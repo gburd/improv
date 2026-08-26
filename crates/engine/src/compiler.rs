@@ -331,7 +331,11 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
         TypedExprKind::BinaryOp(op, l, r) => {
             let lp = build_plan(ctx, l)?;
             let rp = build_plan(ctx, r)?;
-            if l.ty.dim == r.ty.dim {
+            // A scalar literal operand broadcasts over the other operand and is
+            // folded into the map by the dataflow builder — no Join needed.
+            let is_scalar_lit =
+                |e: &TypedExpr| matches!(e.kind, TypedExprKind::Literal(_)) && e.ty.dim.is_scalar();
+            if l.ty.dim == r.ty.dim || is_scalar_lit(l) || is_scalar_lit(r) {
                 PlanNodeKind::MapBinary(*op, Box::new(lp), Box::new(rp))
             } else {
                 // Dims differ: insert a Join on the shared (intersection)

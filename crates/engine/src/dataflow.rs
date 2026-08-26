@@ -69,12 +69,35 @@ where
 
         PlanNodeKind::MapBinary(op, left, right) => {
             // Operands are dimension-aligned by an enclosing Join (or equal
-            // dims). Align by key and apply the op element-wise.
-            let l = build_coll(left, inputs, derived)?;
-            let r = build_coll(right, inputs, derived)?;
+            // dims). A *literal* operand has no collection of its own; fold it
+            // into the map closure so it broadcasts over the other operand.
             let op = *op;
-            Ok(l.join(&r)
-                .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))))
+            match (literal_value(left), literal_value(right)) {
+                (Some(lit), None) => {
+                    let r = build_coll(right, inputs, derived)?;
+                    Ok(r.map(move |(k, b)| (k, apply_binary(op, &lit, &b))))
+                }
+                (None, Some(lit)) => {
+                    let l = build_coll(left, inputs, derived)?;
+                    Ok(l.map(move |(k, a)| (k, apply_binary(op, &a, &lit))))
+                }
+                (Some(a), Some(b)) => {
+                    // Both literals: a scalar result under the empty key.
+                    // (Rare; the compiler usually has at least one measure ref.)
+                    let v = apply_binary(op, &a, &b);
+                    // No source collection to attach to; unsupported standalone.
+                    let _ = v;
+                    Err(EngineError::Unsupported(
+                        "binary op on two literals (no dimensioned context)".into(),
+                    ))
+                }
+                (None, None) => {
+                    let l = build_coll(left, inputs, derived)?;
+                    let r = build_coll(right, inputs, derived)?;
+                    Ok(l.join(&r)
+                        .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))))
+                }
+            }
         }
 
         PlanNodeKind::Join {
@@ -193,6 +216,15 @@ where
                 ))),
             }
         }
+    }
+}
+
+/// If a plan node is a literal, return its `CellValue` (for folding a constant
+/// operand into a `MapBinary` map rather than materializing a collection).
+fn literal_value(node: &PlanNode) -> Option<CellValue> {
+    match &node.kind {
+        PlanNodeKind::Literal(v) => CellValue::from_model_value(v),
+        _ => None,
     }
 }
 
@@ -755,6 +787,53 @@ mod tests {
             Some(&CellValue::Bool(true)),
             "Price 20 > 15"
         );
+    }
+
+    #[test]
+    fn evaluate_comparison_against_literal_broadcasts() {
+        // Expensive[Product] = Price > 15  (a *literal* RHS, no Threshold
+        // measure) — exercises literal folding + broadcast in MapBinary.
+        let mut model = Model::new();
+        let product = CategoryId(2);
+        model.add_category(product, "Product");
+        model.add_item(ItemId(20), product, "WidgetA");
+        model.add_item(ItemId(21), product, "WidgetB");
+        model.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Price".into()),
+            value_type: ValueType::Number,
+            categories: vec![product],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        model.add_measure(Measure {
+            id: MeasureId(130),
+            name: Name("Expensive".into()),
+            value_type: ValueType::Boolean,
+            categories: vec![product],
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::BinaryOp(
+                BinaryOp::Gt,
+                Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+                Box::new(Expr::Literal(Value::Number(15.0))),
+            ))),
+            description: None,
+        });
+        let c = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
+        model.set_input(
+            MeasureId(100),
+            c(&[(product, ItemId(20))]),
+            Value::Number(10.0),
+        );
+        model.set_input(
+            MeasureId(100),
+            c(&[(product, ItemId(21))]),
+            Value::Number(20.0),
+        );
+
+        let out = evaluate(&model, &[MeasureId(130)]).expect("evaluate");
+        let exp = out.get(&MeasureId(130)).expect("Expensive");
+        assert_eq!(exp.get(&key(&[(2, 20)])), Some(&CellValue::Bool(false)));
+        assert_eq!(exp.get(&key(&[(2, 21)])), Some(&CellValue::Bool(true)));
     }
 
     #[test]
