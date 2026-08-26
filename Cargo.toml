@@ -6,6 +6,8 @@ members = [
     "crates/engine",
     "crates/cli",
     "crates/nl_formula",
+    "crates/tui",
+    "crates/server",
 ]
 
 [workspace.package]
@@ -30,3 +32,10 @@ differential-dataflow = "=0.13.0"
 timely = "=0.13.0"
 # Storage substrate: the embedded SQLite Mentat fork.
 mentat = { path = "../mentat" }
+# TUI (Phase 2).
+ratatui = "0.29"
+crossterm = "0.28"
+# Server (Phase 3).
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower = "0.5"

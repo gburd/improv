@@ -1,0 +1,17 @@
+[package]
+name = "improv_tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "improv-tui"
+path = "src/main.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+improv_storage_mentat = { path = "../storage_mentat" }
+improv_engine = { path = "../engine" }
+thiserror.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
