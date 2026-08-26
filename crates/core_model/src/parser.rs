@@ -6,7 +6,7 @@
 //! [`Model`] (like `NlContext`); unknown names are a clean [`ParseError`],
 //! never a panic.
 //!
-//! # Grammar (v1 subset of §4 — no `CALL(...)`/`SQL("...")`)
+//! # Grammar (v1 subset of §4, plus named scalar calls; no `SQL("...")`)
 //!
 //! ```ebnf
 //! Formula      = Identifier "=" Expression ;
@@ -47,7 +47,10 @@
 //! ## Not implemented (deferred, per §4/§11.3)
 //!
 //! * Date literals `#2025-01-01#` (spec §3.3, optional here).
-//! * `CALL(...)` / `SQL("...")` forms (later phases).
+//! * External-language `CALL(...)` dispatch (Phase 6 runtime) and `SQL("...")`
+//!   (Phase 7). Named *scalar* calls (`ABS(x)`, `SQRT(x)`, `MIN2(a,b)`, … — see
+//!   `scalar_func`) ARE supported: the deterministic, in-process foundation the
+//!   external runtimes later plug into via the same `Expr::Call` node.
 
 use crate::formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 use crate::ids::{CategoryId, MeasureId, Name};
@@ -58,6 +61,29 @@ pub const FUNC_SUM: FuncId = FuncId(1);
 pub const FUNC_AVG: FuncId = FuncId(2);
 pub const FUNC_MIN: FuncId = FuncId(3);
 pub const FUNC_MAX: FuncId = FuncId(4);
+
+/// Named scalar built-in functions callable as `NAME(args...)` in a formula.
+///
+/// These ids and arities MUST match the engine's scalar registry
+/// (`improv_engine::compiler::scalar_arity`). This is the deterministic,
+/// in-process function surface; the Phase 6 external-language `CALL(...)` form
+/// plugs additional runtimes into the same `Expr::Call` seam.
+///
+/// Returns `(FuncId, arity)` for a recognized name (case-insensitive).
+pub fn scalar_func(name: &str) -> Option<(FuncId, usize)> {
+    let (id, arity) = match name.to_ascii_uppercase().as_str() {
+        "ABS" => (10, 1),
+        "ROUND" => (11, 1),
+        "FLOOR" => (12, 1),
+        "CEIL" => (13, 1),
+        "SQRT" => (14, 1),
+        "NEG" => (15, 1),
+        "MIN2" => (20, 2),
+        "MAX2" => (21, 2),
+        _ => return None,
+    };
+    Some((FuncId(id), arity))
+}
 
 /// A formula parse failure. `position` is a byte offset into the source token
 /// stream's originating text when known.
@@ -419,7 +445,48 @@ impl<'a> Parser<'a> {
                 return self.parse_aggregation(func);
             }
         }
+        if let Some((func, arity)) = scalar_func(&word) {
+            // Named scalar call `NAME(args...)` only when directly followed by
+            // "("; otherwise the word is an ordinary measure name.
+            if matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(") {
+                return self.parse_scalar_call(&word, func, arity);
+            }
+        }
         self.parse_measure_ref()
+    }
+
+    /// A named scalar function call: `NAME(expr, expr, ...)`. Arity is checked
+    /// against the registry so a bad call is a clear parse error.
+    fn parse_scalar_call(
+        &mut self,
+        name: &str,
+        func: FuncId,
+        arity: usize,
+    ) -> Result<Expr, ParseError> {
+        self.bump(); // function name
+        if !self.eat_op("(") {
+            return Err(self.err("expected '(' after function name"));
+        }
+        let mut args = Vec::new();
+        if !matches!(self.toks.get(self.pos).map(|s| &s.tok), Some(Tok::Op(o)) if o == ")") {
+            loop {
+                args.push(self.parse_expr()?);
+                if self.eat_op(",") {
+                    continue;
+                }
+                break;
+            }
+        }
+        if !self.eat_op(")") {
+            return Err(self.err("expected ')' to close function call"));
+        }
+        if args.len() != arity {
+            return Err(self.err(format!(
+                "{name} takes {arity} argument(s), got {}",
+                args.len()
+            )));
+        }
+        Ok(Expr::Call(func, args))
     }
 
     /// Aggregation = AggFunc "(" MeasureRef "OVER" Identifier ")"
@@ -811,5 +878,38 @@ mod tests {
         let e = parse_expr(&m, "Price + Widgets").unwrap_err();
         assert!(e.position.is_some());
         assert!(e.to_string().contains("unknown measure"));
+    }
+
+    #[test]
+    fn parses_named_scalar_call() {
+        let m = fixture();
+        // ABS(Price) -> Call(FuncId(10), [Ref(Price)]).
+        let f = parse_expr(&m, "ABS(Price)").unwrap();
+        assert_eq!(f.expr, Expr::Call(FuncId(10), vec![refr(PRICE)]));
+
+        // Two-arg MIN2, case-insensitive, args are full expressions.
+        let f = parse_expr(&m, "min2(Price, Cost - Revenue)").unwrap();
+        match f.expr {
+            Expr::Call(FuncId(20), args) => {
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0], refr(PRICE));
+            }
+            other => panic!("expected MIN2 call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_call_wrong_arity_errors() {
+        let m = fixture();
+        assert!(parse_expr(&m, "ABS(Price, Cost)").is_err()); // ABS is arity 1
+        assert!(parse_expr(&m, "MIN2(Price)").is_err()); // MIN2 is arity 2
+    }
+
+    #[test]
+    fn scalar_name_without_paren_is_a_measure_ref() {
+        // A bare name matching a scalar func but not followed by "(" is parsed
+        // as a measure ref (and errors if unknown) — no false function parse.
+        let m = fixture();
+        assert!(parse_expr(&m, "ABS").is_err()); // unknown measure "ABS"
     }
 }

@@ -237,12 +237,16 @@ phrases. Parse↔describe must round-trip (a tested property).
 
 `SUM`, `AVG`, `MIN`, `MAX` (via the `OVER` aggregation form).
 
-### 11.2 Planned Scalar Functions
+### 11.2 Scalar Functions
 
-As the numeric core grows to general `FuncCall` (an engine follow-up),
-add scalar built-ins incrementally, e.g. `ABS`, `ROUND`, `FLOOR`, `CEIL`;
-logical `AND`/`OR`/`NOT`; date `TODAY`/`YEAR`/`MONTH`/`DAY`. Add functions only
-as the engine gains the ability to evaluate them deterministically — do not
+**Implemented** and callable as `NAME(args...)` in a formula (name-→id registry
+in `core_model::parser::scalar_func`, evaluated by the engine's scalar path):
+`ABS`, `ROUND`, `FLOOR`, `CEIL`, `SQRT`, `NEG` (arity 1) and `MIN2`, `MAX2`
+(arity 2). Arity is checked at parse time. These are pure and deterministic, so
+they behave as ordinary operators to the engine.
+
+Add further built-ins (e.g. logical helpers, date `YEAR`/`MONTH`/`DAY`)
+incrementally — only as the engine can evaluate them deterministically. Do not
 document a function the engine cannot run.
 
 ### 11.3 Later-Phase Extension Points

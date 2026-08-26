@@ -136,7 +136,13 @@ The authoritative roadmap and Phase 5–7 invariants live in
   inspector (metadata/dimensions/dependencies/formula-in-English/error count).
   8 tests. Pending: keyboard grid navigation, scenario management, virtualized
   rendering for very large grids.
-- **Phase 6 (External-language functions): PLANNED.**
+- **Phase 6 (External-language functions): FOUNDATION DONE; runtime PLANNED.**
+  Named scalar functions are callable from formula text — `ABS`/`ROUND`/`FLOOR`/
+  `CEIL`/`SQRT`/`NEG`/`MIN2`/`MAX2` via `core_model::parser::scalar_func`,
+  evaluated deterministically by the engine (e.g. `AbsDelta = ABS(Delta)`).
+  This is the in-process, deterministic seam (`Expr::Call`). The external
+  `CALL(...)` runtime dispatch (Python first, then R/Julia/WASM) is still
+  PLANNED.
 - **Phase 7 (SQL connectivity): PLANNED.**
 
 ## Definition of done for v1

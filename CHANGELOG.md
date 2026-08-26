@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Named scalar functions in formulas**: `ABS`, `ROUND`, `FLOOR`, `CEIL`,
+  `SQRT`, `NEG`, `MIN2`, `MAX2` are now callable as `NAME(args...)` in formula
+  text (parser registry `core_model::parser::scalar_func`, arity-checked),
+  evaluated deterministically by the engine — the in-process foundation for
+  Phase 6's external-language `CALL(...)` runtime.
 - **Desktop GUI** (`improv_gui`, egui/eframe): `improv-gui <db>` — a model
   explorer, an editable pivot grid (input cells edit through the live engine
   with autosave; derived cells read-only), a formula editor (edit/add derived
