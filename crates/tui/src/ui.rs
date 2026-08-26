@@ -69,8 +69,13 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
         lines.push(Line::from(format!("pages (fixed): {pages}")));
     }
     lines.push(Line::from(
-        "arrows: move   Tab/m: next measure   q/Esc: quit",
+        "arrows: move   e/Enter: edit   Esc: cancel   Tab/m: next measure   q: quit",
     ));
+    if let Some(buf) = &app.edit {
+        lines.push(Line::from(format!("edit> {buf}")));
+    } else if let Some(msg) = &app.status {
+        lines.push(Line::from(msg.clone()));
+    }
     lines
 }
 
@@ -121,7 +126,7 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid) -> Table<'a> {
 pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(4), Constraint::Min(3)])
+        .constraints([Constraint::Length(5), Constraint::Min(3)])
         .split(f.area());
 
     let status = ratatui::widgets::Paragraph::new(status_lines(app))

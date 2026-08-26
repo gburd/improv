@@ -40,15 +40,16 @@ fn main() {
         }
     };
 
-    if let Err(e) = run(app) {
+    if let Err(e) = run(app, &path) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
 /// Enter the alt screen, run the loop, and always restore the terminal — even
-/// on error or panic.
-fn run(mut app: App) -> Result<(), String> {
+/// on error or panic. On a clean exit the (possibly edited) model is saved back
+/// to `path` (autosave-on-quit; edits are held in memory during the session).
+fn run(mut app: App, path: &str) -> Result<(), String> {
     enable_raw_mode().map_err(|e| e.to_string())?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).map_err(|e| e.to_string())?;
@@ -67,7 +68,12 @@ fn run(mut app: App) -> Result<(), String> {
 
     // Always restore on the normal path too.
     let _ = restore();
-    result
+    result?;
+
+    // Autosave the edited model on clean exit (edits live in memory otherwise).
+    ModelStore::open(path)
+        .and_then(|mut s| s.save_model(&app.model))
+        .map_err(|e| format!("autosave failed: {e}"))
 }
 
 /// Undo terminal setup. Safe to call multiple times.
@@ -83,17 +89,49 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> R
             .map_err(|e| e.to_string())?;
 
         match event::read().map_err(|e| e.to_string())? {
-            Event::Key(k) if k.kind != KeyEventKind::Release => match k.code {
-                KeyCode::Char('q') | KeyCode::Esc => app.should_quit = true,
-                KeyCode::Tab | KeyCode::Char('m') => app.next_measure(),
-                KeyCode::Up => app.move_cursor(-1, 0),
-                KeyCode::Down => app.move_cursor(1, 0),
-                KeyCode::Left => app.move_cursor(0, -1),
-                KeyCode::Right => app.move_cursor(0, 1),
-                _ => {}
-            },
+            Event::Key(k) if k.kind != KeyEventKind::Release => {
+                if app.edit.is_some() {
+                    edit_key(app, k.code);
+                } else {
+                    normal_key(app, k.code);
+                }
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Key handling while a cell edit is in progress.
+fn edit_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Enter => app.commit_edit(),
+        KeyCode::Esc => app.cancel_edit(),
+        KeyCode::Backspace => {
+            if let Some(buf) = app.edit.as_mut() {
+                buf.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(buf) = app.edit.as_mut() {
+                buf.push(c);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Key handling in normal (navigation) mode.
+fn normal_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('e') | KeyCode::Enter => app.begin_edit(),
+        KeyCode::Tab | KeyCode::Char('m') => app.next_measure(),
+        KeyCode::Up => app.move_cursor(-1, 0),
+        KeyCode::Down => app.move_cursor(1, 0),
+        KeyCode::Left => app.move_cursor(0, -1),
+        KeyCode::Right => app.move_cursor(0, 1),
+        KeyCode::Esc => app.status = None,
+        _ => {}
+    }
 }
