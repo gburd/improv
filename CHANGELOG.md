@@ -8,6 +8,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Live incremental edit API** (`improv_engine::session::Engine`): builds the
+  differential-dataflow graph once and applies input-cell edits as deltas
+  (`set`/`clear`/`apply`), recomputing only affected coordinates — no rebuild.
+- **TUI live editing**: edit input cells in the pivot grid (`e`/Enter),
+  derived measures recompute live via the session engine; autosave on quit.
+- **Server** `POST /measures/:id/eval`: apply edits through the live engine and
+  return the recomputed snapshot (what-if by default; `"persist": true` writes
+  through).
 - **Textual formula parser** (`improv_core_model::parser`): `parse_formula` /
   `parse_expr` accept Improv formula text (`Revenue = Price * Quantity`,
   precedence, comparisons, `AND`/`OR`/`NOT`, `SUM|AVG|MIN|MAX(x OVER Cat)`),

@@ -31,13 +31,12 @@ cells it actually affects.
 
 The following are named in the design but **not yet implemented**:
 
-- A desktop GUI.
-- Live cell editing / re-pivot in the TUI (it currently views and navigates;
-  editing is the next increment).
-- A live incremental edit API on top of the engine's one-shot `evaluate`
-  (the engine spike proves deltas work; `evaluate` currently runs to
-  completion once).
-- Non-numeric derived values and general (non-aggregation) function calls.
+- A desktop GUI (Phase 5).
+- TUI re-pivot (dragging categories between axes) and a formula-editor pane —
+  the TUI edits input cells and recomputes live today, but re-pivot is pending.
+- Non-numeric (Text/Boolean) derived values and general (non-aggregation)
+  function calls.
+- External-language functions (Phase 6) and SQL connectivity (Phase 7).
 - Server authentication (the API is localhost-only for now).
 
 Per-phase status is tracked in `.agent/AGENT_STEERING.md`; the detailed design

@@ -63,6 +63,10 @@ A VisiCalc-style terminal interface built on **ratatui** + **crossterm**.
 - Renders a measure as a 2-D pivot grid (categories on rows/columns, extra
   dimensions as pages)
 - Keyboard navigation and measure cycling
+- **Live cell editing** of input measures (`e`/Enter to edit, Enter commits,
+  Esc cancels; `q` quits): commits push through the engine's live incremental
+  edit API so derived measures recompute from the delta, and re-render.
+  Derived cells are read-only. Autosaves to Mentat on quit.
 - Panic-safe terminal teardown (restores the terminal on error)
 
 ### 4.2 Layout
@@ -72,9 +76,8 @@ A VisiCalc-style terminal interface built on **ratatui** + **crossterm**.
 
 ### 4.3 Next Increment
 
-Live editing and re-pivot: edits → engine deltas → incremental recalculation →
-re-render, with autosave via Mentat. This depends on the engine's live
-incremental edit API (an engine follow-up).
+Re-pivot (drag categories between axes) and save-on-every-commit; a formula
+editor pane. The incremental-edit dependency is satisfied (`session::Engine`).
 
 ---
 
@@ -88,6 +91,9 @@ A JSON HTTP API built on **axum** + **tokio**, over a model store.
 - `GET  /model`
 - `GET  /measures`
 - `GET  /measures/:id/values`
+- `POST /measures/:id/eval` — apply input-cell edits through the live engine and
+  return the recomputed snapshot (what-if by default; `"persist": true` writes
+  through)
 - `POST /measures/:id/cells` — set a cell
 - `POST /nl/parse` — CNL → formula
 - `POST /nl/describe` — formula → CNL
