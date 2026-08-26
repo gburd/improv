@@ -11,3 +11,6 @@ path = "src/lib.rs"
 [dependencies]
 improv_core_model = { path = "../core_model" }
 thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"

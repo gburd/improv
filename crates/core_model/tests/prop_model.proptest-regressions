@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4d7bb5a9b14bbba29a2d2c80adf8f817f806cda45f69d55a339fe61122883ff8 # shrinks to m = Model { categories: {CategoryId(0): Category { id: CategoryId(0), name: Name("Cat0"), items: [] }}, items: {}, measures: {MeasureId(111): Measure { id: MeasureId(111), name: Name("M111"), value_type: Number, categories: [], kind: Input, description: None }}, inputs: {(MeasureId(111), Coordinate { dims: {} }): Number(-396023.53689636564)} }

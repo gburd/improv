@@ -1,0 +1,41 @@
+[package]
+name = "improv-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# Own workspace so it doesn't inherit the root workspace's pinned DD/timely
+# deps (cargo-fuzz needs nightly + -Z build-std sanitizer flags).
+[workspace]
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+improv_core_model = { path = "../crates/core_model" }
+improv_nl_formula = { path = "../crates/nl_formula" }
+improv_engine = { path = "../crates/engine" }
+serde_json = "1"
+
+[[bin]]
+name = "fuzz_nl_formula"
+path = "fuzz_targets/fuzz_nl_formula.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_model_json"
+path = "fuzz_targets/fuzz_model_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_coord_codec"
+path = "fuzz_targets/fuzz_coord_codec.rs"
+test = false
+doc = false
+bench = false

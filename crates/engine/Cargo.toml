@@ -13,3 +13,6 @@ improv_core_model = { path = "../core_model" }
 thiserror.workspace = true
 differential-dataflow.workspace = true
 timely.workspace = true
+
+[dev-dependencies]
+proptest = "1"
