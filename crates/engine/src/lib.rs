@@ -20,6 +20,7 @@
 pub mod compiler;
 pub mod dataflow;
 pub mod plan;
+pub mod session;
 pub mod typed;
 
 use improv_core_model::{CategoryId, Coordinate, ItemId};

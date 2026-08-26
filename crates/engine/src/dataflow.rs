@@ -48,7 +48,7 @@ type Coll<G> = Collection<G, (CoordKey, u64), isize>;
 ///
 /// `inputs` maps input-measure ids to their base DD collections. A `Ref` to a
 /// *derived* measure resolves to its already-built collection in `derived`.
-fn build<G: Scope>(
+pub(crate) fn build_coll<G: Scope>(
     node: &PlanNode,
     inputs: &HashMap<MeasureId, Coll<G>>,
     derived: &HashMap<MeasureId, Coll<G>>,
@@ -64,7 +64,7 @@ where
             .ok_or_else(|| EngineError::Unsupported(format!("no collection for measure {m:?}"))),
 
         PlanNodeKind::MapUnary(op, child) => {
-            let c = build(child, inputs, derived)?;
+            let c = build_coll(child, inputs, derived)?;
             let op = *op;
             Ok(c.map(move |(k, bits)| {
                 let v = f64::from_bits(bits);
@@ -86,8 +86,8 @@ where
         PlanNodeKind::MapBinary(op, left, right) => {
             // Operands are dimension-aligned by an enclosing Join (or equal
             // dims). Align by key and apply the op element-wise.
-            let l = build(left, inputs, derived)?;
-            let r = build(right, inputs, derived)?;
+            let l = build_coll(left, inputs, derived)?;
+            let r = build_coll(right, inputs, derived)?;
             let op = *op;
             Ok(l.join(&r).map(move |(k, (lb, rb))| {
                 let a = f64::from_bits(lb);
@@ -104,8 +104,8 @@ where
             // Re-key both sides to the shared join categories, join, then
             // rebuild the union key. The union of the two full keys is the
             // result coordinate.
-            let l = build(left, inputs, derived)?;
-            let r = build(right, inputs, derived)?;
+            let l = build_coll(left, inputs, derived)?;
+            let r = build_coll(right, inputs, derived)?;
             let keys = join_keys.clone();
             let keys2 = keys.clone();
             let l_keyed = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
@@ -126,7 +126,7 @@ where
             group_by,
             func,
         } => {
-            let c = build(input, inputs, derived)?;
+            let c = build_coll(input, inputs, derived)?;
             let gb = group_by.clone();
             let func = *func;
             // Re-key to the group-by coordinate, then reduce.
@@ -175,7 +175,7 @@ where
             }
             match args.as_slice() {
                 [a] => {
-                    let c = build(a, inputs, derived)?;
+                    let c = build_coll(a, inputs, derived)?;
                     Ok(c.map(move |(k, bits)| {
                         (k, apply_scalar(func, &[f64::from_bits(bits)]).to_bits())
                     }))
@@ -184,8 +184,8 @@ where
                     // Align by shared categories (broadcast the smaller dim
                     // over the larger), join, apply the function on both
                     // decoded values, rebuild the union coordinate.
-                    let l = build(a, inputs, derived)?;
-                    let r = build(b, inputs, derived)?;
+                    let l = build_coll(a, inputs, derived)?;
+                    let r = build_coll(b, inputs, derived)?;
                     let keys: Vec<CategoryId> =
                         a.ty.dim
                             .categories
@@ -300,7 +300,7 @@ fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
 /// Compute the derived measures transitively needed by `targets`, in
 /// dependency order (a measure comes after every derived measure it
 /// references). Rejects cycles.
-fn derived_build_order(
+pub(crate) fn derived_build_order(
     model: &Model,
     targets: &[MeasureId],
 ) -> Result<Vec<MeasureId>, EngineError> {
@@ -413,7 +413,7 @@ pub fn evaluate(
 
             let mut derived: HashMap<MeasureId, Coll<_>> = HashMap::new();
             for (mid, plan) in &plans_arc {
-                if let Ok(coll) = build(plan, &input_colls, &derived) {
+                if let Ok(coll) = build_coll(plan, &input_colls, &derived) {
                     let mid = *mid;
                     let res = res.clone();
                     // Collapse to one value per key.
