@@ -106,10 +106,11 @@ The authoritative roadmap and Phase 5–7 invariants live in
     the v1 EBNF grammar into a `Formula` (used by the CLI's `add-derived`).
   - **Scalar functions: DONE.** ABS/ROUND/FLOOR/CEIL/SQRT/NEG/MIN2/MAX2 and
     numeric comparison/logical ops evaluate through the engine.
+  - **Live incremental edit API: DONE.** `session::Engine` builds the dataflow
+    once on a worker thread; `set`/`clear`/`apply` push input-cell edits as
+    deltas, recomputing only affected coordinates (4 session tests).
   - **Phase 1 follow-ups (deferred):** non-numeric (Text/Boolean) derived
-    values as a true DD lane; standalone/broadcast literals; a live incremental
-    edit API on top of `evaluate` (the spike proves deltas work; `evaluate`
-    currently runs once).
+    values as a true DD lane; standalone/broadcast literals.
 - **Phase 2 — CLI: DONE.** `crates/cli` `improv` binary: init / add-category /
   add-item / add-measure (with dimensions) / add-derived (textual formula) /
   set / list / show / eval (engine compute) / export over a Mentat-backed store
@@ -121,9 +122,9 @@ The authoritative roadmap and Phase 5–7 invariants live in
   (10 tests): model/measures/values, NL parse/describe, set-cell. Auth deferred.
 - **Phase 4 — CNL: DONE (initial grammar).** `crates/nl_formula` parse/describe
   with a controlled grammar + round-trip (10 tests).
-- **v1 core (Phases 0–4): DONE.** Remaining v1 follow-ups: live TUI editing,
-  non-numeric derived values, general `FuncCall`, and a live incremental edit
-  API on top of one-shot `evaluate`.
+- **v1 core (Phases 0–4): DONE.** Remaining v1 follow-ups: non-numeric derived
+  values (Text/Boolean DD lane) and general `FuncCall`. (Live TUI editing and
+  the incremental edit API are done — see the Phase 1 / Phase 2 entries above.)
 - **Phase 5 (Desktop GUI): PLANNED.**
 - **Phase 6 (External-language functions): PLANNED.**
 - **Phase 7 (SQL connectivity): PLANNED.**

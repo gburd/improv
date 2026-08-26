@@ -186,9 +186,12 @@ round proved unaffected cells are not recomputed.
 feeds numeric input cells, runs, and returns computed values. It is verified
 against the canonical Time×Product revenue results (1000 / 1000 / 1200 / 1600).
 
-> `evaluate` currently runs once end-to-end. A **live incremental edit API** on
-> top of it (edits → deltas → recompute without full rebuild) is a Phase 1
-> follow-up; the spike already proves the delta mechanics work.
+> `evaluate` runs once end-to-end. A **live incremental edit API** (`session.rs`
+> `Engine`) builds the graph once on a dedicated worker thread and applies
+> input-cell edits as deltas (`Engine::set` / `clear` / `apply`), recomputing
+> only affected coordinates without a rebuild. Structural changes (new
+> measures/formulas) require a new `Engine`. **DONE** — verified by the session
+> tests (initial snapshot, affected-only update, broadcast, cell clear).
 
 ---
 
