@@ -8,10 +8,13 @@
 //!   * diff `R` = `isize`; a final `reduce` collapses to one value per key.
 //!
 //! Scope (v1, numeric): InputMeasure, Literal, MapUnary(Neg), MapBinary
-//! (arithmetic), Join (dimension alignment), Aggregate (SUM/AVG/MIN/MAX).
-//! Non-numeric values and general FuncCall are future work.
+//! (arithmetic + comparison/logical encoded as 1.0/0.0), Join (dimension
+//! alignment), Aggregate (SUM/AVG/MIN/MAX), and scalar FuncCall built-ins
+//! (ABS/ROUND/FLOOR/CEIL/SQRT/NEG, MIN2/MAX2). Non-numeric derived values
+//! (Text/Boolean stored as such) are future work: comparison/logical results
+//! live in the numeric lane as 1.0/0.0.
 
-use crate::compiler::{compile_formula, CompileContext};
+use crate::compiler::{compile_formula, scalar_arity, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
 use crate::{encode_coord, CoordKey};
 use differential_dataflow::input::InputSession;
@@ -160,7 +163,53 @@ where
         }
 
         PlanNodeKind::Literal(_) => Err(EngineError::Unsupported("non-numeric literal".into())),
-        PlanNodeKind::FuncCall { .. } => Err(EngineError::Unsupported("general FuncCall".into())),
+        PlanNodeKind::FuncCall { func, args } => {
+            let func = *func;
+            let arity = scalar_arity(func)
+                .ok_or_else(|| EngineError::Unsupported(format!("unknown scalar func {func:?}")))?;
+            if args.len() != arity {
+                return Err(EngineError::Unsupported(format!(
+                    "scalar {func:?} arity {arity}, got {} args",
+                    args.len()
+                )));
+            }
+            match args.as_slice() {
+                [a] => {
+                    let c = build(a, inputs, derived)?;
+                    Ok(c.map(move |(k, bits)| {
+                        (k, apply_scalar(func, &[f64::from_bits(bits)]).to_bits())
+                    }))
+                }
+                [a, b] => {
+                    // Align by shared categories (broadcast the smaller dim
+                    // over the larger), join, apply the function on both
+                    // decoded values, rebuild the union coordinate.
+                    let l = build(a, inputs, derived)?;
+                    let r = build(b, inputs, derived)?;
+                    let keys: Vec<CategoryId> =
+                        a.ty.dim
+                            .categories
+                            .iter()
+                            .copied()
+                            .filter(|c| b.ty.dim.categories.contains(c))
+                            .collect();
+                    let keys2 = keys.clone();
+                    let l_keyed = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
+                    let r_keyed = r.map(move |(k, v)| (project(&k, &keys2), (k, v)));
+                    Ok(l_keyed
+                        .join(&r_keyed)
+                        .map(move |(_jk, ((lk, lv), (rk, rv)))| {
+                            let merged = union_keys(&lk, &rk);
+                            let out = apply_scalar(func, &[f64::from_bits(lv), f64::from_bits(rv)]);
+                            (merged, out.to_bits())
+                        }))
+                }
+                _ => Err(EngineError::Unsupported(format!(
+                    "scalar func arity {} unsupported",
+                    args.len()
+                ))),
+            }
+        }
     }
 }
 
@@ -192,6 +241,30 @@ fn bool_f64(b: bool) -> f64 {
         1.0
     } else {
         0.0
+    }
+}
+
+/// Evaluate a scalar built-in on its decoded f64 args. Ids match the compiler's
+/// `scalar_arity` registry. Domain errors (SQRT of a negative) yield NaN,
+/// consistent with the Div-by-zero -> NaN convention. Deterministic: pure f64
+/// arithmetic, no ordering dependence.
+fn apply_scalar(func: FuncId, args: &[f64]) -> f64 {
+    match (func.0, args) {
+        (10, [a]) => a.abs(),
+        (11, [a]) => a.round(),
+        (12, [a]) => a.floor(),
+        (13, [a]) => a.ceil(),
+        (14, [a]) => {
+            if *a < 0.0 {
+                f64::NAN
+            } else {
+                a.sqrt()
+            }
+        }
+        (15, [a]) => -a,
+        (20, [a, b]) => a.min(*b),
+        (21, [a, b]) => a.max(*b),
+        _ => f64::NAN,
     }
 }
 
@@ -527,6 +600,118 @@ mod tests {
         assert_eq!(rbp.get(&key(&[(2, 20)])), Some(&2200.0));
         assert_eq!(rbp.get(&key(&[(2, 21)])), Some(&2600.0));
         assert_eq!(rbp.len(), 2);
+    }
+
+    // Scalar FuncCall evaluation over the revenue model: ABS (unary) and MIN2
+    // (2-arg join path). Comparison-as-numeric is checked separately.
+    #[test]
+    fn evaluate_scalar_funcs_and_comparison() {
+        let mut model = revenue_model();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let refr = |id| Expr::Ref(id, DimensionSpec::default());
+        let mk = |id: u32, name: &str, cats: Vec<CategoryId>, f: Expr| Measure {
+            id: MeasureId(id),
+            name: Name(name.into()),
+            value_type: ValueType::Number,
+            categories: cats,
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(f)),
+            description: None,
+        };
+
+        // Profit[Time,Product] = Price[Product] - Quantity[Time,Product]
+        // (negative everywhere: 10-100, 20-50, ...).
+        model.add_measure(mk(
+            110,
+            "Profit",
+            vec![time, product],
+            Expr::BinaryOp(
+                BinaryOp::Sub,
+                Box::new(refr(MeasureId(100))),
+                Box::new(refr(MeasureId(101))),
+            ),
+        ));
+        // AbsProfit = ABS(Profit)
+        model.add_measure(mk(
+            111,
+            "AbsProfit",
+            vec![time, product],
+            Expr::Call(FuncId(10), vec![refr(MeasureId(110))]),
+        ));
+        // MinPQ[Time,Product] = MIN2(Price[Product], Quantity[Time,Product])
+        model.add_measure(mk(
+            113,
+            "MinPQ",
+            vec![time, product],
+            Expr::Call(FuncId(20), vec![refr(MeasureId(100)), refr(MeasureId(101))]),
+        ));
+
+        let out = evaluate(&model, &[MeasureId(111), MeasureId(113)]).expect("evaluate");
+
+        // AbsProfit = |Price - Quantity|.
+        let ap = out.get(&MeasureId(111)).expect("AbsProfit");
+        assert_eq!(ap.get(&key(&[(1, 10), (2, 20)])), Some(&90.0)); // |10-100|
+        assert_eq!(ap.get(&key(&[(1, 10), (2, 21)])), Some(&30.0)); // |20-50|
+        assert_eq!(ap.get(&key(&[(1, 11), (2, 20)])), Some(&110.0)); // |10-120|
+        assert_eq!(ap.get(&key(&[(1, 11), (2, 21)])), Some(&60.0)); // |20-80|
+
+        // MinPQ = min(Price, Quantity) = Price everywhere (Price<Quantity).
+        let mp = out.get(&MeasureId(113)).expect("MinPQ");
+        assert_eq!(mp.get(&key(&[(1, 10), (2, 20)])), Some(&10.0));
+        assert_eq!(mp.get(&key(&[(1, 11), (2, 21)])), Some(&20.0));
+
+        // Determinism: a second run yields identical results.
+        let out2 = evaluate(&model, &[MeasureId(111), MeasureId(113)]).expect("evaluate");
+        assert_eq!(out.get(&MeasureId(111)), out2.get(&MeasureId(111)));
+        assert_eq!(out.get(&MeasureId(113)), out2.get(&MeasureId(113)));
+    }
+
+    // Comparison result encoded as 1.0/0.0 in the numeric lane:
+    // Hot[Product] = Price > Threshold, an input Threshold[Product] = 15.
+    #[test]
+    fn evaluate_comparison_as_numeric() {
+        let mut model = revenue_model();
+        let product = CategoryId(2);
+        let refr = |id| Expr::Ref(id, DimensionSpec::default());
+
+        // Threshold[Product] = 15 for both products (input).
+        model.add_measure(Measure {
+            id: MeasureId(120),
+            name: Name("Threshold".into()),
+            value_type: ValueType::Number,
+            categories: vec![product],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let coord = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
+        model.set_input(
+            MeasureId(120),
+            coord(&[(product, ItemId(20))]),
+            Value::Number(15.0),
+        );
+        model.set_input(
+            MeasureId(120),
+            coord(&[(product, ItemId(21))]),
+            Value::Number(15.0),
+        );
+
+        // Hot[Product] = Price > Threshold  (Price A=10 -> 0.0, B=20 -> 1.0).
+        model.add_measure(Measure {
+            id: MeasureId(121),
+            name: Name("Hot".into()),
+            value_type: ValueType::Boolean,
+            categories: vec![product],
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::BinaryOp(
+                BinaryOp::Gt,
+                Box::new(refr(MeasureId(100))),
+                Box::new(refr(MeasureId(120))),
+            ))),
+            description: None,
+        });
+
+        let out = evaluate(&model, &[MeasureId(121)]).expect("evaluate");
+        let hot = out.get(&MeasureId(121)).expect("Hot");
+        assert_eq!(hot.get(&key(&[(2, 20)])), Some(&0.0), "Price 10 not > 15");
+        assert_eq!(hot.get(&key(&[(2, 21)])), Some(&1.0), "Price 20 > 15");
     }
 
     #[test]

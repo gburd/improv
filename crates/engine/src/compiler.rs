@@ -66,6 +66,31 @@ fn is_aggregation(f: FuncId) -> bool {
     matches!(f, SUM | AVG | MIN | MAX)
 }
 
+/// Scalar (non-aggregating) built-in func-id registry. These ids start at 10 so
+/// they never collide with the aggregation ids (1-4). Each takes `arity`
+/// Number args and returns Number over the union of the args' dims. Evaluation
+/// lives in `dataflow::apply_scalar`; the two tables must agree on ids/arity.
+///
+/// | id | name  | arity | meaning                          |
+/// |----|-------|-------|----------------------------------|
+/// | 10 | ABS   | 1     | absolute value                   |
+/// | 11 | ROUND | 1     | round half-to-even (f64::round)  |
+/// | 12 | FLOOR | 1     | floor                            |
+/// | 13 | CEIL  | 1     | ceil                             |
+/// | 14 | SQRT  | 1     | sqrt (NaN for negative input)    |
+/// | 15 | NEG   | 1     | negate                           |
+/// | 20 | MIN2  | 2     | min of two args                  |
+/// | 21 | MAX2  | 2     | max of two args                  |
+///
+/// Returns the arity for a known scalar func id, or `None` if unknown.
+pub fn scalar_arity(f: FuncId) -> Option<usize> {
+    match f.0 {
+        10..=15 => Some(1),
+        20 | 21 => Some(2),
+        _ => None,
+    }
+}
+
 /// Pass 1: type + dimension inference.
 #[allow(
     clippy::only_used_in_recursion,
@@ -157,10 +182,49 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                 ty: TypeInfo { value_type, dim },
             })
         }
-        Expr::Call(func, args) => {
-            if !is_aggregation(*func) {
-                return Err(CompileError::UnknownFunction(*func));
+        Expr::Call(func, args) if !is_aggregation(*func) => {
+            // Scalar built-in: N Number args on broadcastable dims, result
+            // Number over the union dim.
+            let arity = scalar_arity(*func).ok_or(CompileError::UnknownFunction(*func))?;
+            if args.len() != arity {
+                return Err(CompileError::Unsupported(format!(
+                    "scalar {func:?} expects {arity} arg(s), got {}",
+                    args.len()
+                )));
             }
+            let typed_args: Vec<TypedExpr> = args
+                .iter()
+                .map(|a| infer(ctx, target, a))
+                .collect::<Result<_>>()?;
+            for a in &typed_args {
+                if a.ty.value_type != ValueType::Number {
+                    return Err(CompileError::TypeMismatch(format!(
+                        "scalar {func:?} expects Number args, got {:?}",
+                        a.ty.value_type
+                    )));
+                }
+            }
+            // Union dim; require pairwise broadcastability (one a subset of the
+            // other) so the dataflow join is well defined.
+            let mut dim = Dim::scalar();
+            for a in &typed_args {
+                if !(dim.is_subset_of(&a.ty.dim) || a.ty.dim.is_subset_of(&dim)) {
+                    return Err(CompileError::DimensionMismatch(format!(
+                        "scalar {func:?} args not broadcastable: {:?} vs {:?}",
+                        dim.categories, a.ty.dim.categories
+                    )));
+                }
+                dim = dim.union(&a.ty.dim);
+            }
+            Ok(TypedExpr {
+                kind: TypedExprKind::Call(*func, typed_args),
+                ty: TypeInfo {
+                    value_type: ValueType::Number,
+                    dim,
+                },
+            })
+        }
+        Expr::Call(func, args) => {
             // Aggregation: single arg, collapse its `over` categories.
             let arg = match args.as_slice() {
                 [a] => infer(ctx, target, a)?,
@@ -283,6 +347,18 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                         .collect();
                 let (lp_aligned, rp_aligned) = split_join(lp, rp, join_keys, &ty);
                 PlanNodeKind::MapBinary(*op, Box::new(lp_aligned), Box::new(rp_aligned))
+            }
+        }
+        TypedExprKind::Call(func, args) if !is_aggregation(*func) => {
+            // Scalar built-in: lower each arg; the dataflow builder aligns
+            // multi-arg calls by key (join) and applies the function.
+            let arg_plans = args
+                .iter()
+                .map(|a| build_plan(ctx, a))
+                .collect::<Result<Vec<_>>>()?;
+            PlanNodeKind::FuncCall {
+                func: *func,
+                args: arg_plans,
             }
         }
         TypedExprKind::Call(func, args) => {
@@ -477,5 +553,65 @@ mod tests {
             plan.kind,
             PlanNodeKind::MapBinary(BinaryOp::Mul, ..)
         ));
+    }
+
+    // Scalar FuncCall: ABS(Price) types as Number with the arg's dim and
+    // lowers to PlanNodeKind::FuncCall.
+    #[test]
+    fn scalar_abs_infers_and_lowers() {
+        let measures = fixture();
+        let ctx = CompileContext::new(&measures);
+        let expr = Expr::Call(FuncId(10), vec![refr(PRICE)]); // ABS(Price[Product])
+
+        let typed = infer(&ctx, MeasureId(200), &expr).expect("infer");
+        assert_eq!(typed.ty.value_type, ValueType::Number);
+        assert_eq!(typed.ty.dim, Dim::of(vec![PRODUCT]), "dim follows the arg");
+
+        let plan = build_plan(&ctx, &typed).expect("plan");
+        match plan.kind {
+            PlanNodeKind::FuncCall { func, args } => {
+                assert_eq!(func, FuncId(10));
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0].kind, PlanNodeKind::InputMeasure(PRICE)));
+            }
+            other => panic!("expected FuncCall, got {other:?}"),
+        }
+    }
+
+    // 2-arg scalar MIN2 unions dims; wrong-arity and wrong-type error.
+    #[test]
+    fn scalar_min2_union_dim_and_errors() {
+        let measures = fixture();
+        let ctx = CompileContext::new(&measures);
+        // MIN2(Price[Product], Quantity[Time,Product]) -> [Time,Product]
+        let ok = Expr::Call(FuncId(20), vec![refr(PRICE), refr(QTY)]);
+        let typed = infer(&ctx, MeasureId(200), &ok).expect("infer");
+        assert_eq!(typed.ty.dim, Dim::of(vec![TIME, PRODUCT]), "union dim");
+
+        // Wrong arity: ABS with 2 args.
+        let bad_arity = Expr::Call(FuncId(10), vec![refr(PRICE), refr(QTY)]);
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &bad_arity),
+            Err(CompileError::Unsupported(_))
+        ));
+
+        // Wrong type: ABS of a comparison (Boolean) result.
+        let cmp = Expr::BinaryOp(
+            BinaryOp::Gt,
+            Box::new(refr(PRICE)),
+            Box::new(Expr::Literal(Value::Number(1.0))),
+        );
+        let bad_type = Expr::Call(FuncId(10), vec![cmp]);
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &bad_type),
+            Err(CompileError::TypeMismatch(_))
+        ));
+
+        // Unknown scalar id (not 10-15/20-21 and not an aggregation).
+        let unknown = Expr::Call(FuncId(50), vec![refr(PRICE)]);
+        assert_eq!(
+            infer(&ctx, MeasureId(200), &unknown),
+            Err(CompileError::UnknownFunction(FuncId(50)))
+        );
     }
 }
