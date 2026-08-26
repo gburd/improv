@@ -20,9 +20,7 @@ use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::{Join as _, Reduce};
 use differential_dataflow::Collection;
-use improv_core_model::{
-    BinaryOp, CategoryId, FuncId, MeasureId, MeasureKind, Model, UnaryOp,
-};
+use improv_core_model::{BinaryOp, CategoryId, FuncId, MeasureId, MeasureKind, Model, UnaryOp};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use timely::dataflow::Scope;
