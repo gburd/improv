@@ -91,9 +91,10 @@ GUI later.
     Join / Aggregate), feeds numeric input cells, returns computed values.
     Verified against the canonical Time×Product revenue results
     (1000/1000/1200/1600).
-  - **Phase 1 follow-ups (deferred):** multi-layer derived measures (topological
-    build so a derived measure can reference another derived measure — currently
-    single-layer input->derived); non-numeric values; general `FuncCall`;
+  - Multi-layer derived measures: DONE — `evaluate` builds derived measures in
+    topological dependency order (cycles rejected), so a derived measure may
+    reference another derived measure.
+  - **Phase 1 follow-ups (deferred):** non-numeric values; general `FuncCall`;
     standalone/broadcast literals; a live incremental edit API on top of
     `evaluate` (the spike proves deltas work; `evaluate` currently runs once).
 - **Phase 2 — CLI: DONE (headless subset).** `crates/cli` `improv` binary:

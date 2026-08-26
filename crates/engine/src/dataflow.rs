@@ -224,20 +224,80 @@ fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
     m.into_iter().collect()
 }
 
+/// Compute the derived measures transitively needed by `targets`, in
+/// dependency order (a measure comes after every derived measure it
+/// references). Rejects cycles.
+fn derived_build_order(
+    model: &Model,
+    targets: &[MeasureId],
+) -> Result<Vec<MeasureId>, EngineError> {
+    let mut order: Vec<MeasureId> = Vec::new();
+    let mut visited: std::collections::HashSet<MeasureId> = std::collections::HashSet::new();
+    let mut on_stack: std::collections::HashSet<MeasureId> = std::collections::HashSet::new();
+
+    fn visit(
+        model: &Model,
+        m: MeasureId,
+        order: &mut Vec<MeasureId>,
+        visited: &mut std::collections::HashSet<MeasureId>,
+        on_stack: &mut std::collections::HashSet<MeasureId>,
+    ) -> Result<(), EngineError> {
+        if visited.contains(&m) {
+            return Ok(());
+        }
+        let measure = match model.measures.get(&m) {
+            Some(x) => x,
+            None => return Ok(()), // unknown ref: the compiler will report it
+        };
+        // Only derived measures participate in the build order.
+        let formula = match &measure.kind {
+            MeasureKind::Derived(f) => f,
+            MeasureKind::Input => {
+                visited.insert(m);
+                return Ok(());
+            }
+        };
+        if !on_stack.insert(m) {
+            return Err(EngineError::Unsupported(format!(
+                "cyclic measure dependency at {m:?}"
+            )));
+        }
+        for dep in formula.referenced_measures() {
+            visit(model, dep, order, visited, on_stack)?;
+        }
+        on_stack.remove(&m);
+        visited.insert(m);
+        order.push(m);
+        Ok(())
+    }
+
+    for t in targets {
+        visit(model, *t, &mut order, &mut visited, &mut on_stack)?;
+    }
+    Ok(order)
+}
+
 /// Run `model` to completion and return computed values for the requested
 /// derived measures: `measure -> (coordinate-key -> value)`.
 ///
-/// v1: numeric input + derived measures only. Derived measures must reference
-/// only input measures (a single dataflow layer); multi-layer derivation is a
-/// follow-up (topological build over `derived`).
+/// Numeric input + derived measures. Supports **multi-layer** derivation: a
+/// derived measure may reference other derived measures; they are built in
+/// topological order so each layer feeds the next. Cyclic dependencies are
+/// rejected.
 pub fn evaluate(
     model: &Model,
     targets: &[MeasureId],
 ) -> Result<HashMap<MeasureId, HashMap<CoordKey, f64>>, EngineError> {
-    // Compile each target's plan up front (outside the timely closure).
     let ctx = CompileContext::new(&model.measures);
+
+    // Determine every derived measure transitively needed by `targets`, in
+    // dependency (topological) order: a measure appears after all derived
+    // measures it references.
+    let order = derived_build_order(model, targets)?;
+
+    // Compile each derived measure in that order.
     let mut plans: Vec<(MeasureId, PlanNode)> = Vec::new();
-    for m in targets {
+    for m in &order {
         if let Some(measure) = model.measures.get(m) {
             if let MeasureKind::Derived(f) = &measure.kind {
                 plans.push((*m, compile_formula(&ctx, *m, f)?));
@@ -278,20 +338,23 @@ pub fn evaluate(
                 input_colls.insert(*id, coll);
             }
 
-            let derived: HashMap<MeasureId, Coll<_>> = HashMap::new();
+            let mut derived: HashMap<MeasureId, Coll<_>> = HashMap::new();
             for (mid, plan) in &plans_arc {
                 if let Ok(coll) = build(plan, &input_colls, &derived) {
                     let mid = *mid;
                     let res = res.clone();
-                    // Collapse to one value per key, then capture.
-                    coll.reduce(|_k, inp, out| {
+                    // Collapse to one value per key.
+                    let reduced = coll.reduce(|_k, inp, out| {
                         for (bits, mult) in inp {
                             if *mult > 0 {
                                 out.push((**bits, 1isize));
                             }
                         }
-                    })
-                    .inspect(move |((k, bits), _t, diff)| {
+                    });
+                    // Register this derived measure so later layers can
+                    // reference it as an InputMeasure.
+                    derived.insert(mid, reduced.clone());
+                    reduced.inspect(move |((k, bits), _t, diff)| {
                         if *diff > 0 {
                             res.lock()
                                 .unwrap()
@@ -433,5 +496,69 @@ mod tests {
         // Revenue[2026,B] = 20*80 = 1600
         assert_eq!(rev.get(&key(&[(1, 11), (2, 21)])), Some(&1600.0));
         assert_eq!(rev.len(), 4);
+    }
+
+    #[test]
+    fn evaluate_multi_layer_derivation() {
+        // RevenueByProduct[Product] = SUM(Revenue OVER Time), where Revenue is
+        // itself a derived measure -> two dataflow layers.
+        let mut model = revenue_model();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let over_time = improv_core_model::DimensionSpec {
+            by: vec![product],
+            over: vec![time],
+            except: vec![],
+        };
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("RevenueByProduct".into()),
+            value_type: ValueType::Number,
+            categories: vec![product],
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::Call(
+                improv_core_model::FuncId(1), // SUM
+                vec![Expr::Ref(MeasureId(102), over_time)],
+            ))),
+            description: None,
+        });
+
+        let out = evaluate(&model, &[MeasureId(103)]).expect("evaluate");
+        let rbp = out.get(&MeasureId(103)).expect("RevenueByProduct computed");
+        // WidgetA: 1000 + 1200 = 2200 ; WidgetB: 1000 + 1600 = 2600
+        assert_eq!(rbp.get(&key(&[(2, 20)])), Some(&2200.0));
+        assert_eq!(rbp.get(&key(&[(2, 21)])), Some(&2600.0));
+        assert_eq!(rbp.len(), 2);
+    }
+
+    #[test]
+    fn cyclic_dependency_is_rejected() {
+        // A -> B -> A cycle must error, not loop forever.
+        let mut model = Model::new();
+        let mul = |a, b| {
+            improv_core_model::Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(a, DimensionSpec::default())),
+                Box::new(Expr::Ref(b, DimensionSpec::default())),
+            ))
+        };
+        model.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("A".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Derived(mul(MeasureId(2), MeasureId(2))),
+            description: None,
+        });
+        model.add_measure(Measure {
+            id: MeasureId(2),
+            name: Name("B".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Derived(mul(MeasureId(1), MeasureId(1))),
+            description: None,
+        });
+        assert!(
+            evaluate(&model, &[MeasureId(1)]).is_err(),
+            "cycle must be rejected"
+        );
     }
 }
