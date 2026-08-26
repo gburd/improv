@@ -2,10 +2,23 @@
 
 A cross-platform multidimensional spreadsheet (Lotus Improv / Quantrix lineage)
 in Rust, with incremental recalculation on differential dataflow and storage on
-the embedded (SQLite) Mentat fork. See `AGENT_STEERING.md` for architecture,
-constraints, and live phase status. `IMPROV.txt` is the source design.
+the embedded (SQLite) Mentat fork.
 
-See `.agent-steering-domains.md` for domain-specific steering (local).
+## Steering & design docs (read these)
+
+This file is the single top-level agent doc: contributor workflow, git hygiene,
+and the CI quality gate. The rest of the steering lives under `.agent/`:
+
+- **`.agent/AGENT_STEERING.md`** — the *live* phase-status tracker (DONE / NEXT).
+- **`.agent/steering/`** — the *detailed design* set. Start with
+  `STEERING_SYSTEM_OVERVIEW.md`, then `AGENT_MASTER_STEERING.md`, then the
+  subsystem doc for your work (engine, storage, formula language, GUI,
+  database connectivity, testing & release).
+- **`IMPROV.txt`** (repo root) — the source design of record.
+
+When a phase lands, update `.agent/AGENT_STEERING.md`. When a subsystem's design
+changes, update the relevant `.agent/steering/` doc. (`.agent-steering-domains.md`
+is tool-generated, local, and gitignored — not part of the steering set.)
 
 ## Git hygiene (required)
 
@@ -26,7 +39,8 @@ See `.agent-steering-domains.md` for domain-specific steering (local).
   work, don't rewrite pushed `main`).
 - Commit generated `Cargo.lock` (this workspace ships binaries). Do not commit
   `target/`, coverage artifacts, fuzz corpora, or agent-local files
-  (`.claude/`, `.kiro/`, `.agent-steering-domains.md`).
+  (`.claude/`, `.kiro/`, `.agent-steering-domains.md`, and any
+  `.agent/**/.maki` or `.agent/**/.memelord` runtime artifacts).
 
 ## Quality gates (required — CI enforces, run locally before commit)
 
@@ -69,20 +83,21 @@ Prefer `cargo nextest run` for the fast suite. Property/fuzz crates:
   checked (`mdbook-linkcheck` / `lychee`).
 - Man page(s) for the `improv` CLI under `/docs/man` (generated or hand-written
   roff), one per command surface.
-- `README.md`, `CHANGELOG.md` (Keep a Changelog), `CONTRIBUTING.md`, `LICENSE`
-  (Apache-2.0).
+- `README.md`, `CHANGELOG.md` (Keep a Changelog), `CONTRIBUTING.md`,
+  `LICENSE-APACHE` + `LICENSE-MIT` (dual Apache-2.0 OR MIT).
 - **Steering requires docs stay in sync:** any change to public API, CLI
   surface, formula/CNL grammar, or the Mentat schema updates the corresponding
   rustdoc, mdBook page, man page, and CHANGELOG in the SAME change. A phase
-  landing updates `AGENT_STEERING.md`'s phase-status section. Stale docs are a
-  defect.
+  landing updates `.agent/AGENT_STEERING.md`'s phase-status section. Stale docs
+  are a defect.
 
 ## Layout
 
 Cargo workspace, `crates/*`: `core_model`, `storage_mentat`, `engine`, `cli`,
-`nl_formula` (+ `tui`, `server` as phases land). Shared deps pinned in
+`tui`, `server`, `nl_formula`. Shared deps pinned in
 `[workspace.dependencies]`; the `differential-dataflow`/`timely` pin is delicate
-(see `AGENT_STEERING.md` — do not bump blindly).
+(see `.agent/steering/AGENT_ENGINE_STEERING.md` §2 — do not bump blindly). MSRV
+is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
 
 ## CI / storage-backend pin
 

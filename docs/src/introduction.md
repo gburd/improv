@@ -40,7 +40,8 @@ The following are named in the design but **not yet implemented**:
 - Non-numeric derived values and general (non-aggregation) function calls.
 - Server authentication (the API is localhost-only for now).
 
-Per-phase status is tracked in `AGENT_STEERING.md` at the repository root.
+Per-phase status is tracked in `.agent/AGENT_STEERING.md`; the detailed design
+is in `.agent/steering/`.
 
 ## Reading order
 

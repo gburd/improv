@@ -1,7 +1,10 @@
-# Improv — Agent Steering
+# Improv — Agent Steering (live phase tracker)
 
-Full design rationale lives in `IMPROV.txt` (the source conversation). This file
-is the actionable steering: architecture, constraints, and phase status.
+This is the **live status tracker**: what is DONE / NEXT right now. The
+*detailed design* lives in `.agent/steering/` (start with
+`STEERING_SYSTEM_OVERVIEW.md`); the *source design of record* is `IMPROV.txt`;
+contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
+When a phase lands, update this file.
 
 ## Mission
 
@@ -63,17 +66,22 @@ GUI later.
 
 ## Phases (build in order)
 
+The authoritative roadmap and Phase 5–7 invariants live in
+`.agent/steering/AGENT_MASTER_STEERING.md` §6–§7. Summary:
+
 - **Phase 0 — Foundations:** core_model + storage_mentat + tests.
-  - core_model: DONE (ids, value, formula, model; JSON round-trip; 4 tests).
-  - storage_mentat: NEXT.
 - **Phase 1 — Engine + formula compiler:** typed inference, plan (joins/aggs),
-  DD integration. *DD-viability spike: DONE (gate cleared).* Next: formula
-  compiler (AST -> typed -> PlanNode) and a generic plan->dataflow builder
-  driven by `core_model` measures (the spike hardcodes one formula).
-- **Phase 2 — TUI + CLI.**
+  differential-dataflow evaluation.
+- **Phase 2 — CLI + TUI.**
 - **Phase 3 — Server.**
 - **Phase 4 — CNL natural-language formulas.**
-- **Phase 5 — Desktop GUI (future).**
+- **Phase 5 — Desktop GUI** (toolkit chosen at phase start; no new modeling
+  semantics).
+- **Phase 6 — External-language functions** (`CALL(func, ...)`; Python first,
+  then R/Julia/WASM; pure, typed, dimension-declaring).
+- **Phase 7 — SQL database connectivity** (import/export + `SQL("...")`
+  live-query measures; external SQL is a source/sink, never the system of
+  record).
 
 ## Phase status (live)
 
@@ -107,9 +115,12 @@ GUI later.
   (10 tests): model/measures/values, NL parse/describe, set-cell. Auth deferred.
 - **Phase 4 — CNL: DONE (initial grammar).** `crates/nl_formula` parse/describe
   with a controlled grammar + round-trip (10 tests).
-- **Phase 5 (GUI): pending.** Live TUI editing, non-numeric derived values,
-  general function calls, and a live incremental edit API are the remaining
-  follow-ups.
+- **v1 core (Phases 0–4): DONE.** Remaining v1 follow-ups: live TUI editing,
+  non-numeric derived values, general `FuncCall`, and a live incremental edit
+  API on top of one-shot `evaluate`.
+- **Phase 5 (Desktop GUI): PLANNED.**
+- **Phase 6 (External-language functions): PLANNED.**
+- **Phase 7 (SQL connectivity): PLANNED.**
 
 ## Definition of done for v1
 

@@ -60,7 +60,7 @@ jobs:
           staging="improv-${{ github.ref_name }}-${{ matrix.target }}"
           mkdir -p "$staging"
           cp "target/${{ matrix.target }}/release/${bin}${ext}" "$staging/"
-          cp README.md LICENSE CHANGELOG.md "$staging/"
+          cp README.md LICENSE-APACHE LICENSE-MIT CHANGELOG.md "$staging/"
           cp docs/man/improv.1 "$staging/" 2>/dev/null || true
           if [ "$ext" = ".exe" ]; then
             7z a "${staging}.zip" "$staging"

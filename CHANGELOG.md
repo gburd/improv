@@ -37,6 +37,6 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **Natural language** (`improv_nl_formula`): controlled-English ⇄ formula
   parse/describe with a stable round trip.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
-  `.typos.toml`, CI, license (Apache-2.0), contributor guide.
+  `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
 [Unreleased]: https://codeberg.org/gregburd/improv

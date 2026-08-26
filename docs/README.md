@@ -44,5 +44,5 @@ When the code changes, update the docs in the same change:
 - The datom schema (`crates/storage_mentat/src/schema.rs`) ⇄ the
   *Storage & Persistence* chapter.
 
-`AGENT_STEERING.md` in the repository root is the source of truth for
-architecture, constraints, and per-phase status.
+`.agent/AGENT_STEERING.md` is the source of truth for live per-phase status;
+`.agent/steering/` holds the detailed architecture and constraints.

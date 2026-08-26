@@ -30,3 +30,7 @@ lcov.info
 /.claude
 /.kiro
 /.agent-steering-domains.md
+# Agent runtime artifacts that must never be committed (memelord memory,
+# maki permissions), wherever they land.
+**/.maki/
+**/.memelord/

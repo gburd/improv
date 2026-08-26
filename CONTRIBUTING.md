@@ -1,7 +1,8 @@
 # Contributing to Improv
 
 Thanks for your interest. This document is the short version; `AGENTS.md` and
-`AGENT_STEERING.md` carry the full engineering conventions.
+`.agent/AGENT_STEERING.md` (+ `.agent/steering/`) carry the full engineering
+conventions.
 
 ## Before you commit
 
@@ -43,4 +44,5 @@ and `CHANGELOG.md` in the same change. Stale docs are treated as defects.
 
 ## License
 
-By contributing you agree your work is licensed under Apache-2.0.
+By contributing you agree your work is dual-licensed under Apache-2.0 OR MIT
+(the recipient's choice), matching the project license.

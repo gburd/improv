@@ -16,8 +16,8 @@ recalculation is always incremental.
 - **Interfaces:** a headless CLI today; a VisiCalc-style TUI, a server mode, and
   controlled-natural-language formulas are in progress.
 
-> Status: early. See [`AGENT_STEERING.md`](AGENT_STEERING.md) for architecture,
-> design constraints, and live per-phase status.
+> Status: early. See [`.agent/AGENT_STEERING.md`](.agent/AGENT_STEERING.md) for
+> live phase status and [`.agent/steering/`](.agent/steering/) for the design.
 
 ## Workspace layout
 
@@ -69,4 +69,5 @@ typos
 
 ## License
 
-Apache-2.0. See [`LICENSE`](LICENSE).
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT) at
+your option.
