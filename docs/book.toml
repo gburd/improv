@@ -1,0 +1,21 @@
+[book]
+title = "Improv"
+description = "A multidimensional spreadsheet in Rust: user and design guide."
+authors = ["Greg Burd <greg@burd.me>"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+default-theme = "light"
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.linkcheck]
+# Fail the build on broken links. External links are followed too; set to
+# false there if offline. Intra-book links must always resolve.
+follow-web-links = false

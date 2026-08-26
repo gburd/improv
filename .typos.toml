@@ -6,6 +6,9 @@ extend-exclude = [
     "Cargo.lock",
     "docs/man/*",
     "*.roff",
+    "docs/mermaid.min.js",   # vendored mdbook-mermaid asset
+    "docs/mermaid-init.js",  # vendored mdbook-mermaid asset
+    "docs/book/**",          # generated mdbook output (gitignored)
 ]
 
 [default.extend-words]

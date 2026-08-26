@@ -1,0 +1,129 @@
+.\" Man page for the Improv CLI.
+.TH IMPROV 1 "2025" "improv 0.1.0" "Improv Manual"
+.SH NAME
+improv \- headless multidimensional spreadsheet model CLI
+.SH SYNOPSIS
+.B improv
+.I command
+.RI [ args ]
+.SH DESCRIPTION
+.B improv
+is the command-line front-end to the Improv multidimensional spreadsheet.
+It operates on a model store backed by an embedded (SQLite) Mentat datom
+database. Each invocation opens the store, mutates the loaded model, and saves
+it back.
+.PP
+A model is built from
+.B categories
+(dimensions such as Time or Product),
+.B items
+(members of a category, such as 2025 or WidgetA),
+.B measures
+(named variables indexed by a subset of the categories), and
+.B input cells
+(raw values at a coordinate). A coordinate maps category names to item names.
+.PP
+The
+.B \-\-at
+flag on
+.B set
+names a coordinate as a comma-separated list of
+.IR Category = Item
+pairs, resolved against the loaded model. Numeric ids are given directly on the
+command line.
+.SH COMMANDS
+.TP
+.B init \fI<db>\fR
+Create or open the store at
+.IR <db> ,
+install the schema, and save an empty model. Use an empty string for an
+in-memory database.
+.TP
+.B add-category \fI<db> <id> <name>\fR
+Add a category (dimension).
+.I <id>
+is a number.
+.TP
+.B add-item \fI<db> <id> <category-id> <name>\fR
+Add an item (a member of a category).
+.I <id>
+and
+.I <category-id>
+are numbers. The category must already exist.
+.TP
+.B add-measure \fI<db> <id> <name>\fR number|boolean|text\fR input\fR
+Add an input measure.
+.I <id>
+is a number. The type keyword
+.RB ( number ,
+.BR boolean ,
+or
+.BR text )
+declares how
+.B set
+parses values for this measure. The trailing
+.B input
+keyword is required; only input measures are supported.
+.TP
+.B set \fI<db> <measure-id> <value>\fR [\fB\-\-at\fR \fICat=Item,Cat=Item ...\fR]
+Set an input cell. The
+.I <value>
+is parsed by the measure's declared type (a float for
+.BR number ,
+.B true
+or
+.B false
+for
+.BR boolean ,
+verbatim text for
+.BR text ).
+.B \-\-at
+maps category names to item names; omit it for a scalar cell.
+.TP
+.B list \fI<db>\fR
+Print all categories, items, measures, and input cells.
+.TP
+.B show \fI<db> <measure-id>\fR
+Print one measure and its input cells.
+.TP
+.B export \fI<db>\fR
+Print the whole model as pretty-printed JSON.
+.TP
+.B help
+Show usage. Also accepted as
+.B \-\-help
+and
+.BR \-h .
+.SH EXAMPLES
+Build a small Time \(mu Product model:
+.PP
+.RS
+.nf
+improv init          model.db
+improv add-category  model.db 1 Time
+improv add-category  model.db 2 Product
+improv add-item      model.db 10 1 2025
+improv add-item      model.db 20 2 WidgetA
+improv add-measure   model.db 100 Price    number input
+improv add-measure   model.db 101 Quantity number input
+improv set           model.db 100 10 --at Product=WidgetA
+improv set           model.db 101 100 --at Time=2025,Product=WidgetA
+improv list          model.db
+improv show          model.db 100
+improv export        model.db
+.fi
+.RE
+.SH FILES
+.TP
+.I <db>
+The model store: a single SQLite file created and read by
+.BR improv .
+An empty string names an in-memory database that is discarded on exit.
+.SH AUTHOR
+Greg Burd <greg@burd.me>
+.SH SEE ALSO
+The Improv guide (mdBook) under
+.IR docs/ ,
+and
+.I AGENT_STEERING.md
+in the repository root for architecture and per-phase status.
