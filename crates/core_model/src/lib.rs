@@ -7,10 +7,12 @@
 
 pub mod formula;
 pub mod ids;
+pub mod parser;
 pub mod value;
 
 pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ViewId};
+pub use parser::{parse_expr, parse_formula, FormulaText, ParseError};
 pub use value::{Value, ValueError, ValueErrorKind, ValueType};
 
 use serde::{Deserialize, Serialize};
