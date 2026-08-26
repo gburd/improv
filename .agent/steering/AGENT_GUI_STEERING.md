@@ -156,6 +156,23 @@ Choosing the toolkit is the first task of the phase. It must balance performance
 Rust-ecosystem maturity. No framework is mandated by the source design; select
 one deliberately and record the decision here.
 
+**Decision: `egui` / `eframe`.** Rationale:
+
+- **Data-grid fit.** egui is immediate-mode: the whole UI redraws each frame,
+  which maps cleanly onto the engine's live recalculation (edit → snapshot →
+  redraw). `egui_extras::TableBuilder` handles large, virtualized grids.
+- **Maturity + portability.** eframe is the most mature pure-Rust GUI, ships on
+  Linux/macOS/Windows (and web) from one codebase, and is actively maintained.
+- **Keyboard-centric.** egui has first-class keyboard focus/navigation, matching
+  the §9.3 constraint.
+- It is the first candidate the source design names (IMPROV.txt: "egui, iced,
+  druid, or similar").
+
+Pinned at `eframe`/`egui`/`egui_extras` `0.36` in `[workspace.dependencies]`.
+The GUI crate (`improv_gui`, binary `improv-gui`) is a thin view over
+`improv_engine` (live `session::Engine`) and `improv_storage_mentat`; it adds no
+modeling semantics.
+
 ### 9.2 Surface
 
 - Model explorer (categories, items, measures, views, scenarios)

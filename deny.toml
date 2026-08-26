@@ -10,6 +10,11 @@ ignore = [
     # here. Improv's own crates introduce none of these.
     "RUSTSEC-2025-0141", # bincode unmaintained (transitive via mentat)
     "RUSTSEC-2024-0436", # paste no longer maintained (differential-dataflow)
+    # Transitive via the egui/eframe GUI stack (fonts + xml). Not on any hot
+    # path we control; revisit when egui updates the offending deps.
+    "RUSTSEC-2026-0192", # ttf-parser unmaintained (egui font rasterizer)
+    "RUSTSEC-2026-0194", # quick-xml quadratic tag scan (egui svg/icon path)
+    "RUSTSEC-2026-0195", # quick-xml NsReader alloc DoS (egui svg/icon path)
 ]
 
 [licenses]
@@ -27,6 +32,9 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
+    # Font licenses from egui's bundled default fonts (permissive, OSI-recognized).
+    "OFL-1.1",
+    "LicenseRef-UFL-1.0",
 ]
 unused-allowed-license = "allow"
 
