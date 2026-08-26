@@ -83,3 +83,23 @@ Cargo workspace, `crates/*`: `core_model`, `storage_mentat`, `engine`, `cli`,
 `nl_formula` (+ `tui`, `server` as phases land). Shared deps pinned in
 `[workspace.dependencies]`; the `differential-dataflow`/`timely` pin is delicate
 (see `AGENT_STEERING.md` — do not bump blindly).
+
+## CI / storage-backend pin
+
+- **Mentat is a sibling path dependency** (`mentat = { path = "../mentat" }`).
+  CI clones it next to the checkout from
+  `https://codeberg.org/gregburd/mentat.git` at branch **`improv-base`**
+  (env `MENTAT_REPO` / `MENTAT_REF` in the workflows). When Improv needs newer
+  Mentat behavior, commit + push it to `improv-base` in the mentat repo first,
+  then bump the ref if the branch name changes.
+- **GitHub** (`.github/workflows/`): `ci.yml` (fmt, clippy `-D warnings` on our
+  crates only, typos, cargo-deny, matrix build+test on Linux/macOS/Windows ×
+  default/all-features via nextest, MSRV, rustdoc+mdBook build); `docs.yml`
+  (build guide+API, deploy to GitHub Pages); `release.yml` (tag-triggered
+  cross-platform qualify + CLI artifact upload).
+- **Codeberg/Forgejo** (`.forgejo/workflows/`): `ci.yml` mirrors the gate;
+  `pages.yml` publishes the site to the `pages` branch (needs a
+  `PAGES_PUSH_TOKEN` repo secret with contents:write).
+- Clippy in CI lints only Improv crates (`-p improv_*`); the vendored Mentat
+  dependency emits its own upstream warnings that must not fail our gate.
+- Action versions are pinned by commit SHA; keep them current but pinned.

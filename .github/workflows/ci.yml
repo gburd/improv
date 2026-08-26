@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUSTFLAGS: -Dwarnings
+  # The embedded Mentat storage backend is a sibling path dependency
+  # (`mentat = { path = "../mentat" }`). CI clones it next to the checkout.
+  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
+  MENTAT_REF: improv-base
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: improv
+      # Lint only the Improv workspace crates; the vendored Mentat dep emits its
+      # own (upstream) warnings which must not fail our -D warnings gate.
+      - name: Clippy (workspace crates)
+        working-directory: improv
+        run: >
+          cargo clippy
+          -p improv_core_model
+          -p improv_storage_mentat
+          -p improv_engine
+          -p improv_nl_formula
+          -p improv_cli
+          --all-targets --all-features -- -D warnings
+
+  typos:
+    name: Typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: crate-ci/typos@db35ee91e80fbb447f33b0e5fbddb24d2a1a884f # v1.29.4
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+      - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
+        with:
+          manifest-path: improv/Cargo.toml
+          command: check advisories licenses bans sources
+
+  build-test:
+    name: Build & Test (${{ matrix.os }} / ${{ matrix.features }})
+    runs-on: ${{ matrix.os }}
+    needs: [fmt, clippy]
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        features: ["", "--all-features"]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+        shell: bash
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # nextest
+        with:
+          tool: nextest
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: improv
+          key: ${{ matrix.os }}-${{ matrix.features }}
+      - name: Build
+        working-directory: improv
+        run: cargo build --workspace ${{ matrix.features }}
+      - name: Test
+        working-directory: improv
+        run: cargo nextest run --workspace ${{ matrix.features }}
+      - name: Doctests
+        working-directory: improv
+        run: cargo test --workspace --doc ${{ matrix.features }}
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    needs: [fmt]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85.0"
+      - name: Build (MSRV)
+        working-directory: improv
+        run: cargo build --workspace
+
+  docs:
+    name: Doc build
+    runs-on: ubuntu-latest
+    needs: [fmt]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+      - uses: dtolnay/rust-toolchain@stable
+      - name: rustdoc
+        working-directory: improv
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+        run: cargo doc --workspace --no-deps
+      - name: Install mdBook
+        run: |
+          cargo install mdbook --version ^0.4 --locked || true
+          cargo install mdbook-linkcheck --locked || true
+          cargo install mdbook-mermaid --locked || true
+      - name: Build book
+        working-directory: improv
+        run: mdbook build docs

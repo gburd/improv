@@ -1,0 +1,70 @@
+name: Docs (GitHub Pages)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+env:
+  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
+  MENTAT_REF: improv-base
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install mdBook toolchain
+        run: |
+          cargo install mdbook --version ^0.4 --locked || true
+          cargo install mdbook-linkcheck --locked || true
+          cargo install mdbook-mermaid --locked || true
+      - name: Build mdBook guide
+        working-directory: improv
+        run: mdbook build docs
+      - name: Build rustdoc API
+        working-directory: improv
+        run: cargo doc --workspace --no-deps
+      - name: Assemble site
+        working-directory: improv
+        run: |
+          site="$GITHUB_WORKSPACE/site"
+          mkdir -p "$site"
+          # mdbook-linkcheck nests html output under docs/book/html.
+          if [ -d docs/book/html ]; then
+            cp -r docs/book/html/* "$site"/
+          else
+            cp -r docs/book/* "$site"/
+          fi
+          mkdir -p "$site/api"
+          cp -r target/doc/* "$site/api"/
+          # Landing redirect to the guide.
+          printf '<meta http-equiv="refresh" content="0; url=./index.html">' > "$site/404.html"
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

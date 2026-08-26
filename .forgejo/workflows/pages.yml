@@ -1,0 +1,72 @@
+# Forgejo / Codeberg Pages — build the mdBook guide + rustdoc API and publish
+# to the `pages` branch, which Codeberg Pages serves at
+# https://gregburd.codeberg.page/improv/ (or the repo's configured Pages URL).
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
+  MENTAT_REF: improv-base
+
+jobs:
+  build-and-publish:
+    runs-on: docker
+    container:
+      image: rust:1.90-bookworm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: improv
+          fetch-depth: 0
+      - name: Clone Mentat backend
+        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
+      - name: Install mdBook toolchain
+        run: |
+          cargo install mdbook --version ^0.4 --locked
+          cargo install mdbook-linkcheck --locked
+          cargo install mdbook-mermaid --locked
+      - name: Build mdBook guide
+        working-directory: improv
+        run: mdbook build docs
+      - name: Build rustdoc API
+        working-directory: improv
+        run: cargo doc --workspace --no-deps
+      - name: Assemble site
+        working-directory: improv
+        run: |
+          site="$GITHUB_WORKSPACE/public"
+          mkdir -p "$site"
+          if [ -d docs/book/html ]; then
+            cp -r docs/book/html/* "$site"/
+          else
+            cp -r docs/book/* "$site"/
+          fi
+          mkdir -p "$site/api"
+          cp -r target/doc/* "$site/api"/
+          # Codeberg Pages: a .domains file or plain static content works as-is.
+          touch "$site/.nojekyll"
+      - name: Publish to pages branch
+        working-directory: improv
+        env:
+          # A push token with contents:write must be provided as a repo secret.
+          FORGEJO_TOKEN: ${{ secrets.PAGES_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FORGEJO_TOKEN:-}" ]; then
+            echo "PAGES_PUSH_TOKEN not set; skipping publish (build succeeded)."
+            exit 0
+          fi
+          git config --global user.name "Greg Burd"
+          git config --global user.email "greg@burd.me"
+          cd "$GITHUB_WORKSPACE/public"
+          git init -q
+          git checkout -q -b pages
+          git add -A
+          git commit -q -m "docs: publish site for ${GITHUB_SHA}"
+          origin="https://x-access-token:${FORGEJO_TOKEN}@codeberg.org/gregburd/improv.git"
+          git push -f "$origin" pages
