@@ -16,6 +16,7 @@ use axum::{
 };
 use improv_core_model::{Coordinate, MeasureId, MeasureKind, Model};
 use improv_engine::dataflow::evaluate;
+use improv_engine::session::{Edit, Engine};
 use improv_engine::{decode_coord, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
@@ -53,6 +54,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/model", get(get_model))
         .route("/measures", get(list_measures))
         .route("/measures/:id/values", get(measure_values))
+        .route("/measures/:id/eval", post(eval_measure))
         .route("/measures/:id/cells", post(set_cell))
         .route("/nl/parse", post(nl_parse))
         .route("/nl/describe", post(nl_describe))
@@ -166,6 +168,115 @@ async fn measure_values(
                 .collect()
         }
     };
+    Ok(Json(cells))
+}
+
+/// One edit in an `/eval` request: `measure` id, `coord` as `[[cat_id, item_id], ...]`
+/// (numeric ids, matching `CoordKey`), and `value` (`null` clears the cell).
+#[derive(Deserialize)]
+struct EvalEdit {
+    measure: u32,
+    coord: CoordKey,
+    value: Option<f64>,
+}
+
+#[derive(Deserialize)]
+struct EvalReq {
+    #[serde(default)]
+    edits: Vec<EvalEdit>,
+    #[serde(default)]
+    persist: bool,
+}
+
+/// Incremental / what-if evaluation. Builds a short-lived live `Engine` over
+/// all derived measures, applies the batch of edits as deltas, and returns the
+/// recomputed snapshot for measure `:id` as `[{coord: [[cat_name,item_name]..], value}]`.
+///
+/// Stateless by design: the `Engine` owns a worker thread and a live dataflow
+/// and is not cheaply shareable across async tasks, so v1 rebuilds one per
+/// request inside `spawn_blocking`. A persistent per-session engine pool is a
+/// later optimization. Edits are pure what-if unless `"persist": true`, in
+/// which case each edit is also written to the model store.
+async fn eval_measure(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<u32>,
+    body: Result<Json<EvalReq>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Vec<Cell>>, ApiError> {
+    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let mid = MeasureId(id);
+
+    let mut model = load_model(&state).await?;
+    let measure = model
+        .measures
+        .get(&mid)
+        .ok_or_else(|| ApiError::NotFound(format!("no measure {id}")))?;
+    if measure.is_input() {
+        return Err(ApiError::BadRequest(format!(
+            "measure {id} is an input; use /eval on a derived measure"
+        )));
+    }
+
+    // Persist first (so a persisted edit is durable even if the caller only
+    // wants the side effect); the engine below then sees the same values.
+    if req.persist {
+        for e in &req.edits {
+            let coord = decode_coord(&e.coord);
+            match e.value {
+                Some(v) => model.set_input(
+                    MeasureId(e.measure),
+                    coord,
+                    improv_core_model::Value::Number(v),
+                ),
+                None => {
+                    model.inputs.remove(&(MeasureId(e.measure), coord));
+                }
+            }
+        }
+        let path = state.db_path.clone();
+        let to_save = model.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
+            store.save_model(&to_save).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
+        .map_err(ApiError::Internal)?;
+    }
+
+    // All derived measures are the engine's targets.
+    let targets: Vec<MeasureId> = model
+        .measures
+        .iter()
+        .filter(|(_, m)| !m.is_input())
+        .map(|(id, _)| *id)
+        .collect();
+    let edits: Vec<Edit> = req
+        .edits
+        .into_iter()
+        .map(|e| Edit {
+            measure: MeasureId(e.measure),
+            coord: e.coord,
+            value: e.value,
+        })
+        .collect();
+
+    // Engine owns a worker thread and holds a live dataflow: do it all on a
+    // blocking thread and never across an await point.
+    let values = tokio::task::spawn_blocking(move || {
+        let (mut engine, _initial) = Engine::new(&model, &targets).map_err(|e| e.to_string())?;
+        let mut snap = engine.apply(edits).map_err(|e| e.to_string())?;
+        Ok::<_, String>(snap.remove(&mid).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
+    .map_err(ApiError::Internal)?;
+
+    // Re-borrow the model for coord rendering: load it once more (cheap, small).
+    let model = load_model(&state).await?;
+    let cells = values
+        .into_iter()
+        .map(|(k, n)| readable_key(&model, &k, n))
+        .collect();
     Ok(Json(cells))
 }
 
@@ -614,5 +725,130 @@ mod tests {
             .iter()
             .any(|c| c["value"].as_f64() == Some(42.0));
         assert!(has_42, "updated cell value should persist");
+    }
+
+    // Read Revenue[2025,WidgetA] from a /values or /eval response body.
+    fn revenue_2025_widgeta(cells: &JsonValue) -> Option<f64> {
+        let want = json!([["Product", "WidgetA"], ["Time", "2025"]]);
+        cells
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["coord"] == want)
+            .and_then(|c| c["value"].as_f64())
+    }
+
+    #[tokio::test]
+    async fn eval_what_if_does_not_persist() {
+        let (app, _p) = seeded_app();
+        // Set Quantity[2025,WidgetA] (time cat 1/item 10, product cat 2/item 20)
+        // from 100 to 200 -> Revenue there should be 10*200 = 2000 in response.
+        let body = json!({
+            "edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 200.0}]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/measures/102/eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cells = body_json(resp).await;
+        assert_eq!(revenue_2025_widgeta(&cells), Some(2000.0));
+
+        // Without persist, the stored model is untouched: GET /values still 1000.
+        let resp = app
+            .oneshot(
+                Request::get("/measures/102/values")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cells = body_json(resp).await;
+        assert_eq!(revenue_2025_widgeta(&cells), Some(1000.0));
+    }
+
+    #[tokio::test]
+    async fn eval_with_persist_writes_through() {
+        let (app, _p) = seeded_app();
+        let body = json!({
+            "persist": true,
+            "edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 200.0}]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/measures/102/eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cells = body_json(resp).await;
+        assert_eq!(revenue_2025_widgeta(&cells), Some(2000.0));
+
+        // With persist, GET /values now reflects the change: 10*200 = 2000.
+        let resp = app
+            .oneshot(
+                Request::get("/measures/102/values")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cells = body_json(resp).await;
+        assert_eq!(revenue_2025_widgeta(&cells), Some(2000.0));
+    }
+
+    #[tokio::test]
+    async fn eval_on_input_measure_is_400() {
+        let (app, _p) = seeded_app();
+        let resp = app
+            .oneshot(
+                Request::post("/measures/101/eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"edits": []}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn eval_unknown_measure_is_404() {
+        let (app, _p) = seeded_app();
+        let resp = app
+            .oneshot(
+                Request::post("/measures/999/eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({"edits": []}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn eval_malformed_body_is_400_no_panic() {
+        let (app, _p) = seeded_app();
+        let resp = app
+            .oneshot(
+                Request::post("/measures/102/eval")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{ not json"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
