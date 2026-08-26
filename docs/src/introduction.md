@@ -31,7 +31,8 @@ cells it actually affects.
 
 The following are named in the design but **not yet implemented**:
 
-- A desktop GUI (Phase 5).
+- Scenario management, keyboard grid navigation, and virtualized rendering for
+  very large grids in the desktop GUI (the core GUI panels are built).
 - TUI re-pivot (dragging categories between axes) and a formula-editor pane —
   the TUI edits input cells and recomputes live today, but re-pivot is pending.
 - Non-numeric (Text/Boolean) derived values and general (non-aggregation)

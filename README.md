@@ -30,6 +30,7 @@ recalculation is always incremental.
 | `improv_cli` | The `improv` command-line tool. |
 | `improv_tui` | VisiCalc-style terminal pivot viewer (`improv-tui`). |
 | `improv_server` | JSON HTTP API over a model store (`improv-server`). |
+| `improv_gui` | egui/eframe desktop app (`improv-gui`). |
 
 ## Quick start
 

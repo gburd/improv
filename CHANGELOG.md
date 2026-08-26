@@ -8,6 +8,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Desktop GUI** (`improv_gui`, egui/eframe): `improv-gui <db>` — a model
+  explorer, an editable pivot grid (input cells edit through the live engine
+  with autosave; derived cells read-only), a formula editor (edit/add derived
+  measures from formula text), and an inspector (metadata, dimensions,
+  dependencies, formula-in-English, error-cell count). Phase 5 toolkit
+  decision: egui/eframe.
 - **Non-numeric value lane**: the engine dataflow now carries a tagged
   `CellValue` (`Num`/`Bool`/`Text`/`Err`), so boolean and text derived measures
   evaluate end-to-end (e.g. `Hot = Price > 15` yields a boolean). Comparisons

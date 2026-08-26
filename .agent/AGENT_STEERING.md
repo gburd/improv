@@ -63,6 +63,7 @@ GUI later.
 - `crates/tui` — VisiCalc-like terminal UI. [Phase 2]
 - `crates/server` — HTTP/RPC API. [Phase 3]
 - `crates/nl_formula` — CNL <-> formula. [Phase 4]
+- `crates/gui` — egui/eframe desktop app (`improv-gui`). [Phase 5]
 
 ## Phases (build in order)
 
@@ -128,7 +129,13 @@ The authoritative roadmap and Phase 5–7 invariants live in
   with a controlled grammar + round-trip (10 tests).
 - **v1 core (Phases 0–4): DONE.** Remaining v1 follow-ups: `Date` values in the
   DD lane and standalone/broadcast literals (both minor).
-- **Phase 5 (Desktop GUI): PLANNED.**
+- **Phase 5 (Desktop GUI): DONE (core panels).** `crates/gui` `improv-gui`
+  (egui/eframe, toolkit decision in AGENT_GUI_STEERING §9.1): model explorer,
+  editable pivot grid (input cells edit through the live engine + autosave),
+  formula editor (edit/add derived measures via `core_model::parser`),
+  inspector (metadata/dimensions/dependencies/formula-in-English/error count).
+  8 tests. Pending: keyboard grid navigation, scenario management, virtualized
+  rendering for very large grids.
 - **Phase 6 (External-language functions): PLANNED.**
 - **Phase 7 (SQL connectivity): PLANNED.**
 

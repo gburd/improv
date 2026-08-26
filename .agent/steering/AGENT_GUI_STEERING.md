@@ -175,11 +175,22 @@ modeling semantics.
 
 ### 9.2 Surface
 
-- Model explorer (categories, items, measures, views, scenarios)
-- Pivot/grid view with efficient large-model rendering
-- Formula editor (DSL + CNL) with inline errors
-- Inspector (measure metadata, dimensions, dependencies, error traces)
-- Scenario management
+**Implemented** (`improv-gui <db>`, egui/eframe):
+
+- Model explorer (left): categories (expandable to items) and measures
+  (input vs derived), click to select.
+- Pivot/grid view (center): first two categories on rows/columns, extra dims
+  pinned as pages. Input cells are editable (click → text field → `set_cell`
+  through the live engine → incremental recompute + autosave); derived cells
+  are read-only, rendered via `CellValue` (bool/text/`#ERR`).
+- Formula editor (bottom): edit a derived measure's formula, or add a new
+  derived measure from formula text; both parse via `core_model::parser` and
+  rebuild the live engine.
+- Inspector (right): id, name, kind, value type, dimensions, derived
+  dependencies, formula-in-English, and an error-cell count.
+
+**Not yet:** keyboard grid-cursor navigation, scenario management,
+efficient virtualized rendering for very large grids.
 
 ### 9.3 Constraints
 
