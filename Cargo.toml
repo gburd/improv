@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/core_model",
     "crates/storage_mentat",
+    "crates/storage_sql",
     "crates/engine",
     "crates/cli",
     "crates/nl_formula",

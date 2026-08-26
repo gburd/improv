@@ -58,6 +58,7 @@ GUI later.
 - `crates/core_model` — categories, items, measures, coordinates, formulas,
   value types. GUI/storage-free. **[Phase 0: DONE]**
 - `crates/storage_mentat` — persistence via the embedded Mentat. [Phase 0]
+- `crates/storage_sql` — SQL import/export (SQLite). [Phase 7]
 - `crates/engine` — formula compiler (AST -> typed -> plan) + DD integration. [Phase 1]
 - `crates/cli` — headless model runner / import-export. [Phase 2]
 - `crates/tui` — VisiCalc-like terminal UI. [Phase 2]
@@ -143,7 +144,13 @@ The authoritative roadmap and Phase 5–7 invariants live in
   This is the in-process, deterministic seam (`Expr::Call`). The external
   `CALL(...)` runtime dispatch (Python first, then R/Julia/WASM) is still
   PLANNED.
-- **Phase 7 (SQL connectivity): PLANNED.**
+- **Phase 7 (SQL connectivity): IN PROGRESS.** `crates/storage_sql` imports a
+  SQLite `SELECT` into an input measure (columns → categories/items/cells) and
+  exports a measure's cells to a SQL table; CLI `import-sql` / `export-sql`.
+  SQL data enters as ordinary input cells (deterministic core untouched).
+  Identifiers validated, values bound (injection-safe). PLANNED: live-query
+  `SQL("...")` measures, connection/credential management, GUI wizards, other
+  backends (Postgres/DuckDB).
 
 ## Definition of done for v1
 

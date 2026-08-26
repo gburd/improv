@@ -11,6 +11,7 @@ use improv_core_model::{
     ValueType,
 };
 use improv_storage_mentat::ModelStore;
+use improv_storage_sql::{export_measure, import_query, DimensionMapping, ImportSpec};
 
 const USAGE: &str = "\
 improv — headless spreadsheet model CLI
@@ -53,6 +54,18 @@ COMMANDS:
     export <db>
         Print the whole model as pretty JSON.
 
+    import-sql <db> <source.sqlite> <measure-id> <measure-name> <SELECT> \
+               <value-col> <dim-col:cat-id:cat-name> [<dim-col:cat-id:cat-name> ...]
+        Import a SQLite query into a new input measure. Each dim-col maps a
+        result column to a category (distinct values become items); value-col
+        is the numeric measure value. Example:
+        import-sql m.db sales.db 100 Revenue \"SELECT t,p,r FROM sales\" r \
+                   t:1:Time p:2:Product
+
+    export-sql <db> <target.sqlite> <measure-id> <table> <value-col>
+        Write a measure's input cells to a SQLite table (one column per
+        dimension category + the value column; created if absent).
+
     help | --help
         Show this help.
 ";
@@ -83,6 +96,8 @@ fn run(args: &[String]) -> Result<(), String> {
         "show" => cmd_show(rest),
         "eval" => cmd_eval(rest),
         "export" => cmd_export(rest),
+        "import-sql" => cmd_import_sql(rest),
+        "export-sql" => cmd_export_sql(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
@@ -358,6 +373,73 @@ fn render_coord_key(model: &Model, key: &[(u32, u32)]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let source = arg(rest, 1, "source.sqlite")?;
+    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+    let measure_name = arg(rest, 3, "measure-name")?.to_string();
+    let query = arg(rest, 4, "SELECT")?.to_string();
+    let value_column = arg(rest, 5, "value-col")?.to_string();
+
+    // Remaining args: dim-col:cat-id:cat-name
+    let mut dimensions = Vec::new();
+    for spec in &rest[6.min(rest.len())..] {
+        let parts: Vec<&str> = spec.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "dimension spec '{spec}' must be <col>:<cat-id>:<cat-name>"
+            ));
+        }
+        dimensions.push(DimensionMapping {
+            column: parts[0].to_string(),
+            category_id: CategoryId(parse_u32(parts[1], "cat-id")?),
+            category_name: parts[2].to_string(),
+        });
+    }
+    if dimensions.is_empty() {
+        return Err("at least one dimension mapping is required".into());
+    }
+
+    let conn = rusqlite::Connection::open(source).map_err(|e| e.to_string())?;
+    let spec = ImportSpec {
+        query,
+        dimensions,
+        value_column,
+        measure_id,
+        measure_name: measure_name.clone(),
+        item_id_base: 1_000_000, // above hand-assigned ids; avoids collisions
+    };
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let n = import_query(&conn, &mut model, &spec).map_err(|e| e.to_string())?;
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!(
+        "imported {n} cells into measure {} '{measure_name}'",
+        measure_id.0
+    );
+    Ok(())
+}
+
+fn cmd_export_sql(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let target = arg(rest, 1, "target.sqlite")?;
+    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+    let table = arg(rest, 3, "table")?;
+    let value_column = arg(rest, 4, "value-col")?;
+
+    let mut store = open(db)?;
+    let model = store.load_model().map_err(|e| e.to_string())?;
+    let conn = rusqlite::Connection::open(target).map_err(|e| e.to_string())?;
+    let n = export_measure(&conn, &model, measure_id, table, value_column)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "exported {n} cells from measure {} to table '{table}'",
+        measure_id.0
+    );
+    Ok(())
 }
 
 // --- parsing / resolution ---
@@ -652,5 +734,45 @@ mod tests {
 
         // `eval` on an input measure is a clear error, not a crash.
         assert!(run(&s(&["eval", &db, "100"])).is_err());
+    }
+
+    #[test]
+    fn import_sql_creates_measure_and_cells() {
+        let db = tmp_db();
+        let _guard = scopeguard(&db);
+        // A source SQLite DB with a sales table.
+        let src = format!("{db}.src.sqlite");
+        let _sguard = scopeguard(&src);
+        {
+            let conn = rusqlite::Connection::open(&src).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE sales(t TEXT,p TEXT,r REAL);
+                 INSERT INTO sales VALUES('2025','A',1000.0),('2025','B',500.0);",
+            )
+            .unwrap();
+        }
+
+        run(&s(&["init", &db])).unwrap();
+        run(&s(&[
+            "import-sql",
+            &db,
+            &src,
+            "100",
+            "Revenue",
+            "SELECT t,p,r FROM sales",
+            "r",
+            "t:1:Time",
+            "p:2:Product",
+        ]))
+        .unwrap();
+
+        let mut store = ModelStore::open(&db).unwrap();
+        let model = store.load_model().unwrap();
+        let m = model.measure_by_name("Revenue").unwrap();
+        assert!(m.is_input());
+        assert_eq!(m.categories.len(), 2);
+        assert_eq!(model.inputs.len(), 2);
+        assert_eq!(model.category_by_name("Time").unwrap().items.len(), 1); // just 2025
+        assert_eq!(model.category_by_name("Product").unwrap().items.len(), 2);
     }
 }

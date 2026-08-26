@@ -25,6 +25,7 @@ recalculation is always incremental.
 |-------|---------|
 | `improv_core_model` | Categories, items, measures, coordinates, formulas, values. GUI/storage-free. |
 | `improv_storage_mentat` | Persistence: model ⇄ datoms on embedded Mentat (SQLite). |
+| `improv_storage_sql` | SQL import/export (SQLite): external data ⇄ measures. |
 | `improv_engine` | Formula compiler (`Formula → TypedExpr → PlanNode`) + differential-dataflow evaluation. |
 | `improv_nl_formula` | Controlled-natural-language ⇄ formula translation. |
 | `improv_cli` | The `improv` command-line tool. |

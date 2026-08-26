@@ -105,6 +105,19 @@ Compute a derived measure through the engine and print its cells.
 .B export \fI<db>\fR
 Print the whole model as pretty-printed JSON.
 .TP
+.B import-sql \fI<db> <source.sqlite> <measure-id> <measure-name> <SELECT> <value-col> <dim-col:cat-id:cat-name>...\fR
+Import a SQLite query into a new input measure. Each
+.I dim-col:cat-id:cat-name
+maps a result column to a category (distinct values become items); the
+.I value-col
+column supplies the numeric measure value. SQL data enters as ordinary input
+cells.
+.TP
+.B export-sql \fI<db> <target.sqlite> <measure-id> <table> <value-col>\fR
+Write a measure's input cells to a SQLite table (one column per dimension
+category plus the value column; the table is created if absent). Identifiers
+are validated and values bound as parameters.
+.TP
 .B help
 Show usage. Also accepted as
 .B \-\-help

@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **SQL connectivity** (`improv_storage_sql`, Phase 7, SQLite): import a
+  `SELECT` into a new input measure (columns → categories/items/cells) and
+  export a measure's cells to a SQL table. CLI `import-sql` / `export-sql`.
+  SQL data enters as ordinary input cells, so the deterministic engine core is
+  untouched; identifiers are validated and values bound (injection-safe).
 - **Named scalar functions in formulas**: `ABS`, `ROUND`, `FLOOR`, `CEIL`,
   `SQRT`, `NEG`, `MIN2`, `MAX2` are now callable as `NAME(args...)` in formula
   text (parser registry `core_model::parser::scalar_func`, arity-checked),

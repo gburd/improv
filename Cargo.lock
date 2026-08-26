@@ -2083,6 +2083,8 @@ dependencies = [
  "improv_core_model",
  "improv_engine",
  "improv_storage_mentat",
+ "improv_storage_sql",
+ "rusqlite",
  "serde_json",
  "thiserror 2.0.20",
 ]
@@ -2157,6 +2159,15 @@ dependencies = [
  "mentat",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "improv_storage_sql"
+version = "0.1.0"
+dependencies = [
+ "improv_core_model",
+ "rusqlite",
  "thiserror 2.0.20",
 ]
 

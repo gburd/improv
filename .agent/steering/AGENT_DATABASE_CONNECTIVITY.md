@@ -1,8 +1,9 @@
 # AGENT_DATABASE_CONNECTIVITY.md
 Database Connectivity Steering Document for Improv (Phase 7)
 
-> **Status: PLANNED — Phase 7.** SQL database connectivity is a committed later
-> phase, built after the v1 core (Phases 0–4) and the desktop GUI (Phase 5).
+> **Status: IN PROGRESS — Phase 7.** SQLite import/export is implemented
+> (`improv_storage_sql`); connection management, live-query measures, and other
+> backends (Postgres/DuckDB/…) are still planned.
 >
 > This is connectivity *to* external databases (import/export, live queries) — a
 > distinct concern from Improv's own persistence, which is always the embedded
@@ -56,11 +57,18 @@ SalesData = SQL("SELECT time, product, revenue FROM sales")
 
 ## 5. Import / Export Workflows
 
-- **Import wizard:** select connection → enter SQL → preview → map columns to
-  categories/measures → create model elements.
-- **Export wizard:** select measure/view → select connection → select table →
-  choose write mode (INSERT / UPSERT / REPLACE / APPEND) → execute. Dimensions
-  become SQL columns (`Revenue[Time, Product] → time, product, revenue`).
+**Implemented** (`improv_storage_sql`, SQLite; CLI `import-sql` / `export-sql`):
+
+- **Import:** run a `SELECT` against a SQLite connection, map result columns to
+  categories (distinct values → items) and one value column to a new input
+  measure's numeric cells. SQL data enters as ordinary input cells — the engine
+  gains no SQL path and stays deterministic.
+- **Export:** write a measure's cells to a SQL table (one column per dimension
+  category + a value column, created if absent). Identifiers are validated;
+  values are bound as parameters (no interpolation of data).
+
+**Planned:** GUI import/export wizards (column-mapping preview), other backends
+(PostgreSQL/DuckDB/…), and the `SQL("...")` live-query measure form (§4).
 
 ## 6. Security
 
