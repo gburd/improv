@@ -101,7 +101,17 @@ fn items_of(model: &Model, cat: CategoryId) -> Vec<(ItemId, String)> {
 fn values_for(model: &Model, measure: MeasureId, snapshot: &Snapshot) -> HashMap<CoordKey, f64> {
     let is_derived = model.measures.get(&measure).map(|m| m.is_derived());
     match is_derived {
-        Some(true) => snapshot.get(&measure).cloned().unwrap_or_default(),
+        // Derived: read the live engine snapshot, projecting each CellValue to a
+        // number (non-numeric derived cells show as their number/NaN for now).
+        // ponytail: numeric grid only; a typed cell renderer is future TUI work.
+        Some(true) => snapshot
+            .get(&measure)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_num().map(|n| (k.clone(), n)))
+                    .collect()
+            })
+            .unwrap_or_default(),
         _ => model
             .inputs
             .iter()
@@ -580,8 +590,12 @@ mod tests {
             k
         };
         assert_eq!(
-            app.snapshot.get(&MeasureId(102)).unwrap().get(&rev_key),
-            Some(&2000.0),
+            app.snapshot
+                .get(&MeasureId(102))
+                .unwrap()
+                .get(&rev_key)
+                .and_then(|v| v.as_num()),
+            Some(2000.0),
             "derived Revenue recomputed incrementally"
         );
     }

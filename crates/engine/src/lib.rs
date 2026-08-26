@@ -23,10 +23,71 @@ pub mod plan;
 pub mod session;
 pub mod typed;
 
-use improv_core_model::{CategoryId, Coordinate, ItemId};
+use improv_core_model::{CategoryId, Coordinate, ItemId, Value};
 
 /// The dataflow encoding of a coordinate: sorted `(category_id, item_id)` pairs.
 pub type CoordKey = Vec<(u32, u32)>;
+
+/// The dataflow encoding of a cell value.
+///
+/// Differential-dataflow data must be `Ord + Eq + Hash + Clone + 'static` and
+/// exchange-safe. `f64` is none of the first three, so numbers ride as their
+/// bit pattern; the other variants make Text / Boolean / Error first-class in
+/// the dataflow (the non-numeric value lane). Numbers stay the fast path.
+#[derive(
+    Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub enum CellValue {
+    /// A number, as `f64::to_bits()` (total order via `f64::total_cmp` at the
+    /// boundary; bit order is fine for equality/hashing/exchange).
+    Num(u64),
+    Bool(bool),
+    Text(String),
+    /// An error value; the `u8` is the `ValueError` kind discriminant so error
+    /// cells are distinguishable and propagate through operators.
+    Err(u8),
+}
+
+impl CellValue {
+    /// Wrap an `f64`.
+    pub fn num(n: f64) -> Self {
+        CellValue::Num(n.to_bits())
+    }
+    /// The number this holds, if it is `Num`.
+    pub fn as_num(&self) -> Option<f64> {
+        match self {
+            CellValue::Num(b) => Some(f64::from_bits(*b)),
+            _ => None,
+        }
+    }
+    /// Encode a boolean as the numeric-lane 1.0/0.0 (back-compat with the
+    /// comparison/logical convention) — used where downstream expects a number.
+    pub fn from_bool_numeric(b: bool) -> Self {
+        CellValue::num(if b { 1.0 } else { 0.0 })
+    }
+    /// Convert a model `Value` into a `CellValue` for feeding inputs.
+    pub fn from_model_value(v: &Value) -> Option<CellValue> {
+        match v {
+            Value::Number(n) => Some(CellValue::num(*n)),
+            Value::Boolean(b) => Some(CellValue::Bool(*b)),
+            Value::Text(t) => Some(CellValue::Text(t.clone())),
+            Value::Enum(e) => Some(CellValue::num(*e as f64)),
+            Value::DateTime(_) => None, // dates in the DD lane are future work
+            Value::Error(_) => Some(CellValue::Err(0)),
+        }
+    }
+}
+
+impl std::fmt::Display for CellValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CellValue::Num(bits) => write!(f, "{}", f64::from_bits(*bits)),
+            CellValue::Bool(b) => write!(f, "{b}"),
+            CellValue::Text(t) => write!(f, "{t}"),
+            CellValue::Err(_) => write!(f, "#ERR"),
+        }
+    }
+}
 
 /// Encode a `Coordinate` as its dataflow key (BTreeMap already iterates sorted).
 pub fn encode_coord(c: &Coordinate) -> CoordKey {

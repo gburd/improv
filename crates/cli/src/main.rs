@@ -324,10 +324,11 @@ fn cmd_eval(rest: &[String]) -> Result<(), String> {
         .get(&mid)
         .ok_or_else(|| "engine produced no result for this measure".to_string())?;
 
-    // Render each coordinate key (Vec<(cat_id, item_id)>) with readable names.
-    let mut rows: Vec<(String, f64)> = cells
+    // Render each coordinate key (Vec<(cat_id, item_id)>) with readable names,
+    // and each value via CellValue's Display (number / bool / text / #ERR).
+    let mut rows: Vec<(String, String)> = cells
         .iter()
-        .map(|(k, v)| (render_coord_key(&model, k), *v))
+        .map(|(k, v)| (render_coord_key(&model, k), v.to_string()))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -647,7 +648,7 @@ mod tests {
         let cells = out.get(&MeasureId(102)).unwrap();
         let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
-        assert_eq!(cells.get(&key), Some(&70.0));
+        assert_eq!(cells.get(&key).and_then(|v| v.as_num()), Some(70.0));
 
         // `eval` on an input measure is a clear error, not a crash.
         assert!(run(&s(&["eval", &db, "100"])).is_err());

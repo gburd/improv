@@ -92,9 +92,12 @@ Measure kinds:
 
 ### 3.3 Coordinates and Values
 
-A coordinate is a tuple of `(category, item)` pairs. Values may be Number, Text,
-Boolean, Date, or Error. The v1 numeric core operates on Number; non-numeric
-derived values are a deferred follow-up (see §12).
+A coordinate is a tuple of `(category, item)` pairs. Values are carried in the
+dataflow as `engine::CellValue` (`Num(f64 bits)` / `Bool` / `Text` / `Err`),
+which is `Ord + Eq + Hash + serde` (timely 0.13 exchanges via serde). Numbers
+are the fast path; comparisons and `NOT`/`AND`/`OR` yield `Bool`, so **boolean
+and text derived measures work end-to-end** (e.g. `Hot = Price > 15` →
+`Bool`). `Date` is not yet representable in the lane (skipped on input).
 
 ---
 

@@ -164,7 +164,7 @@ async fn measure_values(
             let values = out.remove(&mid).unwrap_or_default();
             values
                 .into_iter()
-                .map(|(k, n)| readable_key(&model, &k, n))
+                .map(|(k, n)| readable_key(&model, &k, n.as_num().unwrap_or(f64::NAN)))
                 .collect()
         }
     };
@@ -275,7 +275,7 @@ async fn eval_measure(
     let model = load_model(&state).await?;
     let cells = values
         .into_iter()
-        .map(|(k, n)| readable_key(&model, &k, n))
+        .map(|(k, n)| readable_key(&model, &k, n.as_num().unwrap_or(f64::NAN)))
         .collect();
     Ok(Json(cells))
 }

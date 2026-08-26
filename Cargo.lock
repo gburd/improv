@@ -712,6 +712,7 @@ dependencies = [
  "differential-dataflow",
  "improv_core_model",
  "proptest",
+ "serde",
  "thiserror",
  "timely",
 ]

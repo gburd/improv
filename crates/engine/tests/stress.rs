@@ -174,7 +174,11 @@ fn stress_revenue_large() {
             (TIME.0, time_item(t).0),
             (PRODUCT.0, product_item(p).0),
         ]));
-        assert_eq!(got, Some(&expected), "Revenue[t{t},p{p}]");
+        assert_eq!(
+            got.and_then(|v| v.as_num()),
+            Some(expected),
+            "Revenue[t{t},p{p}]"
+        );
     }
 }
 
@@ -202,6 +206,10 @@ fn stress_multi_layer_rollup() {
     for &p in &[0u32, 7, M_PRODUCT - 1] {
         let expected: f64 = (0..N_TIME).map(|t| price_of(p) * qty_of(t, p)).sum();
         let got = rbp.get(&key(&[(PRODUCT.0, product_item(p).0)]));
-        assert_eq!(got, Some(&expected), "RevenueByProduct[p{p}]");
+        assert_eq!(
+            got.and_then(|v| v.as_num()),
+            Some(expected),
+            "RevenueByProduct[p{p}]"
+        );
     }
 }

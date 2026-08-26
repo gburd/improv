@@ -19,7 +19,7 @@
 
 use crate::compiler::{compile_formula, CompileContext};
 use crate::plan::PlanNode;
-use crate::{encode_coord, CoordKey};
+use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{MeasureId, MeasureKind, Model};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
@@ -40,7 +40,7 @@ pub struct Edit {
 }
 
 /// A snapshot of a computed derived measure after an edit round.
-pub type MeasureValues = HashMap<CoordKey, f64>;
+pub type MeasureValues = HashMap<CoordKey, CellValue>;
 
 enum Cmd {
     /// Apply a batch of edits, advance time, and return the new full snapshot
@@ -235,7 +235,7 @@ fn worker_loop(
             .unwrap()
             .take()
             .expect("worker_loop runs a single timely worker");
-        let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, u64), isize>> =
+        let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>> =
             HashMap::new();
         let snap = snapshot.clone();
         let mut probe = ProbeHandle::new();
@@ -255,21 +255,21 @@ fn worker_loop(
                     let mid = *mid;
                     let snap = snap.clone();
                     let reduced = coll.reduce(|_k, inp, out| {
-                        for (bits, mult) in inp {
+                        for (val, mult) in inp {
                             if *mult > 0 {
-                                out.push((**bits, 1isize));
+                                out.push(((*val).clone(), 1isize));
                             }
                         }
                     });
                     derived.insert(mid, reduced.clone());
                     reduced
-                        .inspect(move |((k, bits), _t, diff)| {
+                        .inspect(move |((k, val), _t, diff)| {
                             // Maintain the running snapshot from the delta
                             // stream: a +1 sets the value, a -1 removes it.
                             let mut s = snap.lock().unwrap();
                             let m = s.entry(mid).or_default();
                             if *diff > 0 {
-                                m.insert(k.clone(), f64::from_bits(*bits));
+                                m.insert(k.clone(), val.clone());
                             } else if *diff < 0 {
                                 m.remove(k);
                             }
@@ -285,7 +285,7 @@ fn worker_loop(
         let mut run_to = |t: u64,
                           sessions: &mut HashMap<
             MeasureId,
-            InputSession<u64, (CoordKey, u64), isize>,
+            InputSession<u64, (CoordKey, CellValue), isize>,
         >| {
             for s in sessions.values_mut() {
                 s.advance_to(t);
@@ -300,7 +300,7 @@ fn worker_loop(
         for e in &seed {
             if let Some(session) = sessions.get_mut(&e.measure) {
                 if let Some(v) = e.value {
-                    session.insert((e.coord.clone(), v.to_bits()));
+                    session.insert((e.coord.clone(), CellValue::num(v)));
                 }
             }
         }
@@ -312,10 +312,10 @@ fn worker_loop(
         // Serve edit rounds.
         // We track the previous value of each cell so a "set" is a proper
         // retract(old)+assert(new) on the cardinality-one cell.
-        let mut prev: HashMap<(MeasureId, CoordKey), u64> = HashMap::new();
+        let mut prev: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
         for e in &seed {
             if let Some(v) = e.value {
-                prev.insert((e.measure, e.coord.clone()), v.to_bits());
+                prev.insert((e.measure, e.coord.clone()), CellValue::num(v));
             }
         }
 
@@ -324,16 +324,16 @@ fn worker_loop(
                 Cmd::Edit(edits, reply) => {
                     for e in &edits {
                         let key = (e.measure, e.coord.clone());
-                        let old = prev.get(&key).copied();
+                        let old = prev.get(&key).cloned();
                         if let Some(session) = sessions.get_mut(&e.measure) {
-                            if let Some(old_bits) = old {
-                                session.remove((e.coord.clone(), old_bits));
+                            if let Some(old_val) = old {
+                                session.remove((e.coord.clone(), old_val));
                             }
                             match e.value {
                                 Some(v) => {
-                                    let bits = v.to_bits();
-                                    session.insert((e.coord.clone(), bits));
-                                    prev.insert(key, bits);
+                                    let cv = CellValue::num(v);
+                                    session.insert((e.coord.clone(), cv.clone()));
+                                    prev.insert(key, cv);
                                 }
                                 None => {
                                     prev.remove(&key);
@@ -431,8 +431,14 @@ mod tests {
         let model = revenue_model();
         let (_engine, snap) = Engine::new(&model, &[MeasureId(102)]).expect("engine");
         let rev = snap.get(&MeasureId(102)).expect("revenue");
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 20)])), Some(&1000.0)); // 10*100
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 21)])), Some(&1000.0)); // 20*50
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(1000.0)
+        ); // 10*100
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 21)])).and_then(|v| v.as_num()),
+            Some(1000.0)
+        ); // 20*50
         assert_eq!(rev.len(), 2);
     }
 
@@ -447,8 +453,14 @@ mod tests {
             .set(MeasureId(101), key(&[(1, 10), (2, 20)]), 120.0)
             .expect("edit");
         let rev = snap.get(&MeasureId(102)).expect("revenue");
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 20)])), Some(&1200.0));
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 21)])), Some(&1000.0));
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(1200.0)
+        );
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 21)])).and_then(|v| v.as_num()),
+            Some(1000.0)
+        );
     }
 
     #[test]
@@ -460,7 +472,10 @@ mod tests {
             .set(MeasureId(100), key(&[(2, 20)]), 15.0)
             .expect("edit");
         let rev = snap.get(&MeasureId(102)).expect("revenue");
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 20)])), Some(&1500.0)); // 15*100
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(1500.0)
+        ); // 15*100
     }
 
     #[test]
@@ -476,6 +491,9 @@ mod tests {
         let rev = snap.get(&MeasureId(102)).expect("revenue");
         assert_eq!(rev.get(&key(&[(1, 10), (2, 20)])), None);
         // The other cell survives.
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 21)])), Some(&1000.0));
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 21)])).and_then(|v| v.as_num()),
+            Some(1000.0)
+        );
     }
 }

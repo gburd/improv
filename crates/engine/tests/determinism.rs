@@ -103,8 +103,8 @@ fn canonical_model(n_time: u32, m_product: u32) -> Model {
 
 /// Compare two result maps for exact byte-for-byte f64 identity.
 fn assert_maps_bit_identical(
-    a: &HashMap<MeasureId, HashMap<CoordKey, f64>>,
-    b: &HashMap<MeasureId, HashMap<CoordKey, f64>>,
+    a: &HashMap<MeasureId, HashMap<CoordKey, improv_engine::CellValue>>,
+    b: &HashMap<MeasureId, HashMap<CoordKey, improv_engine::CellValue>>,
 ) {
     let ka: std::collections::BTreeSet<_> = a.keys().collect();
     let kb: std::collections::BTreeSet<_> = b.keys().collect();
@@ -117,11 +117,9 @@ fn assert_maps_bit_identical(
             let vb = mb
                 .get(k)
                 .unwrap_or_else(|| panic!("missing key in run 2: {k:?}"));
-            assert_eq!(
-                va.to_bits(),
-                vb.to_bits(),
-                "bit-identical value for {mid:?} at {k:?}"
-            );
+            // `CellValue` is `Eq`/`Hash` (numbers carried as bit patterns), so
+            // equality here is exact/bit-identical.
+            assert_eq!(va, vb, "bit-identical value for {mid:?} at {k:?}");
         }
     }
 }
@@ -190,8 +188,9 @@ fn evaluate_is_insertion_order_independent() {
         rev.get(&key(&[
             (TIME.0, time_item(2).0),
             (PRODUCT.0, product_item(1).0)
-        ])),
-        Some(&20.0)
+        ]))
+        .and_then(|v| v.as_num()),
+        Some(20.0)
     );
 }
 
@@ -263,7 +262,7 @@ proptest! {
 
         // Same values (integer-valued products are exact in f64).
         for (k, e) in &expected {
-            prop_assert_eq!(rev.get(k), Some(e));
+            prop_assert_eq!(rev.get(k).and_then(|v| v.as_num()), Some(*e));
         }
     }
 }

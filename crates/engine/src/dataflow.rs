@@ -16,12 +16,12 @@
 
 use crate::compiler::{compile_formula, scalar_arity, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
-use crate::{encode_coord, CoordKey};
+use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::{Join as _, Reduce};
 use differential_dataflow::Collection;
 use improv_core_model::{
-    BinaryOp, CategoryId, FuncId, MeasureId, MeasureKind, Model, UnaryOp, Value,
+    BinaryOp, CategoryId, FuncId, MeasureId, MeasureKind, Model, UnaryOp,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -41,8 +41,8 @@ pub enum EngineError {
     Unsupported(String),
 }
 
-/// A DD collection of `(coordinate, f64-bits)`.
-type Coll<G> = Collection<G, (CoordKey, u64), isize>;
+/// A DD collection of `(coordinate, cell value)`.
+type Coll<G> = Collection<G, (CoordKey, CellValue), isize>;
 
 /// Recursively build a collection for a plan node.
 ///
@@ -66,21 +66,7 @@ where
         PlanNodeKind::MapUnary(op, child) => {
             let c = build_coll(child, inputs, derived)?;
             let op = *op;
-            Ok(c.map(move |(k, bits)| {
-                let v = f64::from_bits(bits);
-                let out = match op {
-                    UnaryOp::Neg => -v,
-                    // Boolean not on a numeric encoding: treat !=0 as true.
-                    UnaryOp::Not => {
-                        if v == 0.0 {
-                            1.0
-                        } else {
-                            0.0
-                        }
-                    }
-                };
-                (k, out.to_bits())
-            }))
+            Ok(c.map(move |(k, v)| (k, apply_unary(op, &v))))
         }
 
         PlanNodeKind::MapBinary(op, left, right) => {
@@ -89,11 +75,8 @@ where
             let l = build_coll(left, inputs, derived)?;
             let r = build_coll(right, inputs, derived)?;
             let op = *op;
-            Ok(l.join(&r).map(move |(k, (lb, rb))| {
-                let a = f64::from_bits(lb);
-                let b = f64::from_bits(rb);
-                (k, apply_binary(op, a, b).to_bits())
-            }))
+            Ok(l.join(&r)
+                .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))))
         }
 
         PlanNodeKind::Join {
@@ -134,35 +117,28 @@ where
             Ok(keyed.reduce(move |_key, input, output| {
                 let vals: Vec<f64> = input
                     .iter()
-                    .flat_map(|(bits, mult)| {
+                    .flat_map(|(v, mult)| {
                         let n = (*mult).max(0) as usize;
-                        std::iter::repeat_n(f64::from_bits(**bits), n)
+                        let x = v.as_num().unwrap_or(f64::NAN);
+                        std::iter::repeat_n(x, n)
                     })
                     .collect();
                 if vals.is_empty() {
                     return;
                 }
                 let agg = aggregate(func, &vals);
-                output.push((agg.to_bits(), 1isize));
+                output.push((CellValue::num(agg), 1isize));
             }))
         }
 
-        PlanNodeKind::Literal(Value::Number(n)) => {
-            // A scalar literal has no coordinate; emit under the empty key.
-            // (Broadcasting a literal against a dimensioned operand is done by
-            // the MapBinary join, which will find the empty-key literal only if
-            // join keys are empty — adequate for v1 scalar-on-scalar.)
-            let bits = n.to_bits();
-            // We can't create a collection from thin air here without an input;
-            // literals are only supported inside expressions the compiler has
-            // already dimensioned. Signal unsupported standalone use.
-            let _ = bits;
+        PlanNodeKind::Literal(_) => {
+            // Standalone literals need a dimensioned context to broadcast over;
+            // the compiler only produces them inside expressions. Not supported
+            // as a top-level plan node in v1.
             Err(EngineError::Unsupported(
-                "standalone numeric literal (needs a dimensioned context)".into(),
+                "standalone literal (needs a dimensioned context)".into(),
             ))
         }
-
-        PlanNodeKind::Literal(_) => Err(EngineError::Unsupported("non-numeric literal".into())),
         PlanNodeKind::FuncCall { func, args } => {
             let func = *func;
             let arity = scalar_arity(func)
@@ -176,8 +152,11 @@ where
             match args.as_slice() {
                 [a] => {
                     let c = build_coll(a, inputs, derived)?;
-                    Ok(c.map(move |(k, bits)| {
-                        (k, apply_scalar(func, &[f64::from_bits(bits)]).to_bits())
+                    Ok(c.map(move |(k, v)| {
+                        (
+                            k,
+                            CellValue::num(apply_scalar(func, &[v.as_num().unwrap_or(f64::NAN)])),
+                        )
                     }))
                 }
                 [a, b] => {
@@ -200,8 +179,14 @@ where
                         .join(&r_keyed)
                         .map(move |(_jk, ((lk, lv), (rk, rv)))| {
                             let merged = union_keys(&lk, &rk);
-                            let out = apply_scalar(func, &[f64::from_bits(lv), f64::from_bits(rv)]);
-                            (merged, out.to_bits())
+                            let out = apply_scalar(
+                                func,
+                                &[
+                                    lv.as_num().unwrap_or(f64::NAN),
+                                    rv.as_num().unwrap_or(f64::NAN),
+                                ],
+                            );
+                            (merged, CellValue::num(out))
                         }))
                 }
                 _ => Err(EngineError::Unsupported(format!(
@@ -213,34 +198,48 @@ where
     }
 }
 
-fn apply_binary(op: BinaryOp, a: f64, b: f64) -> f64 {
+fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellValue {
+    // Equality/inequality work on any value type (Text, Bool, Num, Err);
+    // everything else operates on the numeric lane.
     match op {
-        BinaryOp::Add => a + b,
-        BinaryOp::Sub => a - b,
-        BinaryOp::Mul => a * b,
-        BinaryOp::Div => {
-            if b == 0.0 {
-                f64::NAN
-            } else {
-                a / b
-            }
-        }
-        BinaryOp::And => bool_f64(a != 0.0 && b != 0.0),
-        BinaryOp::Or => bool_f64(a != 0.0 || b != 0.0),
-        BinaryOp::Eq => bool_f64(a == b),
-        BinaryOp::Ne => bool_f64(a != b),
-        BinaryOp::Lt => bool_f64(a < b),
-        BinaryOp::Le => bool_f64(a <= b),
-        BinaryOp::Gt => bool_f64(a > b),
-        BinaryOp::Ge => bool_f64(a >= b),
+        BinaryOp::Eq => return CellValue::Bool(a == b),
+        BinaryOp::Ne => return CellValue::Bool(a != b),
+        _ => {}
+    }
+    let (x, y) = (
+        a.as_num().unwrap_or(f64::NAN),
+        b.as_num().unwrap_or(f64::NAN),
+    );
+    match op {
+        BinaryOp::Add => CellValue::num(x + y),
+        BinaryOp::Sub => CellValue::num(x - y),
+        BinaryOp::Mul => CellValue::num(x * y),
+        BinaryOp::Div => CellValue::num(if y == 0.0 { f64::NAN } else { x / y }),
+        BinaryOp::And => CellValue::Bool(truthy(a) && truthy(b)),
+        BinaryOp::Or => CellValue::Bool(truthy(a) || truthy(b)),
+        BinaryOp::Lt => CellValue::Bool(x < y),
+        BinaryOp::Le => CellValue::Bool(x <= y),
+        BinaryOp::Gt => CellValue::Bool(x > y),
+        BinaryOp::Ge => CellValue::Bool(x >= y),
+        BinaryOp::Eq | BinaryOp::Ne => unreachable!("handled above"),
     }
 }
 
-fn bool_f64(b: bool) -> f64 {
-    if b {
-        1.0
-    } else {
-        0.0
+fn apply_unary(op: UnaryOp, v: &CellValue) -> CellValue {
+    match op {
+        UnaryOp::Neg => CellValue::num(-v.as_num().unwrap_or(f64::NAN)),
+        UnaryOp::Not => CellValue::Bool(!truthy(v)),
+    }
+}
+
+/// Truthiness for logical ops: `Bool` directly, a nonzero `Num`, a non-empty
+/// `Text`; errors are falsy.
+fn truthy(v: &CellValue) -> bool {
+    match v {
+        CellValue::Bool(b) => *b,
+        CellValue::Num(bits) => f64::from_bits(*bits) != 0.0,
+        CellValue::Text(t) => !t.is_empty(),
+        CellValue::Err(_) => false,
     }
 }
 
@@ -360,7 +359,7 @@ pub(crate) fn derived_build_order(
 pub fn evaluate(
     model: &Model,
     targets: &[MeasureId],
-) -> Result<HashMap<MeasureId, HashMap<CoordKey, f64>>, EngineError> {
+) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
     let ctx = CompileContext::new(&model.measures);
 
     // Determine every derived measure transitively needed by `targets`, in
@@ -378,18 +377,20 @@ pub fn evaluate(
         }
     }
 
-    // Gather input cells to feed, grouped by measure.
-    let mut input_cells: HashMap<MeasureId, Vec<(CoordKey, u64)>> = HashMap::new();
+    // Gather input cells to feed, grouped by measure. All value types the DD
+    // lane supports (Number, Boolean, Text, Enum, Error) are fed; DateTime is
+    // not yet representable and is skipped.
+    let mut input_cells: HashMap<MeasureId, Vec<(CoordKey, CellValue)>> = HashMap::new();
     for ((mid, coord), val) in &model.inputs {
-        if let Value::Number(n) = val {
+        if let Some(cv) = CellValue::from_model_value(val) {
             input_cells
                 .entry(*mid)
                 .or_default()
-                .push((encode_coord(coord), n.to_bits()));
+                .push((encode_coord(coord), cv));
         }
     }
 
-    let results: Arc<Mutex<HashMap<MeasureId, HashMap<CoordKey, f64>>>> =
+    let results: Arc<Mutex<HashMap<MeasureId, HashMap<CoordKey, CellValue>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let results2 = results.clone();
 
@@ -398,7 +399,7 @@ pub fn evaluate(
     let plans_arc = plans.clone();
 
     timely::execute::execute_directly(move |worker| {
-        let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, u64), isize>> =
+        let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>> =
             HashMap::new();
         let res = results2.clone();
 
@@ -418,22 +419,22 @@ pub fn evaluate(
                     let res = res.clone();
                     // Collapse to one value per key.
                     let reduced = coll.reduce(|_k, inp, out| {
-                        for (bits, mult) in inp {
+                        for (val, mult) in inp {
                             if *mult > 0 {
-                                out.push((**bits, 1isize));
+                                out.push(((*val).clone(), 1isize));
                             }
                         }
                     });
                     // Register this derived measure so later layers can
                     // reference it as an InputMeasure.
                     derived.insert(mid, reduced.clone());
-                    reduced.inspect(move |((k, bits), _t, diff)| {
+                    reduced.inspect(move |((k, val), _t, diff)| {
                         if *diff > 0 {
                             res.lock()
                                 .unwrap()
                                 .entry(mid)
                                 .or_default()
-                                .insert(k.clone(), f64::from_bits(*bits));
+                                .insert(k.clone(), val.clone());
                         }
                     });
                 }
@@ -445,7 +446,7 @@ pub fn evaluate(
             session.advance_to(0);
             if let Some(cells) = input_cells.get(id) {
                 for (k, v) in cells {
-                    session.insert((k.clone(), *v));
+                    session.insert((k.clone(), v.clone()));
                 }
             }
         }
@@ -466,7 +467,7 @@ pub fn evaluate(
 mod tests {
     use super::*;
     use improv_core_model::{
-        Coordinate, DimensionSpec, Expr, ItemId, Measure, MeasureKind, Name, ValueType,
+        Coordinate, DimensionSpec, Expr, ItemId, Measure, MeasureKind, Name, Value, ValueType,
     };
 
     // The canonical Time x Product revenue model with known results.
@@ -561,13 +562,25 @@ mod tests {
         let rev = out.get(&MeasureId(102)).expect("revenue computed");
 
         // Revenue[2025,A] = 10*100 = 1000
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 20)])), Some(&1000.0));
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(1000.0)
+        );
         // Revenue[2025,B] = 20*50 = 1000
-        assert_eq!(rev.get(&key(&[(1, 10), (2, 21)])), Some(&1000.0));
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 21)])).and_then(|v| v.as_num()),
+            Some(1000.0)
+        );
         // Revenue[2026,A] = 10*120 = 1200
-        assert_eq!(rev.get(&key(&[(1, 11), (2, 20)])), Some(&1200.0));
+        assert_eq!(
+            rev.get(&key(&[(1, 11), (2, 20)])).and_then(|v| v.as_num()),
+            Some(1200.0)
+        );
         // Revenue[2026,B] = 20*80 = 1600
-        assert_eq!(rev.get(&key(&[(1, 11), (2, 21)])), Some(&1600.0));
+        assert_eq!(
+            rev.get(&key(&[(1, 11), (2, 21)])).and_then(|v| v.as_num()),
+            Some(1600.0)
+        );
         assert_eq!(rev.len(), 4);
     }
 
@@ -597,8 +610,14 @@ mod tests {
         let out = evaluate(&model, &[MeasureId(103)]).expect("evaluate");
         let rbp = out.get(&MeasureId(103)).expect("RevenueByProduct computed");
         // WidgetA: 1000 + 1200 = 2200 ; WidgetB: 1000 + 1600 = 2600
-        assert_eq!(rbp.get(&key(&[(2, 20)])), Some(&2200.0));
-        assert_eq!(rbp.get(&key(&[(2, 21)])), Some(&2600.0));
+        assert_eq!(
+            rbp.get(&key(&[(2, 20)])).and_then(|v| v.as_num()),
+            Some(2200.0)
+        );
+        assert_eq!(
+            rbp.get(&key(&[(2, 21)])).and_then(|v| v.as_num()),
+            Some(2600.0)
+        );
         assert_eq!(rbp.len(), 2);
     }
 
@@ -649,15 +668,33 @@ mod tests {
 
         // AbsProfit = |Price - Quantity|.
         let ap = out.get(&MeasureId(111)).expect("AbsProfit");
-        assert_eq!(ap.get(&key(&[(1, 10), (2, 20)])), Some(&90.0)); // |10-100|
-        assert_eq!(ap.get(&key(&[(1, 10), (2, 21)])), Some(&30.0)); // |20-50|
-        assert_eq!(ap.get(&key(&[(1, 11), (2, 20)])), Some(&110.0)); // |10-120|
-        assert_eq!(ap.get(&key(&[(1, 11), (2, 21)])), Some(&60.0)); // |20-80|
+        assert_eq!(
+            ap.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(90.0)
+        ); // |10-100|
+        assert_eq!(
+            ap.get(&key(&[(1, 10), (2, 21)])).and_then(|v| v.as_num()),
+            Some(30.0)
+        ); // |20-50|
+        assert_eq!(
+            ap.get(&key(&[(1, 11), (2, 20)])).and_then(|v| v.as_num()),
+            Some(110.0)
+        ); // |10-120|
+        assert_eq!(
+            ap.get(&key(&[(1, 11), (2, 21)])).and_then(|v| v.as_num()),
+            Some(60.0)
+        ); // |20-80|
 
         // MinPQ = min(Price, Quantity) = Price everywhere (Price<Quantity).
         let mp = out.get(&MeasureId(113)).expect("MinPQ");
-        assert_eq!(mp.get(&key(&[(1, 10), (2, 20)])), Some(&10.0));
-        assert_eq!(mp.get(&key(&[(1, 11), (2, 21)])), Some(&20.0));
+        assert_eq!(
+            mp.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(10.0)
+        );
+        assert_eq!(
+            mp.get(&key(&[(1, 11), (2, 21)])).and_then(|v| v.as_num()),
+            Some(20.0)
+        );
 
         // Determinism: a second run yields identical results.
         let out2 = evaluate(&model, &[MeasureId(111), MeasureId(113)]).expect("evaluate");
@@ -668,7 +705,7 @@ mod tests {
     // Comparison result encoded as 1.0/0.0 in the numeric lane:
     // Hot[Product] = Price > Threshold, an input Threshold[Product] = 15.
     #[test]
-    fn evaluate_comparison_as_numeric() {
+    fn evaluate_comparison_yields_boolean() {
         let mut model = revenue_model();
         let product = CategoryId(2);
         let refr = |id| Expr::Ref(id, DimensionSpec::default());
@@ -710,8 +747,16 @@ mod tests {
 
         let out = evaluate(&model, &[MeasureId(121)]).expect("evaluate");
         let hot = out.get(&MeasureId(121)).expect("Hot");
-        assert_eq!(hot.get(&key(&[(2, 20)])), Some(&0.0), "Price 10 not > 15");
-        assert_eq!(hot.get(&key(&[(2, 21)])), Some(&1.0), "Price 20 > 15");
+        assert_eq!(
+            hot.get(&key(&[(2, 20)])),
+            Some(&CellValue::Bool(false)),
+            "Price 10 not > 15"
+        );
+        assert_eq!(
+            hot.get(&key(&[(2, 21)])),
+            Some(&CellValue::Bool(true)),
+            "Price 20 > 15"
+        );
     }
 
     #[test]

@@ -8,6 +8,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Non-numeric value lane**: the engine dataflow now carries a tagged
+  `CellValue` (`Num`/`Bool`/`Text`/`Err`), so boolean and text derived measures
+  evaluate end-to-end (e.g. `Hot = Price > 15` yields a boolean). Comparisons
+  and `NOT`/`AND`/`OR` produce `Bool`. CLI/TUI/server render via `CellValue`.
 - **Live incremental edit API** (`improv_engine::session::Engine`): builds the
   differential-dataflow graph once and applies input-cell edits as deltas
   (`set`/`clear`/`apply`), recomputing only affected coordinates — no rebuild.
