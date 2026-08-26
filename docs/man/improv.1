@@ -51,7 +51,7 @@ and
 .I <category-id>
 are numbers. The category must already exist.
 .TP
-.B add-measure \fI<db> <id> <name>\fR number|boolean|text\fR input\fR
+.B add-measure \fI<db> <id> <name>\fR number|boolean|text\fR input\fR [\fICategory ...\fR]
 Add an input measure.
 .I <id>
 is a number. The type keyword
@@ -63,7 +63,20 @@ declares how
 .B set
 parses values for this measure. The trailing
 .B input
-keyword is required; only input measures are supported.
+keyword is required. Any further arguments are category
+.I names
+declaring the dimensions this measure ranges over, e.g.
+.BR "input Time Product" .
+.TP
+.B add-derived \fI<db> <id> <name> <formula>\fR
+Add a derived (formula) measure. The
+.I <formula>
+is Improv formula text, e.g.
+.BR \(dqPrice * Quantity\(dq
+or
+.BR \(dqSUM(Revenue OVER Time)\(dq ,
+with measure and category names resolved against the model. The measure's
+categories are inferred from the measures it references.
 .TP
 .B set \fI<db> <measure-id> <value>\fR [\fB\-\-at\fR \fICat=Item,Cat=Item ...\fR]
 Set an input cell. The
@@ -85,6 +98,9 @@ Print all categories, items, measures, and input cells.
 .TP
 .B show \fI<db> <measure-id>\fR
 Print one measure and its input cells.
+.TP
+.B eval \fI<db> <measure-id>\fR
+Compute a derived measure through the engine and print its cells.
 .TP
 .B export \fI<db>\fR
 Print the whole model as pretty-printed JSON.

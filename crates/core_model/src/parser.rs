@@ -349,7 +349,7 @@ impl<'a> Parser<'a> {
     /// Factor = Primary [ "^" Factor ]   (right-associative power)
     ///
     /// The AST has no `Pow` `BinaryOp` variant, so `^` is rejected with a clear
-    /// error rather than mis-lowered. Grammar slot kept for forward-compat.
+    /// error rather than mislowered. Grammar slot kept for forward-compat.
     fn parse_factor(&mut self) -> Result<Expr, ParseError> {
         let base = self.parse_primary()?;
         if matches!(self.peek(), Some(Tok::Op(o)) if o == "^") {

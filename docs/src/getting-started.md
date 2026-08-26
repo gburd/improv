@@ -38,19 +38,25 @@ by the binary, are:
 | `init` | `<db>` |
 | `add-category` | `<db> <id> <name>` |
 | `add-item` | `<db> <id> <category-id> <name>` |
-| `add-measure` | `<db> <id> <name> <number\|boolean\|text> input` |
+| `add-measure` | `<db> <id> <name> <number\|boolean\|text> input [Category ...]` |
+| `add-derived` | `<db> <id> <name> <formula>` |
 | `set` | `<db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]` |
 | `list` | `<db>` |
 | `show` | `<db> <measure-id>` |
+| `eval` | `<db> <measure-id>` |
 | `export` | `<db>` |
 | `help` | (also `--help`, `-h`) |
 
 Notes:
 
 - Ids (`<id>`, `<category-id>`, `<measure-id>`) are plain numbers.
-- `add-measure` only accepts **input** measures today; the trailing `input`
-  keyword is required. The type (`number`, `boolean`, `text`) declares how
-  `set` parses the value.
+- `add-measure` adds an **input** measure; the trailing `input` keyword is
+  required, and any further arguments are category **names** declaring the
+  measure's dimensions (e.g. `... input Time Product`). The type (`number`,
+  `boolean`, `text`) declares how `set` parses the value.
+- `add-derived` adds a **formula** measure from Improv formula text (e.g.
+  `"Price * Quantity"` or `"SUM(Revenue OVER Time)"`); its categories are
+  inferred from the measures it references. Compute it with `eval`.
 - `set --at` maps category **names** to item **names**, comma-separated. Omit
   `--at` for a scalar (zero-dimensional) cell.
 - `set` parses the value according to the measure's declared type: a `number`
@@ -72,8 +78,8 @@ improv add-item      "$DB" 10 1 2025
 improv add-item      "$DB" 11 1 2026
 improv add-item      "$DB" 20 2 WidgetA
 improv add-item      "$DB" 21 2 WidgetB
-improv add-measure   "$DB" 100 Price    number input
-improv add-measure   "$DB" 101 Quantity number input
+improv add-measure   "$DB" 100 Price    number input Product
+improv add-measure   "$DB" 101 Quantity number input Time Product
 improv set           "$DB" 100 10 --at Product=WidgetA
 improv set           "$DB" 100 20 --at Product=WidgetB
 improv set           "$DB" 101 100 --at Time=2025,Product=WidgetA
@@ -122,10 +128,41 @@ Dump the whole model as JSON (useful for scripting or diffing):
 improv export "$DB"
 ```
 
+## Define a derived measure and compute it
+
+Define `Revenue` from a textual formula, then evaluate it through the engine:
+
+```sh
+improv add-derived "$DB" 102 Revenue "Price * Quantity"
+improv eval        "$DB" 102
+```
+
+```text
+eval 102 'Revenue' (4 cells):
+  Revenue[Time=2025, Product=WidgetA] = 1000
+  Revenue[Time=2025, Product=WidgetB] = 1000
+  Revenue[Time=2026, Product=WidgetA] = 1200
+  Revenue[Time=2026, Product=WidgetB] = 1600
+```
+
+Derived measures can build on other derived measures. Roll `Revenue` up over
+`Time` with an aggregation:
+
+```sh
+improv add-derived "$DB" 103 RevByProduct "SUM(Revenue OVER Time)"
+improv eval        "$DB" 103
+```
+
+```text
+eval 103 'RevByProduct' (2 cells):
+  RevByProduct[Product=WidgetA] = 2200
+  RevByProduct[Product=WidgetB] = 2600
+```
+
 ## Where the CLI stops today
 
-The CLI creates categories, items, and **input** measures, sets input cells, and
-inspects the model. It does **not** yet define derived (formula) measures or run
-the engine to compute them; that is exercised through the `improv_engine`
-crate's API and tests. Building derived measures from the CLI, along with a TUI
-and server, is planned.
+The CLI defines categories, items, input and derived measures, sets input
+cells, and evaluates derived measures through the engine. It does not yet edit
+formulas interactively or drive the incremental edit loop; the TUI (viewer
+today) and a live editing loop are planned. See the
+[architecture chapter](./architecture.md) for the full pipeline.

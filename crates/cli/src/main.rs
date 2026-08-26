@@ -7,7 +7,8 @@
 //! the loaded model, e.g. `--at Time=2025,Product=WidgetA`.
 
 use improv_core_model::{
-    CategoryId, Coordinate, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value, ValueType,
+    parser, CategoryId, Coordinate, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value,
+    ValueType,
 };
 use improv_storage_mentat::ModelStore;
 
@@ -27,8 +28,14 @@ COMMANDS:
     add-item <db> <id> <category-id> <name>
         Add an item (member of a category). <id>, <category-id> are numbers.
 
-    add-measure <db> <id> <name> <number|boolean|text> input
+    add-measure <db> <id> <name> <number|boolean|text> input [Category ...]
         Add an input measure. The type declares how `set` parses values.
+        Trailing category NAMES declare the dimensions it ranges over.
+
+    add-derived <db> <id> <name> <formula>
+        Add a derived (formula) measure, e.g.
+        add-derived m.db 102 Revenue \"Price * Quantity\".
+        Categories are inferred from the referenced measures.
 
     set <db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]
         Set an input cell. --at maps category NAMES to item NAMES.
@@ -39,6 +46,9 @@ COMMANDS:
 
     show <db> <measure-id>
         Print one measure and its input cells.
+
+    eval <db> <measure-id>
+        Compute a derived measure via the engine and print its cells.
 
     export <db>
         Print the whole model as pretty JSON.
@@ -67,9 +77,11 @@ fn run(args: &[String]) -> Result<(), String> {
         "add-category" => cmd_add_category(rest),
         "add-item" => cmd_add_item(rest),
         "add-measure" => cmd_add_measure(rest),
+        "add-derived" => cmd_add_derived(rest),
         "set" => cmd_set(rest),
         "list" => cmd_list(rest),
         "show" => cmd_show(rest),
+        "eval" => cmd_eval(rest),
         "export" => cmd_export(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
@@ -141,16 +153,67 @@ fn cmd_add_measure(rest: &[String]) -> Result<(), String> {
     }
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+    // Optional trailing args name the categories this measure ranges over,
+    // resolved by name against the model, e.g. `... input Time Product`.
+    let mut categories = Vec::new();
+    for cat_name in &rest[5.min(rest.len())..] {
+        let c = model
+            .category_by_name(cat_name)
+            .ok_or_else(|| format!("unknown category '{cat_name}'"))?;
+        categories.push(c.id);
+    }
+
     model.add_measure(Measure {
         id,
         name: Name(name.to_string()),
         value_type,
-        categories: Vec::new(),
+        categories,
         kind: MeasureKind::Input,
         description: None,
     });
     store.save_model(&model).map_err(|e| e.to_string())?;
     println!("added input measure {} '{name}'", id.0);
+    Ok(())
+}
+
+fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let id = MeasureId(parse_u32(arg(rest, 1, "id")?, "id")?);
+    let name = arg(rest, 2, "name")?;
+    let formula_text = arg(rest, 3, "formula")?;
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+    // Parse the RHS expression, resolving measure/category names against the model.
+    let formula = parser::parse_expr(&model, formula_text).map_err(|e| e.to_string())?;
+
+    // Infer the derived measure's categories as the union of the categories of
+    // every measure the formula references (aggregation collapses are handled
+    // by the engine at evaluation time; this is the declared shape).
+    let mut cats: Vec<CategoryId> = Vec::new();
+    for m in formula.referenced_measures() {
+        if let Some(measure) = model.measures.get(&m) {
+            for c in &measure.categories {
+                if !cats.contains(c) {
+                    cats.push(*c);
+                }
+            }
+        }
+    }
+    cats.sort_by_key(|c| c.0);
+
+    model.add_measure(Measure {
+        id,
+        name: Name(name.to_string()),
+        value_type: ValueType::Number,
+        categories: cats,
+        kind: MeasureKind::Derived(formula),
+        description: None,
+    });
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("added derived measure {} '{name}'", id.0);
     Ok(())
 }
 
@@ -236,6 +299,64 @@ fn cmd_export(rest: &[String]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?;
     println!("{json}");
     Ok(())
+}
+
+fn cmd_eval(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
+    let mut store = open(db)?;
+    let model = store.load_model().map_err(|e| e.to_string())?;
+
+    let m = model
+        .measures
+        .get(&mid)
+        .ok_or_else(|| format!("no measure with id {}", mid.0))?;
+    if !m.is_derived() {
+        return Err(format!(
+            "measure {} '{}' is an input measure; use `show` to see its cells",
+            mid.0, m.name
+        ));
+    }
+    let name = m.name.to_string();
+
+    let out = improv_engine::dataflow::evaluate(&model, &[mid]).map_err(|e| e.to_string())?;
+    let cells = out
+        .get(&mid)
+        .ok_or_else(|| "engine produced no result for this measure".to_string())?;
+
+    // Render each coordinate key (Vec<(cat_id, item_id)>) with readable names.
+    let mut rows: Vec<(String, f64)> = cells
+        .iter()
+        .map(|(k, v)| (render_coord_key(&model, k), *v))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+    println!("eval {} '{name}' ({} cells):", mid.0, rows.len());
+    for (coord, v) in rows {
+        println!("  {name}[{coord}] = {v}");
+    }
+    Ok(())
+}
+
+/// Render an engine coordinate key `[(cat_id, item_id), ...]` as
+/// `Cat=Item, Cat=Item` using model names (falling back to ids).
+fn render_coord_key(model: &Model, key: &[(u32, u32)]) -> String {
+    key.iter()
+        .map(|(c, i)| {
+            let cat = model
+                .categories
+                .get(&CategoryId(*c))
+                .map(|c| c.name.0.clone())
+                .unwrap_or_else(|| c.to_string());
+            let item = model
+                .items
+                .get(&ItemId(*i))
+                .map(|it| it.name.0.clone())
+                .unwrap_or_else(|| i.to_string());
+            format!("{cat}={item}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 // --- parsing / resolution ---
@@ -458,5 +579,77 @@ mod tests {
     }
     fn scopeguard(db: &str) -> Guard {
         Guard(db.to_string())
+    }
+
+    #[test]
+    fn derived_formula_eval() {
+        // Full v1 flow through the CLI: dimensioned inputs, a derived measure
+        // defined from a textual formula, evaluated through the engine.
+        let db = tmp_db();
+        let _guard = scopeguard(&db);
+
+        run(&s(&["init", &db])).unwrap();
+        run(&s(&["add-category", &db, "1", "Time"])).unwrap();
+        run(&s(&["add-category", &db, "2", "Product"])).unwrap();
+        run(&s(&["add-item", &db, "10", "1", "Y2025"])).unwrap();
+        run(&s(&["add-item", &db, "20", "2", "WidgetA"])).unwrap();
+        run(&s(&[
+            "add-measure",
+            &db,
+            "100",
+            "Price",
+            "number",
+            "input",
+            "Product",
+        ]))
+        .unwrap();
+        run(&s(&[
+            "add-measure",
+            &db,
+            "101",
+            "Quantity",
+            "number",
+            "input",
+            "Time",
+            "Product",
+        ]))
+        .unwrap();
+        run(&s(&["set", &db, "100", "10", "--at", "Product=WidgetA"])).unwrap();
+        run(&s(&[
+            "set",
+            &db,
+            "101",
+            "7",
+            "--at",
+            "Time=Y2025,Product=WidgetA",
+        ]))
+        .unwrap();
+
+        // Define a derived measure from a textual formula.
+        run(&s(&[
+            "add-derived",
+            &db,
+            "102",
+            "Revenue",
+            "Price * Quantity",
+        ]))
+        .unwrap();
+
+        // The derived measure exists, is derived, and inferred its categories.
+        let mut store = ModelStore::open(&db).unwrap();
+        let model = store.load_model().unwrap();
+        let rev = model.measure_by_name("Revenue").unwrap();
+        assert!(rev.is_derived());
+        assert_eq!(rev.categories.len(), 2);
+
+        // The engine computes Revenue[Y2025,WidgetA] = 10 * 7 = 70.
+        let out = improv_engine::dataflow::evaluate(&model, &[MeasureId(102)]).unwrap();
+        let cells = out.get(&MeasureId(102)).unwrap();
+        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        key.sort();
+        assert_eq!(cells.get(&key), Some(&70.0));
+
+        // `eval` on an input measure is a clear error, not a crash.
+        assert!(run(&s(&["eval", &db, "100"])).is_err());
     }
 }

@@ -8,6 +8,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Textual formula parser** (`improv_core_model::parser`): `parse_formula` /
+  `parse_expr` accept Improv formula text (`Revenue = Price * Quantity`,
+  precedence, comparisons, `AND`/`OR`/`NOT`, `SUM|AVG|MIN|MAX(x OVER Cat)`),
+  resolving names against the model.
+- **Scalar built-in functions** in the engine: `ABS`, `ROUND`, `FLOOR`, `CEIL`,
+  `SQRT`, `NEG`, `MIN2`, `MAX2` (numeric); comparison/logical operators
+  evaluate in the numeric lane (1.0/0.0).
+- **CLI**: `add-derived <db> <id> <name> <formula>` (define a formula measure)
+  and `eval <db> <measure-id>` (compute a derived measure via the engine);
+  `add-measure` now takes trailing category names to declare a measure's
+  dimensions. The full v1 flow — model, formula, incremental recalculation —
+  now works end-to-end from the CLI.
 - **TUI** (`improv_tui`): a VisiCalc-style terminal pivot viewer
   (`improv-tui <db>`) — renders a measure as a 2-D grid (categories on
   rows/columns, extra dims as pages), keyboard navigation, measure cycling,

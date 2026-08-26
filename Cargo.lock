@@ -688,6 +688,7 @@ name = "improv_cli"
 version = "0.1.0"
 dependencies = [
  "improv_core_model",
+ "improv_engine",
  "improv_storage_mentat",
  "serde_json",
  "thiserror",

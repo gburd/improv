@@ -102,12 +102,18 @@ The authoritative roadmap and Phase 5–7 invariants live in
   - Multi-layer derived measures: DONE — `evaluate` builds derived measures in
     topological dependency order (cycles rejected), so a derived measure may
     reference another derived measure.
-  - **Phase 1 follow-ups (deferred):** non-numeric values; general `FuncCall`;
-    standalone/broadcast literals; a live incremental edit API on top of
-    `evaluate` (the spike proves deltas work; `evaluate` currently runs once).
-- **Phase 2 — CLI: DONE (headless subset).** `crates/cli` `improv` binary:
-  init/add-category/add-item/add-measure/set/list/show/export over a
-  Mentat-backed store (3 tests).
+  - **Textual formula parser: DONE.** `core_model::parser::parse_formula` parses
+    the v1 EBNF grammar into a `Formula` (used by the CLI's `add-derived`).
+  - **Scalar functions: DONE.** ABS/ROUND/FLOOR/CEIL/SQRT/NEG/MIN2/MAX2 and
+    numeric comparison/logical ops evaluate through the engine.
+  - **Phase 1 follow-ups (deferred):** non-numeric (Text/Boolean) derived
+    values as a true DD lane; standalone/broadcast literals; a live incremental
+    edit API on top of `evaluate` (the spike proves deltas work; `evaluate`
+    currently runs once).
+- **Phase 2 — CLI: DONE.** `crates/cli` `improv` binary: init / add-category /
+  add-item / add-measure (with dimensions) / add-derived (textual formula) /
+  set / list / show / eval (engine compute) / export over a Mentat-backed store
+  (4 tests). The full v1 flow works end-to-end from the CLI.
 - **Phase 2 — TUI: DONE (viewer).** `improv_tui` renders a measure as a pivot
   grid with keyboard navigation and measure cycling (4 tests). Live editing /
   re-pivot is the next increment.
