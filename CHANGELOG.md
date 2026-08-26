@@ -8,6 +8,22 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **TUI** (`improv_tui`): a VisiCalc-style terminal pivot viewer
+  (`improv-tui <db>`) — renders a measure as a 2-D grid (categories on
+  rows/columns, extra dims as pages), keyboard navigation, measure cycling,
+  panic-safe terminal teardown.
+- **Server** (`improv_server`): a JSON HTTP API (`improv-server <db> [addr]`)
+  — `/health`, `/model`, `/measures`, `/measures/:id/values`, `/nl/parse`,
+  `/nl/describe`, `/measures/:id/cells`.
+- **Multi-layer derived measures**: `engine::evaluate` builds derived measures
+  in topological order (cycles rejected), so a derived measure may reference
+  another derived measure.
+- **Tests**: property tests (proptest) for model/codec/CNL round-trips; fuzz
+  targets (cargo-fuzz) for the CNL parser, model JSON, and coordinate codec;
+  engine determinism suite (bit-for-bit reproducibility, insertion-order
+  independence) and `#[ignore]` stress tests (100k-cell recalculation).
+- **CI/CD**: GitHub + Codeberg workflows for the full quality gate,
+  cross-platform build/test, release qualification, and docs publishing.
 - **Core model** (`improv_core_model`): categories, items, measures,
   coordinates, dimension-aware formula AST, value/error types. JSON round-trip.
 - **Storage** (`improv_storage_mentat`): persist a model as datoms on the

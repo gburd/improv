@@ -28,6 +28,8 @@ recalculation is always incremental.
 | `improv_engine` | Formula compiler (`Formula → TypedExpr → PlanNode`) + differential-dataflow evaluation. |
 | `improv_nl_formula` | Controlled-natural-language ⇄ formula translation. |
 | `improv_cli` | The `improv` command-line tool. |
+| `improv_tui` | VisiCalc-style terminal pivot viewer (`improv-tui`). |
+| `improv_server` | JSON HTTP API over a model store (`improv-server`). |
 
 ## Quick start
 

@@ -99,10 +99,17 @@ GUI later.
     `evaluate` (the spike proves deltas work; `evaluate` currently runs once).
 - **Phase 2 — CLI: DONE (headless subset).** `crates/cli` `improv` binary:
   init/add-category/add-item/add-measure/set/list/show/export over a
-  Mentat-backed store (3 tests). TUI still pending.
+  Mentat-backed store (3 tests).
+- **Phase 2 — TUI: DONE (viewer).** `improv_tui` renders a measure as a pivot
+  grid with keyboard navigation and measure cycling (4 tests). Live editing /
+  re-pivot is the next increment.
+- **Phase 3 — Server: DONE.** `improv_server` JSON HTTP API over a model store
+  (10 tests): model/measures/values, NL parse/describe, set-cell. Auth deferred.
 - **Phase 4 — CNL: DONE (initial grammar).** `crates/nl_formula` parse/describe
   with a controlled grammar + round-trip (10 tests).
-- **Phase 2 (TUI), Phase 3 (server), Phase 5 (GUI): pending.**
+- **Phase 5 (GUI): pending.** Live TUI editing, non-numeric derived values,
+  general function calls, and a live incremental edit API are the remaining
+  follow-ups.
 
 ## Definition of done for v1
 
