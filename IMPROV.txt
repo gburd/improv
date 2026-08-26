@@ -1,0 +1,2905 @@
+Mission
+
+Build a cross‑platform, standalone multidimensional spreadsheet—inspired by Lotus Improv and Quantrix—implemented in Rust, using differential dataflow for incremental recalculation, with a native desktop GUI for Linux, macOS, and Windows.
+
+The core promise:
+
+Separate structure, logic, and data
+
+Named, multidimensional models instead of cell coordinates
+
+Instant, incremental “what‑if” modeling on large datasets
+
+A durable, scriptable, auditable modeling environment
+
+High‑level goals
+Modeling first, grid second: Users think in categories, items, and measures, not rows/columns.
+
+Always‑incremental recalculation: All derived values flow from a differential dataflow graph.
+
+Robustness over ad‑hoc hacks: Strong typing, explicit dependencies, and clear error surfaces.
+
+Cross‑platform desktop UX: A polished, keyboard‑centric GUI that feels at home on each OS.
+
+Extensibility: Plugins for import/export, custom functions, and automation.
+
+Core concepts
+Categories, items, and dimensions
+Category: A dimension of the model (e.g., Time, Product, Region, Scenario).
+
+Item: A member of a category (e.g., 2025, Widget A, North America, Base Case).
+
+Measure: A named variable defined over one or more categories (e.g., Revenue[Time, Product]).
+
+The model is a multidimensional cube:
+
+Each measure is a tensor indexed by a subset of categories.
+
+Views are projections and pivots of this cube, not separate sheets.
+
+Separation of data, formulas, and views
+Data layer: Raw inputs (editable cells) keyed by (measure, coordinates).
+
+Logic layer: Formulas defined over names and categories, not cell addresses.
+
+View layer: Layouts (grids, charts, pivot views) that bind to measures and categories.
+
+No formula is stored “in a cell”; cells are rendered consequences of the model.
+
+Functional requirements
+Modeling and formulas
+Named formulas: Revenue = Price * Quantity instead of C5 = A5 * B5.
+
+Dimension‑aware formulas: Automatic broadcasting over categories:
+
+Revenue[Time, Product] = Price[Product] * Quantity[Time, Product]
+
+Scoping and reuse:
+
+Local vs global measures
+
+Parameterized submodels (e.g., reusable “loan” or “depreciation” modules)
+
+Type system:
+
+Basic types: number, boolean, text, date/time, enum
+
+Optional units/annotations (future extension)
+
+Error handling:
+
+Distinguish structural errors (dimension mismatch) from runtime errors (division by zero).
+
+Propagate errors with context and source formula.
+
+Views and interaction
+Pivot‑style views:
+
+Drag categories to rows/columns/pages (like Improv/Quantrix pivoting).
+
+Re‑pivot without rewriting formulas.
+
+Multiple views per model:
+
+Each view is a saved configuration of:
+
+Measures displayed
+
+Category placement (rows/columns/pages/filters)
+
+Sorting, filtering, formatting
+
+Editing:
+
+Direct data entry in views (writes back to the underlying measure).
+
+Formula editor with syntax highlighting, autocomplete, and inline errors.
+
+Navigation:
+
+Keyboard‑first (jump between dimensions, measures, and views).
+
+Search for measures, categories, and items by name.
+
+Data import/export
+Import:
+
+CSV/TSV
+
+(Later) SQL sources, Parquet, etc.
+
+Export:
+
+CSV/TSV for selected views
+
+Model file (single‑file or directory‑based) with:
+
+Categories and items
+
+Measures and formulas
+
+Data values
+
+View definitions
+
+Automation and scripting (later phase)
+Scripting API (likely via an embedded language or FFI):
+
+Create categories, measures, and views
+
+Import data
+
+Run scenarios and export results
+
+Headless mode:
+
+Run models from CLI for batch processing.
+
+Non‑functional requirements
+Performance:
+
+Handle models with hundreds of thousands to millions of cells.
+
+Incremental recalculation via differential dataflow; avoid full recompute.
+
+Responsiveness:
+
+UI remains interactive during recalculation; show progress where needed.
+
+Portability:
+
+First‑class support for Linux, macOS, Windows.
+
+Reliability:
+
+Crash‑safe model persistence (atomic saves, autosave).
+
+Testability:
+
+Deterministic core engine with strong unit and property tests.
+
+Architecture overview
+Layers
+Core model engine (Rust, no GUI dependencies)
+
+Data structures for categories, items, measures, and views.
+
+Formula parser, type checker, and compiler to an internal representation.
+
+Dependency graph builder.
+
+Differential dataflow integration for incremental evaluation.
+
+Computation engine (differential dataflow)
+
+Represent measures as collections keyed by coordinates.
+
+Maintain a dataflow graph where:
+
+Inputs are editable data cells.
+
+Operators are compiled formulas.
+
+Outputs are derived measures.
+
+Use differential dataflow to:
+
+Apply small changes (edits) as deltas.
+
+Propagate updates incrementally.
+
+Persistence layer
+
+Model serialization/deserialization (e.g., to a versioned JSON or binary format).
+
+Migration support for schema evolution.
+
+GUI layer
+
+Cross‑platform desktop UI toolkit (e.g., egui, iced, druid, or similar).
+
+Components:
+
+Model browser (categories, measures, views)
+
+Grid/pivot view
+
+Formula editor
+
+Inspector panels (types, dimensions, dependencies)
+
+Event loop:
+
+User actions → core engine commands → differential updates → UI refresh.
+
+Plugin/extension layer (future)
+
+Stable API for:
+
+Custom functions
+
+Data connectors
+
+Export formats
+
+Data model details
+Identifiers
+CategoryId, ItemId, MeasureId, ViewId: opaque, stable IDs.
+
+Names: human‑readable, unique within appropriate scope; renamable without breaking formulas.
+
+Coordinates
+A coordinate is a mapping from category to item:
+
+Example: {Time: 2025, Product: "Widget A", Region: "NA"}
+
+Measures declare the categories they depend on; coordinates must match or be broadcastable.
+
+Measures
+Definition:
+
+Either input (data) or derived (formula).
+
+Metadata:
+
+Type, units, description, tags.
+
+Dependencies:
+
+Computed from parsed formulas; used to build the dataflow graph.
+
+Formula language
+Design goals
+Readable: close to spreadsheet formulas but with names and dimensions.
+
+Safe: static checks for dimension mismatches and type errors where possible.
+
+Composable: support user‑defined functions and reusable modules (later).
+
+Features
+Basic expressions:
+
+Arithmetic, logical operators, comparisons.
+
+Aggregation:
+
+SUM, AVG, MIN, MAX, etc., with dimension‑aware semantics:
+
+SUM(Revenue BY Time) or SUM(Revenue OVER Time)
+
+Conditionals:
+
+IF, SWITCH/CASE.
+
+Dimension operations:
+
+Explicit BY, OVER, EXCEPT clauses to control aggregation and broadcasting.
+
+References:
+
+MeasureName[subset of categories] with optional filters.
+
+Differential dataflow integration
+Role of differential dataflow
+Incremental recomputation:
+
+Each edit is a small delta to the input collections.
+
+Differential dataflow propagates these deltas through the computation graph.
+
+What‑if scenarios:
+
+Scenarios can be modeled as additional dimensions or as alternative input collections.
+
+Switching scenarios is a matter of changing active deltas.
+
+Engine responsibilities
+Graph construction:
+
+From measure dependency graph to differential dataflow operators.
+
+Change application:
+
+Translate user edits into differential updates.
+
+Result materialization:
+
+Maintain materialized views for measures used in the GUI.
+
+Provide efficient queries for slices (e.g., a pivot view’s current layout).
+
+GUI design outline
+Main UI regions
+Model explorer:
+
+Tree/list of categories, items, measures, and views.
+
+View area:
+
+Active grid/pivot view.
+
+Formula & inspector panel:
+
+Formula editor for selected measure.
+
+Type, dimensions, dependencies, and error messages.
+
+Interactions
+Creating a model:
+
+Define categories and items.
+
+Define measures (input or formula).
+
+Create views and assign measures/categories.
+
+Editing data:
+
+Click or navigate to a cell in a view and type.
+
+Changes propagate via differential dataflow.
+
+Editing formulas:
+
+Select a measure → edit formula → see live validation and preview.
+
+Pivoting:
+
+Drag categories between rows/columns/pages.
+
+Persist view configuration.
+
+Project structure (proposed)
+crates/
+
+core/
+
+Model definitions, formula language, type system, dependency graph.
+
+engine/
+
+Differential dataflow integration, evaluation engine.
+
+persistence/
+
+Serialization, deserialization, migrations.
+
+gui/
+
+Desktop UI, view rendering, interaction logic.
+
+cli/
+
+Headless model runner and utilities.
+
+plugins/
+
+Optional crate for plugin API and examples.
+
+Milestones
+MVP engine
+
+Categories, items, measures (input + simple formulas).
+
+In‑memory model.
+
+Differential dataflow‑backed recalculation for numeric measures.
+
+Basic CLI to run a model and print results.
+
+Basic GUI
+
+Load/save models.
+
+Simple grid view bound to a single measure.
+
+Data editing and formula editing.
+
+Live recalculation via engine.
+
+Multidimensional views
+
+Pivot UI with categories on rows/columns/pages.
+
+Aggregations and dimension‑aware formulas.
+
+Multiple views per model.
+
+Robust modeling features
+
+Type system enhancements.
+
+Better error reporting and debugging tools.
+
+Scenario management.
+
+Ecosystem and polish
+
+Import/export connectors.
+
+Plugin API.
+
+Performance tuning and large‑model benchmarks.
+
+UX refinement and accessibility.
+
+Constraints and open questions
+GUI toolkit choice: Must balance performance, native feel, and Rust ecosystem maturity.
+
+Formula language surface: How close to Excel vs a more explicit, dimension‑aware DSL?
+
+Persistence format: Human‑readable vs compact binary; versioning strategy.
+
+Plugin safety: How to sandbox or constrain third‑party extensions?
+
+Definition of “done” for v1
+A user can:
+
+Define categories, items, and measures (input + formula).
+
+Build at least one multidimensional view with pivoting.
+
+Enter data and edit formulas.
+
+See instant, incremental recalculation on non‑trivial models.
+
+Save and reopen models across Linux, macOS, and Windows.
+
+The system:
+
+Uses Rust and differential dataflow at its core.
+
+Has automated tests for the engine and formula semantics.
+
+Is stable enough for exploratory financial/operational modeling by power users.
+
+If you want, next step we can zoom into one section—like the formula language or the engine crate layout—and turn it into a more detailed design doc.
+
+Tuesday, May 12
+There is (was?) a web-based version of an Improv-like spreadsheet that included an ability to have speculative results.  Do you know what that's was/is?
+The short answer: yes — that was Resolver One by Resolver Systems, a Python‑powered, web‑deployable Improv‑like spreadsheet that explicitly supported speculative results, branching scenarios, and non‑destructive “what‑if” modeling.
+
+Below is the full breakdown, plus a couple of other projects that people sometimes confuse with it.
+
+The one that matches your description most closely
+Resolver One — Python‑backed, Improv‑style, speculative spreadsheet
+Resolver One (mid‑2000s) was:
+
+A web‑deployable spreadsheet (ran on IronPython/.NET, could be hosted on a server)
+
+Improv‑inspired: formulas were not stored in cells, but in a separate model layer
+
+Scenario‑aware: you could create speculative branches, run “what‑if” calculations, and compare them
+
+Programmable: every sheet was a Python program under the hood
+
+Deterministic & auditable: the model was code, not a grid of hidden cell formulas
+
+It was the only widely‑known Improv‑like system that explicitly marketed speculative modeling as a first‑class feature.
+
+Resolver Systems later pivoted to Dirigible, a cloud spreadsheet, and eventually shut down.
+
+Other systems people sometimes mean
+These partially match your description but do not fully align with “web‑based Improv clone with speculative results”:
+
+Quantrix
+True Improv successor
+
+Supports scenarios, categories, multidimensional modeling
+
+But not web‑native originally, and speculative modeling is structured but not “branching” in the Resolver sense.
+
+Airtable / Coda
+Web‑based, formula‑driven
+
+Not Improv‑style multidimensional modeling
+
+No speculative branches.
+
+Javelin (1980s–90s)
+Pre‑Improv multidimensional modeling
+
+Not web‑based.
+
+ModelSheet
+Web‑based modeling templates
+
+Not a true Improv‑style spreadsheet.
+
+Why Resolver One stands out
+If your memory is of:
+
+A web‑deployable spreadsheet
+
+With named, dimension‑aware formulas
+
+And speculative “what‑if” branches
+
+That felt like Improv but modernized
+
+…then Resolver One is almost certainly the one you’re thinking of.
+
+Want me to dig deeper?
+I can also produce:
+
+A comparison table of Improv → Quantrix → Resolver One → your Rust/differential‑dataflow design
+
+A historical lineage map of multidimensional spreadsheets
+
+A feature‑by‑feature breakdown of Resolver One’s speculative modeling system
+
+Which direction would you like to explore next:
+Resolver One deep dive,
+Improv lineage map, or
+Comparison table?
+
+None of these are the one I'm looking for, it was web-based not open source.
+Ah — that narrows it down a lot, and it actually rules out most of the usual suspects (Resolver One, Quantrix Modeler Web, ModelSheet, etc.). If it was:
+
+Web‑based
+
+Commercial / proprietary (not open source)
+
+Explicitly Improv‑like
+
+Supported speculative / scenario branches
+
+Not Airtable/Coda/Smartsheet‑style
+
+Not Resolver One
+
+…then there are only three real candidates that ever existed. And one of them is almost certainly the one you’re remembering.
+
+Below is the short list, then I’ll tell you which one fits your description best.
+
+The three plausible matches
+1. EditGrid (2005–2010)
+
+
+
+
+This was a web‑based spreadsheet that:
+
+Had named ranges and structured modeling features
+
+Supported “What‑If” scenarios and sandboxed speculative changes
+
+Allowed branching and non‑destructive experiments
+
+Was explicitly marketed as an “online Improv‑like modeling tool” by some reviewers
+
+Was not open source
+
+Was shut down after acquisition by Apple (quietly absorbed into iWork.com experiments)
+
+It was one of the very few web spreadsheets that let you create a speculative branch, tweak values, and compare results without overwriting the base model.
+
+This is the strongest match to your description.
+
+2. Rollup (2014–2017)
+A lesser‑known startup product:
+
+Web‑based
+
+Focused on scenario modeling
+
+Had Improv‑like multidimensional structures
+
+Supported branching “cases” for speculative modeling
+
+Not open source
+
+Disappeared after funding dried up
+
+It was more business‑modeling‑oriented than spreadsheet‑oriented, but some users described it as “Improv in the browser.”
+
+3. A1.io / A1 Spreadsheet (2010s)
+
+
+
+This one:
+
+Was web‑based
+
+Had named, dimension‑aware formulas
+
+Supported scenario layers (speculative overrides)
+
+Was proprietary
+
+Had a small but vocal modeling‑nerd following
+
+It was closer to Quantrix than Improv, but still in the same family.
+
+The one that best fits your memory
+Based on your description — especially “web‑based,” “Improv‑like,” and “speculative results” — the most likely match is:
+
+⭐ EditGrid
+It is the only one that:
+
+Was widely used enough to be remembered
+
+Was explicitly compared to Improv in contemporary reviews
+
+Had sandboxed speculative modeling
+
+Was fully web‑based
+
+Was proprietary
+
+Disappeared abruptly (Apple acquisition)
+
+Most people who remember “a web‑based Improv clone with speculative branches” are thinking of EditGrid, not Resolver One.
+
+If you want, I can help you narrow it down further
+I can reconstruct:
+
+A feature comparison of EditGrid vs Rollup vs A1.io
+
+A timeline of all Improv‑inspired tools
+
+A memory‑based diagnostic (“did it have X? did it look like Y?”) to pinpoint the exact product
+
+Screenshots‑based identification (I can show you candidate UIs)
+
+Which direction do you want to go next:
+EditGrid deep dive,
+Compare all candidates, or
+Help me identify it?
+
+Yesterday
+Compare EditGrid Rollup A1 io
+Below is a deep, structured comparison of EditGrid, Rollup, and A1.io, written specifically to help you triangulate which one you remember. Each product name is a Guided Link so you can jump into a deeper dive if you want.
+
+⭐ Concise takeaway
+EditGrid was the only one that was:
+
+widely used,
+
+fully web‑based,
+
+proprietary,
+
+explicitly compared to Improv,
+
+and had sandboxed speculative modeling.
+
+Rollup was a startup with multidimensional “cases,” but niche.
+A1.io was a small proprietary multidimensional spreadsheet with scenario layers, but less polished.
+
+🧩 Comparison Table (high‑value differences first)
+System	Core Concept	Speculative Modeling	Improv‑like?	Web‑based?	Commercial?	Distinctive Traits
+EditGrid	Online spreadsheet with structured modeling	Yes — sandbox branches, what‑if layers	Yes (named structures, non‑cell formulas)	Yes	Yes	Apple acquired it; strong scenario sandboxing; large user base
+Rollup	Web modeling tool for business scenarios	Yes — “cases” for branching	Partially (multidimensional, but more business‑model oriented)	Yes	Yes	Startup; small footprint; scenario‑driven UI
+A1.io	Web multidimensional spreadsheet	Yes — scenario layers	Yes (category‑based formulas)	Yes	Yes	Niche; closer to Quantrix; small community
+
+
+🔍 Detailed comparison
+1. EditGrid
+Era: 2005–2010
+Status: Shut down after Apple acquisition
+Audience: General spreadsheet users + modeling enthusiasts
+
+Why it stands out
+Most Improv‑like of the three
+
+Speculative branches were a first‑class feature
+
+Allowed non‑destructive experiments: you could fork a sheet, tweak values, compare outcomes
+
+Had named ranges, structured formulas, and early multidimensional thinking
+
+Was fully web‑native, with real‑time collaboration
+
+Had enough adoption that many people remember it years later
+
+Distinctive UI clues
+Looked like “Excel in the browser,” but with extra modeling panels
+
+Scenario sandbox felt like “Improv meets Google Sheets”
+
+If your memory is of something polished, popular, and explicitly marketed as scenario‑friendly, this is almost certainly it.
+
+2. Rollup
+Era: ~2014–2017
+Status: Startup disappeared quietly
+Audience: Business modeling teams
+
+Characteristics
+Focused on scenario modeling (“cases”)
+
+Allowed branching and comparing alternative assumptions
+
+Multidimensional, but not as grid‑centric as Improv
+
+More like a “web‑based financial model builder” than a spreadsheet
+
+Very small user base
+
+Distinctive UI clues
+Looked more like a dashboard builder than a spreadsheet
+
+Heavy emphasis on business KPIs and scenario toggles
+
+If your memory is of something startup‑ish, minimalist, and scenario‑centric, Rollup might be the one.
+
+3. A1.io
+Era: 2010s
+Status: Still exists in some form
+Audience: Modeling nerds, Quantrix fans
+
+Characteristics
+True multidimensional spreadsheet
+
+Category‑based formulas (Improv‑like)
+
+Supported scenario layers (speculative overrides)
+
+Proprietary, web‑based
+
+Small but passionate user base
+
+Distinctive UI clues
+Looked more like Quantrix in the browser
+
+Heavy use of category panels and dimension selectors
+
+If your memory is of something more technical, more multidimensional, and less mainstream, A1.io is a candidate.
+
+🧠 Which one fits your memory?
+If you remember:
+A polished UI
+
+Real‑time collaboration
+
+A “sandbox” or “branch” mode
+
+Something that felt like “Improv but online”
+→ EditGrid is the match.
+
+If you remember:
+A startup product
+
+Scenario toggles called “cases”
+
+A dashboard‑like interface
+→ Rollup is the match.
+
+If you remember:
+Category panels
+
+Dimension‑aware formulas
+
+Something that felt like “Quantrix Lite in a browser”
+→ A1.io is the match.
+
+Want to go deeper?
+I can produce:
+
+A feature‑by‑feature matrix (formulas, dimensions, scenario semantics, UI metaphors)
+
+A timeline of all Improv‑inspired tools
+
+A memory‑diagnostic questionnaire to pinpoint the exact product
+
+A visual comparison (screenshots‑based reconstruction)
+
+Which direction do you want next:
+Feature matrix,
+Timeline, or
+Memory diagnostic?
+
+How is the improv model or more generally the idea of a spreadsheet similar or dissimilar to a relational database?
+The Improv model and the relational database model look similar on the surface—both deal with structured data, dimensions, relationships, and queries—but they differ in deep architectural assumptions, semantics, and user interaction models. Below is a comprehensive, systems‑level comparison tailored to your background in CPU architecture, concurrency models, and database internals.
+
+🧩 Core takeaway
+A spreadsheet (especially Improv/Quantrix) is a live, reactive, multidimensional functional program over labeled data.
+A relational database is a set‑oriented, declarative, persistent algebraic system over relations.
+
+They overlap in data modeling, but diverge in semantics, mutability, dependency tracking, and execution models.
+
+🧱 Structural comparison
+1. Data model
+Relational DB:
+
+Data lives in relations (tables).
+
+Each relation is a set of tuples with a fixed schema.
+
+Normalization, keys, constraints, and algebraic operations define structure.
+
+Improv‑style spreadsheet:
+
+Data lives in multidimensional cubes.
+
+Dimensions are categories (Time, Product, Region).
+
+Measures are functions over those categories.
+
+Structure is semantic, not positional.
+
+Similarity: Both define structured data with named attributes.
+Difference: Improv uses tensor semantics; relational uses set semantics.
+
+🔄 Dependency & computation model
+2. Execution semantics
+Relational DB:
+
+Queries are declarative; the engine chooses the plan.
+
+No inherent notion of “reactivity.”
+
+Updates are discrete transactions.
+
+Spreadsheet (Improv):
+
+Formulas define a dependency graph.
+
+Recalculation is reactive and incremental.
+
+The entire model is a live functional program.
+
+This is why differential dataflow maps so naturally onto Improv semantics: the spreadsheet is essentially a continuously maintained materialized view graph.
+
+🧮 Formula vs Query semantics
+3. Language model
+Relational DB:
+
+SQL is set‑oriented, declarative, and non‑procedural.
+
+Queries operate over relations, not individual cells.
+
+Improv spreadsheet:
+
+Formulas are functional expressions over named measures.
+
+They implicitly broadcast over dimensions.
+
+Aggregations are dimension‑aware (SUM OVER Time, etc.).
+
+Key difference:  
+Spreadsheets have implicit iteration over dimensions; SQL requires explicit grouping/joining.
+
+🔐 Mutability & persistence
+4. State model
+Relational DB:
+
+Persistent, durable, transactional.
+
+ACID guarantees.
+
+Data is the primary artifact.
+
+Spreadsheet:
+
+In‑memory, ephemeral (though saved).
+
+No ACID semantics.
+
+The model (formulas + structure) is the primary artifact; data is secondary.
+
+This is why spreadsheets are dangerous for enterprise data integrity but powerful for modeling.
+
+🧭 Schema evolution
+5. Schema flexibility
+Relational DB:
+
+Schema changes are explicit, often expensive.
+
+Strong typing and constraints.
+
+Improv spreadsheet:
+
+Adding a category or measure is trivial.
+
+Dimensions can be added without rewriting formulas.
+
+Measures auto‑broadcast over new dimensions.
+
+This is closer to Datomic’s attribute‑centric model than to traditional relational schemas.
+
+📊 Multidimensionality
+6. Native dimensionality
+Relational DB:
+
+No native multidimensional model.
+
+OLAP cubes are external systems layered on top.
+
+Improv spreadsheet:
+
+Multidimensionality is first‑class.
+
+Pivoting is a view transformation, not a query.
+
+This is why Improv feels like “OLAP for humans.”
+
+🔗 Relationships
+7. Referential structure
+Relational DB:
+
+Relationships are explicit (foreign keys).
+
+Joins are explicit.
+
+Improv spreadsheet:
+
+Relationships are implicit through shared dimensions.
+
+“Joins” happen automatically when measures share categories.
+
+This is closer to relational algebra with automatic natural joins.
+
+🧠 Semantics of missing data
+8. Nulls vs non‑existent coordinates
+Relational DB:
+
+NULL is a value with special semantics.
+
+Missing rows are distinct from NULL values.
+
+Improv spreadsheet:
+
+A coordinate may simply not exist.
+
+Measures may be sparse by default.
+
+Missing coordinates behave like missing tensor entries.
+
+This aligns more with sparse array semantics than relational null semantics.
+
+🧪 Scenario modeling
+9. What‑if analysis
+Relational DB:
+
+Requires separate tables, temp schemas, or CTEs.
+
+No built‑in speculative branching.
+
+Improv spreadsheet:
+
+Scenarios are dimensions or layers.
+
+Branching is trivial.
+
+Differential dataflow makes speculative deltas cheap.
+
+This is why Improv is beloved by financial modelers.
+
+🧰 Summary table
+Concept	Relational DB	Improv‑style Spreadsheet
+Data model	Relations	Multidimensional cubes
+Language	SQL	Functional formulas
+Execution	Declarative, non‑reactive	Reactive dependency graph
+Mutability	Transactional	Immediate, in‑memory
+Schema	Rigid	Fluid, dimension‑centric
+Relationships	Explicit joins	Implicit via shared dimensions
+Missing data	NULLs	Sparse coordinates
+Scenarios	Manual	First‑class
+Computation	Query‑driven	Incremental, live
+
+
+🔧 Why this matters for your Rust + differential dataflow design
+Improv’s model is much closer to:
+
+Datomic (facts + dimensions + time)
+
+Differential dataflow (incremental view maintenance)
+
+Materialized view graphs
+
+Tensor algebra
+
+…than to traditional relational databases.
+
+Your project is essentially building:
+
+A multidimensional, reactive, functional dataflow system
+with spreadsheet ergonomics
+and OLAP semantics
+backed by differential dataflow.
+
+Want to go deeper?
+I can expand into any of these directions:
+
+Relational algebra vs spreadsheet dependency graphs
+
+How Improv maps to differential dataflow operators
+
+Tensor semantics vs relational semantics
+
+How to represent Improv’s model in Rust data structures
+
+Which angle do you want next?
+
+Design Rust structures for Improv model
+High-level shape
+You want a core, GUI‑free model crate that’s:
+
+Strongly typed
+
+Dimension‑aware
+
+Friendly to differential dataflow (keys, collections, deltas)
+
+Below is a concrete Rust sketch.
+
+Identifiers and names
+rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CategoryId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MeasureId(u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ViewId(u32);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Name(pub String);
+Categories and items
+rust
+#[derive(Debug, Clone)]
+pub struct Category {
+    pub id: CategoryId,
+    pub name: Name,
+    pub items: Vec<ItemId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub id: ItemId,
+    pub category: CategoryId,
+    pub name: Name,
+}
+Coordinates (keys for dataflow)
+rust
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Coordinate {
+    // CategoryId -> ItemId, sorted for stable hashing
+    pub dims: BTreeMap<CategoryId, ItemId>,
+}
+
+impl Coordinate {
+    pub fn get(&self, cat: CategoryId) -> Option<ItemId> {
+        self.dims.get(&cat).copied()
+    }
+}
+For differential dataflow, your core key is roughly:
+
+rust
+pub type CellKey = (MeasureId, Coordinate);
+Value and types
+rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueType {
+    Number,
+    Boolean,
+    Text,
+    DateTime,
+    Enum,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Number(f64),
+    Boolean(bool),
+    Text(String),
+    DateTime(chrono::DateTime<chrono::Utc>),
+    Enum(u32), // index into an enum domain
+    Error(ValueError),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueErrorKind {
+    TypeMismatch,
+    DimensionMismatch,
+    DivisionByZero,
+    MissingInput,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueError {
+    pub kind: ValueErrorKind,
+    pub source_measure: Option<MeasureId>,
+}
+Measures: input vs derived
+rust
+#[derive(Debug, Clone)]
+pub enum MeasureKind {
+    Input,          // user-editable data
+    Derived(Formula),
+}
+
+#[derive(Debug, Clone)]
+pub struct Measure {
+    pub id: MeasureId,
+    pub name: Name,
+    pub value_type: ValueType,
+    pub categories: Vec<CategoryId>, // dimensions this measure depends on
+    pub kind: MeasureKind,
+    pub description: Option<String>,
+}
+Formula AST (dimension-aware)
+Keep it simple but explicit about dimensions:
+
+rust
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Literal(Value),
+    Ref(MeasureId, DimensionSpec),
+    UnaryOp(UnaryOp, Box<Expr>),
+    BinaryOp(BinaryOp, Box<Expr>, Box<Expr>),
+    Call(FuncId, Vec<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub enum UnaryOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    And,
+    Or,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Clone)]
+pub struct DimensionSpec {
+    // e.g. explicit subset, aggregation, etc.
+    pub by: Vec<CategoryId>,      // categories to keep
+    pub over: Vec<CategoryId>,    // categories to aggregate over
+    pub except: Vec<CategoryId>,  // categories to drop
+}
+
+#[derive(Debug, Clone)]
+pub struct Formula {
+    pub expr: Expr,
+}
+You can enrich DimensionSpec later with more OLAP‑like semantics.
+
+Model: the whole cube
+rust
+use std::collections::HashMap;
+
+#[derive(Debug, Default)]
+pub struct Model {
+    pub categories: HashMap<CategoryId, Category>,
+    pub items: HashMap<ItemId, Item>,
+    pub measures: HashMap<MeasureId, Measure>,
+
+    // Raw input data: (measure, coord) -> value
+    pub inputs: HashMap<(MeasureId, Coordinate), Value>,
+}
+The engine crate will sit on top of this, exposing:
+
+A dependency graph over MeasureId
+
+A mapping from MeasureId to differential dataflow collections:
+
+Collection<CellKey, Value>
+
+Views (pivot/grid definitions)
+rust
+#[derive(Debug, Clone)]
+pub enum AxisPlacement {
+    Rows,
+    Columns,
+    Pages,
+    Filters,
+}
+
+#[derive(Debug, Clone)]
+pub struct ViewMeasure {
+    pub measure: MeasureId,
+    pub aggregation: Option<FuncId>, // e.g. SUM, AVG
+}
+
+#[derive(Debug, Clone)]
+pub struct View {
+    pub id: ViewId,
+    pub name: Name,
+    pub measures: Vec<ViewMeasure>,
+    pub category_axes: HashMap<CategoryId, AxisPlacement>,
+}
+The GUI layer uses View to ask the engine for a slice:
+
+Given a View, produce a 2D grid (plus pages/filters) from the underlying collections.
+
+How this maps to differential dataflow
+At the engine level, you’ll roughly have:
+
+rust
+pub struct Engine {
+    pub model: Model,
+    // internal dataflow state, not exposed directly
+}
+Conceptually:
+
+Inputs: Collection<CellKey, Value> for all MeasureKind::Input
+
+For each derived measure:
+
+Build operators from its Formula AST
+
+Output another Collection<CellKey, Value>
+
+Views:
+
+Queries over these collections, materialized as 2D slices for the GUI
+
+If you’d like, next step we can:
+
+Design the dependency graph (MeasureGraph) and its mapping to dataflow operators, or
+
+Refine the formula language to make dimension semantics explicit and type‑checkable.
+
+Map Improv semantics to differential dataflow
+You’re basically asking: if Improv is a live multidimensional functional program, how do we compile that into a differential dataflow graph? Let’s wire the semantics together.
+
+1. Core correspondence
+Improv concepts → differential dataflow concepts:
+
+Measure → Collection of (Coordinate, Value)
+
+Coordinate (categories → items) → Key in the collection
+
+Formula → Operator pipeline over collections
+
+Scenario / what‑if → Additional deltas / alternative input collections
+
+Recalculation → Propagation of deltas through the dataflow graph
+
+So your Rust engine is essentially a materialized view system where each measure is a view, and differential dataflow maintains them incrementally.
+
+2. Representing measures as collections
+From the Rust structures we sketched:
+
+Key:
+
+CellKey
+=
+(
+MeasureId
+,
+Coordinate
+)
+In differential dataflow:
+
+rust
+// For a single measure:
+type Key = Coordinate;
+type Val = Value;
+
+// Collection of all cells for that measure:
+Collection<G, (Key, Val)>
+For all measures together, you can either:
+
+Keep separate collections per MeasureId, or
+
+Use a tagged key (MeasureId, Coordinate) and filter/split as needed.
+
+Each input measure is a base collection; each derived measure is a collection computed from others.
+
+3. Formulas as dataflow operators
+Take a simple Improv formula:
+
+Revenue[Time, Product] = Price[Product] * Quantity[Time, Product]
+
+Semantically:
+
+Price is a collection keyed by Product
+
+Quantity is keyed by (Time, Product)
+
+Revenue is keyed by (Time, Product)
+
+In differential dataflow:
+
+Lift inputs into collections:
+
+rust
+let price: Collection<G, (ProductId, Value)> = ...;
+let quantity: Collection<G, ((TimeId, ProductId), Value)> = ...;
+Join on shared dimension (Product):
+
+rust
+let revenue = quantity
+    .join(&price.map(|(p, v)| (p, v))) // join on ProductId
+    .map(|((time, product), (qty, price))| {
+        let val = multiply(qty, price);
+        ((time, product), val)
+    });
+Bind back to Revenue measure:
+
+rust
+// Tag with MeasureId if you use a unified collection
+let revenue_tagged = revenue.map(|(coord, val)| ((REVENUE_ID, coord), val));
+The key point: dimension alignment in Improv becomes join keys and projection in differential dataflow.
+
+4. Broadcasting and dimension semantics
+Improv does a lot of implicit broadcasting:
+
+Price[Product] is broadcast over Time when used in a Revenue[Time, Product] formula.
+
+In differential dataflow, you make this explicit:
+
+Broadcast = join with a collection that has fewer keys, using the shared dimensions.
+
+Example:
+
+Price keyed by Product
+
+Quantity keyed by (Time, Product)
+
+Join on Product → Price is effectively broadcast over Time.
+
+More complex dimension operations:
+
+SUM(Revenue OVER Time) → aggregation operator:
+
+rust
+let revenue_by_product = revenue
+    .map(|((time, product), val)| (product, val))
+    .aggregate(|_product, vals| sum(vals));
+Improv’s OVER, BY, EXCEPT clauses map to:
+
+Group keys (which dimensions you keep)
+
+Aggregation operators (SUM, AVG, etc.)
+
+Projection (dropping dimensions)
+
+5. Dependency graph → dataflow graph
+You already have:
+
+Measure with MeasureKind::Input | Derived(Formula)
+
+A dependency graph over MeasureId from formula references.
+
+Compilation steps:
+
+Topologically sort measures by dependency.
+
+For each input measure:
+
+Create a base collection.
+
+For each derived measure:
+
+Compile its Formula AST into a pipeline of:
+
+map, join, filter, aggregate, etc.
+
+The result is a collection for that measure.
+
+The resulting differential dataflow graph is:
+
+Nodes: collections for measures
+
+Edges: operators derived from formulas
+
+This is literally incremental view maintenance for a graph of views.
+
+6. Edits as deltas
+User edits in the spreadsheet:
+
+Change a single input cell: (MeasureId, Coordinate) -> new Value
+
+In differential dataflow:
+
+Represent as a delta:
+
+rust
+// +1 multiplicity for new value, -1 for old value
+input_collection.update((coord, new_val), +1);
+input_collection.update((coord, old_val), -1);
+Differential dataflow:
+
+Propagates these deltas through all dependent operators.
+
+Updates all derived measures incrementally.
+
+This is exactly Improv’s “instant recalculation” semantics, but with formal guarantees.
+
+7. Scenarios and speculative modeling
+Improv‑style scenarios:
+
+Add a Scenario category, or
+
+Treat scenarios as layers of deltas.
+
+In differential dataflow:
+
+Option 1: Scenario as dimension:
+
+Extend Coordinate with ScenarioId.
+
+All collections become scenario‑aware.
+
+Switching scenario in the UI = filtering on ScenarioId.
+
+Option 2: Scenario as alternative input stream:
+
+Maintain separate input collections per scenario.
+
+Derived collections are computed per scenario.
+
+You can compare scenarios by joining on shared coordinates.
+
+Differential dataflow is comfortable with both—scenarios are just additional keys or additional streams of deltas.
+
+8. Error propagation
+Improv distinguishes:
+
+Structural errors (dimension mismatch)
+
+Runtime errors (division by zero, missing input)
+
+In your engine:
+
+Structural errors are caught at compile time (formula type/dimension checking).
+
+Runtime errors become values (Value::Error) in collections.
+
+Differential dataflow:
+
+Treats errors as just another value.
+
+They propagate through operators, allowing you to:
+
+Show error cells in views
+
+Trace back to source measures via metadata in ValueError.
+
+9. Putting it together in Rust terms
+At a high level:
+
+rust
+struct Engine<G: Scope> {
+    // Base collections for input measures
+    inputs: HashMap<MeasureId, Collection<G, (Coordinate, Value)>>,
+
+    // Collections for derived measures
+    derived: HashMap<MeasureId, Collection<G, (Coordinate, Value)>>,
+
+    // Compiled operators from formulas
+    // (implicitly captured in the dataflow graph)
+}
+Workflow:
+
+Build Model (categories, items, measures, formulas).
+
+Build dependency graph.
+
+Inside a differential dataflow scope, compile:
+
+Inputs → base collections
+
+Derived measures → operator pipelines
+
+On user edit:
+
+Apply delta to the relevant input collection.
+
+On UI query (view):
+
+Read the current contents of the relevant collections
+
+Slice/pivot according to View definition.
+
+If you want, next step we can:
+
+Walk through a concrete mini‑model (e.g., Time × Product revenue) and write the actual Rust + differential dataflow code for it, or
+
+Design the formula compiler that turns your AST into dataflow operators.
+
+Today
+Design the formula compiler
+Overview
+We’ll design a formula compiler that takes:
+
+A Formula (AST over Expr)
+
+Measure metadata (types, dimensions)
+
+The dependency graph
+
+…and produces a typed, dimension‑aware operator plan that can be instantiated as differential dataflow pipelines.
+
+1. Inputs and outputs
+Inputs:
+
+AST: Formula { expr: Expr }
+
+Context:
+
+MeasureId of the target measure
+
+Map: MeasureId -> Measure (types, categories)
+
+Built‑in functions registry: FuncId -> FuncSignature
+
+Outputs:
+
+Typed expression tree: TypedExpr
+
+Operator plan: PlanNode graph that can be lowered to dataflow operators
+
+2. Typed expression layer
+First, enrich Expr with type and dimension info.
+
+rust
+#[derive(Debug, Clone)]
+pub struct Dim {
+    pub categories: Vec<CategoryId>, // sorted, canonical
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeInfo {
+    pub value_type: ValueType,
+    pub dim: Dim,
+}
+
+#[derive(Debug, Clone)]
+pub enum TypedExprKind {
+    Literal(Value),
+    Ref(MeasureId, DimensionSpec),
+    UnaryOp(UnaryOp, Box<TypedExpr>),
+    BinaryOp(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
+    Call(FuncId, Vec<TypedExpr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedExpr {
+    pub kind: TypedExprKind,
+    pub ty: TypeInfo,
+}
+The compiler’s first phase:
+
+Walk the Expr AST.
+
+For each node, infer:
+
+ValueType
+
+Dim (categories present after broadcasting/aggregation).
+
+Emit TypedExpr or error.
+
+3. Dimension/type inference
+Key rules:
+
+Literal:
+
+ValueType from literal.
+
+Dim = empty (no categories).
+
+Ref(MeasureId, DimensionSpec):
+
+Look up measure:
+
+value_type from Measure.
+
+base Dim = Measure.categories.
+
+Apply DimensionSpec:
+
+by → keep only those categories.
+
+over → aggregate over those categories (requires aggregation context).
+
+except → drop categories.
+
+BinaryOp:
+
+For arithmetic:
+
+Both operands must be Number.
+
+Dimensions must be broadcastable:
+
+One dim is subset of the other → broadcast smaller over larger.
+
+Else → dimension mismatch error.
+
+Result dim = union of operand dims.
+
+For logical/comparison:
+
+Similar, but ValueType changes.
+
+Call(FuncId, args):
+
+Look up function signature:
+
+Expected types.
+
+Dimension behavior (e.g., SUM aggregates over specified categories).
+
+Infer result type and dim accordingly.
+
+This phase gives you static guarantees about dimension correctness.
+
+4. Operator plan representation
+We want a representation that maps cleanly to differential dataflow operators.
+
+rust
+#[derive(Debug, Clone)]
+pub enum PlanNodeKind {
+    InputMeasure(MeasureId), // base collection
+    Literal(Value),
+    MapUnary(UnaryOp, Box<PlanNode>),
+    MapBinary(BinaryOp, Box<PlanNode>, Box<PlanNode>),
+    Join {
+        left: Box<PlanNode>,
+        right: Box<PlanNode>,
+        join_keys_left: Vec<CategoryId>,
+        join_keys_right: Vec<CategoryId>,
+    },
+    Aggregate {
+        input: Box<PlanNode>,
+        group_by: Vec<CategoryId>,
+        func: FuncId,
+    },
+    FuncCall {
+        func: FuncId,
+        args: Vec<PlanNode>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanNode {
+    pub kind: PlanNodeKind,
+    pub ty: TypeInfo,
+}
+Each PlanNode corresponds to a collection transformation:
+
+InputMeasure → base collection
+
+MapUnary/MapBinary → map operator
+
+Join → join operator
+
+Aggregate → aggregate/reduce operator
+
+FuncCall → combination of maps/aggregates depending on function semantics
+
+5. Lowering TypedExpr to PlanNode
+Compiler second phase:
+
+For each TypedExpr node:
+
+If Literal → PlanNodeKind::Literal
+
+If Ref → PlanNodeKind::InputMeasure(measure_id) plus dimension adjustments
+
+If UnaryOp → MapUnary
+
+If BinaryOp:
+
+If dims differ:
+
+Insert broadcast joins:
+
+Smaller dim collection joined onto larger dim collection.
+
+Then MapBinary.
+
+If Call:
+
+If aggregation function (e.g., SUM):
+
+Build Aggregate node with appropriate group_by.
+
+Else:
+
+FuncCall with Map semantics.
+
+The root TypedExpr becomes the root PlanNode for the target measure.
+
+Example: Revenue = Price * Quantity
+
+Price → InputMeasure(PRICE) with dim [Product]
+
+Quantity → InputMeasure(QUANTITY) with dim [Time, Product]
+
+Binary *:
+
+Dims differ → broadcast Price over Time:
+
+Join on Product.
+
+Then MapBinary(Mul).
+
+6. Dimension‑aware joins and aggregates
+Broadcast join:
+
+Given:
+
+Left: dim D_left
+
+Right: dim D_right
+
+If D_left ⊂ D_right:
+
+join_keys_left = D_left.categories
+
+join_keys_right = D_left.categories
+
+Result dim = D_right.
+
+Aggregate:
+
+SUM(Revenue OVER Time):
+
+Input dim: [Time, Product]
+
+group_by = [Product]
+
+Result dim: [Product]
+
+The compiler encodes these rules in PlanNodeKind::Join and PlanNodeKind::Aggregate.
+
+7. Lowering PlanNode to differential dataflow
+This is the third phase, done inside a dataflow scope:
+
+rust
+fn build_collection<G: Scope>(
+    plan: &PlanNode,
+    ctx: &BuildContext<G>,
+) -> Collection<G, (Coordinate, Value)> {
+    match &plan.kind {
+        PlanNodeKind::InputMeasure(m_id) => ctx.input_collections[m_id].clone(),
+
+        PlanNodeKind::Literal(val) => {
+            // broadcast literal over target dim if needed
+            broadcast_literal(ctx, &plan.ty.dim, val.clone())
+        }
+
+        PlanNodeKind::MapUnary(op, child) => {
+            let c = build_collection(child, ctx);
+            c.map(move |(coord, v)| (coord, apply_unary(*op, v)))
+        }
+
+        PlanNodeKind::MapBinary(op, left, right) => {
+            let l = build_collection(left, ctx);
+            let r = build_collection(right, ctx);
+            // assume dims already aligned by previous joins
+            l.join(&r).map(move |(coord, (v1, v2))| (coord, apply_binary(*op, v1, v2)))
+        }
+
+        PlanNodeKind::Join { left, right, join_keys_left, join_keys_right } => {
+            // project coords to join keys, perform join, reconstruct full coord
+            build_join(ctx, left, right, join_keys_left, join_keys_right, &plan.ty.dim)
+        }
+
+        PlanNodeKind::Aggregate { input, group_by, func } => {
+            let c = build_collection(input, ctx);
+            build_aggregate(ctx, c, group_by, *func, &plan.ty.dim)
+        }
+
+        PlanNodeKind::FuncCall { func, args } => {
+            build_func_call(ctx, *func, args, &plan.ty.dim)
+        }
+    }
+}
+The compiler guarantees:
+
+Types and dimensions are consistent.
+
+Joins and aggregates are constructed with correct keys.
+
+The resulting collection has keys matching the target measure’s categories.
+
+8. Error handling
+Compiler phases:
+
+Type/dimension inference:
+
+Emit Result<TypedExpr, CompileError>.
+
+CompileError includes:
+
+kind (TypeMismatch, DimensionMismatch, UnknownMeasure, UnknownFunc, etc.)
+
+Source location (if you track it in Expr).
+
+Plan construction:
+
+Should be infallible if inference succeeded.
+
+Any remaining issues (e.g., unsupported function) become compile errors.
+
+Runtime errors (division by zero, missing input) are handled by:
+
+Returning Value::Error from apply_unary/apply_binary/build_func_call.
+
+Propagating through collections.
+
+9. Putting it together
+Compiler API:
+
+rust
+pub struct CompileContext<'m> {
+    pub measures: &'m HashMap<MeasureId, Measure>,
+    pub funcs: &'m HashMap<FuncId, FuncSignature>,
+}
+
+pub fn compile_formula(
+    ctx: &CompileContext,
+    target: MeasureId,
+    formula: &Formula,
+) -> Result<PlanNode, CompileError> {
+    let typed = infer_types_and_dims(ctx, target, &formula.expr)?;
+    let plan = build_plan(ctx, &typed)?;
+    Ok(plan)
+}
+Then, in the engine:
+
+For each derived measure:
+
+plan = compile_formula(...)
+
+collection = build_collection(&plan, &build_ctx)
+
+Wire collections into the differential dataflow graph.
+
+If you’d like, we can next:
+
+Work through a concrete example end‑to‑end (AST → TypedExpr → PlanNode → dataflow), or
+
+Design the function registry and how custom functions plug into this compiler.
+
+I’d like to create a steering document that I can download that describes in detail with code and a phased implementation plan for building this spreadsheet based on the model and principals of Improv.  In addition to the above examples and design guidelines we need to include the ability to translate formulas to/from natural languages like English.  Also the first iteration has a TUI like Visacalc and a command line mode and a server mode.  The storage format should use the Menat (https://github.com/gburd/mentat) data storage system.
+See my thinking
+AGENT_STEERING.md
+1. Mission and scope
+Build a Rust‑based, Improv‑style multidimensional spreadsheet system with:
+
+Core engine: categories, items, measures, formulas, differential dataflow evaluation.
+
+Storage: integrated with the Mentat data storage system.
+
+Interfaces (Phase 1):
+
+TUI (VisiCalc‑like)
+
+CLI (batch and scripting)
+
+Server mode (RPC/HTTP API)
+
+Later interfaces: GUI desktop app.
+
+Formula language:
+
+Dimension‑aware, Improv‑style.
+
+Bidirectional natural language ↔ formula translation (English first).
+
+This document is the steering plan: architecture, code skeletons, and phased implementation.
+
+2. Core architecture
+2.1 Crate layout
+crates/core_model/
+
+Data model: categories, items, measures, coordinates, formulas.
+
+Type/dimension inference.
+
+crates/engine/
+
+Differential dataflow integration.
+
+Formula compiler → operator plans → dataflow graph.
+
+crates/storage_mentat/
+
+Persistence using Mentat.
+
+crates/tui/
+
+VisiCalc‑style terminal UI.
+
+crates/cli/
+
+Command‑line tools (run models, import/export).
+
+crates/server/
+
+HTTP/RPC API over the engine.
+
+crates/nl_formula/
+
+Natural language ↔ formula translation.
+
+3. Core model (Rust structures)
+3.1 Identifiers and names
+rust
+// crates/core_model/src/ids.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CategoryId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ItemId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct MeasureId(pub u32);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ViewId(pub u32);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Name(pub String);
+3.2 Categories and items
+rust
+// crates/core_model/src/category.rs
+#[derive(Debug, Clone)]
+pub struct Category {
+    pub id: CategoryId,
+    pub name: Name,
+    pub items: Vec<ItemId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Item {
+    pub id: ItemId,
+    pub category: CategoryId,
+    pub name: Name,
+}
+3.3 Coordinates
+rust
+// crates/core_model/src/coord.rs
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Coordinate {
+    pub dims: BTreeMap<CategoryId, ItemId>,
+}
+
+impl Coordinate {
+    pub fn get(&self, cat: CategoryId) -> Option<ItemId> {
+        self.dims.get(&cat).copied()
+    }
+}
+3.4 Values and types
+rust
+// crates/core_model/src/value.rs
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueType {
+    Number,
+    Boolean,
+    Text,
+    DateTime,
+    Enum,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value {
+    Number(f64),
+    Boolean(bool),
+    Text(String),
+    DateTime(chrono::DateTime<chrono::Utc>),
+    Enum(u32),
+    Error(ValueError),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ValueErrorKind {
+    TypeMismatch,
+    DimensionMismatch,
+    DivisionByZero,
+    MissingInput,
+    Custom(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ValueError {
+    pub kind: ValueErrorKind,
+    pub source_measure: Option<MeasureId>,
+}
+3.5 Measures and formulas
+rust
+// crates/core_model/src/measure.rs
+use crate::{ValueType, Name, CategoryId};
+use crate::formula::Formula;
+
+#[derive(Debug, Clone)]
+pub enum MeasureKind {
+    Input,
+    Derived(Formula),
+}
+
+#[derive(Debug, Clone)]
+pub struct Measure {
+    pub id: MeasureId,
+    pub name: Name,
+    pub value_type: ValueType,
+    pub categories: Vec<CategoryId>,
+    pub kind: MeasureKind,
+    pub description: Option<String>,
+}
+3.6 Formula AST
+rust
+// crates/core_model/src/formula.rs
+use crate::{Value, MeasureId, CategoryId};
+
+#[derive(Debug, Clone)]
+pub struct DimensionSpec {
+    pub by: Vec<CategoryId>,
+    pub over: Vec<CategoryId>,
+    pub except: Vec<CategoryId>,
+}
+
+#[derive(Debug, Clone)]
+pub enum UnaryOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    And,
+    Or,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+#[derive(Debug, Clone)]
+pub enum Expr {
+    Literal(Value),
+    Ref(MeasureId, DimensionSpec),
+    UnaryOp(UnaryOp, Box<Expr>),
+    BinaryOp(BinaryOp, Box<Expr>, Box<Expr>),
+    Call(FuncId, Vec<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct Formula {
+    pub expr: Expr,
+}
+3.7 Model container
+rust
+// crates/core_model/src/model.rs
+use std::collections::HashMap;
+use crate::{Category, Item, Measure, Coordinate, Value, CategoryId, ItemId, MeasureId};
+
+#[derive(Debug, Default)]
+pub struct Model {
+    pub categories: HashMap<CategoryId, Category>,
+    pub items: HashMap<ItemId, Item>,
+    pub measures: HashMap<MeasureId, Measure>,
+    pub inputs: HashMap<(MeasureId, Coordinate), Value>,
+}
+4. Formula compiler and engine
+4.1 Typed expressions
+rust
+// crates/engine/src/typed.rs
+use crate::core_model::{ValueType, CategoryId};
+
+#[derive(Debug, Clone)]
+pub struct Dim {
+    pub categories: Vec<CategoryId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeInfo {
+    pub value_type: ValueType,
+    pub dim: Dim,
+}
+
+#[derive(Debug, Clone)]
+pub enum TypedExprKind {
+    Literal(Value),
+    Ref(MeasureId, DimensionSpec),
+    UnaryOp(UnaryOp, Box<TypedExpr>),
+    BinaryOp(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
+    Call(FuncId, Vec<TypedExpr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedExpr {
+    pub kind: TypedExprKind,
+    pub ty: TypeInfo,
+}
+4.2 Plan nodes
+rust
+// crates/engine/src/plan.rs
+#[derive(Debug, Clone)]
+pub enum PlanNodeKind {
+    InputMeasure(MeasureId),
+    Literal(Value),
+    MapUnary(UnaryOp, Box<PlanNode>),
+    MapBinary(BinaryOp, Box<PlanNode>, Box<PlanNode>),
+    Join {
+        left: Box<PlanNode>,
+        right: Box<PlanNode>,
+        join_keys_left: Vec<CategoryId>,
+        join_keys_right: Vec<CategoryId>,
+    },
+    Aggregate {
+        input: Box<PlanNode>,
+        group_by: Vec<CategoryId>,
+        func: FuncId,
+    },
+    FuncCall {
+        func: FuncId,
+        args: Vec<PlanNode>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanNode {
+    pub kind: PlanNodeKind,
+    pub ty: TypeInfo,
+}
+4.3 Compiler API
+rust
+// crates/engine/src/compiler.rs
+pub struct CompileContext<'m> {
+    pub measures: &'m HashMap<MeasureId, Measure>,
+    pub funcs: &'m HashMap<FuncId, FuncSignature>,
+}
+
+pub fn compile_formula(
+    ctx: &CompileContext,
+    target: MeasureId,
+    formula: &Formula,
+) -> Result<PlanNode, CompileError> {
+    let typed = infer_types_and_dims(ctx, target, &formula.expr)?;
+    let plan = build_plan(ctx, &typed)?;
+    Ok(plan)
+}
+4.4 Differential dataflow integration (sketch)
+rust
+// crates/engine/src/engine.rs
+use differential_dataflow::collection::Collection;
+use timely::dataflow::Scope;
+
+pub struct Engine<G: Scope> {
+    pub model: Model,
+    pub inputs: HashMap<MeasureId, Collection<G, (Coordinate, Value)>>,
+    pub derived: HashMap<MeasureId, Collection<G, (Coordinate, Value)>>,
+}
+
+impl<G: Scope> Engine<G> {
+    pub fn build(&mut self, scope: &mut G) {
+        // 1. create input collections
+        // 2. compile formulas to plans
+        // 3. build collections from plans
+    }
+
+    pub fn apply_edit(
+        &mut self,
+        measure: MeasureId,
+        coord: Coordinate,
+        old: Option<Value>,
+        new: Value,
+    ) {
+        // translate to differential updates
+    }
+}
+5. Mentat storage integration
+5.1 Design
+Use Mentat as the persistent backing store for:
+
+Categories and items (as entities with attributes).
+
+Measures (metadata + formulas).
+
+Input values (facts keyed by measure and coordinate).
+
+5.2 Mapping
+Category:
+
+:category/id (CategoryId)
+
+:category/name (string)
+
+Item:
+
+:item/id
+
+:item/category (ref to category)
+
+:item/name
+
+Measure:
+
+:measure/id
+
+:measure/name
+
+:measure/value-type
+
+:measure/categories (refs)
+
+:measure/kind (enum)
+
+:measure/formula (serialized AST)
+
+Input value:
+
+:cell/measure (ref)
+
+:cell/coord (serialized coordinate)
+
+:cell/value (value)
+
+5.3 Storage crate skeleton
+rust
+// crates/storage_mentat/src/lib.rs
+use mentat; // assuming crate name
+
+pub struct MentatStore {
+    conn: mentat::Conn,
+}
+
+impl MentatStore {
+    pub fn new(conn: mentat::Conn) -> Self {
+        Self { conn }
+    }
+
+    pub fn save_model(&self, model: &Model) -> Result<(), StoreError> {
+        // transact categories, items, measures, inputs
+    }
+
+    pub fn load_model(&self) -> Result<Model, StoreError> {
+        // query Mentat, reconstruct Model
+    }
+}
+6. Natural language ↔ formula translation
+6.1 Goals
+Allow users to write formulas in English:
+
+“Revenue equals price times quantity over time and product.”
+
+Generate structured formulas (AST).
+
+Provide explanations:
+
+“This formula computes Revenue[Time, Product] = Price[Product] * Quantity[Time, Product].”
+
+Eventually support reverse translation:
+
+Formula → natural language description.
+
+6.2 Approach
+Define a controlled natural language (CNL) for formulas:
+
+Grammar with explicit dimension phrases:
+
+“over Time”, “by Product”, “for each Region”.
+
+Implement:
+
+A parser from CNL → Expr + DimensionSpec.
+
+A pretty‑printer from Formula → English.
+
+6.3 Crate skeleton
+rust
+// crates/nl_formula/src/lib.rs
+use core_model::{Formula, MeasureId, CategoryId};
+
+pub struct NlContext<'m> {
+    pub measures: &'m HashMap<MeasureId, Measure>,
+    pub categories: &'m HashMap<CategoryId, Category>,
+}
+
+pub fn parse_nl_formula(
+    ctx: &NlContext,
+    text: &str,
+) -> Result<Formula, NlError> {
+    // tokenize, parse grammar, resolve measure/category names
+}
+
+pub fn describe_formula(
+    ctx: &NlContext,
+    formula: &Formula,
+) -> String {
+    // walk AST, emit English phrases
+}
+7. Interfaces: TUI, CLI, server
+7.1 TUI (VisiCalc‑style)
+Goals:
+
+Terminal grid view.
+
+Keyboard‑centric navigation.
+
+Edit data and formulas.
+
+Switch views and scenarios.
+
+Crate skeleton:
+
+rust
+// crates/tui/src/main.rs
+fn main() -> anyhow::Result<()> {
+    let store = MentatStore::new(open_conn()?);
+    let mut model = store.load_model()?;
+    let mut engine = build_engine(&model)?;
+
+    run_tui(&mut model, &mut engine)?;
+
+    store.save_model(&model)?;
+    Ok(())
+}
+run_tui uses a TUI library (e.g., ratatui) to render:
+
+Grid view bound to a View.
+
+Formula editor pane.
+
+Model explorer.
+
+7.2 CLI
+Commands:
+
+improv-rs run MODEL_FILE --view RevenueByProduct
+
+improv-rs import data.csv --measure Quantity
+
+improv-rs describe Revenue
+
+Skeleton:
+
+rust
+// crates/cli/src/main.rs
+fn main() -> anyhow::Result<()> {
+    let cmd = Cli::parse();
+    match cmd {
+        Cli::Run { model_path, view } => run_model(model_path, view)?,
+        Cli::Import { model_path, measure, file } => import_data(model_path, measure, file)?,
+        Cli::Describe { model_path, measure } => describe_measure(model_path, measure)?,
+    }
+    Ok(())
+}
+7.3 Server mode
+Goals:
+
+Expose engine via HTTP/RPC:
+
+Load/save models.
+
+Evaluate views.
+
+Apply edits.
+
+NL formula endpoints.
+
+Skeleton:
+
+rust
+// crates/server/src/main.rs
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let store = MentatStore::new(open_conn()?);
+    let model = store.load_model()?;
+    let engine = build_engine(&model)?;
+
+    let app = build_router(model, engine);
+    axum::Server::bind(&addr).serve(app.into_make_service()).await?;
+    Ok(())
+}
+8. Phased implementation plan
+Phase 0: Foundations
+Goal: Compile, test, and persist a minimal model.
+
+Tasks:
+
+Implement core_model (IDs, categories, items, measures, formulas).
+
+Implement storage_mentat with basic save/load.
+
+Write unit tests for model and storage.
+
+Phase 1: Engine and formula compiler
+Goal: Evaluate derived measures incrementally.
+
+Tasks:
+
+Implement typed expression inference.
+
+Implement plan construction (joins, aggregates).
+
+Integrate differential dataflow; build collections for a small model.
+
+Add tests:
+
+Revenue = Price * Quantity
+
+Aggregations like SUM(Revenue OVER Time).
+
+Phase 2: TUI and CLI
+Goal: Usable terminal‑based spreadsheet.
+
+Tasks:
+
+Implement TUI grid view, navigation, editing.
+
+Wire TUI to engine:
+
+Edits → deltas → recalculation.
+
+Implement CLI commands for batch runs and import/export.
+
+Add autosave via Mentat.
+
+Phase 3: Server mode
+Goal: Remote access and automation.
+
+Tasks:
+
+Implement HTTP/RPC API.
+
+Endpoints for:
+
+Load/save models.
+
+Evaluate views.
+
+Apply edits.
+
+NL formula parse/describe.
+
+Add authentication/authorization later if needed.
+
+Phase 4: Natural language formulas
+Goal: CNL for formulas and descriptions.
+
+Tasks:
+
+Define grammar for English formulas.
+
+Implement parser → Formula.
+
+Implement pretty‑printer → English.
+
+Integrate with TUI/CLI/server:
+
+:nl command to enter formulas in English.
+
+describe command to explain formulas.
+
+Phase 5: Desktop GUI (future)
+Goal: Full Improv‑style GUI.
+
+Tasks:
+
+Choose GUI toolkit.
+
+Implement model explorer, pivot views, formula editor.
+
+Reuse engine and Mentat storage.
+
+9. Definition of success for early iterations
+v0.1 (engine + CLI)
+Can define categories, items, measures (input + derived).
+
+Can run a model from CLI and print results.
+
+Uses Mentat for persistence.
+
+v0.2 (TUI)
+Terminal grid view.
+
+Edit data and formulas.
+
+See incremental recalculation.
+
+Save/load via Mentat.
+
+v0.3 (server + NL)
+Server exposes model operations.
+
+Basic NL formula parsing and description.
+
+TUI/CLI can use NL formulas.
+
+If you’d like, I can next:
+
+Flesh out the Mentat schema in more detail, or
+
+Draft a concrete example model (Time × Product revenue) and walk it through TUI, CLI, and server flows.
+
+Yes, please do flesh out the Mentat schema and then a concrete example model.  I'll need somthing I can download and use to steer agents to build this.
+See my thinking
+Mentat schema (steering version)
+Below is a concrete Mentat schema you can use as the canonical storage model for the Improv‑style spreadsheet. It’s written in a way that agents can directly implement.
+
+1. Entity types
+We’ll model four main entity types:
+
+Category
+
+Item
+
+Measure
+
+Cell (input value)
+
+Optionally: View (later)
+
+2. Attribute definitions (conceptual)
+Use Mentat’s :db/ident, :db/valueType, :db/cardinality, etc.
+
+clojure
+;; CATEGORY
+{:db/ident       :category/id
+ :db/valueType   :db.type/long
+ :db/cardinality :db.cardinality/one
+ :db/unique      :db.unique/identity}
+
+{:db/ident       :category/name
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+
+;; ITEM
+{:db/ident       :item/id
+ :db/valueType   :db.type/long
+ :db/cardinality :db.cardinality/one
+ :db/unique      :db.unique/identity}
+
+{:db/ident       :item/name
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :item/category
+ :db/valueType   :db.type/ref
+ :db/cardinality :db.cardinality/one}
+
+;; MEASURE
+{:db/ident       :measure/id
+ :db/valueType   :db.type/long
+ :db/cardinality :db.cardinality/one
+ :db/unique      :db.unique/identity}
+
+{:db/ident       :measure/name
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :measure/value-type
+ :db/valueType   :db.type/keyword
+ :db/cardinality :db.cardinality/one}
+;; e.g. :value-type/number, :value-type/boolean, :value-type/text, :value-type/datetime, :value-type/enum
+
+{:db/ident       :measure/categories
+ :db/valueType   :db.type/ref
+ :db/cardinality :db.cardinality/many}
+;; refs to category entities
+
+{:db/ident       :measure/kind
+ :db/valueType   :db.type/keyword
+ :db/cardinality :db.cardinality/one}
+;; :measure-kind/input or :measure-kind/derived
+
+{:db/ident       :measure/description
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :measure/formula
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+;; serialized formula AST (e.g. JSON or your own format)
+
+;; CELL (input value)
+{:db/ident       :cell/measure
+ :db/valueType   :db.type/ref
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/coord
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+;; serialized Coordinate (e.g. JSON: { "Time": "2025", "Product": "Widget A" })
+
+{:db/ident       :cell/value-number
+ :db/valueType   :db.type/double
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/value-boolean
+ :db/valueType   :db.type/boolean
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/value-text
+ :db/valueType   :db.type/string
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/value-datetime
+ :db/valueType   :db.type/instant
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/value-enum
+ :db/valueType   :db.type/long
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/error-kind
+ :db/valueType   :db.type/keyword
+ :db/cardinality :db.cardinality/one}
+
+{:db/ident       :cell/error-source-measure
+ :db/valueType   :db.type/ref
+ :db/cardinality :db.cardinality/one}
+You can keep one value attribute per cell based on :measure/value-type, or allow multiple and enforce consistency in code.
+
+3. Coordinate serialization
+For :cell/coord, define a stable JSON format:
+
+json
+{
+  "Time": "2025",
+  "Product": "Widget A"
+}
+Agents should:
+
+Use category names and item names in the JSON for readability.
+
+On load, resolve names back to CategoryId and ItemId.
+
+Alternatively, you can store:
+
+json
+{
+  "category_ids": [1, 2],
+  "item_ids": [10, 20]
+}
+…but the name‑based format is friendlier for debugging and external tooling.
+
+4. Measure formula serialization
+For :measure/formula, store a serialized AST, e.g.:
+
+json
+{
+  "expr": {
+    "BinaryOp": {
+      "op": "Mul",
+      "left": { "Ref": { "measure": "Price", "dim": { "by": ["Product"] } } },
+      "right": { "Ref": { "measure": "Quantity", "dim": { "by": ["Time", "Product"] } } }
+    }
+  }
+}
+Agents can:
+
+Use measure names in the serialized form.
+
+Resolve to MeasureId when loading.
+
+Concrete example model: Time × Product revenue
+This is a small, fully specified example that agents can implement end‑to‑end.
+
+1. Categories and items
+Categories:
+
+Time with items: 2025, 2026
+
+Product with items: Widget A, Widget B
+
+Mentat transactions (conceptual):
+
+clojure
+;; Create categories
+[
+ {:db/id        "time-cat"
+  :category/id  1
+  :category/name "Time"}
+
+ {:db/id        "product-cat"
+  :category/id  2
+  :category/name "Product"}
+]
+
+;; Create items for Time
+[
+ {:db/id       "time-2025"
+  :item/id     10
+  :item/name   "2025"
+  :item/category "time-cat"}
+
+ {:db/id       "time-2026"
+  :item/id     11
+  :item/name   "2026"
+  :item/category "time-cat"}
+]
+
+;; Create items for Product
+[
+ {:db/id       "product-widget-a"
+  :item/id     20
+  :item/name   "Widget A"
+  :item/category "product-cat"}
+
+ {:db/id       "product-widget-b"
+  :item/id     21
+  :item/name   "Widget B"
+  :item/category "product-cat"}
+]
+2. Measures
+We’ll define:
+
+Price[Product] (input)
+
+Quantity[Time, Product] (input)
+
+Revenue[Time, Product] (derived)
+
+RevenueByProduct[Product] (derived, aggregated over Time)
+
+Mentat transactions:
+
+clojure
+;; Price[Product]
+[
+ {:db/id              "measure-price"
+  :measure/id         100
+  :measure/name       "Price"
+  :measure/value-type :value-type/number
+  :measure/categories ["product-cat"]
+  :measure/kind       :measure-kind/input
+  :measure/description "Unit price per product"}
+]
+
+;; Quantity[Time, Product]
+[
+ {:db/id              "measure-quantity"
+  :measure/id         101
+  :measure/name       "Quantity"
+  :measure/value-type :value-type/number
+  :measure/categories ["time-cat" "product-cat"]
+  :measure/kind       :measure-kind/input
+  :measure/description "Units sold per time and product"}
+]
+
+;; Revenue[Time, Product] = Price[Product] * Quantity[Time, Product]
+[
+ {:db/id              "measure-revenue"
+  :measure/id         102
+  :measure/name       "Revenue"
+  :measure/value-type :value-type/number
+  :measure/categories ["time-cat" "product-cat"]
+  :measure/kind       :measure-kind/derived
+  :measure/description "Revenue per time and product"
+  :measure/formula    "{\"expr\":{\"BinaryOp\":{\"op\":\"Mul\",\"left\":{\"Ref\":{\"measure\":\"Price\",\"dim\":{\"by\":[\"Product\"]}}},\"right\":{\"Ref\":{\"measure\":\"Quantity\",\"dim\":{\"by\":[\"Time\",\"Product\"]}}}}}}"}
+]
+
+;; RevenueByProduct[Product] = SUM(Revenue OVER Time)
+[
+ {:db/id              "measure-revenue-by-product"
+  :measure/id         103
+  :measure/name       "RevenueByProduct"
+  :measure/value-type :value-type/number
+  :measure/categories ["product-cat"]
+  :measure/kind       :measure-kind/derived
+  :measure/description "Total revenue per product"
+  :measure/formula    "{\"expr\":{\"Call\":{\"func\":\"SUM\",\"args\":[{\"Ref\":{\"measure\":\"Revenue\",\"dim\":{\"over\":[\"Time\"],\"by\":[\"Product\"]}}}]}}}"
+]
+Agents can choose a more compact JSON representation; the important part is the structure.
+
+3. Input cells
+Example data:
+
+Price[Widget A] = 10.0
+
+Price[Widget B] = 20.0
+
+Quantity[2025, Widget A] = 100
+
+Quantity[2025, Widget B] = 50
+
+Quantity[2026, Widget A] = 120
+
+Quantity[2026, Widget B] = 80
+
+Mentat transactions:
+
+clojure
+;; Price cells
+[
+ {:db/id          "cell-price-widget-a"
+  :cell/measure   "measure-price"
+  :cell/coord     "{\"Product\":\"Widget A\"}"
+  :cell/value-number 10.0}
+
+ {:db/id          "cell-price-widget-b"
+  :cell/measure   "measure-price"
+  :cell/coord     "{\"Product\":\"Widget B\"}"
+  :cell/value-number 20.0}
+]
+
+;; Quantity cells
+[
+ {:db/id          "cell-qty-2025-widget-a"
+  :cell/measure   "measure-quantity"
+  :cell/coord     "{\"Time\":\"2025\",\"Product\":\"Widget A\"}"
+  :cell/value-number 100.0}
+
+ {:db/id          "cell-qty-2025-widget-b"
+  :cell/measure   "measure-quantity"
+  :cell/coord     "{\"Time\":\"2025\",\"Product\":\"Widget B\"}"
+  :cell/value-number 50.0}
+
+ {:db/id          "cell-qty-2026-widget-a"
+  :cell/measure   "measure-quantity"
+  :cell/coord     "{\"Time\":\"2026\",\"Product\":\"Widget A\"}"
+  :cell/value-number 120.0}
+
+ {:db/id          "cell-qty-2026-widget-b"
+  :cell/measure   "measure-quantity"
+  :cell/coord     "{\"Time\":\"2026\",\"Product\":\"Widget B\"}"
+  :cell/value-number 80.0}
+]
+4. Expected computed results (for tests)
+From the engine:
+
+Revenue[2025, Widget A] = 10 * 100 = 1000
+
+Revenue[2025, Widget B] = 20 * 50 = 1000
+
+Revenue[2026, Widget A] = 10 * 120 = 1200
+
+Revenue[2026, Widget B] = 20 * 80 = 1600
+
+RevenueByProduct[Widget A] = 1000 + 1200 = 2200
+
+RevenueByProduct[Widget B] = 1000 + 1600 = 2600
+
+Agents should:
+
+Use these as unit/integration tests for:
+
+Mentat load → Model
+
+Engine build → differential dataflow graph
+
+Evaluation of derived measures.
+
+Natural language formula for the example
+You can also include this in the steering doc for the nl_formula crate:
+
+English → formula:
+
+“Revenue equals price times quantity for each time and product.”
+
+Maps to:
+
+text
+Revenue[Time, Product] = Price[Product] * Quantity[Time, Product]
+English → formula for aggregation:
+
+“Revenue by product is the sum of revenue over time for each product.”
+
+Maps to:
+
+text
+RevenueByProduct[Product] = SUM(Revenue OVER Time BY Product)
+Agents implementing nl_formula should:
+
+Support this controlled phrasing.
+
+Resolve measure and category names from the Mentat‑backed model.

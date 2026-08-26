@@ -1,0 +1,15 @@
+[package]
+name = "improv_engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "improv_engine"
+path = "src/lib.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+thiserror.workspace = true
+differential-dataflow.workspace = true
+timely.workspace = true

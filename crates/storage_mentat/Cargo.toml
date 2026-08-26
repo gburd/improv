@@ -1,0 +1,16 @@
+[package]
+name = "improv_storage_mentat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "improv_storage_mentat"
+path = "src/lib.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+mentat.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true

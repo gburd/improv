@@ -1,0 +1,105 @@
+# cargo-deny configuration.
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # The vendored embedded Mentat workspace (path dep) pulls a few
+    # unmaintained transitive crates and is tracked in the mentat repo, not
+    # here. Improv's own crates introduce none of these.
+    "RUSTSEC-2025-0141", # bincode unmaintained (transitive via mentat)
+    "RUSTSEC-2024-0436", # paste no longer maintained (differential-dataflow)
+]
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+]
+unused-allowed-license = "allow"
+
+# The vendored Mentat workspace crates omit their license field; the whole
+# workspace is Apache-2.0. Clarify each so cargo-deny doesn't flag them.
+[[licenses.clarify]]
+crate = "sql_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_transaction"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "public_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "query_algebrizer_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "query_projector_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "query_pull_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "core_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "db_traits"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_core"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_db"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_query_algebrizer"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_query_projector"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_query_pull"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_query_sql"
+expression = "Apache-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "mentat_sql"
+expression = "Apache-2.0"
+license-files = []
+
+[bans]
+# The DD/timely pin and the vendored Mentat workspace drag in multiple versions
+# and wildcard path deps transitively. Improv's own crates use pinned versions.
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://codeberg.org/gregburd/mentat"]

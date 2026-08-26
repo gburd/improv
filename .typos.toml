@@ -1,0 +1,22 @@
+# typos configuration. https://github.com/crate-ci/typos
+
+[files]
+extend-exclude = [
+    "IMPROV.txt",       # source design transcript, verbatim
+    "Cargo.lock",
+    "docs/man/*",
+    "*.roff",
+]
+
+[default.extend-words]
+# Domain terms typos might flag.
+Improv = "Improv"
+Quantrix = "Quantrix"
+Datomic = "Datomic"
+Mentat = "Mentat"
+edn = "edn"
+EDN = "EDN"
+datom = "datom"
+datoms = "datoms"
+EAVT = "EAVT"
+Abomonation = "Abomonation"

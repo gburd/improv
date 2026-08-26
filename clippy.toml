@@ -1,0 +1,8 @@
+# Clippy configuration for Improv.
+# Keep the default lint set; project policy is `-D warnings` in CI.
+
+# Flag large error/enum variants early (the model/value types are cloned a lot).
+enum-variant-size-threshold = 256
+
+# Cognitive-complexity ceiling nudges the compiler/formula code toward small fns.
+cognitive-complexity-threshold = 30
