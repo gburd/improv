@@ -5,11 +5,13 @@
 //!
 //! Structure follows the project steering doc (AGENT_STEERING.md / IMPROV.txt).
 
+pub mod extfn_def;
 pub mod formula;
 pub mod ids;
 pub mod parser;
 pub mod value;
 
+pub use extfn_def::{ExternalFn, Language};
 pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ViewId};
 pub use parser::{parse_expr, parse_formula, FormulaText, ParseError};
@@ -131,6 +133,30 @@ pub struct Model {
     /// modeling — it does not change measures or data.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub views: HashMap<ViewId, View>,
+    /// External-language function definitions (Phase 6) available to formulas
+    /// via `CALL(name, ...)`, keyed by name. Plain data; the `improv_extfn`
+    /// crate evaluates them. Marked non-deterministic-source-adjacent: the
+    /// engine treats a call as pure per the author's purity assertion.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub external_fns: HashMap<String, ExternalFn>,
+    /// Measures computed by calling an external function per coordinate over
+    /// argument measures (Phase 6). The measure's `kind` stays `Input`; a
+    /// host-side refresh (in `improv_engine::external`) runs the function and
+    /// populates its cells — the engine's dataflow gains no external-call path,
+    /// so its determinism is preserved.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub external_calls: HashMap<MeasureId, ExternalCall>,
+}
+
+/// A measure defined as `func(arg_measures...)` where `func` is a registered
+/// external function. Evaluated host-side per coordinate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalCall {
+    /// Name of the external function (a key in `Model.external_fns`).
+    pub func: String,
+    /// The measures supplying the function's positional arguments, aligned to
+    /// the function's declared `arg_types`.
+    pub arg_measures: Vec<MeasureId>,
 }
 
 /// A saved pivot layout: which measure, how its categories are placed on axes,

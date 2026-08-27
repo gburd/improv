@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 improv_core_model = { path = "../core_model" }
+improv_extfn = { path = "../extfn" }
 thiserror.workspace = true
 serde.workspace = true
 differential-dataflow.workspace = true

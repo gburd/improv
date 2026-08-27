@@ -83,6 +83,19 @@ impl ModelStore {
             ));
         }
         self.transact_group(views)?;
+
+        // Singleton meta: external function defs + external-call measures, each
+        // as a JSON blob on one entity (only if non-empty).
+        if !model.external_fns.is_empty() || !model.external_calls.is_empty() {
+            let fns_json = serde_json::to_string(&model.external_fns)?;
+            let calls_json = serde_json::to_string(&model.external_calls)?;
+            let edn = format!(
+                "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {}}}]",
+                convert::edn_str_pub(&fns_json),
+                convert::edn_str_pub(&calls_json),
+            );
+            self.store.transact(&edn)?;
+        }
         Ok(())
     }
 
@@ -104,6 +117,7 @@ impl ModelStore {
         self.load_measures(&mut model)?;
         self.load_cells(&mut model)?;
         self.load_views(&mut model)?;
+        self.load_meta(&mut model)?;
         Ok(model)
     }
 
@@ -282,6 +296,20 @@ impl ModelStore {
             let json = convert::as_string(&row[0])?;
             let v: improv_core_model::View = serde_json::from_str(&json)?;
             model.views.insert(v.id, v);
+        }
+        Ok(())
+    }
+
+    fn load_meta(&mut self, model: &mut Model) -> Result<()> {
+        if let Some(json) = self.scalar_string(
+            "[:find ?j . :where [?e :meta/singleton 1] [?e :meta/external-fns ?j]]",
+        )? {
+            model.external_fns = serde_json::from_str(&json)?;
+        }
+        if let Some(json) = self.scalar_string(
+            "[:find ?j . :where [?e :meta/singleton 1] [?e :meta/external-calls ?j]]",
+        )? {
+            model.external_calls = serde_json::from_str(&json)?;
         }
         Ok(())
     }

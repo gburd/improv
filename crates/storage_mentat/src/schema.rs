@@ -85,4 +85,18 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :view/json
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+
+ ;; MODEL META (singleton). JSON blobs for maps without a natural per-entity
+ ;; datom shape: external function defs and external-call measures.
+ {:db/ident :meta/singleton
+  :db/valueType :db.type/long
+  :db/cardinality :db.cardinality/one
+  :db/unique :db.unique/identity
+  :db/index true}
+ {:db/ident :meta/external-fns
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
+ {:db/ident :meta/external-calls
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 ]"#;

@@ -43,41 +43,10 @@ use improv_core_model::{Value, ValueType};
 use std::collections::HashMap;
 use std::time::Duration;
 
-/// Source language of an external function. Python is implemented; the others
-/// are reserved so the descriptor is stable as runtimes are added.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    Python,
-    R,
-    Julia,
-    Wasm,
-}
-
-/// A registered external function: everything needed to type-check a call and
-/// invoke the runtime deterministically.
-///
-/// `body` is the function *body* (statements), evaluated with the JSON-decoded
-/// arguments bound to a list named `args` and expected to produce a `result`
-/// (see [`python`] for the exact contract).
-#[derive(Debug, Clone)]
-pub struct ExternalFn {
-    pub name: String,
-    pub language: Language,
-    pub body: String,
-    /// Declared argument types, in order. `arity` == `arg_types.len()`.
-    pub arg_types: Vec<ValueType>,
-    pub return_type: ValueType,
-    /// The author asserts the body is pure (deterministic, no side effects the
-    /// engine must observe). The runtime records it; enforcement beyond the
-    /// isolated invocation is future work.
-    pub pure: bool,
-}
-
-impl ExternalFn {
-    pub fn arity(&self) -> usize {
-        self.arg_types.len()
-    }
-}
+// `ExternalFn`/`Language` are the model-level *definitions* (plain, serializable
+// data); this crate is their *runtime*. Re-exported so callers can use
+// `improv_extfn::{ExternalFn, Language}` interchangeably.
+pub use improv_core_model::{ExternalFn, Language};
 
 /// Name -> descriptor. The engine will resolve a `FuncId`/name to a descriptor
 /// here for non-builtin calls.
