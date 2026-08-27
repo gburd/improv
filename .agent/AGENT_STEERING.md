@@ -149,9 +149,10 @@ The authoritative roadmap and Phase 5–7 invariants live in
   `engine::external::refresh_external_measure` evaluates it per coordinate and
   writes input cells — external calls stay OFF the differential-dataflow hot
   path, so the engine core stays pure/deterministic. Persisted via Mentat
-  `:meta/*` blobs. REMAINING: a `CALL(...)` formula-grammar form (today the call
-  is described by `ExternalCall` metadata, not parsed from formula text);
-  R/Julia/WASM runtimes; an OS sandbox (currently isolated-mode + timeout only).
+  `:meta/*` blobs. A `CALL(func, args...)` formula-grammar form parses (via
+  `core_model::parser::parse_definition`) to an `ExternalCall`; the CLI exposes
+  `register-ext` / `define` / `refresh-ext` end to end. REMAINING: R/Julia/WASM
+  runtimes; an OS sandbox (currently isolated-mode + timeout only).
 - **Phase 7 (SQL connectivity): IN PROGRESS.** `crates/storage_sql` imports a
   `SELECT` into an input measure (columns → categories/items/cells), exports a
   measure's cells to a SQL table, and supports **live-query refresh**
@@ -162,8 +163,10 @@ The authoritative roadmap and Phase 5–7 invariants live in
   environment at connect time and redacted from logs (credentials out of band).
   CLI `import-sql` / `refresh-sql` / `export-sql`. SQL data enters as ordinary
   input cells (deterministic core untouched); identifiers validated, values
-  bound (injection-safe). PLANNED: on-load/interval refresh, a `SQL("...")`
-  formula form, GUI import/export wizards, DuckDB.
+  bound (injection-safe). A `SQL("...")` definition-grammar form parses (via
+  `parse_definition`) as a whole-RHS source; column→dimension mapping stays with
+  the `import-sql` CLI command. PLANNED: on-load/interval refresh, GUI
+  import/export wizards, DuckDB.
 
 ## Definition of done for v1
 

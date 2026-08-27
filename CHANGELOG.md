@@ -8,6 +8,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`CALL(...)` / `SQL(...)` definition grammar**: `core_model::parser::
+  parse_definition` parses a measure definition as an ordinary formula or a
+  whole-RHS source form (`Target = CALL(func, args...)` /
+  `Target = SQL("query")`), keeping source forms off the engine's expression
+  grammar. CLI `define` / `register-ext` / `refresh-ext` make external-call
+  measures usable end to end.
+- **Chart view** (`improv-gui`): a Chart toggle plots the selected measure as
+  grouped bars (optional line overlay), drawn with `egui::Painter` (no new
+  dependency), honoring filters and page pinning.
 - **External-function measures wired into the engine** (Phase 6): a measure can
   be defined as `func(arg_measures...)` (`Model.external_calls`);
   `engine::external::refresh_external_measure` evaluates the registered
