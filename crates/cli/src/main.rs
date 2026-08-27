@@ -11,7 +11,9 @@ use improv_core_model::{
     ValueType,
 };
 use improv_storage_mentat::ModelStore;
-use improv_storage_sql::{export_measure, import_query, DimensionMapping, ImportSpec};
+use improv_storage_sql::{
+    add_sql_measure, export_measure, refresh_sql_measure, DimensionMapping, ImportSpec,
+};
 
 const USAGE: &str = "\
 improv — headless spreadsheet model CLI
@@ -61,6 +63,11 @@ COMMANDS:
         is the numeric measure value. Example:
         import-sql m.db sales.db 100 Revenue \"SELECT t,p,r FROM sales\" r \
                    t:1:Time p:2:Product
+        The measure is SQL-backed and can be re-run with refresh-sql.
+
+    refresh-sql <db> <source.sqlite> <measure-id>
+        Re-run an SQL-backed measure's stored query and replace its cells with
+        the fresh result (new dimension values become new items).
 
     export-sql <db> <target.sqlite> <measure-id> <table> <value-col>
         Write a measure's input cells to a SQLite table (one column per
@@ -97,6 +104,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "eval" => cmd_eval(rest),
         "export" => cmd_export(rest),
         "import-sql" => cmd_import_sql(rest),
+        "refresh-sql" => cmd_refresh_sql(rest),
         "export-sql" => cmd_export_sql(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
@@ -414,12 +422,27 @@ fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
-    let n = import_query(&conn, &mut model, &spec).map_err(|e| e.to_string())?;
+    // add_sql_measure imports AND records a refreshable SqlSource on the model.
+    let n = add_sql_measure(&conn, &mut model, &spec).map_err(|e| e.to_string())?;
     store.save_model(&model).map_err(|e| e.to_string())?;
     println!(
-        "imported {n} cells into measure {} '{measure_name}'",
+        "imported {n} cells into SQL-backed measure {} '{measure_name}' (refresh with refresh-sql)",
         measure_id.0
     );
+    Ok(())
+}
+
+fn cmd_refresh_sql(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let source = arg(rest, 1, "source.sqlite")?;
+    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+
+    let conn = rusqlite::Connection::open(source).map_err(|e| e.to_string())?;
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let n = refresh_sql_measure(&conn, &mut model, measure_id).map_err(|e| e.to_string())?;
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("refreshed measure {} from SQL: {n} cells", measure_id.0);
     Ok(())
 }
 

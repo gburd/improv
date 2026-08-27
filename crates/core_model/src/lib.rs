@@ -118,6 +118,29 @@ pub struct Model {
     /// this map is keyed by a `(MeasureId, Coordinate)` tuple.
     #[serde(with = "inputs_as_seq")]
     pub inputs: HashMap<(MeasureId, Coordinate), Value>,
+    /// Metadata marking which input measures are backed by an external SQL
+    /// query (Phase 7). The measure's `kind` stays `Input` — to the engine an
+    /// SQL measure is an ordinary input whose cells are (re)populated by
+    /// refreshing the query, so the deterministic core gains no SQL path. This
+    /// map records *how* to refresh; the actual query run lives in
+    /// `improv_storage_sql`.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub sql_sources: HashMap<MeasureId, SqlSource>,
+}
+
+/// How to refresh an SQL-backed input measure: the query and how its columns
+/// map to the measure's dimensions + value. A live-query measure marked here
+/// is nondeterministic (its data comes from outside); determinism tests treat
+/// only measures WITHOUT an entry here as pure.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SqlSource {
+    /// The `SELECT` to run on refresh.
+    pub query: String,
+    /// Result column names, in the same order as the measure's `categories`,
+    /// whose distinct values are the items of each dimension.
+    pub dimension_columns: Vec<String>,
+    /// Result column holding the numeric value.
+    pub value_column: String,
 }
 
 /// serde adapter: (de)serialize the tuple-keyed `inputs` map as a `Vec` of

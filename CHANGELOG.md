@@ -8,6 +8,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **SQL live-query measures** (Phase 7): an imported SQL measure now records a
+  refreshable `SqlSource` on the model (`improv_storage_sql::add_sql_measure` /
+  `refresh_sql_measure`); CLI `refresh-sql` re-runs the stored query and
+  replaces the measure's cells (persisted via a `:measure/sql-source` datom).
+  SQL data re-enters as ordinary input cells, so the engine recomputes
+  dependents with no SQL path of its own; these measures are marked
+  nondeterministic (refresh-gated).
 - **TUI pivoting + mouse** (`improv-tui`): `p` rotates categories across
   rows/columns/pages (Improv/Quantrix-style re-pivot, no formula changes), and
   left-click selects a cell (mouse capture enabled). Complements the existing

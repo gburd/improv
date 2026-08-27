@@ -63,7 +63,10 @@ pub fn item_edn(i: &Item) -> String {
     )
 }
 
-pub fn measure_edn(m: &Measure) -> Result<String> {
+pub fn measure_edn(
+    m: &Measure,
+    sql_source: Option<&improv_core_model::SqlSource>,
+) -> Result<String> {
     let mut fields = vec![
         format!(":measure/id {}", m.id.0),
         format!(":measure/name {}", edn_str(&m.name.0)),
@@ -84,6 +87,12 @@ pub fn measure_edn(m: &Measure) -> Result<String> {
 
     if let Some(desc) = &m.description {
         fields.push(format!(":measure/description {}", edn_str(desc)));
+    }
+
+    // SQL-source metadata (Phase 7 live-query measures), as a JSON blob.
+    if let Some(src) = sql_source {
+        let json = serde_json::to_string(src)?;
+        fields.push(format!(":measure/sql-source {}", edn_str(&json)));
     }
 
     // Category refs (cardinality-many) via lookup-refs.

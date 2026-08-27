@@ -63,7 +63,7 @@ impl ModelStore {
 
         let mut measures = Vec::new();
         for m in model.measures.values() {
-            measures.push(convert::measure_edn(m)?);
+            measures.push(convert::measure_edn(m, model.sql_sources.get(&m.id))?);
         }
         self.transact_group(measures)?;
 
@@ -181,6 +181,16 @@ impl ModelStore {
             ))?;
 
             let categories = self.load_measure_categories(id)?;
+
+            // SQL-source metadata (Phase 7), if this measure is SQL-backed.
+            if let Some(json) = self.scalar_string(&format!(
+                "[:find ?s . :where [?e :measure/id {}] [?e :measure/sql-source ?s]]",
+                id.0
+            ))? {
+                let src: improv_core_model::SqlSource = serde_json::from_str(&json)?;
+                model.sql_sources.insert(id, src);
+            }
+
             model.measures.insert(
                 id,
                 Measure {

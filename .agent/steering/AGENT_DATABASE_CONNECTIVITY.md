@@ -41,19 +41,20 @@ Lifecycle: create → test → save → edit → delete.
 
 ## 4. SQL Live-Query Measures
 
-A `SQL("...")` formula form (a Phase 7 grammar extension; see
-`AGENT_FORMULA_LANGUAGE.md` §11.3) produces a measure collection:
+**Implemented** as SQL-backed input measures with a stored, refreshable source
+(`improv_storage_sql::{add_sql_measure, refresh_sql_measure}`; CLI `import-sql`
++ `refresh-sql`; metadata persisted on the model as `SqlSource` /
+`:measure/sql-source`). A future `SQL("...")` *formula form* (a grammar
+extension per `AGENT_FORMULA_LANGUAGE.md` §11.3) would be sugar over this.
 
-```text
-SalesData = SQL("SELECT time, product, revenue FROM sales")
-```
-
-- SQL columns map to categories/items/measures; dimensionality is inferred from
-  the selected columns.
-- Refresh modes: manual, on model load, on interval, on demand.
-- A refresh re-runs the query, updates the collection, and lets the engine
-  recompute dependents incrementally (SQL measures behave like derived measures
-  in the dependency graph).
+- SQL columns map to a measure's dimension categories (distinct values → items)
+  and one value column; the mapping is recorded so refresh reuses it.
+- **Refresh** re-runs the query and replaces the measure's cells; new dimension
+  values become new items (items are interned by name, so refresh reuses them).
+  Manual/on-demand today; on-load / interval refresh is a follow-up.
+- The refreshed cells are ordinary input cells, so the engine recomputes
+  dependents with no SQL path of its own. SQL measures are **marked**
+  (`Model.sql_sources`) so determinism tests treat only non-SQL measures as pure.
 
 ## 5. Import / Export Workflows
 

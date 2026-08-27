@@ -50,6 +50,9 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :measure/formula
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+ {:db/ident :measure/sql-source
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 
  ;; CELL (input value). Keyed by a synthetic unique string measure+coord.
  {:db/ident :cell/key

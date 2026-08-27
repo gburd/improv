@@ -88,10 +88,16 @@ pub fn import_query(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> 
         description: Some(format!("imported from SQL: {}", truncate(&spec.query, 80))),
     });
 
-    // Per-category interner: distinct string value -> ItemId (stable, sorted at
-    // the end for determinism of assigned ids across runs would require sorted
-    // input; we assign in first-seen order but the model is value-equivalent).
+    // Per-category interner: dimension value string -> ItemId. Seed it with the
+    // model's EXISTING items (by category + name) so re-import / refresh reuses
+    // items instead of minting duplicates with the same name.
     let mut interners: HashMap<CategoryId, HashMap<String, ItemId>> = HashMap::new();
+    for it in model.items.values() {
+        interners
+            .entry(it.category)
+            .or_default()
+            .insert(it.name.0.clone(), it.id);
+    }
     let mut next_item = spec.item_id_base;
 
     let mut stmt = conn.prepare(&spec.query)?;
@@ -165,6 +171,90 @@ pub fn import_query(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> 
     }
 
     Ok(count)
+}
+
+/// Register an SQL-backed input measure (records its `SqlSource` on the model)
+/// and populate it by running the query once. The measure's categories must
+/// already exist or be creatable from the import; this is a convenience over
+/// `import_query` that also marks the measure as SQL-backed so it can be
+/// refreshed later.
+pub fn add_sql_measure(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> Result<usize> {
+    let source = improv_core_model::SqlSource {
+        query: spec.query.clone(),
+        dimension_columns: spec.dimensions.iter().map(|d| d.column.clone()).collect(),
+        value_column: spec.value_column.clone(),
+    };
+    let n = import_query(conn, model, spec)?;
+    model.sql_sources.insert(spec.measure_id, source);
+    Ok(n)
+}
+
+/// Refresh an SQL-backed measure: re-run its stored query and replace its input
+/// cells with the fresh result. New dimension values become new items. The
+/// measure must have a `SqlSource` (added via `add_sql_measure`).
+///
+/// This is the `SQL("...")` live-query refresh (Phase 7): SQL data re-enters as
+/// ordinary input cells, so the engine recomputes dependents with no SQL path
+/// of its own. It is nondeterministic by nature (external data), hence gated on
+/// an explicit refresh rather than sitting on a pure evaluation path.
+pub fn refresh_sql_measure(
+    conn: &Connection,
+    model: &mut Model,
+    measure: MeasureId,
+) -> Result<usize> {
+    let source = model
+        .sql_sources
+        .get(&measure)
+        .cloned()
+        .ok_or_else(|| SqlError::Import(format!("{measure:?} is not an SQL-backed measure")))?;
+    let m = model
+        .measures
+        .get(&measure)
+        .ok_or_else(|| SqlError::Import(format!("no measure {measure:?}")))?;
+    if source.dimension_columns.len() != m.categories.len() {
+        return Err(SqlError::Import(format!(
+            "SQL source for {measure:?} maps {} columns but the measure has {} categories",
+            source.dimension_columns.len(),
+            m.categories.len()
+        )));
+    }
+    // Rebuild the import spec from the stored source + the measure's categories.
+    let dimensions: Vec<DimensionMapping> = source
+        .dimension_columns
+        .iter()
+        .zip(m.categories.iter())
+        .map(|(col, cat)| DimensionMapping {
+            column: col.clone(),
+            category_id: *cat,
+            category_name: model
+                .categories
+                .get(cat)
+                .map(|c| c.name.0.clone())
+                .unwrap_or_else(|| cat.0.to_string()),
+        })
+        .collect();
+    let spec = ImportSpec {
+        query: source.query.clone(),
+        dimensions,
+        value_column: source.value_column.clone(),
+        measure_id: measure,
+        measure_name: m.name.0.clone(),
+        // Continue item ids above the current max to avoid collisions.
+        item_id_base: model
+            .items
+            .keys()
+            .map(|i| i.0)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(1_000_000),
+    };
+    // Clear this measure's existing cells (refresh replaces them). Items from
+    // prior refreshes are left in place (harmless; may be re-referenced).
+    model.inputs.retain(|(mid, _), _| *mid != measure);
+    // import_query re-adds the measure; remove first so it isn't duplicated.
+    model.measures.remove(&measure);
+    let n = import_query(conn, model, &spec)?;
+    Ok(n)
 }
 
 /// Write a measure's input cells to a SQL table: one column per dimension
@@ -426,5 +516,56 @@ mod tests {
         let out = Connection::open_in_memory().unwrap();
         // A table name with a quote must be rejected, not interpolated.
         assert!(export_measure(&out, &model, MeasureId(100), "bad\"; DROP", "v").is_err());
+    }
+
+    #[test]
+    fn sql_measure_refresh_picks_up_new_data() {
+        let conn = source_db();
+        let mut model = Model::new();
+        // Register + populate an SQL-backed measure.
+        let n = add_sql_measure(&conn, &mut model, &revenue_spec()).unwrap();
+        assert_eq!(n, 3);
+        assert!(model.sql_sources.contains_key(&MeasureId(100)));
+
+        // The source data changes (a new row + a changed value).
+        conn.execute_batch(
+            "UPDATE sales SET revenue = 9999.0 WHERE time='2025' AND product='WidgetA';
+             INSERT INTO sales VALUES ('2027','WidgetA', 1.0);",
+        )
+        .unwrap();
+
+        // Refresh replaces this measure's cells with the fresh query result.
+        let n2 = refresh_sql_measure(&conn, &mut model, MeasureId(100)).unwrap();
+        assert_eq!(n2, 4, "now four rows");
+        assert_eq!(model.inputs.len(), 4);
+
+        // The changed cell reflects the new value.
+        let time = model.category_by_name("Time").unwrap().id;
+        let product = model.category_by_name("Product").unwrap().id;
+        let item = |cat, name: &str| {
+            model
+                .items
+                .values()
+                .find(|i| i.category == cat && i.name.0 == name)
+                .unwrap()
+                .id
+        };
+        let coord = Coordinate::from_pairs([
+            (time, item(time, "2025")),
+            (product, item(product, "WidgetA")),
+        ]);
+        assert_eq!(
+            model.input(MeasureId(100), &coord),
+            Some(&Value::Number(9999.0))
+        );
+    }
+
+    #[test]
+    fn refresh_requires_a_registered_source() {
+        let conn = source_db();
+        let mut model = Model::new();
+        // A plain import (no source registered) can't be refreshed.
+        import_query(&conn, &mut model, &revenue_spec()).unwrap();
+        assert!(refresh_sql_measure(&conn, &mut model, MeasureId(100)).is_err());
     }
 }

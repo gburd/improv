@@ -45,6 +45,26 @@ pub struct ImprovApp {
     /// New-derived-measure form: name + formula text.
     new_name: String,
     new_formula: String,
+
+    // --- pivot state (mirrors the TUI's per-measure axis order + paging) ---
+    /// A permutation of the selected measure's categories: index 0 -> rows,
+    /// 1 -> columns, 2.. -> pages. Pivoting reorders this without touching
+    /// formulas. Resets to the measure's natural order on measure switch.
+    axis_order: Vec<CategoryId>,
+    /// Selected item index for each page (extra) dimension, positionally by
+    /// page dim (i.e. `axis_order[2 + i]`). Reset on measure switch.
+    page_idx: Vec<usize>,
+    /// The measure `axis_order`/`page_idx` currently describe (so we reset the
+    /// pivot state when the selection changes).
+    axis_for: Option<MeasureId>,
+}
+
+/// Which grid axis a category is assigned to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    Rows,
+    Columns,
+    Pages,
 }
 
 impl ImprovApp {
@@ -60,6 +80,7 @@ impl ImprovApp {
 
         let (engine, snapshot) = build_engine(&model);
         let selected = pick_default_measure(&model);
+        let axis_order = natural_axis_order(&model, selected);
 
         Ok(ImprovApp {
             db: db.to_string(),
@@ -74,6 +95,9 @@ impl ImprovApp {
             formula_for: None,
             new_name: String::new(),
             new_formula: String::new(),
+            axis_order,
+            page_idx: Vec::new(),
+            axis_for: selected,
         })
     }
 
@@ -141,6 +165,119 @@ impl ImprovApp {
         }
         self.save();
         Ok(())
+    }
+
+    // -- pivot / page state (pure; unit-tested without egui) ---------------
+
+    /// Reset the pivot state to the selected measure's natural order when the
+    /// selection has changed. Called each frame before rendering the grid.
+    fn sync_axis_state(&mut self) {
+        if self.axis_for != self.selected {
+            self.axis_for = self.selected;
+            self.axis_order = natural_axis_order(&self.model, self.selected);
+            self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+        } else if self.page_idx.len() != self.axis_order.len().saturating_sub(2) {
+            // Keep page_idx sized to the current page-dimension count.
+            self.page_idx
+                .resize(self.axis_order.len().saturating_sub(2), 0);
+        }
+    }
+
+    /// Resolved axes for the current pivot state: (row cat, col cat, pinned
+    /// page dims as (category, item)). Mirrors the grid's cell keying. Page
+    /// items are the selected index for each page dimension (clamped).
+    fn resolved_axes(
+        &self,
+    ) -> (
+        Option<CategoryId>,
+        Option<CategoryId>,
+        Vec<(CategoryId, ItemId)>,
+    ) {
+        let row_cat = self.axis_order.first().copied();
+        let col_cat = self.axis_order.get(1).copied();
+        let mut pinned = Vec::new();
+        for (pi, c) in self.axis_order.iter().skip(2).enumerate() {
+            let its = self.sorted_items(*c);
+            if its.is_empty() {
+                continue;
+            }
+            let sel = self
+                .page_idx
+                .get(pi)
+                .copied()
+                .unwrap_or(0)
+                .min(its.len() - 1);
+            pinned.push((*c, its[sel].0));
+        }
+        (row_cat, col_cat, pinned)
+    }
+
+    /// A category's items sorted by id (shared by paging and grid rendering).
+    fn sorted_items(&self, c: CategoryId) -> Vec<(ItemId, String)> {
+        let mut v: Vec<(ItemId, String)> = self
+            .model
+            .categories
+            .get(&c)
+            .map(|cat| {
+                cat.items
+                    .iter()
+                    .filter_map(|id| self.model.items.get(id).map(|it| (*id, it.name.0.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort_by_key(|(id, _)| id.0);
+        v
+    }
+
+    /// Move `category` to `axis`. Rows/Columns take the single slot at index
+    /// 0/1 (swapping out whatever was there, which drops to pages); Pages sends
+    /// it to the end. No-op if the category is not in the current axis order.
+    /// Pivoting is formula-free re-projection (Improv/Quantrix signature move).
+    pub fn set_axis(&mut self, category: CategoryId, axis: Axis) {
+        let Some(cur) = self.axis_order.iter().position(|c| *c == category) else {
+            return;
+        };
+        self.axis_order.remove(cur);
+        match axis {
+            Axis::Rows => self.axis_order.insert(0, category),
+            Axis::Columns => {
+                let at = 1.min(self.axis_order.len());
+                self.axis_order.insert(at, category);
+            }
+            Axis::Pages => self.axis_order.push(category),
+        }
+        self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+    }
+
+    /// Pivot: rotate the axis order left (rows->pages, cols->rows, first
+    /// page->cols). Repeatedly cycles which category sits on each axis. No-op
+    /// for < 2 categories. Mirrors the TUI's `pivot()`.
+    pub fn pivot_rotate(&mut self) {
+        if self.axis_order.len() < 2 {
+            return;
+        }
+        self.axis_order.rotate_left(1);
+        self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+    }
+
+    /// Set the pinned item index for page dimension `dim_index` (position among
+    /// the page dims, i.e. `axis_order[2 + dim_index]`), clamped to the
+    /// dimension's item count. No-op if out of range.
+    pub fn set_page(&mut self, dim_index: usize, item_index: usize) {
+        let Some(cat) = self.axis_order.get(2 + dim_index).copied() else {
+            return;
+        };
+        let count = self.sorted_items(cat).len();
+        if count == 0 {
+            return;
+        }
+        if self.page_idx.len() != self.axis_order.len().saturating_sub(2) {
+            self.page_idx
+                .resize(self.axis_order.len().saturating_sub(2), 0);
+        }
+        if let Some(slot) = self.page_idx.get_mut(dim_index) {
+            *slot = item_index.min(count - 1);
+        }
     }
 
     /// Rebuild the live engine after a structural change (formula edit / new
@@ -342,8 +479,17 @@ fn pick_default_measure(model: &Model) -> Option<MeasureId> {
         .or_else(|| ids.first().copied())
 }
 
+/// The measure's categories in natural (declared) order (empty if none/absent).
+fn natural_axis_order(model: &Model, measure: Option<MeasureId>) -> Vec<CategoryId> {
+    measure
+        .and_then(|m| model.measures.get(&m))
+        .map(|m| m.categories.clone())
+        .unwrap_or_default()
+}
+
 impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_axis_state();
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
         self.formula_panel(ctx);
@@ -528,67 +674,160 @@ impl ImprovApp {
             });
     }
 
-    /// Center: the pivot grid for the selected measure.
+    /// Center: the axis shelf (drag/reassign categories) + page selectors +
+    /// the pivot grid for the selected measure.
     fn grid_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| match self.selected {
             None => {
                 ui.label("No measures. Open a model store with `improv-gui <db>`.");
             }
             Some(mid) => {
-                let (name, cats) = {
-                    let m = &self.model.measures[&mid];
-                    (m.name.0.clone(), m.categories.clone())
-                };
+                let name = self.model.measures[&mid].name.0.clone();
                 ui.heading(&name);
-                ui.label(format!(
-                    "dimensions: {}",
-                    if cats.is_empty() {
-                        "(scalar)".to_string()
-                    } else {
-                        cats.iter()
-                            .map(|c| self.model.categories[c].name.0.clone())
-                            .collect::<Vec<_>>()
-                            .join(" x ")
-                    }
-                ));
-                // Pages: extra dims beyond the first two, pinned to first item.
-                let pinned = self.pinned_dims(&cats);
-                if !pinned.is_empty() {
-                    let text = pinned
-                        .iter()
-                        .map(|(c, i)| {
-                            format!(
-                                "{}={}",
-                                self.model.categories[c].name.0, self.model.items[i].name.0
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    ui.label(format!("pages: {text}"));
-                }
+                self.axis_shelf(ui);
+                self.page_selectors(ui);
                 ui.separator();
-                self.render_grid(ui, mid, &cats);
+                self.render_grid(ui, mid);
             }
         });
     }
 
-    /// Extra dims beyond the first two, pinned to their first item.
-    fn pinned_dims(&self, cats: &[CategoryId]) -> Vec<(CategoryId, ItemId)> {
-        cats.iter()
-            .skip(2)
-            .filter_map(|c| {
-                self.model
-                    .categories
-                    .get(c)
-                    .and_then(|cat| cat.items.iter().min_by_key(|i| i.0).map(|i| (*c, *i)))
-            })
-            .collect()
+    /// The pivot "axis shelf": three drop zones (Rows / Columns / Pages) each
+    /// showing the category chips assigned there. Categories are dragged
+    /// between zones (egui 0.29 `dnd_drag_source`/`dnd_drop_zone`); each chip
+    /// also has a "->" button that cycles rows->cols->pages for mouse-only use.
+    fn axis_shelf(&mut self, ui: &mut egui::Ui) {
+        let cat_name = |app: &ImprovApp, c: CategoryId| {
+            app.model
+                .categories
+                .get(&c)
+                .map(|x| x.name.0.clone())
+                .unwrap_or_else(|| format!("category {}", c.0))
+        };
+        // Snapshot the per-axis assignment for this frame.
+        let row_cat = self.axis_order.first().copied();
+        let col_cat = self.axis_order.get(1).copied();
+        let page_cats: Vec<CategoryId> = self.axis_order.iter().skip(2).copied().collect();
+
+        // Mutations requested this frame (applied after the borrow ends).
+        let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
+
+        let zone = |ui: &mut egui::Ui,
+                    app: &ImprovApp,
+                    label: &str,
+                    axis: Axis,
+                    cats: &[CategoryId],
+                    moves: &mut Vec<(CategoryId, Axis)>| {
+            ui.vertical(|ui| {
+                ui.strong(label);
+                let frame = egui::Frame::default()
+                    .inner_margin(4.0)
+                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
+                let (_, dropped) = ui.dnd_drop_zone::<CategoryId, ()>(frame, |ui| {
+                    ui.set_min_size(egui::vec2(120.0, 26.0));
+                    ui.horizontal_wrapped(|ui| {
+                        if cats.is_empty() {
+                            ui.weak("(empty)");
+                        }
+                        for c in cats {
+                            let id = egui::Id::new(("chip", c.0));
+                            ui.dnd_drag_source(id, *c, |ui| {
+                                ui.label(egui::RichText::new(cat_name(app, *c)).strong());
+                            });
+                            // Mouse-only fallback: cycle rows->cols->pages.
+                            let next = match axis {
+                                Axis::Rows => Axis::Columns,
+                                Axis::Columns => Axis::Pages,
+                                Axis::Pages => Axis::Rows,
+                            };
+                            if ui.small_button("->").clicked() {
+                                moves.push((*c, next));
+                            }
+                        }
+                    });
+                });
+                if let Some(c) = dropped {
+                    moves.push((*c, axis));
+                }
+            });
+        };
+
+        ui.horizontal(|ui| {
+            zone(
+                ui,
+                self,
+                "Rows",
+                Axis::Rows,
+                &row_cat.into_iter().collect::<Vec<_>>(),
+                &mut moves,
+            );
+            zone(
+                ui,
+                self,
+                "Columns",
+                Axis::Columns,
+                &col_cat.into_iter().collect::<Vec<_>>(),
+                &mut moves,
+            );
+            zone(ui, self, "Pages", Axis::Pages, &page_cats, &mut moves);
+            if ui.button("Pivot").on_hover_text("rotate axes").clicked() {
+                self.pivot_rotate();
+            }
+        });
+
+        for (c, axis) in moves {
+            self.set_axis(c, axis);
+        }
     }
 
-    /// Render `measure` as a 2-D pivot grid: first category on rows, second on
-    /// columns, remaining dims pinned to their first item. Input cells are
-    /// editable; derived cells are read-only.
-    fn render_grid(&mut self, ui: &mut egui::Ui, measure: MeasureId, cats: &[CategoryId]) {
+    /// Page selectors: for each page (extra) dimension, a ` <label> [i/n] < > `
+    /// control that pins which item the grid slices to. Mirrors the TUI paging.
+    fn page_selectors(&mut self, ui: &mut egui::Ui) {
+        let page_cats: Vec<CategoryId> = self.axis_order.iter().skip(2).copied().collect();
+        if page_cats.is_empty() {
+            return;
+        }
+        let mut set: Option<(usize, usize)> = None;
+        ui.horizontal(|ui| {
+            for (i, c) in page_cats.iter().enumerate() {
+                let items = self.sorted_items(*c);
+                if items.is_empty() {
+                    continue;
+                }
+                let cur = self
+                    .page_idx
+                    .get(i)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(items.len() - 1);
+                let cname = self
+                    .model
+                    .categories
+                    .get(c)
+                    .map(|x| x.name.0.clone())
+                    .unwrap_or_default();
+                ui.group(|ui| {
+                    ui.label(&cname);
+                    if ui.small_button("<").clicked() {
+                        let prev = (cur + items.len() - 1) % items.len();
+                        set = Some((i, prev));
+                    }
+                    ui.label(format!("{}  [{}/{}]", items[cur].1, cur + 1, items.len()));
+                    if ui.small_button(">").clicked() {
+                        set = Some((i, (cur + 1) % items.len()));
+                    }
+                });
+            }
+        });
+        if let Some((dim, idx)) = set {
+            self.set_page(dim, idx);
+        }
+    }
+
+    /// Render `measure` as a 2-D pivot grid using the current axis order: the
+    /// category at axis index 0 on rows, index 1 on columns, the rest pinned to
+    /// their selected page item. Input cells are editable; derived read-only.
+    fn render_grid(&mut self, ui: &mut egui::Ui, measure: MeasureId) {
         let is_derived = self
             .model
             .measures
@@ -596,33 +835,13 @@ impl ImprovApp {
             .map(|m| m.is_derived())
             .unwrap_or(false);
         let values = self.values_for(measure);
-        let items = |c: CategoryId| -> Vec<(ItemId, String)> {
-            let mut v: Vec<(ItemId, String)> = self
-                .model
-                .categories
-                .get(&c)
-                .map(|cat| {
-                    cat.items
-                        .iter()
-                        .filter_map(|id| {
-                            self.model.items.get(id).map(|it| (*id, it.name.0.clone()))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            v.sort_by_key(|(id, _)| id.0);
-            v
-        };
-
-        let row_cat = cats.first().copied();
-        let col_cat = cats.get(1).copied();
+        let (row_cat, col_cat, pinned) = self.resolved_axes();
         let rows = row_cat
-            .map(items)
+            .map(|c| self.sorted_items(c))
             .unwrap_or_else(|| vec![(ItemId(0), String::new())]);
         let cols = col_cat
-            .map(items)
+            .map(|c| self.sorted_items(c))
             .unwrap_or_else(|| vec![(ItemId(0), String::new())]);
-        let pinned = self.pinned_dims(cats);
 
         // Edits collected during rendering, applied after the table closure so
         // we don't borrow `self` mutably inside it.
@@ -910,6 +1129,8 @@ mod tests {
     fn build_app(model: Model) -> ImprovApp {
         let (engine, snapshot) = build_engine(&model);
         let selected = pick_default_measure(&model);
+        let axis_order = natural_axis_order(&model, selected);
+        let page_idx = vec![0; axis_order.len().saturating_sub(2)];
         ImprovApp {
             db: String::new(),
             model,
@@ -923,6 +1144,146 @@ mod tests {
             formula_for: None,
             new_name: String::new(),
             new_formula: String::new(),
+            axis_order,
+            page_idx,
+            axis_for: selected,
         }
+    }
+
+    // A 3-D input measure Sales[Time, Product, Region] for paging tests
+    // (mirrors the TUI's paging fixture).
+    fn sales_3d_model() -> Model {
+        let mut m = Model::new();
+        let (time, product, region) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        m.add_category(time, "Time");
+        m.add_category(product, "Product");
+        m.add_category(region, "Region");
+        m.add_item(ItemId(10), time, "2025");
+        m.add_item(ItemId(20), product, "WidgetA");
+        m.add_item(ItemId(30), region, "North");
+        m.add_item(ItemId(31), region, "South");
+        m.add_measure(Measure {
+            id: MeasureId(200),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product, region],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let c = |pairs: &[(CategoryId, ItemId)]| {
+            improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
+        };
+        m.set_input(
+            MeasureId(200),
+            c(&[
+                (time, ItemId(10)),
+                (product, ItemId(20)),
+                (region, ItemId(30)),
+            ]),
+            Value::Number(100.0),
+        );
+        m.set_input(
+            MeasureId(200),
+            c(&[
+                (time, ItemId(10)),
+                (product, ItemId(20)),
+                (region, ItemId(31)),
+            ]),
+            Value::Number(250.0),
+        );
+        m
+    }
+
+    #[test]
+    fn set_axis_moves_category_from_columns_to_rows() {
+        // Quantity[Time, Product]: natural rows=Time(1), cols=Product(2).
+        let mut app = build_app(revenue_model());
+        app.selected = Some(MeasureId(101));
+        app.sync_axis_state();
+        let (r, c, _) = app.resolved_axes();
+        assert_eq!(r, Some(CategoryId(1))); // Time on rows
+        assert_eq!(c, Some(CategoryId(2))); // Product on cols
+
+        // Move Product (currently on columns) to rows.
+        app.set_axis(CategoryId(2), Axis::Rows);
+        let (r, c, _) = app.resolved_axes();
+        assert_eq!(r, Some(CategoryId(2)), "Product now on rows");
+        assert_eq!(c, Some(CategoryId(1)), "Time bumped to columns");
+    }
+
+    #[test]
+    fn pivot_rotate_swaps_axes_and_back() {
+        let mut app = build_app(revenue_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        let (r0, c0, _) = app.resolved_axes();
+        assert_eq!((r0, c0), (Some(CategoryId(1)), Some(CategoryId(2))));
+
+        app.pivot_rotate();
+        let (r1, c1, _) = app.resolved_axes();
+        assert_eq!((r1, c1), (Some(CategoryId(2)), Some(CategoryId(1))));
+
+        app.pivot_rotate(); // back to start for a 2-D measure
+        let (r2, c2, _) = app.resolved_axes();
+        assert_eq!((r2, c2), (Some(CategoryId(1)), Some(CategoryId(2))));
+    }
+
+    #[test]
+    fn set_page_changes_pinned_item_and_cell_value() {
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        // One page dim (Region), pinned to North (index 0) by default.
+        let (_, _, pinned) = app.resolved_axes();
+        assert_eq!(pinned, vec![(CategoryId(3), ItemId(30))]); // North
+
+        // Cell [2025, WidgetA, North] = 100.
+        let vals = app.values_for(MeasureId(200));
+        let mut north = vec![(1u32, 10u32), (2, 20), (3, 30)];
+        north.sort();
+        assert_eq!(vals.get(&north), Some(&100.0));
+
+        // Page to South (index 1): pinned item and the visible value change.
+        app.set_page(0, 1);
+        let (_, _, pinned) = app.resolved_axes();
+        assert_eq!(pinned, vec![(CategoryId(3), ItemId(31))]); // South
+        let mut south = vec![(1u32, 10u32), (2, 20), (3, 31)];
+        south.sort();
+        assert_eq!(vals.get(&south), Some(&250.0));
+    }
+
+    #[test]
+    fn switching_measure_resets_axis_order() {
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        // Pivot away from natural order.
+        app.pivot_rotate();
+        assert_ne!(
+            app.axis_order,
+            vec![CategoryId(1), CategoryId(2), CategoryId(3)]
+        );
+
+        // Add a 1-D measure and select it: axis order resets to its natural order.
+        app.model.add_measure(Measure {
+            id: MeasureId(201),
+            name: Name("Tax".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(2)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        app.selected = Some(MeasureId(201));
+        app.sync_axis_state();
+        assert_eq!(app.axis_order, vec![CategoryId(2)]);
+        assert!(app.page_idx.is_empty());
+
+        // Back to Sales: natural order restored (not the pivoted one).
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        assert_eq!(
+            app.axis_order,
+            vec![CategoryId(1), CategoryId(2), CategoryId(3)]
+        );
     }
 }

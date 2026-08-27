@@ -145,12 +145,15 @@ The authoritative roadmap and Phase 5–7 invariants live in
   `CALL(...)` runtime dispatch (Python first, then R/Julia/WASM) is still
   PLANNED.
 - **Phase 7 (SQL connectivity): IN PROGRESS.** `crates/storage_sql` imports a
-  SQLite `SELECT` into an input measure (columns → categories/items/cells) and
-  exports a measure's cells to a SQL table; CLI `import-sql` / `export-sql`.
-  SQL data enters as ordinary input cells (deterministic core untouched).
-  Identifiers validated, values bound (injection-safe). PLANNED: live-query
-  `SQL("...")` measures, connection/credential management, GUI wizards, other
-  backends (Postgres/DuckDB).
+  SQLite `SELECT` into an input measure (columns → categories/items/cells),
+  exports a measure's cells to a SQL table, and supports **live-query refresh**:
+  an imported measure stores a refreshable `SqlSource` (persisted on the model),
+  and `refresh_sql_measure` re-runs the query to replace its cells. CLI
+  `import-sql` / `refresh-sql` / `export-sql`. SQL data enters as ordinary input
+  cells (deterministic core untouched; SQL measures marked in
+  `Model.sql_sources`). Identifiers validated, values bound (injection-safe).
+  PLANNED: connection/credential management, on-load/interval refresh, a
+  `SQL("...")` formula form, GUI wizards, other backends (Postgres/DuckDB).
 
 ## Definition of done for v1
 
