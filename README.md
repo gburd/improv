@@ -35,6 +35,13 @@ recalculation is always incremental.
 
 ## Quick start
 
+With [Nix](https://nixos.org) (flakes): `nix develop` drops you into a dev shell
+with the right Rust toolchain, the GUI runtime libraries (Wayland/X11/libGL) on
+`LD_LIBRARY_PATH`, and the tooling (`nextest`, `deny`, `mdbook`, `typos`,
+`sqlite3`). A `.envrc` (`use flake`) makes `direnv` load it automatically.
+The desktop GUI (`improv-gui`) needs those libs, so run it from inside the
+shell.
+
 ```sh
 cargo build --workspace
 cargo test  --workspace

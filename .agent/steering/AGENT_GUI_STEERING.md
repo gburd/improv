@@ -122,7 +122,33 @@ updates.
 ### 6.3 Pivoting
 
 Assign categories to rows / columns / pages / filters → the engine materializes
-a new slice → the interface renders it.
+a new slice → the interface renders it. This is the signature Improv/Quantrix
+interaction: the same measures are re-projected without rewriting any formula.
+
+### 6.4 Quantrix / Lotus Improv feature parity
+
+Improv aims to match the modeling hallmarks of Lotus Improv and Quantrix
+Modeler. Parity status (drives the plan):
+
+- Named categories/items/measures; formulas over names, not cells. **Done.**
+- Multidimensional cube; automatic broadcasting; dimension-aware aggregation.
+  **Done.**
+- Live incremental recalculation. **Done.**
+- Scenarios as an ordinary category (what-if by adding/switching an item).
+  **Supported** via the category model.
+- **Pivoting — drag/reassign categories between rows / columns / pages /
+  filters, without rewriting formulas.** The defining interaction. *In
+  progress*: axis reassignment (move a category to rows/cols/pages) is being
+  added to the GUI (drag-and-drop) and TUI (keyboard + mouse). Filters (restrict
+  a dimension to a subset) follow.
+- **Multiple saved views** per model — a named layout (which measure, category
+  placement, sort/filter). *Planned* (a `View` on the model, persisted as
+  datoms; see IMPROV.txt "View layer").
+- Charts on a view. *Planned*, lower priority.
+
+Both the GUI (`improv-gui`) and the TUI (`improv-tui`) support pivoting; the TUI
+additionally accepts **mouse input** (click to select/pivot) where the terminal
+supports it, in addition to keyboard control.
 
 ---
 
