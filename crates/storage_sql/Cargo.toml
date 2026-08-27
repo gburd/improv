@@ -11,7 +11,12 @@ path = "src/lib.rs"
 [dependencies]
 improv_core_model = { path = "../core_model" }
 thiserror.workspace = true
+serde.workspace = true
+postgres = "0.19"
 
 [dependencies.rusqlite]
 version = "0.40"
 features = ["bundled"]
+
+[dev-dependencies]
+serde_json.workspace = true

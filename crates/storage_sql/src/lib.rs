@@ -11,20 +11,32 @@
 //!   data). Credential/connection management is the caller's concern; this crate
 //!   takes an open `rusqlite::Connection`.
 //!
-//! v1 targets **SQLite** (the reference driver, and what the embedded Mentat
-//! store already uses). Other backends (Postgres, DuckDB, …) slot behind the
-//! same column→model mapping later.
+//! Backends sit behind a common [`Backend`] enum ([`backend`] module): SQLite
+//! (the reference driver, and what the embedded Mentat store already uses) and
+//! Postgres. Both produce a common typed [`backend::Table`], so the column→model
+//! mapping below is backend-agnostic. Connections are described out of band by
+//! [`conn::Connection`] (no plaintext secrets) and opened via [`conn::open`].
 
+pub mod backend;
+pub mod conn;
+pub mod pg;
+
+pub use backend::{Backend, Cell, SqlConn, Table};
+pub use conn::{ConnKind, Connection};
+pub use pg::connect_postgres;
+
+use backend::Cell as BackendCell;
 use improv_core_model::{
     CategoryId, Coordinate, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value, ValueType,
 };
-use rusqlite::Connection;
 use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SqlError {
     #[error("sql error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("connect: {0}")]
+    Connect(String),
     #[error("import: {0}")]
     Import(String),
     #[error("export: {0}")]
@@ -65,7 +77,14 @@ pub struct DimensionMapping {
 ///
 /// SQL data enters purely as input cells (a normal measure collection), so the
 /// deterministic engine core is untouched.
-pub fn import_query(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> Result<usize> {
+pub fn import_query<C: SqlConn>(
+    mut conn: C,
+    model: &mut Model,
+    spec: &ImportSpec,
+) -> Result<usize> {
+    // Run the query once, up front, into a backend-agnostic table.
+    let table = conn.query(&spec.query)?;
+
     // Ensure the categories exist.
     for d in &spec.dimensions {
         model
@@ -100,31 +119,21 @@ pub fn import_query(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> 
     }
     let mut next_item = spec.item_id_base;
 
-    let mut stmt = conn.prepare(&spec.query)?;
-    let col_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-
     // Resolve column indices up front; error clearly if a mapped column is absent.
-    let idx = |name: &str| -> Result<usize> {
-        col_names
-            .iter()
-            .position(|c| c == name)
-            .ok_or_else(|| SqlError::Import(format!("no column '{name}' in query result")))
-    };
     let dim_idx: Vec<(usize, CategoryId)> = spec
         .dimensions
         .iter()
-        .map(|d| Ok((idx(&d.column)?, d.category_id)))
+        .map(|d| Ok((table.column_index(&d.column)?, d.category_id)))
         .collect::<Result<_>>()?;
-    let val_idx = idx(&spec.value_column)?;
+    let val_idx = table.column_index(&spec.value_column)?;
 
-    let mut rows = stmt.query([])?;
     let mut count = 0usize;
-    // Collect (coord, value) first so we can mutate the model after the borrow.
+    // Collect (coord, value) first so we can mutate the model after.
     let mut cells: Vec<(Coordinate, f64)> = Vec::new();
-    while let Some(row) = rows.next()? {
+    for row in &table.rows {
         let mut coord = Coordinate::new();
         for (ci, cat) in &dim_idx {
-            let key = cell_text(row, *ci)?;
+            let key = row[*ci].as_text();
             let item = *interners
                 .entry(*cat)
                 .or_default()
@@ -136,17 +145,15 @@ pub fn import_query(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> 
                 });
             coord = coord.with(*cat, item);
         }
-        let value: f64 = row.get(val_idx).map_err(|e| {
+        let value: f64 = row[val_idx].as_number().map_err(|_| {
             SqlError::Import(format!(
-                "value column '{}' is not numeric: {e}",
+                "value column '{}' is not numeric",
                 spec.value_column
             ))
         })?;
         cells.push((coord, value));
         count += 1;
     }
-    drop(rows);
-    drop(stmt);
 
     // Register items on their categories and set the input cells.
     for (cat, items) in &interners {
@@ -178,7 +185,7 @@ pub fn import_query(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> 
 /// already exist or be creatable from the import; this is a convenience over
 /// `import_query` that also marks the measure as SQL-backed so it can be
 /// refreshed later.
-pub fn add_sql_measure(conn: &Connection, model: &mut Model, spec: &ImportSpec) -> Result<usize> {
+pub fn add_sql_measure<C: SqlConn>(conn: C, model: &mut Model, spec: &ImportSpec) -> Result<usize> {
     let source = improv_core_model::SqlSource {
         query: spec.query.clone(),
         dimension_columns: spec.dimensions.iter().map(|d| d.column.clone()).collect(),
@@ -197,8 +204,8 @@ pub fn add_sql_measure(conn: &Connection, model: &mut Model, spec: &ImportSpec) 
 /// ordinary input cells, so the engine recomputes dependents with no SQL path
 /// of its own. It is nondeterministic by nature (external data), hence gated on
 /// an explicit refresh rather than sitting on a pure evaluation path.
-pub fn refresh_sql_measure(
-    conn: &Connection,
+pub fn refresh_sql_measure<C: SqlConn>(
+    conn: C,
     model: &mut Model,
     measure: MeasureId,
 ) -> Result<usize> {
@@ -263,8 +270,8 @@ pub fn refresh_sql_measure(
 ///
 /// `table` and column names are validated as plain identifiers to avoid
 /// injection through DDL (which cannot be parameterized).
-pub fn export_measure(
-    conn: &Connection,
+pub fn export_measure<C: SqlConn>(
+    mut conn: C,
     model: &Model,
     measure: MeasureId,
     table: &str,
@@ -298,15 +305,19 @@ pub fn export_measure(
     let cols_ddl = dim_cols
         .iter()
         .map(|(_, n)| format!("{n} TEXT"))
-        .chain(std::iter::once(format!("{value_column} REAL")))
+        .chain(std::iter::once(format!(
+            "{value_column} {}",
+            conn.real_type()
+        )))
         .collect::<Vec<_>>()
         .join(", ");
     conn.execute(
         &format!("CREATE TABLE IF NOT EXISTS {table} ({cols_ddl})"),
-        [],
+        &[],
     )?;
 
-    let placeholders = std::iter::repeat_n("?", dim_cols.len() + 1)
+    let placeholders = (1..=dim_cols.len() + 1)
+        .map(|n| conn.placeholder(n))
         .collect::<Vec<_>>()
         .join(", ");
     let col_list = dim_cols
@@ -316,7 +327,6 @@ pub fn export_measure(
         .collect::<Vec<_>>()
         .join(", ");
     let insert = format!("INSERT INTO {table} ({col_list}) VALUES ({placeholders})");
-    let mut stmt = conn.prepare(&insert)?;
 
     let mut count = 0usize;
     for ((mid, coord), val) in &model.inputs {
@@ -327,35 +337,24 @@ pub fn export_measure(
             Value::Number(n) => *n,
             _ => continue, // v1 exports numeric cells only
         };
-        // Bind dimension item names then the value.
-        let mut params: Vec<rusqlite::types::Value> = Vec::with_capacity(dim_cols.len() + 1);
+        // Bind dimension item names then the value (all as parameters).
+        let mut params: Vec<BackendCell> = Vec::with_capacity(dim_cols.len() + 1);
         for (cat, _) in &dim_cols {
             let item_name = coord
                 .get(*cat)
                 .and_then(|i| model.items.get(&i))
                 .map(|it| it.name.0.clone())
                 .unwrap_or_default();
-            params.push(rusqlite::types::Value::Text(item_name));
+            params.push(BackendCell::Text(item_name));
         }
-        params.push(rusqlite::types::Value::Real(n));
-        stmt.execute(rusqlite::params_from_iter(params))?;
+        params.push(BackendCell::Float(n));
+        conn.execute(&insert, &params)?;
         count += 1;
     }
     Ok(count)
 }
 
 // --- helpers ---
-
-fn cell_text(row: &rusqlite::Row, idx: usize) -> Result<String> {
-    use rusqlite::types::ValueRef;
-    Ok(match row.get_ref(idx)? {
-        ValueRef::Null => String::new(),
-        ValueRef::Integer(i) => i.to_string(),
-        ValueRef::Real(f) => f.to_string(),
-        ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
-        ValueRef::Blob(_) => return Err(SqlError::Import("blob dimension value".into())),
-    })
-}
 
 /// Validate a SQL identifier (table/column) used in DDL/DML that can't be
 /// parameterized: ASCII alphanumeric + underscore, not starting with a digit.
@@ -402,8 +401,8 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
 
-    fn source_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
+    fn source_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE sales (time TEXT, product TEXT, revenue REAL);
              INSERT INTO sales VALUES ('2025','WidgetA', 1000.0);
@@ -438,9 +437,9 @@ mod tests {
 
     #[test]
     fn import_maps_columns_to_model() {
-        let conn = source_db();
+        let mut conn = Backend::Sqlite(source_db());
         let mut model = Model::new();
-        let n = import_query(&conn, &mut model, &revenue_spec()).unwrap();
+        let n = import_query(&mut conn, &mut model, &revenue_spec()).unwrap();
         assert_eq!(n, 3, "three rows imported");
 
         // Categories + items created.
@@ -476,15 +475,26 @@ mod tests {
 
     #[test]
     fn import_then_export_round_trips_values() {
-        let conn = source_db();
+        let mut conn = Backend::Sqlite(source_db());
         let mut model = Model::new();
-        import_query(&conn, &mut model, &revenue_spec()).unwrap();
+        import_query(&mut conn, &mut model, &revenue_spec()).unwrap();
 
-        let out = Connection::open_in_memory().unwrap();
-        let n = export_measure(&out, &model, MeasureId(100), "revenue_out", "revenue").unwrap();
+        let out = rusqlite::Connection::open_in_memory().unwrap();
+        let mut out_be = Backend::Sqlite(out);
+        let n = export_measure(
+            &mut out_be,
+            &model,
+            MeasureId(100),
+            "revenue_out",
+            "revenue",
+        )
+        .unwrap();
         assert_eq!(n, 3);
 
         // Read the exported values back; the multiset of revenues matches.
+        let Backend::Sqlite(out) = &out_be else {
+            unreachable!()
+        };
         let mut stmt = out
             .prepare("SELECT revenue FROM revenue_out ORDER BY revenue")
             .unwrap();
@@ -498,44 +508,47 @@ mod tests {
 
     #[test]
     fn missing_column_errors() {
-        let conn = source_db();
+        let mut conn = Backend::Sqlite(source_db());
         let mut model = Model::new();
         let mut spec = revenue_spec();
         spec.value_column = "nope".into();
-        assert!(import_query(&conn, &mut model, &spec).is_err());
+        assert!(import_query(&mut conn, &mut model, &spec).is_err());
     }
 
     #[test]
     fn export_rejects_bad_identifier() {
         let model = {
-            let conn = source_db();
+            let mut conn = Backend::Sqlite(source_db());
             let mut m = Model::new();
-            import_query(&conn, &mut m, &revenue_spec()).unwrap();
+            import_query(&mut conn, &mut m, &revenue_spec()).unwrap();
             m
         };
-        let out = Connection::open_in_memory().unwrap();
+        let mut out = Backend::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
         // A table name with a quote must be rejected, not interpolated.
-        assert!(export_measure(&out, &model, MeasureId(100), "bad\"; DROP", "v").is_err());
+        assert!(export_measure(&mut out, &model, MeasureId(100), "bad\"; DROP", "v").is_err());
     }
 
     #[test]
     fn sql_measure_refresh_picks_up_new_data() {
-        let conn = source_db();
+        let mut conn = Backend::Sqlite(source_db());
         let mut model = Model::new();
         // Register + populate an SQL-backed measure.
-        let n = add_sql_measure(&conn, &mut model, &revenue_spec()).unwrap();
+        let n = add_sql_measure(&mut conn, &mut model, &revenue_spec()).unwrap();
         assert_eq!(n, 3);
         assert!(model.sql_sources.contains_key(&MeasureId(100)));
 
         // The source data changes (a new row + a changed value).
-        conn.execute_batch(
+        let Backend::Sqlite(raw) = &conn else {
+            unreachable!()
+        };
+        raw.execute_batch(
             "UPDATE sales SET revenue = 9999.0 WHERE time='2025' AND product='WidgetA';
              INSERT INTO sales VALUES ('2027','WidgetA', 1.0);",
         )
         .unwrap();
 
         // Refresh replaces this measure's cells with the fresh query result.
-        let n2 = refresh_sql_measure(&conn, &mut model, MeasureId(100)).unwrap();
+        let n2 = refresh_sql_measure(&mut conn, &mut model, MeasureId(100)).unwrap();
         assert_eq!(n2, 4, "now four rows");
         assert_eq!(model.inputs.len(), 4);
 
@@ -562,10 +575,86 @@ mod tests {
 
     #[test]
     fn refresh_requires_a_registered_source() {
-        let conn = source_db();
+        let mut conn = Backend::Sqlite(source_db());
         let mut model = Model::new();
         // A plain import (no source registered) can't be refreshed.
-        import_query(&conn, &mut model, &revenue_spec()).unwrap();
-        assert!(refresh_sql_measure(&conn, &mut model, MeasureId(100)).is_err());
+        import_query(&mut conn, &mut model, &revenue_spec()).unwrap();
+        assert!(refresh_sql_measure(&mut conn, &mut model, MeasureId(100)).is_err());
+    }
+
+    /// Backend abstraction: open a SQLite `Connection` descriptor and run the
+    /// SQLite import through the same enum, then export. Exercises `conn::open`.
+    #[test]
+    fn conn_open_sqlite_import_export() {
+        // Seed an in-memory DB and hand it to the abstraction directly.
+        let mut conn = Backend::Sqlite(source_db());
+        let mut model = Model::new();
+        let n = import_query(&mut conn, &mut model, &revenue_spec()).unwrap();
+        assert_eq!(n, 3);
+
+        // A file-backed SQLite descriptor round-trips through open().
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("improv_sql_test_{}.db", std::process::id()));
+        let desc = crate::conn::sqlite("s1", "scratch", path.to_str().unwrap());
+        let mut be = crate::conn::open(&desc).unwrap();
+        let out =
+            export_measure(&mut be, &model, MeasureId(100), "revenue_out", "revenue").unwrap();
+        assert_eq!(out, 3);
+        drop(be);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Postgres query mapping: guarded by IMPROV_TEST_PG. Skips cleanly if unset
+    /// so CI without a database still passes.
+    #[test]
+    fn postgres_import_when_available() {
+        let Ok(uri) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return;
+        };
+        let mut be = crate::connect_postgres(&uri).expect("connect IMPROV_TEST_PG");
+        // Build a disposable source table.
+        be.execute("DROP TABLE IF EXISTS improv_pg_sales", &[])
+            .unwrap();
+        be.execute(
+            "CREATE TABLE improv_pg_sales (t TEXT, p TEXT, revenue DOUBLE PRECISION)",
+            &[],
+        )
+        .unwrap();
+        for (t, p, r) in [
+            ("2025", "A", 10.0),
+            ("2025", "B", 20.0),
+            ("2026", "A", 30.0),
+        ] {
+            be.execute(
+                "INSERT INTO improv_pg_sales (t, p, revenue) VALUES ($1, $2, $3)",
+                &[Cell::Text(t.into()), Cell::Text(p.into()), Cell::Float(r)],
+            )
+            .unwrap();
+        }
+        let mut model = Model::new();
+        let spec = ImportSpec {
+            query: "SELECT t, p, revenue FROM improv_pg_sales".into(),
+            dimensions: vec![
+                DimensionMapping {
+                    column: "t".into(),
+                    category_id: CategoryId(1),
+                    category_name: "Time".into(),
+                },
+                DimensionMapping {
+                    column: "p".into(),
+                    category_id: CategoryId(2),
+                    category_name: "Product".into(),
+                },
+            ],
+            value_column: "revenue".into(),
+            measure_id: MeasureId(100),
+            measure_name: "Revenue".into(),
+            item_id_base: 1000,
+        };
+        let n = import_query(&mut be, &mut model, &spec).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(model.inputs.len(), 3);
+        be.execute("DROP TABLE improv_pg_sales", &[]).unwrap();
     }
 }
