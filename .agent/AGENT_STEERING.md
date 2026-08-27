@@ -65,6 +65,7 @@ GUI later.
 - `crates/server` — HTTP/RPC API. [Phase 3]
 - `crates/nl_formula` — CNL <-> formula. [Phase 4]
 - `crates/gui` — egui/eframe desktop app (`improv-gui`). [Phase 5]
+- `crates/extfn` — external-language function runtime (Python). [Phase 6]
 
 ## Phases (build in order)
 
@@ -137,13 +138,16 @@ The authoritative roadmap and Phase 5–7 invariants live in
   inspector (metadata/dimensions/dependencies/formula-in-English/error count).
   8 tests. Pending: keyboard grid navigation, scenario management, virtualized
   rendering for very large grids.
-- **Phase 6 (External-language functions): FOUNDATION DONE; runtime PLANNED.**
-  Named scalar functions are callable from formula text — `ABS`/`ROUND`/`FLOOR`/
+- **Phase 6 (External-language functions): IN PROGRESS.** In-process named
+  scalar functions are callable from formula text — `ABS`/`ROUND`/`FLOOR`/
   `CEIL`/`SQRT`/`NEG`/`MIN2`/`MAX2` via `core_model::parser::scalar_func`,
   evaluated deterministically by the engine (e.g. `AbsDelta = ABS(Delta)`).
-  This is the in-process, deterministic seam (`Expr::Call`). The external
-  `CALL(...)` runtime dispatch (Python first, then R/Julia/WASM) is still
-  PLANNED.
+  The external runtime lives in `crates/extfn` (`improv_extfn`): a `Registry`
+  of typed, purity-asserted `ExternalFn`s evaluated in an isolated Python
+  subprocess (timeout + JSON marshalling), speaking `core_model::Value`. NOT
+  yet wired into the engine's `Expr::Call` dispatch (the integration + a
+  `CALL(...)` grammar form are the remaining steps); R/Julia/WASM and an OS
+  sandbox are future work.
 - **Phase 7 (SQL connectivity): IN PROGRESS.** `crates/storage_sql` imports a
   SQLite `SELECT` into an input measure (columns → categories/items/cells),
   exports a measure's cells to a SQL table, and supports **live-query refresh**:

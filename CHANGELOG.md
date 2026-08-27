@@ -8,6 +8,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **External-function runtime** (`improv_extfn`, Phase 6): a registry of typed,
+  purity-asserted external functions evaluated in an isolated Python subprocess
+  (timeout + JSON marshalling), speaking `core_model::Value` — the runtime the
+  engine's `Expr::Call` will dispatch to (wiring pending). Isolated-mode +
+  timeout, not yet an OS sandbox.
+- **GUI keyboard grid navigation** (`improv-gui`): arrow/hjkl move a highlighted
+  cell cursor; Enter/F2 edit, `[`/`]` page, `n`/`N` cycle measures; click also
+  moves the cursor.
 - **Saved views + filters** (`core_model::View`/`Filter`, Quantrix/Improv
   parity): a `View` captures a measure, an axis-order permutation
   (rows/columns/pages), pinned page items, and per-category filters (restrict a
