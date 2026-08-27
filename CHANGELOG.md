@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Saved views + filters** (`core_model::View`/`Filter`, Quantrix/Improv
+  parity): a `View` captures a measure, an axis-order permutation
+  (rows/columns/pages), pinned page items, and per-category filters (restrict a
+  dimension to a subset). Persisted through Mentat (`:view/*` datoms), survives
+  save/load. The data model both interfaces can drive; UI wiring follows.
 - **GUI drag-and-drop pivoting** (`improv-gui`): an axis shelf (Rows / Columns /
   Pages) lets you drag category chips between axes (egui drag-and-drop) or use
   per-chip `→` / a Pivot button, with per-page-dimension `< >` selectors — the

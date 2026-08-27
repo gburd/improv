@@ -126,6 +126,53 @@ pub struct Model {
     /// `improv_storage_sql`.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sql_sources: HashMap<MeasureId, SqlSource>,
+    /// Saved views: named pivot layouts over the model (parity with
+    /// Improv/Quantrix "multiple views per model"). A view is presentation, not
+    /// modeling — it does not change measures or data.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub views: HashMap<ViewId, View>,
+}
+
+/// A saved pivot layout: which measure, how its categories are placed on axes,
+/// which page items are pinned, and any per-category filters. Reusable across
+/// sessions; the interfaces load a view to reproduce a layout without touching
+/// formulas or data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct View {
+    pub id: ViewId,
+    pub name: Name,
+    pub measure: MeasureId,
+    /// A permutation of the measure's categories: index 0 is on rows, 1 on
+    /// columns, the rest are pages. Empty = use the measure's natural order.
+    #[serde(default)]
+    pub axis_order: Vec<CategoryId>,
+    /// For each page (extra) dimension, the pinned item.
+    #[serde(default)]
+    pub page_items: Vec<(CategoryId, ItemId)>,
+    /// Per-category filters: restrict a dimension to this subset of items.
+    /// A category absent here is unfiltered (all items shown).
+    #[serde(default)]
+    pub filters: Vec<Filter>,
+}
+
+/// Restrict a category to a subset of its items in a view.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Filter {
+    pub category: CategoryId,
+    /// Items to KEEP. An empty list means "no items pass" (an explicit empty
+    /// filter); omit the `Filter` entirely to show all items.
+    pub items: Vec<ItemId>,
+}
+
+impl View {
+    /// Does `item` in `category` pass this view's filters? Categories without a
+    /// filter always pass.
+    pub fn allows(&self, category: CategoryId, item: ItemId) -> bool {
+        match self.filters.iter().find(|f| f.category == category) {
+            Some(f) => f.items.contains(&item),
+            None => true,
+        }
+    }
 }
 
 /// How to refresh an SQL-backed input measure: the query and how its columns
@@ -218,6 +265,16 @@ impl Model {
     pub fn category_by_name(&self, name: &str) -> Option<&Category> {
         self.categories.values().find(|c| c.name.0 == name)
     }
+
+    /// Save (or replace) a view.
+    pub fn add_view(&mut self, v: View) {
+        self.views.insert(v.id, v);
+    }
+
+    /// Look up a view by its human name.
+    pub fn view_by_name(&self, name: &str) -> Option<&View> {
+        self.views.values().find(|v| v.name.0 == name)
+    }
 }
 
 #[cfg(test)]
@@ -274,5 +331,34 @@ mod tests {
         let json = serde_json::to_string(&m).expect("serialize");
         let back: Model = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(m, back, "model survives a JSON round trip");
+    }
+
+    #[test]
+    fn views_and_filters() {
+        let mut m = time_product_model();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        // A view of Price pivoted with Product on rows, filtered to WidgetA.
+        m.add_view(View {
+            id: ViewId(1),
+            name: Name("By Product".into()),
+            measure: MeasureId(100),
+            axis_order: vec![product, time],
+            page_items: vec![],
+            filters: vec![Filter {
+                category: product,
+                items: vec![ItemId(20)], // WidgetA only
+            }],
+        });
+        let v = m.view_by_name("By Product").expect("view");
+        assert_eq!(v.axis_order, vec![product, time]);
+        // Filter: WidgetA passes, WidgetB does not; unfiltered Time passes all.
+        assert!(v.allows(product, ItemId(20)));
+        assert!(!v.allows(product, ItemId(21)));
+        assert!(v.allows(time, ItemId(10)));
+
+        // Views survive a JSON round trip.
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Model = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
     }
 }

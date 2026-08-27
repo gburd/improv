@@ -72,6 +72,17 @@ impl ModelStore {
             cells.push(convert::cell_edn(*mid, coord, val)?);
         }
         self.transact_group(cells)?;
+
+        let mut views = Vec::new();
+        for v in model.views.values() {
+            let json = serde_json::to_string(v)?;
+            views.push(format!(
+                "{{:view/id {} :view/json {}}}",
+                v.id.0,
+                convert::edn_str_pub(&json)
+            ));
+        }
+        self.transact_group(views)?;
         Ok(())
     }
 
@@ -92,6 +103,7 @@ impl ModelStore {
         self.load_items(&mut model)?;
         self.load_measures(&mut model)?;
         self.load_cells(&mut model)?;
+        self.load_views(&mut model)?;
         Ok(model)
     }
 
@@ -264,6 +276,16 @@ impl ModelStore {
         Ok(())
     }
 
+    fn load_views(&mut self, model: &mut Model) -> Result<()> {
+        let q = "[:find ?json :where [?e :view/id _] [?e :view/json ?json]]";
+        for row in self.rel(q)? {
+            let json = convert::as_string(&row[0])?;
+            let v: improv_core_model::View = serde_json::from_str(&json)?;
+            model.views.insert(v.id, v);
+        }
+        Ok(())
+    }
+
     fn scalar(&self, query: &str) -> Result<Option<TypedValue>> {
         use mentat::Queryable;
         let out = self.store.q_once(query, None)?;
@@ -342,6 +364,17 @@ mod tests {
             Coordinate::from_pairs([(product, ItemId(20))]),
             Value::Number(10.0),
         );
+        m.add_view(improv_core_model::View {
+            id: improv_core_model::ViewId(1),
+            name: Name("Prices by product".into()),
+            measure: MeasureId(100),
+            axis_order: vec![CategoryId(2)],
+            page_items: vec![],
+            filters: vec![improv_core_model::Filter {
+                category: CategoryId(2),
+                items: vec![ItemId(20)],
+            }],
+        });
         m
     }
 
@@ -368,5 +401,12 @@ mod tests {
             loaded.input(MeasureId(100), &coord),
             Some(&Value::Number(10.0))
         );
+
+        // The saved view (layout + filter) survived the round trip.
+        let v = loaded.view_by_name("Prices by product").expect("view");
+        assert_eq!(v.measure, MeasureId(100));
+        assert_eq!(v.axis_order, vec![CategoryId(2)]);
+        assert!(v.allows(CategoryId(2), ItemId(20)));
+        assert!(!v.allows(CategoryId(2), ItemId(21)));
     }
 }

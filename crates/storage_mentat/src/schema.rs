@@ -75,4 +75,14 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :cell/value-text
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+
+ ;; VIEW (saved pivot layout). Stored whole as a JSON blob, keyed by id.
+ {:db/ident :view/id
+  :db/valueType :db.type/long
+  :db/cardinality :db.cardinality/one
+  :db/unique :db.unique/identity
+  :db/index true}
+ {:db/ident :view/json
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 ]"#;
