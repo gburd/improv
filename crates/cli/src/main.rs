@@ -7,8 +7,8 @@
 //! the loaded model, e.g. `--at Time=2025,Product=WidgetA`.
 
 use improv_core_model::{
-    parser, CategoryId, Coordinate, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value,
-    ValueType,
+    parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, Measure, MeasureId,
+    MeasureKind, Model, Name, Value, ValueType,
 };
 use improv_storage_mentat::ModelStore;
 use improv_storage_sql::{
@@ -39,6 +39,21 @@ COMMANDS:
         Add a derived (formula) measure, e.g.
         add-derived m.db 102 Revenue \"Price * Quantity\".
         Categories are inferred from the referenced measures.
+
+    define <db> <id> <definition>
+        Create a measure from a definition string. Two forms:
+          Formula: define m.db 102 \"Revenue = Price * Quantity\"
+          External call: define m.db 200 \"H = CALL(hypot, Price, Quantity)\"
+        (SQL(...) form: use import-sql, which needs a column-to-dimension map.)
+
+    register-ext <db> <name> <arity> <python-body>
+        Register a pure Python external function (Number args + Number result;
+        the body binds a list `args` and sets `result`), e.g.
+        register-ext m.db hypot 2 \"result = (args[0]**2 + args[1]**2) ** 0.5\".
+
+    refresh-ext <db> <measure-id>
+        (Re)populate a CALL(...) measure by running its function over its
+        argument measures, host-side (external calls stay off the engine path).
 
     set <db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]
         Set an input cell. --at maps category NAMES to item NAMES.
@@ -98,6 +113,9 @@ fn run(args: &[String]) -> Result<(), String> {
         "add-item" => cmd_add_item(rest),
         "add-measure" => cmd_add_measure(rest),
         "add-derived" => cmd_add_derived(rest),
+        "define" => cmd_define(rest),
+        "register-ext" => cmd_register_ext(rest),
+        "refresh-ext" => cmd_refresh_ext(rest),
         "set" => cmd_set(rest),
         "list" => cmd_list(rest),
         "show" => cmd_show(rest),
@@ -237,6 +255,145 @@ fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
     });
     store.save_model(&model).map_err(|e| e.to_string())?;
     println!("added derived measure {} '{name}'", id.0);
+    Ok(())
+}
+
+/// `define <db> <id> "<Target = ...>"` — create a measure from a definition
+/// string. Supports an ordinary formula (`Target = Price * Quantity`) and the
+/// external-call source form (`Target = CALL(func, ArgMeasure, ...)`). The SQL
+/// source form is handled by `import-sql` (it needs a column→dimension mapping
+/// beyond the query string). The target name is taken from the definition's LHS.
+fn cmd_define(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let id = MeasureId(parse_u32(arg(rest, 1, "id")?, "id")?);
+    let text = arg(rest, 2, "definition")?;
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+    match parser::parse_definition(&model, text).map_err(|e| e.to_string())? {
+        Definition::Formula(ft) => {
+            let mut cats: Vec<CategoryId> = Vec::new();
+            for m in ft.formula.referenced_measures() {
+                if let Some(measure) = model.measures.get(&m) {
+                    for c in &measure.categories {
+                        if !cats.contains(c) {
+                            cats.push(*c);
+                        }
+                    }
+                }
+            }
+            cats.sort_by_key(|c| c.0);
+            model.add_measure(Measure {
+                id,
+                name: ft.target.clone(),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Derived(ft.formula),
+                description: None,
+            });
+            println!("defined derived measure {} '{}'", id.0, ft.target.0);
+        }
+        Definition::Call { target, func, args } => {
+            if !model.external_fns.contains_key(&func) {
+                return Err(format!("external function '{func}' is not registered"));
+            }
+            // Resolve argument measure names to ids; the call's categories are
+            // the union of its argument measures' categories.
+            let mut arg_ids = Vec::new();
+            let mut cats: Vec<CategoryId> = Vec::new();
+            for a in &args {
+                let m = model
+                    .measures
+                    .values()
+                    .find(|m| m.name == *a)
+                    .ok_or_else(|| format!("unknown argument measure '{}'", a.0))?;
+                arg_ids.push(m.id);
+                for c in &m.categories {
+                    if !cats.contains(c) {
+                        cats.push(*c);
+                    }
+                }
+            }
+            cats.sort_by_key(|c| c.0);
+            // The measure is an Input measure populated by a host-side refresh
+            // (`engine::external::refresh_external_measure`).
+            model.add_measure(Measure {
+                id,
+                name: target.clone(),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+            model.external_calls.insert(
+                id,
+                ExternalCall {
+                    func: func.clone(),
+                    arg_measures: arg_ids,
+                },
+            );
+            println!(
+                "defined external-call measure {} '{}' = {func}(...); run 'refresh-ext' to populate",
+                id.0, target.0
+            );
+        }
+        Definition::Sql { .. } => {
+            return Err(
+                "SQL(...) form: use 'import-sql' (it needs a column-to-dimension mapping)"
+                    .to_string(),
+            );
+        }
+    }
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// `register-ext <db> <name> <arity> "<python body>"` — register a pure Python
+/// external function (all Number args + Number result; the body binds `args`
+/// and sets `result`). Enough to make `define ... CALL(name, ...)` usable from
+/// the CLI; richer type signatures are a future flag.
+fn cmd_register_ext(rest: &[String]) -> Result<(), String> {
+    use improv_core_model::{ExternalFn, Language};
+    let db = arg(rest, 0, "db")?;
+    let name = arg(rest, 1, "name")?;
+    let arity = parse_u32(arg(rest, 2, "arity")?, "arity")? as usize;
+    let body = arg(rest, 3, "python-body")?;
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    model.external_fns.insert(
+        name.to_string(),
+        ExternalFn {
+            name: name.to_string(),
+            language: Language::Python,
+            body: body.to_string(),
+            arg_types: vec![ValueType::Number; arity],
+            return_type: ValueType::Number,
+            pure: true,
+        },
+    );
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("registered external function '{name}' (arity {arity})");
+    Ok(())
+}
+
+/// `refresh-ext <db> <measure-id>` — (re)populate an external-call measure by
+/// running its function over its argument measures, host-side.
+fn cmd_refresh_ext(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let n = improv_engine::external::refresh_external_measure(
+        &mut model,
+        improv_engine::external::DEFAULT_TIMEOUT,
+        mid,
+    )
+    .map_err(|e| e.to_string())?;
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("refreshed external measure {} ({n} cells)", mid.0);
     Ok(())
 }
 

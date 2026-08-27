@@ -14,8 +14,11 @@
 //! explicit refresh (they are nondeterministic sources by nature).
 
 use improv_core_model::{Coordinate, MeasureId, Model, Value};
-use improv_extfn::Registry;
 use std::collections::BTreeMap;
+use std::time::Duration;
+
+/// Default wall-clock deadline for a single external evaluation.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExternalError {
@@ -40,7 +43,7 @@ pub enum ExternalError {
 /// argument measure has a value (the natural join of the arguments' cells).
 pub fn refresh_external_measure(
     model: &mut Model,
-    registry: &Registry,
+    timeout: Duration,
     measure: MeasureId,
 ) -> Result<usize, ExternalError> {
     let call = model
@@ -99,7 +102,7 @@ pub fn refresh_external_measure(
             .iter()
             .map(|m| m.get(&coord).cloned().unwrap_or(Value::Number(f64::NAN)))
             .collect();
-        let result = match improv_extfn::eval(&func, &args, registry.timeout()) {
+        let result = match improv_extfn::eval(&func, &args, timeout) {
             Ok(v) => v,
             Err(e) => improv_extfn::error_value(e.to_string()),
         };
@@ -160,9 +163,9 @@ mod tests {
                 arg_measures: vec![MeasureId(100)],
             },
         );
-        let reg = Registry::new();
+
         assert!(matches!(
-            refresh_external_measure(&mut m, &reg, MeasureId(200)),
+            refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(200)),
             Err(ExternalError::UnknownFunction(_))
         ));
     }
@@ -189,9 +192,9 @@ mod tests {
                 arg_measures: vec![MeasureId(100)],
             },
         );
-        let reg = Registry::new();
+
         assert!(matches!(
-            refresh_external_measure(&mut m, &reg, MeasureId(200)),
+            refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(200)),
             Err(ExternalError::ArgCountMismatch { .. })
         ));
     }
@@ -228,8 +231,7 @@ mod tests {
             },
         );
 
-        let reg = Registry::new();
-        let n = refresh_external_measure(&mut m, &reg, MeasureId(200)).unwrap();
+        let n = refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(200)).unwrap();
         assert_eq!(n, 2);
         // H[A] = hypot(3,4) = 5 ; H[B] = hypot(10,20) = ~22.36
         let a = Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);

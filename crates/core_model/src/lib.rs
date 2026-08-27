@@ -14,7 +14,9 @@ pub mod value;
 pub use extfn_def::{ExternalFn, Language};
 pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ViewId};
-pub use parser::{parse_expr, parse_formula, FormulaText, ParseError};
+pub use parser::{
+    parse_definition, parse_expr, parse_formula, Definition, FormulaText, ParseError,
+};
 pub use value::{Value, ValueError, ValueErrorKind, ValueType};
 
 use serde::{Deserialize, Serialize};

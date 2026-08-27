@@ -120,6 +120,28 @@ pub struct FormulaText {
     pub formula: Formula,
 }
 
+/// A parsed measure *definition* — either an ordinary formula or a source form
+/// (`SQL("...")` / `CALL(fn, m1, m2, ...)`) that describes a host-side source
+/// rather than a differential-dataflow expression. Source forms carry the
+/// metadata a refresh consumes; they never enter the engine's expression graph,
+/// preserving the deterministic core.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Definition {
+    /// `Target = <expr>` — an ordinary engine formula.
+    Formula(FormulaText),
+    /// `Target = SQL("<query>")` — a SQL-sourced input measure. The query is the
+    /// raw string; column→dimension mapping is the caller's concern.
+    Sql { target: Name, query: String },
+    /// `Target = CALL(func, arg_measure, ...)` — an external-function measure.
+    /// `func` is the registered function name; `args` are the argument measure
+    /// names (resolved to ids by the caller against the model).
+    Call {
+        target: Name,
+        func: String,
+        args: Vec<Name>,
+    },
+}
+
 // ---------------------------------------------------------------------------
 // Tokenizer
 // ---------------------------------------------------------------------------
@@ -572,13 +594,29 @@ fn agg_func(word: &str) -> Option<FuncId> {
 /// against `model`.
 pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseError> {
     let toks = tokenize(text)?;
+    let (target, rhs_start) = parse_lhs(&toks)?;
+    let mut p = Parser {
+        toks: &toks[rhs_start..],
+        pos: 0,
+        model,
+    };
+    let expr = p.parse_expr()?;
+    if p.peek().is_some() {
+        return Err(p.err("unexpected trailing input"));
+    }
+    Ok(FormulaText {
+        target,
+        formula: Formula::new(expr),
+    })
+}
+
+/// Locate the target name (LHS) and the index of the first RHS token (past
+/// `=`), skipping an optional bracketed target dimension list. Shared by
+/// [`parse_formula`] and [`parse_definition`].
+fn parse_lhs(toks: &[Spanned]) -> Result<(Name, usize), ParseError> {
     if toks.is_empty() {
         return Err(ParseError::new("empty formula", None));
     }
-    // LHS: Identifier [ "[" DimList "]" ] "=".  The target may carry a
-    // dimension list (e.g. `TotalRevenue[Product] = ...`); it declares the
-    // target measure's own dims, which live in the measure metadata, so we
-    // parse and discard it here and return only the name.
     let target = match &toks[0].tok {
         Tok::Ident(w) => Name(w.clone()),
         _ => {
@@ -588,10 +626,8 @@ pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseErro
             ))
         }
     };
-    // Find the assignment `=`, skipping an optional bracketed dim-list.
     let mut idx = 1;
     if matches!(toks.get(idx).map(|s| &s.tok), Some(Tok::Op(o)) if o == "[") {
-        // Consume up to and including the matching ']'.
         idx += 1;
         while !matches!(toks.get(idx).map(|s| &s.tok), Some(Tok::Op(o)) if o == "]") {
             if toks.get(idx).is_none() {
@@ -604,15 +640,36 @@ pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseErro
         }
         idx += 1; // past ']'
     }
-    let has_assign = matches!(toks.get(idx).map(|s| &s.tok), Some(Tok::Op(o)) if o == "=");
-    if !has_assign {
+    if !matches!(toks.get(idx).map(|s| &s.tok), Some(Tok::Op(o)) if o == "=") {
         return Err(ParseError::new(
             "expected '=' after target measure name",
             toks.get(idx).map(|s| s.pos),
         ));
     }
+    Ok((target, idx + 1))
+}
+
+/// Parse a measure definition: an ordinary `Target = <expr>` formula, or a
+/// source form `Target = SQL("...")` / `Target = CALL(fn, m1, m2, ...)`. The
+/// source forms are recognized only as the *entire* RHS (they are measure
+/// sources, not sub-expressions), keeping them out of the engine's expression
+/// grammar and thus off the deterministic hot path.
+pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseError> {
+    let toks = tokenize(text)?;
+    let (target, rhs) = parse_lhs(&toks)?;
+    // Is the RHS exactly `IDENT ( ... )` where IDENT is SQL/CALL?
+    if let Some(Tok::Ident(head)) = toks.get(rhs).map(|s| &s.tok) {
+        let is_open = matches!(toks.get(rhs + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(");
+        if is_open && head.eq_ignore_ascii_case("sql") {
+            return parse_sql_form(&toks, rhs, target);
+        }
+        if is_open && head.eq_ignore_ascii_case("call") {
+            return parse_call_form(&toks, rhs, target);
+        }
+    }
+    // Fall through to an ordinary formula expression.
     let mut p = Parser {
-        toks: &toks[idx + 1..],
+        toks: &toks[rhs..],
         pos: 0,
         model,
     };
@@ -620,10 +677,97 @@ pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseErro
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
-    Ok(FormulaText {
+    Ok(Definition::Formula(FormulaText {
         target,
         formula: Formula::new(expr),
-    })
+    }))
+}
+
+/// `SQL("<query>")` — a single string literal argument.
+fn parse_sql_form(toks: &[Spanned], rhs: usize, target: Name) -> Result<Definition, ParseError> {
+    // toks[rhs] = SQL, [rhs+1] = '(', [rhs+2] = Str, [rhs+3] = ')'
+    let query = match toks.get(rhs + 2).map(|s| &s.tok) {
+        Some(Tok::Str(s)) => s.clone(),
+        _ => {
+            return Err(ParseError::new(
+                "SQL(...) takes a single quoted query string",
+                toks.get(rhs + 2).map(|s| s.pos),
+            ))
+        }
+    };
+    match toks.get(rhs + 3).map(|s| &s.tok) {
+        Some(Tok::Op(o)) if o == ")" => {}
+        _ => {
+            return Err(ParseError::new(
+                "expected ')' to close SQL(...)",
+                toks.get(rhs + 3).map(|s| s.pos),
+            ))
+        }
+    }
+    if toks.get(rhs + 4).is_some() {
+        return Err(ParseError::new(
+            "unexpected trailing input after SQL(...)",
+            toks.get(rhs + 4).map(|s| s.pos),
+        ));
+    }
+    Ok(Definition::Sql { target, query })
+}
+
+/// `CALL(func, arg_measure, ...)` — a function name then zero or more measure
+/// name arguments.
+fn parse_call_form(toks: &[Spanned], rhs: usize, target: Name) -> Result<Definition, ParseError> {
+    let func = match toks.get(rhs + 2).map(|s| &s.tok) {
+        Some(Tok::Ident(w)) => w.clone(),
+        _ => {
+            return Err(ParseError::new(
+                "CALL(...) takes a function name then argument measures",
+                toks.get(rhs + 2).map(|s| s.pos),
+            ))
+        }
+    };
+    // After the function name: optional `, arg, arg, ...` then `)`.
+    let mut i = rhs + 3;
+    let mut args = Vec::new();
+    loop {
+        match toks.get(i).map(|s| &s.tok) {
+            Some(Tok::Op(o)) if o == ")" => {
+                i += 1;
+                break;
+            }
+            Some(Tok::Op(o)) if o == "," => {
+                i += 1;
+                match toks.get(i).map(|s| &s.tok) {
+                    Some(Tok::Ident(w)) => {
+                        args.push(Name(w.clone()));
+                        i += 1;
+                    }
+                    _ => {
+                        return Err(ParseError::new(
+                            "expected an argument measure name after ',' in CALL(...)",
+                            toks.get(i).map(|s| s.pos),
+                        ))
+                    }
+                }
+            }
+            other => {
+                return Err(ParseError::new(
+                    if other.is_none() {
+                        "unterminated CALL(...)"
+                    } else {
+                        "expected ',' or ')' in CALL(...)"
+                    },
+                    toks.get(i).map(|s| s.pos),
+                ))
+            }
+        }
+    }
+    if toks.get(i).is_some() {
+        return Err(ParseError::new(
+            "unexpected trailing input after CALL(...)",
+            toks.get(i).map(|s| s.pos),
+        ));
+    }
+    Ok(Definition::Call { target, func, args })
 }
 
 /// Parse just an expression (the RHS), with no target/assignment.
@@ -911,5 +1055,66 @@ mod tests {
         // as a measure ref (and errors if unknown) — no false function parse.
         let m = fixture();
         assert!(parse_expr(&m, "ABS").is_err()); // unknown measure "ABS"
+    }
+
+    #[test]
+    fn definition_falls_through_to_ordinary_formula() {
+        let m = fixture();
+        match parse_definition(&m, "Revenue = Price * Quantity").unwrap() {
+            Definition::Formula(ft) => {
+                assert_eq!(ft.target, Name("Revenue".into()));
+            }
+            other => panic!("expected Formula, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn definition_parses_sql_form() {
+        let m = fixture();
+        match parse_definition(&m, r#"Sales = SQL("select region, amount from sales")"#).unwrap() {
+            Definition::Sql { target, query } => {
+                assert_eq!(target, Name("Sales".into()));
+                assert_eq!(query, "select region, amount from sales");
+            }
+            other => panic!("expected Sql, got {other:?}"),
+        }
+        // SQL(...) needs exactly one string literal.
+        assert!(parse_definition(&m, "X = SQL(Price)").is_err());
+        assert!(parse_definition(&m, r#"X = SQL("a", "b")"#).is_err());
+    }
+
+    #[test]
+    fn definition_parses_call_form() {
+        let m = fixture();
+        // Zero-arg call.
+        match parse_definition(&m, "Now = CALL(now)").unwrap() {
+            Definition::Call { target, func, args } => {
+                assert_eq!(target, Name("Now".into()));
+                assert_eq!(func, "now");
+                assert!(args.is_empty());
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+        // Multi-arg call, argument measures by name (resolved by the caller).
+        match parse_definition(&m, "H = CALL(hypot, Price, Quantity)").unwrap() {
+            Definition::Call { func, args, .. } => {
+                assert_eq!(func, "hypot");
+                assert_eq!(args, vec![Name("Price".into()), Name("Quantity".into())]);
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+        // Malformed arg lists error, not panic.
+        assert!(parse_definition(&m, "X = CALL(f,)").is_err());
+        assert!(parse_definition(&m, "X = CALL(f, Price").is_err()); // unterminated
+        assert!(parse_definition(&m, "X = CALL()").is_err()); // no function name
+    }
+
+    #[test]
+    fn call_and_sql_are_only_recognized_as_the_whole_rhs() {
+        // `CALL`/`SQL` as a sub-expression is NOT a source form; it falls into
+        // the expression parser, where an unknown measure named CALL/SQL errors
+        // (they are not builtins). This keeps source forms off the engine path.
+        let m = fixture();
+        assert!(parse_definition(&m, "X = Price + SQL(\"q\")").is_err());
     }
 }
