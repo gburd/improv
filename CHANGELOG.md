@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Refresh scheduler daemon** (`serve-refresh`): honors each measure's
+  `RefreshPolicy` automatically — on every tick it refreshes the due measures
+  (on-load once, interval every N seconds). The scheduling decision is a pure,
+  unit-tested `core_model::schedule`; external-call measures also carry a
+  policy (`define ... --refresh`).
 - **SQL refresh policy + `refresh-all`**: `SqlSource` records a `RefreshPolicy`
   (manual / on-load / interval); CLI `import-sql --refresh ...` sets it and
   `refresh-all <db> [source.sqlite]` refreshes every external-sourced measure

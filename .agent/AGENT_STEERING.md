@@ -166,10 +166,15 @@ The authoritative roadmap and Phase 5–7 invariants live in
   bound (injection-safe). A `SQL("...")` definition-grammar form parses (via
   `parse_definition`) as a whole-RHS source; column→dimension mapping stays with
   the `import-sql` CLI command. Refresh-policy metadata (`RefreshPolicy`:
-  manual/on-load/interval) is recordable per SQL measure (`--refresh` flag), and
-  `refresh-all` re-runs every external-sourced measure at once. PLANNED: a
-  daemon/scheduler that *honors* interval/on-load timing automatically, GUI
-  import/export wizards, DuckDB.
+  manual/on-load/interval) is recordable per SQL *and* external-call measure
+  (`--refresh` flag), `refresh-all` re-runs every external-sourced measure at
+  once, and `serve-refresh` is a daemon that *honors* the policy timing
+  automatically (pure decision in `core_model::schedule`). PLANNED: GUI
+  import/export wizards. DuckDB backend is WIP-but-shelved: it builds and passes
+  (15 tests) but its `bundled` build pulls the arrow/ureq stack and
+  `webpki-roots` (`CDLA-Permissive-2.0`, a build-time dep) which trips
+  `cargo deny`; parked on git stash pending a maintainer `deny.toml` decision
+  (allow CDLA-Permissive-2.0, or drop duckdb's httpfs/ureq feature).
 
 ## Definition of done for v1
 
