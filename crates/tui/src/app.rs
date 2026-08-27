@@ -37,12 +37,16 @@ pub struct Grid {
     pub cells: Vec<Vec<Option<f64>>>,
 }
 
-/// A fixed extra dimension shown on the status line.
+/// An extra dimension not on the row/column axes, pinned to one item (a
+/// "page"). `item_index`/`item_count` let the UI page through the dimension's
+/// items with `[` / `]`.
 pub struct PageDim {
     pub cat: CategoryId,
     pub cat_name: String,
     pub item_name: String,
     pub item: ItemId,
+    pub item_index: usize,
+    pub item_count: usize,
 }
 
 impl Grid {
@@ -127,6 +131,19 @@ fn values_for(model: &Model, measure: MeasureId, snapshot: &Snapshot) -> HashMap
 /// Build the pivot grid for `measure`. Uses the measure's first two categories
 /// as the row/column axes and pins the rest to their first item.
 pub fn build_grid(model: &Model, measure: MeasureId, snapshot: &Snapshot) -> Grid {
+    build_grid_paged(model, measure, snapshot, &[])
+}
+
+/// Like [`build_grid`] but pins each extra (page) dimension to the item at the
+/// given index (clamped). `page_idx[i]` selects the item for the i-th extra
+/// dimension (categories beyond the first two); a missing/short entry defaults
+/// to 0. Enables paging through a 3+ dimensional measure.
+pub fn build_grid_paged(
+    model: &Model,
+    measure: MeasureId,
+    snapshot: &Snapshot,
+    page_idx: &[usize],
+) -> Grid {
     let m = model.measures.get(&measure);
     let measure_name = m
         .map(|m| m.name.0.clone())
@@ -154,18 +171,23 @@ pub fn build_grid(model: &Model, measure: MeasureId, snapshot: &Snapshot) -> Gri
         None => vec![(ItemId(0), String::new())],
     };
 
-    // Extra dims pinned to their first item.
+    // Extra dims pinned to the selected page item (default first).
     let mut pages = Vec::new();
-    for c in cats.iter().skip(2) {
+    for (pi, c) in cats.iter().skip(2).enumerate() {
         let its = items_of(model, *c);
-        if let Some((id, name)) = its.into_iter().next() {
-            pages.push(PageDim {
-                cat: *c,
-                cat_name: cat_name(*c),
-                item_name: name,
-                item: id,
-            });
+        if its.is_empty() {
+            continue;
         }
+        let sel = page_idx.get(pi).copied().unwrap_or(0).min(its.len() - 1);
+        let (id, name) = its[sel].clone();
+        pages.push(PageDim {
+            cat: *c,
+            cat_name: cat_name(*c),
+            item_name: name,
+            item: id,
+            item_index: sel,
+            item_count: its.len(),
+        });
     }
 
     let values = values_for(model, measure, snapshot);
@@ -257,6 +279,9 @@ pub struct App {
     pub edit: Option<String>,
     /// Transient status/error message (e.g. "derived cells are computed").
     pub status: Option<String>,
+    /// Selected item index for each extra (page) dimension of the viewed
+    /// measure; `[` / `]` cycle the first one. Reset when the measure changes.
+    pub page_idx: Vec<usize>,
 }
 
 impl App {
@@ -287,6 +312,7 @@ impl App {
 
         let selected = 0;
         let grid = build_grid(&model, measures[selected], &snapshot);
+        let page_idx = vec![0; grid.pages.len()];
         Ok(App {
             model,
             measures,
@@ -299,19 +325,49 @@ impl App {
             snapshot,
             edit: None,
             status: None,
+            page_idx,
         })
     }
 
     fn reselect(&mut self) {
-        self.grid = build_grid(&self.model, self.measures[self.selected], &self.snapshot);
+        self.grid = build_grid_paged(
+            &self.model,
+            self.measures[self.selected],
+            &self.snapshot,
+            &self.page_idx,
+        );
         self.cursor_row = self.cursor_row.min(self.grid.n_rows().saturating_sub(1));
         self.cursor_col = self.cursor_col.min(self.grid.n_cols().saturating_sub(1));
+    }
+
+    /// Cycle the first page (extra) dimension's selected item by `delta`
+    /// (wrapping). No-op if the viewed measure has no extra dimensions.
+    pub fn page(&mut self, delta: isize) {
+        let Some(pd) = self.grid.pages.first() else {
+            self.status = Some("no extra dimensions to page".into());
+            return;
+        };
+        let count = pd.item_count.max(1);
+        // Ensure page_idx has an entry per current page dim.
+        if self.page_idx.len() != self.grid.pages.len() {
+            self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
+        }
+        let cur = self.page_idx.first().copied().unwrap_or(0);
+        let next = (cur as isize + delta).rem_euclid(count as isize) as usize;
+        if let Some(slot) = self.page_idx.first_mut() {
+            *slot = next;
+        }
+        self.reselect();
     }
 
     /// Cycle to the next measure (wraps).
     pub fn next_measure(&mut self) {
         self.selected = (self.selected + 1) % self.measures.len();
+        // A new measure has its own extra dimensions; start at their first page.
+        self.page_idx.clear();
         self.reselect();
+        // Size page_idx to the new grid so `[`/`]` work immediately.
+        self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
     }
 
     /// Cursor movement, clamped to the grid (never goes out of range).
@@ -636,5 +692,64 @@ mod tests {
         assert_eq!(improv_engine::encode_coord(&coord), key);
         assert_eq!(coord.get(CategoryId(1)), Some(ItemId(11)));
         assert_eq!(coord.get(CategoryId(2)), Some(ItemId(21)));
+    }
+
+    #[test]
+    fn paging_changes_the_pinned_extra_dimension() {
+        // A 3-D input measure Sales[Time, Product, Region]; Time/Product are the
+        // grid axes, Region is a page dimension navigated with [ / ].
+        let mut m = Model::new();
+        let (time, product, region) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        m.add_category(time, "Time");
+        m.add_category(product, "Product");
+        m.add_category(region, "Region");
+        m.add_item(ItemId(10), time, "2025");
+        m.add_item(ItemId(20), product, "WidgetA");
+        m.add_item(ItemId(30), region, "North");
+        m.add_item(ItemId(31), region, "South");
+        m.add_measure(Measure {
+            id: MeasureId(200),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product, region],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let c = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
+        m.set_input(
+            MeasureId(200),
+            c(&[
+                (time, ItemId(10)),
+                (product, ItemId(20)),
+                (region, ItemId(30)),
+            ]),
+            Value::Number(100.0),
+        );
+        m.set_input(
+            MeasureId(200),
+            c(&[
+                (time, ItemId(10)),
+                (product, ItemId(20)),
+                (region, ItemId(31)),
+            ]),
+            Value::Number(250.0),
+        );
+
+        let mut app = App::new(m).unwrap();
+        // One page dimension (Region), starting on North (index 0).
+        assert_eq!(app.grid.pages.len(), 1);
+        assert_eq!(app.grid.pages[0].item_name, "North");
+        assert_eq!(app.grid.pages[0].item_count, 2);
+        assert_eq!(app.grid.value_at(0, 0), Some(100.0)); // North cell
+
+        // Page to the next Region: South, and the visible cell changes.
+        app.page(1);
+        assert_eq!(app.grid.pages[0].item_name, "South");
+        assert_eq!(app.grid.value_at(0, 0), Some(250.0));
+
+        // Wraps back to North.
+        app.page(1);
+        assert_eq!(app.grid.pages[0].item_name, "North");
+        assert_eq!(app.grid.value_at(0, 0), Some(100.0));
     }
 }

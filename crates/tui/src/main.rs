@@ -131,6 +131,8 @@ fn normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Down => app.move_cursor(1, 0),
         KeyCode::Left => app.move_cursor(0, -1),
         KeyCode::Right => app.move_cursor(0, 1),
+        KeyCode::Char('[') => app.page(-1),
+        KeyCode::Char(']') => app.page(1),
         KeyCode::Esc => app.status = None,
         _ => {}
     }

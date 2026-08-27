@@ -63,13 +63,21 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
         let pages = g
             .pages
             .iter()
-            .map(|p| format!("{}={}", p.cat_name, p.item_name))
+            .map(|p| {
+                format!(
+                    "{}={} ({}/{})",
+                    p.cat_name,
+                    p.item_name,
+                    p.item_index + 1,
+                    p.item_count
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
-        lines.push(Line::from(format!("pages (fixed): {pages}")));
+        lines.push(Line::from(format!("pages: {pages}   ([ ] to change)")));
     }
     lines.push(Line::from(
-        "arrows: move   e/Enter: edit   Esc: cancel   Tab/m: next measure   q: quit",
+        "arrows: move   e/Enter: edit   [ ]: page   Tab/m: measure   Esc: cancel   q: quit",
     ));
     if let Some(buf) = &app.edit {
         lines.push(Line::from(format!("edit> {buf}")));

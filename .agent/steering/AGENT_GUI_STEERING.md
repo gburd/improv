@@ -60,14 +60,15 @@ A VisiCalc-style terminal interface built on **ratatui** + **crossterm**.
 
 ### 4.1 Current Capabilities
 
-- Renders a measure as a 2-D pivot grid (categories on rows/columns, extra
-  dimensions as pages)
-- Keyboard navigation and measure cycling
+- Renders a measure as a 2-D pivot grid (first two categories on rows/columns).
+- Keyboard navigation (arrows), measure cycling (`Tab`/`m`), and **paging**
+  through extra (3rd+) dimensions with `[` / `]` (a `page i/n` indicator shows
+  the current slice).
 - **Live cell editing** of input measures (`e`/Enter to edit, Enter commits,
   Esc cancels; `q` quits): commits push through the engine's live incremental
   edit API so derived measures recompute from the delta, and re-render.
   Derived cells are read-only. Autosaves to Mentat on quit.
-- Panic-safe terminal teardown (restores the terminal on error)
+- A key-hint footer and panic-safe terminal teardown (restores on error).
 
 ### 4.2 Layout
 

@@ -8,6 +8,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **TUI paging** (`improv-tui`): `[` / `]` cycle the pinned item of a measure's
+  extra (3rd+) dimension, so multi-dimensional measures are fully viewable
+  slice-by-slice; a `page i/n` indicator and a key-hint footer were added.
 - **SQL connectivity** (`improv_storage_sql`, Phase 7, SQLite): import a
   `SELECT` into a new input measure (columns → categories/items/cells) and
   export a measure's cells to a SQL table. CLI `import-sql` / `export-sql`.
