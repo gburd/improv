@@ -1,6 +1,6 @@
 //! Rendering: a header/status line plus the pivot grid as a table.
 
-use crate::app::{App, Grid};
+use crate::app::{App, Grid, GridGeom};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -77,7 +77,7 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
         lines.push(Line::from(format!("pages: {pages}   ([ ] to change)")));
     }
     lines.push(Line::from(
-        "arrows: move   e/Enter: edit   [ ]: page   Tab/m: measure   Esc: cancel   q: quit",
+        "arrows/click: move   e/Enter: edit   [ ]: page   p: pivot   Tab/m: measure   q: quit",
     ));
     if let Some(buf) = &app.edit {
         lines.push(Line::from(format!("edit> {buf}")));
@@ -131,7 +131,7 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid) -> Table<'a> {
         .column_spacing(1)
 }
 
-pub fn render(f: &mut Frame, app: &App) {
+pub fn render(f: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(5), Constraint::Min(3)])
@@ -140,6 +140,19 @@ pub fn render(f: &mut Frame, app: &App) {
     let status = ratatui::widgets::Paragraph::new(status_lines(app))
         .block(Block::default().borders(Borders::ALL).title(" Status "));
     f.render_widget(status, chunks[0]);
+
+    // Record the grid geometry so mouse clicks can be mapped back to cells.
+    // Layout mirrors `grid_table`: a bordered block (1-cell inset on each side),
+    // a header row, then data rows; a row-label column (width 16) + N data
+    // columns (width 12) separated by 1-cell spacing.
+    let area = chunks[1];
+    app.grid_geom = Some(GridGeom {
+        // First data cell origin: inside the border (+1,+1), below the header (+1).
+        x0: area.x + 1,
+        y0: area.y + 2,
+        col_w: 12,
+        spacing: 1,
+    });
 
     let table = grid_table(app, &app.grid);
     f.render_widget(table, chunks[1]);

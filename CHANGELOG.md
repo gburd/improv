@@ -8,6 +8,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **TUI pivoting + mouse** (`improv-tui`): `p` rotates categories across
+  rows/columns/pages (Improv/Quantrix-style re-pivot, no formula changes), and
+  left-click selects a cell (mouse capture enabled). Complements the existing
+  arrow navigation, `[`/`]` paging, `e`/Enter editing, and measure cycling.
+- **Nix flake**: `nix develop` dev shell with the Rust toolchain, GUI runtime
+  libraries on `LD_LIBRARY_PATH` (so `improv-gui` runs), and the tooling.
 - **TUI paging** (`improv-tui`): `[` / `]` cycle the pinned item of a measure's
   extra (3rd+) dimension, so multi-dimensional measures are fully viewable
   slice-by-slice; a `page i/n` indicator and a key-hint footer were added.

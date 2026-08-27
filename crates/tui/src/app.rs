@@ -49,6 +49,18 @@ pub struct PageDim {
     pub item_count: usize,
 }
 
+/// Geometry of the last-rendered grid, recorded by `ui::render` so mouse
+/// clicks (screen col/row) can be mapped back to a grid cell.
+#[derive(Clone, Copy, Debug)]
+pub struct GridGeom {
+    /// Screen coords of the top-left DATA cell (row 0, col 0).
+    pub x0: u16,
+    pub y0: u16,
+    /// Width of each data column and the inter-column spacing.
+    pub col_w: u16,
+    pub spacing: u16,
+}
+
 impl Grid {
     pub fn n_rows(&self) -> usize {
         self.rows.len()
@@ -144,11 +156,35 @@ pub fn build_grid_paged(
     snapshot: &Snapshot,
     page_idx: &[usize],
 ) -> Grid {
+    build_grid_pivoted(model, measure, snapshot, page_idx, None)
+}
+
+/// The most general grid builder. `axis_order`, when `Some`, is a permutation
+/// of the measure's categories that sets which category is on rows (first),
+/// columns (second), and pages (rest) — this is how the UI *pivots* without
+/// touching formulas. `None` uses the measure's natural category order.
+pub fn build_grid_pivoted(
+    model: &Model,
+    measure: MeasureId,
+    snapshot: &Snapshot,
+    page_idx: &[usize],
+    axis_order: Option<&[CategoryId]>,
+) -> Grid {
     let m = model.measures.get(&measure);
     let measure_name = m
         .map(|m| m.name.0.clone())
         .unwrap_or_else(|| measure.0.to_string());
-    let cats: Vec<CategoryId> = m.map(|m| m.categories.clone()).unwrap_or_default();
+    let natural: Vec<CategoryId> = m.map(|m| m.categories.clone()).unwrap_or_default();
+    // Use the requested axis order if it is a valid permutation of the measure's
+    // categories; otherwise fall back to natural order (defensive).
+    let cats: Vec<CategoryId> = match axis_order {
+        Some(order)
+            if order.len() == natural.len() && natural.iter().all(|c| order.contains(c)) =>
+        {
+            order.to_vec()
+        }
+        _ => natural,
+    };
 
     let cat_name = |c: CategoryId| {
         model
@@ -282,6 +318,12 @@ pub struct App {
     /// Selected item index for each extra (page) dimension of the viewed
     /// measure; `[` / `]` cycle the first one. Reset when the measure changes.
     pub page_idx: Vec<usize>,
+    /// Current axis order (a permutation of the viewed measure's categories):
+    /// element 0 is on rows, 1 on columns, the rest are pages. Pivoting mutates
+    /// this; it resets to the measure's natural order on measure switch.
+    pub axis_order: Vec<CategoryId>,
+    /// Geometry of the last render, for mapping mouse clicks to cells.
+    pub grid_geom: Option<GridGeom>,
 }
 
 impl App {
@@ -311,6 +353,14 @@ impl App {
         };
 
         let selected = 0;
+        let natural_axes = |mid: MeasureId| -> Vec<CategoryId> {
+            model
+                .measures
+                .get(&mid)
+                .map(|m| m.categories.clone())
+                .unwrap_or_default()
+        };
+        let axis_order = natural_axes(measures[selected]);
         let grid = build_grid(&model, measures[selected], &snapshot);
         let page_idx = vec![0; grid.pages.len()];
         Ok(App {
@@ -326,18 +376,62 @@ impl App {
             edit: None,
             status: None,
             page_idx,
+            axis_order,
+            grid_geom: None,
         })
     }
 
     fn reselect(&mut self) {
-        self.grid = build_grid_paged(
+        self.grid = build_grid_pivoted(
             &self.model,
             self.measures[self.selected],
             &self.snapshot,
             &self.page_idx,
+            Some(&self.axis_order),
         );
         self.cursor_row = self.cursor_row.min(self.grid.n_rows().saturating_sub(1));
         self.cursor_col = self.cursor_col.min(self.grid.n_cols().saturating_sub(1));
+    }
+
+    /// The viewed measure's categories in natural (declared) order.
+    fn natural_axis_order(&self) -> Vec<CategoryId> {
+        self.model
+            .measures
+            .get(&self.measures[self.selected])
+            .map(|m| m.categories.clone())
+            .unwrap_or_default()
+    }
+
+    /// Pivot: rotate the axis order left, so rows->pages, cols->rows, first
+    /// page->cols. A single discoverable key repeatedly cycles which category
+    /// sits on each axis — the Improv/Quantrix "move a category to another
+    /// axis" gesture, without touching formulas. No-op for < 2 categories.
+    pub fn pivot(&mut self) {
+        if self.axis_order.len() < 2 {
+            self.status = Some("nothing to pivot (measure has < 2 dimensions)".into());
+            return;
+        }
+        self.axis_order.rotate_left(1);
+        // Axis roles changed; reset page selection to first items.
+        self.page_idx.clear();
+        self.reselect();
+        self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
+        let names: Vec<String> = self
+            .axis_order
+            .iter()
+            .map(|c| {
+                self.model
+                    .categories
+                    .get(c)
+                    .map(|x| x.name.0.clone())
+                    .unwrap_or_else(|| c.0.to_string())
+            })
+            .collect();
+        self.status = Some(format!(
+            "pivot: rows={} cols={}",
+            names[0],
+            names.get(1).cloned().unwrap_or_default()
+        ));
     }
 
     /// Cycle the first page (extra) dimension's selected item by `delta`
@@ -363,7 +457,8 @@ impl App {
     /// Cycle to the next measure (wraps).
     pub fn next_measure(&mut self) {
         self.selected = (self.selected + 1) % self.measures.len();
-        // A new measure has its own extra dimensions; start at their first page.
+        // A new measure has its own dimensions; reset axis order and paging.
+        self.axis_order = self.natural_axis_order();
         self.page_idx.clear();
         self.reselect();
         // Size page_idx to the new grid so `[`/`]` work immediately.
@@ -376,6 +471,26 @@ impl App {
         let max_col = self.grid.n_cols().saturating_sub(1) as isize;
         self.cursor_row = (self.cursor_row as isize + drow).clamp(0, max_row) as usize;
         self.cursor_col = (self.cursor_col as isize + dcol).clamp(0, max_col) as usize;
+    }
+
+    /// Handle a left-click at screen `(col, row)`: if it lands on a data cell,
+    /// move the cursor there. Uses the geometry recorded by the last render.
+    /// Out-of-grid clicks are ignored. (Enables mouse-driven navigation; the
+    /// terminal must support mouse reporting, which `improv-tui` enables.)
+    pub fn click_at(&mut self, col: u16, row: u16) {
+        let Some(g) = self.grid_geom else { return };
+        if row < g.y0 || col < g.x0 {
+            return;
+        }
+        // Which data row: each grid row is one terminal line from y0.
+        let r = (row - g.y0) as usize;
+        // Which data column: columns are col_w + spacing wide, starting at x0.
+        let stride = (g.col_w + g.spacing) as usize;
+        let c = ((col - g.x0) as usize) / stride.max(1);
+        if r < self.grid.n_rows() && c < self.grid.n_cols() {
+            self.cursor_row = r;
+            self.cursor_col = c;
+        }
     }
 
     /// True if the currently viewed measure is an input measure (editable).
@@ -751,5 +866,43 @@ mod tests {
         app.page(1);
         assert_eq!(app.grid.pages[0].item_name, "North");
         assert_eq!(app.grid.value_at(0, 0), Some(100.0));
+    }
+
+    #[test]
+    fn pivot_swaps_axes() {
+        // Revenue[Time, Product]: rows=Time, cols=Product initially.
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101)); // Quantity[Time, Product] input, 2x2
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Time");
+        assert_eq!(app.grid.col_cat.as_ref().unwrap().1, "Product");
+
+        // Pivot: rotate axes -> rows=Product, cols=Time.
+        app.pivot();
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Product");
+        assert_eq!(app.grid.col_cat.as_ref().unwrap().1, "Time");
+
+        // Pivot again on a 2-D measure returns to the original orientation.
+        app.pivot();
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Time");
+        assert_eq!(app.grid.col_cat.as_ref().unwrap().1, "Product");
+    }
+
+    #[test]
+    fn click_moves_cursor_to_cell() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101)); // 2x2
+                                        // Simulate the geometry a render would record.
+        app.grid_geom = Some(GridGeom {
+            x0: 2,
+            y0: 5,
+            col_w: 12,
+            spacing: 1,
+        });
+        // Click in data row 1, column 1: x within the 2nd column (stride 13).
+        app.click_at(2 + 13, 5 + 1);
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+        // A click above the grid (in the status area) is ignored.
+        app.click_at(2, 0);
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
     }
 }

@@ -7,7 +7,10 @@ mod ui;
 
 use app::App;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+        MouseEventKind,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -52,7 +55,7 @@ fn main() {
 fn run(mut app: App, path: &str) -> Result<(), String> {
     enable_raw_mode().map_err(|e| e.to_string())?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen).map_err(|e| e.to_string())?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
 
     // Restore the terminal if the run loop panics, then re-raise.
     let prev_hook = std::panic::take_hook();
@@ -79,7 +82,7 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
 /// Undo terminal setup. Safe to call multiple times.
 fn restore() -> io::Result<()> {
     let mut stdout = io::stdout();
-    execute!(stdout, LeaveAlternateScreen)?;
+    execute!(stdout, DisableMouseCapture, LeaveAlternateScreen)?;
     disable_raw_mode()
 }
 
@@ -94,6 +97,14 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> R
                     edit_key(app, k.code);
                 } else {
                     normal_key(app, k.code);
+                }
+            }
+            // Mouse: left-click selects the cell under the pointer; a click on a
+            // page indicator / axis label pivots (handled via cell hit-testing
+            // against the last-rendered grid rect stored on `app`).
+            Event::Mouse(m) if app.edit.is_none() => {
+                if let MouseEventKind::Down(MouseButton::Left) = m.kind {
+                    app.click_at(m.column, m.row);
                 }
             }
             _ => {}
@@ -133,6 +144,7 @@ fn normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Right => app.move_cursor(0, 1),
         KeyCode::Char('[') => app.page(-1),
         KeyCode::Char(']') => app.page(1),
+        KeyCode::Char('p') => app.pivot(),
         KeyCode::Esc => app.status = None,
         _ => {}
     }

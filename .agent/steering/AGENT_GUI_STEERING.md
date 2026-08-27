@@ -61,9 +61,11 @@ A VisiCalc-style terminal interface built on **ratatui** + **crossterm**.
 ### 4.1 Current Capabilities
 
 - Renders a measure as a 2-D pivot grid (first two categories on rows/columns).
-- Keyboard navigation (arrows), measure cycling (`Tab`/`m`), and **paging**
-  through extra (3rd+) dimensions with `[` / `]` (a `page i/n` indicator shows
-  the current slice).
+- **Pivoting**: `p` rotates which categories sit on rows/columns/pages (the
+  Improv/Quantrix "move a category to another axis" gesture, no formula edits).
+- Keyboard navigation (arrows), **mouse** (click a cell to select it; the
+  terminal must support mouse reporting, which the TUI enables), measure
+  cycling (`Tab`/`m`), and paging extra dimensions with `[` / `]`.
 - **Live cell editing** of input measures (`e`/Enter to edit, Enter commits,
   Esc cancels; `q` quits): commits push through the engine's live incremental
   edit API so derived measures recompute from the delta, and re-render.
