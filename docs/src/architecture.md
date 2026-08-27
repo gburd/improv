@@ -12,9 +12,11 @@ the ones below it.
 | `engine` | `improv_engine` | Formula compiler + differential-dataflow evaluation. | Done (numeric core) |
 | `nl_formula` | `improv_nl_formula` | Controlled-natural-language ⇄ formula translation. | Done (initial grammar) |
 | `cli` | `improv_cli` | The `improv` command-line tool. | Done (headless subset) |
-| *(tui)* | — | VisiCalc-style terminal UI. | Planned |
-| *(server)* | — | HTTP/RPC API. | Planned |
-| *(gui)* | — | Desktop GUI. | Planned |
+| *(tui)* | `improv_tui` | VisiCalc-style terminal pivot viewer. | Done |
+| *(server)* | `improv_server` | JSON HTTP API over a model store. | Done |
+| *(gui)* | `improv_gui` | Desktop GUI (pivoting, charts, views, filters). | Done |
+| *(storage_sql)* | `improv_storage_sql` | SQL import/export + refresh (SQLite, PostgreSQL). | Done |
+| *(extfn)* | `improv_extfn` | External-language function runtime (Python). | Done (Python) |
 
 ## The computation pipeline
 

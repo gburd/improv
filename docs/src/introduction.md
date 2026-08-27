@@ -26,18 +26,24 @@ cells it actually affects.
 - **`improv_nl_formula`** — a controlled-natural-language grammar that parses to
   and renders from a formula.
 - **`improv_cli`** — the headless `improv` command-line tool.
+- **`improv_tui`** — a VisiCalc-style terminal pivot viewer (`improv-tui`).
+- **`improv_server`** — a JSON HTTP API over a model store (`improv-server`).
+- **`improv_gui`** — the egui/eframe desktop app (`improv-gui`).
+- **`improv_storage_sql`** — SQL import/export + live-query refresh (SQLite,
+  PostgreSQL).
+- **`improv_extfn`** — the external-language function runtime (isolated Python).
 
 ## What is planned
 
 The following are named in the design but **not yet implemented**:
 
-- Scenario management, keyboard grid navigation, and virtualized rendering for
-  very large grids in the desktop GUI (the core GUI panels are built).
-- TUI re-pivot (dragging categories between axes) and a formula-editor pane —
-  the TUI edits input cells and recomputes live today, but re-pivot is pending.
-- Non-numeric (Text/Boolean) derived values and general (non-aggregation)
-  function calls.
-- External-language functions (Phase 6) and SQL connectivity (Phase 7).
+- Scenario management and virtualized rendering for very large grids in the
+  desktop GUI (pivoting, keyboard navigation, charts, saved views, and filters
+  are built).
+- Additional external-language runtimes (R/Julia/WASM) and an OS-level sandbox
+  (external Python runs in an isolated subprocess with a timeout today).
+- Interval/on-load SQL refresh scheduling and GUI import/export wizards
+  (manual `import-sql`/`refresh-sql`/`export-sql` work today); DuckDB.
 - Server authentication (the API is localhost-only for now).
 
 Per-phase status is tracked in `.agent/AGENT_STEERING.md`; the detailed design

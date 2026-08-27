@@ -78,6 +78,28 @@ or
 with measure and category names resolved against the model. The measure's
 categories are inferred from the measures it references.
 .TP
+.B define \fI<db> <id> \(dq<Target = ...>\(dq\fR
+Create a measure from a definition string whose left side is the target name.
+Two forms: an ordinary formula (
+.BR \(dqRevenue = Price * Quantity\(dq )
+or an external call (
+.BR \(dqH = CALL(hypot, Price, Quantity)\(dq ),
+which registers an external-function measure populated by
+.BR refresh-ext .
+.TP
+.B register-ext \fI<db> <name> <arity> \(dq<python body>\(dq\fR
+Register a pure Python external function (Number arguments and result). The
+body binds a list
+.I args
+and sets
+.IR result .
+.TP
+.B refresh-ext \fI<db> <measure-id>\fR
+Re-populate a
+.BR CALL(...)
+measure by running its function over its argument measures, host-side
+(external calls stay off the differential-dataflow evaluation path).
+.TP
 .B set \fI<db> <measure-id> <value>\fR [\fB\-\-at\fR \fICat=Item,Cat=Item ...\fR]
 Set an input cell. The
 .I <value>

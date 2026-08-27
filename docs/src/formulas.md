@@ -91,8 +91,12 @@ operators — see [Architecture](./architecture.md).
 
 ## Scope today
 
-The numeric engine evaluates: input-measure references, unary negation, the
-arithmetic binary ops, dimension-aligning joins, and `SUM`/`AVG`/`MIN`/`MAX`
-aggregation. **Planned / not yet implemented:** non-numeric derived values,
-standalone (broadcast) literals, general (non-aggregation) function calls, and
-derived measures that reference other derived measures.
+The engine evaluates: input-measure references, unary negation, the arithmetic
+and comparison binary ops, dimension-aligning joins, `SUM`/`AVG`/`MIN`/`MAX`
+aggregation, named scalar functions (`ABS`/`ROUND`/`FLOOR`/`CEIL`/`SQRT`/`NEG`/
+`MIN2`/`MAX2`), non-numeric (Text/Boolean/Error) values, and derived measures
+that reference other derived measures. External-language functions are called
+via the `CALL(...)` definition form and evaluated host-side (see the
+[README](https://codeberg.org/gregburd/improv#readme)). **Planned / not yet
+implemented:** standalone (broadcast) literals and additional external runtimes
+(R/Julia/WASM).

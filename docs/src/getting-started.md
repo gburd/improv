@@ -159,10 +159,13 @@ eval 103 'RevByProduct' (2 cells):
   RevByProduct[Product=WidgetB] = 2600
 ```
 
-## Where the CLI stops today
+## Beyond the CLI
 
 The CLI defines categories, items, input and derived measures, sets input
-cells, and evaluates derived measures through the engine. It does not yet edit
-formulas interactively or drive the incremental edit loop; the TUI (viewer
-today) and a live editing loop are planned. See the
-[architecture chapter](./architecture.md) for the full pipeline.
+cells, evaluates derived measures through the engine, imports/exports SQL, and
+registers and runs external Python functions. For interactive use, the
+`improv-tui` terminal viewer edits input cells and re-pivots live, and the
+`improv-gui` desktop app adds drag-and-drop pivoting, charts, saved views, and
+filters. See the [architecture chapter](./architecture.md) for the full
+pipeline and the [README](https://codeberg.org/gregburd/improv#readme) for the
+per-interface run instructions and keybindings.
