@@ -216,6 +216,25 @@ pub struct SqlSource {
     pub dimension_columns: Vec<String>,
     /// Result column holding the numeric value.
     pub value_column: String,
+    /// When this measure should be refreshed. Defaults to `Manual` (only when
+    /// asked). This is *policy metadata*; a caller (CLI `refresh-all`, a future
+    /// scheduler) decides when to honor it — the deterministic engine core is
+    /// untouched either way.
+    #[serde(default)]
+    pub refresh_policy: RefreshPolicy,
+}
+
+/// When an external-sourced measure (SQL or external-function) should refresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RefreshPolicy {
+    /// Only when explicitly asked (the safe default).
+    #[default]
+    Manual,
+    /// Whenever the model is loaded/opened by a tool that honors the policy.
+    OnLoad,
+    /// At most every `secs` seconds (advisory; the honoring tool tracks time).
+    Interval { secs: u64 },
 }
 
 /// serde adapter: (de)serialize the tuple-keyed `inputs` map as a `Vec` of

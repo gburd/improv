@@ -8,7 +8,7 @@
 
 use improv_core_model::{
     parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, Measure, MeasureId,
-    MeasureKind, Model, Name, Value, ValueType,
+    MeasureKind, Model, Name, RefreshPolicy, Value, ValueType,
 };
 use improv_storage_mentat::ModelStore;
 use improv_storage_sql::{
@@ -79,10 +79,17 @@ COMMANDS:
         import-sql m.db sales.db 100 Revenue \"SELECT t,p,r FROM sales\" r \
                    t:1:Time p:2:Product
         The measure is SQL-backed and can be re-run with refresh-sql.
+        Add --refresh <manual|on-load|interval:SECS> to record a refresh policy.
 
     refresh-sql <db> <source.sqlite> <measure-id>
         Re-run an SQL-backed measure's stored query and replace its cells with
         the fresh result (new dimension values become new items).
+
+    refresh-all <db> [source.sqlite]
+        Refresh every external-sourced measure at once: all CALL(...) measures,
+        plus all SQL-backed measures when a source.sqlite is given. Reports each
+        measure's refresh policy. (Timing policies are advisory metadata; this
+        is the manual \"do it now\" batch.)
 
     export-sql <db> <target.sqlite> <measure-id> <table> <value-col>
         Write a measure's input cells to a SQLite table (one column per
@@ -123,6 +130,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "export" => cmd_export(rest),
         "import-sql" => cmd_import_sql(rest),
         "refresh-sql" => cmd_refresh_sql(rest),
+        "refresh-all" => cmd_refresh_all(rest),
         "export-sql" => cmd_export_sql(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
@@ -378,6 +386,85 @@ fn cmd_register_ext(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse an optional `--refresh <manual|on-load|interval:SECS>` flag from an
+/// argument list; absent means `Manual`.
+fn parse_refresh_flag(rest: &[String]) -> Result<RefreshPolicy, String> {
+    let Some(pos) = rest.iter().position(|a| a == "--refresh") else {
+        return Ok(RefreshPolicy::Manual);
+    };
+    let val = rest
+        .get(pos + 1)
+        .ok_or("--refresh needs a value: manual | on-load | interval:SECS")?;
+    match val.as_str() {
+        "manual" => Ok(RefreshPolicy::Manual),
+        "on-load" => Ok(RefreshPolicy::OnLoad),
+        other => {
+            if let Some(secs) = other.strip_prefix("interval:") {
+                let secs = secs
+                    .parse::<u64>()
+                    .map_err(|_| "interval:SECS must be a number")?;
+                Ok(RefreshPolicy::Interval { secs })
+            } else {
+                Err(format!(
+                    "unknown refresh policy '{other}': use manual | on-load | interval:SECS"
+                ))
+            }
+        }
+    }
+}
+
+/// `refresh-all <db> [source.sqlite]` — refresh every external-sourced measure:
+/// all external-function (`CALL`) measures, plus all SQL-backed measures when a
+/// SQLite source is given. This honors nothing about `RefreshPolicy` timing
+/// itself — it is the manual "do it now" batch; a scheduler that consults the
+/// policy is future work. Policy metadata is reported so it is visible.
+fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let source = rest.get(1).cloned();
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+    let mut total = 0usize;
+    // External-function measures need no external connection.
+    let ext_ids: Vec<MeasureId> = model.external_calls.keys().copied().collect();
+    for mid in ext_ids {
+        let n = improv_engine::external::refresh_external_measure(
+            &mut model,
+            improv_engine::external::DEFAULT_TIMEOUT,
+            mid,
+        )
+        .map_err(|e| e.to_string())?;
+        println!("refreshed external measure {} ({n} cells)", mid.0);
+        total += n;
+    }
+    // SQL measures need the source database.
+    let sql_ids: Vec<MeasureId> = model.sql_sources.keys().copied().collect();
+    if !sql_ids.is_empty() {
+        match &source {
+            Some(src) => {
+                let conn = rusqlite::Connection::open(src).map_err(|e| e.to_string())?;
+                for mid in sql_ids {
+                    let policy = model.sql_sources.get(&mid).map(|s| s.refresh_policy);
+                    let n =
+                        refresh_sql_measure(&conn, &mut model, mid).map_err(|e| e.to_string())?;
+                    println!("refreshed SQL measure {} ({n} cells) [{policy:?}]", mid.0);
+                    total += n;
+                }
+            }
+            None => {
+                eprintln!(
+                    "note: {} SQL-backed measure(s) skipped (pass a source.sqlite to refresh them)",
+                    sql_ids.len()
+                );
+            }
+        }
+    }
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("refresh-all: {total} cells refreshed");
+    Ok(())
+}
+
 /// `refresh-ext <db> <measure-id>` — (re)populate an external-call measure by
 /// running its function over its argument measures, host-side.
 fn cmd_refresh_ext(rest: &[String]) -> Result<(), String> {
@@ -548,9 +635,17 @@ fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
     let query = arg(rest, 4, "SELECT")?.to_string();
     let value_column = arg(rest, 5, "value-col")?.to_string();
 
-    // Remaining args: dim-col:cat-id:cat-name
+    // Remaining args: dim-col:cat-id:cat-name, plus an optional
+    // `--refresh <manual|on-load|interval:SECS>` flag anywhere after them.
+    let refresh_policy = parse_refresh_flag(rest)?;
     let mut dimensions = Vec::new();
-    for spec in &rest[6.min(rest.len())..] {
+    let mut i = 6;
+    while i < rest.len() {
+        let spec = &rest[i];
+        if spec == "--refresh" {
+            i += 2; // skip flag + its value
+            continue;
+        }
         let parts: Vec<&str> = spec.splitn(3, ':').collect();
         if parts.len() != 3 {
             return Err(format!(
@@ -562,6 +657,7 @@ fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
             category_id: CategoryId(parse_u32(parts[1], "cat-id")?),
             category_name: parts[2].to_string(),
         });
+        i += 1;
     }
     if dimensions.is_empty() {
         return Err("at least one dimension mapping is required".into());
@@ -575,6 +671,7 @@ fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
         measure_id,
         measure_name: measure_name.clone(),
         item_id_base: 1_000_000, // above hand-assigned ids; avoids collisions
+        refresh_policy,
     };
 
     let mut store = open(db)?;
@@ -749,6 +846,22 @@ fn fmt_value(v: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn refresh_flag_parses_all_forms() {
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse_refresh_flag(&s(&[])).unwrap(), RefreshPolicy::Manual);
+        assert_eq!(
+            parse_refresh_flag(&s(&["--refresh", "on-load"])).unwrap(),
+            RefreshPolicy::OnLoad
+        );
+        assert_eq!(
+            parse_refresh_flag(&s(&["x", "--refresh", "interval:30"])).unwrap(),
+            RefreshPolicy::Interval { secs: 30 }
+        );
+        assert!(parse_refresh_flag(&s(&["--refresh", "hourly"])).is_err());
+        assert!(parse_refresh_flag(&s(&["--refresh"])).is_err()); // missing value
+    }
 
     fn tmp_db() -> String {
         let p = std::env::temp_dir().join(format!(

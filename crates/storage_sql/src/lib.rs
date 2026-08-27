@@ -63,6 +63,8 @@ pub struct ImportSpec {
     pub measure_name: String,
     /// Base id for minting item ids; items get sequential ids from here.
     pub item_id_base: u32,
+    /// How the resulting measure should refresh (default `Manual`).
+    pub refresh_policy: improv_core_model::RefreshPolicy,
 }
 
 pub struct DimensionMapping {
@@ -190,6 +192,7 @@ pub fn add_sql_measure<C: SqlConn>(conn: C, model: &mut Model, spec: &ImportSpec
         query: spec.query.clone(),
         dimension_columns: spec.dimensions.iter().map(|d| d.column.clone()).collect(),
         value_column: spec.value_column.clone(),
+        refresh_policy: spec.refresh_policy,
     };
     let n = import_query(conn, model, spec)?;
     model.sql_sources.insert(spec.measure_id, source);
@@ -254,6 +257,7 @@ pub fn refresh_sql_measure<C: SqlConn>(
             .max()
             .map(|m| m + 1)
             .unwrap_or(1_000_000),
+        refresh_policy: source.refresh_policy,
     };
     // Clear this measure's existing cells (refresh replaces them). Items from
     // prior refreshes are left in place (harmless; may be re-referenced).
@@ -432,6 +436,7 @@ mod tests {
             measure_id: MeasureId(100),
             measure_name: "Revenue".into(),
             item_id_base: 1000,
+            refresh_policy: Default::default(),
         }
     }
 
@@ -651,6 +656,7 @@ mod tests {
             measure_id: MeasureId(100),
             measure_name: "Revenue".into(),
             item_id_base: 1000,
+            refresh_policy: Default::default(),
         };
         let n = import_query(&mut be, &mut model, &spec).unwrap();
         assert_eq!(n, 3);
