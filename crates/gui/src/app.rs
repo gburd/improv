@@ -69,6 +69,10 @@ pub struct ImprovApp {
     /// the grid's dimensions. Reset when the selected measure or pivot changes.
     cursor_row: usize,
     cursor_col: usize,
+
+    /// Whether the read-only chart panel is shown, and its bar/line toggle.
+    show_chart: bool,
+    chart_line: bool,
 }
 
 /// Which grid axis a category is assigned to.
@@ -114,7 +118,37 @@ impl ImprovApp {
             view_name: String::new(),
             cursor_row: 0,
             cursor_col: 0,
+            show_chart: false,
+            chart_line: false,
         })
+    }
+
+    // -- read-only accessors for the chart module (crate-internal) ---------
+
+    pub(crate) fn selected(&self) -> Option<MeasureId> {
+        self.selected
+    }
+    pub(crate) fn resolved_axes_pub(
+        &self,
+    ) -> (
+        Option<CategoryId>,
+        Option<CategoryId>,
+        Vec<(CategoryId, ItemId)>,
+    ) {
+        self.resolved_axes()
+    }
+    pub(crate) fn values_for_pub(&self, measure: MeasureId) -> HashMap<CoordKey, f64> {
+        self.values_for(measure)
+    }
+    /// Sorted, filtered items as `(item_id, name)` — item ids as raw `u32`.
+    pub(crate) fn sorted_items_pub(&self, c: CategoryId) -> Vec<(u32, String)> {
+        self.sorted_items(c)
+            .into_iter()
+            .map(|(id, n)| (id.0, n))
+            .collect()
+    }
+    pub(crate) fn category_name_pub(&self, c: CategoryId) -> Option<String> {
+        self.model.categories.get(&c).map(|x| x.name.0.clone())
     }
 
     // -- pure state logic (unit-tested; no rendering) ----------------------
@@ -713,6 +747,7 @@ impl eframe::App for ImprovApp {
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
         self.formula_panel(ctx);
+        self.chart_panel(ctx);
         self.grid_panel(ctx);
     }
 }
@@ -929,6 +964,26 @@ impl ImprovApp {
             });
     }
 
+    /// Bottom-right chart panel (shown only when the "Chart" toggle is on): a
+    /// read-only bar chart of the selected measure with a bar/line toggle.
+    fn chart_panel(&mut self, ctx: &egui::Context) {
+        if !self.show_chart {
+            return;
+        }
+        egui::SidePanel::right("chart")
+            .resizable(true)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Chart");
+                    ui.checkbox(&mut self.chart_line, "line");
+                });
+                ui.separator();
+                let data = self.chart_series();
+                crate::chart::render_chart(ui, &data, self.chart_line);
+            });
+    }
+
     /// Center: the axis shelf (drag/reassign categories) + page selectors +
     /// the pivot grid for the selected measure.
     fn grid_panel(&mut self, ctx: &egui::Context) {
@@ -938,7 +993,16 @@ impl ImprovApp {
             }
             Some(mid) => {
                 let name = self.model.measures[&mid].name.0.clone();
-                ui.heading(&name);
+                ui.horizontal(|ui| {
+                    ui.heading(&name);
+                    if ui
+                        .selectable_label(self.show_chart, "Chart")
+                        .on_hover_text("toggle a read-only chart of this measure")
+                        .clicked()
+                    {
+                        self.show_chart = !self.show_chart;
+                    }
+                });
                 self.axis_shelf(ui);
                 self.page_selectors(ui);
                 self.filter_shelf(ui);
@@ -1351,6 +1415,18 @@ impl ImprovApp {
     }
 }
 
+/// Crate-internal wrapper over `cell_key` taking raw `u32` row/col item ids
+/// (the chart works in raw ids). Same sorted-`CoordKey` contract.
+pub(crate) fn cell_key_pub(
+    row_cat: Option<CategoryId>,
+    col_cat: Option<CategoryId>,
+    rid: u32,
+    cid: u32,
+    pinned: &[(CategoryId, ItemId)],
+) -> CoordKey {
+    cell_key(row_cat, col_cat, ItemId(rid), ItemId(cid), pinned)
+}
+
 /// The sorted `CoordKey` for a cell, given the row/col categories, this cell's
 /// row/col items, and the pinned extra dims.
 fn cell_key(
@@ -1571,6 +1647,8 @@ mod tests {
             view_name: String::new(),
             cursor_row: 0,
             cursor_col: 0,
+            show_chart: false,
+            chart_line: false,
         }
     }
 
@@ -1952,5 +2030,85 @@ mod tests {
             vec![(CategoryId(3), ItemId(31))],
             "page item restored"
         );
+    }
+
+    // -- chart_series (pure; no egui) --------------------------------------
+
+    #[test]
+    fn chart_series_yields_labels_and_oracle_values() {
+        // Revenue[Time, Product], natural axes: rows=Time -> x, cols=Product ->
+        // one series each. Oracle: WidgetA = 1000/1200, WidgetB = 1000/1600.
+        let app = build_app(grid_2x2_model());
+        assert_eq!(app.selected, Some(MeasureId(102))); // Revenue selected
+        let d = app.chart_series();
+        assert_eq!(d.x_title, "Time");
+        assert_eq!(d.x_labels, vec!["2025".to_string(), "2026".to_string()]);
+        assert_eq!(d.series.len(), 2);
+        assert_eq!(d.series[0].name, "WidgetA");
+        assert_eq!(d.series[0].points, vec![Some(1000.0), Some(1200.0)]);
+        assert_eq!(d.series[1].name, "WidgetB");
+        assert_eq!(d.series[1].points, vec![Some(1000.0), Some(1600.0)]);
+        // y-range spans 0..1600 (0 always included).
+        assert_eq!(d.y_range(), (0.0, 1600.0));
+    }
+
+    #[test]
+    fn chart_series_1d_single_series() {
+        // Price[Product]: 1-D grid -> a single unnamed series over Product.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(100)); // Price[Product]
+        app.sync_axis_state();
+        let d = app.chart_series();
+        assert_eq!(d.x_title, "Product");
+        assert_eq!(
+            d.x_labels,
+            vec!["WidgetA".to_string(), "WidgetB".to_string()]
+        );
+        assert_eq!(d.series.len(), 1);
+        assert_eq!(d.series[0].name, "");
+        assert_eq!(d.series[0].points, vec![Some(10.0), Some(20.0)]);
+    }
+
+    #[test]
+    fn chart_filter_removes_a_bar() {
+        // Hide 2026 on the Time (x) axis: its label and points drop out.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+        app.toggle_filter_item(CategoryId(1), ItemId(11)); // hide 2026
+        let d = app.chart_series();
+        assert_eq!(d.x_labels, vec!["2025".to_string()], "2026 filtered out");
+        assert_eq!(d.series[0].points, vec![Some(1000.0)]); // WidgetA
+        assert_eq!(d.series[1].points, vec![Some(1000.0)]); // WidgetB
+    }
+
+    #[test]
+    fn chart_non_numeric_cell_is_a_gap_not_a_panic() {
+        // Overwrite one Revenue-input cell so a derived cell errors, and set a
+        // Text input on another measure: both surface as gaps, not panics.
+        let mut app = build_app(grid_2x2_model());
+        // Make Quantity[2026, WidgetA] a Text value -> Revenue[2026, WidgetA]
+        // becomes an Error (type mismatch), which values_for skips (gap).
+        let c = |pairs: &[(CategoryId, ItemId)]| {
+            improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
+        };
+        app.model.set_input(
+            MeasureId(101),
+            c(&[(CategoryId(1), ItemId(11)), (CategoryId(2), ItemId(20))]),
+            Value::Text("oops".into()),
+        );
+        app.rebuild_engine();
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+        let d = app.chart_series(); // must not panic
+                                    // WidgetA series: 2025 numeric, 2026 is a gap (None).
+        assert_eq!(d.series[0].name, "WidgetA");
+        assert_eq!(d.series[0].points, vec![Some(1000.0), None]);
+        // WidgetB series unaffected.
+        assert_eq!(d.series[1].points, vec![Some(1000.0), Some(1600.0)]);
+        // y-range still valid, 0 included.
+        let (lo, hi) = d.y_range();
+        assert_eq!(lo, 0.0);
+        assert!(hi >= 1600.0);
     }
 }

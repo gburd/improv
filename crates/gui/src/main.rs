@@ -6,6 +6,7 @@
 //! model explorer, formula editor, and inspector.
 
 mod app;
+mod chart;
 
 use app::ImprovApp;
 
