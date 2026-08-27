@@ -76,8 +76,25 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
             .join(", ");
         lines.push(Line::from(format!("pages: {pages}   ([ ] to change)")));
     }
+    if !app.filters.is_empty() {
+        let f = app
+            .filters
+            .iter()
+            .map(|f| {
+                let cname = app
+                    .model
+                    .categories
+                    .get(&f.category)
+                    .map(|c| c.name.0.clone())
+                    .unwrap_or_default();
+                format!("{cname}: {} shown", f.items.len())
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(format!("filters: {f}   (F to clear)")));
+    }
     lines.push(Line::from(
-        "arrows/click: move   e/Enter: edit   [ ]: page   p: pivot   Tab/m: measure   q: quit",
+        "arrows/click: move  e/Enter: edit  [ ]: page  p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  q: quit",
     ));
     if let Some(buf) = &app.edit {
         lines.push(Line::from(format!("edit> {buf}")));

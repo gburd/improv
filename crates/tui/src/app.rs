@@ -8,7 +8,7 @@
 
 #[cfg(test)]
 use improv_core_model::Coordinate;
-use improv_core_model::{CategoryId, ItemId, MeasureId, Model, Value};
+use improv_core_model::{CategoryId, Filter, ItemId, MeasureId, Model, Name, Value, View, ViewId};
 use improv_engine::session::{Engine, MeasureValues};
 use improv_engine::{decode_coord, encode_coord, CoordKey};
 use std::collections::HashMap;
@@ -89,14 +89,21 @@ impl Grid {
     }
 }
 
-/// Item names for a category, in the category's declared item order.
-fn items_of(model: &Model, cat: CategoryId) -> Vec<(ItemId, String)> {
+/// Item names for a category, in the category's declared item order, keeping
+/// only items that pass `filters` (a category absent from `filters` is
+/// unfiltered). Presentation-only: it hides items, it never touches data.
+fn items_of(model: &Model, cat: CategoryId, filters: &[Filter]) -> Vec<(ItemId, String)> {
+    let keep = |id: ItemId| match filters.iter().find(|f| f.category == cat) {
+        Some(f) => f.items.contains(&id),
+        None => true,
+    };
     model
         .categories
         .get(&cat)
         .map(|c| {
             c.items
                 .iter()
+                .filter(|id| keep(**id))
                 .map(|id| {
                     let name = model
                         .items
@@ -156,19 +163,22 @@ pub fn build_grid_paged(
     snapshot: &Snapshot,
     page_idx: &[usize],
 ) -> Grid {
-    build_grid_pivoted(model, measure, snapshot, page_idx, None)
+    build_grid_pivoted(model, measure, snapshot, page_idx, None, &[])
 }
 
 /// The most general grid builder. `axis_order`, when `Some`, is a permutation
 /// of the measure's categories that sets which category is on rows (first),
 /// columns (second), and pages (rest) — this is how the UI *pivots* without
 /// touching formulas. `None` uses the measure's natural category order.
+/// `filters` restricts which items of a category are shown (presentation only;
+/// unlisted categories show all items).
 pub fn build_grid_pivoted(
     model: &Model,
     measure: MeasureId,
     snapshot: &Snapshot,
     page_idx: &[usize],
     axis_order: Option<&[CategoryId]>,
+    filters: &[Filter],
 ) -> Grid {
     let m = model.measures.get(&measure);
     let measure_name = m
@@ -199,18 +209,18 @@ pub fn build_grid_pivoted(
 
     // Row / column header items (synthetic single entry when the axis is absent).
     let rows = match row_cat {
-        Some((c, _)) => items_of(model, c),
+        Some((c, _)) => items_of(model, c, filters),
         None => vec![(ItemId(0), String::new())],
     };
     let cols = match col_cat {
-        Some((c, _)) => items_of(model, c),
+        Some((c, _)) => items_of(model, c, filters),
         None => vec![(ItemId(0), String::new())],
     };
 
     // Extra dims pinned to the selected page item (default first).
     let mut pages = Vec::new();
     for (pi, c) in cats.iter().skip(2).enumerate() {
-        let its = items_of(model, *c);
+        let its = items_of(model, *c, filters);
         if its.is_empty() {
             continue;
         }
@@ -311,6 +321,8 @@ pub struct App {
     pub engine: Option<Engine>,
     /// Latest derived-measure values from the engine.
     pub snapshot: Snapshot,
+    /// The last saved view applied via `cycle_view`, so cycling advances.
+    pub applied_view: Option<ViewId>,
     /// When `Some`, edit mode is active and this holds the in-progress text.
     pub edit: Option<String>,
     /// Transient status/error message (e.g. "derived cells are computed").
@@ -322,6 +334,10 @@ pub struct App {
     /// element 0 is on rows, 1 on columns, the rest are pages. Pivoting mutates
     /// this; it resets to the measure's natural order on measure switch.
     pub axis_order: Vec<CategoryId>,
+    /// Active per-category display filters for the current layout (which items
+    /// of a category are shown). Presentation only — never changes model data.
+    /// Captured when saving a view; reset on measure switch.
+    pub filters: Vec<Filter>,
     /// Geometry of the last render, for mapping mouse clicks to cells.
     pub grid_geom: Option<GridGeom>,
 }
@@ -373,10 +389,12 @@ impl App {
             should_quit: false,
             engine,
             snapshot,
+            applied_view: None,
             edit: None,
             status: None,
             page_idx,
             axis_order,
+            filters: Vec::new(),
             grid_geom: None,
         })
     }
@@ -388,6 +406,7 @@ impl App {
             &self.snapshot,
             &self.page_idx,
             Some(&self.axis_order),
+            &self.filters,
         );
         self.cursor_row = self.cursor_row.min(self.grid.n_rows().saturating_sub(1));
         self.cursor_col = self.cursor_col.min(self.grid.n_cols().saturating_sub(1));
@@ -457,9 +476,10 @@ impl App {
     /// Cycle to the next measure (wraps).
     pub fn next_measure(&mut self) {
         self.selected = (self.selected + 1) % self.measures.len();
-        // A new measure has its own dimensions; reset axis order and paging.
+        // A new measure has its own dimensions; reset axis order, paging, filters.
         self.axis_order = self.natural_axis_order();
         self.page_idx.clear();
+        self.filters.clear();
         self.reselect();
         // Size page_idx to the new grid so `[`/`]` work immediately.
         self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
@@ -573,6 +593,156 @@ impl App {
         Ok(())
     }
 
+    // -- views & filters (pure; terminal-free -> unit-testable) ------------
+
+    /// The viewed measure's id.
+    fn viewed_measure(&self) -> MeasureId {
+        self.measures[self.selected]
+    }
+
+    /// Build a `View` capturing the current layout: viewed measure, axis order,
+    /// pinned page items, and active filters. Presentation only — no data.
+    pub fn build_view(&self, id: ViewId, name: &str) -> View {
+        let page_items = self.grid.pages.iter().map(|p| (p.cat, p.item)).collect();
+        View {
+            id,
+            name: Name(name.to_string()),
+            measure: self.viewed_measure(),
+            axis_order: self.axis_order.clone(),
+            page_items,
+            filters: self.filters.clone(),
+        }
+    }
+
+    /// The smallest unused view id (>= 1).
+    fn next_view_id(&self) -> ViewId {
+        ViewId(
+            self.model
+                .views
+                .keys()
+                .map(|v| v.0)
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(1),
+        )
+    }
+
+    /// Save the current layout as a named view: mint an id, add it to the
+    /// model, and (when `path` is set) persist immediately. Returns the id.
+    pub fn save_view(&mut self, name: &str, path: Option<&str>) -> ViewId {
+        let id = self.next_view_id();
+        let view = self.build_view(id, name);
+        self.model.add_view(view);
+        if let Some(path) = path {
+            match improv_storage_mentat::ModelStore::open(path)
+                .and_then(|mut s| s.save_model(&self.model))
+            {
+                Ok(()) => self.status = Some(format!("saved view '{name}'")),
+                Err(e) => self.status = Some(format!("save failed: {e}")),
+            }
+        } else {
+            self.status = Some(format!("saved view '{name}'"));
+        }
+        id
+    }
+
+    /// Apply a saved `View` to the live layout: select its measure, restore the
+    /// axis order, page items, and filters, then re-render. Presentation only
+    /// — measures and data are untouched. No-op if the measure is gone.
+    pub fn apply_view(&mut self, view: &View) {
+        let Some(idx) = self.measures.iter().position(|m| *m == view.measure) else {
+            self.status = Some("view's measure no longer exists".into());
+            return;
+        };
+        self.selected = idx;
+        self.axis_order = if view.axis_order.is_empty() {
+            self.natural_axis_order()
+        } else {
+            view.axis_order.clone()
+        };
+        self.filters = view.filters.clone();
+        self.reselect();
+        // Restore pinned page items positionally by page dimension.
+        self.page_idx = self
+            .grid
+            .pages
+            .iter()
+            .map(|p| {
+                view.page_items
+                    .iter()
+                    .find(|(c, _)| *c == p.cat)
+                    .and_then(|(_, it)| {
+                        items_of(&self.model, p.cat, &self.filters)
+                            .iter()
+                            .position(|(id, _)| id == it)
+                    })
+                    .unwrap_or(p.item_index)
+            })
+            .collect();
+        self.reselect();
+    }
+
+    /// Cycle to the next saved view (by id order) and apply it. No-op if there
+    /// are no saved views.
+    pub fn cycle_view(&mut self) {
+        let mut ids: Vec<ViewId> = self.model.views.keys().copied().collect();
+        if ids.is_empty() {
+            self.status = Some("no saved views (press S to save one)".into());
+            return;
+        }
+        ids.sort_by_key(|v| v.0);
+        // Advance past the last-applied view if it is still present.
+        let start = self
+            .applied_view
+            .and_then(|cur| ids.iter().position(|v| *v == cur))
+            .map(|p| (p + 1) % ids.len())
+            .unwrap_or(0);
+        let id = ids[start];
+        self.applied_view = Some(id);
+        let view = self.model.views[&id].clone();
+        self.apply_view(&view);
+        self.status = Some(format!("view: {}", view.name.0));
+    }
+
+    /// Toggle whether `item` of `category` is shown. Building the filter from
+    /// the full item set on first toggle, then removing/re-adding the item.
+    /// Removing the last shown item leaves an explicit empty filter (nothing
+    /// shown for that category). Presentation only.
+    pub fn toggle_filter_item(&mut self, category: CategoryId, item: ItemId) {
+        let all: Vec<ItemId> = self
+            .model
+            .categories
+            .get(&category)
+            .map(|c| c.items.clone())
+            .unwrap_or_default();
+        let pos = self.filters.iter().position(|f| f.category == category);
+        match pos {
+            None => {
+                // First toggle: start from all items, then hide this one.
+                let items: Vec<ItemId> = all.into_iter().filter(|i| *i != item).collect();
+                self.filters.push(Filter { category, items });
+            }
+            Some(i) => {
+                let f = &mut self.filters[i];
+                if let Some(p) = f.items.iter().position(|x| *x == item) {
+                    f.items.remove(p);
+                } else {
+                    f.items.push(item);
+                }
+                // If the filter now keeps everything, drop it (unfiltered).
+                if f.items.len() == all.len() && all.iter().all(|i| f.items.contains(i)) {
+                    self.filters.remove(i);
+                }
+            }
+        }
+        self.reselect();
+    }
+
+    /// Clear all active filters, showing every item again.
+    pub fn clear_filters(&mut self) {
+        self.filters.clear();
+        self.reselect();
+    }
     /// The `(measure, Coordinate)` of the cell under the cursor.
     #[cfg(test)]
     pub fn cursor_coord(&self) -> (MeasureId, Coordinate) {
@@ -904,5 +1074,117 @@ mod tests {
         // A click above the grid (in the status area) is ignored.
         app.click_at(2, 0);
         assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+    }
+
+    #[test]
+    fn filter_hides_a_row_item_from_the_grid() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101)); // Quantity[Time, Product]: rows=Time(2025,2026)
+        assert_eq!(app.grid.n_rows(), 2);
+        // Hide 2026 (ItemId 11) from the Time row axis.
+        app.toggle_filter_item(CategoryId(1), ItemId(11));
+        let rows: Vec<ItemId> = app.grid.rows.iter().map(|(id, _)| *id).collect();
+        assert_eq!(rows, vec![ItemId(10)], "2026 filtered out of rows");
+        // Columns (unfiltered Product) still show both.
+        assert_eq!(app.grid.n_cols(), 2);
+        // Toggling it back restores both rows (filter dropped when it keeps all).
+        app.toggle_filter_item(CategoryId(1), ItemId(11));
+        assert_eq!(app.grid.n_rows(), 2);
+        assert!(app.filters.is_empty(), "unfiltered again");
+    }
+
+    #[test]
+    fn save_view_captures_axis_order_and_filters() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101)); // Quantity[Time, Product]
+        app.pivot(); // rows=Product, cols=Time
+        app.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
+
+        let id = app.save_view("L1", None);
+        let v = app.model.views.get(&id).expect("view saved");
+        assert_eq!(v.measure, MeasureId(101));
+        assert_eq!(v.axis_order, vec![CategoryId(2), CategoryId(1)]);
+        let f = v
+            .filters
+            .iter()
+            .find(|f| f.category == CategoryId(2))
+            .unwrap();
+        assert_eq!(f.items, vec![ItemId(20)]); // only WidgetA kept
+        assert_eq!(app.model.view_by_name("L1").map(|v| v.id), Some(id));
+    }
+
+    #[test]
+    fn apply_view_restores_axis_order_and_filters() {
+        // Build a view from one app, apply it to a fresh app -> layout matches.
+        let mut src = App::new(revenue_model()).unwrap();
+        view(&mut src, MeasureId(101));
+        src.pivot(); // rows=Product, cols=Time
+        src.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
+        let v = src.build_view(ViewId(1), "L1");
+
+        let mut dst = App::new(revenue_model()).unwrap();
+        assert_ne!(dst.grid.measure, MeasureId(101)); // starts on derived Revenue
+        dst.apply_view(&v);
+
+        assert_eq!(dst.grid.measure, MeasureId(101));
+        assert_eq!(dst.axis_order, vec![CategoryId(2), CategoryId(1)]);
+        assert_eq!(dst.filters, v.filters);
+        // The filter is reflected in the grid: WidgetB gone from the row axis.
+        let rows: Vec<ItemId> = dst.grid.rows.iter().map(|(id, _)| *id).collect();
+        assert_eq!(rows, vec![ItemId(20)], "only WidgetA on rows");
+        assert_eq!(dst.grid.row_cat.as_ref().unwrap().1, "Product");
+        assert_eq!(dst.grid.col_cat.as_ref().unwrap().1, "Time");
+    }
+
+    #[test]
+    fn apply_view_restores_page_item() {
+        // 3-D Sales[Time, Product, Region]: save on South, apply to a fresh app.
+        let mut m = Model::new();
+        let (time, product, region) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        m.add_category(time, "Time");
+        m.add_category(product, "Product");
+        m.add_category(region, "Region");
+        m.add_item(ItemId(10), time, "2025");
+        m.add_item(ItemId(20), product, "WidgetA");
+        m.add_item(ItemId(30), region, "North");
+        m.add_item(ItemId(31), region, "South");
+        m.add_measure(Measure {
+            id: MeasureId(200),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product, region],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let c = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
+        m.set_input(
+            MeasureId(200),
+            c(&[
+                (time, ItemId(10)),
+                (product, ItemId(20)),
+                (region, ItemId(30)),
+            ]),
+            Value::Number(100.0),
+        );
+        m.set_input(
+            MeasureId(200),
+            c(&[
+                (time, ItemId(10)),
+                (product, ItemId(20)),
+                (region, ItemId(31)),
+            ]),
+            Value::Number(250.0),
+        );
+
+        let mut src = App::new(m.clone()).unwrap();
+        src.page(1); // page Region to South
+        assert_eq!(src.grid.pages[0].item_name, "South");
+        let v = src.build_view(ViewId(1), "south");
+        assert_eq!(v.page_items, vec![(region, ItemId(31))]);
+
+        let mut dst = App::new(m).unwrap();
+        assert_eq!(dst.grid.pages[0].item_name, "North");
+        dst.apply_view(&v);
+        assert_eq!(dst.grid.pages[0].item_name, "South", "page item restored");
     }
 }

@@ -14,7 +14,8 @@
 use std::collections::HashMap;
 
 use improv_core_model::{
-    parser, CategoryId, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value, ValueType,
+    parser, CategoryId, Filter, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value,
+    ValueType, View, ViewId,
 };
 use improv_engine::session::{Engine, MeasureValues};
 use improv_engine::{encode_coord, CellValue, CoordKey};
@@ -57,6 +58,12 @@ pub struct ImprovApp {
     /// The measure `axis_order`/`page_idx` currently describe (so we reset the
     /// pivot state when the selection changes).
     axis_for: Option<MeasureId>,
+    /// Active per-category display filters for the current layout. Presentation
+    /// only (hides items from the grid; never touches data). Captured when
+    /// saving a view; reset on measure switch.
+    filters: Vec<Filter>,
+    /// Text buffer for the "Save view" name field.
+    view_name: String,
 
     /// Keyboard cell cursor into the current grid (row/col indices), clamped to
     /// the grid's dimensions. Reset when the selected measure or pivot changes.
@@ -103,6 +110,8 @@ impl ImprovApp {
             axis_order,
             page_idx: Vec::new(),
             axis_for: selected,
+            filters: Vec::new(),
+            view_name: String::new(),
             cursor_row: 0,
             cursor_col: 0,
         })
@@ -183,6 +192,7 @@ impl ImprovApp {
             self.axis_for = self.selected;
             self.axis_order = natural_axis_order(&self.model, self.selected);
             self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+            self.filters.clear();
             self.cursor_row = 0;
             self.cursor_col = 0;
         } else if self.page_idx.len() != self.axis_order.len().saturating_sub(2) {
@@ -222,8 +232,14 @@ impl ImprovApp {
         (row_cat, col_cat, pinned)
     }
 
-    /// A category's items sorted by id (shared by paging and grid rendering).
+    /// A category's items sorted by id, honoring the active filters (shared by
+    /// paging and grid rendering). A category without a filter shows all items;
+    /// filtering is presentation only — it never touches model data.
     fn sorted_items(&self, c: CategoryId) -> Vec<(ItemId, String)> {
+        let keep = |id: ItemId| match self.filters.iter().find(|f| f.category == c) {
+            Some(f) => f.items.contains(&id),
+            None => true,
+        };
         let mut v: Vec<(ItemId, String)> = self
             .model
             .categories
@@ -231,6 +247,7 @@ impl ImprovApp {
             .map(|cat| {
                 cat.items
                     .iter()
+                    .filter(|id| keep(**id))
                     .filter_map(|id| self.model.items.get(id).map(|it| (*id, it.name.0.clone())))
                     .collect()
             })
@@ -290,6 +307,121 @@ impl ImprovApp {
         if let Some(slot) = self.page_idx.get_mut(dim_index) {
             *slot = item_index.min(count - 1);
         }
+    }
+
+    // -- views & filters (pure; unit-tested without egui) ------------------
+
+    /// Build a `View` capturing the current layout: selected measure, axis
+    /// order, pinned page items, and active filters. Presentation only.
+    pub fn build_view(&self, id: ViewId, name: &str) -> Option<View> {
+        let measure = self.selected?;
+        let (_, _, pinned) = self.resolved_axes();
+        Some(View {
+            id,
+            name: Name(name.to_string()),
+            measure,
+            axis_order: self.axis_order.clone(),
+            page_items: pinned,
+            filters: self.filters.clone(),
+        })
+    }
+
+    /// The smallest unused view id (>= 1).
+    fn next_view_id(&self) -> ViewId {
+        ViewId(
+            self.model
+                .views
+                .keys()
+                .map(|v| v.0)
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(1),
+        )
+    }
+
+    /// Save the current layout as a named view: mint an id, add it to the
+    /// model, and autosave. Returns the id (None if no measure is selected).
+    pub fn save_view(&mut self, name: &str) -> Option<ViewId> {
+        let name = name.trim();
+        if name.is_empty() {
+            self.status = "view name is required".into();
+            return None;
+        }
+        let id = self.next_view_id();
+        let view = self.build_view(id, name)?;
+        self.model.add_view(view);
+        self.save();
+        self.status = format!("saved view '{name}'");
+        Some(id)
+    }
+
+    /// Apply a saved `View` to the live layout: select its measure, restore the
+    /// axis order, page items, and filters, then re-render. Presentation only
+    /// — measures and data untouched. No-op if the measure is gone.
+    pub fn apply_view(&mut self, view: &View) {
+        if !self.model.measures.contains_key(&view.measure) {
+            self.status = "view's measure no longer exists".into();
+            return;
+        }
+        self.selected = Some(view.measure);
+        // Pin selection so sync_axis_state does not reset what we set below.
+        self.axis_for = Some(view.measure);
+        self.axis_order = if view.axis_order.is_empty() {
+            natural_axis_order(&self.model, self.selected)
+        } else {
+            view.axis_order.clone()
+        };
+        self.filters = view.filters.clone();
+        // Restore page selections positionally by page dimension.
+        self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+        for (pi, cat) in self.axis_order.iter().skip(2).enumerate() {
+            if let Some((_, it)) = view.page_items.iter().find(|(c, _)| c == cat) {
+                if let Some(idx) = self.sorted_items(*cat).iter().position(|(id, _)| id == it) {
+                    if let Some(slot) = self.page_idx.get_mut(pi) {
+                        *slot = idx;
+                    }
+                }
+            }
+        }
+        self.editing = None;
+        self.clamp_cursor();
+        self.status = format!("view: {}", view.name.0);
+    }
+
+    /// Toggle whether `item` of `category` is shown. On first toggle the filter
+    /// starts from all items minus this one; toggling so all items are kept
+    /// drops the filter. Presentation only.
+    pub fn toggle_filter_item(&mut self, category: CategoryId, item: ItemId) {
+        let all: Vec<ItemId> = self
+            .model
+            .categories
+            .get(&category)
+            .map(|c| c.items.clone())
+            .unwrap_or_default();
+        match self.filters.iter().position(|f| f.category == category) {
+            None => {
+                let items: Vec<ItemId> = all.into_iter().filter(|i| *i != item).collect();
+                self.filters.push(Filter { category, items });
+            }
+            Some(i) => {
+                let f = &mut self.filters[i];
+                if let Some(p) = f.items.iter().position(|x| *x == item) {
+                    f.items.remove(p);
+                } else {
+                    f.items.push(item);
+                }
+                if f.items.len() == all.len() && all.iter().all(|x| f.items.contains(x)) {
+                    self.filters.remove(i);
+                }
+            }
+        }
+        self.clamp_cursor();
+    }
+
+    /// Clear all active filters, showing every item again.
+    pub fn clear_filters(&mut self) {
+        self.filters.clear();
+        self.clamp_cursor();
     }
 
     /// Rebuild the live engine after a structural change (formula edit / new
@@ -636,6 +768,41 @@ impl ImprovApp {
                             }
                         }
                     });
+
+                self.views_section(ui);
+            });
+    }
+
+    /// Views section in the explorer: a name field + "Save view" button that
+    /// captures the current layout, and a list of saved views (click to load).
+    fn views_section(&mut self, ui: &mut egui::Ui) {
+        egui::CollapsingHeader::new("Views")
+            .default_open(true)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(&mut self.view_name);
+                    if ui.button("Save view").clicked() {
+                        let name = self.view_name.clone();
+                        if self.save_view(&name).is_some() {
+                            self.view_name.clear();
+                        }
+                    }
+                });
+                let mut ids: Vec<ViewId> = self.model.views.keys().copied().collect();
+                if ids.is_empty() {
+                    ui.weak("(no saved views)");
+                }
+                ids.sort_by_key(|v| v.0);
+                let mut load: Option<View> = None;
+                for id in ids {
+                    let v = &self.model.views[&id];
+                    if ui.button(&v.name.0).clicked() {
+                        load = Some(v.clone());
+                    }
+                }
+                if let Some(v) = load {
+                    self.apply_view(&v);
+                }
             });
     }
 
@@ -774,6 +941,7 @@ impl ImprovApp {
                 ui.heading(&name);
                 self.axis_shelf(ui);
                 self.page_selectors(ui);
+                self.filter_shelf(ui);
                 ui.separator();
                 self.render_grid(ui, mid);
             }
@@ -909,6 +1077,67 @@ impl ImprovApp {
         });
         if let Some((dim, idx)) = set {
             self.set_page(dim, idx);
+        }
+    }
+
+    /// Filter shelf: for each category on an axis, a collapsing checkbox list of
+    /// its items. Unchecking an item hides it from the grid (presentation
+    /// only); a "Clear filters" button restores all. Mirrors the TUI's f/F.
+    fn filter_shelf(&mut self, ui: &mut egui::Ui) {
+        let cats: Vec<CategoryId> = self.axis_order.clone();
+        if cats.is_empty() {
+            return;
+        }
+        let mut toggles: Vec<(CategoryId, ItemId)> = Vec::new();
+        let mut clear = false;
+        ui.collapsing("Filters", |ui| {
+            for c in &cats {
+                let cname = self
+                    .model
+                    .categories
+                    .get(c)
+                    .map(|x| x.name.0.clone())
+                    .unwrap_or_default();
+                // Full (unfiltered) item list so hidden items can be re-shown.
+                let mut items: Vec<(ItemId, String)> = self
+                    .model
+                    .categories
+                    .get(c)
+                    .map(|cat| {
+                        cat.items
+                            .iter()
+                            .filter_map(|id| {
+                                self.model.items.get(id).map(|it| (*id, it.name.0.clone()))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                items.sort_by_key(|(id, _)| id.0);
+                let f = self.filters.iter().find(|f| f.category == *c);
+                egui::CollapsingHeader::new(&cname)
+                    .id_salt(("filter", c.0))
+                    .show(ui, |ui| {
+                        for (id, name) in &items {
+                            let shown = match f {
+                                Some(f) => f.items.contains(id),
+                                None => true,
+                            };
+                            let mut checked = shown;
+                            if ui.checkbox(&mut checked, name).changed() {
+                                toggles.push((*c, *id));
+                            }
+                        }
+                    });
+            }
+            if !self.filters.is_empty() && ui.button("Clear filters").clicked() {
+                clear = true;
+            }
+        });
+        for (c, i) in toggles {
+            self.toggle_filter_item(c, i);
+        }
+        if clear {
+            self.clear_filters();
         }
     }
 
@@ -1338,6 +1567,8 @@ mod tests {
             axis_order,
             page_idx,
             axis_for: selected,
+            filters: Vec::new(),
+            view_name: String::new(),
             cursor_row: 0,
             cursor_col: 0,
         }
@@ -1619,5 +1850,107 @@ mod tests {
         app.begin_edit_cursor();
         assert!(app.editing.is_none());
         assert_eq!(app.status, "derived cells are computed, not editable");
+    }
+
+    #[test]
+    fn filter_hides_an_item_from_the_rendered_rows() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        // Rows = Time (2025, 2026); hide 2026 (ItemId 11).
+        let (row_cat, _, _) = app.resolved_axes();
+        assert_eq!(row_cat, Some(CategoryId(1)));
+        assert_eq!(app.sorted_items(CategoryId(1)).len(), 2);
+        app.toggle_filter_item(CategoryId(1), ItemId(11));
+        let rows: Vec<ItemId> = app
+            .sorted_items(CategoryId(1))
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(rows, vec![ItemId(10)], "2026 filtered out of the row axis");
+        // Columns (unfiltered Product) still show both.
+        assert_eq!(app.sorted_items(CategoryId(2)).len(), 2);
+        // Re-showing 2026 drops the filter (all items kept).
+        app.toggle_filter_item(CategoryId(1), ItemId(11));
+        assert!(app.filters.is_empty());
+        assert_eq!(app.sorted_items(CategoryId(1)).len(), 2);
+    }
+
+    #[test]
+    fn save_view_captures_measure_axis_order_and_filters() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        app.pivot_rotate(); // rows=Product, cols=Time
+        app.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
+
+        let id = app.save_view("L1").expect("saved");
+        let v = app.model.views.get(&id).expect("view stored");
+        assert_eq!(v.measure, MeasureId(101));
+        assert_eq!(v.axis_order, vec![CategoryId(2), CategoryId(1)]);
+        let f = v
+            .filters
+            .iter()
+            .find(|f| f.category == CategoryId(2))
+            .unwrap();
+        assert_eq!(f.items, vec![ItemId(20)]); // only WidgetA kept
+        assert_eq!(app.model.view_by_name("L1").map(|v| v.id), Some(id));
+    }
+
+    #[test]
+    fn apply_view_restores_axis_order_and_filters() {
+        // Build a view from one app, apply it to a fresh app -> layout matches.
+        let mut src = build_app(grid_2x2_model());
+        src.selected = Some(MeasureId(101));
+        src.sync_axis_state();
+        src.pivot_rotate(); // rows=Product, cols=Time
+        src.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
+        let v = src.build_view(ViewId(1), "L1").expect("view");
+
+        let mut dst = build_app(grid_2x2_model());
+        // dst starts on Revenue (derived) with natural axes and no filters.
+        assert_eq!(dst.selected, Some(MeasureId(102)));
+        dst.apply_view(&v);
+        dst.sync_axis_state(); // must not clobber the applied layout
+
+        assert_eq!(dst.selected, Some(MeasureId(101)));
+        assert_eq!(dst.axis_order, vec![CategoryId(2), CategoryId(1)]);
+        assert_eq!(dst.filters, v.filters);
+        let (row_cat, col_cat, _) = dst.resolved_axes();
+        assert_eq!(row_cat, Some(CategoryId(2))); // Product on rows
+        assert_eq!(col_cat, Some(CategoryId(1))); // Time on cols
+                                                  // Filter reflected: only WidgetA on the (row) Product axis.
+        let rows: Vec<ItemId> = dst
+            .sorted_items(CategoryId(2))
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(rows, vec![ItemId(20)]);
+    }
+
+    #[test]
+    fn apply_view_restores_page_item() {
+        let mut src = build_app(sales_3d_model());
+        src.selected = Some(MeasureId(200));
+        src.sync_axis_state();
+        // Page Region (dim 0) to South (index 1).
+        src.set_page(0, 1);
+        let (_, _, pinned) = src.resolved_axes();
+        assert_eq!(pinned, vec![(CategoryId(3), ItemId(31))]); // South
+        let v = src.build_view(ViewId(1), "south").expect("view");
+        assert_eq!(v.page_items, vec![(CategoryId(3), ItemId(31))]);
+
+        let mut dst = build_app(sales_3d_model());
+        dst.selected = Some(MeasureId(200));
+        dst.sync_axis_state();
+        let (_, _, pinned) = dst.resolved_axes();
+        assert_eq!(pinned, vec![(CategoryId(3), ItemId(30))]); // North default
+        dst.apply_view(&v);
+        let (_, _, pinned) = dst.resolved_axes();
+        assert_eq!(
+            pinned,
+            vec![(CategoryId(3), ItemId(31))],
+            "page item restored"
+        );
     }
 }

@@ -67,7 +67,7 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
     let backend = CrosstermBackend::new(io::stdout());
     let result = Terminal::new(backend)
         .map_err(|e| e.to_string())
-        .and_then(|mut term| event_loop(&mut term, &mut app));
+        .and_then(|mut term| event_loop(&mut term, &mut app, path));
 
     // Always restore on the normal path too.
     let _ = restore();
@@ -86,7 +86,11 @@ fn restore() -> io::Result<()> {
     disable_raw_mode()
 }
 
-fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<(), String> {
+fn event_loop(
+    term: &mut Terminal<CrosstermBackend<Stdout>>,
+    app: &mut App,
+    path: &str,
+) -> Result<(), String> {
     while !app.should_quit {
         term.draw(|f| ui::render(f, app))
             .map_err(|e| e.to_string())?;
@@ -96,7 +100,7 @@ fn event_loop(term: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> R
                 if app.edit.is_some() {
                     edit_key(app, k.code);
                 } else {
-                    normal_key(app, k.code);
+                    normal_key(app, k.code, path);
                 }
             }
             // Mouse: left-click selects the cell under the pointer; a click on a
@@ -133,7 +137,7 @@ fn edit_key(app: &mut App, code: KeyCode) {
 }
 
 /// Key handling in normal (navigation) mode.
-fn normal_key(app: &mut App, code: KeyCode) {
+fn normal_key(app: &mut App, code: KeyCode, path: &str) {
     match code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('e') | KeyCode::Enter => app.begin_edit(),
@@ -145,7 +149,34 @@ fn normal_key(app: &mut App, code: KeyCode) {
         KeyCode::Char('[') => app.page(-1),
         KeyCode::Char(']') => app.page(1),
         KeyCode::Char('p') => app.pivot(),
+        // Filters: 'f' hides/shows the row item under the cursor; 'F' clears.
+        KeyCode::Char('f') => filter_row_under_cursor(app),
+        KeyCode::Char('F') => app.clear_filters(),
+        // Views: 'S' saves the current layout; 'v' cycles saved views.
+        KeyCode::Char('S') => save_current_view(app, path),
+        KeyCode::Char('v') => app.cycle_view(),
         KeyCode::Esc => app.status = None,
         _ => {}
     }
+}
+
+/// Toggle the visibility of the row item under the cursor within its (row)
+/// category. Repeated 'f' on different rows narrows the row axis to a subset.
+fn filter_row_under_cursor(app: &mut App) {
+    let (Some((cat, _)), Some((item, _))) = (
+        app.grid.row_cat.clone(),
+        app.grid.rows.get(app.cursor_row).cloned(),
+    ) else {
+        app.status = Some("no row category to filter".into());
+        return;
+    };
+    app.toggle_filter_item(cat, item);
+}
+
+/// Save the current layout as a generated "view N" name and persist to `path`.
+/// (Inline text entry is intentionally omitted; the view can be renamed via a
+/// future dialog. Documented simplification.)
+fn save_current_view(app: &mut App, path: &str) {
+    let n = app.model.views.len() + 1;
+    app.save_view(&format!("view {n}"), Some(path));
 }
