@@ -8,6 +8,20 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **External-function measures wired into the engine** (Phase 6): a measure can
+  be defined as `func(arg_measures...)` (`Model.external_calls`);
+  `engine::external::refresh_external_measure` evaluates the registered
+  `ExternalFn` per coordinate via `improv_extfn` and writes input cells —
+  host-side, so the dataflow core stays pure. `ExternalFn`/`Language` moved to
+  `core_model`; defs + calls persist through Mentat.
+- **Saved views + filters in the UI** (`improv-gui`, `improv-tui`): save the
+  current layout as a named view, load it to reproduce measure + axis placement
+  + pins + filters, and filter a category to a subset of items. GUI: Views
+  panel + Filters checkboxes. TUI: `S` save, `v` cycle, `f`/`F` filter.
+- **PostgreSQL backend + connection management** (Phase 7): SQL import/export/
+  refresh now work over a backend abstraction (SQLite + Postgres via
+  `postgres`); serde `Connection` descriptors keep credentials out of band
+  (password-less DSN + `password_env`, resolved at connect time, redacted logs).
 - **External-function runtime** (`improv_extfn`, Phase 6): a registry of typed,
   purity-asserted external functions evaluated in an isolated Python subprocess
   (timeout + JSON marshalling), speaking `core_model::Value` — the runtime the

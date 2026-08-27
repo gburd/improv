@@ -141,23 +141,29 @@ The authoritative roadmap and Phase 5–7 invariants live in
 - **Phase 6 (External-language functions): IN PROGRESS.** In-process named
   scalar functions are callable from formula text — `ABS`/`ROUND`/`FLOOR`/
   `CEIL`/`SQRT`/`NEG`/`MIN2`/`MAX2` via `core_model::parser::scalar_func`,
-  evaluated deterministically by the engine (e.g. `AbsDelta = ABS(Delta)`).
-  The external runtime lives in `crates/extfn` (`improv_extfn`): a `Registry`
-  of typed, purity-asserted `ExternalFn`s evaluated in an isolated Python
-  subprocess (timeout + JSON marshalling), speaking `core_model::Value`. NOT
-  yet wired into the engine's `Expr::Call` dispatch (the integration + a
-  `CALL(...)` grammar form are the remaining steps); R/Julia/WASM and an OS
-  sandbox are future work.
+  evaluated deterministically by the engine. The external runtime lives in
+  `crates/extfn` (`improv_extfn`): a `Registry` of typed, purity-asserted
+  `ExternalFn`s (defined in `core_model`) evaluated in an isolated Python
+  subprocess (timeout + JSON marshalling). **Integrated host-side**:
+  `Model.external_calls` marks a measure as `func(arg_measures...)`, and
+  `engine::external::refresh_external_measure` evaluates it per coordinate and
+  writes input cells — external calls stay OFF the differential-dataflow hot
+  path, so the engine core stays pure/deterministic. Persisted via Mentat
+  `:meta/*` blobs. REMAINING: a `CALL(...)` formula-grammar form (today the call
+  is described by `ExternalCall` metadata, not parsed from formula text);
+  R/Julia/WASM runtimes; an OS sandbox (currently isolated-mode + timeout only).
 - **Phase 7 (SQL connectivity): IN PROGRESS.** `crates/storage_sql` imports a
-  SQLite `SELECT` into an input measure (columns → categories/items/cells),
-  exports a measure's cells to a SQL table, and supports **live-query refresh**:
-  an imported measure stores a refreshable `SqlSource` (persisted on the model),
-  and `refresh_sql_measure` re-runs the query to replace its cells. CLI
-  `import-sql` / `refresh-sql` / `export-sql`. SQL data enters as ordinary input
-  cells (deterministic core untouched; SQL measures marked in
-  `Model.sql_sources`). Identifiers validated, values bound (injection-safe).
-  PLANNED: connection/credential management, on-load/interval refresh, a
-  `SQL("...")` formula form, GUI wizards, other backends (Postgres/DuckDB).
+  `SELECT` into an input measure (columns → categories/items/cells), exports a
+  measure's cells to a SQL table, and supports **live-query refresh**
+  (`SqlSource` on the model + `refresh_sql_measure`). Works over a
+  backend abstraction (`SqlConn`/`Backend`): **SQLite and PostgreSQL** (pg via
+  `postgres 0.19`). **Connection management**: serde `Connection` descriptors
+  hold a password-less DSN + `password_env`; the secret is read from the
+  environment at connect time and redacted from logs (credentials out of band).
+  CLI `import-sql` / `refresh-sql` / `export-sql`. SQL data enters as ordinary
+  input cells (deterministic core untouched); identifiers validated, values
+  bound (injection-safe). PLANNED: on-load/interval refresh, a `SQL("...")`
+  formula form, GUI import/export wizards, DuckDB.
 
 ## Definition of done for v1
 
