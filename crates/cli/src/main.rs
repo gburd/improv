@@ -14,6 +14,7 @@ use improv_storage_mentat::ModelStore;
 use improv_storage_sql::{
     add_sql_measure, export_measure, refresh_sql_measure, DimensionMapping, ImportSpec,
 };
+use std::collections::HashMap;
 
 const USAGE: &str = "\
 improv — headless spreadsheet model CLI
@@ -45,6 +46,7 @@ COMMANDS:
           Formula: define m.db 102 \"Revenue = Price * Quantity\"
           External call: define m.db 200 \"H = CALL(hypot, Price, Quantity)\"
         (SQL(...) form: use import-sql, which needs a column-to-dimension map.)
+        A CALL(...) measure accepts --refresh <manual|on-load|interval:SECS>.
 
     register-ext <db> <name> <arity> <python-body>
         Register a pure Python external function (Number args + Number result;
@@ -91,6 +93,12 @@ COMMANDS:
         measure's refresh policy. (Timing policies are advisory metadata; this
         is the manual \"do it now\" batch.)
 
+    serve-refresh <db> [source.sqlite] [--tick SECS]
+        Run a daemon that honors each measure's refresh policy: on every tick
+        (default 5s) it refreshes the measures that are due (on-load once,
+        interval every N seconds). SQL measures refresh only if a source.sqlite
+        is given; CALL(...) measures always. Ctrl-C to stop.
+
     export-sql <db> <target.sqlite> <measure-id> <table> <value-col>
         Write a measure's input cells to a SQLite table (one column per
         dimension category + the value column; created if absent).
@@ -131,6 +139,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "import-sql" => cmd_import_sql(rest),
         "refresh-sql" => cmd_refresh_sql(rest),
         "refresh-all" => cmd_refresh_all(rest),
+        "serve-refresh" => cmd_serve_refresh(rest),
         "export-sql" => cmd_export_sql(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
@@ -339,6 +348,7 @@ fn cmd_define(rest: &[String]) -> Result<(), String> {
                 ExternalCall {
                     func: func.clone(),
                     arg_measures: arg_ids,
+                    refresh_policy: parse_refresh_flag(rest)?,
                 },
             );
             println!(
@@ -463,6 +473,80 @@ fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
     store.save_model(&model).map_err(|e| e.to_string())?;
     println!("refresh-all: {total} cells refreshed");
     Ok(())
+}
+
+/// `serve-refresh <db> [source.sqlite] [--tick SECS]` — a long-running daemon
+/// that honors each measure's `RefreshPolicy`: on each tick it refreshes the
+/// measures that are *due* (OnLoad once, Interval every N seconds), reloading
+/// and saving the model each cycle. SQL measures are refreshed only if a
+/// source.sqlite is given; external (CALL) measures always can be. Ctrl-C to
+/// stop. The scheduling decision is the pure `core_model::schedule::due_measures`.
+fn cmd_serve_refresh(rest: &[String]) -> Result<(), String> {
+    use improv_core_model::schedule;
+    use std::time::{Duration, Instant};
+
+    let db = arg(rest, 0, "db")?;
+    // Optional positional source.sqlite (anything not starting with '--').
+    let source = rest.get(1).filter(|a| !a.starts_with("--")).cloned();
+    let tick_secs = match rest.iter().position(|a| a == "--tick") {
+        Some(p) => rest
+            .get(p + 1)
+            .ok_or("--tick needs a value in seconds")?
+            .parse::<u64>()
+            .map_err(|_| "--tick SECS must be a number")?,
+        None => 5,
+    };
+
+    let start = Instant::now();
+    // last_run per measure, in whole seconds since `start`.
+    let mut last_run: HashMap<MeasureId, u64> = HashMap::new();
+
+    eprintln!("serve-refresh: honoring refresh policies every {tick_secs}s (Ctrl-C to stop)");
+    loop {
+        let now_secs = start.elapsed().as_secs();
+        let mut store = open(db)?;
+        let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+        // Gather policies from both source kinds.
+        let mut policies: HashMap<MeasureId, RefreshPolicy> = HashMap::new();
+        for (id, s) in &model.sql_sources {
+            policies.insert(*id, s.refresh_policy);
+        }
+        for (id, c) in &model.external_calls {
+            policies.insert(*id, c.refresh_policy);
+        }
+
+        let due = schedule::due_measures(&policies, now_secs, &last_run);
+        if !due.is_empty() {
+            let conn = match &source {
+                Some(src) => Some(rusqlite::Connection::open(src).map_err(|e| e.to_string())?),
+                None => None,
+            };
+            for mid in due {
+                let refreshed = if model.external_calls.contains_key(&mid) {
+                    improv_engine::external::refresh_external_measure(
+                        &mut model,
+                        improv_engine::external::DEFAULT_TIMEOUT,
+                        mid,
+                    )
+                    .map(Some)
+                    .map_err(|e| e.to_string())?
+                } else if let Some(c) = &conn {
+                    refresh_sql_measure(c, &mut model, mid)
+                        .map(Some)
+                        .map_err(|e| e.to_string())?
+                } else {
+                    None // SQL measure but no source given; skip quietly
+                };
+                if let Some(n) = refreshed {
+                    last_run.insert(mid, now_secs);
+                    eprintln!("[{now_secs}s] refreshed measure {} ({n} cells)", mid.0);
+                }
+            }
+            store.save_model(&model).map_err(|e| e.to_string())?;
+        }
+        std::thread::sleep(Duration::from_secs(tick_secs));
+    }
 }
 
 /// `refresh-ext <db> <measure-id>` — (re)populate an external-call measure by

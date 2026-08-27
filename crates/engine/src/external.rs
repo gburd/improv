@@ -161,6 +161,7 @@ mod tests {
             ExternalCall {
                 func: "nope".into(),
                 arg_measures: vec![MeasureId(100)],
+                refresh_policy: Default::default(),
             },
         );
 
@@ -190,6 +191,7 @@ mod tests {
             ExternalCall {
                 func: "hypot".into(),
                 arg_measures: vec![MeasureId(100)],
+                refresh_policy: Default::default(),
             },
         );
 
@@ -228,6 +230,7 @@ mod tests {
             ExternalCall {
                 func: "hypot".into(),
                 arg_measures: vec![MeasureId(100), MeasureId(101)],
+                refresh_policy: Default::default(),
             },
         );
 

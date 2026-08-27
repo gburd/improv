@@ -9,6 +9,7 @@ pub mod extfn_def;
 pub mod formula;
 pub mod ids;
 pub mod parser;
+pub mod schedule;
 pub mod value;
 
 pub use extfn_def::{ExternalFn, Language};
@@ -159,6 +160,10 @@ pub struct ExternalCall {
     /// The measures supplying the function's positional arguments, aligned to
     /// the function's declared `arg_types`.
     pub arg_measures: Vec<MeasureId>,
+    /// When this measure should be refreshed (default `Manual`). Advisory
+    /// metadata a scheduler consults; see `RefreshPolicy`.
+    #[serde(default)]
+    pub refresh_policy: RefreshPolicy,
 }
 
 /// A saved pivot layout: which measure, how its categories are placed on axes,
