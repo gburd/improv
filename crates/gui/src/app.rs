@@ -57,6 +57,11 @@ pub struct ImprovApp {
     /// The measure `axis_order`/`page_idx` currently describe (so we reset the
     /// pivot state when the selection changes).
     axis_for: Option<MeasureId>,
+
+    /// Keyboard cell cursor into the current grid (row/col indices), clamped to
+    /// the grid's dimensions. Reset when the selected measure or pivot changes.
+    cursor_row: usize,
+    cursor_col: usize,
 }
 
 /// Which grid axis a category is assigned to.
@@ -98,6 +103,8 @@ impl ImprovApp {
             axis_order,
             page_idx: Vec::new(),
             axis_for: selected,
+            cursor_row: 0,
+            cursor_col: 0,
         })
     }
 
@@ -176,11 +183,14 @@ impl ImprovApp {
             self.axis_for = self.selected;
             self.axis_order = natural_axis_order(&self.model, self.selected);
             self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+            self.cursor_row = 0;
+            self.cursor_col = 0;
         } else if self.page_idx.len() != self.axis_order.len().saturating_sub(2) {
             // Keep page_idx sized to the current page-dimension count.
             self.page_idx
                 .resize(self.axis_order.len().saturating_sub(2), 0);
         }
+        self.clamp_cursor();
     }
 
     /// Resolved axes for the current pivot state: (row cat, col cat, pinned
@@ -247,6 +257,7 @@ impl ImprovApp {
             Axis::Pages => self.axis_order.push(category),
         }
         self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+        self.clamp_cursor();
     }
 
     /// Pivot: rotate the axis order left (rows->pages, cols->rows, first
@@ -258,6 +269,7 @@ impl ImprovApp {
         }
         self.axis_order.rotate_left(1);
         self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+        self.clamp_cursor();
     }
 
     /// Set the pinned item index for page dimension `dim_index` (position among
@@ -286,6 +298,82 @@ impl ImprovApp {
         let (engine, snapshot) = build_engine(&self.model);
         self.engine = engine;
         self.snapshot = snapshot;
+    }
+
+    // -- keyboard cell cursor (pure; unit-tested without egui) -------------
+
+    /// The current grid's (row_count, col_count) for the selected measure and
+    /// pivot. Both are >= 1 (a missing axis renders one synthetic row/column,
+    /// matching `render_grid`).
+    fn grid_dims(&self) -> (usize, usize) {
+        let (row_cat, col_cat, _) = self.resolved_axes();
+        let rows = row_cat
+            .map(|c| self.sorted_items(c).len().max(1))
+            .unwrap_or(1);
+        let cols = col_cat
+            .map(|c| self.sorted_items(c).len().max(1))
+            .unwrap_or(1);
+        (rows, cols)
+    }
+
+    /// Move the cursor by `(drow, dcol)`, clamped to the current grid (never
+    /// out of range). Mirrors the TUI's `move_cursor`.
+    pub fn move_cursor(&mut self, drow: isize, dcol: isize) {
+        let (rows, cols) = self.grid_dims();
+        let max_row = rows.saturating_sub(1) as isize;
+        let max_col = cols.saturating_sub(1) as isize;
+        self.cursor_row = (self.cursor_row as isize + drow).clamp(0, max_row) as usize;
+        self.cursor_col = (self.cursor_col as isize + dcol).clamp(0, max_col) as usize;
+    }
+
+    /// Clamp the cursor into the current grid (called after a pivot / measure
+    /// switch that may have shrunk it).
+    fn clamp_cursor(&mut self) {
+        let (rows, cols) = self.grid_dims();
+        self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
+    }
+
+    /// The `CoordKey` of the cell under the cursor, given the current pivot.
+    pub fn cursor_key(&self) -> CoordKey {
+        let (row_cat, col_cat, pinned) = self.resolved_axes();
+        let rid = row_cat
+            .and_then(|c| self.sorted_items(c).get(self.cursor_row).map(|(id, _)| *id))
+            .unwrap_or(ItemId(0));
+        let cid = col_cat
+            .and_then(|c| self.sorted_items(c).get(self.cursor_col).map(|(id, _)| *id))
+            .unwrap_or(ItemId(0));
+        cell_key(row_cat, col_cat, rid, cid, &pinned)
+    }
+
+    /// True if the cursor cell is an editable input cell (i.e. the selected
+    /// measure is an input measure). Derived measures are read-only.
+    pub fn cursor_is_editable(&self) -> bool {
+        self.selected
+            .and_then(|m| self.model.measures.get(&m))
+            .map(|m| !m.is_derived())
+            .unwrap_or(false)
+    }
+
+    /// Begin editing the cursor cell if it is editable, seeding the buffer with
+    /// the current value. On a derived cell, sets the status message instead.
+    /// Mirrors the TUI's `begin_edit`.
+    fn begin_edit_cursor(&mut self) {
+        let Some(measure) = self.selected else {
+            return;
+        };
+        if !self.cursor_is_editable() {
+            self.status = "derived cells are computed, not editable".into();
+            return;
+        }
+        let key = self.cursor_key();
+        let seed = self
+            .values_for(measure)
+            .get(&key)
+            .map(|v| format!("{v}"))
+            .unwrap_or_default();
+        self.editing = Some((measure, key));
+        self.edit_buf = seed;
     }
 
     /// Parse `text` as the RHS expression for an existing measure and make it
@@ -824,10 +912,86 @@ impl ImprovApp {
         }
     }
 
+    /// Handle keyboard navigation for the grid. Arrow keys (and h/j/k/l) move
+    /// the cursor; Enter/F2 begin editing the cursor cell; `[`/`]` and
+    /// PageUp/PageDown page the first page dimension; `n`/`N` cycle the
+    /// selected measure. Swallowed while a cell text field is open (so typing
+    /// a value doesn't also move the cursor). `n`/`N` (not Tab) drive measure
+    /// cycling because egui reserves Tab for widget focus.
+    fn handle_grid_keys(&mut self, ui: &egui::Ui) {
+        // While editing a cell, let the text field own the keyboard (Enter/Esc
+        // are handled in the cell rendering below).
+        if self.editing.is_some() {
+            return;
+        }
+        use egui::Key;
+        let k = |key: Key| ui.input(|i| i.key_pressed(key));
+
+        if k(Key::ArrowUp) || k(Key::K) {
+            self.move_cursor(-1, 0);
+        }
+        if k(Key::ArrowDown) || k(Key::J) {
+            self.move_cursor(1, 0);
+        }
+        if k(Key::ArrowLeft) || k(Key::H) {
+            self.move_cursor(0, -1);
+        }
+        if k(Key::ArrowRight) || k(Key::L) {
+            self.move_cursor(0, 1);
+        }
+        if k(Key::Enter) || k(Key::F2) {
+            self.begin_edit_cursor();
+        }
+        // Page the first page dimension, if any.
+        if k(Key::CloseBracket) || k(Key::PageDown) {
+            self.page_first(1);
+        }
+        if k(Key::OpenBracket) || k(Key::PageUp) {
+            self.page_first(-1);
+        }
+        // Cycle measures with n / N (Tab is taken by egui focus).
+        if k(Key::N) {
+            let shift = ui.input(|i| i.modifiers.shift);
+            self.cycle_measure(if shift { -1 } else { 1 });
+        }
+    }
+
+    /// Cycle the first page dimension by `delta` (wrapping) via `set_page`.
+    fn page_first(&mut self, delta: isize) {
+        let Some(cat) = self.axis_order.get(2).copied() else {
+            return;
+        };
+        let count = self.sorted_items(cat).len();
+        if count == 0 {
+            return;
+        }
+        let cur = self.page_idx.first().copied().unwrap_or(0).min(count - 1);
+        let next = (cur as isize + delta).rem_euclid(count as isize) as usize;
+        self.set_page(0, next);
+    }
+
+    /// Cycle the selected measure by `delta` (wrapping) in id order.
+    fn cycle_measure(&mut self, delta: isize) {
+        let mut ids: Vec<MeasureId> = self.model.measures.keys().copied().collect();
+        if ids.is_empty() {
+            return;
+        }
+        ids.sort_by_key(|m| m.0);
+        let cur = self
+            .selected
+            .and_then(|s| ids.iter().position(|m| *m == s))
+            .unwrap_or(0);
+        let next = (cur as isize + delta).rem_euclid(ids.len() as isize) as usize;
+        self.selected = Some(ids[next]);
+        self.editing = None;
+    }
+
     /// Render `measure` as a 2-D pivot grid using the current axis order: the
     /// category at axis index 0 on rows, index 1 on columns, the rest pinned to
     /// their selected page item. Input cells are editable; derived read-only.
     fn render_grid(&mut self, ui: &mut egui::Ui, measure: MeasureId) {
+        self.handle_grid_keys(ui);
+        let cursor = (self.cursor_row, self.cursor_col);
         let is_derived = self
             .model
             .measures
@@ -847,6 +1011,7 @@ impl ImprovApp {
         // we don't borrow `self` mutably inside it.
         let mut commit: Option<(CoordKey, String)> = None;
         let mut clicked_derived = false;
+        let mut cancel = false;
 
         use egui_extras::{Column, TableBuilder};
         let mut table = TableBuilder::new(ui)
@@ -867,49 +1032,75 @@ impl ImprovApp {
                 }
             })
             .body(|mut body| {
-                for (rid, rname) in &rows {
+                for (ri, (rid, rname)) in rows.iter().enumerate() {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
                             ui.strong(rname);
                         });
-                        for (cid, _) in &cols {
+                        for (ci, (cid, _)) in cols.iter().enumerate() {
                             let key = cell_key(row_cat, col_cat, *rid, *cid, &pinned);
+                            let is_cursor = cursor == (ri, ci);
                             row.col(|ui| {
-                                if is_derived {
-                                    let text =
-                                        self.derived_cell_text(measure, &key).unwrap_or_default();
-                                    if ui.label(text).clicked() {
-                                        clicked_derived = true;
-                                    }
-                                } else if self.editing.as_ref() == Some(&(measure, key.clone())) {
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut self.edit_buf)
-                                            .desired_width(f32::INFINITY),
+                                // Highlight the cursor cell with a tinted frame.
+                                let mut frame = egui::Frame::default();
+                                if is_cursor {
+                                    frame = frame.fill(ui.visuals().selection.bg_fill).stroke(
+                                        egui::Stroke::new(
+                                            1.0_f32,
+                                            ui.visuals().selection.stroke.color,
+                                        ),
                                     );
-                                    resp.request_focus();
-                                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                    if resp.lost_focus() || enter {
-                                        commit = Some((key.clone(), self.edit_buf.clone()));
-                                    }
-                                } else {
-                                    let text = values
-                                        .get(&key)
-                                        .map(|v| format!("{v}"))
-                                        .unwrap_or_default();
-                                    if ui.button(text).clicked() {
-                                        self.editing = Some((measure, key.clone()));
-                                        self.edit_buf = values
+                                }
+                                frame.show(ui, |ui| {
+                                    if is_derived {
+                                        let text = self
+                                            .derived_cell_text(measure, &key)
+                                            .unwrap_or_default();
+                                        if ui.label(text).clicked() {
+                                            self.cursor_row = ri;
+                                            self.cursor_col = ci;
+                                            clicked_derived = true;
+                                        }
+                                    } else if self.editing.as_ref() == Some(&(measure, key.clone()))
+                                    {
+                                        let resp = ui.add(
+                                            egui::TextEdit::singleline(&mut self.edit_buf)
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                        resp.request_focus();
+                                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        if esc {
+                                            cancel = true;
+                                        } else if resp.lost_focus() || enter {
+                                            commit = Some((key.clone(), self.edit_buf.clone()));
+                                        }
+                                    } else {
+                                        let text = values
                                             .get(&key)
                                             .map(|v| format!("{v}"))
                                             .unwrap_or_default();
+                                        if ui.button(text).clicked() {
+                                            self.cursor_row = ri;
+                                            self.cursor_col = ci;
+                                            self.editing = Some((measure, key.clone()));
+                                            self.edit_buf = values
+                                                .get(&key)
+                                                .map(|v| format!("{v}"))
+                                                .unwrap_or_default();
+                                        }
                                     }
-                                }
+                                });
                             });
                         }
                     });
                 }
             });
 
+        if cancel {
+            self.editing = None;
+            self.status = "edit cancelled".into();
+        }
         if clicked_derived {
             self.status = "derived cells are computed, not editable".into();
         }
@@ -1147,6 +1338,8 @@ mod tests {
             axis_order,
             page_idx,
             axis_for: selected,
+            cursor_row: 0,
+            cursor_col: 0,
         }
     }
 
@@ -1285,5 +1478,146 @@ mod tests {
             app.axis_order,
             vec![CategoryId(1), CategoryId(2), CategoryId(3)]
         );
+    }
+
+    /// A 2x2 input measure Quantity[Time(2025,2026), Product(WidgetA,WidgetB)]
+    /// plus Revenue = Price * Quantity, for cursor navigation/edit tests.
+    fn grid_2x2_model() -> Model {
+        let mut m = Model::new();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        m.add_category(t, "Time");
+        m.add_category(p, "Product");
+        m.add_item(ItemId(10), t, "2025");
+        m.add_item(ItemId(11), t, "2026");
+        m.add_item(ItemId(20), p, "WidgetA");
+        m.add_item(ItemId(21), p, "WidgetB");
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Price".into()),
+            value_type: ValueType::Number,
+            categories: vec![p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(101),
+            name: Name("Quantity".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(102),
+            name: Name("Revenue".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+                Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+            ))),
+            description: None,
+        });
+        let c = |pairs: &[(CategoryId, ItemId)]| {
+            improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
+        };
+        m.set_input(MeasureId(100), c(&[(p, ItemId(20))]), Value::Number(10.0));
+        m.set_input(MeasureId(100), c(&[(p, ItemId(21))]), Value::Number(20.0));
+        for (ti, pi, q) in [
+            (ItemId(10), ItemId(20), 100.0),
+            (ItemId(10), ItemId(21), 50.0),
+            (ItemId(11), ItemId(20), 120.0),
+            (ItemId(11), ItemId(21), 80.0),
+        ] {
+            m.set_input(MeasureId(101), c(&[(t, ti), (p, pi)]), Value::Number(q));
+        }
+        m
+    }
+
+    #[test]
+    fn cursor_clamps_at_all_edges_and_after_pivot_shrink() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product], 2x2
+        app.sync_axis_state();
+
+        // Off the top-left: clamps to (0, 0).
+        app.move_cursor(-5, -5);
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        // Off the bottom-right: clamps to (1, 1).
+        app.move_cursor(100, 100);
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+
+        // Switch to Price[Product]: 2 rows, 1 synthetic col -> column re-clamps.
+        app.selected = Some(MeasureId(100));
+        app.sync_axis_state(); // resets cursor to (0,0) on measure switch
+        app.move_cursor(5, 5);
+        assert_eq!(app.cursor_col, 0, "single-column grid clamps col to 0");
+        assert_eq!(app.cursor_row, 1, "two rows -> max row 1");
+
+        // Sales 3-D: put the cursor at the far corner, then pivot to a shape
+        // where the cursor would be out of range; clamp_cursor must fix it.
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        // Region on cols has 2 items; move to the far cell.
+        app.pivot_rotate(); // rows=Product, cols=Region (2 cols)
+        app.move_cursor(100, 100);
+        let (r, c) = (app.cursor_row, app.cursor_col);
+        let (rows, cols) = app.grid_dims();
+        assert!(r < rows && c < cols, "cursor within {rows}x{cols}");
+        // Pivot again (rows=Region -> single-item axes elsewhere) and confirm
+        // the cursor never goes out of range.
+        app.pivot_rotate();
+        let (rows, cols) = app.grid_dims();
+        assert!(app.cursor_row < rows && app.cursor_col < cols);
+    }
+
+    #[test]
+    fn cursor_maps_to_expected_coord_key() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        // [1,1] = Quantity[2026, WidgetB] = Time(11), Product(21).
+        app.cursor_row = 1;
+        app.cursor_col = 1;
+        let mut expect = vec![(1u32, 11u32), (2, 21)];
+        expect.sort();
+        assert_eq!(app.cursor_key(), expect);
+
+        // [0,1] = Quantity[2025, WidgetB] = Time(10), Product(21).
+        app.cursor_row = 0;
+        app.cursor_col = 1;
+        let mut expect = vec![(1u32, 10u32), (2, 21)];
+        expect.sort();
+        assert_eq!(app.cursor_key(), expect);
+    }
+
+    #[test]
+    fn move_then_edit_routes_through_set_cell_and_recomputes() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        assert!(app.cursor_is_editable());
+
+        // Move to Quantity[2025, WidgetA] = [0,0], set it to 200.
+        app.cursor_row = 0;
+        app.cursor_col = 0;
+        let key = app.cursor_key();
+        app.set_cell(MeasureId(101), key, 200.0).unwrap();
+
+        // Revenue[2025, WidgetA] = Price(10) * 200 = 2000 in the snapshot.
+        let mut rkey = vec![(1u32, 10u32), (2, 20)];
+        rkey.sort();
+        let rev = app.values_for(MeasureId(102));
+        assert_eq!(rev.get(&rkey), Some(&2000.0));
+
+        // Derived measure: cursor cell is not editable (status set, not enter).
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+        assert!(!app.cursor_is_editable());
+        app.begin_edit_cursor();
+        assert!(app.editing.is_none());
+        assert_eq!(app.status, "derived cells are computed, not editable");
     }
 }
