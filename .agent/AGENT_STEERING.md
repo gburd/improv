@@ -165,7 +165,10 @@ The authoritative roadmap and Phase 5–7 invariants live in
   input cells (deterministic core untouched); identifiers validated, values
   bound (injection-safe). A `SQL("...")` definition-grammar form parses (via
   `parse_definition`) as a whole-RHS source; column→dimension mapping stays with
-  the `import-sql` CLI command. PLANNED: on-load/interval refresh, GUI
+  the `import-sql` CLI command. Refresh-policy metadata (`RefreshPolicy`:
+  manual/on-load/interval) is recordable per SQL measure (`--refresh` flag), and
+  `refresh-all` re-runs every external-sourced measure at once. PLANNED: a
+  daemon/scheduler that *honors* interval/on-load timing automatically, GUI
   import/export wizards, DuckDB.
 
 ## Definition of done for v1

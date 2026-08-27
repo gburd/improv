@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **SQL refresh policy + `refresh-all`**: `SqlSource` records a `RefreshPolicy`
+  (manual / on-load / interval); CLI `import-sql --refresh ...` sets it and
+  `refresh-all <db> [source.sqlite]` refreshes every external-sourced measure
+  (CALL + SQL) at once. Policy is advisory metadata (a scheduler that honors
+  timing is future work); the engine core is untouched.
 - **`CALL(...)` / `SQL(...)` definition grammar**: `core_model::parser::
   parse_definition` parses a measure definition as an ordinary formula or a
   whole-RHS source form (`Target = CALL(func, args...)` /

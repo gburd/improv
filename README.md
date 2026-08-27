@@ -84,6 +84,7 @@ cargo run -p improv_cli -- help
 | `eval <db> <measure-id>` | Compute a derived measure through the engine. |
 | `export <db>` | Dump the model as JSON. |
 | `import-sql` / `refresh-sql` / `export-sql` | SQL ⇄ measure (see below). |
+| `refresh-all <db> [source.sqlite]` | Refresh every external-sourced measure (CALL + SQL) at once. |
 | `register-ext <db> <name> <arity> "<python body>"` | Register a pure Python function. |
 | `refresh-ext <db> <measure-id>` | Populate a `CALL(...)` measure host-side. |
 
