@@ -208,18 +208,22 @@ modeling semantics.
 
 - Model explorer (left): categories (expandable to items) and measures
   (input vs derived), click to select.
-- Pivot/grid view (center): first two categories on rows/columns, extra dims
-  pinned as pages. Input cells are editable (click → text field → `set_cell`
-  through the live engine → incremental recompute + autosave); derived cells
-  are read-only, rendered via `CellValue` (bool/text/`#ERR`).
+- Pivot/grid view (center): an **axis shelf** (Rows / Columns / Pages drop
+  zones) above the grid — **drag category chips between axes** (egui
+  drag-and-drop) or use per-chip `→` / a Pivot button to re-pivot live, plus
+  per-page-dimension `< >` selectors. The Improv/Quantrix pivot, no formula
+  edits. Input cells are editable (click → text field → `set_cell` through the
+  live engine → incremental recompute + autosave); derived cells are read-only,
+  rendered via `CellValue` (bool/text/`#ERR`).
 - Formula editor (bottom): edit a derived measure's formula, or add a new
   derived measure from formula text; both parse via `core_model::parser` and
   rebuild the live engine.
 - Inspector (right): id, name, kind, value type, dimensions, derived
   dependencies, formula-in-English, and an error-cell count.
 
-**Not yet:** keyboard grid-cursor navigation, scenario management,
-efficient virtualized rendering for very large grids.
+**Not yet:** keyboard grid-cursor navigation, filters (restrict a dimension to
+a subset), multiple saved views, scenario management, efficient virtualized
+rendering for very large grids.
 
 ### 9.3 Constraints
 

@@ -8,6 +8,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **GUI drag-and-drop pivoting** (`improv-gui`): an axis shelf (Rows / Columns /
+  Pages) lets you drag category chips between axes (egui drag-and-drop) or use
+  per-chip `→` / a Pivot button, with per-page-dimension `< >` selectors — the
+  Improv/Quantrix re-pivot, no formula edits. Grid re-pivots live.
 - **SQL live-query measures** (Phase 7): an imported SQL measure now records a
   refreshable `SqlSource` on the model (`improv_storage_sql::add_sql_measure` /
   `refresh_sql_measure`); CLI `refresh-sql` re-runs the stored query and
