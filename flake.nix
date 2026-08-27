@@ -41,11 +41,11 @@
           libxkbcommon
           libGL # libglvnd: libGL/libEGL
           vulkan-loader
-          xorg.libX11
-          xorg.libXcursor
-          xorg.libXi
-          xorg.libXrandr
-          xorg.libxcb
+          libx11
+          libxcursor
+          libxi
+          libxrandr
+          libxcb
         ];
 
         # Dev tooling used by the quality gate and docs (see AGENTS.md).
