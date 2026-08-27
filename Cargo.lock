@@ -2113,6 +2113,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_extfn"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "improv_core_model",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "improv_gui"
 version = "0.1.0"
 dependencies = [
