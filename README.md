@@ -116,11 +116,14 @@ The whole flow, recorded: **[`docs/demo/cli-demo.cast`](docs/demo/cli-demo.cast)
 [`docs/demo/cli-demo.sh`](docs/demo/cli-demo.sh)).
 
 **Incremental recalculation**, recorded: build a model, then flow in new numbers
-and watch the derived measures recompute —
-**[`docs/demo/recalc-demo.cast`](docs/demo/recalc-demo.cast)**
+and watch the derived measures recompute:
+
+![Incremental recalculation demo](docs/img/recalc-demo.svg)
+
+Raw cast: **[`docs/demo/recalc-demo.cast`](docs/demo/recalc-demo.cast)**
 (`asciinema play docs/demo/recalc-demo.cast`; re-record with
-[`docs/demo/recalc-demo.sh`](docs/demo/recalc-demo.sh); upload to asciinema.org
-with `asciinema upload docs/demo/recalc-demo.cast`).
+[`docs/demo/recalc-demo.sh`](docs/demo/recalc-demo.sh); the SVG above is rendered
+from the cast with `svg-term`).
 
 For a richer playground — a 3-D **Time × Product × Region** sales model with
 Price/Cost/Quantity inputs and Revenue/COGS/Margin + aggregated derived measures

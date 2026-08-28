@@ -2,6 +2,12 @@
 # asciinema demo: build a small model, then flow in new numbers and watch the
 # derived measures recompute. Recorded to docs/demo/recalc-demo.cast.
 #   docs/demo/recalc-demo.sh
+#
+# To (re)record and render the embedded SVG:
+#   asciinema rec --overwrite -c "bash docs/demo/recalc-demo.sh" docs/demo/recalc-demo.cast
+#   asciinema convert -f asciicast-v2 docs/demo/recalc-demo.cast /tmp/recalc-v2.cast
+#   npx --yes svg-term-cli --in /tmp/recalc-v2.cast --out docs/img/recalc-demo.svg \
+#       --window --width 80 --height 34
 set -euo pipefail
 
 IMPROV="${IMPROV:-cargo run --quiet -p improv_cli --}"
