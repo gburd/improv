@@ -5,11 +5,13 @@
 //! v1, so open-per-request keeps the store off the async runtime and avoids
 //! sharing a non-Send store across tasks.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -23,9 +25,44 @@ use improv_storage_mentat::ModelStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
+/// Accepted bearer tokens, or open mode.
+///
+/// `Disabled` = no auth (local dev / tests, preserves v1 behavior);
+/// `Tokens` = require `Authorization: Bearer <t>` for a `t` in the set.
+#[derive(Clone)]
+pub enum Auth {
+    Disabled,
+    Tokens(HashSet<String>),
+}
+
+impl Auth {
+    /// Build from `IMPROV_API_TOKEN` (single) + `IMPROV_API_TOKENS` (comma-sep).
+    /// Empty/whitespace tokens are ignored; no tokens => `Disabled`.
+    fn from_env() -> Self {
+        let mut tokens = HashSet::new();
+        if let Ok(t) = std::env::var("IMPROV_API_TOKEN") {
+            let t = t.trim();
+            if !t.is_empty() {
+                tokens.insert(t.to_string());
+            }
+        }
+        if let Ok(list) = std::env::var("IMPROV_API_TOKENS") {
+            for t in list.split(',').map(str::trim).filter(|t| !t.is_empty()) {
+                tokens.insert(t.to_string());
+            }
+        }
+        if tokens.is_empty() {
+            Auth::Disabled
+        } else {
+            Auth::Tokens(tokens)
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     db_path: String,
+    auth: Auth,
 }
 
 #[tokio::main]
@@ -39,7 +76,11 @@ async fn main() {
         .or_else(|| std::env::var("IMPROV_ADDR").ok())
         .unwrap_or_else(|| "127.0.0.1:3000".to_string());
 
-    let state = Arc::new(AppState { db_path });
+    let auth = Auth::from_env();
+    if matches!(auth, Auth::Disabled) {
+        eprintln!("auth disabled: set IMPROV_API_TOKEN to require a bearer token");
+    }
+    let state = Arc::new(AppState { db_path, auth });
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
@@ -49,8 +90,8 @@ async fn main() {
 
 /// Build the router. Exposed so tests can drive it via `oneshot`.
 pub fn app(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/health", get(health))
+    // Protected routes: everything except `/health` (public for liveness probes).
+    let protected = Router::new()
         .route("/model", get(get_model))
         .route("/measures", get(list_measures))
         .route("/measures/:id/values", get(measure_values))
@@ -58,7 +99,34 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/measures/:id/cells", post(set_cell))
         .route("/nl/parse", post(nl_parse))
         .route("/nl/describe", post(nl_describe))
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+
+    Router::new()
+        .route("/health", get(health))
+        .merge(protected)
         .with_state(state)
+}
+
+/// Bearer-token gate. In open mode every request passes. Otherwise:
+/// missing/blank `Authorization` -> 401; present but not an accepted token -> 403.
+/// The token value is never logged.
+async fn require_token(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let tokens = match &state.auth {
+        Auth::Disabled => return next.run(req).await,
+        Auth::Tokens(t) => t,
+    };
+    let presented = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    match presented {
+        None => (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
+        Some(t) if tokens.contains(t) => next.run(req).await,
+        Some(_) => (StatusCode::FORBIDDEN, "invalid bearer token").into_response(),
+    }
 }
 
 // --- error handling: never panic on request input ---
@@ -493,8 +561,27 @@ mod tests {
         store.save_model(&revenue_model()).unwrap();
         let state = Arc::new(AppState {
             db_path: path.to_str().unwrap().to_string(),
+            auth: Auth::Disabled,
         });
         (app(state), path)
+    }
+
+    // Same seeded store, but auth enabled with a single accepted token.
+    fn authed_app(token: &str) -> (Router, std::path::PathBuf) {
+        let (_, path) = seeded_app();
+        let state = Arc::new(AppState {
+            db_path: path.to_str().unwrap().to_string(),
+            auth: Auth::Tokens(HashSet::from([token.to_string()])),
+        });
+        (app(state), path)
+    }
+
+    fn get_with_bearer(uri: &str, token: Option<&str>) -> Request<Body> {
+        let mut b = Request::get(uri);
+        if let Some(t) = token {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        b.body(Body::empty()).unwrap()
     }
 
     async fn body_json(resp: Response) -> JsonValue {
@@ -850,5 +937,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn authed_health_is_public() {
+        let (app, _p) = authed_app("secret");
+        let resp = app.oneshot(get_with_bearer("/health", None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn authed_protected_route_requires_token() {
+        let (app, _p) = authed_app("secret");
+        // No header -> 401.
+        let resp = app
+            .clone()
+            .oneshot(get_with_bearer("/measures", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        // Wrong token -> 403.
+        let resp = app
+            .clone()
+            .oneshot(get_with_bearer("/measures", Some("nope")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // Correct token -> 200.
+        let resp = app
+            .oneshot(get_with_bearer("/measures", Some("secret")))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }
