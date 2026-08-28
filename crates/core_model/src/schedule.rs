@@ -1,5 +1,5 @@
 //! Pure refresh-scheduling decisions: given each external-sourced measure's
-//! [`RefreshPolicy`](crate::RefreshPolicy) and when it last ran, decide which
+//! [`RefreshPolicy`] and when it last ran, decide which
 //! measures are *due* to refresh now. This is intentionally I/O-free and
 //! clock-free (times are plain seconds) so a daemon can drive it and tests can
 //! exercise it deterministically. The daemon (CLI `serve-refresh`) does the
