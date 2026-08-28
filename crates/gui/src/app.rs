@@ -136,24 +136,32 @@ impl ImprovApp {
     pub(crate) fn selected(&self) -> Option<MeasureId> {
         self.selected
     }
-    pub(crate) fn resolved_axes_pub(
+    /// Row/column category stacks and pinned pages for the current pivot — the
+    /// general (stacked) form the chart needs. Row/col tuples come from
+    /// `axis_tuples_pub`; keys from `cell_key_multi_pub`.
+    pub(crate) fn chart_axes_pub(
         &self,
-    ) -> (
-        Option<CategoryId>,
-        Option<CategoryId>,
-        Vec<(CategoryId, ItemId)>,
-    ) {
-        self.resolved_axes()
+    ) -> (Vec<CategoryId>, Vec<CategoryId>, Vec<(CategoryId, ItemId)>) {
+        (self.row_cats(), self.col_cats(), self.pinned_pages())
+    }
+    /// The Cartesian product of `cats`' filtered items (see `axis_tuples`),
+    /// exposed for the chart. Empty `cats` -> one empty tuple.
+    pub(crate) fn axis_tuples_pub(&self, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
+        self.axis_tuples(cats)
+    }
+    /// The sorted `CoordKey` for a stacked cell (see `cell_key_multi`).
+    pub(crate) fn cell_key_multi_pub(
+        &self,
+        row_cats: &[CategoryId],
+        row_tuple: &[(ItemId, String)],
+        col_cats: &[CategoryId],
+        col_tuple: &[(ItemId, String)],
+        pinned: &[(CategoryId, ItemId)],
+    ) -> CoordKey {
+        cell_key_multi(row_cats, row_tuple, col_cats, col_tuple, pinned)
     }
     pub(crate) fn values_for_pub(&self, measure: MeasureId) -> HashMap<CoordKey, f64> {
         self.values_for(measure)
-    }
-    /// Sorted, filtered items as `(item_id, name)` — item ids as raw `u32`.
-    pub(crate) fn sorted_items_pub(&self, c: CategoryId) -> Vec<(u32, String)> {
-        self.sorted_items(c)
-            .into_iter()
-            .map(|(id, n)| (id.0, n))
-            .collect()
     }
     pub(crate) fn category_name_pub(&self, c: CategoryId) -> Option<String> {
         self.model.categories.get(&c).map(|x| x.name.0.clone())
@@ -250,6 +258,8 @@ impl ImprovApp {
     /// Resolved axes for the current pivot state: (row cat, col cat, pinned
     /// page dims as (category, item)). Mirrors the grid's cell keying. Page
     /// items are the selected index for each page dimension (clamped).
+    /// Test-only: rendering and the chart use the stacked (`_cats`) form.
+    #[cfg(test)]
     fn resolved_axes(
         &self,
     ) -> (
@@ -327,6 +337,14 @@ impl ImprovApp {
             out = next;
         }
         out
+    }
+
+    /// The item lists (sorted, filtered) for each of `cats`, in order. Used to
+    /// virtualize the row axis: with these lists we can compute the total row
+    /// count as a product of lengths and decode the i-th row tuple on demand
+    /// (`nth_tuple`) without materializing the whole Cartesian product.
+    fn axis_item_lists(&self, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
+        cats.iter().map(|c| self.sorted_items(*c)).collect()
     }
 
     /// A category's items sorted by id, honoring the active filters (shared by
@@ -562,8 +580,8 @@ impl ImprovApp {
     /// pivot. Both are >= 1 (a missing axis renders one synthetic row/column,
     /// matching `render_grid`).
     fn grid_dims(&self) -> (usize, usize) {
-        let rows = self.axis_tuples(&self.row_cats()).len().max(1);
-        let cols = self.axis_tuples(&self.col_cats()).len().max(1);
+        let rows = product_len(&self.axis_item_lists(&self.row_cats())).max(1);
+        let cols = product_len(&self.axis_item_lists(&self.col_cats())).max(1);
         (rows, cols)
     }
 
@@ -589,16 +607,24 @@ impl ImprovApp {
     pub fn cursor_key(&self) -> CoordKey {
         let row_cats = self.row_cats();
         let col_cats = self.col_cats();
-        let row_tuples = self.axis_tuples(&row_cats);
-        let col_tuples = self.axis_tuples(&col_cats);
-        let empty = Vec::new();
-        let row_tuple = row_tuples.get(self.cursor_row).unwrap_or(&empty);
-        let col_tuple = col_tuples.get(self.cursor_col).unwrap_or(&empty);
+        let row_lists = self.axis_item_lists(&row_cats);
+        let col_lists = self.axis_item_lists(&col_cats);
+        // Decode only the cursor's row/col line (never the whole product).
+        let row_tuple = if row_lists.is_empty() || product_len(&row_lists) == 0 {
+            Vec::new()
+        } else {
+            nth_tuple(&row_lists, self.cursor_row.min(product_len(&row_lists) - 1))
+        };
+        let col_tuple = if col_lists.is_empty() || product_len(&col_lists) == 0 {
+            Vec::new()
+        } else {
+            nth_tuple(&col_lists, self.cursor_col.min(product_len(&col_lists) - 1))
+        };
         cell_key_multi(
             &row_cats,
-            row_tuple,
+            &row_tuple,
             &col_cats,
-            col_tuple,
+            &col_tuple,
             &self.pinned_pages(),
         )
     }
@@ -1449,19 +1475,20 @@ impl ImprovApp {
             .unwrap_or(false);
         let values = self.values_for(measure);
 
-        // Cartesian product of stacked categories per axis. Each tuple is one
-        // grid line; `row_cats`/`col_cats` give the stacking order (outer→inner).
+        // Cartesian product of stacked categories per axis. Columns are
+        // materialized up front (they become egui table columns, which the
+        // TableBuilder needs before the body, and are few in practice). Rows
+        // are VIRTUALIZED: we hold only the per-category item lists and decode
+        // the i-th row tuple on demand (see `nth_tuple`), so a grid with
+        // millions of row lines never allocates them all.
         let row_cats = self.row_cats();
         let col_cats = self.col_cats();
         let pinned = self.pinned_pages();
-        let row_lines = {
-            let t = self.axis_tuples(&row_cats);
-            if t.is_empty() {
-                vec![Vec::new()]
-            } else {
-                t
-            }
-        };
+        let row_lists = self.axis_item_lists(&row_cats);
+        // Total row lines: product of the row categories' filtered item counts
+        // (1 when there are no row categories -> a single synthetic row; 0 if
+        // any row category filtered to empty -> also render one blank line).
+        let total_rows = product_len(&row_lists).max(1);
         let col_lines = {
             let t = self.axis_tuples(&col_cats);
             if t.is_empty() {
@@ -1472,6 +1499,16 @@ impl ImprovApp {
         };
         let n_row_stub = row_cats.len().max(1); // stub columns (one per row cat)
         let n_col_hdr = col_cats.len().max(1); // header rows (one per col cat)
+
+        // Decode the i-th row tuple on demand (empty when there are no row
+        // categories -> the single synthetic row).
+        let row_tuple_at = |lists: &[Vec<(ItemId, String)>], i: usize| -> Vec<(ItemId, String)> {
+            if lists.is_empty() {
+                Vec::new()
+            } else {
+                nth_tuple(lists, i)
+            }
+        };
 
         // Edits collected during rendering, applied after the table closure so
         // we don't borrow `self` mutably inside it.
@@ -1538,97 +1575,100 @@ impl ImprovApp {
                     });
                 }
             })
-            .body(|mut body| {
-                // Track the previous row tuple so a stacked outer category only
-                // prints its label when it changes (group outlining).
-                let mut prev: Vec<Option<ItemId>> = vec![None; n_row_stub];
-                for (ri, row_line) in row_lines.iter().enumerate() {
-                    body.row(20.0, |mut row| {
-                        // Stub columns: one per stacked row category.
-                        for si in 0..n_row_stub {
-                            let cell = row_line.get(si);
-                            row.col(|ui| {
-                                match cell {
-                                    Some((id, name)) => {
-                                        // Outline: blank if same as the row above
-                                        // (except the innermost, always shown).
-                                        let inner = si + 1 == n_row_stub;
-                                        let changed = prev[si] != Some(*id);
-                                        if inner || changed {
-                                            header_cell(ui, name);
-                                        } else {
-                                            header_cell(ui, "");
-                                        }
-                                        prev[si] = Some(*id);
-                                        // Reset inner tracking when an outer changed.
-                                        if changed {
-                                            for p in prev.iter_mut().skip(si + 1) {
-                                                *p = None;
-                                            }
-                                        }
-                                    }
-                                    None => header_cell(ui, ""),
-                                }
-                            });
-                        }
-                        for (ci, col_line) in col_lines.iter().enumerate() {
-                            let key =
-                                cell_key_multi(&row_cats, row_line, &col_cats, col_line, &pinned);
-                            let is_cursor = cursor == (ri, ci);
-                            row.col(|ui| {
-                                let mut frame = egui::Frame::default();
-                                if is_cursor {
-                                    frame = frame.fill(ui.visuals().selection.bg_fill).stroke(
-                                        egui::Stroke::new(
-                                            1.0_f32,
-                                            ui.visuals().selection.stroke.color,
-                                        ),
-                                    );
-                                }
-                                frame.show(ui, |ui| {
-                                    if is_derived {
-                                        let text = self
-                                            .derived_cell_text(measure, &key)
-                                            .unwrap_or_default();
-                                        if ui.label(text).clicked() {
-                                            self.cursor_row = ri;
-                                            self.cursor_col = ci;
-                                            clicked_derived = true;
-                                        }
-                                    } else if self.editing.as_ref() == Some(&(measure, key.clone()))
-                                    {
-                                        let resp = ui.add(
-                                            egui::TextEdit::singleline(&mut self.edit_buf)
-                                                .desired_width(f32::INFINITY),
-                                        );
-                                        resp.request_focus();
-                                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                        if esc {
-                                            cancel = true;
-                                        } else if resp.lost_focus() || enter {
-                                            commit = Some((key.clone(), self.edit_buf.clone()));
-                                        }
+            .body(|body| {
+                // Virtualized rows: `body.rows` only invokes the closure for the
+                // rows currently visible in the viewport. Because rows are not
+                // built contiguously, group outlining can't rely on a running
+                // `prev` tracker — for row `ri` we decode row `ri-1`'s tuple on
+                // demand and blank an outer stub cell when it matches.
+                body.rows(20.0, total_rows, |mut row| {
+                    let ri = row.index();
+                    let row_line = row_tuple_at(&row_lists, ri);
+                    let prev_line = if ri > 0 {
+                        Some(row_tuple_at(&row_lists, ri - 1))
+                    } else {
+                        None
+                    };
+                    // Stub columns: one per stacked row category.
+                    for si in 0..n_row_stub {
+                        let cell = row_line.get(si);
+                        row.col(|ui| {
+                            match cell {
+                                Some((_id, name)) => {
+                                    // Show the label on the innermost stub always,
+                                    // and on an outer stub only when this level or
+                                    // any enclosing outer level changed from the
+                                    // row above — group outlining.
+                                    let inner = si + 1 == n_row_stub;
+                                    let changed = match &prev_line {
+                                        None => true,
+                                        Some(p) => (0..=si).any(|k| {
+                                            row_line.get(k).map(|(id, _)| id)
+                                                != p.get(k).map(|(id, _)| id)
+                                        }),
+                                    };
+                                    if inner || changed {
+                                        header_cell(ui, name);
                                     } else {
-                                        let text = values
+                                        header_cell(ui, "");
+                                    }
+                                }
+                                None => header_cell(ui, ""),
+                            }
+                        });
+                    }
+                    for (ci, col_line) in col_lines.iter().enumerate() {
+                        let key =
+                            cell_key_multi(&row_cats, &row_line, &col_cats, col_line, &pinned);
+                        let is_cursor = cursor == (ri, ci);
+                        row.col(|ui| {
+                            let mut frame = egui::Frame::default();
+                            if is_cursor {
+                                frame = frame.fill(ui.visuals().selection.bg_fill).stroke(
+                                    egui::Stroke::new(1.0_f32, ui.visuals().selection.stroke.color),
+                                );
+                            }
+                            frame.show(ui, |ui| {
+                                if is_derived {
+                                    let text =
+                                        self.derived_cell_text(measure, &key).unwrap_or_default();
+                                    if ui.label(text).clicked() {
+                                        self.cursor_row = ri;
+                                        self.cursor_col = ci;
+                                        clicked_derived = true;
+                                    }
+                                } else if self.editing.as_ref() == Some(&(measure, key.clone())) {
+                                    let resp = ui.add(
+                                        egui::TextEdit::singleline(&mut self.edit_buf)
+                                            .desired_width(f32::INFINITY),
+                                    );
+                                    resp.request_focus();
+                                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                    if esc {
+                                        cancel = true;
+                                    } else if resp.lost_focus() || enter {
+                                        commit = Some((key.clone(), self.edit_buf.clone()));
+                                    }
+                                } else {
+                                    let text = values
+                                        .get(&key)
+                                        .map(|v| format!("{v}"))
+                                        .unwrap_or_default();
+                                    if ui.button(text).clicked() {
+                                        self.cursor_row = ri;
+                                        self.cursor_col = ci;
+                                        self.editing = Some((measure, key.clone()));
+                                        self.edit_buf = values
                                             .get(&key)
                                             .map(|v| format!("{v}"))
                                             .unwrap_or_default();
-                                        if ui.button(text).clicked() {
-                                            self.cursor_row = ri;
-                                            self.cursor_col = ci;
-                                            self.editing = Some((measure, key.clone()));
-                                            self.edit_buf = values
-                                                .get(&key)
-                                                .map(|v| format!("{v}"))
-                                                .unwrap_or_default();
-                                        }
                                     }
-                                });
+                                }
                             });
-                        }
-                    });
-                }
+                        });
+                    }
+                });
             });
 
         if cancel {
@@ -1656,41 +1696,6 @@ impl ImprovApp {
     }
 }
 
-/// Crate-internal wrapper over `cell_key` taking raw `u32` row/col item ids
-/// (the chart works in raw ids). Same sorted-`CoordKey` contract.
-pub(crate) fn cell_key_pub(
-    row_cat: Option<CategoryId>,
-    col_cat: Option<CategoryId>,
-    rid: u32,
-    cid: u32,
-    pinned: &[(CategoryId, ItemId)],
-) -> CoordKey {
-    cell_key(row_cat, col_cat, ItemId(rid), ItemId(cid), pinned)
-}
-
-/// The sorted `CoordKey` for a cell, given the row/col categories, this cell's
-/// row/col items, and the pinned extra dims.
-fn cell_key(
-    row_cat: Option<CategoryId>,
-    col_cat: Option<CategoryId>,
-    rid: ItemId,
-    cid: ItemId,
-    pinned: &[(CategoryId, ItemId)],
-) -> CoordKey {
-    let mut pairs: Vec<(u32, u32)> = Vec::new();
-    if let Some(c) = row_cat {
-        pairs.push((c.0, rid.0));
-    }
-    if let Some(c) = col_cat {
-        pairs.push((c.0, cid.0));
-    }
-    for (c, i) in pinned {
-        pairs.push((c.0, i.0));
-    }
-    pairs.sort();
-    pairs
-}
-
 /// The sorted `CoordKey` for a cell when categories are STACKED on each axis:
 /// `row_cats[i]` binds to `row_tuple[i]`, `col_cats[j]` to `col_tuple[j]`, plus
 /// the pinned page dims. Tuples come from `axis_tuples` so they align with the
@@ -1714,6 +1719,34 @@ fn cell_key_multi(
     }
     pairs.sort();
     pairs
+}
+
+/// The number of axis lines the Cartesian product of `lists` produces: the
+/// product of each list's length (empty `lists` -> 1, the scalar axis; any
+/// empty list -> 0, no lines). Mirrors `axis_tuples(..).len()` but is O(k) in
+/// the number of categories, never materializing the product.
+fn product_len(lists: &[Vec<(ItemId, String)>]) -> usize {
+    lists.iter().map(|l| l.len()).product()
+}
+
+/// The i-th line of the Cartesian product of `lists` (outer category first),
+/// by mixed-radix decoding of `i` across the list lengths — the inner (last)
+/// category is the least-significant digit, matching `axis_tuples`' ordering
+/// (which increments the inner category fastest). Returns the bound
+/// `(ItemId, name)` per category. `i` must be `< product_len(lists)`.
+///
+/// This is what lets the grid virtualize rows: instead of holding every row
+/// tuple in a Vec, we decode line `i` (and, for group outlining, line `i-1`)
+/// only when that row is actually painted.
+fn nth_tuple(lists: &[Vec<(ItemId, String)>], mut i: usize) -> Vec<(ItemId, String)> {
+    let mut out: Vec<(ItemId, String)> = vec![(ItemId(0), String::new()); lists.len()];
+    for (d, list) in lists.iter().enumerate().rev() {
+        let radix = list.len();
+        debug_assert!(radix > 0, "empty category has no lines");
+        out[d] = list[i % radix].clone();
+        i /= radix;
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2004,6 +2037,120 @@ mod tests {
         assert_eq!(key, vec![(1, 10), (2, 20)]);
         // Grid dims: 1 row line, 1 col line (no col categories).
         assert_eq!(app.grid_dims(), (1, 1));
+    }
+
+    #[test]
+    fn nth_tuple_decodes_mixed_radix_and_matches_axis_tuples() {
+        // Row cats Time(4 items) x Region(2 items): 8 lines, inner (Region)
+        // varies fastest — same order as axis_tuples.
+        let time: Vec<(ItemId, String)> =
+            (0..4).map(|k| (ItemId(10 + k), format!("T{k}"))).collect();
+        let region: Vec<(ItemId, String)> =
+            (0..2).map(|k| (ItemId(30 + k), format!("R{k}"))).collect();
+        let lists = vec![time.clone(), region.clone()];
+        assert_eq!(product_len(&lists), 8);
+
+        // line 0 = (T0, R0); line 1 = (T0, R1); line 7 = (T3, R1).
+        assert_eq!(
+            nth_tuple(&lists, 0),
+            vec![time[0].clone(), region[0].clone()]
+        );
+        assert_eq!(
+            nth_tuple(&lists, 1),
+            vec![time[0].clone(), region[1].clone()]
+        );
+        assert_eq!(
+            nth_tuple(&lists, 7),
+            vec![time[3].clone(), region[1].clone()]
+        );
+
+        // Iterating 0..total reproduces the full Cartesian product built by the
+        // reference product-builder (same ordering as axis_tuples).
+        let mut reference: Vec<Vec<(ItemId, String)>> = vec![Vec::new()];
+        for list in &lists {
+            let mut next = Vec::new();
+            for prefix in &reference {
+                for it in list {
+                    let mut t = prefix.clone();
+                    t.push(it.clone());
+                    next.push(t);
+                }
+            }
+            reference = next;
+        }
+        let decoded: Vec<_> = (0..product_len(&lists))
+            .map(|i| nth_tuple(&lists, i))
+            .collect();
+        assert_eq!(decoded, reference);
+    }
+
+    #[test]
+    fn nth_tuple_matches_apps_axis_tuples() {
+        // Cross-check against the app's own axis_tuples on the 2x2 model.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product] stacked
+        let cats = app.row_cats();
+        let lists = app.axis_item_lists(&cats);
+        let want = app.axis_tuples(&cats);
+        assert_eq!(product_len(&lists), want.len());
+        for (i, w) in want.iter().enumerate() {
+            assert_eq!(nth_tuple(&lists, i), *w, "line {i}");
+        }
+    }
+
+    #[test]
+    fn large_grid_row_count_is_correct_and_does_not_panic() {
+        // A synthetic model with a category of a few thousand items so the row
+        // product is large; the pure helpers must give the right count and
+        // decode any line without materializing the whole product.
+        let mut m = Model::new();
+        let (big, small) = (CategoryId(1), CategoryId(2));
+        m.add_category(big, "Big");
+        m.add_category(small, "Small");
+        let n_big = 5_000u32;
+        for k in 0..n_big {
+            m.add_item(ItemId(1_000 + k), big, format!("b{k}"));
+        }
+        for k in 0..3u32 {
+            m.add_item(ItemId(10 + k), small, format!("s{k}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(300),
+            name: Name("M".into()),
+            value_type: ValueType::Number,
+            categories: vec![big, small],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let mut app = build_app(m);
+        app.selected = Some(MeasureId(300));
+        app.sync_axis_state();
+        // Stack both categories on rows -> 5000 * 3 = 15000 row lines.
+        app.set_axis(small, Axis::Rows);
+        assert_eq!(app.row_cats(), vec![big, small]);
+
+        let lists = app.axis_item_lists(&app.row_cats());
+        let total = product_len(&lists);
+        assert_eq!(total, (n_big as usize) * 3);
+        // grid_dims reports the same total (no column category -> 1 col).
+        assert_eq!(app.grid_dims(), (total, 1));
+
+        // Decode the first, a middle, and the last line without panic.
+        let first = nth_tuple(&lists, 0);
+        assert_eq!(first[0].0, ItemId(1_000));
+        assert_eq!(first[1].0, ItemId(10));
+        let last = nth_tuple(&lists, total - 1);
+        assert_eq!(last[0].0, ItemId(1_000 + n_big - 1));
+        assert_eq!(last[1].0, ItemId(12));
+        // A cursor deep in the grid resolves its key without materializing rows.
+        app.cursor_row = total - 1;
+        app.cursor_col = 0;
+        let key = app.cursor_key();
+        let mut want = vec![(big.0, 1_000 + n_big - 1), (small.0, 12)];
+        want.sort();
+        assert_eq!(key, want);
     }
 
     #[test]
@@ -2343,6 +2490,81 @@ mod tests {
         assert_eq!(d.series[1].points, vec![Some(1000.0), Some(1600.0)]);
         // y-range spans 0..1600 (0 always included).
         assert_eq!(d.y_range(), (0.0, 1600.0));
+    }
+
+    #[test]
+    fn chart_series_stacked_rows_join_tuple_labels_and_match_cell_keys() {
+        // Revenue[Time, Product]: stack BOTH categories on rows, leaving no
+        // column category. x-labels become the joined row tuples
+        // ("2025 / WidgetA", ...) and there is one unnamed series whose values
+        // match cell_key_multi lookups.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(102)); // Revenue
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product]
+        assert_eq!(app.row_cats(), vec![CategoryId(1), CategoryId(2)]);
+        assert!(app.col_cats().is_empty());
+
+        let d = app.chart_series();
+        assert_eq!(d.x_title, "Time / Product");
+        assert_eq!(
+            d.x_labels,
+            vec![
+                "2025 / WidgetA".to_string(),
+                "2025 / WidgetB".to_string(),
+                "2026 / WidgetA".to_string(),
+                "2026 / WidgetB".to_string(),
+            ]
+        );
+        // One series (no column categories), unnamed.
+        assert_eq!(d.series.len(), 1);
+        assert_eq!(d.series[0].name, "");
+
+        // Each point matches a direct cell_key_multi lookup on the same tuples.
+        let values = app.values_for(MeasureId(102));
+        let row_tuples = app.axis_tuples(&app.row_cats());
+        let want: Vec<Option<f64>> = row_tuples
+            .iter()
+            .map(|t| {
+                let key = cell_key_multi(&app.row_cats(), t, &[], &[], &[]);
+                values.get(&key).copied()
+            })
+            .collect();
+        assert_eq!(d.series[0].points, want);
+        // Oracle: WidgetA prices 10/20; Quantities 100,50,120,80 ->
+        // 1000, 1000, 1200, 1600.
+        assert_eq!(
+            d.series[0].points,
+            vec![Some(1000.0), Some(1000.0), Some(1200.0), Some(1600.0)]
+        );
+    }
+
+    #[test]
+    fn chart_series_stacked_columns_form_one_series_per_col_tuple() {
+        // Revenue[Time, Product]: rows=Time, columns stack both? Instead stack
+        // Product on rows AND keep Time on cols to exercise a multi-tuple
+        // column axis. Here: rows=Product (2), cols=Time (2) -> 2 x-labels,
+        // 2 series named by the (single-item) column tuples.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+        app.pivot_rotate(); // rows=Product, cols=Time
+        assert_eq!(app.row_cats(), vec![CategoryId(2)]);
+        assert_eq!(app.col_cats(), vec![CategoryId(1)]);
+
+        let d = app.chart_series();
+        assert_eq!(d.x_title, "Product");
+        assert_eq!(
+            d.x_labels,
+            vec!["WidgetA".to_string(), "WidgetB".to_string()]
+        );
+        // One series per Time item (single-element column tuples).
+        assert_eq!(d.series.len(), 2);
+        assert_eq!(d.series[0].name, "2025");
+        assert_eq!(d.series[1].name, "2026");
+        // 2025: WidgetA=1000, WidgetB=1000; 2026: WidgetA=1200, WidgetB=1600.
+        assert_eq!(d.series[0].points, vec![Some(1000.0), Some(1000.0)]);
+        assert_eq!(d.series[1].points, vec![Some(1200.0), Some(1600.0)]);
     }
 
     #[test]

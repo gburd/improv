@@ -1,11 +1,14 @@
 //! A read-only chart view of the selected measure.
 //!
 //! `chart_series` is a pure function of the app state (snapshot + filters +
-//! pivot/page): it produces `ChartData` — x-labels (items of the row category)
-//! and one series per column item (or a single series for a 1-D grid) — with no
-//! egui calls. `render_chart` just paints that `ChartData` with `egui::Painter`
-//! (grouped bars, optional line overlay). Non-numeric / Error cells are gaps
-//! (`None`), never a panic. The chart never mutates the model or engine.
+//! pivot/page): the x-axis is the full Cartesian product of the ROW categories
+//! (labels are the joined tuple names, e.g. "2024Q1 / North"), and there is one
+//! series per full COLUMN tuple (series name = joined column tuple names). The
+//! single-category case is the 1-length-tuple case; a 1-D grid (no columns) is
+//! one unnamed series. No egui calls. `render_chart` just paints that
+//! `ChartData` with `egui::Painter` (grouped bars, optional line overlay).
+//! Non-numeric / Error cells are gaps (`None`), never a panic. The chart never
+//! mutates the model or engine.
 
 use crate::app::ImprovApp;
 
@@ -14,17 +17,17 @@ use crate::app::ImprovApp;
 /// (non-numeric / missing cell).
 #[derive(Debug, Default, PartialEq)]
 pub struct ChartData {
-    /// X-axis category name (row category), for the axis title.
+    /// X-axis title: the joined ROW category names (e.g. "Time / Region").
     pub x_title: String,
-    /// One label per x position (row item names), in grid order.
+    /// One label per x position: the joined row-tuple item names, in grid order.
     pub x_labels: Vec<String>,
-    /// One series per column item (or a single unnamed series if 1-D).
+    /// One series per full column tuple (a single unnamed series if 1-D).
     pub series: Vec<Series>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct Series {
-    /// Column item name (empty for a 1-D grid's single series).
+    /// Joined column-tuple item names (empty for a 1-D grid's single series).
     pub name: String,
     /// y-value per x position; `None` is a gap.
     pub points: Vec<Option<f64>>,
@@ -52,37 +55,53 @@ impl ChartData {
 impl ImprovApp {
     /// Build the chart data for the selected measure from the current snapshot,
     /// honoring the active filters and pinned page items (same visible-item set
-    /// as the grid). Rows -> x-axis; columns -> one series each; a 1-D grid is a
-    /// single series. Pure: no egui, no mutation.
+    /// as the grid). The x-axis is the full Cartesian product of the ROW
+    /// categories (x-label = joined tuple item names, e.g. "2024Q1 / North");
+    /// one series per full COLUMN tuple (series name = joined column tuple
+    /// names). The single-category case is just the 1-length-tuple case. A 1-D
+    /// grid (no column categories) is a single unnamed series. Non-numeric /
+    /// missing cells are gaps (`None`). Pure: no egui, no mutation.
     pub fn chart_series(&self) -> ChartData {
         let Some(measure) = self.selected() else {
             return ChartData::default();
         };
-        let (row_cat, col_cat, pinned) = self.resolved_axes_pub();
+        let (row_cats, col_cats, pinned) = self.chart_axes_pub();
         let values = self.values_for_pub(measure);
 
-        let rows: Vec<(u32, String)> = match row_cat {
-            Some(c) => self.sorted_items_pub(c),
-            None => vec![(0, String::new())],
+        // Full row/column products (each element is a tuple of (ItemId, name)).
+        let row_tuples = self.axis_tuples_pub(&row_cats);
+        let col_tuples = self.axis_tuples_pub(&col_cats);
+        // An empty product (a category filtered to nothing) yields no x/series.
+        let row_tuples = if row_tuples.is_empty() {
+            vec![Vec::new()]
+        } else {
+            row_tuples
         };
-        let cols: Vec<(u32, String)> = match col_cat {
-            Some(c) => self.sorted_items_pub(c),
-            None => vec![(0, String::new())],
+        let col_tuples = if col_tuples.is_empty() {
+            vec![Vec::new()]
+        } else {
+            col_tuples
         };
 
-        let x_title = row_cat
-            .and_then(|c| self.category_name_pub(c))
-            .unwrap_or_default();
-        let x_labels: Vec<String> = rows.iter().map(|(_, n)| n.clone()).collect();
-
-        let series = cols
+        // Axis title: the joined row-category names (e.g. "Time / Region").
+        let x_title = row_cats
             .iter()
-            .map(|(cid, cname)| Series {
-                name: cname.clone(),
-                points: rows
+            .filter_map(|c| self.category_name_pub(*c))
+            .collect::<Vec<_>>()
+            .join(" / ");
+        // x-label per row tuple: joined item names.
+        let x_labels: Vec<String> = row_tuples.iter().map(|t| join_names(t)).collect();
+
+        let series = col_tuples
+            .iter()
+            .map(|col_tuple| Series {
+                name: join_names(col_tuple),
+                points: row_tuples
                     .iter()
-                    .map(|(rid, _)| {
-                        let key = crate::app::cell_key_pub(row_cat, col_cat, *rid, *cid, &pinned);
+                    .map(|row_tuple| {
+                        let key = self.cell_key_multi_pub(
+                            &row_cats, row_tuple, &col_cats, col_tuple, &pinned,
+                        );
                         values.get(&key).copied()
                     })
                     .collect(),
@@ -95,6 +114,15 @@ impl ImprovApp {
             series,
         }
     }
+}
+
+/// Join a tuple's item names with " / " (empty tuple -> empty string).
+fn join_names(tuple: &[(improv_core_model::ItemId, String)]) -> String {
+    tuple
+        .iter()
+        .map(|(_, n)| n.as_str())
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 /// Paint `data` into the current `ui` as grouped bars (and, when `line` is set,
