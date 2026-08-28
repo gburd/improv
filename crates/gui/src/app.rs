@@ -1003,7 +1003,7 @@ impl ImprovApp {
                         self.show_chart = !self.show_chart;
                     }
                 });
-                self.axis_shelf(ui);
+                self.margin_tiles(ui);
                 self.page_selectors(ui);
                 self.filter_shelf(ui);
                 ui.separator();
@@ -1012,11 +1012,14 @@ impl ImprovApp {
         });
     }
 
-    /// The pivot "axis shelf": three drop zones (Rows / Columns / Pages) each
-    /// showing the category chips assigned there. Categories are dragged
-    /// between zones (egui 0.29 `dnd_drag_source`/`dnd_drop_zone`); each chip
-    /// also has a "->" button that cycles rows->cols->pages for mouse-only use.
-    fn axis_shelf(&mut self, ui: &mut egui::Ui) {
+    /// The signature Lotus Improv pivot gesture: category **tiles at the grid
+    /// margins**. The top margin holds the *Columns* category tile, the left
+    /// margin the *Rows* tile, and a strip holds the *Pages* tiles. Each tile
+    /// is a drag source; each margin is a drop zone — drag a tile from one
+    /// margin to another to re-pivot, exactly as in NeXTSTEP Improv, without
+    /// touching any formula. A small `↻` on each tile is a mouse-only fallback
+    /// that cycles rows→cols→pages.
+    fn margin_tiles(&mut self, ui: &mut egui::Ui) {
         let cat_name = |app: &ImprovApp, c: CategoryId| {
             app.model
                 .categories
@@ -1024,44 +1027,69 @@ impl ImprovApp {
                 .map(|x| x.name.0.clone())
                 .unwrap_or_else(|| format!("category {}", c.0))
         };
-        // Snapshot the per-axis assignment for this frame.
         let row_cat = self.axis_order.first().copied();
         let col_cat = self.axis_order.get(1).copied();
         let page_cats: Vec<CategoryId> = self.axis_order.iter().skip(2).copied().collect();
-
-        // Mutations requested this frame (applied after the borrow ends).
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
 
-        let zone = |ui: &mut egui::Ui,
-                    app: &ImprovApp,
-                    label: &str,
-                    axis: Axis,
-                    cats: &[CategoryId],
-                    moves: &mut Vec<(CategoryId, Axis)>| {
-            ui.vertical(|ui| {
-                ui.strong(label);
-                let frame = egui::Frame::default()
-                    .inner_margin(4.0)
-                    .stroke(ui.visuals().widgets.noninteractive.bg_stroke);
-                let (_, dropped) = ui.dnd_drop_zone::<CategoryId, ()>(frame, |ui| {
-                    ui.set_min_size(egui::vec2(120.0, 26.0));
-                    ui.horizontal_wrapped(|ui| {
-                        if cats.is_empty() {
-                            ui.weak("(empty)");
-                        }
-                        for c in cats {
-                            let id = egui::Id::new(("chip", c.0));
-                            ui.dnd_drag_source(id, *c, |ui| {
-                                ui.label(egui::RichText::new(cat_name(app, *c)).strong());
-                            });
-                            // Mouse-only fallback: cycle rows->cols->pages.
-                            let next = match axis {
+        // A draggable category tile: raised beveled face with the category name.
+        let tile = |ui: &mut egui::Ui, app: &ImprovApp, c: CategoryId, from: Axis| {
+            let id = egui::Id::new(("tile", c.0));
+            ui.dnd_drag_source(id, c, |ui| {
+                egui::Frame::default()
+                    .fill(crate::theme::NEXT_LIGHT)
+                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
+                    .inner_margin(egui::Margin::symmetric(8.0, 3.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(cat_name(app, c)).strong());
+                            let next = match from {
                                 Axis::Rows => Axis::Columns,
                                 Axis::Columns => Axis::Pages,
                                 Axis::Pages => Axis::Rows,
                             };
-                            if ui.small_button("->").clicked() {
-                                moves.push((*c, next));
+                            if ui
+                                .small_button("↻")
+                                .on_hover_text("move to next axis")
+                                .clicked()
+                            {
+                                // recorded below via the returned move
+                                ui.data_mut(|d| d.insert_temp(id, next));
+                            }
+                        });
+                    });
+            });
+            // Pull any cycle request recorded on this tile's id.
+            if let Some(next) = ui.data(|d| d.get_temp::<Axis>(id)) {
+                ui.data_mut(|d| d.remove::<Axis>(id));
+                Some((c, next))
+            } else {
+                None
+            }
+        };
+
+        // A margin drop zone with a NeXT-groove frame + axis label.
+        let margin = |ui: &mut egui::Ui,
+                      app: &ImprovApp,
+                      label: &str,
+                      axis: Axis,
+                      cats: &[CategoryId],
+                      moves: &mut Vec<(CategoryId, Axis)>| {
+            ui.vertical(|ui| {
+                ui.small(egui::RichText::new(label).weak());
+                let frame = egui::Frame::default()
+                    .fill(crate::theme::NEXT_GRAY)
+                    .inner_margin(3.0)
+                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::NEXT_DARK));
+                let (_, dropped) = ui.dnd_drop_zone::<CategoryId, ()>(frame, |ui| {
+                    ui.set_min_size(egui::vec2(120.0, 28.0));
+                    ui.horizontal_wrapped(|ui| {
+                        if cats.is_empty() {
+                            ui.weak("(drop here)");
+                        }
+                        for c in cats {
+                            if let Some(m) = tile(ui, app, *c, axis) {
+                                moves.push(m);
                             }
                         }
                     });
@@ -1073,23 +1101,23 @@ impl ImprovApp {
         };
 
         ui.horizontal(|ui| {
-            zone(
+            margin(
                 ui,
                 self,
-                "Rows",
-                Axis::Rows,
-                &row_cat.into_iter().collect::<Vec<_>>(),
-                &mut moves,
-            );
-            zone(
-                ui,
-                self,
-                "Columns",
+                "↓ Columns",
                 Axis::Columns,
                 &col_cat.into_iter().collect::<Vec<_>>(),
                 &mut moves,
             );
-            zone(ui, self, "Pages", Axis::Pages, &page_cats, &mut moves);
+            margin(
+                ui,
+                self,
+                "→ Rows",
+                Axis::Rows,
+                &row_cat.into_iter().collect::<Vec<_>>(),
+                &mut moves,
+            );
+            margin(ui, self, "Pages", Axis::Pages, &page_cats, &mut moves);
             if ui.button("Pivot").on_hover_text("rotate axes").clicked() {
                 self.pivot_rotate();
             }
