@@ -115,6 +115,13 @@ The whole flow, recorded: **[`docs/demo/cli-demo.cast`](docs/demo/cli-demo.cast)
 (play with `asciinema play docs/demo/cli-demo.cast`, or re-record with
 [`docs/demo/cli-demo.sh`](docs/demo/cli-demo.sh)).
 
+**Incremental recalculation**, recorded: build a model, then flow in new numbers
+and watch the derived measures recompute —
+**[`docs/demo/recalc-demo.cast`](docs/demo/recalc-demo.cast)**
+(`asciinema play docs/demo/recalc-demo.cast`; re-record with
+[`docs/demo/recalc-demo.sh`](docs/demo/recalc-demo.sh); upload to asciinema.org
+with `asciinema upload docs/demo/recalc-demo.cast`).
+
 For a richer playground — a 3-D **Time × Product × Region** sales model with
 Price/Cost/Quantity inputs and Revenue/COGS/Margin + aggregated derived measures
 — run [`docs/demo/sample-model.sh`](docs/demo/sample-model.sh):
@@ -175,13 +182,31 @@ Time × Product.
 
 ## GUI (`improv-gui`)
 
-The egui/eframe desktop app — explorer, editable pivot grid, drag-and-drop
-pivoting (Rows/Columns/Pages shelf), formula editor, inspector, saved views,
-per-category filters, and a bar/line **chart** of the selected measure. Run it
-from inside the Nix dev shell (it needs the GUI runtime libs):
+The egui/eframe desktop app in the NeXTSTEP-flavored look-and-feel of the
+original Lotus Improv — explorer, editable pivot grid, on-grid margin **category
+tiles** for drag-to-pivot, a top **formula bar**, inspector, saved views,
+per-category filters, a bar/line **chart**, and **multi-category-per-axis
+stacking**.
+
+![Improv GUI — pivot grid](docs/img/gui-pivot-grid.png)
+
+*The 3-D sample model: Revenue over Time × Product × Region. Product is on
+columns, Time on rows, Region paged (North [1/2]); the formula bar shows
+`Revenue = Price times Quantity`, and the inspector shows its dependencies.*
+
+![Improv GUI — stacked axes](docs/img/gui-stacked-axes.png)
+
+*The same measure after dragging **Region** onto the Rows margin: rows are now
+the stacked product Time × Region (2024Q1 North/South, 2024Q2 …), with the outer
+Time label printed once per group.*
+
+Run it from inside the Nix dev shell (it needs the GUI runtime libs):
 
 ```sh
 nix develop -c cargo run -p improv_gui -- model.db
+# or build the richer sample model first:
+bash docs/demo/sample-model.sh sample.db && \
+  nix develop -c cargo run -p improv_gui -- sample.db
 ```
 
 Grid keyboard navigation (mouse also works throughout):
