@@ -165,10 +165,11 @@ The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
   `Rows \ Columns` category names.
 - **NeXT-style tool palette** — a narrow left column of beveled buttons
   (pivot / chart / save view / save model).
-
-*Deferred:* true multi-category-per-axis **stacking** (nested group headers over
-a Cartesian product of stacked categories) — a feature-sized change to
-`render_grid` + `cell_key`, with its own tests.
+- **Multi-category-per-axis stacking** — more than one category can be stacked
+  on the row or column axis (`n_rows`/`n_cols` split of `axis_order`); the grid
+  renders the Cartesian product with nested column headers and group-outlined
+  row stubs. Dragging a category onto an axis margin stacks it; dragging to
+  Pages unstacks. Persisted in `View` (`n_rows`/`n_cols`, serde-default 1).
 
 Both the GUI (`improv-gui`) and the TUI (`improv-tui`) support pivoting; the TUI
 additionally accepts **mouse input** (click to select/pivot) where the terminal

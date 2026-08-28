@@ -13,8 +13,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   corners, paper-white grid), on-grid **category tiles at the grid margins** as
   the pivot gesture (drag a tile between Rows/Columns/Pages margins), a top
   **formula bar** (`<Measure> = <expr>`), chiseled grid headers with a
-  `Rows \ Columns` corner stub, and a NeXT-style **tool palette**. (True
-  multi-category-per-axis stacking is deferred.)
+  `Rows \ Columns` corner stub, a NeXT-style **tool palette**, and
+  **multi-category-per-axis stacking** (stack >1 category on an axis; the grid
+  renders the Cartesian product with nested headers and group-outlined rows).
 - **Refresh scheduler daemon** (`serve-refresh`): honors each measure's
   `RefreshPolicy` automatically — on every tick it refreshes the due measures
   (on-load once, interval every N seconds). The scheduling decision is a pure,
