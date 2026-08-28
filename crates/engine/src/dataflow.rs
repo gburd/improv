@@ -19,10 +19,12 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::{Join as _, Reduce};
+use differential_dataflow::AsCollection;
 use differential_dataflow::Collection;
 use improv_core_model::{BinaryOp, CategoryId, FuncId, MeasureId, MeasureKind, Model, UnaryOp};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use timely::dataflow::operators::ToStream;
 use timely::dataflow::Scope;
 
 /// SUM/AVG/MIN/MAX func ids (must match the compiler's convention).
@@ -48,11 +50,12 @@ type Coll<G> = Collection<G, (CoordKey, CellValue), isize>;
 /// *derived* measure resolves to its already-built collection in `derived`.
 pub(crate) fn build_coll<G: Scope>(
     node: &PlanNode,
+    scope: &mut G,
     inputs: &HashMap<MeasureId, Coll<G>>,
     derived: &HashMap<MeasureId, Coll<G>>,
 ) -> Result<Coll<G>, EngineError>
 where
-    G::Timestamp: differential_dataflow::lattice::Lattice,
+    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
 {
     match &node.kind {
         PlanNodeKind::InputMeasure(m) => inputs
@@ -62,7 +65,7 @@ where
             .ok_or_else(|| EngineError::Unsupported(format!("no collection for measure {m:?}"))),
 
         PlanNodeKind::MapUnary(op, child) => {
-            let c = build_coll(child, inputs, derived)?;
+            let c = build_coll(child, scope, inputs, derived)?;
             let op = *op;
             Ok(c.map(move |(k, v)| (k, apply_unary(op, &v))))
         }
@@ -74,26 +77,25 @@ where
             let op = *op;
             match (literal_value(left), literal_value(right)) {
                 (Some(lit), None) => {
-                    let r = build_coll(right, inputs, derived)?;
+                    let r = build_coll(right, scope, inputs, derived)?;
                     Ok(r.map(move |(k, b)| (k, apply_binary(op, &lit, &b))))
                 }
                 (None, Some(lit)) => {
-                    let l = build_coll(left, inputs, derived)?;
+                    let l = build_coll(left, scope, inputs, derived)?;
                     Ok(l.map(move |(k, a)| (k, apply_binary(op, &a, &lit))))
                 }
                 (Some(a), Some(b)) => {
-                    // Both literals: a scalar result under the empty key.
-                    // (Rare; the compiler usually has at least one measure ref.)
+                    // Both literals: a scalar result at the empty coordinate.
                     let v = apply_binary(op, &a, &b);
-                    // No source collection to attach to; unsupported standalone.
-                    let _ = v;
-                    Err(EngineError::Unsupported(
-                        "binary op on two literals (no dimensioned context)".into(),
-                    ))
+                    let empty: CoordKey = Vec::new();
+                    let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
+                    Ok(vec![((empty, v), t, 1isize)]
+                        .to_stream(scope)
+                        .as_collection())
                 }
                 (None, None) => {
-                    let l = build_coll(left, inputs, derived)?;
-                    let r = build_coll(right, inputs, derived)?;
+                    let l = build_coll(left, scope, inputs, derived)?;
+                    let r = build_coll(right, scope, inputs, derived)?;
                     Ok(l.join(&r)
                         .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))))
                 }
@@ -108,8 +110,8 @@ where
             // Re-key both sides to the shared join categories, join, then
             // rebuild the union key. The union of the two full keys is the
             // result coordinate.
-            let l = build_coll(left, inputs, derived)?;
-            let r = build_coll(right, inputs, derived)?;
+            let l = build_coll(left, scope, inputs, derived)?;
+            let r = build_coll(right, scope, inputs, derived)?;
             let keys = join_keys.clone();
             let keys2 = keys.clone();
             let l_keyed = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
@@ -130,7 +132,7 @@ where
             group_by,
             func,
         } => {
-            let c = build_coll(input, inputs, derived)?;
+            let c = build_coll(input, scope, inputs, derived)?;
             let gb = group_by.clone();
             let func = *func;
             // Re-key to the group-by coordinate, then reduce.
@@ -152,13 +154,17 @@ where
             }))
         }
 
-        PlanNodeKind::Literal(_) => {
-            // Standalone literals need a dimensioned context to broadcast over;
-            // the compiler only produces them inside expressions. Not supported
-            // as a top-level plan node in v1.
-            Err(EngineError::Unsupported(
-                "standalone literal (needs a dimensioned context)".into(),
-            ))
+        PlanNodeKind::Literal(v) => {
+            // A standalone literal is a *scalar* measure: one value at the empty
+            // coordinate, which broadcasts (via Join) into any formula that
+            // references it. Build a constant single-cell collection.
+            let cv = CellValue::from_model_value(v)
+                .ok_or_else(|| EngineError::Unsupported("literal has no cell value".into()))?;
+            let empty: CoordKey = Vec::new();
+            let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
+            Ok(vec![((empty, cv), t, 1isize)]
+                .to_stream(scope)
+                .as_collection())
         }
         PlanNodeKind::FuncCall { func, args } => {
             let func = *func;
@@ -172,7 +178,7 @@ where
             }
             match args.as_slice() {
                 [a] => {
-                    let c = build_coll(a, inputs, derived)?;
+                    let c = build_coll(a, scope, inputs, derived)?;
                     Ok(c.map(move |(k, v)| {
                         (
                             k,
@@ -184,8 +190,8 @@ where
                     // Align by shared categories (broadcast the smaller dim
                     // over the larger), join, apply the function on both
                     // decoded values, rebuild the union coordinate.
-                    let l = build_coll(a, inputs, derived)?;
-                    let r = build_coll(b, inputs, derived)?;
+                    let l = build_coll(a, scope, inputs, derived)?;
+                    let r = build_coll(b, scope, inputs, derived)?;
                     let keys: Vec<CategoryId> =
                         a.ty.dim
                             .categories
@@ -269,6 +275,7 @@ fn truthy(v: &CellValue) -> bool {
         CellValue::Bool(b) => *b,
         CellValue::Num(bits) => f64::from_bits(*bits) != 0.0,
         CellValue::Text(t) => !t.is_empty(),
+        CellValue::Date(ms) => *ms != 0,
         CellValue::Err(_) => false,
     }
 }
@@ -444,7 +451,7 @@ pub fn evaluate(
 
             let mut derived: HashMap<MeasureId, Coll<_>> = HashMap::new();
             for (mid, plan) in &plans_arc {
-                if let Ok(coll) = build_coll(plan, &input_colls, &derived) {
+                if let Ok(coll) = build_coll(plan, scope, &input_colls, &derived) {
                     let mid = *mid;
                     let res = res.clone();
                     // Collapse to one value per key.
@@ -834,6 +841,28 @@ mod tests {
         let exp = out.get(&MeasureId(130)).expect("Expensive");
         assert_eq!(exp.get(&key(&[(2, 20)])), Some(&CellValue::Bool(false)));
         assert_eq!(exp.get(&key(&[(2, 21)])), Some(&CellValue::Bool(true)));
+    }
+
+    #[test]
+    fn evaluate_standalone_literal_is_a_scalar_measure() {
+        // TaxRate = 0.08  (a bare literal RHS, no measure ref) evaluates to a
+        // single scalar cell at the empty coordinate.
+        let mut model = Model::new();
+        model.add_measure(Measure {
+            id: MeasureId(140),
+            name: Name("TaxRate".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::Literal(
+                Value::Number(0.08),
+            ))),
+            description: None,
+        });
+        let out = evaluate(&model, &[MeasureId(140)]).expect("evaluate");
+        let tr = out.get(&MeasureId(140)).expect("TaxRate");
+        // One cell, at the empty coordinate.
+        assert_eq!(tr.len(), 1);
+        assert_eq!(tr.get(&key(&[])), Some(&CellValue::num(0.08)));
     }
 
     #[test]

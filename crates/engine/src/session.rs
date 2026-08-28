@@ -251,7 +251,7 @@ fn worker_loop(
 
             let mut derived = HashMap::new();
             for (mid, plan) in &plans {
-                if let Ok(coll) = build_coll(plan, &input_colls, &derived) {
+                if let Ok(coll) = build_coll(plan, scope, &input_colls, &derived) {
                     let mid = *mid;
                     let snap = snap.clone();
                     let reduced = coll.reduce(|_k, inp, out| {

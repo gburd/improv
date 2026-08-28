@@ -44,6 +44,10 @@ pub enum CellValue {
     Num(u64),
     Bool(bool),
     Text(String),
+    /// A UTC timestamp as milliseconds since the Unix epoch. `i64` keeps the
+    /// value totally-ordered/`Hash`/`Ord` for the DD lane (unlike a chrono
+    /// `DateTime`, which is fine but this avoids a chrono dep in the key type).
+    Date(i64),
     /// An error value; the `u8` is the `ValueError` kind discriminant so error
     /// cells are distinguishable and propagate through operators.
     Err(u8),
@@ -73,7 +77,7 @@ impl CellValue {
             Value::Boolean(b) => Some(CellValue::Bool(*b)),
             Value::Text(t) => Some(CellValue::Text(t.clone())),
             Value::Enum(e) => Some(CellValue::num(*e as f64)),
-            Value::DateTime(_) => None, // dates in the DD lane are future work
+            Value::DateTime(dt) => Some(CellValue::Date(dt.timestamp_millis())),
             Value::Error(_) => Some(CellValue::Err(0)),
         }
     }
@@ -85,6 +89,13 @@ impl std::fmt::Display for CellValue {
             CellValue::Num(bits) => write!(f, "{}", f64::from_bits(*bits)),
             CellValue::Bool(b) => write!(f, "{b}"),
             CellValue::Text(t) => write!(f, "{t}"),
+            CellValue::Date(ms) => {
+                // Render as an RFC3339-ish UTC timestamp.
+                match chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*ms) {
+                    Some(dt) => write!(f, "{}", dt.to_rfc3339()),
+                    None => write!(f, "date({ms})"),
+                }
+            }
             CellValue::Err(_) => write!(f, "#ERR"),
         }
     }
@@ -219,5 +230,15 @@ mod spike {
             .rfind(|(_, k, _)| k == target)
             .map(|(_, _, v)| *v)
             .unwrap_or(0.0)
+    }
+
+    #[test]
+    fn date_value_enters_the_dd_lane() {
+        // A model Date value maps to the Date(i64 millis) lane and displays as
+        // an RFC3339 timestamp.
+        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let cv = CellValue::from_model_value(&Value::DateTime(dt)).expect("date -> cell");
+        assert_eq!(cv, CellValue::Date(1_700_000_000_000));
+        assert!(format!("{cv}").starts_with("2023-11-"));
     }
 }

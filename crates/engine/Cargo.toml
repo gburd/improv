@@ -13,6 +13,7 @@ improv_core_model = { path = "../core_model" }
 improv_extfn = { path = "../extfn" }
 thiserror.workspace = true
 serde.workspace = true
+chrono.workspace = true
 differential-dataflow.workspace = true
 timely.workspace = true
 
