@@ -6,7 +6,7 @@
 # To (re)record and render the embedded SVG:
 #   asciinema rec --overwrite -c "bash docs/demo/recalc-demo.sh" docs/demo/recalc-demo.cast
 #   asciinema convert -f asciicast-v2 docs/demo/recalc-demo.cast /tmp/recalc-v2.cast
-#   npx --yes svg-term-cli --in /tmp/recalc-v2.cast --out docs/img/recalc-demo.svg \
+#   npx --yes svg-term-cli --in /tmp/recalc-v2.cast --out docs/src/img/recalc-demo.svg \
 #       --window --width 80 --height 34
 set -euo pipefail
 

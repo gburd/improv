@@ -118,7 +118,7 @@ The whole flow, recorded: **[`docs/demo/cli-demo.cast`](docs/demo/cli-demo.cast)
 **Incremental recalculation**, recorded: build a model, then flow in new numbers
 and watch the derived measures recompute:
 
-![Incremental recalculation demo](docs/img/recalc-demo.svg)
+![Incremental recalculation demo](docs/src/img/recalc-demo.svg)
 
 Raw cast: **[`docs/demo/recalc-demo.cast`](docs/demo/recalc-demo.cast)**
 (`asciinema play docs/demo/recalc-demo.cast`; re-record with
@@ -191,13 +191,13 @@ tiles** for drag-to-pivot, a top **formula bar**, inspector, saved views,
 per-category filters, a bar/line **chart**, and **multi-category-per-axis
 stacking**.
 
-![Improv GUI — pivot grid](docs/img/gui-pivot-grid.png)
+![Improv GUI — pivot grid](docs/src/img/gui-pivot-grid.png)
 
 *The 3-D sample model: Revenue over Time × Product × Region. Product is on
 columns, Time on rows, Region paged (North [1/2]); the formula bar shows
 `Revenue = Price times Quantity`, and the inspector shows its dependencies.*
 
-![Improv GUI — stacked axes](docs/img/gui-stacked-axes.png)
+![Improv GUI — stacked axes](docs/src/img/gui-stacked-axes.png)
 
 *The same measure after dragging **Region** onto the Rows margin: rows are now
 the stacked product Time × Region (2024Q1 North/South, 2024Q2 …), with the outer

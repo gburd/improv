@@ -8,7 +8,7 @@ extend-exclude = [
     "*.roff",
     "docs/mermaid.min.js",   # vendored mdbook-mermaid asset
     "docs/mermaid-init.js",  # vendored mdbook-mermaid asset
-    "docs/img/*.svg",        # generated asciinema recordings (text split across spans)
+    "docs/src/img/*.svg",        # generated asciinema recordings (text split across spans)
     "docs/book/**",          # generated mdbook output (gitignored)
 ]
 
