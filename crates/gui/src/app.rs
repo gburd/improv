@@ -744,6 +744,7 @@ fn natural_axis_order(model: &Model, measure: Option<MeasureId>) -> Vec<Category
 impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_axis_state();
+        self.formula_bar(ctx);
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
         self.formula_panel(ctx);
@@ -890,57 +891,66 @@ impl ImprovApp {
 
     /// Bottom: formula editor for the selected derived measure, plus a form to
     /// add a new derived measure.
-    fn formula_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("formula")
-            .resizable(true)
-            .default_height(140.0)
-            .show(ctx, |ui| {
-                ui.heading("Formula editor");
-                ui.separator();
-
-                // Reload the buffer when the selection changes.
-                if self.formula_for != self.selected {
-                    self.formula_for = self.selected;
-                    self.formula_buf = self
-                        .selected
-                        .and_then(|m| self.model.measures.get(&m))
-                        .and_then(|m| match &m.kind {
-                            MeasureKind::Derived(f) => {
-                                Some(describe_formula(&NlContext::new(&self.model), f))
-                            }
-                            MeasureKind::Input => None,
-                        })
-                        .unwrap_or_default();
-                }
-
-                match self.selected {
-                    Some(mid) if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) => {
-                        ui.label(format!(
-                            "Editing formula for '{}'. Enter a DSL expression (e.g. Price * Quantity).",
-                            self.model.measures[&mid].name.0
-                        ));
-                        ui.text_edit_multiline(&mut self.formula_buf);
-                        if ui.button("Commit formula").clicked() {
-                            let text = self.formula_buf.clone();
-                            match self.commit_formula(mid, &text) {
-                                Ok(()) => self.status = "formula updated".into(),
-                                Err(e) => self.status = format!("formula error: {e}"),
-                            }
+    /// The Lotus Improv **formula bar**: a compact single-line bar across the
+    /// top that shows and edits the *selected measure's* formula. Input
+    /// measures show a hint. Committing re-typechecks and rebuilds the engine.
+    fn formula_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("formula_bar").show(ctx, |ui| {
+            // Reload the buffer when the selection changes.
+            if self.formula_for != self.selected {
+                self.formula_for = self.selected;
+                self.formula_buf = self
+                    .selected
+                    .and_then(|m| self.model.measures.get(&m))
+                    .and_then(|m| match &m.kind {
+                        MeasureKind::Derived(f) => {
+                            Some(describe_formula(&NlContext::new(&self.model), f))
+                        }
+                        MeasureKind::Input => None,
+                    })
+                    .unwrap_or_default();
+            }
+            ui.horizontal(|ui| match self.selected {
+                Some(mid)
+                    if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) =>
+                {
+                    ui.strong(format!("{} =", self.model.measures[&mid].name.0));
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.formula_buf)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("e.g. Price * Quantity"),
+                    );
+                    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Commit").clicked() || enter {
+                        let text = self.formula_buf.clone();
+                        match self.commit_formula(mid, &text) {
+                            Ok(()) => self.status = "formula updated".into(),
+                            Err(e) => self.status = format!("formula error: {e}"),
                         }
                     }
-                    Some(_) => {
-                        ui.label("Selected measure is an input; edit its cells in the grid.");
-                    }
-                    None => {}
                 }
+                Some(mid) => {
+                    ui.strong(format!("{} ", self.model.measures[&mid].name.0));
+                    ui.weak("(input measure — edit cells in the grid)");
+                }
+                None => {
+                    ui.weak("No measure selected.");
+                }
+            });
+        });
+    }
 
-                ui.separator();
-                ui.label("New derived measure:");
+    /// Bottom panel: the "new derived measure" definition form + status line.
+    /// (The selected measure's formula is edited in the top formula bar.)
+    fn formula_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("definitions")
+            .resizable(true)
+            .default_height(80.0)
+            .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    ui.strong("New derived measure:");
                     ui.label("name");
                     ui.text_edit_singleline(&mut self.new_name);
-                });
-                ui.horizontal(|ui| {
                     ui.label("=");
                     ui.text_edit_singleline(&mut self.new_formula);
                     if ui.button("Add").clicked() {
@@ -956,7 +966,6 @@ impl ImprovApp {
                         }
                     }
                 });
-
                 if !self.status.is_empty() {
                     ui.separator();
                     ui.label(&self.status);
