@@ -25,6 +25,8 @@ pub struct Connection {
 pub enum ConnKind {
     /// SQLite: a filesystem path (or `:memory:`). No secret.
     Sqlite { path: String },
+    /// DuckDB: a filesystem path (or `:memory:`). Embedded, no secret.
+    Duckdb { path: String },
     /// Postgres: a DSN/URI **without** a password, plus the env var that holds
     /// the password. The secret is resolved at connect time, never stored.
     Postgres {
@@ -53,6 +55,7 @@ pub fn open(c: &Connection) -> Result<Backend> {
             };
             Ok(Backend::Sqlite(conn))
         }
+        ConnKind::Duckdb { path } => crate::duck::connect_duckdb(path),
         ConnKind::Postgres { uri, password_env } => {
             // libpq-style: append `password=...` as a keyword only if the env var
             // is set. The `postgres` crate accepts both URI and keyword/value
@@ -85,6 +88,17 @@ pub fn sqlite(id: &str, name: &str, path: &str) -> Connection {
         id: id.to_string(),
         name: name.to_string(),
         kind: ConnKind::Sqlite {
+            path: path.to_string(),
+        },
+    }
+}
+
+/// Convenience: a DuckDB descriptor.
+pub fn duckdb(id: &str, name: &str, path: &str) -> Connection {
+    Connection {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: ConnKind::Duckdb {
             path: path.to_string(),
         },
     }
@@ -148,6 +162,20 @@ mod tests {
         match c.kind {
             ConnKind::Postgres { password_env, .. } => assert_eq!(password_env, "PGPASSWORD"),
             _ => panic!("expected postgres"),
+        }
+    }
+
+    #[test]
+    fn duckdb_descriptor_serde_round_trips() {
+        let c = duckdb("d1", "Analytics", "/tmp/warehouse.duckdb");
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(json.contains("duckdb"), "tagged as duckdb");
+        assert!(json.contains("warehouse.duckdb"), "path preserved");
+        let back: Connection = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, c);
+        match back.kind {
+            ConnKind::Duckdb { path } => assert_eq!(path, "/tmp/warehouse.duckdb"),
+            _ => panic!("expected duckdb"),
         }
     }
 

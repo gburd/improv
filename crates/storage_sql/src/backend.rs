@@ -121,6 +121,7 @@ impl SqlConn for &rusqlite::Connection {
 pub enum Backend {
     Sqlite(rusqlite::Connection),
     Postgres(postgres::Client),
+    Duckdb(duckdb::Connection),
 }
 
 impl Backend {
@@ -129,6 +130,7 @@ impl Backend {
         match self {
             Backend::Sqlite(conn) => sqlite_query(conn, sql),
             Backend::Postgres(client) => crate::pg::pg_query(client, sql),
+            Backend::Duckdb(conn) => crate::duck::duck_query(conn, sql),
         }
     }
 
@@ -142,6 +144,7 @@ impl Backend {
                 Ok(())
             }
             Backend::Postgres(client) => crate::pg::pg_execute(client, sql, params),
+            Backend::Duckdb(conn) => crate::duck::duck_execute(conn, sql, params),
         }
     }
 
@@ -151,6 +154,7 @@ impl Backend {
         match self {
             Backend::Sqlite(_) => "?".to_string(),
             Backend::Postgres(_) => format!("${n}"),
+            Backend::Duckdb(_) => "?".to_string(),
         }
     }
 
@@ -159,6 +163,7 @@ impl Backend {
         match self {
             Backend::Sqlite(_) => "REAL",
             Backend::Postgres(_) => "DOUBLE PRECISION",
+            Backend::Duckdb(_) => "DOUBLE",
         }
     }
 }

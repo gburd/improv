@@ -32,6 +32,10 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "Zlib",
+    # webpki-roots (Mozilla CA bundle data) via the duckdb bundled build's
+    # ureq/httpfs chain; permissive, build-time only. DuckDB is a supported
+    # backend, so we allow it rather than drop the feature.
+    "CDLA-Permissive-2.0",
     # Font licenses from egui's bundled default fonts (permissive, OSI-recognized).
     "OFL-1.1",
     "LicenseRef-UFL-1.0",

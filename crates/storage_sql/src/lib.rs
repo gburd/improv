@@ -19,10 +19,12 @@
 
 pub mod backend;
 pub mod conn;
+pub mod duck;
 pub mod pg;
 
 pub use backend::{Backend, Cell, SqlConn, Table};
 pub use conn::{ConnKind, Connection};
+pub use duck::connect_duckdb;
 pub use pg::connect_postgres;
 
 use backend::Cell as BackendCell;
@@ -607,6 +609,70 @@ mod tests {
         assert_eq!(out, 3);
         drop(be);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// DuckDB round-trip: same shape as the SQLite test, through the DuckDB
+    /// backend. Seed an in-memory DuckDB, import a measure, then export it back
+    /// and read the values.
+    #[test]
+    fn duckdb_import_then_export_round_trips() {
+        let dconn = duckdb::Connection::open_in_memory().unwrap();
+        dconn
+            .execute_batch(
+                "CREATE TABLE sales (time VARCHAR, product VARCHAR, revenue DOUBLE);
+                 INSERT INTO sales VALUES ('2025','WidgetA', 1000.0);
+                 INSERT INTO sales VALUES ('2025','WidgetB', 500.0);
+                 INSERT INTO sales VALUES ('2026','WidgetA', 1200.0);",
+            )
+            .unwrap();
+        let mut conn = Backend::Duckdb(dconn);
+        let mut model = Model::new();
+        let n = import_query(&mut conn, &mut model, &revenue_spec()).unwrap();
+        assert_eq!(n, 3);
+
+        // Imported cells match: Revenue[2025, WidgetA] = 1000.
+        let time = model.category_by_name("Time").unwrap().id;
+        let product = model.category_by_name("Product").unwrap().id;
+        let item = |cat, name: &str| {
+            model
+                .items
+                .values()
+                .find(|i| i.category == cat && i.name.0 == name)
+                .unwrap()
+                .id
+        };
+        let coord = Coordinate::from_pairs([
+            (time, item(time, "2025")),
+            (product, item(product, "WidgetA")),
+        ]);
+        assert_eq!(
+            model.input(MeasureId(100), &coord),
+            Some(&Value::Number(1000.0))
+        );
+
+        // Export back into a fresh DuckDB and read the revenues.
+        let mut out_be = Backend::Duckdb(duckdb::Connection::open_in_memory().unwrap());
+        let out = export_measure(
+            &mut out_be,
+            &model,
+            MeasureId(100),
+            "revenue_out",
+            "revenue",
+        )
+        .unwrap();
+        assert_eq!(out, 3);
+        let Backend::Duckdb(out_conn) = &out_be else {
+            unreachable!()
+        };
+        let mut stmt = out_conn
+            .prepare("SELECT revenue FROM revenue_out ORDER BY revenue")
+            .unwrap();
+        let vals: Vec<f64> = stmt
+            .query_map([], |r| r.get::<_, f64>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(vals, vec![500.0, 1000.0, 1200.0]);
     }
 
     /// Postgres query mapping: guarded by IMPROV_TEST_PG. Skips cleanly if unset
