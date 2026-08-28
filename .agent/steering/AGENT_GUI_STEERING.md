@@ -148,6 +148,28 @@ Modeler. Parity status (drives the plan):
   datoms; see IMPROV.txt "View layer").
 - Charts on a view. *Planned*, lower priority.
 
+### 6.5 NeXTSTEP look-and-feel (GUI)
+
+The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
+
+- **NeXTSTEP theme** (`gui::theme::next_style`) — light neutral gray desktop,
+  chiseled/beveled controls (raised light faces, dark bevel edges, sunken
+  pressed faces), squared corners, muted blue selection, paper-white grid.
+- **On-grid margin category tiles** — the signature pivot gesture: category
+  *tiles at the grid margins* (top = Columns, left = Rows, plus a Pages strip);
+  each tile is a drag source, each margin a drop zone. Drag a tile between
+  margins to re-pivot, no formula rewrite. (Routes through `set_axis`.)
+- **Top formula bar** — the selected measure's formula on one line
+  (`<Measure> = <expr>`, Enter/Commit), Improv-style.
+- **Chiseled grid headers** with a top-left corner stub showing the current
+  `Rows \ Columns` category names.
+- **NeXT-style tool palette** — a narrow left column of beveled buttons
+  (pivot / chart / save view / save model).
+
+*Deferred:* true multi-category-per-axis **stacking** (nested group headers over
+a Cartesian product of stacked categories) — a feature-sized change to
+`render_grid` + `cell_key`, with its own tests.
+
 Both the GUI (`improv-gui`) and the TUI (`improv-tui`) support pivoting; the TUI
 additionally accepts **mouse input** (click to select/pivot) where the terminal
 supports it, in addition to keyboard control.

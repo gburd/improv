@@ -8,6 +8,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **NeXTSTEP look-and-feel for the desktop GUI**, matching the original Lotus
+  Improv: a NeXTSTEP theme (gray desktop, chiseled/beveled controls, squared
+  corners, paper-white grid), on-grid **category tiles at the grid margins** as
+  the pivot gesture (drag a tile between Rows/Columns/Pages margins), a top
+  **formula bar** (`<Measure> = <expr>`), chiseled grid headers with a
+  `Rows \ Columns` corner stub, and a NeXT-style **tool palette**. (True
+  multi-category-per-axis stacking is deferred.)
 - **Refresh scheduler daemon** (`serve-refresh`): honors each measure's
   `RefreshPolicy` automatically — on every tick it refreshes the due measures
   (on-load once, interval every N seconds). The scheduling decision is a pure,
