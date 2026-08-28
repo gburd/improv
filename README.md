@@ -115,6 +115,19 @@ The whole flow, recorded: **[`docs/demo/cli-demo.cast`](docs/demo/cli-demo.cast)
 (play with `asciinema play docs/demo/cli-demo.cast`, or re-record with
 [`docs/demo/cli-demo.sh`](docs/demo/cli-demo.sh)).
 
+For a richer playground — a 3-D **Time × Product × Region** sales model with
+Price/Cost/Quantity inputs and Revenue/COGS/Margin + aggregated derived measures
+— run [`docs/demo/sample-model.sh`](docs/demo/sample-model.sh):
+
+```sh
+bash docs/demo/sample-model.sh sample.db
+nix develop -c cargo run -p improv_gui -- sample.db
+```
+
+In the GUI: select `Revenue`, then drag the **Region** tile onto the Rows
+margin to stack it under Time (nested row headers), or onto Pages to slice by
+region; toggle the chart, save a view, or filter Product to a subset.
+
 ### SQL and external functions
 
 ```sh
