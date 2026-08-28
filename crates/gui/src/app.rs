@@ -745,6 +745,7 @@ impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_axis_state();
         self.formula_bar(ctx);
+        self.tool_palette(ctx);
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
         self.formula_panel(ctx);
@@ -754,6 +755,47 @@ impl eframe::App for ImprovApp {
 }
 
 impl ImprovApp {
+    /// A NeXTSTEP-style **tool palette**: a narrow left column of beveled
+    /// buttons for the common operations (pivot, chart, save model, save view).
+    /// Always visible, like the tear-off palettes in NeXTSTEP apps.
+    fn tool_palette(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("tools")
+            .resizable(false)
+            .exact_width(44.0)
+            .show(ctx, |ui| {
+                ui.add_space(4.0);
+                ui.vertical_centered(|ui| {
+                    let btn = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
+                        ui.add_sized([32.0, 28.0], egui::Button::new(glyph))
+                            .on_hover_text(tip)
+                            .clicked()
+                    };
+                    if btn(ui, "↻", "Pivot (rotate axes)") {
+                        self.pivot_rotate();
+                    }
+                    if btn(ui, "☉", "Toggle chart") {
+                        self.show_chart = !self.show_chart;
+                    }
+                    ui.add_space(6.0);
+                    if btn(ui, "▤", "Save view") {
+                        // Save under the current name box, or a generated name.
+                        let name = if self.view_name.trim().is_empty() {
+                            format!("view {}", self.model.views.len() + 1)
+                        } else {
+                            self.view_name.clone()
+                        };
+                        if self.save_view(&name).is_some() {
+                            self.view_name.clear();
+                            self.status = format!("saved view '{name}'");
+                        }
+                    }
+                    if btn(ui, "⬇", "Save model to store") {
+                        self.save();
+                    }
+                });
+            });
+    }
+
     /// Left: model explorer grouped into Categories (with their items) and
     /// Measures (input vs derived). Clicking a measure selects it.
     fn explorer_panel(&mut self, ctx: &egui::Context) {
