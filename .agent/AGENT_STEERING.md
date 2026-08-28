@@ -126,18 +126,24 @@ The authoritative roadmap and Phase 5–7 invariants live in
   grid with keyboard navigation and measure cycling (4 tests). Live editing /
   re-pivot is the next increment.
 - **Phase 3 — Server: DONE.** `improv_server` JSON HTTP API over a model store
-  (10 tests): model/measures/values, NL parse/describe, set-cell. Auth deferred.
+  (10 tests): model/measures/values, NL parse/describe, set-cell. **Bearer-token
+  auth** (Auth::Tokens from `IMPROV_API_TOKEN`/`IMPROV_API_TOKENS`; `/health`
+  public, 401/403 otherwise; open mode when unset).
 - **Phase 4 — CNL: DONE (initial grammar).** `crates/nl_formula` parse/describe
   with a controlled grammar + round-trip (10 tests).
-- **v1 core (Phases 0–4): DONE.** Remaining v1 follow-ups: `Date` values in the
-  DD lane and standalone/broadcast literals (both minor).
-- **Phase 5 (Desktop GUI): DONE (core panels).** `crates/gui` `improv-gui`
-  (egui/eframe, toolkit decision in AGENT_GUI_STEERING §9.1): model explorer,
-  editable pivot grid (input cells edit through the live engine + autosave),
-  formula editor (edit/add derived measures via `core_model::parser`),
-  inspector (metadata/dimensions/dependencies/formula-in-English/error count).
-  8 tests. Pending: keyboard grid navigation, scenario management, virtualized
-  rendering for very large grids.
+- **v1 core (Phases 0–4): DONE.** v1 follow-ups now done too: `Date` values in
+  the DD lane (`CellValue::Date`) and standalone/broadcast literal measures
+  (a bare `X = 5` scalar broadcasts by reference).
+- **Phase 5 (Desktop GUI): DONE.** `crates/gui` `improv-gui` in the NeXTSTEP
+  look-and-feel: explorer, editable pivot grid, on-grid margin category tiles,
+  top formula bar, inspector, charts, saved views, filters, keyboard nav,
+  multi-category-per-axis stacking, and **virtualized rendering** (mixed-radix
+  `nth_tuple` + `body.rows`, so a row axis of millions of lines never
+  materializes). Charts plot the full Cartesian product of stacked axes.
+- **Scenario management (what-if): DONE.** First-class `Scenario` = a named
+  overlay of input-cell overrides (`Model.scenarios`, `with_scenario`);
+  deterministic (the engine sees ordinary inputs). Persisted via Mentat; CLI
+  `scenario` + `eval --scenario`.
 - **Phase 6 (External-language functions): IN PROGRESS.** In-process named
   scalar functions are callable from formula text — `ABS`/`ROUND`/`FLOOR`/
   `CEIL`/`SQRT`/`NEG`/`MIN2`/`MAX2` via `core_model::parser::scalar_func`,
@@ -151,8 +157,10 @@ The authoritative roadmap and Phase 5–7 invariants live in
   path, so the engine core stays pure/deterministic. Persisted via Mentat
   `:meta/*` blobs. A `CALL(func, args...)` formula-grammar form parses (via
   `core_model::parser::parse_definition`) to an `ExternalCall`; the CLI exposes
-  `register-ext` / `define` / `refresh-ext` end to end. REMAINING: R/Julia/WASM
-  runtimes; an OS sandbox (currently isolated-mode + timeout only).
+  `register-ext` / `define` / `refresh-ext` end to end. Runtimes: **Python, R,
+  Julia, WASM (in-process wasmi), and Pure-lang** (per-language runners sharing
+  a spawn/timeout/JSON-envelope helper; wasm has a numeric f64 ABI). REMAINING:
+  an OS-level sandbox (seccomp/namespaces) — currently isolated-mode + timeout.
 - **Phase 7 (SQL connectivity): IN PROGRESS.** `crates/storage_sql` imports a
   `SELECT` into an input measure (columns → categories/items/cells), exports a
   measure's cells to a SQL table, and supports **live-query refresh**
@@ -170,11 +178,9 @@ The authoritative roadmap and Phase 5–7 invariants live in
   (`--refresh` flag), `refresh-all` re-runs every external-sourced measure at
   once, and `serve-refresh` is a daemon that *honors* the policy timing
   automatically (pure decision in `core_model::schedule`). PLANNED: GUI
-  import/export wizards. DuckDB backend is WIP-but-shelved: it builds and passes
-  (15 tests) but its `bundled` build pulls the arrow/ureq stack and
-  `webpki-roots` (`CDLA-Permissive-2.0`, a build-time dep) which trips
-  `cargo deny`; parked on git stash pending a maintainer `deny.toml` decision
-  (allow CDLA-Permissive-2.0, or drop duckdb's httpfs/ureq feature).
+  import/export wizards. **DuckDB** is a first-class backend (bundled build;
+  Backend::Duckdb + ConnKind::Duckdb; deny allows the build-time
+  CDLA-Permissive-2.0 it pulls).
 
 ## Definition of done for v1
 

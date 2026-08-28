@@ -8,6 +8,23 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **DuckDB** as a first-class SQL backend (bundled build; `Backend::Duckdb`,
+  `ConnKind::Duckdb`).
+- **Date values** in the engine's DD value lane (`CellValue::Date`), and
+  **standalone/broadcast literal measures** (a bare `X = 5` scalar that
+  broadcasts into other formulas).
+- **What-if scenarios** as first-class model data: `Scenario` = a named overlay
+  of input-cell overrides (`Model.scenarios`, `with_scenario`), deterministic;
+  CLI `scenario` + `eval --scenario`.
+- **External-function runtimes** R, Julia, WASM (in-process `wasmi`), and
+  **Pure-lang**, alongside Python.
+- **Server bearer-token authentication** (`IMPROV_API_TOKEN` /
+  `IMPROV_API_TOKENS`; `/health` public; open mode when unset).
+- **Virtualized large-grid rendering** in the GUI (mixed-radix on-demand row
+  tuples via `body.rows` — millions of row lines never materialized), and
+  **charting the full Cartesian product** of stacked axes.
+- **Large-model stress tests** (`crates/engine/tests/stress.rs`): scale-eval up
+  to 1M cells and an incremental-edit throughput test (`--ignored`).
 - **NeXTSTEP look-and-feel for the desktop GUI**, matching the original Lotus
   Improv: a NeXTSTEP theme (gray desktop, chiseled/beveled controls, squared
   corners, paper-white grid), on-grid **category tiles at the grid margins** as
