@@ -28,6 +28,10 @@ id_type!(
     /// Identifies a saved view (pivot/grid layout).
     ViewId
 );
+id_type!(
+    /// Identifies a what-if scenario (an input-override overlay).
+    ScenarioId
+);
 
 /// A human-readable name. Unique within its scope; renamable without breaking
 /// formulas (formulas bind to ids, not names).

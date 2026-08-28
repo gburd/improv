@@ -84,15 +84,21 @@ impl ModelStore {
         }
         self.transact_group(views)?;
 
-        // Singleton meta: external function defs + external-call measures, each
-        // as a JSON blob on one entity (only if non-empty).
-        if !model.external_fns.is_empty() || !model.external_calls.is_empty() {
+        // Singleton meta: external function defs + external-call measures +
+        // what-if scenarios, each as a JSON blob on one entity (only if any
+        // are non-empty).
+        if !model.external_fns.is_empty()
+            || !model.external_calls.is_empty()
+            || !model.scenarios.is_empty()
+        {
             let fns_json = serde_json::to_string(&model.external_fns)?;
             let calls_json = serde_json::to_string(&model.external_calls)?;
+            let scen_json = serde_json::to_string(&model.scenarios)?;
             let edn = format!(
-                "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {}}}]",
+                "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {} :meta/scenarios {}}}]",
                 convert::edn_str_pub(&fns_json),
                 convert::edn_str_pub(&calls_json),
+                convert::edn_str_pub(&scen_json),
             );
             self.store.transact(&edn)?;
         }
@@ -310,6 +316,11 @@ impl ModelStore {
             "[:find ?j . :where [?e :meta/singleton 1] [?e :meta/external-calls ?j]]",
         )? {
             model.external_calls = serde_json::from_str(&json)?;
+        }
+        if let Some(json) = self
+            .scalar_string("[:find ?j . :where [?e :meta/singleton 1] [?e :meta/scenarios ?j]]")?
+        {
+            model.scenarios = serde_json::from_str(&json)?;
         }
         Ok(())
     }

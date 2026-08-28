@@ -11,14 +11,16 @@
 use crate::value::ValueType;
 use serde::{Deserialize, Serialize};
 
-/// The runtime language an external function targets. Only `Python` is wired up
-/// today; the rest are reserved for later phases.
+/// The runtime language an external function targets. Each variant has a runner
+/// in the `improv_extfn` crate (subprocess for the scripting languages, an
+/// in-process `wasmi` interpreter for `Wasm`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Language {
     Python,
     R,
     Julia,
     Wasm,
+    Pure,
 }
 
 /// A registered external function: everything needed to type-check a call and

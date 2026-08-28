@@ -99,4 +99,7 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :meta/external-calls
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+ {:db/ident :meta/scenarios
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 ]"#;

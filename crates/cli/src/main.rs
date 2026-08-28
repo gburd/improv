@@ -8,7 +8,7 @@
 
 use improv_core_model::{
     parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, Measure, MeasureId,
-    MeasureKind, Model, Name, RefreshPolicy, Value, ValueType,
+    MeasureKind, Model, Name, RefreshPolicy, Scenario, ScenarioId, Value, ValueType,
 };
 use improv_storage_mentat::ModelStore;
 use improv_storage_sql::{
@@ -67,8 +67,13 @@ COMMANDS:
     show <db> <measure-id>
         Print one measure and its input cells.
 
-    eval <db> <measure-id>
-        Compute a derived measure via the engine and print its cells.
+    eval <db> <measure-id> [--scenario <name>]
+        Compute a derived measure via the engine and print its cells. With
+        --scenario, evaluate under a what-if overlay (its input overrides win).
+
+    scenario <db> <scenario-name> <measure-id> <value> [--at Cat=Item,...]
+        Create or update a what-if scenario by adding one input-cell override.
+        The base model is untouched; evaluate with `eval ... --scenario <name>`.
 
     export <db>
         Print the whole model as pretty JSON.
@@ -128,6 +133,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "add-item" => cmd_add_item(rest),
         "add-measure" => cmd_add_measure(rest),
         "add-derived" => cmd_add_derived(rest),
+        "scenario" => cmd_scenario(rest),
         "define" => cmd_define(rest),
         "register-ext" => cmd_register_ext(rest),
         "refresh-ext" => cmd_refresh_ext(rest),
@@ -568,6 +574,54 @@ fn cmd_refresh_ext(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// `scenario <db> <scenario-name> <measure-id> <value> [--at Cat=Item,...]`
+/// — create or update a what-if scenario by adding one input-cell override.
+/// Evaluate under it with `eval <db> <measure-id> --scenario <name>`.
+fn cmd_scenario(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let sname = arg(rest, 1, "scenario-name")?.to_string();
+    let mid = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+    let value_arg = arg(rest, 3, "value")?;
+    let at = parse_at_flag(&rest[4.min(rest.len())..])?;
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let vt = model
+        .measures
+        .get(&mid)
+        .ok_or_else(|| format!("no measure with id {}", mid.0))?
+        .value_type;
+    let value = parse_value(value_arg, vt)?;
+    let coord = resolve_coord(&model, &at)?;
+
+    // Find an existing scenario by name, else mint a new id.
+    let existing = model
+        .scenarios
+        .values()
+        .find(|s| s.name.0 == sname)
+        .map(|s| s.id);
+    let sid = existing.unwrap_or_else(|| {
+        ScenarioId(
+            model
+                .scenarios
+                .keys()
+                .map(|s| s.0)
+                .max()
+                .map(|m| m + 1)
+                .unwrap_or(1),
+        )
+    });
+    let scenario = model.scenarios.entry(sid).or_insert_with(|| Scenario {
+        id: sid,
+        name: Name(sname.clone()),
+        overrides: std::collections::HashMap::new(),
+    });
+    scenario.overrides.insert((mid, coord), value);
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("scenario '{sname}': override on measure {} recorded", mid.0);
+    Ok(())
+}
+
 fn cmd_set(rest: &[String]) -> Result<(), String> {
     let db = arg(rest, 0, "db")?;
     let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
@@ -656,7 +710,20 @@ fn cmd_eval(rest: &[String]) -> Result<(), String> {
     let db = arg(rest, 0, "db")?;
     let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
     let mut store = open(db)?;
-    let model = store.load_model().map_err(|e| e.to_string())?;
+    let base = store.load_model().map_err(|e| e.to_string())?;
+
+    // Optional `--scenario NAME`: evaluate under a what-if overlay.
+    let model = match rest.iter().position(|a| a == "--scenario") {
+        Some(p) => {
+            let name = rest.get(p + 1).ok_or("--scenario needs a name")?;
+            let sid = base
+                .scenario_by_name(name)
+                .ok_or_else(|| format!("no scenario named '{name}'"))?
+                .id;
+            base.with_scenario(sid)
+        }
+        None => base,
+    };
 
     let m = model
         .measures

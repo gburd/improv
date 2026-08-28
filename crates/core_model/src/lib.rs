@@ -14,7 +14,7 @@ pub mod value;
 
 pub use extfn_def::{ExternalFn, Language};
 pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
-pub use ids::{CategoryId, ItemId, MeasureId, Name, ViewId};
+pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
 pub use parser::{
     parse_definition, parse_expr, parse_formula, Definition, FormulaText, ParseError,
 };
@@ -149,6 +149,26 @@ pub struct Model {
     /// so its determinism is preserved.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub external_calls: HashMap<MeasureId, ExternalCall>,
+    /// What-if **scenarios**: named sets of input-cell overrides layered on the
+    /// base model. First-class in the Improv sense — a scenario changes only
+    /// which *input* values are fed to the engine, so evaluating "under" a
+    /// scenario stays fully deterministic (the engine sees ordinary inputs).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub scenarios: HashMap<ScenarioId, Scenario>,
+}
+
+/// A what-if scenario: a named overlay of input-cell overrides on the base
+/// model. Applying it produces a model whose `inputs` are the base inputs with
+/// these overrides taking precedence; derived measures then recompute normally.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Scenario {
+    pub id: ScenarioId,
+    pub name: Name,
+    /// Input-cell overrides: `(measure, coordinate) -> value`. Only `Input`
+    /// measures are meaningful here; an override on a derived measure is
+    /// ignored by the engine (derived cells are computed).
+    #[serde(with = "inputs_as_seq")]
+    pub overrides: HashMap<(MeasureId, Coordinate), Value>,
 }
 
 /// A measure defined as `func(arg_measures...)` where `func` is a registered
@@ -340,6 +360,34 @@ impl Model {
     pub fn view_by_name(&self, name: &str) -> Option<&View> {
         self.views.values().find(|v| v.name.0 == name)
     }
+
+    /// Register a what-if scenario.
+    pub fn add_scenario(&mut self, s: Scenario) {
+        self.scenarios.insert(s.id, s);
+    }
+
+    /// Look up a scenario by its human name.
+    pub fn scenario_by_name(&self, name: &str) -> Option<&Scenario> {
+        self.scenarios.values().find(|s| s.name.0 == name)
+    }
+
+    /// Produce a model with a scenario's input overrides applied on top of the
+    /// base inputs (overrides win). Structure, formulas, and every other input
+    /// are unchanged — only the overridden `(measure, coordinate)` cells differ,
+    /// so the returned model evaluates deterministically like any other. The
+    /// scenario set itself is cleared on the overlay (an overlay is a concrete
+    /// what-if world, not a base to re-branch). Returns the base model unchanged
+    /// if no scenario by that id exists.
+    pub fn with_scenario(&self, id: ScenarioId) -> Model {
+        let mut m = self.clone();
+        m.scenarios.clear();
+        if let Some(s) = self.scenarios.get(&id) {
+            for (key, val) in &s.overrides {
+                m.inputs.insert(key.clone(), val.clone());
+            }
+        }
+        m
+    }
 }
 
 #[cfg(test)]
@@ -424,6 +472,37 @@ mod tests {
         assert!(v.allows(time, ItemId(10)));
 
         // Views survive a JSON round trip.
+        let json = serde_json::to_string(&m).unwrap();
+        let back: Model = serde_json::from_str(&json).unwrap();
+        assert_eq!(m, back);
+    }
+
+    #[test]
+    fn scenario_overlay_overrides_inputs() {
+        let mut m = time_product_model();
+        let product = CategoryId(2);
+        let a = Coordinate::from_pairs([(product, ItemId(20))]);
+        // Base: Price[WidgetA] = 10.
+        assert_eq!(m.input(MeasureId(100), &a), Some(&Value::Number(10.0)));
+
+        // A what-if scenario raising WidgetA's price to 15.
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert((MeasureId(100), a.clone()), Value::Number(15.0));
+        m.add_scenario(Scenario {
+            id: ScenarioId(1),
+            name: Name("Price hike".into()),
+            overrides,
+        });
+
+        // Base model unchanged; overlay sees the override.
+        assert_eq!(m.input(MeasureId(100), &a), Some(&Value::Number(10.0)));
+        let s = m.scenario_by_name("Price hike").unwrap().id;
+        let world = m.with_scenario(s);
+        assert_eq!(world.input(MeasureId(100), &a), Some(&Value::Number(15.0)));
+        // The overlay is a concrete world: no scenarios to re-branch.
+        assert!(world.scenarios.is_empty());
+
+        // Scenarios survive a JSON round trip.
         let json = serde_json::to_string(&m).unwrap();
         let back: Model = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
