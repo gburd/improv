@@ -1343,6 +1343,31 @@ impl ImprovApp {
         let mut clicked_derived = false;
         let mut cancel = false;
 
+        // Chiseled header cell (raised bevel) matching NeXTSTEP Improv.
+        fn header_cell(ui: &mut egui::Ui, text: &str) {
+            egui::Frame::default()
+                .fill(crate::theme::NEXT_LIGHT)
+                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
+                .inner_margin(egui::Margin::symmetric(4.0, 1.0))
+                .show(ui, |ui| {
+                    ui.add(egui::Label::new(egui::RichText::new(text).strong()).truncate());
+                });
+        }
+        // Corner stub shows the row × column category names, as Improv does.
+        let row_label = row_cat
+            .and_then(|c| self.model.categories.get(&c))
+            .map(|c| c.name.0.clone())
+            .unwrap_or_default();
+        let col_label = col_cat
+            .and_then(|c| self.model.categories.get(&c))
+            .map(|c| c.name.0.clone())
+            .unwrap_or_default();
+        let corner = if row_label.is_empty() && col_label.is_empty() {
+            String::new()
+        } else {
+            format!("{row_label} \\ {col_label}")
+        };
+
         use egui_extras::{Column, TableBuilder};
         let mut table = TableBuilder::new(ui)
             .striped(true)
@@ -1351,13 +1376,13 @@ impl ImprovApp {
             table = table.column(Column::auto().resizable(true));
         }
         table
-            .header(20.0, |mut header| {
+            .header(22.0, |mut header| {
                 header.col(|ui| {
-                    ui.strong("");
+                    header_cell(ui, &corner);
                 });
                 for (_, cname) in &cols {
                     header.col(|ui| {
-                        ui.strong(cname);
+                        header_cell(ui, cname);
                     });
                 }
             })
@@ -1365,7 +1390,7 @@ impl ImprovApp {
                 for (ri, (rid, rname)) in rows.iter().enumerate() {
                     body.row(20.0, |mut row| {
                         row.col(|ui| {
-                            ui.strong(rname);
+                            header_cell(ui, rname);
                         });
                         for (ci, (cid, _)) in cols.iter().enumerate() {
                             let key = cell_key(row_cat, col_cat, *rid, *cid, &pinned);
