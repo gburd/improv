@@ -397,6 +397,8 @@ mod tests {
             name: Name("Prices by product".into()),
             measure: MeasureId(100),
             axis_order: vec![CategoryId(2)],
+            n_rows: 1,
+            n_cols: 1,
             page_items: vec![],
             filters: vec![improv_core_model::Filter {
                 category: CategoryId(2),

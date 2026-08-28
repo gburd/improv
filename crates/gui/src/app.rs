@@ -52,6 +52,12 @@ pub struct ImprovApp {
     /// 1 -> columns, 2.. -> pages. Pivoting reorders this without touching
     /// formulas. Resets to the measure's natural order on measure switch.
     axis_order: Vec<CategoryId>,
+    /// How many leading `axis_order` categories are stacked on the ROW axis,
+    /// and how many (after those) on the COLUMN axis. The rest are pages.
+    /// Default 1/1 (one category per axis); increasing them stacks categories
+    /// on an axis (nested group headers over the Cartesian product of items).
+    n_rows: usize,
+    n_cols: usize,
     /// Selected item index for each page (extra) dimension, positionally by
     /// page dim (i.e. `axis_order[2 + i]`). Reset on measure switch.
     page_idx: Vec<usize>,
@@ -112,6 +118,8 @@ impl ImprovApp {
             new_name: String::new(),
             new_formula: String::new(),
             axis_order,
+            n_rows: 1,
+            n_cols: 1,
             page_idx: Vec::new(),
             axis_for: selected,
             filters: Vec::new(),
@@ -225,14 +233,16 @@ impl ImprovApp {
         if self.axis_for != self.selected {
             self.axis_for = self.selected;
             self.axis_order = natural_axis_order(&self.model, self.selected);
-            self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+            self.n_rows = 1.min(self.axis_order.len());
+            self.n_cols = 1.min(self.axis_order.len().saturating_sub(self.n_rows));
+            self.page_idx = vec![0; self.page_cats().len()];
             self.filters.clear();
             self.cursor_row = 0;
             self.cursor_col = 0;
-        } else if self.page_idx.len() != self.axis_order.len().saturating_sub(2) {
+        } else if self.page_idx.len() != self.page_cats().len() {
             // Keep page_idx sized to the current page-dimension count.
-            self.page_idx
-                .resize(self.axis_order.len().saturating_sub(2), 0);
+            let n = self.page_cats().len();
+            self.page_idx.resize(n, 0);
         }
         self.clamp_cursor();
     }
@@ -248,9 +258,37 @@ impl ImprovApp {
         Vec<(CategoryId, ItemId)>,
     ) {
         let row_cat = self.axis_order.first().copied();
-        let col_cat = self.axis_order.get(1).copied();
+        let col_cat = self.axis_order.get(self.n_rows).copied();
+        (row_cat, col_cat, self.pinned_pages())
+    }
+
+    /// The categories stacked on the ROW axis (outer→inner), the COLUMN axis,
+    /// and the remaining PAGE categories, derived from `axis_order` + the
+    /// `n_rows`/`n_cols` split. Categories that fall off the current measure's
+    /// dimension set are naturally absent from `axis_order`.
+    fn row_cats(&self) -> Vec<CategoryId> {
+        self.axis_order.iter().take(self.n_rows).copied().collect()
+    }
+    fn col_cats(&self) -> Vec<CategoryId> {
+        self.axis_order
+            .iter()
+            .skip(self.n_rows)
+            .take(self.n_cols)
+            .copied()
+            .collect()
+    }
+    fn page_cats(&self) -> Vec<CategoryId> {
+        self.axis_order
+            .iter()
+            .skip(self.n_rows + self.n_cols)
+            .copied()
+            .collect()
+    }
+
+    /// The pinned (category, item) for each page dimension, from `page_idx`.
+    fn pinned_pages(&self) -> Vec<(CategoryId, ItemId)> {
         let mut pinned = Vec::new();
-        for (pi, c) in self.axis_order.iter().skip(2).enumerate() {
+        for (pi, c) in self.page_cats().iter().enumerate() {
             let its = self.sorted_items(*c);
             if its.is_empty() {
                 continue;
@@ -263,7 +301,32 @@ impl ImprovApp {
                 .min(its.len() - 1);
             pinned.push((*c, its[sel].0));
         }
-        (row_cat, col_cat, pinned)
+        pinned
+    }
+
+    /// The Cartesian product of `cats`' filtered items, outer category first.
+    /// Each returned element is one axis line: a tuple of `(ItemId, name)` in
+    /// `cats` order. An empty `cats` yields a single empty tuple (a 1-line
+    /// axis, i.e. a scalar in that direction). Any empty category collapses the
+    /// product to nothing (no lines).
+    fn axis_tuples(&self, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
+        let mut out: Vec<Vec<(ItemId, String)>> = vec![Vec::new()];
+        for c in cats {
+            let items = self.sorted_items(*c);
+            if items.is_empty() {
+                return Vec::new();
+            }
+            let mut next = Vec::with_capacity(out.len() * items.len());
+            for prefix in &out {
+                for it in &items {
+                    let mut t = prefix.clone();
+                    t.push(it.clone());
+                    next.push(t);
+                }
+            }
+            out = next;
+        }
+        out
     }
 
     /// A category's items sorted by id, honoring the active filters (shared by
@@ -290,36 +353,57 @@ impl ImprovApp {
         v
     }
 
-    /// Move `category` to `axis`. Rows/Columns take the single slot at index
-    /// 0/1 (swapping out whatever was there, which drops to pages); Pages sends
-    /// it to the end. No-op if the category is not in the current axis order.
-    /// Pivoting is formula-free re-projection (Improv/Quantrix signature move).
+    /// Move `category` to `axis`, appending it as the innermost entry of that
+    /// axis (so categories *stack*: dropping a second category on Rows nests it
+    /// under the first). Removes it from its previous axis. No-op if the
+    /// category is not among the current measure's dimensions. Pivoting is
+    /// formula-free re-projection (the Improv/Quantrix signature move).
     pub fn set_axis(&mut self, category: CategoryId, axis: Axis) {
-        let Some(cur) = self.axis_order.iter().position(|c| *c == category) else {
+        if !self.axis_order.contains(&category) {
             return;
-        };
-        self.axis_order.remove(cur);
-        match axis {
-            Axis::Rows => self.axis_order.insert(0, category),
-            Axis::Columns => {
-                let at = 1.min(self.axis_order.len());
-                self.axis_order.insert(at, category);
-            }
-            Axis::Pages => self.axis_order.push(category),
         }
-        self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+        let (mut rows, mut cols, mut pages) = (self.row_cats(), self.col_cats(), self.page_cats());
+        for v in [&mut rows, &mut cols, &mut pages] {
+            v.retain(|c| *c != category);
+        }
+        match axis {
+            Axis::Rows => rows.push(category),
+            Axis::Columns => cols.push(category),
+            Axis::Pages => pages.push(category),
+        }
+        self.rebuild_axis_order(rows, cols, pages);
         self.clamp_cursor();
     }
 
-    /// Pivot: rotate the axis order left (rows->pages, cols->rows, first
-    /// page->cols). Repeatedly cycles which category sits on each axis. No-op
-    /// for < 2 categories. Mirrors the TUI's `pivot()`.
+    /// Flatten the three axis groups back into `axis_order` + `n_rows`/`n_cols`,
+    /// and resize `page_idx` to the new page count.
+    fn rebuild_axis_order(
+        &mut self,
+        rows: Vec<CategoryId>,
+        cols: Vec<CategoryId>,
+        pages: Vec<CategoryId>,
+    ) {
+        self.n_rows = rows.len();
+        self.n_cols = cols.len();
+        self.axis_order = rows;
+        self.axis_order.extend(cols);
+        self.axis_order.extend(pages);
+        self.page_idx = vec![0; self.page_cats().len()];
+    }
+
+    /// Pivot: swap the entire row stack with the entire column stack
+    /// (Rows ↔ Columns), keeping pages put. For the classic one-per-axis case
+    /// this is the familiar row/column swap; with stacked categories it swaps
+    /// the two groups. No-op if there is nothing on either of rows/columns.
     pub fn pivot_rotate(&mut self) {
-        if self.axis_order.len() < 2 {
+        let rows = self.row_cats();
+        let cols = self.col_cats();
+        if rows.is_empty() && cols.is_empty() {
             return;
         }
-        self.axis_order.rotate_left(1);
-        self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
+        let pages = self.page_cats();
+        // Swap: old columns become rows, old rows become columns.
+        self.rebuild_axis_order(cols, rows, pages);
         self.clamp_cursor();
     }
 
@@ -327,16 +411,16 @@ impl ImprovApp {
     /// the page dims, i.e. `axis_order[2 + dim_index]`), clamped to the
     /// dimension's item count. No-op if out of range.
     pub fn set_page(&mut self, dim_index: usize, item_index: usize) {
-        let Some(cat) = self.axis_order.get(2 + dim_index).copied() else {
+        let pages = self.page_cats();
+        let Some(cat) = pages.get(dim_index).copied() else {
             return;
         };
         let count = self.sorted_items(cat).len();
         if count == 0 {
             return;
         }
-        if self.page_idx.len() != self.axis_order.len().saturating_sub(2) {
-            self.page_idx
-                .resize(self.axis_order.len().saturating_sub(2), 0);
+        if self.page_idx.len() != pages.len() {
+            self.page_idx.resize(pages.len(), 0);
         }
         if let Some(slot) = self.page_idx.get_mut(dim_index) {
             *slot = item_index.min(count - 1);
@@ -349,13 +433,14 @@ impl ImprovApp {
     /// order, pinned page items, and active filters. Presentation only.
     pub fn build_view(&self, id: ViewId, name: &str) -> Option<View> {
         let measure = self.selected?;
-        let (_, _, pinned) = self.resolved_axes();
         Some(View {
             id,
             name: Name(name.to_string()),
             measure,
             axis_order: self.axis_order.clone(),
-            page_items: pinned,
+            n_rows: self.n_rows,
+            n_cols: self.n_cols,
+            page_items: self.pinned_pages(),
             filters: self.filters.clone(),
         })
     }
@@ -405,10 +490,15 @@ impl ImprovApp {
         } else {
             view.axis_order.clone()
         };
+        // Restore the axis split, clamped to the actual axis_order length.
+        let len = self.axis_order.len();
+        self.n_rows = view.n_rows.min(len);
+        self.n_cols = view.n_cols.min(len.saturating_sub(self.n_rows));
         self.filters = view.filters.clone();
         // Restore page selections positionally by page dimension.
-        self.page_idx = vec![0; self.axis_order.len().saturating_sub(2)];
-        for (pi, cat) in self.axis_order.iter().skip(2).enumerate() {
+        let page_cats = self.page_cats();
+        self.page_idx = vec![0; page_cats.len()];
+        for (pi, cat) in page_cats.iter().enumerate() {
             if let Some((_, it)) = view.page_items.iter().find(|(c, _)| c == cat) {
                 if let Some(idx) = self.sorted_items(*cat).iter().position(|(id, _)| id == it) {
                     if let Some(slot) = self.page_idx.get_mut(pi) {
@@ -472,13 +562,8 @@ impl ImprovApp {
     /// pivot. Both are >= 1 (a missing axis renders one synthetic row/column,
     /// matching `render_grid`).
     fn grid_dims(&self) -> (usize, usize) {
-        let (row_cat, col_cat, _) = self.resolved_axes();
-        let rows = row_cat
-            .map(|c| self.sorted_items(c).len().max(1))
-            .unwrap_or(1);
-        let cols = col_cat
-            .map(|c| self.sorted_items(c).len().max(1))
-            .unwrap_or(1);
+        let rows = self.axis_tuples(&self.row_cats()).len().max(1);
+        let cols = self.axis_tuples(&self.col_cats()).len().max(1);
         (rows, cols)
     }
 
@@ -502,14 +587,20 @@ impl ImprovApp {
 
     /// The `CoordKey` of the cell under the cursor, given the current pivot.
     pub fn cursor_key(&self) -> CoordKey {
-        let (row_cat, col_cat, pinned) = self.resolved_axes();
-        let rid = row_cat
-            .and_then(|c| self.sorted_items(c).get(self.cursor_row).map(|(id, _)| *id))
-            .unwrap_or(ItemId(0));
-        let cid = col_cat
-            .and_then(|c| self.sorted_items(c).get(self.cursor_col).map(|(id, _)| *id))
-            .unwrap_or(ItemId(0));
-        cell_key(row_cat, col_cat, rid, cid, &pinned)
+        let row_cats = self.row_cats();
+        let col_cats = self.col_cats();
+        let row_tuples = self.axis_tuples(&row_cats);
+        let col_tuples = self.axis_tuples(&col_cats);
+        let empty = Vec::new();
+        let row_tuple = row_tuples.get(self.cursor_row).unwrap_or(&empty);
+        let col_tuple = col_tuples.get(self.cursor_col).unwrap_or(&empty);
+        cell_key_multi(
+            &row_cats,
+            row_tuple,
+            &col_cats,
+            col_tuple,
+            &self.pinned_pages(),
+        )
     }
 
     /// True if the cursor cell is an editable input cell (i.e. the selected
@@ -1078,9 +1169,9 @@ impl ImprovApp {
                 .map(|x| x.name.0.clone())
                 .unwrap_or_else(|| format!("category {}", c.0))
         };
-        let row_cat = self.axis_order.first().copied();
-        let col_cat = self.axis_order.get(1).copied();
-        let page_cats: Vec<CategoryId> = self.axis_order.iter().skip(2).copied().collect();
+        let row_stack = self.row_cats();
+        let col_stack = self.col_cats();
+        let page_cats: Vec<CategoryId> = self.page_cats();
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
 
         // A draggable category tile: raised beveled face with the category name.
@@ -1152,22 +1243,8 @@ impl ImprovApp {
         };
 
         ui.horizontal(|ui| {
-            margin(
-                ui,
-                self,
-                "↓ Columns",
-                Axis::Columns,
-                &col_cat.into_iter().collect::<Vec<_>>(),
-                &mut moves,
-            );
-            margin(
-                ui,
-                self,
-                "→ Rows",
-                Axis::Rows,
-                &row_cat.into_iter().collect::<Vec<_>>(),
-                &mut moves,
-            );
+            margin(ui, self, "↓ Columns", Axis::Columns, &col_stack, &mut moves);
+            margin(ui, self, "→ Rows", Axis::Rows, &row_stack, &mut moves);
             margin(ui, self, "Pages", Axis::Pages, &page_cats, &mut moves);
             if ui.button("Pivot").on_hover_text("rotate axes").clicked() {
                 self.pivot_rotate();
@@ -1182,7 +1259,7 @@ impl ImprovApp {
     /// Page selectors: for each page (extra) dimension, a ` <label> [i/n] < > `
     /// control that pins which item the grid slices to. Mirrors the TUI paging.
     fn page_selectors(&mut self, ui: &mut egui::Ui) {
-        let page_cats: Vec<CategoryId> = self.axis_order.iter().skip(2).copied().collect();
+        let page_cats: Vec<CategoryId> = self.page_cats();
         if page_cats.is_empty() {
             return;
         }
@@ -1330,7 +1407,7 @@ impl ImprovApp {
 
     /// Cycle the first page dimension by `delta` (wrapping) via `set_page`.
     fn page_first(&mut self, delta: isize) {
-        let Some(cat) = self.axis_order.get(2).copied() else {
+        let Some(cat) = self.page_cats().first().copied() else {
             return;
         };
         let count = self.sorted_items(cat).len();
@@ -1371,13 +1448,30 @@ impl ImprovApp {
             .map(|m| m.is_derived())
             .unwrap_or(false);
         let values = self.values_for(measure);
-        let (row_cat, col_cat, pinned) = self.resolved_axes();
-        let rows = row_cat
-            .map(|c| self.sorted_items(c))
-            .unwrap_or_else(|| vec![(ItemId(0), String::new())]);
-        let cols = col_cat
-            .map(|c| self.sorted_items(c))
-            .unwrap_or_else(|| vec![(ItemId(0), String::new())]);
+
+        // Cartesian product of stacked categories per axis. Each tuple is one
+        // grid line; `row_cats`/`col_cats` give the stacking order (outer→inner).
+        let row_cats = self.row_cats();
+        let col_cats = self.col_cats();
+        let pinned = self.pinned_pages();
+        let row_lines = {
+            let t = self.axis_tuples(&row_cats);
+            if t.is_empty() {
+                vec![Vec::new()]
+            } else {
+                t
+            }
+        };
+        let col_lines = {
+            let t = self.axis_tuples(&col_cats);
+            if t.is_empty() {
+                vec![Vec::new()]
+            } else {
+                t
+            }
+        };
+        let n_row_stub = row_cats.len().max(1); // stub columns (one per row cat)
+        let n_col_hdr = col_cats.len().max(1); // header rows (one per col cat)
 
         // Edits collected during rendering, applied after the table closure so
         // we don't borrow `self` mutably inside it.
@@ -1395,50 +1489,93 @@ impl ImprovApp {
                     ui.add(egui::Label::new(egui::RichText::new(text).strong()).truncate());
                 });
         }
-        // Corner stub shows the row × column category names, as Improv does.
-        let row_label = row_cat
-            .and_then(|c| self.model.categories.get(&c))
-            .map(|c| c.name.0.clone())
-            .unwrap_or_default();
-        let col_label = col_cat
-            .and_then(|c| self.model.categories.get(&c))
-            .map(|c| c.name.0.clone())
-            .unwrap_or_default();
-        let corner = if row_label.is_empty() && col_label.is_empty() {
-            String::new()
-        } else {
-            format!("{row_label} \\ {col_label}")
+        let cat_name = |app: &ImprovApp, c: CategoryId| {
+            app.model
+                .categories
+                .get(&c)
+                .map(|x| x.name.0.clone())
+                .unwrap_or_default()
         };
 
         use egui_extras::{Column, TableBuilder};
-        let mut table = TableBuilder::new(ui)
-            .striped(true)
-            .column(Column::auto().resizable(true));
-        for _ in &cols {
+        let mut table = TableBuilder::new(ui).striped(true);
+        // One stub column per stacked row category, then one column per col line.
+        for _ in 0..n_row_stub {
             table = table.column(Column::auto().resizable(true));
         }
+        for _ in &col_lines {
+            table = table.column(Column::auto().resizable(true));
+        }
+
         table
-            .header(22.0, |mut header| {
-                header.col(|ui| {
-                    header_cell(ui, &corner);
-                });
-                for (_, cname) in &cols {
+            .header(22.0 * n_col_hdr as f32, |mut header| {
+                // Corner stub: the row category names stacked, then a header
+                // block spanning the column-category rows. With egui_extras we
+                // render the stacked column-category labels inside one tall
+                // header cell per column line (outer→inner, top→bottom).
+                for (si, rc) in row_cats.iter().enumerate() {
+                    let _ = si;
                     header.col(|ui| {
-                        header_cell(ui, cname);
+                        header_cell(ui, &cat_name(self, *rc));
+                    });
+                }
+                if row_cats.is_empty() {
+                    header.col(|ui| {
+                        header_cell(ui, "");
+                    });
+                }
+                for line in &col_lines {
+                    header.col(|ui| {
+                        ui.vertical(|ui| {
+                            if line.is_empty() {
+                                header_cell(ui, "");
+                            }
+                            for (it, name) in line {
+                                let _ = it;
+                                header_cell(ui, name);
+                            }
+                        });
                     });
                 }
             })
             .body(|mut body| {
-                for (ri, (rid, rname)) in rows.iter().enumerate() {
+                // Track the previous row tuple so a stacked outer category only
+                // prints its label when it changes (group outlining).
+                let mut prev: Vec<Option<ItemId>> = vec![None; n_row_stub];
+                for (ri, row_line) in row_lines.iter().enumerate() {
                     body.row(20.0, |mut row| {
-                        row.col(|ui| {
-                            header_cell(ui, rname);
-                        });
-                        for (ci, (cid, _)) in cols.iter().enumerate() {
-                            let key = cell_key(row_cat, col_cat, *rid, *cid, &pinned);
+                        // Stub columns: one per stacked row category.
+                        for si in 0..n_row_stub {
+                            let cell = row_line.get(si);
+                            row.col(|ui| {
+                                match cell {
+                                    Some((id, name)) => {
+                                        // Outline: blank if same as the row above
+                                        // (except the innermost, always shown).
+                                        let inner = si + 1 == n_row_stub;
+                                        let changed = prev[si] != Some(*id);
+                                        if inner || changed {
+                                            header_cell(ui, name);
+                                        } else {
+                                            header_cell(ui, "");
+                                        }
+                                        prev[si] = Some(*id);
+                                        // Reset inner tracking when an outer changed.
+                                        if changed {
+                                            for p in prev.iter_mut().skip(si + 1) {
+                                                *p = None;
+                                            }
+                                        }
+                                    }
+                                    None => header_cell(ui, ""),
+                                }
+                            });
+                        }
+                        for (ci, col_line) in col_lines.iter().enumerate() {
+                            let key =
+                                cell_key_multi(&row_cats, row_line, &col_cats, col_line, &pinned);
                             let is_cursor = cursor == (ri, ci);
                             row.col(|ui| {
-                                // Highlight the cursor cell with a tinted frame.
                                 let mut frame = egui::Frame::default();
                                 if is_cursor {
                                     frame = frame.fill(ui.visuals().selection.bg_fill).stroke(
@@ -1546,6 +1683,31 @@ fn cell_key(
     }
     if let Some(c) = col_cat {
         pairs.push((c.0, cid.0));
+    }
+    for (c, i) in pinned {
+        pairs.push((c.0, i.0));
+    }
+    pairs.sort();
+    pairs
+}
+
+/// The sorted `CoordKey` for a cell when categories are STACKED on each axis:
+/// `row_cats[i]` binds to `row_tuple[i]`, `col_cats[j]` to `col_tuple[j]`, plus
+/// the pinned page dims. Tuples come from `axis_tuples` so they align with the
+/// category list. The general form of `cell_key`.
+fn cell_key_multi(
+    row_cats: &[CategoryId],
+    row_tuple: &[(ItemId, String)],
+    col_cats: &[CategoryId],
+    col_tuple: &[(ItemId, String)],
+    pinned: &[(CategoryId, ItemId)],
+) -> CoordKey {
+    let mut pairs: Vec<(u32, u32)> = Vec::new();
+    for (c, (it, _)) in row_cats.iter().zip(row_tuple.iter()) {
+        pairs.push((c.0, it.0));
+    }
+    for (c, (it, _)) in col_cats.iter().zip(col_tuple.iter()) {
+        pairs.push((c.0, it.0));
     }
     for (c, i) in pinned {
         pairs.push((c.0, i.0));
@@ -1745,6 +1907,8 @@ mod tests {
             new_name: String::new(),
             new_formula: String::new(),
             axis_order,
+            n_rows: 1,
+            n_cols: 1,
             page_idx,
             axis_for: selected,
             filters: Vec::new(),
@@ -1810,11 +1974,36 @@ mod tests {
         assert_eq!(r, Some(CategoryId(1))); // Time on rows
         assert_eq!(c, Some(CategoryId(2))); // Product on cols
 
-        // Move Product (currently on columns) to rows.
+        // Dragging Product onto Rows STACKS it under Time (both on rows), which
+        // is the Improv semantics; columns become empty.
         app.set_axis(CategoryId(2), Axis::Rows);
+        assert_eq!(app.row_cats(), vec![CategoryId(1), CategoryId(2)]);
+        assert!(app.col_cats().is_empty());
         let (r, c, _) = app.resolved_axes();
-        assert_eq!(r, Some(CategoryId(2)), "Product now on rows");
-        assert_eq!(c, Some(CategoryId(1)), "Time bumped to columns");
+        assert_eq!(r, Some(CategoryId(1)), "primary row is still Time");
+        assert_eq!(c, None, "no column category after stacking both on rows");
+    }
+
+    #[test]
+    fn stacked_rows_form_cartesian_product_with_correct_keys() {
+        // Quantity[Time, Product] with BOTH categories stacked on rows.
+        let mut app = build_app(revenue_model());
+        app.selected = Some(MeasureId(101));
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product]
+        assert_eq!(app.row_cats(), vec![CategoryId(1), CategoryId(2)]);
+
+        // The row axis is the product of Time items x Product items.
+        let tuples = app.axis_tuples(&app.row_cats());
+        // revenue_model has Time={2025(10)}, Product={WidgetA(20)} (1x1) here,
+        // so a single tuple binding both categories.
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].len(), 2, "tuple binds both stacked categories");
+        // The cell key for that row (no columns) binds Time AND Product, sorted.
+        let key = cell_key_multi(&app.row_cats(), &tuples[0], &[], &[], &[]);
+        assert_eq!(key, vec![(1, 10), (2, 20)]);
+        // Grid dims: 1 row line, 1 col line (no col categories).
+        assert_eq!(app.grid_dims(), (1, 1));
     }
 
     #[test]

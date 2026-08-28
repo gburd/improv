@@ -165,7 +165,6 @@ pub struct ExternalCall {
     #[serde(default)]
     pub refresh_policy: RefreshPolicy,
 }
-
 /// A saved pivot layout: which measure, how its categories are placed on axes,
 /// which page items are pinned, and any per-category filters. Reusable across
 /// sessions; the interfaces load a view to reproduce a layout without touching
@@ -175,10 +174,19 @@ pub struct View {
     pub id: ViewId,
     pub name: Name,
     pub measure: MeasureId,
-    /// A permutation of the measure's categories: index 0 is on rows, 1 on
-    /// columns, the rest are pages. Empty = use the measure's natural order.
+    /// A permutation of the measure's categories: the first `n_rows` are
+    /// stacked on rows (outer→inner), the next `n_cols` on columns, the rest
+    /// are pages. Empty = use the measure's natural order. (Pre-stacking views
+    /// have no `n_rows`/`n_cols`; they default to 1/1 = one category per axis.)
     #[serde(default)]
     pub axis_order: Vec<CategoryId>,
+    /// How many leading `axis_order` categories are stacked on the row axis.
+    #[serde(default = "one")]
+    pub n_rows: usize,
+    /// How many `axis_order` categories (after the rows) are stacked on the
+    /// column axis.
+    #[serde(default = "one")]
+    pub n_cols: usize,
     /// For each page (extra) dimension, the pinned item.
     #[serde(default)]
     pub page_items: Vec<(CategoryId, ItemId)>,
@@ -186,6 +194,11 @@ pub struct View {
     /// A category absent here is unfiltered (all items shown).
     #[serde(default)]
     pub filters: Vec<Filter>,
+}
+
+/// Serde default for `View::n_rows`/`n_cols`: one category per axis.
+fn one() -> usize {
+    1
 }
 
 /// Restrict a category to a subset of its items in a view.
@@ -395,6 +408,8 @@ mod tests {
             name: Name("By Product".into()),
             measure: MeasureId(100),
             axis_order: vec![product, time],
+            n_rows: 1,
+            n_cols: 1,
             page_items: vec![],
             filters: vec![Filter {
                 category: product,

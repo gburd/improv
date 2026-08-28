@@ -609,6 +609,8 @@ impl App {
             name: Name(name.to_string()),
             measure: self.viewed_measure(),
             axis_order: self.axis_order.clone(),
+            n_rows: 1,
+            n_cols: 1,
             page_items,
             filters: self.filters.clone(),
         }
