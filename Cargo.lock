@@ -2516,6 +2516,7 @@ dependencies = [
 name = "improv_engine"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "differential-dataflow",
  "improv_core_model",
  "improv_extfn",

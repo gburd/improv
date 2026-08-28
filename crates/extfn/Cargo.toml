@@ -13,3 +13,16 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+# In-process WebAssembly interpreter (no JIT; MSRV 1.77 per its Cargo.toml, well
+# under our 1.97 floor). MIT/Apache-2.0.
+wasmi = "0.32"
+
+[features]
+# `wat:` module bodies are assembled with the `wat` crate. On by default; turn
+# off for a smaller dep tree if only `.wasm`/base64 modules are used.
+default = ["wat"]
+wat = ["dep:wat"]
+
+[dependencies.wat]
+version = "1"
+optional = true

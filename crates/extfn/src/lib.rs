@@ -17,25 +17,41 @@
 //! (`arg_types` / `return_type`); higher-arity dimension broadcasting is the
 //! engine's job at the call site, not this runtime's.
 //!
-//! # Sandboxing (Python v1) and its limits
+//! # Language runtimes
 //!
-//! Python is invoked as `python3 -I -S -`:
-//! * `-I` isolated mode: ignores `PYTHON*` env vars and the user site dir, and
-//!   does not prepend the script's directory to `sys.path`.
-//! * `-S` no `site`: skips automatic site-package imports.
-//! * `-` reads the program from **stdin**, so the function body is never
-//!   interpolated into a shell command line (no shell is spawned at all —
-//!   `std::process::Command` execs `python3` directly).
-//! * A wall-clock **timeout** (default 5s) kills a runaway child.
+//! `eval` dispatches on `f.language` to a per-language runner:
+//! * **Python / R / Julia / Pure** — subprocess runners (shared plumbing in
+//!   the `runner` module): the interpreter reads a generated program on stdin
+//!   and prints one `{"ok":..}` / `{"error":..}` JSON envelope on stdout. A
+//!   wall-clock timeout kills a runaway child. If the interpreter binary is
+//!   absent, `eval` returns [`ExtFnError::LanguageUnavailable`] — it never
+//!   panics.
+//! * **Wasm** — an in-process `wasmi` interpreter (no subprocess); numeric f64
+//!   ABI (see the `wasm` module).
+//!
+//! # Sandboxing and its limits
+//!
+//! Python is invoked as `python3 -I -S -` (isolated, no site, program on stdin);
+//! R as `Rscript --vanilla -`; Julia as `julia --startup-file=no -`; Pure as
+//! `pure -q`. In every case the program arrives on **stdin**, so the function
+//! body is never interpolated into a shell command line (no shell is spawned).
+//! A wall-clock **timeout** (default 5s) kills a runaway child.
 //!
 //! This blocks the accidental-import / stray-config-file class of problems and
 //! bounds runtime. It is **not** an OS sandbox: a determined body can still read
-//! files or open sockets. Hardening (seccomp, namespaces, a container, or a
-//! WASM runtime) is future work and is the real trust boundary for untrusted
-//! code. v1 assumes function bodies are authored/reviewed by the model owner.
+//! files or open sockets. Hardening (seccomp, namespaces, a container) is future
+//! work and is the real trust boundary for untrusted code. v1 assumes function
+//! bodies are authored/reviewed by the model owner. The Wasm runtime is the
+//! closest thing to a real sandbox here (no host imports are linked), but its
+//! ABI is numeric-only for now.
 
+mod julia;
 mod marshal;
+mod pure;
 mod python;
+mod r;
+mod runner;
+mod wasm;
 
 pub use marshal::{error_value, value_to_json};
 
@@ -128,7 +144,10 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
     }
     match f.language {
         Language::Python => python::eval(f, args, timeout),
-        other => Err(ExtFnError::LanguageUnavailable(format!("{other:?}"))),
+        Language::R => r::eval(f, args, timeout),
+        Language::Julia => julia::eval(f, args, timeout),
+        Language::Wasm => wasm::eval(f, args, timeout),
+        Language::Pure => pure::eval(f, args, timeout),
     }
 }
 
@@ -345,5 +364,194 @@ mod tests {
         assert!(matches!(err, ExtFnError::Timeout(_)), "got {err:?}");
         // Killed near the deadline, not hung forever.
         assert!(start.elapsed() < Duration::from_secs(8));
+    }
+
+    // ---- Interpreter availability probe (shared) ----
+
+    /// True if `cmd --version` exits successfully. Round-trip tests for R/Julia/
+    /// Pure early-return (logging a skip) when their interpreter is missing so CI
+    /// without them still passes.
+    fn cmd_available(cmd: &str) -> bool {
+        std::process::Command::new(cmd)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    // ---- R (guarded) ----
+
+    #[test]
+    fn r_hypot() {
+        if !cmd_available("Rscript") {
+            println!("skipped: Rscript not found");
+            return;
+        }
+        let f = ExternalFn {
+            name: "hyp".into(),
+            language: Language::R,
+            body: "result <- sqrt(args[[1]]^2 + args[[2]]^2)".into(),
+            arg_types: vec![ValueType::Number, ValueType::Number],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let out = eval(
+            &f,
+            &[Value::Number(3.0), Value::Number(4.0)],
+            Duration::from_secs(10),
+        )
+        .expect("eval");
+        assert_eq!(out, Value::Number(5.0));
+    }
+
+    // ---- Julia (guarded) ----
+
+    #[test]
+    fn julia_sum() {
+        if !cmd_available("julia") {
+            println!("skipped: julia not found");
+            return;
+        }
+        let f = ExternalFn {
+            name: "add".into(),
+            language: Language::Julia,
+            body: "    result = args[1] + args[2]".into(),
+            arg_types: vec![ValueType::Number, ValueType::Number],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let out = eval(
+            &f,
+            &[Value::Number(2.0), Value::Number(40.0)],
+            Duration::from_secs(30),
+        )
+        .expect("eval");
+        assert_eq!(out, Value::Number(42.0));
+    }
+
+    // ---- Pure-lang (guarded) ----
+
+    #[test]
+    fn pure_sum() {
+        if !cmd_available("pure") {
+            println!("skipped: pure not found");
+            return;
+        }
+        let f = ExternalFn {
+            name: "add".into(),
+            language: Language::Pure,
+            body: "let result = args!0 + args!1;".into(),
+            arg_types: vec![ValueType::Number, ValueType::Number],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let out = eval(
+            &f,
+            &[Value::Number(19.0), Value::Number(23.0)],
+            Duration::from_secs(10),
+        )
+        .expect("eval");
+        assert_eq!(out, Value::Number(42.0));
+    }
+
+    // ---- WASM (no external tool; wasmi + wat assembled at test time) ----
+
+    #[test]
+    fn wasm_doubles_input() {
+        // A 3-line module exporting `improv_call(f64) -> f64` = x + x.
+        let wat = "(module (func (export \"improv_call\") (param f64) (result f64) \
+             local.get 0 local.get 0 f64.add))";
+        let f = ExternalFn {
+            name: "double".into(),
+            language: Language::Wasm,
+            body: format!("wat:{wat}"),
+            arg_types: vec![ValueType::Number],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let out = eval(&f, &[Value::Number(21.0)], Duration::from_secs(5)).expect("eval");
+        assert_eq!(out, Value::Number(42.0));
+    }
+
+    #[test]
+    fn wasm_two_args() {
+        // a*a + b*b, exercising a 2-arg numeric ABI.
+        let wat = "(module (func (export \"improv_call\") (param f64 f64) (result f64) \
+             local.get 0 local.get 0 f64.mul local.get 1 local.get 1 f64.mul f64.add))";
+        let f = ExternalFn {
+            name: "sqsum".into(),
+            language: Language::Wasm,
+            body: format!("wat:{wat}"),
+            arg_types: vec![ValueType::Number, ValueType::Number],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let out = eval(
+            &f,
+            &[Value::Number(3.0), Value::Number(4.0)],
+            Duration::from_secs(5),
+        )
+        .expect("eval");
+        assert_eq!(out, Value::Number(25.0));
+    }
+
+    #[test]
+    fn wasm_missing_export_is_runtime_error() {
+        let f = ExternalFn {
+            name: "nope".into(),
+            language: Language::Wasm,
+            body: "wat:(module)".into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let err = eval(&f, &[], Duration::from_secs(5)).unwrap_err();
+        match err {
+            ExtFnError::Runtime { message, .. } => assert!(message.contains("improv_call")),
+            other => panic!("expected Runtime, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wasm_rejects_non_numeric_abi() {
+        let f = ExternalFn {
+            name: "bad".into(),
+            language: Language::Wasm,
+            body: "wat:(module)".into(),
+            arg_types: vec![ValueType::Text],
+            return_type: ValueType::Text,
+            pure: true,
+        };
+        let err = eval(&f, &[Value::Text("x".into())], Duration::from_secs(5)).unwrap_err();
+        assert!(matches!(err, ExtFnError::Runtime { .. }), "got {err:?}");
+    }
+
+    // ---- Unavailable runtime does not panic ----
+
+    #[test]
+    fn absent_interpreter_is_error_not_panic() {
+        // A language whose interpreter may not be installed yields an error, not
+        // a panic. If the runtime happens to be present, a benign body still
+        // succeeds — either way, no panic.
+        for lang in [Language::R, Language::Julia, Language::Pure] {
+            let body = match lang {
+                Language::R => "result <- 1",
+                Language::Julia => "    result = 1",
+                Language::Pure => "let result = 1;",
+                _ => unreachable!(),
+            };
+            let f = ExternalFn {
+                name: "probe".into(),
+                language: lang,
+                body: body.into(),
+                arg_types: vec![],
+                return_type: ValueType::Number,
+                pure: true,
+            };
+            // Must return a Result (no panic); Ok or Err both acceptable.
+            let _ = eval(&f, &[], Duration::from_secs(5));
+        }
     }
 }
