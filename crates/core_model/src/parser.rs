@@ -46,11 +46,11 @@
 //!
 //! ## Not implemented (deferred, per §4/§11.3)
 //!
-//! * Date literals `#2025-01-01#` (spec §3.3, optional here).
-//! * External-language `CALL(...)` dispatch (Phase 6 runtime) and `SQL("...")`
-//!   (Phase 7). Named *scalar* calls (`ABS(x)`, `SQRT(x)`, `MIN2(a,b)`, … — see
-//!   `scalar_func`) ARE supported: the deterministic, in-process foundation the
-//!   external runtimes later plug into via the same `Expr::Call` node.
+//! * (Date literals `#2025-01-01#` and `#...T...Z#` ARE supported — see
+//!   `parse_date_literal`.)
+//! * Nothing else material: named scalar calls (`ABS`, `SQRT`, `MIN2`, …) and
+//!   the whole-RHS source forms `CALL(...)` / `SQL("...")` (via
+//!   `parse_definition`) are supported.
 
 use crate::formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 use crate::ids::{CategoryId, MeasureId, Name};
@@ -151,6 +151,9 @@ enum Tok {
     Ident(String),
     Number(f64),
     Str(String),
+    /// A date/time literal `#YYYY-MM-DD#` or `#YYYY-MM-DDTHH:MM:SSZ#`, stored as
+    /// a UTC timestamp.
+    Date(chrono::DateTime<chrono::Utc>),
     /// A punctuation/operator lexeme (`+`, `<=`, `==`, `[`, ...).
     Op(String),
 }
@@ -160,6 +163,19 @@ enum Tok {
 struct Spanned {
     tok: Tok,
     pos: usize,
+}
+
+/// Parse the inside of a `#...#` date literal. Accepts a bare date
+/// `YYYY-MM-DD` (midnight UTC) or an RFC3339 timestamp `YYYY-MM-DDTHH:MM:SSZ`.
+fn parse_date_literal(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let raw = raw.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(raw) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
+        return d.and_hms_opt(0, 0, 0).map(|ndt| ndt.and_utc());
+    }
+    None
 }
 
 fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
@@ -185,6 +201,26 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 i += 1; // closing quote
                 out.push(Spanned {
                     tok: Tok::Str(s),
+                    pos: start,
+                });
+            }
+            '#' => {
+                // Date literal: #YYYY-MM-DD# or #YYYY-MM-DDTHH:MM:SSZ#.
+                i += 1;
+                let s0 = i;
+                while i < bytes.len() && bytes[i] != b'#' {
+                    i += 1;
+                }
+                if i >= bytes.len() {
+                    return Err(ParseError::new("unterminated date literal", Some(start)));
+                }
+                let raw = &text[s0..i];
+                i += 1; // closing '#'
+                let dt = parse_date_literal(raw).ok_or_else(|| {
+                    ParseError::new(format!("invalid date: {raw:?}"), Some(start))
+                })?;
+                out.push(Spanned {
+                    tok: Tok::Date(dt),
                     pos: start,
                 });
             }
@@ -433,6 +469,11 @@ impl<'a> Parser<'a> {
                 let s = s.clone();
                 self.bump();
                 Ok(Expr::Literal(Value::Text(s)))
+            }
+            Some(Tok::Date(dt)) => {
+                let dt = *dt;
+                self.bump();
+                Ok(Expr::Literal(Value::DateTime(dt)))
             }
             Some(Tok::Ident(_)) => self.parse_ident_primary(),
             Some(Tok::Op(o)) => Err(self.err(format!("unexpected operator: {o}"))),
@@ -1066,6 +1107,25 @@ mod tests {
             }
             other => panic!("expected Formula, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_date_literal() {
+        let m = fixture();
+        // Bare date -> midnight UTC.
+        let f = parse_expr(&m, "#2025-01-15#").unwrap();
+        match f.expr {
+            Expr::Literal(Value::DateTime(dt)) => {
+                assert_eq!(dt.to_rfc3339(), "2025-01-15T00:00:00+00:00");
+            }
+            other => panic!("expected date literal, got {other:?}"),
+        }
+        // Full RFC3339.
+        let f = parse_expr(&m, "#2025-01-15T09:30:00Z#").unwrap();
+        assert!(matches!(f.expr, Expr::Literal(Value::DateTime(_))));
+        // Bad date errors, not panics.
+        assert!(parse_expr(&m, "#not-a-date#").is_err());
+        assert!(parse_expr(&m, "#2025-01-15").is_err()); // unterminated
     }
 
     #[test]

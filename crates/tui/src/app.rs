@@ -10,7 +10,7 @@
 use improv_core_model::Coordinate;
 use improv_core_model::{CategoryId, Filter, ItemId, MeasureId, Model, Name, Value, View, ViewId};
 use improv_engine::session::{Engine, MeasureValues};
-use improv_engine::{decode_coord, encode_coord, CoordKey};
+use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
 use std::collections::HashMap;
 
 /// Live derived-measure values, keyed by measure then coordinate. Kept in
@@ -33,8 +33,10 @@ pub struct Grid {
     pub cols: Vec<(ItemId, String)>,
     /// Categories beyond the first two, pinned to a chosen item ("pages").
     pub pages: Vec<PageDim>,
-    /// Cell values indexed `[row][col]`. `None` = empty cell.
-    pub cells: Vec<Vec<Option<f64>>>,
+    /// Cell values indexed `[row][col]`. `None` = empty cell. Typed
+    /// (`CellValue`) so non-numeric cells (Text/Bool/Date/#ERR) render
+    /// correctly, not just numbers.
+    pub cells: Vec<Vec<Option<CellValue>>>,
 }
 
 /// An extra dimension not on the row/column axes, pinned to one item (a
@@ -68,12 +70,24 @@ impl Grid {
     pub fn n_cols(&self) -> usize {
         self.cols.len()
     }
+    /// The numeric value at `[row][col]`, if the cell holds a number (for the
+    /// edit-seed path). Non-numeric cells return `None`.
     pub fn value_at(&self, row: usize, col: usize) -> Option<f64> {
+        self.cell_at(row, col).and_then(|v| v.as_num())
+    }
+    /// The typed cell value at `[row][col]`.
+    pub fn cell_at(&self, row: usize, col: usize) -> Option<&CellValue> {
         self.cells
             .get(row)
             .and_then(|r| r.get(col))
-            .copied()
-            .flatten()
+            .and_then(|c| c.as_ref())
+    }
+    /// The display string for `[row][col]` (empty for an empty cell).
+    pub fn display_at(&self, row: usize, col: usize) -> String {
+        match self.cell_at(row, col) {
+            Some(v) => v.to_string(),
+            None => String::new(),
+        }
     }
     /// The sorted `CoordKey` for the cell at `[row][col]`.
     pub fn coord_key(&self, row: usize, col: usize) -> CoordKey {
@@ -117,31 +131,30 @@ fn items_of(model: &Model, cat: CategoryId, filters: &[Filter]) -> Vec<(ItemId, 
         .unwrap_or_default()
 }
 
-/// The value map for a measure: `CoordKey -> f64`.
+/// The value map for a measure: `CoordKey -> CellValue`.
 ///
 /// Input measures read straight from `model.inputs`; derived measures come from
-/// the live engine `snapshot` (empty map -> grid renders blank).
-fn values_for(model: &Model, measure: MeasureId, snapshot: &Snapshot) -> HashMap<CoordKey, f64> {
+/// the live engine `snapshot` (empty map -> grid renders blank). Values keep
+/// their type so the grid can render numbers, text, booleans, dates, and #ERR.
+fn values_for(
+    model: &Model,
+    measure: MeasureId,
+    snapshot: &Snapshot,
+) -> HashMap<CoordKey, CellValue> {
     let is_derived = model.measures.get(&measure).map(|m| m.is_derived());
     match is_derived {
-        // Derived: read the live engine snapshot, projecting each CellValue to a
-        // number (non-numeric derived cells show as their number/NaN for now).
-        // ponytail: numeric grid only; a typed cell renderer is future TUI work.
+        // Derived: read the live engine snapshot (already typed CellValues).
         Some(true) => snapshot
             .get(&measure)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_num().map(|n| (k.clone(), n)))
-                    .collect()
-            })
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default(),
+        // Input: read model cells, mapping each typed model Value to a CellValue.
         _ => model
             .inputs
             .iter()
             .filter(|((mid, _), _)| *mid == measure)
-            .filter_map(|((_, coord), v)| match v {
-                Value::Number(n) => Some((encode_coord(coord), *n)),
-                _ => None,
+            .filter_map(|((_, coord), v)| {
+                CellValue::from_model_value(v).map(|cv| (encode_coord(coord), cv))
             })
             .collect(),
     }
@@ -244,7 +257,7 @@ pub fn build_grid_pivoted(
         let mut row_cells = Vec::with_capacity(cols.len());
         for c in 0..cols.len() {
             let key = cell_key(&row_cat, &col_cat, &rows, &cols, &pages, r, c);
-            row_cells.push(values.get(&key).copied());
+            row_cells.push(values.get(&key).cloned());
         }
         cells.push(row_cells);
     }
@@ -841,6 +854,33 @@ mod tests {
         assert_eq!(grid.value_at(0, 0), Some(1000.0));
         // Revenue[2026, WidgetB] = 20 * 80 = 1600.
         assert_eq!(grid.value_at(1, 1), Some(1600.0));
+    }
+
+    #[test]
+    fn text_input_cell_renders_typed_not_nan() {
+        // A Text input measure must render its text (not NaN / blank).
+        use improv_core_model::{Measure, MeasureKind, Name, ValueType};
+        let mut model = Model::new();
+        let p = CategoryId(2);
+        model.add_category(p, "Product");
+        model.add_item(ItemId(20), p, "WidgetA");
+        model.add_measure(Measure {
+            id: MeasureId(300),
+            name: Name("Label".into()),
+            value_type: ValueType::Text,
+            categories: vec![p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        model.set_input(
+            MeasureId(300),
+            Coordinate::from_pairs([(p, ItemId(20))]),
+            Value::Text("hello".into()),
+        );
+        let app = App::new(model).unwrap();
+        let grid = build_grid(&app.model, MeasureId(300), &app.snapshot);
+        assert_eq!(grid.display_at(0, 0), "hello");
+        assert_eq!(grid.value_at(0, 0), None, "text cell has no numeric value");
     }
 
     #[test]

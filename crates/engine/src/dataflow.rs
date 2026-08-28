@@ -11,8 +11,8 @@
 //! (arithmetic + comparison/logical encoded as 1.0/0.0), Join (dimension
 //! alignment), Aggregate (SUM/AVG/MIN/MAX), and scalar FuncCall built-ins
 //! (ABS/ROUND/FLOOR/CEIL/SQRT/NEG, MIN2/MAX2). Non-numeric derived values
-//! (Text/Boolean stored as such) are future work: comparison/logical results
-//! live in the numeric lane as 1.0/0.0.
+//! (Text/Boolean stored as such) and Date values are carried in `CellValue`;
+//! comparison/logical results live in the numeric lane as 1.0/0.0.
 
 use crate::compiler::{compile_formula, scalar_arity, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
@@ -414,9 +414,9 @@ pub fn evaluate(
         }
     }
 
-    // Gather input cells to feed, grouped by measure. All value types the DD
-    // lane supports (Number, Boolean, Text, Enum, Error) are fed; DateTime is
-    // not yet representable and is skipped.
+    // Gather input cells to feed, grouped by measure. Every model value type
+    // maps into the DD lane: Number, Boolean, Text, Enum, DateTime (as
+    // CellValue::Date millis), and Error.
     let mut input_cells: HashMap<MeasureId, Vec<(CoordKey, CellValue)>> = HashMap::new();
     for ((mid, coord), val) in &model.inputs {
         if let Some(cv) = CellValue::from_model_value(val) {

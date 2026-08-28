@@ -126,7 +126,7 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid) -> Table<'a> {
         let mut cells =
             vec![Cell::from(rname.clone()).style(Style::default().add_modifier(Modifier::BOLD))];
         for c in 0..g.n_cols() {
-            let text = fmt_cell(g.value_at(r, c));
+            let text = g.display_at(r, c);
             let cell = Cell::from(text);
             let cell = if r == app.cursor_row && c == app.cursor_col {
                 cell.style(sel)
