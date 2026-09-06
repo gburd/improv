@@ -12,7 +12,7 @@ use improv_core_model::{
     Category, CategoryId, Coordinate, Formula, Item, ItemId, Measure, MeasureId, MeasureKind,
     Model, Name, Value, ValueType,
 };
-use mentat::{Store, TypedValue};
+use mentat::{InProgress, Store, TypedValue};
 use std::collections::HashMap;
 
 mod convert;
@@ -36,6 +36,23 @@ impl From<mentat::errors::MentatError> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// Transact one EDN vector of `entities` through `ip`, sharing its underlying
+/// SQLite transaction with every other call made on the same `InProgress` (a
+/// no-op if `entities` is empty). Used by `save_model` so every step commits
+/// or rolls back together instead of each being its own SQLite transaction.
+fn transact_group(
+    ip: &mut InProgress<'_, '_>,
+    entities: impl IntoIterator<Item = String>,
+) -> Result<()> {
+    let parts: Vec<String> = entities.into_iter().collect();
+    if parts.is_empty() {
+        return Ok(());
+    }
+    let edn = format!("[{}]", parts.join("\n"));
+    ip.transact(edn)?;
+    Ok(())
+}
+
 /// A model store backed by embedded Mentat (a single SQLite file, or `""` for
 /// in-memory).
 pub struct ModelStore {
@@ -50,28 +67,43 @@ impl ModelStore {
         Ok(ModelStore { store })
     }
 
-    /// Persist the entire model. Idempotent for identity-unique entities
-    /// (categories/items/measures keyed by their id; cells keyed by
-    /// measure+coord), so re-saving updates in place.
+    /// Persist the entire model, atomically: either every category, item,
+    /// measure, cell, view and meta-blob is durably saved, or (on any error)
+    /// none of them are.
+    ///
+    /// Idempotent for identity-unique entities (categories/items/measures
+    /// keyed by their id; cells keyed by measure+coord), so re-saving updates
+    /// in place.
     ///
     /// Transacted in dependency order (categories, then items, then measures,
-    /// then cells) as separate transactions so that lookup-refs resolve against
-    /// already-committed data.
+    /// then cells, then views, then meta) as several `InProgress::transact`
+    /// calls sharing ONE underlying SQLite transaction (via
+    /// `Store::begin_transaction`), so later lookup-refs resolve against
+    /// earlier (still-uncommitted) writes in the same save. A single
+    /// `ip.commit()` at the end makes the whole sequence all-or-nothing: if
+    /// any step's EDN fails to transact, `?` returns before `commit()` runs
+    /// and the dropped `InProgress` rolls back every prior step of this save.
+    /// See `.agent/steering/AGENT_DATABASE_CONNECTIVITY.md` "Crash safety".
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
-        self.transact_group(model.categories.values().map(convert::category_edn))?;
-        self.transact_group(model.items.values().map(convert::item_edn))?;
+        let mut ip = self.store.begin_transaction()?;
+
+        transact_group(
+            &mut ip,
+            model.categories.values().map(convert::category_edn),
+        )?;
+        transact_group(&mut ip, model.items.values().map(convert::item_edn))?;
 
         let mut measures = Vec::new();
         for m in model.measures.values() {
             measures.push(convert::measure_edn(m, model.sql_sources.get(&m.id))?);
         }
-        self.transact_group(measures)?;
+        transact_group(&mut ip, measures)?;
 
         let mut cells = Vec::new();
         for ((mid, coord), val) in model.inputs.iter() {
             cells.push(convert::cell_edn(*mid, coord, val)?);
         }
-        self.transact_group(cells)?;
+        transact_group(&mut ip, cells)?;
 
         let mut views = Vec::new();
         for v in model.views.values() {
@@ -82,7 +114,7 @@ impl ModelStore {
                 convert::edn_str_pub(&json)
             ));
         }
-        self.transact_group(views)?;
+        transact_group(&mut ip, views)?;
 
         // Singleton meta: external function defs + external-call measures +
         // what-if scenarios, each as a JSON blob on one entity (only if any
@@ -100,18 +132,10 @@ impl ModelStore {
                 convert::edn_str_pub(&calls_json),
                 convert::edn_str_pub(&scen_json),
             );
-            self.store.transact(&edn)?;
+            ip.transact(edn)?;
         }
-        Ok(())
-    }
 
-    fn transact_group(&mut self, entities: impl IntoIterator<Item = String>) -> Result<()> {
-        let parts: Vec<String> = entities.into_iter().collect();
-        if parts.is_empty() {
-            return Ok(());
-        }
-        let edn = format!("[{}]", parts.join("\n"));
-        self.store.transact(&edn)?;
+        ip.commit()?;
         Ok(())
     }
 
@@ -416,6 +440,43 @@ mod tests {
                 items: vec![ItemId(20)],
             }],
         });
+
+        // Meta blob: an external function def, an external-call measure that
+        // uses it, and a what-if scenario -- so `save_model`'s :meta/* step
+        // (the last, easiest-to-miss step of the multi-step save) is non-empty
+        // and covered by the round-trip.
+        m.external_fns.insert(
+            "double".into(),
+            improv_core_model::ExternalFn {
+                name: "double".into(),
+                language: improv_core_model::Language::Pure,
+                body: "return args[0] * 2".into(),
+                arg_types: vec![ValueType::Number],
+                return_type: ValueType::Number,
+                pure: true,
+            },
+        );
+        m.external_calls.insert(
+            MeasureId(102),
+            improv_core_model::ExternalCall {
+                func: "double".into(),
+                arg_measures: vec![MeasureId(100)],
+                refresh_policy: improv_core_model::RefreshPolicy::Manual,
+            },
+        );
+        m.add_scenario(improv_core_model::Scenario {
+            id: improv_core_model::ScenarioId(1),
+            name: Name("High price".into()),
+            overrides: [(
+                (
+                    MeasureId(100),
+                    Coordinate::from_pairs([(product, ItemId(20))]),
+                ),
+                Value::Number(99.0),
+            )]
+            .into_iter()
+            .collect(),
+        });
         m
     }
 
@@ -449,5 +510,127 @@ mod tests {
         assert_eq!(v.axis_order, vec![CategoryId(2)]);
         assert!(v.allows(CategoryId(2), ItemId(20)));
         assert!(!v.allows(CategoryId(2), ItemId(21)));
+
+        // The :meta/* blob (external fns/calls + scenarios) survived too --
+        // this is the LAST step of `save_model` and the one most exposed by
+        // the old multi-transact-call bug this fix closes (see the atomicity
+        // test below).
+        assert_eq!(loaded.external_fns.len(), 1);
+        assert_eq!(
+            loaded.external_fns["double"],
+            original.external_fns["double"]
+        );
+        assert_eq!(loaded.external_calls.len(), 1);
+        assert_eq!(
+            loaded.external_calls[&MeasureId(102)],
+            original.external_calls[&MeasureId(102)]
+        );
+        assert_eq!(loaded.scenarios.len(), 1);
+        let scenario = loaded.scenario_by_name("High price").expect("scenario");
+        assert_eq!(
+            scenario.overrides.get(&(MeasureId(100), coord.clone())),
+            Some(&Value::Number(99.0))
+        );
+
+        // Full-model equality, modulo `measure.categories` / `category.items`
+        // vector order (cardinality-many refs come back from the store in
+        // query order, not necessarily insertion order): normalize those
+        // before comparing so the assertion isn't flaky while still checking
+        // every field of every entity.
+        assert_eq!(sort_vecs(loaded), sort_vecs(original));
+    }
+
+    /// Prove `save_model`'s atomicity: a save that fails partway through must
+    /// not leave a mixed old/new state.
+    ///
+    /// Before this fix, `save_model` issued one `Store::transact` call per
+    /// step (categories, items, measures, cells, views, meta): six separate
+    /// SQLite transactions, each committing independently (confirmed by
+    /// reading `Store::transact` in `../mentat/src/store.rs`, which opens and
+    /// commits its own `InProgress` per call -- see also
+    /// `AGENT_DATABASE_CONNECTIVITY.md` "Crash safety"). A crash or error
+    /// between two of those steps left the earlier steps durably committed
+    /// and the later ones missing or stale: a real "atomic saves" gap per
+    /// IMPROV.txt.
+    ///
+    /// After the fix, all six steps run through ONE `InProgress` (one open
+    /// SQLite transaction, via `Store::begin_transaction`) and a single
+    /// trailing `ip.commit()`. If any step's `?` returns early, the
+    /// `InProgress` (and its inner `rusqlite::Transaction`) is dropped
+    /// without being committed; `rusqlite::Transaction`'s `Drop` rolls the
+    /// whole SQLite transaction back (default `DropBehavior::Rollback`), so
+    /// nothing from a failed save -- not even its earlier steps -- reaches
+    /// disk/the in-memory DB.
+    ///
+    /// To manufacture a real, publicly-reachable transact failure we set an
+    /// input cell to `Value::Number(f64::NAN)`: Rust's `f64` `Display` prints
+    /// `NaN` as the bare (unquoted) EDN token `NaN`, which Mentat's
+    /// `:db.type/double` typechecking rejects with `BadValuePair` (verified
+    /// directly against `../mentat`: `store.transact("[{:cell/value-number
+    /// NaN}]")` fails). This is a real, reachable failure -- e.g. a formula
+    /// producing `0.0/0.0` fed back in as an input -- not a contrived path.
+    #[test]
+    fn save_partway_failure_does_not_leave_a_partial_write() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let m1 = sample_model();
+        store.save_model(&m1).expect("save m1");
+
+        // M2: a modification of M1 that touches every step BEFORE the failing
+        // `cells` step (a new category+item, a renamed measure) plus the
+        // failing cell itself, and would ALSO touch steps after `cells` (a
+        // new view, a new scenario) were the transact ever to get that far.
+        // If atomicity holds, NONE of these changes appear after the failed
+        // save -- not even the ones from steps that would have run first.
+        let mut m2 = m1.clone();
+        let extra_cat = CategoryId(3);
+        m2.add_category(extra_cat, "Region");
+        m2.add_item(ItemId(30), extra_cat, "EMEA");
+        m2.measures.get_mut(&MeasureId(100)).unwrap().name = Name("Price (changed)".into());
+        m2.set_input(
+            MeasureId(100),
+            Coordinate::from_pairs([(CategoryId(2), ItemId(20))]),
+            Value::Number(f64::NAN),
+        );
+        m2.add_view(improv_core_model::View {
+            id: improv_core_model::ViewId(2),
+            name: Name("Should never persist".into()),
+            measure: MeasureId(100),
+            axis_order: vec![],
+            n_rows: 1,
+            n_cols: 1,
+            page_items: vec![],
+            filters: vec![],
+        });
+        m2.add_scenario(improv_core_model::Scenario {
+            id: improv_core_model::ScenarioId(2),
+            name: Name("Should also never persist".into()),
+            overrides: HashMap::new(),
+        });
+
+        let err = store
+            .save_model(&m2)
+            .expect_err("NaN cell must fail to transact");
+        assert!(
+            matches!(err, StoreError::Mentat(_)),
+            "expected a Mentat transact error, got {err:?}"
+        );
+
+        // The store must be exactly M1 -- none of M2's changes, including the
+        // ones from steps that ran before the failing `cells` step, survived.
+        let after = store.load_model().expect("load after failed save");
+        assert_eq!(sort_vecs(after), sort_vecs(m1));
+    }
+
+    /// Sort the order-insensitive `Vec` fields (`measure.categories`,
+    /// `category.items`) so two models differing only in that ordering
+    /// compare equal.
+    fn sort_vecs(mut m: Model) -> Model {
+        for c in m.categories.values_mut() {
+            c.items.sort();
+        }
+        for measure in m.measures.values_mut() {
+            measure.categories.sort();
+        }
+        m
     }
 }
