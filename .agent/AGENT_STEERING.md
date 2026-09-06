@@ -221,10 +221,14 @@ than table-stakes usability. The plan now re-orders toward what makes people
      walking off a UTF-8 boundary), and an unbounded-recursion stack overflow
      on deeply-nested parens (now bounded by `MAX_PARSE_DEPTH`). This validates
      the whole point of Phase C.
-  2. **extfn OS-level sandbox: NOT YET DONE** — the first attempt died with 0
-     tool uses (concurrency/connection failure), no changes landed; still
-     needed. Today's isolation is subprocess + timeout only, not a real
-     security boundary for untrusted bodies.
+  2. **extfn OS-level sandbox: DONE.** `extfn::sandbox::{SandboxPolicy,apply}`:
+     on Linux, wraps subprocess runtimes in `bwrap` (read-only root, no
+     network/IPC/UTS namespace, fresh tmpfs `/tmp`) when available, plus
+     `setrlimit` (CPU/address-space/FDs/procs) always; macOS gets the rlimits;
+     Windows is a documented no-op (timeout only). Fail-open by design
+     (never breaks functionality if bwrap/rlimits are unavailable) — a
+     best-effort boundary, not a hard guarantee (upgrade path: require
+     bwrap/gVisor). `ExternalFn.pure` maps to `Restricted` by default.
 - **Phase D — reach (after A–C):** a plugin architecture for import/export
   formats and automation; out-of-core storage for billion-cell scale (current
   verified ceiling is ~1M cells in-memory); GUI import/export wizards; a hosted

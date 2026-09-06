@@ -16,6 +16,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   shows a failed parse's error position inline, via a pure
   `formula_highlight::scan`/`highlight_formula`.
 - **Formula-parser fuzz target** (`fuzz/fuzz_targets/fuzz_formula_parser.rs`).
+- **extfn OS-level sandbox**: subprocess runtimes (Python/R/Julia/Pure) now run
+  under `bwrap` (namespace isolation) when available plus OS resource limits
+  (CPU/memory/FDs/procs) always, fail-open by design; WASM was already
+  sandboxed by construction (`wasmi`, no host imports).
 
 ### Fixed
 
