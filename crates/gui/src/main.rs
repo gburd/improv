@@ -7,6 +7,7 @@
 
 mod app;
 mod chart;
+mod formula_highlight;
 mod theme;
 
 use app::ImprovApp;

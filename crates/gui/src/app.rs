@@ -43,6 +43,14 @@ pub struct ImprovApp {
     /// The measure whose formula `formula_buf` currently holds (so we reload
     /// the buffer when the selection changes).
     formula_for: Option<MeasureId>,
+    /// The byte offset of the last `commit_formula` parse error, if any (for
+    /// the formula bar's inline red-underline highlight + error label). Set on
+    /// a failed commit; cleared on a successful commit or when the buffer is
+    /// edited again.
+    formula_error_pos: Option<usize>,
+    /// The message of the last `commit_formula` parse error, shown directly
+    /// under the formula bar. Cleared alongside `formula_error_pos`.
+    formula_error_msg: String,
     /// New-derived-measure form: name + formula text.
     new_name: String,
     new_formula: String,
@@ -115,6 +123,8 @@ impl ImprovApp {
             edit_buf: String::new(),
             formula_buf: String::new(),
             formula_for: None,
+            formula_error_pos: None,
+            formula_error_msg: String::new(),
             new_name: String::new(),
             new_formula: String::new(),
             axis_order,
@@ -662,9 +672,18 @@ impl ImprovApp {
     /// Parse `text` as the RHS expression for an existing measure and make it
     /// derived (replacing any prior formula/input kind). Rebuilds the engine
     /// (structure changed), refreshes the snapshot, and autosaves. On parse
-    /// error the model is left unchanged and the error is returned.
+    /// error the model is left unchanged, `formula_error_pos`/`formula_error_msg`
+    /// are set (for the formula bar's inline highlight), and the error is
+    /// returned. On success those fields are cleared.
     pub fn commit_formula(&mut self, measure: MeasureId, text: &str) -> Result<(), String> {
-        let formula = parser::parse_expr(&self.model, text).map_err(|e| e.to_string())?;
+        let formula = match parser::parse_expr(&self.model, text) {
+            Ok(f) => f,
+            Err(e) => {
+                self.formula_error_pos = e.position;
+                self.formula_error_msg = e.to_string();
+                return Err(e.to_string());
+            }
+        };
         let m = self
             .model
             .measures
@@ -673,6 +692,8 @@ impl ImprovApp {
         m.kind = MeasureKind::Derived(formula);
         self.rebuild_engine();
         self.save();
+        self.formula_error_pos = None;
+        self.formula_error_msg.clear();
         Ok(())
     }
 
@@ -1055,7 +1076,8 @@ impl ImprovApp {
     /// measures show a hint. Committing re-typechecks and rebuilds the engine.
     fn formula_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("formula_bar").show(ctx, |ui| {
-            // Reload the buffer when the selection changes.
+            // Reload the buffer when the selection changes, clearing any
+            // stale inline error from the previously selected measure.
             if self.formula_for != self.selected {
                 self.formula_for = self.selected;
                 self.formula_buf = self
@@ -1068,17 +1090,37 @@ impl ImprovApp {
                         MeasureKind::Input => None,
                     })
                     .unwrap_or_default();
+                self.formula_error_pos = None;
+                self.formula_error_msg.clear();
             }
             ui.horizontal(|ui| match self.selected {
                 Some(mid)
                     if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) =>
                 {
                     ui.strong(format!("{} =", self.model.measures[&mid].name.0));
+                    let error_pos = self.formula_error_pos;
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+                        let mut job = crate::formula_highlight::highlight_formula(
+                            text,
+                            font.clone(),
+                            error_pos,
+                        );
+                        job.wrap.max_width = wrap_width;
+                        ui.fonts(|f| f.layout_job(job))
+                    };
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut self.formula_buf)
                             .desired_width(f32::INFINITY)
-                            .hint_text("e.g. Price * Quantity"),
+                            .hint_text("e.g. Price * Quantity")
+                            .layouter(&mut layouter),
                     );
+                    if resp.changed() {
+                        // The user edited the buffer: the previous error no
+                        // longer describes what's on screen.
+                        self.formula_error_pos = None;
+                        self.formula_error_msg.clear();
+                    }
                     let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if ui.button("Commit").clicked() || enter {
                         let text = self.formula_buf.clone();
@@ -1096,6 +1138,14 @@ impl ImprovApp {
                     ui.weak("No measure selected.");
                 }
             });
+            // Inline error label directly under the formula bar (in addition
+            // to the general status line), cleared alongside the highlight.
+            if !self.formula_error_msg.is_empty() {
+                ui.colored_label(
+                    crate::formula_highlight::ERROR_COLOR,
+                    format!("⚠ {}", self.formula_error_msg),
+                );
+            }
         });
     }
 
@@ -1886,6 +1936,35 @@ mod tests {
     }
 
     #[test]
+    fn commit_formula_error_sets_and_clears_error_pos() {
+        let mut app = build_app(revenue_model());
+        assert_eq!(app.formula_error_pos, None);
+
+        // A failing commit records the parser's reported byte offset.
+        let text = "Price * Widgets";
+        let err = app.commit_formula(MeasureId(102), text).unwrap_err();
+        let expected_pos = parser::parse_expr(&app.model, text).unwrap_err().position;
+        assert!(expected_pos.is_some());
+        assert_eq!(app.formula_error_pos, expected_pos);
+        assert!(!app.formula_error_msg.is_empty());
+        assert!(err.contains("Widgets") || err.contains("measure"));
+
+        // Clearing the error (what the formula bar does when the buffer is
+        // edited again) resets both fields.
+        app.formula_error_pos = None;
+        app.formula_error_msg.clear();
+        assert_eq!(app.formula_error_pos, None);
+
+        // A successful commit clears any leftover error state too.
+        app.formula_error_pos = Some(999);
+        app.formula_error_msg = "stale".into();
+        app.commit_formula(MeasureId(102), "Price + Quantity")
+            .expect("commit");
+        assert_eq!(app.formula_error_pos, None);
+        assert!(app.formula_error_msg.is_empty());
+    }
+
+    #[test]
     fn bad_add_derived_leaves_model_unchanged() {
         let mut app = build_app(revenue_model());
         let before = app.model.clone();
@@ -1937,6 +2016,8 @@ mod tests {
             edit_buf: String::new(),
             formula_buf: String::new(),
             formula_for: None,
+            formula_error_pos: None,
+            formula_error_msg: String::new(),
             new_name: String::new(),
             new_formula: String::new(),
             axis_order,
