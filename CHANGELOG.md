@@ -6,6 +6,29 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **CSV/TSV import/export** (`improv_storage_csv`): the baseline data on-ramp
+  named in IMPROV.txt, previously missing. CLI `import-csv`/`export-csv`
+  mirror `import-sql`/`export-sql`'s column-to-dimension mapping syntax.
+- **GUI formula syntax highlighting + inline error display**: the formula bar
+  highlights identifiers/functions/numbers/strings/date-literals/operators and
+  shows a failed parse's error position inline, via a pure
+  `formula_highlight::scan`/`highlight_formula`.
+- **Formula-parser fuzz target** (`fuzz/fuzz_targets/fuzz_formula_parser.rs`).
+
+### Fixed
+
+- **Parser panic on multi-byte UTF-8** (found by the new fuzz target /
+  adversarial-input test): the tokenizer cast a raw byte to `char` and could
+  walk off a UTF-8 character boundary. Now decodes real characters.
+- **Parser stack overflow on deeply-nested parentheses** (a real DoS on
+  attacker-controlled formula text): recursive descent now bounds nesting
+  depth (`MAX_PARSE_DEPTH`) and errors cleanly instead of overflowing.
+- **CI/local gate scoping**: `cargo fmt`/`cargo clippy` now target our 11
+  crates explicitly; `--all`/`--workspace` could reach the vendored Mentat
+  path dependency and, transitively, whatever it depends on.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added

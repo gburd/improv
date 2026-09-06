@@ -196,23 +196,33 @@ a scheduler daemon, a NeXTSTEP-styled GUI with stacking/virtualization) faster
 than table-stakes usability. The plan now re-orders toward what makes people
 *trust and adopt* the tool, in phases:
 
-- **Phase A — credibility gaps (NEXT):**
-  1. **CSV/TSV import/export** (`storage_csv` or an extension of
-     `storage_sql`) — the baseline on-ramp named in IMPROV.txt, still missing.
-     CLI `import-csv`/`export-csv`; GUI/TUI wiring follows.
-  2. **Crash-safety**: verify + document the autosave/save durability story
-     (kill mid-write, reload, no corruption) with a regression test.
-  3. **Honest GUI L&F labeling**: the current NeXTSTEP theme/margin-tiles/tool
-     palette is a good-faith, *inspired-by* rebuild from general knowledge —
-     it has never been verified against real Lotus Improv 3.0 / Quantrix
-     Modeler screenshots or video. Docs must say "NeXTSTEP-inspired," not
-     "identical," until a real side-by-side happens.
-- **Phase B — formula editor UX:** syntax highlighting + inline error display
-  in the GUI formula bar (autocomplete follows once highlighting lands).
-- **Phase C — harden what exists:** a fuzz target for the formula parser
-  itself (coord codec / model JSON / CNL are already fuzzed); an extfn
-  OS-level sandbox (seccomp/namespaces) — today's isolation is subprocess +
-  timeout only, not a real security boundary for untrusted bodies.
+- **Phase A — credibility gaps:**
+  1. **CSV/TSV import/export: DONE.** `improv_storage_csv` (`import_csv`/
+     `export_measure_csv`, mirroring storage_sql's ImportSpec shape); CLI
+     `import-csv`/`export-csv`. GUI/TUI wiring still open.
+  2. **Crash-safety: NOT YET DONE** — the first attempt at this task failed
+     (agent connection error, no changes landed); still needs verifying +
+     documenting the autosave/save durability story (kill mid-write, reload,
+     no corruption) with a regression test.
+  3. **Honest GUI L&F labeling: DONE.** README/steering now say
+     "NeXTSTEP-inspired, unverified" rather than implying parity with real
+     Lotus Improv 3.0 / Quantrix Modeler (see §6.5 in
+     `.agent/steering/AGENT_GUI_STEERING.md`).
+- **Phase B — formula editor UX: DONE.** Syntax highlighting (identifiers,
+  functions, numbers, strings, date literals, operators) + inline error
+  position highlighting in the GUI formula bar, via a pure
+  `gui::formula_highlight::scan`/`highlight_formula`.
+- **Phase C — harden what exists:**
+  1. **Formula-parser fuzz target: DONE**
+     (`fuzz/fuzz_targets/fuzz_formula_parser.rs`) — and it found two real bugs,
+     both fixed: a tokenizer panic on multi-byte UTF-8 (byte-cast-to-`char`
+     walking off a UTF-8 boundary), and an unbounded-recursion stack overflow
+     on deeply-nested parens (now bounded by `MAX_PARSE_DEPTH`). This validates
+     the whole point of Phase C.
+  2. **extfn OS-level sandbox: NOT YET DONE** — the first attempt died with 0
+     tool uses (concurrency/connection failure), no changes landed; still
+     needed. Today's isolation is subprocess + timeout only, not a real
+     security boundary for untrusted bodies.
 - **Phase D — reach (after A–C):** a plugin architecture for import/export
   formats and automation; out-of-core storage for billion-cell scale (current
   verified ceiling is ~1M cells in-memory); GUI import/export wizards; a hosted
