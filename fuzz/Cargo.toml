@@ -39,3 +39,10 @@ path = "fuzz_targets/fuzz_coord_codec.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_formula_parser"
+path = "fuzz_targets/fuzz_formula_parser.rs"
+test = false
+doc = false
+bench = false

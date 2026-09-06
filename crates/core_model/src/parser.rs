@@ -184,9 +184,17 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
     let mut i = 0;
     while i < bytes.len() {
         let start = i;
-        let c = bytes[i] as char;
+        // Decode the real character at this byte offset. `bytes[i] as char`
+        // (the previous approach) casts a single BYTE, which is wrong for any
+        // multi-byte UTF-8 sequence and can walk `i` to a non-boundary offset,
+        // panicking on the eventual `text[..i]` slice. `text` is valid UTF-8
+        // (it's a `&str`), so decoding at a boundary we maintain never fails.
+        let c = text[i..]
+            .chars()
+            .next()
+            .expect("i < len implies a char here");
         match c {
-            c if c.is_whitespace() => i += 1,
+            c if c.is_whitespace() => i += c.len_utf8(),
             '"' => {
                 // String literal: consume to the closing quote (no escapes in v1).
                 i += 1;
@@ -238,11 +246,14 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 });
             }
             c if c.is_alphabetic() || c == '_' => {
-                while i < bytes.len() && {
-                    let b = bytes[i] as char;
-                    b.is_alphanumeric() || b == '_'
-                } {
-                    i += 1;
+                i += c.len_utf8();
+                while i < bytes.len() {
+                    let b = text[i..].chars().next().expect("i < len");
+                    if b.is_alphanumeric() || b == '_' {
+                        i += b.len_utf8();
+                    } else {
+                        break;
+                    }
                 }
                 out.push(Spanned {
                     tok: Tok::Ident(text[start..i].to_string()),
@@ -265,7 +276,7 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                                 Some(start),
                             ));
                         }
-                        i += 1;
+                        i += c.len_utf8();
                         c.to_string()
                     }
                 };
@@ -287,7 +298,15 @@ struct Parser<'a> {
     toks: &'a [Spanned],
     pos: usize,
     model: &'a Model,
+    /// Current recursive-descent nesting depth (parens / unary chains).
+    /// Bounded so adversarial input (e.g. thousands of nested `(`) errors
+    /// cleanly instead of overflowing the stack.
+    depth: usize,
 }
+
+/// Maximum recursive-descent nesting depth for a single formula. Generous for
+/// any real formula; small enough to never approach the stack limit.
+const MAX_PARSE_DEPTH: usize = 200;
 
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<&Tok> {
@@ -445,6 +464,17 @@ impl<'a> Parser<'a> {
     /// Primary = Literal | Aggregation | MeasureRef | "(" Expression ")"
     ///         | ("-"|"NOT") Primary
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(self.err("expression nested too deeply"));
+        }
+        let result = self.parse_primary_inner();
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_primary_inner(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             None => Err(self.err("unexpected end of input")),
             Some(Tok::Op(o)) if o == "-" => {
@@ -640,6 +670,7 @@ pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseErro
         toks: &toks[rhs_start..],
         pos: 0,
         model,
+        depth: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
@@ -713,6 +744,7 @@ pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseEr
         toks: &toks[rhs..],
         pos: 0,
         model,
+        depth: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
@@ -821,6 +853,7 @@ pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
         toks: &toks,
         pos: 0,
         model,
+        depth: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
@@ -1176,5 +1209,81 @@ mod tests {
         // (they are not builtins). This keeps source forms off the engine path.
         let m = fixture();
         assert!(parse_definition(&m, "X = Price + SQL(\"q\")").is_err());
+    }
+
+    #[test]
+    fn adversarial_inputs_never_panic() {
+        // Manual fallback for fuzz/fuzz_targets/fuzz_formula_parser.rs (which
+        // needs a nightly toolchain + cargo-fuzz to actually run under
+        // libFuzzer): feed a batch of hand-picked adversarial strings through
+        // all three parser entry points and assert none of them panics. An
+        // Ok or an Err are both fine outcomes; a panic is the only failure.
+        let m = fixture();
+        let mut inputs: Vec<String> = [
+            "",
+            "   \t\n  ",
+            "((((((((((((((((((((((((((((((((",
+            "\"unterminated",
+            "#2025-01-01", // unterminated date literal
+            "#not-a-date#",
+            "999999999999999999999999999999999999999999999999",
+            "1e999999999999999999999999999999",
+            "+++++---***///",
+            "CALL(",
+            "CALL(f,)",
+            "CALL(f, ,)",
+            "SQL(",
+            "SQL(\"\")",
+            "SQL(1)",
+            "\u{0}\u{0}\u{0}",
+            "\u{1F4A9}\u{1F4A9}\u{1F4A9}", // multi-byte UTF-8 (emoji)
+            "Price[Product",
+            "Price[,,,]",
+            "SUM(Price OVER)",
+            "SUM(Price OVER Product OVER Time)",
+            "=",
+            "X = = =",
+            "X=",
+            "X = CALL(CALL(CALL(CALL(f))))",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        inputs.push("a".repeat(10_000));
+        inputs.push("(".repeat(5_000));
+        for s in &inputs {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = parse_expr(&m, s);
+                let _ = parse_formula(&m, s);
+                let _ = parse_definition(&m, s);
+            }))
+            .unwrap_or_else(|e| panic!("parser panicked on input {s:?}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn multi_byte_utf8_does_not_panic_the_tokenizer() {
+        // Regression: the tokenizer used to cast a raw BYTE to `char` and step
+        // one byte at a time, slicing off a UTF-8 character boundary on any
+        // multi-byte input (found via the adversarial-input sweep above with
+        // an emoji). Multi-byte identifiers/whitespace/unknown chars must all
+        // either tokenize or error cleanly — never panic.
+        let m = fixture();
+        assert!(parse_expr(&m, "\u{1F4A9}\u{1F4A9}\u{1F4A9}").is_err()); // unknown char, not a crash
+                                                                         // A multi-byte char inside what would otherwise be an identifier.
+        let _ = parse_expr(&m, "Price\u{00e9}"); // must not panic either way
+    }
+
+    #[test]
+    fn deeply_nested_parens_error_instead_of_overflowing_the_stack() {
+        // Regression: recursive-descent `parse_primary` recursed once per '(',
+        // so thousands of nested opens overflowed the stack (found via the
+        // adversarial-input sweep). A bounded depth now errors cleanly.
+        let m = fixture();
+        let deep = "(".repeat(5_000);
+        assert!(parse_expr(&m, &deep).is_err());
+        // A reasonable nesting depth still works fine.
+        let reasonable = format!("{}Price{}", "(".repeat(50), ")".repeat(50));
+        assert!(parse_expr(&m, &reasonable).is_ok());
     }
 }
