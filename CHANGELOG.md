@@ -19,6 +19,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Non-atomic model saves** (crash-safety): `save_model` transacted the
+  model in up to 6 separate SQLite transactions; a crash between them left a
+  partial save. Now one `InProgress`, one commit — all-or-nothing.
 - **Parser panic on multi-byte UTF-8** (found by the new fuzz target /
   adversarial-input test): the tokenizer cast a raw byte to `char` and could
   walk off a UTF-8 character boundary. Now decodes real characters.

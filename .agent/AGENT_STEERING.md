@@ -200,10 +200,12 @@ than table-stakes usability. The plan now re-orders toward what makes people
   1. **CSV/TSV import/export: DONE.** `improv_storage_csv` (`import_csv`/
      `export_measure_csv`, mirroring storage_sql's ImportSpec shape); CLI
      `import-csv`/`export-csv`. GUI/TUI wiring still open.
-  2. **Crash-safety: NOT YET DONE** — the first attempt at this task failed
-     (agent connection error, no changes landed); still needs verifying +
-     documenting the autosave/save durability story (kill mid-write, reload,
-     no corruption) with a regression test.
+  2. **Crash-safety: DONE.** `save_model` used to transact the model in up to
+     6 separate SQLite transactions (a crash between them left a partial
+     save); it now opens ONE `InProgress` and commits once, so a save is
+     all-or-nothing. Proven by a regression test that forces a genuine
+     mid-save failure and asserts nothing leaks through. See
+     `.agent/steering/AGENT_DATABASE_CONNECTIVITY.md` §9.
   3. **Honest GUI L&F labeling: DONE.** README/steering now say
      "NeXTSTEP-inspired, unverified" rather than implying parity with real
      Lotus Improv 3.0 / Quantrix Modeler (see §6.5 in
