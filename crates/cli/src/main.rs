@@ -108,6 +108,18 @@ COMMANDS:
         Write a measure's input cells to a SQLite table (one column per
         dimension category + the value column; created if absent).
 
+    import-csv <db> <file.csv> <measure-id> <measure-name> <value-col> \
+               <dim-col:cat-id:cat-name> [<dim-col:cat-id:cat-name> ...] \
+               [--tsv] [--no-header]
+        Import a CSV/TSV file into a new input measure. Columns are header
+        names by default (0-based indices with --no-header). Delimiter is
+        comma unless --tsv is given or the file ends in .tsv. Example:
+        import-csv m.db sales.csv 100 Revenue r t:1:Time p:2:Product
+
+    export-csv <db> <target.csv> <measure-id> [--tsv]
+        Write a measure's input cells to a CSV/TSV file (one column per
+        dimension category + the value column, header row first).
+
     help | --help
         Show this help.
 ";
@@ -147,6 +159,8 @@ fn run(args: &[String]) -> Result<(), String> {
         "refresh-all" => cmd_refresh_all(rest),
         "serve-refresh" => cmd_serve_refresh(rest),
         "export-sql" => cmd_export_sql(rest),
+        "import-csv" => cmd_import_csv(rest),
+        "export-csv" => cmd_export_csv(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
@@ -865,6 +879,99 @@ fn cmd_export_sql(rest: &[String]) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!(
         "exported {n} cells from measure {} to table '{table}'",
+        measure_id.0
+    );
+    Ok(())
+}
+
+/// `import-csv <db> <file.csv> <measure-id> <measure-name> <value-col> \
+///     <dim-col:cat-id:cat-name> [...] [--tsv] [--no-header]`
+/// Mirrors import-sql's dimension-mapping syntax. `<value-col>`/`<dim-col>` are
+/// header names by default (or 0-based indices with `--no-header`). Delimiter
+/// is comma unless `--tsv` is given or the file ends in `.tsv`.
+fn cmd_import_csv(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let path = arg(rest, 1, "file.csv")?;
+    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+    let measure_name = arg(rest, 3, "measure-name")?.to_string();
+    let value_col = arg(rest, 4, "value-col")?;
+
+    let has_header = !rest.iter().any(|a| a == "--no-header");
+    let tsv = rest.iter().any(|a| a == "--tsv") || path.ends_with(".tsv");
+    let delimiter = if tsv { b'\t' } else { b',' };
+    let col_ref = |s: &str| -> improv_storage_csv::ColumnRef {
+        if has_header {
+            improv_storage_csv::ColumnRef::Name(s.to_string())
+        } else {
+            s.parse::<usize>()
+                .map(improv_storage_csv::ColumnRef::Index)
+                .unwrap_or_else(|_| improv_storage_csv::ColumnRef::Name(s.to_string()))
+        }
+    };
+
+    let mut dimensions = Vec::new();
+    for spec in &rest[5.min(rest.len())..] {
+        if spec.starts_with("--") {
+            continue;
+        }
+        let parts: Vec<&str> = spec.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "dimension spec '{spec}' must be <col>:<cat-id>:<cat-name>"
+            ));
+        }
+        dimensions.push(improv_storage_csv::DimensionMapping {
+            column: col_ref(parts[0]),
+            category_id: CategoryId(parse_u32(parts[1], "cat-id")?),
+            category_name: parts[2].to_string(),
+        });
+    }
+    if dimensions.is_empty() {
+        return Err("at least one dimension mapping is required".into());
+    }
+
+    let spec = improv_storage_csv::ImportSpec {
+        path: path.into(),
+        delimiter,
+        has_header,
+        measure_id,
+        measure_name: measure_name.clone(),
+        value_type: ValueType::Number,
+        value_column: col_ref(value_col),
+        dimensions,
+        item_id_base: 1_000_000,
+    };
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let n = improv_storage_csv::import_csv(&mut model, &spec).map_err(|e| e.to_string())?;
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!(
+        "imported {n} cells into measure {} '{measure_name}'",
+        measure_id.0
+    );
+    Ok(())
+}
+
+/// `export-csv <db> <target.csv> <measure-id> [--tsv]`
+fn cmd_export_csv(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let target = arg(rest, 1, "target.csv")?;
+    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+    let tsv = rest.iter().any(|a| a == "--tsv") || target.ends_with(".tsv");
+    let delimiter = if tsv { b'\t' } else { b',' };
+
+    let mut store = open(db)?;
+    let model = store.load_model().map_err(|e| e.to_string())?;
+    let n = improv_storage_csv::export_measure_csv(
+        &model,
+        measure_id,
+        std::path::Path::new(target),
+        delimiter,
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "exported {n} rows from measure {} to {target}",
         measure_id.0
     );
     Ok(())

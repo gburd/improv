@@ -12,6 +12,7 @@ path = "src/main.rs"
 improv_core_model = { path = "../core_model" }
 improv_storage_mentat = { path = "../storage_mentat" }
 improv_storage_sql = { path = "../storage_sql" }
+improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }
 thiserror.workspace = true
 serde_json.workspace = true

@@ -4,6 +4,7 @@ members = [
     "crates/core_model",
     "crates/storage_mentat",
     "crates/storage_sql",
+    "crates/storage_csv",
     "crates/engine",
     "crates/cli",
     "crates/nl_formula",
