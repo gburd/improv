@@ -249,8 +249,12 @@ Routes: `/health`, `/model`, `/measures`, `/measures/:id/{values,eval,cells}`,
 See [`CONTRIBUTING.md`](CONTRIBUTING.md). The quality gate (all warning-free):
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+# fmt/clippy are scoped to our 11 crates: cargo --all/--workspace would also
+# walk the vendored Mentat path dependency (../mentat) and, transitively,
+# whatever IT depends on.
+IMPROV_CRATES=$(ls crates | sed 's/^/-p improv_/')
+cargo fmt $IMPROV_CRATES -- --check
+cargo clippy $IMPROV_CRATES --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo deny check
 typos

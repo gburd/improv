@@ -46,9 +46,13 @@ is tool-generated, local, and gitignored — not part of the steering set.)
 
 The full "tidy" gate — all must be error- AND warning-free:
 
-1. `cargo fmt --all -- --check` (rustfmt, config in `rustfmt.toml`)
-2. `cargo clippy --all-targets --all-features -- -D warnings` (config in
-   `clippy.toml`)
+1. `cargo fmt -p improv_<crate> ... -- --check` for every crate under
+   `crates/` (rustfmt, config in `rustfmt.toml`). Scope to our crates, not
+   `--all` — `--all` also walks the vendored Mentat path dependency
+   (`../mentat`) and, transitively, whatever IT depends on.
+2. `cargo clippy -p improv_<crate> ... --all-targets --all-features -- -D
+   warnings` (config in `clippy.toml`), same per-crate scoping (the vendored
+   Mentat dep emits its own upstream warnings that must not fail our gate).
 3. `cargo test --workspace` (all suites green)
 4. `cargo deny check` (licenses, advisories, bans — config in `deny.toml`)
 5. `typos` (spell-check code + docs)

@@ -33,7 +33,24 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - run: cargo fmt --all -- --check
+      # Format only the Improv workspace crates: `cargo fmt --all` would also
+      # walk the vendored Mentat path dependency (and, transitively, whatever
+      # IT path-depends on) if it happens to be checked out alongside this
+      # repo, which is not part of our gate.
+      - run: >
+          cargo fmt
+          -p improv_core_model
+          -p improv_storage_mentat
+          -p improv_storage_sql
+          -p improv_storage_csv
+          -p improv_engine
+          -p improv_extfn
+          -p improv_nl_formula
+          -p improv_cli
+          -p improv_tui
+          -p improv_server
+          -p improv_gui
+          -- --check
 
   clippy:
     name: Clippy
@@ -59,9 +76,15 @@ jobs:
           cargo clippy
           -p improv_core_model
           -p improv_storage_mentat
+          -p improv_storage_sql
+          -p improv_storage_csv
           -p improv_engine
+          -p improv_extfn
           -p improv_nl_formula
           -p improv_cli
+          -p improv_tui
+          -p improv_server
+          -p improv_gui
           --all-targets --all-features -- -D warnings
 
   typos:

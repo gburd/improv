@@ -9,8 +9,12 @@ conventions.
 Every commit keeps the tree green. Run the full gate locally:
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+# fmt/clippy target only our 11 crates (not `--all`/`--workspace`): that would
+# also walk the vendored Mentat path dependency (../mentat) and, transitively,
+# whatever it depends on.
+IMPROV_CRATES=$(ls crates | sed 's/^/-p improv_/')
+cargo fmt $IMPROV_CRATES -- --check
+cargo clippy $IMPROV_CRATES --all-targets --all-features -- -D warnings
 cargo test --workspace          # or: cargo nextest run --workspace
 cargo deny check
 typos

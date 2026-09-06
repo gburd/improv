@@ -36,16 +36,35 @@ jobs:
         run: rustup component add rustfmt clippy
       - name: Format
         working-directory: improv
-        run: cargo fmt --all -- --check
+        run: >
+          cargo fmt
+          -p improv_core_model
+          -p improv_storage_mentat
+          -p improv_storage_sql
+          -p improv_storage_csv
+          -p improv_engine
+          -p improv_extfn
+          -p improv_nl_formula
+          -p improv_cli
+          -p improv_tui
+          -p improv_server
+          -p improv_gui
+          -- --check
       - name: Clippy (workspace crates)
         working-directory: improv
         run: >
           cargo clippy
           -p improv_core_model
           -p improv_storage_mentat
+          -p improv_storage_sql
+          -p improv_storage_csv
           -p improv_engine
+          -p improv_extfn
           -p improv_nl_formula
           -p improv_cli
+          -p improv_tui
+          -p improv_server
+          -p improv_gui
           --all-targets --all-features -- -D warnings
       - name: Build
         working-directory: improv
