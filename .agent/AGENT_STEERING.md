@@ -188,3 +188,34 @@ Define categories/items/measures (input + formula); build a multidimensional
 pivot view; enter data and edit formulas; instant incremental recalculation on
 non-trivial models; save/reopen across Linux/macOS/Windows; deterministic,
 tested engine.
+
+## Post-v0.5.0 plan (re-prioritized toward credibility & usability)
+
+v0.5.0 delivered engine breadth (5 extfn languages, 3 SQL backends, scenarios,
+a scheduler daemon, a NeXTSTEP-styled GUI with stacking/virtualization) faster
+than table-stakes usability. The plan now re-orders toward what makes people
+*trust and adopt* the tool, in phases:
+
+- **Phase A — credibility gaps (NEXT):**
+  1. **CSV/TSV import/export** (`storage_csv` or an extension of
+     `storage_sql`) — the baseline on-ramp named in IMPROV.txt, still missing.
+     CLI `import-csv`/`export-csv`; GUI/TUI wiring follows.
+  2. **Crash-safety**: verify + document the autosave/save durability story
+     (kill mid-write, reload, no corruption) with a regression test.
+  3. **Honest GUI L&F labeling**: the current NeXTSTEP theme/margin-tiles/tool
+     palette is a good-faith, *inspired-by* rebuild from general knowledge —
+     it has never been verified against real Lotus Improv 3.0 / Quantrix
+     Modeler screenshots or video. Docs must say "NeXTSTEP-inspired," not
+     "identical," until a real side-by-side happens.
+- **Phase B — formula editor UX:** syntax highlighting + inline error display
+  in the GUI formula bar (autocomplete follows once highlighting lands).
+- **Phase C — harden what exists:** a fuzz target for the formula parser
+  itself (coord codec / model JSON / CNL are already fuzzed); an extfn
+  OS-level sandbox (seccomp/namespaces) — today's isolation is subprocess +
+  timeout only, not a real security boundary for untrusted bodies.
+- **Phase D — reach (after A–C):** a plugin architecture for import/export
+  formats and automation; out-of-core storage for billion-cell scale (current
+  verified ceiling is ~1M cells in-memory); GUI import/export wizards; a hosted
+  refresh-scheduler service.
+
+Phase status is tracked per-item above as it lands.

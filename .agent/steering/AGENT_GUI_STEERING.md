@@ -150,6 +150,15 @@ Modeler. Parity status (drives the plan):
 
 ### 6.5 NeXTSTEP look-and-feel (GUI)
 
+**Status: inspired-by, unverified — not a confirmed match.** The desktop GUI is
+built from general knowledge of the original NeXTSTEP Lotus Improv's
+description (gray desktop, beveled controls, drag-to-pivot category tiles), NOT
+from a side-by-side comparison against real screenshots or a recording of
+Improv 3.0 / Quantrix Modeler. Until that comparison happens, docs/README
+should say "NeXTSTEP-inspired," never "identical." A real comparison (a
+screenshot or video frame from the actual applications) is the fastest way to
+close this gap — see the Phase A item in `.agent/AGENT_STEERING.md`.
+
 The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
 
 - **NeXTSTEP theme** (`gui::theme::next_style`) — light neutral gray desktop,

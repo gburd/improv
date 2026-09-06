@@ -185,9 +185,11 @@ Time × Product.
 
 ## GUI (`improv-gui`)
 
-The egui/eframe desktop app in the NeXTSTEP-flavored look-and-feel of the
-original Lotus Improv — explorer, editable pivot grid, on-grid margin **category
-tiles** for drag-to-pivot, a top **formula bar**, inspector, saved views,
+The egui/eframe desktop app, styled in a NeXTSTEP-*inspired* look-and-feel
+(built from general knowledge of the original Lotus Improv, not a verified
+side-by-side comparison) — explorer, editable pivot grid, on-grid margin
+**category tiles** for drag-to-pivot, a top **formula bar**, inspector, saved
+views,
 per-category filters, a bar/line **chart**, and **multi-category-per-axis
 stacking**.
 
