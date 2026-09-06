@@ -11,6 +11,7 @@
 
 use crate::marshal::value_to_json;
 use crate::runner;
+use crate::sandbox;
 use crate::{ExtFnError, ExternalFn};
 use improv_core_model::Value;
 use serde_json::json;
@@ -48,7 +49,14 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
     .to_string();
     let prog = program(&f.body, &payload);
 
-    let out = runner::run_interpreter("python3", &["-I", "-S", "-"], &prog, timeout, "python")?;
+    let out = runner::run_interpreter(
+        "python3",
+        &["-I", "-S", "-"],
+        &prog,
+        timeout,
+        "python",
+        sandbox::policy_for(f.pure),
+    )?;
     runner::parse_envelope(&out.stdout, &out.stderr, f.return_type, "python")
 }
 

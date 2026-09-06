@@ -11,6 +11,7 @@
 
 use crate::marshal::value_to_json;
 use crate::runner;
+use crate::sandbox;
 use crate::{ExtFnError, ExternalFn};
 use improv_core_model::Value;
 use serde_json::json;
@@ -52,6 +53,7 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
         &prog,
         timeout,
         "julia",
+        sandbox::policy_for(f.pure),
     )?;
     runner::parse_envelope(&out.stdout, &out.stderr, f.return_type, "julia")
 }

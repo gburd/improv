@@ -10,6 +10,7 @@
 
 use crate::marshal::value_to_json;
 use crate::runner;
+use crate::sandbox;
 use crate::{ExtFnError, ExternalFn};
 use improv_core_model::Value;
 use serde_json::json;
@@ -47,7 +48,14 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
     .to_string();
     let prog = program(&f.body, &payload);
     // `--vanilla` = no site/user profiles, no saved workspace, no history.
-    let out = runner::run_interpreter("Rscript", &["--vanilla", "-"], &prog, timeout, "R")?;
+    let out = runner::run_interpreter(
+        "Rscript",
+        &["--vanilla", "-"],
+        &prog,
+        timeout,
+        "R",
+        sandbox::policy_for(f.pure),
+    )?;
     runner::parse_envelope(&out.stdout, &out.stderr, f.return_type, "R")
 }
 

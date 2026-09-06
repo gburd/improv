@@ -8,6 +8,7 @@
 //! it lives here as [`run_interpreter`]. The per-language modules only build the
 //! program string and parse the `{"ok":..}` / `{"error":..}` envelope.
 
+use crate::sandbox::SandboxPolicy;
 use crate::ExtFnError;
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -21,8 +22,9 @@ pub struct Output {
     pub stderr: String,
 }
 
-/// Spawn `cmd args`, write `program` to its stdin, and read stdout/stderr with a
-/// wall-clock timeout enforced by a killer thread (SIGKILL / taskkill).
+/// Spawn `cmd args` under `policy`'s OS sandbox (see the `sandbox` module),
+/// write `program` to its stdin, and read stdout/stderr with a wall-clock
+/// timeout enforced by a killer thread (SIGKILL / taskkill).
 ///
 /// `runtime_name` is used only for error messages. A spawn failure (interpreter
 /// not on PATH) maps to [`ExtFnError::LanguageUnavailable`] so `eval` never
@@ -33,12 +35,16 @@ pub fn run_interpreter(
     program: &str,
     timeout: Duration,
     runtime_name: &str,
+    policy: SandboxPolicy,
 ) -> Result<Output, ExtFnError> {
-    let mut child = Command::new(cmd)
-        .args(args)
+    let mut command = Command::new(cmd);
+    command.args(args);
+    let mut command = crate::sandbox::apply(command, policy);
+    command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
         .spawn()
         .map_err(|e| ExtFnError::LanguageUnavailable(format!("{runtime_name} ({cmd}): {e}")))?;
 

@@ -2554,6 +2554,7 @@ version = "0.5.0"
 dependencies = [
  "chrono",
  "improv_core_model",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.20",

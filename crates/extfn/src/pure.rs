@@ -14,6 +14,7 @@
 //! indexes it.
 
 use crate::runner;
+use crate::sandbox;
 use crate::{ExtFnError, ExternalFn};
 use improv_core_model::Value;
 use std::fmt::Write as _;
@@ -35,7 +36,14 @@ fn program(body: &str, args: &[Value]) -> Result<String, ExtFnError> {
 /// Run the function. Assumes arity/type checks already passed.
 pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, ExtFnError> {
     let prog = program(&f.body, args)?;
-    let out = runner::run_interpreter("pure", &["-q"], &prog, timeout, "pure")?;
+    let out = runner::run_interpreter(
+        "pure",
+        &["-q"],
+        &prog,
+        timeout,
+        "pure",
+        sandbox::policy_for(f.pure),
+    )?;
     runner::parse_envelope(&out.stdout, &out.stderr, f.return_type, "pure")
 }
 
