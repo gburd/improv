@@ -2624,6 +2624,7 @@ name = "improv_storage_mentat"
 version = "0.5.0"
 dependencies = [
  "improv_core_model",
+ "improv_engine",
  "mentat",
  "serde",
  "serde_json",
