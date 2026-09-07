@@ -122,6 +122,18 @@ COMMANDS:
 
     help | --help
         Show this help.
+
+    stream <db> <target-measure> [<target-measure> ...]
+        Read input-cell edits from stdin, one per line:
+          <measure> <value> [Cat=Item,Cat=Item,...]
+        (<measure> is a numeric id or a name; the coordinate is omitted for a
+        scalar measure). Each line applies incrementally to a live engine
+        (a delta, not a full re-evaluation), and every changed cell of the
+        target measure(s) prints to stdout as:
+          <measure> <Cat=Item,...> = <value>
+        A malformed line is reported on stderr and skipped, not fatal. On EOF
+        the final state is saved back to <db>. Example:
+          printf 'Price 12 Product=WidgetA\n' | improv stream m.db Revenue
 ";
 
 fn main() {
@@ -161,6 +173,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "export-sql" => cmd_export_sql(rest),
         "import-csv" => cmd_import_csv(rest),
         "export-csv" => cmd_export_csv(rest),
+        "stream" => cmd_stream(rest),
         other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
 }
@@ -718,6 +731,150 @@ fn cmd_export(rest: &[String]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?;
     println!("{json}");
     Ok(())
+}
+
+/// Resolve a measure argument that may be a numeric id or a measure name.
+fn resolve_measure(model: &Model, s: &str) -> Result<MeasureId, String> {
+    if let Ok(n) = s.parse::<u32>() {
+        let mid = MeasureId(n);
+        if model.measures.contains_key(&mid) {
+            return Ok(mid);
+        }
+    }
+    model
+        .measure_by_name(s)
+        .map(|m| m.id)
+        .ok_or_else(|| format!("no measure named or numbered '{s}'"))
+}
+
+/// `stream <db> <target-measure> [<target-measure> ...]`
+///
+/// Reads lines from stdin, one per input-cell edit:
+///   `<measure> <value> [Cat=Item,Cat=Item,...]`
+/// (`<measure>` is a numeric id or a measure name; the coordinate is omitted
+/// for a scalar, 0-dimension measure). Each line applies to the live
+/// incremental engine (a delta, not a full re-evaluation), and every CHANGED
+/// cell of the target measure(s) is printed to stdout as:
+///   `<measure> <Cat=Item,...> = <value>`
+/// so a shell pipeline can produce edits and consume recomputed results as
+/// they land: `producer | improv stream model.db Revenue | consumer`.
+///
+/// A malformed line is reported on stderr and skipped (does not abort the
+/// stream -- a long-running pipe shouldn't die on one bad line). On EOF the
+/// final model state is saved back to `<db>`, exactly like `set` persists.
+fn cmd_stream(rest: &[String]) -> Result<(), String> {
+    use std::io::BufRead;
+
+    let db = arg(rest, 0, "db")?;
+    if rest.len() < 2 {
+        return Err("stream needs at least one target measure".into());
+    }
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+    let targets: Vec<MeasureId> = rest[1..]
+        .iter()
+        .map(|s| resolve_measure(&model, s))
+        .collect::<Result<_, _>>()?;
+    for t in &targets {
+        let m = &model.measures[t];
+        if !m.is_derived() {
+            eprintln!(
+                "warning: target measure {} '{}' is an input measure, not derived -- \
+                 it will never appear in a recompute snapshot",
+                t.0, m.name
+            );
+        }
+    }
+
+    let (mut engine, mut snapshot) =
+        improv_engine::session::Engine::new(&model, &targets).map_err(|e| e.to_string())?;
+
+    let stdin = std::io::stdin();
+    for (lineno, line) in stdin.lock().lines().enumerate() {
+        let line = line.map_err(|e| e.to_string())?;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match apply_stream_line(&mut model, &mut engine, line) {
+            Ok(new_snapshot) => {
+                print_stream_diff(&model, &targets, &snapshot, &new_snapshot);
+                snapshot = new_snapshot;
+            }
+            Err(e) => eprintln!("stream: line {}: {e}", lineno + 1),
+        }
+    }
+
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Parse one `<measure> <value> [Cat=Item,...]` stream line, apply it to both
+/// `model` (so the final state can be saved) and the live `engine` (for
+/// incremental recompute), and return the new snapshot.
+fn apply_stream_line(
+    model: &mut Model,
+    engine: &mut improv_engine::session::Engine,
+    line: &str,
+) -> Result<HashMap<MeasureId, improv_engine::session::MeasureValues>, String> {
+    let mut parts = line.split_whitespace();
+    let measure_tok = parts.next().ok_or("empty line")?;
+    let value_tok = parts.next().ok_or("missing <value>")?;
+    let coord_tok = parts.next(); // optional
+    if parts.next().is_some() {
+        return Err("too many fields (expected: <measure> <value> [Cat=Item,...])".into());
+    }
+
+    let mid = resolve_measure(model, measure_tok)?;
+    let vt = model
+        .measures
+        .get(&mid)
+        .ok_or_else(|| format!("no measure {}", mid.0))?
+        .value_type;
+    let value = parse_value(value_tok, vt)?;
+    let coord = match coord_tok {
+        Some(spec) => resolve_coord(model, &parse_pairs(spec)?)?,
+        None => Coordinate::new(),
+    };
+    let num = value
+        .as_number()
+        .ok_or("stream currently supports Number-valued input cells only")?;
+
+    model.set_input(mid, coord.clone(), value);
+    let key = improv_engine::encode_coord(&coord);
+    engine.set(mid, key, num).map_err(|e| e.to_string())
+}
+
+/// Print every cell that changed (or is new) in `targets` between `before` and
+/// `after`: one line each, `<measure> <coord> = <value>`. A cell present
+/// before but absent after (a retraction with nothing replacing it) is not
+/// printed -- `stream` reports new/changed values, not deletions.
+fn print_stream_diff(
+    model: &Model,
+    targets: &[MeasureId],
+    before: &HashMap<MeasureId, improv_engine::session::MeasureValues>,
+    after: &HashMap<MeasureId, improv_engine::session::MeasureValues>,
+) {
+    let empty: improv_engine::session::MeasureValues = HashMap::new();
+    for mid in targets {
+        let before_m = before.get(mid).unwrap_or(&empty);
+        let after_m = after.get(mid).unwrap_or(&empty);
+        let mut rows: Vec<(&improv_engine::CoordKey, &improv_engine::CellValue)> = after_m
+            .iter()
+            .filter(|(k, v)| before_m.get(*k) != Some(*v))
+            .collect();
+        rows.sort_by(|a, b| a.0.cmp(b.0));
+        let name = model
+            .measures
+            .get(mid)
+            .map(|m| m.name.0.clone())
+            .unwrap_or_else(|| mid.0.to_string());
+        for (key, val) in rows {
+            println!("{name} {} = {val}", render_coord_key(model, key));
+        }
+    }
 }
 
 fn cmd_eval(rest: &[String]) -> Result<(), String> {
@@ -1325,5 +1482,137 @@ mod tests {
         assert_eq!(model.inputs.len(), 2);
         assert_eq!(model.category_by_name("Time").unwrap().items.len(), 1); // just 2025
         assert_eq!(model.category_by_name("Product").unwrap().items.len(), 2);
+    }
+
+    fn stream_test_model() -> Model {
+        let mut m = Model::new();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        m.add_category(t, "Time");
+        m.add_category(p, "Product");
+        m.add_item(ItemId(10), t, "2025");
+        m.add_item(ItemId(20), p, "WidgetA");
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Price".into()),
+            value_type: ValueType::Number,
+            categories: vec![p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(101),
+            name: Name("Quantity".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(102),
+            name: Name("Revenue".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(
+                improv_core_model::Expr::BinaryOp(
+                    improv_core_model::BinaryOp::Mul,
+                    Box::new(improv_core_model::Expr::Ref(
+                        MeasureId(100),
+                        improv_core_model::DimensionSpec::default(),
+                    )),
+                    Box::new(improv_core_model::Expr::Ref(
+                        MeasureId(101),
+                        improv_core_model::DimensionSpec::default(),
+                    )),
+                ),
+            )),
+            description: None,
+        });
+        m.set_input(
+            MeasureId(100),
+            Coordinate::from_pairs([(p, ItemId(20))]),
+            Value::Number(10.0),
+        );
+        m.set_input(
+            MeasureId(101),
+            Coordinate::from_pairs([(t, ItemId(10)), (p, ItemId(20))]),
+            Value::Number(5.0),
+        );
+        m
+    }
+
+    #[test]
+    fn resolve_measure_by_id_or_name() {
+        let m = stream_test_model();
+        assert_eq!(resolve_measure(&m, "100").unwrap(), MeasureId(100));
+        assert_eq!(resolve_measure(&m, "Price").unwrap(), MeasureId(100));
+        assert!(resolve_measure(&m, "nope").is_err());
+        assert!(resolve_measure(&m, "9999").is_err()); // numeric but unknown
+    }
+
+    #[test]
+    fn stream_line_applies_incrementally_and_diff_reports_only_changes() {
+        let mut model = stream_test_model();
+        let (mut engine, snap0) =
+            improv_engine::session::Engine::new(&model, &[MeasureId(102)]).unwrap();
+        // Base Revenue = 10 * 5 = 50.
+        let key = improv_engine::encode_coord(&Coordinate::from_pairs([
+            (CategoryId(1), ItemId(10)),
+            (CategoryId(2), ItemId(20)),
+        ]));
+        assert_eq!(
+            snap0.get(&MeasureId(102)).unwrap().get(&key),
+            Some(&improv_engine::CellValue::num(50.0))
+        );
+
+        // Price -> 15 by name, no coordinate token needed... but Price DOES have
+        // a dimension (Product), so the coordinate is required here.
+        let snap1 = apply_stream_line(&mut model, &mut engine, "Price 15 Product=WidgetA").unwrap();
+        assert_eq!(
+            snap1.get(&MeasureId(102)).unwrap().get(&key),
+            Some(&improv_engine::CellValue::num(75.0)) // 15*5
+        );
+        // The model's own input cell reflects the edit too (for the eventual save).
+        assert_eq!(
+            model.input(
+                MeasureId(100),
+                &Coordinate::from_pairs([(CategoryId(2), ItemId(20))])
+            ),
+            Some(&Value::Number(15.0))
+        );
+
+        // Quantity -> 8 by numeric id.
+        let snap2 =
+            apply_stream_line(&mut model, &mut engine, "101 8 Time=2025,Product=WidgetA").unwrap();
+        assert_eq!(
+            snap2.get(&MeasureId(102)).unwrap().get(&key),
+            Some(&improv_engine::CellValue::num(120.0)) // 15*8
+        );
+
+        // The diff between snap1 and snap2 must report exactly the one changed
+        // Revenue cell, not the whole snapshot.
+        let mid = MeasureId(102);
+        let before = snap1.get(&mid).cloned().unwrap_or_default();
+        let after = snap2.get(&mid).cloned().unwrap_or_default();
+        let changed: Vec<_> = after
+            .iter()
+            .filter(|(k, v)| before.get(*k) != Some(*v))
+            .collect();
+        assert_eq!(changed.len(), 1, "exactly one Revenue cell changed");
+    }
+
+    #[test]
+    fn stream_line_errors_are_clear_not_panics() {
+        let mut model = stream_test_model();
+        let (mut engine, _) =
+            improv_engine::session::Engine::new(&model, &[MeasureId(102)]).unwrap();
+        assert!(apply_stream_line(&mut model, &mut engine, "").is_err());
+        assert!(apply_stream_line(&mut model, &mut engine, "NoSuchMeasure 5").is_err());
+        assert!(
+            apply_stream_line(&mut model, &mut engine, "Price notanumber Product=WidgetA").is_err()
+        );
+        assert!(apply_stream_line(&mut model, &mut engine, "Price").is_err()); // missing value
+        assert!(
+            apply_stream_line(&mut model, &mut engine, "Price 15 Product=WidgetA extra").is_err()
+        ); // too many fields
     }
 }
