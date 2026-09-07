@@ -6,6 +6,8 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-07
+
 ### Added
 
 - **`ModelStore::load_partial`**: loads only a measure set's dependency

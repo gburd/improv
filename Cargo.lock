@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "improv_cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "improv_core_model",
  "improv_engine",
@@ -2525,7 +2525,7 @@ dependencies = [
 
 [[package]]
 name = "improv_core_model"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "proptest",
@@ -2536,14 +2536,14 @@ dependencies = [
 
 [[package]]
 name = "improv_data_source"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "improv_core_model",
 ]
 
 [[package]]
 name = "improv_engine"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "differential-dataflow",
@@ -2557,7 +2557,7 @@ dependencies = [
 
 [[package]]
 name = "improv_extfn"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "improv_gui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "eframe",
  "egui",
@@ -2586,7 +2586,7 @@ dependencies = [
 
 [[package]]
 name = "improv_nl_formula"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "improv_core_model",
  "proptest",
@@ -2595,7 +2595,7 @@ dependencies = [
 
 [[package]]
 name = "improv_server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "axum",
  "improv_core_model",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "improv_storage_csv"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "csv",
  "improv_core_model",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "improv_storage_mentat"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "improv_core_model",
  "improv_engine",
@@ -2633,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "improv_storage_sql"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "duckdb",
  "improv_core_model",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "improv_tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "crossterm",
  "improv_core_model",
