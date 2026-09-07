@@ -7,6 +7,7 @@
 
 mod app;
 mod chart;
+mod csv_wizard;
 mod formula_highlight;
 mod theme;
 

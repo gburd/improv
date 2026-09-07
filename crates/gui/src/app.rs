@@ -22,6 +22,8 @@ use improv_engine::{encode_coord, CellValue, CoordKey};
 use improv_nl_formula::{describe_formula, NlContext};
 use improv_storage_mentat::ModelStore;
 
+use crate::csv_wizard::{self, ExportForm, ImportForm};
+
 /// The running GUI application.
 pub struct ImprovApp {
     /// The store path (empty = in-memory scratch); used for saving.
@@ -87,6 +89,12 @@ pub struct ImprovApp {
     /// Whether the read-only chart panel is shown, and its bar/line toggle.
     show_chart: bool,
     chart_line: bool,
+
+    /// CSV/TSV import/export wizard: whether the panel is shown, and its two
+    /// forms (see `csv_wizard`).
+    show_csv_wizard: bool,
+    import_form: ImportForm,
+    export_form: ExportForm,
 }
 
 /// Which grid axis a category is assigned to.
@@ -138,6 +146,9 @@ impl ImprovApp {
             cursor_col: 0,
             show_chart: false,
             chart_line: false,
+            show_csv_wizard: false,
+            import_form: ImportForm::default(),
+            export_form: ExportForm::default(),
         })
     }
 
@@ -576,6 +587,64 @@ impl ImprovApp {
         self.clamp_cursor();
     }
 
+    // -- CSV/TSV import/export wizard (pure orchestration; unit-tested) ----
+
+    /// Toggle the CSV/TSV wizard panel. On first open, prefill the import
+    /// form's measure id with the next free one (mirrors `next_view_id`'s
+    /// auto-assign pattern) if the field is still blank.
+    pub fn toggle_csv_wizard(&mut self) {
+        self.show_csv_wizard = !self.show_csv_wizard;
+        if self.show_csv_wizard && self.import_form.measure_id.trim().is_empty() {
+            self.import_form.measure_id = self.next_measure_id().to_string();
+        }
+    }
+
+    /// Run the import wizard: build an `ImportSpec` from `self.import_form`,
+    /// import it into the live model, rebuild the engine (structure changed),
+    /// autosave, and report the cell count (or the error) in `self.status`.
+    /// Never panics — every failure path (bad form, bad file, `CsvError`)
+    /// lands in `self.status` as a clear message.
+    pub fn run_csv_import(&mut self) {
+        let spec = match csv_wizard::build_import_spec(&self.import_form) {
+            Ok(s) => s,
+            Err(e) => {
+                self.status = format!("import error: {e}");
+                return;
+            }
+        };
+        match improv_storage_csv::import_csv(&mut self.model, &spec) {
+            Ok(n) => {
+                self.rebuild_engine();
+                self.save();
+                self.status = format!(
+                    "imported {n} cell(s) into measure {} '{}'",
+                    spec.measure_id.0, spec.measure_name
+                );
+                self.selected = Some(spec.measure_id);
+            }
+            Err(e) => self.status = format!("import error: {e}"),
+        }
+    }
+
+    /// Run the export wizard: resolve `self.export_form` and write the
+    /// selected measure's cells to disk, reporting the row count (or the
+    /// error) in `self.status`. Never panics.
+    pub fn run_csv_export(&mut self) {
+        let (measure, path, delimiter) = match csv_wizard::build_export_args(&self.export_form) {
+            Ok(a) => a,
+            Err(e) => {
+                self.status = format!("export error: {e}");
+                return;
+            }
+        };
+        match improv_storage_csv::export_measure_csv(&self.model, measure, &path, delimiter) {
+            Ok(n) => {
+                self.status = format!("exported {n} row(s) to {}", path.display());
+            }
+            Err(e) => self.status = format!("export error: {e}"),
+        }
+    }
+
     /// Rebuild the live engine after a structural change (formula edit / new
     /// derived measure) and refresh the snapshot.
     fn rebuild_engine(&mut self) {
@@ -888,6 +957,7 @@ impl eframe::App for ImprovApp {
         self.inspector_panel(ctx);
         self.formula_panel(ctx);
         self.chart_panel(ctx);
+        self.csv_wizard_panel(ctx);
         self.grid_panel(ctx);
     }
 }
@@ -913,6 +983,9 @@ impl ImprovApp {
                     }
                     if btn(ui, "☉", "Toggle chart") {
                         self.show_chart = !self.show_chart;
+                    }
+                    if btn(ui, "⇄", "Import/export CSV or TSV") {
+                        self.toggle_csv_wizard();
                     }
                     ui.add_space(6.0);
                     if btn(ui, "▤", "Save view") {
@@ -1200,6 +1273,114 @@ impl ImprovApp {
                 let data = self.chart_series();
                 crate::chart::render_chart(ui, &data, self.chart_line);
             });
+    }
+
+    /// A toggle-able window: CSV/TSV import (left) + export (right), mirroring
+    /// the CLI's `import-csv`/`export-csv` exactly. All fields are plain text
+    /// (no file-dialog dependency, same pattern as the "Save view" name box) —
+    /// see `csv_wizard::build_import_spec`/`build_export_args` for the pure
+    /// validation this panel drives.
+    fn csv_wizard_panel(&mut self, ctx: &egui::Context) {
+        if !self.show_csv_wizard {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("Import / Export CSV")
+            .open(&mut open)
+            .default_width(480.0)
+            .show(ctx, |ui| {
+                ui.columns(2, |cols| {
+                    self.csv_import_form(&mut cols[0]);
+                    self.csv_export_form(&mut cols[1]);
+                });
+            });
+        if !open {
+            self.show_csv_wizard = false;
+        }
+    }
+
+    /// The import half of the wizard: file path, delimiter/header toggles,
+    /// measure id (auto-assigned)/name, value column, and a repeatable list
+    /// of dimension-mapping rows with +/- controls.
+    fn csv_import_form(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Import");
+        ui.horizontal(|ui| {
+            ui.label("file");
+            ui.text_edit_singleline(&mut self.import_form.path);
+        });
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut self.import_form.tsv, "TSV");
+            ui.checkbox(&mut self.import_form.has_header, "has header row");
+        });
+        ui.horizontal(|ui| {
+            ui.label("measure id");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.import_form.measure_id).desired_width(60.0),
+            );
+            ui.label("name");
+            ui.text_edit_singleline(&mut self.import_form.measure_name);
+        });
+        ui.horizontal(|ui| {
+            ui.label("value column");
+            ui.text_edit_singleline(&mut self.import_form.value_column);
+        });
+        ui.separator();
+        ui.label("dimensions (column, category id, category name):");
+        let mut remove: Option<usize> = None;
+        for (i, row) in self.import_form.dimensions.iter_mut().enumerate() {
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut row.column);
+                ui.add(egui::TextEdit::singleline(&mut row.category_id).desired_width(40.0));
+                ui.text_edit_singleline(&mut row.category_name);
+                if ui.small_button("-").clicked() {
+                    remove = Some(i);
+                }
+            });
+        }
+        if let Some(i) = remove {
+            self.import_form.dimensions.remove(i);
+        }
+        if ui.small_button("+ dimension").clicked() {
+            self.import_form
+                .dimensions
+                .push(csv_wizard::DimRow::default());
+        }
+        ui.separator();
+        if ui.button("Import").clicked() {
+            self.run_csv_import();
+        }
+    }
+
+    /// The export half of the wizard: a measure combo box (from the current
+    /// model, like the explorer's measure list), a target path, and a
+    /// delimiter toggle.
+    fn csv_export_form(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Export");
+        let mut ids: Vec<MeasureId> = self.model.measures.keys().copied().collect();
+        ids.sort_by_key(|m| m.0);
+        let selected_label = self
+            .export_form
+            .measure_id
+            .and_then(|m| self.model.measures.get(&m))
+            .map(|m| m.name.0.clone())
+            .unwrap_or_else(|| "(choose a measure)".to_string());
+        egui::ComboBox::from_label("measure")
+            .selected_text(selected_label)
+            .show_ui(ui, |ui| {
+                for id in &ids {
+                    let name = self.model.measures[id].name.0.clone();
+                    ui.selectable_value(&mut self.export_form.measure_id, Some(*id), name);
+                }
+            });
+        ui.horizontal(|ui| {
+            ui.label("file");
+            ui.text_edit_singleline(&mut self.export_form.path);
+        });
+        ui.checkbox(&mut self.export_form.tsv, "TSV");
+        ui.separator();
+        if ui.button("Export").clicked() {
+            self.run_csv_export();
+        }
     }
 
     /// Center: the axis shelf (drag/reassign categories) + page selectors +
@@ -2031,6 +2212,9 @@ mod tests {
             cursor_col: 0,
             show_chart: false,
             chart_line: false,
+            show_csv_wizard: false,
+            import_form: ImportForm::default(),
+            export_form: ExportForm::default(),
         }
     }
 
