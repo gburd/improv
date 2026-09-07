@@ -88,6 +88,9 @@ cargo run -p improv_cli -- help
 | `serve-refresh <db> [source.sqlite] [--tick SECS]` | Daemon that honors each measure's refresh policy (on-load / interval). |
 | `register-ext <db> <name> <arity> "<python body>"` | Register a pure Python function. |
 | `refresh-ext <db> <measure-id>` | Populate a `CALL(...)` measure host-side. |
+| `import-csv <db> <file> <id> <name> <value-col> <dim:cat-id:cat-name>... [--tsv] [--no-header]` | CSV/TSV ⇄ measure. |
+| `export-csv <db> <file> <measure-id> [--tsv]` | Write a measure's cells to CSV/TSV. |
+| `stream <db> <target-measure>...` | Stream edits from stdin, print changed cells to stdout (see below). |
 
 ### Try it — the revenue model
 
@@ -155,6 +158,23 @@ cargo run -p improv_cli -- refresh-ext model.db 200
 
 `storage_sql` also speaks **PostgreSQL**; connection descriptors keep credentials
 out of band (a password-less DSN plus an env-var name resolved at connect time).
+
+### Streaming compute (stdin → stdout)
+
+`stream` reads edits from stdin and prints changed cells to stdout as they're
+computed incrementally (a live engine, not a reload-and-recompute per line) —
+for piping a producer of new data straight through Improv:
+
+```sh
+printf 'Price 15 Product=WidgetA\nQuantity 8 Time=2025,Product=WidgetA\n' \
+  | cargo run -p improv_cli -- stream model.db Revenue
+# Revenue Time=2025, Product=WidgetA = 75
+# Revenue Time=2025, Product=WidgetA = 120
+```
+
+Each line is `<measure> <value> [Cat=Item,...]` (measure by id or name; the
+coordinate is omitted for a scalar measure). A malformed line warns on stderr
+and is skipped, not fatal; on EOF the final state saves back to the model file.
 
 ---
 

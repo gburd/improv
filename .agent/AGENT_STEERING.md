@@ -261,13 +261,19 @@ than table-stakes usability. The plan now re-orders toward what makes people
      process needed. `GET /scheduler/status` (bearer-protected) reports it.
      SQL-sourced measures stay CLI-only (`SqlSource` carries no connection
      string on the model; inventing one would be scope creep).
-  5. **`improv stream` (stdin→stdout incremental compute): PLANNED.** A
-     scripting-pipeline command: read `measure coord=item,... value` lines
-     from stdin, apply each via the live `session::Engine::set` (delta-only
-     recompute, not a full reload/re-eval per line), and print the changed
-     cells of one or more target measures to stdout as they land — so
-     `producer | improv stream model.db Revenue | consumer` works. Requested
-     directly; not in the original IMPROV.txt design but a natural
-     extension of the CLI's existing `set`/`eval` and the live engine.
+  5. **`improv stream` (stdin→stdout incremental compute): DONE.**
+     `improv stream <db> <target-measure> [...]` reads
+     `<measure> <value> [Cat=Item,...]` lines from stdin (measure by id or
+     name), applies each via the live `session::Engine::set`/`apply`
+     (delta-only recompute, not a full reload/re-eval per line), and prints
+     only the CHANGED cells of the target measure(s) to stdout as
+     `<measure> <Cat=Item,...> = <value>` — diffed against the prior
+     snapshot host-side (the engine itself always returns a full snapshot).
+     A malformed line warns on stderr and is skipped, not fatal; on EOF the
+     final state saves back to `<db>`. Verified end to end:
+     `producer | improv stream model.db Revenue | consumer`. 3 new tests
+     (pure `resolve_measure`/`apply_stream_line`/diff logic; no process
+     spawning needed — `apply_stream_line` takes the `Model`+`Engine`
+     directly, the natural test seam).
 
 Phase status is tracked per-item above as it lands.

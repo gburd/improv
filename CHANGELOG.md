@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`improv stream`**: a stdin→stdout streaming compute pipeline. Reads
+  `<measure> <value> [Cat=Item,...]` edit lines from stdin, applies each
+  incrementally to a live engine, and prints only the changed cells of one or
+  more target measures to stdout as they land —
+  `producer | improv stream model.db Revenue | consumer`.
 - **CSV/TSV import/export** (`improv_storage_csv`): the baseline data on-ramp
   named in IMPROV.txt, previously missing. CLI `import-csv`/`export-csv`
   mirror `import-sql`/`export-sql`'s column-to-dimension mapping syntax; a GUI
