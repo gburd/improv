@@ -1,6 +1,6 @@
 //! Rendering: a header/status line plus the pivot grid as a table.
 
-use crate::app::{App, Grid, GridGeom};
+use crate::app::{App, CommandKind, Grid, GridGeom};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
@@ -94,10 +94,16 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
         lines.push(Line::from(format!("filters: {f}   (F to clear)")));
     }
     lines.push(Line::from(
-        "arrows/click: move  e/Enter: edit  [ ]: page  p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  q: quit",
+        "arrows/click: move  e/Enter: edit  [ ]: page  p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  I: import-csv  E: export-csv  q: quit",
     ));
     if let Some(buf) = &app.edit {
         lines.push(Line::from(format!("edit> {buf}")));
+    } else if let Some((kind, buf)) = &app.command {
+        let prompt = match kind {
+            CommandKind::ImportCsv => "import-csv",
+            CommandKind::ExportCsv => "export-csv",
+        };
+        lines.push(Line::from(format!("{prompt}> {buf}")));
     } else if let Some(msg) = &app.status {
         lines.push(Line::from(msg.clone()));
     }

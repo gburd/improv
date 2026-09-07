@@ -8,10 +8,14 @@
 
 #[cfg(test)]
 use improv_core_model::Coordinate;
-use improv_core_model::{CategoryId, Filter, ItemId, MeasureId, Model, Name, Value, View, ViewId};
+use improv_core_model::{
+    CategoryId, Filter, ItemId, MeasureId, Model, Name, Value, ValueType, View, ViewId,
+};
 use improv_engine::session::{Engine, MeasureValues};
 use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
+use improv_storage_csv::{export_measure_csv, import_csv, ColumnRef, DimensionMapping, ImportSpec};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 /// Live derived-measure values, keyed by measure then coordinate. Kept in
 /// `App` and refreshed incrementally by the `Engine` on each committed edit;
@@ -300,6 +304,106 @@ fn cell_key(
     key
 }
 
+/// Which CSV command is active in the command-prompt (`self.command`).
+/// Mirrors the cell-edit buffer (`self.edit`) but for a full command line
+/// instead of a single value, and covers the two storage_csv entry points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandKind {
+    ImportCsv,
+    ExportCsv,
+}
+
+/// Parse an `import-csv>` prompt line into an [`ImportSpec`]. Mirrors the
+/// CLI's `import-csv <db> <file.csv> <measure-id> <measure-name> <value-col>
+/// <dim-col:cat-id:cat-name> [...] [--tsv] [--no-header]` syntax, minus the
+/// leading `<db>` (the TUI's already-open model plays that role). Whitespace-
+/// separated, like the CLI's own argv; no quoting support (a filename with a
+/// space isn't representable, matching the CLI's own simplicity).
+///
+/// Terminal-free -> unit-testable without a running TUI.
+pub fn parse_import_line(line: &str) -> Result<ImportSpec, String> {
+    let has_header = !line.split_whitespace().any(|t| t == "--no-header");
+    let tsv_flag = line.split_whitespace().any(|t| t == "--tsv");
+    let positional: Vec<&str> = line
+        .split_whitespace()
+        .filter(|t| *t != "--tsv" && *t != "--no-header")
+        .collect();
+    if positional.len() < 5 {
+        return Err("usage: <file.csv> <measure-id> <measure-name> <value-col> \
+             <dim-col:cat-id:cat-name> [...] [--tsv] [--no-header]"
+            .to_string());
+    }
+    let path = positional[0];
+    let measure_id = positional[1]
+        .parse::<u32>()
+        .map_err(|_| format!("<measure-id> must be a number, got '{}'", positional[1]))?;
+    let measure_name = positional[2].to_string();
+    let value_col = positional[3];
+
+    let tsv = tsv_flag || path.ends_with(".tsv");
+    let delimiter = if tsv { b'\t' } else { b',' };
+    let col_ref = |s: &str| -> ColumnRef {
+        if has_header {
+            ColumnRef::Name(s.to_string())
+        } else {
+            s.parse::<usize>()
+                .map(ColumnRef::Index)
+                .unwrap_or_else(|_| ColumnRef::Name(s.to_string()))
+        }
+    };
+
+    let mut dimensions = Vec::new();
+    for spec in &positional[4..] {
+        let parts: Vec<&str> = spec.splitn(3, ':').collect();
+        if parts.len() != 3 {
+            return Err(format!(
+                "dimension spec '{spec}' must be <col>:<cat-id>:<cat-name>"
+            ));
+        }
+        let cat_id = parts[1]
+            .parse::<u32>()
+            .map_err(|_| format!("<cat-id> must be a number, got '{}'", parts[1]))?;
+        dimensions.push(DimensionMapping {
+            column: col_ref(parts[0]),
+            category_id: CategoryId(cat_id),
+            category_name: parts[2].to_string(),
+        });
+    }
+    if dimensions.is_empty() {
+        return Err("at least one dimension mapping is required".to_string());
+    }
+
+    Ok(ImportSpec {
+        path: PathBuf::from(path),
+        delimiter,
+        has_header,
+        measure_id: MeasureId(measure_id),
+        measure_name,
+        value_type: ValueType::Number,
+        value_column: col_ref(value_col),
+        dimensions,
+        item_id_base: 1_000_000, // above hand-assigned ids; avoids collisions
+    })
+}
+
+/// Parse an `export-csv>` prompt line into `(target-path, measure-id,
+/// delimiter)`. Mirrors the CLI's `export-csv <db> <target.csv>
+/// <measure-id> [--tsv]`, minus `<db>`.
+pub fn parse_export_line(line: &str) -> Result<(String, MeasureId, u8), String> {
+    let tsv_flag = line.split_whitespace().any(|t| t == "--tsv");
+    let positional: Vec<&str> = line.split_whitespace().filter(|t| *t != "--tsv").collect();
+    if positional.len() < 2 {
+        return Err("usage: <target.csv> <measure-id> [--tsv]".to_string());
+    }
+    let target = positional[0].to_string();
+    let measure_id = positional[1]
+        .parse::<u32>()
+        .map_err(|_| format!("<measure-id> must be a number, got '{}'", positional[1]))?;
+    let tsv = tsv_flag || target.ends_with(".tsv");
+    let delimiter = if tsv { b'\t' } else { b',' };
+    Ok((target, MeasureId(measure_id), delimiter))
+}
+
 /// Measures sorted for stable cycling: derived first, then by id.
 pub fn measure_order(model: &Model) -> Vec<MeasureId> {
     let mut ids: Vec<MeasureId> = model.measures.keys().copied().collect();
@@ -353,6 +457,10 @@ pub struct App {
     pub filters: Vec<Filter>,
     /// Geometry of the last render, for mapping mouse clicks to cells.
     pub grid_geom: Option<GridGeom>,
+    /// When `Some`, the CSV import/export command prompt is active: which
+    /// command and its in-progress typed line. Mirrors `edit`'s shape but for
+    /// a whole command line rather than a single cell value.
+    pub command: Option<(CommandKind, String)>,
 }
 
 impl App {
@@ -409,6 +517,7 @@ impl App {
             axis_order,
             filters: Vec::new(),
             grid_geom: None,
+            command: None,
         })
     }
 
@@ -604,6 +713,116 @@ impl App {
         }
         self.reselect();
         Ok(())
+    }
+
+    // -- CSV import/export command prompt (pure; terminal-free -> unit-testable) --
+
+    /// Enter import-csv command-prompt mode (bound to `I`). Mirrors
+    /// `begin_edit`: starts an empty typed-line buffer.
+    pub fn begin_import_csv(&mut self) {
+        self.command = Some((CommandKind::ImportCsv, String::new()));
+        self.status = None;
+    }
+
+    /// Enter export-csv command-prompt mode (bound to `E`).
+    pub fn begin_export_csv(&mut self) {
+        self.command = Some((CommandKind::ExportCsv, String::new()));
+        self.status = None;
+    }
+
+    /// Cancel command-prompt mode without side effects.
+    pub fn cancel_command(&mut self) {
+        self.command = None;
+        self.status = None;
+    }
+
+    /// Commit the in-progress command line: parse it per the active
+    /// `CommandKind`, run the storage_csv import/export, and set a status
+    /// message (success with a count, or the parse/IO error). Always exits
+    /// command mode — a malformed line reports the error rather than looping
+    /// (matching the TUI's existing "generated view name" simplicity).
+    pub fn commit_command(&mut self) {
+        let Some((kind, line)) = self.command.take() else {
+            return;
+        };
+        self.status = Some(match kind {
+            CommandKind::ImportCsv => self.run_import_csv(&line),
+            CommandKind::ExportCsv => self.run_export_csv(&line),
+        });
+    }
+
+    /// Parse and run an import-csv command line against `self.model`, and
+    /// rebuild the engine/grid so the new measure shows up immediately
+    /// (mirrors `next_measure`'s structural-rebuild path, since importing
+    /// adds a new measure — the engine's fixed structure must be rebuilt).
+    fn run_import_csv(&mut self, line: &str) -> String {
+        let spec = match parse_import_line(line) {
+            Ok(s) => s,
+            Err(e) => return format!("import-csv: {e}"),
+        };
+        let measure_name = spec.measure_name.clone();
+        match import_csv(&mut self.model, &spec) {
+            Ok(n) => {
+                self.rebuild_after_structural_change();
+                format!("imported {n} cell(s) into measure '{measure_name}'")
+            }
+            Err(e) => format!("import-csv: {e}"),
+        }
+    }
+
+    /// Parse and run an export-csv command line against `self.model`.
+    fn run_export_csv(&mut self, line: &str) -> String {
+        let (target, measure_id, delimiter) = match parse_export_line(line) {
+            Ok(t) => t,
+            Err(e) => return format!("export-csv: {e}"),
+        };
+        match export_measure_csv(&self.model, measure_id, Path::new(&target), delimiter) {
+            Ok(n) => format!(
+                "exported {n} row(s) from measure {} to {target}",
+                measure_id.0
+            ),
+            Err(e) => format!("export-csv: {e}"),
+        }
+    }
+
+    /// Rebuild `measures`/`engine`/`grid` from the current `self.model` after a
+    /// structural change (a new measure/category/item), keeping the viewed
+    /// measure selected when it still exists. Mirrors the fresh-build logic in
+    /// `App::new`, since the live `Engine`'s tracked structure is fixed at
+    /// construction and a new measure needs a new engine.
+    fn rebuild_after_structural_change(&mut self) {
+        let viewed = self.measures.get(self.selected).copied();
+        self.measures = measure_order(&self.model);
+        let derived: Vec<MeasureId> = self
+            .measures
+            .iter()
+            .copied()
+            .filter(|id| {
+                self.model
+                    .measures
+                    .get(id)
+                    .map(|m| m.is_derived())
+                    .unwrap_or(false)
+            })
+            .collect();
+        let (engine, snapshot) = if derived.is_empty() {
+            (None, Snapshot::new())
+        } else {
+            match Engine::new(&self.model, &derived) {
+                Ok((e, s)) => (Some(e), s),
+                Err(_) => (None, Snapshot::new()), // reported via caller's status already
+            }
+        };
+        self.engine = engine;
+        self.snapshot = snapshot;
+        self.selected = viewed
+            .and_then(|v| self.measures.iter().position(|m| *m == v))
+            .unwrap_or(0);
+        self.axis_order = self.natural_axis_order();
+        self.page_idx.clear();
+        self.filters.clear();
+        self.reselect();
+        self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
     }
 
     // -- views & filters (pure; terminal-free -> unit-testable) ------------
@@ -1228,5 +1447,211 @@ mod tests {
         assert_eq!(dst.grid.pages[0].item_name, "North");
         dst.apply_view(&v);
         assert_eq!(dst.grid.pages[0].item_name, "South", "page item restored");
+    }
+
+    // -- CSV import/export command prompt -----------------------------------
+
+    fn tmp_path(suffix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "improv_tui_test_{}_{}{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            suffix
+        ))
+    }
+
+    struct TmpFile(PathBuf);
+    impl Drop for TmpFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn parse_import_line_builds_expected_spec() {
+        let spec = parse_import_line("sales.csv 100 Revenue revenue time:1:Time product:2:Product")
+            .unwrap();
+        assert_eq!(spec.path, PathBuf::from("sales.csv"));
+        assert_eq!(spec.delimiter, b',');
+        assert!(spec.has_header);
+        assert_eq!(spec.measure_id, MeasureId(100));
+        assert_eq!(spec.measure_name, "Revenue");
+        assert_eq!(spec.value_column, ColumnRef::Name("revenue".into()));
+        assert_eq!(spec.dimensions.len(), 2);
+        assert_eq!(spec.dimensions[0].column, ColumnRef::Name("time".into()));
+        assert_eq!(spec.dimensions[0].category_id, CategoryId(1));
+        assert_eq!(spec.dimensions[0].category_name, "Time");
+        assert_eq!(spec.dimensions[1].column, ColumnRef::Name("product".into()));
+        assert_eq!(spec.dimensions[1].category_id, CategoryId(2));
+        assert_eq!(spec.dimensions[1].category_name, "Product");
+    }
+
+    #[test]
+    fn parse_import_line_flags_flip_delimiter_and_header() {
+        let spec = parse_import_line("sales.tsv 100 Revenue revenue time:1:Time --tsv --no-header")
+            .unwrap();
+        assert_eq!(spec.delimiter, b'\t');
+        assert!(!spec.has_header);
+        // Without a header, bare column refs parse as 0-based indices.
+        assert_eq!(spec.value_column, ColumnRef::Name("revenue".into()));
+    }
+
+    #[test]
+    fn parse_import_line_no_header_uses_index_columns() {
+        let spec = parse_import_line("sales.csv 100 Revenue 2 0:1:Time --no-header").unwrap();
+        assert_eq!(spec.value_column, ColumnRef::Index(2));
+        assert_eq!(spec.dimensions[0].column, ColumnRef::Index(0));
+    }
+
+    #[test]
+    fn parse_import_line_rejects_malformed_input() {
+        assert!(parse_import_line("").is_err());
+        assert!(parse_import_line("sales.csv 100 Revenue revenue").is_err()); // no dims
+        assert!(parse_import_line("sales.csv notanumber Revenue revenue time:1:Time").is_err());
+        assert!(parse_import_line("sales.csv 100 Revenue revenue time:notanumber:Time").is_err());
+        assert!(parse_import_line("sales.csv 100 Revenue revenue badspec").is_err());
+    }
+
+    #[test]
+    fn parse_export_line_builds_expected_tuple() {
+        let (target, mid, delim) = parse_export_line("out.csv 100").unwrap();
+        assert_eq!(target, "out.csv");
+        assert_eq!(mid, MeasureId(100));
+        assert_eq!(delim, b',');
+
+        let (_, _, delim_tsv) = parse_export_line("out.csv 100 --tsv").unwrap();
+        assert_eq!(delim_tsv, b'\t');
+    }
+
+    #[test]
+    fn parse_export_line_rejects_malformed_input() {
+        assert!(parse_export_line("").is_err());
+        assert!(parse_export_line("out.csv").is_err());
+        assert!(parse_export_line("out.csv notanumber").is_err());
+    }
+
+    /// A minimal starter model with one placeholder input measure, so
+    /// `App::new` succeeds (it requires >= 1 measure) before import-csv adds
+    /// the real one under test.
+    fn starter_model() -> Model {
+        let mut m = Model::new();
+        let cat = CategoryId(9);
+        m.add_category(cat, "Placeholder");
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Placeholder".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m
+    }
+
+    #[test]
+    fn import_command_end_to_end_adds_measure_and_cells() {
+        let csv_path = tmp_path(".csv");
+        let _guard = TmpFile(csv_path.clone());
+        std::fs::write(
+            &csv_path,
+            "time,product,revenue\n2025,WidgetA,1000\n2025,WidgetB,500\n2026,WidgetA,1200\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(starter_model()).unwrap();
+        app.begin_import_csv();
+        assert_eq!(app.command.as_ref().unwrap().0, CommandKind::ImportCsv);
+        app.command.as_mut().unwrap().1 = format!(
+            "{} 100 Revenue revenue time:1:Time product:2:Product",
+            csv_path.display()
+        );
+        app.commit_command();
+
+        assert!(app.command.is_none(), "command mode exited");
+        let status = app.status.clone().unwrap_or_default();
+        assert!(status.contains("imported 3"), "got: {status}");
+
+        let m = app.model.measure_by_name("Revenue").unwrap();
+        assert!(m.is_input());
+        assert_eq!(app.model.inputs.len(), 3);
+        // The new measure is now selectable/viewable through the App.
+        assert!(app.measures.contains(&MeasureId(100)));
+    }
+
+    #[test]
+    fn import_command_reports_parse_error_and_exits_mode() {
+        let mut app = App::new(starter_model()).unwrap();
+        app.begin_import_csv();
+        app.command.as_mut().unwrap().1 = "sales.csv notanumber Revenue revenue".to_string();
+        app.commit_command();
+        assert!(app.command.is_none());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("import-csv:"));
+    }
+
+    #[test]
+    fn export_command_end_to_end_round_trips() {
+        // First import into a fresh measure, then export it and read the file back.
+        let csv_path = tmp_path(".csv");
+        let _csv_guard = TmpFile(csv_path.clone());
+        std::fs::write(
+            &csv_path,
+            "time,product,revenue\n2025,WidgetA,1000\n2026,WidgetA,1200\n",
+        )
+        .unwrap();
+
+        let mut app = App::new(starter_model()).unwrap();
+        app.begin_import_csv();
+        app.command.as_mut().unwrap().1 = format!(
+            "{} 100 Revenue revenue time:1:Time product:2:Product",
+            csv_path.display()
+        );
+        app.commit_command();
+        assert!(app.status.as_deref().unwrap_or("").contains("imported 2"));
+
+        let out_path = tmp_path(".out.csv");
+        let _out_guard = TmpFile(out_path.clone());
+        app.begin_export_csv();
+        app.command.as_mut().unwrap().1 = format!("{} 100", out_path.display());
+        app.commit_command();
+        assert!(app.command.is_none());
+        let status = app.status.clone().unwrap_or_default();
+        assert!(status.contains("exported 2"), "got: {status}");
+
+        let contents = std::fs::read_to_string(&out_path).unwrap();
+        assert!(contents.contains("Time"));
+        assert!(contents.contains("Product"));
+        assert!(contents.contains("Revenue"));
+        assert_eq!(contents.lines().count(), 3); // header + 2 rows
+    }
+
+    #[test]
+    fn export_command_reports_error_for_unknown_measure() {
+        let mut app = App::new(starter_model()).unwrap();
+        app.begin_export_csv();
+        app.command.as_mut().unwrap().1 = "out.csv 999".to_string();
+        app.commit_command();
+        assert!(app.command.is_none());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("export-csv:"));
+    }
+
+    #[test]
+    fn cancel_command_clears_state_without_side_effects() {
+        let mut app = App::new(starter_model()).unwrap();
+        app.begin_import_csv();
+        app.command.as_mut().unwrap().1 = "whatever".to_string();
+        app.cancel_command();
+        assert!(app.command.is_none());
+        assert!(app.status.is_none());
     }
 }

@@ -99,6 +99,8 @@ fn event_loop(
             Event::Key(k) if k.kind != KeyEventKind::Release => {
                 if app.edit.is_some() {
                     edit_key(app, k.code);
+                } else if app.command.is_some() {
+                    command_key(app, k.code);
                 } else {
                     normal_key(app, k.code, path);
                 }
@@ -106,7 +108,7 @@ fn event_loop(
             // Mouse: left-click selects the cell under the pointer; a click on a
             // page indicator / axis label pivots (handled via cell hit-testing
             // against the last-rendered grid rect stored on `app`).
-            Event::Mouse(m) if app.edit.is_none() => {
+            Event::Mouse(m) if app.edit.is_none() && app.command.is_none() => {
                 if let MouseEventKind::Down(MouseButton::Left) = m.kind {
                     app.click_at(m.column, m.row);
                 }
@@ -136,6 +138,25 @@ fn edit_key(app: &mut App, code: KeyCode) {
     }
 }
 
+/// Key handling while the import-csv/export-csv command prompt is active.
+fn command_key(app: &mut App, code: KeyCode) {
+    match code {
+        KeyCode::Enter => app.commit_command(),
+        KeyCode::Esc => app.cancel_command(),
+        KeyCode::Backspace => {
+            if let Some((_, buf)) = app.command.as_mut() {
+                buf.pop();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some((_, buf)) = app.command.as_mut() {
+                buf.push(c);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Key handling in normal (navigation) mode.
 fn normal_key(app: &mut App, code: KeyCode, path: &str) {
     match code {
@@ -155,6 +176,9 @@ fn normal_key(app: &mut App, code: KeyCode, path: &str) {
         // Views: 'S' saves the current layout; 'v' cycles saved views.
         KeyCode::Char('S') => save_current_view(app, path),
         KeyCode::Char('v') => app.cycle_view(),
+        // CSV import/export: 'I' opens the import-csv prompt, 'E' export-csv.
+        KeyCode::Char('I') => app.begin_import_csv(),
+        KeyCode::Char('E') => app.begin_export_csv(),
         KeyCode::Esc => app.status = None,
         _ => {}
     }
