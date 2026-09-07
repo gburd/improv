@@ -1,12 +1,15 @@
 # Out-of-Core Storage — Investigation & Design Notes (Phase D)
 
-**STATUS: proposed, not scheduled.** This document is the output of a
-one-time investigation task (Phase D of the post-v0.5.0 plan, see
-`.agent/AGENT_STEERING.md`). It records where the real scale ceiling is,
-why, what fixing it would concretely require, and a recommended first step
-— **it is not committed-to work, and nothing here has been implemented.**
-Treat it as the reference to read before anyone signs up to build
-out-of-core storage, not as a promise that it will be built.
+**STATUS: §4's recommended first step is BUILT** (`Model::
+measure_dependency_closure` + `ModelStore::load_partial`, wired into CLI
+`eval`/`show` — see `.agent/AGENT_STEERING.md` Phase D.2). The rest of this
+document (§3a dimension partitioning, §3b DD spilling) remains proposed, not
+scheduled. This was originally a one-time investigation task (Phase D of the
+post-v0.5.0 plan); it records where the real scale ceiling is, why, what
+fully fixing it would concretely require beyond step 1, and why step 1 alone
+does not raise the hard whole-model ceiling (only avoids loading data a
+bounded operation never touches). Treat §3a/3b as the reference to read
+before anyone signs up to build the rest, not as a promise that they will be.
 
 ---
 
@@ -274,33 +277,39 @@ aggregate over a huge dimension" case that 3c alone doesn't fix, not a
 replacement for it. 3b (waiting for DD to grow disk-spilling) is not
 actionable at the pinned version and shouldn't be designed around.
 
-**Concrete first step, if this is ever picked up:** add
-`ModelStore::load_partial(&mut self, measure_ids: &[MeasureId]) ->
-Result<Model>` in `crates/storage_mentat/src/lib.rs`, alongside (not
-replacing) the existing `load_model()`. It would: (1) compute the
-transitive input-measure dependency set for `measure_ids` (reusing the
-same `referenced_measures()` walk `derived_build_order` already does in
-`engine::dataflow`, exposed from `core_model` so `storage_mentat` doesn't
-need to depend on `engine`), (2) load only those measures' categories/
-items/cells via a filtered Datalog query, (3) return an ordinary `Model` —
-so `engine::dataflow::evaluate`/`engine::session::Engine::new` need **zero
-changes**, because they already only touch what's in the `Model` they're
-handed. This alone would let a model with a billion cells across many
-measures work fine for any single operation whose formula-dependency
-closure is a bounded subset of the whole — which is the common case for
-"open the CLI/TUI/GUI/server and look at one measure or edit one cell,"
-even though it wouldn't be a general disk-spilling engine and wouldn't help
-a genuine "aggregate literally everything" operation. That's a real,
-useful, honestly-scoped win, not a promise of unbounded scale.
+**Concrete first step — BUILT:** `ModelStore::load_partial(&mut self,
+measure_ids: &[MeasureId]) -> Result<Model>` in
+`crates/storage_mentat/src/lib.rs`, alongside (not replacing) the existing
+`load_model()`. It: (1) computes the transitive measure dependency set for
+`measure_ids` via `Model::measure_dependency_closure` (a pure walk over
+`Formula::referenced_measures()` and external-call `arg_measures`, added to
+`core_model`), (2) loads categories/items/measures/views/meta in full (their
+volume scales with model *shape*, cheap regardless of data size) but filters
+`load_cells` to only the closure's measures, (3) returns an ordinary `Model`
+— `engine::dataflow::evaluate`/`engine::session::Engine::new` needed **zero
+changes**, confirmed by a test asserting identical `evaluate()` output over a
+full load vs. a partial load of the same derived measure. Wired into CLI
+`eval`/`show` (both operate over one measure's dependency closure); `stream`
+stays on `load_model()` since it accepts arbitrary-measure edits from stdin,
+which needs the full measure set resident — not a safe windowing candidate.
 
-## 5. Non-goals / explicitly out of scope for this document
+This lets a model with a billion cells across many measures work fine for any
+single operation whose formula-dependency closure is a bounded subset of the
+whole — the common case for "open the CLI/TUI/GUI/server and look at one
+measure or edit one cell." It is NOT a general disk-spilling engine and does
+NOT help a genuine "aggregate literally everything" operation (`stream`'s
+arbitrary edits, a full-model export, a grand total over a huge dimension) —
+see §3a/3b below for what THOSE would still require. A real, useful,
+honestly-scoped win, not a promise of unbounded scale.
 
-- No engine/DD rewrite. No change to `crates/engine/src/*`,
-  `crates/core_model/src/*`, or `crates/storage_mentat/src/*` was made as
-  part of producing this document (per the task's scope); §4's "concrete
-  first step" is a proposal for *future* work, not something landed here.
-- No claim that any of this is scheduled. See `.agent/AGENT_STEERING.md`
-  Phase D — this remains "investigated, not implemented."
+## 5. Non-goals / explicitly out of scope
+
+- No engine/DD rewrite happened. `crates/engine/src/dataflow.rs` and
+  `crates/engine/src/session.rs` are unchanged — §4's first step
+  deliberately required none, and that remains true after building it.
+- §3a (dimension partitioning) and §3b (waiting on DD to grow disk-spilling)
+  remain **not built, not scheduled**. See `.agent/AGENT_STEERING.md` Phase
+  D.2 for the live status of the whole out-of-core line item.
 - No attempt to design a full OLAP-cube/materialized-aggregate system for
   the "aggregate literally everything in a billion-cell model" case — that
   is a materially bigger, separate design problem than the common-case

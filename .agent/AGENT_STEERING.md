@@ -240,17 +240,22 @@ than table-stakes usability. The plan now re-orders toward what makes people
      `DataSource` abstraction would be pure indirection (ponytail: no
      interface for a plugin loader nobody's asked to use at runtime). Every
      public function signature is unchanged; zero call-site changes anywhere.
-  2. **Out-of-core storage: investigated, not implemented.**
-     Empirically-verified ceiling is now **5,000,000 cells** in-memory (up
-     from the previous 1M), ~3.5GB peak RSS and ~2.5-4 min `evaluate()`
-     wall-clock at that size (`cargo test -p improv_engine --test stress --
+  2. **Out-of-core storage: step 1 DONE, remainder investigated-not-built.**
+     `Model::measure_dependency_closure` + `ModelStore::load_partial` (the
+     design doc's recommended first step) now load only a bounded operation's
+     dependency closure, not the whole model — wired into CLI `eval`/`show`.
+     `engine::dataflow`/`engine::session` needed zero changes (proven by a
+     full-vs-partial `evaluate()` parity test). This does NOT raise the
+     hard memory ceiling for an operation that touches the whole model by
+     definition (a grand total, `stream`'s arbitrary-measure edits) — only
+     for the common case (one measure's formula chain) does it avoid loading
+     data the operation never touches. Empirically-verified whole-model
+     ceiling is still **5,000,000 cells** in-memory (~3.5GB peak RSS,
+     ~2.5-4 min `evaluate()`; `cargo test -p improv_engine --test stress --
      --ignored --nocapture scale_evaluate_5m`); 10M is estimated (~7GB RSS)
-     but was not run to avoid risking an OOM. Design doc at
-     `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` recommends changing the
-     storage-to-engine boundary so a `Model` handed to the DD graph is a
-     dependency-closure *window* over the measures an operation actually
-     needs (`ModelStore::load_partial`), not the whole model, as the first
-     step — not a DD/engine-internals rewrite.
+     but was not run to avoid risking an OOM. Dimension-partitioning (3a) and
+     waiting on DD to grow disk-spilling (3b) remain un-built, per the design
+     doc at `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md`.
   3. **GUI import/export wizards: DONE.** A toggle-able Import/Export CSV
      window in the GUI (dimension-mapping rows, pure builders); a TUI
      `I`/`E` command prompt. (Same landing as the Phase A CSV item above.)

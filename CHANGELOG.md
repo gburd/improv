@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`ModelStore::load_partial`**: loads only a measure set's dependency
+  closure (its formula chain / external-call args), not every cell of every
+  measure in the store — the out-of-core design doc's recommended first step,
+  built. `engine::dataflow`/`engine::session` needed zero changes. CLI
+  `eval`/`show` now use it.
 - **`improv stream`**: a stdin→stdout streaming compute pipeline. Reads
   `<measure> <value> [Cat=Item,...]` edit lines from stdin, applies each
   incrementally to a live engine, and prints only the changed cells of one or
