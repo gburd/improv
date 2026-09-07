@@ -145,9 +145,41 @@ impl ModelStore {
         self.load_categories(&mut model)?;
         self.load_items(&mut model)?;
         self.load_measures(&mut model)?;
-        self.load_cells(&mut model)?;
+        self.load_cells(&mut model, None)?;
         self.load_views(&mut model)?;
         self.load_meta(&mut model)?;
+        Ok(model)
+    }
+
+    /// Load a model containing only the categories/items/measures/cells that
+    /// an operation over `measure_ids` actually needs: `measure_ids` plus
+    /// their transitive dependency closure (`Model::measure_dependency_closure`
+    /// — every measure reachable via a `Derived` formula or an external-call's
+    /// `arg_measures`). Views/scenarios/external-fn defs/meta are still loaded
+    /// in full (they're small, bounded by model *shape* not data volume, not
+    /// data-scale-sensitive like cells are).
+    ///
+    /// This is the "windowed" load recommended in
+    /// `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` §4: `engine::dataflow::
+    /// evaluate`/`engine::session::Engine::new` need ZERO changes, because they
+    /// already only touch whatever is in the `Model` they're handed — the gap
+    /// was purely that `load_model` always loaded every cell of every measure
+    /// regardless of what the caller needed. Categories/items/measures are
+    /// still loaded in full too (their volume scales with model *shape*, which
+    /// is the cheap part; only `load_cells`, whose volume scales with *data*,
+    /// is filtered). A single operation whose formula-dependency closure is a
+    /// bounded subset of a huge model can now avoid paying for every other
+    /// measure's cells — it does NOT help an operation that touches the whole
+    /// model by definition (e.g. a grand total over everything).
+    pub fn load_partial(&mut self, measure_ids: &[MeasureId]) -> Result<Model> {
+        let mut model = Model::new();
+        self.load_categories(&mut model)?;
+        self.load_items(&mut model)?;
+        self.load_measures(&mut model)?;
+        self.load_views(&mut model)?;
+        self.load_meta(&mut model)?; // external_calls populated before the closure walk
+        let closure = model.measure_dependency_closure(measure_ids);
+        self.load_cells(&mut model, Some(&closure))?;
         Ok(model)
     }
 
@@ -275,14 +307,27 @@ impl ModelStore {
         Ok(cats)
     }
 
-    fn load_cells(&mut self, model: &mut Model) -> Result<()> {
+    fn load_cells(
+        &mut self,
+        model: &mut Model,
+        filter: Option<&std::collections::HashSet<MeasureId>>,
+    ) -> Result<()> {
         // Get all cells' measure id + coord, then fetch the typed value by the
         // owning measure's declared type (avoids optional-attribute functions).
+        // A `filter` skips the (expensive, one-query-per-cell) value fetch for
+        // any measure not in the set -- this is `load_partial`'s savings: we
+        // still enumerate every (measure, coord) pair (cheap, one query total)
+        // but only pay for the cells an operation's dependency closure needs.
         let q = "[:find ?mid ?coord :where \
                   [?e :cell/measure ?m] [?m :measure/id ?mid] \
                   [?e :cell/coord ?coord]]";
         for row in self.rel(q)? {
             let mid = MeasureId(convert::as_u32(&row[0])?);
+            if let Some(keep) = filter {
+                if !keep.contains(&mid) {
+                    continue;
+                }
+            }
             let coord_json = convert::as_string(&row[1])?;
             let coord: Coordinate = serde_json::from_str(&coord_json)?;
 
@@ -632,5 +677,130 @@ mod tests {
             measure.categories.sort();
         }
         m
+    }
+
+    #[test]
+    fn load_partial_loads_only_the_dependency_closures_cells() {
+        // Time x Product; Price (input), Quantity (input), Revenue = Price *
+        // Quantity (derived) -- Revenue's closure is {Revenue, Price, Quantity}.
+        // Unrelated (input) is a measure with its own cell that must NOT load.
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = Model::new();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        m.add_category(time, "Time");
+        m.add_category(product, "Product");
+        m.add_item(ItemId(10), time, "2025");
+        m.add_item(ItemId(20), product, "WidgetA");
+
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Price".into()),
+            value_type: ValueType::Number,
+            categories: vec![product],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(101),
+            name: Name("Quantity".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(102),
+            name: Name("Revenue".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+                Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+            ))),
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(200),
+            name: Name("Unrelated".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+
+        let price_coord = Coordinate::from_pairs([(product, ItemId(20))]);
+        let qty_coord = Coordinate::from_pairs([(time, ItemId(10)), (product, ItemId(20))]);
+        m.set_input(MeasureId(100), price_coord.clone(), Value::Number(10.0));
+        m.set_input(MeasureId(101), qty_coord.clone(), Value::Number(5.0));
+        m.set_input(MeasureId(200), Coordinate::new(), Value::Number(999.0));
+
+        store.save_model(&m).expect("save");
+
+        // load_partial(&[Revenue]) must load Price/Quantity's cells but NOT
+        // Unrelated's, even though Unrelated's MEASURE metadata is still
+        // present (categories/items/measures are always loaded in full --
+        // only cell volume is filtered).
+        let partial = store.load_partial(&[MeasureId(102)]).expect("load_partial");
+        assert!(
+            partial.measures.contains_key(&MeasureId(200)),
+            "measure shape still loads"
+        );
+        assert_eq!(
+            partial.input(MeasureId(100), &price_coord),
+            Some(&Value::Number(10.0))
+        );
+        assert_eq!(
+            partial.input(MeasureId(101), &qty_coord),
+            Some(&Value::Number(5.0))
+        );
+        assert_eq!(
+            partial.input(MeasureId(200), &Coordinate::new()),
+            None,
+            "Unrelated's cell must NOT be loaded -- it's outside Revenue's closure"
+        );
+
+        // The engine gets zero changes: evaluate() over the SAME partial model
+        // (which is an ordinary Model) produces the same Revenue as a full load.
+        let full = store.load_model().expect("load_model");
+        let out_full =
+            improv_engine::dataflow::evaluate(&full, &[MeasureId(102)]).expect("eval full");
+        let out_partial =
+            improv_engine::dataflow::evaluate(&partial, &[MeasureId(102)]).expect("eval partial");
+        assert_eq!(out_full, out_partial);
+    }
+
+    #[test]
+    fn load_partial_with_no_dependencies_loads_only_its_own_cells() {
+        // A root with no formula/arg_measures (an ordinary input measure) has a
+        // closure of just itself.
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = Model::new();
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("A".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(2),
+            name: Name("B".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.set_input(MeasureId(1), Coordinate::new(), Value::Number(1.0));
+        m.set_input(MeasureId(2), Coordinate::new(), Value::Number(2.0));
+        store.save_model(&m).expect("save");
+
+        let partial = store.load_partial(&[MeasureId(1)]).expect("load_partial");
+        assert_eq!(
+            partial.input(MeasureId(1), &Coordinate::new()),
+            Some(&Value::Number(1.0))
+        );
+        assert_eq!(partial.input(MeasureId(2), &Coordinate::new()), None);
     }
 }

@@ -341,6 +341,39 @@ impl Model {
         self.inputs.get(&(measure, coord.clone()))
     }
 
+    /// The transitive closure of every measure `roots` depends on: for each
+    /// derived measure, its formula's `referenced_measures()`; for an
+    /// external-call measure (`Model.external_calls`), its `arg_measures`.
+    /// Includes `roots` themselves. Storage-free, engine-free — a `Model`
+    /// loader (e.g. `storage_mentat::ModelStore::load_partial`) uses this to
+    /// load only the input cells an operation over `roots` actually needs,
+    /// instead of the whole model (see
+    /// `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` §4).
+    pub fn measure_dependency_closure(
+        &self,
+        roots: &[MeasureId],
+    ) -> std::collections::HashSet<MeasureId> {
+        let mut seen: std::collections::HashSet<MeasureId> = roots.iter().copied().collect();
+        let mut frontier: Vec<MeasureId> = roots.to_vec();
+        while let Some(m) = frontier.pop() {
+            let mut deps: Vec<MeasureId> = Vec::new();
+            if let Some(measure) = self.measures.get(&m) {
+                if let MeasureKind::Derived(f) = &measure.kind {
+                    deps.extend(f.referenced_measures());
+                }
+            }
+            if let Some(call) = self.external_calls.get(&m) {
+                deps.extend(call.arg_measures.iter().copied());
+            }
+            for d in deps {
+                if seen.insert(d) {
+                    frontier.push(d);
+                }
+            }
+        }
+        seen
+    }
+
     /// Look up a measure by its human name.
     pub fn measure_by_name(&self, name: &str) -> Option<&Measure> {
         self.measures.values().find(|m| m.name.0 == name)
@@ -506,5 +539,58 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: Model = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn measure_dependency_closure_walks_formulas_and_external_calls() {
+        // A -> B -> C chain via Derived formulas, plus D = CALL(f, C, E) (an
+        // external-call measure whose "dependencies" are its arg_measures, not
+        // an Expr). F is unrelated and must NOT appear in A's closure.
+        let mut m = Model::new();
+        let a = MeasureId(1);
+        let b = MeasureId(2);
+        let c = MeasureId(3);
+        let d = MeasureId(4);
+        let e = MeasureId(5);
+        let f = MeasureId(6);
+        let leaf = |id: MeasureId, kind: MeasureKind| Measure {
+            id,
+            name: Name(format!("M{}", id.0)),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind,
+            description: None,
+        };
+        m.add_measure(leaf(c, MeasureKind::Input));
+        m.add_measure(leaf(e, MeasureKind::Input));
+        m.add_measure(leaf(f, MeasureKind::Input));
+        m.add_measure(leaf(
+            b,
+            MeasureKind::Derived(Formula::new(Expr::Ref(c, DimensionSpec::default()))),
+        ));
+        m.add_measure(leaf(
+            a,
+            MeasureKind::Derived(Formula::new(Expr::Ref(b, DimensionSpec::default()))),
+        ));
+        m.add_measure(leaf(d, MeasureKind::Input)); // external-call measures stay Input
+        m.external_calls.insert(
+            d,
+            ExternalCall {
+                func: "f".into(),
+                arg_measures: vec![c, e],
+                refresh_policy: Default::default(),
+            },
+        );
+
+        let closure = m.measure_dependency_closure(&[a]);
+        assert_eq!(closure, [a, b, c].into_iter().collect());
+
+        let closure_d = m.measure_dependency_closure(&[d]);
+        assert_eq!(closure_d, [d, c, e].into_iter().collect());
+
+        // Multiple roots union their closures; unrelated F never appears.
+        let closure_both = m.measure_dependency_closure(&[a, d]);
+        assert_eq!(closure_both, [a, b, c, d, e].into_iter().collect());
+        assert!(!closure_both.contains(&f));
     }
 }

@@ -701,7 +701,7 @@ fn cmd_show(rest: &[String]) -> Result<(), String> {
     let db = arg(rest, 0, "db")?;
     let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
     let mut store = open(db)?;
-    let model = store.load_model().map_err(|e| e.to_string())?;
+    let model = store.load_partial(&[mid]).map_err(|e| e.to_string())?;
     let m = model
         .measures
         .get(&mid)
@@ -881,7 +881,10 @@ fn cmd_eval(rest: &[String]) -> Result<(), String> {
     let db = arg(rest, 0, "db")?;
     let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
     let mut store = open(db)?;
-    let base = store.load_model().map_err(|e| e.to_string())?;
+    // load_partial loads only mid's dependency closure (its formula chain /
+    // external-call args), not every cell of every measure in the store --
+    // see .agent/steering/AGENT_OUT_OF_CORE_DESIGN.md §4.
+    let base = store.load_partial(&[mid]).map_err(|e| e.to_string())?;
 
     // Optional `--scenario NAME`: evaluate under a what-if overlay.
     let model = match rest.iter().position(|a| a == "--scenario") {

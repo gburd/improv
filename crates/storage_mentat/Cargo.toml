@@ -14,3 +14,9 @@ mentat.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# Test-only: proves load_partial's output is an ordinary Model that
+# engine::dataflow::evaluate needs zero changes to consume (no runtime
+# dependency; storage_mentat's public API has no engine coupling).
+improv_engine = { path = "../engine" }
