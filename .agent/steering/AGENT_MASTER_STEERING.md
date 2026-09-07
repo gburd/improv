@@ -172,19 +172,27 @@ Build strictly in phase order:
 
 - **Phase 0 — Foundations:** `core_model` + `storage_mentat` + tests. **DONE.**
 - **Phase 1 — Engine + formula compiler:** typed inference, plan
-  (joins/aggregates), DD evaluation. DD-viability gate cleared. **DONE (numeric
-  core).**
-- **Phase 2 — CLI + TUI.** CLI **DONE (headless subset)**; TUI **DONE (viewer)**,
-  live editing pending.
-- **Phase 3 — Server.** **DONE** (JSON HTTP API; auth deferred).
+  (joins/aggregates), DD evaluation. DD-viability gate cleared. **DONE.**
+- **Phase 2 — CLI + TUI.** CLI **DONE**; TUI **DONE** (live editing, pivoting,
+  paging, filters, saved views, CSV import/export).
+- **Phase 3 — Server.** **DONE** (JSON HTTP API, bearer-token auth, a hosted
+  refresh scheduler).
 - **Phase 4 — CNL formulas.** **DONE (initial grammar).**
-- **Phase 5 — Desktop GUI.** Full Improv-style desktop app; toolkit to be chosen
-  early in the phase. Reuses engine + storage unchanged. **PLANNED.**
-- **Phase 6 — External-language functions.** `CALL(func, args...)` dispatching to
-  external runtimes; pure, typed, dimension-declaring. Python first (Resolver One
-  lineage), then R, Julia, and WASM. **PLANNED.**
-- **Phase 7 — SQL database connectivity.** Import/export and `SQL("...")`
-  live-query measures over external databases. **PLANNED.**
+- **Phase 5 — Desktop GUI.** **DONE.** egui/eframe, NeXTSTEP-inspired
+  look-and-feel, pivoting (incl. multi-category-per-axis stacking),
+  virtualized large-grid rendering, charts, saved views/filters, a CSV
+  import/export wizard, syntax-highlighted formula editing.
+- **Phase 6 — External-language functions.** **DONE.** `CALL(func, args...)`
+  dispatches host-side (off the DD hot path) to Python, R, Julia, WASM
+  (in-process `wasmi`), and Pure-lang; an OS-level sandbox (`bwrap` +
+  rlimits) restricts untrusted bodies.
+- **Phase 7 — SQL database connectivity.** **DONE.** Import/export +
+  `SQL("...")` live-query measures over SQLite, PostgreSQL, and DuckDB, with
+  a refresh scheduler (policy-driven, CLI daemon or hosted in the server).
+
+Post-v0.5.0 work (CSV/TSV, crash-safety, formula-editor UX, sandboxing, the
+shared data-source crate, `improv stream`, and the out-of-core investigation)
+is tracked as Phases A–D in `.agent/AGENT_STEERING.md`, not renumbered here.
 
 The `.agent/AGENT_STEERING.md` file holds the authoritative live status; this
 roadmap is the plan, that file is the truth.

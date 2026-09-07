@@ -104,8 +104,11 @@ A JSON HTTP API built on **axum** + **tokio**, over a model store.
 ### 5.2 Design Notes
 
 - Stateless request handlers over a shared model store.
-- Authentication/authorization is **deferred** (documented as not-yet-present).
+- **Bearer-token authentication** (`IMPROV_API_TOKEN`/`IMPROV_API_TOKENS`;
+  `/health` stays public; open mode when no token is configured).
 - The server reuses the same evaluate/persist path as the other interfaces.
+- A **hosted refresh scheduler** runs as a background task alongside the API
+  (`IMPROV_SCHEDULER`/`IMPROV_SCHEDULER_TICK_SECS`; `GET /scheduler/status`).
 
 ---
 

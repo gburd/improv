@@ -143,8 +143,9 @@ Number, Text, Boolean, Date, Error.
 ### 6.2 Type Checking
 
 Ensures operators and functions receive valid types and aggregations receive
-valid collections. The v1 numeric core operates on Number; non-numeric derived
-values are a deferred engine follow-up.
+valid collections. Non-numeric derived values are supported: comparison/
+logical operators produce real `Boolean` `CellValue`s (not a numeric 1.0/0.0
+encoding), and `Text`/`Date`/`Error` flow through the same value lane.
 
 ---
 
