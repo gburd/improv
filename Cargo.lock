@@ -2535,6 +2535,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_data_source"
+version = "0.5.0"
+dependencies = [
+ "improv_core_model",
+]
+
+[[package]]
 name = "improv_engine"
 version = "0.5.0"
 dependencies = [
@@ -2572,6 +2579,7 @@ dependencies = [
  "improv_core_model",
  "improv_engine",
  "improv_nl_formula",
+ "improv_storage_csv",
  "improv_storage_mentat",
  "thiserror 2.0.20",
 ]
@@ -2607,6 +2615,7 @@ version = "0.5.0"
 dependencies = [
  "csv",
  "improv_core_model",
+ "improv_data_source",
  "thiserror 2.0.20",
 ]
 
@@ -2627,6 +2636,7 @@ version = "0.5.0"
 dependencies = [
  "duckdb",
  "improv_core_model",
+ "improv_data_source",
  "postgres",
  "rusqlite",
  "serde",
@@ -2641,6 +2651,7 @@ dependencies = [
  "crossterm",
  "improv_core_model",
  "improv_engine",
+ "improv_storage_csv",
  "improv_storage_mentat",
  "ratatui",
  "thiserror 2.0.20",

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/core_model",
+    "crates/data_source",
     "crates/storage_mentat",
     "crates/storage_sql",
     "crates/storage_csv",

@@ -10,6 +10,7 @@ path = "src/lib.rs"
 
 [dependencies]
 improv_core_model = { path = "../core_model" }
+improv_data_source = { path = "../data_source" }
 thiserror.workspace = true
 serde.workspace = true
 postgres = "0.19"

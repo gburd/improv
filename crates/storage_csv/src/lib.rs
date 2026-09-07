@@ -16,10 +16,7 @@
 //!   (`import_csv_from`, `export_measure_csv_to`) so tests exercise the real
 //!   logic against an in-memory buffer, no tempfiles required.
 
-use improv_core_model::{
-    CategoryId, Coordinate, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value, ValueType,
-};
-use std::collections::HashMap;
+use improv_core_model::{CategoryId, Coordinate, MeasureId, Model, Value, ValueType};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -105,26 +102,22 @@ pub fn import_csv_from<R: io::Read>(
     };
 
     // Ensure the categories exist.
-    for d in &spec.dimensions {
-        model
-            .categories
-            .entry(d.category_id)
-            .or_insert_with(|| improv_core_model::Category {
-                id: d.category_id,
-                name: Name(d.category_name.clone()),
-                items: Vec::new(),
-            });
-    }
+    improv_data_source::ensure_categories(
+        model,
+        spec.dimensions
+            .iter()
+            .map(|d| (d.category_id, d.category_name.as_str())),
+    );
     // Create the measure (input, over the mapped categories).
     let cats: Vec<CategoryId> = spec.dimensions.iter().map(|d| d.category_id).collect();
-    model.add_measure(Measure {
-        id: spec.measure_id,
-        name: Name(spec.measure_name.clone()),
-        value_type: spec.value_type,
-        categories: cats,
-        kind: MeasureKind::Input,
-        description: Some(format!("imported from CSV: {}", spec.path.display())),
-    });
+    improv_data_source::add_input_measure(
+        model,
+        spec.measure_id,
+        &spec.measure_name,
+        spec.value_type,
+        cats,
+        Some(format!("imported from CSV: {}", spec.path.display())),
+    );
 
     // Resolve column refs to indices up front; error clearly if a named
     // column doesn't exist (or a name is used with no header row).
@@ -141,17 +134,10 @@ pub fn import_csv_from<R: io::Read>(
         .max()
         .unwrap_or(0);
 
-    // Per-category interner: item name -> ItemId. Seed it with the model's
+    // Per-category interner: item name -> ItemId. Seeded with the model's
     // EXISTING items (by category + name) so re-import reuses items instead of
     // minting duplicates with the same name.
-    let mut interners: HashMap<CategoryId, HashMap<String, ItemId>> = HashMap::new();
-    for it in model.items.values() {
-        interners
-            .entry(it.category)
-            .or_default()
-            .insert(it.name.0.clone(), it.id);
-    }
-    let mut next_item = spec.item_id_base;
+    let mut interner = improv_data_source::ItemInterner::seeded_from(model, spec.item_id_base);
 
     let mut cells: Vec<(Coordinate, Value)> = Vec::new();
     for result in rdr.records() {
@@ -172,16 +158,8 @@ pub fn import_csv_from<R: io::Read>(
         }
         let mut coord = Coordinate::new();
         for (ci, cat) in &dim_idx {
-            let key = record.get(*ci).unwrap_or("").to_string();
-            let item = *interners
-                .entry(*cat)
-                .or_default()
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    let id = ItemId(next_item);
-                    next_item += 1;
-                    id
-                });
+            let key = record.get(*ci).unwrap_or("");
+            let item = interner.intern(*cat, key);
             coord = coord.with(*cat, item);
         }
         let raw = record.get(val_idx).unwrap_or("");
@@ -197,24 +175,8 @@ pub fn import_csv_from<R: io::Read>(
         cells.push((coord, value));
     }
 
-    // Register items on their categories, then set the input cells.
-    for (cat, items) in &interners {
-        for (name, id) in items {
-            model
-                .items
-                .entry(*id)
-                .or_insert_with(|| improv_core_model::Item {
-                    id: *id,
-                    category: *cat,
-                    name: Name(name.clone()),
-                });
-            if let Some(c) = model.categories.get_mut(cat) {
-                if !c.items.contains(id) {
-                    c.items.push(*id);
-                }
-            }
-        }
-    }
+    // Register interned items on their categories, then set the input cells.
+    interner.register(model);
     let count = cells.len();
     for (coord, value) in cells {
         model.set_input(spec.measure_id, coord, value);
@@ -339,6 +301,7 @@ pub fn export_measure_csv_to<W: io::Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use improv_core_model::ItemId;
     use std::io::Cursor;
 
     const SALES_CSV: &str = "time,product,revenue\n\

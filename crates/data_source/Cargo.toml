@@ -1,15 +1,12 @@
 [package]
-name = "improv_storage_csv"
+name = "improv_data_source"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [lib]
-name = "improv_storage_csv"
+name = "improv_data_source"
 path = "src/lib.rs"
 
 [dependencies]
 improv_core_model = { path = "../core_model" }
-improv_data_source = { path = "../data_source" }
-thiserror.workspace = true
-csv = "1"

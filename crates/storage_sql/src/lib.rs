@@ -28,10 +28,7 @@ pub use duck::connect_duckdb;
 pub use pg::connect_postgres;
 
 use backend::Cell as BackendCell;
-use improv_core_model::{
-    CategoryId, Coordinate, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value, ValueType,
-};
-use std::collections::HashMap;
+use improv_core_model::{CategoryId, Coordinate, MeasureId, Model, Value, ValueType};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SqlError {
@@ -90,38 +87,27 @@ pub fn import_query<C: SqlConn>(
     let table = conn.query(&spec.query)?;
 
     // Ensure the categories exist.
-    for d in &spec.dimensions {
-        model
-            .categories
-            .entry(d.category_id)
-            .or_insert_with(|| improv_core_model::Category {
-                id: d.category_id,
-                name: Name(d.category_name.clone()),
-                items: Vec::new(),
-            });
-    }
+    improv_data_source::ensure_categories(
+        model,
+        spec.dimensions
+            .iter()
+            .map(|d| (d.category_id, d.category_name.as_str())),
+    );
     // Create the measure (input, over the mapped categories).
     let cats: Vec<CategoryId> = spec.dimensions.iter().map(|d| d.category_id).collect();
-    model.add_measure(Measure {
-        id: spec.measure_id,
-        name: Name(spec.measure_name.clone()),
-        value_type: ValueType::Number,
-        categories: cats,
-        kind: MeasureKind::Input,
-        description: Some(format!("imported from SQL: {}", truncate(&spec.query, 80))),
-    });
+    improv_data_source::add_input_measure(
+        model,
+        spec.measure_id,
+        &spec.measure_name,
+        ValueType::Number,
+        cats,
+        Some(format!("imported from SQL: {}", truncate(&spec.query, 80))),
+    );
 
-    // Per-category interner: dimension value string -> ItemId. Seed it with the
+    // Per-category interner: dimension value string -> ItemId. Seeded with the
     // model's EXISTING items (by category + name) so re-import / refresh reuses
     // items instead of minting duplicates with the same name.
-    let mut interners: HashMap<CategoryId, HashMap<String, ItemId>> = HashMap::new();
-    for it in model.items.values() {
-        interners
-            .entry(it.category)
-            .or_default()
-            .insert(it.name.0.clone(), it.id);
-    }
-    let mut next_item = spec.item_id_base;
+    let mut interner = improv_data_source::ItemInterner::seeded_from(model, spec.item_id_base);
 
     // Resolve column indices up front; error clearly if a mapped column is absent.
     let dim_idx: Vec<(usize, CategoryId)> = spec
@@ -138,15 +124,7 @@ pub fn import_query<C: SqlConn>(
         let mut coord = Coordinate::new();
         for (ci, cat) in &dim_idx {
             let key = row[*ci].as_text();
-            let item = *interners
-                .entry(*cat)
-                .or_default()
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    let id = ItemId(next_item);
-                    next_item += 1;
-                    id
-                });
+            let item = interner.intern(*cat, &key);
             coord = coord.with(*cat, item);
         }
         let value: f64 = row[val_idx].as_number().map_err(|_| {
@@ -159,24 +137,8 @@ pub fn import_query<C: SqlConn>(
         count += 1;
     }
 
-    // Register items on their categories and set the input cells.
-    for (cat, items) in &interners {
-        for (name, id) in items {
-            model
-                .items
-                .entry(*id)
-                .or_insert_with(|| improv_core_model::Item {
-                    id: *id,
-                    category: *cat,
-                    name: Name(name.clone()),
-                });
-            if let Some(c) = model.categories.get_mut(cat) {
-                if !c.items.contains(id) {
-                    c.items.push(*id);
-                }
-            }
-        }
-    }
+    // Register interned items on their categories, then set the input cells.
+    interner.register(model);
     for (coord, value) in cells {
         model.set_input(spec.measure_id, coord, Value::Number(value));
     }
