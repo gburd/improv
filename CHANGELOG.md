@@ -10,7 +10,16 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 - **CSV/TSV import/export** (`improv_storage_csv`): the baseline data on-ramp
   named in IMPROV.txt, previously missing. CLI `import-csv`/`export-csv`
-  mirror `import-sql`/`export-sql`'s column-to-dimension mapping syntax.
+  mirror `import-sql`/`export-sql`'s column-to-dimension mapping syntax; a GUI
+  Import/Export wizard and a TUI `I`/`E` command prompt wire it into all three
+  interfaces.
+- **Hosted refresh scheduler** in `improv-server`: the same due-measure/
+  refresh loop as the CLI's `serve-refresh` daemon now runs as a background
+  task (`IMPROV_SCHEDULER`/`IMPROV_SCHEDULER_TICK_SECS`), with
+  `GET /scheduler/status` to observe it.
+- **`improv_data_source`**: shared import logic (category/measure setup,
+  name→id item interning) extracted out of `storage_sql`/`storage_csv`'s
+  independent duplication; every public function signature unchanged.
 - **GUI formula syntax highlighting + inline error display**: the formula bar
   highlights identifiers/functions/numbers/strings/date-literals/operators and
   shows a failed parse's error position inline, via a pure

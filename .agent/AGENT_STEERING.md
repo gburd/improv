@@ -197,9 +197,11 @@ than table-stakes usability. The plan now re-orders toward what makes people
 *trust and adopt* the tool, in phases:
 
 - **Phase A — credibility gaps:**
-  1. **CSV/TSV import/export: DONE.** `improv_storage_csv` (`import_csv`/
-     `export_measure_csv`, mirroring storage_sql's ImportSpec shape); CLI
-     `import-csv`/`export-csv`. GUI/TUI wiring still open.
+  1. **CSV/TSV import/export: DONE (incl. GUI/TUI wiring).**
+     `improv_storage_csv` (`import_csv`/`export_measure_csv`); CLI
+     `import-csv`/`export-csv`; a GUI wizard (toggle-able Import/Export window,
+     dimension-mapping rows, pure builders); a TUI `I`/`E` command prompt
+     reusing the cell-edit buffer machinery (compact CLI-like syntax).
   2. **Crash-safety: DONE.** `save_model` used to transact the model in up to
      6 separate SQLite transactions (a crash between them left a partial
      save); it now opens ONE `InProgress` and commits once, so a save is
@@ -229,18 +231,43 @@ than table-stakes usability. The plan now re-orders toward what makes people
      (never breaks functionality if bwrap/rlimits are unavailable) — a
      best-effort boundary, not a hard guarantee (upgrade path: require
      bwrap/gVisor). `ExternalFn.pure` maps to `Restricted` by default.
-- **Phase D — reach (after A–C):** a plugin architecture for import/export
-  formats and automation; out-of-core storage for billion-cell scale —
-  **investigated, not implemented.** Empirically-verified ceiling is now
-  **5,000,000 cells** in-memory (up from the previous 1M), ~3.5GB peak RSS
-  and ~2.5-4 min `evaluate()` wall-clock at that size (`cargo test -p
-  improv_engine --test stress -- --ignored --nocapture scale_evaluate_5m`);
-  10M is estimated (~7GB RSS) but was not run to avoid risking an OOM.
-  Design doc at `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` recommends
-  changing the storage-to-engine boundary so a `Model` handed to the DD
-  graph is a dependency-closure *window* over the measures an operation
-  actually needs (`ModelStore::load_partial`), not the whole model, as the
-  first step — not a DD/engine-internals rewrite. GUI import/export
-  wizards; a hosted refresh-scheduler service.
+- **Phase D — reach (after A–C):**
+  1. **Import/export "plugin" dedup: DONE.** New tiny `improv_data_source`
+     crate holds the import logic byte-for-byte duplicated between
+     `storage_sql`/`storage_csv` (category/measure setup + name→id item
+     interning); both delegate to it. No trait/dynamic-loading system built
+     — there is exactly one real caller per backend today, so a generic
+     `DataSource` abstraction would be pure indirection (ponytail: no
+     interface for a plugin loader nobody's asked to use at runtime). Every
+     public function signature is unchanged; zero call-site changes anywhere.
+  2. **Out-of-core storage: investigated, not implemented.**
+     Empirically-verified ceiling is now **5,000,000 cells** in-memory (up
+     from the previous 1M), ~3.5GB peak RSS and ~2.5-4 min `evaluate()`
+     wall-clock at that size (`cargo test -p improv_engine --test stress --
+     --ignored --nocapture scale_evaluate_5m`); 10M is estimated (~7GB RSS)
+     but was not run to avoid risking an OOM. Design doc at
+     `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` recommends changing the
+     storage-to-engine boundary so a `Model` handed to the DD graph is a
+     dependency-closure *window* over the measures an operation actually
+     needs (`ModelStore::load_partial`), not the whole model, as the first
+     step — not a DD/engine-internals rewrite.
+  3. **GUI import/export wizards: DONE.** A toggle-able Import/Export CSV
+     window in the GUI (dimension-mapping rows, pure builders); a TUI
+     `I`/`E` command prompt. (Same landing as the Phase A CSV item above.)
+  4. **Hosted refresh-scheduler service: DONE.** `improv-server` now runs the
+     same due-measure/refresh loop as the CLI's `serve-refresh` daemon as a
+     background tokio task (`IMPROV_SCHEDULER`/`IMPROV_SCHEDULER_TICK_SECS`),
+     so CALL measures refresh automatically while the API runs, no separate
+     process needed. `GET /scheduler/status` (bearer-protected) reports it.
+     SQL-sourced measures stay CLI-only (`SqlSource` carries no connection
+     string on the model; inventing one would be scope creep).
+  5. **`improv stream` (stdin→stdout incremental compute): PLANNED.** A
+     scripting-pipeline command: read `measure coord=item,... value` lines
+     from stdin, apply each via the live `session::Engine::set` (delta-only
+     recompute, not a full reload/re-eval per line), and print the changed
+     cells of one or more target measures to stdout as they land — so
+     `producer | improv stream model.db Revenue | consumer` works. Requested
+     directly; not in the original IMPROV.txt design but a natural
+     extension of the CLI's existing `set`/`eval` and the live engine.
 
 Phase status is tracked per-item above as it lands.
