@@ -25,6 +25,9 @@ use improv_storage_mentat::ModelStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
+mod scheduler;
+use scheduler::SharedStatus;
+
 /// Accepted bearer tokens, or open mode.
 ///
 /// `Disabled` = no auth (local dev / tests, preserves v1 behavior);
@@ -63,6 +66,8 @@ impl Auth {
 pub struct AppState {
     db_path: String,
     auth: Auth,
+    /// `None` when the scheduler is disabled (`IMPROV_SCHEDULER=0`).
+    scheduler_status: Option<SharedStatus>,
 }
 
 #[tokio::main]
@@ -80,7 +85,36 @@ async fn main() {
     if matches!(auth, Auth::Disabled) {
         eprintln!("auth disabled: set IMPROV_API_TOKEN to require a bearer token");
     }
-    let state = Arc::new(AppState { db_path, auth });
+
+    let scheduler_enabled = std::env::var("IMPROV_SCHEDULER")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    let tick_secs = std::env::var("IMPROV_SCHEDULER_TICK_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5);
+
+    let scheduler_status = scheduler_enabled.then(|| {
+        Arc::new(std::sync::Mutex::new(scheduler::SchedulerStatus {
+            tick_secs,
+            ..Default::default()
+        }))
+    });
+    let state = Arc::new(AppState {
+        db_path,
+        auth,
+        scheduler_status: scheduler_status.clone(),
+    });
+    if let Some(status) = scheduler_status {
+        scheduler::spawn_scheduler(
+            state.clone(),
+            std::time::Duration::from_secs(tick_secs),
+            status,
+        );
+    } else {
+        eprintln!("scheduler disabled (IMPROV_SCHEDULER=0)");
+    }
+
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
@@ -99,6 +133,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/measures/:id/cells", post(set_cell))
         .route("/nl/parse", post(nl_parse))
         .route("/nl/describe", post(nl_describe))
+        .route("/scheduler/status", get(scheduler_status_handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
 
     Router::new()
@@ -164,6 +199,23 @@ async fn load_model(state: &Arc<AppState>) -> Result<Model, ApiError> {
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Scheduler observability: enabled/tick/last-refreshed. Protected (not a
+/// liveness probe like `/health`) since it can reveal which measures exist.
+async fn scheduler_status_handler(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
+    match &state.scheduler_status {
+        None => Json(json!({ "enabled": false })),
+        Some(status) => {
+            let s = status.lock().unwrap_or_else(|e| e.into_inner());
+            Json(json!({
+                "enabled": true,
+                "tick_secs": s.tick_secs,
+                "last_tick_refreshed": s.last_tick_refreshed,
+                "last_error": s.last_error,
+            }))
+        }
+    }
 }
 
 async fn get_model(State(state): State<Arc<AppState>>) -> Result<Json<Model>, ApiError> {
@@ -562,6 +614,7 @@ mod tests {
         let state = Arc::new(AppState {
             db_path: path.to_str().unwrap().to_string(),
             auth: Auth::Disabled,
+            scheduler_status: None,
         });
         (app(state), path)
     }
@@ -572,6 +625,7 @@ mod tests {
         let state = Arc::new(AppState {
             db_path: path.to_str().unwrap().to_string(),
             auth: Auth::Tokens(HashSet::from([token.to_string()])),
+            scheduler_status: None,
         });
         (app(state), path)
     }
@@ -969,5 +1023,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn scheduler_status_is_protected_and_reports_disabled() {
+        // Disabled scheduler (test apps carry `scheduler_status: None`).
+        let (app, _p) = seeded_app();
+        let resp = app
+            .oneshot(
+                Request::get("/scheduler/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_json(resp).await;
+        assert_eq!(v["enabled"], false);
+
+        // Auth still gates it like any other protected route.
+        let (app, _p) = authed_app("secret");
+        let resp = app
+            .oneshot(get_with_bearer("/scheduler/status", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }
