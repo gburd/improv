@@ -230,8 +230,17 @@ than table-stakes usability. The plan now re-orders toward what makes people
      best-effort boundary, not a hard guarantee (upgrade path: require
      bwrap/gVisor). `ExternalFn.pure` maps to `Restricted` by default.
 - **Phase D — reach (after A–C):** a plugin architecture for import/export
-  formats and automation; out-of-core storage for billion-cell scale (current
-  verified ceiling is ~1M cells in-memory); GUI import/export wizards; a hosted
-  refresh-scheduler service.
+  formats and automation; out-of-core storage for billion-cell scale —
+  **investigated, not implemented.** Empirically-verified ceiling is now
+  **5,000,000 cells** in-memory (up from the previous 1M), ~3.5GB peak RSS
+  and ~2.5-4 min `evaluate()` wall-clock at that size (`cargo test -p
+  improv_engine --test stress -- --ignored --nocapture scale_evaluate_5m`);
+  10M is estimated (~7GB RSS) but was not run to avoid risking an OOM.
+  Design doc at `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` recommends
+  changing the storage-to-engine boundary so a `Model` handed to the DD
+  graph is a dependency-closure *window* over the measures an operation
+  actually needs (`ModelStore::load_partial`), not the whole model, as the
+  first step — not a DD/engine-internals rewrite. GUI import/export
+  wizards; a hosted refresh-scheduler service.
 
 Phase status is tracked per-item above as it lands.

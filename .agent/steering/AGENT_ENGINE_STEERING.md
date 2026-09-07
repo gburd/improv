@@ -320,3 +320,5 @@ Part of the full steering set:
 - `AGENT_DATABASE_CONNECTIVITY.md`
 - `AGENT_TESTING_AND_RELEASE_QUALIFICATION.md`
 - `STEERING_SYSTEM_OVERVIEW.md`
+- `AGENT_OUT_OF_CORE_DESIGN.md` — Phase D scale investigation (proposed, not
+  scheduled)

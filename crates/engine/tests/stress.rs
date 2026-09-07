@@ -14,9 +14,14 @@
 //!  * the live `session::Engine` incremental path: many single-cell edits, each
 //!    recomputing only the affected coordinate (deltas, not full rebuild).
 //!
-//! Sizes are `n_time * n_product` cells. We cap the default heavy sizes at
-//! ~1M cells (fits in CI RAM). True billion-cell scale needs out-of-core
-//! storage (future work); these tests scale to what fits in memory.
+//! Sizes are `n_time * n_product` cells. The default heavy cases go up to 1M
+//! cells (fits in CI RAM). `scale_evaluate_2m`/`_5m` push further (empirically
+//! run on a dev machine: see `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` for
+//! the measured wall-clock/RSS numbers and the point at which this stops being
+//! practical); `scale_evaluate_10m` is left `#[ignore]`d but NOT verified here
+//! (estimated ~7GB RSS, extrapolated, not run, to avoid OOMing a shared
+//! sandbox). True billion-cell scale needs out-of-core storage (future work,
+//! see the design doc above); these tests scale to what fits in memory.
 
 use improv_core_model::{
     BinaryOp, CategoryId, Coordinate, DimensionSpec, Expr, Formula, FuncId, ItemId, Measure,
@@ -309,6 +314,38 @@ fn scale_evaluate_100k() {
 #[ignore = "heavy; run with --ignored --nocapture"]
 fn scale_evaluate_1m() {
     run_scale_case(SCALE_TIME, SCALE_PRODUCT); // 1M cells by default
+}
+
+/// Empirically-verified ceiling exploration (Phase D investigation, see
+/// `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md`). Bigger than the 1M default:
+/// pushes the SAME `grid_model`/`evaluate` path to find where an all-in-RAM
+/// `Model` + single DD graph run actually stops being practical on a single
+/// machine. Run with `--ignored --nocapture` and read `[scale]` timings; peak
+/// RSS is best measured externally (`/usr/bin/time -v`), since these numbers
+/// were gathered that way, not printed from inside the process.
+#[test]
+#[ignore = "heavy; run with --ignored --nocapture"]
+fn scale_evaluate_2m() {
+    run_scale_case(2_000, 1_000); // 2M cells
+}
+
+#[test]
+#[ignore = "heavy; run with --ignored --nocapture"]
+fn scale_evaluate_5m() {
+    run_scale_case(5_000, 1_000); // 5M cells
+}
+
+/// NOT run in the investigation that produced
+/// `.agent/steering/AGENT_OUT_OF_CORE_DESIGN.md` — extrapolating from the 1M/
+/// 2M/5M timings (~0.66GB RSS per million cells, super-linear eval time),
+/// 10M cells is estimated at ~7GB peak RSS and several minutes of eval, which
+/// was judged too likely to OOM a shared/multi-tenant sandbox to attempt
+/// blindly. Left here `#[ignore]`d for a host with headroom to spare (watch
+/// RSS; extrapolate from 1M/2M/5M first if you bump this further).
+#[test]
+#[ignore = "heavy; run with --ignored --nocapture; ~7GB RSS estimated, not yet run"]
+fn scale_evaluate_10m() {
+    run_scale_case(10_000, 1_000); // 10M cells
 }
 
 #[test]

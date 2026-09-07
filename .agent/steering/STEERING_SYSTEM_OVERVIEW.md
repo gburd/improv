@@ -138,6 +138,8 @@ macOS, and Windows — on a deterministic, tested engine.
 - `AGENT_FORMULA_LANGUAGE.md` — formula DSL + CNL
 - `AGENT_DATABASE_CONNECTIVITY.md` — SQL connectivity (Phase 7)
 - `AGENT_TESTING_AND_RELEASE_QUALIFICATION.md` — testing + release gates
+- `AGENT_OUT_OF_CORE_DESIGN.md` — Phase D scale investigation (proposed, not
+  scheduled)
 - `STEERING_SYSTEM_OVERVIEW.md` — this document
 
 Together, these define the complete Improv architecture.
