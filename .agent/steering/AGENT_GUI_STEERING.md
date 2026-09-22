@@ -13,12 +13,19 @@ Next gates, in order:
 1. Fix Unicode highlighting, empty filtered axes, CNL/DSL mismatch, focus,
    typed edits, save-error handling and unsafe CSV mutations. Require actual
    headless egui event/frame regressions, not only helper tests.
-2. Collect attributed, version-specific historical screenshots/manual pages
-   and interaction sequences. Never infer historical visuals from memory.
-3. Approve a worksheet-first reconstruction design retaining egui and the
-   engine: actual left/top grid-edge category handles, multi-measure views,
-   grouped headers, formula area and inspectors matched to those references.
-   The current horizontal shelf is NOT a left/top grid-edge implementation.
+2. **Reference gate: SATISFIED 2026-09-22.** The maintainer supplied NeXTSTEP
+   Improv screenshots (`~/Downloads/improv/`), 17 Quantrix online-demo
+   screenshots, and the Quantrix Modeler brochure. Two decisive references are
+   archived in `docs/reviews/refs/`. Chat/Qloud/Groovy are out of scope.
+3. **Reconstruction plan written: `docs/reviews/2026-09-22-gui-reconstruction-plan.md`**
+   — awaiting maintainer approval before layout code changes. It sequences:
+   margin gutters with edge-docked tiles (the references show tiles in
+   bottom-left/top-right gutters, and the pivot IS dragging between gutters —
+   our horizontal shelf is structurally wrong), a numbered formula list,
+   multiple matrices on a free-form canvas, nested headers with group
+   summaries plus quoted/qualified names, then chrome. Attribution is split
+   Improv-derived vs Quantrix-derived; no pixel-fidelity claim to Improv 3.0
+   may rest on Quantrix screenshots.
 4. Complete new/open/save-as, category/item creation, clipboard, range
    selection, undo/redo, and keyboard-only workflows.
 5. Qualify with screenshot comparisons at fixed DPI/geometry, pointer/key
