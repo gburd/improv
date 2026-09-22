@@ -14,12 +14,12 @@
 use std::collections::HashMap;
 
 use improv_core_model::{
-    parser, CategoryId, Filter, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value,
-    ValueType, View, ViewId,
+    parser, BinaryOp, CategoryId, Expr, Filter, FuncId, ItemId, Measure, MeasureId, MeasureKind,
+    Model, Name, ParseError, UnaryOp, Value, ValueType, View, ViewId,
 };
 use improv_engine::session::{Engine, MeasureValues};
 use improv_engine::{encode_coord, CellValue, CoordKey};
-use improv_nl_formula::{describe_formula, NlContext};
+use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
 
 use crate::csv_wizard::{self, ExportForm, ImportForm};
@@ -227,7 +227,9 @@ impl ImprovApp {
     }
 
     /// Set an input cell and push the edit through the live engine, refreshing
-    /// the snapshot. Returns an error string on failure (e.g. derived cell).
+    /// the snapshot. Returns an error string on failure (e.g. derived cell, or
+    /// a failed autosave — the in-memory edit stands, but the caller MUST NOT
+    /// report success when the store write failed).
     pub fn set_cell(
         &mut self,
         measure: MeasureId,
@@ -250,7 +252,7 @@ impl ImprovApp {
                 .set(measure, coord, value)
                 .map_err(|e| e.to_string())?;
         }
-        self.save();
+        self.save()?;
         Ok(())
     }
 
@@ -510,7 +512,9 @@ impl ImprovApp {
     }
 
     /// Save the current layout as a named view: mint an id, add it to the
-    /// model, and autosave. Returns the id (None if no measure is selected).
+    /// model, and autosave. Returns the id, or `None` when nothing was saved
+    /// (no measure selected, blank name, or a failed store write — in which
+    /// case the view is rolled back and `status` holds the error).
     pub fn save_view(&mut self, name: &str) -> Option<ViewId> {
         let name = name.trim();
         if name.is_empty() {
@@ -520,7 +524,11 @@ impl ImprovApp {
         let id = self.next_view_id();
         let view = self.build_view(id, name)?;
         self.model.add_view(view);
-        self.save();
+        if let Err(e) = self.save() {
+            self.model.views.remove(&id);
+            self.status = e;
+            return None;
+        }
         self.status = format!("saved view '{name}'");
         Some(id)
     }
@@ -627,12 +635,16 @@ impl ImprovApp {
         match improv_storage_csv::import_csv(&mut self.model, &spec) {
             Ok(n) => {
                 self.rebuild_engine();
-                self.save();
-                self.status = format!(
-                    "imported {n} cell(s) into measure {} '{}'",
-                    spec.measure_id.0, spec.measure_name
-                );
                 self.selected = Some(spec.measure_id);
+                // A failed autosave is reported as the failure it is; the
+                // imported cells are already in the live model.
+                self.status = match self.save() {
+                    Ok(()) => format!(
+                        "imported {n} cell(s) into measure {} '{}'",
+                        spec.measure_id.0, spec.measure_name
+                    ),
+                    Err(e) => e,
+                };
             }
             Err(e) => self.status = format!("import error: {e}"),
         }
@@ -768,14 +780,38 @@ impl ImprovApp {
         self.edit_buf = seed;
     }
 
+    /// The editable source text the formula bar shows for `measure`: symbolic
+    /// DSL (`Price * Quantity`) whenever the v1 grammar can spell the formula
+    /// exactly, else the controlled-English description (`Price times
+    /// Quantity`). Empty for an input measure or an unknown id.
+    ///
+    /// Whatever this returns, [`Self::commit_formula`] accepts unchanged — that
+    /// is the invariant this pair exists to keep.
+    pub fn formula_source(&self, measure: MeasureId) -> String {
+        let Some(MeasureKind::Derived(f)) = self.model.measures.get(&measure).map(|m| &m.kind)
+        else {
+            return String::new();
+        };
+        formula_dsl(&self.model, f)
+            .unwrap_or_else(|| describe_formula(&NlContext::new(&self.model), f))
+    }
+
     /// Parse `text` as the RHS expression for an existing measure and make it
     /// derived (replacing any prior formula/input kind). Rebuilds the engine
-    /// (structure changed), refreshes the snapshot, and autosaves. On parse
-    /// error the model is left unchanged, `formula_error_pos`/`formula_error_msg`
-    /// are set (for the formula bar's inline highlight), and the error is
-    /// returned. On success those fields are cleared.
+    /// (structure changed), refreshes the snapshot, and autosaves.
+    ///
+    /// **Atomic:** the change is validated on a *candidate* model (parse, then
+    /// a real engine build) and only published once the engine is known good
+    /// and the store write succeeded. On any failure the previous model,
+    /// engine, and snapshot are all left intact and the error is returned; on a
+    /// parse error `formula_error_pos`/`formula_error_msg` are also set (for the
+    /// formula bar's inline highlight). On success those fields are cleared.
+    ///
+    /// `text` may be either the symbolic DSL (`Price * Quantity`) or the
+    /// controlled English the formula bar displays (`Price times Quantity`);
+    /// see [`Self::formula_source`].
     pub fn commit_formula(&mut self, measure: MeasureId, text: &str) -> Result<(), String> {
-        let formula = match parser::parse_expr(&self.model, text) {
+        let formula = match self.parse_formula_text(text) {
             Ok(f) => f,
             Err(e) => {
                 self.formula_error_pos = e.position;
@@ -783,23 +819,61 @@ impl ImprovApp {
                 return Err(e.to_string());
             }
         };
-        let m = self
-            .model
+        // Validate on a candidate copy: a formula that parses can still fail to
+        // build (cycle, type/dimension error), which would otherwise leave the
+        // app with a saved-but-broken model and a dead engine.
+        let mut candidate = self.model.clone();
+        let m = candidate
             .measures
             .get_mut(&measure)
             .ok_or_else(|| format!("no measure with id {}", measure.0))?;
         m.kind = MeasureKind::Derived(formula);
-        self.rebuild_engine();
-        self.save();
+        self.publish(candidate)?;
         self.formula_error_pos = None;
         self.formula_error_msg.clear();
+        Ok(())
+    }
+
+    /// Parse formula text in either supported surface language: the symbolic
+    /// DSL first (the primary language, and the one whose error positions the
+    /// formula bar highlights), then the controlled English of
+    /// `improv_nl_formula`. The DSL error is what surfaces if both fail.
+    fn parse_formula_text(&self, text: &str) -> Result<improv_core_model::Formula, ParseError> {
+        match parser::parse_expr(&self.model, text) {
+            Ok(f) => Ok(f),
+            Err(dsl_err) => {
+                parse_nl_formula(&NlContext::new(&self.model), text).map_err(|_| dsl_err)
+            }
+        }
+    }
+
+    /// Replace the model with `candidate`, but only if it builds a working
+    /// engine and persists: build first, save second, publish third. On failure
+    /// nothing is touched (`self` keeps its model, engine, and snapshot).
+    ///
+    /// ponytail: validation is a full model clone + a full engine rebuild per
+    /// structural edit (briefly two live engines). That is the price of
+    /// atomicity at GUI edit rates; if formula editing ever needs to be
+    /// interactive on huge models, validate against a compile-only pass
+    /// (`engine::compiler::compile_formula` + `derived_build_order`) instead of
+    /// a real `Engine::new`.
+    fn publish(&mut self, candidate: Model) -> Result<(), String> {
+        let (engine, snapshot) = try_build_engine(&candidate)?;
+        let previous = std::mem::replace(&mut self.model, candidate);
+        if let Err(e) = self.save() {
+            self.model = previous;
+            return Err(e);
+        }
+        self.engine = engine;
+        self.snapshot = snapshot;
         Ok(())
     }
 
     /// Create a new derived measure named `name` with RHS `text`. Categories
     /// are inferred as the union of the referenced measures' categories (same
     /// rule as the CLI's `add-derived`). Rebuilds the engine and autosaves. On
-    /// parse error (or a duplicate name) the model is unchanged.
+    /// any failure (parse error, duplicate name, engine build failure, failed
+    /// store write) the model, engine, and snapshot are unchanged.
     pub fn add_derived_measure(&mut self, name: &str, text: &str) -> Result<MeasureId, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -808,7 +882,7 @@ impl ImprovApp {
         if self.model.measure_by_name(name).is_some() {
             return Err(format!("a measure named {name:?} already exists"));
         }
-        let formula = parser::parse_expr(&self.model, text).map_err(|e| e.to_string())?;
+        let formula = self.parse_formula_text(text).map_err(|e| e.to_string())?;
 
         // Infer categories: union of referenced measures' categories.
         let mut cats: Vec<CategoryId> = Vec::new();
@@ -824,7 +898,8 @@ impl ImprovApp {
         cats.sort_by_key(|c| c.0);
 
         let id = MeasureId(self.next_measure_id());
-        self.model.add_measure(Measure {
+        let mut candidate = self.model.clone();
+        candidate.add_measure(Measure {
             id,
             name: Name(name.to_string()),
             value_type: ValueType::Number,
@@ -832,8 +907,7 @@ impl ImprovApp {
             kind: MeasureKind::Derived(formula),
             description: None,
         });
-        self.rebuild_engine();
-        self.save();
+        self.publish(candidate)?;
         Ok(id)
     }
 
@@ -849,15 +923,16 @@ impl ImprovApp {
     }
 
     /// Autosave the model to the store when `db` is set. In-memory (`""`)
-    /// models skip saving. Save failures land in the status line, never panic.
-    fn save(&mut self) {
+    /// models skip saving. Returns the failure message so callers can report
+    /// it — never overwrite a save failure with a success message.
+    #[must_use = "a failed save must be surfaced, not reported as success"]
+    fn save(&mut self) -> Result<(), String> {
         if self.db.is_empty() {
-            return;
+            return Ok(());
         }
-        match ModelStore::open(&self.db).and_then(|mut s| s.save_model(&self.model).map(|_| ())) {
-            Ok(()) => {}
-            Err(e) => self.status = format!("save failed: {e}"),
-        }
+        ModelStore::open(&self.db)
+            .and_then(|mut s| s.save_model(&self.model).map(|_| ()))
+            .map_err(|e| format!("save failed: {e}"))
     }
 
     /// Read-only inspector facts for `measure` (see `inspector` panel).
@@ -933,6 +1008,21 @@ struct InspectorData {
 /// Build a live engine over all derived measures in `model`, plus its initial
 /// snapshot. Falls back to no engine (inputs still render) on build failure.
 fn build_engine(model: &Model) -> (Option<Engine>, HashMap<MeasureId, MeasureValues>) {
+    match try_build_engine(model) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("improv-gui: engine build failed: {e}");
+            (None, HashMap::new())
+        }
+    }
+}
+
+/// Build a live engine over all derived measures in `model`, propagating a
+/// build failure (cycle, type/dimension error) instead of swallowing it. A
+/// model with no derived measures builds no engine, successfully.
+fn try_build_engine(
+    model: &Model,
+) -> Result<(Option<Engine>, HashMap<MeasureId, MeasureValues>), String> {
     let derived: Vec<MeasureId> = model
         .measures
         .values()
@@ -940,14 +1030,189 @@ fn build_engine(model: &Model) -> (Option<Engine>, HashMap<MeasureId, MeasureVal
         .map(|m| m.id)
         .collect();
     if derived.is_empty() {
-        return (None, HashMap::new());
+        return Ok((None, HashMap::new()));
     }
-    match Engine::new(model, &derived) {
-        Ok((e, snap)) => (Some(e), snap),
-        Err(e) => {
-            eprintln!("improv-gui: engine build failed: {e}");
-            (None, HashMap::new())
+    let (e, snap) = Engine::new(model, &derived).map_err(|e| e.to_string())?;
+    Ok((Some(e), snap))
+}
+
+/// Render `formula` as symbolic-DSL source text that `parser::parse_expr` parses
+/// back to the *identical* AST, or `None` when the v1 grammar has no exact
+/// spelling for the shape (a bare ref carrying `over`/`except`, a
+/// multi-category `OVER`, a non-identifier measure/category name, an
+/// enum/error/negative/exponent literal, an unknown function id). Callers fall
+/// back to the controlled-English description for those, which
+/// `commit_formula` also accepts.
+fn formula_dsl(model: &Model, formula: &improv_core_model::Formula) -> Option<String> {
+    expr_dsl(model, &formula.expr)
+}
+
+/// Binding tightness, mirroring `parser`'s grammar levels (higher binds
+/// tighter). Used to emit exactly the parentheses needed to round-trip.
+fn prec(e: &Expr) -> u8 {
+    match e {
+        Expr::BinaryOp(op, _, _) => match op {
+            BinaryOp::Or => 1,
+            BinaryOp::And => 2,
+            BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Lt
+            | BinaryOp::Le
+            | BinaryOp::Gt
+            | BinaryOp::Ge => 3,
+            BinaryOp::Add | BinaryOp::Sub => 4,
+            BinaryOp::Mul | BinaryOp::Div => 5,
+        },
+        Expr::UnaryOp(_, _) => 6,
+        _ => 7,
+    }
+}
+
+/// `expr_dsl`, parenthesized when `e` binds more loosely than its context.
+fn child_dsl(model: &Model, e: &Expr, min_prec: u8) -> Option<String> {
+    let s = expr_dsl(model, e)?;
+    Some(if prec(e) < min_prec {
+        format!("({s})")
+    } else {
+        s
+    })
+}
+
+fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
+    match e {
+        Expr::Literal(v) => literal_dsl(v),
+        Expr::Ref(id, spec) => {
+            // `over`/`except` have no bare-ref spelling: `OVER` exists only
+            // inside an aggregation (handled below) and `except` not at all.
+            if !spec.over.is_empty() || !spec.except.is_empty() {
+                return None;
+            }
+            ref_dsl(model, *id, &spec.by)
         }
+        Expr::UnaryOp(op, inner) => {
+            // Both unary operators take a Primary, so anything looser than a
+            // unary chain needs parentheses.
+            let s = child_dsl(model, inner, 6)?;
+            Some(match op {
+                UnaryOp::Neg => format!("-{s}"),
+                UnaryOp::Not => format!("NOT {s}"),
+            })
+        }
+        Expr::BinaryOp(op, l, r) => {
+            let p = prec(e);
+            let sym = match op {
+                BinaryOp::Add => "+",
+                BinaryOp::Sub => "-",
+                BinaryOp::Mul => "*",
+                BinaryOp::Div => "/",
+                BinaryOp::And => "AND",
+                BinaryOp::Or => "OR",
+                BinaryOp::Eq => "==",
+                BinaryOp::Ne => "<>",
+                BinaryOp::Lt => "<",
+                BinaryOp::Le => "<=",
+                BinaryOp::Gt => ">",
+                BinaryOp::Ge => ">=",
+            };
+            // Left-associative levels keep a same-level LEFT child bare and
+            // parenthesize a same-level RIGHT child; comparisons are
+            // non-associative, so a same-level child needs parens on either
+            // side (`a < b < c` does not parse).
+            let (lmin, rmin) = if p == 3 { (4, 4) } else { (p, p + 1) };
+            Some(format!(
+                "{} {sym} {}",
+                child_dsl(model, l, lmin)?,
+                child_dsl(model, r, rmin)?
+            ))
+        }
+        Expr::Call(func, args) => call_dsl(model, *func, args),
+    }
+}
+
+fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
+    let name = func_name(func)?;
+    // Aggregation: `FUNC(MeasureRef OVER Category)`, exactly one collapsed
+    // category (all the v1 grammar can express).
+    if let [Expr::Ref(id, spec)] = args {
+        if !spec.over.is_empty() {
+            if spec.over.len() != 1 || !spec.except.is_empty() {
+                return None;
+            }
+            return Some(format!(
+                "{name}({} OVER {})",
+                ref_dsl(model, *id, &spec.by)?,
+                ident(category_name(model, spec.over[0])?)?
+            ));
+        }
+    }
+    let rendered: Option<Vec<String>> = args.iter().map(|a| expr_dsl(model, a)).collect();
+    Some(format!("{name}({})", rendered?.join(", ")))
+}
+
+/// The DSL name of a built-in function id. Scalar names are resolved *through*
+/// `parser::scalar_func` so the id table stays single-sourced there.
+fn func_name(func: FuncId) -> Option<&'static str> {
+    const SCALARS: &[&str] = &[
+        "ABS", "ROUND", "FLOOR", "CEIL", "SQRT", "NEG", "MIN2", "MAX2",
+    ];
+    match func.0 {
+        1 => Some("SUM"),
+        2 => Some("AVG"),
+        3 => Some("MIN"),
+        4 => Some("MAX"),
+        _ => SCALARS
+            .iter()
+            .copied()
+            .find(|n| parser::scalar_func(n).map(|(id, _)| id) == Some(func)),
+    }
+}
+
+fn ref_dsl(model: &Model, id: MeasureId, by: &[CategoryId]) -> Option<String> {
+    let name = ident(model.measures.get(&id).map(|m| m.name.0.as_str())?)?;
+    if by.is_empty() {
+        return Some(name.to_string());
+    }
+    let cats: Option<Vec<&str>> = by
+        .iter()
+        .map(|c| category_name(model, *c).and_then(ident))
+        .collect();
+    Some(format!("{name}[{}]", cats?.join(", ")))
+}
+
+fn category_name(model: &Model, c: CategoryId) -> Option<&str> {
+    model.categories.get(&c).map(|cat| cat.name.0.as_str())
+}
+
+/// `name` if the tokenizer reads it back as a single identifier that is not a
+/// grammar keyword; `None` otherwise (the DSL has no quoting for names).
+fn ident(name: &str) -> Option<&str> {
+    let mut chars = name.chars();
+    let head_ok = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_');
+    if !head_ok || !chars.all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    const KEYWORDS: &[&str] = &["NOT", "AND", "OR", "OVER", "TRUE", "FALSE"];
+    if KEYWORDS.iter().any(|k| name.eq_ignore_ascii_case(k)) {
+        return None;
+    }
+    Some(name)
+}
+
+fn literal_dsl(v: &Value) -> Option<String> {
+    match v {
+        // The number tokenizer reads digits and '.' only: no sign, no exponent.
+        Value::Number(n) => {
+            let s = format!("{n}");
+            (n.is_finite() && *n >= 0.0 && s.chars().all(|c| c.is_ascii_digit() || c == '.'))
+                .then_some(s)
+        }
+        Value::Boolean(b) => Some(if *b { "TRUE".into() } else { "FALSE".into() }),
+        // The v1 string literal has no escapes, so only text that survives
+        // verbatim between quotes is expressible.
+        Value::Text(t) => (!t.contains('"') && !t.contains('\\') && !t.contains(char::is_control))
+            .then(|| format!("\"{t}\"")),
+        Value::DateTime(dt) => Some(format!("#{}#", dt.to_rfc3339())),
+        Value::Enum(_) | Value::Error(_) => None,
     }
 }
 
@@ -1031,7 +1296,10 @@ impl ImprovApp {
                         }
                     }
                     if btn(ui, "⬇", "Save model to store") {
-                        self.save();
+                        self.status = match self.save() {
+                            Ok(()) => "saved model".into(),
+                            Err(e) => e,
+                        };
                     }
                 });
             });
@@ -1185,13 +1453,7 @@ impl ImprovApp {
                 self.formula_for = self.selected;
                 self.formula_buf = self
                     .selected
-                    .and_then(|m| self.model.measures.get(&m))
-                    .and_then(|m| match &m.kind {
-                        MeasureKind::Derived(f) => {
-                            Some(describe_formula(&NlContext::new(&self.model), f))
-                        }
-                        MeasureKind::Input => None,
-                    })
+                    .map(|m| self.formula_source(m))
                     .unwrap_or_default();
                 self.formula_error_pos = None;
                 self.formula_error_msg.clear();
@@ -2199,6 +2461,314 @@ mod tests {
             .is_err());
         assert!(app.add_derived_measure("Revenue", "Price").is_err()); // dup name
         assert_eq!(app.model, before);
+    }
+
+    // -- BUG 2: the displayed formula must commit unchanged ----------------
+
+    /// Every formula shape the formula bar can display, for the round-trip.
+    /// `SQL(...)`/`CALL(...)` are measure *definitions* whose measures stay
+    /// `MeasureKind::Input` (see `cli::cmd_define`), so the formula bar shows
+    /// them the input hint, never editable formula text — nothing to round-trip.
+    fn displayable_formulas() -> Vec<(&'static str, Formula)> {
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        let price = || Expr::Ref(MeasureId(100), DimensionSpec::default());
+        let qty = || Expr::Ref(MeasureId(101), DimensionSpec::default());
+        let bin = |op, l: Expr, r: Expr| Expr::BinaryOp(op, Box::new(l), Box::new(r));
+        vec![
+            (
+                "binary op",
+                Formula::new(bin(BinaryOp::Mul, price(), qty())),
+            ),
+            (
+                "nested binary ops needing parens",
+                Formula::new(bin(
+                    BinaryOp::Mul,
+                    bin(BinaryOp::Add, price(), qty()),
+                    bin(BinaryOp::Sub, qty(), Expr::Literal(Value::Number(2.0))),
+                )),
+            ),
+            (
+                "right-nested same-precedence",
+                Formula::new(bin(
+                    BinaryOp::Sub,
+                    price(),
+                    bin(BinaryOp::Sub, qty(), Expr::Literal(Value::Number(1.0))),
+                )),
+            ),
+            (
+                "aggregation with OVER",
+                Formula::new(Expr::Call(
+                    FuncId(1), // SUM
+                    vec![Expr::Ref(
+                        MeasureId(101),
+                        DimensionSpec {
+                            by: vec![],
+                            over: vec![t],
+                            except: vec![],
+                        },
+                    )],
+                )),
+            ),
+            (
+                "scalar call",
+                Formula::new(Expr::Call(FuncId(10), vec![price()])), // ABS
+            ),
+            (
+                "two-arg scalar call",
+                Formula::new(Expr::Call(FuncId(20), vec![price(), qty()])), // MIN2
+            ),
+            (
+                "comparison",
+                Formula::new(bin(BinaryOp::Gt, price(), qty())),
+            ),
+            (
+                "logical over comparisons",
+                Formula::new(bin(
+                    BinaryOp::And,
+                    bin(BinaryOp::Gt, price(), qty()),
+                    Expr::UnaryOp(
+                        UnaryOp::Not,
+                        Box::new(bin(BinaryOp::Eq, qty(), Expr::Literal(Value::Number(0.0)))),
+                    ),
+                )),
+            ),
+            (
+                "unary negation of a group",
+                Formula::new(Expr::UnaryOp(
+                    UnaryOp::Neg,
+                    Box::new(bin(BinaryOp::Add, price(), qty())),
+                )),
+            ),
+            (
+                "dimension-projected ref",
+                Formula::new(bin(
+                    BinaryOp::Mul,
+                    Expr::Ref(
+                        MeasureId(101),
+                        DimensionSpec {
+                            by: vec![t, p],
+                            over: vec![],
+                            except: vec![],
+                        },
+                    ),
+                    price(),
+                )),
+            ),
+            (
+                "date literals",
+                Formula::new(bin(
+                    BinaryOp::Gt,
+                    // Built through the parser so the test needs no chrono dep.
+                    parser::parse_expr(&revenue_model(), "#2025-01-01#")
+                        .expect("date literal parses")
+                        .expr,
+                    parser::parse_expr(&revenue_model(), "#2024-06-30T12:00:00Z#")
+                        .expect("timestamp literal parses")
+                        .expr,
+                )),
+            ),
+            (
+                "boolean and text literals",
+                Formula::new(bin(
+                    BinaryOp::Or,
+                    Expr::Literal(Value::Boolean(true)),
+                    bin(
+                        BinaryOp::Eq,
+                        Expr::Literal(Value::Text("hello world".into())),
+                        Expr::Literal(Value::Text("x".into())),
+                    ),
+                )),
+            ),
+        ]
+    }
+
+    /// The invariant: the text the formula bar puts in its buffer commits
+    /// successfully UNCHANGED, leaving the AST and the computed snapshot alone.
+    #[test]
+    fn displayed_formula_commits_unchanged() {
+        for (label, formula) in displayable_formulas() {
+            let mut model = revenue_model();
+            model.measures.get_mut(&MeasureId(102)).unwrap().kind =
+                MeasureKind::Derived(formula.clone());
+            let mut app = build_app(model);
+            app.selected = Some(MeasureId(102));
+
+            // Exactly what `formula_bar` seeds the buffer with.
+            let buf = app.formula_source(MeasureId(102));
+            assert!(!buf.is_empty(), "{label}: nothing displayed");
+
+            let before = app.snapshot.clone();
+            app.commit_formula(MeasureId(102), &buf)
+                .unwrap_or_else(|e| panic!("{label}: displayed {buf:?} did not commit: {e}"));
+
+            let after = match &app.model.measures[&MeasureId(102)].kind {
+                MeasureKind::Derived(f) => f.clone(),
+                MeasureKind::Input => panic!("{label}: measure stopped being derived"),
+            };
+            assert_eq!(
+                after, formula,
+                "{label}: AST changed by round-trip ({buf:?})"
+            );
+            assert!(app.engine.is_some(), "{label}: engine lost");
+            assert_eq!(app.snapshot, before, "{label}: snapshot changed ({buf:?})");
+        }
+    }
+
+    #[test]
+    fn displayed_dsl_is_the_symbolic_language_not_prose() {
+        // The plain revenue model's formula shows as DSL, minimally parenthesized.
+        let app = build_app(revenue_model());
+        assert_eq!(app.formula_source(MeasureId(102)), "Price * Quantity");
+        // Input measures have no formula text.
+        assert_eq!(app.formula_source(MeasureId(100)), "");
+        assert_eq!(app.formula_source(MeasureId(999)), "");
+    }
+
+    #[test]
+    fn shapes_without_a_dsl_spelling_fall_back_to_cnl_and_still_commit() {
+        // `SUM(x OVER Time AND Product)` has no v1 DSL spelling (one category
+        // per OVER), so the bar shows controlled English — which commits.
+        let mut model = revenue_model();
+        let f = Formula::new(Expr::Call(
+            FuncId(1),
+            vec![Expr::Ref(
+                MeasureId(101),
+                DimensionSpec {
+                    by: vec![],
+                    over: vec![CategoryId(1), CategoryId(2)],
+                    except: vec![],
+                },
+            )],
+        ));
+        model.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(f.clone());
+        let mut app = build_app(model);
+
+        let buf = app.formula_source(MeasureId(102));
+        assert_eq!(buf, "the sum of Quantity over Time and Product");
+        app.commit_formula(MeasureId(102), &buf).expect("commits");
+        match &app.model.measures[&MeasureId(102)].kind {
+            MeasureKind::Derived(got) => assert_eq!(*got, f),
+            MeasureKind::Input => panic!("stopped being derived"),
+        }
+    }
+
+    #[test]
+    fn dsl_printer_refuses_inexpressible_shapes() {
+        let model = revenue_model();
+        // A bare ref carrying `over` (no aggregation) and `except` have no
+        // spelling; so does an unknown function id and an enum literal.
+        let bare_over = Formula::new(Expr::Ref(
+            MeasureId(100),
+            DimensionSpec {
+                by: vec![],
+                over: vec![CategoryId(1)],
+                except: vec![],
+            },
+        ));
+        assert_eq!(formula_dsl(&model, &bare_over), None);
+        let excepted = Formula::new(Expr::Ref(
+            MeasureId(100),
+            DimensionSpec {
+                by: vec![],
+                over: vec![],
+                except: vec![CategoryId(1)],
+            },
+        ));
+        assert_eq!(formula_dsl(&model, &excepted), None);
+        let unknown_fn = Formula::new(Expr::Call(
+            FuncId(4242),
+            vec![Expr::Ref(MeasureId(100), DimensionSpec::default())],
+        ));
+        assert_eq!(formula_dsl(&model, &unknown_fn), None);
+        assert_eq!(
+            formula_dsl(&model, &Formula::new(Expr::Literal(Value::Enum(3)))),
+            None
+        );
+        // A negative literal has no token either (only unary minus does).
+        assert_eq!(
+            formula_dsl(&model, &Formula::new(Expr::Literal(Value::Number(-1.0)))),
+            None
+        );
+    }
+
+    // -- BUG 1: failed saves and bad formulas ------------------------------
+
+    #[test]
+    fn cell_edit_and_formula_commit_report_save_failure() {
+        // A store path under a directory that does not exist: every save fails.
+        let db = std::env::temp_dir()
+            .join(format!("improv_gui_no_such_dir_{}", std::process::id()))
+            .join("model.db")
+            .to_string_lossy()
+            .into_owned();
+        let mut app = build_app(revenue_model());
+        app.db = db;
+
+        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        key.sort();
+        let err = app
+            .set_cell(MeasureId(101), key, 9.0)
+            .expect_err("unwritable store must fail the edit");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+
+        let err = app
+            .commit_formula(MeasureId(102), "Price + Quantity")
+            .expect_err("unwritable store must fail the commit");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+
+        let err = app
+            .add_derived_measure("Margin", "Price - Quantity")
+            .expect_err("unwritable store must fail the add");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+
+        // The view save reports the failure in the status line and rolls back.
+        assert_eq!(app.save_view("L1"), None);
+        assert!(app.status.starts_with("save failed:"), "{}", app.status);
+        assert!(app.model.views.is_empty(), "view rolled back");
+
+        // A failed formula commit did not publish the new formula, so the model
+        // still holds (and computes) the original Revenue = Price * Quantity.
+        assert_eq!(app.formula_source(MeasureId(102)), "Price * Quantity");
+        assert!(app.model.measure_by_name("Margin").is_none());
+    }
+
+    #[test]
+    fn formula_that_fails_to_build_is_not_published() {
+        let mut app = build_app(revenue_model());
+        let before_model = app.model.clone();
+        let before_snapshot = app.snapshot.clone();
+
+        // Revenue = Revenue + Price parses fine but is a dependency cycle, so
+        // the engine cannot build.
+        let err = app
+            .commit_formula(MeasureId(102), "Revenue + Price")
+            .expect_err("a cyclic formula must be rejected");
+        assert!(err.contains("cyclic"), "got {err:?}");
+
+        assert_eq!(app.model, before_model, "model preserved");
+        assert_eq!(app.snapshot, before_snapshot, "snapshot preserved");
+        assert!(app.engine.is_some(), "engine preserved");
+        assert_eq!(app.formula_source(MeasureId(102)), "Price * Quantity");
+        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        key.sort();
+        assert_eq!(app.values_for(MeasureId(102)).get(&key), Some(&70.0));
+
+        // Same for a type error the parser accepts but the compiler rejects
+        // (comparison result fed to arithmetic).
+        let err = app
+            .commit_formula(MeasureId(102), "(Price > Quantity) * Price")
+            .expect_err("a type error must be rejected");
+        assert!(!err.is_empty());
+        assert_eq!(app.model, before_model, "model preserved");
+        assert!(app.engine.is_some(), "engine preserved");
+
+        // And for add_derived_measure.
+        let err = app
+            .add_derived_measure("Bad", "(Price > Quantity) * Price")
+            .expect_err("a type error must be rejected");
+        assert!(!err.is_empty());
+        assert_eq!(app.model, before_model, "model preserved");
+        assert!(app.engine.is_some(), "engine preserved");
     }
 
     #[test]
