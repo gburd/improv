@@ -198,7 +198,11 @@ impl ImprovApp {
     // -- pure state logic (unit-tested; no rendering) ----------------------
 
     /// The numeric value map for a measure (input cells, or the derived
-    /// snapshot projected to numbers for the grid).
+    /// snapshot), projected to numbers for the CHART, which can only plot
+    /// numbers. Non-numeric cells are absent (a gap).
+    ///
+    /// The GRID must not use this: a Text/Boolean/DateTime cell would render
+    /// blank. Display goes through [`Self::cell_text`], which is type-aware.
     fn values_for(&self, measure: MeasureId) -> HashMap<CoordKey, f64> {
         let is_derived = self.model.measures.get(&measure).map(|m| m.is_derived());
         match is_derived {
@@ -224,33 +228,85 @@ impl ImprovApp {
         }
     }
 
-    /// The display text for a derived cell (booleans as true/false, errors as
-    /// `#ERR`) via `CellValue`'s `Display`.
-    fn derived_cell_text(&self, measure: MeasureId, key: &CoordKey) -> Option<String> {
-        self.snapshot
-            .get(&measure)
-            .and_then(|m| m.get(key))
-            .map(|v| v.to_string())
-    }
-
-    /// Set an input cell and push the edit through the live engine, refreshing
-    /// the snapshot. Returns an error string on failure (e.g. derived cell, or
-    /// a failed autosave — the in-memory edit stands, but the caller MUST NOT
-    /// report success when the store write failed).
-    pub fn set_cell(
-        &mut self,
-        measure: MeasureId,
-        coord: CoordKey,
-        value: f64,
-    ) -> Result<(), String> {
+    /// The typed value of a cell: the engine snapshot for a derived measure,
+    /// the model's stored `Value` (mapped to a `CellValue`) for an input one.
+    /// `None` = the cell genuinely holds nothing.
+    fn cell_value(&self, measure: MeasureId, key: &CoordKey) -> Option<CellValue> {
         if self
             .model
             .measures
             .get(&measure)
-            .map(|m| m.is_derived())
-            .unwrap_or(false)
+            .is_some_and(|m| m.is_derived())
         {
+            return self
+                .snapshot
+                .get(&measure)
+                .and_then(|m| m.get(key))
+                .cloned();
+        }
+        self.model
+            .input(measure, &decode(key))
+            .and_then(CellValue::from_model_value)
+    }
+
+    /// The display text for any cell — derived OR input — via `CellValue`'s
+    /// `Display`: numbers as numbers, text as text, booleans as `true`/`false`,
+    /// dates as RFC3339, error cells as `#ERR`. A cell is blank only when it
+    /// holds no value, never merely because its value is not a number.
+    fn cell_text(&self, measure: MeasureId, key: &CoordKey) -> Option<String> {
+        self.cell_value(measure, key).map(|v| v.to_string())
+    }
+
+    /// Set an input cell to a TYPED value and push the edit through the live
+    /// engine, refreshing the snapshot.
+    ///
+    /// `value`'s type must match the measure's DECLARED `value_type`: a Text
+    /// measure refuses a `Value::Number` (and vice versa) rather than silently
+    /// replacing a typed cell with a number. Editing UI must parse by declared
+    /// type — see [`Self::commit_cell_text`].
+    ///
+    /// Returns an error string on failure (derived cell, type mismatch, or a
+    /// failed autosave); on failure the model, engine, and snapshot are left as
+    /// they were.
+    pub fn set_cell(
+        &mut self,
+        measure: MeasureId,
+        coord: CoordKey,
+        value: Value,
+    ) -> Result<(), String> {
+        self.write_cell(measure, coord, Some(value))
+    }
+
+    /// Remove an input cell's value (the empty-commit path) and push the
+    /// retraction through the live engine. Same atomicity as [`Self::set_cell`].
+    pub fn clear_cell(&mut self, measure: MeasureId, coord: CoordKey) -> Result<(), String> {
+        self.write_cell(measure, coord, None)
+    }
+
+    /// The one write path for input cells: `Some(v)` sets, `None` clears.
+    fn write_cell(
+        &mut self,
+        measure: MeasureId,
+        coord: CoordKey,
+        value: Option<Value>,
+    ) -> Result<(), String> {
+        let m = self
+            .model
+            .measures
+            .get(&measure)
+            .ok_or_else(|| format!("no measure with id {}", measure.0))?;
+        if m.is_derived() {
             return Err("derived cells are computed, not editable".into());
+        }
+        // The declared type is the contract: never coerce, never overwrite a
+        // typed cell with a value of another type.
+        if let Some(v) = &value {
+            if v.type_of() != Some(m.value_type) {
+                return Err(format!(
+                    "measure '{}' is declared {:?}; refusing to store {v:?}",
+                    m.name.0, m.value_type
+                ));
+            }
         }
         // Precise rollback rather than publish()'s clone-and-swap: a single cell
         // edit goes through the INCREMENTAL engine (`engine.set`), so cloning the
@@ -262,14 +318,14 @@ impl ImprovApp {
         let prior = self.model.input(measure, &key).cloned();
         let prior_snapshot = self.snapshot.clone();
 
-        self.model
-            .set_input(measure, key.clone(), Value::Number(value));
-        let outcome = (|| -> Result<(), String> {
-            if let Some(engine) = &mut self.engine {
-                self.snapshot = engine
-                    .set(measure, coord.clone(), value)
-                    .map_err(|e| e.to_string())?;
+        match &value {
+            Some(v) => self.model.set_input(measure, key.clone(), v.clone()),
+            None => {
+                self.model.inputs.remove(&(measure, key.clone()));
             }
+        }
+        let outcome = (|| -> Result<(), String> {
+            self.push_engine(measure, &coord, value.as_ref())?;
             self.save()
         })();
 
@@ -282,26 +338,71 @@ impl ImprovApp {
                     self.model.inputs.remove(&(measure, key));
                 }
             }
-            if let Some(engine) = &mut self.engine {
-                let restored = prior.as_ref().and_then(|v| v.as_number());
-                match restored {
-                    Some(n) => {
-                        if let Ok(s) = engine.set(measure, coord, n) {
-                            self.snapshot = s;
-                        } else {
-                            self.snapshot = prior_snapshot;
-                        }
-                    }
-                    // No prior numeric value to re-assert; fall back to the
-                    // snapshot captured before the edit.
-                    None => self.snapshot = prior_snapshot,
-                }
-            } else {
+            if self.push_engine(measure, &coord, prior.as_ref()).is_err() {
                 self.snapshot = prior_snapshot;
             }
             return Err(e);
         }
         Ok(())
+    }
+
+    /// Push one input-cell edit through the live engine and adopt the recomputed
+    /// snapshot. No engine (no derived measures) -> nothing to do.
+    ///
+    /// Only NUMBERS enter the dataflow's numeric lane, so a typed
+    /// (text/boolean/date/error) value CLEARS the engine's cell — exactly what a
+    /// reload would seed (`Engine::new` seeds numeric inputs only). Without
+    /// that, retyping a numeric cell as text would leave derived measures
+    /// computing with a number the cell no longer holds.
+    fn push_engine(
+        &mut self,
+        measure: MeasureId,
+        coord: &CoordKey,
+        value: Option<&Value>,
+    ) -> Result<(), String> {
+        let Some(engine) = &mut self.engine else {
+            return Ok(());
+        };
+        let snapshot = match value.and_then(|v| v.as_number()) {
+            Some(n) => engine.set(measure, coord.clone(), n),
+            None => engine.clear(measure, coord.clone()),
+        }
+        .map_err(|e| e.to_string())?;
+        self.snapshot = snapshot;
+        Ok(())
+    }
+
+    /// Commit a grid edit buffer for `measure[coord]`, interpreting the text by
+    /// the measure's DECLARED `value_type`. Returns the status message.
+    ///
+    /// * An EMPTY (or whitespace-only) buffer **clears the cell**. Escape
+    ///   already cancels an edit, so an empty commit is the GUI's only way to
+    ///   delete a value; treating it as a second cancel would make cells
+    ///   un-clearable.
+    /// * Otherwise the declared type wins over the text's shape: `"42"` typed
+    ///   into a Text measure stores `Value::Text("42")`, never a number.
+    /// * Text that does not parse as the declared type is REJECTED (`Err`); the
+    ///   prior typed value stays exactly as it was.
+    pub fn commit_cell_text(
+        &mut self,
+        measure: MeasureId,
+        coord: CoordKey,
+        text: &str,
+    ) -> Result<String, String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            self.clear_cell(measure, coord)?;
+            return Ok("cell cleared".into());
+        }
+        let declared = self
+            .model
+            .measures
+            .get(&measure)
+            .map(|m| m.value_type)
+            .ok_or_else(|| format!("no measure with id {}", measure.0))?;
+        let value = parse_typed(&self.model, declared, trimmed)?;
+        self.set_cell(measure, coord, value)?;
+        Ok("cell updated".into())
     }
 
     // -- pivot / page state (pure; unit-tested without egui) ---------------
@@ -840,11 +941,7 @@ impl ImprovApp {
             self.status = "derived cells are computed, not editable".into();
             return;
         }
-        let seed = self
-            .values_for(measure)
-            .get(&key)
-            .map(|v| format!("{v}"))
-            .unwrap_or_default();
+        let seed = self.cell_text(measure, &key).unwrap_or_default();
         self.editing = Some((measure, key));
         self.edit_buf = seed;
     }
@@ -1316,6 +1413,43 @@ fn literal_dsl(v: &Value) -> Option<String> {
             .then(|| format!("\"{t}\"")),
         Value::DateTime(dt) => Some(format!("#{}#", dt.to_rfc3339())),
         Value::Enum(_) | Value::Error(_) => None,
+    }
+}
+
+/// Parse cell text as `declared`, the measure's declared type. The declared
+/// type WINS over the text's shape: `"42"` for a Text measure is text, not a
+/// number. Unparsable text is an error (never a coerced value), so a bad edit
+/// leaves the prior typed cell untouched.
+///
+/// Dates and booleans reuse the formula grammar's own literal forms (via
+/// `parser::parse_expr` on `#...#` / `TRUE`|`FALSE`), so a date a formula
+/// accepts is a date a cell accepts. Numbers use `f64::from_str` instead: the
+/// formula tokenizer reads digits and `.` only, and a cell must accept `-3.5`
+/// and `1e9`.
+fn parse_typed(model: &Model, declared: ValueType, text: &str) -> Result<Value, String> {
+    let literal = |src: String| match parser::parse_expr(model, &src) {
+        Ok(f) => match f.expr {
+            Expr::Literal(v) if v.type_of() == Some(declared) => Some(v),
+            _ => None,
+        },
+        Err(_) => None,
+    };
+    match declared {
+        ValueType::Number => text
+            .parse::<f64>()
+            .map(Value::Number)
+            .map_err(|_| format!("not a number: {text:?}")),
+        // Text takes the buffer verbatim (trimmed by the caller) — no parsing,
+        // so nothing a user can type is rejected.
+        ValueType::Text => Ok(Value::Text(text.to_string())),
+        ValueType::Boolean => literal(text.to_ascii_uppercase())
+            .ok_or_else(|| format!("not a boolean (use true/false): {text:?}")),
+        ValueType::DateTime => literal(format!("#{text}#"))
+            .ok_or_else(|| format!("not a date (use YYYY-MM-DD or RFC3339): {text:?}")),
+        ValueType::Enum => text
+            .parse::<u32>()
+            .map(Value::Enum)
+            .map_err(|_| format!("not an enum index: {text:?}")),
     }
 }
 
@@ -2127,7 +2261,6 @@ impl ImprovApp {
             .get(&measure)
             .map(|m| m.is_derived())
             .unwrap_or(false);
-        let values = self.values_for(measure);
 
         // Cartesian product of stacked categories per axis. Columns are
         // materialized up front (they become egui table columns, which the
@@ -2290,8 +2423,7 @@ impl ImprovApp {
                             }
                             frame.show(ui, |ui| {
                                 if is_derived {
-                                    let text =
-                                        self.derived_cell_text(measure, &key).unwrap_or_default();
+                                    let text = self.cell_text(measure, &key).unwrap_or_default();
                                     if ui.label(text).clicked() {
                                         self.cursor_row = ri;
                                         self.cursor_col = ci;
@@ -2311,18 +2443,15 @@ impl ImprovApp {
                                         commit = Some((key.clone(), self.edit_buf.clone()));
                                     }
                                 } else {
-                                    let text = values
-                                        .get(&key)
-                                        .map(|v| format!("{v}"))
-                                        .unwrap_or_default();
-                                    if ui.button(text).clicked() {
+                                    // Typed display: text, booleans, dates, and
+                                    // #ERR all render as themselves (never blank
+                                    // just because they are not numbers).
+                                    let text = self.cell_text(measure, &key).unwrap_or_default();
+                                    if ui.button(text.clone()).clicked() {
                                         self.cursor_row = ri;
                                         self.cursor_col = ci;
                                         self.editing = Some((measure, key.clone()));
-                                        self.edit_buf = values
-                                            .get(&key)
-                                            .map(|v| format!("{v}"))
-                                            .unwrap_or_default();
+                                        self.edit_buf = text;
                                     }
                                 }
                             });
@@ -2340,18 +2469,10 @@ impl ImprovApp {
         }
         if let Some((key, text)) = commit {
             self.editing = None;
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                self.status = "empty cell not set".into();
-            } else {
-                match trimmed.parse::<f64>() {
-                    Ok(v) => match self.set_cell(measure, key, v) {
-                        Ok(()) => self.status = "cell updated".into(),
-                        Err(e) => self.status = format!("edit error: {e}"),
-                    },
-                    Err(_) => self.status = format!("bad number: {trimmed:?}"),
-                }
-            }
+            self.status = match self.commit_cell_text(measure, key, &text) {
+                Ok(msg) => msg,
+                Err(e) => format!("edit error: {e}"),
+            };
         }
     }
 }
@@ -2497,7 +2618,8 @@ mod tests {
         // Set Quantity[2025,WidgetA] = 9 -> Revenue = 90.
         let mut qkey = vec![(1u32, 10u32), (2u32, 20u32)];
         qkey.sort();
-        app.set_cell(MeasureId(101), qkey.clone(), 9.0).unwrap();
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(9.0))
+            .unwrap();
         let rev = app.values_for(MeasureId(102));
         assert_eq!(rev.get(&qkey), Some(&90.0));
     }
@@ -2506,7 +2628,9 @@ mod tests {
     fn editing_derived_is_rejected() {
         let mut app = build_app(revenue_model());
         let key = vec![(1u32, 10u32), (2u32, 20u32)];
-        assert!(app.set_cell(MeasureId(102), key, 1.0).is_err());
+        assert!(app
+            .set_cell(MeasureId(102), key, Value::Number(1.0))
+            .is_err());
     }
 
     #[test]
@@ -2843,7 +2967,7 @@ mod tests {
         let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         let err = app
-            .set_cell(MeasureId(101), key, 9.0)
+            .set_cell(MeasureId(101), key, Value::Number(9.0))
             .expect_err("unwritable store must fail the edit");
         assert!(err.starts_with("save failed:"), "got {err:?}");
 
@@ -3375,7 +3499,8 @@ mod tests {
         app.cursor_row = 0;
         app.cursor_col = 0;
         let key = app.cursor_key().expect("cursor addresses a cell");
-        app.set_cell(MeasureId(101), key, 200.0).unwrap();
+        app.set_cell(MeasureId(101), key, Value::Number(200.0))
+            .unwrap();
 
         // Revenue[2025, WidgetA] = Price(10) * 200 = 2000 in the snapshot.
         let mut rkey = vec![(1u32, 10u32), (2, 20)];
@@ -4206,12 +4331,282 @@ mod tests {
         let coord = vec![(1u32, 10u32), (2u32, 20u32)];
         let before = app.model.input(measure, &decode(&coord)).cloned();
 
-        let res = app.set_cell(measure, coord.clone(), 999.0);
+        let res = app.set_cell(measure, coord.clone(), Value::Number(999.0));
         assert!(res.is_err(), "save to an unwritable path must fail");
         assert_eq!(
             app.model.input(measure, &decode(&coord)).cloned(),
             before,
             "defect #6: rejected value must not remain in the model"
         );
+    }
+
+    // -- typed (non-numeric) cell display + editing -------------------------
+
+    /// A `Value::DateTime` built through the same literal grammar cell editing
+    /// uses (so tests need no direct chrono dependency).
+    fn date(text: &str) -> Value {
+        parse_typed(&Model::new(), ValueType::DateTime, text).expect("fixture date")
+    }
+
+    /// One input measure per declared type, all over a single category so each
+    /// grid is 1x1 and the coordinate is trivial.
+    fn typed_model() -> Model {
+        let mut m = Model::new();
+        let p = CategoryId(1);
+        m.add_category(p, "Product");
+        m.add_item(ItemId(10), p, "WidgetA");
+        for (id, name, vt) in [
+            (1u32, "Qty", ValueType::Number),
+            (2, "Label", ValueType::Text),
+            (3, "Active", ValueType::Boolean),
+            (4, "Shipped", ValueType::DateTime),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: vt,
+                categories: vec![p],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let cell = improv_core_model::Coordinate::from_pairs([(p, ItemId(10))]);
+        m.set_input(MeasureId(1), cell.clone(), Value::Number(7.0));
+        m.set_input(MeasureId(2), cell.clone(), Value::Text("hello".into()));
+        m.set_input(MeasureId(3), cell.clone(), Value::Boolean(true));
+        m.set_input(MeasureId(4), cell, date("2025-03-04"));
+        m
+    }
+
+    fn typed_key() -> CoordKey {
+        vec![(1u32, 10u32)]
+    }
+
+    /// Every declared type RENDERS its value. Pre-fix the grid projected input
+    /// cells through `f64`, so Text/Boolean/DateTime cells were blank.
+    #[test]
+    fn typed_input_cells_render_their_values() {
+        let app = build_app(typed_model());
+        let key = typed_key();
+        assert_eq!(app.cell_text(MeasureId(1), &key).as_deref(), Some("7"));
+        assert_eq!(app.cell_text(MeasureId(2), &key).as_deref(), Some("hello"));
+        assert_eq!(app.cell_text(MeasureId(3), &key).as_deref(), Some("true"));
+        assert_eq!(
+            app.cell_text(MeasureId(4), &key).as_deref(),
+            Some("2025-03-04T00:00:00+00:00")
+        );
+        // A cell with no value is still blank (absence, not type).
+        assert_eq!(app.cell_text(MeasureId(2), &vec![(1u32, 99u32)]), None);
+    }
+
+    /// Each declared type round-trips through an edit: type-appropriate text in,
+    /// the matching `Value` variant stored, the display reading it back.
+    #[test]
+    fn every_declared_type_round_trips_through_an_edit() {
+        let mut app = build_app(typed_model());
+        let key = typed_key();
+        let coord = decode(&key);
+        let cases: Vec<(MeasureId, &str, Value)> = vec![
+            (MeasureId(1), "12.5", Value::Number(12.5)),
+            (
+                MeasureId(2),
+                "widget label",
+                Value::Text("widget label".into()),
+            ),
+            (MeasureId(3), "false", Value::Boolean(false)),
+            (MeasureId(4), "2026-01-02", date("2026-01-02")),
+        ];
+        for (m, text, want) in cases {
+            assert_eq!(
+                app.commit_cell_text(m, key.clone(), text).as_deref(),
+                Ok("cell updated"),
+                "measure {} rejected {text:?}",
+                m.0
+            );
+            assert_eq!(
+                app.model.input(m, &coord),
+                Some(&want),
+                "measure {} stored the wrong variant",
+                m.0
+            );
+            assert_eq!(
+                app.cell_text(m, &key),
+                Some(
+                    CellValue::from_model_value(&want)
+                        .expect("typed cell")
+                        .to_string()
+                ),
+                "measure {} reads back differently than it stored",
+                m.0
+            );
+        }
+    }
+
+    /// The DECLARED type wins over the text's shape: numeric-looking text typed
+    /// into a Text measure stays Text. Pre-fix every commit parsed `f64` and
+    /// stored `Value::Number`, corrupting the cell's type.
+    #[test]
+    fn text_measure_never_stores_a_number() {
+        let mut app = build_app(typed_model());
+        let key = typed_key();
+        let coord = decode(&key);
+        for text in ["hello", "42"] {
+            app.commit_cell_text(MeasureId(2), key.clone(), text)
+                .expect("text commit");
+            assert_eq!(
+                app.model.input(MeasureId(2), &coord),
+                Some(&Value::Text(text.into())),
+                "{text:?} must stay Text for a Text-declared measure"
+            );
+        }
+        // And the typed API refuses a mismatched variant outright.
+        let err = app
+            .set_cell(MeasureId(2), key, Value::Number(42.0))
+            .expect_err("a Text measure must refuse a Number");
+        assert!(err.contains("declared Text"), "got {err:?}");
+    }
+
+    /// Text that does not parse as the declared type is rejected: the error is
+    /// surfaced and the prior typed value is untouched.
+    #[test]
+    fn invalid_typed_input_is_rejected_and_prior_value_survives() {
+        let mut app = build_app(typed_model());
+        let key = typed_key();
+        let coord = decode(&key);
+        let cases = [
+            (MeasureId(1), "abc", Value::Number(7.0), "not a number"),
+            (MeasureId(3), "maybe", Value::Boolean(true), "not a boolean"),
+            (MeasureId(4), "not-a-date", date("2025-03-04"), "not a date"),
+        ];
+        for (m, bad, prior, msg) in cases {
+            let err = app
+                .commit_cell_text(m, key.clone(), bad)
+                .expect_err("invalid input must be rejected");
+            assert!(err.contains(msg), "measure {} said {err:?}", m.0);
+            assert_eq!(
+                app.model.input(m, &coord),
+                Some(&prior),
+                "measure {} lost its prior value to a rejected edit",
+                m.0
+            );
+        }
+    }
+
+    /// The chosen empty-commit behavior: an empty buffer CLEARS the cell
+    /// (Escape already cancels, so this is the only way to delete a value).
+    #[test]
+    fn empty_commit_clears_the_cell() {
+        let mut app = build_app(typed_model());
+        let key = typed_key();
+        let coord = decode(&key);
+        assert_eq!(
+            app.commit_cell_text(MeasureId(2), key.clone(), "   ")
+                .as_deref(),
+            Ok("cell cleared")
+        );
+        assert_eq!(app.model.input(MeasureId(2), &coord), None);
+        assert_eq!(app.cell_text(MeasureId(2), &key), None, "cleared = blank");
+        // Clearing an already-empty cell is a no-op success.
+        assert!(app.commit_cell_text(MeasureId(2), key, "").is_ok());
+    }
+
+    /// Clearing a numeric cell must retract it from the live engine too, so
+    /// derived measures stop computing with a value the cell no longer holds.
+    #[test]
+    fn clearing_a_numeric_cell_retracts_it_from_the_engine() {
+        let mut app = build_app(revenue_model());
+        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        key.sort();
+        assert_eq!(
+            app.values_for(MeasureId(102)).get(&key),
+            Some(&70.0),
+            "Revenue = Price(10) * Quantity(7)"
+        );
+        app.clear_cell(MeasureId(101), key.clone())
+            .expect("clear input cell");
+        assert_eq!(
+            app.values_for(MeasureId(102)).get(&key),
+            None,
+            "a cleared input must not leave a stale derived cell"
+        );
+    }
+
+    /// Retyping a cell as a non-numeric value must also retract it from the
+    /// engine's numeric lane (only numbers flow there), so no derived cell keeps
+    /// computing from a number the cell no longer holds.
+    #[test]
+    fn retyping_a_numeric_cell_as_text_retracts_it_from_the_engine() {
+        // Build the engine while Quantity is numeric, so it really holds the
+        // cell (declaring Text up front makes `Price * Quantity` fail to
+        // compile, leaving no engine and testing nothing), THEN redeclare the
+        // measure as Text so a text edit is the legal one.
+        let mut app = build_app(revenue_model());
+        assert!(app.engine.is_some(), "the fixture needs a live engine");
+        app.model
+            .measures
+            .get_mut(&MeasureId(101))
+            .expect("Quantity")
+            .value_type = ValueType::Text;
+        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        key.sort();
+        assert_eq!(
+            app.values_for(MeasureId(102)).get(&key),
+            Some(&70.0),
+            "the engine starts out computing from the numeric cell"
+        );
+        app.commit_cell_text(MeasureId(101), key.clone(), "n/a")
+            .expect("text commit");
+        assert_eq!(
+            app.cell_text(MeasureId(101), &key).as_deref(),
+            Some("n/a"),
+            "the text value is what the grid shows"
+        );
+        assert_eq!(
+            app.values_for(MeasureId(102)).get(&key),
+            None,
+            "derived cell must not keep computing from the retracted number"
+        );
+    }
+
+    /// Defect-6 atomicity on the TYPED path: a failed save rolls the in-memory
+    /// typed edit back (set AND clear), prior value intact.
+    #[test]
+    fn failed_save_rolls_back_a_typed_edit() {
+        let mut app = build_app(typed_model());
+        app.db = "/nonexistent-dir-improv/cannot-write.db".to_string();
+        let key = typed_key();
+        let coord = decode(&key);
+
+        let err = app
+            .commit_cell_text(MeasureId(2), key.clone(), "replacement")
+            .expect_err("save to an unwritable path must fail");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+        assert_eq!(
+            app.model.input(MeasureId(2), &coord),
+            Some(&Value::Text("hello".into())),
+            "a failed save must not leave the typed edit in memory"
+        );
+
+        let err = app
+            .commit_cell_text(MeasureId(2), key, "")
+            .expect_err("save must fail");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+        assert_eq!(
+            app.model.input(MeasureId(2), &coord),
+            Some(&Value::Text("hello".into())),
+            "a failed save must not leave the cell cleared in memory"
+        );
+    }
+
+    /// Begin-edit seeds the buffer with the cell's TYPED display text, so a
+    /// text/date cell is tweaked rather than retyped from blank.
+    #[test]
+    fn begin_edit_seeds_the_typed_display_text() {
+        let mut app = build_app(typed_model());
+        app.selected = Some(MeasureId(2)); // Label (Text)
+        app.sync_axis_state();
+        app.begin_edit_cursor();
+        assert_eq!(app.editing.as_ref().map(|(m, _)| *m), Some(MeasureId(2)));
+        assert_eq!(app.edit_buf, "hello", "text cell seeded blank");
     }
 }
