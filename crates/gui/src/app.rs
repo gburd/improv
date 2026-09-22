@@ -252,14 +252,55 @@ impl ImprovApp {
         {
             return Err("derived cells are computed, not editable".into());
         }
+        // Precise rollback rather than publish()'s clone-and-swap: a single cell
+        // edit goes through the INCREMENTAL engine (`engine.set`), so cloning the
+        // whole model and rebuilding the graph per keystroke would throw away the
+        // very thing that makes editing cheap. Instead remember the prior value
+        // and undo both the model and the engine if anything downstream fails, so
+        // a reported failure never leaves memory diverged from the store.
+        let key = decode(&coord);
+        let prior = self.model.input(measure, &key).cloned();
+        let prior_snapshot = self.snapshot.clone();
+
         self.model
-            .set_input(measure, decode(&coord), Value::Number(value));
-        if let Some(engine) = &mut self.engine {
-            self.snapshot = engine
-                .set(measure, coord, value)
-                .map_err(|e| e.to_string())?;
+            .set_input(measure, key.clone(), Value::Number(value));
+        let outcome = (|| -> Result<(), String> {
+            if let Some(engine) = &mut self.engine {
+                self.snapshot = engine
+                    .set(measure, coord.clone(), value)
+                    .map_err(|e| e.to_string())?;
+            }
+            self.save()
+        })();
+
+        if let Err(e) = outcome {
+            // Restore the model, then push the restored value back through the
+            // engine so its graph and our snapshot agree with the model again.
+            match &prior {
+                Some(v) => self.model.set_input(measure, key, v.clone()),
+                None => {
+                    self.model.inputs.remove(&(measure, key));
+                }
+            }
+            if let Some(engine) = &mut self.engine {
+                let restored = prior.as_ref().and_then(|v| v.as_number());
+                match restored {
+                    Some(n) => {
+                        if let Ok(s) = engine.set(measure, coord, n) {
+                            self.snapshot = s;
+                        } else {
+                            self.snapshot = prior_snapshot;
+                        }
+                    }
+                    // No prior numeric value to re-assert; fall back to the
+                    // snapshot captured before the edit.
+                    None => self.snapshot = prior_snapshot,
+                }
+            } else {
+                self.snapshot = prior_snapshot;
+            }
+            return Err(e);
         }
-        self.save()?;
         Ok(())
     }
 
@@ -304,25 +345,46 @@ impl ImprovApp {
 
     /// The categories stacked on the ROW axis (outer→inner), the COLUMN axis,
     /// and the remaining PAGE categories, derived from `axis_order` + the
-    /// `n_rows`/`n_cols` split. Categories that fall off the current measure's
-    /// dimension set are naturally absent from `axis_order`.
+    /// `n_rows`/`n_cols` split.
+    ///
+    /// Each is filtered to the SELECTED MEASURE's own dimensions. `axis_order`
+    /// is not guaranteed to match them: `apply_view` restores a saved order
+    /// verbatim, and a CSV re-import can overwrite `measure.categories`, so a
+    /// stale category can linger in `axis_order` while no longer being a
+    /// dimension of the measure on screen. Such a category must not influence
+    /// this measure's grid at all — without this filter, a stale PAGE category
+    /// filtered to zero items made `pinned_pages_opt` return `None` and blanked
+    /// a grid whose every cell was fully specified.
+    ///
+    /// This is distinct from the case 6a4b862 fixed: a category that IS a real
+    /// dimension of the measure and is filtered to nothing still yields zero
+    /// lines, because those coordinates genuinely would be under-specified.
+    fn measure_dims(&self) -> Vec<CategoryId> {
+        natural_axis_order(&self.model, self.selected)
+    }
+
+    /// `axis_order` restricted to the selected measure's dimensions, preserving
+    /// the user's axis placement/order. The `n_rows`/`n_cols` split indexes
+    /// `axis_order`, so the split is applied first and each slice is filtered.
+    fn live_axis_slice(&self, skip: usize, take: usize) -> Vec<CategoryId> {
+        let dims = self.measure_dims();
+        self.axis_order
+            .iter()
+            .skip(skip)
+            .take(take)
+            .filter(|c| dims.contains(c))
+            .copied()
+            .collect()
+    }
+
     fn row_cats(&self) -> Vec<CategoryId> {
-        self.axis_order.iter().take(self.n_rows).copied().collect()
+        self.live_axis_slice(0, self.n_rows)
     }
     fn col_cats(&self) -> Vec<CategoryId> {
-        self.axis_order
-            .iter()
-            .skip(self.n_rows)
-            .take(self.n_cols)
-            .copied()
-            .collect()
+        self.live_axis_slice(self.n_rows, self.n_cols)
     }
     fn page_cats(&self) -> Vec<CategoryId> {
-        self.axis_order
-            .iter()
-            .skip(self.n_rows + self.n_cols)
-            .copied()
-            .collect()
+        self.live_axis_slice(self.n_rows + self.n_cols, usize::MAX)
     }
 
     /// The pinned (category, item) for each page dimension, from `page_idx`.
@@ -4064,6 +4126,92 @@ mod tests {
             app.formula_error_msg.is_empty(),
             "stale inline parse error survived a save failure: {:?}",
             app.formula_error_msg
+        );
+    }
+    /// A category left in `axis_order` that is NOT a dimension of the selected
+    /// measure must not affect that measure's grid. Regression for the review's
+    /// defect #4: a stale PAGE category filtered to zero items blanked a grid
+    /// whose every cell was fully specified.
+    #[test]
+    fn stale_non_dimension_page_category_does_not_blank_the_grid() {
+        let mut m = Model::new();
+        let (t, p, r) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        for (c, n) in [(t, "Time"), (p, "Product"), (r, "Region")] {
+            m.add_category(c, n);
+        }
+        m.add_item(ItemId(10), t, "2025");
+        m.add_item(ItemId(20), p, "W");
+        m.add_item(ItemId(30), r, "North");
+        // Sales ranges over Time x Product ONLY; Region is not a dimension.
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let cell = improv_core_model::Coordinate::from_pairs([(t, ItemId(10)), (p, ItemId(20))]);
+        m.set_input(MeasureId(1), cell, Value::Number(42.0));
+
+        let mut app = build_app(m);
+        app.selected = Some(MeasureId(1));
+        app.sync_axis_state();
+        // What apply_view leaves behind after the measure was re-imported over
+        // fewer dimensions: a stale Region page category.
+        app.axis_order = vec![t, p, r];
+        app.n_rows = 1;
+        app.n_cols = 1;
+        app.page_idx = vec![0];
+        app.filters = vec![Filter {
+            category: r,
+            items: vec![],
+        }];
+
+        assert!(
+            app.page_cats().is_empty(),
+            "a non-dimension category must not count as a page axis"
+        );
+        assert_eq!(
+            app.grid_dims(),
+            (1, 1),
+            "grid must still render its one cell"
+        );
+        assert!(
+            app.cursor_key().is_some(),
+            "cell coordinate is fully specified"
+        );
+
+        // Contrast, and the 6a4b862 behavior that must NOT regress: a category
+        // that IS a real dimension, filtered to empty, still yields zero lines.
+        app.filters = vec![Filter {
+            category: p,
+            items: vec![],
+        }];
+        assert_eq!(
+            app.grid_dims().1,
+            0,
+            "a real dimension filtered empty => no lines"
+        );
+    }
+
+    /// Regression for the review's defect #6: a failed save must not leave the
+    /// in-memory model diverged from the store.
+    #[test]
+    fn failed_cell_save_rolls_back_the_in_memory_edit() {
+        let mut app = build_app(revenue_model());
+        // An unwritable store path: save() must fail.
+        app.db = "/nonexistent-dir-improv/cannot-write.db".to_string();
+        let measure = MeasureId(101); // Quantity (input)
+        let coord = vec![(1u32, 10u32), (2u32, 20u32)];
+        let before = app.model.input(measure, &decode(&coord)).cloned();
+
+        let res = app.set_cell(measure, coord.clone(), 999.0);
+        assert!(res.is_err(), "save to an unwritable path must fail");
+        assert_eq!(
+            app.model.input(measure, &decode(&coord)).cloned(),
+            before,
+            "defect #6: rejected value must not remain in the model"
         );
     }
 }
