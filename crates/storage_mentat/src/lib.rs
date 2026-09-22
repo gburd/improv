@@ -36,20 +36,49 @@ impl From<mentat::errors::MentatError> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
-/// Transact one EDN vector of `entities` through `ip`, sharing its underlying
-/// SQLite transaction with every other call made on the same `InProgress` (a
-/// no-op if `entities` is empty). Used by `save_model` so every step commits
-/// or rolls back together instead of each being its own SQLite transaction.
+/// Upper bound on the number of datoms Improv puts in a single
+/// `InProgress::transact` call.
+///
+/// Mentat's `insert_non_fts_searches` (`../mentat/db/src/db.rs`) splits one
+/// transact's datoms into chunks of `SQLITE_LIMIT_VARIABLE_NUMBER /
+/// bindings_per_statement` = `32766 / 6` = 5461, then asserts
+/// `bindings_per_statement * count < max_vars`. For a *full* chunk that reads
+/// `6 * 5461 < 32766`, which is false — so any transact carrying 5461 or more
+/// datoms aborts the process with `Too many values: 6 * 5461 >= 32766`. It is a
+/// hard `assert!`, not a `Result`, so it cannot be caught or retried; the only
+/// fix on our side is to never hand Mentat that many datoms at once.
+///
+/// 2000 leaves ~2.7x headroom under 5461. The headroom is deliberate: a re-save
+/// of an existing entity turns into a retraction plus an assertion for each
+/// changed cardinality-one attribute, so the datom count Mentat actually sees
+/// can exceed the count we emit.
+const MAX_DATOMS_PER_TRANSACT: usize = 2000;
+
+/// Transact `entities` through `ip` in EDN vectors of at most
+/// `MAX_DATOMS_PER_TRANSACT / datoms_per_entity` entities each, sharing the
+/// underlying SQLite transaction with every other call made on the same
+/// `InProgress` (a no-op if `entities` is empty).
+///
+/// `datoms_per_entity` is an *upper bound* on the attributes one element of
+/// `entities` asserts (see `MAX_DATOMS_PER_TRANSACT` for why the bound matters).
+///
+/// Chunking happens *inside* the caller's `InProgress`: many `transact` calls,
+/// still exactly one `commit()`, so `save_model` stays all-or-nothing — a
+/// failure in chunk 7 of 24 rolls back chunks 1..7 along with every other step
+/// of the save.
 fn transact_group(
     ip: &mut InProgress<'_, '_>,
+    datoms_per_entity: usize,
     entities: impl IntoIterator<Item = String>,
 ) -> Result<()> {
     let parts: Vec<String> = entities.into_iter().collect();
-    if parts.is_empty() {
-        return Ok(());
+    // `.max(1)` only bites for an entity so wide it exceeds the whole budget by
+    // itself; a single entity is indivisible, so one-per-transact is the best
+    // we can do (and still 2.7x under the real ceiling).
+    let per_chunk = (MAX_DATOMS_PER_TRANSACT / datoms_per_entity.max(1)).max(1);
+    for batch in parts.chunks(per_chunk) {
+        ip.transact(format!("[{}]", batch.join("\n")))?;
     }
-    let edn = format!("[{}]", parts.join("\n"));
-    ip.transact(edn)?;
     Ok(())
 }
 
@@ -94,26 +123,46 @@ impl ModelStore {
     /// any step's EDN fails to transact, `?` returns before `commit()` runs
     /// and the dropped `InProgress` rolls back every prior step of this save.
     /// See `.agent/steering/AGENT_DATABASE_CONNECTIVITY.md` "Crash safety".
+    ///
+    /// Each step is further split into several `transact` calls of bounded
+    /// datom count (see `MAX_DATOMS_PER_TRANSACT`), because Mentat aborts the
+    /// process on a transact of 5461+ datoms. The extra calls are still inside
+    /// the same single `InProgress`/`commit()`, so atomicity is unaffected.
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
         let mut ip = self.store.begin_transaction()?;
 
+        // `datoms_per_entity` arguments below are upper bounds on the
+        // attributes each `convert::*_edn` helper can emit for one entity.
+        // :category/id + :category/name.
         transact_group(
             &mut ip,
+            2,
             model.categories.values().map(convert::category_edn),
         )?;
-        transact_group(&mut ip, model.items.values().map(convert::item_edn))?;
+        // :item/id + :item/name + :item/category.
+        transact_group(&mut ip, 3, model.items.values().map(convert::item_edn))?;
 
         let mut measures = Vec::new();
         for m in model.measures.values() {
             measures.push(convert::measure_edn(m, model.sql_sources.get(&m.id))?);
         }
-        transact_group(&mut ip, measures)?;
+        // id, name, value-type, kind, formula, description, sql-source, plus
+        // one :measure/categories datom per category (cardinality-many); take
+        // the widest measure in this model rather than guessing.
+        let widest_measure = 7 + model
+            .measures
+            .values()
+            .map(|m| m.categories.len())
+            .max()
+            .unwrap_or(0);
+        transact_group(&mut ip, widest_measure, measures)?;
 
         let mut cells = Vec::new();
         for ((mid, coord), val) in model.inputs.iter() {
             cells.push(convert::cell_edn(*mid, coord, val)?);
         }
-        transact_group(&mut ip, cells)?;
+        // :cell/key + :cell/measure + :cell/coord + one typed value attribute.
+        transact_group(&mut ip, 4, cells)?;
 
         let mut views = Vec::new();
         for v in model.views.values() {
@@ -124,7 +173,8 @@ impl ModelStore {
                 convert::edn_str_pub(&json)
             ));
         }
-        transact_group(&mut ip, views)?;
+        // :view/id + :view/json.
+        transact_group(&mut ip, 2, views)?;
 
         // Singleton meta: external function defs + external-call measures +
         // what-if scenarios, each as a JSON blob on one entity (only if any
@@ -957,5 +1007,108 @@ mod tests {
             Some(&Value::Number(1.0))
         );
         assert_eq!(partial.input(MeasureId(2), &Coordinate::new()), None);
+    }
+
+    const WIDE_CAT: CategoryId = CategoryId(1);
+
+    /// A model with `n_cells` input cells over `n_cells` items of one category,
+    /// so BOTH the items group and the cells group exceed a single safe
+    /// transact.
+    fn wide_model(n_cells: u32) -> Model {
+        let mut m = Model::new();
+        m.add_category(WIDE_CAT, "Thing");
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Amount".into()),
+            value_type: ValueType::Number,
+            categories: vec![WIDE_CAT],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        for i in 0..n_cells {
+            m.add_item(ItemId(1000 + i), WIDE_CAT, format!("item{i}"));
+            m.set_input(
+                MeasureId(1),
+                Coordinate::from_pairs([(WIDE_CAT, ItemId(1000 + i))]),
+                Value::Number(f64::from(i) * 1.5),
+            );
+        }
+        m
+    }
+
+    fn assert_wide_round_trip(n_cells: u32) {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        store.save_model(&wide_model(n_cells)).expect("save large");
+
+        let loaded = store.load_model().expect("load large");
+        assert_eq!(loaded.items.len() as u32, n_cells);
+        assert_eq!(loaded.inputs.len() as u32, n_cells);
+        // Spot-check the first, a middle, and the last cell's value.
+        for i in [0, n_cells / 2, n_cells - 1] {
+            assert_eq!(
+                loaded.input(
+                    MeasureId(1),
+                    &Coordinate::from_pairs([(WIDE_CAT, ItemId(1000 + i))])
+                ),
+                Some(&Value::Number(f64::from(i) * 1.5)),
+                "cell {i} of {n_cells}"
+            );
+        }
+    }
+
+    /// A model past Mentat's hard transact ceiling must save and round-trip.
+    ///
+    /// Mentat's `insert_non_fts_searches` `assert!`s that a single transact
+    /// carries fewer than `32766 / 6` = 5461 datoms, and *aborts the process*
+    /// otherwise (`Too many values: 6 * 5461 >= 32766`). Before the chunking
+    /// fix `save_model` put every entity of a kind in ONE transact, so this
+    /// test panicked rather than failed: 6000 cells (and 6000 items) are each
+    /// well past that limit.
+    #[test]
+    fn save_and_load_model_past_mentats_transact_limit() {
+        assert_wide_round_trip(6_000);
+    }
+
+    /// Same, but far enough past the boundary to prove *many* chunks work and
+    /// not just the first one. Ignored only because the load path issues one
+    /// query per cell, which makes it slow; run with
+    /// `cargo test -p improv_storage_mentat -- --ignored`.
+    #[test]
+    #[ignore = "slow (load does one query per cell); run with --ignored"]
+    fn save_and_load_model_spanning_many_chunks() {
+        assert_wide_round_trip(12_000);
+    }
+
+    /// Chunking must not weaken atomicity: a failure in a *later* chunk of the
+    /// cells group rolls back the earlier chunks of that same group, not just
+    /// the earlier groups.
+    #[test]
+    fn a_failure_in_a_later_chunk_rolls_back_earlier_chunks() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = wide_model(6_000);
+        // NaN prints as the bare EDN token `NaN`, which Mentat's
+        // `:db.type/double` typecheck rejects -- same mechanism as
+        // `save_partway_failure_does_not_leave_a_partial_write`. Which chunk it
+        // lands in depends on HashMap iteration order, which is the point:
+        // whichever chunk fails, everything before it must vanish.
+        m.set_input(
+            MeasureId(1),
+            Coordinate::from_pairs([(WIDE_CAT, ItemId(1000))]),
+            Value::Number(f64::NAN),
+        );
+        let err = store.save_model(&m).expect_err("NaN cell must fail");
+        assert!(matches!(err, StoreError::Mentat(_)), "got {err:?}");
+
+        // Nothing from the failed save survived: not the categories/items
+        // transacted before the cells group, and not the cell chunks that
+        // succeeded before the failing one.
+        let after = store.load_model().expect("load after failed save");
+        assert!(
+            after.inputs.is_empty(),
+            "{} cells leaked",
+            after.inputs.len()
+        );
+        assert!(after.items.is_empty(), "{} items leaked", after.items.len());
+        assert!(after.categories.is_empty());
     }
 }
