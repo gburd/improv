@@ -102,7 +102,7 @@ pub fn import_csv_from<R: io::Read>(
     };
 
     // Everything below up to the "commit" comment is READ-ONLY on `model`, so
-    // any error (bad column, short row, unparseable number) returns before the
+    // any error (bad column, short row, unparsable number) returns before the
     // caller's model is touched: import is atomic without staging a clone.
     // Resolve column refs to indices up front; error clearly if a named
     // column doesn't exist (or a name is used with no header row).
@@ -582,7 +582,7 @@ mod tests {
     fn failed_import_leaves_the_model_untouched() {
         let cases = [
             "time,product,revenue\n2026,OnlyOneField\n", // short row
-            "time,product,revenue\n2025,WidgetA,notanumber\n", // unparseable number
+            "time,product,revenue\n2025,WidgetA,notanumber\n", // unparsable number
             "time,product,nope\n2025,WidgetA,1000\n",    // unknown value column
         ];
         for bad in cases {

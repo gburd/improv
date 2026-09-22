@@ -13,6 +13,8 @@ extend-exclude = [
 ]
 
 [default.extend-words]
+# Commit SHAs cited in review docs can contain letter runs typos misreads.
+ba = "ba"
 # Domain terms typos might flag.
 Improv = "Improv"
 Quantrix = "Quantrix"

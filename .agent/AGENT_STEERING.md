@@ -43,9 +43,27 @@ baseline on hotdog; its temporary instance was terminated after collection.
     call `evaluate()`. **Scale claims must be re-derived end-to-end (save +
     reload), not from `evaluate()` alone.**
 
+  **Second batch landed 2026-09-22** after an independent review found 7 real
+  defects in the first, including the original bug RELOCATED into the new DSL
+  printer and a `.max(1)` fix applied to the grid but left in `chart.rs`:
+  `ec51384` (formula bar shows only text that re-commits; chart agrees with the
+  grid on empty axes), `25ba0b6` (refuse an un-chunkable wide measure instead of
+  aborting the process), `148c1cd` (a stale non-dimension category no longer
+  blanks an addressable grid; cell edits roll back on save failure). A
+  re-reviewer verified round two. Every fix has a regression confirmed to fail
+  on revert.
+
+  Process note: the worker->reviewer->re-reviewer pattern paid for itself here.
+  The first round's formula test was 12 hand-picked shapes that all happened to
+  round-trip, which is exactly why it missed two defects; the second round
+  enumerates the argument space instead.
+
   Still open from the audit: typed (non-numeric) cell editing, keyboard focus
   stealing between the grid and other text fields, derived CSV export reading
-  input storage instead of computed results, multi-measure display, undo/redo.
+  input storage instead of computed results (a derived measure exports a header
+  and zero rows), multi-measure display, undo/redo. Pre-existing and unfixed:
+  stale `:measure/categories` refs are never retracted, so changing a measure's
+  category set accumulates the union across saves.
 - **NEXT: data integrity/security review** — repeated CSV item IDs/import
   rollback, computed exports, concurrent scheduler writes, private-file
   isolation and termination of timed-out WASM execution.

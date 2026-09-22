@@ -3803,7 +3803,7 @@ mod tests {
     /// crossed with an empty/non-empty `except` and a `by` list, plus non-`Ref`
     /// args (a literal, a binary op, a nested call) — for each aggregating func
     /// id. Whatever `formula_source` shows as editable MUST re-commit unchanged;
-    /// what it cannot spell must be `None`, never unparseable text.
+    /// what it cannot spell must be `None`, never unparsable text.
     ///
     /// (`proptest` is not a dev-dependency of this crate, so this is the
     /// systematic table over the arg space rather than a generator.)
@@ -3883,7 +3883,7 @@ mod tests {
                 )),
             ));
             // The aggregation inside a larger expression (the printer recurses
-            // through `child_dsl`, which must not leak unparseable text either).
+            // through `child_dsl`, which must not leak unparsable text either).
             out.push((
                 format!("f{}(Quantity) * Price", func.0),
                 Formula::new(Expr::BinaryOp(

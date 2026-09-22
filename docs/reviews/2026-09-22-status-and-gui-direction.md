@@ -95,3 +95,51 @@ other text fields; derived CSV export reading input storage rather than computed
 results; multi-measure display; undo/redo. The historical-reference and
 GUI-reconstruction gates in `.agent/steering/AGENT_GUI_STEERING.md` remain
 unstarted.
+
+## Independent review of the repair batch, and a second round
+
+An independent reviewer probed the five fixes above and found **7 real
+defects** — including one case of the original bug relocated rather than
+fixed. A re-reviewer then verified the second round. Both rounds are closed.
+
+| Reviewer finding | Fix | Note |
+| --- | --- | --- |
+| `formula_dsl` emitted DSL its own parser rejects (aggregation with empty `over`, or a non-`Ref` arg) | `ec51384` | The bug `b81abc3` claimed to fix, relocated; reachable in three keystrokes via CNL input |
+| Bar text no parser accepts for non-identifier measure names (`"Unit Price"` — what a CSV header gives) | `ec51384` | `formula_source` now verifies its own invariant by reparsing |
+| `chart.rs` kept the `.max(1)` empty-axis synthesis the grid fix removed | `ec51384` | Root-cause miss: the pattern had two call sites, one was fixed |
+| Stale inline parse error survived a later save failure | `ec51384` | |
+| `save_model` still aborted the process for one entity wider than the queue limit | `25ba0b6` | Chunking cannot split a single entity |
+| Stale non-dimension category blanked a fully-addressable grid | `148c1cd` | Unassigned in round two; reproduced, then fixed |
+| `set_cell` not atomic on save failure | `148c1cd` | Unassigned in round two |
+
+Two corrections the fixers made to their own briefs, both verified rather than
+assumed:
+
+- The transact ceiling is **per attribute queue** (cardinality-many vs
+  cardinality-one), not per transact, so the binding quantity for a measure is
+  its category count alone. Guarding on `7 + N` would have wrongly rejected the
+  measurably-working 5454–5460 range.
+- The missing-retraction bug (cardinality-many `:measure/categories`
+  accumulating stale refs, pre-existing) does **not** undermine that guard:
+  on-disk accumulation adds zero rows to the search tables, because `search()`
+  LEFT JOINs existing datoms. A comment warns that a future retraction fix puts
+  retracts in the same queue as adds, which would require halving the guard.
+
+### Test-quality finding
+
+The reviewer reverted each fix in isolation and confirmed every one had a test
+that fails on revert — no decorative tests. It also identified why the round-one
+formula fixture missed two defects: 12 hand-picked shapes that all happened to
+round-trip. The round-two test enumerates the aggregation argument space
+instead. `nth_tuple`'s `assert!` promotion has no failing-on-revert test
+because the panic is genuinely unreachable (fuzzed across 96 axis/filter/cursor
+configurations) — untested belt-and-braces, not a guarded fix.
+
+### Still open after both rounds
+
+Typed (non-numeric) cell editing; keyboard focus stealing between the grid and
+other text fields; derived CSV export reading input storage rather than computed
+results (a derived measure currently exports a header and zero rows);
+multi-measure display; undo/redo. Pre-existing and unfixed: stale
+`:measure/categories` refs are never retracted, so changing a measure's category
+set accumulates the union across saves.
