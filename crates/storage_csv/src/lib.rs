@@ -1,5 +1,6 @@
 //! CSV/TSV connectivity (Phase A, post-v0.5.0 plan): import a CSV/TSV file into
-//! an Improv `Model`, and export a measure's cells back to CSV/TSV.
+//! an Improv `Model`, and export a measure's cells back to CSV/TSV (an input
+//! measure's stored cells, or a derived measure's engine-computed ones).
 //!
 //! Mirrors `improv_storage_sql`'s shape (see its module docs): a column→model
 //! mapping (dimension columns → categories/items, one value column → a
@@ -216,10 +217,12 @@ fn resolve_col(headers: Option<&csv::StringRecord>, col: &ColumnRef) -> Result<u
     }
 }
 
-/// Write a measure's input cells to a CSV/TSV file: one column per dimension
-/// category (item name) plus a value column, header row first. Returns the
-/// number of rows written. See [`export_measure_csv_to`] for the writer-based
-/// (testable) version.
+/// Write a measure's cells to a CSV/TSV file: one column per dimension
+/// category (item name) plus a value column, header row first. An **input**
+/// measure exports its stored cells; a **derived** measure is evaluated by the
+/// engine and exports its computed cells (IMPROV.txt:113 — export the computed
+/// view). Returns the number of rows written. See [`export_measure_csv_to`]
+/// for the writer-based (testable) version.
 pub fn export_measure_csv(
     model: &Model,
     measure: MeasureId,
@@ -230,8 +233,20 @@ pub fn export_measure_csv(
     export_measure_csv_to(model, measure, file, delimiter)
 }
 
-/// Write a measure's input cells to `writer` as CSV/TSV (`delimiter`).
-/// Rows are written in coordinate order, so output is deterministic.
+/// Write a measure's cells to `writer` as CSV/TSV (`delimiter`). Rows are
+/// written in coordinate order, so output is deterministic.
+///
+/// * **Input measure** — writes `model.inputs` for that measure, unchanged.
+/// * **Derived measure** — runs `improv_engine::dataflow::evaluate` and writes
+///   the computed cells. An engine failure (cyclic/unsupported formula) is a
+///   [`CsvError::Other`], not a silently empty file.
+///
+/// Error cells (`#ERR`, and the NaN the engine produces for a domain error
+/// like division by zero) are **skipped**, matching how input `Value::Error`
+/// cells have always been treated: the value column is typed, and writing
+/// `#ERR`/`NaN` into it would make the file fail to re-import as a `Number`
+/// column. The returned count reflects rows actually written, so a caller can
+/// see that skipping happened.
 pub fn export_measure_csv_to<W: io::Write>(
     model: &Model,
     measure: MeasureId,
@@ -263,24 +278,30 @@ pub fn export_measure_csv_to<W: io::Write>(
     header.push(m.name.0.clone());
     wtr.write_record(&header)?;
 
-    let mut rows: Vec<(&Coordinate, &Value)> = model
-        .inputs
-        .iter()
-        .filter(|((mid, _), _)| *mid == measure)
-        .map(|((_, c), v)| (c, v))
-        .collect();
-    rows.sort_by(|a, b| a.0.cmp(b.0));
+    // Derived measures have no stored cells; ask the engine for computed ones.
+    let mut rows: Vec<(Coordinate, String)> = if m.is_derived() {
+        let out = improv_engine::dataflow::evaluate(model, &[measure])
+            .map_err(|e| CsvError::Other(format!("evaluating measure {measure:?}: {e}")))?;
+        out.get(&measure)
+            .map(|cells| {
+                cells
+                    .iter()
+                    .filter_map(|(k, v)| cell_text(v).map(|s| (improv_engine::decode_coord(k), s)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        model
+            .inputs
+            .iter()
+            .filter(|((mid, _), _)| *mid == measure)
+            .filter_map(|((_, c), v)| value_text(v).map(|s| (c.clone(), s)))
+            .collect()
+    };
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut count = 0usize;
-    for (coord, val) in rows {
-        let value_str = match val {
-            Value::Number(n) => n.to_string(),
-            Value::Boolean(b) => b.to_string(),
-            Value::Text(s) => s.clone(),
-            Value::DateTime(dt) => dt.to_rfc3339(),
-            Value::Enum(e) => e.to_string(),
-            Value::Error(_) => continue, // no meaningful cell text to export
-        };
+    for (coord, value_str) in rows {
         let mut row: Vec<String> = Vec::with_capacity(dim_cols.len() + 1);
         for (cat, _) in &dim_cols {
             let name = coord
@@ -296,6 +317,35 @@ pub fn export_measure_csv_to<W: io::Write>(
     }
     wtr.flush()?;
     Ok(count)
+}
+
+/// The value column text for a stored input value, or `None` to skip the row
+/// (error cells have no meaningful, re-importable cell text).
+fn value_text(val: &Value) -> Option<String> {
+    match val {
+        Value::Number(n) => Some(n.to_string()),
+        Value::Boolean(b) => Some(b.to_string()),
+        Value::Text(s) => Some(s.clone()),
+        Value::DateTime(dt) => Some(dt.to_rfc3339()),
+        Value::Enum(e) => Some(e.to_string()),
+        Value::Error(_) => None,
+    }
+}
+
+/// The value column text for an engine-computed cell, or `None` to skip the
+/// row. Skips `#ERR` and non-finite numbers (the engine's NaN convention for
+/// division by zero / domain errors) for the same reason `value_text` skips
+/// `Value::Error`: neither re-imports as a number.
+fn cell_text(v: &improv_engine::CellValue) -> Option<String> {
+    use improv_engine::CellValue;
+    match v {
+        CellValue::Num(bits) => {
+            let n = f64::from_bits(*bits);
+            n.is_finite().then(|| n.to_string())
+        }
+        CellValue::Err(_) => None,
+        other => Some(other.to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -643,5 +693,236 @@ mod tests {
         let model = Model::new();
         let mut buf = Vec::new();
         assert!(export_measure_csv_to(&model, MeasureId(999), &mut buf, b',').is_err());
+    }
+
+    // ---- derived-measure export (the computed view, IMPROV.txt:113) ----
+
+    /// The canonical Time x Product revenue oracle: Price[Product] x
+    /// Quantity[Time,Product] -> Revenue[Time,Product], matching the engine's
+    /// own `revenue_model` fixture (crates/engine/src/dataflow.rs).
+    /// Oracle: [2025,A]=1000, [2025,B]=1000, [2026,A]=1200, [2026,B]=1600.
+    fn revenue_model() -> Model {
+        use improv_core_model::{
+            BinaryOp, DimensionSpec, Expr, Formula, Measure, MeasureKind, Name,
+        };
+
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = Model::new();
+        m.add_category(time, "Time");
+        m.add_category(product, "Product");
+        m.add_item(ItemId(10), time, "2025");
+        m.add_item(ItemId(11), time, "2026");
+        m.add_item(ItemId(20), product, "WidgetA");
+        m.add_item(ItemId(21), product, "WidgetB");
+
+        let input = |id: u32, name: &str, cats: Vec<CategoryId>| Measure {
+            id: MeasureId(id),
+            name: Name(name.into()),
+            value_type: ValueType::Number,
+            categories: cats,
+            kind: MeasureKind::Input,
+            description: None,
+        };
+        m.add_measure(input(100, "Price", vec![product]));
+        m.add_measure(input(101, "Quantity", vec![time, product]));
+        m.add_measure(Measure {
+            id: MeasureId(102),
+            name: Name("Revenue".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+                Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+            ))),
+            description: None,
+        });
+
+        let at = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
+        m.set_input(
+            MeasureId(100),
+            at(&[(product, ItemId(20))]),
+            Value::Number(10.0),
+        );
+        m.set_input(
+            MeasureId(100),
+            at(&[(product, ItemId(21))]),
+            Value::Number(20.0),
+        );
+        for (t, p, q) in [
+            (ItemId(10), ItemId(20), 100.0),
+            (ItemId(10), ItemId(21), 50.0),
+            (ItemId(11), ItemId(20), 120.0),
+            (ItemId(11), ItemId(21), 80.0),
+        ] {
+            m.set_input(
+                MeasureId(101),
+                at(&[(time, t), (product, p)]),
+                Value::Number(q),
+            );
+        }
+        m
+    }
+
+    /// Parse exported CSV into `(dim values..., value)` rows, header dropped.
+    fn parse_rows(buf: &[u8]) -> (Vec<String>, Vec<Vec<String>>) {
+        let text = String::from_utf8(buf.to_vec()).unwrap();
+        let mut lines = text
+            .lines()
+            .map(|l| l.split(',').map(|s| s.to_string()).collect::<Vec<String>>());
+        let header = lines.next().expect("header row");
+        (header, lines.collect())
+    }
+
+    #[test]
+    fn export_derived_measure_writes_computed_oracle_values() {
+        let model = revenue_model();
+        let mut buf = Vec::new();
+        let n = export_measure_csv_to(&model, MeasureId(102), &mut buf, b',').unwrap();
+        assert_eq!(n, 4, "four computed Revenue cells, not zero");
+
+        let (header, rows) = parse_rows(&buf);
+        assert_eq!(header, vec!["Time", "Product", "Revenue"]);
+        // Coordinate order: (2025,A), (2025,B), (2026,A), (2026,B).
+        assert_eq!(
+            rows,
+            vec![
+                vec!["2025", "WidgetA", "1000"],
+                vec!["2025", "WidgetB", "1000"],
+                vec!["2026", "WidgetA", "1200"],
+                vec!["2026", "WidgetB", "1600"],
+            ]
+        );
+    }
+
+    #[test]
+    fn export_input_measure_is_unchanged_by_derived_support() {
+        // Quantity is an input measure in the same model: its export must be
+        // exactly its stored cells, untouched by the engine path.
+        let model = revenue_model();
+        let mut buf = Vec::new();
+        let n = export_measure_csv_to(&model, MeasureId(101), &mut buf, b',').unwrap();
+        assert_eq!(n, 4);
+        let (header, rows) = parse_rows(&buf);
+        assert_eq!(header, vec!["Time", "Product", "Quantity"]);
+        assert_eq!(
+            rows,
+            vec![
+                vec!["2025", "WidgetA", "100"],
+                vec!["2025", "WidgetB", "50"],
+                vec!["2026", "WidgetA", "120"],
+                vec!["2026", "WidgetB", "80"],
+            ]
+        );
+
+        // A one-dimensional input measure still exports its single dim column.
+        let mut buf = Vec::new();
+        assert_eq!(
+            export_measure_csv_to(&model, MeasureId(100), &mut buf, b',').unwrap(),
+            2
+        );
+        let (header, rows) = parse_rows(&buf);
+        assert_eq!(header, vec!["Product", "Price"]);
+        assert_eq!(rows, vec![vec!["WidgetA", "10"], vec!["WidgetB", "20"]]);
+    }
+
+    #[test]
+    fn derived_export_reimports_as_an_input_measure_with_matching_values() {
+        let model = revenue_model();
+        let mut buf = Vec::new();
+        export_measure_csv_to(&model, MeasureId(102), &mut buf, b',').unwrap();
+
+        let mut spec = revenue_spec();
+        spec.measure_id = MeasureId(200);
+        spec.measure_name = "RevenueSnapshot".into();
+        spec.value_column = ColumnRef::Name("Revenue".into());
+        spec.dimensions[0].column = ColumnRef::Name("Time".into());
+        spec.dimensions[1].column = ColumnRef::Name("Product".into());
+
+        let mut model2 = Model::new();
+        let n = import_csv_from(Cursor::new(buf), &mut model2, &spec).unwrap();
+        assert_eq!(n, 4);
+
+        // Every computed cell round-tripped to the same value, cell by cell.
+        let computed = improv_engine::dataflow::evaluate(&model, &[MeasureId(102)]).unwrap();
+        let (t2, p2) = (
+            model2.category_by_name("Time").unwrap().id,
+            model2.category_by_name("Product").unwrap().id,
+        );
+        for (k, v) in computed.get(&MeasureId(102)).unwrap() {
+            // Re-map the original coordinate onto model2's interned item ids.
+            let orig = improv_engine::decode_coord(k);
+            let name = |cat: CategoryId| model.items[&orig.get(cat).unwrap()].name.0.clone();
+            let coord = Coordinate::from_pairs([
+                (t2, item_id(&model2, t2, &name(CategoryId(1)))),
+                (p2, item_id(&model2, p2, &name(CategoryId(2)))),
+            ]);
+            assert_eq!(
+                model2.input(MeasureId(200), &coord),
+                Some(&Value::Number(v.as_num().unwrap())),
+                "round-trip mismatch at {orig:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn derived_export_skips_error_cells_and_still_writes_the_good_ones() {
+        use improv_core_model::{
+            BinaryOp, DimensionSpec, Expr, Formula, Measure, MeasureKind, Name,
+        };
+
+        // Margin = Revenue / Quantity, with Quantity zeroed for [2025,WidgetA]:
+        // the engine yields NaN there (its div-by-zero convention), which is not
+        // re-importable as a number, so that row is skipped and the other three
+        // are written.
+        let mut model = revenue_model();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        model.set_input(
+            MeasureId(101),
+            Coordinate::from_pairs([(time, ItemId(10)), (product, ItemId(20))]),
+            Value::Number(0.0),
+        );
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Margin".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Div,
+                Box::new(Expr::Ref(MeasureId(102), DimensionSpec::default())),
+                Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+            ))),
+            description: None,
+        });
+
+        let mut buf = Vec::new();
+        let n = export_measure_csv_to(&model, MeasureId(103), &mut buf, b',').unwrap();
+        assert_eq!(n, 3, "the NaN/#ERR cell is skipped, the rest are written");
+        let (_, rows) = parse_rows(&buf);
+        assert_eq!(rows.len(), 3);
+        let text = String::from_utf8(buf).unwrap();
+        assert!(!text.contains("NaN"), "no NaN in the value column: {text}");
+        assert!(
+            !text.contains("#ERR"),
+            "no #ERR in the value column: {text}"
+        );
+        // The skipped row's coordinate is absent; the others are present.
+        assert!(!rows.iter().any(|r| r[0] == "2025" && r[1] == "WidgetA"));
+        assert!(rows.iter().any(|r| r[0] == "2026" && r[1] == "WidgetB"));
+
+        // An input Value::Error cell is skipped the same way (unchanged behavior).
+        let mut model = revenue_model();
+        model.set_input(
+            MeasureId(101),
+            Coordinate::from_pairs([(time, ItemId(10)), (product, ItemId(20))]),
+            Value::Error(improv_core_model::ValueError::new(
+                improv_core_model::ValueErrorKind::DivisionByZero,
+            )),
+        );
+        let mut buf = Vec::new();
+        assert_eq!(
+            export_measure_csv_to(&model, MeasureId(101), &mut buf, b',').unwrap(),
+            3
+        );
     }
 }

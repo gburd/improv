@@ -11,5 +11,8 @@ path = "src/lib.rs"
 [dependencies]
 improv_core_model = { path = "../core_model" }
 improv_data_source = { path = "../data_source" }
+# Exporting a DERIVED measure needs computed cells, which only the engine can
+# produce. No cycle: the engine depends on core_model/extfn, never on storage.
+improv_engine = { path = "../engine" }
 thiserror.workspace = true
 csv = "1"
