@@ -101,24 +101,9 @@ pub fn import_csv_from<R: io::Read>(
         None
     };
 
-    // Ensure the categories exist.
-    improv_data_source::ensure_categories(
-        model,
-        spec.dimensions
-            .iter()
-            .map(|d| (d.category_id, d.category_name.as_str())),
-    );
-    // Create the measure (input, over the mapped categories).
-    let cats: Vec<CategoryId> = spec.dimensions.iter().map(|d| d.category_id).collect();
-    improv_data_source::add_input_measure(
-        model,
-        spec.measure_id,
-        &spec.measure_name,
-        spec.value_type,
-        cats,
-        Some(format!("imported from CSV: {}", spec.path.display())),
-    );
-
+    // Everything below up to the "commit" comment is READ-ONLY on `model`, so
+    // any error (bad column, short row, unparseable number) returns before the
+    // caller's model is touched: import is atomic without staging a clone.
     // Resolve column refs to indices up front; error clearly if a named
     // column doesn't exist (or a name is used with no header row).
     let dim_idx: Vec<(usize, CategoryId)> = spec
@@ -175,7 +160,22 @@ pub fn import_csv_from<R: io::Read>(
         cells.push((coord, value));
     }
 
-    // Register interned items on their categories, then set the input cells.
+    // Commit: every row validated, so mutate the caller's model now — create
+    // the categories/measure, register interned items, set the input cells.
+    improv_data_source::ensure_categories(
+        model,
+        spec.dimensions
+            .iter()
+            .map(|d| (d.category_id, d.category_name.as_str())),
+    );
+    improv_data_source::add_input_measure(
+        model,
+        spec.measure_id,
+        &spec.measure_name,
+        spec.value_type,
+        Vec::from_iter(spec.dimensions.iter().map(|d| d.category_id)),
+        Some(format!("imported from CSV: {}", spec.path.display())),
+    );
     interner.register(model);
     let count = cells.len();
     for (coord, value) in cells {
@@ -521,6 +521,121 @@ mod tests {
         let mut spec = revenue_spec();
         spec.value_column = ColumnRef::Name("nope".into());
         assert!(import_csv_from(Cursor::new(SALES_CSV), &mut model, &spec).is_err());
+    }
+
+    #[test]
+    fn repeat_import_with_same_base_never_aliases_item_ids() {
+        let mut model = Model::new();
+        import_csv_from(
+            Cursor::new("time,product,revenue\n2025,WidgetA,1000\n"),
+            &mut model,
+            &revenue_spec(),
+        )
+        .unwrap();
+        let time = model.category_by_name("Time").unwrap().id;
+        let product = model.category_by_name("Product").unwrap().id;
+        let first = model.clone();
+
+        // Same fixed base (what the GUI wizard always passes), different data.
+        let n = import_csv_from(
+            Cursor::new("time,product,revenue\n2026,WidgetB,1200\n"),
+            &mut model,
+            &revenue_spec(),
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+
+        // Four distinct items, each id owning exactly one name.
+        let mut seen: Vec<(CategoryId, ItemId, &str)> = model
+            .items
+            .values()
+            .map(|i| (i.category, i.id, i.name.0.as_str()))
+            .collect();
+        seen.sort();
+        assert_eq!(seen.len(), 4, "2025/2026 + WidgetA/WidgetB: {seen:?}");
+        let ids: std::collections::HashSet<ItemId> = seen.iter().map(|(_, id, _)| *id).collect();
+        assert_eq!(ids.len(), 4, "no id reused for two names: {seen:?}");
+
+        // The first import's items kept their names, and its cell survived.
+        for it in first.items.values() {
+            assert_eq!(model.items.get(&it.id).unwrap().name.0, it.name.0);
+        }
+        let old = Coordinate::from_pairs([
+            (time, item_id(&model, time, "2025")),
+            (product, item_id(&model, product, "WidgetA")),
+        ]);
+        assert_eq!(
+            model.input(MeasureId(100), &old),
+            Some(&Value::Number(1000.0))
+        );
+        let fresh = Coordinate::from_pairs([
+            (time, item_id(&model, time, "2026")),
+            (product, item_id(&model, product, "WidgetB")),
+        ]);
+        assert_eq!(
+            model.input(MeasureId(100), &fresh),
+            Some(&Value::Number(1200.0))
+        );
+    }
+
+    #[test]
+    fn failed_import_leaves_the_model_untouched() {
+        let cases = [
+            "time,product,revenue\n2026,OnlyOneField\n", // short row
+            "time,product,revenue\n2025,WidgetA,notanumber\n", // unparseable number
+            "time,product,nope\n2025,WidgetA,1000\n",    // unknown value column
+        ];
+        for bad in cases {
+            let mut model = Model::new();
+            let before = model.clone();
+            assert!(import_csv_from(Cursor::new(bad), &mut model, &revenue_spec()).is_err());
+            assert_eq!(model, before, "empty model mutated by: {bad:?}");
+
+            // Same, onto a model that already holds a good import.
+            let mut model = Model::new();
+            import_csv_from(Cursor::new(SALES_CSV), &mut model, &revenue_spec()).unwrap();
+            let before = model.clone();
+            assert!(import_csv_from(Cursor::new(bad), &mut model, &revenue_spec()).is_err());
+            assert_eq!(model, before, "populated model mutated by: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn failed_import_does_not_overwrite_an_existing_measure() {
+        use improv_core_model::{Measure, MeasureKind, Name};
+
+        // A pre-existing measure sharing the spec's measure id, with different
+        // metadata: a failed import must not clobber it.
+        let mut model = Model::new();
+        model.add_category(CategoryId(9), "Region");
+        model.add_item(ItemId(90), CategoryId(9), "East");
+        model.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Headcount".into()),
+            value_type: ValueType::Text,
+            categories: vec![CategoryId(9)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let coord = Coordinate::from_pairs([(CategoryId(9), ItemId(90))]);
+        model.set_input(MeasureId(100), coord.clone(), Value::Text("hi".into()));
+        let before = model.clone();
+
+        assert!(import_csv_from(
+            Cursor::new("time,product,revenue\n2025,WidgetA,notanumber\n"),
+            &mut model,
+            &revenue_spec(),
+        )
+        .is_err());
+        assert_eq!(model, before);
+        let m = model.measures.get(&MeasureId(100)).unwrap();
+        assert_eq!(m.name.0, "Headcount");
+        assert_eq!(m.value_type, ValueType::Text);
+        assert_eq!(m.categories, vec![CategoryId(9)]);
+        assert_eq!(
+            model.input(MeasureId(100), &coord),
+            Some(&Value::Text("hi".into()))
+        );
     }
 
     #[test]

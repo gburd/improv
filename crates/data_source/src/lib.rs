@@ -71,17 +71,25 @@ pub struct ItemInterner {
 }
 
 impl ItemInterner {
-    /// Seed the interner from `model`'s existing items; new ids start at
-    /// `item_id_base`.
+    /// Seed the interner from `model`'s existing items. Minted ids start at
+    /// `item_id_base`, but never below `max(existing item id) + 1`: on a repeat
+    /// import the caller passes the same fixed base (the GUI wizard always
+    /// passes 1_000_000), so allocating straight from the base would re-mint an
+    /// id a *differently named* item already owns — `register` then keeps the
+    /// old name and the new row's value silently lands under the wrong label.
+    /// Allocating above the model's maximum guarantees freshness while the base
+    /// still acts as the floor for a fresh import.
     pub fn seeded_from(model: &Model, item_id_base: u32) -> Self {
         let mut map: HashMap<CategoryId, HashMap<String, ItemId>> = HashMap::new();
+        let mut max_id = 0u32;
         for it in model.items.values() {
             map.entry(it.category)
                 .or_default()
                 .insert(it.name.0.clone(), it.id);
+            max_id = max_id.max(it.id.0);
         }
         Self {
-            next_item: item_id_base,
+            next_item: item_id_base.max(max_id.saturating_add(1)),
             map,
         }
     }
@@ -166,6 +174,30 @@ mod tests {
         interner.register(&mut model);
         assert_eq!(model.categories.get(&cat).unwrap().items.len(), 2);
         assert!(model.items.contains_key(&fresh1));
+    }
+
+    #[test]
+    fn mints_above_existing_ids_even_when_base_is_lower() {
+        // A prior import left item 1_000_000 ⇒ re-seeding with the same fixed
+        // base must not hand that id to a different name.
+        let mut model = Model::new();
+        let cat = CategoryId(1);
+        ensure_categories(&mut model, [(cat, "Time")]);
+        model.items.insert(
+            ItemId(1_000_000),
+            Item {
+                id: ItemId(1_000_000),
+                category: cat,
+                name: Name("2025".into()),
+            },
+        );
+
+        let mut interner = ItemInterner::seeded_from(&model, 1_000_000);
+        let fresh = interner.intern(cat, "2026");
+        assert_ne!(fresh, ItemId(1_000_000));
+        interner.register(&mut model);
+        assert_eq!(model.items.get(&ItemId(1_000_000)).unwrap().name.0, "2025");
+        assert_eq!(model.items.get(&fresh).unwrap().name.0, "2026");
     }
 
     #[test]
