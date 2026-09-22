@@ -58,11 +58,23 @@ baseline on hotdog; its temporary instance was terminated after collection.
   round-trip, which is exactly why it missed two defects; the second round
   enumerates the argument space instead.
 
-  Still open from the audit: typed (non-numeric) cell editing, keyboard focus
-  stealing between the grid and other text fields, derived CSV export reading
-  input storage instead of computed results (a derived measure exports a header
-  and zero rows), multi-measure display, undo/redo. Pre-existing and unfixed:
-  stale `:measure/categories` refs are never retracted, so changing a measure's
+  **Third batch landed 2026-09-22** — the remaining audit items, each verified
+  by mutation rather than only by a passing test:
+  - `790127e` typed cell display/editing: Text/Boolean/Date inputs rendered
+    BLANK and could be overwritten as numbers. Parsing now switches on the
+    measure's DECLARED type, so '42' into a Text measure stores Text; an empty
+    commit clears the cell. One of the agent's own new tests was found
+    decorative under mutation and rewritten.
+  - `db8cfa4` derived CSV export evaluated instead of reading empty input
+    storage (a derived measure used to export a header and zero rows).
+  - `74e7f38` focus-aware shortcuts (typing in any text field no longer pivots
+    the grid) and model undo/redo (bounded snapshot stacks reusing publish()'s
+    consistency guarantee; all four mutation paths wired).
+
+  Still open: multi-measure display — now folded into the GUI reconstruction
+  plan as Step 3 (a canvas of matrices), since the references show it is a
+  layout capability, not a bolt-on. Pre-existing and unfixed: stale
+  `:measure/categories` refs are never retracted, so changing a measure's
   category set accumulates the union across saves.
 - **NEXT: data integrity/security review** — repeated CSV item IDs/import
   rollback, computed exports, concurrent scheduler writes, private-file
