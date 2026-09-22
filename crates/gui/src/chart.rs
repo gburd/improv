@@ -1,7 +1,9 @@
 //! A read-only chart view of the selected measure.
 //!
 //! `chart_series` is a pure function of the app state (snapshot + filters +
-//! pivot/page): the x-axis is the full Cartesian product of the ROW categories
+//! pivot/page); an axis filtered to nothing (or a page category with no
+//! pinnable item) charts nothing at all, exactly as the grid renders nothing.
+//! The x-axis is the full Cartesian product of the ROW categories
 //! (labels are the joined tuple names, e.g. "2024Q1 / North"), and there is one
 //! series per full COLUMN tuple (series name = joined column tuple names). The
 //! single-category case is the 1-length-tuple case; a 1-D grid (no columns) is
@@ -61,27 +63,32 @@ impl ImprovApp {
     /// names). The single-category case is just the 1-length-tuple case. A 1-D
     /// grid (no column categories) is a single unnamed series. Non-numeric /
     /// missing cells are gaps (`None`). Pure: no egui, no mutation.
+    ///
+    /// Empty [`ChartData`] (no x, no series) whenever nothing is addressable:
+    /// no selection, an axis category filtered to zero items, or a page
+    /// category with no pinnable item. `render_chart` reports that as "no
+    /// data" — the chart never plots an under-specified key. Matches
+    /// `grid_dims`.
     pub fn chart_series(&self) -> ChartData {
         let Some(measure) = self.selected() else {
             return ChartData::default();
         };
-        let (row_cats, col_cats, pinned) = self.chart_axes_pub();
+        // No pinnable page item -> every key would omit that category. The grid
+        // renders nothing there; so does the chart.
+        let Some((row_cats, col_cats, pinned)) = self.chart_axes_pub() else {
+            return ChartData::default();
+        };
         let values = self.values_for_pub(measure);
 
         // Full row/column products (each element is a tuple of (ItemId, name)).
+        // No categories on an axis yields one empty tuple (scalar in that
+        // direction); a category filtered to nothing yields NO tuples and stays
+        // that way — a synthesized line's key would omit that category.
         let row_tuples = self.axis_tuples_pub(&row_cats);
         let col_tuples = self.axis_tuples_pub(&col_cats);
-        // An empty product (a category filtered to nothing) yields no x/series.
-        let row_tuples = if row_tuples.is_empty() {
-            vec![Vec::new()]
-        } else {
-            row_tuples
-        };
-        let col_tuples = if col_tuples.is_empty() {
-            vec![Vec::new()]
-        } else {
-            col_tuples
-        };
+        if row_tuples.is_empty() || col_tuples.is_empty() {
+            return ChartData::default();
+        }
 
         // Axis title: the joined row-category names (e.g. "Time / Region").
         let x_title = row_cats

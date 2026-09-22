@@ -105,6 +105,10 @@ pub enum Axis {
     Pages,
 }
 
+/// The resolved pivot for the chart: the ROW category stack, the COLUMN stack,
+/// and the pinned `(category, item)` for every PAGE dimension.
+pub(crate) type ChartAxes = (Vec<CategoryId>, Vec<CategoryId>, Vec<(CategoryId, ItemId)>);
+
 impl ImprovApp {
     /// Load a model from the store at `db` (`""` = fresh in-memory model) and
     /// build the live engine over its derived measures.
@@ -160,10 +164,13 @@ impl ImprovApp {
     /// Row/column category stacks and pinned pages for the current pivot — the
     /// general (stacked) form the chart needs. Row/col tuples come from
     /// `axis_tuples_pub`; keys from `cell_key_multi_pub`.
-    pub(crate) fn chart_axes_pub(
-        &self,
-    ) -> (Vec<CategoryId>, Vec<CategoryId>, Vec<(CategoryId, ItemId)>) {
-        (self.row_cats(), self.col_cats(), self.pinned_pages())
+    ///
+    /// `None` when a PAGE category is filtered to zero items: nothing can be
+    /// pinned for it, so every cell key would omit that category. Same rule as
+    /// the grid (`grid_dims`/`cursor_key`) — chart nothing rather than plot
+    /// under-specified keys.
+    pub(crate) fn chart_axes_pub(&self) -> Option<ChartAxes> {
+        Some((self.row_cats(), self.col_cats(), self.pinned_pages_opt()?))
     }
     /// The Cartesian product of `cats`' filtered items (see `axis_tuples`),
     /// exposed for the chart. Empty `cats` -> one empty tuple.
@@ -783,17 +790,31 @@ impl ImprovApp {
     /// The editable source text the formula bar shows for `measure`: symbolic
     /// DSL (`Price * Quantity`) whenever the v1 grammar can spell the formula
     /// exactly, else the controlled-English description (`Price times
-    /// Quantity`). Empty for an input measure or an unknown id.
+    /// Quantity`).
     ///
-    /// Whatever this returns, [`Self::commit_formula`] accepts unchanged — that
-    /// is the invariant this pair exists to keep.
-    pub fn formula_source(&self, measure: MeasureId) -> String {
+    /// `None` when there is nothing editable to show: `measure` is unknown or
+    /// an input measure, or *neither* surface language can spell the formula.
+    /// The latter is reachable from a CSV import: a measure named `"Unit
+    /// Price"` is not a DSL identifier (and the DSL has no quoting), while the
+    /// CNL tokenizer splits the name on whitespace and cannot resolve it
+    /// either. The bar renders that read-only instead of inviting a commit of
+    /// text that no parser accepts.
+    ///
+    /// Whatever this returns, [`Self::commit_formula`] accepts unchanged and
+    /// leaves the identical AST — the invariant this pair exists to keep. It is
+    /// *checked* here, by reparsing the candidate text through the very same
+    /// [`Self::parse_formula_text`] `commit_formula` uses, so no printer/parser
+    /// drift can quietly violate it.
+    pub fn formula_source(&self, measure: MeasureId) -> Option<String> {
         let Some(MeasureKind::Derived(f)) = self.model.measures.get(&measure).map(|m| &m.kind)
         else {
-            return String::new();
+            return None;
         };
-        formula_dsl(&self.model, f)
-            .unwrap_or_else(|| describe_formula(&NlContext::new(&self.model), f))
+        let dsl = formula_dsl(&self.model, f);
+        let cnl = describe_formula(&NlContext::new(&self.model), f);
+        dsl.into_iter()
+            .chain(std::iter::once(cnl))
+            .find(|text| self.parse_formula_text(text).ok().as_ref() == Some(f))
     }
 
     /// Parse `text` as the RHS expression for an existing measure and make it
@@ -805,7 +826,9 @@ impl ImprovApp {
     /// and the store write succeeded. On any failure the previous model,
     /// engine, and snapshot are all left intact and the error is returned; on a
     /// parse error `formula_error_pos`/`formula_error_msg` are also set (for the
-    /// formula bar's inline highlight). On success those fields are cleared.
+    /// formula bar's inline highlight). They are cleared the moment `text`
+    /// parses — a later save failure is a save error, not an inline position in
+    /// text that has no error at that offset.
     ///
     /// `text` may be either the symbolic DSL (`Price * Quantity`) or the
     /// controlled English the formula bar displays (`Price times Quantity`);
@@ -819,6 +842,11 @@ impl ImprovApp {
                 return Err(e.to_string());
             }
         };
+        // `text` parsed: any previous inline parse error no longer describes
+        // it. Clear BEFORE publishing, so a failed save does not leave a red
+        // underline at an offset where this text is perfectly fine.
+        self.formula_error_pos = None;
+        self.formula_error_msg.clear();
         // Validate on a candidate copy: a formula that parses can still fail to
         // build (cycle, type/dimension error), which would otherwise leave the
         // app with a saved-but-broken model and a dead engine.
@@ -829,8 +857,6 @@ impl ImprovApp {
             .ok_or_else(|| format!("no measure with id {}", measure.0))?;
         m.kind = MeasureKind::Derived(formula);
         self.publish(candidate)?;
-        self.formula_error_pos = None;
-        self.formula_error_msg.clear();
         Ok(())
     }
 
@@ -1131,22 +1157,37 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
 
 fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
     let name = func_name(func)?;
-    // Aggregation: `FUNC(MeasureRef OVER Category)`, exactly one collapsed
-    // category (all the v1 grammar can express).
-    if let [Expr::Ref(id, spec)] = args {
-        if !spec.over.is_empty() {
-            if spec.over.len() != 1 || !spec.except.is_empty() {
-                return None;
-            }
-            return Some(format!(
-                "{name}({} OVER {})",
-                ref_dsl(model, *id, &spec.by)?,
-                ident(category_name(model, spec.over[0])?)?
-            ));
+    // Aggregation: `FUNC(MeasureRef OVER Category)` is the ONLY spelling the v1
+    // grammar has for an aggregating func id, and `parse_aggregation` demands
+    // it (a ref arg, exactly one OVER category, no `except`). Anything else
+    // must NOT fall through to the generic call printer: `SUM(Quantity)` and
+    // `SUM(Price * Quantity)` are rejected by `parse_expr`. Return `None` so
+    // the caller falls back to the controlled-English description.
+    if is_aggregation(func) {
+        let [Expr::Ref(id, spec)] = args else {
+            return None;
+        };
+        if spec.over.len() != 1 || !spec.except.is_empty() {
+            return None;
         }
+        return Some(format!(
+            "{name}({} OVER {})",
+            ref_dsl(model, *id, &spec.by)?,
+            ident(category_name(model, spec.over[0])?)?
+        ));
     }
     let rendered: Option<Vec<String>> = args.iter().map(|a| expr_dsl(model, a)).collect();
     Some(format!("{name}({})", rendered?.join(", ")))
+}
+
+/// Whether `func` is one of the v1 aggregating built-ins (SUM/AVG/MIN/MAX),
+/// whose only DSL spelling is the `OVER` form. Ids come from `parser`'s public
+/// constants, the same table `engine::compiler::is_aggregation` mirrors.
+fn is_aggregation(func: FuncId) -> bool {
+    matches!(
+        func,
+        parser::FUNC_SUM | parser::FUNC_AVG | parser::FUNC_MIN | parser::FUNC_MAX
+    )
 }
 
 /// The DSL name of a built-in function id. Scalar names are resolved *through*
@@ -1155,11 +1196,11 @@ fn func_name(func: FuncId) -> Option<&'static str> {
     const SCALARS: &[&str] = &[
         "ABS", "ROUND", "FLOOR", "CEIL", "SQRT", "NEG", "MIN2", "MAX2",
     ];
-    match func.0 {
-        1 => Some("SUM"),
-        2 => Some("AVG"),
-        3 => Some("MIN"),
-        4 => Some("MAX"),
+    match func {
+        parser::FUNC_SUM => Some("SUM"),
+        parser::FUNC_AVG => Some("AVG"),
+        parser::FUNC_MIN => Some("MIN"),
+        parser::FUNC_MAX => Some("MAX"),
         _ => SCALARS
             .iter()
             .copied()
@@ -1453,7 +1494,7 @@ impl ImprovApp {
                 self.formula_for = self.selected;
                 self.formula_buf = self
                     .selected
-                    .map(|m| self.formula_source(m))
+                    .and_then(|m| self.formula_source(m))
                     .unwrap_or_default();
                 self.formula_error_pos = None;
                 self.formula_error_msg.clear();
@@ -1463,6 +1504,34 @@ impl ImprovApp {
                     if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) =>
                 {
                     ui.strong(format!("{} =", self.model.measures[&mid].name.0));
+                    // No spelling either surface language accepts (e.g. a
+                    // measure named "Unit Price" from a CSV header): show the
+                    // formula read-only rather than invite a commit of text
+                    // that cannot parse. See `formula_source`.
+                    //
+                    // ponytail: this reparses the one-line formula per frame.
+                    // Cache it next to `formula_buf` (same invalidation as
+                    // `formula_for`) if a profile ever shows it.
+                    if self.formula_source(mid).is_none() {
+                        let english = self
+                            .model
+                            .measures
+                            .get(&mid)
+                            .and_then(|m| match &m.kind {
+                                MeasureKind::Derived(f) => {
+                                    Some(describe_formula(&NlContext::new(&self.model), f))
+                                }
+                                MeasureKind::Input => None,
+                            })
+                            .unwrap_or_default();
+                        ui.weak(english);
+                        ui.weak(
+                            "(not editable here: this formula has no editable spelling \u{2014} \
+                             rename the measure(s)/category(ies) it uses to simple identifiers \
+                             to edit it)",
+                        );
+                        return;
+                    }
                     let error_pos = self.formula_error_pos;
                     let font = egui::TextStyle::Body.resolve(ui.style());
                     let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
@@ -2594,7 +2663,9 @@ mod tests {
             app.selected = Some(MeasureId(102));
 
             // Exactly what `formula_bar` seeds the buffer with.
-            let buf = app.formula_source(MeasureId(102));
+            let buf = app
+                .formula_source(MeasureId(102))
+                .unwrap_or_else(|| panic!("{label}: nothing displayed"));
             assert!(!buf.is_empty(), "{label}: nothing displayed");
 
             let before = app.snapshot.clone();
@@ -2618,10 +2689,13 @@ mod tests {
     fn displayed_dsl_is_the_symbolic_language_not_prose() {
         // The plain revenue model's formula shows as DSL, minimally parenthesized.
         let app = build_app(revenue_model());
-        assert_eq!(app.formula_source(MeasureId(102)), "Price * Quantity");
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("Price * Quantity")
+        );
         // Input measures have no formula text.
-        assert_eq!(app.formula_source(MeasureId(100)), "");
-        assert_eq!(app.formula_source(MeasureId(999)), "");
+        assert_eq!(app.formula_source(MeasureId(100)), None);
+        assert_eq!(app.formula_source(MeasureId(999)), None);
     }
 
     #[test]
@@ -2643,7 +2717,7 @@ mod tests {
         model.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(f.clone());
         let mut app = build_app(model);
 
-        let buf = app.formula_source(MeasureId(102));
+        let buf = app.formula_source(MeasureId(102)).expect("displayable");
         assert_eq!(buf, "the sum of Quantity over Time and Product");
         app.commit_formula(MeasureId(102), &buf).expect("commits");
         match &app.model.measures[&MeasureId(102)].kind {
@@ -2728,7 +2802,10 @@ mod tests {
 
         // A failed formula commit did not publish the new formula, so the model
         // still holds (and computes) the original Revenue = Price * Quantity.
-        assert_eq!(app.formula_source(MeasureId(102)), "Price * Quantity");
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("Price * Quantity")
+        );
         assert!(app.model.measure_by_name("Margin").is_none());
     }
 
@@ -2748,7 +2825,10 @@ mod tests {
         assert_eq!(app.model, before_model, "model preserved");
         assert_eq!(app.snapshot, before_snapshot, "snapshot preserved");
         assert!(app.engine.is_some(), "engine preserved");
-        assert_eq!(app.formula_source(MeasureId(102)), "Price * Quantity");
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("Price * Quantity")
+        );
         let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(app.values_for(MeasureId(102)).get(&key), Some(&70.0));
@@ -3653,5 +3733,337 @@ mod tests {
         let (lo, hi) = d.y_range();
         assert_eq!(lo, 0.0);
         assert!(hi >= 1600.0);
+    }
+
+    // -- regression: the displayed-text-commits-unchanged invariant ---------
+
+    /// Every aggregation arg shape, systematically: `over` of length 0/1/2/3,
+    /// crossed with an empty/non-empty `except` and a `by` list, plus non-`Ref`
+    /// args (a literal, a binary op, a nested call) — for each aggregating func
+    /// id. Whatever `formula_source` shows as editable MUST re-commit unchanged;
+    /// what it cannot spell must be `None`, never unparseable text.
+    ///
+    /// (`proptest` is not a dev-dependency of this crate, so this is the
+    /// systematic table over the arg space rather than a generator.)
+    fn aggregation_arg_space() -> Vec<(String, Formula)> {
+        let cats = [CategoryId(1), CategoryId(2), CategoryId(3)];
+        let mut out = Vec::new();
+        for func in [
+            parser::FUNC_SUM,
+            parser::FUNC_AVG,
+            parser::FUNC_MIN,
+            parser::FUNC_MAX,
+        ] {
+            // Ref args: every (over, except, by) subset combination.
+            for over_n in 0..=3usize {
+                for except_n in 0..=2usize {
+                    for by_n in 0..=2usize {
+                        let spec = DimensionSpec {
+                            by: cats[..by_n].to_vec(),
+                            over: cats[..over_n].to_vec(),
+                            except: cats[..except_n].to_vec(),
+                        };
+                        out.push((
+                            format!(
+                                "f{}(Quantity over={over_n} except={except_n} by={by_n})",
+                                func.0
+                            ),
+                            Formula::new(Expr::Call(func, vec![Expr::Ref(MeasureId(101), spec)])),
+                        ));
+                    }
+                }
+            }
+            // Non-`Ref` args: the parser's aggregation rule accepts none of them.
+            let price = || Expr::Ref(MeasureId(100), DimensionSpec::default());
+            let qty = || Expr::Ref(MeasureId(101), DimensionSpec::default());
+            for (what, arg) in [
+                ("literal", Expr::Literal(Value::Number(1.0))),
+                (
+                    "product",
+                    Expr::BinaryOp(BinaryOp::Mul, Box::new(price()), Box::new(qty())),
+                ),
+                ("negated ref", Expr::UnaryOp(UnaryOp::Neg, Box::new(qty()))),
+                ("scalar call", Expr::Call(FuncId(10), vec![qty()])),
+                (
+                    "nested agg",
+                    Expr::Call(
+                        parser::FUNC_SUM,
+                        vec![Expr::Ref(
+                            MeasureId(101),
+                            DimensionSpec {
+                                by: vec![],
+                                over: vec![CategoryId(1)],
+                                except: vec![],
+                            },
+                        )],
+                    ),
+                ),
+                ("no args", Expr::Literal(Value::Boolean(true))),
+            ] {
+                out.push((
+                    format!("f{}({what})", func.0),
+                    Formula::new(Expr::Call(func, vec![arg])),
+                ));
+            }
+            // Zero args and two args (arity the aggregation rule cannot spell).
+            out.push((
+                format!("f{}() no args at all", func.0),
+                Formula::new(Expr::Call(func, vec![])),
+            ));
+            out.push((
+                format!("f{}(two refs)", func.0),
+                Formula::new(Expr::Call(
+                    func,
+                    vec![
+                        Expr::Ref(MeasureId(100), DimensionSpec::default()),
+                        Expr::Ref(MeasureId(101), DimensionSpec::default()),
+                    ],
+                )),
+            ));
+            // The aggregation inside a larger expression (the printer recurses
+            // through `child_dsl`, which must not leak unparseable text either).
+            out.push((
+                format!("f{}(Quantity) * Price", func.0),
+                Formula::new(Expr::BinaryOp(
+                    BinaryOp::Mul,
+                    Box::new(Expr::Call(
+                        func,
+                        vec![Expr::Ref(MeasureId(101), DimensionSpec::default())],
+                    )),
+                    Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+                )),
+            ));
+        }
+        out
+    }
+
+    /// DEFECT 1: an aggregation whose arg is not `Ref`-with-exactly-one-`over`
+    /// has no DSL spelling. `formula_dsl` must return `None` (so the CNL
+    /// fallback runs) instead of printing `SUM(Quantity)`, which
+    /// `parse_expr` rejects ("expected 'OVER' in aggregation").
+    #[test]
+    fn every_aggregation_arg_shape_displays_only_committable_text() {
+        let mut failures: Vec<String> = Vec::new();
+        for (label, formula) in aggregation_arg_space() {
+            let mut model = revenue_model();
+            model.add_category(CategoryId(3), "Region");
+            model.add_item(ItemId(30), CategoryId(3), "North");
+            model.measures.get_mut(&MeasureId(102)).unwrap().kind =
+                MeasureKind::Derived(formula.clone());
+            let mut app = build_app(model);
+            app.selected = Some(MeasureId(102));
+
+            // Whatever the DSL printer emits must parse as the same AST.
+            if let Some(dsl) = formula_dsl(&app.model, &formula) {
+                match parser::parse_expr(&app.model, &dsl) {
+                    Ok(back) if back == formula => {}
+                    Ok(back) => failures.push(format!(
+                        "[{label}] DSL {dsl:?} reparsed to a DIFFERENT ast: {:?}",
+                        back.expr
+                    )),
+                    Err(e) => failures.push(format!("[{label}] DSL {dsl:?} DOES NOT PARSE: {e}")),
+                }
+            }
+            // And whatever the bar shows as editable must re-commit unchanged.
+            let Some(shown) = app.formula_source(MeasureId(102)) else {
+                continue; // read-only: nothing is offered for editing
+            };
+            match app.commit_formula(MeasureId(102), &shown) {
+                Ok(()) => match &app.model.measures[&MeasureId(102)].kind {
+                    MeasureKind::Derived(got) if *got == formula => {}
+                    other => failures.push(format!(
+                        "[{label}] displayed {shown:?} committed to a DIFFERENT formula: {other:?}"
+                    )),
+                },
+                Err(e) => failures.push(format!(
+                    "[{label}] displayed {shown:?} does not commit: {e}"
+                )),
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} shape(s) display text that does not re-commit:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// DEFECT 1, the three-keystroke user path: type controlled English that
+    /// builds an aggregation with an empty `over`, commit, then commit the text
+    /// the bar now shows without editing it.
+    #[test]
+    fn cnl_aggregation_without_over_recommits_from_the_bar() {
+        let mut app = build_app(revenue_model());
+        app.selected = Some(MeasureId(102));
+        app.commit_formula(MeasureId(102), "the sum of Quantity")
+            .expect("CNL commits");
+        let committed = match &app.model.measures[&MeasureId(102)].kind {
+            MeasureKind::Derived(f) => f.clone(),
+            MeasureKind::Input => panic!("stopped being derived"),
+        };
+        // The bar reloads its buffer from `formula_source`; Commit again.
+        let shown = app
+            .formula_source(MeasureId(102))
+            .expect("an editable spelling exists (CNL)");
+        app.commit_formula(MeasureId(102), &shown)
+            .unwrap_or_else(|e| panic!("bar text {shown:?} does not commit: {e}"));
+        match &app.model.measures[&MeasureId(102)].kind {
+            MeasureKind::Derived(f) => assert_eq!(*f, committed, "AST changed on re-commit"),
+            MeasureKind::Input => panic!("stopped being derived"),
+        }
+    }
+
+    /// DEFECT 2: a measure name with no spelling in EITHER surface language
+    /// (a CSV header like `"Unit Price"`, a slash, a hyphen, a DSL keyword) is
+    /// never offered as editable text — `formula_source` returns `None` so the
+    /// bar goes read-only. Names that ARE spellable still round-trip.
+    #[test]
+    fn unspellable_measure_names_are_never_shown_as_editable() {
+        let spellable = ["UnitPrice", "Unit_Price", "Price2024", "_Price"];
+        let unspellable = [
+            "Unit Price",
+            "Price/Unit",
+            "Price-2024",
+            "Q1 Revenue",
+            "Over",
+            "over",
+            "AND",
+            "Price(net)",
+            "",
+        ];
+        for name in spellable.iter().chain(unspellable.iter()) {
+            let mut model = revenue_model();
+            model.measures.get_mut(&MeasureId(100)).unwrap().name = Name((*name).into());
+            let mut app = build_app(model);
+            app.selected = Some(MeasureId(102));
+            let formula = match &app.model.measures[&MeasureId(102)].kind {
+                MeasureKind::Derived(f) => f.clone(),
+                MeasureKind::Input => panic!("Revenue is derived"),
+            };
+            match app.formula_source(MeasureId(102)) {
+                // Shown as editable => it MUST commit unchanged.
+                Some(shown) => {
+                    assert!(
+                        spellable.contains(name),
+                        "name {name:?} has no spelling but the bar shows {shown:?}"
+                    );
+                    app.commit_formula(MeasureId(102), &shown)
+                        .unwrap_or_else(|e| {
+                            panic!("name {name:?}: displayed {shown:?} does not commit: {e}")
+                        });
+                    match &app.model.measures[&MeasureId(102)].kind {
+                        MeasureKind::Derived(f) => {
+                            assert_eq!(*f, formula, "name {name:?}: AST changed ({shown:?})")
+                        }
+                        MeasureKind::Input => panic!("stopped being derived"),
+                    }
+                }
+                // Not editable => neither parser may accept the DSL/CNL text,
+                // which is exactly why we refuse to offer it.
+                None => {
+                    assert!(
+                        unspellable.contains(name),
+                        "name {name:?} is spellable but the bar refuses to show it"
+                    );
+                    let cnl = describe_formula(&NlContext::new(&app.model), &formula);
+                    assert_ne!(
+                        app.parse_formula_text(&cnl).ok().as_ref(),
+                        Some(&formula),
+                        "name {name:?}: CNL {cnl:?} DOES round-trip; it should be editable"
+                    );
+                }
+            }
+        }
+    }
+
+    /// DEFECT 5: with an empty ROW axis the grid renders zero lines; the chart
+    /// must not invent an x line labelled `""`.
+    #[test]
+    fn chart_with_an_empty_row_axis_has_no_x_lines() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+        assert_eq!(app.grid_dims(), (2, 2));
+        // Hide every Time item: rows -> empty.
+        for it in [ItemId(10), ItemId(11)] {
+            app.toggle_filter_item(CategoryId(1), it);
+        }
+        assert_eq!(app.grid_dims(), (0, 2), "grid renders no rows");
+        let d = app.chart_series();
+        assert!(
+            d.x_labels.is_empty() && d.series.is_empty(),
+            "chart invented {} x line(s) / {} series for an empty row axis: {d:?}",
+            d.x_labels.len(),
+            d.series.len()
+        );
+    }
+
+    /// DEFECT 5: an empty COLUMN axis likewise yields no series, and an
+    /// unpinnable PAGE category yields nothing at all (the grid is (0,0)) —
+    /// never a full chart drawn at keys that omit the page category.
+    #[test]
+    fn chart_with_an_empty_column_or_page_axis_has_no_data() {
+        // Empty column axis.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+        for it in [ItemId(20), ItemId(21)] {
+            app.toggle_filter_item(CategoryId(2), it);
+        }
+        assert_eq!(app.grid_dims(), (2, 0), "grid renders no columns");
+        let d = app.chart_series();
+        assert!(
+            d.x_labels.is_empty() && d.series.is_empty(),
+            "chart drew data for an empty column axis: {d:?}"
+        );
+
+        // Empty page axis (3-D measure: Region pages).
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        assert_eq!(app.page_cats(), vec![CategoryId(3)]);
+        for it in [ItemId(30), ItemId(31)] {
+            app.toggle_filter_item(CategoryId(3), it);
+        }
+        assert_eq!(app.grid_dims(), (0, 0), "grid renders nothing");
+        let d = app.chart_series();
+        assert_eq!(
+            d,
+            crate::chart::ChartData::default(),
+            "chart plotted at Region-less (under-specified) keys: {d:?}"
+        );
+    }
+
+    /// DEFECT 7: a parse error sets the inline red underline; a subsequent
+    /// VALID formula whose SAVE fails must not leave that underline pointing
+    /// into text which parses cleanly.
+    #[test]
+    fn stale_parse_error_is_cleared_when_a_later_save_fails() {
+        let mut app = build_app(revenue_model());
+        // Step 1: a parse error sets the inline highlight.
+        app.commit_formula(MeasureId(102), "Price *** Quantity")
+            .expect_err("a parse error");
+        assert!(app.formula_error_pos.is_some(), "parse error marked");
+        assert!(!app.formula_error_msg.is_empty());
+
+        // Step 2: a VALID formula whose save fails (unwritable store path).
+        app.db = std::env::temp_dir()
+            .join(format!("improv_gui_no_such_dir_{}", std::process::id()))
+            .join("model.db")
+            .to_string_lossy()
+            .into_owned();
+        let err = app
+            .commit_formula(MeasureId(102), "Price + Quantity")
+            .expect_err("unwritable store must fail the commit");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+        assert_eq!(
+            app.formula_error_pos, None,
+            "stale inline position survived a save failure"
+        );
+        assert!(
+            app.formula_error_msg.is_empty(),
+            "stale inline parse error survived a save failure: {:?}",
+            app.formula_error_msg
+        );
     }
 }
