@@ -57,6 +57,12 @@ fn transact_group(
 /// in-memory).
 pub struct ModelStore {
     store: Store,
+    /// Test-only: how many `(measure, coord)` rows the last `load_cells` query
+    /// *returned* (not how many survived a Rust-side filter). Lets a test prove
+    /// the enumeration itself is bounded by `load_partial`'s closure rather
+    /// than by the size of the whole store.
+    #[cfg(test)]
+    cell_rows_returned: usize,
 }
 
 impl ModelStore {
@@ -64,7 +70,11 @@ impl ModelStore {
     pub fn open(path: &str) -> Result<Self> {
         let mut store = Store::open(path)?;
         store.transact(schema::SCHEMA_EDN)?;
-        Ok(ModelStore { store })
+        Ok(ModelStore {
+            store,
+            #[cfg(test)]
+            cell_rows_returned: 0,
+        })
     }
 
     /// Persist the entire model, atomically: either every category, item,
@@ -171,6 +181,13 @@ impl ModelStore {
     /// bounded subset of a huge model can now avoid paying for every other
     /// measure's cells — it does NOT help an operation that touches the whole
     /// model by definition (e.g. a grand total over everything).
+    ///
+    /// The cell filter is applied *in the store*: `load_cells` binds `?mid` to
+    /// exactly the closure's measure ids with `ground`, so the query returns
+    /// rows only for those measures — no row is materialized or returned for a
+    /// cell outside the closure. See `load_cells` for the one residual cost
+    /// this does NOT remove (SQLite still scans the cell datom slices inside
+    /// the query; only the returned row set is closure-bounded).
     pub fn load_partial(&mut self, measure_ids: &[MeasureId]) -> Result<Model> {
         let mut model = Model::new();
         self.load_categories(&mut model)?;
@@ -312,22 +329,62 @@ impl ModelStore {
         model: &mut Model,
         filter: Option<&std::collections::HashSet<MeasureId>>,
     ) -> Result<()> {
-        // Get all cells' measure id + coord, then fetch the typed value by the
-        // owning measure's declared type (avoids optional-attribute functions).
-        // A `filter` skips the (expensive, one-query-per-cell) value fetch for
-        // any measure not in the set -- this is `load_partial`'s savings: we
-        // still enumerate every (measure, coord) pair (cheap, one query total)
-        // but only pay for the cells an operation's dependency closure needs.
-        let q = "[:find ?mid ?coord :where \
-                  [?e :cell/measure ?m] [?m :measure/id ?mid] \
-                  [?e :cell/coord ?coord]]";
-        for row in self.rel(q)? {
-            let mid = MeasureId(convert::as_u32(&row[0])?);
-            if let Some(keep) = filter {
-                if !keep.contains(&mid) {
-                    continue;
+        // Enumerate cells' measure id + coord, then fetch each typed value by
+        // the owning measure's declared type (avoids optional-attribute
+        // functions).
+        //
+        // The measure filter is applied IN the query, not in this loop: with a
+        // `filter`, `?mid` is `ground`-bound to exactly the closure's measure
+        // ids, so the store returns rows only for those measures. Nothing
+        // proportional to the rest of the model's cells is materialized or
+        // returned. Without a filter (`load_model`) this is the same single
+        // unconstrained query as always — a whole-model load wants every cell
+        // in one query, not N.
+        //
+        // Residual cost, stated plainly: the returned row set and all per-row
+        // work are bounded by the closure, but Mentat plans either shape as a
+        // scan of the `:cell/measure` / `:cell/coord` datom slices (`SEARCH ...
+        // USING COVERING INDEX idx_datoms_aevt (a=?)`, verified with
+        // `Store::q_explain`), so inside SQLite the query still walks every
+        // cell datom. Making the scan itself seek-bounded needs a Mentat/schema
+        // change (an AVET-indexed `:cell/measure` usable as a leading index
+        // column), not a query rewrite.
+        let q = match filter {
+            None => "[:find ?mid ?coord :where \
+                      [?e :cell/measure ?m] [?m :measure/id ?mid] \
+                      [?e :cell/coord ?coord]]"
+                .to_string(),
+            Some(keep) => {
+                if keep.is_empty() {
+                    // `ground` rejects an empty collection, and an empty
+                    // closure needs no cells: skip the query entirely.
+                    #[cfg(test)]
+                    {
+                        self.cell_rows_returned = 0;
+                    }
+                    return Ok(());
                 }
+                // Sorted so the query text is stable/reproducible.
+                let mut ids: Vec<u32> = keep.iter().map(|m| m.0).collect();
+                ids.sort_unstable();
+                let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
+                format!(
+                    "[:find ?mid ?coord :where \
+                      [(ground [{}]) [?mid ...]] \
+                      [?m :measure/id ?mid] \
+                      [?e :cell/measure ?m] \
+                      [?e :cell/coord ?coord]]",
+                    ids.join(" ")
+                )
             }
+        };
+        let rows = self.rel(&q)?;
+        #[cfg(test)]
+        {
+            self.cell_rows_returned = rows.len();
+        }
+        for row in rows {
+            let mid = MeasureId(convert::as_u32(&row[0])?);
             let coord_json = convert::as_string(&row[1])?;
             let coord: Coordinate = serde_json::from_str(&coord_json)?;
 
@@ -768,6 +825,104 @@ mod tests {
         let out_partial =
             improv_engine::dataflow::evaluate(&partial, &[MeasureId(102)]).expect("eval partial");
         assert_eq!(out_full, out_partial);
+    }
+
+    /// `load_partial`'s cell *enumeration* must be bounded by the closure, not
+    /// by the size of the store: a measure outside the closure with hundreds of
+    /// cells must not produce a single returned row.
+    ///
+    /// Checked via `ModelStore::cell_rows_returned` (test-only), which records
+    /// how many rows the `load_cells` query RETURNED — before this fix the
+    /// query was always the unconstrained "every (measure, coord) pair" one and
+    /// non-closure measures were dropped by a `continue` in the Rust loop, so
+    /// this counter would have read 402 (all cells) instead of 2, and both
+    /// assertions below would fail.
+    #[test]
+    fn load_partial_enumeration_is_bounded_by_the_closure() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = Model::new();
+        let cat = CategoryId(1);
+        m.add_category(cat, "Thing");
+        const BIG: u32 = 400;
+        for i in 0..BIG {
+            m.add_item(ItemId(1000 + i), cat, format!("item{i}"));
+        }
+
+        // Closure: Derived = Small * Small (so {Derived, Small}), 1 input cell.
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Small".into()),
+            value_type: ValueType::Number,
+            categories: vec![cat],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(2),
+            name: Name("Derived".into()),
+            value_type: ValueType::Number,
+            categories: vec![cat],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(MeasureId(1), DimensionSpec::default())),
+                Box::new(Expr::Ref(MeasureId(1), DimensionSpec::default())),
+            ))),
+            description: None,
+        });
+        // Outside the closure, and much bigger than it.
+        m.add_measure(Measure {
+            id: MeasureId(3),
+            name: Name("Huge".into()),
+            value_type: ValueType::Number,
+            categories: vec![cat],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+
+        let small_coord = Coordinate::from_pairs([(cat, ItemId(1000))]);
+        m.set_input(MeasureId(1), small_coord.clone(), Value::Number(3.0));
+        m.set_input(MeasureId(2), small_coord.clone(), Value::Number(9.0));
+        for i in 0..BIG {
+            m.set_input(
+                MeasureId(3),
+                Coordinate::from_pairs([(cat, ItemId(1000 + i))]),
+                Value::Number(f64::from(i)),
+            );
+        }
+        store.save_model(&m).expect("save");
+
+        let partial = store.load_partial(&[MeasureId(2)]).expect("load_partial");
+        // The closure has 2 cells (Small's and Derived's own stored cell); the
+        // store holds 2 + BIG. The query must have returned only the former.
+        assert_eq!(
+            store.cell_rows_returned,
+            2,
+            "load_partial must not enumerate out-of-closure rows (store holds {} cells)",
+            2 + BIG
+        );
+        assert_eq!(partial.inputs.len(), 2);
+        assert_eq!(
+            partial.input(MeasureId(1), &small_coord),
+            Some(&Value::Number(3.0))
+        );
+
+        // Empty closure: no cells, no query (a bare `ground []` is a Mentat
+        // parse error, so this branch must short-circuit, not build a query).
+        let none = store.load_partial(&[]).expect("load_partial(&[])");
+        assert!(none.inputs.is_empty());
+        assert_eq!(store.cell_rows_returned, 0);
+
+        // load_model still loads EVERYTHING -- no accidental filtering.
+        let full = store.load_model().expect("load_model");
+        assert_eq!(store.cell_rows_returned as u32, 2 + BIG);
+        assert_eq!(full.inputs.len() as u32, 2 + BIG);
+        assert_eq!(
+            full.input(
+                MeasureId(3),
+                &Coordinate::from_pairs([(cat, ItemId(1000 + BIG - 1))])
+            ),
+            Some(&Value::Number(f64::from(BIG - 1)))
+        );
     }
 
     #[test]
