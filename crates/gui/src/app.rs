@@ -95,7 +95,25 @@ pub struct ImprovApp {
     show_csv_wizard: bool,
     import_form: ImportForm,
     export_form: ExportForm,
+
+    /// Undo/redo history: whole-`Model` snapshots, oldest first. `undo_stack`
+    /// holds the states BEFORE each recorded mutation; `redo_stack` the states
+    /// undone away. See [`ImprovApp::undo`] and `UNDO_DEPTH`.
+    undo_stack: Vec<Model>,
+    redo_stack: Vec<Model>,
 }
+
+/// How many model states the undo (and redo) stack keeps; older entries are
+/// evicted.
+///
+/// ponytail: history is a bounded stack of FULL `Model` clones — one clone per
+/// mutation, up to 50 resident copies. That is honest and obviously correct
+/// (the model already round-trips and compares by value), but the ceiling is
+/// memory: 50 × model size. If models get big enough for that to hurt, replace
+/// the snapshots with a command/delta log (per-edit inverse operations) behind
+/// the same `undo`/`redo`/`record_history` API — the call sites do not care
+/// which it is.
+const UNDO_DEPTH: usize = 50;
 
 /// Which grid axis a category is assigned to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +171,8 @@ impl ImprovApp {
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             export_form: ExportForm::default(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         })
     }
 
@@ -317,6 +337,9 @@ impl ImprovApp {
         let key = decode(&coord);
         let prior = self.model.input(measure, &key).cloned();
         let prior_snapshot = self.snapshot.clone();
+        // The undo point: a clone of the model as it is right now. Taken before
+        // the write, recorded only once the write (engine + save) succeeded.
+        let prior_model = self.model.clone();
 
         match &value {
             Some(v) => self.model.set_input(measure, key.clone(), v.clone()),
@@ -343,6 +366,7 @@ impl ImprovApp {
             }
             return Err(e);
         }
+        self.record_history(prior_model);
         Ok(())
     }
 
@@ -693,12 +717,14 @@ impl ImprovApp {
         }
         let id = self.next_view_id();
         let view = self.build_view(id, name)?;
+        let prior_model = self.model.clone();
         self.model.add_view(view);
         if let Err(e) = self.save() {
             self.model.views.remove(&id);
             self.status = e;
             return None;
         }
+        self.record_history(prior_model);
         self.status = format!("saved view '{name}'");
         Some(id)
     }
@@ -802,10 +828,16 @@ impl ImprovApp {
                 return;
             }
         };
+        // `import_csv` is read-only on the model until it commits, so a failed
+        // import leaves nothing to undo; the snapshot is kept only on success.
+        let prior_model = self.model.clone();
         match improv_storage_csv::import_csv(&mut self.model, &spec) {
             Ok(n) => {
                 self.rebuild_engine();
                 self.selected = Some(spec.measure_id);
+                // The model changed whether or not the store write worked, so
+                // the import is undoable either way.
+                self.record_history(prior_model);
                 // A failed autosave is reported as the failure it is; the
                 // imported cells are already in the live model.
                 self.status = match self.save() {
@@ -1034,7 +1066,8 @@ impl ImprovApp {
 
     /// Replace the model with `candidate`, but only if it builds a working
     /// engine and persists: build first, save second, publish third. On failure
-    /// nothing is touched (`self` keeps its model, engine, and snapshot).
+    /// nothing is touched (`self` keeps its model, engine, and snapshot). On
+    /// success the replaced model becomes an undo point.
     ///
     /// ponytail: validation is a full model clone + a full engine rebuild per
     /// structural edit (briefly two live engines). That is the price of
@@ -1043,6 +1076,16 @@ impl ImprovApp {
     /// (`engine::compiler::compile_formula` + `derived_build_order`) instead of
     /// a real `Engine::new`.
     fn publish(&mut self, candidate: Model) -> Result<(), String> {
+        let previous = self.swap_model(candidate)?;
+        self.record_history(previous);
+        Ok(())
+    }
+
+    /// The atomic model swap behind [`Self::publish`] and undo/redo: build an
+    /// engine for `candidate`, save it, and only then adopt it (model, engine,
+    /// snapshot together). Returns the model it replaced. Records no history —
+    /// callers decide (an undo must not become an undo point of its own).
+    fn swap_model(&mut self, candidate: Model) -> Result<Model, String> {
         let (engine, snapshot) = try_build_engine(&candidate)?;
         let previous = std::mem::replace(&mut self.model, candidate);
         if let Err(e) = self.save() {
@@ -1051,7 +1094,112 @@ impl ImprovApp {
         }
         self.engine = engine;
         self.snapshot = snapshot;
-        Ok(())
+        Ok(previous)
+    }
+
+    // -- undo / redo -------------------------------------------------------
+
+    /// Record `prior` (the model as it was *before* the mutation that just
+    /// succeeded) as an undo point, and drop the redo stack — a fresh mutation
+    /// makes the undone future unreachable (standard semantics).
+    fn record_history(&mut self, prior: Model) {
+        push_bounded(&mut self.undo_stack, prior);
+        self.redo_stack.clear();
+    }
+
+    /// True when there is a recorded state to undo (for enabling UI).
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    /// True when there is an undone state to redo.
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    /// Undo the last model mutation: restore the previous model, rebuild the
+    /// engine and snapshot from it, and persist it (so undo-then-quit does not
+    /// resurrect the undone state). The current model moves to the redo stack.
+    ///
+    /// An empty history is a no-op, not an error. A failed restore (a store
+    /// write failure) leaves everything as it was and keeps the undo point, so
+    /// the step is not lost; the error is returned for the caller to surface.
+    pub fn undo(&mut self) -> Result<(), String> {
+        let Some(prior) = self.undo_stack.pop() else {
+            return Ok(());
+        };
+        let current = self.model.clone();
+        match self.swap_model(prior) {
+            Ok(_) => {
+                push_bounded(&mut self.redo_stack, current);
+                self.after_history_restore();
+                Ok(())
+            }
+            Err(e) => {
+                // Nothing was swapped, so the undo point still applies.
+                self.undo_stack.push(current);
+                Err(e)
+            }
+        }
+    }
+
+    /// Redo the last undone mutation (the mirror of [`Self::undo`]).
+    pub fn redo(&mut self) -> Result<(), String> {
+        let Some(next) = self.redo_stack.pop() else {
+            return Ok(());
+        };
+        let current = self.model.clone();
+        match self.swap_model(next) {
+            Ok(_) => {
+                push_bounded(&mut self.undo_stack, current);
+                self.after_history_restore();
+                Ok(())
+            }
+            Err(e) => {
+                self.redo_stack.push(current);
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Self::undo`], with the outcome reported in the status line (the UI
+    /// path). A store-write failure during undo is surfaced, never swallowed;
+    /// an empty history says so rather than looking like a broken key.
+    fn undo_with_status(&mut self) {
+        let had = self.can_undo();
+        self.status = match self.undo() {
+            Ok(()) if had => "undo".into(),
+            Ok(()) => "nothing to undo".into(),
+            Err(e) => format!("undo failed: {e}"),
+        };
+    }
+
+    /// [`Self::redo`], with the outcome reported in the status line.
+    fn redo_with_status(&mut self) {
+        let had = self.can_redo();
+        self.status = match self.redo() {
+            Ok(()) if had => "redo".into(),
+            Ok(()) => "nothing to redo".into(),
+            Err(e) => format!("redo failed: {e}"),
+        };
+    }
+
+    /// Re-point the transient UI state at the restored model: a measure the
+    /// restored model no longer has (an undone CSV import, an undone new
+    /// derived measure) cannot stay selected or half-edited.
+    fn after_history_restore(&mut self) {
+        self.editing = None;
+        if !self
+            .selected
+            .is_some_and(|m| self.model.measures.contains_key(&m))
+        {
+            self.selected = pick_default_measure(&self.model);
+        }
+        // Force the formula bar to reload from the restored model.
+        self.formula_for = None;
+        self.formula_error_pos = None;
+        self.formula_error_msg.clear();
+        self.sync_axis_state();
     }
 
     /// Create a new derived measure named `name` with RHS `text`. Categories
@@ -1175,6 +1323,35 @@ impl ImprovApp {
             error_cells,
         })
     }
+}
+
+/// Push `state` onto a bounded history stack, evicting the oldest entry once
+/// [`UNDO_DEPTH`] is reached.
+fn push_bounded(stack: &mut Vec<Model>, state: Model) {
+    if stack.len() >= UNDO_DEPTH {
+        stack.remove(0);
+    }
+    stack.push(state);
+}
+
+/// Whether the grid's single-key bindings (cursor motion, paging, measure
+/// cycling, undo/redo) should act this frame.
+///
+/// * `editing` — a GRID CELL editor is open: the cell's own text field owns the
+///   keyboard (its Enter/Esc are handled where it is rendered).
+/// * `other_focus` — some egui widget owns keyboard focus. While a cell is
+///   being edited that widget IS the cell editor, so the two flags overlap;
+///   either one suppresses the bindings. Any *other* focused widget (the
+///   formula bar, the new-measure name/formula fields, the CSV wizard's text
+///   fields, the view-name box) must get the keystroke instead of the grid —
+///   otherwise typing `n` cycles measures and `h`/`j`/`k`/`l` moves the cursor
+///   mid-word.
+///
+/// A pure predicate so the decision is unit-testable without a window; the
+/// focus flag itself comes from `egui::Memory::focused()`, which is `None`
+/// again as soon as focus is released (so the gate is never sticky).
+fn grid_keys_enabled(editing: bool, other_focus: bool) -> bool {
+    !editing && !other_focus
 }
 
 /// Read-only facts about a measure, assembled for the inspector panel.
@@ -1483,6 +1660,7 @@ fn natural_axis_order(model: &Model, measure: Option<MeasureId>) -> Vec<Category
 impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_axis_state();
+        self.handle_history_keys(ctx);
         self.formula_bar(ctx);
         self.tool_palette(ctx);
         self.explorer_panel(ctx);
@@ -1495,6 +1673,39 @@ impl eframe::App for ImprovApp {
 }
 
 impl ImprovApp {
+    /// App-wide undo/redo bindings: Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and
+    /// Ctrl/Cmd+Y redo. Gated by the same [`grid_keys_enabled`] predicate the
+    /// grid uses, so the chords never fire while a cell editor or any other
+    /// text field owns the keyboard. Handled here (not in `handle_grid_keys`)
+    /// because the grid isn't rendered when no measure is selected — which is
+    /// exactly the state an undone import can leave behind.
+    fn handle_history_keys(&mut self, ctx: &egui::Context) {
+        let other_focus = ctx.memory(|m| m.focused()).is_some();
+        if !grid_keys_enabled(self.editing.is_some(), other_focus) {
+            return;
+        }
+        let (command, shift, z, y) = ctx.input(|i| {
+            (
+                i.modifiers.command,
+                i.modifiers.shift,
+                i.key_pressed(egui::Key::Z),
+                i.key_pressed(egui::Key::Y),
+            )
+        });
+        if !command {
+            return;
+        }
+        if z {
+            if shift {
+                self.redo_with_status();
+            } else {
+                self.undo_with_status();
+            }
+        } else if y {
+            self.redo_with_status();
+        }
+    }
+
     /// A NeXTSTEP-style **tool palette**: a narrow left column of beveled
     /// buttons for the common operations (pivot, chart, save model, save view).
     /// Always visible, like the tear-off palettes in NeXTSTEP apps.
@@ -1512,6 +1723,12 @@ impl ImprovApp {
                     };
                     if btn(ui, "↻", "Pivot (rotate axes)") {
                         self.pivot_rotate();
+                    }
+                    if btn(ui, "↶", "Undo (Ctrl+Z)") {
+                        self.undo_with_status();
+                    }
+                    if btn(ui, "↷", "Redo (Ctrl+Shift+Z)") {
+                        self.redo_with_status();
                     }
                     if btn(ui, "☉", "Toggle chart") {
                         self.show_chart = !self.show_chart;
@@ -2178,17 +2395,34 @@ impl ImprovApp {
     /// Handle keyboard navigation for the grid. Arrow keys (and h/j/k/l) move
     /// the cursor; Enter/F2 begin editing the cursor cell; `[`/`]` and
     /// PageUp/PageDown page the first page dimension; `n`/`N` cycle the
-    /// selected measure. Swallowed while a cell text field is open (so typing
-    /// a value doesn't also move the cursor). `n`/`N` (not Tab) drive measure
-    /// cycling because egui reserves Tab for widget focus.
+    /// selected measure; Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z (or Ctrl+Y)
+    /// redoes. Swallowed while a cell text field is open, or while ANY other
+    /// egui widget owns keyboard focus (so typing in the formula bar, the
+    /// new-measure form, the CSV wizard, or the view-name box never also drives
+    /// the grid). `n`/`N` (not Tab) drive measure cycling because egui reserves
+    /// Tab for widget focus.
     fn handle_grid_keys(&mut self, ui: &egui::Ui) {
-        // While editing a cell, let the text field own the keyboard (Enter/Esc
-        // are handled in the cell rendering below).
-        if self.editing.is_some() {
+        // `memory().focused()` is egui 0.29's "which widget owns the keyboard";
+        // it is `None` again as soon as focus is released, so this gate is
+        // transient, never sticky. While a CELL is being edited the focused
+        // widget is the grid's own editor, which `editing` already covers
+        // (Enter/Esc are handled in the cell rendering below).
+        let other_focus = ui.ctx().memory(|m| m.focused()).is_some();
+        if !grid_keys_enabled(self.editing.is_some(), other_focus) {
             return;
         }
         use egui::Key;
         let k = |key: Key| ui.input(|i| i.key_pressed(key));
+        let modifiers = ui.input(|i| i.modifiers);
+
+        // Undo/redo (Ctrl/Cmd chords) are handled app-wide in
+        // `handle_history_keys`, not here — the grid is not rendered at all when
+        // no measure is selected, and undoing must still work there. Leaving
+        // every modified chord alone also keeps e.g. Ctrl+N from cycling
+        // measures.
+        if modifiers.command {
+            return;
+        }
 
         if k(Key::ArrowUp) || k(Key::K) {
             self.move_cursor(-1, 0);
@@ -3096,6 +3330,8 @@ mod tests {
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             export_form: ExportForm::default(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         }
     }
 
@@ -4608,5 +4844,488 @@ mod tests {
         app.begin_edit_cursor();
         assert_eq!(app.editing.as_ref().map(|(m, _)| *m), Some(MeasureId(2)));
         assert_eq!(app.edit_buf, "hello", "text cell seeded blank");
+    }
+
+    // -- ITEM 1: grid shortcuts must not steal keystrokes ------------------
+
+    /// The gate is a pure predicate so it can be checked exhaustively: grid
+    /// bindings run only when NOTHING owns the keyboard. Pre-fix the decision
+    /// was `!editing` alone, so the `(false, true)` row — some *other* text
+    /// field focused — wrongly enabled them.
+    #[test]
+    fn grid_keys_are_enabled_only_when_nothing_owns_the_keyboard() {
+        assert!(grid_keys_enabled(false, false), "idle grid: keys act");
+        assert!(!grid_keys_enabled(true, false), "cell editor open");
+        assert!(
+            !grid_keys_enabled(false, true),
+            "another text field is focused: it must get the keystroke"
+        );
+        assert!(!grid_keys_enabled(true, true), "cell editor focused");
+    }
+
+    /// Feed one frame of key presses through `handle_grid_keys` with `focus`
+    /// optionally held by a NON-grid widget id, and report what the grid state
+    /// became: (selected measure, cursor, first page index).
+    fn frame_with_keys(
+        app: &mut ImprovApp,
+        keys: &[egui::Key],
+        focus: Option<&str>,
+    ) -> (Option<MeasureId>, (usize, usize), usize) {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            events: keys
+                .iter()
+                .map(|k| egui::Event::Key {
+                    key: *k,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            if let Some(id) = focus {
+                // Exactly what a focused TextEdit elsewhere in the app does.
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
+            }
+            egui::CentralPanel::default().show(ctx, |ui| {
+                app.handle_grid_keys(ui);
+            });
+        });
+        (
+            app.selected,
+            (app.cursor_row, app.cursor_col),
+            app.page_idx.first().copied().unwrap_or(0),
+        )
+    }
+
+    /// Typing in the formula bar / new-measure form / CSV wizard / view-name
+    /// box must not drive the grid: with focus elsewhere, `n`, `j`/`l` and `]`
+    /// change nothing. Pre-fix each of them cycled the measure, moved the cell
+    /// cursor, and paged a dimension mid-word.
+    #[test]
+    fn focused_text_field_elsewhere_swallows_grid_shortcuts() {
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        let before = (app.selected, (app.cursor_row, app.cursor_col), 0);
+
+        use egui::Key;
+        let keys = [Key::N, Key::J, Key::L, Key::CloseBracket, Key::Enter];
+        for field in ["formula_bar", "new_measure_name", "csv_path", "view_name"] {
+            let after = frame_with_keys(&mut app, &keys, Some(field));
+            assert_eq!(after, before, "{field} focused, yet the grid reacted");
+            assert!(
+                app.editing.is_none(),
+                "{field} focused, yet Enter opened a cell editor"
+            );
+        }
+    }
+
+    /// The gate is transient, not sticky: the very next frame after focus is
+    /// released, the same keys work again.
+    #[test]
+    fn grid_shortcuts_work_again_once_focus_is_released() {
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200)); // Sales[Time, Product, Region]
+        app.sync_axis_state();
+
+        // Frame 1: focused elsewhere -> `]` must not page.
+        use egui::Key;
+        let (_, _, page) = frame_with_keys(&mut app, &[Key::CloseBracket], Some("some_text_field"));
+        assert_eq!(page, 0, "paged while a text field had focus");
+
+        // Frame 2: focus released -> the very same key works again (the gate is
+        // transient, not a latch).
+        let (_, cursor, page) = frame_with_keys(&mut app, &[Key::CloseBracket], None);
+        assert_eq!(page, 1, "`]` must page the first page dimension again");
+        assert_eq!(cursor, (0, 0));
+    }
+
+    /// Cell editing is untouched by the gate: `editing.is_some()` already
+    /// suppressed the bindings, and the editor's own focus must not change that.
+    #[test]
+    fn cell_editing_still_works_while_editing() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+
+        // Enter opens the editor (no focus held).
+        use egui::Key;
+        frame_with_keys(&mut app, &[Key::Enter], None);
+        let editing = app.editing.clone();
+        assert!(
+            editing.is_some(),
+            "Enter must begin editing the cursor cell"
+        );
+
+        // While editing, the cell editor holds focus. The grid bindings stay
+        // out of the way and the edit buffer survives the frame.
+        app.edit_buf = "7".into();
+        let after = frame_with_keys(&mut app, &[Key::N, Key::J, Key::L], Some("cell_editor"));
+        assert_eq!(after.1, (0, 0), "cursor moved under the open editor");
+        assert_eq!(app.editing, editing, "the open editor was disturbed");
+        assert_eq!(app.edit_buf, "7");
+
+        // And committing the buffer still writes the cell.
+        let key = app.cursor_key().expect("cursor addresses a cell");
+        let msg = app
+            .commit_cell_text(MeasureId(101), key.clone(), &app.edit_buf.clone())
+            .expect("commit");
+        assert_eq!(msg, "cell updated");
+        assert_eq!(app.cell_text(MeasureId(101), &key).as_deref(), Some("7"));
+    }
+
+    /// Ctrl+Z goes through the same gate: it must not fire while a text field
+    /// is focused (Ctrl+Z belongs to that field's own editing), and must fire
+    /// when nothing is focused.
+    #[test]
+    fn undo_shortcut_honors_the_focus_gate() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101));
+        app.sync_axis_state();
+        let key = app.cursor_key().expect("cell");
+        app.set_cell(MeasureId(101), key.clone(), Value::Number(999.0))
+            .expect("edit");
+        assert!(app.can_undo());
+
+        let press_undo = |app: &mut ImprovApp, focus: Option<&str>| {
+            let ctx = egui::Context::default();
+            let raw = egui::RawInput {
+                modifiers: egui::Modifiers::COMMAND,
+                events: vec![egui::Event::Key {
+                    key: egui::Key::Z,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                }],
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                if let Some(id) = focus {
+                    ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
+                }
+                app.handle_history_keys(ctx);
+            });
+        };
+
+        press_undo(&mut app, Some("formula_bar"));
+        assert_eq!(
+            app.cell_text(MeasureId(101), &key).as_deref(),
+            Some("999"),
+            "Ctrl+Z fired while typing in another field"
+        );
+
+        press_undo(&mut app, None);
+        assert_eq!(
+            app.cell_text(MeasureId(101), &key).as_deref(),
+            Some("100"),
+            "Ctrl+Z with no focus must undo"
+        );
+    }
+
+    // -- ITEM 2: undo / redo of MODEL state -------------------------------
+
+    /// The oracle cell + its Revenue key for the 2x2 fixture.
+    fn q_and_rev_keys() -> (CoordKey, CoordKey) {
+        let mut k = vec![(1u32, 10u32), (2, 20)];
+        k.sort();
+        (k.clone(), k)
+    }
+
+    #[test]
+    fn undo_restores_the_cell_and_the_engine_snapshot() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, rkey) = q_and_rev_keys();
+        // Quantity[2025, WidgetA] = 100, Price[WidgetA] = 10 -> Revenue 1000.
+        assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&1000.0));
+
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
+            .expect("edit");
+        assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&2000.0));
+
+        app.undo().expect("undo");
+        assert_eq!(
+            app.cell_text(MeasureId(101), &qkey).as_deref(),
+            Some("100"),
+            "undo must restore the prior cell value"
+        );
+        assert_eq!(
+            app.values_for(MeasureId(102)).get(&rkey),
+            Some(&1000.0),
+            "the engine snapshot must agree with the restored model"
+        );
+
+        app.redo().expect("redo");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("200"));
+        assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&2000.0));
+    }
+
+    #[test]
+    fn undo_restores_a_cleared_cell() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, rkey) = q_and_rev_keys();
+        app.clear_cell(MeasureId(101), qkey.clone()).expect("clear");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey), None);
+
+        app.undo().expect("undo");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("100"));
+        assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&1000.0));
+    }
+
+    #[test]
+    fn undo_a_formula_commit_and_a_new_derived_measure() {
+        let mut app = build_app(revenue_model());
+        let mut rkey = vec![(1u32, 10u32), (2, 20)];
+        rkey.sort();
+        assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&70.0));
+
+        app.commit_formula(MeasureId(102), "Price + Quantity")
+            .expect("commit");
+        assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&17.0));
+
+        app.undo().expect("undo");
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("Price * Quantity"),
+            "undo must restore the prior formula"
+        );
+        assert_eq!(
+            app.values_for(MeasureId(102)).get(&rkey),
+            Some(&70.0),
+            "the engine must be rebuilt from the restored formula"
+        );
+
+        // A new derived measure is undone away entirely.
+        let id = app
+            .add_derived_measure("Margin", "Price - Quantity")
+            .expect("add");
+        assert!(app.model.measures.contains_key(&id));
+        app.undo().expect("undo");
+        assert!(
+            app.model.measure_by_name("Margin").is_none(),
+            "undo must remove the added measure"
+        );
+        assert!(
+            !app.snapshot.contains_key(&id),
+            "the snapshot must not keep values for a measure that is gone"
+        );
+        assert_eq!(app.selected, Some(MeasureId(102)), "selection re-pointed");
+    }
+
+    #[test]
+    fn undo_a_view_save() {
+        let mut app = build_app(revenue_model());
+        let id = app.save_view("L1").expect("saved");
+        assert!(app.model.views.contains_key(&id));
+        app.undo().expect("undo");
+        assert!(app.model.views.is_empty(), "undo must drop the saved view");
+    }
+
+    /// A CSV import creates a measure, a category, and items. Undo must take
+    /// all of them away, not just the cells.
+    #[test]
+    fn undo_a_csv_import_removes_what_it_created() {
+        let path = std::env::temp_dir().join(format!(
+            "improv_gui_undo_import_{}_{}.csv",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::write(&path, "region,amount\nNorth,5\nSouth,7\n").expect("write csv");
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(path.clone());
+
+        let mut app = build_app(inputs_only_model());
+        let before = app.model.clone();
+        app.import_form = ImportForm {
+            path: path.to_string_lossy().into_owned(),
+            tsv: false,
+            has_header: true,
+            measure_id: "500".into(),
+            measure_name: "Imported".into(),
+            value_column: "amount".into(),
+            dimensions: vec![csv_wizard::DimRow {
+                column: "region".into(),
+                category_id: "9".into(),
+                category_name: "Region".into(),
+            }],
+        };
+        app.run_csv_import();
+        assert!(
+            app.status.starts_with("imported 2 cell(s)"),
+            "import failed: {}",
+            app.status
+        );
+        assert!(app.model.measures.contains_key(&MeasureId(500)));
+        assert!(app.model.categories.contains_key(&CategoryId(9)));
+        let imported_items = app.model.items.len();
+        assert!(imported_items > before.items.len(), "items were minted");
+
+        app.undo().expect("undo");
+        assert!(
+            !app.model.measures.contains_key(&MeasureId(500)),
+            "undo must remove the imported measure"
+        );
+        assert!(
+            !app.model.categories.contains_key(&CategoryId(9)),
+            "undo must remove the category the import created"
+        );
+        assert_eq!(app.model, before, "undo must restore the pre-import model");
+        assert_eq!(
+            app.selected,
+            pick_default_measure(&before),
+            "selection must leave the measure that no longer exists"
+        );
+
+        app.redo().expect("redo");
+        assert!(app.model.measures.contains_key(&MeasureId(500)));
+        assert_eq!(app.model.items.len(), imported_items);
+    }
+
+    #[test]
+    fn undo_at_the_bottom_of_the_stack_is_a_no_op() {
+        let mut app = build_app(revenue_model());
+        let before = app.model.clone();
+        assert!(!app.can_undo());
+        app.undo().expect("undo on an empty history is a no-op");
+        app.redo().expect("redo on an empty history is a no-op");
+        assert_eq!(app.model, before);
+        // And after undoing the only recorded step.
+        let (qkey, _) = q_and_rev_keys();
+        app.set_cell(MeasureId(101), qkey, Value::Number(1.0))
+            .expect("edit");
+        app.undo().expect("undo");
+        assert!(!app.can_undo());
+        app.undo().expect("still a no-op, not a panic");
+        assert_eq!(app.model, before);
+    }
+
+    #[test]
+    fn history_depth_is_bounded_and_evicts_the_oldest() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, _) = q_and_rev_keys();
+        // UNDO_DEPTH + 5 edits: the five oldest undo points are evicted.
+        for i in 1..=(UNDO_DEPTH + 5) {
+            app.set_cell(
+                MeasureId(101),
+                qkey.clone(),
+                Value::Number(1000.0 + i as f64),
+            )
+            .expect("edit");
+        }
+        assert_eq!(app.undo_stack.len(), UNDO_DEPTH, "depth bound not enforced");
+
+        // Undo everything we can: we land on the state after edit #5 (the
+        // oldest still-recorded point), never the original 100.
+        while app.can_undo() {
+            app.undo().expect("undo");
+        }
+        assert_eq!(
+            app.cell_text(MeasureId(101), &qkey).as_deref(),
+            Some("1005"),
+            "the oldest retained undo point should be the state after edit 5"
+        );
+    }
+
+    #[test]
+    fn a_new_mutation_after_undo_clears_the_redo_stack() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, _) = q_and_rev_keys();
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
+            .expect("edit");
+        app.undo().expect("undo");
+        assert!(app.can_redo(), "undo must make the step redoable");
+
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(300.0))
+            .expect("edit");
+        assert!(
+            !app.can_redo(),
+            "a fresh mutation must make the undone future unreachable"
+        );
+        app.undo().expect("undo");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("100"));
+    }
+
+    /// Undo must PERSIST: undo then quit must not resurrect the undone state.
+    #[test]
+    fn undo_is_saved_to_the_store() {
+        let db = std::env::temp_dir()
+            .join(format!(
+                "improv_gui_undo_persist_{}_{}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(db.clone());
+
+        ModelStore::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed the store");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let (qkey, _) = q_and_rev_keys();
+
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
+            .expect("edit");
+        app.undo().expect("undo");
+
+        let reloaded = ModelStore::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(
+            reloaded.input(MeasureId(101), &decode(&qkey)),
+            Some(&Value::Number(100.0)),
+            "the undone value was left in the store"
+        );
+    }
+
+    /// A store write that fails during undo is surfaced, and the step is not
+    /// lost: the undo point stays, so the user can retry.
+    #[test]
+    fn a_failed_save_during_undo_is_reported_and_keeps_the_step() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, _) = q_and_rev_keys();
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
+            .expect("edit");
+
+        app.db = std::env::temp_dir()
+            .join(format!("improv_gui_no_such_dir_{}", std::process::id()))
+            .join("model.db")
+            .to_string_lossy()
+            .into_owned();
+        let err = app
+            .undo()
+            .expect_err("an unwritable store must fail the undo");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+        assert_eq!(
+            app.cell_text(MeasureId(101), &qkey).as_deref(),
+            Some("200"),
+            "a failed undo must leave the live state alone"
+        );
+        assert!(app.can_undo(), "the undo point must survive a failed undo");
+
+        // The UI path reports it instead of claiming success.
+        app.undo_with_status();
+        assert!(app.status.starts_with("undo failed:"), "{}", app.status);
     }
 }
