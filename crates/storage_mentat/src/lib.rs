@@ -54,6 +54,34 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// can exceed the count we emit.
 const MAX_DATOMS_PER_TRANSACT: usize = 2000;
 
+/// The datom count at which one transact aborts the process (see
+/// `MAX_DATOMS_PER_TRANSACT`): `32766 / 6`.
+///
+/// Chunking keeps *groups* of entities under this, but it cannot help when ONE
+/// entity is this wide by itself — an entity map is indivisible, so the widest
+/// single entity is the hard floor on what a transact must carry. Improv has
+/// exactly one entity kind whose width scales with model data:
+/// `:measure/categories` is `:db.cardinality/many`, so a measure with N
+/// categories emits N ref datoms (plus ~7 fixed attributes). `save_model`
+/// therefore rejects an over-wide measure with `StoreError::Integrity` instead
+/// of handing Mentat a transact that kills the process.
+///
+/// The ceiling applies *per attribute queue*, not per transact: Mentat's
+/// transactor splits a transact's datoms into cardinality-many
+/// (`SearchType::Exact`) and cardinality-one (`Inexact`) queues and calls
+/// `insert_non_fts_searches` once per queue, each with its own chunking and its
+/// own `assert!`. That is why a measure with 5460 categories saves even though
+/// it emits 5467 datoms: 5460 land in the many-queue and 7 in the one-queue.
+/// The binding constraint is the category count alone, so the guard checks that
+/// and not the padded `datoms_per_entity` bound (checking the padded bound would
+/// reject the 5454..=5460 category range, which is measurably fine today).
+const MAX_DATOMS_PER_TRANSACT_QUEUE: usize = 32766 / 6;
+
+/// Most `:measure/categories` refs one measure can carry and still be savable
+/// (5460 — verified as the last good value by
+/// `measure_at_the_single_entity_ceiling_round_trips`).
+const MAX_CATEGORIES_PER_MEASURE: usize = MAX_DATOMS_PER_TRANSACT_QUEUE - 1;
+
 /// Transact `entities` through `ip` in EDN vectors of at most
 /// `MAX_DATOMS_PER_TRANSACT / datoms_per_entity` entities each, sharing the
 /// underlying SQLite transaction with every other call made on the same
@@ -73,8 +101,11 @@ fn transact_group(
 ) -> Result<()> {
     let parts: Vec<String> = entities.into_iter().collect();
     // `.max(1)` only bites for an entity so wide it exceeds the whole budget by
-    // itself; a single entity is indivisible, so one-per-transact is the best
-    // we can do (and still 2.7x under the real ceiling).
+    // itself; a single entity is indivisible, so one-per-transact is the best we
+    // can do. That is NOT automatically under Mentat's real ceiling — an entity
+    // wide enough to exceed MAX_DATOMS_PER_TRANSACT_QUEUE on its own still
+    // aborts, which is why `save_model` guards the one entity kind whose width
+    // is unbounded (`:measure/categories`) before it gets here.
     let per_chunk = (MAX_DATOMS_PER_TRANSACT / datoms_per_entity.max(1)).max(1);
     for batch in parts.chunks(per_chunk) {
         ip.transact(format!("[{}]", batch.join("\n")))?;
@@ -128,6 +159,11 @@ impl ModelStore {
     /// datom count (see `MAX_DATOMS_PER_TRANSACT`), because Mentat aborts the
     /// process on a transact of 5461+ datoms. The extra calls are still inside
     /// the same single `InProgress`/`commit()`, so atomicity is unaffected.
+    ///
+    /// Chunking cannot rescue a *single* entity wider than that ceiling, so a
+    /// measure with more than `MAX_CATEGORIES_PER_MEASURE` (5460) categories is
+    /// rejected up front with `StoreError::Integrity` — a recoverable error
+    /// instead of a killed process.
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
         let mut ip = self.store.begin_transaction()?;
 
@@ -146,16 +182,52 @@ impl ModelStore {
         for m in model.measures.values() {
             measures.push(convert::measure_edn(m, model.sql_sources.get(&m.id))?);
         }
-        // id, name, value-type, kind, formula, description, sql-source, plus
-        // one :measure/categories datom per category (cardinality-many); take
-        // the widest measure in this model rather than guessing.
-        let widest_measure = 7 + model
+        // A measure is one indivisible entity, and `:measure/categories` is
+        // cardinality-many, so its width is the only model-data-dependent width
+        // in the schema. Chunking cannot split it: past the per-queue ceiling
+        // Mentat aborts the process, so refuse the save with a recoverable error
+        // instead (`ip` is dropped un-committed here, so nothing persists).
+        //
+        // NOTE (interacts with the missing-retraction bug): `save_model` never
+        // retracts stale `:measure/categories` refs, so re-saving a measure whose
+        // category set *changed* leaves the union on disk. A later `load_model`
+        // hands back that union, which is how a model can grow past this limit
+        // without any single in-memory save ever being that wide. The guard is
+        // still sound, because Mentat's `assert!` counts only the datoms in the
+        // transact being applied — on-disk accumulation for a cardinality-many
+        // attribute adds no rows to the search tables (proven by
+        // `churned_resave_reports_error_not_abort`). The consequence of the
+        // retraction bug is that the *error* can appear on a re-save of a loaded
+        // model whose author never built a measure that wide; fixing retraction
+        // removes that surprise, not this guard.
+        let widest_categories = model
             .measures
             .values()
             .map(|m| m.categories.len())
             .max()
             .unwrap_or(0);
-        transact_group(&mut ip, widest_measure, measures)?;
+        if widest_categories > MAX_CATEGORIES_PER_MEASURE {
+            let worst = model
+                .measures
+                .values()
+                .max_by_key(|m| m.categories.len())
+                .expect("non-empty: widest_categories > 0");
+            return Err(StoreError::Integrity(format!(
+                "measure {} (\"{}\") has {} categories; a measure is a single \
+                 indivisible entity and the store aborts on a transact carrying \
+                 {} or more datoms for one attribute, so at most {} categories \
+                 per measure can be saved",
+                worst.id.0,
+                worst.name.0,
+                widest_categories,
+                MAX_DATOMS_PER_TRANSACT_QUEUE,
+                MAX_CATEGORIES_PER_MEASURE,
+            )));
+        }
+        // id, name, value-type, kind, formula, description, sql-source, plus
+        // one :measure/categories datom per category (cardinality-many); take
+        // the widest measure in this model rather than guessing.
+        transact_group(&mut ip, 7 + widest_categories, measures)?;
 
         let mut cells = Vec::new();
         for ((mid, coord), val) in model.inputs.iter() {
@@ -1110,5 +1182,115 @@ mod tests {
         );
         assert!(after.items.is_empty(), "{} items leaked", after.items.len());
         assert!(after.categories.is_empty());
+    }
+
+    /// A measure carrying `n` categories, numbered from `first_id`.
+    fn measure_with_n_categories_from(n: usize, first_id: u32) -> Model {
+        let mut m = Model::new();
+        let mut cats = Vec::with_capacity(n);
+        for i in 0..n {
+            let c = CategoryId(first_id + i as u32);
+            m.add_category(c, format!("cat{i}"));
+            cats.push(c);
+        }
+        m.add_measure(Measure {
+            id: MeasureId(7),
+            name: Name("Very Wide".into()),
+            value_type: ValueType::Number,
+            categories: cats,
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m
+    }
+
+    fn measure_with_n_categories(n: usize) -> Model {
+        measure_with_n_categories_from(n, 1)
+    }
+
+    /// One entity wider than the store's per-transact ceiling must come back as
+    /// an error, not kill the process.
+    ///
+    /// Chunking (`MAX_DATOMS_PER_TRANSACT`) fixed groups of entities, but a
+    /// measure is indivisible: `:measure/categories` is cardinality-many, so
+    /// 5461+ categories on one measure put 5461+ datoms in a single
+    /// `insert_non_fts_searches` call, which `assert!`s and *aborts*. Against
+    /// the pre-guard code this exact input printed
+    /// `Too many values: 6 * 5461 >= 32766` from `../mentat/db/src/db.rs:949`.
+    #[test]
+    fn measure_past_the_single_entity_ceiling_errors_instead_of_aborting() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let m = measure_with_n_categories(MAX_CATEGORIES_PER_MEASURE + 1);
+        let err = store
+            .save_model(&m)
+            .expect_err("over-wide measure must fail");
+
+        let msg = err.to_string();
+        assert!(matches!(err, StoreError::Integrity(_)), "got {err:?}");
+        // The diagnostic names the offending entity and the real limit.
+        assert!(msg.contains("measure 7"), "{msg}");
+        assert!(msg.contains("Very Wide"), "{msg}");
+        assert!(msg.contains("5461"), "{msg}");
+        assert!(
+            msg.contains(&MAX_CATEGORIES_PER_MEASURE.to_string()),
+            "{msg}"
+        );
+
+        // The refused save left nothing behind (the `InProgress` is dropped
+        // before `commit`), so a later smaller save is unaffected.
+        assert!(store.load_model().expect("load").measures.is_empty());
+    }
+
+    /// The last savable width still saves and round-trips — the guard must not
+    /// be off by one. 5460 is measured, not assumed: 5461 aborts (see above).
+    #[test]
+    fn measure_at_the_single_entity_ceiling_round_trips() {
+        assert_eq!(MAX_CATEGORIES_PER_MEASURE, 5460);
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let m = measure_with_n_categories(MAX_CATEGORIES_PER_MEASURE);
+        store.save_model(&m).expect("5460 categories must save");
+
+        let loaded = store.load_model().expect("load");
+        assert_eq!(
+            loaded.measures[&MeasureId(7)].categories.len(),
+            MAX_CATEGORIES_PER_MEASURE
+        );
+    }
+
+    /// The guard stays sound despite the (separate, unfixed) missing-retraction
+    /// bug: `:measure/categories` is cardinality-many and `save_model` never
+    /// retracts stale refs, so re-saving a measure with a *different* category
+    /// set accumulates the union on disk. Two 3000-category saves of disjoint
+    /// sets each pass the guard, yet the store then holds 6000 refs — past the
+    /// ceiling. Re-saving *that loaded model* must be a clean error, and a
+    /// normal-width save over the accumulated entity must still succeed (proving
+    /// the abort counts only the datoms of the transact being applied, so the
+    /// in-memory budget the guard checks is the right thing to check).
+    #[test]
+    fn churned_resave_reports_error_not_abort() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        store
+            .save_model(&measure_with_n_categories_from(3_000, 1))
+            .expect("first save");
+        store
+            .save_model(&measure_with_n_categories_from(3_000, 10_000))
+            .expect("churned re-save (both halves under the guard)");
+
+        // Finding #8: the union accumulated, so the on-disk width now exceeds
+        // what either in-memory save emitted.
+        let loaded = store.load_model().expect("load");
+        assert_eq!(loaded.measures[&MeasureId(7)].categories.len(), 6_000);
+
+        // Re-saving the accumulated model is a recoverable error, not an abort.
+        let err = store
+            .save_model(&loaded)
+            .expect_err("6000-ref re-save must fail");
+        assert!(matches!(err, StoreError::Integrity(_)), "got {err:?}");
+
+        // And a normal-width save over the 6000-ref on-disk entity still works:
+        // the ceiling is per-transact, not cumulative.
+        store
+            .save_model(&measure_with_n_categories_from(3_000, 1))
+            .expect("narrow save over a wide on-disk entity");
     }
 }
