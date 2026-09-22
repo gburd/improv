@@ -39,25 +39,51 @@ pub struct Token {
     pub end: usize,
 }
 
+/// The character at byte offset `i` of `text`. `i` must be a char boundary
+/// (every offset [`scan`] advances to is one, by construction).
+///
+/// This exists because `text.as_bytes()[i] as char` — the shape this scanner
+/// used to have, and the same bug once present in
+/// `core_model::parser::tokenize` — casts a single BYTE, which is wrong for
+/// any multi-byte UTF-8 sequence and walks the cursor onto a non-boundary
+/// offset, panicking on the eventual `&text[start..i]` slice.
+fn char_at(text: &str, i: usize) -> char {
+    text[i..]
+        .chars()
+        .next()
+        .expect("i < len implies a char here")
+}
+
 /// Scan `text` into a flat sequence of [`Token`]s covering every byte (no
 /// gaps), classifying identifiers/numbers/strings/date-literals/operators by
-/// simple char class. Never fails — unrecognized bytes become single-byte
+/// simple char class. Never fails — unrecognized characters become single-char
 /// `Operator` tokens so the whole string is always covered.
+///
+/// Every `start`/`end` is a char boundary and the tokens tile `text` exactly
+/// (no gaps, no overlap): [`highlight_formula`] slices `text` by those ranges.
 pub fn scan(text: &str) -> Vec<Token> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let start = i;
-        let c = bytes[i] as char;
+        let c = char_at(text, i);
         let kind = match c {
             c if c.is_whitespace() => {
-                while i < bytes.len() && (bytes[i] as char).is_whitespace() {
-                    i += 1;
+                i += c.len_utf8();
+                while i < bytes.len() {
+                    let w = char_at(text, i);
+                    if w.is_whitespace() {
+                        i += w.len_utf8();
+                    } else {
+                        break;
+                    }
                 }
                 TokenKind::Whitespace
             }
             '"' => {
+                // Byte scanning is safe here: ASCII bytes never occur inside a
+                // multi-byte UTF-8 sequence, so `i` stays on a char boundary.
                 i += 1;
                 while i < bytes.len() && bytes[i] != b'"' {
                     i += 1;
@@ -84,11 +110,14 @@ pub fn scan(text: &str) -> Vec<Token> {
                 TokenKind::Number
             }
             c if c.is_alphabetic() || c == '_' => {
-                while i < bytes.len() && {
-                    let b = bytes[i] as char;
-                    b.is_alphanumeric() || b == '_'
-                } {
-                    i += 1;
+                i += c.len_utf8();
+                while i < bytes.len() {
+                    let w = char_at(text, i);
+                    if w.is_alphanumeric() || w == '_' {
+                        i += w.len_utf8();
+                    } else {
+                        break;
+                    }
                 }
                 let word = &text[start..i];
                 if FUNCTIONS.iter().any(|f| word.eq_ignore_ascii_case(f)) {
@@ -98,15 +127,17 @@ pub fn scan(text: &str) -> Vec<Token> {
                 }
             }
             _ => {
-                // Two-char operators first, then a single byte.
-                let two = text.get(i..(i + 2).min(bytes.len()));
+                // Two-char operators first, then a single CHAR. `get` yields
+                // None on a non-boundary/out-of-range end, so this can never
+                // split a multi-byte sequence.
+                let two = text.get(i..i + 2);
                 if matches!(
                     two,
                     Some("<=") | Some(">=") | Some("<>") | Some("==") | Some("!=")
                 ) {
                     i += 2;
                 } else {
-                    i += 1;
+                    i += c.len_utf8();
                 }
                 TokenKind::Operator
             }
@@ -239,6 +270,88 @@ mod tests {
             pos = t.end;
         }
         assert_eq!(pos, text.len());
+    }
+
+    /// The load-bearing invariant: tokens tile `text` exactly (start at 0, each
+    /// one begins where the last ended, the last ends at `text.len()`) and every
+    /// boundary is a char boundary — `highlight_formula` slices by these ranges.
+    fn assert_tiles(text: &str) {
+        let toks = scan(text);
+        let mut pos = 0;
+        for t in &toks {
+            assert_eq!(t.start, pos, "gap/overlap before {t:?} in {text:?}");
+            assert!(t.end > t.start, "empty token {t:?} in {text:?}");
+            assert!(
+                text.is_char_boundary(t.start),
+                "{:?}: start {} not a char boundary",
+                text,
+                t.start
+            );
+            assert!(
+                text.is_char_boundary(t.end),
+                "{:?}: end {} not a char boundary",
+                text,
+                t.end
+            );
+            pos = t.end;
+        }
+        assert_eq!(pos, text.len(), "tokens do not cover all of {text:?}");
+    }
+
+    #[test]
+    fn unicode_input_never_panics_and_tokens_stay_on_char_boundaries() {
+        // Each of these panicked before the byte-cast fix (the reproduced case
+        // on EC2 was `scan("é")`).
+        for text in [
+            "é",
+            "café",
+            "年度売上",          // CJK identifier
+            "年度 * 売上",       // CJK with ASCII operator
+            "🚀",                // emoji (4-byte, non-alphabetic)
+            "Price 🚀 Quantity", // emoji as an "operator"
+            "Prîx * Qté",        // mixed ASCII + accented identifiers
+            "SUM(Recéttes OVER Année)",
+            "\u{0301}",   // lone combining mark
+            "e\u{0301}x", // combining mark inside an identifier
+            "ééé",
+            "\"café\" == Nom", // non-ASCII inside a string literal
+            "#2025-01-é1#",    // non-ASCII inside a date literal
+            "3.14 ≤ é",        // multi-byte operator-ish char
+            "é<=é",            // two-char op adjacent to multi-byte chars
+            "é\"unterminated", // unterminated string after a multi-byte char
+            "é#unterminated",
+            " é", // non-ASCII whitespace (NBSP)
+        ] {
+            assert_tiles(text);
+            // The renderer slices by the same ranges; must not panic either.
+            let job = highlight_formula(text, FontId::default(), Some(1));
+            assert_eq!(job.text, text, "rendered text differs for {text:?}");
+        }
+    }
+
+    #[test]
+    fn multibyte_identifier_is_one_token() {
+        // "café" is 5 bytes / 4 chars: one Ident token spanning all of it.
+        let toks = kinds("café");
+        assert_eq!(toks, vec![(TokenKind::Ident, "café")]);
+        // A non-alphanumeric multi-byte char is a single-CHAR operator token,
+        // not a single-byte one.
+        let toks = scan("🚀");
+        assert_eq!(
+            toks,
+            vec![Token {
+                kind: TokenKind::Operator,
+                start: 0,
+                end: 4
+            }]
+        );
+    }
+
+    #[test]
+    fn error_position_inside_a_multibyte_char_does_not_panic() {
+        // byte 1 is a continuation byte of "é": not a char boundary.
+        let job = highlight_formula("é + 1", FontId::default(), Some(1));
+        assert_eq!(job.text, "é + 1");
     }
 
     #[test]

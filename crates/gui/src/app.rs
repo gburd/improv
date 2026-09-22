@@ -317,6 +317,9 @@ impl ImprovApp {
     }
 
     /// The pinned (category, item) for each page dimension, from `page_idx`.
+    /// A page category filtered to zero items pins nothing and is simply
+    /// absent, so the result can be SHORTER than `page_cats()` — grid/cursor
+    /// code must use `pinned_pages_opt`, which rejects that case.
     fn pinned_pages(&self) -> Vec<(CategoryId, ItemId)> {
         let mut pinned = Vec::new();
         for (pi, c) in self.page_cats().iter().enumerate() {
@@ -333,6 +336,15 @@ impl ImprovApp {
             pinned.push((*c, its[sel].0));
         }
         pinned
+    }
+
+    /// The pinned page items, or `None` if any page category is filtered to zero
+    /// items. In that case no item can be pinned for it, so every cell
+    /// coordinate would omit that category — under-specified for the measure's
+    /// dimensions. Render nothing rather than a cell at such a key.
+    fn pinned_pages_opt(&self) -> Option<Vec<(CategoryId, ItemId)>> {
+        let pinned = self.pinned_pages();
+        (pinned.len() == self.page_cats().len()).then_some(pinned)
     }
 
     /// The Cartesian product of `cats`' filtered items, outer category first.
@@ -656,11 +668,17 @@ impl ImprovApp {
     // -- keyboard cell cursor (pure; unit-tested without egui) -------------
 
     /// The current grid's (row_count, col_count) for the selected measure and
-    /// pivot. Both are >= 1 (a missing axis renders one synthetic row/column,
-    /// matching `render_grid`).
+    /// pivot. An axis with NO categories is genuinely scalar and has ONE line;
+    /// an axis whose category is filtered to zero items has ZERO lines (an empty
+    /// grid with headers — never a synthetic line whose coordinate would omit
+    /// that category). If a PAGE category is filtered to zero items nothing is
+    /// addressable at all, so both counts are 0. Matches `render_grid`.
     fn grid_dims(&self) -> (usize, usize) {
-        let rows = product_len(&self.axis_item_lists(&self.row_cats())).max(1);
-        let cols = product_len(&self.axis_item_lists(&self.col_cats())).max(1);
+        if self.pinned_pages_opt().is_none() {
+            return (0, 0);
+        }
+        let rows = product_len(&self.axis_item_lists(&self.row_cats()));
+        let cols = product_len(&self.axis_item_lists(&self.col_cats()));
         (rows, cols)
     }
 
@@ -682,39 +700,46 @@ impl ImprovApp {
         self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
     }
 
-    /// The `CoordKey` of the cell under the cursor, given the current pivot.
-    pub fn cursor_key(&self) -> CoordKey {
+    /// The `CoordKey` of the cell under the cursor, given the current pivot, or
+    /// `None` when there is no cell there: any axis (row, column, or page)
+    /// category filtered to zero items means no coordinate fully specifies the
+    /// measure's dimensions, so there is nothing to address. An axis with no
+    /// categories at all is scalar in that direction and still has one line.
+    pub fn cursor_key(&self) -> Option<CoordKey> {
+        let pinned = self.pinned_pages_opt()?;
         let row_cats = self.row_cats();
         let col_cats = self.col_cats();
         let row_lists = self.axis_item_lists(&row_cats);
         let col_lists = self.axis_item_lists(&col_cats);
+        let (n_rows, n_cols) = (product_len(&row_lists), product_len(&col_lists));
+        if n_rows == 0 || n_cols == 0 {
+            return None;
+        }
         // Decode only the cursor's row/col line (never the whole product).
-        let row_tuple = if row_lists.is_empty() || product_len(&row_lists) == 0 {
+        // `product_len` of an empty list set is 1, the scalar axis -> empty tuple.
+        let row_tuple = if row_lists.is_empty() {
             Vec::new()
         } else {
-            nth_tuple(&row_lists, self.cursor_row.min(product_len(&row_lists) - 1))
+            nth_tuple(&row_lists, self.cursor_row.min(n_rows - 1))
         };
-        let col_tuple = if col_lists.is_empty() || product_len(&col_lists) == 0 {
+        let col_tuple = if col_lists.is_empty() {
             Vec::new()
         } else {
-            nth_tuple(&col_lists, self.cursor_col.min(product_len(&col_lists) - 1))
+            nth_tuple(&col_lists, self.cursor_col.min(n_cols - 1))
         };
-        cell_key_multi(
-            &row_cats,
-            &row_tuple,
-            &col_cats,
-            &col_tuple,
-            &self.pinned_pages(),
-        )
+        Some(cell_key_multi(
+            &row_cats, &row_tuple, &col_cats, &col_tuple, &pinned,
+        ))
     }
 
-    /// True if the cursor cell is an editable input cell (i.e. the selected
-    /// measure is an input measure). Derived measures are read-only.
+    /// True if the cursor cell is an editable input cell: the selected measure
+    /// is an input measure AND the cursor addresses a real, fully-specified
+    /// coordinate (see `cursor_key`). Derived measures are read-only.
     pub fn cursor_is_editable(&self) -> bool {
         self.selected
             .and_then(|m| self.model.measures.get(&m))
-            .map(|m| !m.is_derived())
-            .unwrap_or(false)
+            .is_some_and(|m| !m.is_derived())
+            && self.cursor_key().is_some()
     }
 
     /// Begin editing the cursor cell if it is editable, seeding the buffer with
@@ -724,11 +749,16 @@ impl ImprovApp {
         let Some(measure) = self.selected else {
             return;
         };
+        // Order matters: report a missing cell (empty filtered axis) before the
+        // derived check, so the message names the real reason.
+        let Some(key) = self.cursor_key() else {
+            self.status = "no cell here: an axis category is filtered to nothing".into();
+            return;
+        };
         if !self.cursor_is_editable() {
             self.status = "derived cells are computed, not editable".into();
             return;
         }
-        let key = self.cursor_key();
         let seed = self
             .values_for(measure)
             .get(&key)
@@ -1714,25 +1744,31 @@ impl ImprovApp {
         // millions of row lines never allocates them all.
         let row_cats = self.row_cats();
         let col_cats = self.col_cats();
-        let pinned = self.pinned_pages();
+        // A page category filtered to zero items pins nothing, so no coordinate
+        // would fully specify the measure's dimensions: render no cells at all.
+        let pinned = self.pinned_pages_opt();
+        let pages_ok = pinned.is_some();
+        let pinned = pinned.unwrap_or_default();
         let row_lists = self.axis_item_lists(&row_cats);
-        // Total row lines: product of the row categories' filtered item counts
-        // (1 when there are no row categories -> a single synthetic row; 0 if
-        // any row category filtered to empty -> also render one blank line).
-        let total_rows = product_len(&row_lists).max(1);
-        let col_lines = {
-            let t = self.axis_tuples(&col_cats);
-            if t.is_empty() {
-                vec![Vec::new()]
-            } else {
-                t
-            }
+        // Total row lines: product of the row categories' filtered item counts.
+        // No row categories -> 1 (a genuinely scalar axis). Any row category
+        // filtered to zero items -> 0 lines: an empty grid with headers, never a
+        // synthetic line (that line's coordinate would omit the category, and
+        // `nth_tuple` would divide by a zero radix).
+        let total_rows = if pages_ok { product_len(&row_lists) } else { 0 };
+        // Column lines, materialized. `axis_tuples` already yields one empty
+        // tuple for a scalar axis (no col categories) and nothing at all for a
+        // category filtered to zero items — keep both as-is.
+        let col_lines = if pages_ok {
+            self.axis_tuples(&col_cats)
+        } else {
+            Vec::new()
         };
         let n_row_stub = row_cats.len().max(1); // stub columns (one per row cat)
         let n_col_hdr = col_cats.len().max(1); // header rows (one per col cat)
 
         // Decode the i-th row tuple on demand (empty when there are no row
-        // categories -> the single synthetic row).
+        // categories -> the single scalar row).
         let row_tuple_at = |lists: &[Vec<(ItemId, String)>], i: usize| -> Vec<(ItemId, String)> {
             if lists.is_empty() {
                 Vec::new()
@@ -1964,7 +2000,16 @@ fn product_len(lists: &[Vec<(ItemId, String)>]) -> usize {
 /// by mixed-radix decoding of `i` across the list lengths — the inner (last)
 /// category is the least-significant digit, matching `axis_tuples`' ordering
 /// (which increments the inner category fastest). Returns the bound
-/// `(ItemId, name)` per category. `i` must be `< product_len(lists)`.
+/// `(ItemId, name)` per category.
+///
+/// # Panics
+///
+/// `i` must be `< product_len(lists)`, which implies every list is non-empty.
+/// A list filtered to zero items means the axis has NO lines, so there is no
+/// `i`-th line to decode; callers (`grid_dims`, `render_grid`, `cursor_key`)
+/// render zero lines in that case rather than calling here. The check is a
+/// hard `assert!` (not `debug_assert!`) because `i % 0` is a divide-by-zero
+/// crash in release builds.
 ///
 /// This is what lets the grid virtualize rows: instead of holding every row
 /// tuple in a Vec, we decode line `i` (and, for group outlining, line `i-1`)
@@ -1973,7 +2018,7 @@ fn nth_tuple(lists: &[Vec<(ItemId, String)>], mut i: usize) -> Vec<(ItemId, Stri
     let mut out: Vec<(ItemId, String)> = vec![(ItemId(0), String::new()); lists.len()];
     for (d, list) in lists.iter().enumerate().rev() {
         let radix = list.len();
-        debug_assert!(radix > 0, "empty category has no lines");
+        assert!(radix > 0, "empty category has no lines");
         out[d] = list[i % radix].clone();
         i /= radix;
     }
@@ -2412,7 +2457,7 @@ mod tests {
         // A cursor deep in the grid resolves its key without materializing rows.
         app.cursor_row = total - 1;
         app.cursor_col = 0;
-        let key = app.cursor_key();
+        let key = app.cursor_key().expect("cursor addresses a cell");
         let mut want = vec![(big.0, 1_000 + n_big - 1), (small.0, 12)];
         want.sort();
         assert_eq!(key, want);
@@ -2597,14 +2642,14 @@ mod tests {
         app.cursor_col = 1;
         let mut expect = vec![(1u32, 11u32), (2, 21)];
         expect.sort();
-        assert_eq!(app.cursor_key(), expect);
+        assert_eq!(app.cursor_key(), Some(expect));
 
         // [0,1] = Quantity[2025, WidgetB] = Time(10), Product(21).
         app.cursor_row = 0;
         app.cursor_col = 1;
         let mut expect = vec![(1u32, 10u32), (2, 21)];
         expect.sort();
-        assert_eq!(app.cursor_key(), expect);
+        assert_eq!(app.cursor_key(), Some(expect));
     }
 
     #[test]
@@ -2617,7 +2662,7 @@ mod tests {
         // Move to Quantity[2025, WidgetA] = [0,0], set it to 200.
         app.cursor_row = 0;
         app.cursor_col = 0;
-        let key = app.cursor_key();
+        let key = app.cursor_key().expect("cursor addresses a cell");
         app.set_cell(MeasureId(101), key, 200.0).unwrap();
 
         // Revenue[2025, WidgetA] = Price(10) * 200 = 2000 in the snapshot.
@@ -2657,6 +2702,154 @@ mod tests {
         app.toggle_filter_item(CategoryId(1), ItemId(11));
         assert!(app.filters.is_empty());
         assert_eq!(app.sorted_items(CategoryId(1)).len(), 2);
+    }
+
+    /// Filter `cat` down to zero visible items (the state the audit found
+    /// crashing: `nth_tuple`'s `i % 0` divide-by-zero in release builds).
+    fn hide_all_items(app: &mut ImprovApp, cat: CategoryId) {
+        let items: Vec<ItemId> = app
+            .model
+            .categories
+            .get(&cat)
+            .map(|c| c.items.clone())
+            .unwrap_or_default();
+        for it in items {
+            app.toggle_filter_item(cat, it);
+        }
+        assert!(
+            app.sorted_items(cat).is_empty(),
+            "category {cat:?} should be filtered to nothing"
+        );
+    }
+
+    #[test]
+    fn row_category_filtered_to_empty_renders_zero_lines_not_one() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state(); // rows=Time, cols=Product
+        assert_eq!(app.grid_dims(), (2, 2));
+
+        hide_all_items(&mut app, CategoryId(1)); // Time -> nothing on rows
+        let (rows, cols) = app.grid_dims();
+        assert_eq!(rows, 0, "an empty row category must render ZERO row lines");
+        assert_eq!(cols, 2, "the column axis is untouched");
+        // No cell is addressable, so nothing is editable and no under-specified
+        // key can be produced.
+        assert_eq!(app.cursor_key(), None);
+        assert!(!app.cursor_is_editable());
+        app.begin_edit_cursor();
+        assert!(app.editing.is_none(), "no edit may start on a missing cell");
+
+        // Showing one item back restores exactly one line, with a complete key.
+        app.toggle_filter_item(CategoryId(1), ItemId(10));
+        assert_eq!(app.grid_dims(), (1, 2));
+        let key = app.cursor_key().expect("cell exists again");
+        assert_eq!(key.len(), 2, "key binds both Time and Product");
+    }
+
+    #[test]
+    fn column_category_filtered_to_empty_renders_zero_lines_not_one() {
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101));
+        app.sync_axis_state(); // rows=Time, cols=Product
+        hide_all_items(&mut app, CategoryId(2)); // Product -> nothing on cols
+        let (rows, cols) = app.grid_dims();
+        assert_eq!(cols, 0, "an empty column category renders ZERO columns");
+        assert_eq!(rows, 2, "the row axis is untouched");
+        assert_eq!(app.cursor_key(), None);
+        assert!(!app.cursor_is_editable());
+        app.begin_edit_cursor();
+        assert!(app.editing.is_none());
+    }
+
+    #[test]
+    fn page_category_filtered_to_empty_leaves_no_addressable_cell() {
+        // Sales[Time, Product, Region]: Region is the page dimension. With no
+        // Region item pinnable, every key would omit Region — under-specified.
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        assert_eq!(app.page_cats(), vec![CategoryId(3)]);
+        let full = app.cursor_key().expect("a cell before filtering");
+        assert_eq!(full.len(), 3, "key binds Time, Product AND Region");
+
+        hide_all_items(&mut app, CategoryId(3)); // Region -> nothing pinnable
+        assert_eq!(
+            app.grid_dims(),
+            (0, 0),
+            "no page item pinnable -> nothing to render"
+        );
+        assert_eq!(
+            app.cursor_key(),
+            None,
+            "must not yield a Region-less (under-specified) key"
+        );
+        assert!(!app.cursor_is_editable());
+        app.begin_edit_cursor();
+        assert!(app.editing.is_none());
+        assert!(app.status.contains("filtered"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn stacked_axis_with_one_empty_category_renders_zero_lines() {
+        // Both categories stacked on rows; emptying the INNER one zeroes the
+        // whole product (the mixed-radix decode has no valid line).
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101));
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product]
+        assert_eq!(app.grid_dims(), (4, 1));
+        hide_all_items(&mut app, CategoryId(2));
+        assert_eq!(app.grid_dims(), (0, 1));
+        assert_eq!(app.cursor_key(), None);
+    }
+
+    #[test]
+    fn scalar_axis_with_no_categories_still_has_one_line() {
+        // The distinction the fix turns on: `product_len(&[]) == 1` (an axis
+        // with NO categories is scalar in that direction — one legitimate line)
+        // vs a category present but filtered to zero items (no lines at all).
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(100)); // Price[Product] only
+        app.sync_axis_state();
+        assert_eq!(app.col_cats(), vec![], "no column category: scalar axis");
+        assert_eq!(
+            app.grid_dims(),
+            (2, 1),
+            "2 Product rows x 1 scalar column line"
+        );
+        // That single scalar line has a complete key (Price's only dimension).
+        let key = app.cursor_key().expect("scalar column line has a cell");
+        assert_eq!(key, vec![(2u32, 20u32)]);
+        assert!(app.cursor_is_editable());
+
+        // Same model, but now the ROW category is emptied: 0 rows, while the
+        // scalar column axis stays at 1.
+        hide_all_items(&mut app, CategoryId(2));
+        assert_eq!(app.grid_dims(), (0, 1));
+        assert_eq!(app.cursor_key(), None);
+    }
+
+    #[test]
+    fn cursor_never_decodes_a_line_of_an_empty_axis() {
+        // A stale cursor (left over from before the filter) must not reach
+        // `nth_tuple` with a zero radix: that is `i % 0`, a release-mode crash.
+        let mut app = build_app(grid_2x2_model());
+        app.selected = Some(MeasureId(101));
+        app.sync_axis_state();
+        app.move_cursor(10, 10); // bottom-right of the 2x2 grid
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+        hide_all_items(&mut app, CategoryId(1));
+        // clamp_cursor ran via toggle_filter_item: the row axis has no lines, so
+        // the row index collapses to 0 (the column axis is unaffected).
+        assert_eq!(app.cursor_row, 0);
+        assert_eq!(app.cursor_key(), None);
+        // Even a forced out-of-range cursor resolves to "no cell", not a panic.
+        app.cursor_row = 7;
+        app.cursor_col = 7;
+        assert_eq!(app.cursor_key(), None);
+        app.move_cursor(1, 1);
+        assert_eq!(app.cursor_row, 0, "an empty axis cannot be moved into");
     }
 
     #[test]
