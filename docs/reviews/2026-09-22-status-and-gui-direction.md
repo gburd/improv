@@ -58,3 +58,40 @@ and AWS SSH key pair deleted. A guest shutdown guard was also installed.
   Cartesian products; row virtualization alone does not imply billion-cell UX.
 - Sandbox read-only root is not private-file isolation. WASM receive timeout
   does not terminate the worker. These need security qualification, not DONE.
+
+## First repair batch — landed 2026-09-22
+
+Each fix carries a regression verified to fail against the pre-fix code.
+
+| Finding | Commit | Outcome |
+| --- | --- | --- |
+| Unicode highlighter panic (reproduced on EC2) | `6a4b862` | Fixed; tokens asserted to tile the string on char boundaries |
+| Empty filtered axis divide-by-zero | `6a4b862` | Fixed; empty axis renders zero lines, no under-specified coordinates |
+| CSV item-ID aliasing across imports | `8241d81` | Fixed; ids allocated above existing maximum |
+| CSV import mutates before validating | `8241d81` | Fixed; validation precedes all mutation |
+| `load_partial` enumerated every cell | `5d80eba` | Bounded in-query via `ground`; residual index scan documented |
+| Save failures reported as success | `b81abc3` | `save()` returns `Result`, `#[must_use]` |
+| Bad formula could disable the engine | `b81abc3` | Validated clone published only on success |
+| Formula bar showed CNL, committed DSL | `b81abc3` | DSL printer added; commit accepts DSL or CNL |
+
+### Additional critical bug found during the batch
+
+**`save_model` panicked on any model over ~5,461 cells** (`3b8f725`). Mentat
+asserts `6 * count < 32766` per transact, so a single large group aborted the
+save outright. The advertised multi-million-cell scale was therefore unreachable
+for any workflow that saves; the 5M stress tests never caught it because they
+exercise `evaluate()` only and never call `save_model()`.
+
+**Consequence for the plan:** scale claims must be re-derived end-to-end
+(build, save, reload, evaluate), not from `evaluate()` in isolation. The
+verified save+reload ceiling is now 12,000 cells (behind `#[ignore]`), with
+6,000 covered by the default suite — far below the 5,000,000 figure quoted for
+`evaluate()` alone.
+
+### Still open from this audit
+
+Typed (non-numeric) cell editing; keyboard focus stealing between the grid and
+other text fields; derived CSV export reading input storage rather than computed
+results; multi-measure display; undo/redo. The historical-reference and
+GUI-reconstruction gates in `.agent/steering/AGENT_GUI_STEERING.md` remain
+unstarted.

@@ -17,6 +17,35 @@ baseline on hotdog; its temporary instance was terminated after collection.
 - **NEXT: GUI correctness** — reproduced Unicode highlighter panic; empty
   filtered axes; displayed-formula round-trip; focus; typed edits; preserving
   the working model/engine on failed formula edits and saves.
+
+  **First repair batch landed 2026-09-22** (`6a4b862`, `8241d81`, `5d80eba`,
+  `b81abc3`, `3b8f725`), each with a regression verified to fail pre-fix:
+  - Unicode highlighter panic and the empty-axis divide-by-zero fixed; an axis
+    filtered to empty now renders zero lines and refuses under-specified
+    coordinates, with the genuinely-scalar case preserved.
+  - Formula bar now round-trips: a DSL printer was added (none existed) with a
+    CNL fallback for ASTs the v1 DSL provably cannot spell, and commit accepts
+    either language.
+  - `save()` returns `Result` and is `#[must_use]`; `commit_formula` publishes
+    through a validated clone, so a bad formula or failed write can no longer
+    leave a saved-but-broken model reported as success.
+  - CSV import no longer aliases item ids across repeated imports, and
+    validates before mutating (a failed import leaves the model untouched).
+  - `load_partial` now binds the closure in the query (`ground`), so returned
+    rows and per-row work are closure-bounded. **Residual, not yet fixed:**
+    SQLite still index-scans the cell attribute slice inside the query, so
+    latency is not fully bounded; that needs an AVET-indexed `:cell/measure`
+    in Mentat.
+  - **`save_model` could not save any model over ~5461 cells at all** (a hard
+    Mentat assert). Transacts are now chunked at 2000 datoms inside the single
+    existing transaction. This had invalidated the advertised multi-million-cell
+    scale for every save path; the 5M stress tests missed it because they only
+    call `evaluate()`. **Scale claims must be re-derived end-to-end (save +
+    reload), not from `evaluate()` alone.**
+
+  Still open from the audit: typed (non-numeric) cell editing, keyboard focus
+  stealing between the grid and other text fields, derived CSV export reading
+  input storage instead of computed results, multi-measure display, undo/redo.
 - **NEXT: data integrity/security review** — repeated CSV item IDs/import
   rollback, computed exports, concurrent scheduler writes, private-file
   isolation and termination of timed-out WASM execution.
