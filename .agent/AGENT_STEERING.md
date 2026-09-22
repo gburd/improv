@@ -6,6 +6,32 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
+## Active priority — post-v0.6.0 qualification (2026-09-22)
+
+Earlier DONE labels are implementation milestones, not release-readiness or
+Lotus Improv parity certification. The source audit found correctness gaps
+behind passing helper tests. See
+`docs/reviews/2026-09-22-status-and-gui-direction.md` for findings and an EC2
+baseline on hotdog; its temporary instance was terminated after collection.
+
+- **NEXT: GUI correctness** — reproduced Unicode highlighter panic; empty
+  filtered axes; displayed-formula round-trip; focus; typed edits; preserving
+  the working model/engine on failed formula edits and saves.
+- **NEXT: data integrity/security review** — repeated CSV item IDs/import
+  rollback, computed exports, concurrent scheduler writes, private-file
+  isolation and termination of timed-out WASM execution.
+- **GUI reconstruction: design pending approval.** NeXTSTEP Lotus Improv is
+  the explicit target. Establish historical references, then a worksheet-first
+  design with real grid-edge category handles, multi-measure presentation,
+  formula area, menus/inspectors, undo and clipboard. See GUI steering's
+  current-direction section for acceptance gates.
+- **Scale remains unfinished:** partial loads still enumerate all coordinate
+  rows before filtering; GUI charts and columns materialize products. No
+  billion-cell usability claim follows from row virtualization.
+- **Validation:** deterministic frame/event regressions and reproducible EC2
+  baselines; measure before claiming improvement. Keep engine and storage
+  correctness ahead of additional backend/runtime breadth.
+
 ## Mission
 
 A cross-platform, standalone multidimensional spreadsheet inspired by Lotus

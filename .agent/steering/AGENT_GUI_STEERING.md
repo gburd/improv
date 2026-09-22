@@ -1,6 +1,32 @@
 # AGENT_GUI_STEERING.md
 Interfaces Steering Document for Improv (CLI, TUI, Server, and desktop GUI)
 
+## Current direction — 2026-09-22
+
+North star: **NeXTSTEP Lotus Improv**, not a hybrid of Quantrix and Windows
+Improv. GUI parity is NOT qualified. Older DONE labels describe implemented
+pieces, not faithful UX or complete correctness. Audit and EC2 baseline:
+`docs/reviews/2026-09-22-status-and-gui-direction.md`.
+
+Next gates, in order:
+
+1. Fix Unicode highlighting, empty filtered axes, CNL/DSL mismatch, focus,
+   typed edits, save-error handling and unsafe CSV mutations. Require actual
+   headless egui event/frame regressions, not only helper tests.
+2. Collect attributed, version-specific historical screenshots/manual pages
+   and interaction sequences. Never infer historical visuals from memory.
+3. Approve a worksheet-first reconstruction design retaining egui and the
+   engine: actual left/top grid-edge category handles, multi-measure views,
+   grouped headers, formula area and inspectors matched to those references.
+   The current horizontal shelf is NOT a left/top grid-edge implementation.
+4. Complete new/open/save-as, category/item creation, clipboard, range
+   selection, undo/redo, and keyboard-only workflows.
+5. Qualify with screenshot comparisons at fixed DPI/geometry, pointer/key
+   tests, measured frame latency/RSS and cross-platform packaging tests.
+
+A major GUI rewrite requires approval of the reference-backed design first.
+Do not label appearance identical or UX complete before these gates pass.
+
 ## 1. Purpose
 
 This document defines the user-facing interfaces of Improv. The **early
@@ -232,7 +258,7 @@ one deliberately and record the decision here.
 - It is the first candidate the source design names (IMPROV.txt: "egui, iced,
   druid, or similar").
 
-Pinned at `eframe`/`egui`/`egui_extras` `0.36` in `[workspace.dependencies]`.
+Pinned at `eframe`/`egui`/`egui_extras` `0.29` in `[workspace.dependencies]`.
 The GUI crate (`improv_gui`, binary `improv-gui`) is a thin view over
 `improv_engine` (live `session::Engine`) and `improv_storage_mentat`; it adds no
 modeling semantics.
