@@ -101,7 +101,87 @@ pub struct ImprovApp {
     /// undone away. See [`ImprovApp::undo`] and `UNDO_DEPTH`.
     undo_stack: Vec<Model>,
     redo_stack: Vec<Model>,
+
+    /// Where the grid's margin gutters and the table itself ended up in the
+    /// last laid-out frame (see [`GutterRects`]). Recorded by
+    /// [`ImprovApp::gutter_frame`]; `None` until the grid has been rendered
+    /// once. Layout output, not model state.
+    gutters: Option<GutterRects>,
 }
+
+/// The measured screen geometry of the grid's margin gutters and the table they
+/// frame, as laid out in the last frame.
+///
+/// The gutters are *docked to the grid's edges* — the signature Improv pivot
+/// surface (`docs/reviews/refs/improv-pivot-gesture.jpg`): row-axis tiles in the
+/// gutter along the table's left edge, column-axis tiles in the gutter along its
+/// top edge, page/unplaced tiles in the bottom-left corner well. Recording the
+/// rects makes that adjacency *checkable* instead of merely apparent — see
+/// [`gutters_frame_table`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GutterRects {
+    /// The column-axis gutter, spanning the table's top edge.
+    top: egui::Rect,
+    /// The row-axis gutter, spanning the table's left edge.
+    left: egui::Rect,
+    /// The table (header + cells) the two gutters frame.
+    table: egui::Rect,
+    /// The bottom-left corner well: page (unplaced) categories.
+    well: egui::Rect,
+}
+
+/// Tolerance, in points, for the gutter-adjacency invariant. The edges are
+/// computed from the same panel cursor so they agree exactly; half a point of
+/// slack only guards against rounding in egui's pixel alignment.
+const EDGE_EPS: f32 = 0.5;
+
+/// Whether the gutters genuinely *frame* the table: the row gutter's right edge
+/// **is** the table's left edge, the column gutter's bottom edge **is** the
+/// table's top edge, each gutter spans the table along its other axis, and the
+/// corner well sits below the table at the row gutter's left edge.
+///
+/// This is the geometric property the old horizontal "axis shelf" failed: three
+/// drop zones side by side above the grid touch no grid edge at all. It is
+/// `debug_assert!`ed every frame (when the window has room — see
+/// [`gutters_have_room`]) and asserted on recorded rects in the headless layout
+/// test.
+fn gutters_frame_table(g: &GutterRects) -> bool {
+    let adjoins = |a: f32, b: f32| (a - b).abs() <= EDGE_EPS;
+    adjoins(g.left.max.x, g.table.min.x)
+        && adjoins(g.top.max.y, g.table.min.y)
+        // The row gutter runs alongside the table, not merely up to a corner.
+        && g.left.min.y <= g.table.min.y + EDGE_EPS
+        && g.left.max.y + EDGE_EPS >= g.table.min.y
+        // The column gutter spans across the table.
+        && g.top.min.x <= g.table.min.x + EDGE_EPS
+        && g.top.max.x + EDGE_EPS >= g.table.min.x
+        // The well is the bottom-left corner of the framed region: below the row
+        // gutter (whose height IS the framed region's height — the table's own
+        // `min_rect` can overflow that when its content does not fit), and flush
+        // with the row gutter's left edge.
+        && g.well.min.y + EDGE_EPS >= g.left.max.y
+        && adjoins(g.well.min.x, g.left.min.x)
+}
+
+/// Whether the window left the gutters enough room to be laid out at all.
+///
+/// A panel clamps its extent to what is available, so in an absurdly small
+/// window (a few dozen points of central panel) the bottom well is squeezed up
+/// past the table and [`gutters_frame_table`] cannot hold — through no fault of
+/// the layout. The per-frame `debug_assert!` is gated on this so shrinking the
+/// window can never panic a debug build; the invariant itself stays strict, and
+/// the layout test asserts it at a real window size.
+fn gutters_have_room(g: &GutterRects) -> bool {
+    g.well.min.y >= g.top.max.y && g.left.height() > 0.0
+}
+
+/// Thickness of the row (left) gutter, in points. The blank corner box above it
+/// is the same width, so the two line up exactly.
+///
+/// ponytail: a constant, not a measurement of the widest category name — tile
+/// labels truncate instead. Measure the names (`Context::fonts` +
+/// `layout_no_wrap`) if long category names turn out to be common.
+const GUTTER_W: f32 = 120.0;
 
 /// How many model states the undo (and redo) stack keeps; older entries are
 /// evicted.
@@ -114,6 +194,18 @@ pub struct ImprovApp {
 /// the same `undo`/`redo`/`record_history` API — the call sites do not care
 /// which it is.
 const UNDO_DEPTH: usize = 50;
+
+/// Which way a gutter's drop zone stretches to cover the gutter: its **fixed**
+/// axis. See [`ImprovApp::gutter_drop_zone`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FillAxis {
+    /// Stretch across the gutter's width (the top gutter and the corner well,
+    /// whose heights come from their tiles).
+    Horizontal,
+    /// Stretch down the gutter's height (the left gutter, whose width is
+    /// [`GUTTER_W`]).
+    Vertical,
+}
 
 /// Which grid axis a category is assigned to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +265,7 @@ impl ImprovApp {
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            gutters: None,
         })
     }
 
@@ -2161,8 +2254,8 @@ impl ImprovApp {
         }
     }
 
-    /// Center: the axis shelf (drag/reassign categories) + page selectors +
-    /// the pivot grid for the selected measure.
+    /// Center: the measure title, the filter shelf, then the grid wrapped in its
+    /// **margin gutters** (see [`ImprovApp::gutter_frame`]).
     fn grid_panel(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| match self.selected {
             None => {
@@ -2179,116 +2272,274 @@ impl ImprovApp {
                     {
                         self.show_chart = !self.show_chart;
                     }
+                    if ui
+                        .button("Pivot")
+                        .on_hover_text("rotate axes (swap the row and column stacks)")
+                        .clicked()
+                    {
+                        self.pivot_rotate();
+                    }
                 });
-                self.margin_tiles(ui);
-                self.page_selectors(ui);
                 self.filter_shelf(ui);
                 ui.separator();
-                self.render_grid(ui, mid);
+                self.gutter_frame(ui, mid);
             }
         });
     }
 
-    /// The signature Lotus Improv pivot gesture: category **tiles at the grid
-    /// margins**. The top margin holds the *Columns* category tile, the left
-    /// margin the *Rows* tile, and a strip holds the *Pages* tiles. Each tile
-    /// is a drag source; each margin is a drop zone — drag a tile from one
-    /// margin to another to re-pivot, exactly as in NeXTSTEP Improv, without
-    /// touching any formula. A small `↻` on each tile is a mouse-only fallback
-    /// that cycles rows→cols→pages.
-    fn margin_tiles(&mut self, ui: &mut egui::Ui) {
-        let cat_name = |app: &ImprovApp, c: CategoryId| {
-            app.model
-                .categories
-                .get(&c)
-                .map(|x| x.name.0.clone())
-                .unwrap_or_else(|| format!("category {}", c.0))
-        };
-        let row_stack = self.row_cats();
-        let col_stack = self.col_cats();
-        let page_cats: Vec<CategoryId> = self.page_cats();
+    /// The grid inside its **margin gutters** — the Improv pivot surface.
+    ///
+    /// Reference: `docs/reviews/refs/improv-pivot-gesture.jpg`. Category tiles
+    /// are docked in gutters that *frame* the table, and the pivot gesture IS
+    /// dragging a tile from one gutter to another:
+    ///
+    /// ```text
+    ///   +- corner --+- TOP gutter: column-axis tiles, stacked ---+
+    ///   | (blank)   |  || Travel v                               |
+    ///   |           |  || Hours  v                               |
+    ///   +-----------+----------------------------------------------+
+    ///   | LEFT      |                                              |
+    ///   | gutter:   |    the table (chiseled headers + cells)      |
+    ///   | row-axis  |                                              |
+    ///   | tiles     |                                              |
+    ///   +-----------+----------------------------------------------+
+    ///   | WELL (bottom-left, inline with the horizontal scrollbar  |
+    ///   | in the reference): page/unplaced tiles + page selectors  |
+    ///   +----------------------------------------------------------+
+    /// ```
+    ///
+    /// Adjacency is **constructed, not hoped for**: the gutters are nested
+    /// [`egui::SidePanel`]/[`egui::TopBottomPanel`]s inside this `Ui`, and a
+    /// panel's contract is that it consumes its strip and moves the parent
+    /// cursor to its far edge, so whatever is laid out next starts exactly at
+    /// that edge. Each panel's own rect and the table's `min_rect` are recorded
+    /// in `self.gutters`, `debug_assert!`ed against
+    /// [`gutters_frame_table`] every frame, and asserted in the headless layout
+    /// test.
+    ///
+    /// Gutter *thickness* along the docked axis is left to the panels: they size
+    /// to their content (a panel re-reads its extent from the previous frame's
+    /// `PanelState`), so stacking another tile makes the gutter grow rather than
+    /// clip it against a hard-coded height. The row gutter is the one fixed
+    /// width, [`GUTTER_W`], so the grid's left edge does not jump as category
+    /// names change.
+    fn gutter_frame(&mut self, ui: &mut egui::Ui, measure: MeasureId) {
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
+        let col_stack = self.col_cats();
+        let row_stack = self.row_cats();
+        let page_cats = self.page_cats();
 
-        // A draggable category tile: raised beveled face with the category name.
-        let tile = |ui: &mut egui::Ui, app: &ImprovApp, c: CategoryId, from: Axis| {
-            let id = egui::Id::new(("tile", c.0));
-            ui.dnd_drag_source(id, c, |ui| {
-                egui::Frame::default()
-                    .fill(crate::theme::NEXT_LIGHT)
-                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
-                    .inner_margin(egui::Margin::symmetric(8.0, 3.0))
-                    .show(ui, |ui| {
+        // Bottom-left corner well first: it claims the bottom strip of the whole
+        // frame, so the two edge gutters and the table share the space above it
+        // (the reference puts it inline with the horizontal scrollbar).
+        let well = egui::TopBottomPanel::bottom(ui.id().with("gutter_well"))
+            .frame(Self::gutter_style())
+            .show_inside(ui, |ui| {
+                Self::gutter_drop_zone(
+                    ui,
+                    Axis::Pages,
+                    FillAxis::Horizontal,
+                    &mut moves,
+                    |ui, moves| {
                         ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(cat_name(app, c)).strong());
-                            let next = match from {
-                                Axis::Rows => Axis::Columns,
-                                Axis::Columns => Axis::Pages,
-                                Axis::Pages => Axis::Rows,
-                            };
-                            if ui
-                                .small_button("↻")
-                                .on_hover_text("move to next axis")
-                                .clicked()
-                            {
-                                // recorded below via the returned move
-                                ui.data_mut(|d| d.insert_temp(id, next));
+                            if page_cats.is_empty() {
+                                ui.weak("(drop to unplace)");
+                            }
+                            for c in &page_cats {
+                                Self::tile(ui, &self.model, *c, Axis::Pages, moves);
                             }
                         });
-                    });
-            });
-            // Pull any cycle request recorded on this tile's id.
-            if let Some(next) = ui.data(|d| d.get_temp::<Axis>(id)) {
-                ui.data_mut(|d| d.remove::<Axis>(id));
-                Some((c, next))
-            } else {
-                None
-            }
-        };
+                    },
+                );
+                self.page_selectors(ui);
+            })
+            .response
+            .rect;
 
-        // A margin drop zone with a NeXT-groove frame + axis label.
-        let margin = |ui: &mut egui::Ui,
-                      app: &ImprovApp,
-                      label: &str,
-                      axis: Axis,
-                      cats: &[CategoryId],
-                      moves: &mut Vec<(CategoryId, Axis)>| {
-            ui.vertical(|ui| {
-                ui.small(egui::RichText::new(label).weak());
-                let frame = egui::Frame::default()
-                    .fill(crate::theme::NEXT_GRAY)
-                    .inner_margin(3.0)
-                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::NEXT_DARK));
-                let (_, dropped) = ui.dnd_drop_zone::<CategoryId, ()>(frame, |ui| {
-                    ui.set_min_size(egui::vec2(120.0, 28.0));
-                    ui.horizontal_wrapped(|ui| {
-                        if cats.is_empty() {
-                            ui.weak("(drop here)");
-                        }
-                        for c in cats {
-                            if let Some(m) = tile(ui, app, *c, axis) {
-                                moves.push(m);
-                            }
-                        }
-                    });
+        // The column gutter: the top strip, spanning the table's full width.
+        // Stacked column categories read top-to-bottom, as the reference's
+        // "Result" panel shows (`Travel` above `Hours`).
+        let top = egui::TopBottomPanel::top(ui.id().with("gutter_top"))
+            .frame(Self::gutter_style())
+            .show_inside(ui, |ui| {
+                // Skip the true corner: the column tiles start one row-gutter
+                // width in, leaving a blank box over the row gutter (the
+                // reference shows an empty box there). Painted below rather than
+                // nested as a panel — a nested panel fills the strip's height,
+                // which would latch this self-sizing gutter at its tallest.
+                ui.horizontal(|ui| {
+                    ui.add_space(GUTTER_W);
+                    Self::gutter_drop_zone(
+                        ui,
+                        Axis::Columns,
+                        FillAxis::Horizontal,
+                        &mut moves,
+                        |ui, moves| {
+                            ui.vertical(|ui| {
+                                if col_stack.is_empty() {
+                                    ui.weak("(drop a category on Columns)");
+                                }
+                                for c in &col_stack {
+                                    Self::tile(ui, &self.model, *c, Axis::Columns, moves);
+                                }
+                            });
+                        },
+                    );
                 });
-                if let Some(c) = dropped {
-                    moves.push((*c, axis));
-                }
-            });
-        };
+            })
+            .response
+            .rect;
 
-        ui.horizontal(|ui| {
-            margin(ui, self, "↓ Columns", Axis::Columns, &col_stack, &mut moves);
-            margin(ui, self, "→ Rows", Axis::Rows, &row_stack, &mut moves);
-            margin(ui, self, "Pages", Axis::Pages, &page_cats, &mut moves);
-            if ui.button("Pivot").on_hover_text("rotate axes").clicked() {
-                self.pivot_rotate();
-            }
-        });
+        // The row gutter: the left strip of what remains, so its right edge is
+        // the table's left edge.
+        let left = egui::SidePanel::left(ui.id().with("gutter_left"))
+            .frame(Self::gutter_style())
+            .exact_width(GUTTER_W)
+            .show_inside(ui, |ui| {
+                Self::gutter_drop_zone(
+                    ui,
+                    Axis::Rows,
+                    FillAxis::Vertical,
+                    &mut moves,
+                    |ui, moves| {
+                        ui.vertical(|ui| {
+                            if row_stack.is_empty() {
+                                ui.weak("(drop a category on Rows)");
+                            }
+                            for c in &row_stack {
+                                Self::tile(ui, &self.model, *c, Axis::Rows, moves);
+                            }
+                        });
+                    },
+                );
+            })
+            .response
+            .rect;
+
+        // The blank corner box at the true corner: the part of the column gutter
+        // sitting over the row gutter.
+        ui.painter().rect_stroke(
+            egui::Rect::from_min_max(top.min, egui::pos2(left.max.x, top.max.y)).shrink(2.0),
+            egui::Rounding::ZERO,
+            egui::Stroke::new(1.0_f32, crate::theme::NEXT_DARK),
+        );
+
+        // Whatever is left is the table: it starts at the row gutter's right
+        // edge and the column gutter's bottom edge by panel construction.
+        let table = ui
+            .scope(|ui| {
+                self.render_grid(ui, measure);
+            })
+            .response
+            .rect;
+
+        let rects = GutterRects {
+            top,
+            left,
+            table,
+            well,
+        };
+        debug_assert!(
+            !gutters_have_room(&rects) || gutters_frame_table(&rects),
+            "gutters must frame the table: {rects:?}"
+        );
+        self.gutters = Some(rects);
 
         for (c, axis) in moves {
             self.set_axis(c, axis);
         }
+    }
+
+    /// The NeXT-groove frame a gutter is painted with.
+    fn gutter_style() -> egui::Frame {
+        egui::Frame::default()
+            .fill(crate::theme::NEXT_GRAY)
+            .inner_margin(egui::Margin::same(2.0))
+            .stroke(egui::Stroke::new(1.0_f32, crate::theme::NEXT_DARK))
+    }
+
+    /// Make the whole of `ui` a drop target for category tiles: a category
+    /// released here is recorded as a move to `axis`, which
+    /// [`ImprovApp::set_axis`] applies (appending to that axis' stack). The zone
+    /// stretches across the gutter so the drop target IS the gutter, not just the
+    /// tiles in it — an empty axis must still be droppable.
+    ///
+    /// `fill` says which way to stretch. It must be the gutter's **fixed** axis:
+    /// a zone that claims all the available space along a *self-sizing* panel's
+    /// own axis ratchets that panel wider every frame, because next frame's
+    /// "available" includes what the zone claimed last frame.
+    fn gutter_drop_zone(
+        ui: &mut egui::Ui,
+        axis: Axis,
+        fill: FillAxis,
+        moves: &mut Vec<(CategoryId, Axis)>,
+        contents: impl FnOnce(&mut egui::Ui, &mut Vec<(CategoryId, Axis)>),
+    ) {
+        let (_, dropped) = ui.dnd_drop_zone::<CategoryId, ()>(egui::Frame::default(), |ui| {
+            match fill {
+                FillAxis::Horizontal => ui.set_min_width(ui.available_width()),
+                FillAxis::Vertical => ui.set_min_height(ui.available_height()),
+            }
+            contents(ui, moves);
+        });
+        if let Some(c) = dropped {
+            moves.push((*c, axis));
+        }
+    }
+
+    /// One category tile: the Quantrix `|| Name v` chip — a grip glyph to drag by,
+    /// the category name, and a dropdown arrow (its menu of per-category actions
+    /// — filter / sort / collapse — arrives in Step 4; for now the arrow is the
+    /// mouse-only *cycle* affordance, rows→columns→pages, which is also the
+    /// keyboard-free fallback for re-pivoting without a drag).
+    ///
+    /// The whole chip is a drag source, so dragging it into another gutter
+    /// re-pivots (the drop is handled by [`ImprovApp::gutter_drop_zone`]).
+    fn tile(
+        ui: &mut egui::Ui,
+        model: &Model,
+        c: CategoryId,
+        from: Axis,
+        moves: &mut Vec<(CategoryId, Axis)>,
+    ) {
+        let name = model
+            .categories
+            .get(&c)
+            .map(|x| x.name.0.clone())
+            .unwrap_or_else(|| format!("category {}", c.0));
+        let next = match from {
+            Axis::Rows => Axis::Columns,
+            Axis::Columns => Axis::Pages,
+            Axis::Pages => Axis::Rows,
+        };
+        ui.dnd_drag_source(egui::Id::new(("tile", c.0)), c, |ui| {
+            egui::Frame::default()
+                .fill(crate::theme::NEXT_LIGHT)
+                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
+                .inner_margin(egui::Margin::symmetric(4.0, 2.0))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Grip: egui's default font has no `⋮`/`⁞`, so the grip is
+                        // a pair of broken bars, which it does have.
+                        ui.add(
+                            egui::Label::new(egui::RichText::new("¦¦").monospace().weak())
+                                .selectable(false),
+                        );
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&name).strong())
+                                .selectable(false)
+                                .truncate(),
+                        );
+                        if ui
+                            .small_button("⏷")
+                            .on_hover_text(format!("move {name} to {next:?}"))
+                            .clicked()
+                        {
+                            moves.push((c, next));
+                        }
+                    });
+                });
+        });
     }
 
     /// Page selectors: for each page (extra) dimension, a ` <label> [i/n] < > `
@@ -3336,6 +3587,7 @@ mod tests {
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            gutters: None,
         }
     }
 
@@ -5331,5 +5583,381 @@ mod tests {
         // The UI path reports it instead of claiming success.
         app.undo_with_status();
         assert!(app.status.starts_with("undo failed:"), "{}", app.status);
+    }
+
+    // -- STEP 1: margin gutters (docs/reviews/2026-09-22-gui-reconstruction-plan.md)
+
+    /// A headless egui `Context` sized like a desktop window, plus a `pass`
+    /// closure that lays out one real frame of the whole app and returns the
+    /// gutter/table geometry the grid recorded.
+    ///
+    /// This is a genuine headless frame: `Context::run` over the same panel
+    /// sequence `eframe::App::update` drives, so the rects are the ones a user
+    /// would see, not a reconstruction. (`eframe::Frame` cannot be built outside
+    /// eframe, but `update` only forwards it, so the panel calls are made
+    /// directly here.) The `Context` is handed back so a caller can run MANY
+    /// frames on ONE context: egui carries panel extents from frame to frame, so
+    /// single-frame geometry cannot see a gutter that ratchets.
+    fn layout_harness() -> (
+        egui::Context,
+        impl FnMut(&egui::Context, &mut ImprovApp) -> GutterRects,
+    ) {
+        let ctx = egui::Context::default();
+        ctx.set_style(crate::theme::next_style());
+        let mut time = 0.0_f64;
+        let pass = move |ctx: &egui::Context, app: &mut ImprovApp| {
+            time += 1.0 / 60.0;
+            let raw = egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                app.sync_axis_state();
+                app.formula_bar(ctx);
+                app.tool_palette(ctx);
+                app.explorer_panel(ctx);
+                app.inspector_panel(ctx);
+                app.formula_panel(ctx);
+                app.chart_panel(ctx);
+                app.csv_wizard_panel(ctx);
+                app.grid_panel(ctx);
+            });
+            app.gutters.expect("the grid panel must record its gutters")
+        };
+        (ctx, pass)
+    }
+
+    /// Lay out `app` until its geometry stops changing, and return it. A panel
+    /// reads its extent from the previous frame's `PanelState`, so the frame
+    /// right after a layout change still reports the old size; settling makes an
+    /// assertion about *the* layout rather than about a transient.
+    ///
+    /// Panics if the geometry never settles within 20 frames — which is itself
+    /// the check that no gutter ratchets open frame after frame.
+    fn settle(
+        ctx: &egui::Context,
+        app: &mut ImprovApp,
+        pass: &mut impl FnMut(&egui::Context, &mut ImprovApp) -> GutterRects,
+    ) -> GutterRects {
+        let mut prev = pass(ctx, app);
+        for _ in 0..20 {
+            let now = pass(ctx, app);
+            if now == prev {
+                return now;
+            }
+            prev = now;
+        }
+        panic!("the gutter layout never settled (it drifts every frame): {prev:?}");
+    }
+
+    /// Lay out one app on a fresh context and return its settled geometry.
+    fn layout_frame(app: &mut ImprovApp) -> GutterRects {
+        let (ctx, mut pass) = layout_harness();
+        settle(&ctx, app, &mut pass)
+    }
+
+    /// A `Sales[Time, Product, Region]` app ready to lay out: `Time` on rows,
+    /// `Product` on columns, `Region` in the well.
+    fn gutter_app() -> ImprovApp {
+        let mut app = build_app(sales_3d_model());
+        app.selected = Some(MeasureId(200));
+        app.sync_axis_state();
+        app
+    }
+
+    /// Re-pivoting repeatedly on ONE long-lived context must not make any gutter
+    /// creep: stacking a tile grows the column gutter, unstacking shrinks it back
+    /// to exactly its old size, and the corner well returns to its old height.
+    ///
+    /// This is a regression the first draft of this step actually had: a drop
+    /// zone claiming `available_size()` inside a self-sizing panel ratcheted the
+    /// well taller every frame, because the next frame's "available" included
+    /// what the zone claimed in the last one. A single-frame test cannot see it.
+    #[test]
+    fn gutters_do_not_creep_across_frames_or_repivots() {
+        let mut app = gutter_app();
+        let (ctx, mut pass) = layout_harness();
+        let one = settle(&ctx, &mut app, &mut pass);
+
+        app.set_axis(CategoryId(3), Axis::Columns);
+        let two = settle(&ctx, &mut app, &mut pass);
+        assert!(
+            two.top.height() > one.top.height(),
+            "a second stacked column tile must make the gutter taller"
+        );
+
+        app.set_axis(CategoryId(3), Axis::Pages);
+        let back = settle(&ctx, &mut app, &mut pass);
+        assert_eq!(
+            back.top.height(),
+            one.top.height(),
+            "the column gutter must shrink back, not latch open"
+        );
+        assert_eq!(
+            back.well.height(),
+            one.well.height(),
+            "the corner well must shrink back, not ratchet"
+        );
+        assert!(gutters_frame_table(&back), "{back:?}");
+    }
+
+    /// Shrinking the window must never panic a debug build, and must never claim
+    /// the gutters frame the table when they have been squeezed flat. At a real
+    /// window size the invariant holds; below the size where the panels still fit
+    /// [`gutters_have_room`] reports that and the per-frame `debug_assert!`
+    /// stands down.
+    ///
+    /// This drives [`ImprovApp::gutter_frame`]'s own `debug_assert!` at every
+    /// size, so a regression that breaks adjacency at a usable window size fails
+    /// here rather than at a user's first resize.
+    #[test]
+    fn shrinking_the_window_never_panics_and_never_lies_about_framing() {
+        let sizes = [
+            (1200.0, 800.0),
+            (900.0, 600.0),
+            (600.0, 400.0),
+            (300.0, 200.0),
+            (120.0, 80.0),
+            (10.0, 10.0),
+        ];
+        let mut framed_at_least_once = false;
+        for (w, h) in sizes {
+            let mut app = gutter_app();
+            let ctx = egui::Context::default();
+            ctx.set_style(crate::theme::next_style());
+            // Several frames so the panels settle at this size (and so the
+            // per-frame debug assertion runs on the settled geometry too).
+            for i in 0..8 {
+                let raw = egui::RawInput {
+                    time: Some(f64::from(i) / 60.0),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(w, h),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw, |ctx| {
+                    app.sync_axis_state();
+                    app.grid_panel(ctx);
+                });
+            }
+            let g = app.gutters.expect("gutters recorded at every size");
+            if gutters_have_room(&g) {
+                framed_at_least_once = true;
+                assert!(
+                    gutters_frame_table(&g),
+                    "{w}x{h}: there was room, so the gutters must frame the table: {g:?}"
+                );
+            }
+        }
+        assert!(
+            framed_at_least_once,
+            "no size had room — the test would be vacuous"
+        );
+    }
+
+    /// **The Step 1 acceptance test.** The row gutter's rect adjoins the
+    /// table's LEFT edge and the column gutter's adjoins its TOP edge — the
+    /// geometric check the old three-zone horizontal shelf failed (it sat
+    /// entirely above the grid, touching neither edge).
+    #[test]
+    fn row_gutter_adjoins_the_tables_left_edge_and_column_gutter_its_top() {
+        let g = layout_frame(&mut gutter_app());
+
+        assert!(
+            (g.left.max.x - g.table.min.x).abs() <= EDGE_EPS,
+            "row gutter right edge {} must BE the table's left edge {} (gutters {g:?})",
+            g.left.max.x,
+            g.table.min.x
+        );
+        assert!(
+            (g.top.max.y - g.table.min.y).abs() <= EDGE_EPS,
+            "column gutter bottom edge {} must BE the table's top edge {} (gutters {g:?})",
+            g.top.max.y,
+            g.table.min.y
+        );
+        // The gutters run ALONGSIDE the table, not merely touch a corner.
+        assert!(
+            g.left.min.y <= g.table.min.y && g.left.max.y > g.table.min.y,
+            "the row gutter must span the table vertically: {g:?}"
+        );
+        assert!(
+            g.top.min.x <= g.table.min.x && g.top.max.x > g.table.min.x,
+            "the column gutter must span the table horizontally: {g:?}"
+        );
+        // Both gutters are real, visible strips.
+        assert!(g.left.width() > 0.0 && g.left.height() > 0.0, "{g:?}");
+        assert!(g.top.width() > 0.0 && g.top.height() > 0.0, "{g:?}");
+        // And the whole arrangement satisfies the framing invariant.
+        assert!(gutters_frame_table(&g), "{g:?}");
+    }
+
+    /// The corner well is the BOTTOM-LEFT one the reference shows (`Country` /
+    /// `Travel` inline with the horizontal scrollbar): below the table, flush
+    /// with the row gutter's left edge.
+    #[test]
+    fn the_page_well_is_the_bottom_left_corner() {
+        let g = layout_frame(&mut gutter_app());
+        assert!(
+            g.well.min.y >= g.left.max.y - EDGE_EPS,
+            "the well must sit BELOW the framed region (the row gutter): {g:?}"
+        );
+        assert!(
+            g.well.min.y >= g.table.min.y,
+            "the well must be below the table's top, not beside it: {g:?}"
+        );
+        assert!(
+            (g.well.min.x - g.left.min.x).abs() <= EDGE_EPS,
+            "the well must be flush with the row gutter's left edge: {g:?}"
+        );
+    }
+
+    /// The true corner (above the row gutter, left of the column tiles) is
+    /// blank, as the reference shows — the column gutter starts to the RIGHT of
+    /// the row gutter's width, never over it.
+    #[test]
+    fn the_column_gutter_leaves_a_blank_corner_over_the_row_gutter() {
+        let g = layout_frame(&mut gutter_app());
+        // The top gutter spans the full frame width (corner + tiles), and the
+        // table begins one gutter-width in, so the corner box is exactly the
+        // part of the top gutter left of the table.
+        let corner = egui::Rect::from_min_max(g.top.min, egui::pos2(g.table.min.x, g.top.max.y));
+        assert!(
+            corner.width() >= GUTTER_W - 2.0 * EDGE_EPS - 4.0,
+            "the blank corner must be a gutter-width wide, got {}: {g:?}",
+            corner.width()
+        );
+    }
+
+    /// Stacking two categories on the column axis makes the column gutter
+    /// TALLER (tiles stack vertically, as the reference's "Result" panel shows
+    /// `Travel` above `Hours`) while still adjoining the table's top edge.
+    #[test]
+    fn stacked_column_tiles_grow_the_gutter_downward_and_stay_docked() {
+        let mut app = gutter_app();
+        let one = layout_frame(&mut app);
+        assert_eq!(app.col_cats().len(), 1);
+
+        // Stack a second category on columns (the drop a drag would produce).
+        app.set_axis(CategoryId(3), Axis::Columns);
+        assert_eq!(app.col_cats().len(), 2, "two categories on the column axis");
+        let two = layout_frame(&mut app);
+
+        assert!(
+            two.top.height() > one.top.height(),
+            "a second stacked column tile must make the gutter taller: {} -> {}",
+            one.top.height(),
+            two.top.height()
+        );
+        assert!(
+            (two.top.max.y - two.table.min.y).abs() <= EDGE_EPS,
+            "the taller gutter must still adjoin the table's top edge: {two:?}"
+        );
+        assert!(gutters_frame_table(&two), "{two:?}");
+
+        // ...and unstacking shrinks it back: the gutter must not latch at its
+        // tallest (a drop zone sized to `available_size` inside a self-sizing
+        // panel would ratchet the panel open forever).
+        app.set_axis(CategoryId(3), Axis::Pages);
+        assert_eq!(app.col_cats().len(), 1);
+        let back = layout_frame(&mut app);
+        assert!(
+            back.top.height() <= one.top.height() + EDGE_EPS,
+            "the column gutter latched open: {} vs {}",
+            back.top.height(),
+            one.top.height()
+        );
+        assert!(gutters_frame_table(&back), "{back:?}");
+    }
+
+    /// An axis filtered to zero lines still lays out gutters that frame the
+    /// table (the empty-axis fix must not be regressed by the new geometry).
+    #[test]
+    fn gutters_still_frame_the_table_when_an_axis_is_empty() {
+        let mut app = gutter_app();
+        let rows = app.row_cats();
+        hide_all_items(&mut app, rows[0]);
+        assert_eq!(app.grid_dims().0, 0, "the row axis must render zero lines");
+        let g = layout_frame(&mut app);
+        assert!(gutters_frame_table(&g), "{g:?}");
+    }
+
+    /// Dragging a tile from one gutter to another re-pivots through `set_axis`:
+    /// the drop is egui-internal, so drive the same payload/axis pair the drop
+    /// zone produces and assert on the axis state.
+    #[test]
+    fn dropping_a_tile_in_another_gutter_repivots() {
+        let mut app = gutter_app(); // Sales[Time, Product, Region]
+        let (time, product, region) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        assert_eq!(app.row_cats(), vec![time]);
+        assert_eq!(app.col_cats(), vec![product]);
+        assert_eq!(app.page_cats(), vec![region]);
+
+        // Drag `Time` from the row gutter into the column gutter: it leaves rows
+        // and APPENDS to the column stack (the reference's `Travel` landing
+        // under `Hours`).
+        app.set_axis(time, Axis::Columns);
+        assert!(app.row_cats().is_empty(), "Time must leave the row gutter");
+        assert_eq!(
+            app.col_cats(),
+            vec![product, time],
+            "Time must stack UNDER the existing column category"
+        );
+
+        // Drag `Region` out of the well into the row gutter.
+        app.set_axis(region, Axis::Rows);
+        assert_eq!(app.row_cats(), vec![region]);
+        assert!(app.page_cats().is_empty(), "the well must be empty now");
+
+        // And the layout still frames the table after the re-pivot.
+        let g = layout_frame(&mut app);
+        assert!(gutters_frame_table(&g), "{g:?}");
+    }
+
+    /// The per-tile dropdown arrow is the mouse-only fallback: it cycles the
+    /// category rows -> columns -> pages -> rows through the same `set_axis`.
+    #[test]
+    fn the_tile_arrow_cycles_a_category_through_all_three_axes() {
+        let mut app = gutter_app();
+        let time = CategoryId(1);
+        assert_eq!(app.row_cats(), vec![time]);
+        // Rows -> Columns -> Pages -> Rows, the `tile` next-axis sequence.
+        app.set_axis(time, Axis::Columns);
+        assert!(app.col_cats().contains(&time));
+        app.set_axis(time, Axis::Pages);
+        assert!(app.page_cats().contains(&time));
+        app.set_axis(time, Axis::Rows);
+        assert_eq!(app.row_cats(), vec![time]);
+    }
+
+    /// `gutters_frame_table` must REJECT the old horizontal shelf: three zones
+    /// laid out side by side above the grid touch neither edge. Without this the
+    /// invariant could be vacuously true.
+    #[test]
+    fn the_old_horizontal_shelf_fails_the_framing_invariant() {
+        let r = |x0, y0, x1, y1| egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1));
+        // Shelf: [Columns][Rows][Pages] in one row at y 0..30, grid below at y 40.
+        let shelf = GutterRects {
+            top: r(0.0, 0.0, 120.0, 30.0),
+            left: r(126.0, 0.0, 246.0, 30.0),
+            well: r(252.0, 0.0, 372.0, 30.0),
+            table: r(0.0, 40.0, 800.0, 600.0),
+        };
+        assert!(
+            !gutters_frame_table(&shelf),
+            "the shelf must NOT count as framing the table"
+        );
+        // The gutter arrangement passes.
+        let docked = GutterRects {
+            top: r(0.0, 0.0, 800.0, 40.0),
+            left: r(0.0, 40.0, 120.0, 600.0),
+            table: r(120.0, 40.0, 800.0, 600.0),
+            well: r(0.0, 600.0, 800.0, 634.0),
+        };
+        assert!(gutters_frame_table(&docked), "{docked:?}");
     }
 }
