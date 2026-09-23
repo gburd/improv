@@ -663,6 +663,8 @@ mod tests {
                 category: CategoryId(2),
                 items: vec![ItemId(20)],
             }],
+            rect: Default::default(),
+            placements: vec![],
         });
 
         // Meta blob: an external function def, an external-call measure that
@@ -764,6 +766,139 @@ mod tests {
         assert_eq!(sort_vecs(loaded), sort_vecs(original));
     }
 
+    /// A view saved by a PRE-CANVAS build of Improv must still load. Those
+    /// blobs are on users' disks; the only thing that ever read them is
+    /// `serde_json::from_str::<View>` in `load_views`, so this drives the real
+    /// store path with the real legacy bytes (transacted straight as a
+    /// `:view/json` datom -- constructing it via today's `View` would test the
+    /// new type against itself and prove nothing about old data).
+    #[test]
+    fn legacy_flat_view_blob_loads_from_the_store() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        // Structure first, so the loaded view's measure/categories exist.
+        let mut m = sample_model();
+        m.views.clear();
+        store.save_model(&m).expect("save");
+
+        // Byte-for-byte the shape `View` serialized to before canvases: no
+        // `placements`, no `rect`.
+        let legacy = r#"{"id":9,"name":"Legacy layout","measure":100,"axis_order":[2,1],"n_rows":1,"n_cols":1,"page_items":[],"filters":[{"category":2,"items":[20]}]}"#;
+        store
+            .store
+            .transact(&format!(
+                "[{{:view/id 9 :view/json {}}}]",
+                convert::edn_str_pub(legacy)
+            ))
+            .expect("transact legacy view blob");
+
+        let loaded = store.load_model().expect("load");
+        let v = loaded.view_by_name("Legacy layout").expect("legacy view");
+        assert_eq!(v.id, improv_core_model::ViewId(9));
+        assert_eq!(v.measure, MeasureId(100));
+        assert_eq!(v.axis_order, vec![CategoryId(2), CategoryId(1)]);
+        assert_eq!((v.n_rows, v.n_cols), (1, 1));
+        assert!(v.page_items.is_empty());
+        // Behaves identically: filters still filter.
+        assert!(v.allows(CategoryId(2), ItemId(20)));
+        assert!(!v.allows(CategoryId(2), ItemId(21)));
+        // ...as a one-matrix canvas with defaulted geometry.
+        assert!(v.placements.is_empty());
+        let ms = v.matrices();
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].measure, MeasureId(100));
+        assert_eq!(ms[0].filters, v.filters);
+        assert_eq!(ms[0].rect, improv_core_model::CanvasRect::default());
+
+        // Re-saving the loaded model rewrites it in the NEW shape, and that
+        // still loads to the same thing (migration is idempotent, not lossy).
+        store.save_model(&loaded).expect("re-save");
+        let again = store.load_model().expect("re-load");
+        assert_eq!(again.views, loaded.views);
+    }
+
+    /// A multi-matrix canvas view survives a real store round trip, geometry
+    /// included.
+    ///
+    /// Also confirms the change does NOT interact with `save_model`'s two datom
+    /// limits: a view is `:view/id` + `:view/json` = 2 datoms no matter how many
+    /// placements the JSON holds (placements make the *string* longer, never the
+    /// datom count), and placements are not `:measure/categories`, so the
+    /// 5460-categories-per-measure guard is untouched. The 24 placements here
+    /// would blow a per-datom budget if either were false.
+    #[test]
+    fn multi_placement_view_round_trips_through_the_store() {
+        use improv_core_model::{CanvasRect, MatrixPlacement, View, ViewId};
+
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = sample_model();
+        m.views.clear();
+
+        let mut primary = MatrixPlacement::new(MeasureId(100));
+        primary.axis_order = vec![CategoryId(2)];
+        primary.rect = CanvasRect {
+            x: 12.5,
+            y: 24.0,
+            w: 400.0,
+            h: 180.0,
+        };
+        primary.filters = vec![improv_core_model::Filter {
+            category: CategoryId(2),
+            items: vec![ItemId(20)],
+        }];
+
+        let mut second = MatrixPlacement::new(MeasureId(102));
+        second.axis_order = vec![CategoryId(1), CategoryId(2)];
+        second.n_rows = 2;
+        second.n_cols = 0;
+        second.page_items = vec![(CategoryId(1), ItemId(10))];
+        second.rect = CanvasRect {
+            x: 440.0,
+            y: 24.0,
+            w: 320.25,
+            h: 240.0,
+        };
+
+        let extras: Vec<MatrixPlacement> = std::iter::once(second.clone())
+            .chain((0u8..23).map(|i| {
+                let mut p = MatrixPlacement::new(MeasureId(100));
+                p.rect = CanvasRect {
+                    x: f32::from(i) * 10.0,
+                    y: 600.0,
+                    w: 100.0,
+                    h: 80.0,
+                };
+                p
+            }))
+            .collect();
+        let view = View::from_matrices(
+            ViewId(5),
+            Name("Canvas".into()),
+            primary.clone(),
+            extras.clone(),
+        );
+        m.add_view(view.clone());
+
+        store.save_model(&m).expect("save multi-placement view");
+        let loaded = store.load_model().expect("load");
+        let v = loaded.view_by_name("Canvas").expect("canvas view");
+
+        assert_eq!(v, &view, "whole view survived the store round trip");
+        assert_eq!(v.matrices().len(), 1 + extras.len());
+        // Geometry, to the float.
+        assert_eq!(v.rect, primary.rect);
+        assert_eq!(v.placements[0].rect, second.rect);
+        assert_eq!(v.placements[0].rect.w, 320.25);
+        // Per-matrix pivot and filters.
+        assert_eq!((v.placements[0].n_rows, v.placements[0].n_cols), (2, 0));
+        assert_eq!(v.placements[0].page_items, second.page_items);
+        assert!(v.allows(CategoryId(2), ItemId(20)));
+        assert!(!v.allows(CategoryId(2), ItemId(21)));
+        assert!(
+            v.placements[0].allows(CategoryId(2), ItemId(21)),
+            "matrix 2 is unfiltered -- filters are per matrix"
+        );
+    }
+
     /// Prove `save_model`'s atomicity: a save that fails partway through must
     /// not leave a mixed old/new state.
     ///
@@ -824,6 +959,8 @@ mod tests {
             n_cols: 1,
             page_items: vec![],
             filters: vec![],
+            rect: Default::default(),
+            placements: vec![],
         });
         m2.add_scenario(improv_core_model::Scenario {
             id: improv_core_model::ScenarioId(2),

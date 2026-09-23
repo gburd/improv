@@ -689,6 +689,10 @@ impl ImprovApp {
             n_cols: self.n_cols,
             page_items: self.pinned_pages(),
             filters: self.filters.clone(),
+            // Step 3 will place several matrices here; today the GUI still
+            // saves the one on screen as the view's primary matrix.
+            rect: Default::default(),
+            placements: vec![],
         })
     }
 

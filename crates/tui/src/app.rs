@@ -845,6 +845,10 @@ impl App {
             n_cols: 1,
             page_items,
             filters: self.filters.clone(),
+            // Canvas geometry/extra matrices are GUI-canvas concepts (plan
+            // Step 3); the TUI always saves a single-matrix view.
+            rect: Default::default(),
+            placements: vec![],
         }
     }
 

@@ -185,14 +185,105 @@ pub struct ExternalCall {
     #[serde(default)]
     pub refresh_policy: RefreshPolicy,
 }
-/// A saved pivot layout: which measure, how its categories are placed on axes,
-/// which page items are pinned, and any per-category filters. Reusable across
-/// sessions; the interfaces load a view to reproduce a layout without touching
-/// formulas or data.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Where a matrix sits on a view's canvas: position of its top-left corner and
+/// its size, in abstract layout units (the GUI treats them as egui logical
+/// points; nothing here depends on egui — `core_model` is GUI-free).
+///
+/// `Default` is a sane starting rectangle, not a zero one: a zero-sized matrix
+/// is never what a caller wants, and a legacy view deserialized without
+/// geometry has to land somewhere visible.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CanvasRect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+impl Default for CanvasRect {
+    fn default() -> Self {
+        // ponytail: fixed default size; make it measure-aware (columns x rows)
+        // if auto-layout of a freshly placed matrix matters.
+        CanvasRect {
+            x: 0.0,
+            y: 0.0,
+            w: 480.0,
+            h: 320.0,
+        }
+    }
+}
+
+/// One matrix on a view's canvas: a measure, that matrix's own pivot layout,
+/// and where it sits (`rect`). A view holds several of these — Quantrix's
+/// free-form canvas, where each matrix is independently pivoted (see
+/// `docs/reviews/2026-09-22-gui-reconstruction-plan.md` Step 3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MatrixPlacement {
+    pub measure: MeasureId,
+    /// This matrix's axis permutation; see `View::axis_order`.
+    #[serde(default)]
+    pub axis_order: Vec<CategoryId>,
+    /// Categories stacked on this matrix's row axis.
+    #[serde(default = "one")]
+    pub n_rows: usize,
+    /// Categories stacked on this matrix's column axis.
+    #[serde(default = "one")]
+    pub n_cols: usize,
+    /// Pinned page items for this matrix.
+    #[serde(default)]
+    pub page_items: Vec<(CategoryId, ItemId)>,
+    /// This matrix's own filters.
+    #[serde(default)]
+    pub filters: Vec<Filter>,
+    /// Canvas geometry.
+    #[serde(default)]
+    pub rect: CanvasRect,
+}
+
+impl MatrixPlacement {
+    /// A placement of `measure` with default layout and geometry.
+    pub fn new(measure: MeasureId) -> Self {
+        MatrixPlacement {
+            measure,
+            axis_order: Vec::new(),
+            n_rows: 1,
+            n_cols: 1,
+            page_items: Vec::new(),
+            filters: Vec::new(),
+            rect: CanvasRect::default(),
+        }
+    }
+
+    /// Does `item` in `category` pass THIS matrix's filters? Categories without
+    /// a filter always pass. Same rule as `View::allows`, applied per matrix.
+    pub fn allows(&self, category: CategoryId, item: ItemId) -> bool {
+        match self.filters.iter().find(|f| f.category == category) {
+            Some(f) => f.items.contains(&item),
+            None => true,
+        }
+    }
+}
+
+/// A saved canvas layout: one *primary* matrix described by the flat fields
+/// below, plus any number of `placements` (additional matrices), each with its
+/// own measure, pivot and geometry.
+///
+/// The flat fields (`measure`, `axis_order`, `n_rows`, `n_cols`, `page_items`,
+/// `filters`) and `rect` ARE the primary matrix — not a cache of
+/// `placements[0]`. `placements` holds only the *extra* matrices, so every
+/// matrix is stored exactly once and there is no way for two copies of the same
+/// matrix to disagree. Use `View::matrices()` to iterate all of them uniformly.
+///
+/// This is what keeps pre-canvas saved views loading unchanged: a view written
+/// before canvases has no `placements`, defaults to none, and is therefore a
+/// one-matrix canvas whose single matrix is exactly what it always was.
+/// Reusable across sessions; loading a view reproduces a layout without
+/// touching formulas or data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct View {
     pub id: ViewId,
     pub name: Name,
+    /// The primary matrix's measure.
     pub measure: MeasureId,
     /// A permutation of the measure's categories: the first `n_rows` are
     /// stacked on rows (outer→inner), the next `n_cols` on columns, the rest
@@ -214,9 +305,19 @@ pub struct View {
     /// A category absent here is unfiltered (all items shown).
     #[serde(default)]
     pub filters: Vec<Filter>,
+    /// Where the primary matrix sits on the canvas. (Pre-canvas views have no
+    /// geometry; they default to `CanvasRect::default()`.)
+    #[serde(default)]
+    pub rect: CanvasRect,
+    /// Additional matrices on this canvas, beyond the primary one described by
+    /// the fields above. Empty (the default, and what every pre-canvas saved
+    /// view deserializes to) = a single-matrix view.
+    #[serde(default)]
+    pub placements: Vec<MatrixPlacement>,
 }
 
-/// Serde default for `View::n_rows`/`n_cols`: one category per axis.
+/// Serde default for `n_rows`/`n_cols` on `View` and `MatrixPlacement`: one
+/// category per axis.
 fn one() -> usize {
     1
 }
@@ -231,13 +332,59 @@ pub struct Filter {
 }
 
 impl View {
-    /// Does `item` in `category` pass this view's filters? Categories without a
-    /// filter always pass.
-    pub fn allows(&self, category: CategoryId, item: ItemId) -> bool {
-        match self.filters.iter().find(|f| f.category == category) {
-            Some(f) => f.items.contains(&item),
-            None => true,
+    /// Build a view from its matrices: the first is the primary one (the flat
+    /// fields), the rest become `placements`.
+    pub fn from_matrices(
+        id: ViewId,
+        name: Name,
+        primary: MatrixPlacement,
+        extras: Vec<MatrixPlacement>,
+    ) -> Self {
+        View {
+            id,
+            name,
+            measure: primary.measure,
+            axis_order: primary.axis_order,
+            n_rows: primary.n_rows,
+            n_cols: primary.n_cols,
+            page_items: primary.page_items,
+            filters: primary.filters,
+            rect: primary.rect,
+            placements: extras,
         }
+    }
+
+    /// The primary matrix, as a `MatrixPlacement` (the flat fields viewed
+    /// uniformly).
+    pub fn primary(&self) -> MatrixPlacement {
+        MatrixPlacement {
+            measure: self.measure,
+            axis_order: self.axis_order.clone(),
+            n_rows: self.n_rows,
+            n_cols: self.n_cols,
+            page_items: self.page_items.clone(),
+            filters: self.filters.clone(),
+            rect: self.rect,
+        }
+    }
+
+    /// Every matrix on this canvas, primary first. Always non-empty.
+    pub fn matrices(&self) -> Vec<MatrixPlacement> {
+        let mut v = Vec::with_capacity(1 + self.placements.len());
+        v.push(self.primary());
+        v.extend(self.placements.iter().cloned());
+        v
+    }
+
+    /// Does `item` in `category` pass the PRIMARY matrix's filters? Categories
+    /// without a filter always pass.
+    ///
+    /// Unchanged semantics from before canvases: filtering is per matrix, and
+    /// this is the primary matrix's filter set (identical to the whole view's,
+    /// for a single-matrix view). For another matrix use
+    /// `MatrixPlacement::allows`.
+    pub fn allows(&self, category: CategoryId, item: ItemId) -> bool {
+        self.primary().allows(category, item)
     }
 }
 
@@ -496,6 +643,8 @@ mod tests {
                 category: product,
                 items: vec![ItemId(20)], // WidgetA only
             }],
+            rect: Default::default(),
+            placements: vec![],
         });
         let v = m.view_by_name("By Product").expect("view");
         assert_eq!(v.axis_order, vec![product, time]);
@@ -508,6 +657,129 @@ mod tests {
         let json = serde_json::to_string(&m).unwrap();
         let back: Model = serde_json::from_str(&json).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn legacy_flat_view_json_loads_as_a_one_matrix_canvas() {
+        // A view exactly as written to disk BEFORE canvases existed: no
+        // `placements`, no `rect`. Literal legacy JSON on purpose -- building it
+        // with today's `View` would test the new type against itself.
+        let legacy = r#"{
+            "id": 7,
+            "name": "By Product",
+            "measure": 100,
+            "axis_order": [2, 1],
+            "n_rows": 1,
+            "n_cols": 1,
+            "page_items": [[3, 30]],
+            "filters": [{"category": 2, "items": [20]}]
+        }"#;
+        let v: View = serde_json::from_str(legacy).expect("legacy view deserializes");
+
+        // Every flat field survived verbatim.
+        assert_eq!(v.id, ViewId(7));
+        assert_eq!(v.name, Name("By Product".into()));
+        assert_eq!(v.measure, MeasureId(100));
+        assert_eq!(v.axis_order, vec![CategoryId(2), CategoryId(1)]);
+        assert_eq!((v.n_rows, v.n_cols), (1, 1));
+        assert_eq!(v.page_items, vec![(CategoryId(3), ItemId(30))]);
+        assert_eq!(
+            v.filters,
+            vec![Filter {
+                category: CategoryId(2),
+                items: vec![ItemId(20)]
+            }]
+        );
+
+        // It is a ONE-matrix canvas, and that matrix mirrors the flat fields.
+        assert!(v.placements.is_empty(), "no extra matrices");
+        let ms = v.matrices();
+        assert_eq!(ms.len(), 1);
+        assert_eq!(ms[0].measure, MeasureId(100));
+        assert_eq!(ms[0].axis_order, v.axis_order);
+        assert_eq!((ms[0].n_rows, ms[0].n_cols), (1, 1));
+        assert_eq!(ms[0].page_items, v.page_items);
+        assert_eq!(ms[0].filters, v.filters);
+        assert_eq!(ms[0].rect, CanvasRect::default(), "geometry defaulted");
+
+        // ...and it still FILTERS identically, via the view and the matrix.
+        assert!(v.allows(CategoryId(2), ItemId(20)));
+        assert!(!v.allows(CategoryId(2), ItemId(21)));
+        assert!(v.allows(CategoryId(1), ItemId(10))); // unfiltered category
+        assert!(!ms[0].allows(CategoryId(2), ItemId(21)));
+
+        // A legacy view with NO n_rows/n_cols at all (pre-stacking) still
+        // defaults to 1/1, as it did before this change.
+        let prestacking = r#"{"id": 1, "name": "V", "measure": 100, "axis_order": [1, 2]}"#;
+        let v2: View = serde_json::from_str(prestacking).expect("pre-stacking view");
+        assert_eq!((v2.n_rows, v2.n_cols), (1, 1));
+        assert_eq!(v2.matrices().len(), 1);
+    }
+
+    #[test]
+    fn multi_placement_view_round_trips_and_filters_per_matrix() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut second = MatrixPlacement::new(MeasureId(101));
+        second.axis_order = vec![time, product];
+        second.n_rows = 2;
+        second.n_cols = 0;
+        second.rect = CanvasRect {
+            x: 520.0,
+            y: 48.5,
+            w: 300.0,
+            h: 200.0,
+        };
+        second.filters = vec![Filter {
+            category: time,
+            items: vec![ItemId(11)], // 2026 only, on THIS matrix
+        }];
+
+        let mut primary = MatrixPlacement::new(MeasureId(100));
+        primary.axis_order = vec![product];
+        primary.rect = CanvasRect {
+            x: 10.0,
+            y: 20.0,
+            w: 400.0,
+            h: 150.0,
+        };
+        primary.filters = vec![Filter {
+            category: product,
+            items: vec![ItemId(20)],
+        }];
+
+        let v = View::from_matrices(
+            ViewId(3),
+            Name("Canvas".into()),
+            primary.clone(),
+            vec![second.clone()],
+        );
+        assert_eq!(v.matrices(), vec![primary.clone(), second.clone()]);
+
+        // Filters are per matrix: the view's `allows` is the PRIMARY matrix's.
+        assert!(v.allows(product, ItemId(20)));
+        assert!(!v.allows(product, ItemId(21)));
+        assert!(v.allows(time, ItemId(10)), "primary has no Time filter");
+        assert!(!second.allows(time, ItemId(10)), "but matrix 2 does");
+        assert!(second.allows(time, ItemId(11)));
+
+        // Serde round trip, geometry included.
+        let json = serde_json::to_string(&v).unwrap();
+        let back: View = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, v);
+        assert_eq!(back.rect.x, 10.0);
+        assert_eq!(back.placements[0].rect.y, 48.5);
+        assert_eq!(back.placements[0].rect.w, 300.0);
+        assert_eq!(
+            (back.placements[0].n_rows, back.placements[0].n_cols),
+            (2, 0)
+        );
+
+        // And inside a whole Model.
+        let mut m = time_product_model();
+        m.add_view(v.clone());
+        let back: Model = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.views[&ViewId(3)].matrices().len(), 2);
     }
 
     #[test]
