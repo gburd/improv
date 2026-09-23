@@ -3,7 +3,14 @@
 # Run from the repo root: docs/demo/cli-demo.sh
 set -euo pipefail
 
-IMPROV="${IMPROV:-cargo run --quiet -p improv_cli --}"
+# Build once, then invoke the binary directly. Using `cargo run` per command
+# re-checks the whole workspace on each of the ~60 invocations below, which took
+# 12m31s versus 2.7s for the built binary.
+if [ -z "${IMPROV:-}" ]; then
+  cargo build --quiet -p improv_cli
+  IMPROV="$(cargo metadata --format-version 1 --no-deps \
+    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/improv"
+fi
 DB="$(mktemp -u /tmp/improv-demo-XXXX.db)"
 trap 'rm -f "$DB"' EXIT
 
