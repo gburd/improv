@@ -17,8 +17,11 @@ Next gates, in order:
    Improv screenshots (`~/Downloads/improv/`), 17 Quantrix online-demo
    screenshots, and the Quantrix Modeler brochure. Two decisive references are
    archived in `docs/reviews/refs/`. Chat/Qloud/Groovy are out of scope.
-3. **Reconstruction plan written: `docs/reviews/2026-09-22-gui-reconstruction-plan.md`**
-   — awaiting maintainer approval before layout code changes. It sequences:
+3. **Reconstruction plan EXECUTED — all five steps landed 2026-09-22/23.** See
+   the execution record at the end of
+   `docs/reviews/2026-09-22-gui-reconstruction-plan.md` for per-step commits,
+   the bugs found on the way (including silent string corruption on save), and
+   what was deferred and why. The plan sequenced:
    margin gutters with edge-docked tiles (the references show tiles in
    bottom-left/top-right gutters, and the pivot IS dragging between gutters —
    our horizontal shelf is structurally wrong), a numbered formula list,
@@ -186,7 +189,15 @@ Modeler. Parity status (drives the plan):
 
 ### 6.5 NeXTSTEP look-and-feel (GUI)
 
-**Status: inspired-by, unverified — not a confirmed match.** The desktop GUI is
+**Status: reference-derived (2026-09-23), still not a verified pixel match.**
+The GUI was rebuilt against supplied NeXTSTEP Improv and Quantrix references
+(see the reconstruction plan's execution record): tiles now dock in gutters that
+frame the grid, formulas are a numbered list, a view is a canvas of matrices,
+and names can be quoted. Steps 1/2/4 follow the NeXTSTEP screenshots; the
+canvas, tile chrome and status readout follow modern Quantrix, the drifted
+descendant — so pixel fidelity to Improv 3.0 remains unproven.
+
+Historical note on the pre-rebuild state: The desktop GUI is
 built from general knowledge of the original NeXTSTEP Lotus Improv's
 description (gray desktop, beveled controls, drag-to-pivot category tiles), NOT
 from a side-by-side comparison against real screenshots or a recording of

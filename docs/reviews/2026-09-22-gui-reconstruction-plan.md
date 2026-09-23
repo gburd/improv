@@ -120,3 +120,39 @@ Tableau export, and the YouTube walkthrough's video-only details (unwatchable
 here — no video capability). Undo/redo, typed editing, derived export and focus
 handling are correctness items tracked in the audit, not layout work, and are
 being fixed independently.
+
+---
+
+## Execution record — all five steps landed 2026-09-22/23
+
+| Step | Commit | Outcome |
+| --- | --- | --- |
+| 1 — margin gutters | `a48ecdd` | Tiles docked in gutters that frame the table; adjacency **constructed** via egui's panel contract, not approximated. Established this codebase's first headless egui frame test, with the invariant proven non-vacuous by feeding the old shelf's geometry in and asserting rejection. |
+| 2 — formula list | `dba846d` | Numbered pane over every derived measure, per-formula enable checkbox, inline errors, click-to-select. |
+| 3a — schema | `f8eb0bc` | `CanvasRect`/`MatrixPlacement`; flat `View` fields are the primary matrix and `placements` holds only extras, so old blobs need no migration code and nothing can drift out of sync. |
+| 3b — canvas | `a2a5f94` | Per-matrix `Matrix` state; child-`Ui` canvas (not `egui::Window`, which cannot scroll inside a parent `ScrollArea`); focus-gated shortcuts. |
+| 4a — grammar | `91bf2bc` | `'quoted identifiers'` with `''` escaping; dotted names parse but deliberately do not resolve, leaving `parse_name` as the single seam. |
+| 4b — printer | `dba846d` | 8 of 9 previously-unspellable names now round-trip; only the empty name remains unspellable. |
+| 5 — chrome | `a2a5f94` | Per-matrix title bars, document tabs, `Sum` readout. |
+
+### Bugs found while executing the plan
+
+- **String corruption on save** (`596082c`): `edn_str` emitted `\n`/`\t`/`\r` escapes that Mentat's reader does not interpret — it drops the backslash — so `"Line\nBreak"` reloaded as `"LinenBreak"`. Any description, name, or Text cell containing a newline or tab silently lost data. Found incidentally during Step 2 and fixed with a regression.
+- Three Step-3b tests **survived their mutation** and were strengthened; one was nondeterministic (datalog does not promise ordering) and failed ~40% of runs.
+
+### Deferred, with reasons
+
+Freely-placed rich text on the canvas needs a text-block object the model does
+not have. Per-cell color coding, the `Current/Historical/Future` legend, and
+outline-collapse triangles are unimplemented. Dotted qualification resolves
+nothing until a matrix namespace exists. The grip/arrow glyphs the Quantrix
+chips use are absent from egui's default font — real fidelity needs a bundled
+font. Nothing here derives from the YouTube walkthrough, which is unwatchable in
+this environment.
+
+### Fidelity claim
+
+Steps 1, 2 and 4 follow the NeXTSTEP screenshots; Step 3's canvas, the tile
+chrome and Step 5's readout follow modern Quantrix, the drifted descendant.
+**This is not a verified pixel match to Improv 3.0** and must not be described
+as one. A runnable Improv 3.0 or its manual remains the only way to close that.

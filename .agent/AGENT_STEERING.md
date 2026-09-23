@@ -71,9 +71,14 @@ baseline on hotdog; its temporary instance was terminated after collection.
     the grid) and model undo/redo (bounded snapshot stacks reusing publish()'s
     consistency guarantee; all four mutation paths wired).
 
-  Still open: multi-measure display — now folded into the GUI reconstruction
-  plan as Step 3 (a canvas of matrices), since the references show it is a
-  layout capability, not a bolt-on. Pre-existing and unfixed: stale
+  **GUI reconstruction executed 2026-09-22/23 — all five plan steps landed**
+  (`a48ecdd` gutters, `dba846d` formula list + quoted printing, `f8eb0bc`
+  schema, `91bf2bc` grammar, `a2a5f94` canvas + chrome). Multi-measure display
+  is delivered as Step 3's canvas of matrices. Execution record, deferred items
+  and the fidelity caveat are in
+  `docs/reviews/2026-09-22-gui-reconstruction-plan.md`. One data-loss bug was
+  found on the way and fixed (`596082c`): strings containing newlines or tabs
+  were silently corrupted on save. Pre-existing and unfixed: stale
   `:measure/categories` refs are never retracted, so changing a measure's
   category set accumulates the union across saves.
 - **NEXT: data integrity/security review** — repeated CSV item IDs/import
