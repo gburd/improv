@@ -1430,4 +1430,45 @@ mod tests {
             .save_model(&measure_with_n_categories_from(3_000, 1))
             .expect("narrow save over a wide on-disk entity");
     }
+    /// Strings containing newlines, tabs or CRs must survive save/reload.
+    /// `edn_str` used to emit `\\n`/`\\t`/`\\r`, but Mentat's EDN reader drops the
+    /// backslash rather than interpreting it, so `"a\\nb"` reloaded as `"anb"` --
+    /// silent corruption of any description, name, or Text cell with whitespace
+    /// control characters in it.
+    #[test]
+    fn control_characters_survive_a_round_trip() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = Model::new();
+        let cat = CategoryId(1);
+        m.add_category(cat, "Line\nBreak");
+        m.add_item(ItemId(10), cat, "Tab\tItem");
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Multi\nLine".into()),
+            value_type: ValueType::Text,
+            categories: vec![cat],
+            kind: MeasureKind::Input,
+            description: Some("first\nsecond\tthird\rfourth".into()),
+        });
+        m.set_input(
+            MeasureId(1),
+            Coordinate::from_pairs([(cat, ItemId(10))]),
+            Value::Text("cell\nwith\ttabs".into()),
+        );
+        store.save_model(&m).expect("save");
+        let back = store.load_model().expect("load");
+
+        assert_eq!(back.categories[&cat].name.0, "Line\nBreak");
+        assert_eq!(back.items[&ItemId(10)].name.0, "Tab\tItem");
+        let got = &back.measures[&MeasureId(1)];
+        assert_eq!(got.name.0, "Multi\nLine");
+        assert_eq!(
+            got.description.as_deref(),
+            Some("first\nsecond\tthird\rfourth")
+        );
+        assert_eq!(
+            back.input(MeasureId(1), &Coordinate::from_pairs([(cat, ItemId(10))])),
+            Some(&Value::Text("cell\nwith\ttabs".into()))
+        );
+    }
 }
