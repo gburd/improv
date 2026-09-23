@@ -1,8 +1,12 @@
-//! A read-only chart view of the selected measure.
+//! A read-only chart view of the FOCUSED matrix's measure.
 //!
-//! `chart_series` is a pure function of the app state (snapshot + filters +
-//! pivot/page); an axis filtered to nothing (or a page category with no
-//! pinnable item) charts nothing at all, exactly as the grid renders nothing.
+//! `chart_series` is a pure function of the app state (snapshot + the focused
+//! matrix's filters + its pivot/page); an axis filtered to nothing (or a page
+//! category with no pinnable item) charts nothing at all, exactly as the grid
+//! renders nothing. With several matrices on the canvas the chart follows the
+//! keyboard, as every other single-measure surface does — see
+//! `ImprovApp::focused`.
+//!
 //! The x-axis is the full Cartesian product of the ROW categories
 //! (labels are the joined tuple names, e.g. "2024Q1 / North"), and there is one
 //! series per full COLUMN tuple (series name = joined column tuple names). The
@@ -55,20 +59,20 @@ impl ChartData {
 }
 
 impl ImprovApp {
-    /// Build the chart data for the selected measure from the current snapshot,
-    /// honoring the active filters and pinned page items (same visible-item set
-    /// as the grid). The x-axis is the full Cartesian product of the ROW
-    /// categories (x-label = joined tuple item names, e.g. "2024Q1 / North");
-    /// one series per full COLUMN tuple (series name = joined column tuple
-    /// names). The single-category case is just the 1-length-tuple case. A 1-D
-    /// grid (no column categories) is a single unnamed series. Non-numeric /
-    /// missing cells are gaps (`None`). Pure: no egui, no mutation.
+    /// Build the chart data for the FOCUSED matrix's measure from the current
+    /// snapshot, honoring THAT matrix's active filters and pinned page items
+    /// (same visible-item set as its grid). The x-axis is the full Cartesian
+    /// product of the ROW categories (x-label = joined tuple item names, e.g.
+    /// "2024Q1 / North"); one series per full COLUMN tuple (series name = joined
+    /// column tuple names). The single-category case is just the 1-length-tuple
+    /// case. A 1-D grid (no column categories) is a single unnamed series.
+    /// Non-numeric / missing cells are gaps (`None`). Pure: no egui, no mutation.
     ///
     /// Empty [`ChartData`] (no x, no series) whenever nothing is addressable:
-    /// no selection, an axis category filtered to zero items, or a page
-    /// category with no pinnable item. `render_chart` reports that as "no
-    /// data" — the chart never plots an under-specified key. Matches
-    /// `grid_dims`.
+    /// no measure on the focused matrix, an axis category filtered to zero
+    /// items, or a page category with no pinnable item. `render_chart` reports
+    /// that as "no data" — the chart never plots an under-specified key. Matches
+    /// `Matrix::grid_dims`.
     pub fn chart_series(&self) -> ChartData {
         let Some(measure) = self.selected() else {
             return ChartData::default();

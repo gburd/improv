@@ -15,8 +15,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 use improv_core_model::{
-    parser, BinaryOp, CategoryId, Expr, Filter, FuncId, ItemId, Measure, MeasureId, MeasureKind,
-    Model, Name, ParseError, UnaryOp, Value, ValueType, View, ViewId,
+    parser, BinaryOp, CanvasRect, CategoryId, Expr, Filter, FuncId, ItemId, MatrixPlacement,
+    Measure, MeasureId, MeasureKind, Model, Name, ParseError, UnaryOp, Value, ValueType, View,
+    ViewId,
 };
 use improv_engine::session::{Engine, MeasureValues};
 use improv_engine::{encode_coord, CellValue, CoordKey};
@@ -24,6 +25,68 @@ use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
 
 use crate::csv_wizard::{self, ExportForm, ImportForm};
+
+/// One matrix on the canvas: a measure, that matrix's OWN pivot / filter /
+/// cursor / cell-editor state, and where it sits (`rect`).
+///
+/// This is the GUI-side twin of [`improv_core_model::MatrixPlacement`] (which is
+/// the persisted form): a placement plus the transient bits a placement has no
+/// business storing — the keyboard cursor, the open cell editor, and the
+/// measured gutter geometry. Several of these live on one canvas
+/// (`ImprovApp::matrices`), each independently pivotable, which is plan Step 3
+/// (`docs/reviews/2026-09-22-gui-reconstruction-plan.md`).
+///
+/// Every method here takes `&Model` rather than holding one: a matrix is pure
+/// presentation over the shared model, exactly as the per-view state was before
+/// it became a list.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Matrix {
+    /// The measure this matrix shows. `None` only for an empty model.
+    measure: Option<MeasureId>,
+    /// A permutation of `measure`'s categories: the first `n_rows` are stacked
+    /// on rows (outer→inner), the next `n_cols` on columns, the rest are pages.
+    /// Pivoting reorders this without touching formulas. Reset to the measure's
+    /// natural order when this matrix's measure changes.
+    axis_order: Vec<CategoryId>,
+    /// How many leading `axis_order` categories are stacked on the ROW axis,
+    /// and how many (after those) on the COLUMN axis. The rest are pages.
+    /// Default 1/1 (one category per axis); increasing them stacks categories
+    /// on an axis (nested group headers over the Cartesian product of items).
+    n_rows: usize,
+    n_cols: usize,
+    /// Selected item index for each page (extra) dimension, positionally by
+    /// page dim (i.e. `axis_order[n_rows + n_cols + i]`).
+    page_idx: Vec<usize>,
+    /// The measure `axis_order`/`page_idx` currently describe (so the pivot
+    /// state resets when this matrix's measure changes).
+    axis_for: Option<MeasureId>,
+    /// Active per-category display filters for this matrix. Presentation only
+    /// (hides items from the grid; never touches data). Captured when saving a
+    /// view; reset on measure switch.
+    filters: Vec<Filter>,
+    /// Keyboard cell cursor into this matrix's grid (row/col indices), clamped
+    /// to its dimensions.
+    cursor_row: usize,
+    cursor_col: usize,
+    /// The cell currently being edited in THIS matrix, and its text buffer.
+    editing: Option<(MeasureId, CoordKey)>,
+    edit_buf: String,
+    /// Where this matrix sits on the canvas (persisted in the view).
+    rect: CanvasRect,
+    /// Where THIS matrix's margin gutters and table ended up in the last
+    /// laid-out frame (see [`GutterRects`]). `None` until it has rendered once.
+    /// Layout output, not state.
+    gutters: Option<GutterRects>,
+    /// The row and column category stacks THIS matrix's grid was last rendered
+    /// with, as `(rows, columns)`. `None` until it has rendered once.
+    ///
+    /// Render output, the same role `gutters` plays for the geometry — and for
+    /// the same reason: it makes "each matrix renders its OWN pivot" checkable
+    /// instead of merely intended. Asserting on `axis_order` alone cannot see a
+    /// renderer that ignores its matrix index and draws the focused matrix's
+    /// layout N times.
+    rendered_axes: Option<(Vec<CategoryId>, Vec<CategoryId>)>,
+}
 
 /// The running GUI application.
 pub struct ImprovApp {
@@ -33,14 +96,20 @@ pub struct ImprovApp {
     /// Live incremental engine over all derived measures, plus its snapshot.
     engine: Option<Engine>,
     snapshot: HashMap<MeasureId, MeasureValues>,
-    /// The measure currently shown in the grid.
-    selected: Option<MeasureId>,
+    /// The matrices on the canvas, in canvas order. **Always non-empty**: index
+    /// 0 is the view's primary matrix (see [`View`]'s flat fields), the rest are
+    /// its `placements`.
+    matrices: Vec<Matrix>,
+    /// Which matrix has the keyboard: the only one that consumes grid shortcuts
+    /// and the one every "selected measure" surface (formula bar, inspector,
+    /// chart, status readout) reads from. Always a valid index into `matrices`.
+    focus: usize,
+    /// The saved view this canvas was loaded from, if any — the highlighted
+    /// document tab (see [`ImprovApp::document_tabs`]).
+    current_view: Option<ViewId>,
     status: String,
 
     // --- transient UI edit buffers (view state, not model state) ---
-    /// The cell currently being edited in the grid, and its text buffer.
-    editing: Option<(MeasureId, CoordKey)>,
-    edit_buf: String,
     /// The formula-editor text for the selected derived measure.
     formula_buf: String,
     /// The measure whose formula `formula_buf` currently holds (so we reload
@@ -57,35 +126,8 @@ pub struct ImprovApp {
     /// New-derived-measure form: name + formula text.
     new_name: String,
     new_formula: String,
-
-    // --- pivot state (mirrors the TUI's per-measure axis order + paging) ---
-    /// A permutation of the selected measure's categories: index 0 -> rows,
-    /// 1 -> columns, 2.. -> pages. Pivoting reorders this without touching
-    /// formulas. Resets to the measure's natural order on measure switch.
-    axis_order: Vec<CategoryId>,
-    /// How many leading `axis_order` categories are stacked on the ROW axis,
-    /// and how many (after those) on the COLUMN axis. The rest are pages.
-    /// Default 1/1 (one category per axis); increasing them stacks categories
-    /// on an axis (nested group headers over the Cartesian product of items).
-    n_rows: usize,
-    n_cols: usize,
-    /// Selected item index for each page (extra) dimension, positionally by
-    /// page dim (i.e. `axis_order[2 + i]`). Reset on measure switch.
-    page_idx: Vec<usize>,
-    /// The measure `axis_order`/`page_idx` currently describe (so we reset the
-    /// pivot state when the selection changes).
-    axis_for: Option<MeasureId>,
-    /// Active per-category display filters for the current layout. Presentation
-    /// only (hides items from the grid; never touches data). Captured when
-    /// saving a view; reset on measure switch.
-    filters: Vec<Filter>,
     /// Text buffer for the "Save view" name field.
     view_name: String,
-
-    /// Keyboard cell cursor into the current grid (row/col indices), clamped to
-    /// the grid's dimensions. Reset when the selected measure or pivot changes.
-    cursor_row: usize,
-    cursor_col: usize,
 
     /// Whether the read-only chart panel is shown, and its bar/line toggle.
     show_chart: bool,
@@ -102,12 +144,6 @@ pub struct ImprovApp {
     /// undone away. See [`ImprovApp::undo`] and `UNDO_DEPTH`.
     undo_stack: Vec<Model>,
     redo_stack: Vec<Model>,
-
-    /// Where the grid's margin gutters and the table itself ended up in the
-    /// last laid-out frame (see [`GutterRects`]). Recorded by
-    /// [`ImprovApp::gutter_frame`]; `None` until the grid has been rendered
-    /// once. Layout output, not model state.
-    gutters: Option<GutterRects>,
 
     /// Where each formula-list row landed in the last laid-out frame, as
     /// `(measure, row rect)` in display order. Recorded by
@@ -127,7 +163,7 @@ pub struct ImprovApp {
 /// rects makes that adjacency *checkable* instead of merely apparent — see
 /// [`gutters_frame_table`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct GutterRects {
+pub(crate) struct GutterRects {
     /// The column-axis gutter, spanning the table's top edge.
     top: egui::Rect,
     /// The row-axis gutter, spanning the table's left edge.
@@ -191,6 +227,30 @@ fn gutters_have_room(g: &GutterRects) -> bool {
 /// `layout_no_wrap`) if long category names turn out to be common.
 const GUTTER_W: f32 = 120.0;
 
+/// How far a newly added matrix is offset from the last one, in points, so a
+/// fresh matrix never lands exactly on top of its predecessor (the classic
+/// cascade). See [`ImprovApp::add_matrix`].
+const CASCADE: f32 = 28.0;
+
+/// Height of a matrix's title bar, in points — the reference's teal
+/// `Property Financials: Virginia Ave` band across the top of each matrix
+/// (plan Step 5). See [`ImprovApp::matrix_title_bar`].
+const TITLE_H: f32 = 22.0;
+
+/// Slack around the matrices on the canvas surface, in points: room to drag a
+/// matrix into beyond the right/bottom-most one.
+const CANVAS_MARGIN: f32 = 80.0;
+
+/// Size of a matrix's bottom-right resize grip, in points.
+const GRIP: f32 = 12.0;
+
+/// Smallest a matrix can be dragged to. Below roughly this it has no room for
+/// its title bar, its gutters and a cell, so shrinking further would only hide
+/// its own chrome — [`gutters_have_room`] is the same judgement about the
+/// window.
+const MATRIX_MIN_W: f32 = 240.0;
+const MATRIX_MIN_H: f32 = 160.0;
+
 /// How many model states the undo (and redo) stack keeps; older entries are
 /// evicted.
 ///
@@ -227,6 +287,471 @@ pub enum Axis {
 /// and the pinned `(category, item)` for every PAGE dimension.
 pub(crate) type ChartAxes = (Vec<CategoryId>, Vec<CategoryId>, Vec<(CategoryId, ItemId)>);
 
+impl Matrix {
+    /// A matrix showing `measure` with its natural axis order and the default
+    /// canvas geometry.
+    fn new(model: &Model, measure: Option<MeasureId>) -> Matrix {
+        let axis_order = natural_axis_order(model, measure);
+        Matrix {
+            measure,
+            n_rows: 1.min(axis_order.len()),
+            n_cols: 1.min(axis_order.len().saturating_sub(1)),
+            axis_order,
+            axis_for: measure,
+            ..Matrix::default()
+        }
+    }
+
+    /// A matrix restoring a saved [`MatrixPlacement`] verbatim: its measure,
+    /// axis split, filters and geometry, with the page pins resolved
+    /// positionally by page dimension (an item that no longer exists falls back
+    /// to the first one).
+    ///
+    /// `None` when the placement's measure is gone — the caller decides whether
+    /// that is an error (a whole view) or one matrix to drop.
+    fn from_placement(model: &Model, p: &MatrixPlacement) -> Option<Matrix> {
+        if !model.measures.contains_key(&p.measure) {
+            return None;
+        }
+        let mut m = Matrix {
+            measure: Some(p.measure),
+            axis_order: if p.axis_order.is_empty() {
+                natural_axis_order(model, Some(p.measure))
+            } else {
+                p.axis_order.clone()
+            },
+            axis_for: Some(p.measure),
+            filters: p.filters.clone(),
+            rect: p.rect,
+            ..Matrix::default()
+        };
+        // Clamp the axis split to the restored order's length.
+        let len = m.axis_order.len();
+        m.n_rows = p.n_rows.min(len);
+        m.n_cols = p.n_cols.min(len.saturating_sub(m.n_rows));
+        // Page selections, positionally by page dimension.
+        let page_cats = m.page_cats(model);
+        m.page_idx = vec![0; page_cats.len()];
+        for (pi, cat) in page_cats.iter().enumerate() {
+            if let Some((_, it)) = p.page_items.iter().find(|(c, _)| c == cat) {
+                if let Some(idx) = m
+                    .sorted_items(model, *cat)
+                    .iter()
+                    .position(|(id, _)| id == it)
+                {
+                    if let Some(slot) = m.page_idx.get_mut(pi) {
+                        *slot = idx;
+                    }
+                }
+            }
+        }
+        m.clamp_cursor(model);
+        Some(m)
+    }
+
+    /// This matrix as a persistable [`MatrixPlacement`] — everything a saved
+    /// view needs to reproduce it, and nothing transient (no cursor, no open
+    /// editor). `None` when no measure is shown: there is no matrix to save.
+    fn to_placement(&self, model: &Model) -> Option<MatrixPlacement> {
+        Some(MatrixPlacement {
+            measure: self.measure?,
+            axis_order: self.axis_order.clone(),
+            n_rows: self.n_rows,
+            n_cols: self.n_cols,
+            page_items: self.pinned_pages(model),
+            filters: self.filters.clone(),
+            rect: self.rect,
+        })
+    }
+
+    /// Move this matrix on the canvas by `(dx, dy)` — the title-bar drag (the
+    /// reference's free-form placement).
+    ///
+    /// Clamped at the canvas's top-left: a matrix at a negative offset would sit
+    /// outside the scrollable surface, which cannot scroll to it, so it would be
+    /// unreachable and unrecoverable except by editing the saved view.
+    fn move_by(&mut self, dx: f32, dy: f32) {
+        self.rect.x = (self.rect.x + dx).max(0.0);
+        self.rect.y = (self.rect.y + dy).max(0.0);
+    }
+
+    /// Resize this matrix by `(dw, dh)` — the bottom-right grip drag.
+    ///
+    /// Clamped at [`MATRIX_MIN_W`] x [`MATRIX_MIN_H`]: smaller than that and the
+    /// matrix has no room for its own title bar, gutters and a cell, so dragging
+    /// further would only hide its chrome — and a zero or negative size would
+    /// make its rect degenerate.
+    fn resize_by(&mut self, dw: f32, dh: f32) {
+        self.rect.w = (self.rect.w + dw).max(MATRIX_MIN_W);
+        self.rect.h = (self.rect.h + dh).max(MATRIX_MIN_H);
+    }
+
+    /// Show `measure` in this matrix, dropping any open cell editor. The pivot
+    /// state re-homes on the next [`Matrix::sync_axis_state`].
+    fn select(&mut self, measure: Option<MeasureId>) {
+        self.measure = measure;
+        self.editing = None;
+    }
+
+    /// Reset this matrix's pivot state to its measure's natural order when its
+    /// measure has changed. Called each frame before rendering.
+    fn sync_axis_state(&mut self, model: &Model) {
+        if self.axis_for != self.measure {
+            self.axis_for = self.measure;
+            self.axis_order = natural_axis_order(model, self.measure);
+            self.n_rows = 1.min(self.axis_order.len());
+            self.n_cols = 1.min(self.axis_order.len().saturating_sub(self.n_rows));
+            self.page_idx = vec![0; self.page_cats(model).len()];
+            self.filters.clear();
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+        } else if self.page_idx.len() != self.page_cats(model).len() {
+            // Keep page_idx sized to the current page-dimension count.
+            let n = self.page_cats(model).len();
+            self.page_idx.resize(n, 0);
+        }
+        self.clamp_cursor(model);
+    }
+
+    /// This matrix's measure's own dimensions, in declared order.
+    ///
+    /// `axis_order` is not guaranteed to match them: restoring a view keeps a
+    /// saved order verbatim, and a CSV re-import can overwrite
+    /// `measure.categories`, so a stale category can linger in `axis_order`
+    /// while no longer being a dimension of the measure on screen. Such a
+    /// category must not influence this matrix's grid at all — without this
+    /// filter, a stale PAGE category filtered to zero items made
+    /// `pinned_pages_opt` return `None` and blanked a grid whose every cell was
+    /// fully specified.
+    ///
+    /// This is distinct from the case 6a4b862 fixed: a category that IS a real
+    /// dimension of the measure and is filtered to nothing still yields zero
+    /// lines, because those coordinates genuinely would be under-specified.
+    fn measure_dims(&self, model: &Model) -> Vec<CategoryId> {
+        natural_axis_order(model, self.measure)
+    }
+
+    /// `axis_order` restricted to the measure's dimensions, preserving the
+    /// user's axis placement/order. The `n_rows`/`n_cols` split indexes
+    /// `axis_order`, so the split is applied first and each slice is filtered.
+    fn live_axis_slice(&self, model: &Model, skip: usize, take: usize) -> Vec<CategoryId> {
+        let dims = self.measure_dims(model);
+        self.axis_order
+            .iter()
+            .skip(skip)
+            .take(take)
+            .filter(|c| dims.contains(c))
+            .copied()
+            .collect()
+    }
+
+    fn row_cats(&self, model: &Model) -> Vec<CategoryId> {
+        self.live_axis_slice(model, 0, self.n_rows)
+    }
+    fn col_cats(&self, model: &Model) -> Vec<CategoryId> {
+        self.live_axis_slice(model, self.n_rows, self.n_cols)
+    }
+    fn page_cats(&self, model: &Model) -> Vec<CategoryId> {
+        self.live_axis_slice(model, self.n_rows + self.n_cols, usize::MAX)
+    }
+
+    /// The pinned (category, item) for each page dimension, from `page_idx`.
+    /// A page category filtered to zero items pins nothing and is simply
+    /// absent, so the result can be SHORTER than `page_cats()` — grid/cursor
+    /// code must use `pinned_pages_opt`, which rejects that case.
+    fn pinned_pages(&self, model: &Model) -> Vec<(CategoryId, ItemId)> {
+        let mut pinned = Vec::new();
+        for (pi, c) in self.page_cats(model).iter().enumerate() {
+            let its = self.sorted_items(model, *c);
+            if its.is_empty() {
+                continue;
+            }
+            let sel = self
+                .page_idx
+                .get(pi)
+                .copied()
+                .unwrap_or(0)
+                .min(its.len() - 1);
+            pinned.push((*c, its[sel].0));
+        }
+        pinned
+    }
+
+    /// The pinned page items, or `None` if any page category is filtered to zero
+    /// items. In that case no item can be pinned for it, so every cell
+    /// coordinate would omit that category — under-specified for the measure's
+    /// dimensions. Render nothing rather than a cell at such a key.
+    fn pinned_pages_opt(&self, model: &Model) -> Option<Vec<(CategoryId, ItemId)>> {
+        let pinned = self.pinned_pages(model);
+        (pinned.len() == self.page_cats(model).len()).then_some(pinned)
+    }
+
+    /// The Cartesian product of `cats`' filtered items, outer category first.
+    /// Each returned element is one axis line: a tuple of `(ItemId, name)` in
+    /// `cats` order. An empty `cats` yields a single empty tuple (a 1-line
+    /// axis, i.e. a scalar in that direction). Any empty category collapses the
+    /// product to nothing (no lines).
+    fn axis_tuples(&self, model: &Model, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
+        let mut out: Vec<Vec<(ItemId, String)>> = vec![Vec::new()];
+        for c in cats {
+            let items = self.sorted_items(model, *c);
+            if items.is_empty() {
+                return Vec::new();
+            }
+            let mut next = Vec::with_capacity(out.len() * items.len());
+            for prefix in &out {
+                for it in &items {
+                    let mut t = prefix.clone();
+                    t.push(it.clone());
+                    next.push(t);
+                }
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// The item lists (sorted, filtered) for each of `cats`, in order. Used to
+    /// virtualize the row axis: with these lists we can compute the total row
+    /// count as a product of lengths and decode the i-th row tuple on demand
+    /// (`nth_tuple`) without materializing the whole Cartesian product.
+    fn axis_item_lists(&self, model: &Model, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
+        cats.iter().map(|c| self.sorted_items(model, *c)).collect()
+    }
+
+    /// A category's items sorted by id, honoring THIS matrix's filters (shared
+    /// by paging and grid rendering). A category without a filter shows all
+    /// items; filtering is presentation only — it never touches model data.
+    fn sorted_items(&self, model: &Model, c: CategoryId) -> Vec<(ItemId, String)> {
+        let keep = |id: ItemId| match self.filters.iter().find(|f| f.category == c) {
+            Some(f) => f.items.contains(&id),
+            None => true,
+        };
+        let mut v: Vec<(ItemId, String)> = model
+            .categories
+            .get(&c)
+            .map(|cat| {
+                cat.items
+                    .iter()
+                    .filter(|id| keep(**id))
+                    .filter_map(|id| model.items.get(id).map(|it| (*id, it.name.0.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        v.sort_by_key(|(id, _)| id.0);
+        v
+    }
+
+    /// Move `category` to `axis` in THIS matrix, appending it as the innermost
+    /// entry of that axis (so categories *stack*: dropping a second category on
+    /// Rows nests it under the first). Removes it from its previous axis. No-op
+    /// if the category is not among this measure's dimensions. Pivoting is
+    /// formula-free re-projection (the Improv/Quantrix signature move).
+    fn set_axis(&mut self, model: &Model, category: CategoryId, axis: Axis) {
+        if !self.axis_order.contains(&category) {
+            return;
+        }
+        let (mut rows, mut cols, mut pages) = (
+            self.row_cats(model),
+            self.col_cats(model),
+            self.page_cats(model),
+        );
+        for v in [&mut rows, &mut cols, &mut pages] {
+            v.retain(|c| *c != category);
+        }
+        match axis {
+            Axis::Rows => rows.push(category),
+            Axis::Columns => cols.push(category),
+            Axis::Pages => pages.push(category),
+        }
+        self.rebuild_axis_order(model, rows, cols, pages);
+        self.clamp_cursor(model);
+    }
+
+    /// Flatten the three axis groups back into `axis_order` + `n_rows`/`n_cols`,
+    /// and resize `page_idx` to the new page count.
+    fn rebuild_axis_order(
+        &mut self,
+        model: &Model,
+        rows: Vec<CategoryId>,
+        cols: Vec<CategoryId>,
+        pages: Vec<CategoryId>,
+    ) {
+        self.n_rows = rows.len();
+        self.n_cols = cols.len();
+        self.axis_order = rows;
+        self.axis_order.extend(cols);
+        self.axis_order.extend(pages);
+        self.page_idx = vec![0; self.page_cats(model).len()];
+    }
+
+    /// Pivot: swap this matrix's entire row stack with its entire column stack
+    /// (Rows ↔ Columns), keeping pages put. For the classic one-per-axis case
+    /// this is the familiar row/column swap; with stacked categories it swaps
+    /// the two groups. No-op if there is nothing on either of rows/columns.
+    fn pivot_rotate(&mut self, model: &Model) {
+        let rows = self.row_cats(model);
+        let cols = self.col_cats(model);
+        if rows.is_empty() && cols.is_empty() {
+            return;
+        }
+        let pages = self.page_cats(model);
+        // Swap: old columns become rows, old rows become columns.
+        self.rebuild_axis_order(model, cols, rows, pages);
+        self.clamp_cursor(model);
+    }
+
+    /// Set the pinned item index for page dimension `dim_index` (its position
+    /// among this matrix's page dims), clamped to that dimension's item count.
+    /// No-op if out of range.
+    fn set_page(&mut self, model: &Model, dim_index: usize, item_index: usize) {
+        let pages = self.page_cats(model);
+        let Some(cat) = pages.get(dim_index).copied() else {
+            return;
+        };
+        let count = self.sorted_items(model, cat).len();
+        if count == 0 {
+            return;
+        }
+        if self.page_idx.len() != pages.len() {
+            self.page_idx.resize(pages.len(), 0);
+        }
+        if let Some(slot) = self.page_idx.get_mut(dim_index) {
+            *slot = item_index.min(count - 1);
+        }
+    }
+
+    /// Cycle this matrix's first page dimension by `delta` (wrapping).
+    fn page_first(&mut self, model: &Model, delta: isize) {
+        let Some(cat) = self.page_cats(model).first().copied() else {
+            return;
+        };
+        let count = self.sorted_items(model, cat).len();
+        if count == 0 {
+            return;
+        }
+        let cur = self.page_idx.first().copied().unwrap_or(0).min(count - 1);
+        let next = (cur as isize + delta).rem_euclid(count as isize) as usize;
+        self.set_page(model, 0, next);
+    }
+
+    /// Toggle whether `item` of `category` is shown in THIS matrix. On first
+    /// toggle the filter starts from all items minus this one; toggling so all
+    /// items are kept drops the filter. Presentation only.
+    fn toggle_filter_item(&mut self, model: &Model, category: CategoryId, item: ItemId) {
+        let all: Vec<ItemId> = model
+            .categories
+            .get(&category)
+            .map(|c| c.items.clone())
+            .unwrap_or_default();
+        match self.filters.iter().position(|f| f.category == category) {
+            None => {
+                let items: Vec<ItemId> = all.into_iter().filter(|i| *i != item).collect();
+                self.filters.push(Filter { category, items });
+            }
+            Some(i) => {
+                let f = &mut self.filters[i];
+                if let Some(p) = f.items.iter().position(|x| *x == item) {
+                    f.items.remove(p);
+                } else {
+                    f.items.push(item);
+                }
+                if f.items.len() == all.len() && all.iter().all(|x| f.items.contains(x)) {
+                    self.filters.remove(i);
+                }
+            }
+        }
+        self.clamp_cursor(model);
+    }
+
+    /// Clear this matrix's filters, showing every item again.
+    fn clear_filters(&mut self, model: &Model) {
+        self.filters.clear();
+        self.clamp_cursor(model);
+    }
+
+    /// This matrix's (row_count, col_count). An axis with NO categories is
+    /// genuinely scalar and has ONE line; an axis whose category is filtered to
+    /// zero items has ZERO lines (an empty grid with headers — never a synthetic
+    /// line whose coordinate would omit that category). If a PAGE category is
+    /// filtered to zero items nothing is addressable at all, so both counts are
+    /// 0. Matches `render_grid`.
+    fn grid_dims(&self, model: &Model) -> (usize, usize) {
+        if self.pinned_pages_opt(model).is_none() {
+            return (0, 0);
+        }
+        let rows = product_len(&self.axis_item_lists(model, &self.row_cats(model)));
+        let cols = product_len(&self.axis_item_lists(model, &self.col_cats(model)));
+        (rows, cols)
+    }
+
+    /// Move this matrix's cursor by `(drow, dcol)`, clamped to its grid (never
+    /// out of range). Mirrors the TUI's `move_cursor`.
+    fn move_cursor(&mut self, model: &Model, drow: isize, dcol: isize) {
+        let (rows, cols) = self.grid_dims(model);
+        let max_row = rows.saturating_sub(1) as isize;
+        let max_col = cols.saturating_sub(1) as isize;
+        self.cursor_row = (self.cursor_row as isize + drow).clamp(0, max_row) as usize;
+        self.cursor_col = (self.cursor_col as isize + dcol).clamp(0, max_col) as usize;
+    }
+
+    /// Clamp the cursor into this matrix's grid (called after a pivot / measure
+    /// switch that may have shrunk it).
+    fn clamp_cursor(&mut self, model: &Model) {
+        let (rows, cols) = self.grid_dims(model);
+        self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
+    }
+
+    /// The `CoordKey` of the cell under this matrix's cursor, or `None` when
+    /// there is no cell there: any axis (row, column, or page) category filtered
+    /// to zero items means no coordinate fully specifies the measure's
+    /// dimensions, so there is nothing to address. An axis with no categories at
+    /// all is scalar in that direction and still has one line.
+    fn cursor_key(&self, model: &Model) -> Option<CoordKey> {
+        let pinned = self.pinned_pages_opt(model)?;
+        let row_cats = self.row_cats(model);
+        let col_cats = self.col_cats(model);
+        let row_lists = self.axis_item_lists(model, &row_cats);
+        let col_lists = self.axis_item_lists(model, &col_cats);
+        let (n_rows, n_cols) = (product_len(&row_lists), product_len(&col_lists));
+        if n_rows == 0 || n_cols == 0 {
+            return None;
+        }
+        // Decode only the cursor's row/col line (never the whole product).
+        // `product_len` of an empty list set is 1, the scalar axis -> empty tuple.
+        let row_tuple = if row_lists.is_empty() {
+            Vec::new()
+        } else {
+            nth_tuple(&row_lists, self.cursor_row.min(n_rows - 1))
+        };
+        let col_tuple = if col_lists.is_empty() {
+            Vec::new()
+        } else {
+            nth_tuple(&col_lists, self.cursor_col.min(n_cols - 1))
+        };
+        Some(cell_key_multi(
+            &row_cats, &row_tuple, &col_cats, &col_tuple, &pinned,
+        ))
+    }
+
+    /// Resolved axes for this matrix: (first row cat, first col cat, pinned page
+    /// dims). Test-only: rendering and the chart use the stacked (`_cats`) form.
+    #[cfg(test)]
+    fn resolved_axes(
+        &self,
+        model: &Model,
+    ) -> (
+        Option<CategoryId>,
+        Option<CategoryId>,
+        Vec<(CategoryId, ItemId)>,
+    ) {
+        let row_cat = self.axis_order.first().copied();
+        let col_cat = self.axis_order.get(self.n_rows).copied();
+        (row_cat, col_cat, self.pinned_pages(model))
+    }
+}
+
 impl ImprovApp {
     /// Load a model from the store at `db` (`""` = fresh in-memory model) and
     /// build the live engine over its derived measures.
@@ -240,32 +765,24 @@ impl ImprovApp {
 
         let (engine, snapshot) = build_engine(&model);
         let selected = pick_default_measure(&model);
-        let axis_order = natural_axis_order(&model, selected);
+        let matrices = vec![Matrix::new(&model, selected)];
 
         Ok(ImprovApp {
             db: db.to_string(),
             model,
             engine,
             snapshot,
-            selected,
+            matrices,
+            focus: 0,
+            current_view: None,
             status: String::new(),
-            editing: None,
-            edit_buf: String::new(),
             formula_buf: String::new(),
             formula_for: None,
             formula_error_pos: None,
             formula_error_msg: String::new(),
             new_name: String::new(),
             new_formula: String::new(),
-            axis_order,
-            n_rows: 1,
-            n_cols: 1,
-            page_idx: Vec::new(),
-            axis_for: selected,
-            filters: Vec::new(),
             view_name: String::new(),
-            cursor_row: 0,
-            cursor_col: 0,
             show_chart: false,
             chart_line: false,
             show_csv_wizard: false,
@@ -273,15 +790,80 @@ impl ImprovApp {
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            gutters: None,
             formula_row_rects: Vec::new(),
         })
+    }
+
+    // -- the canvas: N matrices, one focused -------------------------------
+
+    /// The focused matrix — the one the keyboard, the formula bar, the
+    /// inspector, the chart and the selection readout all follow.
+    ///
+    /// `matrices` is never empty (an empty model still has one matrix, showing
+    /// no measure) and `focus` is clamped here rather than trusted, so removing
+    /// a matrix can never leave a dangling focus.
+    pub(crate) fn focused(&self) -> &Matrix {
+        &self.matrices[self.focus.min(self.matrices.len() - 1)]
+    }
+
+    /// The focused matrix, mutably (see [`Self::focused`]).
+    pub(crate) fn focused_mut(&mut self) -> &mut Matrix {
+        let i = self.focus.min(self.matrices.len() - 1);
+        &mut self.matrices[i]
+    }
+
+    /// Give the keyboard to matrix `i` (clamped). Focus is what makes grid
+    /// shortcuts unambiguous with several matrices on one canvas.
+    pub fn set_focus(&mut self, i: usize) {
+        self.focus = i.min(self.matrices.len() - 1);
+    }
+
+    /// Which matrix has the keyboard.
+    pub fn focus_index(&self) -> usize {
+        self.focus.min(self.matrices.len() - 1)
+    }
+
+    /// How many matrices are on the canvas (always >= 1).
+    pub fn matrix_count(&self) -> usize {
+        self.matrices.len()
+    }
+
+    /// Add a matrix showing `measure` to the canvas, cascaded down-right from
+    /// the last one so it does not land exactly on top of it, and focus it.
+    /// Returns its index.
+    ///
+    /// Canvas layout only — the model is untouched, so this is deliberately NOT
+    /// an undo point; see [`Self::undo`].
+    pub fn add_matrix(&mut self, measure: Option<MeasureId>) -> usize {
+        let mut m = Matrix::new(&self.model, measure);
+        let last = self.matrices.last().map(|m| m.rect).unwrap_or_default();
+        m.rect = CanvasRect {
+            x: last.x + CASCADE,
+            y: last.y + CASCADE,
+            w: last.w,
+            h: last.h,
+        };
+        self.matrices.push(m);
+        self.focus = self.matrices.len() - 1;
+        self.focus
+    }
+
+    /// Remove matrix `i` from the canvas. The LAST matrix is never removed (a
+    /// canvas with none has nowhere to show a measure) — that is a no-op
+    /// returning `false`. Layout only, like [`Self::add_matrix`].
+    pub fn remove_matrix(&mut self, i: usize) -> bool {
+        if self.matrices.len() <= 1 || i >= self.matrices.len() {
+            return false;
+        }
+        self.matrices.remove(i);
+        self.focus = self.focus.min(self.matrices.len() - 1);
+        true
     }
 
     // -- read-only accessors for the chart module (crate-internal) ---------
 
     pub(crate) fn selected(&self) -> Option<MeasureId> {
-        self.selected
+        self.focused().measure
     }
     /// Row/column category stacks and pinned pages for the current pivot — the
     /// general (stacked) form the chart needs. Row/col tuples come from
@@ -291,13 +873,21 @@ impl ImprovApp {
     /// pinned for it, so every cell key would omit that category. Same rule as
     /// the grid (`grid_dims`/`cursor_key`) — chart nothing rather than plot
     /// under-specified keys.
+    ///
+    /// Reads the FOCUSED matrix: with several matrices on the canvas the chart
+    /// follows the keyboard, as every other single-measure surface does.
     pub(crate) fn chart_axes_pub(&self) -> Option<ChartAxes> {
-        Some((self.row_cats(), self.col_cats(), self.pinned_pages_opt()?))
+        let m = self.focused();
+        Some((
+            m.row_cats(&self.model),
+            m.col_cats(&self.model),
+            m.pinned_pages_opt(&self.model)?,
+        ))
     }
     /// The Cartesian product of `cats`' filtered items (see `axis_tuples`),
     /// exposed for the chart. Empty `cats` -> one empty tuple.
     pub(crate) fn axis_tuples_pub(&self, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
-        self.axis_tuples(cats)
+        self.focused().axis_tuples(&self.model, cats)
     }
     /// The sorted `CoordKey` for a stacked cell (see `cell_key_multi`).
     pub(crate) fn cell_key_multi_pub(
@@ -531,32 +1121,46 @@ impl ImprovApp {
         Ok("cell updated".into())
     }
 
-    // -- pivot / page state (pure; unit-tested without egui) ---------------
+    // -- pivot / page state: delegated to the FOCUSED matrix ---------------
+    //
+    // Each matrix on the canvas owns its own axis order, filters and cursor
+    // (see [`Matrix`]). These wrappers keep the app-level API the panels and
+    // tests use and route it at the focused matrix; the per-matrix rendering
+    // path calls the `Matrix` methods directly with its own index.
 
-    /// Reset the pivot state to the selected measure's natural order when the
-    /// selection has changed. Called each frame before rendering the grid.
-    fn sync_axis_state(&mut self) {
-        if self.axis_for != self.selected {
-            self.axis_for = self.selected;
-            self.axis_order = natural_axis_order(&self.model, self.selected);
-            self.n_rows = 1.min(self.axis_order.len());
-            self.n_cols = 1.min(self.axis_order.len().saturating_sub(self.n_rows));
-            self.page_idx = vec![0; self.page_cats().len()];
-            self.filters.clear();
-            self.cursor_row = 0;
-            self.cursor_col = 0;
-        } else if self.page_idx.len() != self.page_cats().len() {
-            // Keep page_idx sized to the current page-dimension count.
-            let n = self.page_cats().len();
-            self.page_idx.resize(n, 0);
-        }
-        self.clamp_cursor();
+    /// Run `f` on the focused matrix with the model alongside it. Two disjoint
+    /// field borrows (`matrices` mutably, `model` immutably), which is why the
+    /// per-matrix methods take `&Model` instead of holding one.
+    fn with_focused<R>(&mut self, f: impl FnOnce(&mut Matrix, &Model) -> R) -> R {
+        let i = self.focus.min(self.matrices.len() - 1);
+        f(&mut self.matrices[i], &self.model)
     }
 
-    /// Resolved axes for the current pivot state: (row cat, col cat, pinned
-    /// page dims as (category, item)). Mirrors the grid's cell keying. Page
-    /// items are the selected index for each page dimension (clamped).
-    /// Test-only: rendering and the chart use the stacked (`_cats`) form.
+    /// Re-home every matrix's pivot state whose measure changed, and clamp the
+    /// focus. Called each frame before rendering.
+    fn sync_axis_state(&mut self) {
+        // `matrices` is never empty, so `focus` always has something to point at.
+        if self.matrices.is_empty() {
+            self.matrices.push(Matrix::new(&self.model, None));
+        }
+        self.focus = self.focus.min(self.matrices.len() - 1);
+        let model = &self.model;
+        for m in &mut self.matrices {
+            m.sync_axis_state(model);
+        }
+    }
+
+    /// Pivot the focused matrix: swap its row and column stacks (the toolbar's
+    /// and the grid header's `Pivot` button).
+    pub fn pivot_rotate(&mut self) {
+        self.with_focused(|m, model| m.pivot_rotate(model));
+    }
+
+    // The rest of the focused matrix's pivot surface reads the same way, and is
+    // reached per-matrix-index from the rendering path (a click drives THAT
+    // matrix, never the focused one). These focused-matrix wrappers exist for
+    // the tests, which assert app-level behavior; production code calls the
+    // [`Matrix`] methods with the index it is rendering.
     #[cfg(test)]
     fn resolved_axes(
         &self,
@@ -565,237 +1169,70 @@ impl ImprovApp {
         Option<CategoryId>,
         Vec<(CategoryId, ItemId)>,
     ) {
-        let row_cat = self.axis_order.first().copied();
-        let col_cat = self.axis_order.get(self.n_rows).copied();
-        (row_cat, col_cat, self.pinned_pages())
+        self.focused().resolved_axes(&self.model)
     }
-
-    /// The categories stacked on the ROW axis (outer→inner), the COLUMN axis,
-    /// and the remaining PAGE categories, derived from `axis_order` + the
-    /// `n_rows`/`n_cols` split.
-    ///
-    /// Each is filtered to the SELECTED MEASURE's own dimensions. `axis_order`
-    /// is not guaranteed to match them: `apply_view` restores a saved order
-    /// verbatim, and a CSV re-import can overwrite `measure.categories`, so a
-    /// stale category can linger in `axis_order` while no longer being a
-    /// dimension of the measure on screen. Such a category must not influence
-    /// this measure's grid at all — without this filter, a stale PAGE category
-    /// filtered to zero items made `pinned_pages_opt` return `None` and blanked
-    /// a grid whose every cell was fully specified.
-    ///
-    /// This is distinct from the case 6a4b862 fixed: a category that IS a real
-    /// dimension of the measure and is filtered to nothing still yields zero
-    /// lines, because those coordinates genuinely would be under-specified.
-    fn measure_dims(&self) -> Vec<CategoryId> {
-        natural_axis_order(&self.model, self.selected)
-    }
-
-    /// `axis_order` restricted to the selected measure's dimensions, preserving
-    /// the user's axis placement/order. The `n_rows`/`n_cols` split indexes
-    /// `axis_order`, so the split is applied first and each slice is filtered.
-    fn live_axis_slice(&self, skip: usize, take: usize) -> Vec<CategoryId> {
-        let dims = self.measure_dims();
-        self.axis_order
-            .iter()
-            .skip(skip)
-            .take(take)
-            .filter(|c| dims.contains(c))
-            .copied()
-            .collect()
-    }
-
+    #[cfg(test)]
     fn row_cats(&self) -> Vec<CategoryId> {
-        self.live_axis_slice(0, self.n_rows)
+        self.focused().row_cats(&self.model)
     }
+    #[cfg(test)]
     fn col_cats(&self) -> Vec<CategoryId> {
-        self.live_axis_slice(self.n_rows, self.n_cols)
+        self.focused().col_cats(&self.model)
     }
+    #[cfg(test)]
     fn page_cats(&self) -> Vec<CategoryId> {
-        self.live_axis_slice(self.n_rows + self.n_cols, usize::MAX)
+        self.focused().page_cats(&self.model)
     }
-
-    /// The pinned (category, item) for each page dimension, from `page_idx`.
-    /// A page category filtered to zero items pins nothing and is simply
-    /// absent, so the result can be SHORTER than `page_cats()` — grid/cursor
-    /// code must use `pinned_pages_opt`, which rejects that case.
-    fn pinned_pages(&self) -> Vec<(CategoryId, ItemId)> {
-        let mut pinned = Vec::new();
-        for (pi, c) in self.page_cats().iter().enumerate() {
-            let its = self.sorted_items(*c);
-            if its.is_empty() {
-                continue;
-            }
-            let sel = self
-                .page_idx
-                .get(pi)
-                .copied()
-                .unwrap_or(0)
-                .min(its.len() - 1);
-            pinned.push((*c, its[sel].0));
-        }
-        pinned
-    }
-
-    /// The pinned page items, or `None` if any page category is filtered to zero
-    /// items. In that case no item can be pinned for it, so every cell
-    /// coordinate would omit that category — under-specified for the measure's
-    /// dimensions. Render nothing rather than a cell at such a key.
-    fn pinned_pages_opt(&self) -> Option<Vec<(CategoryId, ItemId)>> {
-        let pinned = self.pinned_pages();
-        (pinned.len() == self.page_cats().len()).then_some(pinned)
-    }
-
-    /// The Cartesian product of `cats`' filtered items, outer category first.
-    /// Each returned element is one axis line: a tuple of `(ItemId, name)` in
-    /// `cats` order. An empty `cats` yields a single empty tuple (a 1-line
-    /// axis, i.e. a scalar in that direction). Any empty category collapses the
-    /// product to nothing (no lines).
+    #[cfg(test)]
     fn axis_tuples(&self, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
-        let mut out: Vec<Vec<(ItemId, String)>> = vec![Vec::new()];
-        for c in cats {
-            let items = self.sorted_items(*c);
-            if items.is_empty() {
-                return Vec::new();
-            }
-            let mut next = Vec::with_capacity(out.len() * items.len());
-            for prefix in &out {
-                for it in &items {
-                    let mut t = prefix.clone();
-                    t.push(it.clone());
-                    next.push(t);
-                }
-            }
-            out = next;
-        }
-        out
+        self.focused().axis_tuples(&self.model, cats)
     }
-
-    /// The item lists (sorted, filtered) for each of `cats`, in order. Used to
-    /// virtualize the row axis: with these lists we can compute the total row
-    /// count as a product of lengths and decode the i-th row tuple on demand
-    /// (`nth_tuple`) without materializing the whole Cartesian product.
+    #[cfg(test)]
     fn axis_item_lists(&self, cats: &[CategoryId]) -> Vec<Vec<(ItemId, String)>> {
-        cats.iter().map(|c| self.sorted_items(*c)).collect()
+        self.focused().axis_item_lists(&self.model, cats)
     }
-
-    /// A category's items sorted by id, honoring the active filters (shared by
-    /// paging and grid rendering). A category without a filter shows all items;
-    /// filtering is presentation only — it never touches model data.
+    #[cfg(test)]
     fn sorted_items(&self, c: CategoryId) -> Vec<(ItemId, String)> {
-        let keep = |id: ItemId| match self.filters.iter().find(|f| f.category == c) {
-            Some(f) => f.items.contains(&id),
-            None => true,
-        };
-        let mut v: Vec<(ItemId, String)> = self
-            .model
-            .categories
-            .get(&c)
-            .map(|cat| {
-                cat.items
-                    .iter()
-                    .filter(|id| keep(**id))
-                    .filter_map(|id| self.model.items.get(id).map(|it| (*id, it.name.0.clone())))
-                    .collect()
-            })
-            .unwrap_or_default();
-        v.sort_by_key(|(id, _)| id.0);
-        v
+        self.focused().sorted_items(&self.model, c)
     }
-
-    /// Move `category` to `axis`, appending it as the innermost entry of that
-    /// axis (so categories *stack*: dropping a second category on Rows nests it
-    /// under the first). Removes it from its previous axis. No-op if the
-    /// category is not among the current measure's dimensions. Pivoting is
-    /// formula-free re-projection (the Improv/Quantrix signature move).
-    pub fn set_axis(&mut self, category: CategoryId, axis: Axis) {
-        if !self.axis_order.contains(&category) {
-            return;
-        }
-        let (mut rows, mut cols, mut pages) = (self.row_cats(), self.col_cats(), self.page_cats());
-        for v in [&mut rows, &mut cols, &mut pages] {
-            v.retain(|c| *c != category);
-        }
-        match axis {
-            Axis::Rows => rows.push(category),
-            Axis::Columns => cols.push(category),
-            Axis::Pages => pages.push(category),
-        }
-        self.rebuild_axis_order(rows, cols, pages);
-        self.clamp_cursor();
+    /// Move `category` to `axis` in the FOCUSED matrix (see
+    /// [`Matrix::set_axis`]). Pivoting is formula-free re-projection.
+    #[cfg(test)]
+    fn set_axis(&mut self, category: CategoryId, axis: Axis) {
+        self.with_focused(|m, model| m.set_axis(model, category, axis));
     }
-
-    /// Flatten the three axis groups back into `axis_order` + `n_rows`/`n_cols`,
-    /// and resize `page_idx` to the new page count.
-    fn rebuild_axis_order(
-        &mut self,
-        rows: Vec<CategoryId>,
-        cols: Vec<CategoryId>,
-        pages: Vec<CategoryId>,
-    ) {
-        self.n_rows = rows.len();
-        self.n_cols = cols.len();
-        self.axis_order = rows;
-        self.axis_order.extend(cols);
-        self.axis_order.extend(pages);
-        self.page_idx = vec![0; self.page_cats().len()];
-    }
-
-    /// Pivot: swap the entire row stack with the entire column stack
-    /// (Rows ↔ Columns), keeping pages put. For the classic one-per-axis case
-    /// this is the familiar row/column swap; with stacked categories it swaps
-    /// the two groups. No-op if there is nothing on either of rows/columns.
-    pub fn pivot_rotate(&mut self) {
-        let rows = self.row_cats();
-        let cols = self.col_cats();
-        if rows.is_empty() && cols.is_empty() {
-            return;
-        }
-        let pages = self.page_cats();
-        // Swap: old columns become rows, old rows become columns.
-        self.rebuild_axis_order(cols, rows, pages);
-        self.clamp_cursor();
-    }
-
-    /// Set the pinned item index for page dimension `dim_index` (position among
-    /// the page dims, i.e. `axis_order[2 + dim_index]`), clamped to the
-    /// dimension's item count. No-op if out of range.
-    pub fn set_page(&mut self, dim_index: usize, item_index: usize) {
-        let pages = self.page_cats();
-        let Some(cat) = pages.get(dim_index).copied() else {
-            return;
-        };
-        let count = self.sorted_items(cat).len();
-        if count == 0 {
-            return;
-        }
-        if self.page_idx.len() != pages.len() {
-            self.page_idx.resize(pages.len(), 0);
-        }
-        if let Some(slot) = self.page_idx.get_mut(dim_index) {
-            *slot = item_index.min(count - 1);
-        }
+    /// Set the focused matrix's pinned item for page dimension `dim_index`.
+    #[cfg(test)]
+    fn set_page(&mut self, dim_index: usize, item_index: usize) {
+        self.with_focused(|m, model| m.set_page(model, dim_index, item_index));
     }
 
     // -- views & filters (pure; unit-tested without egui) ------------------
 
-    /// Build a `View` capturing the current layout: selected measure, axis
-    /// order, pinned page items, and active filters. Presentation only.
+    /// Build a `View` capturing the WHOLE canvas: every matrix's measure, axis
+    /// order, pinned page items, filters and geometry. Presentation only.
+    ///
+    /// Matrix 0 becomes the view's *primary* matrix (its flat fields), the rest
+    /// its `placements` — which is exactly what makes a one-matrix canvas save
+    /// as a view a pre-canvas Improv would also understand. A matrix with no
+    /// measure (an empty model) contributes nothing; if that leaves no matrices
+    /// at all there is no view to build (`None`).
     pub fn build_view(&self, id: ViewId, name: &str) -> Option<View> {
-        let measure = self.selected?;
-        Some(View {
+        let mut placements: Vec<MatrixPlacement> = self
+            .matrices
+            .iter()
+            .filter_map(|m| m.to_placement(&self.model))
+            .collect();
+        if placements.is_empty() {
+            return None;
+        }
+        let primary = placements.remove(0);
+        Some(View::from_matrices(
             id,
-            name: Name(name.to_string()),
-            measure,
-            axis_order: self.axis_order.clone(),
-            n_rows: self.n_rows,
-            n_cols: self.n_cols,
-            page_items: self.pinned_pages(),
-            filters: self.filters.clone(),
-            // Step 3 will place several matrices here; today the GUI still
-            // saves the one on screen as the view's primary matrix.
-            rect: Default::default(),
-            placements: vec![],
-        })
+            Name(name.to_string()),
+            primary,
+            placements,
+        ))
     }
 
     /// The smallest unused view id (>= 1).
@@ -811,9 +1248,9 @@ impl ImprovApp {
         )
     }
 
-    /// Save the current layout as a named view: mint an id, add it to the
+    /// Save the current canvas as a named view: mint an id, add it to the
     /// model, and autosave. Returns the id, or `None` when nothing was saved
-    /// (no measure selected, blank name, or a failed store write — in which
+    /// (no measure on the canvas, blank name, or a failed store write — in which
     /// case the view is rolled back and `status` holds the error).
     pub fn save_view(&mut self, name: &str) -> Option<ViewId> {
         let name = name.trim();
@@ -831,82 +1268,80 @@ impl ImprovApp {
             return None;
         }
         self.record_history(prior_model);
+        self.current_view = Some(id);
         self.status = format!("saved view '{name}'");
         Some(id)
     }
 
-    /// Apply a saved `View` to the live layout: select its measure, restore the
-    /// axis order, page items, and filters, then re-render. Presentation only
-    /// — measures and data untouched. No-op if the measure is gone.
+    /// Apply a saved `View` to the canvas: rebuild the matrices from its
+    /// placements (measure, axis order, page items, filters, geometry), focus
+    /// the first, and mark it the current document tab. Presentation only —
+    /// measures and data untouched.
+    ///
+    /// **Legacy views load unchanged.** A view written before canvases has no
+    /// `placements`, so `View::matrices()` yields exactly one matrix — its flat
+    /// fields — and the canvas is the single-matrix canvas it always was, down
+    /// to the default geometry.
+    ///
+    /// A placement whose measure no longer exists is dropped rather than shown
+    /// blank; if that leaves nothing the view is refused and the canvas is left
+    /// exactly as it was.
     pub fn apply_view(&mut self, view: &View) {
-        if !self.model.measures.contains_key(&view.measure) {
+        let matrices: Vec<Matrix> = view
+            .matrices()
+            .iter()
+            .filter_map(|p| Matrix::from_placement(&self.model, p))
+            .collect();
+        if matrices.is_empty() {
             self.status = "view's measure no longer exists".into();
             return;
         }
-        self.selected = Some(view.measure);
-        // Pin selection so sync_axis_state does not reset what we set below.
-        self.axis_for = Some(view.measure);
-        self.axis_order = if view.axis_order.is_empty() {
-            natural_axis_order(&self.model, self.selected)
+        let dropped = view.matrices().len() - matrices.len();
+        self.matrices = matrices;
+        self.focus = 0;
+        self.current_view = Some(view.id);
+        self.status = if dropped == 0 {
+            format!("view: {}", view.name.0)
         } else {
-            view.axis_order.clone()
+            format!(
+                "view: {} ({dropped} matrix(es) skipped: measure gone)",
+                view.name.0
+            )
         };
-        // Restore the axis split, clamped to the actual axis_order length.
-        let len = self.axis_order.len();
-        self.n_rows = view.n_rows.min(len);
-        self.n_cols = view.n_cols.min(len.saturating_sub(self.n_rows));
-        self.filters = view.filters.clone();
-        // Restore page selections positionally by page dimension.
-        let page_cats = self.page_cats();
-        self.page_idx = vec![0; page_cats.len()];
-        for (pi, cat) in page_cats.iter().enumerate() {
-            if let Some((_, it)) = view.page_items.iter().find(|(c, _)| c == cat) {
-                if let Some(idx) = self.sorted_items(*cat).iter().position(|(id, _)| id == it) {
-                    if let Some(slot) = self.page_idx.get_mut(pi) {
-                        *slot = idx;
-                    }
-                }
-            }
-        }
-        self.editing = None;
-        self.clamp_cursor();
-        self.status = format!("view: {}", view.name.0);
     }
 
-    /// Toggle whether `item` of `category` is shown. On first toggle the filter
-    /// starts from all items minus this one; toggling so all items are kept
-    /// drops the filter. Presentation only.
-    pub fn toggle_filter_item(&mut self, category: CategoryId, item: ItemId) {
-        let all: Vec<ItemId> = self
-            .model
-            .categories
-            .get(&category)
-            .map(|c| c.items.clone())
-            .unwrap_or_default();
-        match self.filters.iter().position(|f| f.category == category) {
-            None => {
-                let items: Vec<ItemId> = all.into_iter().filter(|i| *i != item).collect();
-                self.filters.push(Filter { category, items });
-            }
-            Some(i) => {
-                let f = &mut self.filters[i];
-                if let Some(p) = f.items.iter().position(|x| *x == item) {
-                    f.items.remove(p);
-                } else {
-                    f.items.push(item);
-                }
-                if f.items.len() == all.len() && all.iter().all(|x| f.items.contains(x)) {
-                    self.filters.remove(i);
-                }
-            }
-        }
-        self.clamp_cursor();
+    /// The saved views as document tabs, in id order: `(id, name, is current)`.
+    /// The reference's `Welcome / Concepts / P&L Canvas` strip — switching tabs
+    /// switches canvases via [`Self::apply_view`].
+    pub fn document_tabs(&self) -> Vec<(ViewId, String, bool)> {
+        let mut ids: Vec<ViewId> = self.model.views.keys().copied().collect();
+        ids.sort_by_key(|v| v.0);
+        ids.into_iter()
+            .map(|id| {
+                (
+                    id,
+                    self.model.views[&id].name.0.clone(),
+                    self.current_view == Some(id),
+                )
+            })
+            .collect()
     }
 
-    /// Clear all active filters, showing every item again.
-    pub fn clear_filters(&mut self) {
-        self.filters.clear();
-        self.clamp_cursor();
+    /// Switch to the saved view `id` (a document-tab click). No-op on an
+    /// unknown id.
+    pub fn open_view(&mut self, id: ViewId) {
+        if let Some(v) = self.model.views.get(&id).cloned() {
+            self.apply_view(&v);
+        }
+    }
+
+    /// Toggle whether `item` of `category` is shown in the FOCUSED matrix. On
+    /// first toggle the filter starts from all items minus this one; toggling so
+    /// all items are kept drops the filter. Presentation only. (The filter shelf
+    /// drives [`Matrix::toggle_filter_item`] on the matrix it belongs to.)
+    #[cfg(test)]
+    fn toggle_filter_item(&mut self, category: CategoryId, item: ItemId) {
+        self.with_focused(|m, model| m.toggle_filter_item(model, category, item));
     }
 
     // -- CSV/TSV import/export wizard (pure orchestration; unit-tested) ----
@@ -940,7 +1375,7 @@ impl ImprovApp {
         match improv_storage_csv::import_csv(&mut self.model, &spec) {
             Ok(n) => {
                 self.rebuild_engine();
-                self.selected = Some(spec.measure_id);
+                self.focused_mut().select(Some(spec.measure_id));
                 // The model changed whether or not the store write worked, so
                 // the import is undoable either way.
                 self.record_history(prior_model);
@@ -985,88 +1420,42 @@ impl ImprovApp {
         self.snapshot = snapshot;
     }
 
-    // -- keyboard cell cursor (pure; unit-tested without egui) -------------
+    // -- keyboard cell cursor: delegated to the FOCUSED matrix -------------
 
-    /// The current grid's (row_count, col_count) for the selected measure and
-    /// pivot. An axis with NO categories is genuinely scalar and has ONE line;
-    /// an axis whose category is filtered to zero items has ZERO lines (an empty
-    /// grid with headers — never a synthetic line whose coordinate would omit
-    /// that category). If a PAGE category is filtered to zero items nothing is
-    /// addressable at all, so both counts are 0. Matches `render_grid`.
+    /// The focused matrix's (row_count, col_count) (see [`Matrix::grid_dims`]).
+    #[cfg(test)]
     fn grid_dims(&self) -> (usize, usize) {
-        if self.pinned_pages_opt().is_none() {
-            return (0, 0);
-        }
-        let rows = product_len(&self.axis_item_lists(&self.row_cats()));
-        let cols = product_len(&self.axis_item_lists(&self.col_cats()));
-        (rows, cols)
+        self.focused().grid_dims(&self.model)
     }
 
-    /// Move the cursor by `(drow, dcol)`, clamped to the current grid (never
-    /// out of range). Mirrors the TUI's `move_cursor`.
+    /// Move the focused matrix's cursor by `(drow, dcol)`, clamped to its grid.
+    /// Mirrors the TUI's `move_cursor`.
     pub fn move_cursor(&mut self, drow: isize, dcol: isize) {
-        let (rows, cols) = self.grid_dims();
-        let max_row = rows.saturating_sub(1) as isize;
-        let max_col = cols.saturating_sub(1) as isize;
-        self.cursor_row = (self.cursor_row as isize + drow).clamp(0, max_row) as usize;
-        self.cursor_col = (self.cursor_col as isize + dcol).clamp(0, max_col) as usize;
+        self.with_focused(|m, model| m.move_cursor(model, drow, dcol));
     }
 
-    /// Clamp the cursor into the current grid (called after a pivot / measure
-    /// switch that may have shrunk it).
-    fn clamp_cursor(&mut self) {
-        let (rows, cols) = self.grid_dims();
-        self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
-        self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
-    }
-
-    /// The `CoordKey` of the cell under the cursor, given the current pivot, or
-    /// `None` when there is no cell there: any axis (row, column, or page)
-    /// category filtered to zero items means no coordinate fully specifies the
-    /// measure's dimensions, so there is nothing to address. An axis with no
-    /// categories at all is scalar in that direction and still has one line.
+    /// The `CoordKey` of the cell under the focused matrix's cursor (see
+    /// [`Matrix::cursor_key`]).
     pub fn cursor_key(&self) -> Option<CoordKey> {
-        let pinned = self.pinned_pages_opt()?;
-        let row_cats = self.row_cats();
-        let col_cats = self.col_cats();
-        let row_lists = self.axis_item_lists(&row_cats);
-        let col_lists = self.axis_item_lists(&col_cats);
-        let (n_rows, n_cols) = (product_len(&row_lists), product_len(&col_lists));
-        if n_rows == 0 || n_cols == 0 {
-            return None;
-        }
-        // Decode only the cursor's row/col line (never the whole product).
-        // `product_len` of an empty list set is 1, the scalar axis -> empty tuple.
-        let row_tuple = if row_lists.is_empty() {
-            Vec::new()
-        } else {
-            nth_tuple(&row_lists, self.cursor_row.min(n_rows - 1))
-        };
-        let col_tuple = if col_lists.is_empty() {
-            Vec::new()
-        } else {
-            nth_tuple(&col_lists, self.cursor_col.min(n_cols - 1))
-        };
-        Some(cell_key_multi(
-            &row_cats, &row_tuple, &col_cats, &col_tuple, &pinned,
-        ))
+        self.focused().cursor_key(&self.model)
     }
 
-    /// True if the cursor cell is an editable input cell: the selected measure
-    /// is an input measure AND the cursor addresses a real, fully-specified
-    /// coordinate (see `cursor_key`). Derived measures are read-only.
+    /// True if the focused matrix's cursor cell is an editable input cell: its
+    /// measure is an input measure AND the cursor addresses a real,
+    /// fully-specified coordinate (see `cursor_key`). Derived measures are
+    /// read-only.
     pub fn cursor_is_editable(&self) -> bool {
-        self.selected
+        self.selected()
             .and_then(|m| self.model.measures.get(&m))
             .is_some_and(|m| !m.is_derived())
             && self.cursor_key().is_some()
     }
 
-    /// Begin editing the cursor cell if it is editable, seeding the buffer with
-    /// the current value. On a derived cell, sets the status message instead.
-    /// Mirrors the TUI's `begin_edit`.
+    /// Begin editing the focused matrix's cursor cell if it is editable, seeding
+    /// its buffer with the current value. On a derived cell, sets the status
+    /// message instead. Mirrors the TUI's `begin_edit`.
     fn begin_edit_cursor(&mut self) {
-        let Some(measure) = self.selected else {
+        let Some(measure) = self.selected() else {
             return;
         };
         // Order matters: report a missing cell (empty filtered axis) before the
@@ -1080,8 +1469,9 @@ impl ImprovApp {
             return;
         }
         let seed = self.cell_text(measure, &key).unwrap_or_default();
-        self.editing = Some((measure, key));
-        self.edit_buf = seed;
+        let m = self.focused_mut();
+        m.editing = Some((measure, key));
+        m.edit_buf = seed;
     }
 
     /// The editable source text the formula bar shows for `measure`: symbolic
@@ -1398,14 +1788,19 @@ impl ImprovApp {
 
     /// Re-point the transient UI state at the restored model: a measure the
     /// restored model no longer has (an undone CSV import, an undone new
-    /// derived measure) cannot stay selected or half-edited.
+    /// derived measure) cannot stay on a matrix or half-edited. Applied to
+    /// EVERY matrix on the canvas, not just the focused one — an undo that
+    /// removes a measure must not leave another matrix pointing at it.
     fn after_history_restore(&mut self) {
-        self.editing = None;
-        if !self
-            .selected
-            .is_some_and(|m| self.model.measures.contains_key(&m))
-        {
-            self.selected = pick_default_measure(&self.model);
+        let fallback = pick_default_measure(&self.model);
+        for m in &mut self.matrices {
+            m.editing = None;
+            if !m
+                .measure
+                .is_some_and(|id| self.model.measures.contains_key(&id))
+            {
+                m.measure = fallback;
+            }
         }
         // Force the formula bar to reload from the restored model.
         self.formula_for = None;
@@ -2039,15 +2434,21 @@ impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_axis_state();
         self.handle_history_keys(ctx);
+        // Panel order IS layout order: a top/bottom panel claims its strip from
+        // the outside in. The document tabs go above everything (the reference's
+        // browser-tab strip), the status bar below everything, and the canvas
+        // takes what is left.
+        self.document_tab_bar(ctx);
         self.formula_bar(ctx);
+        self.status_bar(ctx);
+        self.formula_panel(ctx);
+        self.formula_list_panel(ctx);
         self.tool_palette(ctx);
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
-        self.formula_panel(ctx);
-        self.formula_list_panel(ctx);
         self.chart_panel(ctx);
         self.csv_wizard_panel(ctx);
-        self.grid_panel(ctx);
+        self.canvas_panel(ctx);
     }
 }
 
@@ -2060,7 +2461,7 @@ impl ImprovApp {
     /// exactly the state an undone import can leave behind.
     fn handle_history_keys(&mut self, ctx: &egui::Context) {
         let other_focus = ctx.memory(|m| m.focused()).is_some();
-        if !grid_keys_enabled(self.editing.is_some(), other_focus) {
+        if !grid_keys_enabled(self.focused().editing.is_some(), other_focus) {
             return;
         }
         let (command, shift, z, y) = ctx.input(|i| {
@@ -2180,11 +2581,10 @@ impl ImprovApp {
                             let tag = if m.is_derived() { "= " } else { "· " };
                             let label = format!("{tag}{}", m.name.0);
                             if ui
-                                .selectable_label(self.selected == Some(id), label)
+                                .selectable_label(self.selected() == Some(id), label)
                                 .clicked()
                             {
-                                self.selected = Some(id);
-                                self.editing = None;
+                                self.focused_mut().select(Some(id));
                             }
                         }
                     });
@@ -2194,7 +2594,15 @@ impl ImprovApp {
     }
 
     /// Views section in the explorer: a name field + "Save view" button that
-    /// captures the current layout, and a list of saved views (click to load).
+    /// captures the current CANVAS, and a list of saved views (click to load).
+    ///
+    /// This is the NeXTSTEP reference's model navigator
+    /// (`docs/reviews/refs/improv-next-nested-headers.jpg`: a `Model of
+    /// Divisional Report` window listing `Worksheet 1` / `Worksheet 2`), and the
+    /// same set the Quantrix reference puts in the document-tab strip
+    /// ([`Self::document_tab_bar`]). Both are kept because the references have
+    /// both: a navigator that lists everything, and tabs for the quick switch.
+    /// The current view is highlighted in both.
     fn views_section(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Views")
             .default_open(true)
@@ -2216,7 +2624,10 @@ impl ImprovApp {
                 let mut load: Option<View> = None;
                 for id in ids {
                     let v = &self.model.views[&id];
-                    if ui.button(&v.name.0).clicked() {
+                    if ui
+                        .selectable_label(self.current_view == Some(id), &v.name.0)
+                        .clicked()
+                    {
                         load = Some(v.clone());
                     }
                 }
@@ -2234,7 +2645,7 @@ impl ImprovApp {
             .show(ctx, |ui| {
                 ui.heading("Inspector");
                 ui.separator();
-                let data = self.selected.and_then(|m| self.inspector_data(m));
+                let data = self.selected().and_then(|m| self.inspector_data(m));
                 match data {
                     None => {
                         ui.label("No measure selected.");
@@ -2282,16 +2693,16 @@ impl ImprovApp {
         egui::TopBottomPanel::top("formula_bar").show(ctx, |ui| {
             // Reload the buffer when the selection changes, clearing any
             // stale inline error from the previously selected measure.
-            if self.formula_for != self.selected {
-                self.formula_for = self.selected;
+            if self.formula_for != self.selected() {
+                self.formula_for = self.selected();
                 self.formula_buf = self
-                    .selected
+                    .selected()
                     .and_then(|m| self.formula_source(m))
                     .unwrap_or_default();
                 self.formula_error_pos = None;
                 self.formula_error_msg.clear();
             }
-            ui.horizontal(|ui| match self.selected {
+            ui.horizontal(|ui| match self.selected() {
                 Some(mid)
                     if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) =>
                 {
@@ -2426,7 +2837,7 @@ impl ImprovApp {
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         for (i, row) in rows.iter().enumerate() {
-                            let selected = self.selected == Some(row.measure);
+                            let selected = self.selected() == Some(row.measure);
                             ui.horizontal(|ui| {
                                 let mut on = row.enabled;
                                 if ui
@@ -2470,8 +2881,7 @@ impl ImprovApp {
                     });
                 self.formula_row_rects = rects;
                 if let Some(id) = select {
-                    self.selected = Some(id);
-                    self.editing = None;
+                    self.focused_mut().select(Some(id));
                 }
                 if let Some((id, on)) = toggle {
                     match self.set_formula_enabled(id, on) {
@@ -2505,7 +2915,7 @@ impl ImprovApp {
     fn operator_palette(&mut self, ui: &mut egui::Ui) {
         const TOKENS: &[&str] = &["=", "+", "-", "*", "/", "(", ")", "[", "]"];
         let editable = self
-            .selected
+            .selected()
             .is_some_and(|m| self.formula_source(m).is_some());
         ui.horizontal(|ui| {
             ui.strong("Formulas");
@@ -2526,9 +2936,10 @@ impl ImprovApp {
         });
     }
 
-    /// Bottom panel: the "new derived measure" definition form + status line.
-    /// (The selected measure's formula is edited in the top formula bar; the
-    /// whole model's formulas are listed in [`Self::formula_list_panel`].)
+    /// Bottom panel: the "new derived measure" definition form. (The selected
+    /// measure's formula is edited in the top formula bar; the whole model's
+    /// formulas are listed in [`Self::formula_list_panel`]; the status message
+    /// and the selection aggregate are in [`Self::status_bar`].)
     fn formula_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("definitions")
             .resizable(true)
@@ -2545,7 +2956,7 @@ impl ImprovApp {
                         match self.add_derived_measure(&name, &text) {
                             Ok(id) => {
                                 self.status = format!("added derived measure {}", id.0);
-                                self.selected = Some(id);
+                                self.focused_mut().select(Some(id));
                                 self.new_name.clear();
                                 self.new_formula.clear();
                             }
@@ -2553,10 +2964,6 @@ impl ImprovApp {
                         }
                     }
                 });
-                if !self.status.is_empty() {
-                    ui.separator();
-                    ui.label(&self.status);
-                }
             });
     }
 
@@ -2688,37 +3095,321 @@ impl ImprovApp {
         }
     }
 
-    /// Center: the measure title, the filter shelf, then the grid wrapped in its
-    /// **margin gutters** (see [`ImprovApp::gutter_frame`]).
-    fn grid_panel(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| match self.selected {
-            None => {
-                ui.label("No measures. Open a model store with `improv-gui <db>`.");
-            }
-            Some(mid) => {
-                let name = self.model.measures[&mid].name.0.clone();
-                ui.horizontal(|ui| {
-                    ui.heading(&name);
-                    if ui
-                        .selectable_label(self.show_chart, "Chart")
-                        .on_hover_text("toggle a read-only chart of this measure")
-                        .clicked()
-                    {
-                        self.show_chart = !self.show_chart;
+    /// The reference's **document tabs** (`Welcome / Concepts / P&L Canvas …`):
+    /// one tab per saved view across the top, the current one highlighted.
+    /// Clicking a tab switches canvases via [`Self::open_view`].
+    ///
+    /// A model with no saved views shows a hint instead of an empty strip, and
+    /// `+ Canvas` saves the canvas on screen as a new view (which is what makes
+    /// the second tab reachable at all).
+    fn document_tab_bar(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                let tabs = self.document_tabs();
+                let mut open: Option<ViewId> = None;
+                if tabs.is_empty() {
+                    ui.weak("(no saved views \u{2014} \"+ Canvas\" saves this one)");
+                }
+                for (id, name, current) in tabs {
+                    if ui.selectable_label(current, name).clicked() {
+                        open = Some(id);
                     }
-                    if ui
-                        .button("Pivot")
-                        .on_hover_text("rotate axes (swap the row and column stacks)")
+                }
+                if let Some(id) = open {
+                    self.open_view(id);
+                }
+                ui.separator();
+                if ui
+                    .button("+ Canvas")
+                    .on_hover_text("save the matrices on screen as a new view")
+                    .clicked()
+                {
+                    let name = if self.view_name.trim().is_empty() {
+                        format!("Canvas {}", self.model.views.len() + 1)
+                    } else {
+                        self.view_name.clone()
+                    };
+                    if self.save_view(&name).is_some() {
+                        self.view_name.clear();
+                    }
+                }
+                if ui
+                    .button("+ Matrix")
+                    .on_hover_text("place another matrix on this canvas")
+                    .clicked()
+                {
+                    let m = self
+                        .selected()
+                        .or_else(|| pick_default_measure(&self.model));
+                    self.add_matrix(m);
+                }
+                if self.matrix_count() > 1
+                    && ui
+                        .button("\u{2212} Matrix")
+                        .on_hover_text("remove the focused matrix from this canvas")
                         .clicked()
-                    {
-                        self.pivot_rotate();
+                {
+                    let i = self.focus_index();
+                    self.remove_matrix(i);
+                }
+            });
+        });
+    }
+
+    /// The **status bar** (plan Step 5): the status message on the left and the
+    /// selection-aggregate readout on the right, which is where Quantrix puts
+    /// its `Sum`.
+    fn status_bar(&self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(&self.status);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(self.selection_readout())
+                        .on_hover_text("aggregate of the focused matrix's selection");
+                });
+            });
+        });
+    }
+
+    /// The selection aggregate for the focused matrix, as the status bar shows
+    /// it: the reference's `Sum`.
+    ///
+    /// Selection is ONE cell today (there is no range selection yet), so the sum
+    /// over the selection is that cell's number. Written as a sum rather than as
+    /// "the cell's value" because that is what it means and what a range
+    /// selection will widen to: [`Self::selection_sum`] takes the cursor cell's
+    /// numeric value, and a non-numeric or absent cell contributes nothing, so
+    /// the readout says `Sum \u2014` rather than inventing a zero.
+    pub fn selection_readout(&self) -> String {
+        match self.selection_sum() {
+            Some(v) => format!("Sum {v}"),
+            None => "Sum \u{2014}".to_string(),
+        }
+    }
+
+    /// The numeric sum over the focused matrix's selection, or `None` when
+    /// nothing numeric is selected (no measure, no addressable cell, an empty
+    /// cell, or a text/boolean/date/error cell). See [`Self::selection_readout`].
+    pub fn selection_sum(&self) -> Option<f64> {
+        let measure = self.selected()?;
+        let key = self.cursor_key()?;
+        self.cell_value(measure, &key).and_then(|v| v.as_num())
+    }
+
+    /// The canvas: **N matrices freely placed on one scrollable surface**, which
+    /// is plan Step 3 (`docs/reviews/2026-09-22-gui-reconstruction-plan.md`) and
+    /// the shape the Quantrix reference shows \u2014 several matrices, each with its
+    /// own title bar and its own pivot, laid out where the author put them.
+    ///
+    /// **Container choice: manually placed child `Ui`s, not [`egui::Window`].**
+    /// Three reasons, in order of weight:
+    ///
+    /// 1. A `Window` is an [`egui::Area`] \u2014 a *top-level* floating layer. It
+    ///    neither scrolls with a parent [`egui::ScrollArea`] nor clips to it, so
+    ///    "a scrollable canvas holding matrices" cannot be built out of windows:
+    ///    the matrices would hover over the scrolling canvas instead of living
+    ///    on it.
+    /// 2. The reference's matrices are *document content* (they scroll with the
+    ///    notes and headings around them), not OS-style windows with a
+    ///    close/collapse chrome.
+    /// 3. A child `Ui` placed with [`egui::Ui::new_child`] allocates nothing in
+    ///    its parent, so the canvas extent stays a pure function of the matrix
+    ///    rects. A container that allocated space per matrix would grow the
+    ///    scroll content every frame \u2014 exactly the ratchet Step 1's
+    ///    `gutters_do_not_creep_across_frames_or_repivots` exists to catch.
+    ///
+    /// Each matrix keeps everything Step 1 built: its own margin gutters framing
+    /// its own table, its own tiles, virtualization, nested headers, typed
+    /// editing and empty-axis handling \u2014 because [`Self::gutter_frame`] is
+    /// called once per matrix on that matrix's child `Ui`, and nested panels
+    /// work in any `Ui`.
+    fn canvas_panel(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.model.measures.is_empty() {
+                ui.label("No measures. Open a model store with `improv-gui <db>`.");
+                return;
+            }
+            egui::ScrollArea::both()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    // Claim the canvas extent up front: a pure function of the
+                    // matrix rects (plus room to drag into), so it never grows
+                    // frame over frame.
+                    let extent = self.canvas_extent(ui.available_size());
+                    let (_id, canvas) = ui.allocate_space(extent);
+                    for mi in 0..self.matrices.len() {
+                        self.matrix_frame(ui, canvas.min, mi);
                     }
                 });
-                self.filter_shelf(ui);
-                ui.separator();
-                self.gutter_frame(ui, mid);
-            }
         });
+    }
+
+    /// The canvas surface size: enough to hold every matrix (plus a margin to
+    /// drag into) and at least the visible area, so the scroll view fills.
+    fn canvas_extent(&self, available: egui::Vec2) -> egui::Vec2 {
+        let mut w: f32 = 0.0;
+        let mut h: f32 = 0.0;
+        for m in &self.matrices {
+            w = w.max(m.rect.x + m.rect.w);
+            h = h.max(m.rect.y + m.rect.h);
+        }
+        egui::vec2(
+            (w + CANVAS_MARGIN).max(available.x),
+            (h + CANVAS_MARGIN).max(available.y),
+        )
+    }
+
+    /// One matrix on the canvas at `origin + its rect`: title bar, filter shelf,
+    /// then the gutter-framed grid, all inside a child `Ui` clipped to its own
+    /// rectangle (see [`Self::canvas_panel`] for why a child `Ui` and not a
+    /// window).
+    fn matrix_frame(&mut self, ui: &mut egui::Ui, origin: egui::Pos2, mi: usize) {
+        let Some(m) = self.matrices.get(mi) else {
+            return;
+        };
+        let r = m.rect;
+        let rect = egui::Rect::from_min_size(
+            origin + egui::vec2(r.x, r.y),
+            egui::vec2(r.w.max(MATRIX_MIN_W), r.h.max(MATRIX_MIN_H)),
+        );
+        let focused = self.focus_index() == mi;
+
+        // The matrix's own beveled shell, so several matrices on one canvas read
+        // as distinct objects (the reference frames each one).
+        ui.painter().rect(
+            rect,
+            egui::Rounding::ZERO,
+            crate::theme::NEXT_GRAY,
+            egui::Stroke::new(
+                if focused { 2.0_f32 } else { 1.0_f32 },
+                if focused {
+                    crate::theme::NEXT_BLUE
+                } else {
+                    crate::theme::BEVEL_SHADOW
+                },
+            ),
+        );
+
+        // Clicking anywhere in the matrix focuses it. Registered BEFORE the
+        // contents, so interior widgets (cells, tiles, buttons) still win the
+        // click; this only catches the background.
+        let bg = ui.interact(
+            rect,
+            ui.id().with(("matrix_bg", mi)),
+            egui::Sense::click_and_drag(),
+        );
+        if bg.clicked() || bg.drag_started() {
+            self.set_focus(mi);
+        }
+
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("matrix", mi))
+                .max_rect(rect.shrink(2.0))
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(rect.intersect(ui.clip_rect()));
+        self.matrix_title_bar(&mut child, mi);
+        self.filter_shelf(&mut child, mi);
+        child.separator();
+        self.gutter_frame(&mut child, mi);
+
+        // Bottom-right resize grip: drag to resize this matrix.
+        let grip = egui::Rect::from_min_max(rect.max - egui::vec2(GRIP, GRIP), rect.max);
+        let gr = ui.interact(grip, ui.id().with(("matrix_grip", mi)), egui::Sense::drag());
+        ui.painter().rect_filled(
+            grip,
+            egui::Rounding::ZERO,
+            if gr.hovered() {
+                crate::theme::BEVEL_LIGHT
+            } else {
+                crate::theme::NEXT_DARK
+            },
+        );
+        if gr.dragged() {
+            let d = gr.drag_delta();
+            if let Some(m) = self.matrices.get_mut(mi) {
+                m.resize_by(d.x, d.y);
+            }
+            self.set_focus(mi);
+        }
+    }
+
+    /// A matrix's **title bar** (plan Step 5): the reference's
+    /// `Property Financials: Virginia Ave` band \u2014 the measure's name, then the
+    /// pinned page items that say *which slice* this matrix shows, which is
+    /// precisely what the reference's `: Virginia Ave` is.
+    ///
+    /// It is also the drag handle: dragging the bar moves the matrix on the
+    /// canvas (the reference's free-form placement). Colors come from
+    /// `theme.rs`; the accent band is the NeXT selection blue for the focused
+    /// matrix and the groove gray otherwise, so which matrix has the keyboard is
+    /// visible at a glance.
+    fn matrix_title_bar(&mut self, ui: &mut egui::Ui, mi: usize) {
+        let focused = self.focus_index() == mi;
+        let title = self.matrix_title(mi);
+        let (_id, bar) = ui.allocate_space(egui::vec2(ui.available_width(), TITLE_H));
+        let resp = ui.interact(
+            bar,
+            ui.id().with(("title", mi)),
+            egui::Sense::click_and_drag(),
+        );
+        ui.painter().rect_filled(
+            bar,
+            egui::Rounding::ZERO,
+            if focused {
+                crate::theme::NEXT_BLUE
+            } else {
+                crate::theme::NEXT_DARK
+            },
+        );
+        ui.painter().text(
+            bar.center(),
+            egui::Align2::CENTER_CENTER,
+            &title,
+            egui::TextStyle::Body.resolve(ui.style()),
+            if focused {
+                crate::theme::BEVEL_LIGHT
+            } else {
+                egui::Color32::from_gray(0x10)
+            },
+        );
+        if resp.dragged() {
+            let d = resp.drag_delta();
+            if let Some(m) = self.matrices.get_mut(mi) {
+                m.move_by(d.x, d.y);
+            }
+        }
+        if resp.clicked() || resp.drag_started() {
+            self.set_focus(mi);
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+        }
+    }
+
+    /// A matrix's title text: its measure's name, plus the pinned page items
+    /// after a colon (`Sales: North`) \u2014 the reference's
+    /// `Property Financials: Virginia Ave`.
+    pub fn matrix_title(&self, mi: usize) -> String {
+        let Some(m) = self.matrices.get(mi) else {
+            return String::new();
+        };
+        let name = m
+            .measure
+            .and_then(|id| self.model.measures.get(&id))
+            .map(|x| x.name.0.clone())
+            .unwrap_or_else(|| "(no measure)".to_string());
+        let slice: Vec<String> = m
+            .pinned_pages(&self.model)
+            .iter()
+            .filter_map(|(_, it)| self.model.items.get(it).map(|x| x.name.0.clone()))
+            .collect();
+        if slice.is_empty() {
+            name
+        } else {
+            format!("{name}: {}", slice.join(", "))
+        }
     }
 
     /// The grid inside its **margin gutters** — the Improv pivot surface.
@@ -2747,9 +3438,9 @@ impl ImprovApp {
     /// panel's contract is that it consumes its strip and moves the parent
     /// cursor to its far edge, so whatever is laid out next starts exactly at
     /// that edge. Each panel's own rect and the table's `min_rect` are recorded
-    /// in `self.gutters`, `debug_assert!`ed against
+    /// in that MATRIX's own `gutters` field, `debug_assert!`ed against
     /// [`gutters_frame_table`] every frame, and asserted in the headless layout
-    /// test.
+    /// test — per matrix, so every matrix on the canvas frames its own table.
     ///
     /// Gutter *thickness* along the docked axis is left to the panels: they size
     /// to their content (a panel re-reads its extent from the previous frame's
@@ -2757,11 +3448,18 @@ impl ImprovApp {
     /// clip it against a hard-coded height. The row gutter is the one fixed
     /// width, [`GUTTER_W`], so the grid's left edge does not jump as category
     /// names change.
-    fn gutter_frame(&mut self, ui: &mut egui::Ui, measure: MeasureId) {
+    fn gutter_frame(&mut self, ui: &mut egui::Ui, mi: usize) {
+        let Some(m) = self.matrices.get(mi) else {
+            return;
+        };
+        let Some(measure) = m.measure else {
+            ui.weak("(no measure)");
+            return;
+        };
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
-        let col_stack = self.col_cats();
-        let row_stack = self.row_cats();
-        let page_cats = self.page_cats();
+        let col_stack = m.col_cats(&self.model);
+        let row_stack = m.row_cats(&self.model);
+        let page_cats = m.page_cats(&self.model);
 
         // Bottom-left corner well first: it claims the bottom strip of the whole
         // frame, so the two edge gutters and the table share the space above it
@@ -2780,12 +3478,12 @@ impl ImprovApp {
                                 ui.weak("(drop to unplace)");
                             }
                             for c in &page_cats {
-                                Self::tile(ui, &self.model, *c, Axis::Pages, moves);
+                                Self::tile(ui, &self.model, mi, *c, Axis::Pages, moves);
                             }
                         });
                     },
                 );
-                self.page_selectors(ui);
+                self.page_selectors(ui, mi);
             })
             .response
             .rect;
@@ -2814,7 +3512,7 @@ impl ImprovApp {
                                     ui.weak("(drop a category on Columns)");
                                 }
                                 for c in &col_stack {
-                                    Self::tile(ui, &self.model, *c, Axis::Columns, moves);
+                                    Self::tile(ui, &self.model, mi, *c, Axis::Columns, moves);
                                 }
                             });
                         },
@@ -2841,7 +3539,7 @@ impl ImprovApp {
                                 ui.weak("(drop a category on Rows)");
                             }
                             for c in &row_stack {
-                                Self::tile(ui, &self.model, *c, Axis::Rows, moves);
+                                Self::tile(ui, &self.model, mi, *c, Axis::Rows, moves);
                             }
                         });
                     },
@@ -2862,7 +3560,7 @@ impl ImprovApp {
         // edge and the column gutter's bottom edge by panel construction.
         let table = ui
             .scope(|ui| {
-                self.render_grid(ui, measure);
+                self.render_grid(ui, mi, measure);
             })
             .response
             .rect;
@@ -2875,12 +3573,21 @@ impl ImprovApp {
         };
         debug_assert!(
             !gutters_have_room(&rects) || gutters_frame_table(&rects),
-            "gutters must frame the table: {rects:?}"
+            "matrix {mi}'s gutters must frame its table: {rects:?}"
         );
-        self.gutters = Some(rects);
+        if let Some(m) = self.matrices.get_mut(mi) {
+            m.gutters = Some(rects);
+        }
 
-        for (c, axis) in moves {
-            self.set_axis(c, axis);
+        // A drop re-pivots THIS matrix, not the focused one: dragging a tile in
+        // one matrix must not move another matrix's axis.
+        if !moves.is_empty() {
+            let model = &self.model;
+            if let Some(m) = self.matrices.get_mut(mi) {
+                for (c, axis) in moves {
+                    m.set_axis(model, c, axis);
+                }
+            }
         }
     }
 
@@ -2932,6 +3639,7 @@ impl ImprovApp {
     fn tile(
         ui: &mut egui::Ui,
         model: &Model,
+        mi: usize,
         c: CategoryId,
         from: Axis,
         moves: &mut Vec<(CategoryId, Axis)>,
@@ -2946,7 +3654,9 @@ impl ImprovApp {
             Axis::Columns => Axis::Pages,
             Axis::Pages => Axis::Rows,
         };
-        ui.dnd_drag_source(egui::Id::new(("tile", c.0)), c, |ui| {
+        // The id is per MATRIX as well as per category: two matrices showing
+        // the same category are two distinct drag sources.
+        ui.dnd_drag_source(egui::Id::new(("tile", mi, c.0)), c, |ui| {
             egui::Frame::default()
                 .fill(crate::theme::NEXT_LIGHT)
                 .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
@@ -2978,53 +3688,61 @@ impl ImprovApp {
 
     /// Page selectors: for each page (extra) dimension, a ` <label> [i/n] < > `
     /// control that pins which item the grid slices to. Mirrors the TUI paging.
-    fn page_selectors(&mut self, ui: &mut egui::Ui) {
-        let page_cats: Vec<CategoryId> = self.page_cats();
+    fn page_selectors(&mut self, ui: &mut egui::Ui, mi: usize) {
+        let Some(m) = self.matrices.get(mi) else {
+            return;
+        };
+        let page_cats: Vec<CategoryId> = m.page_cats(&self.model);
         if page_cats.is_empty() {
             return;
         }
         let mut set: Option<(usize, usize)> = None;
         ui.horizontal(|ui| {
             for (i, c) in page_cats.iter().enumerate() {
-                let items = self.sorted_items(*c);
+                let items = m.sorted_items(&self.model, *c);
                 if items.is_empty() {
                     continue;
                 }
-                let cur = self
-                    .page_idx
-                    .get(i)
-                    .copied()
-                    .unwrap_or(0)
-                    .min(items.len() - 1);
+                let cur = m.page_idx.get(i).copied().unwrap_or(0).min(items.len() - 1);
                 let cname = self
                     .model
                     .categories
                     .get(c)
                     .map(|x| x.name.0.clone())
                     .unwrap_or_default();
-                ui.group(|ui| {
-                    ui.label(&cname);
-                    if ui.small_button("<").clicked() {
-                        let prev = (cur + items.len() - 1) % items.len();
-                        set = Some((i, prev));
-                    }
-                    ui.label(format!("{}  [{}/{}]", items[cur].1, cur + 1, items.len()));
-                    if ui.small_button(">").clicked() {
-                        set = Some((i, (cur + 1) % items.len()));
-                    }
+                ui.push_id(("page", mi, c.0), |ui| {
+                    ui.group(|ui| {
+                        ui.label(&cname);
+                        if ui.small_button("<").clicked() {
+                            let prev = (cur + items.len() - 1) % items.len();
+                            set = Some((i, prev));
+                        }
+                        ui.label(format!("{}  [{}/{}]", items[cur].1, cur + 1, items.len()));
+                        if ui.small_button(">").clicked() {
+                            set = Some((i, (cur + 1) % items.len()));
+                        }
+                    });
                 });
             }
         });
         if let Some((dim, idx)) = set {
-            self.set_page(dim, idx);
+            let model = &self.model;
+            if let Some(m) = self.matrices.get_mut(mi) {
+                m.set_page(model, dim, idx);
+            }
         }
     }
 
-    /// Filter shelf: for each category on an axis, a collapsing checkbox list of
-    /// its items. Unchecking an item hides it from the grid (presentation
-    /// only); a "Clear filters" button restores all. Mirrors the TUI's f/F.
-    fn filter_shelf(&mut self, ui: &mut egui::Ui) {
-        let cats: Vec<CategoryId> = self.axis_order.clone();
+    /// Filter shelf for matrix `mi`: for each category on an axis, a collapsing
+    /// checkbox list of its items. Unchecking an item hides it from THIS matrix's
+    /// grid (presentation only); a "Clear filters" button restores all. Mirrors
+    /// the TUI's f/F.
+    fn filter_shelf(&mut self, ui: &mut egui::Ui, mi: usize) {
+        let Some(matrix) = self.matrices.get(mi) else {
+            return;
+        };
+        let cats: Vec<CategoryId> = matrix.axis_order.clone();
+        let filters = matrix.filters.clone();
         if cats.is_empty() {
             return;
         }
@@ -3053,9 +3771,9 @@ impl ImprovApp {
                     })
                     .unwrap_or_default();
                 items.sort_by_key(|(id, _)| id.0);
-                let f = self.filters.iter().find(|f| f.category == *c);
+                let f = filters.iter().find(|f| f.category == *c);
                 egui::CollapsingHeader::new(&cname)
-                    .id_salt(("filter", c.0))
+                    .id_salt(("filter", mi, c.0))
                     .show(ui, |ui| {
                         for (id, name) in &items {
                             let shown = match f {
@@ -3069,15 +3787,18 @@ impl ImprovApp {
                         }
                     });
             }
-            if !self.filters.is_empty() && ui.button("Clear filters").clicked() {
+            if !filters.is_empty() && ui.button("Clear filters").clicked() {
                 clear = true;
             }
         });
-        for (c, i) in toggles {
-            self.toggle_filter_item(c, i);
-        }
-        if clear {
-            self.clear_filters();
+        let model = &self.model;
+        if let Some(m) = self.matrices.get_mut(mi) {
+            for (c, i) in toggles {
+                m.toggle_filter_item(model, c, i);
+            }
+            if clear {
+                m.clear_filters(model);
+            }
         }
     }
 
@@ -3090,14 +3811,22 @@ impl ImprovApp {
     /// new-measure form, the CSV wizard, or the view-name box never also drives
     /// the grid). `n`/`N` (not Tab) drive measure cycling because egui reserves
     /// Tab for widget focus.
-    fn handle_grid_keys(&mut self, ui: &egui::Ui) {
+    ///
+    /// **Only the FOCUSED matrix consumes them** (plan Step 3): `mi` is the
+    /// matrix being rendered, and a matrix that does not have the keyboard
+    /// returns immediately — otherwise one arrow key would move every matrix's
+    /// cursor at once.
+    fn handle_grid_keys(&mut self, ui: &egui::Ui, mi: usize) {
+        if mi != self.focus_index() {
+            return;
+        }
         // `memory().focused()` is egui 0.29's "which widget owns the keyboard";
         // it is `None` again as soon as focus is released, so this gate is
         // transient, never sticky. While a CELL is being edited the focused
         // widget is the grid's own editor, which `editing` already covers
         // (Enter/Esc are handled in the cell rendering below).
         let other_focus = ui.ctx().memory(|m| m.focused()).is_some();
-        if !grid_keys_enabled(self.editing.is_some(), other_focus) {
+        if !grid_keys_enabled(self.focused().editing.is_some(), other_focus) {
             return;
         }
         use egui::Key;
@@ -3142,21 +3871,12 @@ impl ImprovApp {
         }
     }
 
-    /// Cycle the first page dimension by `delta` (wrapping) via `set_page`.
+    /// Cycle the focused matrix's first page dimension by `delta` (wrapping).
     fn page_first(&mut self, delta: isize) {
-        let Some(cat) = self.page_cats().first().copied() else {
-            return;
-        };
-        let count = self.sorted_items(cat).len();
-        if count == 0 {
-            return;
-        }
-        let cur = self.page_idx.first().copied().unwrap_or(0).min(count - 1);
-        let next = (cur as isize + delta).rem_euclid(count as isize) as usize;
-        self.set_page(0, next);
+        self.with_focused(|m, model| m.page_first(model, delta));
     }
 
-    /// Cycle the selected measure by `delta` (wrapping) in id order.
+    /// Cycle the focused matrix's measure by `delta` (wrapping) in id order.
     fn cycle_measure(&mut self, delta: isize) {
         let mut ids: Vec<MeasureId> = self.model.measures.keys().copied().collect();
         if ids.is_empty() {
@@ -3164,20 +3884,29 @@ impl ImprovApp {
         }
         ids.sort_by_key(|m| m.0);
         let cur = self
-            .selected
+            .selected()
             .and_then(|s| ids.iter().position(|m| *m == s))
             .unwrap_or(0);
         let next = (cur as isize + delta).rem_euclid(ids.len() as isize) as usize;
-        self.selected = Some(ids[next]);
-        self.editing = None;
+        self.focused_mut().select(Some(ids[next]));
     }
 
-    /// Render `measure` as a 2-D pivot grid using the current axis order: the
-    /// category at axis index 0 on rows, index 1 on columns, the rest pinned to
-    /// their selected page item. Input cells are editable; derived read-only.
-    fn render_grid(&mut self, ui: &mut egui::Ui, measure: MeasureId) {
-        self.handle_grid_keys(ui);
-        let cursor = (self.cursor_row, self.cursor_col);
+    /// Render matrix `mi`'s `measure` as a 2-D pivot grid using THAT MATRIX's
+    /// axis order: its row stack on rows, its column stack on columns, the rest
+    /// pinned to its selected page items. Input cells are editable; derived
+    /// read-only.
+    ///
+    /// Every read here goes through matrix `mi`, so two matrices showing the same
+    /// measure with different pivots render differently, and only the focused one
+    /// takes keystrokes (see [`Self::handle_grid_keys`]).
+    fn render_grid(&mut self, ui: &mut egui::Ui, mi: usize, measure: MeasureId) {
+        self.handle_grid_keys(ui, mi);
+        let Some(m) = self.matrices.get(mi) else {
+            return;
+        };
+        let cursor = (m.cursor_row, m.cursor_col);
+        let editing = m.editing.clone();
+        let mut edit_buf = m.edit_buf.clone();
         let is_derived = self
             .model
             .measures
@@ -3191,14 +3920,21 @@ impl ImprovApp {
         // are VIRTUALIZED: we hold only the per-category item lists and decode
         // the i-th row tuple on demand (see `nth_tuple`), so a grid with
         // millions of row lines never allocates them all.
-        let row_cats = self.row_cats();
-        let col_cats = self.col_cats();
+        let row_cats = m.row_cats(&self.model);
+        let col_cats = m.col_cats(&self.model);
+        // Record what this matrix is being drawn with (see `Matrix::rendered_axes`).
+        if let Some(m) = self.matrices.get_mut(mi) {
+            m.rendered_axes = Some((row_cats.clone(), col_cats.clone()));
+        }
+        let Some(m) = self.matrices.get(mi) else {
+            return;
+        };
         // A page category filtered to zero items pins nothing, so no coordinate
         // would fully specify the measure's dimensions: render no cells at all.
-        let pinned = self.pinned_pages_opt();
+        let pinned = m.pinned_pages_opt(&self.model);
         let pages_ok = pinned.is_some();
         let pinned = pinned.unwrap_or_default();
-        let row_lists = self.axis_item_lists(&row_cats);
+        let row_lists = m.axis_item_lists(&self.model, &row_cats);
         // Total row lines: product of the row categories' filtered item counts.
         // No row categories -> 1 (a genuinely scalar axis). Any row category
         // filtered to zero items -> 0 lines: an empty grid with headers, never a
@@ -3209,7 +3945,7 @@ impl ImprovApp {
         // tuple for a scalar axis (no col categories) and nothing at all for a
         // category filtered to zero items — keep both as-is.
         let col_lines = if pages_ok {
-            self.axis_tuples(&col_cats)
+            m.axis_tuples(&self.model, &col_cats)
         } else {
             Vec::new()
         };
@@ -3231,6 +3967,9 @@ impl ImprovApp {
         let mut commit: Option<(CoordKey, String)> = None;
         let mut clicked_derived = false;
         let mut cancel = false;
+        // The cursor cell a click chose, applied after the closure.
+        let mut clicked_cell: Option<(usize, usize)> = None;
+        let mut begin_edit: Option<(CoordKey, String)> = None;
 
         // Chiseled header cell (raised bevel) matching NeXTSTEP Improv.
         fn header_cell(ui: &mut egui::Ui, text: &str) {
@@ -3251,7 +3990,10 @@ impl ImprovApp {
         };
 
         use egui_extras::{Column, TableBuilder};
-        let mut table = TableBuilder::new(ui).striped(true);
+        // Salt the table id with the matrix index: two matrices on one canvas are
+        // two tables, and sharing an id would make them fight over column widths
+        // and scroll offsets.
+        let mut table = TableBuilder::new(ui).id_salt(("grid", mi)).striped(true);
         // One stub column per stacked row category, then one column per col line.
         for _ in 0..n_row_stub {
             table = table.column(Column::auto().resizable(true));
@@ -3348,13 +4090,12 @@ impl ImprovApp {
                                 if is_derived {
                                     let text = self.cell_text(measure, &key).unwrap_or_default();
                                     if ui.label(text).clicked() {
-                                        self.cursor_row = ri;
-                                        self.cursor_col = ci;
+                                        clicked_cell = Some((ri, ci));
                                         clicked_derived = true;
                                     }
-                                } else if self.editing.as_ref() == Some(&(measure, key.clone())) {
+                                } else if editing.as_ref() == Some(&(measure, key.clone())) {
                                     let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut self.edit_buf)
+                                        egui::TextEdit::singleline(&mut edit_buf)
                                             .desired_width(f32::INFINITY),
                                     );
                                     resp.request_focus();
@@ -3363,7 +4104,7 @@ impl ImprovApp {
                                     if esc {
                                         cancel = true;
                                     } else if resp.lost_focus() || enter {
-                                        commit = Some((key.clone(), self.edit_buf.clone()));
+                                        commit = Some((key.clone(), edit_buf.clone()));
                                     }
                                 } else {
                                     // Typed display: text, booleans, dates, and
@@ -3371,10 +4112,8 @@ impl ImprovApp {
                                     // just because they are not numbers).
                                     let text = self.cell_text(measure, &key).unwrap_or_default();
                                     if ui.button(text.clone()).clicked() {
-                                        self.cursor_row = ri;
-                                        self.cursor_col = ci;
-                                        self.editing = Some((measure, key.clone()));
-                                        self.edit_buf = text;
+                                        clicked_cell = Some((ri, ci));
+                                        begin_edit = Some((key.clone(), text));
                                     }
                                 }
                             });
@@ -3383,15 +4122,33 @@ impl ImprovApp {
                 });
             });
 
+        // Apply what the closure recorded. A click in ANY matrix also focuses it,
+        // so typing follows the mouse rather than staying on whichever matrix had
+        // the keyboard.
+        if let Some(m) = self.matrices.get_mut(mi) {
+            m.edit_buf = edit_buf;
+            if let Some((ri, ci)) = clicked_cell {
+                m.cursor_row = ri;
+                m.cursor_col = ci;
+            }
+            if let Some((key, text)) = begin_edit {
+                m.editing = Some((measure, key));
+                m.edit_buf = text;
+            }
+            if cancel || commit.is_some() {
+                m.editing = None;
+            }
+        }
+        if clicked_cell.is_some() {
+            self.set_focus(mi);
+        }
         if cancel {
-            self.editing = None;
             self.status = "edit cancelled".into();
         }
         if clicked_derived {
             self.status = "derived cells are computed, not editable".into();
         }
         if let Some((key, text)) = commit {
-            self.editing = None;
             self.status = match self.commit_cell_text(measure, key, &text) {
                 Ok(msg) => msg,
                 Err(e) => format!("edit error: {e}"),
@@ -3528,7 +4285,7 @@ mod tests {
     fn loads_and_computes_derived() {
         let app = build_app(revenue_model());
         // Revenue is derived and selected by default.
-        assert_eq!(app.selected, Some(MeasureId(102)));
+        assert_eq!(app.selected(), Some(MeasureId(102)));
         let vals = app.values_for(MeasureId(102));
         let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
@@ -3769,7 +4526,7 @@ mod tests {
             model.measures.get_mut(&MeasureId(102)).unwrap().kind =
                 MeasureKind::Derived(formula.clone());
             let mut app = build_app(model);
-            app.selected = Some(MeasureId(102));
+            select(&mut app, MeasureId(102));
 
             // Exactly what `formula_bar` seeds the buffer with.
             let buf = app
@@ -3984,36 +4741,29 @@ mod tests {
         assert_eq!(di.dimensions, vec!["Product".to_string()]);
     }
 
-    /// Build an app directly from a model (bypassing the store) for tests.
+    /// Build an app directly from a model (bypassing the store) for tests: one
+    /// matrix on the canvas, showing the default measure, as a fresh
+    /// `ImprovApp::load` would.
     fn build_app(model: Model) -> ImprovApp {
         let (engine, snapshot) = build_engine(&model);
         let selected = pick_default_measure(&model);
-        let axis_order = natural_axis_order(&model, selected);
-        let page_idx = vec![0; axis_order.len().saturating_sub(2)];
+        let matrices = vec![Matrix::new(&model, selected)];
         ImprovApp {
             db: String::new(),
             model,
             engine,
             snapshot,
-            selected,
+            matrices,
+            focus: 0,
+            current_view: None,
             status: String::new(),
-            editing: None,
-            edit_buf: String::new(),
             formula_buf: String::new(),
             formula_for: None,
             formula_error_pos: None,
             formula_error_msg: String::new(),
             new_name: String::new(),
             new_formula: String::new(),
-            axis_order,
-            n_rows: 1,
-            n_cols: 1,
-            page_idx,
-            axis_for: selected,
-            filters: Vec::new(),
             view_name: String::new(),
-            cursor_row: 0,
-            cursor_col: 0,
             show_chart: false,
             chart_line: false,
             show_csv_wizard: false,
@@ -4021,9 +4771,15 @@ mod tests {
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
-            gutters: None,
             formula_row_rects: Vec::new(),
         }
+    }
+
+    /// Point the app's FOCUSED matrix at `measure` (what tests used to do by
+    /// assigning `app.selected`). Kept as a helper so the many tests that select
+    /// a measure read the same as before.
+    fn select(app: &mut ImprovApp, measure: MeasureId) {
+        app.focused_mut().select(Some(measure));
     }
 
     // A 3-D input measure Sales[Time, Product, Region] for paging tests
@@ -4074,7 +4830,7 @@ mod tests {
     fn set_axis_moves_category_from_columns_to_rows() {
         // Quantity[Time, Product]: natural rows=Time(1), cols=Product(2).
         let mut app = build_app(revenue_model());
-        app.selected = Some(MeasureId(101));
+        select(&mut app, MeasureId(101));
         app.sync_axis_state();
         let (r, c, _) = app.resolved_axes();
         assert_eq!(r, Some(CategoryId(1))); // Time on rows
@@ -4094,7 +4850,7 @@ mod tests {
     fn stacked_rows_form_cartesian_product_with_correct_keys() {
         // Quantity[Time, Product] with BOTH categories stacked on rows.
         let mut app = build_app(revenue_model());
-        app.selected = Some(MeasureId(101));
+        select(&mut app, MeasureId(101));
         app.sync_axis_state();
         app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product]
         assert_eq!(app.row_cats(), vec![CategoryId(1), CategoryId(2)]);
@@ -4161,7 +4917,7 @@ mod tests {
     fn nth_tuple_matches_apps_axis_tuples() {
         // Cross-check against the app's own axis_tuples on the 2x2 model.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
         app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product] stacked
         let cats = app.row_cats();
@@ -4198,7 +4954,7 @@ mod tests {
             description: None,
         });
         let mut app = build_app(m);
-        app.selected = Some(MeasureId(300));
+        select(&mut app, MeasureId(300));
         app.sync_axis_state();
         // Stack both categories on rows -> 5000 * 3 = 15000 row lines.
         app.set_axis(small, Axis::Rows);
@@ -4218,8 +4974,8 @@ mod tests {
         assert_eq!(last[0].0, ItemId(1_000 + n_big - 1));
         assert_eq!(last[1].0, ItemId(12));
         // A cursor deep in the grid resolves its key without materializing rows.
-        app.cursor_row = total - 1;
-        app.cursor_col = 0;
+        app.focused_mut().cursor_row = total - 1;
+        app.focused_mut().cursor_col = 0;
         let key = app.cursor_key().expect("cursor addresses a cell");
         let mut want = vec![(big.0, 1_000 + n_big - 1), (small.0, 12)];
         want.sort();
@@ -4229,7 +4985,7 @@ mod tests {
     #[test]
     fn pivot_rotate_swaps_axes_and_back() {
         let mut app = build_app(revenue_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
         let (r0, c0, _) = app.resolved_axes();
         assert_eq!((r0, c0), (Some(CategoryId(1)), Some(CategoryId(2))));
@@ -4246,7 +5002,7 @@ mod tests {
     #[test]
     fn set_page_changes_pinned_item_and_cell_value() {
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         // One page dim (Region), pinned to North (index 0) by default.
         let (_, _, pinned) = app.resolved_axes();
@@ -4270,12 +5026,12 @@ mod tests {
     #[test]
     fn switching_measure_resets_axis_order() {
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         // Pivot away from natural order.
         app.pivot_rotate();
         assert_ne!(
-            app.axis_order,
+            app.focused().axis_order,
             vec![CategoryId(1), CategoryId(2), CategoryId(3)]
         );
 
@@ -4288,16 +5044,16 @@ mod tests {
             kind: MeasureKind::Input,
             description: None,
         });
-        app.selected = Some(MeasureId(201));
+        select(&mut app, MeasureId(201));
         app.sync_axis_state();
-        assert_eq!(app.axis_order, vec![CategoryId(2)]);
-        assert!(app.page_idx.is_empty());
+        assert_eq!(app.focused().axis_order, vec![CategoryId(2)]);
+        assert!(app.focused().page_idx.is_empty());
 
         // Back to Sales: natural order restored (not the pivoted one).
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         assert_eq!(
-            app.axis_order,
+            app.focused().axis_order,
             vec![CategoryId(1), CategoryId(2), CategoryId(3)]
         );
     }
@@ -4360,56 +5116,60 @@ mod tests {
     #[test]
     fn cursor_clamps_at_all_edges_and_after_pivot_shrink() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product], 2x2
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product], 2x2
         app.sync_axis_state();
 
         // Off the top-left: clamps to (0, 0).
         app.move_cursor(-5, -5);
-        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        assert_eq!((app.focused().cursor_row, app.focused().cursor_col), (0, 0));
         // Off the bottom-right: clamps to (1, 1).
         app.move_cursor(100, 100);
-        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+        assert_eq!((app.focused().cursor_row, app.focused().cursor_col), (1, 1));
 
         // Switch to Price[Product]: 2 rows, 1 synthetic col -> column re-clamps.
-        app.selected = Some(MeasureId(100));
+        select(&mut app, MeasureId(100));
         app.sync_axis_state(); // resets cursor to (0,0) on measure switch
         app.move_cursor(5, 5);
-        assert_eq!(app.cursor_col, 0, "single-column grid clamps col to 0");
-        assert_eq!(app.cursor_row, 1, "two rows -> max row 1");
+        assert_eq!(
+            app.focused().cursor_col,
+            0,
+            "single-column grid clamps col to 0"
+        );
+        assert_eq!(app.focused().cursor_row, 1, "two rows -> max row 1");
 
         // Sales 3-D: put the cursor at the far corner, then pivot to a shape
         // where the cursor would be out of range; clamp_cursor must fix it.
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         // Region on cols has 2 items; move to the far cell.
         app.pivot_rotate(); // rows=Product, cols=Region (2 cols)
         app.move_cursor(100, 100);
-        let (r, c) = (app.cursor_row, app.cursor_col);
+        let (r, c) = (app.focused().cursor_row, app.focused().cursor_col);
         let (rows, cols) = app.grid_dims();
         assert!(r < rows && c < cols, "cursor within {rows}x{cols}");
         // Pivot again (rows=Region -> single-item axes elsewhere) and confirm
         // the cursor never goes out of range.
         app.pivot_rotate();
         let (rows, cols) = app.grid_dims();
-        assert!(app.cursor_row < rows && app.cursor_col < cols);
+        assert!(app.focused().cursor_row < rows && app.focused().cursor_col < cols);
     }
 
     #[test]
     fn cursor_maps_to_expected_coord_key() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
         // [1,1] = Quantity[2026, WidgetB] = Time(11), Product(21).
-        app.cursor_row = 1;
-        app.cursor_col = 1;
+        app.focused_mut().cursor_row = 1;
+        app.focused_mut().cursor_col = 1;
         let mut expect = vec![(1u32, 11u32), (2, 21)];
         expect.sort();
         assert_eq!(app.cursor_key(), Some(expect));
 
         // [0,1] = Quantity[2025, WidgetB] = Time(10), Product(21).
-        app.cursor_row = 0;
-        app.cursor_col = 1;
+        app.focused_mut().cursor_row = 0;
+        app.focused_mut().cursor_col = 1;
         let mut expect = vec![(1u32, 10u32), (2, 21)];
         expect.sort();
         assert_eq!(app.cursor_key(), Some(expect));
@@ -4418,13 +5178,13 @@ mod tests {
     #[test]
     fn move_then_edit_routes_through_set_cell_and_recomputes() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
         assert!(app.cursor_is_editable());
 
         // Move to Quantity[2025, WidgetA] = [0,0], set it to 200.
-        app.cursor_row = 0;
-        app.cursor_col = 0;
+        app.focused_mut().cursor_row = 0;
+        app.focused_mut().cursor_col = 0;
         let key = app.cursor_key().expect("cursor addresses a cell");
         app.set_cell(MeasureId(101), key, Value::Number(200.0))
             .unwrap();
@@ -4436,18 +5196,18 @@ mod tests {
         assert_eq!(rev.get(&rkey), Some(&2000.0));
 
         // Derived measure: cursor cell is not editable (status set, not enter).
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
         assert!(!app.cursor_is_editable());
         app.begin_edit_cursor();
-        assert!(app.editing.is_none());
+        assert!(app.focused().editing.is_none());
         assert_eq!(app.status, "derived cells are computed, not editable");
     }
 
     #[test]
     fn filter_hides_an_item_from_the_rendered_rows() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
         // Rows = Time (2025, 2026); hide 2026 (ItemId 11).
         let (row_cat, _, _) = app.resolved_axes();
@@ -4464,7 +5224,7 @@ mod tests {
         assert_eq!(app.sorted_items(CategoryId(2)).len(), 2);
         // Re-showing 2026 drops the filter (all items kept).
         app.toggle_filter_item(CategoryId(1), ItemId(11));
-        assert!(app.filters.is_empty());
+        assert!(app.focused().filters.is_empty());
         assert_eq!(app.sorted_items(CategoryId(1)).len(), 2);
     }
 
@@ -4489,7 +5249,7 @@ mod tests {
     #[test]
     fn row_category_filtered_to_empty_renders_zero_lines_not_one() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state(); // rows=Time, cols=Product
         assert_eq!(app.grid_dims(), (2, 2));
 
@@ -4502,7 +5262,10 @@ mod tests {
         assert_eq!(app.cursor_key(), None);
         assert!(!app.cursor_is_editable());
         app.begin_edit_cursor();
-        assert!(app.editing.is_none(), "no edit may start on a missing cell");
+        assert!(
+            app.focused().editing.is_none(),
+            "no edit may start on a missing cell"
+        );
 
         // Showing one item back restores exactly one line, with a complete key.
         app.toggle_filter_item(CategoryId(1), ItemId(10));
@@ -4514,7 +5277,7 @@ mod tests {
     #[test]
     fn column_category_filtered_to_empty_renders_zero_lines_not_one() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101));
+        select(&mut app, MeasureId(101));
         app.sync_axis_state(); // rows=Time, cols=Product
         hide_all_items(&mut app, CategoryId(2)); // Product -> nothing on cols
         let (rows, cols) = app.grid_dims();
@@ -4523,7 +5286,7 @@ mod tests {
         assert_eq!(app.cursor_key(), None);
         assert!(!app.cursor_is_editable());
         app.begin_edit_cursor();
-        assert!(app.editing.is_none());
+        assert!(app.focused().editing.is_none());
     }
 
     #[test]
@@ -4531,7 +5294,7 @@ mod tests {
         // Sales[Time, Product, Region]: Region is the page dimension. With no
         // Region item pinnable, every key would omit Region — under-specified.
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         assert_eq!(app.page_cats(), vec![CategoryId(3)]);
         let full = app.cursor_key().expect("a cell before filtering");
@@ -4550,7 +5313,7 @@ mod tests {
         );
         assert!(!app.cursor_is_editable());
         app.begin_edit_cursor();
-        assert!(app.editing.is_none());
+        assert!(app.focused().editing.is_none());
         assert!(app.status.contains("filtered"), "status: {}", app.status);
     }
 
@@ -4559,7 +5322,7 @@ mod tests {
         // Both categories stacked on rows; emptying the INNER one zeroes the
         // whole product (the mixed-radix decode has no valid line).
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101));
+        select(&mut app, MeasureId(101));
         app.sync_axis_state();
         app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product]
         assert_eq!(app.grid_dims(), (4, 1));
@@ -4574,7 +5337,7 @@ mod tests {
         // with NO categories is scalar in that direction — one legitimate line)
         // vs a category present but filtered to zero items (no lines at all).
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(100)); // Price[Product] only
+        select(&mut app, MeasureId(100)); // Price[Product] only
         app.sync_axis_state();
         assert_eq!(app.col_cats(), vec![], "no column category: scalar axis");
         assert_eq!(
@@ -4599,27 +5362,31 @@ mod tests {
         // A stale cursor (left over from before the filter) must not reach
         // `nth_tuple` with a zero radix: that is `i % 0`, a release-mode crash.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101));
+        select(&mut app, MeasureId(101));
         app.sync_axis_state();
         app.move_cursor(10, 10); // bottom-right of the 2x2 grid
-        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+        assert_eq!((app.focused().cursor_row, app.focused().cursor_col), (1, 1));
         hide_all_items(&mut app, CategoryId(1));
         // clamp_cursor ran via toggle_filter_item: the row axis has no lines, so
         // the row index collapses to 0 (the column axis is unaffected).
-        assert_eq!(app.cursor_row, 0);
+        assert_eq!(app.focused().cursor_row, 0);
         assert_eq!(app.cursor_key(), None);
         // Even a forced out-of-range cursor resolves to "no cell", not a panic.
-        app.cursor_row = 7;
-        app.cursor_col = 7;
+        app.focused_mut().cursor_row = 7;
+        app.focused_mut().cursor_col = 7;
         assert_eq!(app.cursor_key(), None);
         app.move_cursor(1, 1);
-        assert_eq!(app.cursor_row, 0, "an empty axis cannot be moved into");
+        assert_eq!(
+            app.focused().cursor_row,
+            0,
+            "an empty axis cannot be moved into"
+        );
     }
 
     #[test]
     fn save_view_captures_measure_axis_order_and_filters() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
         app.pivot_rotate(); // rows=Product, cols=Time
         app.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
@@ -4641,7 +5408,7 @@ mod tests {
     fn apply_view_restores_axis_order_and_filters() {
         // Build a view from one app, apply it to a fresh app -> layout matches.
         let mut src = build_app(grid_2x2_model());
-        src.selected = Some(MeasureId(101));
+        select(&mut src, MeasureId(101));
         src.sync_axis_state();
         src.pivot_rotate(); // rows=Product, cols=Time
         src.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
@@ -4649,13 +5416,13 @@ mod tests {
 
         let mut dst = build_app(grid_2x2_model());
         // dst starts on Revenue (derived) with natural axes and no filters.
-        assert_eq!(dst.selected, Some(MeasureId(102)));
+        assert_eq!(dst.selected(), Some(MeasureId(102)));
         dst.apply_view(&v);
         dst.sync_axis_state(); // must not clobber the applied layout
 
-        assert_eq!(dst.selected, Some(MeasureId(101)));
-        assert_eq!(dst.axis_order, vec![CategoryId(2), CategoryId(1)]);
-        assert_eq!(dst.filters, v.filters);
+        assert_eq!(dst.selected(), Some(MeasureId(101)));
+        assert_eq!(dst.focused().axis_order, vec![CategoryId(2), CategoryId(1)]);
+        assert_eq!(dst.focused().filters, v.filters);
         let (row_cat, col_cat, _) = dst.resolved_axes();
         assert_eq!(row_cat, Some(CategoryId(2))); // Product on rows
         assert_eq!(col_cat, Some(CategoryId(1))); // Time on cols
@@ -4671,7 +5438,7 @@ mod tests {
     #[test]
     fn apply_view_restores_page_item() {
         let mut src = build_app(sales_3d_model());
-        src.selected = Some(MeasureId(200));
+        select(&mut src, MeasureId(200));
         src.sync_axis_state();
         // Page Region (dim 0) to South (index 1).
         src.set_page(0, 1);
@@ -4681,7 +5448,7 @@ mod tests {
         assert_eq!(v.page_items, vec![(CategoryId(3), ItemId(31))]);
 
         let mut dst = build_app(sales_3d_model());
-        dst.selected = Some(MeasureId(200));
+        select(&mut dst, MeasureId(200));
         dst.sync_axis_state();
         let (_, _, pinned) = dst.resolved_axes();
         assert_eq!(pinned, vec![(CategoryId(3), ItemId(30))]); // North default
@@ -4701,7 +5468,7 @@ mod tests {
         // Revenue[Time, Product], natural axes: rows=Time -> x, cols=Product ->
         // one series each. Oracle: WidgetA = 1000/1200, WidgetB = 1000/1600.
         let app = build_app(grid_2x2_model());
-        assert_eq!(app.selected, Some(MeasureId(102))); // Revenue selected
+        assert_eq!(app.selected(), Some(MeasureId(102))); // Revenue selected
         let d = app.chart_series();
         assert_eq!(d.x_title, "Time");
         assert_eq!(d.x_labels, vec!["2025".to_string(), "2026".to_string()]);
@@ -4721,7 +5488,7 @@ mod tests {
         // ("2025 / WidgetA", ...) and there is one unnamed series whose values
         // match cell_key_multi lookups.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(102)); // Revenue
+        select(&mut app, MeasureId(102)); // Revenue
         app.sync_axis_state();
         app.set_axis(CategoryId(2), Axis::Rows); // rows = [Time, Product]
         assert_eq!(app.row_cats(), vec![CategoryId(1), CategoryId(2)]);
@@ -4768,7 +5535,7 @@ mod tests {
         // column axis. Here: rows=Product (2), cols=Time (2) -> 2 x-labels,
         // 2 series named by the (single-item) column tuples.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
         app.pivot_rotate(); // rows=Product, cols=Time
         assert_eq!(app.row_cats(), vec![CategoryId(2)]);
@@ -4793,7 +5560,7 @@ mod tests {
     fn chart_series_1d_single_series() {
         // Price[Product]: 1-D grid -> a single unnamed series over Product.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(100)); // Price[Product]
+        select(&mut app, MeasureId(100)); // Price[Product]
         app.sync_axis_state();
         let d = app.chart_series();
         assert_eq!(d.x_title, "Product");
@@ -4810,7 +5577,7 @@ mod tests {
     fn chart_filter_removes_a_bar() {
         // Hide 2026 on the Time (x) axis: its label and points drop out.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
         app.toggle_filter_item(CategoryId(1), ItemId(11)); // hide 2026
         let d = app.chart_series();
@@ -4835,7 +5602,7 @@ mod tests {
             Value::Text("oops".into()),
         );
         app.rebuild_engine();
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
         let d = app.chart_series(); // must not panic
                                     // WidgetA series: 2025 numeric, 2026 is a gap (None).
@@ -4965,7 +5732,7 @@ mod tests {
             model.measures.get_mut(&MeasureId(102)).unwrap().kind =
                 MeasureKind::Derived(formula.clone());
             let mut app = build_app(model);
-            app.selected = Some(MeasureId(102));
+            select(&mut app, MeasureId(102));
 
             // Whatever the DSL printer emits must parse as the same AST.
             if let Some(dsl) = formula_dsl(&app.model, &formula) {
@@ -5008,7 +5775,7 @@ mod tests {
     #[test]
     fn cnl_aggregation_without_over_recommits_from_the_bar() {
         let mut app = build_app(revenue_model());
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.commit_formula(MeasureId(102), "the sum of Quantity")
             .expect("CNL commits");
         let committed = match &app.model.measures[&MeasureId(102)].kind {
@@ -5071,7 +5838,7 @@ mod tests {
             let mut model = revenue_model();
             model.measures.get_mut(&MeasureId(100)).unwrap().name = Name((*name).into());
             let mut app = build_app(model);
-            app.selected = Some(MeasureId(102));
+            select(&mut app, MeasureId(102));
             let formula = match &app.model.measures[&MeasureId(102)].kind {
                 MeasureKind::Derived(f) => f.clone(),
                 MeasureKind::Input => panic!("Revenue is derived"),
@@ -5183,7 +5950,7 @@ mod tests {
     #[test]
     fn chart_with_an_empty_row_axis_has_no_x_lines() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
         assert_eq!(app.grid_dims(), (2, 2));
         // Hide every Time item: rows -> empty.
@@ -5207,7 +5974,7 @@ mod tests {
     fn chart_with_an_empty_column_or_page_axis_has_no_data() {
         // Empty column axis.
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
         for it in [ItemId(20), ItemId(21)] {
             app.toggle_filter_item(CategoryId(2), it);
@@ -5221,7 +5988,7 @@ mod tests {
 
         // Empty page axis (3-D measure: Region pages).
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         assert_eq!(app.page_cats(), vec![CategoryId(3)]);
         for it in [ItemId(30), ItemId(31)] {
@@ -5295,15 +6062,15 @@ mod tests {
         m.set_input(MeasureId(1), cell, Value::Number(42.0));
 
         let mut app = build_app(m);
-        app.selected = Some(MeasureId(1));
+        select(&mut app, MeasureId(1));
         app.sync_axis_state();
         // What apply_view leaves behind after the measure was re-imported over
         // fewer dimensions: a stale Region page category.
-        app.axis_order = vec![t, p, r];
-        app.n_rows = 1;
-        app.n_cols = 1;
-        app.page_idx = vec![0];
-        app.filters = vec![Filter {
+        app.focused_mut().axis_order = vec![t, p, r];
+        app.focused_mut().n_rows = 1;
+        app.focused_mut().n_cols = 1;
+        app.focused_mut().page_idx = vec![0];
+        app.focused_mut().filters = vec![Filter {
             category: r,
             items: vec![],
         }];
@@ -5324,7 +6091,7 @@ mod tests {
 
         // Contrast, and the 6a4b862 behavior that must NOT regress: a category
         // that IS a real dimension, filtered to empty, still yields zero lines.
-        app.filters = vec![Filter {
+        app.focused_mut().filters = vec![Filter {
             category: p,
             items: vec![],
         }];
@@ -5618,11 +6385,14 @@ mod tests {
     #[test]
     fn begin_edit_seeds_the_typed_display_text() {
         let mut app = build_app(typed_model());
-        app.selected = Some(MeasureId(2)); // Label (Text)
+        select(&mut app, MeasureId(2)); // Label (Text)
         app.sync_axis_state();
         app.begin_edit_cursor();
-        assert_eq!(app.editing.as_ref().map(|(m, _)| *m), Some(MeasureId(2)));
-        assert_eq!(app.edit_buf, "hello", "text cell seeded blank");
+        assert_eq!(
+            app.focused().editing.as_ref().map(|(m, _)| *m),
+            Some(MeasureId(2))
+        );
+        assert_eq!(app.focused().edit_buf, "hello", "text cell seeded blank");
     }
 
     // -- ITEM 1: grid shortcuts must not steal keystrokes ------------------
@@ -5645,8 +6415,23 @@ mod tests {
     /// Feed one frame of key presses through `handle_grid_keys` with `focus`
     /// optionally held by a NON-grid widget id, and report what the grid state
     /// became: (selected measure, cursor, first page index).
+    ///
+    /// The keys are delivered to the FOCUSED matrix (index `app.focus_index()`),
+    /// which is what the canvas does; `frame_with_keys_for` drives a specific
+    /// matrix, for asserting that an unfocused one ignores them.
     fn frame_with_keys(
         app: &mut ImprovApp,
+        keys: &[egui::Key],
+        focus: Option<&str>,
+    ) -> (Option<MeasureId>, (usize, usize), usize) {
+        let mi = app.focus_index();
+        frame_with_keys_for(app, mi, keys, focus)
+    }
+
+    /// [`frame_with_keys`], addressed at matrix `mi` rather than the focused one.
+    fn frame_with_keys_for(
+        app: &mut ImprovApp,
+        mi: usize,
         keys: &[egui::Key],
         focus: Option<&str>,
     ) -> (Option<MeasureId>, (usize, usize), usize) {
@@ -5670,13 +6455,13 @@ mod tests {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
             }
             egui::CentralPanel::default().show(ctx, |ui| {
-                app.handle_grid_keys(ui);
+                app.handle_grid_keys(ui, mi);
             });
         });
         (
-            app.selected,
-            (app.cursor_row, app.cursor_col),
-            app.page_idx.first().copied().unwrap_or(0),
+            app.selected(),
+            (app.focused().cursor_row, app.focused().cursor_col),
+            app.focused().page_idx.first().copied().unwrap_or(0),
         )
     }
 
@@ -5687,9 +6472,13 @@ mod tests {
     #[test]
     fn focused_text_field_elsewhere_swallows_grid_shortcuts() {
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
-        let before = (app.selected, (app.cursor_row, app.cursor_col), 0);
+        let before = (
+            app.selected(),
+            (app.focused().cursor_row, app.focused().cursor_col),
+            0,
+        );
 
         use egui::Key;
         let keys = [Key::N, Key::J, Key::L, Key::CloseBracket, Key::Enter];
@@ -5697,7 +6486,7 @@ mod tests {
             let after = frame_with_keys(&mut app, &keys, Some(field));
             assert_eq!(after, before, "{field} focused, yet the grid reacted");
             assert!(
-                app.editing.is_none(),
+                app.focused().editing.is_none(),
                 "{field} focused, yet Enter opened a cell editor"
             );
         }
@@ -5708,7 +6497,7 @@ mod tests {
     #[test]
     fn grid_shortcuts_work_again_once_focus_is_released() {
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200)); // Sales[Time, Product, Region]
+        select(&mut app, MeasureId(200)); // Sales[Time, Product, Region]
         app.sync_axis_state();
 
         // Frame 1: focused elsewhere -> `]` must not page.
@@ -5728,13 +6517,13 @@ mod tests {
     #[test]
     fn cell_editing_still_works_while_editing() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101)); // Quantity[Time, Product]
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
         app.sync_axis_state();
 
         // Enter opens the editor (no focus held).
         use egui::Key;
         frame_with_keys(&mut app, &[Key::Enter], None);
-        let editing = app.editing.clone();
+        let editing = app.focused().editing.clone();
         assert!(
             editing.is_some(),
             "Enter must begin editing the cursor cell"
@@ -5742,16 +6531,20 @@ mod tests {
 
         // While editing, the cell editor holds focus. The grid bindings stay
         // out of the way and the edit buffer survives the frame.
-        app.edit_buf = "7".into();
+        app.focused_mut().edit_buf = "7".into();
         let after = frame_with_keys(&mut app, &[Key::N, Key::J, Key::L], Some("cell_editor"));
         assert_eq!(after.1, (0, 0), "cursor moved under the open editor");
-        assert_eq!(app.editing, editing, "the open editor was disturbed");
-        assert_eq!(app.edit_buf, "7");
+        assert_eq!(
+            app.focused().editing,
+            editing,
+            "the open editor was disturbed"
+        );
+        assert_eq!(app.focused().edit_buf, "7");
 
         // And committing the buffer still writes the cell.
         let key = app.cursor_key().expect("cursor addresses a cell");
         let msg = app
-            .commit_cell_text(MeasureId(101), key.clone(), &app.edit_buf.clone())
+            .commit_cell_text(MeasureId(101), key.clone(), &app.focused().edit_buf.clone())
             .expect("commit");
         assert_eq!(msg, "cell updated");
         assert_eq!(app.cell_text(MeasureId(101), &key).as_deref(), Some("7"));
@@ -5763,7 +6556,7 @@ mod tests {
     #[test]
     fn undo_shortcut_honors_the_focus_gate() {
         let mut app = build_app(grid_2x2_model());
-        app.selected = Some(MeasureId(101));
+        select(&mut app, MeasureId(101));
         app.sync_axis_state();
         let key = app.cursor_key().expect("cell");
         app.set_cell(MeasureId(101), key.clone(), Value::Number(999.0))
@@ -5892,7 +6685,7 @@ mod tests {
             !app.snapshot.contains_key(&id),
             "the snapshot must not keep values for a measure that is gone"
         );
-        assert_eq!(app.selected, Some(MeasureId(102)), "selection re-pointed");
+        assert_eq!(app.selected(), Some(MeasureId(102)), "selection re-pointed");
     }
 
     #[test]
@@ -5962,7 +6755,7 @@ mod tests {
         );
         assert_eq!(app.model, before, "undo must restore the pre-import model");
         assert_eq!(
-            app.selected,
+            app.selected(),
             pick_default_measure(&before),
             "selection must leave the measure that no longer exists"
         );
@@ -6140,19 +6933,43 @@ mod tests {
             };
             let _ = ctx.run(raw, |ctx| {
                 app.sync_axis_state();
+                app.document_tab_bar(ctx);
                 app.formula_bar(ctx);
+                app.status_bar(ctx);
+                app.formula_panel(ctx);
+                app.formula_list_panel(ctx);
                 app.tool_palette(ctx);
                 app.explorer_panel(ctx);
                 app.inspector_panel(ctx);
-                app.formula_panel(ctx);
-                app.formula_list_panel(ctx);
                 app.chart_panel(ctx);
                 app.csv_wizard_panel(ctx);
-                app.grid_panel(ctx);
+                app.canvas_panel(ctx);
             });
-            app.gutters.expect("the grid panel must record its gutters")
+            app.focused()
+                .gutters
+                .expect("the focused matrix must record its gutters")
         };
         (ctx, pass)
+    }
+
+    /// Lay out the whole app for several frames at a desktop window size and
+    /// return EVERY matrix's recorded gutter geometry, in canvas order.
+    ///
+    /// The multi-matrix counterpart of [`layout_frame`]: a canvas holding N
+    /// matrices must have N framed tables, not one.
+    fn layout_all(app: &mut ImprovApp) -> Vec<GutterRects> {
+        let (ctx, mut pass) = layout_harness();
+        for _ in 0..8 {
+            let _ = pass(&ctx, app);
+        }
+        app.matrices
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                m.gutters
+                    .unwrap_or_else(|| panic!("matrix {i} recorded no gutters"))
+            })
+            .collect()
     }
 
     /// Lay out `app` until its geometry stops changing, and return it. A panel
@@ -6188,7 +7005,7 @@ mod tests {
     /// `Product` on columns, `Region` in the well.
     fn gutter_app() -> ImprovApp {
         let mut app = build_app(sales_3d_model());
-        app.selected = Some(MeasureId(200));
+        select(&mut app, MeasureId(200));
         app.sync_axis_state();
         app
     }
@@ -6266,10 +7083,13 @@ mod tests {
                 };
                 let _ = ctx.run(raw, |ctx| {
                     app.sync_axis_state();
-                    app.grid_panel(ctx);
+                    app.canvas_panel(ctx);
                 });
             }
-            let g = app.gutters.expect("gutters recorded at every size");
+            let g = app
+                .focused()
+                .gutters
+                .expect("gutters recorded at every size");
             if gutters_have_room(&g) {
                 framed_at_least_once = true;
                 assert!(
@@ -6612,22 +7432,22 @@ mod tests {
     #[test]
     fn clicking_a_formula_row_selects_its_measure() {
         let mut app = build_app(four_formula_model());
-        app.selected = Some(MeasureId(102));
+        select(&mut app, MeasureId(102));
         app.sync_axis_state();
 
         // Find where row 4 ("Doubled") landed, then click it.
         let target = MeasureId(105);
-        assert_ne!(app.selected, Some(target), "not already selected");
+        assert_ne!(app.selected(), Some(target), "not already selected");
         let clicked = click_formula_row(&mut app, target);
         assert!(clicked, "row for measure {target:?} was never laid out");
         assert_eq!(
-            app.selected,
+            app.selected(),
             Some(target),
             "clicking the row must select its measure so the grid follows"
         );
         // And the grid really did follow: the pivot state re-homed onto it.
         app.sync_axis_state();
-        assert_eq!(app.axis_for, Some(target));
+        assert_eq!(app.focused().axis_for, Some(target));
     }
 
     /// Lay out `app` in real headless frames and click the formula-list row for
@@ -6660,7 +7480,7 @@ mod tests {
                 app.inspector_panel(ctx);
                 app.formula_panel(ctx);
                 app.formula_list_panel(ctx);
-                app.grid_panel(ctx);
+                app.canvas_panel(ctx);
             });
         };
 
@@ -7048,11 +7868,932 @@ mod tests {
                     app.formula_bar(ctx);
                     app.formula_panel(ctx);
                     app.formula_list_panel(ctx);
-                    app.grid_panel(ctx);
+                    app.canvas_panel(ctx);
                 });
             }
             // Still listing every formula after the frames.
             assert_eq!(app.formula_rows().len(), 4, "{w}x{h}");
+        }
+    }
+    // -- STEP 3: N matrices on a canvas
+    // (docs/reviews/2026-09-22-gui-reconstruction-plan.md)
+
+    /// A canvas with TWO matrices over `grid_2x2_model()`: matrix 0 shows
+    /// `Quantity` (an input), matrix 1 shows `Revenue = Price * Quantity` (its
+    /// dependent). The shape the Quantrix reference has — several matrices side
+    /// by side, each its own pivot — and the shape that makes "an edit in one
+    /// recomputes the other" a real assertion.
+    fn two_matrix_app() -> ImprovApp {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101)); // Quantity on matrix 0
+        let i = app.add_matrix(Some(MeasureId(102))); // Revenue on matrix 1
+        assert_eq!(i, 1);
+        app.set_focus(0);
+        app.sync_axis_state();
+        app
+    }
+
+    /// **Step 3 acceptance, part 1:** two matrices exist on one canvas at once,
+    /// and each is INDEPENDENTLY pivotable — pivoting one leaves the other's axis
+    /// state exactly as it was.
+    ///
+    /// Asserted on per-matrix axis state, because that is what "independently
+    /// pivotable" means: before the refactor there was one `axis_order` for the
+    /// whole app, so this could not even be expressed.
+    #[test]
+    fn two_matrices_are_independently_pivotable() {
+        let mut app = two_matrix_app();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        assert_eq!(app.matrix_count(), 2);
+
+        // Both start on their measure's natural axes: Time on rows, Product on
+        // columns.
+        for mi in 0..2 {
+            let m = &app.matrices[mi];
+            assert_eq!(m.row_cats(&app.model), vec![t], "matrix {mi} rows");
+            assert_eq!(m.col_cats(&app.model), vec![p], "matrix {mi} cols");
+        }
+        assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
+        assert_eq!(app.matrices[1].measure, Some(MeasureId(102)));
+
+        // Pivot matrix 1 only (the focused matrix is 0, so this must go through
+        // the matrix itself — exactly as a click in matrix 1 does).
+        let model = app.model.clone();
+        app.matrices[1].pivot_rotate(&model);
+
+        assert_eq!(
+            app.matrices[1].row_cats(&app.model),
+            vec![p],
+            "matrix 1 pivoted: Product on rows"
+        );
+        assert_eq!(app.matrices[1].col_cats(&app.model), vec![t]);
+        assert_eq!(
+            app.matrices[0].row_cats(&app.model),
+            vec![t],
+            "matrix 0 must be untouched by matrix 1's pivot"
+        );
+        assert_eq!(app.matrices[0].col_cats(&app.model), vec![p]);
+
+        // And stacking on one matrix does not stack on the other.
+        app.matrices[0].set_axis(&model, p, Axis::Rows);
+        assert_eq!(app.matrices[0].row_cats(&app.model), vec![t, p]);
+        assert!(app.matrices[0].col_cats(&app.model).is_empty());
+        assert_eq!(
+            app.matrices[1].row_cats(&app.model),
+            vec![p],
+            "matrix 1 still has its own layout"
+        );
+
+        // Filters are per matrix too: hiding an item in one does not hide it in
+        // the other.
+        app.matrices[0].toggle_filter_item(&model, t, ItemId(11));
+        assert_eq!(app.matrices[0].sorted_items(&app.model, t).len(), 1);
+        assert_eq!(
+            app.matrices[1].sorted_items(&app.model, t).len(),
+            2,
+            "a filter is presentation on ONE matrix, not the model"
+        );
+        // ...and so are cursors.
+        app.matrices[1].move_cursor(&model, 5, 5);
+        assert_eq!(
+            (app.matrices[0].cursor_row, app.matrices[0].cursor_col),
+            (0, 0),
+            "matrix 0's cursor must not follow matrix 1's"
+        );
+
+        // Finally: the two layouts are not merely *stored* separately, they are
+        // RENDERED separately. A real headless frame, then each matrix's own
+        // record of what its grid was drawn with (see `Matrix::rendered_axes`).
+        // Without this a renderer that ignored its matrix index and drew the
+        // focused matrix's pivot twice would pass everything above.
+        let _ = layout_all(&mut app);
+        let drew = |app: &ImprovApp, mi: usize| {
+            app.matrices[mi]
+                .rendered_axes
+                .clone()
+                .unwrap_or_else(|| panic!("matrix {mi} never rendered"))
+        };
+        assert_eq!(
+            drew(&app, 0),
+            (vec![t, p], vec![]),
+            "matrix 0 must be drawn with ITS stacked rows"
+        );
+        assert_eq!(
+            drew(&app, 1),
+            (vec![p], vec![t]),
+            "matrix 1 must be drawn with ITS pivot, not matrix 0's"
+        );
+        assert_ne!(
+            drew(&app, 0),
+            drew(&app, 1),
+            "two matrices with different pivots must render differently"
+        );
+    }
+
+    /// **Step 3 acceptance, part 2:** an edit in ONE matrix recomputes a
+    /// dependent measure displayed in ANOTHER. The canvas is a view over one
+    /// shared engine, so `Quantity` edited on matrix 0 must change what matrix 1
+    /// (`Revenue = Price * Quantity`) draws at that coordinate.
+    ///
+    /// Asserted through `cell_text` at matrix 1's own cursor key — the string the
+    /// second matrix actually renders — not through the snapshot, so a canvas
+    /// that rendered stale values from a per-matrix cache would fail here.
+    #[test]
+    fn an_edit_in_one_matrix_recomputes_a_dependent_in_another() {
+        let mut app = two_matrix_app();
+        // Both matrices sit on [2025, WidgetA] (cursor 0,0). Quantity = 100,
+        // Price = 10, so Revenue = 1000.
+        let qkey = app.matrices[0]
+            .cursor_key(&app.model)
+            .expect("matrix 0 addresses a cell");
+        let rkey = app.matrices[1]
+            .cursor_key(&app.model)
+            .expect("matrix 1 addresses a cell");
+        assert_eq!(qkey, rkey, "both matrices are on the same coordinate");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("100"));
+        assert_eq!(
+            app.cell_text(MeasureId(102), &rkey).as_deref(),
+            Some("1000")
+        );
+
+        // Edit Quantity through matrix 0's cell editor path.
+        app.commit_cell_text(MeasureId(101), qkey.clone(), "250")
+            .expect("commit the edit");
+
+        assert_eq!(
+            app.cell_text(MeasureId(101), &qkey).as_deref(),
+            Some("250"),
+            "matrix 0 shows the edit"
+        );
+        assert_eq!(
+            app.cell_text(MeasureId(102), &rkey).as_deref(),
+            Some("2500"),
+            "matrix 1's dependent measure must recompute: 10 * 250"
+        );
+        // The other coordinates of Revenue are untouched (an incremental
+        // recompute, not a wholesale reset).
+        let mut other = vec![(1u32, 11u32), (2, 20)];
+        other.sort();
+        assert_eq!(
+            app.cell_text(MeasureId(102), &other).as_deref(),
+            Some("1200"),
+            "an unrelated coordinate must keep its value"
+        );
+    }
+
+    /// **Step 3 acceptance, part 3a:** saving and reloading round-trips the whole
+    /// multi-matrix canvas — every matrix's measure, pivot, filters, page pins
+    /// and geometry — through `storage_mentat` and back.
+    #[test]
+    fn save_reload_round_trips_a_multi_matrix_canvas() {
+        let db = temp_db("multi_matrix");
+        let _cleanup = Cleanup(db.clone());
+        ModelStore::open(&db)
+            .and_then(|mut s| s.save_model(&sales_3d_model()))
+            .expect("seed the store");
+
+        let mut app = ImprovApp::load(&db).expect("load");
+        select(&mut app, MeasureId(200));
+        app.sync_axis_state();
+        // Matrix 0: pivoted, its page dimension advanced one item.
+        let model = app.model.clone();
+        app.matrices[0].pivot_rotate(&model);
+        app.matrices[0].set_page(&model, 0, 1);
+        app.matrices[0].rect = CanvasRect {
+            x: 12.0,
+            y: 34.0,
+            w: 500.0,
+            h: 300.0,
+        };
+        // Matrix 1: the same measure, with its column category STACKED onto its
+        // row axis instead, placed elsewhere.
+        //
+        // Which category that is, is read from the matrix rather than hardcoded:
+        // `load_measure_categories` queries datalog, which does not promise an
+        // order, so a measure's declared category order after a reload is not
+        // fixed. Naming a category id here made this test pass or fail depending
+        // on which one happened to land on the column axis.
+        app.add_matrix(Some(MeasureId(200)));
+        app.sync_axis_state();
+        let stack = app.matrices[1].col_cats(&app.model)[0];
+        app.matrices[1].set_axis(&model, stack, Axis::Rows);
+        assert_eq!(app.matrices[1].n_rows, 2, "the fixture must really stack");
+        app.matrices[1].rect = CanvasRect {
+            x: 600.0,
+            y: 40.0,
+            w: 420.0,
+            h: 260.0,
+        };
+        let want: Vec<MatrixPlacement> = app
+            .matrices
+            .iter()
+            .map(|m| m.to_placement(&app.model).expect("placement"))
+            .collect();
+
+        let id = app.save_view("Canvas A").expect("saved");
+        // The view holds BOTH matrices: the primary flat fields plus one extra.
+        let stored = app.model.views.get(&id).expect("view stored");
+        assert_eq!(
+            stored.placements.len(),
+            1,
+            "one EXTRA matrix beyond primary"
+        );
+        assert_eq!(stored.matrices(), want, "the view describes both matrices");
+
+        // Reload from the store and apply the view: the canvas comes back.
+        let mut reloaded = ImprovApp::load(&db).expect("reload");
+        assert_eq!(reloaded.matrix_count(), 1, "a fresh app starts single");
+        let v = reloaded.model.views[&id].clone();
+        reloaded.apply_view(&v);
+        reloaded.sync_axis_state(); // must not clobber the applied layout
+
+        assert_eq!(reloaded.matrix_count(), 2, "both matrices restored");
+        let got: Vec<MatrixPlacement> = reloaded
+            .matrices
+            .iter()
+            .map(|m| m.to_placement(&reloaded.model).expect("placement"))
+            .collect();
+        assert_eq!(got, want, "every matrix round-tripped exactly");
+
+        // Spot-check the parts that are easy to lose, against what the live
+        // canvas had rather than against absolute category ids: the store does
+        // not promise to preserve a measure's DECLARED category order, so
+        // "Time ends up on rows" is not a property of this round trip. That each
+        // matrix comes back with the pivot, page pin and geometry IT had is.
+        for (mi, w) in want.iter().enumerate() {
+            let got = &reloaded.matrices[mi];
+            assert_eq!(
+                got.row_cats(&reloaded.model),
+                w.axis_order[..w.n_rows].to_vec(),
+                "matrix {mi}'s row stack"
+            );
+            assert_eq!(
+                got.col_cats(&reloaded.model),
+                w.axis_order[w.n_rows..w.n_rows + w.n_cols].to_vec(),
+                "matrix {mi}'s column stack"
+            );
+            assert_eq!(
+                got.pinned_pages(&reloaded.model),
+                w.page_items,
+                "matrix {mi}'s page pin"
+            );
+        }
+        // The two matrices really do differ, so the loop above is not comparing
+        // one layout with itself: matrix 1 has two categories stacked on rows.
+        assert_eq!(reloaded.matrices[0].n_rows, 1);
+        assert_eq!(reloaded.matrices[1].n_rows, 2);
+        assert!(
+            reloaded.matrices[1]
+                .row_cats(&reloaded.model)
+                .contains(&stack),
+            "matrix 1's stacked category came back on its row axis"
+        );
+        assert_eq!(reloaded.matrices[0].rect.x, 12.0, "geometry per matrix");
+        assert_eq!(reloaded.matrices[1].rect.x, 600.0);
+    }
+
+    /// **Step 3 acceptance, part 3b:** a LEGACY single-matrix view — one written
+    /// before canvases, with no `placements` and no geometry — still loads
+    /// correctly, and loads as exactly one matrix with its saved pivot.
+    ///
+    /// The view here is built the pre-canvas way (flat fields only, `placements`
+    /// empty, `rect` defaulted), which is what `serde` produces for an old stored
+    /// blob; `storage_mentat` has its own test that such a blob deserializes, and
+    /// this is the GUI honoring it.
+    #[test]
+    fn a_legacy_single_matrix_view_still_loads() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        // Exactly the shape a pre-canvas save produced.
+        let legacy = View {
+            id: ViewId(7),
+            name: Name("Legacy".into()),
+            measure: MeasureId(101),
+            axis_order: vec![product, time],
+            n_rows: 1,
+            n_cols: 1,
+            page_items: vec![],
+            filters: vec![Filter {
+                category: product,
+                items: vec![ItemId(20)],
+            }],
+            rect: CanvasRect::default(),
+            placements: vec![],
+        };
+        assert!(
+            legacy.placements.is_empty(),
+            "the fixture must be a pre-canvas view, or it proves nothing"
+        );
+
+        // Apply it to a canvas that currently has TWO matrices: a one-matrix view
+        // must reduce the canvas to one, not leave a stray matrix behind.
+        let mut app = two_matrix_app();
+        assert_eq!(app.matrix_count(), 2);
+        app.apply_view(&legacy);
+        app.sync_axis_state();
+
+        assert_eq!(
+            app.matrix_count(),
+            1,
+            "a legacy view is a ONE-matrix canvas"
+        );
+        let m = &app.matrices[0];
+        assert_eq!(m.measure, Some(MeasureId(101)));
+        assert_eq!(
+            m.row_cats(&app.model),
+            vec![product],
+            "saved pivot restored"
+        );
+        assert_eq!(m.col_cats(&app.model), vec![time]);
+        assert_eq!(m.filters, legacy.filters, "saved filter restored");
+        assert_eq!(
+            m.rect,
+            CanvasRect::default(),
+            "no geometry saved -> the default rectangle, visible on the canvas"
+        );
+        // The filter really is in effect on the restored matrix.
+        assert_eq!(
+            m.sorted_items(&app.model, product)
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![ItemId(20)]
+        );
+        // And re-saving it yields the same one-matrix shape (no phantom extras).
+        let again = app.build_view(ViewId(8), "again").expect("view");
+        assert!(
+            again.placements.is_empty(),
+            "a one-matrix canvas must still save as a one-matrix view"
+        );
+        assert_eq!(again.measure, MeasureId(101));
+    }
+
+    /// A view whose measure is gone is refused and leaves the canvas alone; a
+    /// view where only SOME matrices' measures are gone loads the rest and says
+    /// so, rather than showing a blank matrix.
+    #[test]
+    fn a_view_with_a_missing_measure_is_handled_not_shown_blank() {
+        let mut app = two_matrix_app();
+        let two = app.build_view(ViewId(1), "two").expect("view");
+        // Drop the measure the EXTRA matrix shows.
+        app.model.measures.remove(&MeasureId(102));
+        app.apply_view(&two);
+        assert_eq!(app.matrix_count(), 1, "the dead matrix was dropped");
+        assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
+        assert!(app.status.contains("skipped"), "got {:?}", app.status);
+
+        // Now drop the primary one too: nothing is applicable, so nothing moves.
+        let before = app.matrices.clone();
+        app.model.measures.remove(&MeasureId(101));
+        app.apply_view(&two);
+        assert_eq!(app.matrix_count(), before.len());
+        assert_eq!(app.status, "view's measure no longer exists");
+    }
+
+    /// **Step 3 acceptance, part 4:** only the FOCUSED matrix consumes grid
+    /// shortcuts. An arrow key must move one cursor, not every cursor on the
+    /// canvas — driven through `handle_grid_keys` in a real frame, per matrix
+    /// index, which is how the canvas calls it.
+    #[test]
+    fn only_the_focused_matrix_consumes_grid_shortcuts() {
+        let mut app = two_matrix_app();
+        app.set_focus(0);
+        assert_eq!(app.focus_index(), 0);
+
+        use egui::Key;
+        // Deliver the keys AT matrix 0 (the focused one): its cursor moves.
+        frame_with_keys_for(&mut app, 0, &[Key::ArrowDown, Key::ArrowRight], None);
+        assert_eq!(
+            (app.matrices[0].cursor_row, app.matrices[0].cursor_col),
+            (1, 1),
+            "the focused matrix must take the keystroke"
+        );
+        assert_eq!(
+            (app.matrices[1].cursor_row, app.matrices[1].cursor_col),
+            (0, 0),
+            "the unfocused matrix must not move"
+        );
+
+        // Deliver the SAME keys at matrix 1 while matrix 0 still has the focus:
+        // nothing happens at all (the gate is focus, not which Ui rendered).
+        //
+        // Matrix 0's cursor is put back to the top-left first, so this also
+        // catches the subtler bug: a handler that ignored `mi` and simply drove
+        // "the focused matrix" would move matrix 0 from (0,0) here. (Asserting
+        // against (1,1) could not see that — the 2x2 grid clamps there.)
+        app.matrices[0].cursor_row = 0;
+        app.matrices[0].cursor_col = 0;
+        frame_with_keys_for(&mut app, 1, &[Key::ArrowDown, Key::ArrowRight], None);
+        assert_eq!(
+            (app.matrices[1].cursor_row, app.matrices[1].cursor_col),
+            (0, 0),
+            "an unfocused matrix must ignore keys aimed at it"
+        );
+        assert_eq!(
+            (app.matrices[0].cursor_row, app.matrices[0].cursor_col),
+            (0, 0),
+            "...and must not forward them to the focused matrix either"
+        );
+        // Put it back where the first delivery left it for the rest of the test.
+        app.matrices[0].cursor_row = 1;
+        app.matrices[0].cursor_col = 1;
+
+        // Move the focus: now matrix 1 takes them, and matrix 0 stops.
+        app.set_focus(1);
+        frame_with_keys_for(&mut app, 1, &[Key::ArrowDown], None);
+        assert_eq!(
+            (app.matrices[1].cursor_row, app.matrices[1].cursor_col),
+            (1, 0),
+            "the newly focused matrix takes the keystroke"
+        );
+        assert_eq!(
+            (app.matrices[0].cursor_row, app.matrices[0].cursor_col),
+            (1, 1),
+            "the previously focused matrix froze where it was"
+        );
+
+        // Enter opens the cell editor on the focused matrix ONLY. Matrix 1 shows
+        // derived Revenue, so focus matrix 0 (input Quantity) for this.
+        app.set_focus(0);
+        // Enter aimed at the UNFOCUSED matrix opens nothing anywhere.
+        frame_with_keys_for(&mut app, 1, &[Key::Enter], None);
+        assert!(
+            app.matrices[0].editing.is_none() && app.matrices[1].editing.is_none(),
+            "Enter aimed at an unfocused matrix must open no editor at all"
+        );
+        // Aimed at the focused one it opens that one's editor, and only that one's.
+        frame_with_keys_for(&mut app, 0, &[Key::Enter], None);
+        assert!(
+            app.matrices[0].editing.is_some(),
+            "Enter must open the focused matrix's editor"
+        );
+        assert!(
+            app.matrices[1].editing.is_none(),
+            "...and no other matrix's"
+        );
+    }
+
+    /// **Step 3 acceptance, part 5:** each matrix's margin gutters frame ITS OWN
+    /// table — Step 1's invariant, now per matrix, asserted on the rects a real
+    /// headless frame recorded.
+    ///
+    /// Two matrices means two independent framed regions: this fails if the
+    /// canvas renders one set of gutters, or if the second matrix's gutters land
+    /// on the first matrix's table.
+    #[test]
+    fn every_matrix_on_the_canvas_frames_its_own_table() {
+        let mut app = two_matrix_app();
+        // Place them far apart so overlapping rects cannot make the assertion
+        // accidentally true.
+        app.matrices[0].rect = CanvasRect {
+            x: 0.0,
+            y: 0.0,
+            w: 460.0,
+            h: 300.0,
+        };
+        app.matrices[1].rect = CanvasRect {
+            x: 0.0,
+            y: 340.0,
+            w: 460.0,
+            h: 300.0,
+        };
+        let all = layout_all(&mut app);
+        assert_eq!(all.len(), 2, "one gutter set per matrix");
+
+        for (i, g) in all.iter().enumerate() {
+            assert!(
+                gutters_have_room(g),
+                "matrix {i} must have room at this size: {g:?}"
+            );
+            assert!(
+                gutters_frame_table(g),
+                "matrix {i}'s gutters must frame ITS table: {g:?}"
+            );
+            // Step 1's two headline adjacencies, spelled out per matrix.
+            assert!(
+                (g.left.max.x - g.table.min.x).abs() <= EDGE_EPS,
+                "matrix {i}: row gutter must adjoin its table's left edge: {g:?}"
+            );
+            assert!(
+                (g.top.max.y - g.table.min.y).abs() <= EDGE_EPS,
+                "matrix {i}: column gutter must adjoin its table's top edge: {g:?}"
+            );
+        }
+        // The two framed regions are genuinely distinct: matrix 1's table is
+        // below matrix 0's, not the same rect reported twice.
+        assert!(
+            all[1].table.min.y > all[0].table.min.y + 100.0,
+            "the second matrix must frame a DIFFERENT table: {all:?}"
+        );
+        assert_ne!(all[0].top, all[1].top, "each matrix has its own gutters");
+    }
+
+    /// The CANVAS must not creep either: with N matrices on a scrollable surface,
+    /// the geometry has to settle and stay put frame after frame.
+    ///
+    /// This is Step 1's `gutters_do_not_creep_across_frames_or_repivots`
+    /// discipline applied to the container it now lives in — the reason
+    /// `canvas_extent` is a pure function of the matrix rects rather than
+    /// something derived from last frame's content size. A scroll area whose
+    /// content grew by what it claimed last frame would drift forever, and a
+    /// single-frame assertion cannot see it.
+    #[test]
+    fn the_canvas_does_not_creep_across_frames() {
+        let mut app = two_matrix_app();
+        let (ctx, mut pass) = layout_harness();
+        // Settle (a panel reads its extent from the previous frame), then assert
+        // the settled geometry is genuinely stationary.
+        let settled = settle(&ctx, &mut app, &mut pass);
+        for i in 0..10 {
+            let now = pass(&ctx, &mut app);
+            assert_eq!(now, settled, "the canvas drifted on frame {i}");
+        }
+        // Every matrix's geometry is stationary, not just the focused one's.
+        let first: Vec<GutterRects> = app.matrices.iter().filter_map(|m| m.gutters).collect();
+        assert_eq!(first.len(), 2);
+        for _ in 0..5 {
+            let _ = pass(&ctx, &mut app);
+        }
+        let again: Vec<GutterRects> = app.matrices.iter().filter_map(|m| m.gutters).collect();
+        assert_eq!(first, again, "some matrix's geometry drifted");
+
+        // And the canvas surface itself does not grow: it is a function of the
+        // matrix rects, so asking twice with the same rects gives the same size.
+        let avail = egui::vec2(800.0, 600.0);
+        let a = app.canvas_extent(avail);
+        let b = app.canvas_extent(avail);
+        assert_eq!(a, b);
+        // Moving a matrix right/down DOES grow it (the surface must follow the
+        // content), which is what makes the constancy above meaningful.
+        app.matrices[1].rect.x += 500.0;
+        assert!(
+            app.canvas_extent(avail).x > a.x,
+            "the canvas must grow to hold a matrix moved off its right edge"
+        );
+    }
+
+    /// Dragging a matrix can never put it somewhere unreachable: `move_by` stops
+    /// at the canvas's top-left (the scroll surface starts there, so a negative
+    /// offset could not be scrolled to) and `resize_by` stops at the minimum
+    /// size (below which the matrix has no room for its own chrome, and at zero
+    /// its rect would be degenerate).
+    #[test]
+    fn a_matrix_cannot_be_dragged_or_resized_out_of_reach() {
+        let mut m = Matrix {
+            rect: CanvasRect {
+                x: 10.0,
+                y: 20.0,
+                w: 400.0,
+                h: 300.0,
+            },
+            ..Matrix::default()
+        };
+
+        // Ordinary drags move it exactly as asked, in both directions.
+        m.move_by(30.0, 40.0);
+        assert_eq!((m.rect.x, m.rect.y), (40.0, 60.0));
+        m.move_by(-15.0, -25.0);
+        assert_eq!((m.rect.x, m.rect.y), (25.0, 35.0));
+
+        // A drag past the top-left corner stops AT the corner, never past it.
+        m.move_by(-1000.0, -1000.0);
+        assert_eq!(
+            (m.rect.x, m.rect.y),
+            (0.0, 0.0),
+            "a matrix must not be draggable off the canvas"
+        );
+        // ...and it is still draggable back out, not stuck.
+        m.move_by(50.0, 60.0);
+        assert_eq!((m.rect.x, m.rect.y), (50.0, 60.0));
+
+        // Resizing shrinks and grows, but never below the minimum.
+        m.resize_by(-50.0, -50.0);
+        assert_eq!((m.rect.w, m.rect.h), (350.0, 250.0));
+        m.resize_by(-10_000.0, -10_000.0);
+        assert_eq!(
+            (m.rect.w, m.rect.h),
+            (MATRIX_MIN_W, MATRIX_MIN_H),
+            "a matrix must not be shrinkable past its own chrome"
+        );
+        assert!(m.rect.w > 0.0 && m.rect.h > 0.0, "never a degenerate rect");
+        m.resize_by(100.0, 100.0);
+        assert_eq!(
+            (m.rect.w, m.rect.h),
+            (MATRIX_MIN_W + 100.0, MATRIX_MIN_H + 100.0),
+            "...and growing again still works"
+        );
+    }
+
+    /// The canvas lays out at every window size without panicking, and the
+    /// per-frame framing `debug_assert!` inside `gutter_frame` runs on every
+    /// matrix at every size (the Step 1 discipline, extended to N matrices).
+    #[test]
+    fn the_canvas_lays_out_at_every_window_size() {
+        for (w, h) in [
+            (1400.0, 900.0),
+            (1000.0, 700.0),
+            (600.0, 400.0),
+            (200.0, 150.0),
+            (40.0, 30.0),
+        ] {
+            let mut app = two_matrix_app();
+            let ctx = egui::Context::default();
+            ctx.set_style(crate::theme::next_style());
+            for i in 0..6 {
+                let raw = egui::RawInput {
+                    time: Some(f64::from(i) / 60.0),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(w, h),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw, |ctx| {
+                    app.sync_axis_state();
+                    app.status_bar(ctx);
+                    app.document_tab_bar(ctx);
+                    app.canvas_panel(ctx);
+                });
+            }
+            assert_eq!(app.matrix_count(), 2, "{w}x{h}: both matrices survive");
+        }
+    }
+
+    /// Adding and removing matrices is canvas layout, never a model change:
+    /// nothing becomes an undo point, and the last matrix cannot be removed.
+    ///
+    /// **The undo decision** (recorded here because a test is the only place it
+    /// cannot rot): undo/redo snapshots `Model`, and canvas layout lives in the
+    /// `View`, not the `Model` — so placing, moving, resizing or removing a
+    /// matrix is deliberately NOT undoable. Saving the canvas as a view IS a
+    /// model change and IS undoable, which is what makes a layout recoverable:
+    /// save the canvas, and Ctrl+Z reaches it like any other model edit.
+    #[test]
+    fn canvas_layout_is_not_an_undo_point_but_saving_it_is() {
+        let mut app = build_app(grid_2x2_model());
+        assert!(!app.can_undo());
+
+        app.add_matrix(Some(MeasureId(101)));
+        assert_eq!(app.matrix_count(), 2);
+        assert!(
+            !app.can_undo(),
+            "placing a matrix is layout, not a model change"
+        );
+
+        // Moving and resizing likewise.
+        app.matrices[1].rect.x += 40.0;
+        app.matrices[1].rect.w += 60.0;
+        assert!(!app.can_undo());
+
+        assert!(app.remove_matrix(1));
+        assert_eq!(app.matrix_count(), 1);
+        assert!(!app.can_undo(), "removing a matrix is layout too");
+
+        // The last matrix is never removed: there would be nowhere to show a
+        // measure, and `focused()` must always have a matrix to return.
+        assert!(!app.remove_matrix(0), "the last matrix must stay");
+        assert_eq!(app.matrix_count(), 1);
+        assert!(!app.remove_matrix(9), "an out-of-range index is a no-op");
+
+        // Saving the canvas as a view IS a model change, so it IS undoable —
+        // which is how a layout becomes recoverable.
+        app.add_matrix(Some(MeasureId(102)));
+        let id = app.save_view("Canvas").expect("saved");
+        assert!(app.can_undo(), "saving a view must be an undo point");
+        app.undo().expect("undo the save");
+        assert!(
+            !app.model.views.contains_key(&id),
+            "undo removed the saved view"
+        );
+        assert_eq!(
+            app.matrix_count(),
+            2,
+            "undoing the SAVE does not tear down the canvas it described"
+        );
+    }
+
+    /// Removing a matrix never leaves the focus dangling: `focused()` must keep
+    /// returning a real matrix, whichever one went away.
+    #[test]
+    fn focus_survives_removing_matrices() {
+        let mut app = build_app(grid_2x2_model());
+        app.add_matrix(Some(MeasureId(101)));
+        app.add_matrix(Some(MeasureId(102)));
+        assert_eq!(app.matrix_count(), 3);
+        assert_eq!(app.focus_index(), 2, "a new matrix takes the focus");
+
+        // Remove the focused (last) one: focus falls back inside the range.
+        app.remove_matrix(2);
+        assert_eq!(app.focus_index(), 1);
+        assert_eq!(app.focused().measure, app.matrices[1].measure);
+
+        // Remove an EARLIER one while focused on a later one.
+        app.set_focus(1);
+        app.remove_matrix(0);
+        assert_eq!(app.matrix_count(), 1);
+        assert_eq!(app.focus_index(), 0);
+        // set_focus clamps rather than panicking on a bogus index.
+        app.set_focus(99);
+        assert_eq!(app.focus_index(), 0);
+    }
+
+    /// The formula bar, inspector and chart all follow the FOCUSED matrix: they
+    /// are single-measure surfaces, and on a canvas "the selected measure" can
+    /// only mean "the one with the keyboard".
+    #[test]
+    fn single_measure_surfaces_follow_the_focus() {
+        let mut app = two_matrix_app();
+        app.set_focus(0);
+        assert_eq!(app.selected(), Some(MeasureId(101)), "Quantity");
+        assert_eq!(
+            app.inspector_data(app.selected().unwrap()).unwrap().name,
+            "Quantity"
+        );
+        // Quantity is an input measure: no chart-worthy formula, but a chart.
+        let q_chart = app.chart_series();
+
+        app.set_focus(1);
+        assert_eq!(app.selected(), Some(MeasureId(102)), "Revenue");
+        let d = app.inspector_data(app.selected().unwrap()).unwrap();
+        assert_eq!(d.name, "Revenue");
+        assert!(d.is_derived, "the inspector moved to the derived measure");
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("Price * Quantity")
+        );
+        // The chart followed too: different measure, different numbers.
+        let r_chart = app.chart_series();
+        assert_ne!(
+            q_chart.series[0].points, r_chart.series[0].points,
+            "the chart must plot the focused matrix's measure"
+        );
+    }
+
+    // -- STEP 5: chrome (title bars, selection readout, document tabs)
+
+    /// **Step 5:** each matrix has its own title bar naming its measure, and —
+    /// like the reference's `Property Financials: Virginia Ave` — the slice it
+    /// shows, i.e. its pinned page items.
+    #[test]
+    fn each_matrix_has_its_own_title_naming_its_slice() {
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200)); // Sales[Time, Product, Region]
+        app.sync_axis_state();
+        // One page dim (Region) pinned to North.
+        assert_eq!(app.matrix_title(0), "Sales: North");
+
+        // Page to South: the title follows the slice, which is the point of
+        // putting it there.
+        let model = app.model.clone();
+        app.matrices[0].set_page(&model, 0, 1);
+        assert_eq!(app.matrix_title(0), "Sales: South");
+
+        // A second matrix on the same measure, pinned differently, gets its own
+        // title — two matrices are two slices, and the title bars say which.
+        app.add_matrix(Some(MeasureId(200)));
+        app.sync_axis_state();
+        assert_eq!(app.matrix_title(1), "Sales: North");
+        assert_eq!(app.matrix_title(0), "Sales: South");
+
+        // With no page dimension there is no slice to name, so the title is just
+        // the measure.
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        assert_eq!(app.matrix_title(0), "Quantity");
+        assert_eq!(app.matrix_title(99), "", "an out-of-range index is empty");
+    }
+
+    /// **Step 5:** the status bar's selection-aggregate readout (the reference's
+    /// bottom-right `Sum`), computed from the FOCUSED matrix's selection.
+    ///
+    /// Selection is one cell today, so the sum is that cell's number; a
+    /// non-numeric or absent cell reads `Sum —` rather than a fabricated 0.
+    #[test]
+    fn the_status_bar_reads_out_the_focused_selection_sum() {
+        let mut app = two_matrix_app();
+        // Matrix 0 = Quantity, cursor on [2025, WidgetA] = 100.
+        app.set_focus(0);
+        assert_eq!(app.selection_sum(), Some(100.0));
+        assert_eq!(app.selection_readout(), "Sum 100");
+
+        // Move that matrix's cursor: the readout follows it.
+        let model = app.model.clone();
+        app.matrices[0].move_cursor(&model, 1, 0); // [2026, WidgetA] = 120
+        assert_eq!(app.selection_readout(), "Sum 120");
+
+        // Focus the OTHER matrix: the readout switches to its selection, which is
+        // a derived cell (Revenue[2025, WidgetA] = 10 * 100 = 1000).
+        app.set_focus(1);
+        assert_eq!(app.selection_sum(), Some(1000.0));
+        assert_eq!(app.selection_readout(), "Sum 1000");
+
+        // An empty cell has nothing to sum.
+        app.model
+            .inputs
+            .remove(&(MeasureId(101), decode(&app.cursor_key().unwrap())));
+        app.rebuild_engine();
+        assert_eq!(app.selection_sum(), None);
+        assert_eq!(app.selection_readout(), "Sum \u{2014}");
+    }
+
+    /// A non-numeric selection reads `Sum —`: the aggregate is a SUM, and text
+    /// does not sum. (Its cell still renders its text in the grid — see
+    /// `typed_input_cells_render_their_values`.)
+    #[test]
+    fn a_non_numeric_selection_has_no_sum() {
+        let mut app = build_app(typed_model());
+        select(&mut app, MeasureId(2)); // Label (Text)
+        app.sync_axis_state();
+        assert_eq!(
+            app.cell_text(MeasureId(2), &typed_key()).as_deref(),
+            Some("hello")
+        );
+        assert_eq!(app.selection_sum(), None, "text has no sum");
+        assert_eq!(app.selection_readout(), "Sum \u{2014}");
+    }
+
+    /// **Step 5:** document tabs, one per saved view (the reference's
+    /// `Welcome / Concepts / P&L Canvas`), and clicking one switches CANVASES —
+    /// not just a measure.
+    #[test]
+    fn document_tabs_switch_between_saved_canvases() {
+        let mut app = build_app(grid_2x2_model());
+        assert!(app.document_tabs().is_empty(), "no views, no tabs");
+
+        // Canvas A: one matrix, Quantity.
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        let a = app.save_view("Canvas A").expect("saved A");
+        // Canvas B: two matrices, the second showing Revenue pivoted.
+        app.add_matrix(Some(MeasureId(102)));
+        app.sync_axis_state();
+        let model = app.model.clone();
+        app.matrices[1].pivot_rotate(&model);
+        let b = app.save_view("Canvas B").expect("saved B");
+
+        // Both tabs are listed, in id order, with B current (just saved).
+        let tabs = app.document_tabs();
+        assert_eq!(
+            tabs.iter().map(|(_, n, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["Canvas A", "Canvas B"]
+        );
+        assert_eq!(
+            tabs.iter()
+                .filter(|(_, _, cur)| *cur)
+                .map(|(id, _, _)| *id)
+                .collect::<Vec<_>>(),
+            vec![b],
+            "the just-saved view is the current tab"
+        );
+
+        // Click tab A: the canvas becomes A's — ONE matrix.
+        app.open_view(a);
+        app.sync_axis_state();
+        assert_eq!(app.matrix_count(), 1, "Canvas A has one matrix");
+        assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
+        assert!(
+            app.document_tabs()
+                .iter()
+                .any(|(id, _, cur)| *id == a && *cur),
+            "tab A is now current"
+        );
+
+        // Click tab B: two matrices again, with the pivot B was saved with.
+        app.open_view(b);
+        app.sync_axis_state();
+        assert_eq!(app.matrix_count(), 2, "Canvas B has two matrices");
+        assert_eq!(
+            app.matrices[1].row_cats(&app.model),
+            vec![CategoryId(2)],
+            "B's second matrix came back pivoted"
+        );
+
+        // An unknown id is a no-op, not a panic or an empty canvas.
+        let before = app.matrix_count();
+        app.open_view(ViewId(999));
+        assert_eq!(app.matrix_count(), before);
+    }
+
+    /// A unique temp-db path for a store-backed test.
+    fn temp_db(tag: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "improv_gui_{tag}_{}_{}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// Delete a temp db when the test ends, pass or panic.
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
         }
     }
 }
