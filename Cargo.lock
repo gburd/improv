@@ -1139,6 +1139,7 @@ dependencies = [
 [[package]]
 name = "core_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "bytes",
  "chrono",
@@ -1317,6 +1318,7 @@ dependencies = [
 [[package]]
 name = "db_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "edn",
@@ -1461,6 +1463,7 @@ dependencies = [
 [[package]]
 name = "edn"
 version = "0.1.0"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "bytes",
  "chrono",
@@ -3048,6 +3051,7 @@ dependencies = [
 [[package]]
 name = "mentat"
 version = "0.14.0"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "chrono",
  "core_traits",
@@ -3077,6 +3081,7 @@ dependencies = [
 [[package]]
 name = "mentat_core"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "chrono",
  "core_traits",
@@ -3090,6 +3095,7 @@ dependencies = [
 [[package]]
 name = "mentat_db"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -3110,6 +3116,7 @@ dependencies = [
 [[package]]
 name = "mentat_query_algebrizer"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "edn",
@@ -3120,6 +3127,7 @@ dependencies = [
 [[package]]
 name = "mentat_query_projector"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -3138,6 +3146,7 @@ dependencies = [
 [[package]]
 name = "mentat_query_pull"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -3151,6 +3160,7 @@ dependencies = [
 [[package]]
 name = "mentat_query_sql"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "edn",
@@ -3164,6 +3174,7 @@ dependencies = [
 [[package]]
 name = "mentat_sql"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "mentat_core",
@@ -3175,6 +3186,7 @@ dependencies = [
 [[package]]
 name = "mentat_transaction"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -4134,6 +4146,7 @@ dependencies = [
 [[package]]
 name = "public_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -4158,6 +4171,7 @@ checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 [[package]]
 name = "query_algebrizer_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "edn",
@@ -4167,6 +4181,7 @@ dependencies = [
 [[package]]
 name = "query_projector_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -4181,6 +4196,7 @@ dependencies = [
 [[package]]
 name = "query_pull_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "core_traits",
  "db_traits",
@@ -4882,6 +4898,7 @@ dependencies = [
 [[package]]
 name = "sql_traits"
 version = "0.0.2"
+source = "git+https://codeberg.org/gregburd/mentat.git?rev=eeaefafa13d4be27e8aa6208d7b50898a91205d0#eeaefafa13d4be27e8aa6208d7b50898a91205d0"
 dependencies = [
  "thiserror 2.0.20",
 ]

@@ -10,8 +10,6 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
-  MENTAT_REF: improv-base
 
 jobs:
   qualify:
@@ -34,9 +32,6 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
-        shell: bash
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}

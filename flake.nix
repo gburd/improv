@@ -74,7 +74,7 @@
           shellHook = ''
             echo "improv dev shell — rust $(rustc --version | cut -d' ' -f2)"
             echo "  cargo test --workspace | cargo run -p improv_gui -- <db> | improv-tui"
-            echo "  note: the embedded Mentat backend is a sibling path dep at ../mentat"
+            echo "  note: the embedded Mentat backend is a pinned git dep (no sibling checkout needed)"
           '';
         };
 

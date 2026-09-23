@@ -16,8 +16,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: -Dwarnings
-  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
-  MENTAT_REF: improv-base
 
 jobs:
   lint-build-test:
@@ -30,8 +28,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - name: Toolchain components
         run: rustup component add rustfmt clippy
       - name: Format
@@ -82,8 +78,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked
       - name: Deny

@@ -10,8 +10,6 @@ on:
   workflow_dispatch:
 
 env:
-  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
-  MENTAT_REF: improv-base
 
 jobs:
   build-and-publish:
@@ -23,8 +21,6 @@ jobs:
         with:
           path: improv
           fetch-depth: 0
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - name: Install mdBook toolchain
         run: |
           cargo install mdbook --version ^0.4 --locked

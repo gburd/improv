@@ -17,10 +17,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
   RUSTFLAGS: -Dwarnings
-  # The embedded Mentat storage backend is a sibling path dependency
-  # (`mentat = { path = "../mentat" }`). CI clones it next to the checkout.
-  MENTAT_REPO: https://codeberg.org/gregburd/mentat.git
-  MENTAT_REF: improv-base
 
 jobs:
   fmt:
@@ -60,8 +56,6 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -104,8 +98,6 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - uses: EmbarkStudios/cargo-deny-action@3fd3802e88374d3fe9159b834c7714ec57d6c979 # v2.0.15
         with:
           manifest-path: improv/Cargo.toml
@@ -126,9 +118,6 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
-        shell: bash
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # nextest
         with:
@@ -156,8 +145,6 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.97.0"
@@ -174,8 +161,6 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Clone Mentat backend
-        run: git clone --depth 1 --branch "$MENTAT_REF" "$MENTAT_REPO" mentat
       - uses: dtolnay/rust-toolchain@stable
       - name: rustdoc
         working-directory: improv

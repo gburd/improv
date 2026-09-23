@@ -37,7 +37,17 @@ chrono = { version = "0.4", features = ["serde"] }
 differential-dataflow = "=0.13.0"
 timely = "=0.13.0"
 # Storage substrate: the embedded SQLite Mentat fork.
-mentat = { path = "../mentat" }
+#
+# A GIT dependency, not a path dependency: `path = "../mentat"` meant a fresh
+# clone of this repo could not even parse its own manifest ("failed to read
+# ../mentat/Cargo.toml"), so nobody outside this machine could build Improv. CI
+# hid the breakage by cloning Mentat next to the checkout first.
+#
+# `rev` is pinned so builds are reproducible. Cargo forbids combining `branch`
+# with `rev`, so the branch is recorded here instead: the revision below is the
+# tip of `improv-base`. To take newer Mentat behavior, push to that branch and
+# bump this `rev`.
+mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "eeaefafa13d4be27e8aa6208d7b50898a91205d0" }
 # TUI (Phase 2).
 ratatui = "0.29"
 crossterm = "0.28"

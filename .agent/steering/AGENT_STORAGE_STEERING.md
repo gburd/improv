@@ -22,11 +22,16 @@ Improv persists models to the **embedded SQLite Mentat fork** — a Datomic-styl
 datom store — **not** to EDN files, JSON files, or an external database. This is
 a hard requirement from the source design.
 
-- Dependency: `mentat = { path = "../mentat" }`, a **sibling path dependency**.
-- CI clones it next to the checkout from
-  `https://codeberg.org/gregburd/mentat.git` at branch **`improv-base`** (env
-  `MENTAT_REPO` / `MENTAT_REF`). When Improv needs newer Mentat behavior, commit
-  and push it to `improv-base` in the mentat repo first, then bump the ref here.
+- Dependency: a **pinned git dependency** in `[workspace.dependencies]` —
+  `mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "<sha>" }`.
+  Not a path dependency: `path = "../mentat"` made a fresh clone unbuildable
+  (cargo could not even read the manifest), which CI masked by cloning Mentat
+  beside the checkout. Cargo forbids `branch` together with `rev`, so the
+  revision is pinned and the branch it tracks (**`improv-base`**) is recorded in
+  a comment beside it.
+- When Improv needs newer Mentat behavior: commit and push to `improv-base`,
+  bump the `rev`, and commit the updated `Cargo.lock`. To develop Mentat locally,
+  use a temporary `[patch]` / `cargo add --path` — never commit it.
 - Mentat is backed by SQLite, giving durable, transactional, cross-platform
   persistence for free.
 

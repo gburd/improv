@@ -105,12 +105,18 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
 
 ## CI / storage-backend pin
 
-- **Mentat is a sibling path dependency** (`mentat = { path = "../mentat" }`).
-  CI clones it next to the checkout from
-  `https://codeberg.org/gregburd/mentat.git` at branch **`improv-base`**
-  (env `MENTAT_REPO` / `MENTAT_REF` in the workflows). When Improv needs newer
-  Mentat behavior, commit + push it to `improv-base` in the mentat repo first,
-  then bump the ref if the branch name changes.
+- **Mentat is a pinned git dependency**, declared once in
+  `[workspace.dependencies]`:
+  `mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "<sha>" }`.
+  It is deliberately NOT a path dependency: `path = "../mentat"` meant a fresh
+  clone could not even parse its manifest, so nobody outside a machine with a
+  sibling checkout could build Improv, and CI hid this by cloning Mentat first.
+  The `rev` is pinned for reproducibility (cargo forbids `branch` + `rev`
+  together); the revision tracks the tip of **`improv-base`**. When Improv needs
+  newer Mentat behavior: commit + push to `improv-base`, then bump the `rev` and
+  commit the resulting `Cargo.lock`. A local checkout is still handy for
+  *developing* Mentat — use `[patch]` or `cargo add --path` temporarily, but
+  never commit that.
 - **GitHub** (`.github/workflows/`): `ci.yml` (fmt, clippy `-D warnings` on our
   crates only, typos, cargo-deny, matrix build+test on Linux/macOS/Windows ×
   default/all-features via nextest, MSRV, rustdoc+mdBook build); `docs.yml`
