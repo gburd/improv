@@ -11,6 +11,7 @@
 //! changes — a formula edit or a new derived measure. Plain cell-value edits go
 //! through `engine.set` incrementally.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use improv_core_model::{
@@ -107,6 +108,13 @@ pub struct ImprovApp {
     /// [`ImprovApp::gutter_frame`]; `None` until the grid has been rendered
     /// once. Layout output, not model state.
     gutters: Option<GutterRects>,
+
+    /// Where each formula-list row landed in the last laid-out frame, as
+    /// `(measure, row rect)` in display order. Recorded by
+    /// [`ImprovApp::formula_list_panel`]; empty until the pane has rendered.
+    /// Layout output, not model state — the same role `gutters` plays for the
+    /// grid, and what lets a headless test click a row where a user would.
+    formula_row_rects: Vec<(MeasureId, egui::Rect)>,
 }
 
 /// The measured screen geometry of the grid's margin gutters and the table they
@@ -266,6 +274,7 @@ impl ImprovApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gutters: None,
+            formula_row_rects: Vec::new(),
         })
     }
 
@@ -1082,11 +1091,12 @@ impl ImprovApp {
     ///
     /// `None` when there is nothing editable to show: `measure` is unknown or
     /// an input measure, or *neither* surface language can spell the formula.
-    /// The latter is reachable from a CSV import: a measure named `"Unit
-    /// Price"` is not a DSL identifier (and the DSL has no quoting), while the
-    /// CNL tokenizer splits the name on whitespace and cannot resolve it
-    /// either. The bar renders that read-only instead of inviting a commit of
-    /// text that no parser accepts.
+    /// Since plan Step 4b the printer quotes awkward names (`'Unit Price'`), so
+    /// a CSV-imported measure name is no longer a reason to go read-only; what
+    /// remains unspellable is a formula *shape* the v1 grammar has no form for
+    /// (see [`formula_dsl`]) whose controlled-English rendering also fails to
+    /// round-trip. The bar renders that read-only instead of inviting a commit
+    /// of text that no parser accepts.
     ///
     /// Whatever this returns, [`Self::commit_formula`] accepts unchanged and
     /// leaves the identical AST — the invariant this pair exists to keep. It is
@@ -1146,6 +1156,111 @@ impl ImprovApp {
         m.kind = MeasureKind::Derived(formula);
         self.publish(candidate)?;
         Ok(())
+    }
+
+    /// Whether `measure`'s formula is currently enabled (the reference's `✓`).
+    /// True for an input measure too — it has no formula to disable, so there is
+    /// no unchecked state for it to be in.
+    pub fn formula_enabled(&self, measure: MeasureId) -> bool {
+        self.model
+            .measures
+            .get(&measure)
+            .is_some_and(|m| !formula_disabled(m))
+    }
+
+    /// Enable or disable `measure`'s formula — the reference's per-formula
+    /// checkmark, as a real **model** operation (see [`DISABLED_MARKER`]).
+    ///
+    /// Disabled, the measure keeps its formula but computes nothing, and every
+    /// dependent recomputes without it. Because the flag lives on the measure's
+    /// `description`, it survives save/reload unchanged.
+    ///
+    /// Atomic and undoable on exactly the same terms as [`Self::commit_formula`]
+    /// — it goes through [`Self::publish`], so a toggle that cannot build or
+    /// cannot save leaves the model, engine and snapshot untouched.
+    ///
+    /// A no-op (still `Ok`) on an input measure or an unknown id: neither has a
+    /// formula, so there is nothing to toggle and nothing to report.
+    pub fn set_formula_enabled(&mut self, measure: MeasureId, enabled: bool) -> Result<(), String> {
+        let Some(m) = self.model.measures.get(&measure) else {
+            return Ok(());
+        };
+        // Nothing to toggle: an input measure has no formula, and a formula
+        // already in the requested state needs no rebuild (and must not become
+        // a spurious undo point).
+        if !m.is_derived() || !formula_disabled(m) == enabled {
+            return Ok(());
+        }
+        let mut candidate = self.model.clone();
+        let m = candidate
+            .measures
+            .get_mut(&measure)
+            .ok_or_else(|| format!("no measure with id {}", measure.0))?;
+        // Preserve the user's own description text across the toggle.
+        let (_, user) = split_marker(m.description.as_deref());
+        m.description = join_marker(!enabled, user);
+        self.publish(candidate)
+    }
+
+    /// Every formula in the model, in id order, as the formula pane lists them
+    /// (see [`FormulaRow`] and [`Self::formula_list_panel`]). Numbering is the
+    /// caller's: row `i` is displayed as `i + 1`, matching the reference's
+    /// 1-based list.
+    ///
+    /// Derived measures only — an input measure has no formula, so it has no row.
+    pub fn formula_rows(&self) -> Vec<FormulaRow> {
+        let mut ids: Vec<MeasureId> = self
+            .model
+            .measures
+            .values()
+            .filter(|m| m.is_derived())
+            .map(|m| m.id)
+            .collect();
+        ids.sort_by_key(|m| m.0);
+        ids.into_iter()
+            .filter_map(|id| {
+                let m = self.model.measures.get(&id)?;
+                let MeasureKind::Derived(f) = &m.kind else {
+                    return None;
+                };
+                // Prefer the editable spelling the bar would show; fall back to
+                // the controlled English so a row is never blank.
+                let text = self
+                    .formula_source(id)
+                    .unwrap_or_else(|| describe_formula(&NlContext::new(&self.model), f));
+                Some(FormulaRow {
+                    measure: id,
+                    target: m.name.0.clone(),
+                    text,
+                    enabled: !formula_disabled(m),
+                    error: self.formula_row_error(id, f),
+                })
+            })
+            .collect()
+    }
+
+    /// The inline error for one formula row, or `None` if the formula is sound.
+    ///
+    /// Two distinct failures, both of which the reference's list shows in place
+    /// rather than hiding:
+    ///
+    /// * It does not **build** — a type/dimension error or a cycle. Found by
+    ///   compiling this one formula, not by rebuilding the whole engine, so
+    ///   listing N formulas costs N compiles and no dataflow graphs.
+    /// * It does not **round-trip** — no surface spelling of it parses back to
+    ///   the identical AST, so the text shown is a description, not source. Said
+    ///   plainly, because that row is the read-only one in the editor above.
+    ///
+    /// A DISABLED formula is still checked: an unchecked row with a broken
+    /// formula should say so, not look clean because it is not running.
+    fn formula_row_error(&self, id: MeasureId, f: &improv_core_model::Formula) -> Option<String> {
+        let ctx = improv_engine::compiler::CompileContext::new(&self.model.measures);
+        if let Err(e) = improv_engine::compiler::compile_formula(&ctx, id, f) {
+            return Some(e.to_string());
+        }
+        self.formula_source(id)
+            .is_none()
+            .then(|| "no editable spelling (shown as description)".to_string())
     }
 
     /// Parse formula text in either supported surface language: the symbolic
@@ -1464,6 +1579,30 @@ struct InspectorData {
     error_cells: usize,
 }
 
+/// One row of the formula pane: a single derived measure's formula as the
+/// reference's numbered, checkable list shows it (`✓ 1. Gross Margin = Sum of
+/// Revenue - Sum of Cost of Sales`).
+///
+/// Built by [`ImprovApp::formula_rows`] in measure-id order; the display number
+/// is the row's 1-based position, not an identity, so inserting a formula
+/// renumbers the list exactly as the reference does.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormulaRow {
+    /// The measure this formula defines (clicking the row selects it).
+    pub measure: MeasureId,
+    /// The target measure's name — the left side of the displayed `Target = …`.
+    pub target: String,
+    /// The formula's source text: the editable spelling when one exists, else
+    /// the controlled-English description (`error` then says so).
+    pub text: String,
+    /// Whether the formula is enabled (the reference's `✓`). See
+    /// [`DISABLED_MARKER`].
+    pub enabled: bool,
+    /// Why this row is not sound, shown inline beneath it. `None` when the
+    /// formula compiles and has an editable spelling.
+    pub error: Option<String>,
+}
+
 /// Build a live engine over all derived measures in `model`, plus its initial
 /// snapshot. Falls back to no engine (inputs still render) on build failure.
 fn build_engine(model: &Model) -> (Option<Engine>, HashMap<MeasureId, MeasureValues>) {
@@ -1476,12 +1615,122 @@ fn build_engine(model: &Model) -> (Option<Engine>, HashMap<MeasureId, MeasureVal
     }
 }
 
-/// Build a live engine over all derived measures in `model`, propagating a
-/// build failure (cycle, type/dimension error) instead of swallowing it. A
-/// model with no derived measures builds no engine, successfully.
+/// The reserved leading marker in [`Measure::description`] that flags a derived
+/// measure's formula as **disabled** — the reference's cleared `✓` (see
+/// `docs/reviews/2026-09-22-gui-reconstruction-plan.md` Step 2).
+///
+/// Disabling is a *model-level* fact, not GUI state: it must survive save and
+/// reload, and the engine must honor it. Two properties chose this
+/// representation over the alternative (flipping the measure to `Input` and
+/// stashing its formula somewhere):
+///
+/// * **The formula is never moved or re-encoded.** A disabled measure stays
+///   `MeasureKind::Derived(f)`, so its formula persists through the store's
+///   existing `:measure/formula` attribute, and re-enabling is exact. Stashing
+///   it as *text* instead would have to survive [`formula_dsl`] returning
+///   `None` for shapes the v1 grammar cannot spell — those formulas would be
+///   destroyed by a disable/enable cycle.
+/// * **One bit, on the measure it describes.** The marker rides
+///   `:measure/description`, which the store already reads and writes, so it
+///   round-trips with no schema change; and because it lives *on the measure*,
+///   deleting or renaming that measure carries the flag with it (a side table
+///   keyed by `MeasureId` would need garbage collection).
+///
+/// A user-written description is preserved verbatim after the marker; see
+/// [`split_marker`] / [`join_marker`].
+///
+/// The engine honors it via [`engine_model`], which flattens disabled measures
+/// to `Input` in the model handed to `Engine::new`, so `derived_build_order`
+/// stops traversing them and every dependent recomputes *without* them — which
+/// is exactly what clearing the checkmark means.
+///
+/// ponytail: a reserved prefix in `description` is a sidecar in a user-visible
+/// field (the CLI prints descriptions), and it is what a GUI-only change can
+/// persist. Promote it to a real `Measure.enabled: bool` plus a
+/// `:measure/enabled` store attribute (serde/schema default true, so existing
+/// databases keep loading) as soon as `core_model`/`storage_mentat` can be
+/// touched in the same change; [`split_marker`], [`join_marker`] and
+/// [`formula_disabled`] are the only three places that would move.
+const DISABLED_MARKER: &str = "[improv:formula-disabled]";
+
+/// Separator between the marker and the user's own description text.
+///
+/// A single space, not a newline: `storage_mentat`'s EDN writer emits `\n` as a
+/// two-character escape that Mentat's reader does not interpret, so a newline
+/// does not survive a save/reload at all (it comes back as a bare `n`, silently
+/// corrupting the text). A space round-trips exactly. The marker is
+/// bracket-delimited so the boundary is unambiguous without needing a character
+/// the store cannot carry.
+const MARKER_SEP: char = ' ';
+
+/// Split a measure description into `(formula disabled, the user's own text)`.
+///
+/// The marker counts only when the description IS it, or begins with it
+/// followed by [`MARKER_SEP`] — so a user description that merely starts with
+/// the same characters (`"[improv:formula-disabled]ish"`) is left strictly
+/// alone.
+fn split_marker(description: Option<&str>) -> (bool, Option<&str>) {
+    let Some(d) = description else {
+        return (false, None);
+    };
+    match d.strip_prefix(DISABLED_MARKER) {
+        Some("") => (true, None),
+        Some(rest) if rest.starts_with(MARKER_SEP) => (true, Some(&rest[MARKER_SEP.len_utf8()..])),
+        _ => (false, Some(d)),
+    }
+}
+
+/// Rebuild a description from the two parts [`split_marker`] takes apart — its
+/// inverse for every input `split_marker` can produce.
+fn join_marker(disabled: bool, user: Option<&str>) -> Option<String> {
+    match (disabled, user) {
+        (false, user) => user.map(str::to_string),
+        (true, None) => Some(DISABLED_MARKER.to_string()),
+        (true, Some(user)) => Some(format!("{DISABLED_MARKER}{MARKER_SEP}{user}")),
+    }
+}
+
+/// Whether `m`'s formula is disabled (see [`DISABLED_MARKER`]). Always false
+/// for an input measure, which has no formula to disable.
+fn formula_disabled(m: &Measure) -> bool {
+    m.is_derived() && split_marker(m.description.as_deref()).0
+}
+
+/// `model` as the ENGINE must see it: every measure whose formula is disabled
+/// flattened to `MeasureKind::Input`, keeping its (still-stored) formula out of
+/// the dataflow entirely.
+///
+/// This is the single point that makes disabling real rather than cosmetic. A
+/// flattened measure leaves `derived_build_order`, so it computes nothing (its
+/// cells go blank) *and* every dependent recomputes against its absence instead
+/// of through it.
+///
+/// Borrows when nothing is disabled — the overwhelmingly common case — so the
+/// projection costs nothing on models that never touch the feature.
+fn engine_model(model: &Model) -> Cow<'_, Model> {
+    if !model.measures.values().any(formula_disabled) {
+        return Cow::Borrowed(model);
+    }
+    let mut out = model.clone();
+    for m in out.measures.values_mut() {
+        if formula_disabled(m) {
+            m.kind = MeasureKind::Input;
+        }
+    }
+    Cow::Owned(out)
+}
+
+/// Build a live engine over every *enabled* derived measure in `model`,
+/// propagating a build failure (cycle, type/dimension error) instead of
+/// swallowing it. A measure whose formula is disabled ([`DISABLED_MARKER`]) is
+/// excluded, via [`engine_model`].
+///
+/// `Ok(None)` (no engine, successfully) when nothing is left to compute — a
+/// model with no derived measures, or one whose formulas are all disabled.
 fn try_build_engine(
     model: &Model,
 ) -> Result<(Option<Engine>, HashMap<MeasureId, MeasureValues>), String> {
+    let model = engine_model(model);
     let derived: Vec<MeasureId> = model
         .measures
         .values()
@@ -1491,17 +1740,20 @@ fn try_build_engine(
     if derived.is_empty() {
         return Ok((None, HashMap::new()));
     }
-    let (e, snap) = Engine::new(model, &derived).map_err(|e| e.to_string())?;
+    let (e, snap) = Engine::new(&model, &derived).map_err(|e| e.to_string())?;
     Ok((Some(e), snap))
 }
 
 /// Render `formula` as symbolic-DSL source text that `parser::parse_expr` parses
 /// back to the *identical* AST, or `None` when the v1 grammar has no exact
 /// spelling for the shape (a bare ref carrying `over`/`except`, a
-/// multi-category `OVER`, a non-identifier measure/category name, an
+/// multi-category `OVER`, an empty measure/category name, an
 /// enum/error/negative/exponent literal, an unknown function id). Callers fall
 /// back to the controlled-English description for those, which
 /// `commit_formula` also accepts.
+///
+/// Awkward *names* are no longer a refusal reason: [`ident`] quotes them
+/// (`'Unit Price'`, `'Price/Unit'`, `'Over'`) per plan Step 4b.
 fn formula_dsl(model: &Model, formula: &improv_core_model::Formula) -> Option<String> {
     expr_dsl(model, &formula.expr)
 }
@@ -1644,9 +1896,9 @@ fn func_name(func: FuncId) -> Option<&'static str> {
 fn ref_dsl(model: &Model, id: MeasureId, by: &[CategoryId]) -> Option<String> {
     let name = ident(model.measures.get(&id).map(|m| m.name.0.as_str())?)?;
     if by.is_empty() {
-        return Some(name.to_string());
+        return Some(name);
     }
-    let cats: Option<Vec<&str>> = by
+    let cats: Option<Vec<String>> = by
         .iter()
         .map(|c| category_name(model, *c).and_then(ident))
         .collect();
@@ -1657,19 +1909,48 @@ fn category_name(model: &Model, c: CategoryId) -> Option<&str> {
     model.categories.get(&c).map(|cat| cat.name.0.as_str())
 }
 
-/// `name` if the tokenizer reads it back as a single identifier that is not a
-/// grammar keyword; `None` otherwise (the DSL has no quoting for names).
-fn ident(name: &str) -> Option<&str> {
+/// The DSL spelling of `name` as an identifier: the **bare** form when the
+/// tokenizer reads it back as a single non-keyword identifier, else the
+/// **quoted** form (`'Unit Price'`) the grammar gained in plan Step 4a.
+///
+/// Bare is preferred whenever it works, so ordinary formulas keep printing as
+/// `Price * Quantity` rather than `'Price' * 'Quantity'`.
+///
+/// `None` only for the **empty** name: `''` is an explicit parse error ("empty
+/// quoted name: '' names nothing"), so an unnamed measure/category is the one
+/// name this grammar genuinely cannot spell. Everything else — spaces,
+/// slashes, hyphens, parentheses, digits-first, non-ASCII, and the keywords
+/// (`Over`, `AND`) — is spellable quoted, which is what makes a CSV-derived
+/// measure like `Unit Price` editable instead of read-only.
+///
+/// A literal `'` inside the name is escaped by **doubling** it (`Bob''s Rate`),
+/// matching `parser`'s tokenizer exactly. There is no other escape to get
+/// wrong: the quoted form takes every other character verbatim.
+fn ident(name: &str) -> Option<String> {
+    if is_bare_ident(name) {
+        return Some(name.to_string());
+    }
+    // `''` names nothing (a parse error), so an empty name stays unspellable.
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!("'{}'", name.replace('\'', "''")))
+}
+
+/// Whether `name` survives a round trip through the tokenizer as one *bare*
+/// identifier that the grammar will not mistake for a keyword.
+fn is_bare_ident(name: &str) -> bool {
     let mut chars = name.chars();
     let head_ok = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_');
     if !head_ok || !chars.all(|c| c.is_alphanumeric() || c == '_') {
-        return None;
+        return false;
     }
+    // A bare keyword is consumed as grammar, never as a name. (`SUM`/`AVG` and
+    // the scalar-function names are NOT keywords here: the parser only treats
+    // them as functions when directly followed by `(`, which a printed
+    // measure reference never is.)
     const KEYWORDS: &[&str] = &["NOT", "AND", "OR", "OVER", "TRUE", "FALSE"];
-    if KEYWORDS.iter().any(|k| name.eq_ignore_ascii_case(k)) {
-        return None;
-    }
-    Some(name)
+    !KEYWORDS.iter().any(|k| name.eq_ignore_ascii_case(k))
 }
 
 fn literal_dsl(v: &Value) -> Option<String> {
@@ -1763,6 +2044,7 @@ impl eframe::App for ImprovApp {
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
         self.formula_panel(ctx);
+        self.formula_list_panel(ctx);
         self.chart_panel(ctx);
         self.csv_wizard_panel(ctx);
         self.grid_panel(ctx);
@@ -2014,6 +2296,15 @@ impl ImprovApp {
                     if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) =>
                 {
                     ui.strong(format!("{} =", self.model.measures[&mid].name.0));
+                    // A disabled formula is still shown and still editable — it
+                    // is part of the model's logic — but the bar says so, so a
+                    // blank grid is never a mystery.
+                    if !self.formula_enabled(mid) {
+                        ui.weak("(disabled)").on_hover_text(
+                            "This formula is switched off in the formula list \
+                             below, so it computes nothing.",
+                        );
+                    }
                     // No spelling either surface language accepts (e.g. a
                     // measure named "Unit Price" from a CSV header): show the
                     // formula read-only rather than invite a commit of text
@@ -2093,8 +2384,151 @@ impl ImprovApp {
         });
     }
 
+    /// **The Step 2 formula pane** (plan
+    /// `docs/reviews/2026-09-22-gui-reconstruction-plan.md`): the whole model's
+    /// logic as one persistent, numbered, individually-checkable list — the
+    /// shape every reference shows (`✓ 1. Gross Margin = Sum of Revenue - Sum of
+    /// Cost of Sales`), and the thing a single-line bar for the selected measure
+    /// alone can never be.
+    ///
+    /// Reference-faithful in the parts that carry meaning:
+    ///
+    /// * a `Formulas` label and an operator palette (`= + - * / ^ ( ) [ ]`)
+    ///   across the top, each button inserting its token into the editor above;
+    /// * one row per derived measure: a checkbox (the `✓`), a **bold 1-based
+    ///   number**, then `Target = formula`;
+    /// * the selected row highlighted, and clicking any row selecting that
+    ///   measure so the grid follows;
+    /// * inline error text under a row whose formula does not compile.
+    ///
+    /// The editor for the selected row stays the top [`Self::formula_bar`], as
+    /// the reference also has both (a `Formula:` edit line *and* the list).
+    fn formula_list_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::bottom("formula_list")
+            .resizable(true)
+            .default_height(140.0)
+            .show(ctx, |ui| {
+                self.operator_palette(ui);
+                ui.separator();
+                let rows = self.formula_rows();
+                if rows.is_empty() {
+                    self.formula_row_rects.clear();
+                    ui.weak("No formulas yet — define a derived measure below.");
+                    return;
+                }
+                // What the user clicked, applied after the loop so the model is
+                // not mutated while `rows` borrows nothing from it but the UI
+                // still reads `self.selected` per row.
+                let mut select: Option<MeasureId> = None;
+                let mut toggle: Option<(MeasureId, bool)> = None;
+                let mut rects: Vec<(MeasureId, egui::Rect)> = Vec::new();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (i, row) in rows.iter().enumerate() {
+                            let selected = self.selected == Some(row.measure);
+                            ui.horizontal(|ui| {
+                                let mut on = row.enabled;
+                                if ui
+                                    .add(egui::Checkbox::without_text(&mut on))
+                                    .on_hover_text(
+                                        "Enabled. Uncheck to stop this formula \
+                                         computing (dependents recompute without it).",
+                                    )
+                                    .changed()
+                                {
+                                    toggle = Some((row.measure, on));
+                                }
+                                // `1.` `2.` … bold, as the reference numbers them.
+                                ui.strong(format!("{}.", i + 1));
+                                // A disabled formula is dimmed, not hidden: it is
+                                // still part of the model's logic.
+                                let label = format!("{} = {}", row.target, row.text);
+                                let text = if row.enabled {
+                                    egui::RichText::new(label)
+                                } else {
+                                    egui::RichText::new(label).weak().strikethrough()
+                                };
+                                let resp = ui.selectable_label(selected, text);
+                                rects.push((row.measure, resp.rect));
+                                if resp.clicked() {
+                                    select = Some(row.measure);
+                                }
+                            });
+                            if let Some(err) = &row.error {
+                                ui.horizontal(|ui| {
+                                    // Indent under the row's text, past the
+                                    // checkbox and number.
+                                    ui.add_space(44.0);
+                                    ui.colored_label(
+                                        crate::formula_highlight::ERROR_COLOR,
+                                        format!("⚠ {err}"),
+                                    );
+                                });
+                            }
+                        }
+                    });
+                self.formula_row_rects = rects;
+                if let Some(id) = select {
+                    self.selected = Some(id);
+                    self.editing = None;
+                }
+                if let Some((id, on)) = toggle {
+                    match self.set_formula_enabled(id, on) {
+                        Ok(()) => {
+                            self.status = format!(
+                                "formula {} {}",
+                                self.model
+                                    .measures
+                                    .get(&id)
+                                    .map(|m| m.name.0.clone())
+                                    .unwrap_or_default(),
+                                if on { "enabled" } else { "disabled" }
+                            );
+                        }
+                        Err(e) => self.status = format!("toggle failed: {e}"),
+                    }
+                }
+            });
+    }
+
+    /// The reference's operator palette above the formula list: each button
+    /// appends its token to the formula editor's buffer, so the mouse can build
+    /// an expression without the keyboard.
+    ///
+    /// Inert (greyed) unless the selected measure's formula is actually editable
+    /// — appending to a buffer the bar is showing read-only would be a lie.
+    ///
+    /// Skipped from the reference's palette: `‥ : ::` (range/scope operators this
+    /// grammar does not have), `In`/`Skip` (Quantrix scope keywords), `[THIS]`,
+    /// and the `ƒ` function browser (plan Step 5).
+    fn operator_palette(&mut self, ui: &mut egui::Ui) {
+        const TOKENS: &[&str] = &["=", "+", "-", "*", "/", "(", ")", "[", "]"];
+        let editable = self
+            .selected
+            .is_some_and(|m| self.formula_source(m).is_some());
+        ui.horizontal(|ui| {
+            ui.strong("Formulas");
+            ui.separator();
+            for tok in TOKENS {
+                // `=` is the target separator the bar prints itself, so the
+                // palette inserts the operators only.
+                if ui
+                    .add_enabled(editable, egui::Button::new(*tok).small())
+                    .clicked()
+                {
+                    if !self.formula_buf.is_empty() && !self.formula_buf.ends_with(' ') {
+                        self.formula_buf.push(' ');
+                    }
+                    self.formula_buf.push_str(tok);
+                }
+            }
+        });
+    }
+
     /// Bottom panel: the "new derived measure" definition form + status line.
-    /// (The selected measure's formula is edited in the top formula bar.)
+    /// (The selected measure's formula is edited in the top formula bar; the
+    /// whole model's formulas are listed in [`Self::formula_list_panel`].)
     fn formula_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("definitions")
             .resizable(true)
@@ -3588,6 +4022,7 @@ mod tests {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             gutters: None,
+            formula_row_rects: Vec::new(),
         }
     }
 
@@ -4592,14 +5027,27 @@ mod tests {
         }
     }
 
-    /// DEFECT 2: a measure name with no spelling in EITHER surface language
-    /// (a CSV header like `"Unit Price"`, a slash, a hyphen, a DSL keyword) is
-    /// never offered as editable text — `formula_source` returns `None` so the
-    /// bar goes read-only. Names that ARE spellable still round-trip.
+    /// DEFECT 2, **as plan Step 4b resolves it**: an awkward measure name is no
+    /// longer a reason to go read-only. The printer now spells it with a quoted
+    /// identifier (`'Unit Price'`), the form the grammar gained in Step 4a, and
+    /// [`ImprovApp::formula_source`]'s self-verification — reparse the candidate
+    /// text and demand the IDENTICAL `Formula` — confirms it round-trips.
+    ///
+    /// The self-verification is untouched and still the gate: this test asserts
+    /// what it now *accepts*, not that it was relaxed. Every name shown as
+    /// editable is re-committed here and the AST compared.
+    ///
+    /// Exactly ONE name remains genuinely unspellable: the **empty** name. `''`
+    /// is an explicit parse error ("empty quoted name: '' names nothing"), so
+    /// there is no text for it in either language — and it must still be
+    /// refused rather than shown.
     #[test]
-    fn unspellable_measure_names_are_never_shown_as_editable() {
-        let spellable = ["UnitPrice", "Unit_Price", "Price2024", "_Price"];
-        let unspellable = [
+    fn awkward_measure_names_are_spelled_with_quoted_identifiers() {
+        // Bare where bare works (no needless quoting), quoted where it does not.
+        let bare = ["UnitPrice", "Unit_Price", "Price2024", "_Price"];
+        // The nine names the pre-Step-4b test listed as unspellable. Eight are
+        // now editable; `""` is the lone holdout.
+        let quoted = [
             "Unit Price",
             "Price/Unit",
             "Price-2024",
@@ -4608,9 +5056,18 @@ mod tests {
             "over",
             "AND",
             "Price(net)",
-            "",
         ];
-        for name in spellable.iter().chain(unspellable.iter()) {
+        // Plus the escape rule (`''` is one literal quote) and a dotted name,
+        // which quoting keeps out of the deliberately-unresolved qualified form.
+        let extra = ["Bob's Rate", "2024Price", "Ünit", "SUM", "Price.Unit"];
+        let unspellable = [""];
+
+        for name in bare
+            .iter()
+            .chain(quoted.iter())
+            .chain(extra.iter())
+            .chain(unspellable.iter())
+        {
             let mut model = revenue_model();
             model.measures.get_mut(&MeasureId(100)).unwrap().name = Name((*name).into());
             let mut app = build_app(model);
@@ -4620,12 +5077,26 @@ mod tests {
                 MeasureKind::Input => panic!("Revenue is derived"),
             };
             match app.formula_source(MeasureId(102)) {
-                // Shown as editable => it MUST commit unchanged.
+                // Shown as editable => it MUST commit unchanged. This is the
+                // invariant `formula_source` self-verifies; re-check it end to
+                // end through the real commit path.
                 Some(shown) => {
                     assert!(
-                        spellable.contains(name),
-                        "name {name:?} has no spelling but the bar shows {shown:?}"
+                        !unspellable.contains(name),
+                        "name {name:?} must stay unspellable but the bar shows {shown:?}"
                     );
+                    // Bare names print bare; awkward ones print quoted.
+                    if bare.contains(name) {
+                        assert!(
+                            shown.starts_with(&format!("{name} ")),
+                            "name {name:?} needs no quoting, got {shown:?}"
+                        );
+                    } else if quoted.contains(name) {
+                        assert!(
+                            shown.starts_with(&format!("'{name}'")),
+                            "name {name:?} must print quoted, got {shown:?}"
+                        );
+                    }
                     app.commit_formula(MeasureId(102), &shown)
                         .unwrap_or_else(|e| {
                             panic!("name {name:?}: displayed {shown:?} does not commit: {e}")
@@ -4652,6 +5123,58 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// The doubling escape, end to end: a name containing a literal `'` prints
+    /// as `'Bob''s Rate'` and reparses to the same measure. (`parser`'s own
+    /// tests cover the tokenizer; this pins the PRINTER's half of the pair.)
+    #[test]
+    fn an_embedded_quote_is_printed_doubled() {
+        let mut model = revenue_model();
+        model.measures.get_mut(&MeasureId(100)).unwrap().name = Name("Bob's Rate".into());
+        let app = build_app(model);
+        let shown = app
+            .formula_source(MeasureId(102))
+            .expect("a quote in a name is spellable by doubling it");
+        assert_eq!(shown, "'Bob''s Rate' * Quantity");
+    }
+
+    /// Category names inside `[...]` and after `OVER` go through the same
+    /// [`ident`], so an awkward CATEGORY name is spellable too — the other half
+    /// of the read-only defect (a CSV import names categories from headers as
+    /// well).
+    #[test]
+    fn awkward_category_names_are_quoted_in_dim_lists_and_over() {
+        let mut model = revenue_model();
+        model.categories.get_mut(&CategoryId(1)).unwrap().name = Name("Fiscal Year".into());
+        // Revenue = SUM(Quantity OVER 'Fiscal Year')
+        model.measures.get_mut(&MeasureId(102)).unwrap().kind =
+            MeasureKind::Derived(Formula::new(Expr::Call(
+                parser::FUNC_SUM,
+                vec![Expr::Ref(
+                    MeasureId(101),
+                    DimensionSpec {
+                        by: vec![],
+                        over: vec![CategoryId(1)],
+                        except: vec![],
+                    },
+                )],
+            )));
+        let mut app = build_app(model);
+        let shown = app
+            .formula_source(MeasureId(102))
+            .expect("a quoted category name is spellable");
+        assert_eq!(shown, "SUM(Quantity OVER 'Fiscal Year')");
+        // And it round-trips through the real commit path.
+        let before = match &app.model.measures[&MeasureId(102)].kind {
+            MeasureKind::Derived(f) => f.clone(),
+            MeasureKind::Input => panic!("derived"),
+        };
+        app.commit_formula(MeasureId(102), &shown).expect("commits");
+        match &app.model.measures[&MeasureId(102)].kind {
+            MeasureKind::Derived(f) => assert_eq!(*f, before),
+            MeasureKind::Input => panic!("stopped being derived"),
         }
     }
 
@@ -5622,6 +6145,7 @@ mod tests {
                 app.explorer_panel(ctx);
                 app.inspector_panel(ctx);
                 app.formula_panel(ctx);
+                app.formula_list_panel(ctx);
                 app.chart_panel(ctx);
                 app.csv_wizard_panel(ctx);
                 app.grid_panel(ctx);
@@ -5959,5 +6483,576 @@ mod tests {
             well: r(0.0, 600.0, 800.0, 634.0),
         };
         assert!(gutters_frame_table(&docked), "{docked:?}");
+    }
+
+    // -- STEP 2: the formula list pane
+    // (docs/reviews/2026-09-22-gui-reconstruction-plan.md)
+
+    /// A model with FOUR derived measures, one chained onto another, so the
+    /// formula list has several rows and disabling one has a visible dependent:
+    ///
+    /// * `Revenue   = Price * Quantity`      (id 102)
+    /// * `Tax       = Revenue * Rate`        (id 103, depends on Revenue)
+    /// * `Net       = Revenue - Tax`         (id 104, depends on both)
+    /// * `Doubled   = Quantity + Quantity`   (id 105, independent)
+    fn four_formula_model() -> Model {
+        let mut m = grid_2x2_model();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        m.add_measure(Measure {
+            id: MeasureId(110),
+            name: Name("Rate".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        // Declared over the same dimensions as Revenue, with a cell at every
+        // coordinate: this engine aligns a derived*input product on matching
+        // dimensions, it does not broadcast a narrower input across them.
+        for ti in [ItemId(10), ItemId(11)] {
+            for pi in [ItemId(20), ItemId(21)] {
+                m.set_input(
+                    MeasureId(110),
+                    improv_core_model::Coordinate::from_pairs([(t, ti), (p, pi)]),
+                    Value::Number(0.1),
+                );
+            }
+        }
+        let refm = |id| Expr::Ref(id, DimensionSpec::default());
+        for (id, name, expr) in [
+            (
+                103u32,
+                "Tax",
+                Expr::BinaryOp(
+                    BinaryOp::Mul,
+                    Box::new(refm(MeasureId(102))),
+                    Box::new(refm(MeasureId(110))),
+                ),
+            ),
+            (
+                104,
+                "Net",
+                Expr::BinaryOp(
+                    BinaryOp::Sub,
+                    Box::new(refm(MeasureId(102))),
+                    Box::new(refm(MeasureId(103))),
+                ),
+            ),
+            (
+                105,
+                "Doubled",
+                Expr::BinaryOp(
+                    BinaryOp::Add,
+                    Box::new(refm(MeasureId(101))),
+                    Box::new(refm(MeasureId(101))),
+                ),
+            ),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: vec![t, p],
+                kind: MeasureKind::Derived(Formula::new(expr)),
+                description: None,
+            });
+        }
+        m
+    }
+
+    /// **Step 2 acceptance, part 1:** a model with several derived measures
+    /// lists ALL of them, numbered, each with its target measure and formula
+    /// text — the whole model's logic visible at once, which a single-line bar
+    /// for the selected measure cannot show.
+    #[test]
+    fn the_formula_list_shows_every_formula_numbered() {
+        let app = build_app(four_formula_model());
+        let rows = app.formula_rows();
+
+        // Every derived measure, and ONLY derived measures (Price/Quantity/Rate
+        // are inputs: they have no formula, so they have no row).
+        assert_eq!(
+            rows.iter().map(|r| r.target.as_str()).collect::<Vec<_>>(),
+            vec!["Revenue", "Tax", "Net", "Doubled"],
+            "all four formulas, in measure-id order"
+        );
+        assert_eq!(
+            app.model
+                .measures
+                .values()
+                .filter(|m| m.is_derived())
+                .count(),
+            rows.len(),
+            "one row per derived measure, no more"
+        );
+
+        // Each row carries its formula text, and it is the editable spelling.
+        assert_eq!(rows[0].text, "Price * Quantity");
+        assert_eq!(rows[1].text, "Revenue * Rate");
+        assert_eq!(rows[2].text, "Revenue - Tax");
+        assert_eq!(rows[3].text, "Quantity + Quantity");
+        assert!(rows.iter().all(|r| r.error.is_none()), "{rows:?}");
+        assert!(rows.iter().all(|r| r.enabled), "formulas start enabled");
+
+        // The display number is the 1-based row position (the reference's
+        // `1.` `2.` …): inserting a formula renumbers, it is not an identity.
+        let numbered: Vec<String> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| format!("{}. {} = {}", i + 1, r.target, r.text))
+            .collect();
+        assert_eq!(numbered[0], "1. Revenue = Price * Quantity");
+        assert_eq!(numbered[3], "4. Doubled = Quantity + Quantity");
+    }
+
+    /// **Step 2 acceptance, part 2:** clicking a row selects that measure, so
+    /// the grid follows the formula list. Driven through a real headless frame
+    /// (a synthesized click at the row's own screen position), not by calling a
+    /// handler — so a row that renders un-clickable fails here.
+    #[test]
+    fn clicking_a_formula_row_selects_its_measure() {
+        let mut app = build_app(four_formula_model());
+        app.selected = Some(MeasureId(102));
+        app.sync_axis_state();
+
+        // Find where row 4 ("Doubled") landed, then click it.
+        let target = MeasureId(105);
+        assert_ne!(app.selected, Some(target), "not already selected");
+        let clicked = click_formula_row(&mut app, target);
+        assert!(clicked, "row for measure {target:?} was never laid out");
+        assert_eq!(
+            app.selected,
+            Some(target),
+            "clicking the row must select its measure so the grid follows"
+        );
+        // And the grid really did follow: the pivot state re-homed onto it.
+        app.sync_axis_state();
+        assert_eq!(app.axis_for, Some(target));
+    }
+
+    /// Lay out `app` in real headless frames and click the formula-list row for
+    /// `measure`, at the position the row actually occupied. Returns whether
+    /// such a row was laid out.
+    ///
+    /// Two phases, because egui hit-tests a click against the rect a widget had
+    /// in a PREVIOUS frame: settle the panels first (recording
+    /// `formula_row_rects`), then deliver a press+release at that point. A row
+    /// that renders un-clickable therefore fails this, where calling a handler
+    /// directly would not.
+    fn click_formula_row(app: &mut ImprovApp, measure: MeasureId) -> bool {
+        let ctx = egui::Context::default();
+        ctx.set_style(crate::theme::next_style());
+        let frame = |app: &mut ImprovApp, events: Vec<egui::Event>, time: f64| {
+            let raw = egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(raw, |ctx| {
+                app.sync_axis_state();
+                app.formula_bar(ctx);
+                app.tool_palette(ctx);
+                app.explorer_panel(ctx);
+                app.inspector_panel(ctx);
+                app.formula_panel(ctx);
+                app.formula_list_panel(ctx);
+                app.grid_panel(ctx);
+            });
+        };
+
+        // Settle the panels so the pane's rows have their final positions.
+        for i in 0..4 {
+            frame(app, Vec::new(), f64::from(i) / 60.0);
+        }
+        let Some(&(_, rect)) = app.formula_row_rects.iter().find(|(m, _)| *m == measure) else {
+            return false;
+        };
+        let at = rect.center();
+
+        // A real press+release at the row's center.
+        frame(
+            app,
+            vec![
+                egui::Event::PointerMoved(at),
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos: at,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            1.0,
+        );
+        true
+    }
+
+    /// **Step 2 acceptance, part 3:** toggling a formula off recomputes
+    /// dependents. Asserted on the SNAPSHOT, which is what the grid draws.
+    ///
+    /// `Tax = Revenue * Rate` and `Net = Revenue - Tax`. Disabling `Tax` must
+    /// make `Tax` compute nothing *and* change `Net`, which is the real test: a
+    /// GUI-only "hide this formula" flag would leave `Net` sitting at its old
+    /// value.
+    ///
+    /// `Net` goes *absent* rather than falling back to `Revenue - 0`, because
+    /// this engine JOINS its operands: a measure with no cells contributes no
+    /// coordinates, so every dependent loses those coordinates too. That is the
+    /// same behavior a dependent of an empty input measure already has —
+    /// disabling a formula makes it indistinguishable from an input nobody has
+    /// filled in, which is the honest reading of "this formula is not running".
+    #[test]
+    fn disabling_a_formula_recomputes_its_dependents() {
+        let mut app = build_app(four_formula_model());
+        let (qkey, _) = q_and_rev_keys();
+
+        // Baseline: Revenue 1000, Tax 100, Net 900.
+        assert_eq!(app.values_for(MeasureId(102)).get(&qkey), Some(&1000.0));
+        assert_eq!(app.values_for(MeasureId(103)).get(&qkey), Some(&100.0));
+        assert_eq!(app.values_for(MeasureId(104)).get(&qkey), Some(&900.0));
+
+        app.set_formula_enabled(MeasureId(103), false)
+            .expect("disable Tax");
+
+        // Tax computes nothing now — it is no longer a dataflow output.
+        assert!(
+            !app.formula_enabled(MeasureId(103)),
+            "the model records Tax as disabled"
+        );
+        assert_eq!(
+            app.values_for(MeasureId(103)).get(&qkey),
+            None,
+            "a disabled formula must compute nothing"
+        );
+        // ...and the DEPENDENT recomputed rather than keeping its stale 900:
+        // Net's operand vanished, so Net vanished with it.
+        assert_eq!(
+            app.values_for(MeasureId(104)).get(&qkey),
+            None,
+            "Net must recompute without Tax, not keep its old 900"
+        );
+        assert!(
+            app.values_for(MeasureId(104)).is_empty(),
+            "no coordinate of Net survives its operand being switched off"
+        );
+        // The untouched formulas are unaffected — only the dependents moved.
+        assert_eq!(app.values_for(MeasureId(102)).get(&qkey), Some(&1000.0));
+        assert_eq!(app.values_for(MeasureId(105)).get(&qkey), Some(&200.0));
+
+        // Re-enabling restores every value exactly — the formula was kept, not
+        // re-derived from text.
+        app.set_formula_enabled(MeasureId(103), true)
+            .expect("re-enable Tax");
+        assert!(app.formula_enabled(MeasureId(103)));
+        assert_eq!(app.values_for(MeasureId(103)).get(&qkey), Some(&100.0));
+        assert_eq!(app.values_for(MeasureId(104)).get(&qkey), Some(&900.0));
+    }
+
+    /// **Step 2 acceptance, part 4:** the disable SURVIVES a save/reload round
+    /// trip through `storage_mentat` — which is why it is a model-level fact and
+    /// not a GUI flag. After reload the formula is still present, still
+    /// disabled, and the reloaded engine still computes dependents without it.
+    #[test]
+    fn a_disabled_formula_survives_a_save_reload_round_trip() {
+        let db = std::env::temp_dir()
+            .join(format!(
+                "improv_gui_disabled_persist_{}_{}.db",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ))
+            .to_string_lossy()
+            .into_owned();
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(db.clone());
+
+        ModelStore::open(&db)
+            .and_then(|mut s| s.save_model(&four_formula_model()))
+            .expect("seed the store");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let (qkey, _) = q_and_rev_keys();
+
+        // Give Tax a real description too, so the round trip must preserve BOTH
+        // the user's text and the disabled bit.
+        app.model
+            .measures
+            .get_mut(&MeasureId(103))
+            .expect("Tax")
+            .description = Some("rate applied to revenue".into());
+        app.set_formula_enabled(MeasureId(103), false)
+            .expect("disable Tax");
+
+        // Reload from the store: a fresh app, nothing carried in memory.
+        let reloaded = ImprovApp::load(&db).expect("reload");
+        assert!(
+            !reloaded.formula_enabled(MeasureId(103)),
+            "the disabled bit did not survive the round trip"
+        );
+        // The FORMULA itself survived (that is why the marker rides alongside it
+        // rather than replacing it), and so did the user's own description text.
+        let tax = &reloaded.model.measures[&MeasureId(103)];
+        assert!(
+            tax.is_derived(),
+            "a disabled measure stays derived, keeping its formula"
+        );
+        assert_eq!(
+            split_marker(tax.description.as_deref()).1,
+            Some("rate applied to revenue"),
+            "the user's description must survive the toggle"
+        );
+        // The reloaded ENGINE honors it: Tax blank, and Net — which depends on
+        // Tax — recomputed away with it.
+        assert_eq!(reloaded.values_for(MeasureId(103)).get(&qkey), None);
+        assert_eq!(reloaded.values_for(MeasureId(104)).get(&qkey), None);
+        // The list still shows it, unchecked rather than hidden.
+        let rows = reloaded.formula_rows();
+        let tax_row = rows
+            .iter()
+            .find(|r| r.measure == MeasureId(103))
+            .expect("a disabled formula is still listed");
+        assert!(!tax_row.enabled);
+        assert_eq!(tax_row.text, "Revenue * Rate", "its formula is still shown");
+
+        // And re-enabling in the reloaded app restores the original values.
+        let mut reloaded = reloaded;
+        reloaded
+            .set_formula_enabled(MeasureId(103), true)
+            .expect("re-enable");
+        assert_eq!(
+            reloaded.values_for(MeasureId(104)).get(&qkey),
+            Some(&900.0),
+            "re-enabling after a reload must restore the exact formula"
+        );
+    }
+
+    /// **Step 2 acceptance, part 5:** a formula that does not build shows its
+    /// error INLINE on its own row, rather than vanishing or silently listing as
+    /// fine. (A cell-type mismatch: `Revenue * Label` where `Label` is Text.)
+    #[test]
+    fn a_formula_that_fails_to_build_shows_its_error_inline() {
+        let mut model = four_formula_model();
+        model.add_measure(Measure {
+            id: MeasureId(120),
+            name: Name("Label".into()),
+            value_type: ValueType::Text,
+            categories: vec![CategoryId(2)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        // Broken = Revenue * Label — a type error the compiler rejects.
+        model.add_measure(Measure {
+            id: MeasureId(121),
+            name: Name("Broken".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(MeasureId(102), DimensionSpec::default())),
+                Box::new(Expr::Ref(MeasureId(120), DimensionSpec::default())),
+            ))),
+            description: None,
+        });
+        let app = build_app(model);
+        let rows = app.formula_rows();
+
+        // It is LISTED, with its text, and carries an inline error.
+        let broken = rows
+            .iter()
+            .find(|r| r.measure == MeasureId(121))
+            .expect("a broken formula is still listed");
+        assert_eq!(broken.text, "Revenue * Label");
+        let err = broken
+            .error
+            .as_deref()
+            .expect("a formula that does not build must show an error inline");
+        assert!(
+            err.to_lowercase().contains("type"),
+            "the inline error must say what is wrong, got {err:?}"
+        );
+        // The SOUND formulas do not borrow its error.
+        for r in rows.iter().filter(|r| r.measure != MeasureId(121)) {
+            assert_eq!(r.error, None, "{r:?} must not report an error");
+        }
+    }
+
+    /// A formula with no editable spelling says so inline, because the editor
+    /// above shows that row read-only — the list must not imply it is editable.
+    #[test]
+    fn a_formula_with_no_editable_spelling_says_so_inline() {
+        let mut model = four_formula_model();
+        // An empty measure name is the one thing `ident` cannot spell (`''` is a
+        // parse error), so Revenue's formula loses its DSL and CNL spellings.
+        model.measures.get_mut(&MeasureId(100)).unwrap().name = Name(String::new());
+        let app = build_app(model);
+        let rows = app.formula_rows();
+        let rev = rows
+            .iter()
+            .find(|r| r.measure == MeasureId(102))
+            .expect("still listed");
+        assert_eq!(
+            rev.error.as_deref(),
+            Some("no editable spelling (shown as description)"),
+            "the list must admit this row is not editable"
+        );
+        assert!(!rev.text.is_empty(), "it still shows a description");
+    }
+
+    /// The disabled marker is a *reserved* description line, so it must not be
+    /// confused with a user description that merely looks like it, and toggling
+    /// must be an exact round trip in both directions.
+    #[test]
+    fn the_disabled_marker_never_eats_a_user_description() {
+        // A description that starts with the marker's characters but is not it.
+        let lookalike = format!("{DISABLED_MARKER}ish notes");
+        assert_eq!(
+            split_marker(Some(lookalike.as_str())),
+            (false, Some(lookalike.as_str()))
+        );
+        // The marker alone, and the marker with text after it.
+        assert_eq!(split_marker(Some(DISABLED_MARKER)), (true, None));
+        let with_text = format!("{DISABLED_MARKER}{MARKER_SEP}keep me");
+        assert_eq!(split_marker(Some(&with_text)), (true, Some("keep me")));
+        // No description at all.
+        assert_eq!(split_marker(None), (false, None));
+        // join_marker inverts split_marker for each of those.
+        for (disabled, user) in [
+            (false, None),
+            (false, Some("plain")),
+            (true, None),
+            (true, Some("keep me")),
+        ] {
+            let joined = join_marker(disabled, user);
+            assert_eq!(
+                split_marker(joined.as_deref()),
+                (disabled, user),
+                "join/split must round-trip ({disabled}, {user:?})"
+            );
+        }
+
+        // End to end: a measure whose description is the lookalike is NOT
+        // treated as disabled, and toggling it keeps that text.
+        let mut model = four_formula_model();
+        model.measures.get_mut(&MeasureId(103)).unwrap().description = Some(lookalike.clone());
+        let mut app = build_app(model);
+        assert!(app.formula_enabled(MeasureId(103)), "not actually disabled");
+        app.set_formula_enabled(MeasureId(103), false).expect("off");
+        app.set_formula_enabled(MeasureId(103), true).expect("on");
+        assert_eq!(
+            app.model.measures[&MeasureId(103)].description.as_deref(),
+            Some(&*lookalike),
+            "a disable/enable cycle must restore the description exactly"
+        );
+    }
+
+    /// Toggling a formula is undoable and atomic on the same terms as a formula
+    /// edit: it goes through `publish`, so it is an undo point, and a failed
+    /// save leaves the model untouched.
+    #[test]
+    fn toggling_a_formula_is_undoable_and_atomic() {
+        let mut app = build_app(four_formula_model());
+        let (qkey, _) = q_and_rev_keys();
+        app.set_formula_enabled(MeasureId(103), false).expect("off");
+        assert!(app.can_undo(), "a toggle must be an undo point");
+        app.undo().expect("undo the toggle");
+        assert!(app.formula_enabled(MeasureId(103)), "undo re-enabled it");
+        assert_eq!(
+            app.values_for(MeasureId(104)).get(&qkey),
+            Some(&900.0),
+            "undo restored the dependent's value too"
+        );
+        // An unwritable store fails the toggle and changes nothing.
+        let mut app = build_app(four_formula_model());
+        app.db = std::env::temp_dir()
+            .join(format!("improv_gui_no_dir_{}", std::process::id()))
+            .join("model.db")
+            .to_string_lossy()
+            .into_owned();
+        let err = app
+            .set_formula_enabled(MeasureId(103), false)
+            .expect_err("an unwritable store must fail the toggle");
+        assert!(err.starts_with("save failed:"), "got {err:?}");
+        assert!(
+            app.formula_enabled(MeasureId(103)),
+            "a failed toggle must leave the model alone"
+        );
+        assert_eq!(app.values_for(MeasureId(103)).get(&qkey), Some(&100.0));
+    }
+
+    /// Toggling is a no-op (not an error) where there is no formula to toggle,
+    /// and disabling EVERY formula is a valid model that simply computes
+    /// nothing — no engine, no panic, inputs still readable.
+    #[test]
+    fn toggling_without_a_formula_is_a_no_op_and_all_off_is_valid() {
+        let mut app = build_app(four_formula_model());
+        // An input measure and an unknown id: both no-ops.
+        app.set_formula_enabled(MeasureId(101), false)
+            .expect("input measure");
+        app.set_formula_enabled(MeasureId(9999), false)
+            .expect("unknown id");
+        assert!(!app.can_undo(), "a no-op must not create an undo point");
+        assert!(app.formula_enabled(MeasureId(101)));
+
+        for id in [102u32, 103, 104, 105] {
+            app.set_formula_enabled(MeasureId(id), false)
+                .unwrap_or_else(|e| panic!("disable {id}: {e}"));
+        }
+        assert!(app.engine.is_none(), "nothing left to compute");
+        let (qkey, _) = q_and_rev_keys();
+        assert_eq!(app.values_for(MeasureId(102)).get(&qkey), None);
+        // Inputs still read fine, and every row is still listed.
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("100"));
+        assert_eq!(app.formula_rows().len(), 4);
+        assert!(app.formula_rows().iter().all(|r| !r.enabled));
+    }
+
+    /// The pane renders in a real frame without panicking, at a realistic size
+    /// and squeezed flat — the same headless-frame discipline Step 1 established.
+    #[test]
+    fn the_formula_pane_lays_out_at_every_window_size() {
+        for (w, h) in [
+            (1200.0, 800.0),
+            (800.0, 400.0),
+            (300.0, 200.0),
+            (60.0, 40.0),
+        ] {
+            let mut app = build_app(four_formula_model());
+            let ctx = egui::Context::default();
+            ctx.set_style(crate::theme::next_style());
+            for i in 0..4 {
+                let raw = egui::RawInput {
+                    time: Some(f64::from(i) / 60.0),
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(w, h),
+                    )),
+                    ..Default::default()
+                };
+                let _ = ctx.run(raw, |ctx| {
+                    app.sync_axis_state();
+                    app.formula_bar(ctx);
+                    app.formula_panel(ctx);
+                    app.formula_list_panel(ctx);
+                    app.grid_panel(ctx);
+                });
+            }
+            // Still listing every formula after the frames.
+            assert_eq!(app.formula_rows().len(), 4, "{w}x{h}");
+        }
     }
 }
