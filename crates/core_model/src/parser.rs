@@ -22,12 +22,46 @@
 //!              | MeasureRef
 //!              | "(" Expression ")"
 //!              | ("-" | "NOT") Primary ;
-//! MeasureRef   = Identifier [ "[" DimList "]" ] ;         (* DimList -> DimensionSpec.by *)
-//! DimList      = Identifier { "," Identifier } ;
-//! Aggregation  = AggFunc "(" MeasureRef "OVER" Identifier ")" ;
+//! MeasureRef   = Name [ "[" DimList "]" ] ;                (* DimList -> DimensionSpec.by *)
+//! DimList      = Name { "," Name } ;
+//! Aggregation  = AggFunc "(" MeasureRef "OVER" Name ")" ;
 //! AggFunc      = "SUM" | "AVG" | "MIN" | "MAX" ;
 //! Literal      = Number | "TRUE" | "FALSE" | '"' text '"' ;
+//!
+//! Name         = [ Identifier "." ] Identifier ;           (* qualifier: see below *)
+//! Identifier   = BareIdent | QuotedIdent ;
+//! BareIdent    = (alpha | "_") { alnum | "_" } ;
+//! QuotedIdent  = "'" ( char-except-quote | "''" )+ "'" ;
 //! ```
+//!
+//! ## Quoted identifiers (`'Unit Price'`)
+//!
+//! Anywhere a measure or category name may appear, it may instead be written
+//! inside **single** quotes — the Quantrix spelling. This is the only way to
+//! name a measure a CSV header produced (`import_csv` takes the header
+//! verbatim, so `Unit Price`, `Cost/Unit` and `2024 Total` are all real
+//! measure names), and the only way to name one that collides with a grammar
+//! keyword (`'Over'`, `'SUM'`, `'NOT'`).
+//!
+//! * Double quotes are untouched: `"..."` is still a *text literal*, `'...'` is
+//!   a *name*. They never overlap.
+//! * A literal `'` inside a quoted name is written **doubled**: `'Bob''s Rate'`
+//!   names the measure `Bob's Rate`. (Quantrix/SQL convention; chosen over
+//!   backslashes so the quoted form needs no escape character at all.)
+//! * A quoted name is never a keyword, a function, `TRUE`/`FALSE` or `OVER`: it
+//!   resolves against the model as a measure/category name, full stop.
+//! * `''` (empty) and an unterminated `'` are clean parse errors.
+//!
+//! ## Dotted qualification (`Matrix.Measure`) — parsed, not yet resolvable
+//!
+//! Quantrix qualifies a name by its owning matrix
+//! (`'Defined Input & Outputs'.'Income tax rate (Corporate)'`). Improv has no
+//! matrix concept yet: a measure belongs to the *model*, not to a matrix, so
+//! there is nothing a qualifier could name. The tokenizer and parser therefore
+//! accept the form and reject it with an error that names the unknown
+//! qualifier, instead of the old `unexpected character: '.'`. When multiple
+//! matrices per view land (GUI plan Step 3), `Parser::parse_name` is the one
+//! place resolution has to learn about.
 //!
 //! ## The `=` ambiguity (assignment vs. equality)
 //!
@@ -149,6 +183,10 @@ pub enum Definition {
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
     Ident(String),
+    /// A single-quoted name (`'Unit Price'`), with `''` already un-doubled to a
+    /// single `'`. Distinct from [`Tok::Ident`] because a quoted name is *never*
+    /// a keyword or function: it can only be a measure/category name.
+    QIdent(String),
     Number(f64),
     Str(String),
     /// A date/time literal `#YYYY-MM-DD#` or `#YYYY-MM-DDTHH:MM:SSZ#`, stored as
@@ -245,6 +283,42 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                     pos: start,
                 });
             }
+            '\'' => {
+                // Quoted identifier `'Unit Price'`; `''` is one literal `'`.
+                // Advance by `len_utf8()` only (never by raw bytes) so a
+                // multi-byte name cannot walk `i` off a char boundary.
+                i += 1; // opening quote
+                let mut name = String::new();
+                let mut closed = false;
+                while i < bytes.len() {
+                    let c = text[i..].chars().next().expect("i < len");
+                    i += c.len_utf8();
+                    if c == '\'' {
+                        // `i` is on a char boundary here, so this is safe.
+                        if text[i..].starts_with('\'') {
+                            name.push('\'');
+                            i += 1;
+                            continue;
+                        }
+                        closed = true;
+                        break;
+                    }
+                    name.push(c);
+                }
+                if !closed {
+                    return Err(ParseError::new("unterminated quoted name", Some(start)));
+                }
+                if name.is_empty() {
+                    return Err(ParseError::new(
+                        "empty quoted name: '' names nothing",
+                        Some(start),
+                    ));
+                }
+                out.push(Spanned {
+                    tok: Tok::QIdent(name),
+                    pos: start,
+                });
+            }
             c if c.is_alphabetic() || c == '_' => {
                 i += c.len_utf8();
                 while i < bytes.len() {
@@ -269,7 +343,7 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                         two.unwrap().to_string()
                     }
                     _ => {
-                        let single = "+-*/^=<>()[],".find(c);
+                        let single = "+-*/^=<>()[],.".find(c);
                         if single.is_none() {
                             return Err(ParseError::new(
                                 format!("unexpected character: {c:?}"),
@@ -338,9 +412,50 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Case-insensitive keyword match on an identifier token (without consuming).
+    /// Case-insensitive keyword match on a *bare* identifier token (without
+    /// consuming). A quoted name ([`Tok::QIdent`]) is never a keyword, so
+    /// `'Over'` stays a measure name.
     fn peek_kw(&self, kw: &str) -> bool {
         matches!(self.peek(), Some(Tok::Ident(w)) if w.eq_ignore_ascii_case(kw))
+    }
+
+    /// Consume one identifier — bare (`Price`) or quoted (`'Unit Price'`) — and
+    /// return its text. `what` names the expectation for the error message.
+    fn take_ident(&mut self, what: &str) -> Result<String, ParseError> {
+        match self.peek() {
+            Some(Tok::Ident(w) | Tok::QIdent(w)) => {
+                let w = w.clone();
+                self.pos += 1;
+                Ok(w)
+            }
+            _ => Err(self.err(format!("expected {what}"))),
+        }
+    }
+
+    /// `Name = [ Identifier "." ] Identifier` — a measure/category name, bare or
+    /// quoted, optionally qualified (`Matrix.Measure`). Returns the name plus
+    /// the byte offset it started at, so a failed lookup points at the *name*
+    /// rather than at whatever follows it.
+    ///
+    /// Qualification *parses* but never resolves: Improv has no namespace a
+    /// qualifier could name (a measure belongs to the model, not to a matrix),
+    /// so a qualified name is a clear error naming the unknown qualifier rather
+    /// than a stray-character complaint. Exactly one dot is consumed, so no
+    /// input can make this allocate or recurse without bound.
+    fn parse_name(&mut self, what: &str) -> Result<(String, Option<usize>), ParseError> {
+        let pos = self.peek_pos();
+        let first = self.take_ident(what)?;
+        if !self.eat_op(".") {
+            return Ok((first, pos));
+        }
+        let leaf = self.take_ident(what)?;
+        Err(ParseError::new(
+            format!(
+                "unknown qualifier: {first} (no such matrix; `{first}.{leaf}` cannot be \
+                 resolved — write the name alone)"
+            ),
+            pos,
+        ))
     }
 
     fn err(&self, msg: impl Into<String>) -> ParseError {
@@ -349,18 +464,20 @@ impl<'a> Parser<'a> {
 
     // --- resolution ---
 
-    fn measure_id(&self, name: &str) -> Result<MeasureId, ParseError> {
+    /// Resolve a measure name consumed by [`Self::parse_name`], reporting the
+    /// failure at the name's own offset (not at whatever follows it).
+    fn measure_id(&self, name: &str, pos: Option<usize>) -> Result<MeasureId, ParseError> {
         self.model
             .measure_by_name(name)
             .map(|m| m.id)
-            .ok_or_else(|| self.err(format!("unknown measure: {name}")))
+            .ok_or_else(|| ParseError::new(format!("unknown measure: {name}"), pos))
     }
 
-    fn category_id(&self, name: &str) -> Result<CategoryId, ParseError> {
+    fn category_id(&self, name: &str, pos: Option<usize>) -> Result<CategoryId, ParseError> {
         self.model
             .category_by_name(name)
             .map(|c| c.id)
-            .ok_or_else(|| self.err(format!("unknown category: {name}")))
+            .ok_or_else(|| ParseError::new(format!("unknown category: {name}"), pos))
     }
 
     // --- grammar ---
@@ -506,6 +623,8 @@ impl<'a> Parser<'a> {
                 Ok(Expr::Literal(Value::DateTime(dt)))
             }
             Some(Tok::Ident(_)) => self.parse_ident_primary(),
+            // A quoted name is only ever a measure reference.
+            Some(Tok::QIdent(_)) => self.parse_measure_ref(),
             Some(Tok::Op(o)) => Err(self.err(format!("unexpected operator: {o}"))),
         }
     }
@@ -609,15 +728,10 @@ impl<'a> Parser<'a> {
         Ok(Expr::Call(func, vec![arg]))
     }
 
-    /// MeasureRef = Identifier [ "[" DimList "]" ]
+    /// MeasureRef = Name [ "[" DimList "]" ]
     fn parse_measure_ref(&mut self) -> Result<Expr, ParseError> {
-        let name = match self.peek() {
-            Some(Tok::Ident(w)) => w.clone(),
-            _ => return Err(self.err("expected a measure name")),
-        };
-        let id = self.measure_id(&name)?;
-        self.bump();
-
+        let (name, pos) = self.parse_name("a measure name")?;
+        let id = self.measure_id(&name, pos)?;
         let mut spec = DimensionSpec::default();
         if self.eat_op("[") {
             spec.by.push(self.parse_category_name()?);
@@ -632,13 +746,8 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_category_name(&mut self) -> Result<CategoryId, ParseError> {
-        let name = match self.peek() {
-            Some(Tok::Ident(w)) => w.clone(),
-            _ => return Err(self.err("expected a category name")),
-        };
-        let id = self.category_id(&name)?;
-        self.bump();
-        Ok(id)
+        let (name, pos) = self.parse_name("a category name")?;
+        self.category_id(&name, pos)
     }
 }
 
@@ -690,7 +799,8 @@ fn parse_lhs(toks: &[Spanned]) -> Result<(Name, usize), ParseError> {
         return Err(ParseError::new("empty formula", None));
     }
     let target = match &toks[0].tok {
-        Tok::Ident(w) => Name(w.clone()),
+        // Bare or quoted: `'Unit Price' = ...` names a CSV-derived measure.
+        Tok::Ident(w) | Tok::QIdent(w) => Name(w.clone()),
         _ => {
             return Err(ParseError::new(
                 "formula must start with a target measure name",
@@ -810,7 +920,7 @@ fn parse_call_form(toks: &[Spanned], rhs: usize, target: Name) -> Result<Definit
             Some(Tok::Op(o)) if o == "," => {
                 i += 1;
                 match toks.get(i).map(|s| &s.tok) {
-                    Some(Tok::Ident(w)) => {
+                    Some(Tok::Ident(w) | Tok::QIdent(w)) => {
                         args.push(Name(w.clone()));
                         i += 1;
                     }
@@ -1224,6 +1334,11 @@ mod tests {
             "   \t\n  ",
             "((((((((((((((((((((((((((((((((",
             "\"unterminated",
+            "'unterminated", // unterminated quoted name
+            "''",            // empty quoted name
+            "'a''",          // doubled quote then EOF
+            "Sheet1.Price",  // dotted qualification (unresolvable today)
+            ".",
             "#2025-01-01", // unterminated date literal
             "#not-a-date#",
             "999999999999999999999999999999999999999999999999",
@@ -1272,6 +1387,255 @@ mod tests {
         assert!(parse_expr(&m, "\u{1F4A9}\u{1F4A9}\u{1F4A9}").is_err()); // unknown char, not a crash
                                                                          // A multi-byte char inside what would otherwise be an identifier.
         let _ = parse_expr(&m, "Price\u{00e9}"); // must not panic either way
+    }
+
+    // --- quoted identifiers (`'Unit Price'`) ---
+
+    /// A model whose measure/category names are the kind `import_csv` produces
+    /// verbatim from a CSV header: spaces, punctuation, leading digits,
+    /// non-ASCII, and names that collide with grammar keywords.
+    fn odd_names() -> Model {
+        let mut m = fixture();
+        m.add_category(CategoryId(3), "Fiscal Year");
+        for (id, name) in [
+            (MeasureId(200), "Unit Price"),
+            (MeasureId(201), "Cost-Per-Unit"),
+            (MeasureId(202), "Revenue/Unit"),
+            (MeasureId(203), "Margin (net)"),
+            (MeasureId(204), "2024 Total"),
+            (MeasureId(205), "Bob's Rate"),
+            (MeasureId(206), "Umsatz \u{20AC} \u{5E74}\u{5EA6}"),
+            (MeasureId(207), "Over"),
+            (MeasureId(208), "SUM"),
+            (MeasureId(209), "NOT"),
+        ] {
+            m.add_measure(Measure {
+                id,
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: vec![TIME, PRODUCT],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        m
+    }
+
+    #[test]
+    fn quoted_name_resolves_a_measure_with_spaces() {
+        // The defect this closes: a CSV header `Unit Price` had no spelling.
+        let m = odd_names();
+        let f = parse_expr(&m, "'Unit Price' * Quantity").unwrap();
+        assert_eq!(
+            f.expr,
+            Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(refr(MeasureId(200))),
+                Box::new(refr(QUANTITY)),
+            )
+        );
+    }
+
+    #[test]
+    fn quoted_names_cover_punctuation_digits_utf8_and_keywords() {
+        let m = odd_names();
+        for (src, id) in [
+            ("'Unit Price'", 200),
+            ("'Cost-Per-Unit'", 201),
+            ("'Revenue/Unit'", 202),
+            ("'Margin (net)'", 203),
+            ("'2024 Total'", 204),
+            ("'Umsatz \u{20AC} \u{5E74}\u{5EA6}'", 206),
+            // Keyword collisions: quoting makes them names, not syntax.
+            ("'Over'", 207),
+            ("'SUM'", 208),
+            ("'NOT'", 209),
+        ] {
+            assert_eq!(
+                parse_expr(&m, src).unwrap().expr,
+                refr(MeasureId(id)),
+                "{src}"
+            );
+        }
+        // And they compose: a quoted keyword-named measure inside an expression
+        // is not read as an operator.
+        assert!(matches!(
+            parse_expr(&m, "'NOT' + 'SUM'").unwrap().expr,
+            Expr::BinaryOp(BinaryOp::Add, _, _)
+        ));
+        // `SUM` quoted is a ref even directly before '(' — quoting wins.
+        assert!(parse_expr(&m, "'SUM'(Price)").is_err()); // trailing '(', not a call
+    }
+
+    #[test]
+    fn doubled_quote_escapes_an_embedded_quote() {
+        // Chosen escape: `''` inside a quoted name is one literal `'`
+        // (Quantrix/SQL convention).
+        let m = odd_names();
+        let f = parse_expr(&m, "'Bob''s Rate' + Price").unwrap();
+        assert_eq!(
+            f.expr,
+            Expr::BinaryOp(
+                BinaryOp::Add,
+                Box::new(refr(MeasureId(205))),
+                Box::new(refr(PRICE)),
+            )
+        );
+        // Without the doubling it is a *different* (unknown) name, and the
+        // trailing `s Rate'` opens an unterminated quote.
+        assert!(parse_expr(&m, "'Bob's Rate'").is_err());
+    }
+
+    #[test]
+    fn quoted_names_work_everywhere_a_name_does() {
+        let m = odd_names();
+        // Target of an assignment.
+        let f = parse_formula(&m, "'Gross Margin' = 'Unit Price' - 'Cost-Per-Unit'").unwrap();
+        assert_eq!(f.target, Name("Gross Margin".into()));
+        // Dimension list and aggregation category.
+        let f = parse_expr(&m, "'Unit Price'[Time, Product]").unwrap();
+        assert_eq!(
+            f.expr,
+            Expr::Ref(
+                MeasureId(200),
+                DimensionSpec {
+                    by: vec![TIME, PRODUCT],
+                    over: vec![],
+                    except: vec![],
+                }
+            )
+        );
+        let f = parse_expr(&m, "SUM('Unit Price' OVER 'Fiscal Year')").unwrap();
+        assert_eq!(
+            f.expr,
+            Expr::Call(
+                FUNC_SUM,
+                vec![Expr::Ref(
+                    MeasureId(200),
+                    DimensionSpec {
+                        over: vec![CategoryId(3)],
+                        by: vec![],
+                        except: vec![],
+                    }
+                )]
+            )
+        );
+        // Scalar call argument, and CALL(...) argument measures.
+        assert!(parse_expr(&m, "ABS('Unit Price')").is_ok());
+        match parse_definition(&m, "X = CALL(f, 'Unit Price')").unwrap() {
+            Definition::Call { args, .. } => {
+                assert_eq!(args, vec![Name("Unit Price".into())]);
+            }
+            other => panic!("expected Call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quoted_name_errors_are_clear_not_panics() {
+        let m = odd_names();
+        // Unknown quoted measure / category name.
+        let e = parse_expr(&m, "'No Such Measure' * Price").unwrap_err();
+        assert!(
+            e.to_string().contains("unknown measure: No Such Measure"),
+            "{e}"
+        );
+        assert_eq!(e.position, Some(0));
+        let e = parse_expr(&m, "SUM(Price OVER 'No Such Category')").unwrap_err();
+        assert!(
+            e.to_string().contains("unknown category: No Such Category"),
+            "{e}"
+        );
+        // Unterminated and empty quoted names.
+        let e = parse_expr(&m, "'Unit Price").unwrap_err();
+        assert!(e.to_string().contains("unterminated quoted name"), "{e}");
+        let e = parse_expr(&m, "'' + Price").unwrap_err();
+        assert!(e.to_string().contains("empty quoted name"), "{e}");
+    }
+
+    #[test]
+    fn double_quotes_are_still_text_literals() {
+        // `'` introduces a NAME, `"` a text literal. Adding one must not have
+        // disturbed the other.
+        let m = odd_names();
+        assert_eq!(
+            parse_expr(&m, "\"Unit Price\"").unwrap().expr,
+            Expr::Literal(Value::Text("Unit Price".into()))
+        );
+        // A single quote inside a text literal is just a character.
+        assert_eq!(
+            parse_expr(&m, "\"it's\"").unwrap().expr,
+            Expr::Literal(Value::Text("it's".into()))
+        );
+    }
+
+    #[test]
+    fn dotted_qualification_parses_but_names_the_unknown_qualifier() {
+        // Improv has no matrix namespace yet (GUI plan Step 3), so the only
+        // honest resolution is a clear error naming the qualifier — not the old
+        // `unexpected character: '.'`.
+        let m = odd_names();
+        for src in [
+            "Sheet1.Price",
+            "'Defined Input & Outputs'.'Income tax rate'",
+            "Price + Sheet1.Quantity",
+            "SUM(Price OVER Sheet1.Time)",
+        ] {
+            let e = parse_expr(&m, src).unwrap_err();
+            assert!(e.to_string().contains("unknown qualifier"), "{src}: {e}");
+        }
+        // The qualifier is named verbatim, quoted or not.
+        let e = parse_expr(&m, "'Defined Input & Outputs'.'Income tax rate'").unwrap_err();
+        assert!(e.to_string().contains("Defined Input & Outputs"), "{e}");
+        // A dot with no name after it is also an error, never a panic.
+        assert!(parse_expr(&m, "Price.").is_err());
+        assert!(parse_expr(&m, ".Price").is_err());
+        // Chains do not recurse: exactly one dot is consumed, then it errors.
+        assert!(parse_expr(&m, &"a.".repeat(5_000)).is_err());
+    }
+
+    #[test]
+    fn quoted_and_dotted_adversarial_inputs_never_panic() {
+        // Companion to `adversarial_inputs_never_panic`, for the quoting and
+        // qualification additions. Ok or Err are both fine; a panic is not.
+        let m = odd_names();
+        let mut inputs: Vec<String> = [
+            "'",
+            "''",
+            "'''",
+            "''''",
+            "'''''",
+            "'unterminated",
+            "'a\u{20AC}",  // unterminated, multi-byte
+            "'\u{1F4A9}'", // quoted emoji name (unknown measure)
+            "'\u{1F4A9}",  // unterminated after multi-byte
+            "'a''",        // doubling then EOF
+            "'\u{0}'",
+            "'Unit Price'[",
+            "'Unit Price'[']",
+            ".",
+            "..",
+            "a..b",
+            "'a'.'b'.'c'",
+            "X = 'a'.'b'",
+            "X = ''",
+            "SUM('a' OVER 'b')",
+            "CALL(f, 'a'",
+            "SQL('q')",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        inputs.push(format!("'{}", "a".repeat(10_000))); // unterminated, long
+        inputs.push("'a''".repeat(5_000)); // doubling storm
+        inputs.push(".".repeat(5_000));
+        for s in &inputs {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = parse_expr(&m, s);
+                let _ = parse_formula(&m, s);
+                let _ = parse_definition(&m, s);
+            }))
+            .unwrap_or_else(|e| panic!("parser panicked on input {s:?}: {e:?}"));
+        }
     }
 
     #[test]
