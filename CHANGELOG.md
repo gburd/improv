@@ -6,6 +6,82 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-24
+
+The GUI is rebuilt against Lotus Improv / Quantrix reference material, and
+Improv becomes buildable by anyone who clones it.
+
+### Added
+
+- **Margin gutters with edge-docked category tiles.** Tiles now sit in gutters
+  that *frame* the grid — column tiles along its top edge, row tiles down its
+  left, page/unplaced categories in a corner well — and pivoting is dragging a
+  tile from one gutter to another. The previous horizontal shelf above the table
+  was structurally wrong: the references show the axes anchored to the edges they
+  control. Adjacency is *constructed* from egui's panel contract rather than
+  approximated, and is asserted by this codebase's first headless egui frame
+  test, proven non-vacuous by feeding the old shelf's geometry in and requiring
+  rejection.
+- **A canvas of matrices.** A view holds several independently pivoted matrices,
+  each with its own axes, filters, cursor and gutters, placed and resized on a
+  scrollable canvas. This also delivers multi-measure display, previously open.
+  Matrices are child `Ui`s, not `egui::Window`s, because a window is a floating
+  layer that cannot scroll inside a parent scroll area.
+- **Numbered formula list.** Every derived measure's formula is visible at once,
+  numbered, with an enable checkbox per formula, inline error state, and
+  click-to-select. Disabling is a real model operation that survives save and
+  reload, not a GUI-only flag, and dependents recompute without the disabled
+  formula.
+- **Quoted and qualified names in formulas.** `'Unit Price'` — exactly what a
+  CSV header produces — now has a spelling, with `''` for an embedded quote.
+  Eight of nine previously unspellable names round-trip; only the empty name
+  remains unspellable. Dotted names (`Matrix.Measure`) parse and fail with a
+  clear error rather than inventing a namespace that does not exist yet.
+- **Multi-matrix view schema**: `CanvasRect` and `MatrixPlacement`, with
+  `View::from_matrices`/`primary`/`matrices`.
+- **Per-matrix title bars, document tabs for saved views, and a selection
+  aggregate readout.**
+- **Undo/redo** over bounded model snapshots, and focus-aware keyboard shortcuts
+  so grid keys only fire when the grid owns focus.
+
+### Fixed
+
+- **Strings containing newlines or tabs were silently corrupted on save.**
+  `"Line\nBreak"` reloaded as `"LinenBreak"`. The escape was emitted but the EDN
+  reader dropped the backslash, so any description, name, or Text cell carrying a
+  newline or tab lost data with no error. Fixed on both sides: raw emission here,
+  and the reader/printer fixed upstream in Mentat.
+- **Models larger than ~5461 cells could not be saved** — `save_model` panicked
+  inside Mentat's transactor. Saves are chunked, and the ceiling is per attribute
+  queue rather than per transact.
+- **Typed cell display and editing** key on the measure's declared type, never
+  the text's shape, so `42` typed into a Text measure stays text.
+- **Derived measures exported their empty input storage** instead of computed
+  values; CSV export now evaluates through the engine.
+- **`improv set` silently wrote a dimensionally invalid cell** when `--at` was
+  forgotten: `improv set db 100 10 Product=A` reported success and stored a cell
+  at the empty coordinate, which then evaluated to nothing. Stray arguments are
+  rejected with a message naming the flag you meant, and the coordinate is
+  checked against the measure's declared dimensions.
+- A Unicode crash in the formula highlighter, an empty-axis divide-by-zero,
+  CSV item-ID aliasing across imports, non-atomic CSV import and cell edits, a
+  formula bar that offered text no parser would accept, and stale
+  non-dimension categories blanking the grid.
+- `rustls` 0.23.43 → 0.23.45 (RUSTSEC-2026-0285, build dependency only).
+
+### Changed
+
+- **Mentat is a pinned git dependency, not a sibling path dependency.** A fresh
+  clone previously could not even *parse* its manifest (`failed to read
+  ../mentat/Cargo.toml`), so nobody without a sibling checkout could build
+  Improv; CI masked this by cloning Mentat beside the checkout in every job.
+  Verified by building a bare clone with no sibling present.
+- The demo scripts build the CLI once instead of invoking `cargo run` per
+  command: `sample-model.sh` went from 12m31s to about 3s.
+- Scale claims are stated end-to-end (build + save + reload + evaluate) rather
+  than from `evaluate()` alone.
+
+
 ## [0.6.0] - 2026-09-07
 
 ### Added

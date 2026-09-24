@@ -6,7 +6,27 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — post-v0.6.0 qualification (2026-09-22)
+## Released: v0.7.0 (2026-09-24)
+
+The reference-backed GUI reconstruction (all five plan steps) plus the
+portability fix shipped as **v0.7.0**. Qualification for that release:
+350 workspace tests, the ignored/stress suite (including 1M-cell evaluate and
+the chunked save spanning many transacts), clippy/fmt/deny/typos clean,
+`cargo doc` warning-free, mdBook + linkcheck, all four binaries smoke-tested,
+and the canonical oracle reverified end-to-end through the CLI
+(Revenue 1000/1000/1200/1600; `SUM(Revenue OVER Time)` 2200/2600).
+
+Two things this release changed structurally:
+
+- **Improv is buildable by anyone.** Mentat moved from a sibling path
+  dependency to a pinned git rev; a fresh clone previously could not even parse
+  its manifest, and CI masked that by cloning Mentat beside the checkout.
+  Verified by building and testing a bare clone with no sibling present.
+- **The EDN string-corruption bug is fixed at the source** (mentat
+  `1af15e15` on `improv-base`, pinned here), not just worked around in
+  `storage_mentat`.
+
+## Earlier active priority — post-v0.6.0 qualification (2026-09-22)
 
 Earlier DONE labels are implementation milestones, not release-readiness or
 Lotus Improv parity certification. The source audit found correctness gaps
