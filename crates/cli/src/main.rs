@@ -619,7 +619,7 @@ fn cmd_scenario(rest: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("no measure with id {}", mid.0))?
         .value_type;
     let value = parse_value(value_arg, vt)?;
-    let coord = resolve_coord(&model, &at)?;
+    let coord = resolve_coord(&model, mid, &at)?;
 
     // Find an existing scenario by name, else mint a new id.
     let existing = model
@@ -664,7 +664,7 @@ fn cmd_set(rest: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("no measure with id {}", mid.0))?
         .value_type;
     let value = parse_value(value_arg, vt)?;
-    let coord = resolve_coord(&model, &at)?;
+    let coord = resolve_coord(&model, mid, &at)?;
 
     model.set_input(mid, coord, value);
     store.save_model(&model).map_err(|e| e.to_string())?;
@@ -835,7 +835,7 @@ fn apply_stream_line(
         .value_type;
     let value = parse_value(value_tok, vt)?;
     let coord = match coord_tok {
-        Some(spec) => resolve_coord(model, &parse_pairs(spec)?)?,
+        Some(spec) => resolve_coord(model, mid, &parse_pairs(spec)?)?,
         None => Coordinate::new(),
     };
     let num = value
@@ -1165,17 +1165,33 @@ fn parse_value(s: &str, vt: ValueType) -> Result<Value, String> {
 }
 
 /// Collect the `--at Cat=Item,...` pairs. Absent flag => empty (scalar cell).
+/// Parse an optional `--at Cat=Item,...` flag.
+///
+/// Rejects any other argument rather than ignoring it. Silently discarding
+/// stray tokens meant `set db 100 10 Product=A` (the `--at` forgotten) reported
+/// success and wrote a cell at the EMPTY coordinate — a dimensionally invalid
+/// cell on a measure declared over `Product`, created with no diagnostic.
 fn parse_at_flag(rest: &[String]) -> Result<Vec<(String, String)>, String> {
     let mut it = rest.iter();
-    while let Some(tok) = it.next() {
-        if tok == "--at" {
-            let spec = it
-                .next()
-                .ok_or_else(|| "--at needs an argument, e.g. Time=2025".to_string())?;
-            return parse_pairs(spec);
-        }
+    let Some(tok) = it.next() else {
+        // No arguments at all: a measure with no dimensions has no coordinate.
+        return Ok(Vec::new());
+    };
+    if tok != "--at" {
+        return Err(if tok.contains('=') {
+            format!("unexpected argument '{tok}' — did you mean '--at {tok}'?")
+        } else {
+            format!("unexpected argument '{tok}' (expected --at Cat=Item,...)")
+        });
     }
-    Ok(Vec::new())
+    let spec = it
+        .next()
+        .ok_or_else(|| "--at needs an argument, e.g. Time=2025".to_string())?;
+    let pairs = parse_pairs(spec)?;
+    if let Some(extra) = it.next() {
+        return Err(format!("unexpected argument '{extra}' after --at {spec}"));
+    }
+    Ok(pairs)
 }
 
 fn parse_pairs(spec: &str) -> Result<Vec<(String, String)>, String> {
@@ -1190,7 +1206,17 @@ fn parse_pairs(spec: &str) -> Result<Vec<(String, String)>, String> {
 }
 
 /// Resolve name pairs to a `Coordinate` using the model.
-fn resolve_coord(model: &Model, pairs: &[(String, String)]) -> Result<Coordinate, String> {
+/// Resolve `Cat=Item` name pairs into a `Coordinate`, checking it names exactly
+/// the dimensions `measure` is declared over.
+///
+/// Without that check a wrong or missing `--at` wrote a cell at a coordinate the
+/// measure has no cell for — it saved, reported success, and then evaluated to
+/// nothing, because the engine joins on the declared dimensions.
+fn resolve_coord(
+    model: &Model,
+    measure: MeasureId,
+    pairs: &[(String, String)],
+) -> Result<Coordinate, String> {
     let mut coord = Coordinate::new();
     for (cat_name, item_name) in pairs {
         let cat = model
@@ -1202,6 +1228,57 @@ fn resolve_coord(model: &Model, pairs: &[(String, String)]) -> Result<Coordinate
             .find(|i| i.category == cat.id && i.name.0 == *item_name)
             .ok_or_else(|| format!("no item named '{item_name}' in category '{cat_name}'"))?;
         coord = coord.with(cat.id, item.id);
+    }
+
+    let Some(m) = model.measures.get(&measure) else {
+        return Ok(coord);
+    };
+    // An empty `categories` means the measure never DECLARED its dimensions
+    // (`add-measure ... input` with no trailing category names) — they are
+    // inferred from use, so any coordinate is legitimate and there is nothing to
+    // check against. Only validate when the declaration exists.
+    if m.categories.is_empty() {
+        return Ok(coord);
+    }
+    let name_of = |c: &CategoryId| {
+        model
+            .categories
+            .get(c)
+            .map(|c| c.name.0.clone())
+            .unwrap_or_else(|| format!("category {}", c.0))
+    };
+    let given: Vec<CategoryId> = coord.categories().collect();
+    let missing: Vec<String> = m
+        .categories
+        .iter()
+        .filter(|c| !given.contains(c))
+        .map(&name_of)
+        .collect();
+    let extra: Vec<String> = given
+        .iter()
+        .filter(|c| !m.categories.contains(c))
+        .map(&name_of)
+        .collect();
+    if !missing.is_empty() || !extra.is_empty() {
+        let mut why = Vec::new();
+        if !missing.is_empty() {
+            why.push(format!("missing {}", missing.join(", ")));
+        }
+        if !extra.is_empty() {
+            why.push(format!("not a dimension of it: {}", extra.join(", ")));
+        }
+        return Err(format!(
+            "measure {} '{}' is declared over [{}], but --at gave [{}] — {}",
+            measure.0,
+            m.name,
+            m.categories
+                .iter()
+                .map(&name_of)
+                .collect::<Vec<_>>()
+                .join(", "),
+            given.iter().map(&name_of).collect::<Vec<_>>().join(", "),
+            why.join("; "),
+        ));
     }
     Ok(coord)
 }
@@ -1617,5 +1694,82 @@ mod tests {
         assert!(
             apply_stream_line(&mut model, &mut engine, "Price 15 Product=WidgetA extra").is_err()
         ); // too many fields
+    }
+    /// A forgotten `--at` used to report success and write a cell at the EMPTY
+    /// coordinate, so a measure declared over `Product` gained a dimensionless
+    /// cell that then evaluated to nothing. Stray tokens are now rejected, and
+    /// the message points at the flag the user meant.
+    #[test]
+    fn stray_coordinate_argument_is_rejected_not_ignored() {
+        let err = parse_at_flag(&["Product=A".to_string()]).unwrap_err();
+        assert!(err.contains("--at Product=A"), "unhelpful message: {err}");
+
+        // A non-pair stray token is still an error, just without the hint.
+        assert!(parse_at_flag(&["junk".to_string()]).is_err());
+
+        // Trailing junk after a valid --at is also caught.
+        assert!(parse_at_flag(&[
+            "--at".to_string(),
+            "Product=A".to_string(),
+            "leftover".to_string(),
+        ])
+        .is_err());
+
+        // No arguments at all remains legal: a scalar measure has no coordinate.
+        assert_eq!(parse_at_flag(&[]).unwrap(), Vec::new());
+
+        // And the normal form still parses.
+        assert_eq!(
+            parse_at_flag(&["--at".to_string(), "Product=A".to_string()]).unwrap(),
+            vec![("Product".to_string(), "A".to_string())]
+        );
+    }
+
+    /// `--at` naming the wrong dimensions used to save a cell the measure has no
+    /// cell for: it reported success, then evaluated to nothing because the
+    /// engine joins on the DECLARED dimensions.
+    #[test]
+    fn coordinate_must_match_the_measures_declared_dimensions() {
+        let model = stream_test_model();
+        let price = MeasureId(100); // declared over Product only
+
+        // Correct: exactly the declared dimensions.
+        let ok = resolve_coord(
+            &model,
+            price,
+            &[("Product".to_string(), "WidgetA".to_string())],
+        );
+        assert!(ok.is_ok(), "valid coordinate rejected: {ok:?}");
+
+        // Empty when a dimension is required.
+        let err = resolve_coord(&model, price, &[]).unwrap_err();
+        assert!(err.contains("missing Product"), "got: {err}");
+
+        // A category that is not one of its dimensions.
+        let err =
+            resolve_coord(&model, price, &[("Time".to_string(), "2025".to_string())]).unwrap_err();
+        assert!(err.contains("not a dimension"), "got: {err}");
+
+        // A measure that never declared its dimensions accepts any coordinate:
+        // they are inferred from use, so there is nothing to validate against.
+        let undeclared = MeasureId(900);
+        let mut m2 = model.clone();
+        m2.add_measure(Measure {
+            id: undeclared,
+            name: Name("Undeclared".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        assert!(
+            resolve_coord(
+                &m2,
+                undeclared,
+                &[("Product".to_string(), "WidgetA".to_string())]
+            )
+            .is_ok(),
+            "an undeclared measure must still accept a coordinate"
+        );
     }
 }
