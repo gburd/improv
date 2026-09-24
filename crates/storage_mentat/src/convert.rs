@@ -14,13 +14,17 @@ fn edn_str(s: &str) -> String {
         match c {
             '"' => out.push_str("\\\""),
             '\\' => out.push_str("\\\\"),
-            // NOTE: do NOT emit \n / \t / \r escapes here. Mentat's EDN
-            // reader does not interpret them -- it drops the backslash, so
-            // "a\nb" round-tripped as "anb", silently corrupting any
-            // description, name, or Text cell containing a newline or tab.
-            // The reader passes these bytes through literally, so emitting them
-            // raw is both correct and lossless. Regression:
-            // control_characters_survive_a_round_trip.
+            // Newlines, tabs and CRs are emitted RAW, not as \n / \t / \r.
+            // They are legal unescaped inside an EDN string literal, and the
+            // reader returns them verbatim, so raw is correct and lossless.
+            //
+            // This used to be a workaround: mentat's reader echoed the
+            // character after a backslash instead of translating it, so an
+            // emitted \n came back as the letter 'n' and "a\nb" round-tripped
+            // as "anb". That is fixed upstream (mentat 1af15e15, pinned in
+            // [workspace.dependencies]), so escaping them would now also work
+            // -- raw simply stays the simpler of two correct options.
+            // Regression: control_characters_survive_a_round_trip.
             _ => out.push(c),
         }
     }

@@ -3601,7 +3601,7 @@ impl ImprovApp {
 
     /// Make the whole of `ui` a drop target for category tiles: a category
     /// released here is recorded as a move to `axis`, which
-    /// [`ImprovApp::set_axis`] applies (appending to that axis' stack). The zone
+    /// [`Matrix::set_axis`] applies (appending to that axis' stack). The zone
     /// stretches across the gutter so the drop target IS the gutter, not just the
     /// tiles in it — an empty axis must still be droppable.
     ///
