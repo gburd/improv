@@ -6,6 +6,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **GUI grid right-aligns numbers** so their digits line up, as Improv does;
+  text, booleans and dates stay left-aligned. The cell editor for a numeric
+  measure is right-aligned to match.
+
 ### Fixed
 
 - **CLI `--at` accepts every natural spelling of a coordinate.** `set` and

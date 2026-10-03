@@ -3953,6 +3953,11 @@ impl ImprovApp {
             .get(&measure)
             .map(|m| m.is_derived())
             .unwrap_or(false);
+        let is_number = self
+            .model
+            .measures
+            .get(&measure)
+            .is_some_and(|m| m.value_type == ValueType::Number);
 
         // Cartesian product of stacked categories per axis. Columns are
         // materialized up front (they become egui table columns, which the
@@ -4119,6 +4124,7 @@ impl ImprovApp {
                         let key =
                             cell_key_multi(&row_cats, &row_line, &col_cats, col_line, &pinned);
                         let is_cursor = cursor == (ri, ci);
+                        let editing_here = editing.as_ref() == Some(&(measure, key.clone()));
                         row.col(|ui| {
                             let mut frame = egui::Frame::default();
                             if is_cursor {
@@ -4127,35 +4133,55 @@ impl ImprovApp {
                                 );
                             }
                             frame.show(ui, |ui| {
-                                if is_derived {
-                                    let text = self.cell_text(measure, &key).unwrap_or_default();
-                                    if ui.label(text).clicked() {
-                                        clicked_cell = Some((ri, ci));
-                                        clicked_derived = true;
-                                    }
-                                } else if editing.as_ref() == Some(&(measure, key.clone())) {
-                                    let resp = ui.add(
-                                        egui::TextEdit::singleline(&mut edit_buf)
-                                            .desired_width(f32::INFINITY),
-                                    );
-                                    resp.request_focus();
-                                    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                    if esc {
-                                        cancel = true;
-                                    } else if resp.lost_focus() || enter {
-                                        commit = Some((key.clone(), edit_buf.clone()));
-                                    }
+                                // Numbers right-align so their digits line up,
+                                // as in Improv; text, booleans and dates stay left.
+                                let value = self.cell_value(measure, &key);
+                                let numeric = matches!(value, Some(CellValue::Num(_)));
+                                // Measure left-to-right in the table's sizing
+                                // pass: a right-to-left layout fills the cell,
+                                // which would size every auto column to its
+                                // fallback width instead of its content.
+                                let right = numeric || (editing_here && is_number);
+                                let align = if right && !ui.is_sizing_pass() {
+                                    egui::Layout::right_to_left(egui::Align::Center)
                                 } else {
-                                    // Typed display: text, booleans, dates, and
-                                    // #ERR all render as themselves (never blank
-                                    // just because they are not numbers).
-                                    let text = self.cell_text(measure, &key).unwrap_or_default();
-                                    if ui.button(text.clone()).clicked() {
-                                        clicked_cell = Some((ri, ci));
-                                        begin_edit = Some((key.clone(), text));
+                                    egui::Layout::left_to_right(egui::Align::Center)
+                                };
+                                let text = value.map(|v| v.to_string()).unwrap_or_default();
+                                ui.with_layout(align, |ui| {
+                                    if is_derived {
+                                        if ui.label(text).clicked() {
+                                            clicked_cell = Some((ri, ci));
+                                            clicked_derived = true;
+                                        }
+                                    } else if editing_here {
+                                        let resp = ui.add(
+                                            egui::TextEdit::singleline(&mut edit_buf)
+                                                .horizontal_align(if is_number {
+                                                    egui::Align::Max
+                                                } else {
+                                                    egui::Align::Min
+                                                })
+                                                .desired_width(f32::INFINITY),
+                                        );
+                                        resp.request_focus();
+                                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                        if esc {
+                                            cancel = true;
+                                        } else if resp.lost_focus() || enter {
+                                            commit = Some((key.clone(), edit_buf.clone()));
+                                        }
+                                    } else {
+                                        // Typed display: text, booleans, dates, and
+                                        // #ERR all render as themselves (never blank
+                                        // just because they are not numbers).
+                                        if ui.button(text.clone()).clicked() {
+                                            clicked_cell = Some((ri, ci));
+                                            begin_edit = Some((key.clone(), text));
+                                        }
                                     }
-                                }
+                                });
                             });
                         });
                     }
@@ -7020,6 +7046,83 @@ mod tests {
             app.csv_wizard_panel(ctx);
             app.canvas_panel(ctx);
         })
+    }
+
+    /// Numbers right-align in their column so the digits line up (Improv's
+    /// grid); text stays left. Two values of different widths in one column
+    /// must share a right edge, and a text cell must not.
+    #[test]
+    fn numeric_cells_right_align() {
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        let mut m = Model::new();
+        m.add_category(t, "Time");
+        m.add_category(p, "Product");
+        m.add_item(ItemId(10), t, "Q1");
+        m.add_item(ItemId(11), t, "Q2");
+        m.add_item(ItemId(20), p, "W");
+        for (id, name, ty) in [(1, "N", ValueType::Number), (2, "S", ValueType::Text)] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ty,
+                categories: vec![t, p],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let at = |q| improv_core_model::Coordinate::from_pairs([(t, ItemId(q)), (p, ItemId(20))]);
+        m.set_input(MeasureId(1), at(10), Value::Number(5.0));
+        m.set_input(MeasureId(1), at(11), Value::Number(12345.5));
+        m.set_input(MeasureId(2), at(10), Value::Text("a".into()));
+        m.set_input(MeasureId(2), at(11), Value::Text("abcdefgh".into()));
+
+        // The on-screen [left, right] x-extent of the text drawn as `s`.
+        let extent = |shapes: &[egui::epaint::ClippedShape], s: &str| {
+            shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Text(t) if t.galley.text() == s => {
+                        let r = t.galley.rect.translate(t.pos.to_vec2());
+                        Some((r.min.x, r.max.x))
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{s:?} was not drawn"))
+        };
+        let mut app = build_app(m);
+        let mut lay_out = |measure, short, long| {
+            select(&mut app, MeasureId(measure));
+            let ctx = egui::Context::default();
+            ctx.set_style(crate::theme::next_style());
+            let mut shapes = Vec::new();
+            for i in 0..8 {
+                shapes = full_frame(
+                    &ctx,
+                    &mut app,
+                    egui::vec2(1280.0, 800.0),
+                    f64::from(i) / 60.0,
+                )
+                .shapes;
+            }
+            (extent(&shapes, short), extent(&shapes, long))
+        };
+        let (num_short, num_long) = lay_out(1, "5", "12345.5");
+        let (txt_short, txt_long) = lay_out(2, "a", "abcdefgh");
+        assert!(
+            (num_short.1 - num_long.1).abs() < 0.5,
+            "numbers share a right edge: {num_short:?} vs {num_long:?}"
+        );
+        assert!(
+            (txt_short.0 - txt_long.0).abs() < 0.5 && (txt_short.1 - txt_long.1).abs() > 0.5,
+            "text stays left-aligned: {txt_short:?} vs {txt_long:?}"
+        );
+        // The column still fits its widest value: right-aligning must not
+        // inflate the auto-sized column (the widest number starts where the
+        // column, i.e. a left-aligned value, starts).
+        assert!(
+            (num_long.0 - txt_short.0).abs() < 0.5,
+            "the numeric column grew past its content: {num_long:?} starts after {txt_short:?}"
+        );
     }
 
     /// At the minimum window size (and the old 800x600 default) nothing the
