@@ -119,7 +119,9 @@ baseline on hotdog; its temporary instance was terminated after collection.
   the application menu (C1) replaces the tool palette and tab strip (B4 in
   part), per `docs/reviews/2026-10-03-nextstep-visual-spec.md` §7. Step 3, first
   half: each matrix is a NeXT worksheet window (`nxwin`) on a `#555555`
-  workspace (B1 in part); explorer and inspector windows are next.
+  workspace. Step 3, second half: the explorer and inspector became the model
+  browser and Info panel windows, so the workspace is full width (B1, B4
+  done). Step 4 (formula pane, B5/B6) is next.
 - **Scale remains unfinished:** partial loads still enumerate all coordinate
   rows before filtering; GUI charts and columns materialize products. No
   billion-cell usability claim follows from row virtualization.

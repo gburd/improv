@@ -16,6 +16,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI model browser and Info panel are NeXT windows.** The docked
+  explorer and inspector side panels are gone, so the dark workspace spans
+  the full width between the formula bar and the bottom panels. The model
+  browser (`<file> - Model`, bottom left; Categories, Measures, Views) has a
+  close box and **View ▸ Model Browser** toggles it. The Info panel (top
+  right, closed at start) opens from **Info ▸ Info Panel…** and closes from
+  its close box. A fresh matrix starts right of the application menu.
 - **GUI matrices are NeXT worksheet windows on a dark workspace.** The
   scrollable canvas is gone: the area between the panels is a `#555555`
   workspace, and each matrix floats on it as its own window with a black

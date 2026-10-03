@@ -3,7 +3,7 @@
 //! An `egui`/`eframe` front-end: a *view* over the engine (see
 //! `.agent/steering/AGENT_GUI_STEERING.md` §9). It loads a model from a Mentat
 //! store, renders a measure as a pivot grid, and (Phase 5 increments) offers a
-//! model explorer, formula editor, and inspector.
+//! model browser, formula editor, and Info panel.
 
 mod app;
 mod chart;

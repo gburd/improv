@@ -207,8 +207,8 @@ Time × Product.
 
 The egui/eframe desktop app, styled in a NeXTSTEP-*inspired* look-and-feel
 (built from general knowledge of the original Lotus Improv, not a verified
-side-by-side comparison) — explorer, editable pivot grid, on-grid margin
-**category tiles** for drag-to-pivot, a top **formula bar**, inspector, saved
+side-by-side comparison) — a model browser window, editable pivot grid, on-grid margin
+**category tiles** for drag-to-pivot, a top **formula bar**, an Info panel, saved
 views,
 per-category filters, a bar/line **chart**, and **multi-category-per-axis
 stacking**.

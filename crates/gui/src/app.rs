@@ -2,7 +2,8 @@
 //!
 //! State: the loaded `Model`, a live `session::Engine` (built over all derived
 //! measures), the current derived-measure snapshot, and the selected measure.
-//! The panels (model explorer, pivot grid, formula editor, inspector) are all
+//! The panels and windows (model browser, pivot grid, formula editor, Info
+//! panel) are all
 //! rendered each frame from this state. The GUI is a pure *view/controller*
 //! over `improv_engine` + the model; it adds no modeling semantics (see
 //! `.agent/steering/AGENT_GUI_STEERING.md` §9.3).
@@ -139,8 +140,10 @@ pub struct ImprovApp {
     /// forms (see `csv_wizard`).
     show_csv_wizard: bool,
     import_form: ImportForm,
-    /// Whether the inspector (the Info panel) is shown.
+    /// Whether the Info panel window is shown (off until Info ▸ Info Panel…).
     show_inspector: bool,
+    /// Whether the model browser window is shown (View ▸ Model Browser).
+    show_browser: bool,
     /// The floating application menu's position and open submenu.
     menu: menu::MenuState,
     export_form: ExportForm,
@@ -218,6 +221,21 @@ fn matrix_window_id(mi: usize) -> egui::Id {
     crate::nxwin::NxWindow::new(("matrix", mi), "").id()
 }
 
+/// Keep NxWindow `win` at `home` on the workspace until the user moves or
+/// resizes it. The workspace settles over the first frames and follows the
+/// native window's size, so a plain `default_rect` would keep the first
+/// frame's guess.
+fn anchor_window(ctx: &egui::Context, win: egui::Id, home: egui::Rect) {
+    let (state, last) = (win.with("nxwin_rect"), win.with("home"));
+    ctx.data_mut(|d| {
+        let at = d.get_temp::<egui::Rect>(state);
+        if at.is_none() || at == d.get_temp::<egui::Rect>(last) {
+            d.insert_temp(state, home);
+        }
+        d.insert_temp(last, home);
+    });
+}
+
 /// Whether the window left the gutters enough room to be laid out at all.
 ///
 /// A panel clamps its extent to what is available, so in an absurdly small
@@ -243,6 +261,10 @@ const GUTTER_W: f32 = 120.0;
 /// cascade). See [`ImprovApp::add_matrix`].
 const CASCADE: f32 = 28.0;
 
+/// Where a fresh canvas's first matrix starts on the workspace: right of the
+/// application menu (at x 4, about 110 wide), as in the NeXT layout.
+const MENU_CLEAR: f32 = 120.0;
+
 /// Smallest a worksheet window can be resized to. Below roughly this it has no
 /// room for its gutters and a cell, so shrinking further would only hide its
 /// own chrome; [`gutters_have_room`] is the same judgement about the window.
@@ -261,8 +283,8 @@ const MATRIX_MIN_H: f32 = 180.0;
 /// which it is.
 const UNDO_DEPTH: usize = 50;
 
-/// Initial window inner size: room for the explorer, a default matrix and the
-/// Inspector side by side.
+/// Initial window inner size: room for the menu, a default matrix and the Info
+/// panel side by side on the workspace.
 pub const INITIAL_WINDOW: [f32; 2] = [1280.0, 800.0];
 /// Minimum window inner size. Smaller windows still never overdraw the side
 /// panels (the canvas clips), but the matrix would be mostly scrolled away.
@@ -303,6 +325,10 @@ impl Matrix {
             n_cols: 1.min(axis_order.len().saturating_sub(1)),
             axis_order,
             axis_for: measure,
+            rect: CanvasRect {
+                x: MENU_CLEAR,
+                ..CanvasRect::default()
+            },
             ..Matrix::default()
         }
     }
@@ -770,7 +796,8 @@ impl ImprovApp {
             chart_line: false,
             show_csv_wizard: false,
             import_form: ImportForm::default(),
-            show_inspector: true,
+            show_inspector: false,
+            show_browser: true,
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -1954,7 +1981,7 @@ fn white_selection(ui: &mut egui::Ui) {
     ui.visuals_mut().selection.bg_fill = crate::theme::WHITE;
 }
 
-/// Read-only facts about a measure, assembled for the inspector panel.
+/// Read-only facts about a measure, assembled for the Info panel.
 #[derive(Debug, PartialEq)]
 struct InspectorData {
     id: MeasureId,
@@ -2434,11 +2461,12 @@ impl eframe::App for ImprovApp {
         self.status_bar(ctx);
         self.formula_panel(ctx);
         self.formula_list_panel(ctx);
-        self.explorer_panel(ctx);
-        self.inspector_panel(ctx);
         self.chart_panel(ctx);
         self.csv_wizard_panel(ctx);
-        self.canvas_panel(ctx);
+        let ws = self.canvas_panel(ctx);
+        // After the worksheets, so they start on top of them.
+        self.model_browser(ctx, ws);
+        self.info_panel(ctx, ws);
         // Last, so it floats over every panel.
         self.menu_bar(ctx);
     }
@@ -2507,6 +2535,7 @@ impl ImprovApp {
     fn run_command(&mut self, ctx: &egui::Context, c: Command) {
         match c {
             Command::InfoPanel => self.show_inspector = !self.show_inspector,
+            Command::ModelBrowser => self.show_browser = !self.show_browser,
             Command::SaveModel => {
                 self.status = match self.save() {
                     Ok(()) => "saved model".into(),
@@ -2527,7 +2556,7 @@ impl ImprovApp {
                 self.remove_matrix(i);
             }
             Command::SaveView => {
-                // Save under the explorer's name box, or a generated name.
+                // Save under the browser's name box, or a generated name.
                 let name = if self.view_name.trim().is_empty() {
                     format!("view {}", self.model.views.len() + 1)
                 } else {
@@ -2550,64 +2579,77 @@ impl ImprovApp {
         }
     }
 
-    /// Left: model explorer grouped into Categories (with their items) and
-    /// Measures (input vs derived). Clicking a measure selects it.
-    fn explorer_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("explorer")
+    /// The model browser (spec §4.2): a NeXT window, `<file> - Model`, at the
+    /// workspace's bottom left, listing Categories (with their items),
+    /// Measures (input vs derived; clicking one selects it) and Views.
+    /// View ▸ Model Browser shows and hides it.
+    fn model_browser(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let mut open = self.show_browser;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(ws.left(), ws.bottom() - 300.0),
+            egui::vec2(260.0, 300.0),
+        );
+        let win = crate::nxwin::NxWindow::new("browser", format!("{} - Model", self.file_name()));
+        anchor_window(ctx, win.id(), rect);
+        let _ = win
+            .closable(&mut open)
+            .default_rect(rect)
             .resizable(true)
-            .default_width(220.0)
             .show(ctx, |ui| {
-                ui.heading("Model");
-                ui.separator();
-
-                egui::CollapsingHeader::new("Categories")
-                    .default_open(true)
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
                     .show(ui, |ui| {
-                        let mut cats: Vec<CategoryId> =
-                            self.model.categories.keys().copied().collect();
-                        cats.sort_by_key(|c| c.0);
-                        for cid in cats {
-                            let cat = &self.model.categories[&cid];
-                            egui::CollapsingHeader::new(&cat.name.0)
-                                .id_salt(("cat", cid.0))
-                                .show(ui, |ui| {
-                                    let mut items = cat.items.clone();
-                                    items.sort_by_key(|i| i.0);
-                                    for iid in items {
-                                        if let Some(it) = self.model.items.get(&iid) {
-                                            ui.label(&it.name.0);
+                        egui::CollapsingHeader::new("Categories")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                let mut cats: Vec<CategoryId> =
+                                    self.model.categories.keys().copied().collect();
+                                cats.sort_by_key(|c| c.0);
+                                for cid in cats {
+                                    let cat = &self.model.categories[&cid];
+                                    egui::CollapsingHeader::new(&cat.name.0)
+                                        .id_salt(("cat", cid.0))
+                                        .show(ui, |ui| {
+                                            let mut items = cat.items.clone();
+                                            items.sort_by_key(|i| i.0);
+                                            for iid in items {
+                                                if let Some(it) = self.model.items.get(&iid) {
+                                                    ui.label(&it.name.0);
+                                                }
+                                            }
+                                        });
+                                }
+                            });
+
+                        egui::CollapsingHeader::new("Measures")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                let mut ids: Vec<MeasureId> =
+                                    self.model.measures.keys().copied().collect();
+                                ids.sort_by_key(|m| m.0);
+                                ui.scope(|ui| {
+                                    white_selection(ui);
+                                    for id in ids {
+                                        let m = &self.model.measures[&id];
+                                        let tag = if m.is_derived() { "= " } else { "· " };
+                                        let label = format!("{tag}{}", m.name.0);
+                                        if ui
+                                            .selectable_label(self.selected() == Some(id), label)
+                                            .clicked()
+                                        {
+                                            self.focused_mut().select(Some(id));
                                         }
                                     }
                                 });
-                        }
-                    });
+                            });
 
-                egui::CollapsingHeader::new("Measures")
-                    .default_open(true)
-                    .show(ui, |ui| {
-                        let mut ids: Vec<MeasureId> = self.model.measures.keys().copied().collect();
-                        ids.sort_by_key(|m| m.0);
-                        ui.scope(|ui| {
-                            white_selection(ui);
-                            for id in ids {
-                                let m = &self.model.measures[&id];
-                                let tag = if m.is_derived() { "= " } else { "· " };
-                                let label = format!("{tag}{}", m.name.0);
-                                if ui
-                                    .selectable_label(self.selected() == Some(id), label)
-                                    .clicked()
-                                {
-                                    self.focused_mut().select(Some(id));
-                                }
-                            }
-                        });
+                        self.views_section(ui);
                     });
-
-                self.views_section(ui);
             });
+        self.show_browser = open;
     }
 
-    /// Views section in the explorer: a name field + "Save view" button that
+    /// Views section in the model browser: a name field + "Save view" button that
     /// captures the current CANVAS, and a list of saved views (click to load).
     ///
     /// This is the NeXTSTEP reference's model navigator
@@ -2620,7 +2662,8 @@ impl ImprovApp {
             .default_open(true)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.view_name);
+                    // Leave the button room in the narrow browser window.
+                    ui.add(egui::TextEdit::singleline(&mut self.view_name).desired_width(120.0));
                     if ui.button("Save view").clicked() {
                         let name = self.view_name.clone();
                         if self.save_view(&name).is_some() {
@@ -2652,17 +2695,22 @@ impl ImprovApp {
             });
     }
 
-    /// Right: inspector for the selected measure.
-    fn inspector_panel(&mut self, ctx: &egui::Context) {
-        if !self.show_inspector {
-            return;
-        }
-        egui::SidePanel::right("inspector")
-            .resizable(true)
-            .default_width(260.0)
+    /// The Info panel (spec §4.7): a NeXT panel window at the workspace's top
+    /// right showing the selected measure's facts. Info ▸ Info Panel… opens
+    /// it; its close box closes it.
+    fn info_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let mut open = self.show_inspector;
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(ws.right() - 280.0, ws.top()),
+            egui::vec2(280.0, 240.0),
+        );
+        let win = crate::nxwin::NxWindow::new("info", "Info");
+        anchor_window(ctx, win.id(), rect);
+        let _ = win
+            .closable(&mut open)
+            .default_rect(rect)
+            .resizable(false)
             .show(ctx, |ui| {
-                ui.heading("Inspector");
-                ui.separator();
                 let data = self.selected().and_then(|m| self.inspector_data(m));
                 match data {
                     None => {
@@ -2700,6 +2748,7 @@ impl ImprovApp {
                     }
                 }
             });
+        self.show_inspector = open;
     }
 
     /// Bottom: formula editor for the selected derived measure, plus a form to
@@ -3083,7 +3132,7 @@ impl ImprovApp {
     }
 
     /// The export half of the wizard: a measure combo box (from the current
-    /// model, like the explorer's measure list), a target path, and a
+    /// model, like the browser's measure list), a target path, and a
     /// delimiter toggle.
     fn csv_export_form(&mut self, ui: &mut egui::Ui) {
         ui.heading("Export");
@@ -3163,7 +3212,7 @@ impl ImprovApp {
     /// so a code-driven focus change (`add_matrix`, `apply_view`) shows as the
     /// key title bar; a press on another window then makes it key, and that
     /// is read back into the focus.
-    fn canvas_panel(&mut self, ctx: &egui::Context) {
+    fn canvas_panel(&mut self, ctx: &egui::Context) -> egui::Rect {
         let ws = egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(crate::theme::DARK_GRAY))
             .show(ctx, |ui| {
@@ -3172,16 +3221,16 @@ impl ImprovApp {
                         crate::theme::WHITE,
                         "No measures. Open a model store with `improv-gui <db>`.",
                     );
-                    return None;
                 }
-                Some(ui.max_rect())
+                ui.max_rect()
             })
             .inner;
-        let Some(ws) = ws else {
-            return;
-        };
-        // ponytail: matrix windows own the key slot; give it to the Info panel
-        // or browser windows (later spec steps) when they become NxWindows.
+        if self.model.measures.is_empty() {
+            return ws;
+        }
+        // ponytail: matrix windows own the key slot. A click on the browser or
+        // Info panel makes it key for that frame only; let it keep the key
+        // (and fence grid keys off) when a panel needs the keyboard.
         crate::nxwin::make_key(ctx, matrix_window_id(self.focus_index()));
         let mut closed = Vec::new();
         for mi in 0..self.matrices.len() {
@@ -3192,6 +3241,7 @@ impl ImprovApp {
         for mi in closed.into_iter().rev() {
             self.remove_matrix(mi);
         }
+        ws
     }
 
     /// Matrix `mi` as a worksheet window on the workspace `ws`: filter shelf,
@@ -3241,11 +3291,19 @@ impl ImprovApp {
     /// A worksheet window's title (spec §4.3): `Sales: North - Worksheet -
     /// demo`, the file being the store's stem or `Untitled` when in memory.
     pub fn window_title(&self, mi: usize) -> String {
-        let file = std::path::Path::new(&self.db)
+        format!(
+            "{} - Worksheet - {}",
+            self.matrix_title(mi),
+            self.file_name()
+        )
+    }
+
+    /// The store's file stem, or `Untitled` when in memory.
+    fn file_name(&self) -> &str {
+        std::path::Path::new(&self.db)
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("Untitled");
-        format!("{} - Worksheet - {file}", self.matrix_title(mi))
+            .unwrap_or("Untitled")
     }
 
     /// A matrix's title text: its measure's name, plus the pinned page items
@@ -3322,7 +3380,7 @@ impl ImprovApp {
         let page_cats = m.page_cats(&self.model);
         // Each gutter panel's `show_inside` REPLACES its clip with the panel
         // rect instead of intersecting it, so tiles and well text escaped the
-        // canvas and drew over the Inspector. The panels get no frame; each body
+        // canvas and drew over the side panels. The panels get no frame; each body
         // first narrows its clip back to the canvas, then paints the gutter
         // frame itself, so the frame and everything in it stay clipped.
         let outer_clip = ui.clip_rect();
@@ -4719,7 +4777,8 @@ mod tests {
             chart_line: false,
             show_csv_wizard: false,
             import_form: ImportForm::default(),
-            show_inspector: true,
+            show_inspector: false,
+            show_browser: true,
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -6916,11 +6975,11 @@ mod tests {
             app.status_bar(ctx);
             app.formula_panel(ctx);
             app.formula_list_panel(ctx);
-            app.explorer_panel(ctx);
-            app.inspector_panel(ctx);
             app.chart_panel(ctx);
             app.csv_wizard_panel(ctx);
-            app.canvas_panel(ctx);
+            let ws = app.canvas_panel(ctx);
+            app.model_browser(ctx, ws);
+            app.info_panel(ctx, ws);
             app.menu_bar(ctx);
             inspect(ctx);
         })
@@ -7645,11 +7704,11 @@ mod tests {
             let _ = ctx.run(raw, |ctx| {
                 app.sync_axis_state();
                 app.formula_bar(ctx);
-                app.explorer_panel(ctx);
-                app.inspector_panel(ctx);
                 app.formula_panel(ctx);
                 app.formula_list_panel(ctx);
-                app.canvas_panel(ctx);
+                let ws = app.canvas_panel(ctx);
+                app.model_browser(ctx, ws);
+                app.info_panel(ctx, ws);
             });
         };
 
@@ -8914,6 +8973,121 @@ mod tests {
         assert!(!app.row_cats().contains(&time));
     }
 
+    // -- NeXTSTEP spec step 3, second half: model browser and Info panel
+
+    /// The NxWindow id of the model browser (`"browser"`) or Info panel
+    /// (`"info"`).
+    fn panel_win(name: &str) -> egui::Id {
+        crate::nxwin::NxWindow::new(name, "").id()
+    }
+
+    /// Window `win`'s close box as laid out last frame, if it was shown.
+    fn close_box_of(ctx: &egui::Context, win: egui::Id) -> Option<egui::Rect> {
+        ctx.viewport(|v| v.prev_pass.widgets.get(win.with("close")).map(|w| w.rect))
+    }
+
+    /// (a) With no side panels, the workspace spans the whole window width at
+    /// 1400x900, between the formula bar and the bottom panels, even with the
+    /// Info panel open.
+    #[test]
+    fn the_workspace_spans_the_full_window_width() {
+        let mut app = build_app(grid_2x2_model());
+        app.show_inspector = true;
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        let mut shapes = Vec::new();
+        for i in 0..6 {
+            shapes = full_frame(&ctx, &mut app, size, f64::from(i) / 60.0).shapes;
+        }
+        let ws = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Rect(r) if r.fill == crate::theme::DARK_GRAY => Some(r.rect),
+                _ => None,
+            })
+            .max_by(|a, b| a.area().total_cmp(&b.area()))
+            .expect("the workspace is painted");
+        assert_eq!((ws.left(), ws.right()), (0.0, 1400.0), "{ws:?}");
+        assert!(ws.top() > 0.0 && ws.bottom() < 900.0, "{ws:?}");
+        assert!(close_box_of(&ctx, panel_win("info")).is_some());
+        assert!(close_box_of(&ctx, panel_win("browser")).is_some());
+    }
+
+    /// (b) The browser is a window titled `<file> - Model`, and clicking a
+    /// measure in it selects that measure.
+    #[test]
+    fn clicking_a_measure_in_the_browser_selects_it() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let text_rect = |label: &str| {
+            shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+        };
+        let titles: Vec<&str> = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().ends_with("- Model") => {
+                    Some(t.galley.text())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(titles, ["Untitled - Model"]);
+        let at = text_rect("· Price").expect("Price is listed").center();
+        let browser = egui::LayerId::new(egui::Order::Middle, panel_win("browser"));
+        assert_eq!(desk.ctx.layer_id_at(at), Some(browser), "in the window");
+        desk.click(&mut app, at);
+        assert_eq!(app.selected(), Some(MeasureId(100)));
+    }
+
+    /// (c) Info ▸ Info Panel… opens the Info window; its close box closes it.
+    #[test]
+    fn the_info_panel_opens_from_the_menu_and_closes_from_its_box() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let info = panel_win("info");
+        assert!(close_box_of(&desk.ctx, info).is_none(), "closed at start");
+        app.run_command(&desk.ctx, Command::InfoPanel);
+        desk.settle(&mut app);
+        let close = close_box_of(&desk.ctx, info).expect("the Info window is shown");
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(
+            shapes.iter().any(|c| matches!(&c.shape,
+                egui::Shape::Text(t) if t.galley.text() == "name: Revenue")),
+            "it shows the selected measure"
+        );
+        desk.click(&mut app, close.center());
+        assert!(!app.show_inspector);
+        desk.settle(&mut app);
+        assert!(close_box_of(&desk.ctx, info).is_none(), "closed again");
+    }
+
+    /// (d) View ▸ Model Browser toggles the browser window.
+    #[test]
+    fn the_model_browser_command_toggles_the_browser() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let browser = panel_win("browser");
+        assert!(close_box_of(&desk.ctx, browser).is_some(), "open at start");
+        app.run_command(&desk.ctx, Command::ModelBrowser);
+        desk.settle(&mut app);
+        assert!(!app.show_browser);
+        assert!(close_box_of(&desk.ctx, browser).is_none());
+        app.run_command(&desk.ctx, Command::ModelBrowser);
+        desk.settle(&mut app);
+        assert!(close_box_of(&desk.ctx, browser).is_some());
+    }
+
     /// Removing a matrix never leaves the focus dangling: `focused()` must keep
     /// returning a real matrix, whichever one went away.
     #[test]
@@ -9162,11 +9336,11 @@ mod tests {
         assert_eq!(app.document_tabs()[0].1, "view 1");
         assert!(app.document_tabs()[0].2, "the saved view is current");
 
+        assert!(!app.show_inspector, "the Info panel opens on demand");
+        app.run_command(&ctx, Command::InfoPanel);
         assert!(app.show_inspector);
         app.run_command(&ctx, Command::InfoPanel);
         assert!(!app.show_inspector);
-        app.run_command(&ctx, Command::InfoPanel);
-        assert!(app.show_inspector);
 
         app.run_command(&ctx, Command::ToggleChart);
         assert!(app.show_chart);
@@ -9225,7 +9399,7 @@ mod tests {
     }
 
     /// The menu is drawn by a whole-app frame, over the panels, and a selected
-    /// list row (the explorer's measure) gets a white face, unlike a hovered
+    /// list row (the browser's measure) gets a white face, unlike a hovered
     /// one, which stays on the panel gray.
     #[test]
     fn selected_list_rows_have_a_white_face() {

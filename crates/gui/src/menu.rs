@@ -17,6 +17,8 @@ use crate::theme::{BLACK, BOLD, DARK_GRAY, LIGHT_GRAY, WHITE};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     InfoPanel,
+    /// Show or hide the model browser window.
+    ModelBrowser,
     SaveModel,
     Undo,
     Redo,
@@ -40,7 +42,8 @@ type Leaf = (&'static str, Option<char>, Option<Command>);
 enum Top {
     /// Opens a submenu. An empty one draws disabled.
     Sub(&'static [Leaf]),
-    /// Opens the submenu of views the caller passes to [`show`].
+    /// Opens the View submenu: Model Browser, then the views the caller
+    /// passes to [`show`].
     Views,
     /// Runs a command directly (`None`: disabled).
     Leaf(Option<Command>),
@@ -101,6 +104,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
 
 const TITLE: &str = "Improv";
 const NO_VIEWS: &str = "No Views";
+const MODEL_BROWSER: &str = "Model Browser";
 
 // Geometry, in points (spec §3, §4.1).
 const BORDER: f32 = 1.0;
@@ -211,12 +215,18 @@ pub fn show(
     if let Some(i) = state.open {
         let leaves: Vec<(&str, Option<char>, Option<Command>, bool)> = match MENU[i].2 {
             Top::Sub(l) => l.iter().map(|&(a, k, c)| (a, k, c, false)).collect(),
-            Top::Views if views.is_empty() => vec![(NO_VIEWS, None, None, false)],
-            Top::Views => views
-                .iter()
-                .enumerate()
-                .map(|(n, (name, cur))| (name.as_str(), None, Some(C::OpenView(n)), *cur))
-                .collect(),
+            Top::Views => {
+                let browser = (MODEL_BROWSER, None, Some(C::ModelBrowser), false);
+                let list = views
+                    .iter()
+                    .enumerate()
+                    .map(|(n, (name, cur))| (name.as_str(), None, Some(C::OpenView(n)), *cur));
+                if views.is_empty() {
+                    vec![browser, (NO_VIEWS, None, None, false)]
+                } else {
+                    std::iter::once(browser).chain(list).collect()
+                }
+            }
             Top::Leaf(_) => Vec::new(),
         };
         let rows: Vec<Row> = leaves
@@ -491,7 +501,16 @@ mod tests {
         assert_eq!(h.click_row(menu_id(), top("Quit")), Some(C::Quit));
         let view = top("View");
         h.click_row(menu_id(), view);
-        assert_eq!(h.click_row(sub_id(view), 2), Some(C::OpenView(2)));
+        assert_eq!(h.click_row(sub_id(view), 3), Some(C::OpenView(2)));
+    }
+
+    /// View ▸ Model Browser sits above the views list and dispatches.
+    #[test]
+    fn view_model_browser_dispatches() {
+        let mut h = Harness::new();
+        let view = top("View");
+        h.click_row(menu_id(), view);
+        assert_eq!(h.click_row(sub_id(view), 0), Some(C::ModelBrowser));
     }
 
     #[test]
@@ -562,7 +581,7 @@ mod tests {
     #[test]
     fn menu_glyphs_are_in_the_installed_fonts() {
         let h = Harness::new();
-        let mut texts: Vec<String> = vec![NO_VIEWS.into()];
+        let mut texts: Vec<String> = vec![NO_VIEWS.into(), MODEL_BROWSER.into()];
         for (label, key, top) in MENU {
             texts.push((*label).into());
             texts.extend(key.map(String::from));

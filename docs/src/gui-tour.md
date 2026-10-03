@@ -4,7 +4,7 @@
 NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
 selection), flat controls with 1 px black outlines, worksheet windows with NeXT
 title bars on a dark gray workspace, white grid cells, a top formula bar, a floating application menu,
-on-grid category tiles for pivoting, and an inspector.
+on-grid category tiles for pivoting, a model browser window and an Info panel.
 
 Run it (from the Nix dev shell, which provides the GUI runtime libraries):
 
@@ -22,10 +22,11 @@ The window has five regions:
 - **Application menu** (floating, top left) — NeXTSTEP's vertical menu. Drag
   its black `Improv` title bar to move it. An item marked with a triangle opens
   a submenu to its right; click it again, press Escape or click elsewhere to
-  close it. **Info ▸ Info Panel…** shows or hides the inspector; **File ▸
+  close it. **Info ▸ Info Panel…** shows or hides the Info panel; **File ▸
   Save** saves the model, and **Import/Export CSV…** opens the CSV wizard;
   **Edit** has Undo and Redo; **Worksheet** has Pivot, Add Matrix, Remove
-  Matrix and Save View; **View** lists the saved views, with a check on the
+  Matrix and Save View; **View** has **Model Browser**, which shows or hides the model browser,
+  then lists the saved views, with a check on the
   current one, and picking one switches the workspace to it; **Graph ▸ Show
   Chart** toggles the chart; **Hide** minimizes and **Quit** closes the
   window. Format, Print and Services, and New, Open, Save As and Close in the
@@ -33,8 +34,11 @@ The window has five regions:
   the right of their item, take Ctrl (Cmd on macOS): `s` save, `z` undo,
   `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
   field has focus.
-- **Model explorer** — Categories (with their items), Measures (`·` input,
-  `=` derived), and saved Views.
+- **Model browser** (window, bottom left of the workspace) — titled
+  `<file> - Model`: Categories (with their items), Measures (`·` input,
+  `=` derived; click one to select it) and saved Views (name field, **Save
+  view**, click a view to open it). Its close box hides it; **View ▸ Model
+  Browser** brings it back.
 - **Formula bar** (top) — the selected measure's formula
   (`Revenue = Price times Quantity`); editing it re-typechecks and recomputes.
 - **Worksheet windows** (center) — the dark gray workspace holds one
@@ -50,8 +54,9 @@ The window has five regions:
   and **Region** paged (`North [1/2]`, steppable). The **category tiles** at the
   Columns / Rows / Pages margins are drag sources; drag one to another margin to
   re-pivot without touching the formula.
-- **Inspector** (right) — the measure's id, kind, value type, dimensions,
-  dependencies, and formula.
+- **Info panel** (window, top right of the workspace, closed at start) —
+  opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
+  type, dimensions, dependencies, and formula. Its close box closes it.
 
 ## Stacked axes
 
