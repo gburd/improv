@@ -51,7 +51,7 @@ Items below are reworded where this direction supersedes them.
 | B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | planned |
 | B5 | Third formula entry point ("New derived measure" form). Add formulas by typing `X = …` on a new formula-list line; drop the form. | planned |
 | B6 | Operator palette (`= + - * / ( ) [ ]`) is not in Improv. Remove it; formula pane gets the ✓ column and a `Calc` button. | planned |
-| B7 | NeXTSTEP chrome: grayscale palette (no blue), Helvetica-like bundled font (license-checked), black title bars, dark tiles with white text, NeXT scrollers, inverted selection. Drop the left tool palette (actions live in the menu). | partial: grayscale palette, square corners, gray selection and dark tiles landed (spec §1); font, title bars, scrollers and the tool palette remain |
+| B7 | NeXTSTEP chrome: grayscale palette (no blue), Helvetica-like bundled font (license-checked), black title bars, dark tiles with white text, NeXT scrollers, inverted selection. Drop the left tool palette (actions live in the menu). | partial: grayscale palette, square corners, gray selection and dark tiles (spec §1) and bundled Arimo 12 (§2) landed; title bars, scrollers and the tool palette remain |
 
 ## Batch C — interaction basics (closes GUI steering gate #4)
 

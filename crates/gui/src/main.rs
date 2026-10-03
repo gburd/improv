@@ -37,6 +37,7 @@ fn main() -> eframe::Result<()> {
         Box::new(|cc| {
             // Apply the NeXTSTEP look-and-feel once at startup.
             cc.egui_ctx.set_style(theme::next_style());
+            theme::install_fonts(&cc.egui_ctx);
             Ok(Box::new(app))
         }),
     )

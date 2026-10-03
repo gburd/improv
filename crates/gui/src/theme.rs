@@ -3,10 +3,14 @@
 //! Lotus Improv ran on NeXTSTEP's 2-bit grayscale display: four grays and no
 //! color at all. This module builds an [`egui::Style`] from exactly those four
 //! levels (plus the scroller trough), with square corners and 1 px strokes.
-//! Roles follow `docs/reviews/2026-10-03-nextstep-visual-spec.md` §1. It is
-//! purely cosmetic: no behavior depends on it.
+//! Roles follow `docs/reviews/2026-10-03-nextstep-visual-spec.md` §1. Text is
+//! the bundled Arimo (§2), a Helvetica-metric face, installed by
+//! [`install_fonts`]. It is purely cosmetic: no behavior depends on it.
 
-use egui::{Color32, Rounding, Shadow, Stroke, Style, Visuals};
+use egui::{
+    Color32, FontData, FontDefinitions, FontFamily, FontId, Rounding, Shadow, Stroke, Style,
+    TextStyle, Visuals,
+};
 
 /// Key-window title bars, grid rules, text, bevel dark edges.
 pub const BLACK: Color32 = Color32::from_gray(0x00);
@@ -30,10 +34,60 @@ const ALLOWED: [Color32; 6] = [
     Color32::TRANSPARENT,
 ];
 
+/// The font name and family of the bold face, for window and menu titles.
+pub const BOLD: &str = "bold";
+
+/// NeXT's one text size: Helvetica 12 everywhere (§2).
+const TEXT_SIZE: f32 = 12.0;
+
+/// Register the bundled Arimo with `ctx`: Regular first in the proportional
+/// family, ahead of egui's default fonts (kept as glyph fallback), and Bold as
+/// the named family [`BOLD`]. [`TextStyle::Heading`] is pointed at the bold
+/// family here rather than in [`next_style`], because a style naming an
+/// unregistered family panics when text is laid out; call this after
+/// `set_style`. Monospace is left as egui's default.
+pub fn install_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "Arimo".into(),
+        FontData::from_static(include_bytes!("../assets/fonts/Arimo-Regular.ttf")),
+    );
+    fonts.font_data.insert(
+        BOLD.into(),
+        FontData::from_static(include_bytes!("../assets/fonts/Arimo-Bold.ttf")),
+    );
+    let fallback = fonts.families[&FontFamily::Proportional].clone();
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .insert(0, "Arimo".into());
+    fonts.families.insert(
+        FontFamily::Name(BOLD.into()),
+        std::iter::once(BOLD.to_string()).chain(fallback).collect(),
+    );
+    ctx.set_fonts(fonts);
+    ctx.all_styles_mut(|s| {
+        s.text_styles.insert(
+            TextStyle::Heading,
+            FontId::new(TEXT_SIZE, FontFamily::Name(BOLD.into())),
+        );
+    });
+}
+
 /// Build the NeXTSTEP [`Style`]. Applied once at startup via
-/// [`egui::Context::set_style`].
+/// [`egui::Context::set_style`], followed by [`install_fonts`].
 pub fn next_style() -> Style {
     let mut style = Style::default();
+    for (ts, size) in [
+        (TextStyle::Body, TEXT_SIZE),
+        (TextStyle::Button, TEXT_SIZE),
+        (TextStyle::Heading, TEXT_SIZE),
+    ] {
+        style
+            .text_styles
+            .insert(ts, FontId::new(size, FontFamily::Proportional));
+    }
     let mut v = Visuals::light();
     let line = |c| Stroke::new(1.0_f32, c);
 
@@ -83,6 +137,8 @@ pub fn next_style() -> Style {
     style.visuals = v;
     style.spacing.item_spacing = egui::vec2(6.0, 4.0);
     style.spacing.button_padding = egui::vec2(8.0, 3.0);
+    // §3: 17 px rows, header bands and tiles.
+    style.spacing.interact_size.y = 17.0;
     style
 }
 
@@ -119,6 +175,29 @@ mod tests {
         assert_eq!(v.extreme_bg_color, WHITE);
         assert_eq!(v.text_color(), BLACK);
         assert_eq!(v.weak_text_color(), DARK_GRAY);
+    }
+
+    #[test]
+    fn install_fonts_puts_arimo_first_and_registers_bold() {
+        let ctx = egui::Context::default();
+        ctx.set_style(next_style());
+        install_fonts(&ctx);
+        // Fonts are swapped in at the start of a pass; laying out a heading
+        // proves the bold family is bound (an unbound one panics).
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| ui.heading("Improv"));
+        });
+        ctx.fonts(|f| {
+            let fonts = f.lock();
+            let defs = fonts.fonts.definitions();
+            let prop = &defs.families[&FontFamily::Proportional];
+            assert_eq!(prop[0], "Arimo");
+            assert!(prop.len() > 1, "egui's fonts must stay as fallback");
+            assert_eq!(defs.families[&FontFamily::Name(BOLD.into())][0], BOLD);
+        });
+        let heading = &ctx.style().text_styles[&TextStyle::Heading];
+        assert_eq!(*heading, FontId::new(12.0, FontFamily::Name(BOLD.into())));
+        assert_eq!(ctx.style().text_styles[&TextStyle::Body].size, 12.0);
     }
 
     #[test]

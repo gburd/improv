@@ -219,7 +219,9 @@ The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
   (`theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE}` plus the `TROUGH` scroller
   gray; no color anywhere): `#AAAAAA` panels and selection fill, white grid and
   text fields, black text and rules, square corners, 1 px strokes, dark-gray
-  category tiles with white text. Spec:
+  category tiles with white text. Text is the bundled Arimo 12 (OFL-1.1,
+  `crates/gui/assets/fonts/`), registered by `theme::install_fonts` ahead of
+  egui's fonts, with Arimo Bold as the `"bold"` family for headings. Spec:
   `docs/reviews/2026-10-03-nextstep-visual-spec.md` §1.
 - **On-grid margin category tiles** — the signature pivot gesture: category
   *tiles at the grid margins* (top = Columns, left = Rows, plus a Pages strip);

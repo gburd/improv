@@ -24,6 +24,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   underline rather than red, and charts use gray shades. Body text passes WCAG
   AA: black on `#AAAAAA` is 9.0:1, black on white 21:1, white on `#555555`
   7.5:1.
+- **GUI text is Arimo 12.** The GUI bundles Arimo 1.33 Regular and Bold
+  (OFL-1.1, `crates/gui/assets/fonts/`), metric-compatible with NeXTSTEP's
+  Helvetica, as its primary proportional font; egui's fonts stay as glyph
+  fallback. Body and button text are 12 pt, and headings are 12 pt bold.
 - **GUI grid right-aligns numbers** so their digits line up, as Improv does;
   text, booleans and dates stay left-aligned. The cell editor for a numeric
   measure is right-aligned to match.

@@ -271,9 +271,9 @@ pub const INITIAL_WINDOW: [f32; 2] = [1280.0, 800.0];
 pub const MIN_WINDOW: [f32; 2] = [960.0, 600.0];
 
 /// The tool palette's `(glyph, tooltip)` buttons, top to bottom. Every glyph
-/// must exist in egui's default fonts (Ubuntu-Light, NotoEmoji,
-/// emoji-icon-font) or it renders as a tofu box; `palette_glyphs_are_in_default_fonts`
-/// enforces that.
+/// must exist in the installed fonts (Arimo, then egui's defaults Ubuntu-Light,
+/// NotoEmoji and emoji-icon-font as fallback) or it renders as a tofu box;
+/// `palette_glyphs_are_in_default_fonts` enforces that.
 const PALETTE: [(&str, &str); 7] = [
     ("↻", "Pivot (rotate axes)"),
     ("⟲", "Undo (Ctrl+Z)"),
@@ -4316,11 +4316,13 @@ fn nth_tuple(lists: &[Vec<(ItemId, String)>], mut i: usize) -> Vec<(ItemId, Stri
 #[cfg(test)]
 mod tests {
     /// Every glyph the GUI draws from a literal (tool palette, tile grip/menu,
-    /// error marker) must be covered by egui's default fonts, else it renders
-    /// as a tofu box. `↶`/`↷` once did.
+    /// error marker) must be covered by the fonts `theme::install_fonts`
+    /// installs (Arimo plus egui's defaults as fallback), else it renders as a
+    /// tofu box. `↶`/`↷` once did.
     #[test]
     fn palette_glyphs_are_in_default_fonts() {
         let ctx = egui::Context::default();
+        crate::theme::install_fonts(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |_| {});
         let prop = egui::FontId::proportional(14.0);
         let mono = egui::FontId::monospace(14.0);
