@@ -10,7 +10,10 @@ pieces, not faithful UX or complete correctness. Audit and EC2 baseline:
 
 UX review 2026-10-03: `docs/reviews/2026-10-03-gui-ux-review-plan.md` lists
 21 concrete defects (batches A–D) found by running the GUI; it refines gates
-4 and 5 below.
+4 and 5 below. **Maintainer direction (2026-10-03): the GUI must look
+identical to NeXTSTEP Improv, with modern features added only where required
+and styled to match.** That supersedes the Quantrix-derived canvas/tab/tile
+chrome noted in §6.5.
 
 Next gates, in order:
 
