@@ -16,6 +16,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI theme is NeXTSTEP grayscale.** The GUI uses NeXT's four grays
+  (`#000000`, `#555555`, `#AAAAAA`, `#FFFFFF`, plus a `#808080` scroller
+  trough) and nothing else: the selection is filled `#AAAAAA` instead of blue,
+  corners are square, strokes are 1 px, the grid sits on white, and category
+  tiles are dark gray with white text. Formula errors are marked by a 2 px
+  underline rather than red, and charts use gray shades. Body text passes WCAG
+  AA: black on `#AAAAAA` is 9.0:1, black on white 21:1, white on `#555555`
+  7.5:1.
 - **GUI grid right-aligns numbers** so their digits line up, as Improv does;
   text, booleans and dates stay left-aligned. The cell editor for a numeric
   measure is right-aligned to match.

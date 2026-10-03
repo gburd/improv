@@ -2696,7 +2696,7 @@ impl ImprovApp {
                             }
                             if d.error_cells > 0 {
                                 ui.colored_label(
-                                    egui::Color32::from_rgb(200, 60, 60),
+                                    crate::formula_highlight::ERROR_COLOR,
                                     format!("{} cell(s) have errors (#ERR)", d.error_cells),
                                 );
                             }
@@ -3301,13 +3301,13 @@ impl ImprovApp {
         ui.painter().rect(
             rect,
             egui::Rounding::ZERO,
-            crate::theme::NEXT_GRAY,
+            crate::theme::LIGHT_GRAY,
             egui::Stroke::new(
                 if focused { 2.0_f32 } else { 1.0_f32 },
                 if focused {
-                    crate::theme::NEXT_BLUE
+                    crate::theme::BLACK
                 } else {
-                    crate::theme::BEVEL_SHADOW
+                    crate::theme::DARK_GRAY
                 },
             ),
         );
@@ -3343,9 +3343,9 @@ impl ImprovApp {
             grip,
             egui::Rounding::ZERO,
             if gr.hovered() {
-                crate::theme::BEVEL_LIGHT
+                crate::theme::WHITE
             } else {
-                crate::theme::NEXT_DARK
+                crate::theme::DARK_GRAY
             },
         );
         if gr.dragged() {
@@ -3364,9 +3364,9 @@ impl ImprovApp {
     ///
     /// It is also the drag handle: dragging the bar moves the matrix on the
     /// canvas (the reference's free-form placement). Colors come from
-    /// `theme.rs`; the accent band is the NeXT selection blue for the focused
-    /// matrix and the groove gray otherwise, so which matrix has the keyboard is
-    /// visible at a glance.
+    /// `theme.rs`: black with white text for the focused (key) matrix, dark gray
+    /// with light-gray text otherwise, as NeXT drew key and non-key title bars,
+    /// so which matrix has the keyboard is visible at a glance.
     fn matrix_title_bar(&mut self, ui: &mut egui::Ui, mi: usize) {
         let focused = self.focus_index() == mi;
         let title = self.matrix_title(mi);
@@ -3380,9 +3380,9 @@ impl ImprovApp {
             bar,
             egui::Rounding::ZERO,
             if focused {
-                crate::theme::NEXT_BLUE
+                crate::theme::BLACK
             } else {
-                crate::theme::NEXT_DARK
+                crate::theme::DARK_GRAY
             },
         );
         ui.painter().text(
@@ -3391,9 +3391,9 @@ impl ImprovApp {
             &title,
             egui::TextStyle::Body.resolve(ui.style()),
             if focused {
-                crate::theme::BEVEL_LIGHT
+                crate::theme::WHITE
             } else {
-                egui::Color32::from_gray(0x10)
+                crate::theme::LIGHT_GRAY
             },
         );
         if resp.dragged() {
@@ -3593,13 +3593,15 @@ impl ImprovApp {
         ui.painter().rect_stroke(
             egui::Rect::from_min_max(top.min, egui::pos2(left.max.x, top.max.y)).shrink(2.0),
             egui::Rounding::ZERO,
-            egui::Stroke::new(1.0_f32, crate::theme::NEXT_DARK),
+            egui::Stroke::new(1.0_f32, crate::theme::DARK_GRAY),
         );
 
         // Whatever is left is the table: it starts at the row gutter's right
         // edge and the column gutter's bottom edge by panel construction.
-        let table = ui
-            .scope(|ui| {
+        // On a white field: NeXT grid cells are white, not panel gray.
+        let table = egui::Frame::none()
+            .fill(crate::theme::WHITE)
+            .show(ui, |ui| {
                 self.render_grid(ui, mi, measure);
             })
             .response
@@ -3634,9 +3636,9 @@ impl ImprovApp {
     /// The NeXT-groove frame a gutter is painted with.
     fn gutter_style() -> egui::Frame {
         egui::Frame::default()
-            .fill(crate::theme::NEXT_GRAY)
+            .fill(crate::theme::LIGHT_GRAY)
             .inner_margin(egui::Margin::same(2.0))
-            .stroke(egui::Stroke::new(1.0_f32, crate::theme::NEXT_DARK))
+            .stroke(egui::Stroke::new(1.0_f32, crate::theme::DARK_GRAY))
     }
 
     /// Make the whole of `ui` a drop target for category tiles: a category
@@ -3698,19 +3700,23 @@ impl ImprovApp {
         // the same category are two distinct drag sources.
         ui.dnd_drag_source(egui::Id::new(("tile", mi, c.0)), c, |ui| {
             egui::Frame::default()
-                .fill(crate::theme::NEXT_LIGHT)
-                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
+                .fill(crate::theme::DARK_GRAY)
+                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BLACK))
                 .inner_margin(egui::Margin::symmetric(4.0, 2.0))
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         // Grip: egui's default font has no `⋮`/`⁞`, so the grip is
                         // a pair of broken bars, which it does have.
                         ui.add(
-                            egui::Label::new(egui::RichText::new("¦¦").monospace().weak())
-                                .selectable(false),
+                            egui::Label::new(
+                                egui::RichText::new("¦¦")
+                                    .monospace()
+                                    .color(crate::theme::LIGHT_GRAY),
+                            )
+                            .selectable(false),
                         );
                         ui.add(
-                            egui::Label::new(egui::RichText::new(&name).strong())
+                            egui::Label::new(egui::RichText::new(&name).color(crate::theme::WHITE))
                                 .selectable(false)
                                 .truncate(),
                         );
@@ -4024,7 +4030,7 @@ impl ImprovApp {
         // stacked column headers are ruled level by level.
         const RULE: egui::Stroke = egui::Stroke {
             width: 1.0,
-            color: crate::theme::NEXT_DARK,
+            color: crate::theme::BLACK,
         };
         fn header_cell(ui: &mut egui::Ui, text: &str) {
             let r = ui.available_rect_before_wrap();
@@ -7106,7 +7112,7 @@ mod tests {
             );
             let chip = shapes.iter().any(|c| match &c.shape {
                 egui::Shape::Rect(r) => {
-                    r.fill == crate::theme::NEXT_LIGHT && r.rect.contains_rect(rect)
+                    r.fill == crate::theme::DARK_GRAY && r.rect.contains_rect(rect)
                 }
                 _ => false,
             });

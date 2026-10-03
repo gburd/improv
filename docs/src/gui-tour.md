@@ -1,8 +1,8 @@
 # The Desktop GUI
 
 `improv-gui` is the egui/eframe desktop front-end, styled after the original
-NeXTSTEP Lotus Improv: a light neutral-gray desktop, chiseled/beveled controls,
-a top formula bar, a left tool palette, on-grid category tiles for pivoting, and
+NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
+selection), square beveled controls, white grid cells, a top formula bar, a left tool palette, on-grid category tiles for pivoting, and
 an inspector.
 
 Run it (from the Nix dev shell, which provides the GUI runtime libraries):

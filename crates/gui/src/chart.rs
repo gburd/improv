@@ -139,7 +139,8 @@ fn join_names(tuple: &[(improv_core_model::ItemId, String)]) -> String {
 /// Paint `data` into the current `ui` as grouped bars (and, when `line` is set,
 /// an overlaid line per series). Read-only: draws with `egui::Painter` only.
 pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
-    use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+    use crate::theme::{BLACK, DARK_GRAY, TROUGH, WHITE};
+    use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
     if data.x_labels.is_empty() || data.series.is_empty() {
         ui.weak("(no data to chart — select a numeric measure with items)");
@@ -213,14 +214,12 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
     let group_w = slot - 2.0 * pad;
     let bar_w = (group_w / n_s as f32).max(1.0);
 
-    let palette = [
-        Color32::from_rgb(70, 130, 200),
-        Color32::from_rgb(210, 120, 70),
-        Color32::from_rgb(90, 170, 100),
-        Color32::from_rgb(180, 90, 170),
-        Color32::from_rgb(200, 190, 80),
-        Color32::from_rgb(110, 110, 200),
-    ];
+    // Grayscale shades, each bar outlined in black so adjacent series stay
+    // apart on the light-gray panel.
+    // ponytail: four shades then repeats; add hatch patterns if charts with
+    // more than four series matter.
+    let palette = [BLACK, WHITE, DARK_GRAY, TROUGH];
+    let outline = Stroke::new(1.0_f32, BLACK);
     let zero_y = y_of(0.0f64.clamp(y_lo, y_hi));
 
     for (si, s) in data.series.iter().enumerate() {
@@ -234,7 +233,7 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
                 Pos2::new(x0, yv.min(zero_y)),
                 Pos2::new(x0 + bar_w - 1.0, yv.max(zero_y)),
             );
-            painter.rect_filled(bar, 0.0, color);
+            painter.rect(bar, 0.0, color, outline);
         }
         // Optional line overlay through the bar centers, skipping gaps.
         if line {
@@ -284,10 +283,11 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
         let ly = plot.top() + 2.0;
         for (si, s) in data.series.iter().enumerate() {
             let color = palette[si % palette.len()];
-            painter.rect_filled(
+            painter.rect(
                 Rect::from_min_size(Pos2::new(lx, ly), Vec2::new(10.0, 10.0)),
                 0.0,
                 color,
+                outline,
             );
             let galley = painter.layout_no_wrap(s.name.clone(), font.clone(), text_color);
             let w = galley.rect.width();

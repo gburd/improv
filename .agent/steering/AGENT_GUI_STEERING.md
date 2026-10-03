@@ -215,9 +215,12 @@ close this gap — see the Phase A item in `.agent/AGENT_STEERING.md`.
 
 The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
 
-- **NeXTSTEP theme** (`gui::theme::next_style`) — light neutral gray desktop,
-  chiseled/beveled controls (raised light faces, dark bevel edges, sunken
-  pressed faces), squared corners, muted blue selection, paper-white grid.
+- **NeXTSTEP theme** (`gui::theme::next_style`) — NeXT's four-level grayscale
+  (`theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE}` plus the `TROUGH` scroller
+  gray; no color anywhere): `#AAAAAA` panels and selection fill, white grid and
+  text fields, black text and rules, square corners, 1 px strokes, dark-gray
+  category tiles with white text. Spec:
+  `docs/reviews/2026-10-03-nextstep-visual-spec.md` §1.
 - **On-grid margin category tiles** — the signature pivot gesture: category
   *tiles at the grid margins* (top = Columns, left = Rows, plus a Pages strip);
   each tile is a drag source, each margin a drop zone. Drag a tile between

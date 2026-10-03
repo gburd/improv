@@ -51,7 +51,7 @@ Items below are reworded where this direction supersedes them.
 | B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | planned |
 | B5 | Third formula entry point ("New derived measure" form). Add formulas by typing `X = …` on a new formula-list line; drop the form. | planned |
 | B6 | Operator palette (`= + - * / ( ) [ ]`) is not in Improv. Remove it; formula pane gets the ✓ column and a `Calc` button. | planned |
-| B7 | NeXTSTEP chrome: grayscale palette (no blue), Helvetica-like bundled font (license-checked), black title bars, dark tiles with white text, NeXT scrollers, inverted selection. Drop the left tool palette (actions live in the menu). | planned |
+| B7 | NeXTSTEP chrome: grayscale palette (no blue), Helvetica-like bundled font (license-checked), black title bars, dark tiles with white text, NeXT scrollers, inverted selection. Drop the left tool palette (actions live in the menu). | partial: grayscale palette, square corners, gray selection and dark tiles landed (spec §1); font, title bars, scrollers and the tool palette remain |
 
 ## Batch C — interaction basics (closes GUI steering gate #4)
 
@@ -70,7 +70,7 @@ Items below are reworded where this direction supersedes them.
 | D1 | Window title shows document name and a dirty marker. | planned |
 | D2 | Model tree `·`/`=` prefixes are cryptic; use labelled icons/tooltips. | planned |
 | D3 | Status-bar feedback on recalc/save. | planned |
-| D4 | Contrast: grey-on-grey text fails WCAG AA 4.5:1. The NeXT palette is high-contrast black-on-white; matching it fixes most of this. Optional dark variant is a modernization, off by default. | planned |
+| D4 | Contrast: grey-on-grey text fails WCAG AA 4.5:1. The NeXT palette is high-contrast black-on-white; matching it fixes most of this. Optional dark variant is a modernization, off by default. | done for the default theme: black on `#AAAAAA` 9.0:1, black on white 21:1, white on `#555555` 7.5:1. Weak/disabled text (`#555555` on `#AAAAAA`) and non-key title text (`#AAAAAA` on `#555555`) are 3.2:1, per spec §1: enough for disabled text, which WCAG exempts, but empty-state hints drawn weak should become body text as B4/B5 rework them. Dark variant deferred |
 | D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | in progress (harness landed: `scripts/gui-shot.sh`) |
 
 Note: B1/B4/C1 imply multiple OS windows. egui 0.29 supports this via
