@@ -109,6 +109,10 @@ impl<'open> NxWindow<'open> {
     }
 
     /// Outer rect (border included) the first time the window is shown.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the app's windows all own their rect (.rect)")
+    )]
     pub fn default_rect(mut self, rect: Rect) -> Self {
         self.default_rect = rect;
         self
@@ -117,10 +121,6 @@ impl<'open> NxWindow<'open> {
     /// Outer rect for this frame, overriding the one stored from the last
     /// frame; this frame's drags apply on top of it. For callers that own the
     /// rect: feed back [`stored_rect`] after [`Self::show`].
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "app.rs adopts it next; drop this then")
-    )]
     pub fn rect(mut self, rect: Rect) -> Self {
         self.rect = Some(rect);
         self
@@ -128,10 +128,6 @@ impl<'open> NxWindow<'open> {
 
     /// Smallest outer size: resizes stop here, and a smaller incoming rect is
     /// enlarged (keeping its top-left). Defaults to 100 x 60.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "app.rs adopts it next; drop this then")
-    )]
     pub fn min_size(mut self, min_size: Vec2) -> Self {
         self.min_size = min_size;
         self
@@ -139,10 +135,6 @@ impl<'open> NxWindow<'open> {
 
     /// Rect the window is kept inside, both when moved and when resized.
     /// Defaults to [`Context::screen_rect`].
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "app.rs adopts it next; drop this then")
-    )]
     pub fn bounds(mut self, bounds: Rect) -> Self {
         self.bounds = Some(bounds);
         self

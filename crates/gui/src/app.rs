@@ -43,6 +43,10 @@ use crate::menu::{self, Command};
 /// it became a list.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Matrix {
+    /// Keys this matrix's window and widget state for its lifetime, so they
+    /// stay with it when an earlier matrix is removed (an index would shift).
+    /// Unique per process ([`next_matrix_uid`]); a clone keeps it.
+    uid: u64,
     /// The measure this matrix shows. `None` only for an empty model.
     measure: Option<MeasureId>,
     /// A permutation of `measure`'s categories: the first `n_rows` are stacked
@@ -219,24 +223,32 @@ fn gutters_frame_table(g: &GutterRects) -> bool {
         && adjoins(g.well.min.x, g.left.min.x)
 }
 
-/// The [`crate::nxwin::NxWindow`] id of matrix `mi`'s worksheet window.
-fn matrix_window_id(mi: usize) -> egui::Id {
-    crate::nxwin::NxWindow::new(("matrix", mi), "").id()
+/// A fresh [`Matrix`] uid.
+fn next_matrix_uid() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Keep NxWindow `win` at `home` on the workspace until the user moves or
-/// resizes it. The workspace settles over the first frames and follows the
-/// native window's size, so a plain `default_rect` would keep the first
-/// frame's guess.
-fn anchor_window(ctx: &egui::Context, win: egui::Id, home: egui::Rect) {
-    let (state, last) = (win.with("nxwin_rect"), win.with("home"));
-    ctx.data_mut(|d| {
-        let at = d.get_temp::<egui::Rect>(state);
-        if at.is_none() || at == d.get_temp::<egui::Rect>(last) {
-            d.insert_temp(state, home);
-        }
+/// The [`crate::nxwin::NxWindow`] id of the worksheet window of the matrix
+/// whose uid is `uid`.
+fn matrix_window_id(uid: u64) -> egui::Id {
+    crate::nxwin::NxWindow::new(("matrix", uid), "").id()
+}
+
+/// The rect to show NxWindow `win` at: `home` on the workspace until the user
+/// moves or resizes it, then where they left it. The workspace settles over
+/// the first frames and follows the native window's size, so a plain
+/// `default_rect` would keep the first frame's guess.
+fn anchored_rect(ctx: &egui::Context, win: egui::Id, home: egui::Rect) -> egui::Rect {
+    let last = win.with("home");
+    let prev_home = ctx.data_mut(|d| {
+        let prev = d.get_temp::<egui::Rect>(last);
         d.insert_temp(last, home);
+        prev
     });
+    crate::nxwin::stored_rect(ctx, win)
+        .filter(|&at| Some(at) != prev_home)
+        .unwrap_or(home)
 }
 
 /// Whether the window left the gutters enough room to be laid out at all.
@@ -323,6 +335,7 @@ impl Matrix {
     fn new(model: &Model, measure: Option<MeasureId>) -> Matrix {
         let axis_order = natural_axis_order(model, measure);
         Matrix {
+            uid: next_matrix_uid(),
             measure,
             n_rows: 1.min(axis_order.len()),
             n_cols: 1.min(axis_order.len().saturating_sub(1)),
@@ -348,6 +361,7 @@ impl Matrix {
             return None;
         }
         let mut m = Matrix {
+            uid: next_matrix_uid(),
             measure: Some(p.measure),
             axis_order: if p.axis_order.is_empty() {
                 natural_axis_order(model, Some(p.measure))
@@ -2619,10 +2633,10 @@ impl ImprovApp {
             egui::vec2(260.0, 300.0),
         );
         let win = crate::nxwin::NxWindow::new("browser", format!("{} - Model", self.file_name()));
-        anchor_window(ctx, win.id(), rect);
+        let rect = anchored_rect(ctx, win.id(), rect);
         let _ = win
             .closable(&mut open)
-            .default_rect(rect)
+            .rect(rect)
             .resizable(true)
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
@@ -2734,10 +2748,10 @@ impl ImprovApp {
             egui::vec2(280.0, 240.0),
         );
         let win = crate::nxwin::NxWindow::new("info", "Info");
-        anchor_window(ctx, win.id(), rect);
+        let rect = anchored_rect(ctx, win.id(), rect);
         let _ = win
             .closable(&mut open)
-            .default_rect(rect)
+            .rect(rect)
             .resizable(false)
             .show(ctx, |ui| {
                 let data = self.selected().and_then(|m| self.inspector_data(m));
@@ -3260,7 +3274,7 @@ impl ImprovApp {
         // ponytail: matrix windows own the key slot. A click on the browser or
         // Info panel makes it key for that frame only; let it keep the key
         // (and fence grid keys off) when a panel needs the keyboard.
-        crate::nxwin::make_key(ctx, matrix_window_id(self.focus_index()));
+        crate::nxwin::make_key(ctx, matrix_window_id(self.focused().uid));
         let mut closed = Vec::new();
         for mi in 0..self.matrices.len() {
             if !self.matrix_window(ctx, ws, mi) {
@@ -3277,18 +3291,18 @@ impl ImprovApp {
     /// then the gutter-framed grid. Returns `false` when its close box was
     /// clicked (shown only while there is more than one matrix).
     fn matrix_window(&mut self, ctx: &egui::Context, ws: egui::Rect, mi: usize) -> bool {
-        let r = self.matrices[mi].rect;
+        let Matrix { uid, rect: r, .. } = self.matrices[mi];
         let rect = egui::Rect::from_min_size(ws.min + egui::vec2(r.x, r.y), egui::vec2(r.w, r.h));
-        let id = matrix_window_id(mi);
-        let state = id.with("nxwin_rect");
-        // `m.rect` is the source of truth: written in every frame, so a
-        // programmatic change (apply_view) moves the window, and read back
-        // below, so a drag or resize lands in the view.
-        ctx.data_mut(|d| d.insert_temp(state, rect));
+        let id = matrix_window_id(uid);
         let mut open = true;
         let closable = self.matrix_count() > 1;
-        let mut win = crate::nxwin::NxWindow::new(("matrix", mi), self.window_title(mi))
-            .default_rect(rect)
+        // `m.rect` is the source of truth: passed in every frame, so a
+        // programmatic change (apply_view) moves the window, and read back
+        // below, so a drag or resize lands in the view.
+        let mut win = crate::nxwin::NxWindow::new(("matrix", uid), self.window_title(mi))
+            .rect(rect)
+            .min_size(egui::vec2(MATRIX_MIN_W, MATRIX_MIN_H))
+            .bounds(ws)
             .resizable(true);
         if closable {
             win = win.closable(&mut open);
@@ -3298,17 +3312,12 @@ impl ImprovApp {
             ui.separator();
             self.gutter_frame(ui, mi);
         });
-        if let Some(after) = ctx
-            .data(|d| d.get_temp::<egui::Rect>(state))
-            .filter(|a| *a != rect)
-        {
-            // Clamped here, not in nxwin (whose floor is smaller): the next
-            // frame writes it back, so the window stops at the minimum.
+        if let Some(after) = crate::nxwin::stored_rect(ctx, id).filter(|a| *a != rect) {
             self.matrices[mi].rect = CanvasRect {
                 x: after.min.x - ws.min.x,
                 y: after.min.y - ws.min.y,
-                w: after.width().max(MATRIX_MIN_W),
-                h: after.height().max(MATRIX_MIN_H),
+                w: after.width(),
+                h: after.height(),
             };
         }
         if crate::nxwin::is_key(ctx, id) && self.focus_index() != mi {
@@ -3403,6 +3412,7 @@ impl ImprovApp {
             ui.weak("(no measure)");
             return;
         };
+        let uid = m.uid;
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
         let col_stack = m.col_cats(&self.model);
         let row_stack = m.row_cats(&self.model);
@@ -3434,7 +3444,7 @@ impl ImprovApp {
                                     ui.weak("(drop to unplace)");
                                 }
                                 for c in &page_cats {
-                                    Self::tile(ui, &self.model, mi, *c, Axis::Pages, moves);
+                                    Self::tile(ui, &self.model, uid, *c, Axis::Pages, moves);
                                 }
                             });
                         },
@@ -3472,7 +3482,7 @@ impl ImprovApp {
                                         ui.weak("(drop a category on Columns)");
                                     }
                                     for c in &col_stack {
-                                        Self::tile(ui, &self.model, mi, *c, Axis::Columns, moves);
+                                        Self::tile(ui, &self.model, uid, *c, Axis::Columns, moves);
                                     }
                                 });
                             },
@@ -3503,7 +3513,7 @@ impl ImprovApp {
                                     ui.weak("(drop a category on Rows)");
                                 }
                                 for c in &row_stack {
-                                    Self::tile(ui, &self.model, mi, *c, Axis::Rows, moves);
+                                    Self::tile(ui, &self.model, uid, *c, Axis::Rows, moves);
                                 }
                             });
                         },
@@ -3606,7 +3616,7 @@ impl ImprovApp {
     fn tile(
         ui: &mut egui::Ui,
         model: &Model,
-        mi: usize,
+        uid: u64,
         c: CategoryId,
         from: Axis,
         moves: &mut Vec<(CategoryId, Axis)>,
@@ -3623,7 +3633,7 @@ impl ImprovApp {
         };
         // The id is per MATRIX as well as per category: two matrices showing
         // the same category are two distinct drag sources.
-        ui.dnd_drag_source(egui::Id::new(("tile", mi, c.0)), c, |ui| {
+        ui.dnd_drag_source(egui::Id::new(("tile", uid, c.0)), c, |ui| {
             egui::Frame::default()
                 .fill(crate::theme::DARK_GRAY)
                 .stroke(egui::Stroke::new(1.0_f32, crate::theme::BLACK))
@@ -3681,7 +3691,7 @@ impl ImprovApp {
                     .get(c)
                     .map(|x| x.name.0.clone())
                     .unwrap_or_default();
-                ui.push_id(("page", mi, c.0), |ui| {
+                ui.push_id(("page", m.uid, c.0), |ui| {
                     ui.group(|ui| {
                         ui.label(&cname);
                         if ui.small_button("<").clicked() {
@@ -3714,6 +3724,7 @@ impl ImprovApp {
         };
         let cats: Vec<CategoryId> = matrix.axis_order.clone();
         let filters = matrix.filters.clone();
+        let uid = matrix.uid;
         if cats.is_empty() {
             return;
         }
@@ -3744,7 +3755,7 @@ impl ImprovApp {
                 items.sort_by_key(|(id, _)| id.0);
                 let f = filters.iter().find(|f| f.category == *c);
                 egui::CollapsingHeader::new(&cname)
-                    .id_salt(("filter", mi, c.0))
+                    .id_salt(("filter", uid, c.0))
                     .show(ui, |ui| {
                         for (id, name) in &items {
                             let shown = match f {
@@ -3878,6 +3889,7 @@ impl ImprovApp {
         let cursor = (m.cursor_row, m.cursor_col);
         let editing = m.editing.clone();
         let mut edit_buf = m.edit_buf.clone();
+        let uid = m.uid;
         let is_derived = self
             .model
             .measures
@@ -3983,10 +3995,10 @@ impl ImprovApp {
         };
 
         use egui_extras::{Column, TableBuilder};
-        // Salt the table id with the matrix index: two matrices on one canvas are
+        // Salt the table id with the matrix uid: two matrices on one canvas are
         // two tables, and sharing an id would make them fight over column widths
         // and scroll offsets.
-        let mut table = TableBuilder::new(ui).id_salt(("grid", mi)).striped(true);
+        let mut table = TableBuilder::new(ui).id_salt(("grid", uid)).striped(true);
         // One stub column per stacked row category, then one column per col line.
         for _ in 0..n_row_stub {
             table = table.column(Column::auto().resizable(true));
@@ -7161,6 +7173,7 @@ mod tests {
             let ctx = egui::Context::default();
             crate::theme::apply(&ctx);
             let mut shapes: Vec<Vec<egui::epaint::ClippedShape>> = Vec::new();
+            let ids = [win_id(&app, 0), win_id(&app, 1)];
             for i in 0..8 {
                 let _ = full_frame_with(
                     &ctx,
@@ -7169,10 +7182,10 @@ mod tests {
                     f64::from(i) / 60.0,
                     Vec::new(),
                     |ctx| {
-                        shapes = (0..2)
-                            .map(|mi| {
-                                let layer =
-                                    egui::LayerId::new(egui::Order::Middle, matrix_window_id(mi));
+                        shapes = ids
+                            .iter()
+                            .map(|&id| {
+                                let layer = egui::LayerId::new(egui::Order::Middle, id);
                                 ctx.graphics(|g| {
                                     g.get(layer)
                                         .map(|l| l.all_entries().cloned().collect())
@@ -7185,7 +7198,7 @@ mod tests {
             }
             let widgets = ctx.viewport(|v| v.prev_pass.widgets.clone());
             for (mi, shapes) in shapes.iter().enumerate() {
-                let win = win_rect(&ctx, mi).expand(1.0);
+                let win = win_rect(&ctx, &app, mi).expand(1.0);
                 assert!(shapes.len() > 20, "{size:?}: window {mi} painted its grid");
                 for s in shapes {
                     let seen = s.shape.visual_bounding_rect().intersect(s.clip_rect);
@@ -7194,7 +7207,7 @@ mod tests {
                         "{size:?}: window {mi} {win:?} paints at {seen:?}"
                     );
                 }
-                let layer = egui::LayerId::new(egui::Order::Middle, matrix_window_id(mi));
+                let layer = egui::LayerId::new(egui::Order::Middle, ids[mi]);
                 let mut n = 0;
                 for w in widgets.get_layer(layer) {
                     n += 1;
@@ -8760,9 +8773,14 @@ mod tests {
 
     // -- NeXTSTEP spec step 3: worksheet windows on a workspace
 
+    /// Matrix `mi`'s window id.
+    fn win_id(app: &ImprovApp, mi: usize) -> egui::Id {
+        matrix_window_id(app.matrices[mi].uid)
+    }
+
     /// Matrix `mi`'s window rect, as nxwin stores it.
-    fn win_rect(ctx: &egui::Context, mi: usize) -> egui::Rect {
-        ctx.data(|d| d.get_temp::<egui::Rect>(matrix_window_id(mi).with("nxwin_rect")))
+    fn win_rect(ctx: &egui::Context, app: &ImprovApp, mi: usize) -> egui::Rect {
+        crate::nxwin::stored_rect(ctx, win_id(app, mi))
             .unwrap_or_else(|| panic!("window {mi} was never shown"))
     }
 
@@ -8832,8 +8850,8 @@ mod tests {
         let mut desk = Desk::new();
         desk.settle(&mut app);
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
-        assert_ne!(matrix_window_id(0), matrix_window_id(1));
-        assert_ne!(win_rect(&desk.ctx, 0), win_rect(&desk.ctx, 1));
+        assert_ne!(win_id(&app, 0), win_id(&app, 1));
+        assert_ne!(win_rect(&desk.ctx, &app, 0), win_rect(&desk.ctx, &app, 1));
         let titles: Vec<String> = shapes
             .iter()
             .filter_map(|c| match &c.shape {
@@ -8863,7 +8881,7 @@ mod tests {
         let mut desk = Desk::new();
         desk.settle(&mut app);
         let before = app.matrices[0].rect;
-        let win = win_rect(&desk.ctx, 0);
+        let win = win_rect(&desk.ctx, &app, 0);
         let grab = egui::pos2(win.center().x, win.top() + 12.0);
         desk.drag(&mut app, grab, grab + egui::vec2(60.0, 40.0));
         let moved = app.matrices[0].rect;
@@ -8883,7 +8901,7 @@ mod tests {
         assert_eq!(app.matrices[0].rect, moved, "the view kept the drag");
         desk.settle(&mut app);
         assert_eq!(
-            win_rect(&desk.ctx, 0),
+            win_rect(&desk.ctx, &app, 0),
             win.translate(egui::vec2(60.0, 40.0)),
             "and the window follows the view"
         );
@@ -8896,11 +8914,11 @@ mod tests {
         let mut desk = Desk::new();
         desk.settle(&mut app);
         assert_eq!(app.focus_index(), 0);
-        let win = win_rect(&desk.ctx, 1);
+        let win = win_rect(&desk.ctx, &app, 1);
         // Its bottom-right, clear of window 0 (cascaded up-left of it).
         desk.click(&mut app, win.max - egui::vec2(20.0, 20.0));
         assert_eq!(app.focus_index(), 1);
-        assert!(crate::nxwin::is_key(&desk.ctx, matrix_window_id(1)));
+        assert!(crate::nxwin::is_key(&desk.ctx, win_id(&app, 1)));
     }
 
     /// (d) add_matrix focuses the new matrix, and its window becomes key.
@@ -8909,11 +8927,11 @@ mod tests {
         let mut app = build_app(grid_2x2_model());
         let mut desk = Desk::new();
         desk.settle(&mut app);
-        assert!(crate::nxwin::is_key(&desk.ctx, matrix_window_id(0)));
+        assert!(crate::nxwin::is_key(&desk.ctx, win_id(&app, 0)));
         app.add_matrix(Some(MeasureId(102)));
         let _ = desk.frame(&mut app, Vec::new());
-        assert!(crate::nxwin::is_key(&desk.ctx, matrix_window_id(1)));
-        assert!(!crate::nxwin::is_key(&desk.ctx, matrix_window_id(0)));
+        assert!(crate::nxwin::is_key(&desk.ctx, win_id(&app, 1)));
+        assert!(!crate::nxwin::is_key(&desk.ctx, win_id(&app, 0)));
         assert_eq!(app.focus_index(), 1);
     }
 
@@ -8923,19 +8941,17 @@ mod tests {
     fn the_close_box_removes_a_matrix_but_never_the_last() {
         let close_box =
             |r: egui::Rect| egui::pos2(r.right() - 1.0 - 4.0 - 7.5, r.top() + 1.0 + 11.5);
-        let has_close = |ctx: &egui::Context| {
-            ctx.viewport(|v| {
-                v.prev_pass
-                    .widgets
-                    .get(matrix_window_id(0).with("close"))
-                    .is_some()
-            })
+        let has_close = |ctx: &egui::Context, win: egui::Id| {
+            ctx.viewport(|v| v.prev_pass.widgets.get(win.with("close")).is_some())
         };
         let mut app = two_matrix_app();
         let mut desk = Desk::new();
         desk.settle(&mut app);
-        assert!(has_close(&desk.ctx), "two matrices: closable");
-        let at = close_box(win_rect(&desk.ctx, 1));
+        assert!(
+            has_close(&desk.ctx, win_id(&app, 0)),
+            "two matrices: closable"
+        );
+        let at = close_box(win_rect(&desk.ctx, &app, 1));
         desk.click(&mut app, at);
         assert_eq!(app.matrix_count(), 1);
         assert_eq!(
@@ -8944,10 +8960,80 @@ mod tests {
             "window 1 closed"
         );
         desk.settle(&mut app);
-        assert!(!has_close(&desk.ctx), "the last matrix has no close box");
-        let at = close_box(win_rect(&desk.ctx, 0));
+        assert!(
+            !has_close(&desk.ctx, win_id(&app, 0)),
+            "the last matrix has no close box"
+        );
+        let at = close_box(win_rect(&desk.ctx, &app, 0));
         desk.click(&mut app, at);
         assert_eq!(app.matrix_count(), 1);
+    }
+
+    /// Windows are keyed by matrix, not position: closing window 0 of three
+    /// leaves the other two showing under the ids (and at the rects) they had.
+    #[test]
+    fn closing_a_window_keeps_the_other_window_ids() {
+        let mut app = two_matrix_app();
+        app.add_matrix(Some(MeasureId(101)));
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let ids = [win_id(&app, 1), win_id(&app, 2)];
+        let rects = ids.map(|id| crate::nxwin::stored_rect(&desk.ctx, id));
+        let r = win_rect(&desk.ctx, &app, 0);
+        desk.click(
+            &mut app,
+            egui::pos2(r.right() - 1.0 - 4.0 - 7.5, r.top() + 1.0 + 11.5),
+        );
+        assert_eq!(app.matrix_count(), 2, "window 0 closed");
+        desk.settle(&mut app);
+        assert_eq!([win_id(&app, 0), win_id(&app, 1)], ids);
+        let shown = |id: egui::Id| {
+            desk.ctx
+                .viewport(|v| v.prev_pass.widgets.get(id.with("title")).is_some())
+        };
+        assert!(
+            ids.iter().all(|&id| shown(id)),
+            "still shown under their ids"
+        );
+        assert_eq!(
+            ids.map(|id| crate::nxwin::stored_rect(&desk.ctx, id)),
+            rects
+        );
+    }
+
+    /// The left third of the resize bar drags the bottom-left corner; pushed
+    /// far right it stops at the minimum width and the right edge stays put.
+    #[test]
+    fn left_resize_stops_at_the_minimum_width() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let before = app.matrices[0].rect;
+        let win = win_rect(&desk.ctx, &app, 0);
+        let at = egui::pos2(win.left() + 20.0, win.bottom() - 5.0);
+        desk.drag(&mut app, at, at + egui::vec2(1000.0, 0.0));
+        let r = app.matrices[0].rect;
+        assert_eq!(r.w, MATRIX_MIN_W);
+        assert_eq!(r.x + r.w, before.x + before.w, "right edge moved");
+        assert_eq!(win_rect(&desk.ctx, &app, 0).right(), win.right());
+    }
+
+    /// Windows stay on the workspace: a title dragged up stops at its top,
+    /// below the formula bar.
+    #[test]
+    fn a_window_cannot_be_dragged_above_the_workspace() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let win = win_rect(&desk.ctx, &app, 0);
+        let grab = egui::pos2(win.center().x, win.top() + 12.0);
+        desk.drag(&mut app, grab, grab - egui::vec2(0.0, 300.0));
+        assert_eq!(app.matrices[0].rect.y, 0.0);
+        let bar =
+            egui::containers::panel::PanelState::load(&desk.ctx, egui::Id::new("formula_bar"))
+                .expect("formula bar shown")
+                .rect;
+        assert!(win_rect(&desk.ctx, &app, 0).top() >= bar.bottom());
     }
 
     /// Resizing a window persists into its matrix, and never below the
@@ -8959,15 +9045,15 @@ mod tests {
         desk.settle(&mut app);
         let before = app.matrices[0].rect;
         let bar = |r: egui::Rect| egui::pos2(r.right() - 20.0, r.bottom() - 5.0);
-        let at = bar(win_rect(&desk.ctx, 0));
+        let at = bar(win_rect(&desk.ctx, &app, 0));
         desk.drag(&mut app, at, at + egui::vec2(50.0, 30.0));
         let r = app.matrices[0].rect;
         assert_eq!((r.w, r.h), (before.w + 50.0, before.h + 30.0));
-        let at = bar(win_rect(&desk.ctx, 0));
+        let at = bar(win_rect(&desk.ctx, &app, 0));
         desk.drag(&mut app, at, at - egui::vec2(1000.0, 1000.0));
         let r = app.matrices[0].rect;
         assert_eq!((r.w, r.h), (MATRIX_MIN_W, MATRIX_MIN_H));
-        assert_eq!(win_rect(&desk.ctx, 0).size(), egui::vec2(r.w, r.h));
+        assert_eq!(win_rect(&desk.ctx, &app, 0).size(), egui::vec2(r.w, r.h));
     }
 
     /// Dragging a tile from the row gutter to the column gutter of a
@@ -8984,7 +9070,7 @@ mod tests {
             .viewport(|v| {
                 v.prev_pass
                     .widgets
-                    .get(egui::Id::new(("tile", 0usize, time.0)))
+                    .get(egui::Id::new(("tile", app.matrices[0].uid, time.0)))
                     .copied()
             })
             .expect("the Time tile")
