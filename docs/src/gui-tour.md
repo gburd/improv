@@ -2,8 +2,9 @@
 
 `improv-gui` is the egui/eframe desktop front-end, styled after the original
 NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
-selection), square beveled controls, white grid cells, a top formula bar, a left tool palette, on-grid category tiles for pivoting, and
-an inspector.
+selection), flat controls with 1 px black outlines (NeXT window chrome comes
+with step 3), white grid cells, a top formula bar, a left tool palette, on-grid
+category tiles for pivoting, and an inspector.
 
 Run it (from the Nix dev shell, which provides the GUI runtime libraries):
 
@@ -18,7 +19,7 @@ nix develop -c cargo run -p improv_gui -- sample.db
 
 The window has five regions:
 
-- **Tool palette** (far left) — beveled buttons: pivot (rotate axes), toggle
+- **Tool palette** (far left) — buttons: pivot (rotate axes), toggle
   chart, save view, save model.
 - **Model explorer** — Categories (with their items), Measures (`·` input,
   `=` derived), and saved Views.

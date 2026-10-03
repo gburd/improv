@@ -40,6 +40,9 @@ NeXTSTEP 2-bit gray has four levels. Sampled means, after scan and JPEG noise:
 | Bevel light / dark edges | 253 / 0–60 | `#FFFFFF` top-left, `#555555` + `#000000` bottom-right |
 | Disabled text | — | `#555555` on `#AAAAAA` **(unverified)** |
 
+List selection inside #AAAAAA panels uses a WHITE face (as menu pressed),
+since #AAAAAA selection is invisible there.
+
 The current `theme.rs` uses `#AAAAAA` / `#BEBEBE`, a blue selection and
 rounded widgets. All of that is replaced. No color appears anywhere in the
 default theme. Accessibility check: black on `#AAAAAA` is 9.0:1, black on
@@ -65,7 +68,7 @@ proportional family, ahead of egui's defaults, which stay as glyph fallback:
   - Liberation Sans 2.x: also OFL-1.1, derived from Arimo; equivalent.
   - Nimbus Sans (AGPL) and the TeX Gyre Helvetica clone (GUST): rejected.
 
-Ship the TTFs under `crates/gui/assets/fonts/` with `OFL-Arimo.txt` and
+Ship the TTFs under `crates/gui/assets/fonts/` with `OFL.txt` and
 load them with `include_bytes!` in `theme.rs`.
 
 Sizes at 1×:

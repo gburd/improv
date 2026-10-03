@@ -139,7 +139,7 @@ fn join_names(tuple: &[(improv_core_model::ItemId, String)]) -> String {
 /// Paint `data` into the current `ui` as grouped bars (and, when `line` is set,
 /// an overlaid line per series). Read-only: draws with `egui::Painter` only.
 pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
-    use crate::theme::{BLACK, DARK_GRAY, TROUGH, WHITE};
+    use crate::theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE};
     use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 
     if data.x_labels.is_empty() || data.series.is_empty() {
@@ -170,7 +170,7 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
     let visuals = ui.visuals();
     let axis_stroke = Stroke::new(1.0_f32, visuals.weak_text_color());
     let text_color = visuals.text_color();
-    let font = FontId::proportional(11.0);
+    let font = FontId::proportional(12.0);
 
     // y for a data value (top = y_hi).
     let y_of = |v: f64| -> f32 {
@@ -214,11 +214,11 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
     let group_w = slot - 2.0 * pad;
     let bar_w = (group_w / n_s as f32).max(1.0);
 
-    // Grayscale shades, each bar outlined in black so adjacent series stay
-    // apart on the light-gray panel.
+    // The four NeXT grays, each bar, point and line outlined in black so a
+    // light-gray series stays visible on the light-gray panel.
     // ponytail: four shades then repeats; add hatch patterns if charts with
     // more than four series matter.
-    let palette = [BLACK, WHITE, DARK_GRAY, TROUGH];
+    let palette = [BLACK, WHITE, DARK_GRAY, LIGHT_GRAY];
     let outline = Stroke::new(1.0_f32, BLACK);
     let zero_y = y_of(0.0f64.clamp(y_lo, y_hi));
 
@@ -245,9 +245,10 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
                             plot.left() + xi as f32 * slot + pad + si as f32 * bar_w + bar_w / 2.0;
                         let p = Pos2::new(cx, y_of(*v));
                         if let Some(pp) = prev {
+                            painter.line_segment([pp, p], Stroke::new(3.5_f32, BLACK));
                             painter.line_segment([pp, p], Stroke::new(1.5_f32, color));
                         }
-                        painter.circle_filled(p, 2.0, color);
+                        painter.circle(p, 2.5, color, outline);
                         prev = Some(p);
                     }
                     None => prev = None,

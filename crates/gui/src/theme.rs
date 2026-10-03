@@ -20,7 +20,9 @@ pub const DARK_GRAY: Color32 = Color32::from_gray(0x55);
 pub const LIGHT_GRAY: Color32 = Color32::from_gray(0xAA);
 /// Grid cells, text fields, pressed faces, bevel light edges.
 pub const WHITE: Color32 = Color32::from_gray(0xFF);
-/// The scroller trough (the one value outside the four levels).
+/// The scroller trough (the one value outside the four levels). Unused until
+/// the scrollers are restyled (spec §4.8).
+#[allow(dead_code)]
 pub const TROUGH: Color32 = Color32::from_gray(0x80);
 
 /// Every color the theme may use. `TRANSPARENT` is "no stroke / no shadow".
