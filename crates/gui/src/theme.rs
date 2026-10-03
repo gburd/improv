@@ -40,6 +40,15 @@ pub const BOLD: &str = "bold";
 /// NeXT's one text size: Helvetica 12 everywhere (§2).
 const TEXT_SIZE: f32 = 12.0;
 
+/// Apply the NeXTSTEP look to `ctx` at startup: pin the light theme slot
+/// first, so a system theme change can't swap in egui's stock visuals, then
+/// set [`next_style`] into that slot and [`install_fonts`].
+pub fn apply(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Light);
+    ctx.set_style(next_style());
+    install_fonts(ctx);
+}
+
 /// Register the bundled Arimo with `ctx`: Regular first in the proportional
 /// family, ahead of egui's default fonts (kept as glyph fallback), and Bold as
 /// the named family [`BOLD`]. [`TextStyle::Heading`] is pointed at the bold
@@ -75,8 +84,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     });
 }
 
-/// Build the NeXTSTEP [`Style`]. Applied once at startup via
-/// [`egui::Context::set_style`], followed by [`install_fonts`].
+/// Build the NeXTSTEP [`Style`]. Applied once at startup by [`apply`].
 pub fn next_style() -> Style {
     let mut style = Style::default();
     for (ts, size) in [
@@ -198,6 +206,15 @@ mod tests {
         let heading = &ctx.style().text_styles[&TextStyle::Heading];
         assert_eq!(*heading, FontId::new(12.0, FontFamily::Name(BOLD.into())));
         assert_eq!(ctx.style().text_styles[&TextStyle::Body].size, 12.0);
+    }
+
+    #[test]
+    fn apply_pins_the_light_slot() {
+        let ctx = egui::Context::default();
+        apply(&ctx);
+        // What a system ThemeChanged to light does.
+        ctx.set_theme(egui::Theme::Light);
+        assert_eq!(ctx.style().visuals.selection.bg_fill, LIGHT_GRAY);
     }
 
     #[test]
