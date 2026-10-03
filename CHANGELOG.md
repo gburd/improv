@@ -76,6 +76,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   painted on top of the side panels in small windows. They are now clipped to
   the canvas. The window also opens at 1280×800 (was eframe's 800×600) with a
   960×600 minimum.
+- **The GUI no longer loses in-memory work silently.** File ▸ Save (Ctrl+S)
+  is disabled for an in-memory model instead of reporting "saved model", and
+  quitting an edited in-memory model warns first; a second Quit discards it.
 
 ## [0.7.0] - 2026-09-24
 

@@ -144,6 +144,9 @@ pub struct ImprovApp {
     show_inspector: bool,
     /// Whether the model browser window is shown (View ▸ Model Browser).
     show_browser: bool,
+    /// Quit was picked once on an unsaved in-memory model; the next Quit
+    /// closes. Any other command disarms it.
+    quit_armed: bool,
     /// The floating application menu's position and open submenu.
     menu: menu::MenuState,
     export_form: ExportForm,
@@ -798,6 +801,7 @@ impl ImprovApp {
             import_form: ImportForm::default(),
             show_inspector: false,
             show_browser: true,
+            quit_armed: false,
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -2527,12 +2531,17 @@ impl ImprovApp {
             Command::Undo => self.can_undo(),
             Command::Redo => self.can_redo(),
             Command::RemoveMatrix => self.matrix_count() > 1,
+            // In-memory models have no store: never claim "saved".
+            Command::SaveModel => !self.db.is_empty(),
             _ => true,
         }
     }
 
     /// Run a menu command or key equivalent.
     fn run_command(&mut self, ctx: &egui::Context, c: Command) {
+        if c != Command::Quit {
+            self.quit_armed = false;
+        }
         match c {
             Command::InfoPanel => self.show_inspector = !self.show_inspector,
             Command::ModelBrowser => self.show_browser = !self.show_browser,
@@ -2575,8 +2584,23 @@ impl ImprovApp {
             Command::ToggleChart => self.show_chart = !self.show_chart,
             Command::ToggleCsv => self.toggle_csv_wizard(),
             Command::Hide => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
-            Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Command::Quit => {
+                if self.quit_allowed() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
         }
+    }
+
+    /// Whether Quit may close now. Edits to an in-memory model can't be saved,
+    /// so the first Quit only warns and arms; a second one closes.
+    fn quit_allowed(&mut self) -> bool {
+        if self.db.is_empty() && self.can_undo() && !self.quit_armed {
+            self.quit_armed = true;
+            self.status = "unsaved in-memory model: Quit again to discard".into();
+            return false;
+        }
+        true
     }
 
     /// The model browser (spec §4.2): a NeXT window, `<file> - Model`, at the
@@ -4779,6 +4803,7 @@ mod tests {
             import_form: ImportForm::default(),
             show_inspector: false,
             show_browser: true,
+            quit_armed: false,
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -9350,7 +9375,11 @@ mod tests {
 
     /// One frame of [`ImprovApp::handle_command_keys`] with Ctrl/Cmd+`key`
     /// pressed, and `focus` (an egui id) holding keyboard focus if given.
-    fn press_command_key(app: &mut ImprovApp, key: egui::Key, focus: Option<&str>) {
+    fn press_command_key(
+        app: &mut ImprovApp,
+        key: egui::Key,
+        focus: Option<&str>,
+    ) -> egui::FullOutput {
         let ctx = egui::Context::default();
         let raw = egui::RawInput {
             modifiers: egui::Modifiers::COMMAND,
@@ -9363,12 +9392,49 @@ mod tests {
             }],
             ..Default::default()
         };
-        let _ = ctx.run(raw, |ctx| {
+        ctx.run(raw, |ctx| {
             if let Some(id) = focus {
                 ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
             }
             app.handle_command_keys(ctx);
-        });
+        })
+    }
+
+    /// Whether `out` asks the window to close.
+    fn closes(out: &egui::FullOutput) -> bool {
+        out.viewport_output
+            .values()
+            .any(|v| v.commands.contains(&egui::ViewportCommand::Close))
+    }
+
+    /// An in-memory model has no store: Ctrl+S must not report "saved model".
+    #[test]
+    fn ctrl_s_on_an_in_memory_model_does_not_claim_saved() {
+        let mut app = build_app(grid_2x2_model());
+        assert!(app.db.is_empty());
+        let _ = press_command_key(&mut app, egui::Key::S, None);
+        assert_ne!(app.status, "saved model");
+    }
+
+    /// Quitting an edited in-memory model takes two Quits; any other command
+    /// in between disarms the first. A clean model quits at once.
+    #[test]
+    fn quit_on_an_unsaved_in_memory_model_needs_confirming() {
+        let mut app = build_app(grid_2x2_model());
+        assert!(closes(&press_command_key(&mut app, egui::Key::Q, None)));
+
+        app.record_history(app.model.clone());
+        assert!(!closes(&press_command_key(&mut app, egui::Key::Q, None)));
+        assert_eq!(app.status, "unsaved in-memory model: Quit again to discard");
+        assert!(closes(&press_command_key(&mut app, egui::Key::Q, None)));
+
+        app.quit_armed = false;
+        assert!(!closes(&press_command_key(&mut app, egui::Key::Q, None)));
+        let _ = press_command_key(&mut app, egui::Key::H, None);
+        assert!(
+            !closes(&press_command_key(&mut app, egui::Key::Q, None)),
+            "Hide disarmed it"
+        );
     }
 
     /// Ctrl+S saves the model to its store; a text field's focus blocks it.
@@ -9391,9 +9457,9 @@ mod tests {
                 .clone()
         };
 
-        press_command_key(&mut app, egui::Key::S, Some("formula_bar"));
+        let _ = press_command_key(&mut app, egui::Key::S, Some("formula_bar"));
         assert_eq!(described(&db), None, "Ctrl+S fired while typing in a field");
-        press_command_key(&mut app, egui::Key::S, None);
+        let _ = press_command_key(&mut app, egui::Key::S, None);
         assert_eq!(app.status, "saved model");
         assert_eq!(described(&db).as_deref(), Some("saved by ctrl+s"));
     }
