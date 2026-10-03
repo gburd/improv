@@ -263,6 +263,20 @@ const MATRIX_MIN_H: f32 = 160.0;
 /// which it is.
 const UNDO_DEPTH: usize = 50;
 
+/// The tool palette's `(glyph, tooltip)` buttons, top to bottom. Every glyph
+/// must exist in egui's default fonts (Ubuntu-Light, NotoEmoji,
+/// emoji-icon-font) or it renders as a tofu box; `palette_glyphs_are_in_default_fonts`
+/// enforces that.
+const PALETTE: [(&str, &str); 7] = [
+    ("↻", "Pivot (rotate axes)"),
+    ("⟲", "Undo (Ctrl+Z)"),
+    ("⟳", "Redo (Ctrl+Shift+Z)"),
+    ("📊", "Toggle chart"),
+    ("📥", "Import/export CSV or TSV"),
+    ("🗐", "Save view"),
+    ("💾", "Save model to store"),
+];
+
 /// Which way a gutter's drop zone stretches to cover the gutter: its **fixed**
 /// axis. See [`ImprovApp::gutter_drop_zone`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2496,28 +2510,29 @@ impl ImprovApp {
             .show(ctx, |ui| {
                 ui.add_space(4.0);
                 ui.vertical_centered(|ui| {
-                    let btn = |ui: &mut egui::Ui, glyph: &str, tip: &str| {
+                    let btn = |ui: &mut egui::Ui, (glyph, tip): (&str, &str)| {
                         ui.add_sized([32.0, 28.0], egui::Button::new(glyph))
                             .on_hover_text(tip)
                             .clicked()
                     };
-                    if btn(ui, "↻", "Pivot (rotate axes)") {
+                    let [pivot, undo, redo, chart, csv, save_view, save_model] = PALETTE;
+                    if btn(ui, pivot) {
                         self.pivot_rotate();
                     }
-                    if btn(ui, "↶", "Undo (Ctrl+Z)") {
+                    if btn(ui, undo) {
                         self.undo_with_status();
                     }
-                    if btn(ui, "↷", "Redo (Ctrl+Shift+Z)") {
+                    if btn(ui, redo) {
                         self.redo_with_status();
                     }
-                    if btn(ui, "☉", "Toggle chart") {
+                    if btn(ui, chart) {
                         self.show_chart = !self.show_chart;
                     }
-                    if btn(ui, "⇄", "Import/export CSV or TSV") {
+                    if btn(ui, csv) {
                         self.toggle_csv_wizard();
                     }
                     ui.add_space(6.0);
-                    if btn(ui, "▤", "Save view") {
+                    if btn(ui, save_view) {
                         // Save under the current name box, or a generated name.
                         let name = if self.view_name.trim().is_empty() {
                             format!("view {}", self.model.views.len() + 1)
@@ -2529,7 +2544,7 @@ impl ImprovApp {
                             self.status = format!("saved view '{name}'");
                         }
                     }
-                    if btn(ui, "⬇", "Save model to store") {
+                    if btn(ui, save_model) {
                         self.status = match self.save() {
                             Ok(()) => "saved model".into(),
                             Err(e) => e,
@@ -4221,6 +4236,29 @@ fn nth_tuple(lists: &[Vec<(ItemId, String)>], mut i: usize) -> Vec<(ItemId, Stri
 
 #[cfg(test)]
 mod tests {
+    /// Every glyph the GUI draws from a literal (tool palette, tile grip/menu,
+    /// error marker) must be covered by egui's default fonts, else it renders
+    /// as a tofu box. `↶`/`↷` once did.
+    #[test]
+    fn palette_glyphs_are_in_default_fonts() {
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |_| {});
+        let prop = egui::FontId::proportional(14.0);
+        let mono = egui::FontId::monospace(14.0);
+        ctx.fonts(|f| {
+            for (glyph, tip) in super::PALETTE {
+                assert!(
+                    f.has_glyphs(&prop, glyph),
+                    "palette '{tip}' glyph {glyph:?} is tofu"
+                );
+            }
+            for g in ["⏷", "⚠"] {
+                assert!(f.has_glyphs(&prop, g), "{g:?} is tofu");
+            }
+            assert!(f.has_glyphs(&mono, "¦¦"), "tile grip is tofu");
+        });
+    }
+
     use super::*;
     use improv_core_model::{
         BinaryOp, DimensionSpec, Expr, Formula, Measure, MeasureKind, Name, ValueType,

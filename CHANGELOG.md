@@ -13,6 +13,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   space-separated pairs (`--at Time=Q1 Product=Widget`) as well as the
   comma-joined form, merging them. Naming a category twice is a clear error,
   and stray non-pair arguments are still rejected.
+- **GUI tool-palette icons no longer render as tofu boxes.** Undo, redo,
+  import/export and save-view used glyphs (`↶ ↷ ⇄ ▤`) missing from egui's
+  bundled fonts; they now use glyphs those fonts contain, and a unit test
+  checks every palette glyph against the loaded fonts.
 
 ## [0.7.0] - 2026-09-24
 

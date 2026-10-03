@@ -9,7 +9,7 @@ Status is updated in place as items land.
 
 | # | Item | Status |
 | --- | --- | --- |
-| A1 | Tool-palette glyphs (`↶ ↷` etc.) render as tofu `□`: egui's default font lacks them. Bundle an icon font or use glyphs the default font has; add a test that every palette label is covered by the loaded fonts. | in progress |
+| A1 | Tool-palette glyphs (`↶ ↷` etc.) render as tofu `□`: egui's default font lacks them. Bundle an icon font or use glyphs the default font has; add a test that every palette label is covered by the loaded fonts. | done |
 | A2 | Default 800×600 window: Inspector overlaps the matrix and gutter tiles draw over its text. Start at ~1280×800, set a minimum size, keep the canvas's space before side panels. | in progress |
 | A3 | Numeric cells are left-aligned; Improv right-aligns numbers so digits line up. | in progress |
 | A4 | Item headers (`Q1`, `Widget`) are beveled button chips; Improv draws them as plain text in a ruled band — only category tiles look draggable. | in progress |
