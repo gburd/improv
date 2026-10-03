@@ -263,6 +263,13 @@ const MATRIX_MIN_H: f32 = 160.0;
 /// which it is.
 const UNDO_DEPTH: usize = 50;
 
+/// Initial window inner size: room for the explorer, a default matrix and the
+/// Inspector side by side.
+pub const INITIAL_WINDOW: [f32; 2] = [1280.0, 800.0];
+/// Minimum window inner size. Smaller windows still never overdraw the side
+/// panels (the canvas clips), but the matrix would be mostly scrolled away.
+pub const MIN_WINDOW: [f32; 2] = [960.0, 600.0];
+
 /// The tool palette's `(glyph, tooltip)` buttons, top to bottom. Every glyph
 /// must exist in egui's default fonts (Ubuntu-Light, NotoEmoji,
 /// emoji-icon-font) or it renders as a tofu box; `palette_glyphs_are_in_default_fonts`
@@ -3475,30 +3482,40 @@ impl ImprovApp {
         let col_stack = m.col_cats(&self.model);
         let row_stack = m.row_cats(&self.model);
         let page_cats = m.page_cats(&self.model);
+        // Each gutter panel's `show_inside` REPLACES its clip with the panel
+        // rect instead of intersecting it, so tiles and well text escaped the
+        // canvas and drew over the Inspector. The panels get no frame; each body
+        // first narrows its clip back to the canvas, then paints the gutter
+        // frame itself, so the frame and everything in it stay clipped.
+        let outer_clip = ui.clip_rect();
 
         // Bottom-left corner well first: it claims the bottom strip of the whole
         // frame, so the two edge gutters and the table share the space above it
         // (the reference puts it inline with the horizontal scrollbar).
         let well = egui::TopBottomPanel::bottom(ui.id().with("gutter_well"))
-            .frame(Self::gutter_style())
+            .frame(egui::Frame::none())
+            .show_separator_line(false)
             .show_inside(ui, |ui| {
-                Self::gutter_drop_zone(
-                    ui,
-                    Axis::Pages,
-                    FillAxis::Horizontal,
-                    &mut moves,
-                    |ui, moves| {
-                        ui.horizontal(|ui| {
-                            if page_cats.is_empty() {
-                                ui.weak("(drop to unplace)");
-                            }
-                            for c in &page_cats {
-                                Self::tile(ui, &self.model, mi, *c, Axis::Pages, moves);
-                            }
-                        });
-                    },
-                );
-                self.page_selectors(ui, mi);
+                ui.shrink_clip_rect(outer_clip);
+                Self::gutter_style().show(ui, |ui| {
+                    Self::gutter_drop_zone(
+                        ui,
+                        Axis::Pages,
+                        FillAxis::Horizontal,
+                        &mut moves,
+                        |ui, moves| {
+                            ui.horizontal(|ui| {
+                                if page_cats.is_empty() {
+                                    ui.weak("(drop to unplace)");
+                                }
+                                for c in &page_cats {
+                                    Self::tile(ui, &self.model, mi, *c, Axis::Pages, moves);
+                                }
+                            });
+                        },
+                    );
+                    self.page_selectors(ui, mi);
+                });
             })
             .response
             .rect;
@@ -3507,31 +3524,35 @@ impl ImprovApp {
         // Stacked column categories read top-to-bottom, as the reference's
         // "Result" panel shows (`Travel` above `Hours`).
         let top = egui::TopBottomPanel::top(ui.id().with("gutter_top"))
-            .frame(Self::gutter_style())
+            .frame(egui::Frame::none())
+            .show_separator_line(false)
             .show_inside(ui, |ui| {
-                // Skip the true corner: the column tiles start one row-gutter
-                // width in, leaving a blank box over the row gutter (the
-                // reference shows an empty box there). Painted below rather than
-                // nested as a panel — a nested panel fills the strip's height,
-                // which would latch this self-sizing gutter at its tallest.
-                ui.horizontal(|ui| {
-                    ui.add_space(GUTTER_W);
-                    Self::gutter_drop_zone(
-                        ui,
-                        Axis::Columns,
-                        FillAxis::Horizontal,
-                        &mut moves,
-                        |ui, moves| {
-                            ui.vertical(|ui| {
-                                if col_stack.is_empty() {
-                                    ui.weak("(drop a category on Columns)");
-                                }
-                                for c in &col_stack {
-                                    Self::tile(ui, &self.model, mi, *c, Axis::Columns, moves);
-                                }
-                            });
-                        },
-                    );
+                ui.shrink_clip_rect(outer_clip);
+                Self::gutter_style().show(ui, |ui| {
+                    // Skip the true corner: the column tiles start one row-gutter
+                    // width in, leaving a blank box over the row gutter (the
+                    // reference shows an empty box there). Painted below rather than
+                    // nested as a panel — a nested panel fills the strip's height,
+                    // which would latch this self-sizing gutter at its tallest.
+                    ui.horizontal(|ui| {
+                        ui.add_space(GUTTER_W);
+                        Self::gutter_drop_zone(
+                            ui,
+                            Axis::Columns,
+                            FillAxis::Horizontal,
+                            &mut moves,
+                            |ui, moves| {
+                                ui.vertical(|ui| {
+                                    if col_stack.is_empty() {
+                                        ui.weak("(drop a category on Columns)");
+                                    }
+                                    for c in &col_stack {
+                                        Self::tile(ui, &self.model, mi, *c, Axis::Columns, moves);
+                                    }
+                                });
+                            },
+                        );
+                    });
                 });
             })
             .response
@@ -3540,25 +3561,29 @@ impl ImprovApp {
         // The row gutter: the left strip of what remains, so its right edge is
         // the table's left edge.
         let left = egui::SidePanel::left(ui.id().with("gutter_left"))
-            .frame(Self::gutter_style())
+            .frame(egui::Frame::none())
+            .show_separator_line(false)
             .exact_width(GUTTER_W)
             .show_inside(ui, |ui| {
-                Self::gutter_drop_zone(
-                    ui,
-                    Axis::Rows,
-                    FillAxis::Vertical,
-                    &mut moves,
-                    |ui, moves| {
-                        ui.vertical(|ui| {
-                            if row_stack.is_empty() {
-                                ui.weak("(drop a category on Rows)");
-                            }
-                            for c in &row_stack {
-                                Self::tile(ui, &self.model, mi, *c, Axis::Rows, moves);
-                            }
-                        });
-                    },
-                );
+                ui.shrink_clip_rect(outer_clip);
+                Self::gutter_style().show(ui, |ui| {
+                    Self::gutter_drop_zone(
+                        ui,
+                        Axis::Rows,
+                        FillAxis::Vertical,
+                        &mut moves,
+                        |ui, moves| {
+                            ui.vertical(|ui| {
+                                if row_stack.is_empty() {
+                                    ui.weak("(drop a category on Rows)");
+                                }
+                                for c in &row_stack {
+                                    Self::tile(ui, &self.model, mi, *c, Axis::Rows, moves);
+                                }
+                            });
+                        },
+                    );
+                });
             })
             .response
             .rect;
@@ -6961,33 +6986,115 @@ mod tests {
         let mut time = 0.0_f64;
         let pass = move |ctx: &egui::Context, app: &mut ImprovApp| {
             time += 1.0 / 60.0;
-            let raw = egui::RawInput {
-                time: Some(time),
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1200.0, 800.0),
-                )),
-                ..Default::default()
-            };
-            let _ = ctx.run(raw, |ctx| {
-                app.sync_axis_state();
-                app.document_tab_bar(ctx);
-                app.formula_bar(ctx);
-                app.status_bar(ctx);
-                app.formula_panel(ctx);
-                app.formula_list_panel(ctx);
-                app.tool_palette(ctx);
-                app.explorer_panel(ctx);
-                app.inspector_panel(ctx);
-                app.chart_panel(ctx);
-                app.csv_wizard_panel(ctx);
-                app.canvas_panel(ctx);
-            });
+            let _ = full_frame(ctx, app, egui::vec2(1200.0, 800.0), time);
             app.focused()
                 .gutters
                 .expect("the focused matrix must record its gutters")
         };
         (ctx, pass)
+    }
+
+    /// Run one whole-app frame (every panel, in `update`'s order) at `size`.
+    fn full_frame(
+        ctx: &egui::Context,
+        app: &mut ImprovApp,
+        size: egui::Vec2,
+        time: f64,
+    ) -> egui::FullOutput {
+        let raw = egui::RawInput {
+            time: Some(time),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            ..Default::default()
+        };
+        ctx.run(raw, |ctx| {
+            app.sync_axis_state();
+            app.document_tab_bar(ctx);
+            app.formula_bar(ctx);
+            app.status_bar(ctx);
+            app.formula_panel(ctx);
+            app.formula_list_panel(ctx);
+            app.tool_palette(ctx);
+            app.explorer_panel(ctx);
+            app.inspector_panel(ctx);
+            app.chart_panel(ctx);
+            app.csv_wizard_panel(ctx);
+            app.canvas_panel(ctx);
+        })
+    }
+
+    /// At the minimum window size (and the old 800x600 default) nothing the
+    /// matrix canvas paints or makes interactive may reach into the explorer or
+    /// Inspector panels. Gutter panels used to replace their clip with their
+    /// own rect, so tiles and the well drew over (and took clicks from) the
+    /// Inspector.
+    #[test]
+    fn canvas_never_paints_over_side_panels() {
+        for size in [
+            egui::Vec2::from(crate::app::MIN_WINDOW),
+            egui::vec2(800.0, 600.0),
+        ] {
+            let mut app = gutter_app();
+            let ctx = egui::Context::default();
+            ctx.set_style(crate::theme::next_style());
+            let mut out = None;
+            for i in 0..8 {
+                out = Some(full_frame(&ctx, &mut app, size, f64::from(i) / 60.0));
+            }
+            let shapes = out.expect("ran").shapes;
+            let canvas = ctx.available_rect();
+            for id in ["explorer", "inspector"] {
+                let panel = egui::containers::panel::PanelState::load(&ctx, egui::Id::new(id))
+                    .expect("panel laid out")
+                    .rect;
+                assert!(
+                    !panel.intersects(canvas.shrink(1.0)),
+                    "{size:?}: {id} {panel:?} vs canvas {canvas:?}"
+                );
+                for s in &shapes {
+                    let seen = s.shape.visual_bounding_rect().intersect(s.clip_rect);
+                    let foreign = !panel.expand(1.0).contains_rect(s.clip_rect);
+                    assert!(
+                        !(foreign && seen.intersects(panel.shrink(2.0))),
+                        "{size:?}: a shape clipped to {:?} shows inside the {id} panel {panel:?}",
+                        s.clip_rect
+                    );
+                }
+                // Input too: no interactive canvas widget may reach into the
+                // panel. A canvas widget's interact rect is clipped by its own
+                // ui, so a leaked one straddles the panel edge; the panel's own
+                // widgets sit inside it. egui's panel resize handles straddle
+                // panel edges by design (a bottom panel's spans the window).
+                let resize: Vec<egui::Id> = [
+                    "tools",
+                    "explorer",
+                    "inspector",
+                    "formula_bar",
+                    "formula_list",
+                    "definitions",
+                    "chart",
+                    "document_tabs",
+                    "status_bar",
+                ]
+                .map(|p| egui::Id::new(p).with("__resize"))
+                .into();
+                let widgets: Vec<egui::WidgetRect> = ctx.viewport(|v| {
+                    let w = &v.prev_pass.widgets;
+                    w.layer_ids()
+                        .flat_map(|l| w.get_layer(l).copied().collect::<Vec<_>>())
+                        .collect()
+                });
+                for w in widgets {
+                    let foreign = !panel.expand(1.0).contains_rect(w.interact_rect);
+                    assert!(
+                        resize.contains(&w.id)
+                            || !w.sense.interactive()
+                            || !(foreign && w.interact_rect.intersects(panel.shrink(2.0))),
+                        "{size:?}: a canvas widget at {:?} takes input inside the {id} panel {panel:?}",
+                        w.interact_rect
+                    );
+                }
+            }
+        }
     }
 
     /// Lay out the whole app for several frames at a desktop window size and

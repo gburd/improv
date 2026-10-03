@@ -25,7 +25,12 @@ fn main() -> eframe::Result<()> {
         }
     };
 
-    let native_options = eframe::NativeOptions::default();
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size(app::INITIAL_WINDOW)
+            .with_min_inner_size(app::MIN_WINDOW),
+        ..Default::default()
+    };
     eframe::run_native(
         "Improv",
         native_options,

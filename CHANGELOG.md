@@ -17,6 +17,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   import/export and save-view used glyphs (`↶ ↷ ⇄ ▤`) missing from egui's
   bundled fonts; they now use glyphs those fonts contain, and a unit test
   checks every palette glyph against the loaded fonts.
+- **The matrix no longer draws over the Inspector.** Gutter tiles and the page
+  well escaped the canvas clip (egui's nested panels reset the clip rect) and
+  painted on top of the side panels in small windows. They are now clipped to
+  the canvas. The window also opens at 1280×800 (was eframe's 800×600) with a
+  960×600 minimum.
 
 ## [0.7.0] - 2026-09-24
 
