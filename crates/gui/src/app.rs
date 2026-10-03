@@ -2489,16 +2489,19 @@ impl ImprovApp {
         if !grid_keys_enabled(self.focused().editing.is_some(), other_focus) {
             return;
         }
+        // Auto-repeat is ignored: holding Ctrl+S saves once, and a held
+        // Ctrl+Q can't run straight through the quit confirmation.
         let commands: Vec<Command> = ctx.input(|i| {
-            if !i.modifiers.command {
-                return Vec::new();
-            }
             i.events
                 .iter()
                 .filter_map(|e| match e {
                     egui::Event::Key {
-                        key, pressed: true, ..
-                    } => menu::key_command(*key, i.modifiers.shift),
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } if modifiers.command => menu::key_command(*key, modifiers.shift),
                     _ => None,
                 })
                 .collect()
@@ -9380,7 +9383,18 @@ mod tests {
         key: egui::Key,
         focus: Option<&str>,
     ) -> egui::FullOutput {
-        let ctx = egui::Context::default();
+        command_key_frame(&egui::Context::default(), app, key, focus)
+    }
+
+    /// One frame of a Ctrl/Cmd+`key` press on `ctx` through
+    /// `handle_command_keys`. egui flags it a repeat while `key` is still down
+    /// from an earlier frame on the same context.
+    fn command_key_frame(
+        ctx: &egui::Context,
+        app: &mut ImprovApp,
+        key: egui::Key,
+        focus: Option<&str>,
+    ) -> egui::FullOutput {
         let raw = egui::RawInput {
             modifiers: egui::Modifiers::COMMAND,
             events: vec![egui::Event::Key {
@@ -9462,6 +9476,32 @@ mod tests {
         let _ = press_command_key(&mut app, egui::Key::S, None);
         assert_eq!(app.status, "saved model");
         assert_eq!(described(&db).as_deref(), Some("saved by ctrl+s"));
+    }
+
+    /// Holding Ctrl+S saves once: the auto-repeat events that follow are
+    /// ignored, so a later edit isn't written by them.
+    #[test]
+    fn ctrl_s_auto_repeat_does_not_save_again() {
+        let db = temp_db("ctrl_s_repeat");
+        let _cleanup = Cleanup(db.clone());
+        ModelStore::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed the store");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let ctx = egui::Context::default();
+        let _ = command_key_frame(&ctx, &mut app, egui::Key::S, None);
+        assert_eq!(app.status, "saved model");
+        app.status.clear();
+        app.model
+            .measures
+            .get_mut(&MeasureId(101))
+            .expect("Quantity")
+            .description = Some("edited after the save".into());
+        // S is still down: egui delivers this press as an auto-repeat.
+        let _ = command_key_frame(&ctx, &mut app, egui::Key::S, None);
+        assert_eq!(app.status, "", "a repeat ran Save");
+        let reloaded = ImprovApp::load(&db).expect("reload");
+        assert_eq!(reloaded.model.measures[&MeasureId(101)].description, None);
     }
 
     /// The menu is drawn by a whole-app frame, over the panels, and a selected

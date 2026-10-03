@@ -134,15 +134,31 @@ impl Default for MenuState {
     }
 }
 
-/// Map a key equivalent (pressed with Ctrl/Cmd) to its command.
+/// Map a key equivalent (pressed with Ctrl/Cmd) to its command, read off the
+/// [`MENU`] tree so the two can't disagree: a lowercase letter is the plain
+/// chord, an uppercase one the chord with Shift. Y is a Redo alias.
 pub fn key_command(key: Key, shift: bool) -> Option<Command> {
-    Some(match (key, shift) {
-        (Key::S, false) => C::SaveModel,
-        (Key::Z, false) => C::Undo,
-        (Key::Z, true) | (Key::Y, _) => C::Redo,
-        (Key::Q, false) => C::Quit,
-        (Key::H, false) => C::Hide,
-        _ => return None,
+    if key == Key::Y {
+        return Some(C::Redo);
+    }
+    keyed_items()
+        .find(|(k, _)| Key::from_name(&k.to_string()) == Some(key) && k.is_uppercase() == shift)
+        .and_then(|(_, c)| c)
+}
+
+/// Every menu item with a key equivalent, top level and submenus.
+fn keyed_items() -> impl Iterator<Item = (char, Option<Command>)> {
+    MENU.iter().flat_map(|(_, key, top)| {
+        let leaves: &[Leaf] = match top {
+            Top::Sub(l) => l,
+            _ => &[],
+        };
+        let top = match top {
+            Top::Leaf(c) => key.map(|k| (k, *c)),
+            _ => None,
+        };
+        top.into_iter()
+            .chain(leaves.iter().filter_map(|&(_, k, c)| k.map(|k| (k, c))))
     })
 }
 
@@ -564,6 +580,18 @@ mod tests {
         assert_eq!(h.state.pos, pos2(104.0, 54.0));
     }
 
+    /// The key table is the menu: every keyed item maps back to itself.
+    #[test]
+    fn key_command_agrees_with_every_keyed_menu_item() {
+        let mut n = 0;
+        for (k, c) in keyed_items() {
+            let key = Key::from_name(&k.to_string()).expect("a key letter");
+            assert_eq!(key_command(key, k.is_uppercase()), c, "{k:?}");
+            n += 1;
+        }
+        assert_eq!(n, 6, "s z Z p h q");
+    }
+
     #[test]
     fn key_equivalents_map_to_commands() {
         assert_eq!(key_command(Key::S, false), Some(C::SaveModel));
@@ -573,6 +601,7 @@ mod tests {
         assert_eq!(key_command(Key::Q, false), Some(C::Quit));
         assert_eq!(key_command(Key::H, false), Some(C::Hide));
         assert_eq!(key_command(Key::S, true), None);
+        assert_eq!(key_command(Key::P, false), None, "Print is disabled");
         assert_eq!(key_command(Key::A, false), None);
     }
 
