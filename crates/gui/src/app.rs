@@ -3446,7 +3446,7 @@ impl ImprovApp {
     ///   |           |  || Hours  v                               |
     ///   +-----------+----------------------------------------------+
     ///   | LEFT      |                                              |
-    ///   | gutter:   |    the table (chiseled headers + cells)      |
+    ///   | gutter:   |    the table (ruled headers + cells)         |
     ///   | row-axis  |                                              |
     ///   | tiles     |                                              |
     ///   +-----------+----------------------------------------------+
@@ -4016,15 +4016,32 @@ impl ImprovApp {
         let mut clicked_cell: Option<(usize, usize)> = None;
         let mut begin_edit: Option<(CoordKey, String)> = None;
 
-        // Chiseled header cell (raised bevel) matching NeXTSTEP Improv.
+        // An item header: plain text in a ruled band, as in Improv. Only the
+        // category tiles look like draggable controls, so a header is a padded
+        // label, not a beveled chip. It rules its right edge, and its top edge
+        // when it starts a group (non-empty text), so blank outer row stubs
+        // read as one outlined group. Rules span what is left of the cell, so
+        // stacked column headers are ruled level by level.
+        const RULE: egui::Stroke = egui::Stroke {
+            width: 1.0,
+            color: crate::theme::NEXT_DARK,
+        };
         fn header_cell(ui: &mut egui::Ui, text: &str) {
-            egui::Frame::default()
-                .fill(crate::theme::NEXT_LIGHT)
-                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BEVEL_SHADOW))
+            let r = ui.available_rect_before_wrap();
+            ui.painter().vline(r.right(), r.y_range(), RULE);
+            if !text.is_empty() {
+                ui.painter().hline(r.x_range(), r.top(), RULE);
+            }
+            egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(4.0, 1.0))
                 .show(ui, |ui| {
-                    ui.add(egui::Label::new(egui::RichText::new(text).strong()).truncate());
+                    ui.add(egui::Label::new(text).truncate());
                 });
+        }
+        // The rule closing the header band from the body.
+        fn band_bottom(ui: &egui::Ui) {
+            let r = ui.max_rect();
+            ui.painter().hline(r.x_range(), r.bottom(), RULE);
         }
         let cat_name = |app: &ImprovApp, c: CategoryId| {
             app.model
@@ -4057,11 +4074,13 @@ impl ImprovApp {
                     let _ = si;
                     header.col(|ui| {
                         header_cell(ui, &cat_name(self, *rc));
+                        band_bottom(ui);
                     });
                 }
                 if row_cats.is_empty() {
                     header.col(|ui| {
                         header_cell(ui, "");
+                        band_bottom(ui);
                     });
                 }
                 for line in &col_lines {
@@ -4075,6 +4094,7 @@ impl ImprovApp {
                                 header_cell(ui, name);
                             }
                         });
+                        band_bottom(ui);
                     });
                 }
             })
@@ -4095,8 +4115,10 @@ impl ImprovApp {
                     // Stub columns: one per stacked row category.
                     for si in 0..n_row_stub {
                         let cell = row_line.get(si);
+                        // Centered vertically, level with the values.
                         row.col(|ui| {
-                            match cell {
+                            let centered = egui::Layout::left_to_right(egui::Align::Center);
+                            ui.with_layout(centered, |ui| match cell {
                                 Some((_id, name)) => {
                                     // Show the label on the innermost stub always,
                                     // and on an outer stub only when this level or
@@ -4117,7 +4139,7 @@ impl ImprovApp {
                                     }
                                 }
                                 None => header_cell(ui, ""),
-                            }
+                            });
                         });
                     }
                     for (ci, col_line) in col_lines.iter().enumerate() {
@@ -7046,6 +7068,50 @@ mod tests {
             app.csv_wizard_panel(ctx);
             app.canvas_panel(ctx);
         })
+    }
+
+    /// Item headers are plain dark text in a ruled band, not beveled chips:
+    /// no filled rect sits behind a header, and its text is the body color.
+    #[test]
+    fn item_headers_are_plain_text() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(102));
+        let ctx = egui::Context::default();
+        ctx.set_style(crate::theme::next_style());
+        let mut shapes = Vec::new();
+        for i in 0..8 {
+            shapes = full_frame(
+                &ctx,
+                &mut app,
+                egui::vec2(1280.0, 800.0),
+                f64::from(i) / 60.0,
+            )
+            .shapes;
+        }
+        // "WidgetA" is the column header, "2025" the row stub.
+        for header in ["WidgetA", "2025"] {
+            let (rect, color) = shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Text(t) if t.galley.text() == header => Some((
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                        t.galley.job.sections[0].format.color,
+                    )),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("header {header:?} was not drawn"));
+            assert!(
+                color.r() < 0x60 && color.g() < 0x60 && color.b() < 0x60,
+                "header {header:?} must be dark body text, got {color:?}"
+            );
+            let chip = shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Rect(r) => {
+                    r.fill == crate::theme::NEXT_LIGHT && r.rect.contains_rect(rect)
+                }
+                _ => false,
+            });
+            assert!(!chip, "header {header:?} sits on a beveled chip");
+        }
     }
 
     /// Numbers right-align in their column so the digits line up (Improv's

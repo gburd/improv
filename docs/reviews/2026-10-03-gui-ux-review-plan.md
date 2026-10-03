@@ -12,7 +12,7 @@ Status is updated in place as items land.
 | A1 | Tool-palette glyphs (`↶ ↷` etc.) render as tofu `□`: egui's default font lacks them. Bundle an icon font or use glyphs the default font has; add a test that every palette label is covered by the loaded fonts. | done |
 | A2 | Default 800×600 window: Inspector overlaps the matrix and gutter tiles draw over its text. Start at ~1280×800, set a minimum size, keep the canvas's space before side panels. | done: root cause was nested gutter panels resetting the canvas clip; each gutter now narrows its clip to the canvas, 1280×800 initial / 960×600 min |
 | A3 | Numeric cells are left-aligned; Improv right-aligns numbers so digits line up. | done |
-| A4 | Item headers (`Q1`, `Widget`) are beveled button chips; Improv draws them as plain text in a ruled band — only category tiles look draggable. | in progress |
+| A4 | Item headers (`Q1`, `Widget`) are beveled button chips; Improv draws them as plain text in a ruled band — only category tiles look draggable. | done |
 | A5 | CLI `set --at` rejects repeated `--at` / space-separated pairs (only one comma-joined arg works). | done |
 
 ## Direction (maintainer, 2026-10-03)

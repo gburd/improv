@@ -11,6 +11,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **GUI grid right-aligns numbers** so their digits line up, as Improv does;
   text, booleans and dates stay left-aligned. The cell editor for a numeric
   measure is right-aligned to match.
+- **GUI item headers are plain text in a ruled band.** Row and column headers
+  (`Q1`, `Widget`) were beveled button chips. They now draw as plain dark text
+  with rule lines, as in Improv, so only the category tiles look draggable.
 
 ### Fixed
 

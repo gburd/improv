@@ -224,8 +224,9 @@ The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
   margins to re-pivot, no formula rewrite. (Routes through `set_axis`.)
 - **Top formula bar** — the selected measure's formula on one line
   (`<Measure> = <expr>`, Enter/Commit), Improv-style.
-- **Chiseled grid headers** with a top-left corner stub showing the current
-  `Rows \ Columns` category names.
+- **Ruled grid headers**: item headers are plain text in a ruled band (not
+  beveled chips — only category tiles look draggable), with a top-left corner
+  stub showing the row category names. Numbers right-align.
 - **NeXT-style tool palette** — a narrow left column of beveled buttons
   (pivot / chart / save view / save model).
 - **Multi-category-per-axis stacking** — more than one category can be stacked
