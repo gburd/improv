@@ -62,10 +62,21 @@
           git
           sqlite # for the SQL-connectivity crate + manual testing
         ];
+
+        # Headless screenshot tools for scripts/gui-shot.sh (X11, Linux only).
+        shotTools = pkgs.lib.optionals pkgs.stdenv.isLinux (
+          with pkgs;
+          [
+            xorg-server # Xvfb
+            xwd
+            imagemagick
+            xdotool
+          ]
+        );
       in
       {
         devShells.default = pkgs.mkShell {
-          packages = devTools ++ guiRuntimeLibs;
+          packages = devTools ++ guiRuntimeLibs ++ shotTools;
 
           # SQLite is bundled by rusqlite; nothing to link at build time, but
           # keep pkg-config discoverable for any C deps.
