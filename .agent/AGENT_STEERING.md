@@ -6,6 +6,13 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
+## Active priority — GUI UX review (2026-10-03)
+
+A hands-on UX review produced a 21-item plan in four batches
+(`docs/reviews/2026-10-03-gui-ux-review-plan.md`). **NEXT: Batch A** (tofu
+palette glyphs, 800×600 overlap, numeric alignment, header styling, CLI
+`--at`). Batches B–D follow in order; status is tracked in that file.
+
 ## Released: v0.7.0 (2026-09-24)
 
 The reference-backed GUI reconstruction (all five plan steps) plus the

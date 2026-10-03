@@ -8,6 +8,10 @@ Improv. GUI parity is NOT qualified. Older DONE labels describe implemented
 pieces, not faithful UX or complete correctness. Audit and EC2 baseline:
 `docs/reviews/2026-09-22-status-and-gui-direction.md`.
 
+UX review 2026-10-03: `docs/reviews/2026-10-03-gui-ux-review-plan.md` lists
+21 concrete defects (batches A–D) found by running the GUI; it refines gates
+4 and 5 below.
+
 Next gates, in order:
 
 1. Fix Unicode highlighting, empty filtered axes, CNL/DSL mismatch, focus,
