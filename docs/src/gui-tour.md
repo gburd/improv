@@ -2,8 +2,8 @@
 
 `improv-gui` is the egui/eframe desktop front-end, styled after the original
 NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
-selection), flat controls with 1 px black outlines (NeXT window chrome comes
-with step 3), white grid cells, a top formula bar, a floating application menu,
+selection), flat controls with 1 px black outlines, worksheet windows with NeXT
+title bars on a dark gray workspace, white grid cells, a top formula bar, a floating application menu,
 on-grid category tiles for pivoting, and an inspector.
 
 Run it (from the Nix dev shell, which provides the GUI runtime libraries):
@@ -26,7 +26,7 @@ The window has five regions:
   Save** saves the model, and **Import/Export CSV…** opens the CSV wizard;
   **Edit** has Undo and Redo; **Worksheet** has Pivot, Add Matrix, Remove
   Matrix and Save View; **View** lists the saved views, with a check on the
-  current one, and picking one switches the canvas to it; **Graph ▸ Show
+  current one, and picking one switches the workspace to it; **Graph ▸ Show
   Chart** toggles the chart; **Hide** minimizes and **Quit** closes the
   window. Format, Print and Services, and New, Open, Save As and Close in the
   File menu, are not built yet and draw grayed out. Key equivalents, shown at
@@ -37,8 +37,16 @@ The window has five regions:
   `=` derived), and saved Views.
 - **Formula bar** (top) — the selected measure's formula
   (`Revenue = Price times Quantity`); editing it re-typechecks and recomputes.
-- **Pivot grid** (center) — the selected measure projected onto the current
-  axes. Here Revenue is shown with **Product** on columns, **Time** on rows,
+- **Worksheet windows** (center) — the dark gray workspace holds one
+  window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
+  to move a window and its bottom bar to resize it (the left third drags the
+  bottom-left corner, the right third the bottom-right). Clicking a window
+  makes it key (black title bar) and gives its matrix the keyboard. With more
+  than one matrix open, each window's close box removes its matrix.
+  **Worksheet ▸ Add Matrix** opens another window, and **Save View** records
+  every window's place and size.
+- **Pivot grid** (in each worksheet window) — the measure projected onto the
+  current axes. Here Revenue is shown with **Product** on columns, **Time** on rows,
   and **Region** paged (`North [1/2]`, steppable). The **category tiles** at the
   Columns / Rows / Pages margins are drag sources; drag one to another margin to
   re-pivot without touching the formula.

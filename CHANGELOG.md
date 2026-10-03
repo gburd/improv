@@ -16,6 +16,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI matrices are NeXT worksheet windows on a dark workspace.** The
+  scrollable canvas is gone: the area between the panels is a `#555555`
+  workspace, and each matrix floats on it as its own window with a black
+  (key) or dark gray title bar reading `<matrix> - Worksheet - <file>`
+  (`Untitled` when in memory), a close box while more than one matrix is
+  open, and a bottom resize bar. Drag the title bar to move a window; clicking
+  a window gives its matrix the keyboard. Window positions and sizes are saved
+  in views as before, so existing views load unchanged.
 - **GUI application menu replaces the tool palette and tab strip.** A
   floating NeXTSTEP vertical menu (Info, File, Edit, Format, Worksheet, View,
   Graph, Print…, Services, Hide, Quit) with cascading submenus now carries

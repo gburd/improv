@@ -72,7 +72,8 @@ pub(crate) struct Matrix {
     /// The cell currently being edited in THIS matrix, and its text buffer.
     editing: Option<(MeasureId, CoordKey)>,
     edit_buf: String,
-    /// Where this matrix sits on the canvas (persisted in the view).
+    /// Its worksheet window's outer rect, relative to the workspace's top-left
+    /// (persisted in the view).
     rect: CanvasRect,
     /// Where THIS matrix's margin gutters and table ended up in the last
     /// laid-out frame (see [`GutterRects`]). `None` until it has rendered once.
@@ -212,6 +213,11 @@ fn gutters_frame_table(g: &GutterRects) -> bool {
         && adjoins(g.well.min.x, g.left.min.x)
 }
 
+/// The [`crate::nxwin::NxWindow`] id of matrix `mi`'s worksheet window.
+fn matrix_window_id(mi: usize) -> egui::Id {
+    crate::nxwin::NxWindow::new(("matrix", mi), "").id()
+}
+
 /// Whether the window left the gutters enough room to be laid out at all.
 ///
 /// A panel clamps its extent to what is available, so in an absurdly small
@@ -237,24 +243,11 @@ const GUTTER_W: f32 = 120.0;
 /// cascade). See [`ImprovApp::add_matrix`].
 const CASCADE: f32 = 28.0;
 
-/// Height of a matrix's title bar, in points — the reference's teal
-/// `Property Financials: Virginia Ave` band across the top of each matrix
-/// (plan Step 5). See [`ImprovApp::matrix_title_bar`].
-const TITLE_H: f32 = 22.0;
-
-/// Slack around the matrices on the canvas surface, in points: room to drag a
-/// matrix into beyond the right/bottom-most one.
-const CANVAS_MARGIN: f32 = 80.0;
-
-/// Size of a matrix's bottom-right resize grip, in points.
-const GRIP: f32 = 12.0;
-
-/// Smallest a matrix can be dragged to. Below roughly this it has no room for
-/// its title bar, its gutters and a cell, so shrinking further would only hide
-/// its own chrome — [`gutters_have_room`] is the same judgement about the
-/// window.
+/// Smallest a worksheet window can be resized to. Below roughly this it has no
+/// room for its gutters and a cell, so shrinking further would only hide its
+/// own chrome; [`gutters_have_room`] is the same judgement about the window.
 const MATRIX_MIN_W: f32 = 240.0;
-const MATRIX_MIN_H: f32 = 160.0;
+const MATRIX_MIN_H: f32 = 180.0;
 
 /// How many model states the undo (and redo) stack keeps; older entries are
 /// evicted.
@@ -374,28 +367,6 @@ impl Matrix {
             filters: self.filters.clone(),
             rect: self.rect,
         })
-    }
-
-    /// Move this matrix on the canvas by `(dx, dy)` — the title-bar drag (the
-    /// reference's free-form placement).
-    ///
-    /// Clamped at the canvas's top-left: a matrix at a negative offset would sit
-    /// outside the scrollable surface, which cannot scroll to it, so it would be
-    /// unreachable and unrecoverable except by editing the saved view.
-    fn move_by(&mut self, dx: f32, dy: f32) {
-        self.rect.x = (self.rect.x + dx).max(0.0);
-        self.rect.y = (self.rect.y + dy).max(0.0);
-    }
-
-    /// Resize this matrix by `(dw, dh)` — the bottom-right grip drag.
-    ///
-    /// Clamped at [`MATRIX_MIN_W`] x [`MATRIX_MIN_H`]: smaller than that and the
-    /// matrix has no room for its own title bar, gutters and a cell, so dragging
-    /// further would only hide its chrome — and a zero or negative size would
-    /// make its rect degenerate.
-    fn resize_by(&mut self, dw: f32, dh: f32) {
-        self.rect.w = (self.rect.w + dw).max(MATRIX_MIN_W);
-        self.rect.h = (self.rect.h + dh).max(MATRIX_MIN_H);
     }
 
     /// Show `measure` in this matrix, dropping any open cell editor. The pivot
@@ -3183,196 +3154,98 @@ impl ImprovApp {
         self.cell_value(measure, &key).and_then(|v| v.as_num())
     }
 
-    /// The canvas: **N matrices freely placed on one scrollable surface**, which
-    /// is plan Step 3 (`docs/reviews/2026-09-22-gui-reconstruction-plan.md`) and
-    /// the shape the Quantrix reference shows \u2014 several matrices, each with its
-    /// own title bar and its own pivot, laid out where the author put them.
+    /// The workspace: a `#555555` desktop with each matrix floating on it as
+    /// its own NeXT worksheet window (spec §5). The workspace does not scroll;
+    /// each window's grid scrolls itself, and `Matrix::rect` holds the window
+    /// rect relative to the workspace's top-left, so views persist it.
     ///
-    /// **Container choice: manually placed child `Ui`s, not [`egui::Window`].**
-    /// Three reasons, in order of weight:
-    ///
-    /// 1. A `Window` is an [`egui::Area`] \u2014 a *top-level* floating layer. It
-    ///    neither scrolls with a parent [`egui::ScrollArea`] nor clips to it, so
-    ///    "a scrollable canvas holding matrices" cannot be built out of windows:
-    ///    the matrices would hover over the scrolling canvas instead of living
-    ///    on it.
-    /// 2. The reference's matrices are *document content* (they scroll with the
-    ///    notes and headings around them), not OS-style windows with a
-    ///    close/collapse chrome.
-    /// 3. A child `Ui` placed with [`egui::Ui::new_child`] allocates nothing in
-    ///    its parent, so the canvas extent stays a pure function of the matrix
-    ///    rects. A container that allocated space per matrix would grow the
-    ///    scroll content every frame \u2014 exactly the ratchet Step 1's
-    ///    `gutters_do_not_creep_across_frames_or_repivots` exists to catch.
-    ///
-    /// Each matrix keeps everything Step 1 built: its own margin gutters framing
-    /// its own table, its own tiles, virtualization, nested headers, typed
-    /// editing and empty-axis handling \u2014 because [`Self::gutter_frame`] is
-    /// called once per matrix on that matrix's child `Ui`, and nested panels
-    /// work in any `Ui`.
+    /// The focused matrix's window is made key before the windows are shown,
+    /// so a code-driven focus change (`add_matrix`, `apply_view`) shows as the
+    /// key title bar; a press on another window then makes it key, and that
+    /// is read back into the focus.
     fn canvas_panel(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.model.measures.is_empty() {
-                ui.label("No measures. Open a model store with `improv-gui <db>`.");
-                return;
-            }
-            egui::ScrollArea::both()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    // Claim the canvas extent up front: a pure function of the
-                    // matrix rects (plus room to drag into), so it never grows
-                    // frame over frame.
-                    let extent = self.canvas_extent(ui.available_size());
-                    let (_id, canvas) = ui.allocate_space(extent);
-                    for mi in 0..self.matrices.len() {
-                        self.matrix_frame(ui, canvas.min, mi);
-                    }
-                });
-        });
-    }
-
-    /// The canvas surface size: enough to hold every matrix (plus a margin to
-    /// drag into) and at least the visible area, so the scroll view fills.
-    fn canvas_extent(&self, available: egui::Vec2) -> egui::Vec2 {
-        let mut w: f32 = 0.0;
-        let mut h: f32 = 0.0;
-        for m in &self.matrices {
-            w = w.max(m.rect.x + m.rect.w);
-            h = h.max(m.rect.y + m.rect.h);
-        }
-        egui::vec2(
-            (w + CANVAS_MARGIN).max(available.x),
-            (h + CANVAS_MARGIN).max(available.y),
-        )
-    }
-
-    /// One matrix on the canvas at `origin + its rect`: title bar, filter shelf,
-    /// then the gutter-framed grid, all inside a child `Ui` clipped to its own
-    /// rectangle (see [`Self::canvas_panel`] for why a child `Ui` and not a
-    /// window).
-    fn matrix_frame(&mut self, ui: &mut egui::Ui, origin: egui::Pos2, mi: usize) {
-        let Some(m) = self.matrices.get(mi) else {
+        let ws = egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(crate::theme::DARK_GRAY))
+            .show(ctx, |ui| {
+                if self.model.measures.is_empty() {
+                    ui.colored_label(
+                        crate::theme::WHITE,
+                        "No measures. Open a model store with `improv-gui <db>`.",
+                    );
+                    return None;
+                }
+                Some(ui.max_rect())
+            })
+            .inner;
+        let Some(ws) = ws else {
             return;
         };
-        let r = m.rect;
-        let rect = egui::Rect::from_min_size(
-            origin + egui::vec2(r.x, r.y),
-            egui::vec2(r.w.max(MATRIX_MIN_W), r.h.max(MATRIX_MIN_H)),
-        );
-        let focused = self.focus_index() == mi;
-
-        // The matrix's own beveled shell, so several matrices on one canvas read
-        // as distinct objects (the reference frames each one).
-        ui.painter().rect(
-            rect,
-            egui::Rounding::ZERO,
-            crate::theme::LIGHT_GRAY,
-            egui::Stroke::new(
-                if focused { 2.0_f32 } else { 1.0_f32 },
-                if focused {
-                    crate::theme::BLACK
-                } else {
-                    crate::theme::DARK_GRAY
-                },
-            ),
-        );
-
-        // Clicking anywhere in the matrix focuses it. Registered BEFORE the
-        // contents, so interior widgets (cells, tiles, buttons) still win the
-        // click; this only catches the background.
-        let bg = ui.interact(
-            rect,
-            ui.id().with(("matrix_bg", mi)),
-            egui::Sense::click_and_drag(),
-        );
-        if bg.clicked() || bg.drag_started() {
-            self.set_focus(mi);
-        }
-
-        let mut child = ui.new_child(
-            egui::UiBuilder::new()
-                .id_salt(("matrix", mi))
-                .max_rect(rect.shrink(2.0))
-                .layout(egui::Layout::top_down(egui::Align::Min)),
-        );
-        child.set_clip_rect(rect.intersect(ui.clip_rect()));
-        self.matrix_title_bar(&mut child, mi);
-        self.filter_shelf(&mut child, mi);
-        child.separator();
-        self.gutter_frame(&mut child, mi);
-
-        // Bottom-right resize grip: drag to resize this matrix.
-        let grip = egui::Rect::from_min_max(rect.max - egui::vec2(GRIP, GRIP), rect.max);
-        let gr = ui.interact(grip, ui.id().with(("matrix_grip", mi)), egui::Sense::drag());
-        ui.painter().rect_filled(
-            grip,
-            egui::Rounding::ZERO,
-            if gr.hovered() {
-                crate::theme::WHITE
-            } else {
-                crate::theme::DARK_GRAY
-            },
-        );
-        if gr.dragged() {
-            let d = gr.drag_delta();
-            if let Some(m) = self.matrices.get_mut(mi) {
-                m.resize_by(d.x, d.y);
+        // ponytail: matrix windows own the key slot; give it to the Info panel
+        // or browser windows (later spec steps) when they become NxWindows.
+        crate::nxwin::make_key(ctx, matrix_window_id(self.focus_index()));
+        let mut closed = Vec::new();
+        for mi in 0..self.matrices.len() {
+            if !self.matrix_window(ctx, ws, mi) {
+                closed.push(mi);
             }
-            self.set_focus(mi);
+        }
+        for mi in closed.into_iter().rev() {
+            self.remove_matrix(mi);
         }
     }
 
-    /// A matrix's **title bar** (plan Step 5): the reference's
-    /// `Property Financials: Virginia Ave` band \u2014 the measure's name, then the
-    /// pinned page items that say *which slice* this matrix shows, which is
-    /// precisely what the reference's `: Virginia Ave` is.
-    ///
-    /// It is also the drag handle: dragging the bar moves the matrix on the
-    /// canvas (the reference's free-form placement). Colors come from
-    /// `theme.rs`: black with white text for the focused (key) matrix, dark gray
-    /// with light-gray text otherwise, as NeXT drew key and non-key title bars,
-    /// so which matrix has the keyboard is visible at a glance.
-    fn matrix_title_bar(&mut self, ui: &mut egui::Ui, mi: usize) {
-        let focused = self.focus_index() == mi;
-        let title = self.matrix_title(mi);
-        let (_id, bar) = ui.allocate_space(egui::vec2(ui.available_width(), TITLE_H));
-        let resp = ui.interact(
-            bar,
-            ui.id().with(("title", mi)),
-            egui::Sense::click_and_drag(),
-        );
-        ui.painter().rect_filled(
-            bar,
-            egui::Rounding::ZERO,
-            if focused {
-                crate::theme::BLACK
-            } else {
-                crate::theme::DARK_GRAY
-            },
-        );
-        ui.painter().text(
-            bar.center(),
-            egui::Align2::CENTER_CENTER,
-            &title,
-            egui::TextStyle::Body.resolve(ui.style()),
-            if focused {
-                crate::theme::WHITE
-            } else {
-                crate::theme::LIGHT_GRAY
-            },
-        );
-        if resp.dragged() {
-            let d = resp.drag_delta();
-            if let Some(m) = self.matrices.get_mut(mi) {
-                m.move_by(d.x, d.y);
-            }
+    /// Matrix `mi` as a worksheet window on the workspace `ws`: filter shelf,
+    /// then the gutter-framed grid. Returns `false` when its close box was
+    /// clicked (shown only while there is more than one matrix).
+    fn matrix_window(&mut self, ctx: &egui::Context, ws: egui::Rect, mi: usize) -> bool {
+        let r = self.matrices[mi].rect;
+        let rect = egui::Rect::from_min_size(ws.min + egui::vec2(r.x, r.y), egui::vec2(r.w, r.h));
+        let id = matrix_window_id(mi);
+        let state = id.with("nxwin_rect");
+        // `m.rect` is the source of truth: written in every frame, so a
+        // programmatic change (apply_view) moves the window, and read back
+        // below, so a drag or resize lands in the view.
+        ctx.data_mut(|d| d.insert_temp(state, rect));
+        let mut open = true;
+        let closable = self.matrix_count() > 1;
+        let mut win = crate::nxwin::NxWindow::new(("matrix", mi), self.window_title(mi))
+            .default_rect(rect)
+            .resizable(true);
+        if closable {
+            win = win.closable(&mut open);
         }
-        if resp.clicked() || resp.drag_started() {
+        let _ = win.show(ctx, |ui| {
+            self.filter_shelf(ui, mi);
+            ui.separator();
+            self.gutter_frame(ui, mi);
+        });
+        if let Some(after) = ctx
+            .data(|d| d.get_temp::<egui::Rect>(state))
+            .filter(|a| *a != rect)
+        {
+            // Clamped here, not in nxwin (whose floor is smaller): the next
+            // frame writes it back, so the window stops at the minimum.
+            self.matrices[mi].rect = CanvasRect {
+                x: after.min.x - ws.min.x,
+                y: after.min.y - ws.min.y,
+                w: after.width().max(MATRIX_MIN_W),
+                h: after.height().max(MATRIX_MIN_H),
+            };
+        }
+        if crate::nxwin::is_key(ctx, id) && self.focus_index() != mi {
             self.set_focus(mi);
         }
-        if resp.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-        }
+        open
+    }
+
+    /// A worksheet window's title (spec §4.3): `Sales: North - Worksheet -
+    /// demo`, the file being the store's stem or `Untitled` when in memory.
+    pub fn window_title(&self, mi: usize) -> String {
+        let file = std::path::Path::new(&self.db)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled");
+        format!("{} - Worksheet - {file}", self.matrix_title(mi))
     }
 
     /// A matrix's title text: its measure's name, plus the pinned page items
@@ -7018,9 +6891,23 @@ mod tests {
         size: egui::Vec2,
         time: f64,
     ) -> egui::FullOutput {
+        full_frame_with(ctx, app, size, time, Vec::new(), |_| ())
+    }
+
+    /// [`full_frame`] delivering `events`, then calling `inspect` inside the
+    /// pass (while the layers' shapes are still in `ctx.graphics`).
+    fn full_frame_with(
+        ctx: &egui::Context,
+        app: &mut ImprovApp,
+        size: egui::Vec2,
+        time: f64,
+        events: Vec<egui::Event>,
+        mut inspect: impl FnMut(&egui::Context),
+    ) -> egui::FullOutput {
         let raw = egui::RawInput {
             time: Some(time),
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
             ..Default::default()
         };
         ctx.run(raw, |ctx| {
@@ -7035,6 +6922,7 @@ mod tests {
             app.csv_wizard_panel(ctx);
             app.canvas_panel(ctx);
             app.menu_bar(ctx);
+            inspect(ctx);
         })
     }
 
@@ -7073,8 +6961,12 @@ mod tests {
                 "header {header:?} must be dark body text, got {color:?}"
             );
             let chip = shapes.iter().any(|c| match &c.shape {
+                // Chip-sized only: the #555555 workspace behind every
+                // window contains every header too.
                 egui::Shape::Rect(r) => {
-                    r.fill == crate::theme::DARK_GRAY && r.rect.contains_rect(rect)
+                    r.fill == crate::theme::DARK_GRAY
+                        && r.rect.contains_rect(rect)
+                        && r.rect.height() < 4.0 * rect.height()
                 }
                 _ => false,
             });
@@ -7159,88 +7051,73 @@ mod tests {
         );
     }
 
-    /// At the minimum window size (and the old 800x600 default) nothing the
-    /// matrix canvas paints or makes interactive may reach into the explorer or
-    /// Inspector panels. Gutter panels used to replace their clip with their
-    /// own rect, so tiles and the well drew over (and took clicks from) the
-    /// Inspector.
+    /// At the minimum window size (and the old 800x600 default) nothing a
+    /// worksheet window paints or makes interactive reaches outside its own
+    /// window rect. Windows float over the side panels by design (NeXT
+    /// floating windows); what must not happen is the gutter panels escaping
+    /// the window, which `show_inside` would do by replacing their clip.
     #[test]
-    fn canvas_never_paints_over_side_panels() {
+    fn window_content_never_paints_outside_its_window() {
         for size in [
             egui::Vec2::from(crate::app::MIN_WINDOW),
             egui::vec2(800.0, 600.0),
         ] {
             let mut app = gutter_app();
+            app.add_matrix(app.focused().measure);
+            // Below the minimum (as a hand-edited view could be), so the
+            // gutters overflow the body.
+            for m in &mut app.matrices {
+                (m.rect.w, m.rect.h) = (120.0, 80.0);
+            }
             let ctx = egui::Context::default();
             crate::theme::apply(&ctx);
-            let mut out = None;
+            let mut shapes: Vec<Vec<egui::epaint::ClippedShape>> = Vec::new();
             for i in 0..8 {
-                out = Some(full_frame(&ctx, &mut app, size, f64::from(i) / 60.0));
-            }
-            let shapes = out.expect("ran").shapes;
-            let canvas = ctx.available_rect();
-            // The application menu floats over every panel by design: its
-            // foreground areas are not the canvas leaking.
-            let floating: Vec<egui::Rect> = ctx.memory(|m| {
-                m.areas()
-                    .visible_layer_ids()
-                    .into_iter()
-                    .filter(|l| l.order == egui::Order::Foreground)
-                    .filter_map(|l| m.area_rect(l.id))
-                    .collect()
-            });
-            assert!(!floating.is_empty(), "the menu is drawn");
-            for id in ["explorer", "inspector"] {
-                let panel = egui::containers::panel::PanelState::load(&ctx, egui::Id::new(id))
-                    .expect("panel laid out")
-                    .rect;
-                assert!(
-                    !panel.intersects(canvas.shrink(1.0)),
-                    "{size:?}: {id} {panel:?} vs canvas {canvas:?}"
+                let _ = full_frame_with(
+                    &ctx,
+                    &mut app,
+                    size,
+                    f64::from(i) / 60.0,
+                    Vec::new(),
+                    |ctx| {
+                        shapes = (0..2)
+                            .map(|mi| {
+                                let layer =
+                                    egui::LayerId::new(egui::Order::Middle, matrix_window_id(mi));
+                                ctx.graphics(|g| {
+                                    g.get(layer)
+                                        .map(|l| l.all_entries().cloned().collect())
+                                        .unwrap_or_default()
+                                })
+                            })
+                            .collect();
+                    },
                 );
-                for s in &shapes {
+            }
+            let widgets = ctx.viewport(|v| v.prev_pass.widgets.clone());
+            for (mi, shapes) in shapes.iter().enumerate() {
+                let win = win_rect(&ctx, mi).expand(1.0);
+                assert!(shapes.len() > 20, "{size:?}: window {mi} painted its grid");
+                for s in shapes {
                     let seen = s.shape.visual_bounding_rect().intersect(s.clip_rect);
-                    let foreign = !panel.expand(1.0).contains_rect(s.clip_rect);
-                    let menu = floating.iter().any(|f| f.expand(1.0).contains_rect(seen));
                     assert!(
-                        menu || !(foreign && seen.intersects(panel.shrink(2.0))),
-                        "{size:?}: a shape clipped to {:?} shows inside the {id} panel {panel:?}",
-                        s.clip_rect
+                        !seen.is_positive() || win.contains_rect(seen),
+                        "{size:?}: window {mi} {win:?} paints at {seen:?}"
                     );
                 }
-                // Input too: no interactive canvas widget may reach into the
-                // panel. A canvas widget's interact rect is clipped by its own
-                // ui, so a leaked one straddles the panel edge; the panel's own
-                // widgets sit inside it. egui's panel resize handles straddle
-                // panel edges by design (a bottom panel's spans the window).
-                let resize: Vec<egui::Id> = [
-                    "explorer",
-                    "inspector",
-                    "formula_bar",
-                    "formula_list",
-                    "definitions",
-                    "chart",
-                    "status_bar",
-                ]
-                .map(|p| egui::Id::new(p).with("__resize"))
-                .into();
-                let widgets: Vec<egui::WidgetRect> = ctx.viewport(|v| {
-                    let w = &v.prev_pass.widgets;
-                    w.layer_ids()
-                        .flat_map(|l| w.get_layer(l).copied().collect::<Vec<_>>())
-                        .collect()
-                });
-                for w in widgets {
-                    let foreign = !panel.expand(1.0).contains_rect(w.interact_rect);
+                let layer = egui::LayerId::new(egui::Order::Middle, matrix_window_id(mi));
+                let mut n = 0;
+                for w in widgets.get_layer(layer) {
+                    n += 1;
                     assert!(
-                        resize.contains(&w.id)
-                            || w.layer_id.order == egui::Order::Foreground
-                            || !w.sense.interactive()
-                            || !(foreign && w.interact_rect.intersects(panel.shrink(2.0))),
-                        "{size:?}: a canvas widget at {:?} takes input inside the {id} panel {panel:?}",
+                        !w.sense.interactive()
+                            || !w.interact_rect.is_positive()
+                            || win.contains_rect(w.interact_rect),
+                        "{size:?}: window {mi} {win:?} takes input at {:?}",
                         w.interact_rect
                     );
                 }
+                assert!(n > 5, "{size:?}: window {mi} registered its widgets");
             }
         }
     }
@@ -8679,15 +8556,10 @@ mod tests {
         assert_ne!(all[0].top, all[1].top, "each matrix has its own gutters");
     }
 
-    /// The CANVAS must not creep either: with N matrices on a scrollable surface,
-    /// the geometry has to settle and stay put frame after frame.
-    ///
-    /// This is Step 1's `gutters_do_not_creep_across_frames_or_repivots`
-    /// discipline applied to the container it now lives in — the reason
-    /// `canvas_extent` is a pure function of the matrix rects rather than
-    /// something derived from last frame's content size. A scroll area whose
-    /// content grew by what it claimed last frame would drift forever, and a
-    /// single-frame assertion cannot see it.
+    /// The workspace must not creep either: with N worksheet windows, the
+    /// geometry has to settle and stay put frame after frame (Step 1's
+    /// `gutters_do_not_creep_across_frames_or_repivots` discipline applied to
+    /// the windows; a single-frame assertion cannot see a ratchet).
     #[test]
     fn the_canvas_does_not_creep_across_frames() {
         let mut app = two_matrix_app();
@@ -8707,72 +8579,6 @@ mod tests {
         }
         let again: Vec<GutterRects> = app.matrices.iter().filter_map(|m| m.gutters).collect();
         assert_eq!(first, again, "some matrix's geometry drifted");
-
-        // And the canvas surface itself does not grow: it is a function of the
-        // matrix rects, so asking twice with the same rects gives the same size.
-        let avail = egui::vec2(800.0, 600.0);
-        let a = app.canvas_extent(avail);
-        let b = app.canvas_extent(avail);
-        assert_eq!(a, b);
-        // Moving a matrix right/down DOES grow it (the surface must follow the
-        // content), which is what makes the constancy above meaningful.
-        app.matrices[1].rect.x += 500.0;
-        assert!(
-            app.canvas_extent(avail).x > a.x,
-            "the canvas must grow to hold a matrix moved off its right edge"
-        );
-    }
-
-    /// Dragging a matrix can never put it somewhere unreachable: `move_by` stops
-    /// at the canvas's top-left (the scroll surface starts there, so a negative
-    /// offset could not be scrolled to) and `resize_by` stops at the minimum
-    /// size (below which the matrix has no room for its own chrome, and at zero
-    /// its rect would be degenerate).
-    #[test]
-    fn a_matrix_cannot_be_dragged_or_resized_out_of_reach() {
-        let mut m = Matrix {
-            rect: CanvasRect {
-                x: 10.0,
-                y: 20.0,
-                w: 400.0,
-                h: 300.0,
-            },
-            ..Matrix::default()
-        };
-
-        // Ordinary drags move it exactly as asked, in both directions.
-        m.move_by(30.0, 40.0);
-        assert_eq!((m.rect.x, m.rect.y), (40.0, 60.0));
-        m.move_by(-15.0, -25.0);
-        assert_eq!((m.rect.x, m.rect.y), (25.0, 35.0));
-
-        // A drag past the top-left corner stops AT the corner, never past it.
-        m.move_by(-1000.0, -1000.0);
-        assert_eq!(
-            (m.rect.x, m.rect.y),
-            (0.0, 0.0),
-            "a matrix must not be draggable off the canvas"
-        );
-        // ...and it is still draggable back out, not stuck.
-        m.move_by(50.0, 60.0);
-        assert_eq!((m.rect.x, m.rect.y), (50.0, 60.0));
-
-        // Resizing shrinks and grows, but never below the minimum.
-        m.resize_by(-50.0, -50.0);
-        assert_eq!((m.rect.w, m.rect.h), (350.0, 250.0));
-        m.resize_by(-10_000.0, -10_000.0);
-        assert_eq!(
-            (m.rect.w, m.rect.h),
-            (MATRIX_MIN_W, MATRIX_MIN_H),
-            "a matrix must not be shrinkable past its own chrome"
-        );
-        assert!(m.rect.w > 0.0 && m.rect.h > 0.0, "never a degenerate rect");
-        m.resize_by(100.0, 100.0);
-        assert_eq!(
-            (m.rect.w, m.rect.h),
-            (MATRIX_MIN_W + 100.0, MATRIX_MIN_H + 100.0),
-            "...and growing again still works"
-        );
     }
 
     /// The canvas lays out at every window size without panicking, and the
@@ -8861,6 +8667,251 @@ mod tests {
             2,
             "undoing the SAVE does not tear down the canvas it described"
         );
+    }
+
+    // -- NeXTSTEP spec step 3: worksheet windows on a workspace
+
+    /// Matrix `mi`'s window rect, as nxwin stores it.
+    fn win_rect(ctx: &egui::Context, mi: usize) -> egui::Rect {
+        ctx.data(|d| d.get_temp::<egui::Rect>(matrix_window_id(mi).with("nxwin_rect")))
+            .unwrap_or_else(|| panic!("window {mi} was never shown"))
+    }
+
+    fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// Whole-app frames on one context at 1200x800, `events` per frame.
+    struct Desk {
+        ctx: egui::Context,
+        time: f64,
+    }
+
+    impl Desk {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            crate::theme::apply(&ctx);
+            Desk { ctx, time: 0.0 }
+        }
+
+        fn frame(&mut self, app: &mut ImprovApp, events: Vec<egui::Event>) -> egui::FullOutput {
+            self.time += 1.0 / 60.0;
+            let size = egui::vec2(1200.0, 800.0);
+            full_frame_with(&self.ctx, app, size, self.time, events, |_| ())
+        }
+
+        fn settle(&mut self, app: &mut ImprovApp) {
+            for _ in 0..6 {
+                let _ = self.frame(app, Vec::new());
+            }
+        }
+
+        fn click(&mut self, app: &mut ImprovApp, at: egui::Pos2) {
+            let _ = self.frame(
+                app,
+                vec![
+                    egui::Event::PointerMoved(at),
+                    press(at, true),
+                    press(at, false),
+                ],
+            );
+            let _ = self.frame(app, Vec::new());
+        }
+
+        /// Press at `from`, move to `to` in steps, release, settle.
+        fn drag(&mut self, app: &mut ImprovApp, from: egui::Pos2, to: egui::Pos2) {
+            let _ = self.frame(app, vec![egui::Event::PointerMoved(from)]);
+            let _ = self.frame(app, vec![press(from, true)]);
+            for t in [0.25, 0.5, 0.75, 1.0] {
+                let _ = self.frame(app, vec![egui::Event::PointerMoved(from.lerp(to, t))]);
+            }
+            let _ = self.frame(app, vec![press(to, false)]);
+            self.settle(app);
+        }
+    }
+
+    /// (a) Two matrices are two NxWindows with distinct ids, each titled
+    /// `<matrix> - Worksheet - <file>`.
+    #[test]
+    fn each_matrix_is_its_own_worksheet_window() {
+        let mut app = two_matrix_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert_ne!(matrix_window_id(0), matrix_window_id(1));
+        assert_ne!(win_rect(&desk.ctx, 0), win_rect(&desk.ctx, 1));
+        let titles: Vec<String> = shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text().contains(" - Worksheet - ") => {
+                    Some(t.galley.text().to_string())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                "Quantity - Worksheet - Untitled",
+                "Revenue - Worksheet - Untitled"
+            ],
+            "one title per window, in memory = Untitled"
+        );
+        app.db = "/tmp/models/demo.db".into();
+        assert_eq!(app.window_title(1), "Revenue - Worksheet - demo");
+    }
+
+    /// (b) Dragging a window's title bar moves the matrix, and the move
+    /// survives save_view -> apply_view (which in turn moves the window).
+    #[test]
+    fn dragging_a_window_title_moves_the_matrix_into_the_view() {
+        let mut app = two_matrix_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let before = app.matrices[0].rect;
+        let win = win_rect(&desk.ctx, 0);
+        let grab = egui::pos2(win.center().x, win.top() + 12.0);
+        desk.drag(&mut app, grab, grab + egui::vec2(60.0, 40.0));
+        let moved = app.matrices[0].rect;
+        assert_eq!((moved.x, moved.y), (before.x + 60.0, before.y + 40.0));
+        assert_eq!((moved.w, moved.h), (before.w, before.h));
+        assert_eq!(
+            app.matrices[1].rect,
+            two_matrix_app().matrices[1].rect,
+            "window 1 stays"
+        );
+
+        let id = app.save_view("Moved").expect("saved");
+        let view = app.model.views[&id].clone();
+        app.matrices[0].rect = before;
+        desk.settle(&mut app);
+        app.apply_view(&view);
+        assert_eq!(app.matrices[0].rect, moved, "the view kept the drag");
+        desk.settle(&mut app);
+        assert_eq!(
+            win_rect(&desk.ctx, 0),
+            win.translate(egui::vec2(60.0, 40.0)),
+            "and the window follows the view"
+        );
+    }
+
+    /// (c) Clicking window 2 focuses matrix 1.
+    #[test]
+    fn clicking_a_window_focuses_its_matrix() {
+        let mut app = two_matrix_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert_eq!(app.focus_index(), 0);
+        let win = win_rect(&desk.ctx, 1);
+        // Its bottom-right, clear of window 0 (cascaded up-left of it).
+        desk.click(&mut app, win.max - egui::vec2(20.0, 20.0));
+        assert_eq!(app.focus_index(), 1);
+        assert!(crate::nxwin::is_key(&desk.ctx, matrix_window_id(1)));
+    }
+
+    /// (d) add_matrix focuses the new matrix, and its window becomes key.
+    #[test]
+    fn a_new_matrix_window_is_key() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert!(crate::nxwin::is_key(&desk.ctx, matrix_window_id(0)));
+        app.add_matrix(Some(MeasureId(102)));
+        let _ = desk.frame(&mut app, Vec::new());
+        assert!(crate::nxwin::is_key(&desk.ctx, matrix_window_id(1)));
+        assert!(!crate::nxwin::is_key(&desk.ctx, matrix_window_id(0)));
+        assert_eq!(app.focus_index(), 1);
+    }
+
+    /// (e) With two matrices each window has a close box that removes its
+    /// matrix; the last one has none.
+    #[test]
+    fn the_close_box_removes_a_matrix_but_never_the_last() {
+        let close_box =
+            |r: egui::Rect| egui::pos2(r.right() - 1.0 - 4.0 - 7.5, r.top() + 1.0 + 11.5);
+        let has_close = |ctx: &egui::Context| {
+            ctx.viewport(|v| {
+                v.prev_pass
+                    .widgets
+                    .get(matrix_window_id(0).with("close"))
+                    .is_some()
+            })
+        };
+        let mut app = two_matrix_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert!(has_close(&desk.ctx), "two matrices: closable");
+        let at = close_box(win_rect(&desk.ctx, 1));
+        desk.click(&mut app, at);
+        assert_eq!(app.matrix_count(), 1);
+        assert_eq!(
+            app.matrices[0].measure,
+            Some(MeasureId(101)),
+            "window 1 closed"
+        );
+        desk.settle(&mut app);
+        assert!(!has_close(&desk.ctx), "the last matrix has no close box");
+        let at = close_box(win_rect(&desk.ctx, 0));
+        desk.click(&mut app, at);
+        assert_eq!(app.matrix_count(), 1);
+    }
+
+    /// Resizing a window persists into its matrix, and never below the
+    /// minimum the gutters need.
+    #[test]
+    fn resizing_a_window_resizes_its_matrix_down_to_a_minimum() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let before = app.matrices[0].rect;
+        let bar = |r: egui::Rect| egui::pos2(r.right() - 20.0, r.bottom() - 5.0);
+        let at = bar(win_rect(&desk.ctx, 0));
+        desk.drag(&mut app, at, at + egui::vec2(50.0, 30.0));
+        let r = app.matrices[0].rect;
+        assert_eq!((r.w, r.h), (before.w + 50.0, before.h + 30.0));
+        let at = bar(win_rect(&desk.ctx, 0));
+        desk.drag(&mut app, at, at - egui::vec2(1000.0, 1000.0));
+        let r = app.matrices[0].rect;
+        assert_eq!((r.w, r.h), (MATRIX_MIN_W, MATRIX_MIN_H));
+        assert_eq!(win_rect(&desk.ctx, 0).size(), egui::vec2(r.w, r.h));
+    }
+
+    /// Dragging a tile from the row gutter to the column gutter of a
+    /// worksheet window re-pivots that matrix, with real pointer events.
+    #[test]
+    fn a_tile_drag_inside_a_window_repivots() {
+        let mut app = gutter_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let time = CategoryId(1);
+        assert_eq!(app.row_cats(), vec![time]);
+        let tile = desk
+            .ctx
+            .viewport(|v| {
+                v.prev_pass
+                    .widgets
+                    .get(egui::Id::new(("tile", 0usize, time.0)))
+                    .copied()
+            })
+            .expect("the Time tile")
+            .rect;
+        let top = app.focused().gutters.expect("laid out").top;
+        desk.drag(
+            &mut app,
+            tile.center(),
+            egui::pos2(top.right() - 10.0, top.center().y),
+        );
+        assert!(
+            app.col_cats().contains(&time),
+            "Time moved to columns: {:?}",
+            app.col_cats()
+        );
+        assert!(!app.row_cats().contains(&time));
     }
 
     /// Removing a matrix never leaves the focus dangling: `focused()` must keep

@@ -117,7 +117,9 @@ baseline on hotdog; its temporary instance was terminated after collection.
   formula area, menus/inspectors, undo and clipboard. See GUI steering's
   current-direction section for acceptance gates. NeXTSTEP spec step 2 landed:
   the application menu (C1) replaces the tool palette and tab strip (B4 in
-  part), per `docs/reviews/2026-10-03-nextstep-visual-spec.md` §7.
+  part), per `docs/reviews/2026-10-03-nextstep-visual-spec.md` §7. Step 3, first
+  half: each matrix is a NeXT worksheet window (`nxwin`) on a `#555555`
+  workspace (B1 in part); explorer and inspector windows are next.
 - **Scale remains unfinished:** partial loads still enumerate all coordinate
   rows before filtering; GUI charts and columns materialize products. No
   billion-cell usability claim follows from row virtualization.

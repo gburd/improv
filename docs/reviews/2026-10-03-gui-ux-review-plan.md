@@ -45,7 +45,7 @@ Items below are reworded where this direction supersedes them.
 
 | # | Item | Status |
 | --- | --- | --- |
-| B1 | Canvas gets a small fraction of the window. Replace the docked Model/Inspector panels with NeXTSTEP-style separate windows (model browser; Inspector as an Info panel opened from the menu); the worksheet fills its window. | planned |
+| B1 | Canvas gets a small fraction of the window. Replace the docked Model/Inspector panels with NeXTSTEP-style separate windows (model browser; Inspector as an Info panel opened from the menu); the worksheet fills its window. | partial (matrices are worksheet windows on a workspace, `nxwin`; model browser and Info panel windows next) |
 | B2 | Empty gutter wells: row gutter is a tall grey box for one tile; top-right gutter mostly empty. Size gutters to their tiles; highlight as drop zones only during a drag. | planned |
 | B3 | Pages has two controls (tile + separate `< Plan [1/2] >` stepper). Merge into the tile (`Scenario: Plan ▾`). | planned |
 | B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | partial: the tab strip is gone; views are listed in the application menu's View submenu, and Add/Remove Matrix and Save View are in its Worksheet submenu. Model browser and worksheet windows come with step 3 |

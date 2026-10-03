@@ -10,10 +10,6 @@
 //! memory; see [`is_key`]. Closing the key window hands the key to the next
 //! window shown.
 
-// Not wired into the app yet: step 3 of the NeXTSTEP spec (worksheet windows)
-// is the first caller.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use crate::theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE};
 use egui::{
     pos2, vec2, Align2, Color32, Context, FontFamily, FontId, Frame, Id, InnerResponse, LayerId,
@@ -46,6 +42,11 @@ pub fn title_colors(key: bool) -> (Color32, Color32) {
 /// [`NxWindow`])? The id is [`NxWindow::id`].
 pub fn is_key(ctx: &Context, id: Id) -> bool {
     ctx.data(|d| d.get_temp::<Id>(key_slot())) == Some(id)
+}
+
+/// Make the window with this id the key window, as a click on it would.
+pub fn make_key(ctx: &Context, id: Id) {
+    ctx.data_mut(|d| d.insert_temp(key_slot(), id));
 }
 
 /// Memory slot holding the [`Id`] of the key window.
