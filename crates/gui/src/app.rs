@@ -25,6 +25,7 @@ use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
 
 use crate::csv_wizard::{self, ExportForm, ImportForm};
+use crate::menu::{self, Command};
 
 /// One matrix on the canvas: a measure, that matrix's OWN pivot / filter /
 /// cursor / cell-editor state, and where it sits (`rect`).
@@ -137,6 +138,10 @@ pub struct ImprovApp {
     /// forms (see `csv_wizard`).
     show_csv_wizard: bool,
     import_form: ImportForm,
+    /// Whether the inspector (the Info panel) is shown.
+    show_inspector: bool,
+    /// The floating application menu's position and open submenu.
+    menu: menu::MenuState,
     export_form: ExportForm,
 
     /// Undo/redo history: whole-`Model` snapshots, oldest first. `undo_stack`
@@ -269,20 +274,6 @@ pub const INITIAL_WINDOW: [f32; 2] = [1280.0, 800.0];
 /// Minimum window inner size. Smaller windows still never overdraw the side
 /// panels (the canvas clips), but the matrix would be mostly scrolled away.
 pub const MIN_WINDOW: [f32; 2] = [960.0, 600.0];
-
-/// The tool palette's `(glyph, tooltip)` buttons, top to bottom. Every glyph
-/// must exist in the installed fonts (Arimo, then egui's defaults Ubuntu-Light,
-/// NotoEmoji and emoji-icon-font as fallback) or it renders as a tofu box;
-/// `palette_glyphs_are_in_default_fonts` enforces that.
-const PALETTE: [(&str, &str); 7] = [
-    ("↻", "Pivot (rotate axes)"),
-    ("⟲", "Undo (Ctrl+Z)"),
-    ("⟳", "Redo (Ctrl+Shift+Z)"),
-    ("📊", "Toggle chart"),
-    ("📥", "Import/export CSV or TSV"),
-    ("🗐", "Save view"),
-    ("💾", "Save model to store"),
-];
 
 /// Which way a gutter's drop zone stretches to cover the gutter: its **fixed**
 /// axis. See [`ImprovApp::gutter_drop_zone`].
@@ -808,6 +799,8 @@ impl ImprovApp {
             chart_line: false,
             show_csv_wizard: false,
             import_form: ImportForm::default(),
+            show_inspector: true,
+            menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -1982,6 +1975,14 @@ fn grid_keys_enabled(editing: bool, other_focus: bool) -> bool {
     !editing && !other_focus
 }
 
+/// Give `ui`'s selected rows a white face. The palette makes egui's selection
+/// fill and hover fill the same gray as the panel, so a selected
+/// `selectable_label` would look merely hovered. Call inside a `ui.scope` (or a
+/// child ui) so text-edit selection keeps the theme's color.
+fn white_selection(ui: &mut egui::Ui) {
+    ui.visuals_mut().selection.bg_fill = crate::theme::WHITE;
+}
+
 /// Read-only facts about a measure, assembled for the inspector panel.
 #[derive(Debug, PartialEq)]
 struct InspectorData {
@@ -2454,111 +2455,128 @@ fn natural_axis_order(model: &Model, measure: Option<MeasureId>) -> Vec<Category
 impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_axis_state();
-        self.handle_history_keys(ctx);
+        self.handle_command_keys(ctx);
         // Panel order IS layout order: a top/bottom panel claims its strip from
-        // the outside in. The document tabs go above everything (the reference's
-        // browser-tab strip), the status bar below everything, and the canvas
+        // the outside in. The status bar goes below everything and the canvas
         // takes what is left.
-        self.document_tab_bar(ctx);
         self.formula_bar(ctx);
         self.status_bar(ctx);
         self.formula_panel(ctx);
         self.formula_list_panel(ctx);
-        self.tool_palette(ctx);
         self.explorer_panel(ctx);
         self.inspector_panel(ctx);
         self.chart_panel(ctx);
         self.csv_wizard_panel(ctx);
         self.canvas_panel(ctx);
+        // Last, so it floats over every panel.
+        self.menu_bar(ctx);
     }
 }
 
 impl ImprovApp {
-    /// App-wide undo/redo bindings: Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and
-    /// Ctrl/Cmd+Y redo. Gated by the same [`grid_keys_enabled`] predicate the
-    /// grid uses, so the chords never fire while a cell editor or any other
-    /// text field owns the keyboard. Handled here (not in `handle_grid_keys`)
-    /// because the grid isn't rendered when no measure is selected — which is
-    /// exactly the state an undone import can leave behind.
-    fn handle_history_keys(&mut self, ctx: &egui::Context) {
+    /// App-wide key equivalents ([`menu::key_command`]): Ctrl/Cmd+S saves,
+    /// Ctrl/Cmd+Z undoes, Ctrl/Cmd+Shift+Z and Ctrl/Cmd+Y redo, Ctrl/Cmd+H
+    /// hides, Ctrl/Cmd+Q quits. Gated by the same [`grid_keys_enabled`]
+    /// predicate the grid uses, so the chords never fire while a cell editor or
+    /// any other text field owns the keyboard. Handled here (not in
+    /// `handle_grid_keys`) because the grid isn't rendered when no measure is
+    /// selected — which is exactly the state an undone import can leave behind.
+    fn handle_command_keys(&mut self, ctx: &egui::Context) {
         let other_focus = ctx.memory(|m| m.focused()).is_some();
         if !grid_keys_enabled(self.focused().editing.is_some(), other_focus) {
             return;
         }
-        let (command, shift, z, y) = ctx.input(|i| {
-            (
-                i.modifiers.command,
-                i.modifiers.shift,
-                i.key_pressed(egui::Key::Z),
-                i.key_pressed(egui::Key::Y),
-            )
-        });
-        if !command {
-            return;
-        }
-        if z {
-            if shift {
-                self.redo_with_status();
-            } else {
-                self.undo_with_status();
+        let commands: Vec<Command> = ctx.input(|i| {
+            if !i.modifiers.command {
+                return Vec::new();
             }
-        } else if y {
-            self.redo_with_status();
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key, pressed: true, ..
+                    } => menu::key_command(*key, i.modifiers.shift),
+                    _ => None,
+                })
+                .collect()
+        });
+        for c in commands {
+            if self.command_enabled(c) {
+                self.run_command(ctx, c);
+            }
         }
     }
 
-    /// A NeXTSTEP-style **tool palette**: a narrow left column of beveled
-    /// buttons for the common operations (pivot, chart, save model, save view).
-    /// Always visible, like the tear-off palettes in NeXTSTEP apps.
-    fn tool_palette(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("tools")
-            .resizable(false)
-            .exact_width(44.0)
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                ui.vertical_centered(|ui| {
-                    let btn = |ui: &mut egui::Ui, (glyph, tip): (&str, &str)| {
-                        ui.add_sized([32.0, 28.0], egui::Button::new(glyph))
-                            .on_hover_text(tip)
-                            .clicked()
-                    };
-                    let [pivot, undo, redo, chart, csv, save_view, save_model] = PALETTE;
-                    if btn(ui, pivot) {
-                        self.pivot_rotate();
-                    }
-                    if btn(ui, undo) {
-                        self.undo_with_status();
-                    }
-                    if btn(ui, redo) {
-                        self.redo_with_status();
-                    }
-                    if btn(ui, chart) {
-                        self.show_chart = !self.show_chart;
-                    }
-                    if btn(ui, csv) {
-                        self.toggle_csv_wizard();
-                    }
-                    ui.add_space(6.0);
-                    if btn(ui, save_view) {
-                        // Save under the current name box, or a generated name.
-                        let name = if self.view_name.trim().is_empty() {
-                            format!("view {}", self.model.views.len() + 1)
-                        } else {
-                            self.view_name.clone()
-                        };
-                        if self.save_view(&name).is_some() {
-                            self.view_name.clear();
-                            self.status = format!("saved view '{name}'");
-                        }
-                    }
-                    if btn(ui, save_model) {
-                        self.status = match self.save() {
-                            Ok(()) => "saved model".into(),
-                            Err(e) => e,
-                        };
-                    }
-                });
-            });
+    /// Draw the application menu ([`menu::show`]) and run what it returns.
+    fn menu_bar(&mut self, ctx: &egui::Context) {
+        let views: Vec<(String, bool)> = self
+            .document_tabs()
+            .into_iter()
+            .map(|(_, name, current)| (name, current))
+            .collect();
+        let mut state = self.menu;
+        let picked = menu::show(ctx, &mut state, &views, |c| self.command_enabled(c));
+        self.menu = state;
+        if let Some(c) = picked {
+            self.run_command(ctx, c);
+        }
+    }
+
+    /// Whether `c` can run now: the menu draws the rest disabled.
+    fn command_enabled(&self, c: Command) -> bool {
+        match c {
+            Command::Undo => self.can_undo(),
+            Command::Redo => self.can_redo(),
+            Command::RemoveMatrix => self.matrix_count() > 1,
+            _ => true,
+        }
+    }
+
+    /// Run a menu command or key equivalent.
+    fn run_command(&mut self, ctx: &egui::Context, c: Command) {
+        match c {
+            Command::InfoPanel => self.show_inspector = !self.show_inspector,
+            Command::SaveModel => {
+                self.status = match self.save() {
+                    Ok(()) => "saved model".into(),
+                    Err(e) => e,
+                };
+            }
+            Command::Undo => self.undo_with_status(),
+            Command::Redo => self.redo_with_status(),
+            Command::PivotRotate => self.pivot_rotate(),
+            Command::AddMatrix => {
+                let m = self
+                    .selected()
+                    .or_else(|| pick_default_measure(&self.model));
+                self.add_matrix(m);
+            }
+            Command::RemoveMatrix => {
+                let i = self.focus_index();
+                self.remove_matrix(i);
+            }
+            Command::SaveView => {
+                // Save under the explorer's name box, or a generated name.
+                let name = if self.view_name.trim().is_empty() {
+                    format!("view {}", self.model.views.len() + 1)
+                } else {
+                    self.view_name.clone()
+                };
+                if self.save_view(&name).is_some() {
+                    self.view_name.clear();
+                    self.status = format!("saved view '{name}'");
+                }
+            }
+            Command::OpenView(i) => {
+                if let Some(&(id, _, _)) = self.document_tabs().get(i) {
+                    self.open_view(id);
+                }
+            }
+            Command::ToggleChart => self.show_chart = !self.show_chart,
+            Command::ToggleCsv => self.toggle_csv_wizard(),
+            Command::Hide => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
+            Command::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
     }
 
     /// Left: model explorer grouped into Categories (with their items) and
@@ -2598,17 +2616,20 @@ impl ImprovApp {
                     .show(ui, |ui| {
                         let mut ids: Vec<MeasureId> = self.model.measures.keys().copied().collect();
                         ids.sort_by_key(|m| m.0);
-                        for id in ids {
-                            let m = &self.model.measures[&id];
-                            let tag = if m.is_derived() { "= " } else { "· " };
-                            let label = format!("{tag}{}", m.name.0);
-                            if ui
-                                .selectable_label(self.selected() == Some(id), label)
-                                .clicked()
-                            {
-                                self.focused_mut().select(Some(id));
+                        ui.scope(|ui| {
+                            white_selection(ui);
+                            for id in ids {
+                                let m = &self.model.measures[&id];
+                                let tag = if m.is_derived() { "= " } else { "· " };
+                                let label = format!("{tag}{}", m.name.0);
+                                if ui
+                                    .selectable_label(self.selected() == Some(id), label)
+                                    .clicked()
+                                {
+                                    self.focused_mut().select(Some(id));
+                                }
                             }
-                        }
+                        });
                     });
 
                 self.views_section(ui);
@@ -2621,10 +2642,8 @@ impl ImprovApp {
     /// This is the NeXTSTEP reference's model navigator
     /// (`docs/reviews/refs/improv-next-nested-headers.jpg`: a `Model of
     /// Divisional Report` window listing `Worksheet 1` / `Worksheet 2`), and the
-    /// same set the Quantrix reference puts in the document-tab strip
-    /// ([`Self::document_tab_bar`]). Both are kept because the references have
-    /// both: a navigator that lists everything, and tabs for the quick switch.
-    /// The current view is highlighted in both.
+    /// same set the application menu's View submenu lists. The current view is
+    /// highlighted in both.
     fn views_section(&mut self, ui: &mut egui::Ui) {
         egui::CollapsingHeader::new("Views")
             .default_open(true)
@@ -2644,15 +2663,18 @@ impl ImprovApp {
                 }
                 ids.sort_by_key(|v| v.0);
                 let mut load: Option<View> = None;
-                for id in ids {
-                    let v = &self.model.views[&id];
-                    if ui
-                        .selectable_label(self.current_view == Some(id), &v.name.0)
-                        .clicked()
-                    {
-                        load = Some(v.clone());
+                ui.scope(|ui| {
+                    white_selection(ui);
+                    for id in ids {
+                        let v = &self.model.views[&id];
+                        if ui
+                            .selectable_label(self.current_view == Some(id), &v.name.0)
+                            .clicked()
+                        {
+                            load = Some(v.clone());
+                        }
                     }
-                }
+                });
                 if let Some(v) = load {
                     self.apply_view(&v);
                 }
@@ -2661,6 +2683,9 @@ impl ImprovApp {
 
     /// Right: inspector for the selected measure.
     fn inspector_panel(&mut self, ctx: &egui::Context) {
+        if !self.show_inspector {
+            return;
+        }
         egui::SidePanel::right("inspector")
             .resizable(true)
             .default_width(260.0)
@@ -2858,6 +2883,7 @@ impl ImprovApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
+                        white_selection(ui);
                         for (i, row) in rows.iter().enumerate() {
                             let selected = self.selected() == Some(row.measure);
                             ui.horizontal(|ui| {
@@ -3115,67 +3141,6 @@ impl ImprovApp {
         if ui.button("Export").clicked() {
             self.run_csv_export();
         }
-    }
-
-    /// The reference's **document tabs** (`Welcome / Concepts / P&L Canvas …`):
-    /// one tab per saved view across the top, the current one highlighted.
-    /// Clicking a tab switches canvases via [`Self::open_view`].
-    ///
-    /// A model with no saved views shows a hint instead of an empty strip, and
-    /// `+ Canvas` saves the canvas on screen as a new view (which is what makes
-    /// the second tab reachable at all).
-    fn document_tab_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("document_tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let tabs = self.document_tabs();
-                let mut open: Option<ViewId> = None;
-                if tabs.is_empty() {
-                    ui.weak("(no saved views \u{2014} \"+ Canvas\" saves this one)");
-                }
-                for (id, name, current) in tabs {
-                    if ui.selectable_label(current, name).clicked() {
-                        open = Some(id);
-                    }
-                }
-                if let Some(id) = open {
-                    self.open_view(id);
-                }
-                ui.separator();
-                if ui
-                    .button("+ Canvas")
-                    .on_hover_text("save the matrices on screen as a new view")
-                    .clicked()
-                {
-                    let name = if self.view_name.trim().is_empty() {
-                        format!("Canvas {}", self.model.views.len() + 1)
-                    } else {
-                        self.view_name.clone()
-                    };
-                    if self.save_view(&name).is_some() {
-                        self.view_name.clear();
-                    }
-                }
-                if ui
-                    .button("+ Matrix")
-                    .on_hover_text("place another matrix on this canvas")
-                    .clicked()
-                {
-                    let m = self
-                        .selected()
-                        .or_else(|| pick_default_measure(&self.model));
-                    self.add_matrix(m);
-                }
-                if self.matrix_count() > 1
-                    && ui
-                        .button("\u{2212} Matrix")
-                        .on_hover_text("remove the focused matrix from this canvas")
-                        .clicked()
-                {
-                    let i = self.focus_index();
-                    self.remove_matrix(i);
-                }
-            });
-        });
     }
 
     /// The **status bar** (plan Step 5): the status message on the left and the
@@ -3880,7 +3845,7 @@ impl ImprovApp {
         let modifiers = ui.input(|i| i.modifiers);
 
         // Undo/redo (Ctrl/Cmd chords) are handled app-wide in
-        // `handle_history_keys`, not here — the grid is not rendered at all when
+        // `handle_command_keys`, not here — the grid is not rendered at all when
         // no measure is selected, and undoing must still work there. Leaving
         // every modified chord alone also keeps e.g. Ctrl+N from cycling
         // measures.
@@ -4315,24 +4280,18 @@ fn nth_tuple(lists: &[Vec<(ItemId, String)>], mut i: usize) -> Vec<(ItemId, Stri
 
 #[cfg(test)]
 mod tests {
-    /// Every glyph the GUI draws from a literal (tool palette, tile grip/menu,
-    /// error marker) must be covered by the fonts `theme::install_fonts`
-    /// installs (Arimo plus egui's defaults as fallback), else it renders as a
-    /// tofu box. `↶`/`↷` once did.
+    /// Every glyph the GUI draws from a literal (tile grip/menu, error marker)
+    /// must be covered by the fonts `theme::install_fonts` installs (Arimo plus
+    /// egui's defaults as fallback), else it renders as a tofu box. `↶`/`↷` once
+    /// did. The application menu's glyphs are checked in `menu.rs`.
     #[test]
-    fn palette_glyphs_are_in_default_fonts() {
+    fn literal_glyphs_are_in_default_fonts() {
         let ctx = egui::Context::default();
         crate::theme::install_fonts(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |_| {});
         let prop = egui::FontId::proportional(14.0);
         let mono = egui::FontId::monospace(14.0);
         ctx.fonts(|f| {
-            for (glyph, tip) in super::PALETTE {
-                assert!(
-                    f.has_glyphs(&prop, glyph),
-                    "palette '{tip}' glyph {glyph:?} is tofu"
-                );
-            }
             for g in ["⏷", "⚠"] {
                 assert!(f.has_glyphs(&prop, g), "{g:?} is tofu");
             }
@@ -4887,6 +4846,8 @@ mod tests {
             chart_line: false,
             show_csv_wizard: false,
             import_form: ImportForm::default(),
+            show_inspector: true,
+            menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -6699,7 +6660,7 @@ mod tests {
                 if let Some(id) = focus {
                     ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
                 }
-                app.handle_history_keys(ctx);
+                app.handle_command_keys(ctx);
             });
         };
 
@@ -7038,7 +6999,7 @@ mod tests {
         impl FnMut(&egui::Context, &mut ImprovApp) -> GutterRects,
     ) {
         let ctx = egui::Context::default();
-        ctx.set_style(crate::theme::next_style());
+        crate::theme::apply(&ctx);
         let mut time = 0.0_f64;
         let pass = move |ctx: &egui::Context, app: &mut ImprovApp| {
             time += 1.0 / 60.0;
@@ -7064,17 +7025,16 @@ mod tests {
         };
         ctx.run(raw, |ctx| {
             app.sync_axis_state();
-            app.document_tab_bar(ctx);
             app.formula_bar(ctx);
             app.status_bar(ctx);
             app.formula_panel(ctx);
             app.formula_list_panel(ctx);
-            app.tool_palette(ctx);
             app.explorer_panel(ctx);
             app.inspector_panel(ctx);
             app.chart_panel(ctx);
             app.csv_wizard_panel(ctx);
             app.canvas_panel(ctx);
+            app.menu_bar(ctx);
         })
     }
 
@@ -7085,7 +7045,7 @@ mod tests {
         let mut app = build_app(revenue_model());
         select(&mut app, MeasureId(102));
         let ctx = egui::Context::default();
-        ctx.set_style(crate::theme::next_style());
+        crate::theme::apply(&ctx);
         let mut shapes = Vec::new();
         for i in 0..8 {
             shapes = full_frame(
@@ -7167,7 +7127,7 @@ mod tests {
         let mut lay_out = |measure, short, long| {
             select(&mut app, MeasureId(measure));
             let ctx = egui::Context::default();
-            ctx.set_style(crate::theme::next_style());
+            crate::theme::apply(&ctx);
             let mut shapes = Vec::new();
             for i in 0..8 {
                 shapes = full_frame(
@@ -7212,13 +7172,24 @@ mod tests {
         ] {
             let mut app = gutter_app();
             let ctx = egui::Context::default();
-            ctx.set_style(crate::theme::next_style());
+            crate::theme::apply(&ctx);
             let mut out = None;
             for i in 0..8 {
                 out = Some(full_frame(&ctx, &mut app, size, f64::from(i) / 60.0));
             }
             let shapes = out.expect("ran").shapes;
             let canvas = ctx.available_rect();
+            // The application menu floats over every panel by design: its
+            // foreground areas are not the canvas leaking.
+            let floating: Vec<egui::Rect> = ctx.memory(|m| {
+                m.areas()
+                    .visible_layer_ids()
+                    .into_iter()
+                    .filter(|l| l.order == egui::Order::Foreground)
+                    .filter_map(|l| m.area_rect(l.id))
+                    .collect()
+            });
+            assert!(!floating.is_empty(), "the menu is drawn");
             for id in ["explorer", "inspector"] {
                 let panel = egui::containers::panel::PanelState::load(&ctx, egui::Id::new(id))
                     .expect("panel laid out")
@@ -7230,8 +7201,9 @@ mod tests {
                 for s in &shapes {
                     let seen = s.shape.visual_bounding_rect().intersect(s.clip_rect);
                     let foreign = !panel.expand(1.0).contains_rect(s.clip_rect);
+                    let menu = floating.iter().any(|f| f.expand(1.0).contains_rect(seen));
                     assert!(
-                        !(foreign && seen.intersects(panel.shrink(2.0))),
+                        menu || !(foreign && seen.intersects(panel.shrink(2.0))),
                         "{size:?}: a shape clipped to {:?} shows inside the {id} panel {panel:?}",
                         s.clip_rect
                     );
@@ -7242,14 +7214,12 @@ mod tests {
                 // widgets sit inside it. egui's panel resize handles straddle
                 // panel edges by design (a bottom panel's spans the window).
                 let resize: Vec<egui::Id> = [
-                    "tools",
                     "explorer",
                     "inspector",
                     "formula_bar",
                     "formula_list",
                     "definitions",
                     "chart",
-                    "document_tabs",
                     "status_bar",
                 ]
                 .map(|p| egui::Id::new(p).with("__resize"))
@@ -7264,6 +7234,7 @@ mod tests {
                     let foreign = !panel.expand(1.0).contains_rect(w.interact_rect);
                     assert!(
                         resize.contains(&w.id)
+                            || w.layer_id.order == egui::Order::Foreground
                             || !w.sense.interactive()
                             || !(foreign && w.interact_rect.intersects(panel.shrink(2.0))),
                         "{size:?}: a canvas widget at {:?} takes input inside the {id} panel {panel:?}",
@@ -7391,7 +7362,7 @@ mod tests {
         for (w, h) in sizes {
             let mut app = gutter_app();
             let ctx = egui::Context::default();
-            ctx.set_style(crate::theme::next_style());
+            crate::theme::apply(&ctx);
             // Several frames so the panels settle at this size (and so the
             // per-frame debug assertion runs on the settled geometry too).
             for i in 0..8 {
@@ -7783,7 +7754,7 @@ mod tests {
     /// directly would not.
     fn click_formula_row(app: &mut ImprovApp, measure: MeasureId) -> bool {
         let ctx = egui::Context::default();
-        ctx.set_style(crate::theme::next_style());
+        crate::theme::apply(&ctx);
         let frame = |app: &mut ImprovApp, events: Vec<egui::Event>, time: f64| {
             let raw = egui::RawInput {
                 time: Some(time),
@@ -7797,7 +7768,6 @@ mod tests {
             let _ = ctx.run(raw, |ctx| {
                 app.sync_axis_state();
                 app.formula_bar(ctx);
-                app.tool_palette(ctx);
                 app.explorer_panel(ctx);
                 app.inspector_panel(ctx);
                 app.formula_panel(ctx);
@@ -8175,7 +8145,7 @@ mod tests {
         ] {
             let mut app = build_app(four_formula_model());
             let ctx = egui::Context::default();
-            ctx.set_style(crate::theme::next_style());
+            crate::theme::apply(&ctx);
             for i in 0..4 {
                 let raw = egui::RawInput {
                     time: Some(f64::from(i) / 60.0),
@@ -8819,7 +8789,7 @@ mod tests {
         ] {
             let mut app = two_matrix_app();
             let ctx = egui::Context::default();
-            ctx.set_style(crate::theme::next_style());
+            crate::theme::apply(&ctx);
             for i in 0..6 {
                 let raw = egui::RawInput {
                     time: Some(f64::from(i) / 60.0),
@@ -8832,8 +8802,8 @@ mod tests {
                 let _ = ctx.run(raw, |ctx| {
                     app.sync_axis_state();
                     app.status_bar(ctx);
-                    app.document_tab_bar(ctx);
                     app.canvas_panel(ctx);
+                    app.menu_bar(ctx);
                 });
             }
             assert_eq!(app.matrix_count(), 2, "{w}x{h}: both matrices survive");
@@ -9034,9 +9004,9 @@ mod tests {
         assert_eq!(app.selection_readout(), "Sum \u{2014}");
     }
 
-    /// **Step 5:** document tabs, one per saved view (the reference's
-    /// `Welcome / Concepts / P&L Canvas`), and clicking one switches CANVASES —
-    /// not just a measure.
+    /// **Step 5:** one entry per saved view (the reference's `Welcome /
+    /// Concepts / P&L Canvas`), listed in the application menu's View submenu,
+    /// and picking one switches CANVASES — not just a measure.
     #[test]
     fn document_tabs_switch_between_saved_canvases() {
         let mut app = build_app(grid_2x2_model());
@@ -9068,8 +9038,9 @@ mod tests {
             "the just-saved view is the current tab"
         );
 
-        // Click tab A: the canvas becomes A's — ONE matrix.
-        app.open_view(a);
+        // Pick view A from the View menu: the canvas becomes A's — ONE matrix.
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::OpenView(0));
         app.sync_axis_state();
         assert_eq!(app.matrix_count(), 1, "Canvas A has one matrix");
         assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
@@ -9080,8 +9051,8 @@ mod tests {
             "tab A is now current"
         );
 
-        // Click tab B: two matrices again, with the pivot B was saved with.
-        app.open_view(b);
+        // Pick view B: two matrices again, with the pivot B was saved with.
+        app.run_command(&ctx, Command::OpenView(1));
         app.sync_axis_state();
         assert_eq!(app.matrix_count(), 2, "Canvas B has two matrices");
         assert_eq!(
@@ -9094,6 +9065,159 @@ mod tests {
         let before = app.matrix_count();
         app.open_view(ViewId(999));
         assert_eq!(app.matrix_count(), before);
+        app.run_command(&ctx, Command::OpenView(99));
+        assert_eq!(app.matrix_count(), before, "a stale menu index is a no-op");
+    }
+
+    // -- Application menu (docs/reviews/2026-10-03-nextstep-visual-spec.md §4.1)
+
+    #[test]
+    fn menu_undo_restores_an_edited_cell() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, _) = q_and_rev_keys();
+        let ctx = egui::Context::default();
+        assert!(!app.command_enabled(Command::Undo), "nothing to undo yet");
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
+            .expect("edit");
+        assert!(app.command_enabled(Command::Undo));
+        app.run_command(&ctx, Command::Undo);
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("100"));
+        assert!(app.command_enabled(Command::Redo));
+        app.run_command(&ctx, Command::Redo);
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("200"));
+    }
+
+    #[test]
+    fn menu_adds_and_removes_matrices() {
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        assert!(
+            !app.command_enabled(Command::RemoveMatrix),
+            "keep the last one"
+        );
+        app.run_command(&ctx, Command::AddMatrix);
+        assert_eq!(app.matrix_count(), 2);
+        assert!(app.command_enabled(Command::RemoveMatrix));
+        app.run_command(&ctx, Command::RemoveMatrix);
+        assert_eq!(app.matrix_count(), 1);
+    }
+
+    #[test]
+    fn menu_saves_a_view_and_toggles_panels() {
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::SaveView);
+        assert_eq!(app.model.views.len(), 1);
+        assert_eq!(app.document_tabs()[0].1, "view 1");
+        assert!(app.document_tabs()[0].2, "the saved view is current");
+
+        assert!(app.show_inspector);
+        app.run_command(&ctx, Command::InfoPanel);
+        assert!(!app.show_inspector);
+        app.run_command(&ctx, Command::InfoPanel);
+        assert!(app.show_inspector);
+
+        app.run_command(&ctx, Command::ToggleChart);
+        assert!(app.show_chart);
+        app.run_command(&ctx, Command::ToggleCsv);
+        assert!(app.show_csv_wizard);
+    }
+
+    /// One frame of [`ImprovApp::handle_command_keys`] with Ctrl/Cmd+`key`
+    /// pressed, and `focus` (an egui id) holding keyboard focus if given.
+    fn press_command_key(app: &mut ImprovApp, key: egui::Key, focus: Option<&str>) {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            modifiers: egui::Modifiers::COMMAND,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            }],
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            if let Some(id) = focus {
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
+            }
+            app.handle_command_keys(ctx);
+        });
+    }
+
+    /// Ctrl+S saves the model to its store; a text field's focus blocks it.
+    #[test]
+    fn ctrl_s_saves_the_model_unless_a_field_has_focus() {
+        let db = temp_db("ctrl_s");
+        let _cleanup = Cleanup(db.clone());
+        ModelStore::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed the store");
+        let mut app = ImprovApp::load(&db).expect("load");
+        app.model
+            .measures
+            .get_mut(&MeasureId(101))
+            .expect("Quantity")
+            .description = Some("saved by ctrl+s".into());
+        let described = |db: &str| {
+            ImprovApp::load(db).expect("reload").model.measures[&MeasureId(101)]
+                .description
+                .clone()
+        };
+
+        press_command_key(&mut app, egui::Key::S, Some("formula_bar"));
+        assert_eq!(described(&db), None, "Ctrl+S fired while typing in a field");
+        press_command_key(&mut app, egui::Key::S, None);
+        assert_eq!(app.status, "saved model");
+        assert_eq!(described(&db).as_deref(), Some("saved by ctrl+s"));
+    }
+
+    /// The menu is drawn by a whole-app frame, over the panels, and a selected
+    /// list row (the explorer's measure) gets a white face, unlike a hovered
+    /// one, which stays on the panel gray.
+    #[test]
+    fn selected_list_rows_have_a_white_face() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut shapes = Vec::new();
+        for i in 0..6 {
+            shapes = full_frame(
+                &ctx,
+                &mut app,
+                egui::vec2(1280.0, 800.0),
+                f64::from(i) / 60.0,
+            )
+            .shapes;
+        }
+        let text_rect = |label: &str| {
+            shapes.iter().find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+        };
+        let fill_under = |label: &str| {
+            let r = text_rect(label).unwrap_or_else(|| panic!("{label:?} not drawn"));
+            // The row's own face is the tightest rect behind its text (the
+            // panel, and the floating menu where it overlaps, are larger).
+            shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Rect(s) if s.rect.contains_rect(r) => {
+                        Some((s.rect.area(), s.fill))
+                    }
+                    _ => None,
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, fill)| fill)
+        };
+        assert_eq!(fill_under("· Quantity"), Some(crate::theme::WHITE));
+        assert_ne!(fill_under("· Price"), Some(crate::theme::WHITE));
+        assert!(text_rect("Worksheet").is_some(), "the menu is drawn");
     }
 
     /// A unique temp-db path for a store-backed test.

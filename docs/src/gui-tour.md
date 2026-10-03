@@ -3,8 +3,8 @@
 `improv-gui` is the egui/eframe desktop front-end, styled after the original
 NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
 selection), flat controls with 1 px black outlines (NeXT window chrome comes
-with step 3), white grid cells, a top formula bar, a left tool palette, on-grid
-category tiles for pivoting, and an inspector.
+with step 3), white grid cells, a top formula bar, a floating application menu,
+on-grid category tiles for pivoting, and an inspector.
 
 Run it (from the Nix dev shell, which provides the GUI runtime libraries):
 
@@ -19,8 +19,20 @@ nix develop -c cargo run -p improv_gui -- sample.db
 
 The window has five regions:
 
-- **Tool palette** (far left) — buttons: pivot (rotate axes), toggle
-  chart, save view, save model.
+- **Application menu** (floating, top left) — NeXTSTEP's vertical menu. Drag
+  its black `Improv` title bar to move it. An item marked with a triangle opens
+  a submenu to its right; click it again, press Escape or click elsewhere to
+  close it. **Info ▸ Info Panel…** shows or hides the inspector; **File ▸
+  Save** saves the model, and **Import/Export CSV…** opens the CSV wizard;
+  **Edit** has Undo and Redo; **Worksheet** has Pivot, Add Matrix, Remove
+  Matrix and Save View; **View** lists the saved views, with a check on the
+  current one, and picking one switches the canvas to it; **Graph ▸ Show
+  Chart** toggles the chart; **Hide** minimizes and **Quit** closes the
+  window. Format, Print and Services, and New, Open, Save As and Close in the
+  File menu, are not built yet and draw grayed out. Key equivalents, shown at
+  the right of their item, take Ctrl (Cmd on macOS): `s` save, `z` undo,
+  `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
+  field has focus.
 - **Model explorer** — Categories (with their items), Measures (`·` input,
   `=` derived), and saved Views.
 - **Formula bar** (top) — the selected measure's formula

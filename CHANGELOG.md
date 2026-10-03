@@ -16,6 +16,16 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI application menu replaces the tool palette and tab strip.** A
+  floating NeXTSTEP vertical menu (Info, File, Edit, Format, Worksheet, View,
+  Graph, Print…, Services, Hide, Quit) with cascading submenus now carries
+  pivot, undo/redo, chart, CSV, save view, save model, add/remove matrix, and
+  the Info panel (inspector) toggle. The View submenu lists the saved views
+  that the top tab strip used to show. New key equivalents: Ctrl/Cmd+S saves
+  the model, Ctrl/Cmd+H hides and Ctrl/Cmd+Q quits, next to the existing
+  undo/redo chords. None of them fire while a text field has focus. A
+  selected row in the explorer and formula lists now shows a white face, so
+  selection no longer looks the same as hover.
 - **GUI theme is NeXTSTEP grayscale.** The GUI uses NeXT's four grays
   (`#000000`, `#555555`, `#AAAAAA`, `#FFFFFF`, plus a `#808080` scroller
   trough) and nothing else: the selection is filled `#AAAAAA` instead of blue,

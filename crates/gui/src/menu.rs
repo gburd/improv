@@ -6,9 +6,6 @@
 //! key equivalents (Ctrl on Linux and Windows, Cmd on macOS) to the same
 //! commands. Everything is painted with painter shapes and text.
 
-// Not wired into the app yet: the next commit replaces the tool palette with it.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use egui::{
     pos2, vec2, Align2, Area, Color32, Context, FontFamily, FontId, Id, Key, LayerId, Order,
     Painter, Pos2, Rect, Response, Sense, Shape, Stroke,

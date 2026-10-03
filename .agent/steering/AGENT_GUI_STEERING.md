@@ -232,8 +232,11 @@ The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
 - **Ruled grid headers**: item headers are plain text in a ruled band (not
   beveled chips — only category tiles look draggable), with a top-left corner
   stub showing the row category names. Numbers right-align.
-- **NeXT-style tool palette** — a narrow left column of beveled buttons
-  (pivot / chart / save view / save model).
+- **NeXTSTEP application menu** (`menu.rs`, spec §4.1) — a floating vertical
+  menu with cascading submenus and Ctrl/Cmd key equivalents. It replaced the
+  left tool palette and the top document-tab strip: saved views are listed in
+  its View submenu. `menu.rs` returns a `Command`, and
+  `ImprovApp::run_command` dispatches it.
 - **Multi-category-per-axis stacking** — more than one category can be stacked
   on the row or column axis (`n_rows`/`n_cols` split of `axis_order`); the grid
   renders the Cartesian product with nested column headers and group-outlined

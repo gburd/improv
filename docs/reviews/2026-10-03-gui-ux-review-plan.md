@@ -48,7 +48,7 @@ Items below are reworded where this direction supersedes them.
 | B1 | Canvas gets a small fraction of the window. Replace the docked Model/Inspector panels with NeXTSTEP-style separate windows (model browser; Inspector as an Info panel opened from the menu); the worksheet fills its window. | planned |
 | B2 | Empty gutter wells: row gutter is a tall grey box for one tile; top-right gutter mostly empty. Size gutters to their tiles; highlight as drop zones only during a drag. | planned |
 | B3 | Pages has two controls (tile + separate `< Plan [1/2] >` stepper). Merge into the tile (`Scenario: Plan ▾`). | planned |
-| B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | planned |
+| B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | partial: the tab strip is gone; views are listed in the application menu's View submenu, and Add/Remove Matrix and Save View are in its Worksheet submenu. Model browser and worksheet windows come with step 3 |
 | B5 | Third formula entry point ("New derived measure" form). Add formulas by typing `X = …` on a new formula-list line; drop the form. | planned |
 | B6 | Operator palette (`= + - * / ( ) [ ]`) is not in Improv. Remove it; formula pane gets the ✓ column and a `Calc` button. | planned |
 | B7 | NeXTSTEP chrome: grayscale palette (no blue), Helvetica-like bundled font (license-checked), black title bars, dark tiles with white text, NeXT scrollers, inverted selection. Drop the left tool palette (actions live in the menu). | partial: grayscale palette, square corners, gray selection and dark tiles (spec §1) and bundled Arimo 12 (§2) landed; title bars, scrollers and the tool palette remain |
@@ -57,7 +57,7 @@ Items below are reworded where this direction supersedes them.
 
 | # | Item | Status |
 | --- | --- | --- |
-| C1 | No menus. Add the NeXTSTEP vertical application menu (Info/File/Edit/Format/Worksheet/View/Graph/Print/Services/Hide/Quit) with cascading submenus and key equivalents. | planned |
+| C1 | No menus. Add the NeXTSTEP vertical application menu (Info/File/Edit/Format/Worksheet/View/Graph/Print/Services/Hide/Quit) with cascading submenus and key equivalents. | done (`crates/gui/src/menu.rs`); File New/Open/Save As/Close, Format, Print and Services draw disabled until they exist |
 | C2 | Input vs derived cells look identical (modernization). Keep within the grayscale palette, e.g. derived cells in a light-gray band or italic; lock hint on hover. | planned |
 | C3 | No range selection; `Sum` readout is one cell. Drag / Shift+arrow ranges. | planned |
 | C4 | Verify tile-drag ghost + drop-zone highlight and nested group-header result match the reference (needs screenshot/recording, not just a headless test). | planned |
