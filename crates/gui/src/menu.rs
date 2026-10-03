@@ -8,7 +8,7 @@
 
 use egui::{
     pos2, vec2, Align2, Area, Color32, Context, FontFamily, FontId, Id, Key, LayerId, Order,
-    Painter, Pos2, Rect, Response, Sense, Shape, Stroke,
+    Painter, Pos2, Rect, Response, Sense, Shape, Stroke, Vec2,
 };
 
 use crate::theme::{BLACK, BOLD, DARK_GRAY, LIGHT_GRAY, WHITE};
@@ -117,21 +117,13 @@ const MIN_WIDTH: f32 = 96.0;
 const FONT_SIZE: f32 = 12.0;
 
 /// Where the menu sits and which submenu is open. Lives on the app.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct MenuState {
     /// Index into the top level of the open submenu.
     open: Option<usize>,
-    /// Top-left corner of the menu; dragging the title bar moves it.
-    pos: Pos2,
-}
-
-impl Default for MenuState {
-    fn default() -> Self {
-        Self {
-            open: None,
-            pos: pos2(4.0, 4.0),
-        }
-    }
+    /// Top-left corner of the menu; dragging the title bar moves it. `None`
+    /// until first shown, which places it at [`show`]'s `home`.
+    pos: Option<Pos2>,
 }
 
 /// Map a key equivalent (pressed with Ctrl/Cmd) to its command, read off the
@@ -165,23 +157,27 @@ fn keyed_items() -> impl Iterator<Item = (char, Option<Command>)> {
 /// Draw the menu and return the command picked this frame, if any. `views`
 /// fills the View submenu as `(name, is_current)`; picking the n-th returns
 /// [`Command::OpenView`]`(n)`. `enabled` greys out commands that can't run now.
+/// The menu's top-left starts at `home`; after that it stays where it's dragged.
 pub fn show(
     ctx: &Context,
     state: &mut MenuState,
+    home: Pos2,
     views: &[(String, bool)],
     enabled: impl Fn(Command) -> bool,
 ) -> Option<Command> {
     let id = menu_id();
+    let mut pos = state.pos.unwrap_or(home);
     // Apply this frame's title drag before placing the menu, so it tracks the
     // pointer with no frame delay (as nxwin does).
     if let Some(r) = ctx.read_response(id.with("title")) {
-        state.pos += r.drag_delta();
+        pos += r.drag_delta();
     }
     let screen = ctx.screen_rect();
-    state.pos = state.pos.clamp(
+    let pos = pos.clamp(
         screen.min,
         (screen.max - vec2(MIN_WIDTH, TITLE_HEIGHT)).max(screen.min),
     );
+    state.pos = Some(pos);
 
     // A press anywhere but the menu or its open submenu closes the submenu.
     let pressed_at = ctx.input(|i| i.pointer.interact_pos().filter(|_| i.pointer.any_pressed()));
@@ -212,7 +208,7 @@ pub fn show(
             open: state.open == Some(i),
         })
         .collect();
-    let (menu_rect, items) = panel(ctx, id, state.pos, TITLE, &rows, Sense::drag());
+    let (menu_rect, items) = panel(ctx, id, pos, TITLE, &rows, Sense::drag());
 
     let mut picked = None;
     for (i, r) in items.iter().enumerate() {
@@ -256,8 +252,18 @@ pub fn show(
                 open: false,
             })
             .collect();
-        // Cascade from the right edge, title level with the item.
-        let at = pos2(menu_rect.right(), items[i].rect.top() - BORDER);
+        // Cascade from the right edge, title level with the item; from the
+        // left edge when that runs off screen, and lifted to stay on it.
+        let size = panel_size(ctx, MENU[i].0, &rows);
+        let x = if menu_rect.right() + size.x > screen.right() {
+            menu_rect.left() - size.x
+        } else {
+            menu_rect.right()
+        };
+        let y = (items[i].rect.top() - BORDER)
+            .min(screen.bottom() - size.y)
+            .max(screen.top());
+        let at = pos2(x, y);
         let (_, sub) = panel(ctx, sub_id(i), at, MENU[i].0, &rows, Sense::hover());
         for (n, r) in sub.iter().enumerate() {
             if r.clicked() && rows[n].enabled {
@@ -269,7 +275,8 @@ pub fn show(
     picked
 }
 
-fn menu_id() -> Id {
+/// The menu panel's area id.
+pub fn menu_id() -> Id {
     Id::new("improv_menu")
 }
 
@@ -298,6 +305,21 @@ fn bold() -> FontId {
     FontId::new(FONT_SIZE, FontFamily::Name(BOLD.into()))
 }
 
+/// Outer size of a menu panel titled `title` holding `rows`.
+fn panel_size(ctx: &Context, title: &str, rows: &[Row]) -> Vec2 {
+    let text_width = |s: &str, f: FontId| {
+        ctx.fonts(|fonts| fonts.layout_no_wrap(s.to_owned(), f, BLACK).size().x)
+    };
+    let width = rows
+        .iter()
+        .map(|r| text_width(r.label, font()) + RIGHT_SLOT)
+        .chain([text_width(title, bold())])
+        .fold(MIN_WIDTH, f32::max)
+        + 2.0 * (PAD + BORDER);
+    let height = 2.0 * BORDER + TITLE_HEIGHT + ITEM_HEIGHT * rows.len() as f32;
+    vec2(width.ceil(), height)
+}
+
 /// Draw one menu panel (title bar plus rows) in its own foreground [`Area`] at
 /// `pos`. Returns the panel's outer rect and each row's response.
 fn panel(
@@ -308,18 +330,7 @@ fn panel(
     rows: &[Row],
     title_sense: Sense,
 ) -> (Rect, Vec<Response>) {
-    let text_width = |s: &str, f: FontId| {
-        ctx.fonts(|fonts| fonts.layout_no_wrap(s.to_owned(), f, BLACK).size().x)
-    };
-    let width = rows
-        .iter()
-        .map(|r| text_width(r.label, font()) + RIGHT_SLOT)
-        .chain([text_width(title, bold())])
-        .fold(MIN_WIDTH, f32::max)
-        + 2.0 * (PAD + BORDER);
-    let width = width.ceil();
-    let height = 2.0 * BORDER + TITLE_HEIGHT + ITEM_HEIGHT * rows.len() as f32;
-    let outer = Rect::from_min_size(pos, vec2(width, height));
+    let outer = Rect::from_min_size(pos, panel_size(ctx, title, rows));
     let inner = outer.shrink(BORDER);
 
     Area::new(id)
@@ -446,7 +457,7 @@ mod tests {
             let mut picked = None;
             let state = &mut self.state;
             let _ = self.ctx.run(raw, |ctx| {
-                picked = show(ctx, state, &views, |c| c != C::RemoveMatrix);
+                picked = show(ctx, state, pos2(4.0, 4.0), &views, |c| c != C::RemoveMatrix);
             });
             picked
         }
@@ -577,7 +588,24 @@ mod tests {
         h.frame(vec![button(from, true)]);
         h.frame(vec![Event::PointerMoved(to)]);
         h.frame(vec![button(to, false)]);
-        assert_eq!(h.state.pos, pos2(104.0, 54.0));
+        assert_eq!(h.state.pos, Some(pos2(104.0, 54.0)));
+    }
+
+    /// Dragged to the screen's bottom-right corner, the menu opens Worksheet
+    /// to its left and lifts it, keeping the submenu on screen.
+    #[test]
+    fn submenus_stay_on_screen() {
+        let mut h = Harness::new();
+        let menu = h.rect(menu_id());
+        h.state.pos = Some(pos2(800.0 - menu.width(), 450.0));
+        h.frame(Vec::new());
+        let ws = top("Worksheet");
+        h.click_row(menu_id(), ws);
+        assert_eq!(h.state.open, Some(ws));
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+        let sub = h.rect(sub_id(ws));
+        assert!(screen.contains_rect(sub), "{sub:?} off {screen:?}");
+        assert!(sub.right() <= h.rect(menu_id()).left() + 1.0, "{sub:?}");
     }
 
     /// The key table is the menu: every keyed item maps back to itself.

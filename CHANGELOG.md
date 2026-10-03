@@ -79,6 +79,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **The GUI no longer loses in-memory work silently.** File ▸ Save (Ctrl+S)
   is disabled for an in-memory model instead of reporting "saved model", and
   quitting an edited in-memory model warns first; a second Quit discards it.
+- **GUI menus stay on screen.** A submenu that would run off the right edge
+  cascades to the menu's left instead and is lifted to keep its bottom on
+  screen, and the menu now opens on the workspace rather than over the formula
+  bar's label.
 
 ## [0.7.0] - 2026-09-24
 

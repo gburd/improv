@@ -2472,7 +2472,7 @@ impl eframe::App for ImprovApp {
         self.model_browser(ctx, ws);
         self.info_panel(ctx, ws);
         // Last, so it floats over every panel.
-        self.menu_bar(ctx);
+        self.menu_bar(ctx, ws);
     }
 }
 
@@ -2514,14 +2514,16 @@ impl ImprovApp {
     }
 
     /// Draw the application menu ([`menu::show`]) and run what it returns.
-    fn menu_bar(&mut self, ctx: &egui::Context) {
+    /// It starts at the top-left of the workspace `ws`, clear of the panels.
+    fn menu_bar(&mut self, ctx: &egui::Context, ws: egui::Rect) {
         let views: Vec<(String, bool)> = self
             .document_tabs()
             .into_iter()
             .map(|(_, name, current)| (name, current))
             .collect();
         let mut state = self.menu;
-        let picked = menu::show(ctx, &mut state, &views, |c| self.command_enabled(c));
+        let home = ws.min + egui::vec2(4.0, 4.0);
+        let picked = menu::show(ctx, &mut state, home, &views, |c| self.command_enabled(c));
         self.menu = state;
         if let Some(c) = picked {
             self.run_command(ctx, c);
@@ -7008,7 +7010,7 @@ mod tests {
             let ws = app.canvas_panel(ctx);
             app.model_browser(ctx, ws);
             app.info_panel(ctx, ws);
-            app.menu_bar(ctx);
+            app.menu_bar(ctx, ws);
             inspect(ctx);
         })
     }
@@ -8695,8 +8697,8 @@ mod tests {
                 let _ = ctx.run(raw, |ctx| {
                     app.sync_axis_state();
                     app.status_bar(ctx);
-                    app.canvas_panel(ctx);
-                    app.menu_bar(ctx);
+                    let ws = app.canvas_panel(ctx);
+                    app.menu_bar(ctx, ws);
                 });
             }
             assert_eq!(app.matrix_count(), 2, "{w}x{h}: both matrices survive");
@@ -9476,6 +9478,22 @@ mod tests {
         let _ = press_command_key(&mut app, egui::Key::S, None);
         assert_eq!(app.status, "saved model");
         assert_eq!(described(&db).as_deref(), Some("saved by ctrl+s"));
+    }
+
+    /// The menu opens on the workspace, not over the formula bar's label.
+    #[test]
+    fn menu_starts_clear_of_the_formula_bar() {
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let menu = ctx
+            .memory(|m| m.area_rect(menu::menu_id()))
+            .expect("menu shown");
+        let bar = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("formula_bar"))
+            .expect("formula bar shown")
+            .rect;
+        assert!(!menu.intersects(bar), "{menu:?} over {bar:?}");
     }
 
     /// Holding Ctrl+S saves once: the auto-repeat events that follow are
