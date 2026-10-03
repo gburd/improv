@@ -7,28 +7,22 @@
 //! shape; the only glyphs are the title text.
 //!
 //! The *key* window is the most recently clicked `NxWindow`, tracked in egui
-//! memory; see [`is_key`].
+//! memory; see [`is_key`]. Closing the key window hands the key to the next
+//! window shown.
 
 // Not wired into the app yet: step 3 of the NeXTSTEP spec (worksheet windows)
 // is the first caller.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use crate::theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE};
 use egui::{
-    pos2, vec2, Align2, Color32, Context, FontId, Frame, Id, InnerResponse, LayerId, Order,
-    Painter, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
+    pos2, vec2, Align2, Color32, Context, FontFamily, FontId, Frame, Id, InnerResponse, LayerId,
+    Order, Painter, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
 };
-
-// ponytail: move to theme.rs once the palette commit lands
-// TODO(step 3): switch to theme consts + "bold" family
-const BLACK: Color32 = Color32::from_rgb(0x00, 0x00, 0x00);
-const DARK_GRAY: Color32 = Color32::from_rgb(0x55, 0x55, 0x55);
-const LIGHT_GRAY: Color32 = Color32::from_rgb(0xAA, 0xAA, 0xAA);
-const WHITE: Color32 = Color32::from_rgb(0xFF, 0xFF, 0xFF);
 
 // Geometry, in points (spec §3).
 const BORDER: f32 = 1.0;
 const TITLE_HEIGHT: f32 = 23.0;
-const TITLE_FONT_SIZE: f32 = 12.0;
 const CLOSE_SIZE: f32 = 15.0;
 const CLOSE_INSET: f32 = 4.0;
 const RESIZE_HEIGHT: f32 = 9.0;
@@ -49,7 +43,7 @@ pub fn title_colors(key: bool) -> (Color32, Color32) {
 }
 
 /// Is the window with this id the key window (the most recently clicked
-/// [`NxWindow`])? The id is `Id::new(id_source)` from [`NxWindow::new`].
+/// [`NxWindow`])? The id is [`NxWindow::id`].
 pub fn is_key(ctx: &Context, id: Id) -> bool {
     ctx.data(|d| d.get_temp::<Id>(key_slot())) == Some(id)
 }
@@ -65,31 +59,27 @@ fn key_slot() -> Id {
 pub struct NxWindow<'open> {
     id: Id,
     title: String,
-    key: Option<bool>,
     open: Option<&'open mut bool>,
     default_rect: Rect,
     resizable: bool,
 }
 
 impl<'open> NxWindow<'open> {
-    /// A window identified by `Id::new(id_source)`, showing `title` centred
-    /// in its title bar. Resizable by default, not closable.
+    /// A window identified by `id_source` (salted, see [`Self::id`]), showing
+    /// `title` centred in its title bar. Resizable by default, not closable.
     pub fn new(id_source: impl std::hash::Hash, title: impl Into<String>) -> Self {
         Self {
-            id: Id::new(id_source),
+            id: Id::new(("nxwin", id_source)),
             title: title.into(),
-            key: None,
             open: None,
             default_rect: DEFAULT_RECT,
             resizable: true,
         }
     }
 
-    /// Force the key (`true`) or non-key (`false`) look, overriding the
-    /// most-recently-clicked rule.
-    pub fn key(mut self, key: bool) -> Self {
-        self.key = Some(key);
-        self
+    /// The window's [`Id`]: its egui area id, and the id [`is_key`] takes.
+    pub fn id(&self) -> Id {
+        self.id
     }
 
     /// Show a close box; clicking it sets `open` to `false`. While `open` is
@@ -121,7 +111,6 @@ impl<'open> NxWindow<'open> {
         let Self {
             id,
             title,
-            key,
             open,
             default_rect,
             resizable,
@@ -140,7 +129,11 @@ impl<'open> NxWindow<'open> {
         if let Some(r) = ctx.read_response(id.with("title")) {
             rect = rect.translate(r.drag_delta());
         }
-        if let Some(r) = ctx.read_response(id.with("resize")).filter(|r| r.dragged()) {
+        let screen = ctx.screen_rect();
+        if let Some(r) = ctx
+            .read_response(id.with("nx_resize"))
+            .filter(|r| r.dragged())
+        {
             // NeXT: the left third drags the bottom-left corner, the middle
             // the bottom edge, the right third the bottom-right corner. The
             // third is latched at press, since the bar moves under the pointer.
@@ -161,18 +154,29 @@ impl<'open> NxWindow<'open> {
             } else {
                 ctx.data(|d| d.get_temp::<u8>(zone_id)).unwrap_or(1)
             };
+            // Clamp the dragged edge to the screen (never `f32::clamp`, which
+            // panics when the screen is smaller than MIN_SIZE).
             let d = r.drag_delta();
             match zone {
-                0 => rect.min.x = (rect.min.x + d.x).min(rect.max.x - MIN_SIZE.x),
-                2 => rect.max.x = (rect.max.x + d.x).max(rect.min.x + MIN_SIZE.x),
+                0 => {
+                    rect.min.x = (rect.min.x + d.x)
+                        .max(screen.min.x)
+                        .min(rect.max.x - MIN_SIZE.x);
+                }
+                2 => {
+                    rect.max.x = (rect.max.x + d.x)
+                        .min(screen.max.x)
+                        .max(rect.min.x + MIN_SIZE.x);
+                }
                 _ => {}
             }
-            rect.max.y = (rect.max.y + d.y).max(rect.min.y + MIN_SIZE.y);
+            rect.max.y = (rect.max.y + d.y)
+                .min(screen.max.y)
+                .max(rect.min.y + MIN_SIZE.y);
         }
 
         // Keep the window on screen. Done here rather than by egui, whose first
         // (sizing) pass clamps against a guessed 600x400 size.
-        let screen = ctx.screen_rect();
         let max = (screen.max - rect.size()).max(screen.min);
         rect = rect.translate(rect.min.clamp(screen.min, max) - rect.min);
         ctx.data_mut(|d| d.insert_temp(state_id, rect));
@@ -190,7 +194,7 @@ impl<'open> NxWindow<'open> {
                 d.insert_temp(key_slot(), id);
             }
         });
-        let key = key.unwrap_or_else(|| is_key(ctx, id));
+        let key = is_key(ctx, id);
 
         let mut close_clicked = false;
         let shown = egui::Window::new(title.as_str())
@@ -215,16 +219,13 @@ impl<'open> NxWindow<'open> {
                 p.rect_filled(l.title, 0.0, fill);
                 let title_painter =
                     p.with_clip_rect(l.title.shrink2(vec2(CLOSE_INSET * 2.0 + CLOSE_SIZE, 0.0)));
-                // Double-strike for a bold-ish title until the bold face lands.
-                for dx in [0.0, 1.0] {
-                    title_painter.text(
-                        l.title.center() + vec2(dx, 0.0),
-                        Align2::CENTER_CENTER,
-                        &title,
-                        FontId::proportional(TITLE_FONT_SIZE),
-                        text,
-                    );
-                }
+                title_painter.text(
+                    l.title.center(),
+                    Align2::CENTER_CENTER,
+                    &title,
+                    FontId::new(12.0, FontFamily::Name(crate::theme::BOLD.into())),
+                    text,
+                );
                 // The drag is applied before layout, above; this registers it.
                 let _ = ui.interact(l.title, id.with("title"), Sense::drag());
 
@@ -255,7 +256,7 @@ impl<'open> NxWindow<'open> {
                             WHITE,
                         );
                     }
-                    let _ = ui.interact(bar, id.with("resize"), Sense::drag());
+                    let _ = ui.interact(bar, id.with("nx_resize"), Sense::drag());
                 }
 
                 let mut body = ui.new_child(UiBuilder::new().max_rect(l.body));
@@ -270,6 +271,10 @@ impl<'open> NxWindow<'open> {
 
         if let (true, Some(open)) = (close_clicked, open) {
             *open = false;
+            // Hand the key to the next window shown.
+            if is_key(ctx, id) {
+                ctx.data_mut(|d| d.remove::<Id>(key_slot()));
+            }
         }
         Some(InnerResponse {
             inner: shown.inner?,
@@ -345,6 +350,16 @@ mod tests {
     use egui::epaint::ClippedShape;
     use egui::{Event, Modifiers, PointerButton, RawInput, Shape};
 
+    const SCREEN: Rect = Rect {
+        min: Pos2::ZERO,
+        max: pos2(800.0, 600.0),
+    };
+
+    /// The id [`NxWindow::new`] gives `id_source`.
+    fn wid(id_source: &str) -> Id {
+        NxWindow::new(id_source, "").id()
+    }
+
     /// Headless frames at a fixed screen rect, like app.rs's `full_frame`.
     struct Harness {
         ctx: Context,
@@ -353,17 +368,16 @@ mod tests {
 
     impl Harness {
         fn new() -> Self {
-            Self {
-                ctx: Context::default(),
-                time: 0.0,
-            }
+            let ctx = Context::default();
+            crate::theme::install_fonts(&ctx);
+            Self { ctx, time: 0.0 }
         }
 
         fn frame(&mut self, events: Vec<Event>, ui: impl FnMut(&Context)) -> Vec<ClippedShape> {
             self.time += 1.0 / 60.0;
             let raw = RawInput {
                 time: Some(self.time),
-                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                screen_rect: Some(SCREEN),
                 events,
                 ..Default::default()
             };
@@ -415,12 +429,6 @@ mod tests {
         min: pos2(100.0, 100.0),
         max: pos2(400.0, 300.0),
     };
-
-    #[test]
-    fn title_colors_follow_key() {
-        assert_eq!(title_colors(true), (BLACK, WHITE));
-        assert_eq!(title_colors(false), (DARK_GRAY, LIGHT_GRAY));
-    }
 
     /// (a) The painted title bar is 23 px high and the body Ui starts below it.
     #[test]
@@ -505,50 +513,142 @@ mod tests {
         assert_eq!(rect, R.translate(vec2(60.0, 40.0)));
     }
 
+    /// Show "a" (Alpha) at `a` then "b" (Bravo) at `b`, every frame.
+    fn two_windows(a: Rect, b: Rect) -> impl FnMut(&Context) {
+        move |ctx| {
+            let _ = NxWindow::new("a", "Alpha")
+                .default_rect(a)
+                .show(ctx, |_| ());
+            let _ = NxWindow::new("b", "Bravo")
+                .default_rect(b)
+                .show(ctx, |_| ());
+        }
+    }
+
+    fn title(r: Rect) -> Rect {
+        layout(r, false, true).title
+    }
+
     /// (d) Clicking window B makes it key and A non-key, and the painted title
-    /// fills and text colors follow; `.key(..)` overrides the rule.
+    /// fills and text colors follow.
     #[test]
     fn click_makes_window_key() {
         let mut h = Harness::new();
         let a = Rect::from_min_size(pos2(50.0, 50.0), vec2(200.0, 150.0));
         let b = a.translate(vec2(350.0, 0.0));
-        let force_a = std::cell::Cell::new(None);
-        let mut ui = |ctx: &Context| {
-            let mut w = NxWindow::new("a", "Alpha").default_rect(a);
-            if let Some(k) = force_a.get() {
-                w = w.key(k);
-            }
-            let _ = w.show(ctx, |_| ());
-            let _ = NxWindow::new("b", "Bravo")
-                .default_rect(b)
-                .show(ctx, |_| ());
-        };
-        let title = |r| layout(r, false, true).title;
+        let mut ui = two_windows(a, b);
 
         let mut shapes = Vec::new();
         for _ in 0..3 {
             shapes = h.frame(Vec::new(), &mut ui);
         }
-        assert!(is_key(&h.ctx, Id::new("a")), "first window shown is key");
+        assert!(is_key(&h.ctx, wid("a")), "first window shown is key");
         assert_eq!(fill_at(&shapes, title(a)), Some(BLACK));
         assert_eq!(fill_at(&shapes, title(b)), Some(DARK_GRAY));
 
         h.frame(click(b.center()), &mut ui);
         shapes = h.frame(Vec::new(), &mut ui);
-        assert!(is_key(&h.ctx, Id::new("b")));
-        assert!(!is_key(&h.ctx, Id::new("a")));
+        assert!(is_key(&h.ctx, wid("b")));
+        assert!(!is_key(&h.ctx, wid("a")));
         assert_eq!(fill_at(&shapes, title(b)), Some(BLACK));
         assert_eq!(fill_at(&shapes, title(a)), Some(DARK_GRAY));
         assert_eq!(text_color(&shapes, "Bravo"), Some(WHITE));
         assert_eq!(text_color(&shapes, "Alpha"), Some(LIGHT_GRAY));
-
-        force_a.set(Some(true));
-        shapes = h.frame(Vec::new(), &mut ui);
-        assert_eq!(fill_at(&shapes, title(a)), Some(BLACK), "forced key");
     }
 
-    /// Drag the bottom bar at `x` by (40, 30) and return the window rect.
-    fn drag_resize_bar(resizable: bool, x: f32) -> Rect {
+    /// A click where windows overlap keys the one on top, not the one shown
+    /// last; clicking a window also raises it.
+    #[test]
+    fn overlap_click_keys_the_top_window() {
+        let mut h = Harness::new();
+        let a = R;
+        let b = R.translate(vec2(150.0, 100.0));
+        let mut ui = two_windows(a, b);
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        let overlap = a.intersect(b).center();
+
+        h.frame(click(overlap), &mut ui);
+        assert!(is_key(&h.ctx, wid("b")), "B was shown last, so is on top");
+        assert!(!is_key(&h.ctx, wid("a")));
+
+        h.frame(click(a.min + vec2(20.0, 50.0)), &mut ui);
+        assert!(is_key(&h.ctx, wid("a")));
+        assert!(!is_key(&h.ctx, wid("b")));
+
+        // A is now on top, though B is still shown after it.
+        h.frame(click(overlap), &mut ui);
+        assert!(is_key(&h.ctx, wid("a")));
+    }
+
+    /// The click frame paints both titles black: the clicked window takes the
+    /// key after the earlier-shown one has already painted (one-frame lag).
+    #[test]
+    fn click_frame_paints_both_titles_black() {
+        let mut h = Harness::new();
+        let a = Rect::from_min_size(pos2(50.0, 50.0), vec2(200.0, 150.0));
+        let b = a.translate(vec2(350.0, 0.0));
+        let mut ui = two_windows(a, b);
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        let shapes = h.frame(click(b.center()), &mut ui);
+        assert_eq!(fill_at(&shapes, title(a)), Some(BLACK));
+        assert_eq!(fill_at(&shapes, title(b)), Some(BLACK));
+    }
+
+    /// Closing the key window hands the key to the next window shown.
+    #[test]
+    fn closing_key_window_hands_key_on() {
+        let mut h = Harness::new();
+        let mut open = true;
+        let b = R.translate(vec2(350.0, 0.0));
+        let mut ui = |ctx: &Context| {
+            let _ = NxWindow::new("a", "Alpha")
+                .default_rect(R)
+                .closable(&mut open)
+                .show(ctx, |_| ());
+            if !open {
+                let _ = NxWindow::new("b", "Bravo")
+                    .default_rect(b)
+                    .show(ctx, |_| ());
+            }
+        };
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        assert!(is_key(&h.ctx, wid("a")));
+        h.frame(
+            click(layout(R, true, true).close.unwrap().center()),
+            &mut ui,
+        );
+        h.frame(Vec::new(), &mut ui);
+        assert!(!open);
+        assert!(is_key(&h.ctx, wid("b")));
+    }
+
+    /// A window placed off screen is moved back on, keeping its size.
+    #[test]
+    fn off_screen_window_is_clamped_on_screen() {
+        let mut h = Harness::new();
+        let mut rect = Rect::NOTHING;
+        for _ in 0..3 {
+            h.frame(Vec::new(), |ctx| {
+                rect = NxWindow::new("a", "Alpha")
+                    .default_rect(R.translate(vec2(1000.0, 1000.0)))
+                    .show(ctx, |_| ())
+                    .unwrap()
+                    .response
+                    .rect;
+            });
+        }
+        assert_eq!(rect.max, SCREEN.max);
+        assert_eq!(rect.size(), R.size());
+    }
+
+    /// Drag the bottom bar at `x` by `delta` and return the window rect.
+    fn drag_resize_bar(resizable: bool, x: f32, delta: Vec2) -> Rect {
         let mut h = Harness::new();
         let mut rect = Rect::NOTHING;
         let mut ui = |ctx: &Context| {
@@ -564,7 +664,7 @@ mod tests {
             h.frame(Vec::new(), &mut ui);
         }
         let from = pos2(x, R.bottom() - 1.0 - 4.5);
-        drag(&mut h, from, from + vec2(40.0, 30.0), &mut ui);
+        drag(&mut h, from, from + delta, &mut ui);
         rect
     }
 
@@ -572,13 +672,30 @@ mod tests {
     /// the bottom-left corner, the right third the bottom-right.
     #[test]
     fn resize_bar_resizes_only_when_resizable() {
-        let right = drag_resize_bar(true, R.right() - 20.0);
-        assert_eq!(right, Rect::from_min_max(R.min, R.max + vec2(40.0, 30.0)));
-        let left = drag_resize_bar(true, R.left() + 20.0);
+        let d = vec2(40.0, 30.0);
+        let right = drag_resize_bar(true, R.right() - 20.0, d);
+        assert_eq!(right, Rect::from_min_max(R.min, R.max + d));
+        let left = drag_resize_bar(true, R.left() + 20.0, d);
         assert_eq!(
             left,
             Rect::from_min_max(R.min + vec2(40.0, 0.0), R.max + vec2(0.0, 30.0))
         );
-        assert_eq!(drag_resize_bar(false, R.right() - 20.0), R);
+        assert_eq!(drag_resize_bar(false, R.right() - 20.0, d), R);
+    }
+
+    /// The middle third drags only the bottom edge.
+    #[test]
+    fn middle_third_resizes_height_only() {
+        let mid = drag_resize_bar(true, R.center().x, vec2(40.0, 30.0));
+        assert_eq!(mid, Rect::from_min_max(R.min, R.max + vec2(0.0, 30.0)));
+    }
+
+    /// Dragging the bar past the screen bottom stops the edge there instead
+    /// of shoving the window up.
+    #[test]
+    fn resize_past_screen_bottom_clamps_the_edge() {
+        let r = drag_resize_bar(true, R.center().x, vec2(0.0, 400.0));
+        assert_eq!(r.min.y, R.min.y);
+        assert_eq!(r.max.y, SCREEN.max.y);
     }
 }
