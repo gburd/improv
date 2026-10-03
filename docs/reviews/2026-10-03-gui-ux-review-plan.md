@@ -71,7 +71,7 @@ Items below are reworded where this direction supersedes them.
 | D2 | Model tree `·`/`=` prefixes are cryptic; use labelled icons/tooltips. | planned |
 | D3 | Status-bar feedback on recalc/save. | planned |
 | D4 | Contrast: grey-on-grey text fails WCAG AA 4.5:1. The NeXT palette is high-contrast black-on-white; matching it fixes most of this. Optional dark variant is a modernization, off by default. | planned |
-| D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | planned |
+| D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | in progress (harness landed: `scripts/gui-shot.sh`) |
 
 Note: B1/B4/C1 imply multiple OS windows. egui 0.29 supports this via
 `show_viewport_immediate`; where a platform can't, fall back to in-app

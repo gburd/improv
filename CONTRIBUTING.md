@@ -40,6 +40,11 @@ New non-trivial logic ships with a test. We use, as appropriate: unit tests
 deterministic oracles (the Time×Product revenue model), fuzz targets
 (`cargo fuzz`, `/fuzz`), and `--ignored` stress tests.
 
+For GUI changes, run `scripts/gui-shot.sh` from the dev shell. It captures the
+GUI on a headless Xvfb with a fixed demo model and writes
+`target/gui-shot/gui.png` and `compare.png` (beside the NeXT reference) for
+visual review. Missing X tools come from `nix shell`. See `--help`.
+
 ## Docs
 
 If you change a public API, the CLI surface, the formula/CNL grammar, or the

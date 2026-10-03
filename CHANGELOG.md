@@ -6,6 +6,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **GUI screenshot harness (`scripts/gui-shot.sh`).** Builds the binaries,
+  loads a fixed Time×Product×Scenario demo model, runs `improv-gui` on a
+  headless Xvfb at 1400×900 and writes `target/gui-shot/gui.png` plus
+  `compare.png`, the capture beside the NeXT Improv reference. Output is
+  pixel-identical run to run.
+
 ### Changed
 
 - **GUI grid right-aligns numbers** so their digits line up, as Improv does;
