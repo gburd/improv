@@ -54,6 +54,18 @@ fn key_slot() -> Id {
     Id::new("nxwin::key")
 }
 
+/// The outer rect the window with this id ([`NxWindow::id`]) ended its last
+/// [`NxWindow::show`] with: drags, resizes and clamps applied. `None` before
+/// it is first shown.
+pub fn stored_rect(ctx: &Context, id: Id) -> Option<Rect> {
+    ctx.data(|d| d.get_temp::<Rect>(rect_slot(id)))
+}
+
+/// Memory slot holding a window's outer rect between frames.
+fn rect_slot(id: Id) -> Id {
+    id.with("nxwin_rect")
+}
+
 /// A floating window with NeXTSTEP chrome. Build with [`NxWindow::new`],
 /// configure, then call [`NxWindow::show`] every frame.
 #[must_use = "call .show(ctx, ...)"]
@@ -62,6 +74,9 @@ pub struct NxWindow<'open> {
     title: String,
     open: Option<&'open mut bool>,
     default_rect: Rect,
+    rect: Option<Rect>,
+    min_size: Vec2,
+    bounds: Option<Rect>,
     resizable: bool,
 }
 
@@ -74,6 +89,9 @@ impl<'open> NxWindow<'open> {
             title: title.into(),
             open: None,
             default_rect: DEFAULT_RECT,
+            rect: None,
+            min_size: MIN_SIZE,
+            bounds: None,
             resizable: true,
         }
     }
@@ -96,6 +114,40 @@ impl<'open> NxWindow<'open> {
         self
     }
 
+    /// Outer rect for this frame, overriding the one stored from the last
+    /// frame; this frame's drags apply on top of it. For callers that own the
+    /// rect: feed back [`stored_rect`] after [`Self::show`].
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "app.rs adopts it next; drop this then")
+    )]
+    pub fn rect(mut self, rect: Rect) -> Self {
+        self.rect = Some(rect);
+        self
+    }
+
+    /// Smallest outer size: resizes stop here, and a smaller incoming rect is
+    /// enlarged (keeping its top-left). Defaults to 100 x 60.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "app.rs adopts it next; drop this then")
+    )]
+    pub fn min_size(mut self, min_size: Vec2) -> Self {
+        self.min_size = min_size;
+        self
+    }
+
+    /// Rect the window is kept inside, both when moved and when resized.
+    /// Defaults to [`Context::screen_rect`].
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "app.rs adopts it next; drop this then")
+    )]
+    pub fn bounds(mut self, bounds: Rect) -> Self {
+        self.bounds = Some(bounds);
+        self
+    }
+
     /// Whether the bottom resize bar is shown and resizes the window.
     pub fn resizable(mut self, resizable: bool) -> Self {
         self.resizable = resizable;
@@ -114,23 +166,26 @@ impl<'open> NxWindow<'open> {
             title,
             open,
             default_rect,
+            rect,
+            min_size,
+            bounds,
             resizable,
         } = self;
         if matches!(open, Some(false)) {
             return None;
         }
         let closable = open.is_some();
-        let state_id = id.with("nxwin_rect");
-        let mut rect = ctx
-            .data(|d| d.get_temp::<Rect>(state_id))
+        let mut rect = rect
+            .or_else(|| stored_rect(ctx, id))
             .unwrap_or(default_rect);
+        rect.max = rect.min + rect.size().max(min_size);
 
         // Apply this frame's drags before placing the window, as egui's own
         // `Area` does, so the chrome tracks the pointer with no frame delay.
         if let Some(r) = ctx.read_response(id.with("title")) {
             rect = rect.translate(r.drag_delta());
         }
-        let screen = ctx.screen_rect();
+        let screen = bounds.unwrap_or_else(|| ctx.screen_rect());
         if let Some(r) = ctx
             .read_response(id.with("nx_resize"))
             .filter(|r| r.dragged())
@@ -155,32 +210,32 @@ impl<'open> NxWindow<'open> {
             } else {
                 ctx.data(|d| d.get_temp::<u8>(zone_id)).unwrap_or(1)
             };
-            // Clamp the dragged edge to the screen (never `f32::clamp`, which
-            // panics when the screen is smaller than MIN_SIZE).
+            // Clamp the dragged edge to the bounds (never `f32::clamp`, which
+            // panics when the bounds are smaller than `min_size`).
             let d = r.drag_delta();
             match zone {
                 0 => {
                     rect.min.x = (rect.min.x + d.x)
                         .max(screen.min.x)
-                        .min(rect.max.x - MIN_SIZE.x);
+                        .min(rect.max.x - min_size.x);
                 }
                 2 => {
                     rect.max.x = (rect.max.x + d.x)
                         .min(screen.max.x)
-                        .max(rect.min.x + MIN_SIZE.x);
+                        .max(rect.min.x + min_size.x);
                 }
                 _ => {}
             }
             rect.max.y = (rect.max.y + d.y)
                 .min(screen.max.y)
-                .max(rect.min.y + MIN_SIZE.y);
+                .max(rect.min.y + min_size.y);
         }
 
-        // Keep the window on screen. Done here rather than by egui, whose first
+        // Keep the window in bounds. Done here rather than by egui, whose first
         // (sizing) pass clamps against a guessed 600x400 size.
         let max = (screen.max - rect.size()).max(screen.min);
         rect = rect.translate(rect.min.clamp(screen.min, max) - rect.min);
-        ctx.data_mut(|d| d.insert_temp(state_id, rect));
+        ctx.data_mut(|d| d.insert_temp(rect_slot(id), rect));
 
         // A press on this window's layer makes it key; the first window shown
         // is key until something is clicked.
@@ -698,5 +753,94 @@ mod tests {
         let r = drag_resize_bar(true, R.center().x, vec2(0.0, 400.0));
         assert_eq!(r.min.y, R.min.y);
         assert_eq!(r.max.y, SCREEN.max.y);
+    }
+
+    /// Show window a (default rect `R`) configured by `f`; its outer rect.
+    fn show_a(ctx: &Context, f: impl FnOnce(NxWindow<'_>) -> NxWindow<'_>) -> Rect {
+        f(NxWindow::new("a", "Alpha").default_rect(R))
+            .show(ctx, |_| ())
+            .unwrap()
+            .response
+            .rect
+    }
+
+    /// Dragging the left third past `min_size` stops the left edge there,
+    /// rather than at `MIN_SIZE` for the caller to enlarge (sliding it right).
+    #[test]
+    fn left_resize_stops_at_min_size() {
+        let min = vec2(240.0, 180.0);
+        let mut h = Harness::new();
+        let mut ui = |ctx: &Context| {
+            show_a(ctx, |w| w.min_size(min));
+        };
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        let from = pos2(R.left() + 20.0, R.bottom() - 1.0 - 4.5);
+        drag(&mut h, from, from + vec2(400.0, 0.0), &mut ui);
+        let rect = stored_rect(&h.ctx, wid("a")).unwrap();
+        assert_eq!(rect.max.x, R.max.x);
+        assert_eq!(rect.width(), min.x);
+    }
+
+    /// `bounds` replaces the screen as the rect a dragged window is kept in.
+    #[test]
+    fn bounds_clamp_a_dragged_window() {
+        let bounds = Rect::from_min_max(pos2(50.0, 60.0), pos2(600.0, 500.0));
+        let mut h = Harness::new();
+        let mut ui = |ctx: &Context| {
+            show_a(ctx, |w| w.bounds(bounds));
+        };
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        let from = title(R).center();
+        drag(&mut h, from, from + vec2(500.0, 500.0), &mut ui);
+        let rect = stored_rect(&h.ctx, wid("a")).unwrap();
+        assert_eq!(rect.max, bounds.max);
+        assert_eq!(rect.size(), R.size());
+    }
+
+    /// `rect` overrides the stored rect; a caller owning the rect reads it
+    /// back with `stored_rect`, this frame's drag applied.
+    #[test]
+    fn owned_rect_overrides_and_reads_back() {
+        let mut h = Harness::new();
+        for _ in 0..3 {
+            h.frame(Vec::new(), |ctx| {
+                show_a(ctx, |w| w);
+            });
+        }
+        assert_eq!(stored_rect(&h.ctx, wid("a")), Some(R));
+        let start = R.translate(vec2(200.0, 150.0));
+        let mut shown = Rect::NOTHING;
+        h.frame(Vec::new(), |ctx| shown = show_a(ctx, |w| w.rect(start)));
+        assert_eq!(shown, start, "rect() beats the stored R");
+        let mut owned = start;
+        let mut ui = |ctx: &Context| {
+            shown = show_a(ctx, |w| w.rect(owned));
+            owned = stored_rect(ctx, wid("a")).unwrap();
+        };
+        let from = title(start).center();
+        let d = vec2(-60.0, -40.0);
+        drag(&mut h, from, from + d, &mut ui);
+        assert_eq!(owned, start.translate(d));
+        assert_eq!(shown, owned);
+    }
+
+    /// An incoming rect smaller than `min_size` is enlarged, top-left kept.
+    #[test]
+    fn undersized_rect_is_enlarged() {
+        let min = vec2(240.0, 180.0);
+        let small = Rect::from_min_size(pos2(100.0, 100.0), vec2(50.0, 40.0));
+        let mut h = Harness::new();
+        let mut rect = Rect::NOTHING;
+        for _ in 0..3 {
+            h.frame(Vec::new(), |ctx| {
+                rect = show_a(ctx, |w| w.rect(small).min_size(min));
+            });
+        }
+        assert_eq!(rect, Rect::from_min_size(small.min, min));
+        assert_eq!(stored_rect(&h.ctx, wid("a")), Some(rect));
     }
 }
