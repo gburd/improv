@@ -58,7 +58,10 @@ COMMANDS:
         argument measures, host-side (external calls stay off the engine path).
 
     set <db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]
-        Set an input cell. --at maps category NAMES to item NAMES.
+        Set an input cell. --at maps category NAMES to item NAMES. Pairs may
+        be comma-joined, space-separated (--at Time=Q1 Product=A), or given
+        as repeated --at flags; all are merged, and a category may appear
+        only once.
         Value is parsed by the measure's declared type.
 
     list <db>
@@ -73,6 +76,7 @@ COMMANDS:
 
     scenario <db> <scenario-name> <measure-id> <value> [--at Cat=Item,...]
         Create or update a what-if scenario by adding one input-cell override.
+        --at accepts the same forms as for `set`.
         The base model is untouched; evaluate with `eval ... --scenario <name>`.
 
     export <db>
@@ -1164,34 +1168,44 @@ fn parse_value(s: &str, vt: ValueType) -> Result<Value, String> {
     }
 }
 
-/// Collect the `--at Cat=Item,...` pairs. Absent flag => empty (scalar cell).
-/// Parse an optional `--at Cat=Item,...` flag.
+/// Collect the `--at` coordinate pairs. Absent flag => empty (scalar cell).
+///
+/// Accepts every spelling of the same coordinate, merged in order:
+/// `--at A=x,B=y`, `--at A=x --at B=y`, and `--at A=x B=y` (each `--at` takes
+/// the following `Cat=Item` tokens up to the next flag). A category named twice
+/// is an error, not a silent last-wins.
 ///
 /// Rejects any other argument rather than ignoring it. Silently discarding
 /// stray tokens meant `set db 100 10 Product=A` (the `--at` forgotten) reported
 /// success and wrote a cell at the EMPTY coordinate — a dimensionally invalid
 /// cell on a measure declared over `Product`, created with no diagnostic.
 fn parse_at_flag(rest: &[String]) -> Result<Vec<(String, String)>, String> {
-    let mut it = rest.iter();
-    let Some(tok) = it.next() else {
-        // No arguments at all: a measure with no dimensions has no coordinate.
-        return Ok(Vec::new());
-    };
-    if tok != "--at" {
-        return Err(if tok.contains('=') {
-            format!("unexpected argument '{tok}' — did you mean '--at {tok}'?")
-        } else {
-            format!("unexpected argument '{tok}' (expected --at Cat=Item,...)")
-        });
+    let is_pair = |t: &str| t.contains('=') && !t.starts_with("--");
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut it = rest.iter().peekable();
+    while let Some(tok) = it.next() {
+        if tok != "--at" {
+            return Err(if out.is_empty() && is_pair(tok) {
+                format!("unexpected argument '{tok}' — did you mean '--at {tok}'?")
+            } else {
+                format!("unexpected argument '{tok}' (expected --at Cat=Item,...)")
+            });
+        }
+        let mut took = false;
+        while let Some(spec) = it.next_if(|t| is_pair(t)) {
+            took = true;
+            for (cat, item) in parse_pairs(spec)? {
+                if out.iter().any(|(c, _)| *c == cat) {
+                    return Err(format!("--at names category '{cat}' more than once"));
+                }
+                out.push((cat, item));
+            }
+        }
+        if !took {
+            return Err("--at needs an argument, e.g. Time=2025".to_string());
+        }
     }
-    let spec = it
-        .next()
-        .ok_or_else(|| "--at needs an argument, e.g. Time=2025".to_string())?;
-    let pairs = parse_pairs(spec)?;
-    if let Some(extra) = it.next() {
-        return Err(format!("unexpected argument '{extra}' after --at {spec}"));
-    }
-    Ok(pairs)
+    Ok(out)
 }
 
 fn parse_pairs(spec: &str) -> Result<Vec<(String, String)>, String> {
@@ -1723,6 +1737,56 @@ mod tests {
             parse_at_flag(&["--at".to_string(), "Product=A".to_string()]).unwrap(),
             vec![("Product".to_string(), "A".to_string())]
         );
+    }
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    fn tp() -> Vec<(String, String)> {
+        vec![
+            ("Time".to_string(), "Q1".to_string()),
+            ("Product".to_string(), "Widget".to_string()),
+        ]
+    }
+
+    #[test]
+    fn at_flag_accepts_comma_repeated_and_space_separated_forms() {
+        for form in [
+            "--at Time=Q1,Product=Widget",
+            "--at Time=Q1 --at Product=Widget",
+            "--at Time=Q1 Product=Widget",
+        ] {
+            assert_eq!(parse_at_flag(&args(form)).unwrap(), tp(), "form: {form}");
+        }
+    }
+
+    #[test]
+    fn at_flag_rejects_duplicate_category() {
+        for form in [
+            "--at Time=Q1,Time=Q2",
+            "--at Time=Q1 --at Time=Q2",
+            "--at Time=Q1 Time=Q2",
+        ] {
+            let err = parse_at_flag(&args(form)).unwrap_err();
+            assert!(err.contains("'Time' more than once"), "{form}: {err}");
+        }
+    }
+
+    #[test]
+    fn at_flag_still_rejects_garbage() {
+        // Non-pair token after the pairs, bare --at, --at followed by a flag.
+        for form in [
+            "--at Time=Q1 junk",
+            "--at Time=Q1 Product=Widget junk",
+            "--at",
+            "--at Time=Q1 --at",
+            "--at --at Time=Q1",
+            "--at Time=Q1 --bogus",
+            "junk --at Time=Q1",
+        ] {
+            assert!(parse_at_flag(&args(form)).is_err(), "accepted: {form}");
+        }
     }
 
     /// `--at` naming the wrong dimensions used to save a cell the measure has no

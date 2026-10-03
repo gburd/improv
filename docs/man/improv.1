@@ -27,10 +27,20 @@ The
 .B \-\-at
 flag on
 .B set
-names a coordinate as a comma-separated list of
+and
+.B scenario
+names a coordinate as
 .IR Category = Item
-pairs, resolved against the loaded model. Numeric ids are given directly on the
-command line.
+pairs, resolved against the loaded model. Pairs may be comma-joined
+.RB ( "\-\-at Time=Q1,Product=A" ),
+space-separated after one flag
+.RB ( "\-\-at Time=Q1 Product=A" ),
+or spread over repeated flags
+.RB ( "\-\-at Time=Q1 \-\-at Product=A" );
+all are merged. Naming a category twice is an error, as is any argument that
+is not a pair after
+.BR \-\-at .
+Numeric ids are given directly on the command line.
 .SH COMMANDS
 .TP
 .B init \fI<db>\fR

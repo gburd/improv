@@ -57,7 +57,10 @@ Notes:
 - `add-derived` adds a **formula** measure from Improv formula text (e.g.
   `"Price * Quantity"` or `"SUM(Revenue OVER Time)"`); its categories are
   inferred from the measures it references. Compute it with `eval`.
-- `set --at` maps category **names** to item **names**, comma-separated. Omit
+- `set --at` maps category **names** to item **names**. Pairs may be
+  comma-joined (`--at Time=2025,Product=WidgetA`), space-separated
+  (`--at Time=2025 Product=WidgetA`), or given as repeated `--at` flags; they
+  are merged, and a category may appear only once. Omit
   `--at` for a scalar (zero-dimensional) cell.
 - `set` parses the value according to the measure's declared type: a `number`
   measure wants a float, a `boolean` measure wants `true`/`false`, a `text`

@@ -6,6 +6,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **CLI `--at` accepts every natural spelling of a coordinate.** `set` and
+  `scenario` now take repeated flags (`--at Time=Q1 --at Product=Widget`) and
+  space-separated pairs (`--at Time=Q1 Product=Widget`) as well as the
+  comma-joined form, merging them. Naming a category twice is a clear error,
+  and stray non-pair arguments are still rejected.
+
 ## [0.7.0] - 2026-09-24
 
 The GUI is rebuilt against Lotus Improv / Quantrix reference material, and
