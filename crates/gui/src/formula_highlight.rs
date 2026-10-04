@@ -399,4 +399,21 @@ mod tests {
             assert!(c == BLACK || c == DARK_GRAY, "{c:?} is not a palette gray");
         }
     }
+
+    #[test]
+    fn whitespace_runs_and_underscored_idents_are_single_tokens() {
+        let toks: Vec<_> = scan("_a_b  \t x  ")
+            .into_iter()
+            .map(|t| (t.kind, t.start, t.end))
+            .collect();
+        assert_eq!(
+            toks,
+            vec![
+                (TokenKind::Ident, 0, 4),
+                (TokenKind::Whitespace, 4, 8),
+                (TokenKind::Ident, 8, 9),
+                (TokenKind::Whitespace, 9, 11),
+            ]
+        );
+    }
 }

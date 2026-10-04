@@ -659,4 +659,37 @@ mod tests {
             }
         });
     }
+
+    /// With no saved views the View submenu lists Model Browser then a
+    /// disabled "No Views" placeholder.
+    #[test]
+    fn view_submenu_without_views_shows_the_placeholder() {
+        let ctx = Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut state = MenuState {
+            open: Some(top("View")),
+            pos: None,
+        };
+        let mut texts = Vec::new();
+        for t in 0..3 {
+            let raw = RawInput {
+                time: Some(f64::from(t) / 60.0),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            let out = ctx.run(raw, |ctx| {
+                assert_eq!(show(ctx, &mut state, pos2(4.0, 4.0), &[], |_| true), None);
+            });
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+                    _ => None,
+                })
+                .collect();
+        }
+        assert!(texts.iter().any(|t| t == NO_VIEWS), "{texts:?}");
+        assert!(texts.iter().any(|t| t == MODEL_BROWSER), "{texts:?}");
+    }
 }

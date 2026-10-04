@@ -383,4 +383,51 @@ mod tests {
         let mut model = Model::new();
         assert!(improv_storage_csv::import_csv(&mut model, &spec).is_err());
     }
+
+    #[test]
+    fn each_missing_field_is_named_and_headerless_columns_are_indices() {
+        let ok = ImportForm {
+            path: "x.csv".into(),
+            has_header: false,
+            measure_id: "1".into(),
+            measure_name: "M".into(),
+            value_column: "2".into(),
+            dimensions: vec![dim("0", "1", "A"), dim("name", "2", "B")],
+            ..ImportForm::default()
+        };
+        let spec = build_import_spec(&ok).expect("valid");
+        assert_eq!(spec.value_column, ColumnRef::Index(2));
+        assert_eq!(spec.dimensions[0].column, ColumnRef::Index(0));
+        // A non-numeric reference without a header row is still a name.
+        assert_eq!(spec.dimensions[1].column, ColumnRef::Name("name".into()));
+
+        let err = |f: ImportForm| build_import_spec(&f).err().expect("rejected");
+        let with = |edit: fn(&mut ImportForm)| {
+            let mut f = ok.clone();
+            edit(&mut f);
+            f
+        };
+        assert!(err(with(|f| f.measure_name = " ".into())).contains("measure name"));
+        assert!(err(with(|f| f.value_column.clear())).contains("value column"));
+        // Any one of the three dimension fields blank (the others set) is a
+        // partial row, not a skipped spacer.
+        for d in [dim("", "1", "A"), dim("c", "", "A"), dim("c", "1", "")] {
+            let mut f = ok.clone();
+            f.dimensions = vec![d];
+            assert!(err(f).contains("each dimension row"));
+        }
+        assert!(err(with(|f| f.dimensions = vec![dim("c", "x", "A")])).contains("category id"));
+    }
+
+    #[test]
+    fn export_args_need_a_measure_and_a_path() {
+        let mut f = ExportForm::default();
+        assert!(build_export_args(&f).unwrap_err().contains("measure"));
+        f.measure_id = Some(MeasureId(7));
+        f.path = "  ".into();
+        assert!(build_export_args(&f).unwrap_err().contains("path"));
+        f.path = "out.tsv".into();
+        let (m, p, d) = build_export_args(&f).unwrap();
+        assert_eq!((m, p, d), (MeasureId(7), PathBuf::from("out.tsv"), b'\t'));
+    }
 }
