@@ -66,7 +66,7 @@ impl Auth {
 pub struct AppState {
     db_path: String,
     auth: Auth,
-    /// `None` when the scheduler is disabled (`IMPROV_SCHEDULER=0`).
+    /// `None` when the scheduler is disabled (the default; `IMPROV_SCHEDULER=1` enables).
     scheduler_status: Option<SharedStatus>,
 }
 
@@ -86,9 +86,8 @@ async fn main() {
         eprintln!("auth disabled: set IMPROV_API_TOKEN to require a bearer token");
     }
 
-    let scheduler_enabled = std::env::var("IMPROV_SCHEDULER")
-        .map(|v| v != "0")
-        .unwrap_or(true);
+    let scheduler_enabled =
+        scheduler::scheduler_enabled(std::env::var("IMPROV_SCHEDULER").ok().as_deref());
     let tick_secs = std::env::var("IMPROV_SCHEDULER_TICK_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -106,13 +105,27 @@ async fn main() {
         scheduler_status: scheduler_status.clone(),
     });
     if let Some(status) = scheduler_status {
+        let allow = match std::env::var("IMPROV_EXTFN_ALLOW") {
+            Ok(file) => match std::fs::read_to_string(&file) {
+                Ok(text) => scheduler::parse_allowlist(&text),
+                Err(e) => {
+                    eprintln!("scheduler: cannot read IMPROV_EXTFN_ALLOW {file}: {e}; no function will run");
+                    Default::default()
+                }
+            },
+            Err(_) => {
+                eprintln!("scheduler: IMPROV_EXTFN_ALLOW unset; no function will run");
+                Default::default()
+            }
+        };
         scheduler::spawn_scheduler(
             state.clone(),
             std::time::Duration::from_secs(tick_secs),
             status,
+            Arc::new(allow),
         );
     } else {
-        eprintln!("scheduler disabled (IMPROV_SCHEDULER=0)");
+        eprintln!("scheduler disabled (set IMPROV_SCHEDULER=1 to enable)");
     }
 
     let listener = tokio::net::TcpListener::bind(&addr)
