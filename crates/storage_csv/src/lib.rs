@@ -73,6 +73,40 @@ pub struct ImportSpec {
     pub dimensions: Vec<DimensionMapping>,
     /// Base id for minting item ids; new items get sequential ids from here.
     pub item_id_base: u32,
+    /// Most data records accepted; more is an error. `None` means
+    /// [`DEFAULT_MAX_RECORDS`].
+    pub max_records: Option<usize>,
+}
+
+/// Record cap applied when [`ImportSpec::max_records`] is `None`.
+pub const DEFAULT_MAX_RECORDS: usize = 10_000_000;
+/// Longest field accepted on import, in bytes (1 MiB).
+pub const MAX_FIELD_BYTES: usize = 1 << 20;
+/// Longest record accepted on import, in bytes. Enforced while reading, so a
+/// file with one enormous field errors instead of being buffered whole.
+pub const MAX_RECORD_BYTES: u64 = 64 << 20;
+
+/// A reader that refuses to read more than `limit` bytes in total; the import
+/// loop advances `limit` to "end of the last record + [`MAX_RECORD_BYTES`]".
+struct Budget<R> {
+    inner: R,
+    read: u64,
+    limit: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl<R: io::Read> io::Read for Budget<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let room = self.limit.get().saturating_sub(self.read);
+        if room == 0 && !buf.is_empty() {
+            return Err(io::Error::other(format!(
+                "a record exceeds {MAX_RECORD_BYTES} bytes"
+            )));
+        }
+        let take = buf.len().min(usize::try_from(room).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..take])?;
+        self.read += n as u64;
+        Ok(n)
+    }
 }
 
 /// Import a CSV/TSV file into `model` per `spec`. Returns the number of cells
@@ -91,10 +125,16 @@ pub fn import_csv_from<R: io::Read>(
     model: &mut Model,
     spec: &ImportSpec,
 ) -> Result<usize> {
+    let limit = std::rc::Rc::new(std::cell::Cell::new(MAX_RECORD_BYTES));
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(spec.delimiter)
         .has_headers(spec.has_header)
-        .from_reader(reader);
+        .from_reader(Budget {
+            inner: reader,
+            read: 0,
+            limit: limit.clone(),
+        });
+    let max_records = spec.max_records.unwrap_or(DEFAULT_MAX_RECORDS);
 
     let headers = if spec.has_header {
         Some(rdr.headers()?.clone())
@@ -132,6 +172,21 @@ pub fn import_csv_from<R: io::Read>(
             .position()
             .map(|p| p.line() as usize)
             .unwrap_or(cells.len() + 1);
+        if let Some(p) = record.position() {
+            limit.set(p.byte() + record.as_slice().len() as u64 + MAX_RECORD_BYTES);
+        }
+        if cells.len() == max_records {
+            return Err(CsvError::Row {
+                row: row_no,
+                message: format!("more than {max_records} records"),
+            });
+        }
+        if record.iter().any(|f| f.len() > MAX_FIELD_BYTES) {
+            return Err(CsvError::Row {
+                row: row_no,
+                message: format!("a field exceeds {MAX_FIELD_BYTES} bytes"),
+            });
+        }
         if record.len() <= max_idx {
             return Err(CsvError::Row {
                 row: row_no,
@@ -233,6 +288,36 @@ pub fn export_measure_csv(
     export_measure_csv_to(model, measure, file, delimiter)
 }
 
+/// Export options for [`export_measure_csv_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExportSpec {
+    /// Field delimiter: `b','` for CSV, `b'\t'` for TSV.
+    pub delimiter: u8,
+    /// Prefix text that a spreadsheet would run as a formula (a text cell,
+    /// item name or header starting with `=`, `+`, `-`, `@`, tab or CR) with
+    /// a `'` (the OWASP CSV-injection mitigation). Numbers are never touched.
+    /// On by default; turn off only for an exact-text round trip into Improv.
+    pub neutralize_formulas: bool,
+}
+
+impl Default for ExportSpec {
+    fn default() -> Self {
+        ExportSpec {
+            delimiter: b',',
+            neutralize_formulas: true,
+        }
+    }
+}
+
+/// `'`-prefix `s` if a spreadsheet would treat it as a formula.
+fn neutralize(s: String, on: bool) -> String {
+    if on && s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        format!("'{s}")
+    } else {
+        s
+    }
+}
+
 /// Write a measure's cells to `writer` as CSV/TSV (`delimiter`). Rows are
 /// written in coordinate order, so output is deterministic.
 ///
@@ -247,12 +332,30 @@ pub fn export_measure_csv(
 /// `#ERR`/`NaN` into it would make the file fail to re-import as a `Number`
 /// column. The returned count reflects rows actually written, so a caller can
 /// see that skipping happened.
+///
+/// Text that a spreadsheet would run as a formula is neutralized; see
+/// [`ExportSpec::neutralize_formulas`] and [`export_measure_csv_with`].
 pub fn export_measure_csv_to<W: io::Write>(
     model: &Model,
     measure: MeasureId,
     writer: W,
     delimiter: u8,
 ) -> Result<usize> {
+    let spec = ExportSpec {
+        delimiter,
+        ..ExportSpec::default()
+    };
+    export_measure_csv_with(model, measure, writer, &spec)
+}
+
+/// [`export_measure_csv_to`] with explicit [`ExportSpec`] options.
+pub fn export_measure_csv_with<W: io::Write>(
+    model: &Model,
+    measure: MeasureId,
+    writer: W,
+    spec: &ExportSpec,
+) -> Result<usize> {
+    let guard = |s: String| neutralize(s, spec.neutralize_formulas);
     let m = model
         .measures
         .get(&measure)
@@ -272,10 +375,10 @@ pub fn export_measure_csv_to<W: io::Write>(
         .collect();
 
     let mut wtr = csv::WriterBuilder::new()
-        .delimiter(delimiter)
+        .delimiter(spec.delimiter)
         .from_writer(writer);
-    let mut header: Vec<String> = dim_cols.iter().map(|(_, n)| n.clone()).collect();
-    header.push(m.name.0.clone());
+    let mut header: Vec<String> = dim_cols.iter().map(|(_, n)| guard(n.clone())).collect();
+    header.push(guard(m.name.0.clone()));
     wtr.write_record(&header)?;
 
     // Derived measures have no stored cells; ask the engine for computed ones.
@@ -286,7 +389,10 @@ pub fn export_measure_csv_to<W: io::Write>(
             .map(|cells| {
                 cells
                     .iter()
-                    .filter_map(|(k, v)| cell_text(v).map(|s| (improv_engine::decode_coord(k), s)))
+                    .filter_map(|(k, v)| {
+                        cell_text(v, spec.neutralize_formulas)
+                            .map(|s| (improv_engine::decode_coord(k), s))
+                    })
                     .collect()
             })
             .unwrap_or_default()
@@ -295,7 +401,9 @@ pub fn export_measure_csv_to<W: io::Write>(
             .inputs
             .iter()
             .filter(|((mid, _), _)| *mid == measure)
-            .filter_map(|((_, c), v)| value_text(v).map(|s| (c.clone(), s)))
+            .filter_map(|((_, c), v)| {
+                value_text(v, spec.neutralize_formulas).map(|s| (c.clone(), s))
+            })
             .collect()
     };
     rows.sort_by(|a, b| a.0.cmp(&b.0));
@@ -307,7 +415,7 @@ pub fn export_measure_csv_to<W: io::Write>(
             let name = coord
                 .get(*cat)
                 .and_then(|i| model.items.get(&i))
-                .map(|it| it.name.0.clone())
+                .map(|it| guard(it.name.0.clone()))
                 .unwrap_or_default();
             row.push(name);
         }
@@ -321,11 +429,11 @@ pub fn export_measure_csv_to<W: io::Write>(
 
 /// The value column text for a stored input value, or `None` to skip the row
 /// (error cells have no meaningful, re-importable cell text).
-fn value_text(val: &Value) -> Option<String> {
+fn value_text(val: &Value, neutralize_formulas: bool) -> Option<String> {
     match val {
         Value::Number(n) => Some(n.to_string()),
         Value::Boolean(b) => Some(b.to_string()),
-        Value::Text(s) => Some(s.clone()),
+        Value::Text(s) => Some(neutralize(s.clone(), neutralize_formulas)),
         Value::DateTime(dt) => Some(dt.to_rfc3339()),
         Value::Enum(e) => Some(e.to_string()),
         Value::Error(_) => None,
@@ -336,7 +444,7 @@ fn value_text(val: &Value) -> Option<String> {
 /// row. Skips `#ERR` and non-finite numbers (the engine's NaN convention for
 /// division by zero / domain errors) for the same reason `value_text` skips
 /// `Value::Error`: neither re-imports as a number.
-fn cell_text(v: &improv_engine::CellValue) -> Option<String> {
+fn cell_text(v: &improv_engine::CellValue, neutralize_formulas: bool) -> Option<String> {
     use improv_engine::CellValue;
     match v {
         CellValue::Num(bits) => {
@@ -344,6 +452,7 @@ fn cell_text(v: &improv_engine::CellValue) -> Option<String> {
             n.is_finite().then(|| n.to_string())
         }
         CellValue::Err(_) => None,
+        CellValue::Text(t) => Some(neutralize(t.clone(), neutralize_formulas)),
         other => Some(other.to_string()),
     }
 }
@@ -381,6 +490,7 @@ mod tests {
                 },
             ],
             item_id_base: 1000,
+            max_records: None,
         }
     }
 
@@ -563,6 +673,122 @@ mod tests {
             model2.input(MeasureId(101), &coord_a2),
             Some(&Value::Text("hello world".to_string()))
         );
+    }
+
+    /// Data rows of an export, parsed by a real CSV reader (fields can hold
+    /// quoted tabs/CRs).
+    fn csv_rows(buf: &[u8]) -> Vec<Vec<String>> {
+        csv::Reader::from_reader(buf)
+            .records()
+            .map(|r| r.unwrap().iter().map(str::to_string).collect())
+            .collect()
+    }
+
+    /// A Text measure over a Product category, for the injection tests.
+    fn text_model(product: &str, note: &str) -> Model {
+        let mut spec = revenue_spec();
+        spec.value_type = ValueType::Text;
+        spec.value_column = ColumnRef::Index(1);
+        spec.has_header = false;
+        spec.dimensions = vec![DimensionMapping {
+            column: ColumnRef::Index(0),
+            category_id: CategoryId(2),
+            category_name: "Product".into(),
+        }];
+        let mut w = csv::Writer::from_writer(Vec::new());
+        w.write_record([product, note]).unwrap();
+        let data = w.into_inner().unwrap();
+        let mut model = Model::new();
+        import_csv_from(Cursor::new(data), &mut model, &spec).unwrap();
+        model
+    }
+
+    #[test]
+    fn export_neutralizes_formula_text_by_default() {
+        for lead in ["=", "+", "-", "@", "\t", "\r"] {
+            let payload = format!("{lead}cmd|' /C calc'!A0");
+            let model = text_model(&payload, &payload);
+            let mut buf = Vec::new();
+            export_measure_csv_to(&model, MeasureId(100), &mut buf, b',').unwrap();
+            let rows = csv_rows(&buf);
+            let quoted = format!("'{payload}");
+            assert_eq!(rows, vec![vec![quoted.clone(), quoted]], "{lead:?}");
+        }
+        // Harmless text is left alone.
+        let model = text_model("Widget", "fine = ok");
+        let mut buf = Vec::new();
+        export_measure_csv_to(&model, MeasureId(100), &mut buf, b',').unwrap();
+        assert_eq!(csv_rows(&buf), vec![vec!["Widget", "fine = ok"]]);
+    }
+
+    #[test]
+    fn export_leaves_negative_numbers_alone() {
+        let mut model = Model::new();
+        import_csv_from(
+            Cursor::new("time,product,revenue\n2025,WidgetA,-5\n"),
+            &mut model,
+            &revenue_spec(),
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        export_measure_csv_to(&model, MeasureId(100), &mut buf, b',').unwrap();
+        assert_eq!(csv_rows(&buf), vec![vec!["2025", "WidgetA", "-5"]]);
+    }
+
+    #[test]
+    fn export_round_trip_can_opt_out_of_neutralizing() {
+        let model = text_model("-East", "=A1+1");
+        let spec = ExportSpec {
+            neutralize_formulas: false,
+            ..ExportSpec::default()
+        };
+        let mut buf = Vec::new();
+        export_measure_csv_with(&model, MeasureId(100), &mut buf, &spec).unwrap();
+        assert_eq!(csv_rows(&buf), vec![vec!["-East", "=A1+1"]]);
+    }
+
+    #[test]
+    fn import_caps_record_count() {
+        let mut spec = revenue_spec();
+        spec.max_records = Some(2);
+        let mut model = Model::new();
+        let err = import_csv_from(Cursor::new(SALES_CSV), &mut model, &spec).unwrap_err();
+        assert!(err.to_string().contains("more than 2 records"), "{err}");
+        assert!(model.inputs.is_empty(), "atomic: nothing imported");
+        spec.max_records = Some(3);
+        assert_eq!(
+            import_csv_from(Cursor::new(SALES_CSV), &mut model, &spec).unwrap(),
+            3
+        );
+    }
+
+    #[test]
+    fn import_caps_field_length() {
+        let ok = "x".repeat(MAX_FIELD_BYTES);
+        let csv_ok = format!("time,product,revenue\n2025,{ok},1\n");
+        let mut model = Model::new();
+        assert_eq!(
+            import_csv_from(Cursor::new(csv_ok), &mut model, &revenue_spec()).unwrap(),
+            1
+        );
+        let big = "x".repeat(MAX_FIELD_BYTES + 1);
+        let csv_big = format!("time,product,revenue\n2025,{big},1\n");
+        let err =
+            import_csv_from(Cursor::new(csv_big), &mut Model::new(), &revenue_spec()).unwrap_err();
+        assert!(err.to_string().contains("row 2: a field exceeds"), "{err}");
+    }
+
+    #[test]
+    fn import_refuses_a_huge_record_while_streaming() {
+        // An unterminated quote would otherwise swallow the whole input into
+        // one field; the reader budget stops it at MAX_RECORD_BYTES.
+        let header = "time,product,revenue\n2025,A,1\n2025,\"";
+        let reader = io::Read::chain(
+            Cursor::new(header),
+            io::Read::take(io::repeat(b'x'), MAX_RECORD_BYTES * 4),
+        );
+        let err = import_csv_from(reader, &mut Model::new(), &revenue_spec()).unwrap_err();
+        assert!(err.to_string().contains("exceeds"), "{err}");
     }
 
     #[test]

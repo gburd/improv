@@ -7,18 +7,63 @@
 
 use crate::backend::{Backend, Cell, Table};
 use crate::{Result, SqlError};
+use postgres::config::{Host, SslMode};
 use postgres::types::Type;
-use postgres::{Client, NoTls};
+use postgres::{Client, Config, NoTls};
 
 /// Open a Postgres connection from a full libpq/URI connection string.
 ///
 /// The string may embed a password; **do not log it**. Prefer building it via
 /// `conn::open`, which pulls the secret from the environment. On failure the
 /// error is redacted so no secret leaks into logs.
+///
+/// **No TLS is built in.** To keep the password off the wire in cleartext the
+/// connection is refused (fail closed, before any network I/O) unless every
+/// host is loopback or a Unix socket, or the string explicitly says
+/// `sslmode=disable`. `sslmode=require` is refused too, since it cannot be
+/// honoured. Reach a remote server over an SSH tunnel or a local proxy.
 pub fn connect_postgres(conn_str: &str) -> Result<Backend> {
-    let client = Client::connect(conn_str, NoTls)
+    let config: Config = conn_str
+        .parse()
+        .map_err(|_| SqlError::Connect("invalid postgres connection string (redacted)".into()))?;
+    check_pg_transport(&config)?;
+    let client = config
+        .connect(NoTls)
         .map_err(|e| SqlError::Connect(format!("postgres connect failed: {}", redact_pg(e))))?;
     Ok(Backend::Postgres(client))
+}
+
+/// Refuse a connection that would send credentials in cleartext off-host, or
+/// that asks for TLS this build cannot provide. See [`connect_postgres`].
+fn check_pg_transport(config: &Config) -> Result<()> {
+    let no_tls = |why: &str| {
+        Err(SqlError::Connect(format!(
+            "postgres: TLS isn't built into this build of Improv; {why}"
+        )))
+    };
+    let mode = config.get_ssl_mode();
+    if mode == SslMode::Require {
+        return no_tls("sslmode=require cannot be honoured (use an SSH tunnel to a loopback port)");
+    }
+    let host_is_local = |h: &Host| match h {
+        Host::Tcp(name) => {
+            name.eq_ignore_ascii_case("localhost")
+                || name
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        }
+        #[cfg(unix)]
+        Host::Unix(_) => true,
+    };
+    let local = config.get_hosts().iter().all(host_is_local)
+        && config.get_hostaddrs().iter().all(|ip| ip.is_loopback());
+    if !local && mode != SslMode::Disable {
+        return no_tls(
+            "refusing a non-loopback host without an explicit sslmode=disable \
+             (the password would cross the network in cleartext)",
+        );
+    }
+    Ok(())
 }
 
 /// Best-effort scrub of a driver error so a password embedded in a connection
@@ -34,23 +79,26 @@ fn redact_pg(e: postgres::Error) -> String {
 }
 
 pub(crate) fn pg_query(client: &mut Client, sql: &str) -> Result<Table> {
-    let rows = client
-        .query(sql, &[])
-        .map_err(|e| SqlError::Import(format!("postgres query failed: {}", redact_pg(e))))?;
-
-    // Column names come from the first row; an empty result still needs them, so
-    // fall back to a prepared statement's column metadata when there are no rows.
-    let columns: Vec<String> = if let Some(r0) = rows.first() {
-        r0.columns().iter().map(|c| c.name().to_string()).collect()
-    } else {
-        let stmt = client
-            .prepare(sql)
-            .map_err(|e| SqlError::Import(format!("postgres prepare failed: {}", redact_pg(e))))?;
-        stmt.columns()
-            .iter()
-            .map(|c| c.name().to_string())
-            .collect()
-    };
+    // Run the query inside a READ ONLY transaction so even a data-modifying
+    // CTE (`WITH x AS (DELETE ...) SELECT ...`) is refused by the server. The
+    // transaction is rolled back on drop if anything below fails.
+    let pg_err =
+        |what: &str, e| SqlError::Import(format!("postgres {what} failed: {}", redact_pg(e)));
+    let mut tx = client
+        .build_transaction()
+        .read_only(true)
+        .start()
+        .map_err(|e| pg_err("begin read only", e))?;
+    // Prepare once: the statement carries the column names even for an empty
+    // result.
+    let stmt = tx.prepare(sql).map_err(|e| pg_err("prepare", e))?;
+    let rows = tx.query(&stmt, &[]).map_err(|e| pg_err("query", e))?;
+    let columns: Vec<String> = stmt
+        .columns()
+        .iter()
+        .map(|c| c.name().to_string())
+        .collect();
+    tx.commit().map_err(|e| pg_err("commit", e))?;
 
     let mut out_rows = Vec::with_capacity(rows.len());
     for row in &rows {
@@ -90,12 +138,10 @@ fn pg_cell(row: &postgres::Row, i: usize) -> Result<Cell> {
         Type::FLOAT8 => row
             .try_get::<_, Option<f64>>(i)
             .map(|o| o.map(Cell::Float).unwrap_or(Cell::Null)),
-        // NUMERIC has no native Rust mapping without extra crates; pg can cast it
-        // to text on the way out. Read it as a string and parse to Float.
-        Type::NUMERIC => row.try_get::<_, Option<String>>(i).map(|o| match o {
-            Some(s) => s.parse::<f64>().map(Cell::Float).unwrap_or(Cell::Text(s)),
-            None => Cell::Null,
-        }),
+        // NUMERIC arrives in its binary wire form; decode it to Float.
+        Type::NUMERIC => row
+            .try_get::<_, Option<PgNumeric>>(i)
+            .map(|o| o.map(|n| Cell::Float(n.0)).unwrap_or(Cell::Null)),
         // Text-family (TEXT/VARCHAR/BPCHAR/NAME/…): read as String.
         _ => row
             .try_get::<_, Option<String>>(i)
@@ -107,6 +153,39 @@ fn pg_cell(row: &postgres::Row, i: usize) -> Result<Cell> {
             redact_str(&e.to_string())
         ))
     })
+}
+
+/// A Postgres `NUMERIC` read as `f64` (precision beyond f64 is lost, which is
+/// what the model's numeric cells hold anyway).
+struct PgNumeric(f64);
+
+impl<'a> postgres::types::FromSql<'a> for PgNumeric {
+    /// Binary layout: ndigits i16, weight i16, sign u16, dscale u16, then
+    /// `ndigits` base-10000 digits (i16), the first worth `10000^weight`.
+    fn from_sql(
+        _ty: &Type,
+        raw: &'a [u8],
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let word =
+            |k: usize| -> std::result::Result<i16, Box<dyn std::error::Error + Sync + Send>> {
+                raw.get(2 * k..2 * k + 2)
+                    .map(|b| i16::from_be_bytes([b[0], b[1]]))
+                    .ok_or_else(|| "truncated numeric".into())
+            };
+        let (ndigits, weight, sign) = (word(0)?, word(1)?, word(2)? as u16);
+        if sign == 0xC000 {
+            return Ok(PgNumeric(f64::NAN));
+        }
+        let mut v = 0.0;
+        for k in 0..ndigits.max(0) as usize {
+            v += f64::from(word(4 + k)?) * 10000f64.powi(i32::from(weight) - k as i32);
+        }
+        Ok(PgNumeric(if sign == 0x4000 { -v } else { v }))
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        *ty == Type::NUMERIC
+    }
 }
 
 pub(crate) fn pg_execute(client: &mut Client, sql: &str, params: &[Cell]) -> Result<()> {
@@ -176,5 +255,126 @@ fn redact_str(s: &str) -> String {
         "(redacted)".to_string()
     } else {
         s.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transport(dsn: &str) -> Result<()> {
+        check_pg_transport(&dsn.parse().unwrap())
+    }
+
+    #[test]
+    fn transport_allows_loopback_and_sockets() {
+        for ok in [
+            "host=localhost user=u",
+            "host=127.0.0.1 user=u",
+            "host=::1 user=u",
+            "postgresql://u@localhost:5433/db",
+            "host=/var/run/postgresql user=u",
+            "host=db.example.com user=u sslmode=disable",
+        ] {
+            assert!(transport(ok).is_ok(), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn transport_refuses_cleartext_remote_and_unhonourable_tls() {
+        for bad in [
+            "host=db.example.com user=u",
+            "host=10.0.0.5 user=u sslmode=prefer",
+            "postgresql://u@db.example.com/db",
+            "host=localhost,db.example.com user=u",
+            "host=localhost hostaddr=10.0.0.5 user=u",
+            "host=localhost user=u sslmode=require",
+        ] {
+            let err = transport(bad).unwrap_err().to_string();
+            assert!(err.contains("TLS isn't built in"), "{bad:?}: {err}");
+        }
+        // Refused before any network I/O, through the public entry point.
+        assert!(connect_postgres("host=db.example.com user=u").is_err());
+        assert!(connect_postgres("not a dsn ===").is_err());
+    }
+
+    #[test]
+    fn redact_str_scrubs_secrets() {
+        assert_eq!(redact_str("password=x"), "(redacted)");
+        assert_eq!(redact_str("postgres://u:p@h"), "(redacted)");
+        assert_eq!(redact_str("plain"), "plain");
+    }
+
+    /// Live: needs `IMPROV_TEST_PG` (a libpq DSN to a scratch database).
+    fn live() -> Option<Backend> {
+        let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return None;
+        };
+        Some(connect_postgres(&dsn).expect("connect IMPROV_TEST_PG"))
+    }
+
+    #[test]
+    fn pg_maps_every_column_type() {
+        let Some(mut be) = live() else { return };
+        let t = be
+            .query(
+                "SELECT true AS b, 2::int2 AS s, 3::int4 AS i, 4::int8 AS l, \
+                 1.5::float4 AS f, 2.5::float8 AS d, 3.25::numeric AS n, \
+                 'x'::text AS t, NULL::int4 AS z, NULL::text AS zt",
+            )
+            .unwrap();
+        assert_eq!(
+            t.columns,
+            ["b", "s", "i", "l", "f", "d", "n", "t", "z", "zt"]
+        );
+        assert_eq!(
+            t.rows,
+            vec![vec![
+                Cell::Bool(true),
+                Cell::Int(2),
+                Cell::Int(3),
+                Cell::Int(4),
+                Cell::Float(1.5),
+                Cell::Float(2.5),
+                Cell::Float(3.25),
+                Cell::Text("x".into()),
+                Cell::Null,
+                Cell::Null,
+            ]]
+        );
+        // An empty result still reports its columns.
+        let e = be.query("SELECT 1 AS a, 'q' AS b WHERE false").unwrap();
+        assert_eq!(e.columns, ["a", "b"]);
+        assert!(e.rows.is_empty());
+        let n = be
+            .query("SELECT -12345.678::numeric AS a, 0::numeric AS b, 'NaN'::numeric AS c")
+            .unwrap();
+        assert_eq!(n.rows[0][..2], [Cell::Float(-12345.678), Cell::Float(0.0)]);
+        assert!(matches!(n.rows[0][2], Cell::Float(f) if f.is_nan()));
+        // An unmappable type is an error, not a panic.
+        assert!(be.query("SELECT now() AS ts").is_err());
+        assert!(be.query("SELECT * FROM no_such_table").is_err());
+    }
+
+    #[test]
+    fn pg_refresh_query_runs_read_only() {
+        let Some(mut be) = live() else { return };
+        be.execute("DROP TABLE IF EXISTS improv_pg_ro", &[])
+            .unwrap();
+        be.execute("CREATE TABLE improv_pg_ro (v int8)", &[])
+            .unwrap();
+        be.execute("INSERT INTO improv_pg_ro VALUES ($1)", &[Cell::Int(7)])
+            .unwrap();
+        // A data-modifying CTE passes the keyword check but the READ ONLY
+        // transaction refuses it server-side.
+        let cte = "WITH x AS (DELETE FROM improv_pg_ro RETURNING *) SELECT * FROM x";
+        assert!(crate::check_read_only_sql(cte).is_ok());
+        assert!(be.query(cte).is_err());
+        assert!(be.query("DELETE FROM improv_pg_ro").is_err());
+        // The connection is still usable and the row survived.
+        let t = be.query("SELECT v FROM improv_pg_ro").unwrap();
+        assert_eq!(t.rows, vec![vec![Cell::Int(7)]]);
+        be.execute("DROP TABLE improv_pg_ro", &[]).unwrap();
     }
 }

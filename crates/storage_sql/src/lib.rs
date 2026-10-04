@@ -6,10 +6,18 @@
 //! * **Storage separation.** External SQL is a data *source/sink*; the canonical
 //!   model lives in Mentat. Import produces ordinary categories/items/measures/
 //!   input cells — the engine gains no SQL-specific paths and stays deterministic.
-//! * **Security.** Queries are run as-is against a caller-provided connection;
-//!   values are read through rusqlite's typed API (no string interpolation of
-//!   data). Credential/connection management is the caller's concern; this crate
-//!   takes an open `rusqlite::Connection`.
+//! * **Security.** An import/refresh query must be a single `SELECT`/`WITH`
+//!   statement ([`check_read_only_sql`]), and every backend runs it read-only
+//!   (Postgres and DuckDB in a `READ ONLY` transaction, DuckDB with external
+//!   access off; SQLite only if the statement is read-only). Data values are
+//!   bound as parameters, never interpolated. Postgres has no TLS in this
+//!   build, so [`connect_postgres`] refuses a non-loopback host unless the
+//!   connection string says `sslmode=disable`.
+//!
+//! Testing Postgres: the live tests skip unless `IMPROV_TEST_PG` holds a
+//! libpq DSN to a scratch database they may create/drop tables in, e.g.
+//! `IMPROV_TEST_PG="host=127.0.0.1 user=improv password=improv
+//! dbname=improv_test" cargo test -p improv_storage_sql`.
 //!
 //! Backends sit behind a common [`Backend`] enum ([`backend`] module): SQLite
 //! (the reference driver, and what the embedded Mentat store already uses) and
@@ -43,6 +51,47 @@ pub enum SqlError {
 }
 
 pub type Result<T> = std::result::Result<T, SqlError>;
+
+/// Reject anything that is not a single read statement.
+///
+/// A stored `SqlSource.query` is re-run on every refresh with the analyst's
+/// credentials, so it must not be able to write. After skipping leading
+/// whitespace and `--` / `/* */` comments, the text must start with the
+/// keyword `SELECT` or `WITH`, and a `;` may only be followed by whitespace.
+/// This is a cheap first line of defence (deliberately conservative: a `;`
+/// inside a string literal is rejected too). Each backend additionally runs
+/// the query read-only (see [`Backend::query`]), which is what catches a
+/// data-modifying CTE such as `WITH x AS (DELETE ...) SELECT ...`.
+pub fn check_read_only_sql(sql: &str) -> Result<()> {
+    let reject = |why: &str| Err(SqlError::Import(format!("refusing SQL query: {why}")));
+    let mut s = sql;
+    loop {
+        s = s.trim_start();
+        if let Some(rest) = s.strip_prefix("--") {
+            s = rest.find('\n').map_or("", |i| &rest[i + 1..]);
+        } else if let Some(rest) = s.strip_prefix("/*") {
+            match rest.find("*/") {
+                Some(i) => s = &rest[i + 2..],
+                None => return reject("unterminated comment"),
+            }
+        } else {
+            break;
+        }
+    }
+    let word: String = s
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    if !word.eq_ignore_ascii_case("select") && !word.eq_ignore_ascii_case("with") {
+        return reject("only a single SELECT or WITH statement is allowed");
+    }
+    if let Some(i) = s.find(';') {
+        if !s[i + 1..].trim().is_empty() {
+            return reject("multiple statements are not allowed");
+        }
+    }
+    Ok(())
+}
 
 /// How to map a query's result columns onto model elements.
 ///
@@ -83,7 +132,9 @@ pub fn import_query<C: SqlConn>(
     model: &mut Model,
     spec: &ImportSpec,
 ) -> Result<usize> {
-    // Run the query once, up front, into a backend-agnostic table.
+    // Run the query once, up front, into a backend-agnostic table. Only a
+    // single read statement is accepted, and backends run it read-only.
+    check_read_only_sql(&spec.query)?;
     let table = conn.query(&spec.query)?;
 
     // Ensure the categories exist.
@@ -635,6 +686,75 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         assert_eq!(vals, vec![500.0, 1000.0, 1200.0]);
+    }
+
+    #[test]
+    fn read_only_sql_accepts_single_reads() {
+        for ok in [
+            "SELECT 1",
+            "  select time, product FROM sales;  ",
+            "-- note\nSELECT 1",
+            "/* hi */ /* again */ WITH x AS (SELECT 1) SELECT * FROM x",
+            "with x as (select 1) select * from x;\n",
+        ] {
+            assert!(check_read_only_sql(ok).is_ok(), "{ok:?}");
+        }
+    }
+
+    #[test]
+    fn read_only_sql_rejects_writes_and_stacking() {
+        for bad in [
+            "",
+            "drop table sales",
+            "select 1; drop table x",
+            "SELECT 1;DELETE FROM sales",
+            "/* */ delete from sales",
+            "-- SELECT\nupdate sales set revenue = 0",
+            "/* unterminated SELECT",
+            "selectx 1",
+            "COPY sales TO PROGRAM 'id'",
+            "ATTACH 'x.db'",
+            "PRAGMA writable_schema = 1",
+        ] {
+            assert!(check_read_only_sql(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// `WITH ... DELETE` passes the keyword check; the backend's read-only
+    /// execution is what stops it (SQLite: `sqlite3_stmt_readonly`).
+    #[test]
+    fn sqlite_refuses_cte_write() {
+        let conn = source_db();
+        let mut spec = revenue_spec();
+        spec.query = "WITH x AS (SELECT 1) DELETE FROM sales".into();
+        assert!(check_read_only_sql(&spec.query).is_ok());
+        let mut model = Model::new();
+        assert!(import_query(&conn, &mut model, &spec).is_err());
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sales", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3, "rows must survive");
+    }
+
+    /// DuckDB runs queries in a READ ONLY transaction and with external access
+    /// off, so neither a write nor a host-file read gets through.
+    #[test]
+    fn duckdb_query_is_read_only_and_sandboxed() {
+        let mut be = crate::connect_duckdb(":memory:").unwrap();
+        be.execute("CREATE TABLE t (v DOUBLE)", &[]).unwrap();
+        be.execute("INSERT INTO t VALUES (?)", &[Cell::Float(1.0)])
+            .unwrap();
+        // Bypass check_read_only_sql to prove the transaction layer holds.
+        assert!(be.query("DELETE FROM t").is_err());
+        assert!(be.query("INSERT INTO t VALUES (2)").is_err());
+        assert!(be.query("WITH x AS (SELECT 1) DELETE FROM t").is_err());
+        assert!(be.query("SELECT * FROM read_csv('/etc/passwd')").is_err());
+        let t = be.query("SELECT v FROM t").unwrap();
+        assert_eq!(t.rows.len(), 1, "the read still works, the writes did not");
+        // The handle remains usable for export after a refused query.
+        be.execute("INSERT INTO t VALUES (?)", &[Cell::Float(3.0)])
+            .unwrap();
+        assert_eq!(be.query("SELECT v FROM t").unwrap().rows.len(), 2);
     }
 
     /// Postgres query mapping: guarded by IMPROV_TEST_PG. Skips cleanly if unset

@@ -929,7 +929,7 @@ fn apply_stream_line(
     model: &mut Model,
     engine: &mut improv_engine::session::Engine,
     line: &str,
-) -> Result<HashMap<MeasureId, improv_engine::session::MeasureValues>, String> {
+) -> Result<improv_engine::session::Snapshot, String> {
     let mut parts = line.split_whitespace();
     let measure_tok = parts.next().ok_or("empty line")?;
     let value_tok = parts.next().ok_or("missing <value>")?;
@@ -965,10 +965,10 @@ fn apply_stream_line(
 fn print_stream_diff(
     model: &Model,
     targets: &[MeasureId],
-    before: &HashMap<MeasureId, improv_engine::session::MeasureValues>,
-    after: &HashMap<MeasureId, improv_engine::session::MeasureValues>,
+    before: &improv_engine::session::Snapshot,
+    after: &improv_engine::session::Snapshot,
 ) {
-    let empty: improv_engine::session::MeasureValues = HashMap::new();
+    let empty = std::sync::Arc::default();
     for mid in targets {
         let before_m = before.get(mid).unwrap_or(&empty);
         let after_m = after.get(mid).unwrap_or(&empty);
@@ -1211,6 +1211,7 @@ fn cmd_import_csv(rest: &[String]) -> Result<(), String> {
         value_column: col_ref(value_col),
         dimensions,
         item_id_base: 1_000_000,
+        max_records: None,
     };
 
     let mut store = open(db)?;

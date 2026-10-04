@@ -407,23 +407,12 @@ fn scale_evaluate_3d() {
 /// Build a large grid with the live `Engine`, then apply MANY single-cell edits
 /// via `engine.set(..)`, checking a sample recompute to the exact new value.
 /// This is the delta path: each edit recomputes only the affected coordinate,
-/// not the whole model. Prints edits/sec.
+/// not the whole model. Prints edits/sec and time per edit.
 ///
-/// Throughput note: `Engine::set` currently returns a *clone of the full
-/// snapshot* every call, so per-edit cost is O(total cells) from the clone, not
-/// from the (tiny) delta recompute. That clone, not the dataflow, dominates the
-/// edits/sec here. A future delta-only return (changed cells only) would lift
-/// throughput sharply; the grid/edit counts below are sized so the clone stays
-/// affordable while still exercising thousands of real deltas.
-#[test]
-#[ignore = "heavy; run with --ignored --nocapture"]
-fn incremental_many_edits() {
-    // 100x100 = 10k cells, 5k edits: exercises thousands of deltas while the
-    // per-edit full-snapshot clone (see note above) stays affordable. Bump both
-    // to push harder once the engine can return delta-only snapshots.
-    let (n_time, n_product) = (100usize, 100usize);
-    const N_EDITS: usize = 5_000;
-
+/// Snapshots are copy-on-write (`session::Snapshot`), so an edit costs the
+/// delta, not a copy of every cell: per-edit time should be roughly the same
+/// at 10k and 100k cells (compare the two tests' output).
+fn many_edits(n_time: usize, n_product: usize, n_edits: usize) {
     let t0 = Instant::now();
     let (mut engine, snap) = Engine::new(&grid_model(n_time, n_product), &[REVENUE]).expect("eng");
     let build = t0.elapsed();
@@ -441,7 +430,7 @@ fn incremental_many_edits() {
 
     let t1 = Instant::now();
     let mut checks = 0usize;
-    for e in 0..N_EDITS {
+    for e in 0..n_edits {
         idx = (idx + stride) % total;
         let t = idx / n_product;
         let p = idx % n_product;
@@ -463,11 +452,28 @@ fn incremental_many_edits() {
         }
     }
     let edit_time = t1.elapsed();
-    let per_sec = N_EDITS as f64 / edit_time.as_secs_f64();
+    let per_sec = n_edits as f64 / edit_time.as_secs_f64();
+    let per_edit_us = edit_time.as_secs_f64() * 1e6 / n_edits as f64;
     eprintln!(
         "[incremental] {n_time}x{n_product} = {total} cells, engine build {build:?}; \
-         {N_EDITS} edits in {edit_time:?} = {per_sec:.0} edits/sec ({checks} sampled checks)"
+         {n_edits} edits in {edit_time:?} = {per_sec:.0} edits/sec, \
+         {per_edit_us:.1} us/edit ({checks} sampled checks)"
     );
+}
+
+#[test]
+#[ignore = "heavy; run with --ignored --nocapture"]
+fn incremental_many_edits() {
+    // 100x100 = 10k cells, 5k edits.
+    many_edits(100, 100, 5_000);
+}
+
+#[test]
+#[ignore = "heavy; run with --ignored --nocapture"]
+fn incremental_many_edits_100k() {
+    // 1000x100 = 100k cells, same edit count: per-edit time should match the
+    // 10k run (an edit is O(delta), not O(model)).
+    many_edits(1_000, 100, 5_000);
 }
 
 /// Sanity: the engine's edited cell agrees with a from-scratch `evaluate` of a

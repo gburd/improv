@@ -21,7 +21,7 @@ use improv_core_model::{
     Measure, MeasureId, MeasureKind, Model, Name, ParseError, UnaryOp, Value, ValueType, View,
     ViewId,
 };
-use improv_engine::session::{Engine, MeasureValues};
+use improv_engine::session::{Engine, Snapshot};
 use improv_engine::{encode_coord, CellValue, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
@@ -106,7 +106,7 @@ pub struct ImprovApp {
     model: Model,
     /// Live incremental engine over all derived measures, plus its snapshot.
     engine: Option<Engine>,
-    snapshot: HashMap<MeasureId, MeasureValues>,
+    snapshot: Snapshot,
     /// The matrices on the canvas, in canvas order. **Always non-empty**: index
     /// 0 is the view's primary matrix (see [`View`]'s flat fields), the rest are
     /// its `placements`.
@@ -2131,12 +2131,12 @@ fn consume_enter(ui: &egui::Ui) {
 
 /// Build a live engine over all derived measures in `model`, plus its initial
 /// snapshot. Falls back to no engine (inputs still render) on build failure.
-fn build_engine(model: &Model) -> (Option<Engine>, HashMap<MeasureId, MeasureValues>) {
+fn build_engine(model: &Model) -> (Option<Engine>, Snapshot) {
     match try_build_engine(model) {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("improv-gui: engine build failed: {e}");
-            (None, HashMap::new())
+            (None, Snapshot::default())
         }
     }
 }
@@ -2253,9 +2253,7 @@ fn engine_model(model: &Model) -> Cow<'_, Model> {
 ///
 /// `Ok(None)` (no engine, successfully) when nothing is left to compute — a
 /// model with no derived measures, or one whose formulas are all disabled.
-fn try_build_engine(
-    model: &Model,
-) -> Result<(Option<Engine>, HashMap<MeasureId, MeasureValues>), String> {
+fn try_build_engine(model: &Model) -> Result<(Option<Engine>, Snapshot), String> {
     let model = engine_model(model);
     let derived: Vec<MeasureId> = model
         .measures
@@ -2264,7 +2262,7 @@ fn try_build_engine(
         .map(|m| m.id)
         .collect();
     if derived.is_empty() {
-        return Ok((None, HashMap::new()));
+        return Ok((None, Snapshot::default()));
     }
     let (e, snap) = Engine::new(&model, &derived).map_err(|e| e.to_string())?;
     Ok((Some(e), snap))

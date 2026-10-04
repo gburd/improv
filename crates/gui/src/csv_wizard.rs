@@ -150,6 +150,7 @@ pub fn build_import_spec(form: &ImportForm) -> Result<ImportSpec, String> {
         value_column: column_ref(value_col, form.has_header),
         dimensions,
         item_id_base: ITEM_ID_BASE,
+        max_records: None,
     })
 }
 

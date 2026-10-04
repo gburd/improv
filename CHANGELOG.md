@@ -48,6 +48,41 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **Server: model cache.** Requests share one cached model, reloaded only
   after a write, instead of loading the store up to three times per request
   (P4).
+- **SQL refresh is read-only.** A stored `SqlSource.query` must be a single
+  `SELECT`/`WITH` statement (`check_read_only_sql`; stacked statements are
+  refused), and every backend executes it read-only: Postgres in a
+  `READ ONLY` transaction, DuckDB in a `READ ONLY` transaction with
+  `enable_external_access = false` (no `read_csv('/etc/passwd')`, URLs or
+  `ATTACH`), SQLite only if `sqlite3_stmt_readonly`. A data-modifying CTE
+  (`WITH x AS (DELETE ...) SELECT ...`) is refused by the server.
+- **Postgres fails closed on cleartext:** this build has no TLS, so
+  `connect_postgres` refuses a non-loopback host unless the connection
+  string says `sslmode=disable` explicitly, and refuses `sslmode=require`
+  (it cannot be honoured). Use an SSH tunnel to a loopback port.
+- Postgres `NUMERIC` columns now import as numbers (they failed to decode).
+- **CSV export neutralizes formula injection.** Text cells, item names and
+  headers starting with `=`, `+`, `-`, `@`, tab or CR are written with a
+  leading `'`, so Excel/LibreOffice show them as text instead of running
+  them (S16). Numbers are untouched. `ExportSpec { neutralize_formulas:
+  false, .. }` with `export_measure_csv_with` turns it off for an exact
+  round trip.
+- **CSV import is size-capped.** A field over 1 MiB, a record over 64 MiB
+  (checked while streaming, so an unterminated quote can't buffer the
+  file) or more than `ImportSpec::max_records` records (default
+  10,000,000) is an error instead of an out-of-memory (S17).
+
+### Performance
+
+- **Engine edits cost O(changed measures), not O(model)** (P3).
+  `session::Engine` now returns a copy-on-write `session::Snapshot`
+  (`Arc<HashMap<MeasureId, Arc<MeasureValues>>>`): an edit shares every
+  unchanged measure with the previous snapshot instead of cloning all
+  tracked cells. On the `incremental_many_edits` stress test (release,
+  5,000 single-cell edits) the time per edit drops from 950 us to 62 us at
+  10k cells (1,052 to 16,097 edits/s), and from 5,639 us to 71 us at 100k
+  cells (177 to 14,039 edits/s). It is now almost flat in model size.
+  `Engine::new`/`set`/`clear`/`apply` return `Snapshot`, and callers clone
+  it cheaply.
 
 ### Changed
 

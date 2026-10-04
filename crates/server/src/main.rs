@@ -658,16 +658,16 @@ async fn eval_measure(
     let values = tokio::task::spawn_blocking(move || {
         let (mut engine, _initial) =
             Engine::new(&engine_model, &targets).map_err(|e| e.to_string())?;
-        let mut snap = engine.apply(edits).map_err(|e| e.to_string())?;
-        Ok::<_, String>(snap.remove(&mid).unwrap_or_default())
+        let snap = engine.apply(edits).map_err(|e| e.to_string())?;
+        Ok::<_, String>(snap.get(&mid).cloned().unwrap_or_default())
     })
     .await
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
     .map_err(ApiError::Internal)?;
 
     let cells = values
-        .into_iter()
-        .map(|(k, n)| readable_key(&model, &k, n.as_num().unwrap_or(f64::NAN)))
+        .iter()
+        .map(|(k, n)| readable_key(&model, k, n.as_num().unwrap_or(f64::NAN)))
         .collect();
     Ok(Json(cells))
 }
