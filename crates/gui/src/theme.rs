@@ -20,9 +20,7 @@ pub const DARK_GRAY: Color32 = Color32::from_gray(0x55);
 pub const LIGHT_GRAY: Color32 = Color32::from_gray(0xAA);
 /// Grid cells, text fields, pressed faces, bevel light edges.
 pub const WHITE: Color32 = Color32::from_gray(0xFF);
-/// The scroller trough (the one value outside the four levels). Unused until
-/// the scrollers are restyled (spec §4.8).
-#[allow(dead_code)]
+/// The scroller trough (the one value outside the four levels, spec §4.8).
 pub const TROUGH: Color32 = Color32::from_gray(0x80);
 
 /// Every color the theme may use. `TRANSPARENT` is "no stroke / no shadow".
@@ -84,6 +82,30 @@ pub fn install_fonts(ctx: &egui::Context) {
             FontId::new(TEXT_SIZE, FontFamily::Name(BOLD.into())),
         );
     });
+}
+
+/// Show `area` NeXT-style: the bar always there, its trough [`TROUGH`].
+/// egui paints the trough with `extreme_bg_color`, which is WHITE for text
+/// edits, so it is swapped for the scroller only and restored for `add`.
+pub fn next_scroll<R>(
+    ui: &mut egui::Ui,
+    area: egui::ScrollArea,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::scroll_area::ScrollAreaOutput<R> {
+    ui.scope(|ui| {
+        ui.visuals_mut().extreme_bg_color = TROUGH;
+        area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+            .show(ui, |ui| {
+                content(ui);
+                add(ui)
+            })
+    })
+    .inner
+}
+
+/// Undo the trough color inside scrolled content, so text edits stay WHITE.
+pub fn content(ui: &mut egui::Ui) {
+    ui.visuals_mut().extreme_bg_color = WHITE;
 }
 
 /// Build the NeXTSTEP [`Style`]. Applied once at startup by [`apply`].
@@ -149,6 +171,17 @@ pub fn next_style() -> Style {
     style.spacing.button_padding = egui::vec2(8.0, 3.0);
     // §3: 17 px rows, header bands and tiles.
     style.spacing.interact_size.y = 17.0;
+    // §4.8: an always-there 19 px trough with a square knob (the knob takes
+    // the widget faces above). Bevel and grouped arrows are deferred.
+    style.spacing.scroll = egui::style::ScrollStyle {
+        floating: false,
+        bar_width: 19.0,
+        bar_inner_margin: 0.0,
+        bar_outer_margin: 0.0,
+        handle_min_length: 19.0,
+        foreground_color: false,
+        ..egui::style::ScrollStyle::solid()
+    };
     style
 }
 
@@ -230,5 +263,13 @@ mod tests {
             assert_eq!(s.bg_stroke.width, 1.0);
             assert_eq!(s.expansion, 0.0);
         }
+    }
+
+    #[test]
+    fn scrollers_are_solid_and_19_px() {
+        let s = next_style().spacing.scroll;
+        assert_eq!(s.bar_width, 19.0);
+        assert!(!s.floating);
+        assert!(!s.foreground_color);
     }
 }

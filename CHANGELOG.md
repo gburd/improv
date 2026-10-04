@@ -13,6 +13,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   selects a view and shows its computed description (measure, categories,
   pages); a double-click opens it. Categories and Measures move below as
   collapsible sections.
+- GUI: NeXT scrollers. The grid, model browser and formula list show an
+  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob
+  (the knob's bevel and NeXT's grouped arrow buttons are deferred).
 
 ### Added
 

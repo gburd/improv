@@ -2731,9 +2731,10 @@ impl ImprovApp {
             .rect(rect)
             .resizable(true)
             .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink(false)
-                    .show(ui, |ui| {
+                crate::theme::next_scroll(
+                    ui,
+                    egui::ScrollArea::vertical().auto_shrink(false),
+                    |ui| {
                         self.views_section(ui);
 
                         egui::CollapsingHeader::new("Categories")
@@ -2792,7 +2793,8 @@ impl ImprovApp {
                                     }
                                 });
                             });
-                    });
+                    },
+                );
             });
         self.show_browser = open;
     }
@@ -3018,9 +3020,10 @@ impl ImprovApp {
         let mut select: Option<MeasureId> = None;
         let mut toggle: Option<(MeasureId, bool)> = None;
         let mut rects: Vec<(MeasureId, egui::Rect)> = Vec::new();
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
+        crate::theme::next_scroll(
+            ui,
+            egui::ScrollArea::vertical().auto_shrink([false, true]),
+            |ui| {
                 white_selection(ui);
                 for (i, row) in rows.iter().enumerate() {
                     let selected = self.selected() == Some(row.measure);
@@ -3075,7 +3078,8 @@ impl ImprovApp {
                     }
                 }
                 self.new_formula_line(ui, editing);
-            });
+            },
+        );
         self.formula_row_rects = rects;
         // Selection left the rows (an input measure, or none): re-seed the
         // editor next time, as the old bar did on every selection change.
@@ -4143,7 +4147,12 @@ impl ImprovApp {
         // Cells abut: the rules, not item spacing, separate them.
         let spacing = ui.spacing().item_spacing;
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        let mut table = TableBuilder::new(ui).id_salt(("grid", uid)).striped(false);
+        // §4.8: the trough is `extreme_bg_color`; restored after the table.
+        ui.visuals_mut().extreme_bg_color = crate::theme::TROUGH;
+        let mut table = TableBuilder::new(ui)
+            .id_salt(("grid", uid))
+            .striped(false)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
         // One stub column per stacked row category, then one column per col line.
         for _ in 0..n_row_stub {
             table = table.column(Column::auto().resizable(true));
@@ -4290,6 +4299,7 @@ impl ImprovApp {
                                                 clicked_derived = true;
                                             }
                                         } else if editing_here {
+                                            crate::theme::content(ui);
                                             let resp = ui.add(
                                                 egui::TextEdit::singleline(&mut edit_buf)
                                                     .horizontal_align(if is_number {
@@ -4343,6 +4353,7 @@ impl ImprovApp {
             });
 
         ui.spacing_mut().item_spacing = spacing;
+        crate::theme::content(ui);
 
         // Apply what the closure recorded. A click in ANY matrix also focuses it,
         // so typing follows the mouse rather than staying on whichever matrix had
@@ -9205,6 +9216,51 @@ mod tests {
                         && win.contains_rect(r.rect.shrink(1.0)))
         });
         assert!(white, "{at:?}, right of the grid, sits on the white field");
+    }
+
+    /// E2: the grid's vertical scroller is always there, a 19 px TROUGH strip
+    /// beside the data rows, inside the worksheet window (spec §4.8).
+    #[test]
+    fn the_grid_shows_a_gray_trough() {
+        let (mut app, mut desk) = grid_desk();
+        let out = desk.frame(&mut app, Vec::new());
+        let win = win_rect(&desk.ctx, &app, 0);
+        let cell = cell_rect(&desk, &app, 0, 1);
+        let trough = fills(&out).into_iter().any(|(r, c)| {
+            c == crate::theme::TROUGH
+                && (r.width() - 19.0).abs() < 1.0
+                && r.left() >= cell.right() - 1.0
+                && r.y_range().contains(cell.center().y)
+                && win.contains_rect(r)
+        });
+        assert!(trough, "no 19 px TROUGH strip in {win:?}");
+    }
+
+    /// E2: the trough color does not leak into text edits inside a scroller:
+    /// the formula list's new-formula field is still WHITE.
+    #[test]
+    fn text_edits_in_a_scroller_stay_white() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let out = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.1);
+        let field = ctx
+            .viewport(|v| {
+                let w = v.prev_pass.widgets.get(egui::Id::new("formula_new"));
+                w.map(|w| w.rect)
+            })
+            .expect("formula_new shown");
+        let at = field.center();
+        let under: Vec<_> = fills(&out)
+            .into_iter()
+            .filter(|(r, _)| r.contains(at) && field.contains_rect(r.shrink(1.0)))
+            .collect();
+        assert!(
+            under.iter().any(|(_, c)| *c == crate::theme::WHITE),
+            "{field:?}: {under:?}"
+        );
+        assert!(under.iter().all(|(_, c)| *c != crate::theme::TROUGH));
     }
 
     /// Data cell `(ri, ci)`'s rect in the last pass.
