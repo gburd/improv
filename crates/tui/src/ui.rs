@@ -1,4 +1,5 @@
-//! Rendering: a header/status line plus the pivot grid as a table.
+//! Rendering: a status box (title, prompt/message, pages, filters, key help)
+//! sized to its content, over the pivot grid as a table.
 
 use crate::app::{App, CommandKind, Grid, GridGeom};
 use ratatui::{
@@ -9,22 +10,41 @@ use ratatui::{
     Frame,
 };
 
-fn fmt_cell(v: Option<f64>) -> String {
-    match v {
-        Some(n) => {
-            if n.is_nan() {
-                "#ERR".to_string()
-            } else if n.fract() == 0.0 && n.abs() < 1e15 {
-                format!("{n:.0}")
-            } else {
-                format!("{n:.2}")
-            }
+/// Key help entries, packed greedily into lines that fit the status box.
+const HELP: &[&str] = &[
+    "arrows/click: move",
+    "e/Enter: edit",
+    "[ ]: page",
+    "p: pivot",
+    "f/F: filter",
+    "S: save view",
+    "v: view",
+    "Tab/m: measure",
+    "I: import-csv",
+    "E: export-csv",
+    "q: quit",
+];
+
+fn help_lines(width: usize) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for h in HELP {
+        if !cur.is_empty() && cur.len() + 2 + h.len() > width {
+            lines.push(Line::from(std::mem::take(&mut cur)));
         }
-        None => String::new(),
+        if !cur.is_empty() {
+            cur.push_str("  ");
+        }
+        cur.push_str(h);
     }
+    lines.push(Line::from(cur));
+    lines
 }
 
-fn status_lines(app: &App) -> Vec<Line<'static>> {
+/// Status box content for an inner width of `width` columns. The prompt or
+/// message comes right after the title, so a short terminal clips the help
+/// text first, never the line being typed.
+fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let g = &app.grid;
     let axes = match (&g.row_cat, &g.col_cat) {
         (Some((_, r)), Some((_, c))) => format!("rows: {r}  cols: {c}"),
@@ -52,13 +72,24 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
             .get(app.cursor_col)
             .map(|(_, n)| n.as_str())
             .unwrap_or(""),
-        fmt_cell(g.value_at(app.cursor_row, app.cursor_col)),
+        g.display_at(app.cursor_row, app.cursor_col),
     );
 
     let mut lines = vec![Line::from(format!(
         "{} [{}]   {axes}   {coord}",
         g.measure_name, kind
     ))];
+    if let Some(buf) = &app.edit {
+        lines.push(Line::from(format!("edit> {buf}")));
+    } else if let Some((kind, buf)) = &app.command {
+        let prompt = match kind {
+            CommandKind::ImportCsv => "import-csv",
+            CommandKind::ExportCsv => "export-csv",
+        };
+        lines.push(Line::from(format!("{prompt}> {buf}")));
+    } else if let Some(msg) = &app.status {
+        lines.push(Line::from(msg.clone()));
+    }
     if !g.pages.is_empty() {
         let pages = g
             .pages
@@ -93,20 +124,7 @@ fn status_lines(app: &App) -> Vec<Line<'static>> {
             .join(", ");
         lines.push(Line::from(format!("filters: {f}   (F to clear)")));
     }
-    lines.push(Line::from(
-        "arrows/click: move  e/Enter: edit  [ ]: page  p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  I: import-csv  E: export-csv  q: quit",
-    ));
-    if let Some(buf) = &app.edit {
-        lines.push(Line::from(format!("edit> {buf}")));
-    } else if let Some((kind, buf)) = &app.command {
-        let prompt = match kind {
-            CommandKind::ImportCsv => "import-csv",
-            CommandKind::ExportCsv => "export-csv",
-        };
-        lines.push(Line::from(format!("{prompt}> {buf}")));
-    } else if let Some(msg) = &app.status {
-        lines.push(Line::from(msg.clone()));
-    }
+    lines.extend(help_lines(width));
     lines
 }
 
@@ -155,12 +173,16 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid) -> Table<'a> {
 }
 
 pub fn render(f: &mut Frame, app: &mut App) {
+    let lines = status_lines(app, f.area().width.saturating_sub(2) as usize);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(5), Constraint::Min(3)])
+        .constraints([
+            Constraint::Length(lines.len() as u16 + 2),
+            Constraint::Min(3),
+        ])
         .split(f.area());
 
-    let status = ratatui::widgets::Paragraph::new(status_lines(app))
+    let status = ratatui::widgets::Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Status "));
     f.render_widget(status, chunks[0]);
 
@@ -179,4 +201,59 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let table = grid_table(app, &app.grid);
     f.render_widget(table, chunks[1]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::revenue_model;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+
+    /// Render `app` into a `w`x`h` test terminal and return the buffer.
+    fn draw(app: &mut App, w: u16, h: u16) -> Buffer {
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| render(f, app)).unwrap();
+        term.backend().buffer().clone()
+    }
+
+    /// The buffer as one string per row.
+    fn text(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    fn row_of(lines: &[String], needle: &str) -> usize {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle:?} not on screen:\n{}", lines.join("\n")))
+    }
+
+    #[test]
+    fn help_packs_to_width() {
+        assert_eq!(help_lines(1000).len(), 1);
+        let narrow = help_lines(40);
+        assert!(narrow.len() > 2);
+        assert!(narrow.iter().all(|l| l.width() <= 40));
+        assert_eq!(help_lines(0).len(), HELP.len(), "one entry per line");
+    }
+
+    #[test]
+    fn prompt_and_full_help_visible_with_pages_and_filters() {
+        // Regression: a fixed 5-row status box (3 inner lines) pushed the
+        // edit prompt off-screen once a pages: or filters: line appeared, and
+        // the one-line help was cut off at the right edge.
+        let mut app = App::new(revenue_model()).unwrap();
+        app.toggle_filter_item(
+            improv_core_model::CategoryId(1),
+            improv_core_model::ItemId(10),
+        );
+        app.edit = Some("42".into());
+        let lines = text(&draw(&mut app, 60, 30));
+        let prompt = row_of(&lines, "edit> 42");
+        assert!(prompt < row_of(&lines, "filters: Time: 1 shown"));
+        assert!(row_of(&lines, "arrows/click: move") > prompt);
+        row_of(&lines, "q: quit");
+    }
 }

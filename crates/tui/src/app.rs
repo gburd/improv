@@ -1057,14 +1057,14 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use improv_core_model::{
         BinaryOp, DimensionSpec, Expr, Formula, Measure, MeasureKind, Name, ValueType,
     };
 
     // Canonical Time x Product revenue model (mirrors engine's fixture).
-    fn revenue_model() -> Model {
+    pub(crate) fn revenue_model() -> Model {
         let mut m = Model::new();
         let (time, product) = (CategoryId(1), CategoryId(2));
         m.add_category(time, "Time");
