@@ -38,6 +38,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   string says `sslmode=disable` explicitly, and refuses `sslmode=require`
   (it cannot be honoured). Use an SSH tunnel to a loopback port.
 - Postgres `NUMERIC` columns now import as numbers (they failed to decode).
+- **CSV export neutralizes formula injection.** Text cells, item names and
+  headers starting with `=`, `+`, `-`, `@`, tab or CR are written with a
+  leading `'`, so Excel/LibreOffice show them as text instead of running
+  them (S16). Numbers are untouched. `ExportSpec { neutralize_formulas:
+  false, .. }` with `export_measure_csv_with` turns it off for an exact
+  round trip.
+- **CSV import is size-capped.** A field over 1 MiB, a record over 64 MiB
+  (checked while streaming, so an unterminated quote can't buffer the
+  file) or more than `ImportSpec::max_records` records (default
+  10,000,000) is an error instead of an out-of-memory (S17).
 
 ### Changed
 

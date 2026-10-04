@@ -1211,6 +1211,7 @@ fn cmd_import_csv(rest: &[String]) -> Result<(), String> {
         value_column: col_ref(value_col),
         dimensions,
         item_id_base: 1_000_000,
+        max_records: None,
     };
 
     let mut store = open(db)?;

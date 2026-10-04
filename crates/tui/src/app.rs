@@ -398,6 +398,7 @@ pub fn parse_import_line(line: &str) -> Result<ImportSpec, String> {
         value_column: col_ref(value_col),
         dimensions,
         item_id_base: 1_000_000, // above hand-assigned ids; avoids collisions
+        max_records: None,
     })
 }
 
