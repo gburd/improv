@@ -123,7 +123,10 @@ baseline on hotdog; its temporary instance was terminated after collection.
   browser and Info panel windows, so the workspace is full width (B1, B4
   done). Step 4 (formula pane, B5/B6) landed: the formula list lives in each
   worksheet window, the selected row edits in place, and `Name = formula` on
-  its last line adds a measure; the top formula bar is gone.
+  its last line adds a measure; the top formula bar is gone. Step 6 (grid,
+  C2/C3/C5) landed: plain ruled cells, `#AAAAAA` selection and header
+  highlight, double-click to edit, input underline, and range selection with
+  Sum over the range.
 - **Scale remains unfinished:** partial loads still enumerate all coordinate
   rows before filtering; GUI charts and columns materialize products. No
   billion-cell usability claim follows from row virtualization.

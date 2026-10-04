@@ -58,10 +58,10 @@ Items below are reworded where this direction supersedes them.
 | # | Item | Status |
 | --- | --- | --- |
 | C1 | No menus. Add the NeXTSTEP vertical application menu (Info/File/Edit/Format/Worksheet/View/Graph/Print/Services/Hide/Quit) with cascading submenus and key equivalents. | done (`crates/gui/src/menu.rs`); File New/Open/Save As/Close, Format, Print and Services draw disabled until they exist |
-| C2 | Input vs derived cells look identical (modernization). Keep within the grayscale palette, e.g. derived cells in a light-gray band or italic; lock hint on hover. | planned |
-| C3 | No range selection; `Sum` readout is one cell. Drag / Shift+arrow ranges. | planned |
+| C2 | Input vs derived cells look identical (modernization). Keep within the grayscale palette, e.g. derived cells in a light-gray band or italic; lock hint on hover. | done: input cells carry a faint inset LIGHT_GRAY underline (spec §6); derived cells show `formula: <text>` on hover and say they are computed when clicked |
+| C3 | No range selection; `Sum` readout is one cell. Drag / Shift+arrow ranges. | done: Shift+arrow/hjkl, Shift+click and drag select a rectangle; the status-bar Sum adds its numbers (capped at 10,000 cells) |
 | C4 | Verify tile-drag ghost + drop-zone highlight and nested group-header result match the reference (needs screenshot/recording, not just a headless test). | done: drop-zone highlight only during a drag; the ghost is egui's dnd default; checked by screenshot |
-| C5 | Selection is a hard blue box on the value. Thin focus ring plus highlighted matching row/column headers. | planned |
+| C5 | Selection is a hard blue box on the value. Thin focus ring plus highlighted matching row/column headers. | done: per spec §4.5, cells are plain white with black rules, the selection fills `#AAAAAA` with no ring, and the selected rows' and columns' header items fill `#AAAAAA` too |
 
 ## Batch D — polish and qualification
 

@@ -13,8 +13,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   headless Xvfb at 1400×900 and writes `target/gui-shot/gui.png` plus
   `compare.png`, the capture beside the NeXT Improv reference. Output is
   pixel-identical run to run.
+- **GUI range selection.** Shift+arrow (or Shift+hjkl), Shift+click and
+  dragging across cells select a rectangle; a plain arrow or click collapses
+  it. The status-bar **Sum** adds the range's numbers.
 
 ### Changed
+
+- **GUI grid follows NeXT Improv.** Cells are plain white with thin black
+  rules (no stripes, no per-cell buttons); the selection and its row and
+  column header items fill `#AAAAAA`. Input cells carry a faint inset
+  underline; derived cells show `formula: …` on hover. **Double-click** (or
+  Enter / F2) edits a cell; a single click only selects it.
 
 - **GUI category tiles follow NeXT Improv.** Tiles are 17 px dark-gray chips
   with white names (no grip, no ⏷ button; right-click for
