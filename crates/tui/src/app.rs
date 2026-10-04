@@ -65,6 +65,12 @@ pub struct GridGeom {
     /// Width of each data column and the inter-column spacing.
     pub col_w: u16,
     pub spacing: u16,
+    /// First visible data row/column (the scroll offset).
+    pub row0: usize,
+    pub col0: usize,
+    /// How many data rows/columns the window shows.
+    pub rows: usize,
+    pub cols: usize,
 }
 
 impl Grid {
@@ -644,12 +650,14 @@ impl App {
         if row < g.y0 || col < g.x0 {
             return;
         }
-        // Which data row: each grid row is one terminal line from y0.
+        // Which window row: each grid row is one terminal line from y0.
         let r = (row - g.y0) as usize;
-        // Which data column: columns are col_w + spacing wide, starting at x0.
+        // Which window column: columns are col_w + spacing wide, from x0.
         let stride = (g.col_w + g.spacing) as usize;
         let c = ((col - g.x0) as usize) / stride.max(1);
-        if r < self.grid.n_rows() && c < self.grid.n_cols() {
+        let (r, c) = (g.row0 + r, g.col0 + c);
+        let in_window = r < g.row0 + g.rows && c < g.col0 + g.cols;
+        if in_window && r < self.grid.n_rows() && c < self.grid.n_cols() {
             self.cursor_row = r;
             self.cursor_col = c;
         }
@@ -1228,7 +1236,7 @@ pub(crate) mod tests {
     }
 
     // Position the app on a specific measure by id.
-    fn view(app: &mut App, measure: MeasureId) {
+    pub(crate) fn view(app: &mut App, measure: MeasureId) {
         app.selected = app.measures.iter().position(|m| *m == measure).unwrap();
         app.reselect();
     }
@@ -1466,6 +1474,10 @@ pub(crate) mod tests {
             y0: 5,
             col_w: 12,
             spacing: 1,
+            row0: 0,
+            col0: 0,
+            rows: 10,
+            cols: 10,
         });
         // Click in data row 1, column 1: x within the 2nd column (stride 13).
         app.click_at(2 + 13, 5 + 1);
