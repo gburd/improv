@@ -108,12 +108,25 @@ A VisiCalc-style terminal interface built on **ratatui** + **crossterm**.
   Improv/Quantrix "move a category to another axis" gesture, no formula edits).
 - Keyboard navigation (arrows), **mouse** (click a cell to select it; the
   terminal must support mouse reporting, which the TUI enables), measure
-  cycling (`Tab`/`m`), and paging extra dimensions with `[` / `]`.
+  cycling (`Tab`/`m`), and paging extra dimensions with `[` / `]`. The grid
+  scrolls to keep the cursor visible.
+- **Range select** (GUI parity): Shift+arrows grow a range from an anchor;
+  the status line shows its `Sum`. A derived measure's formula is shown on a
+  status line (controlled English via `improv_nl_formula::describe_formula`;
+  the GUI's DSL printer is private to `improv_gui`).
 - **Live cell editing** of input measures (`e`/Enter to edit, Enter commits,
-  Esc cancels; `q` quits): commits push through the engine's live incremental
-  edit API so derived measures recompute from the delta, and re-render.
-  Derived cells are read-only. Autosaves to Mentat on quit.
-- A key-hint footer and panic-safe terminal teardown (restores on error).
+  Esc cancels; `q` quits), parsed per the measure's value type: number edits
+  push through the engine's live incremental edit API so derived measures
+  recompute from the delta; text/boolean edits rebuild the engine (its delta
+  API is numeric-only). Derived cells, and cells on an empty or fully
+  filtered axis, are not editable. Autosaves to Mentat on quit.
+- A status box sized to its content (prompt first, then pages/filters, then
+  the key help wrapped to the width) and panic-safe terminal teardown.
+- **Testability**: `main.rs` is a thin real-terminal shell; `event_loop` is
+  generic over the ratatui `Backend` and takes an iterator of crossterm
+  `Event`s, so tests drive keys/mouse against a `TestBackend` and assert on
+  the rendered buffer. Only `main`/`run`/`restore` (tty setup) are excluded
+  from coverage (`coverage(off)` under `coverage_nightly`).
 
 ### 4.2 Layout
 
