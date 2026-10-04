@@ -407,6 +407,23 @@ pub fn parse_export_line(line: &str) -> Result<(String, MeasureId, u8), String> 
     Ok((target, MeasureId(measure_id), delimiter))
 }
 
+/// Parse an edit buffer as a `vt`-typed value (mirrors the CLI's `set`).
+pub fn parse_typed(text: &str, vt: ValueType) -> Result<Value, String> {
+    match vt {
+        ValueType::Number => text
+            .parse()
+            .map(Value::Number)
+            .map_err(|_| format!("not a number: '{text}'")),
+        ValueType::Boolean => match text {
+            "true" => Ok(Value::Boolean(true)),
+            "false" => Ok(Value::Boolean(false)),
+            _ => Err(format!("not true|false: '{text}'")),
+        },
+        ValueType::Text => Ok(Value::Text(text.to_string())),
+        other => Err(format!("cannot edit a {other:?} cell here")),
+    }
+}
+
 /// Measures sorted for stable cycling: derived first, then by id.
 pub fn measure_order(model: &Model) -> Vec<MeasureId> {
     let mut ids: Vec<MeasureId> = model.measures.keys().copied().collect();
@@ -676,7 +693,8 @@ impl App {
         let seed = match self.grid.value_at(self.cursor_row, self.cursor_col) {
             Some(n) if n.fract() == 0.0 => format!("{n:.0}"),
             Some(n) => format!("{n}"),
-            None => String::new(),
+            // Text/boolean cells seed with their display text.
+            None => self.grid.display_at(self.cursor_row, self.cursor_col),
         };
         self.edit = Some(seed);
         self.status = None;
@@ -688,22 +706,26 @@ impl App {
         self.status = None;
     }
 
-    /// Commit the in-progress edit buffer. Parses the number, applies it to the
-    /// model + engine, refreshes the grid, and exits edit mode. On a parse
-    /// error the buffer stays open with a status message.
+    /// Commit the in-progress edit buffer. Parses it per the measure's value
+    /// type, applies it to the model + engine, refreshes the grid, and exits
+    /// edit mode. On a parse error the buffer stays open with a status message.
     pub fn commit_edit(&mut self) {
         let Some(buf) = self.edit.clone() else {
             return;
         };
-        let text = buf.trim();
-        let value: f64 = match text.parse() {
+        let vt = self
+            .model
+            .measures
+            .get(&self.grid.measure)
+            .map_or(ValueType::Number, |m| m.value_type);
+        let value = match parse_typed(buf.trim(), vt) {
             Ok(v) => v,
-            Err(_) => {
-                self.status = Some(format!("not a number: '{text}'"));
+            Err(e) => {
+                self.status = Some(e);
                 return;
             }
         };
-        match self.apply_edit(self.cursor_row, self.cursor_col, value) {
+        match self.apply_value(self.cursor_row, self.cursor_col, value) {
             Ok(()) => {
                 self.edit = None;
                 self.status = None;
@@ -716,7 +738,15 @@ impl App {
     /// in-memory model and the live engine, then rebuild the grid from the new
     /// snapshot. Returns `Err` (no state change committed) if the viewed
     /// measure is derived. Terminal-free -> unit-testable.
+    #[cfg(test)]
     pub fn apply_edit(&mut self, row: usize, col: usize, value: f64) -> Result<(), String> {
+        self.apply_value(row, col, Value::Number(value))
+    }
+
+    /// Typed edit-apply (see [`App::apply_edit`]). Numbers flow through the
+    /// engine incrementally; the engine's edit delta is numeric-only, so a
+    /// text/boolean edit rebuilds the engine from the updated model instead.
+    pub fn apply_value(&mut self, row: usize, col: usize, value: Value) -> Result<(), String> {
         if !self.viewed_is_input() {
             return Err("derived cells are computed, not editable".into());
         }
@@ -727,12 +757,26 @@ impl App {
         let key = self.grid.coord_key(row, col);
         let coord = decode_coord(&key);
 
-        self.model.set_input(measure, coord, Value::Number(value));
+        let num = match value {
+            Value::Number(n) => Some(n),
+            _ => None,
+        };
+        self.model.set_input(measure, coord, value);
 
         // Push the delta through the engine (if any derived measures exist) and
         // keep the recomputed snapshot for rendering.
         if let Some(engine) = &mut self.engine {
-            self.snapshot = engine.set(measure, key, value).map_err(|e| e.to_string())?;
+            self.snapshot = match num {
+                Some(n) => engine.set(measure, key, n),
+                None => {
+                    let derived: Vec<MeasureId> = self.snapshot.keys().copied().collect();
+                    Engine::new(&self.model, &derived).map(|(e, s)| {
+                        *engine = e;
+                        s
+                    })
+                }
+            }
+            .map_err(|e| e.to_string())?;
         }
         self.reselect();
         Ok(())
@@ -1343,6 +1387,55 @@ mod tests {
         app.pivot();
         assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Time");
         assert_eq!(app.grid.col_cat.as_ref().unwrap().1, "Product");
+    }
+
+    #[test]
+    fn text_and_boolean_cells_are_editable() {
+        // Regression: commit_edit only parsed f64, so a Text/Boolean input
+        // measure could never be edited ("not a number: 'hi'").
+        let mut m = revenue_model();
+        let time = CategoryId(1);
+        for (id, name, vt) in [
+            (200, "Note", ValueType::Text),
+            (201, "Flag", ValueType::Boolean),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: vt,
+                categories: vec![time],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let mut app = App::new(m).unwrap();
+        let at = Coordinate::from_pairs([(time, ItemId(10))]);
+        view(&mut app, MeasureId(200));
+        app.edit = Some("hi there".into());
+        app.commit_edit();
+        assert_eq!(app.status, None);
+        assert_eq!(
+            app.model.input(MeasureId(200), &at),
+            Some(&Value::Text("hi there".into()))
+        );
+        app.begin_edit(); // seeds with the text, not blank
+        assert_eq!(app.edit.as_deref(), Some("hi there"));
+
+        view(&mut app, MeasureId(201));
+        app.edit = Some("maybe".into());
+        app.commit_edit();
+        assert_eq!(app.status.as_deref(), Some("not true|false: 'maybe'"));
+        assert!(app.edit.is_some(), "bad input keeps the buffer open");
+        app.edit = Some("true".into());
+        app.commit_edit();
+        assert_eq!(
+            app.model.input(MeasureId(201), &at),
+            Some(&Value::Boolean(true))
+        );
+        // Derived values survive the engine rebuild a non-number edit triggers.
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
+        assert!(parse_typed("x", ValueType::DateTime).is_err());
     }
 
     #[test]
