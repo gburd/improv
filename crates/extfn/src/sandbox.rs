@@ -10,11 +10,10 @@
 //!
 //! # Policy
 //!
-//! [`SandboxPolicy::Restricted`] is applied to every external function whose
-//! [`ExternalFn::pure`] flag is set (the default the caller should use for
-//! untrusted/author-supplied bodies); [`SandboxPolicy::Trusted`] disables the
-//! sandbox entirely (e.g. for local development or an explicitly
-//! reviewed/first-party function). See [`policy_for`].
+//! The host decides, never the model: [`SandboxPolicy::Restricted`] applies to
+//! every external function unless the operator sets `IMPROV_EXTFN_TRUSTED=1`,
+//! which selects [`SandboxPolicy::Trusted`] (no sandbox) for the whole
+//! process. See [`policy_for`].
 //!
 //! # What's enforced, by platform
 //!
@@ -50,11 +49,8 @@ use std::process::Command;
 
 /// How strictly a subprocess runner should be confined.
 ///
-/// `Restricted` is the default for author-supplied function bodies (anything
-/// marked [`ExternalFn::pure`](crate::ExternalFn::pure) — the model-level
-/// author assertion that the body is safe to run repeatedly/anywhere, which
-/// is exactly the class of code this sandbox targets). `Trusted` skips
-/// sandboxing (first-party/reviewed bodies, or explicit opt-out).
+/// `Restricted` is the default for every body. `Trusted` skips sandboxing and
+/// only the operator selects it (`IMPROV_EXTFN_TRUSTED=1`, see `policy_for`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SandboxPolicy {
     /// No sandboxing applied; the interpreter runs with the caller's full
@@ -68,17 +64,22 @@ pub enum SandboxPolicy {
     Restricted,
 }
 
-/// Map an [`ExternalFn::pure`](crate::ExternalFn::pure) flag to a policy.
-/// `pure = true` (the common case, and the default an author gets) is
-/// `Restricted`; `pure = false` is `Trusted` — an explicit author assertion
-/// that this function is *not* a pure sandboxable computation (e.g. it's
-/// meant to do I/O) is also a statement that the caller already trusts it
-/// with fewer restrictions.
-pub fn policy_for(pure: bool) -> SandboxPolicy {
-    if pure {
-        SandboxPolicy::Restricted
-    } else {
+/// The policy for every subprocess runner. The **host** decides, never the
+/// model: `Restricted` unless the operator sets `IMPROV_EXTFN_TRUSTED=1`
+/// (read once per process). [`ExternalFn::pure`](crate::ExternalFn::pure) is
+/// model data, so it keeps only its caching meaning; letting it choose the
+/// sandbox would let a shared model opt itself out.
+pub fn policy_for() -> SandboxPolicy {
+    static POLICY: std::sync::OnceLock<SandboxPolicy> = std::sync::OnceLock::new();
+    *POLICY.get_or_init(|| policy_from_env(std::env::var_os("IMPROV_EXTFN_TRUSTED").as_deref()))
+}
+
+/// `IMPROV_EXTFN_TRUSTED` value to policy: exactly `1` means `Trusted`.
+fn policy_from_env(trusted: Option<&std::ffi::OsStr>) -> SandboxPolicy {
+    if trusted.is_some_and(|v| v == "1") {
         SandboxPolicy::Trusted
+    } else {
+        SandboxPolicy::Restricted
     }
 }
 
@@ -251,9 +252,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn policy_for_pure_is_restricted() {
-        assert_eq!(policy_for(true), SandboxPolicy::Restricted);
-        assert_eq!(policy_for(false), SandboxPolicy::Trusted);
+    fn policy_is_host_decided() {
+        use std::ffi::OsStr;
+        assert_eq!(policy_from_env(None), SandboxPolicy::Restricted);
+        assert_eq!(
+            policy_from_env(Some(OsStr::new("0"))),
+            SandboxPolicy::Restricted
+        );
+        assert_eq!(
+            policy_from_env(Some(OsStr::new("true"))),
+            SandboxPolicy::Restricted
+        );
+        assert_eq!(
+            policy_from_env(Some(OsStr::new("1"))),
+            SandboxPolicy::Trusted
+        );
+        if std::env::var_os("IMPROV_EXTFN_TRUSTED").is_none() {
+            assert_eq!(policy_for(), SandboxPolicy::Restricted);
+        }
     }
 
     #[test]

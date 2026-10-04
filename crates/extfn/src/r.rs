@@ -54,7 +54,7 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
         &prog,
         timeout,
         "R",
-        sandbox::policy_for(f.pure),
+        sandbox::policy_for(),
     )?;
     runner::parse_envelope(&out.stdout, &out.stderr, f.return_type, "R")
 }

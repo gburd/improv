@@ -51,9 +51,10 @@
 //! the strongest sandbox here: it runs in-process via `wasmi`, which has no
 //! syscall access at all by construction, independent of any OS mechanism.
 //!
-//! [`ExternalFn::pure`] (the author's assertion that a function body is a pure
-//! computation) selects the sandbox strictness: `pure = true` gets
-//! [`SandboxPolicy::Restricted`], `pure = false` gets [`SandboxPolicy::Trusted`].
+//! The host, never the model, picks the sandbox strictness: every body runs
+//! [`SandboxPolicy::Restricted`] unless the operator sets
+//! `IMPROV_EXTFN_TRUSTED=1` (see `sandbox::policy_for`). [`ExternalFn::pure`]
+//! is model data and only affects caching.
 
 mod julia;
 mod marshal;
@@ -580,7 +581,7 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// A `Restricted` (default: `pure = true`) body that tries to allocate
+    /// A `Restricted` (the host default) body that tries to allocate
     /// well past the sandbox's `RLIMIT_AS` ceiling must fail (Python raises
     /// `MemoryError`, which the driver catches and reports as an error
     /// envelope) rather than succeed. This is the rlimit half of the sandbox,
@@ -597,7 +598,7 @@ mod tests {
             body: "x = bytearray(2 * 10**9)\nresult = len(x)".into(),
             arg_types: vec![],
             return_type: ValueType::Number,
-            pure: true, // -> SandboxPolicy::Restricted
+            pure: true,
         };
         let err = eval(&f, &[], Duration::from_secs(10)).unwrap_err();
         // Either the driver's own try/except reports MemoryError as a Runtime
@@ -624,9 +625,10 @@ mod tests {
             body: "x = bytearray(10**7)\nresult = len(x)".into(),
             arg_types: vec![],
             return_type: ValueType::Number,
-            pure: false, // -> SandboxPolicy::Trusted, no rlimit applied
+            pure: false,
         };
-        let out = eval(&f, &[], Duration::from_secs(10)).expect("eval");
+        let out = python::eval_with(&f, &[], Duration::from_secs(10), SandboxPolicy::Trusted)
+            .expect("eval");
         assert_eq!(out, Value::Number(10_000_000.0));
     }
 
@@ -691,7 +693,13 @@ mod tests {
             return_type: ValueType::Text,
             pure: false,
         };
-        let out = eval(&trusted_fn, &[], Duration::from_secs(10)).expect("trusted eval");
+        let out = python::eval_with(
+            &trusted_fn,
+            &[],
+            Duration::from_secs(10),
+            SandboxPolicy::Trusted,
+        )
+        .expect("trusted eval");
         assert_eq!(out, Value::Text("host-only-secret".into()));
 
         let _ = std::fs::remove_dir_all(&host_tmp_dir);

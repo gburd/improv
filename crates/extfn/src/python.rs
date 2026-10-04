@@ -43,6 +43,16 @@ except Exception as e:
 
 /// Run the function. Assumes arity/type checks already passed.
 pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, ExtFnError> {
+    eval_with(f, args, timeout, sandbox::policy_for())
+}
+
+/// [`eval`] under an explicit sandbox policy (tests compare policies).
+pub(crate) fn eval_with(
+    f: &ExternalFn,
+    args: &[Value],
+    timeout: Duration,
+    policy: sandbox::SandboxPolicy,
+) -> Result<Value, ExtFnError> {
     let payload = json!({
         "args": args.iter().map(value_to_json).collect::<Vec<_>>(),
     })
@@ -55,7 +65,7 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
         &prog,
         timeout,
         "python",
-        sandbox::policy_for(f.pure),
+        policy,
     )?;
     runner::parse_envelope(&out.stdout, &out.stderr, f.return_type, "python")
 }
