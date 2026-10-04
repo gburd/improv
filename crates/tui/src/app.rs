@@ -242,12 +242,18 @@ pub fn build_grid_pivoted(
 
     // Extra dims pinned to the selected page item (default first).
     let mut pages = Vec::new();
-    for (pi, c) in cats.iter().skip(2).enumerate() {
+    for c in cats.iter().skip(2) {
         let its = items_of(model, *c, filters);
         if its.is_empty() {
             continue;
         }
-        let sel = page_idx.get(pi).copied().unwrap_or(0).min(its.len() - 1);
+        // Indexed by rendered page (empty dims are skipped), matching how
+        // `App` fills `page_idx` from `grid.pages`.
+        let sel = page_idx
+            .get(pages.len())
+            .copied()
+            .unwrap_or(0)
+            .min(its.len() - 1);
         let (id, name) = its[sel].clone();
         pages.push(PageDim {
             cat: *c,
@@ -608,16 +614,11 @@ impl App {
             self.status = Some("no extra dimensions to page".into());
             return;
         };
-        let count = pd.item_count.max(1);
-        // Ensure page_idx has an entry per current page dim.
-        if self.page_idx.len() != self.grid.pages.len() {
-            self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
-        }
-        let cur = self.page_idx.first().copied().unwrap_or(0);
-        let next = (cur as isize + delta).rem_euclid(count as isize) as usize;
-        if let Some(slot) = self.page_idx.first_mut() {
-            *slot = next;
-        }
+        // Resync from the grid (an empty page dim is skipped, so indices
+        // follow the rendered pages), then step the first one.
+        let next = (pd.item_index as isize + delta).rem_euclid(pd.item_count as isize) as usize;
+        self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
+        self.page_idx[0] = next;
         self.reselect();
     }
 
@@ -1444,6 +1445,40 @@ pub(crate) mod tests {
         view(&mut app, MeasureId(102));
         assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
         assert!(parse_typed("x", ValueType::DateTime).is_err());
+    }
+
+    /// Revenue model plus `Sales[Time, Product, Empty, Region]`: `Empty` has
+    /// no items, so it is skipped as a page and `Region` is the first page.
+    fn model_with_empty_page() -> Model {
+        let mut m = revenue_model();
+        m.add_category(CategoryId(3), "Empty");
+        m.add_category(CategoryId(4), "Region");
+        m.add_item(ItemId(40), CategoryId(4), "North");
+        m.add_item(ItemId(41), CategoryId(4), "South");
+        m.add_measure(Measure {
+            id: MeasureId(300),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: (1..=4).map(CategoryId).collect(),
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m
+    }
+
+    #[test]
+    fn paging_past_an_empty_page_dim_wraps_and_edits_are_refused() {
+        let mut app = App::new(model_with_empty_page()).unwrap();
+        view(&mut app, MeasureId(300));
+        app.page_idx.clear(); // stale/short page_idx is resynced
+        app.page(-1);
+        assert_eq!(app.grid.pages.len(), 1);
+        assert_eq!(app.grid.pages[0].item_name, "South", "wrapped backwards");
+        app.page(1);
+        assert_eq!(app.grid.pages[0].item_name, "North");
+        // No full coordinate exists (Empty has no item): editing is refused.
+        app.begin_edit();
+        assert_eq!(app.status.as_deref(), Some(NO_CELL));
     }
 
     #[test]
