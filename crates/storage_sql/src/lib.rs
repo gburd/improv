@@ -6,10 +6,18 @@
 //! * **Storage separation.** External SQL is a data *source/sink*; the canonical
 //!   model lives in Mentat. Import produces ordinary categories/items/measures/
 //!   input cells — the engine gains no SQL-specific paths and stays deterministic.
-//! * **Security.** Queries are run as-is against a caller-provided connection;
-//!   values are read through rusqlite's typed API (no string interpolation of
-//!   data). Credential/connection management is the caller's concern; this crate
-//!   takes an open `rusqlite::Connection`.
+//! * **Security.** An import/refresh query must be a single `SELECT`/`WITH`
+//!   statement ([`check_read_only_sql`]), and every backend runs it read-only
+//!   (Postgres and DuckDB in a `READ ONLY` transaction, DuckDB with external
+//!   access off; SQLite only if the statement is read-only). Data values are
+//!   bound as parameters, never interpolated. Postgres has no TLS in this
+//!   build, so [`connect_postgres`] refuses a non-loopback host unless the
+//!   connection string says `sslmode=disable`.
+//!
+//! Testing Postgres: the live tests skip unless `IMPROV_TEST_PG` holds a
+//! libpq DSN to a scratch database they may create/drop tables in, e.g.
+//! `IMPROV_TEST_PG="host=127.0.0.1 user=improv password=improv
+//! dbname=improv_test" cargo test -p improv_storage_sql`.
 //!
 //! Backends sit behind a common [`Backend`] enum ([`backend`] module): SQLite
 //! (the reference driver, and what the embedded Mentat store already uses) and
