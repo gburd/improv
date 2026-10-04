@@ -231,6 +231,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Sandboxed external functions on non-FHS hosts (NixOS).** The interpreter
+  is now run by its canonical host path, and `/nix/store` is bound read-only
+  when present. Before, every sandboxed call failed on NixOS with
+  `execvp python3: No such file or directory`.
+
 - **A save no longer clobbers another process's writes.** `save_model` retracts
   stored cells the model lacks, so when two processes shared a store (`improv
   set` beside a running GUI or server) the second saver deleted the first's

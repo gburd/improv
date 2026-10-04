@@ -174,17 +174,38 @@ fn scrub_env(mut cmd: Command) -> Command {
 }
 
 /// Rebuild `cmd` as `bwrap <sandbox flags> -- <original program> <args>`.
+///
+/// The program is resolved on the host `PATH` first and run by absolute path:
+/// inside the sandbox `PATH` is only [`SANDBOX_PATH`], which on non-FHS hosts
+/// (NixOS, where the interpreter lives under `/nix/store`) holds no
+/// interpreter at all. On such hosts `/nix/store` is bound read-only too. It
+/// is world-readable, immutable, and holds no secrets.
 fn wrap_bwrap(bwrap: &Path, cmd: &Command) -> Command {
     let mut wrapped = Command::new(bwrap);
     wrapped.args(BWRAP_ARGS);
+    if Path::new(NIX_STORE).is_dir() {
+        wrapped.args(["--ro-bind", NIX_STORE, NIX_STORE]);
+    }
     if let Some(lang) = std::env::var_os("LANG") {
         wrapped.arg("--setenv").arg("LANG").arg(lang);
     }
     wrapped.arg("--");
-    wrapped.arg(cmd.get_program());
+    let program = Path::new(cmd.get_program());
+    // Canonicalized, so a symlink chain (`~/.nix-profile/bin/python3`, a
+    // pyenv shim) resolves to the real binary under a bound directory.
+    let resolved = match program.is_absolute() {
+        true => Some(program.to_path_buf()),
+        false => which(&program.to_string_lossy()),
+    }
+    .and_then(|p| std::fs::canonicalize(p).ok())
+    .unwrap_or_else(|| program.into());
+    wrapped.arg(resolved);
     wrapped.args(cmd.get_args());
     wrapped
 }
+
+/// The Nix store, bound read-only into the sandbox when the host has one.
+const NIX_STORE: &str = "/nix/store";
 
 /// Unprivileged bubblewrap sandbox. The new root is empty except for the
 /// system directories the interpreter needs, bound read-only (`/usr`, plus
@@ -379,7 +400,14 @@ mod tests {
         .expect("wraps");
         assert_eq!(cmd.get_program(), "/usr/bin/bwrap");
         let args: Vec<_> = cmd.get_args().collect();
-        assert_eq!(&args[args.len() - 3..], ["--", "python3", "-"]);
+        let program = std::path::Path::new(&args[args.len() - 2]);
+        assert_eq!(args[args.len() - 3], "--");
+        assert_eq!(args[args.len() - 1], "-");
+        // Resolved on the host PATH (absolute), or left bare if not found.
+        assert!(program.is_absolute() || program == std::path::Path::new("python3"));
+        assert!(program
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("python3")));
         for flag in ["--unshare-all", "--clearenv", "--die-with-parent"] {
             assert!(args.contains(&std::ffi::OsStr::new(flag)), "{flag}");
         }
@@ -396,6 +424,25 @@ mod tests {
         // abort the spawn from `pre_exec`), not be swallowed.
         assert!(set_rlimit(9999, 1).is_err());
         assert!(set_rlimit(libc::RLIMIT_NOFILE, u64::MAX).is_ok());
+    }
+
+    /// The program is run by its canonical path, so a symlinked interpreter
+    /// (a Nix profile, a shim) still resolves inside the sandbox, where only
+    /// the system directories (and `/nix/store`, when present) are bound.
+    #[cfg(unix)]
+    #[test]
+    fn wrapped_program_is_the_canonical_path() {
+        let dir = std::env::temp_dir().join(format!("improv-canon-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real-python3");
+        std::fs::write(&real, "").unwrap();
+        let link = dir.join("python3");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let wrapped = wrap_bwrap(Path::new("/usr/bin/bwrap"), &Command::new(&link));
+        let last = wrapped.get_args().last().expect("program");
+        assert_eq!(Path::new(last), std::fs::canonicalize(&real).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Without `LANG` in the host env, neither the scrubbed env nor the bwrap
@@ -418,6 +465,9 @@ mod tests {
         assert!(!has_lang(&scrubbed) && !setenv(&wrapped));
         assert!(has_lang(&scrubbed_lang) && setenv(&wrapped_lang));
         let args: Vec<_> = wrapped.get_args().collect();
-        assert_eq!(args.last().copied(), Some(std::ffi::OsStr::new("python3")));
+        let last = std::path::Path::new(args.last().copied().expect("program"));
+        assert!(last
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("python3")));
     }
 }
