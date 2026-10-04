@@ -113,6 +113,20 @@ fn transact_group(
     Ok(())
 }
 
+const VALUE_NUMBER: &str = "value-number";
+const VALUE_BOOLEAN: &str = "value-boolean";
+const VALUE_TEXT: &str = "value-text";
+
+/// The `:cell/<attr>` a value of type `vt` is stored under (see
+/// `convert::cell_edn`).
+fn value_attr(vt: ValueType) -> &'static str {
+    match vt {
+        ValueType::Number | ValueType::Enum => VALUE_NUMBER,
+        ValueType::Boolean => VALUE_BOOLEAN,
+        ValueType::Text | ValueType::DateTime => VALUE_TEXT,
+    }
+}
+
 /// A model store backed by embedded Mentat (a single SQLite file, or `""` for
 /// in-memory).
 pub struct ModelStore {
@@ -451,17 +465,16 @@ impl ModelStore {
         model: &mut Model,
         filter: Option<&std::collections::HashSet<MeasureId>>,
     ) -> Result<()> {
-        // Enumerate cells' measure id + coord, then fetch each typed value by
-        // the owning measure's declared type (avoids optional-attribute
-        // functions).
+        // One query per typed value attribute (three in all), each returning
+        // (measure id, coord, value) rows, so the load is O(value types)
+        // queries, not O(cells). It used to be one query for (mid, coord) and
+        // then one `q_once` per cell for its value: 100k cells took ~290 s.
         //
         // The measure filter is applied IN the query, not in this loop: with a
         // `filter`, `?mid` is `ground`-bound to exactly the closure's measure
         // ids, so the store returns rows only for those measures. Nothing
         // proportional to the rest of the model's cells is materialized or
-        // returned. Without a filter (`load_model`) this is the same single
-        // unconstrained query as always — a whole-model load wants every cell
-        // in one query, not N.
+        // returned.
         //
         // Residual cost, stated plainly: the returned row set and all per-row
         // work are bounded by the closure, but Mentat plans either shape as a
@@ -471,75 +484,73 @@ impl ModelStore {
         // cell datom. Making the scan itself seek-bounded needs a Mentat/schema
         // change (an AVET-indexed `:cell/measure` usable as a leading index
         // column), not a query rewrite.
-        let q = match filter {
-            None => "[:find ?mid ?coord :where \
-                      [?e :cell/measure ?m] [?m :measure/id ?mid] \
-                      [?e :cell/coord ?coord]]"
-                .to_string(),
-            Some(keep) => {
-                if keep.is_empty() {
-                    // `ground` rejects an empty collection, and an empty
-                    // closure needs no cells: skip the query entirely.
-                    #[cfg(test)]
-                    {
-                        self.cell_rows_returned = 0;
-                    }
-                    return Ok(());
+        let ground = match filter {
+            None => String::new(),
+            Some(keep) if keep.is_empty() => {
+                // `ground` rejects an empty collection, and an empty closure
+                // needs no cells: skip the queries entirely.
+                #[cfg(test)]
+                {
+                    self.cell_rows_returned = 0;
                 }
+                return Ok(());
+            }
+            Some(keep) => {
                 // Sorted so the query text is stable/reproducible.
                 let mut ids: Vec<u32> = keep.iter().map(|m| m.0).collect();
                 ids.sort_unstable();
                 let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
-                format!(
-                    "[:find ?mid ?coord :where \
-                      [(ground [{}]) [?mid ...]] \
-                      [?m :measure/id ?mid] \
-                      [?e :cell/measure ?m] \
-                      [?e :cell/coord ?coord]]",
-                    ids.join(" ")
-                )
+                format!("[(ground [{}]) [?mid ...]] ", ids.join(" "))
             }
         };
-        let rows = self.rel(&q)?;
         #[cfg(test)]
         {
-            self.cell_rows_returned = rows.len();
+            self.cell_rows_returned = 0;
         }
-        for row in rows {
-            let mid = MeasureId(convert::as_u32(&row[0])?);
-            let coord_json = convert::as_string(&row[1])?;
-            let coord: Coordinate = serde_json::from_str(&coord_json)?;
-
-            let vt = model
-                .measures
-                .get(&mid)
-                .map(|m| m.value_type)
-                .ok_or_else(|| {
-                    StoreError::Integrity(format!("cell for unknown measure {mid:?}"))
-                })?;
-
-            // The cell entity is uniquely keyed; query its typed value column.
-            let (col, ekey) = match vt {
-                ValueType::Number | ValueType::Enum => ("value-number", "?v"),
-                ValueType::Boolean => ("value-boolean", "?v"),
-                ValueType::Text | ValueType::DateTime => ("value-text", "?v"),
-            };
-            let key = format!("{}::{}", mid.0, coord_json);
-            let vq = format!(
-                "[:find {ekey} . :where [?e :cell/key {}] [?e :cell/{col} ?v]]",
-                convert::edn_str_pub(&key)
+        for attr in [VALUE_NUMBER, VALUE_BOOLEAN, VALUE_TEXT] {
+            let q = format!(
+                "[:find ?mid ?coord ?v :where {ground}\
+                 [?m :measure/id ?mid] [?e :cell/measure ?m] \
+                 [?e :cell/coord ?coord] [?e :cell/{attr} ?v]]"
             );
-            let val_tv = self
-                .scalar(&vq)?
-                .ok_or_else(|| StoreError::Integrity("cell missing value".into()))?;
-
-            let value = match vt {
-                ValueType::Number => Value::Number(convert::as_f64(&val_tv)?),
-                ValueType::Enum => Value::Enum(convert::as_f64(&val_tv)? as u32),
-                ValueType::Boolean => Value::Boolean(convert::as_bool(&val_tv)?),
-                ValueType::Text | ValueType::DateTime => Value::Text(convert::as_string(&val_tv)?),
-            };
-            model.inputs.insert((mid, coord), value);
+            let rows = self.rel(&q)?;
+            #[cfg(test)]
+            {
+                self.cell_rows_returned += rows.len();
+            }
+            for row in rows {
+                let mid = MeasureId(convert::as_u32(&row[0])?);
+                let vt = model
+                    .measures
+                    .get(&mid)
+                    .map(|m| m.value_type)
+                    .ok_or_else(|| {
+                        StoreError::Integrity(format!("cell for unknown measure {mid:?}"))
+                    })?;
+                let coord: Coordinate = serde_json::from_str(&convert::as_string(&row[1])?)?;
+                let value = match (attr, vt) {
+                    (VALUE_NUMBER, ValueType::Enum) => {
+                        Value::Enum(convert::as_f64(&row[2])? as u32)
+                    }
+                    (VALUE_NUMBER, _) => Value::Number(convert::as_f64(&row[2])?),
+                    (VALUE_BOOLEAN, _) => Value::Boolean(convert::as_bool(&row[2])?),
+                    (_, ValueType::DateTime) => {
+                        let text = convert::as_string(&row[2])?;
+                        match chrono::DateTime::parse_from_rfc3339(&text) {
+                            Ok(dt) => Value::DateTime(dt.with_timezone(&chrono::Utc)),
+                            Err(_) => Value::Text(text),
+                        }
+                    }
+                    _ => Value::Text(convert::as_string(&row[2])?),
+                };
+                // A cell carries one value attribute, but a store written
+                // before re-saves retracted the old one may hold several: the
+                // attribute matching the measure's declared type wins.
+                let key = (mid, coord);
+                if attr == value_attr(vt) || !model.inputs.contains_key(&key) {
+                    model.inputs.insert(key, value);
+                }
+            }
         }
         Ok(())
     }
@@ -1279,11 +1290,8 @@ mod tests {
     }
 
     /// Same, but far enough past the boundary to prove *many* chunks work and
-    /// not just the first one. Ignored only because the load path issues one
-    /// query per cell, which makes it slow; run with
-    /// `cargo test -p improv_storage_mentat -- --ignored`.
+    /// not just the first one.
     #[test]
-    #[ignore = "slow (load does one query per cell); run with --ignored"]
     fn save_and_load_model_spanning_many_chunks() {
         assert_wide_round_trip(12_000);
     }
@@ -1470,5 +1478,95 @@ mod tests {
             back.input(MeasureId(1), &Coordinate::from_pairs([(cat, ItemId(10))])),
             Some(&Value::Text("cell\nwith\ttabs".into()))
         );
+    }
+
+    /// One measure per value type, two cells each: what `load_model` hands
+    /// back must equal what was saved, type for type (P1: the per-type value
+    /// queries must not mix attributes up or lose dates to text).
+    fn mixed_type_model() -> Model {
+        let mut m = Model::new();
+        let cat = CategoryId(1);
+        m.add_category(cat, "Thing");
+        m.add_item(ItemId(10), cat, "a");
+        m.add_item(ItemId(11), cat, "b");
+        let dt = |s: &str| {
+            Value::DateTime(
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .unwrap()
+                    .with_timezone(&chrono::Utc),
+            )
+        };
+        let cols = [
+            (ValueType::Number, Value::Number(1.5), Value::Number(-2.0)),
+            (
+                ValueType::Text,
+                Value::Text("hi".into()),
+                Value::Text(String::new()),
+            ),
+            (
+                ValueType::Boolean,
+                Value::Boolean(true),
+                Value::Boolean(false),
+            ),
+            (
+                ValueType::DateTime,
+                dt("2026-01-02T03:04:05Z"),
+                dt("1999-12-31T23:59:59.5Z"),
+            ),
+            (ValueType::Enum, Value::Enum(3), Value::Enum(0)),
+        ];
+        for (i, (vt, a, b)) in cols.into_iter().enumerate() {
+            let mid = MeasureId(100 + i as u32);
+            m.add_measure(Measure {
+                id: mid,
+                name: Name(format!("M{i}")),
+                value_type: vt,
+                categories: vec![cat],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+            m.set_input(mid, Coordinate::from_pairs([(cat, ItemId(10))]), a);
+            m.set_input(mid, Coordinate::from_pairs([(cat, ItemId(11))]), b);
+        }
+        m
+    }
+
+    #[test]
+    fn load_model_returns_identical_cells_for_every_value_type() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let m = mixed_type_model();
+        store.save_model(&m).expect("save");
+        let loaded = store.load_model().expect("load");
+        assert_eq!(loaded.inputs, m.inputs);
+        let partial = store.load_partial(&[MeasureId(103)]).expect("partial");
+        assert_eq!(partial.inputs.len(), 2);
+        assert_eq!(
+            partial.input(
+                MeasureId(103),
+                &Coordinate::from_pairs([(CategoryId(1), ItemId(10))])
+            ),
+            m.input(
+                MeasureId(103),
+                &Coordinate::from_pairs([(CategoryId(1), ItemId(10))])
+            )
+        );
+    }
+
+    /// P1 stress: a 100k-cell load must take seconds, not minutes (it was
+    /// ~290 s with one query per cell). Release mode recommended:
+    /// `cargo test --release -p improv_storage_mentat -- --ignored`.
+    #[test]
+    #[ignore = "stress: 100k cells; run with --ignored"]
+    fn load_100k_cells_is_fast() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        store.save_model(&wide_model(100_000)).expect("save");
+        let t = std::time::Instant::now();
+        let loaded = store.load_model().expect("load");
+        let took = t.elapsed();
+        assert_eq!(loaded.inputs.len(), 100_000);
+        // Target is 5 s in release; debug builds get headroom.
+        let limit = if cfg!(debug_assertions) { 60 } else { 5 };
+        eprintln!("100k-cell load_model: {took:?}");
+        assert!(took.as_secs() < limit, "100k-cell load took {took:?}");
     }
 }

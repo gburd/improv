@@ -252,6 +252,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   screen, and the menu now opens on the workspace rather than over the formula
   bar's label.
 
+### Performance
+
+- **Store load is no longer one query per cell (P1).** `load_model` /
+  `load_partial` fetch (measure, coord, value) in one query per value
+  attribute (three in all) instead of a query per cell. On a 100k-cell
+  model (release CLI, 100×1000 CSV) `improv eval` went from 290.7 s to
+  0.61 s and `improv list` from 289.7 s to 0.71 s. Date cells now load back
+  as dates instead of text.
+
 ## [0.7.0] - 2026-09-24
 
 The GUI is rebuilt against Lotus Improv / Quantrix reference material, and
