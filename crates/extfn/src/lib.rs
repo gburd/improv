@@ -878,4 +878,19 @@ mod tests {
             "grandchild {pid} survived the timeout"
         );
     }
+
+    /// S20: the body reaches `exec` byte for byte. Backslashes used to be
+    /// doubled inside `r"""..."""`, which changed what the body meant.
+    #[test]
+    fn python_body_with_backslashes_and_triple_quotes() {
+        if !python_available() {
+            println!("skipped: python3 not found (or no sandbox)");
+            return;
+        }
+        let body = r#"s = """a\\b"""
+t = '\n' + "\""
+result = s + "|" + str(len(t)) + "|" + "\x41""#;
+        let out = eval(&py(body, ValueType::Text), &[], Duration::from_secs(10)).expect("eval");
+        assert_eq!(out, Value::Text(r"a\b|2|A".into()));
+    }
 }

@@ -1,9 +1,11 @@
 //! Python subprocess runner.
 //!
 //! Invokes `python3 -I -S -` (isolated, no site, program on stdin). Because
-//! `python3 -` consumes stdin as the *program*, the JSON args payload is
-//! embedded into the program as a Python string literal (still via stdin, never
-//! interpolated into a shell command line — no shell is spawned). The driver
+//! `python3 -` consumes stdin as the *program*, the user body and the JSON
+//! args payload travel inside one JSON document embedded as a Python string
+//! literal (still via stdin, never interpolated into a shell command line; no
+//! shell is spawned). JSON escaping is exact, so the body reaches `exec`
+//! byte for byte, backslashes and `"""` included. The driver
 //! binds `args` (a list), `exec`s the user body, which must assign `result`,
 //! and prints one JSON envelope to stdout: `{"ok": <value>}` or
 //! `{"error": "<msg>"}`. The shared [`crate::runner`] enforces the wall-clock
@@ -17,20 +19,17 @@ use improv_core_model::Value;
 use serde_json::json;
 use std::time::Duration;
 
-/// Build the full program: driver + embedded payload + user body.
-///
-/// The body is embedded in a triple-quoted raw string; we escape backslashes
-/// and any `"""` so an authored body cannot break out of the literal.
-fn program(body: &str, payload_json: &str) -> String {
-    let escaped_body = body.replace('\\', "\\\\").replace("\"\"\"", "\\\"\\\"\\\"");
-    let payload_lit = py_str_literal(payload_json);
+/// Build the full program: a fixed driver plus one JSON literal carrying the
+/// body and the args.
+fn program(body: &str, args_json: serde_json::Value) -> String {
+    let payload_lit = py_str_literal(&json!({ "body": body, "args": args_json }).to_string());
     format!(
         r#"import sys, json
 _payload = json.loads({payload_lit})
 args = _payload["args"]
 _ns = {{"args": args}}
 try:
-    exec(r"""{escaped_body}""", {{"__builtins__": __builtins__}}, _ns)
+    exec(_payload["body"], {{"__builtins__": __builtins__}}, _ns)
     if "result" not in _ns:
         print(json.dumps({{"error": "function body did not set `result`"}}))
     else:
@@ -53,11 +52,8 @@ pub(crate) fn eval_with(
     timeout: Duration,
     policy: sandbox::SandboxPolicy,
 ) -> Result<Value, ExtFnError> {
-    let payload = json!({
-        "args": args.iter().map(value_to_json).collect::<Vec<_>>(),
-    })
-    .to_string();
-    let prog = program(&f.body, &payload);
+    let args_json = args.iter().map(value_to_json).collect();
+    let prog = program(&f.body, args_json);
 
     let out = runner::run_interpreter(
         "python3",
