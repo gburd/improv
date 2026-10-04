@@ -1,9 +1,10 @@
-//! Best-effort OS sandbox for the subprocess runners (Python/R/Julia/Pure).
+//! OS sandbox for the subprocess runners (Python/R/Julia/Pure).
 //!
 //! The Wasm runtime (see `wasm.rs`) is already sandboxed by construction: it
 //! runs in-process via the `wasmi` interpreter, which has no syscall access
 //! and no host imports linked, so untrusted Wasm bodies cannot touch the
-//! filesystem or network regardless of OS. This module hardens the
+//! filesystem or network regardless of OS (fuel and a 64 MiB memory cap bound
+//! its CPU and memory; see `wasm.rs`). This module hardens the
 //! *subprocess* runtimes instead, which spawn a real OS process (`python3`,
 //! `Rscript`, `julia`, `pure`) that would otherwise have the full permissions
 //! of the Improv process.
@@ -18,9 +19,13 @@
 //! # What's enforced, by platform
 //!
 //! * **Linux**: the interpreter is re-exec'd under `bwrap` (bubblewrap), an
-//!   unprivileged filesystem/network sandbox, and `setrlimit` ceilings (CPU
+//!   unprivileged filesystem/network sandbox: only `/usr`, `/bin`, `/lib`,
+//!   `/lib64` and `/etc` are visible (read-only); `/tmp`, `/home` and `/root`
+//!   are empty tmpfs, so the host `$HOME` and CWD are invisible; every
+//!   namespace is unshared (no network); the environment is cleared to
+//!   `PATH=/usr/bin:/bin`, `HOME=/tmp` and `LANG`. `setrlimit` ceilings (CPU
 //!   time, address space, open files, process count) are applied via
-//!   `pre_exec`, alongside the wall-clock kill in `runner.rs`.
+//!   `pre_exec`, alongside the wall-clock process-group kill in `runner.rs`.
 //! * **macOS / Windows**: there is no `bwrap`, so `Restricted` refuses to run
 //!   (see below). With the opt-out set, macOS gets the `setrlimit` ceilings
 //!   and Windows gets only the wall-clock timeout (a Job Object limiter is

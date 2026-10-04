@@ -40,8 +40,9 @@ The following are named in the design but **not yet implemented**:
 - Scenario management and virtualized rendering for very large grids in the
   desktop GUI (pivoting, keyboard navigation, charts, saved views, and filters
   are built).
-- Additional external-language runtimes (R/Julia/WASM) and an OS-level sandbox
-  (external Python runs in an isolated subprocess with a timeout today).
+- An OS sandbox for external functions outside Linux. Linux runs them under
+  `bwrap` (bubblewrap) with rlimits; elsewhere they are refused unless the
+  operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`.
 - Interval/on-load SQL refresh scheduling and GUI import/export wizards
   (manual `import-sql`/`refresh-sql`/`export-sql` work today); DuckDB.
 - Server authentication (the API is localhost-only for now).

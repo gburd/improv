@@ -8,6 +8,28 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **External functions: the host picks the sandbox.** Every body runs
+  `Restricted` unless the operator sets `IMPROV_EXTFN_TRUSTED=1`; a model's
+  `pure: false` no longer turns the sandbox off (S2).
+- **External functions fail closed.** Without `bwrap` (bubblewrap) a
+  `Restricted` body is refused with "bwrap not found; install bubblewrap or
+  set IMPROV_EXTFN_ALLOW_UNSANDBOXED=1"; that variable falls back to rlimits
+  only. A failed `setrlimit` aborts the spawn (S4, S18).
+- **External functions: tighter bwrap.** Only `/usr`, `/bin`, `/lib`,
+  `/lib64` and `/etc` are bound read-only; `/tmp`, `/home` and `/root` are
+  empty tmpfs; all namespaces are unshared (no network). The child
+  environment is cleared to `PATH=/usr/bin:/bin`, `HOME=/tmp` and `LANG`, so
+  API tokens and cloud credentials no longer leak (S5, S6).
+- **External functions: bounded output.** stdout and stderr are drained
+  concurrently and capped at 1 MiB each; output over 64 KiB no longer
+  deadlocks into a timeout (S7).
+- **External functions: the timeout kills the process group**, so forked
+  grandchildren die with the body (S8).
+- **Wasm functions:** a fuel budget stops runaway loops (the worker thread
+  ends), linear memory is capped at 64 MiB, and bodies must start with
+  `wat:` or `base64:` (a bare path is no longer read from disk) (S9).
+- **Python functions:** the body is passed verbatim as JSON data instead of
+  inside an escaped raw string, so backslashes keep their meaning (S20).
 - **Server: the refresh scheduler is off by default** (`IMPROV_SCHEDULER=1`
   enables it) and runs only external functions listed by digest in the
   `IMPROV_EXTFN_ALLOW` file, always in the `Restricted` sandbox. Serving a
