@@ -116,6 +116,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Coverage gate.** `scripts/coverage.sh` (and a `coverage` CI job on
+  GitHub and Forgejo) fails when any crate drops below 90% of functions or
+  branches; the workspace stands at about 96% / 95%. New guide
+  `docs/src/running.md`: build, run each front end, security defaults, tests,
+  coverage.
+
 - TUI: Shift+arrows select a range, drawn highlighted, and the status line
   shows its `Sum` (numeric cells only; `Sum —` when there are none), as the
   GUI does. A plain arrow, a click, or any re-layout collapses the range.

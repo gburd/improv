@@ -21,6 +21,9 @@
 //! CSV's is a path/reader, and nothing in the workspace calls either backend
 //! generically — a trait with no generic caller is indirection, not reuse.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use improv_core_model::{
     Category, CategoryId, Item, ItemId, Measure, MeasureId, MeasureKind, Model, Name, ValueType,

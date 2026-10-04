@@ -52,6 +52,9 @@
 //! `IMPROV_EXTFN_TRUSTED=1` (see `sandbox::policy_for`). [`ExternalFn::pure`]
 //! is model data and only affects caching.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod julia;
 mod marshal;

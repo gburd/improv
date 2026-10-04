@@ -25,6 +25,9 @@
 //! mapping below is backend-agnostic. Connections are described out of band by
 //! [`conn::Connection`] (no plaintext secrets) and opened via [`conn::open`].
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 pub mod backend;
 pub mod conn;

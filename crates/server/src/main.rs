@@ -6,6 +6,9 @@
 //! cost one store load per write, not per request. The server assumes it owns
 //! the store: a write from another process is not seen until restart.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use std::collections::HashSet;
 use std::net::SocketAddr;

@@ -45,6 +45,24 @@ GUI on a headless Xvfb with a fixed demo model and writes
 `target/gui-shot/gui.png` and `compare.png` (beside the NeXT reference) for
 visual review. Missing X tools come from `nix shell`. See `--help`.
 
+## Coverage
+
+Every crate must keep **>= 90% of functions and >= 90% of branches**
+covered, measured on library code: inline `#[cfg(test)]` modules carry
+`#[cfg_attr(coverage_nightly, coverage(off))]`, so the percentages are not
+inflated (or deflated) by test code. Thin real-terminal/`main` shells are
+excluded the same way, each with a comment saying why. Run the gate locally:
+
+```sh
+rustup toolchain install nightly -c llvm-tools-preview && cargo install cargo-llvm-cov
+scripts/coverage.sh          # per-crate table; exits 1 below 90%
+scripts/coverage.sh --html   # + target/coverage-html/html/index.html
+```
+
+Set `IMPROV_TEST_PG` to include the live Postgres tests, and install
+`python3` + `bubblewrap` for the sandboxed external-function tests (they
+skip, not fail, without them). CI runs the same gate.
+
 ## GUI screenshot golden
 
 CI's `gui-shot` job runs `scripts/gui-shot-check.sh`: it renders the demo

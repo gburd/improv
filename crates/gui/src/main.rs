@@ -5,6 +5,9 @@
 //! store, renders a measure as a pivot grid, and (Phase 5 increments) offers a
 //! model browser, formula editor, and Info panel.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
 mod chart;

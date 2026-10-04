@@ -6,6 +6,9 @@
 //! Coordinates (`--at`) resolve category *names* and item *names* to ids via
 //! the loaded model, e.g. `--at Time=2025,Product=WidgetA`.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use improv_core_model::{
     parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, MatrixPlacement,

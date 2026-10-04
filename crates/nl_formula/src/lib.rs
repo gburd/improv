@@ -43,6 +43,9 @@
 //!   populating that `Ref`'s [`DimensionSpec`] (`over` -> aggregate over,
 //!   `by`/`for each` -> keep). `except` is not surfaced by the grammar.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use improv_core_model::{
     BinaryOp, CategoryId, DimensionSpec, Expr, Formula, FuncId, MeasureId, Model, Value,

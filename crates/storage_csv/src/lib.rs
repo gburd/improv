@@ -17,6 +17,9 @@
 //!   (`import_csv_from`, `export_measure_csv_to`) so tests exercise the real
 //!   logic against an in-memory buffer, no tempfiles required.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use improv_core_model::{CategoryId, Coordinate, MeasureId, Model, Value, ValueType};
 use std::io;

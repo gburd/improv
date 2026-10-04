@@ -96,6 +96,29 @@ jobs:
           name: gui-shot
           path: improv/target/gui-shot/
 
+  # Coverage gate (see .github/workflows/ci.yml for the rationale).
+  coverage:
+    runs-on: docker
+    container:
+      image: rust:1.97-trixie
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: improv
+      - name: Install nightly + llvm-cov, bubblewrap, python3, postgres
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends bubblewrap python3 postgresql
+          rustup toolchain install nightly --profile minimal -c llvm-tools-preview
+          cargo install cargo-llvm-cov --locked
+          service postgresql start
+          su postgres -c "psql -c \"CREATE ROLE improv LOGIN PASSWORD improv\" -c \"CREATE DATABASE improv_test OWNER improv\""
+      - name: Coverage gate
+        working-directory: improv
+        env:
+          IMPROV_TEST_PG: "host=127.0.0.1 user=improv password=improv dbname=improv_test"
+        run: scripts/coverage.sh 90
+
   deny:
     name: cargo-deny
     runs-on: docker

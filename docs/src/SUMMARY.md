@@ -4,6 +4,7 @@
 
 - [The Improv Model](./model.md)
 - [Getting Started](./getting-started.md)
+- [Running Improv](./running.md)
 - [The Formula Language](./formulas.md)
 - [The Desktop GUI](./gui-tour.md)
 - [Controlled Natural Language](./cnl.md)

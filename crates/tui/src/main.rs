@@ -7,6 +7,9 @@
 //! is generic over the ratatui backend and the event source so tests can drive
 //! it with a `TestBackend` and a scripted `Vec<Event>`.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+// The attribute is only used inside #[cfg(test)] modules, so non-test
+// coverage builds would otherwise warn that the feature is unused.
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
 mod ui;
