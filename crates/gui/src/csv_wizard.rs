@@ -411,7 +411,12 @@ mod tests {
         assert!(err(with(|f| f.value_column.clear())).contains("value column"));
         // Any one of the three dimension fields blank (the others set) is a
         // partial row, not a skipped spacer.
-        for d in [dim("", "1", "A"), dim("c", "", "A"), dim("c", "1", "")] {
+        for d in [
+            dim("", "1", "A"),
+            dim("c", "", "A"),
+            dim("c", "1", ""),
+            dim("", "", "A"),
+        ] {
             let mut f = ok.clone();
             f.dimensions = vec![d];
             assert!(err(f).contains("each dimension row"));

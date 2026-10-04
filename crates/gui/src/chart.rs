@@ -439,4 +439,26 @@ mod tests {
         );
         assert!(!texts(&shapes).iter().any(|t| t == "only"));
     }
+
+    #[test]
+    fn no_measure_charts_nothing_and_all_negative_data_has_no_zero_line() {
+        let app = ImprovApp::load("").expect("in-memory model");
+        assert_eq!(app.chart_series(), ChartData::default());
+        let data = ChartData {
+            x_title: String::new(),
+            x_labels: vec!["a".into(), "b".into()],
+            series: vec![Series {
+                name: String::new(),
+                points: vec![Some(-1.0), Some(-2.0)],
+            }],
+        };
+        assert_eq!(data.y_range(), (-2.0, 0.0));
+        let shapes = paint(&data, false);
+        assert_eq!(count(&shapes, is_bar), 2);
+        // Axes + 3 gridlines; 0 is the top of the range, so no zero line.
+        assert_eq!(
+            count(&shapes, |s| matches!(s, Shape::LineSegment { .. })),
+            5
+        );
+    }
 }
