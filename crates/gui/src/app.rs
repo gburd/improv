@@ -4161,7 +4161,7 @@ impl ImprovApp {
             table = table.column(Column::auto().resizable(true));
         }
 
-        table
+        let body = table
             .header(22.0 * n_col_hdr as f32, |mut header| {
                 // Corner stub: the row category names stacked, then a header
                 // block spanning the column-category rows. With egui_extras we
@@ -4352,6 +4352,12 @@ impl ImprovApp {
                 });
             });
 
+        // §4.8 bevel + grouped arrows; one click = one 20 px row. The table's
+        // area auto-shrinks to its content, plus the bar on the right.
+        let size = body.content_size.min(body.inner_rect.size())
+            + egui::vec2(ui.spacing().scroll.bar_width, 0.0);
+        let outer = egui::Rect::from_min_size(body.inner_rect.min, size);
+        crate::theme::scroller_chrome(ui, &body, outer, 20.0);
         ui.spacing_mut().item_spacing = spacing;
         crate::theme::content(ui);
 

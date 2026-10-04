@@ -8,8 +8,8 @@
 //! [`install_fonts`]. It is purely cosmetic: no behavior depends on it.
 
 use egui::{
-    Color32, FontData, FontDefinitions, FontFamily, FontId, Rounding, Shadow, Stroke, Style,
-    TextStyle, Visuals,
+    pos2, vec2, Color32, FontData, FontDefinitions, FontFamily, FontId, Rect, Rounding, Shadow,
+    Stroke, Style, TextStyle, Visuals,
 };
 
 /// Key-window title bars, grid rules, text, bevel dark edges.
@@ -84,7 +84,8 @@ pub fn install_fonts(ctx: &egui::Context) {
     });
 }
 
-/// Show `area` NeXT-style: the bar always there, its trough [`TROUGH`].
+/// Show `area` NeXT-style: the bar always there, its trough [`TROUGH`],
+/// with [`scroller_chrome`] on top (one line = one interact row).
 /// egui paints the trough with `extreme_bg_color`, which is WHITE for text
 /// edits, so it is swapped for the scroller only and restored for `add`.
 pub fn next_scroll<R>(
@@ -92,15 +93,102 @@ pub fn next_scroll<R>(
     area: egui::ScrollArea,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::scroll_area::ScrollAreaOutput<R> {
-    ui.scope(|ui| {
+    let scoped = ui.scope(|ui| {
         ui.visuals_mut().extreme_bg_color = TROUGH;
         area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 content(ui);
                 add(ui)
             })
-    })
-    .inner
+    });
+    let line = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+    // The scope holds just the area, so its rect is the area plus its bar.
+    scroller_chrome(ui, &scoped.inner, scoped.response.rect, line);
+    scoped.inner
+}
+
+/// §4.8 arrow buttons: 18 px squares.
+pub const ARROW: f32 = 18.0;
+
+/// The vertical trough at the right of a non-floating scroll area's `outer`
+/// rect (area plus bar), then its up and down arrow buttons grouped at the
+/// trough's bottom end.
+pub fn scroller_rects(outer: Rect, bar_width: f32) -> [Rect; 3] {
+    let trough = outer.with_min_x(outer.max.x - bar_width);
+    let button = |n: f32| {
+        Rect::from_min_size(
+            pos2(trough.max.x - ARROW, trough.max.y - n * ARROW),
+            vec2(ARROW, ARROW),
+        )
+    };
+    [trough, button(2.0), button(1.0)]
+}
+
+/// Repaint a shown vertical scroller NeXT-style: a knob with a 1 px bevel
+/// (white top-left, black bottom-right) above two grouped arrow buttons, each
+/// click scrolling `line` points. `outer` is the area plus its bar as laid
+/// out (`out.inner_rect` is the pre-shrink rect, so it can't be used).
+// ponytail: egui still owns knob drags and trough clicks, mapped over the
+// WHOLE trough, so the knob (drawn in the trough minus the arrows) trails the
+// pointer by 2*ARROW/height; a hand-rolled scroller fixes it if it matters.
+pub fn scroller_chrome<R>(
+    ui: &egui::Ui,
+    out: &egui::scroll_area::ScrollAreaOutput<R>,
+    outer: Rect,
+    line: f32,
+) {
+    let scroll = &ui.spacing().scroll;
+    let [trough, up, down] = scroller_rects(outer, scroll.bar_width);
+    let p = ui.painter();
+    p.rect_filled(trough, Rounding::ZERO, TROUGH);
+    let track = trough.min.y..=up.min.y.max(trough.min.y);
+    let view = trough.height();
+    let at = |y: f32| egui::remap_clamp(y, 0.0..=out.content_size.y.max(view), track.clone());
+    let (mut y0, mut y1) = (at(out.state.offset.y), at(out.state.offset.y + view));
+    let grow = (scroll.handle_min_length - (y1 - y0)).max(0.0) / 2.0;
+    (y0, y1) = (
+        (y0 - grow).max(*track.start()),
+        (y1 + grow).min(*track.end()),
+    );
+    raised(
+        p,
+        p.round_rect_to_pixels(Rect::from_x_y_ranges(trough.x_range(), y0..=y1)),
+    );
+    let max = (out.content_size.y - view).max(0.0);
+    for (rect, sign) in [(up, -1.0), (down, 1.0)] {
+        raised(p, rect);
+        let c = rect.center();
+        let (tip, base) = (c.y + sign * 4.0, c.y - sign * 4.0);
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(c.x, tip), pos2(c.x + 5.0, base), pos2(c.x - 5.0, base)],
+            BLACK,
+            Stroke::NONE,
+        ));
+        if ui
+            .interact(
+                rect,
+                out.id.with(("arrow", sign as i8)),
+                egui::Sense::click(),
+            )
+            .clicked()
+        {
+            let mut state = out.state;
+            state.offset.y = (state.offset.y + sign * line).clamp(0.0, max);
+            state.store(ui.ctx(), out.id);
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// A raised NeXT face: [`LIGHT_GRAY`] with a white top-left, black
+/// bottom-right 1 px bevel.
+fn raised(p: &egui::Painter, r: Rect) {
+    let fill = |min, max, c| p.rect_filled(Rect::from_min_max(min, max), Rounding::ZERO, c);
+    fill(r.min, r.max, LIGHT_GRAY);
+    fill(r.min, pos2(r.max.x, r.min.y + 1.0), WHITE);
+    fill(r.min, pos2(r.min.x + 1.0, r.max.y), WHITE);
+    fill(pos2(r.min.x, r.max.y - 1.0), r.max, BLACK);
+    fill(pos2(r.max.x - 1.0, r.min.y), r.max, BLACK);
 }
 
 /// Undo the trough color inside scrolled content, so text edits stay WHITE.
@@ -171,8 +259,8 @@ pub fn next_style() -> Style {
     style.spacing.button_padding = egui::vec2(8.0, 3.0);
     // §3: 17 px rows, header bands and tiles.
     style.spacing.interact_size.y = 17.0;
-    // §4.8: an always-there 19 px trough with a square knob (the knob takes
-    // the widget faces above). Bevel and grouped arrows are deferred.
+    // §4.8: an always-there 19 px trough with a square knob; the bevel and
+    // grouped arrows are painted over it by `scroller_chrome`.
     style.spacing.scroll = egui::style::ScrollStyle {
         floating: false,
         bar_width: 19.0,
@@ -263,6 +351,86 @@ mod tests {
             assert_eq!(s.bg_stroke.width, 1.0);
             assert_eq!(s.expansion, 0.0);
         }
+    }
+
+    #[test]
+    fn grouped_arrows_sit_at_the_trough_bottom_and_scroll() {
+        let ctx = egui::Context::default();
+        ctx.set_style(next_style());
+        let frame = |events: Vec<egui::Event>| {
+            let mut shown = None;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))),
+                events,
+                ..Default::default()
+            };
+            let full = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let area = egui::ScrollArea::vertical().max_height(200.0);
+                    let s = ui.scope(|ui| {
+                        next_scroll(ui, area, |ui| {
+                            for i in 0..50 {
+                                ui.label(format!("row {i}"));
+                            }
+                        })
+                    });
+                    shown = Some((s.inner.id, s.response.rect));
+                });
+            });
+            let (id, inner) = shown.expect("scroll area shown");
+            (full, id, inner)
+        };
+
+        let (full, id, outer) = frame(Vec::new());
+        let [trough, up, down] = scroller_rects(outer, 19.0);
+        assert_eq!(trough.height(), 200.0, "the trough is the area's height");
+        assert_eq!(down.max, trough.max, "down arrow ends the trough");
+        assert_eq!(up.max.y, down.min.y, "up arrow sits right above it");
+        assert_eq!((up.width(), up.height()), (ARROW, ARROW));
+        for button in [up, down] {
+            let painted = full.shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Path(p) => {
+                    p.points.len() == 3 && p.points.iter().all(|q| button.contains(*q))
+                }
+                _ => false,
+            });
+            assert!(painted, "a triangle is painted in {button:?}");
+        }
+        // The up arrow's tip is its topmost point.
+        let tips: Vec<f32> = full
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Path(p) if p.points.len() == 3 && up.contains(p.points[0]) => {
+                    Some(p.points[0].y)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            tips.first().is_some_and(|y| *y < up.center().y),
+            "up points up"
+        );
+
+        let at = down.center();
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = frame(vec![
+            egui::Event::PointerMoved(at),
+            press(true),
+            press(false),
+        ]);
+        let _ = frame(Vec::new());
+        let offset = egui::scroll_area::State::load(&ctx, id)
+            .expect("state")
+            .offset
+            .y;
+        // Exactly one line (17 px row + 4 px spacing), not a trough jump.
+        assert_eq!(offset, 21.0, "down arrow scrolled one line");
     }
 
     #[test]

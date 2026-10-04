@@ -14,8 +14,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   pages); a double-click opens it. Categories and Measures move below as
   collapsible sections.
 - GUI: NeXT scrollers. The grid, model browser and formula list show an
-  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob
-  (the knob's bevel and NeXT's grouped arrow buttons are deferred).
+  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob,
+  a 1 px bevel on the knob and NeXT's two arrow buttons grouped at the
+  bottom of the vertical trough (one line per click).
 
 ### Added
 

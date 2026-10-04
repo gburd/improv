@@ -14,10 +14,10 @@ A hands-on UX review produced a 21-item plan in four batches
 nxwin chrome, application menu, worksheet/browser/Info windows, in-window
 formula pane, NeXT gutters, ruled grid with range selection). Batches D and E
 are DONE too (title/dirty marker, transient status, browser labels and view
-list, white grid field, tile-menu filters, NeXT scrollers). **NEXT:** knob
-bevel + grouped scroller arrows (spec §4.8), a CLI `save-view` so the
-screenshot demo shows a populated browser, and D5 qualification (fixed-DPI
-screenshot comparison in CI). Pixel fidelity to Improv 3.0 is still
+list, white grid field, tile-menu filters, NeXT scrollers with beveled
+knob and grouped arrows). CLI `save-view` landed and the screenshot demo
+saves two views. **NEXT:** D5 qualification (fixed-DPI screenshot
+comparison in CI). Pixel fidelity to Improv 3.0 is still
 unverified.
 
 ## Released: v0.7.0 (2026-09-24)
