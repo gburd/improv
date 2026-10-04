@@ -12,9 +12,13 @@ A hands-on UX review produced a 21-item plan in four batches
 (`docs/reviews/2026-10-03-gui-ux-review-plan.md`). Batches A, B and C are DONE (spec
 `docs/reviews/2026-10-03-nextstep-visual-spec.md` steps 1–6: palette, Arimo,
 nxwin chrome, application menu, worksheet/browser/Info windows, in-window
-formula pane, NeXT gutters, ruled grid with range selection). **NEXT: Batch D**
-(title/dirty marker, status feedback, browser labels) and **Batch E**
-(fidelity gaps: scrollers, white grid field, filters, browser view list).
+formula pane, NeXT gutters, ruled grid with range selection). Batches D and E
+are DONE too (title/dirty marker, transient status, browser labels and view
+list, white grid field, tile-menu filters, NeXT scrollers). **NEXT:** knob
+bevel + grouped scroller arrows (spec §4.8), a CLI `save-view` so the
+screenshot demo shows a populated browser, and D5 qualification (fixed-DPI
+screenshot comparison in CI). Pixel fidelity to Improv 3.0 is still
+unverified.
 
 ## Released: v0.7.0 (2026-09-24)
 
