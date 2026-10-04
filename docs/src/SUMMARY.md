@@ -9,3 +9,4 @@
 - [Controlled Natural Language](./cnl.md)
 - [Architecture & Design](./architecture.md)
 - [Storage & Persistence](./storage.md)
+- [The HTTP Server](./server.md)

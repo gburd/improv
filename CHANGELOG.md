@@ -6,6 +6,27 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **Server: the refresh scheduler is off by default** (`IMPROV_SCHEDULER=1`
+  enables it) and runs only external functions listed by digest in the
+  `IMPROV_EXTFN_ALLOW` file, always in the `Restricted` sandbox. Serving a
+  shared model no longer runs its code (S1).
+- **Server: request limits.** 10 s header-read timeout (slow-loris), 30 s
+  request timeout, 64 requests in flight, 1 MiB bodies, 10,000 edits per
+  `/eval` (S10, S13).
+- **Server: write validation.** Writes need an existing input measure, a
+  coordinate covering exactly its categories, and finite values. Writes are
+  serialized, so concurrent ones no longer lose updates. New
+  `IMPROV_API_TOKENS_RO` read-only tokens (S12).
+- **Server: internal errors** return `{"error":"internal error","request_id":N}`
+  and log the detail, instead of echoing store paths (S14).
+- **Server: auth hardening.** Constant-time token comparison; open mode on a
+  non-loopback address needs `IMPROV_ALLOW_OPEN=1` (S15).
+- **Server: model cache.** Requests share one cached model, reloaded only
+  after a write, instead of loading the store up to three times per request
+  (P4).
+
 ### Changed
 
 - GUI: the model browser now leads with a NeXT-style white list of saved
