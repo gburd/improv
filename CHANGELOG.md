@@ -49,6 +49,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   file) or more than `ImportSpec::max_records` records (default
   10,000,000) is an error instead of an out-of-memory (S17).
 
+### Performance
+
+- **Engine edits cost O(changed measures), not O(model)** (P3).
+  `session::Engine` now returns a copy-on-write `session::Snapshot`
+  (`Arc<HashMap<MeasureId, Arc<MeasureValues>>>`): an edit shares every
+  unchanged measure with the previous snapshot instead of cloning all
+  tracked cells. On the `incremental_many_edits` stress test (release,
+  5,000 single-cell edits) the time per edit drops from 950 us to 62 us at
+  10k cells (1,052 to 16,097 edits/s), and from 5,639 us to 71 us at 100k
+  cells (177 to 14,039 edits/s). It is now almost flat in model size.
+  `Engine::new`/`set`/`clear`/`apply` return `Snapshot`, and callers clone
+  it cheaply.
+
 ### Changed
 
 - TUI: the status box grows to fit its content, so the edit/command prompt

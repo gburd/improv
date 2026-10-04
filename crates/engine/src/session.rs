@@ -23,6 +23,7 @@ use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{MeasureId, MeasureKind, Model};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crate::dataflow::{build_coll, derived_build_order, EngineError};
@@ -42,10 +43,22 @@ pub struct Edit {
 /// A snapshot of a computed derived measure after an edit round.
 pub type MeasureValues = HashMap<CoordKey, CellValue>;
 
+/// Every tracked derived measure's values after an edit round.
+///
+/// Copy-on-write: cloning a `Snapshot` is a reference-count bump, and the
+/// engine shares unchanged measures between successive snapshots. An edit
+/// round copies the outer map (one `Arc` per measure) and only the measures
+/// whose cells changed, and only if a caller still holds the previous
+/// snapshot; drop the old one first and an edit costs just its delta.
+// ponytail: a changed measure is copied whole while the previous snapshot is
+// alive, so one huge measure still costs O(its cells) per edit for callers
+// that keep the old snapshot; a persistent map (`im`) per measure lifts that.
+pub type Snapshot = Arc<HashMap<MeasureId, Arc<MeasureValues>>>;
+
 enum Cmd {
     /// Apply a batch of edits, advance time, and return the new full snapshot
     /// of every tracked derived measure.
-    Edit(Vec<Edit>, Sender<HashMap<MeasureId, MeasureValues>>),
+    Edit(Vec<Edit>, Sender<Snapshot>),
     Shutdown,
 }
 
@@ -64,10 +77,7 @@ impl Engine {
     /// Build a live engine for `model`, tracking `targets` (derived measures).
     /// Seeds the graph with the model's current input cells and returns a handle
     /// plus the initial snapshot.
-    pub fn new(
-        model: &Model,
-        targets: &[MeasureId],
-    ) -> Result<(Engine, HashMap<MeasureId, MeasureValues>), EngineError> {
+    pub fn new(model: &Model, targets: &[MeasureId]) -> Result<(Engine, Snapshot), EngineError> {
         // Compile plans up front (outside the worker), so a compile error is
         // reported synchronously rather than on the worker thread.
         let ctx = CompileContext::new(&model.measures);
@@ -141,7 +151,7 @@ impl Engine {
         measure: MeasureId,
         coord: CoordKey,
         value: f64,
-    ) -> Result<HashMap<MeasureId, MeasureValues>, EngineError> {
+    ) -> Result<Snapshot, EngineError> {
         self.apply(vec![Edit {
             measure,
             coord,
@@ -150,11 +160,7 @@ impl Engine {
     }
 
     /// Remove an input cell and return the recomputed snapshot.
-    pub fn clear(
-        &mut self,
-        measure: MeasureId,
-        coord: CoordKey,
-    ) -> Result<HashMap<MeasureId, MeasureValues>, EngineError> {
+    pub fn clear(&mut self, measure: MeasureId, coord: CoordKey) -> Result<Snapshot, EngineError> {
         self.apply(vec![Edit {
             measure,
             coord,
@@ -164,10 +170,7 @@ impl Engine {
 
     /// Apply a batch of edits atomically (one time step) and return the new
     /// snapshot of all tracked derived measures.
-    pub fn apply(
-        &mut self,
-        edits: Vec<Edit>,
-    ) -> Result<HashMap<MeasureId, MeasureValues>, EngineError> {
+    pub fn apply(&mut self, edits: Vec<Edit>) -> Result<Snapshot, EngineError> {
         // Update our shadow of current input values so retract deltas are exact.
         for e in &edits {
             let k = (e.measure, e.coord.clone());
@@ -214,11 +217,13 @@ fn worker_loop(
     cmd_rx: Receiver<Cmd>,
     ready_tx: Sender<()>,
 ) {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Mutex;
     // The accumulated snapshot, shared with the dataflow's inspect closure.
     // `Arc<Mutex<..>>` (not Rc/RefCell) so the timely closure is Send + Sync.
-    let snapshot: Arc<Mutex<HashMap<MeasureId, MeasureValues>>> =
-        Arc::new(Mutex::new(HashMap::new()));
+    // The snapshot itself is copy-on-write (see [`Snapshot`]): replies hand
+    // out an `Arc` clone, and `Arc::make_mut` below copies only what a caller
+    // still shares and this round changes.
+    let snapshot: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(Snapshot::default()));
     // The command receiver is `!Sync`; wrap it so the (Sync-bounded) timely
     // closure can hold it, and take it out once inside (single worker).
     let cmd_rx = Arc::new(Mutex::new(Some(cmd_rx)));
@@ -267,7 +272,7 @@ fn worker_loop(
                             // Maintain the running snapshot from the delta
                             // stream: a +1 sets the value, a -1 removes it.
                             let mut s = snap.lock().unwrap();
-                            let m = s.entry(mid).or_default();
+                            let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
                             if *diff > 0 {
                                 m.insert(k.clone(), val.clone());
                             } else if *diff < 0 {
@@ -343,7 +348,7 @@ fn worker_loop(
                     }
                     t += 1;
                     run_to(t, &mut sessions);
-                    let out = snapshot.lock().unwrap().clone();
+                    let out = Arc::clone(&snapshot.lock().unwrap());
                     let _ = reply.send(out);
                 }
                 Cmd::Shutdown => break,
@@ -418,6 +423,43 @@ mod tests {
             Value::Number(50.0),
         );
         m
+    }
+
+    /// Copy-on-write: an edit replaces only the changed measure's `Arc`;
+    /// an untouched measure is the same allocation in both snapshots, and an
+    /// old snapshot keeps its values.
+    #[test]
+    fn snapshot_shares_unchanged_measures() {
+        let mut model = revenue_model();
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Double".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Derived(Formula::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+                Box::new(Expr::Literal(Value::Number(2.0))),
+            ))),
+            description: None,
+        });
+        let (mut engine, before) =
+            Engine::new(&model, &[MeasureId(102), MeasureId(103)]).expect("engine");
+        // Price feeds Revenue only.
+        let after = engine
+            .set(MeasureId(100), key(&[(2, 20)]), 15.0)
+            .expect("set");
+        assert!(Arc::ptr_eq(
+            &before[&MeasureId(103)],
+            &after[&MeasureId(103)]
+        ));
+        assert!(!Arc::ptr_eq(
+            &before[&MeasureId(102)],
+            &after[&MeasureId(102)]
+        ));
+        let rev = |s: &Snapshot| s[&MeasureId(102)][&key(&[(1, 10), (2, 20)])].as_num();
+        assert_eq!(rev(&before), Some(1000.0), "old snapshot unchanged");
+        assert_eq!(rev(&after), Some(1500.0));
     }
 
     fn key(pairs: &[(u32, u32)]) -> CoordKey {

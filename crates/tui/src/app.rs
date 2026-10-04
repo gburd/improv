@@ -11,7 +11,7 @@ use improv_core_model::Coordinate;
 use improv_core_model::{
     CategoryId, Filter, ItemId, MeasureId, Model, Name, Value, ValueType, View, ViewId,
 };
-use improv_engine::session::{Engine, MeasureValues};
+use improv_engine::session::Engine;
 use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
 use improv_storage_csv::{export_measure_csv, import_csv, ColumnRef, DimensionMapping, ImportSpec};
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 /// Live derived-measure values, keyed by measure then coordinate. Kept in
 /// `App` and refreshed incrementally by the `Engine` on each committed edit;
 /// used to render derived measures instead of a fresh full `evaluate()`.
-pub type Snapshot = HashMap<MeasureId, MeasureValues>;
+pub type Snapshot = improv_engine::session::Snapshot;
 
 /// One rendered pivot grid for a single measure.
 pub struct Grid {
@@ -518,7 +518,7 @@ impl App {
             })
             .collect();
         let (engine, snapshot) = if derived.is_empty() {
-            (None, Snapshot::new())
+            (None, Snapshot::default())
         } else {
             let (e, s) = Engine::new(&model, &derived).map_err(|e| e.to_string())?;
             (Some(e), s)
@@ -928,11 +928,11 @@ impl App {
             })
             .collect();
         let (engine, snapshot) = if derived.is_empty() {
-            (None, Snapshot::new())
+            (None, Snapshot::default())
         } else {
             match Engine::new(&self.model, &derived) {
                 Ok((e, s)) => (Some(e), s),
-                Err(_) => (None, Snapshot::new()), // reported via caller's status already
+                Err(_) => (None, Snapshot::default()), // reported via caller's status already
             }
         };
         self.engine = engine;
@@ -1231,7 +1231,7 @@ pub(crate) mod tests {
     #[test]
     fn input_grid_single_axis() {
         let model = revenue_model();
-        let grid = build_grid(&model, MeasureId(100), &Snapshot::new()); // Price[Product]
+        let grid = build_grid(&model, MeasureId(100), &Snapshot::default()); // Price[Product]
         assert_eq!(
             grid.n_rows(),
             2,
@@ -1631,7 +1631,7 @@ pub(crate) mod tests {
     #[test]
     fn grid_falls_back_on_bad_axis_order_and_unknown_ids() {
         let m = revenue_model();
-        let s = Snapshot::new();
+        let s = Snapshot::default();
         // Not a permutation of the measure's categories: natural order wins.
         let g = build_grid_pivoted(&m, MeasureId(101), &s, &[], Some(&[CategoryId(2)]), &[]);
         assert_eq!(g.row_cat.unwrap().1, "Time");
