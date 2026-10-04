@@ -2605,6 +2605,7 @@ dependencies = [
  "hyper-util",
  "improv_core_model",
  "improv_engine",
+ "improv_extfn",
  "improv_nl_formula",
  "improv_storage_mentat",
  "serde",

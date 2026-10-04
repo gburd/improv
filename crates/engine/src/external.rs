@@ -121,11 +121,17 @@ mod tests {
     };
 
     fn python_available() -> bool {
-        std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        // python3 must run through the host sandbox: Restricted fails closed
+        // without a working bwrap, and the test then skips.
+        let probe = ExternalFn {
+            name: "probe".into(),
+            language: Language::Python,
+            body: "result = 1".into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        improv_extfn::eval(&probe, &[], std::time::Duration::from_secs(5)).is_ok()
     }
 
     fn base_model() -> Model {

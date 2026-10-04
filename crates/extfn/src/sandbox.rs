@@ -17,35 +17,32 @@
 //!
 //! # What's enforced, by platform
 //!
-//! * **Linux**: if `bwrap` (bubblewrap) is on `PATH`, the interpreter is
-//!   re-exec'd under a minimal unprivileged sandbox: read-only root
-//!   filesystem, no network namespace, a fresh empty `/tmp`, no access to the
-//!   real `$HOME`. This is a real filesystem/network security boundary.
-//!   Whether or not `bwrap` is used, `setrlimit` is additionally applied via
-//!   `pre_exec` for CPU time, address space, open files, and process count —
-//!   defense in depth alongside the existing wall-clock kill in `runner.rs`.
-//! * **macOS**: same `setrlimit`/`pre_exec` treatment (no `bwrap` equivalent
-//!   attempted; sandbox-exec/App Sandbox profiles are a larger scope than
-//!   this pass covers).
-//! * **Windows**: no-op today. `setrlimit` doesn't exist on Windows; a real
-//!   limiter would mean a Job Object (via e.g. the `win32job` crate) capping
-//!   memory/CPU. That's future work — left as a clearly-marked no-op so
-//!   Windows callers get exactly what they get today (the wall-clock timeout
-//!   in `runner.rs`, unchanged) rather than a fragile partial limiter.
+//! * **Linux**: the interpreter is re-exec'd under `bwrap` (bubblewrap), an
+//!   unprivileged filesystem/network sandbox, and `setrlimit` ceilings (CPU
+//!   time, address space, open files, process count) are applied via
+//!   `pre_exec`, alongside the wall-clock kill in `runner.rs`.
+//! * **macOS / Windows**: there is no `bwrap`, so `Restricted` refuses to run
+//!   (see below). With the opt-out set, macOS gets the `setrlimit` ceilings
+//!   and Windows gets only the wall-clock timeout (a Job Object limiter is
+//!   future work).
 //!
-//! # ponytail: fail-open, not fail-closed
+//! # Fail closed
 //!
-//! If `bwrap` is absent, or a `setrlimit` call itself fails (e.g. a
-//! kernel/container that clamps limits lower than we can set, or a limit type
-//! not supported on some exotic unix), the interpreter still runs
-//! unsandboxed-on-that-axis rather than refusing to evaluate the function.
-//! This is a deliberate best-effort ceiling, not a hard guarantee — the
-//! wall-clock kill in `runner.rs` is unaffected either way and stays
-//! authoritative. Upgrade path if a hard guarantee is ever required: require
-//! `bwrap`/gVisor/a real container runtime and refuse to run without it,
-//! rather than degrading silently.
+//! `Restricted` without `bwrap` returns [`ExtFnError::Sandbox`] instead of
+//! running the body unconfined, unless the operator sets
+//! `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`, which falls back to `setrlimit` only.
+//! A `setrlimit` failure in `pre_exec` aborts the spawn. A limit an ancestor
+//! already lowered is kept (the ceiling is clamped to the existing hard limit,
+//! never raised).
 
+use crate::ExtFnError;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// The refusal returned under `Restricted` when `bwrap` is missing.
+const NO_BWRAP: &str =
+    "bwrap not found; install bubblewrap or set IMPROV_EXTFN_ALLOW_UNSANDBOXED=1";
 
 /// How strictly a subprocess runner should be confined.
 ///
@@ -57,9 +54,8 @@ pub enum SandboxPolicy {
     /// filesystem/network/resource access (still subject to the existing
     /// wall-clock timeout in `runner.rs`).
     Trusted,
-    /// Apply every sandboxing mechanism available on this platform (bwrap +
-    /// rlimits on Linux/macOS; rlimits only if bwrap is unavailable; a no-op
-    /// on Windows beyond the existing timeout).
+    /// `bwrap` + rlimits; refuses to run without `bwrap` unless the operator
+    /// sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1` (then rlimits only).
     #[default]
     Restricted,
 }
@@ -70,7 +66,7 @@ pub enum SandboxPolicy {
 /// model data, so it keeps only its caching meaning; letting it choose the
 /// sandbox would let a shared model opt itself out.
 pub fn policy_for() -> SandboxPolicy {
-    static POLICY: std::sync::OnceLock<SandboxPolicy> = std::sync::OnceLock::new();
+    static POLICY: OnceLock<SandboxPolicy> = OnceLock::new();
     *POLICY.get_or_init(|| policy_from_env(std::env::var_os("IMPROV_EXTFN_TRUSTED").as_deref()))
 }
 
@@ -81,6 +77,15 @@ fn policy_from_env(trusted: Option<&std::ffi::OsStr>) -> SandboxPolicy {
     } else {
         SandboxPolicy::Restricted
     }
+}
+
+/// `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`: the operator accepts running
+/// `Restricted` bodies with rlimits only when `bwrap` is missing.
+fn allow_unsandboxed() -> bool {
+    static ALLOW: OnceLock<bool> = OnceLock::new();
+    *ALLOW.get_or_init(|| {
+        std::env::var_os("IMPROV_EXTFN_ALLOW_UNSANDBOXED").is_some_and(|v| v == "1")
+    })
 }
 
 /// Resource ceilings applied via `setrlimit` under [`SandboxPolicy::Restricted`].
@@ -110,38 +115,50 @@ mod limits {
     pub const MAX_NPROC: u64 = 4096;
 }
 
-/// Apply `policy` to `cmd` before it is spawned: either rewrite it in place
-/// to be `bwrap <sandbox args> -- <original cmd/args>` (Linux, when `bwrap` is
-/// on `PATH`), or attach a `pre_exec` rlimit hook (any unix, including the
-/// Linux-without-bwrap fallback). `Trusted` is a no-op.
+/// Apply `policy` to `cmd` before it is spawned: rewrite it as
+/// `bwrap <sandbox args> -- <original cmd/args>` with a `pre_exec` rlimit
+/// hook. Without `bwrap` this fails closed (see the module docs). `Trusted`
+/// is a no-op.
 ///
 /// Called from [`crate::runner::run_interpreter`] so every subprocess runner
 /// (Python/R/Julia/Pure) is covered without per-language duplication.
-pub fn apply(cmd: Command, policy: SandboxPolicy) -> Command {
-    if policy == SandboxPolicy::Trusted {
-        return cmd;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(wrapped) = try_bwrap(&cmd) {
-            return with_rlimits(wrapped);
-        }
-    }
-    with_rlimits(cmd)
+pub fn apply(cmd: Command, policy: SandboxPolicy) -> Result<Command, ExtFnError> {
+    apply_with(cmd, policy, bwrap_path(), allow_unsandboxed())
 }
 
-/// On Linux, if `bwrap` is available, rebuild `cmd` as
-/// `bwrap <sandbox flags> -- <original program> <original args>`.
-/// Returns `None` (leaving `cmd` untouched by the caller) if `bwrap` is not on
-/// `PATH` — the ponytail fail-open path.
-#[cfg(target_os = "linux")]
-fn try_bwrap(cmd: &Command) -> Option<Command> {
-    let bwrap = which("bwrap")?;
+/// [`apply`] with the `bwrap` lookup and the opt-out injected (for tests).
+fn apply_with(
+    cmd: Command,
+    policy: SandboxPolicy,
+    bwrap: Option<PathBuf>,
+    allow_unsandboxed: bool,
+) -> Result<Command, ExtFnError> {
+    if policy == SandboxPolicy::Trusted {
+        return Ok(cmd);
+    }
+    match bwrap {
+        Some(bwrap) => Ok(with_rlimits(wrap_bwrap(&bwrap, &cmd))),
+        None if allow_unsandboxed => Ok(with_rlimits(cmd)),
+        None => Err(ExtFnError::Sandbox(NO_BWRAP.into())),
+    }
+}
+
+/// `bwrap` on `PATH`. Bubblewrap is Linux-only, so `None` elsewhere.
+fn bwrap_path() -> Option<PathBuf> {
+    if cfg!(target_os = "linux") {
+        which("bwrap")
+    } else {
+        None
+    }
+}
+
+/// Rebuild `cmd` as `bwrap <sandbox flags> -- <original program> <args>`.
+fn wrap_bwrap(bwrap: &Path, cmd: &Command) -> Command {
     let mut wrapped = Command::new(bwrap);
     wrapped.args(bwrap_args());
     wrapped.arg(cmd.get_program());
     wrapped.args(cmd.get_args());
-    Some(wrapped)
+    wrapped
 }
 
 /// Minimal unprivileged bubblewrap sandbox: read-only root (so the
@@ -150,7 +167,6 @@ fn try_bwrap(cmd: &Command) -> Option<Command> {
 /// sandbox is killed if Improv itself dies. Deliberately does NOT bind the
 /// real `$HOME` or CWD, so absolute paths outside the read-only root (e.g. a
 /// repo checkout under `$HOME`) are unreadable from inside the sandbox.
-#[cfg(target_os = "linux")]
 fn bwrap_args() -> Vec<&'static str> {
     vec![
         "--ro-bind",
@@ -172,7 +188,6 @@ fn bwrap_args() -> Vec<&'static str> {
 
 /// Search `PATH` for `name`, the same way the shell would. `std::process`
 /// doesn't expose this, so it's a small manual walk.
-#[cfg(target_os = "linux")]
 fn which(name: &str) -> Option<std::path::PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path).find_map(|dir| {
@@ -189,45 +204,50 @@ type RlimitResource = u32;
 #[cfg(all(unix, not(target_os = "linux")))]
 type RlimitResource = libc::c_int;
 
-/// Attach a `pre_exec` hook that applies best-effort `setrlimit` ceilings.
-/// Each limit is applied independently and failures are ignored (fail-open,
-/// see module docs) — a limit the kernel refuses to lower (already lower via
-/// an ancestor's rlimit, e.g. under CI/containers) is not a reason to refuse
-/// to run the interpreter at all.
+/// Attach a `pre_exec` hook that applies the `setrlimit` ceilings. Any
+/// failure is returned from the hook, which aborts the spawn (fail closed).
 #[cfg(unix)]
 fn with_rlimits(mut cmd: Command) -> Command {
     use std::os::unix::process::CommandExt;
     unsafe {
         cmd.pre_exec(|| {
-            set_rlimit(libc::RLIMIT_CPU, limits::CPU_SECONDS);
-            set_rlimit(libc::RLIMIT_AS, limits::ADDRESS_SPACE_BYTES);
-            set_rlimit(libc::RLIMIT_NOFILE, limits::MAX_FDS);
-            set_rlimit(libc::RLIMIT_NPROC, limits::MAX_NPROC);
+            set_rlimit(libc::RLIMIT_CPU, limits::CPU_SECONDS)?;
+            set_rlimit(libc::RLIMIT_AS, limits::ADDRESS_SPACE_BYTES)?;
+            set_rlimit(libc::RLIMIT_NOFILE, limits::MAX_FDS)?;
+            set_rlimit(libc::RLIMIT_NPROC, limits::MAX_NPROC)?;
             Ok(())
         });
     }
     cmd
 }
 
-/// `setrlimit(resource, {cur: value, max: value})`, ignoring the return code.
-/// Async-signal-safe (no allocation, no locking) so it's safe to call from
-/// `pre_exec`, which runs after `fork()` in the child before `exec()`.
+/// `setrlimit(resource, {cur: v, max: v})` with `v = min(value, hard limit)`,
+/// so a limit an ancestor already lowered is kept rather than refused (raising
+/// a hard limit fails with `EPERM`). Async-signal-safe (two syscalls, no
+/// allocation), as `pre_exec` requires.
 ///
 /// `resource` takes libc's raw resource-id type, which is `c_int` on macOS/BSD
 /// but `u32` on Linux (glibc); callers pass the platform's own
 /// `libc::RLIMIT_*` constant, so this stays correct on both without a cast at
 /// each call site.
 #[cfg(unix)]
-fn set_rlimit(resource: RlimitResource, value: u64) {
-    let limit = libc::rlimit {
-        rlim_cur: value as libc::rlim_t,
-        rlim_max: value as libc::rlim_t,
+fn set_rlimit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
     };
-    // ponytail: ignore the result (fail-open, see module docs). A hard
-    // guarantee would check this and refuse to run instead.
-    unsafe {
-        libc::setrlimit(resource, &limit);
+    if unsafe { libc::getrlimit(resource, &mut limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
+    let value = (value as libc::rlim_t).min(limit.rlim_max);
+    let limit = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    if unsafe { libc::setrlimit(resource, &limit) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// Windows: no rlimit equivalent is applied here. Rely on the wall-clock
@@ -275,7 +295,7 @@ mod tests {
     #[test]
     fn trusted_policy_leaves_command_untouched() {
         let cmd = Command::new("python3");
-        let cmd = apply(cmd, SandboxPolicy::Trusted);
+        let cmd = apply(cmd, SandboxPolicy::Trusted).expect("trusted");
         assert_eq!(cmd.get_program(), "python3");
         assert_eq!(cmd.get_args().count(), 0);
     }
@@ -296,13 +316,54 @@ mod tests {
     }
 
     #[test]
-    fn restricted_policy_still_runnable() {
-        // `apply` never panics and always returns a `Command` whose program
-        // is either the original (rlimits-only fallback) or `bwrap` (Linux
-        // with bwrap present); either way it stays runnable (fail-open).
-        let cmd = Command::new("python3");
-        let cmd = apply(cmd, SandboxPolicy::Restricted);
-        let prog = cmd.get_program().to_string_lossy();
-        assert!(prog == "python3" || prog.ends_with("bwrap"));
+    fn restricted_without_bwrap_is_refused() {
+        let err = apply_with(
+            Command::new("python3"),
+            SandboxPolicy::Restricted,
+            None,
+            false,
+        )
+        .unwrap_err();
+        match err {
+            ExtFnError::Sandbox(m) => assert_eq!(m, NO_BWRAP),
+            other => panic!("expected Sandbox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn restricted_without_bwrap_opt_out_uses_rlimits_only() {
+        let cmd = apply_with(
+            Command::new("python3"),
+            SandboxPolicy::Restricted,
+            None,
+            true,
+        )
+        .expect("opt-out runs");
+        assert_eq!(cmd.get_program(), "python3");
+    }
+
+    #[test]
+    fn restricted_with_bwrap_wraps_the_interpreter() {
+        let mut cmd = Command::new("python3");
+        cmd.arg("-");
+        let cmd = apply_with(
+            cmd,
+            SandboxPolicy::Restricted,
+            Some("/usr/bin/bwrap".into()),
+            false,
+        )
+        .expect("wraps");
+        assert_eq!(cmd.get_program(), "/usr/bin/bwrap");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(&args[args.len() - 3..], ["--", "python3", "-"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn set_rlimit_reports_failure() {
+        // An unknown resource id is EINVAL: the error must surface (and so
+        // abort the spawn from `pre_exec`), not be swallowed.
+        assert!(set_rlimit(9999, 1).is_err());
+        assert!(set_rlimit(libc::RLIMIT_NOFILE, u64::MAX).is_ok());
     }
 }

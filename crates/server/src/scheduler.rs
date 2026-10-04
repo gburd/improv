@@ -149,9 +149,9 @@ async fn tick_once(
             let due =
                 improv_core_model::schedule::due_measures(&policies, now_secs, &last_run_snapshot);
 
-            // Force the Restricted sandbox: extfn derives the policy from the
-            // model-controlled `pure` flag (`pure: false` => Trusted), and the
-            // allowlist digest covers only name + body. Restored before save.
+            // Belt and braces: extfn no longer derives the policy from the
+            // model-controlled `pure` flag (S2), but the allowlist digest
+            // covers only name + body, so pin it anyway. Restored before save.
             let authored: Vec<(String, bool)> = model
                 .external_fns
                 .iter_mut()
@@ -226,11 +226,17 @@ mod tests {
     use improv_storage_mentat::ModelStore;
 
     fn python_available() -> bool {
-        std::process::Command::new("python3")
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        // python3 must run through the host sandbox: Restricted fails closed
+        // without a working bwrap, and the test then skips.
+        let probe = ExternalFn {
+            name: "probe".into(),
+            language: Language::Python,
+            body: "result = 1".into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        improv_extfn::eval(&probe, &[], std::time::Duration::from_secs(5)).is_ok()
     }
 
     fn temp_db_path(tag: &str) -> std::path::PathBuf {

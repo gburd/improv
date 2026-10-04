@@ -39,7 +39,7 @@ pub fn run_interpreter(
 ) -> Result<Output, ExtFnError> {
     let mut command = Command::new(cmd);
     command.args(args);
-    let mut command = crate::sandbox::apply(command, policy);
+    let mut command = crate::sandbox::apply(command, policy)?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

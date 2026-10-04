@@ -37,19 +37,15 @@
 //! body is never interpolated into a shell command line (no shell is spawned).
 //! A wall-clock **timeout** (default 5s) kills a runaway child.
 //!
-//! On top of that, every subprocess runner is additionally spawned through the
-//! `sandbox` module's best-effort OS sandbox (see its docs for the full
-//! breakdown): on Linux, a `bwrap` (bubblewrap) filesystem/network sandbox when
-//! `bwrap` is on `PATH`, plus `setrlimit` ceilings (CPU time, address space,
-//! open files, process count) either way; on macOS the same `setrlimit`
-//! ceilings; on Windows, no additional restriction beyond the timeout. This is
-//! **defense in depth, not a hard guarantee** — it degrades gracefully
-//! (fail-open) when a given mechanism is unavailable, so a determined body on
-//! a platform/configuration without `bwrap` could still exceed the intended
-//! boundary. A hard guarantee is future work (require `bwrap`/gVisor/a real
-//! container runtime and refuse to run without it). The Wasm runtime remains
-//! the strongest sandbox here: it runs in-process via `wasmi`, which has no
-//! syscall access at all by construction, independent of any OS mechanism.
+//! On top of that, every subprocess runner is spawned through the `sandbox`
+//! module's OS sandbox (see its docs): on Linux, a `bwrap` (bubblewrap)
+//! filesystem/network sandbox plus `setrlimit` ceilings (CPU time, address
+//! space, open files, process count). It **fails closed**: without `bwrap`
+//! (always the case on macOS and Windows) a `Restricted` body is refused with
+//! [`ExtFnError::Sandbox`] unless the operator sets
+//! `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`, which falls back to rlimits only. The
+//! Wasm runtime runs in-process via `wasmi`, which has no syscall access at
+//! all by construction, independent of any OS mechanism.
 //!
 //! The host, never the model, picks the sandbox strictness: every body runs
 //! [`SandboxPolicy::Restricted`] unless the operator sets
@@ -197,6 +193,10 @@ pub enum ExtFnError {
 
     #[error("function timed out after {0:?}")]
     Timeout(Duration),
+
+    /// The OS sandbox the host policy requires is unavailable (fail closed).
+    #[error("sandbox unavailable: {0}")]
+    Sandbox(String),
 }
 
 #[cfg(test)]
@@ -274,16 +274,19 @@ mod tests {
 
     // ---- Python-dependent tests (guarded) ----
 
-    /// True if `python3` is on PATH. Python tests early-return (logging a skip)
-    /// when false so CI without Python still passes.
+    /// True if `python3` runs under the host sandbox policy. Python tests
+    /// early-return (logging a skip) when false, so CI without Python, or
+    /// without `bwrap` (where `Restricted` fails closed), still passes.
     fn python_available() -> bool {
-        std::process::Command::new("python3")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+        crate::runner::run_interpreter(
+            "python3",
+            &["-I", "-S", "-"],
+            "print(1)",
+            Duration::from_secs(5),
+            "python",
+            crate::sandbox::policy_for(),
+        )
+        .is_ok_and(|o| o.stdout.trim() == "1")
     }
 
     #[test]
