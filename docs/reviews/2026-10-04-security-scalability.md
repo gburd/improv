@@ -1,0 +1,96 @@
+# Security and scalability review — 2026-10-04
+
+Base: `9447077` (`main`). Evidence is `file:line` against that base. Raw
+reviewer notes (with repro commands) are preserved at the end. Reproductions
+were run on the Debian 13 EC2 dev box (c7i.4xlarge, 16 vCPU, 30 GB).
+
+## Threat model
+
+| Actor | Trust | Entry points |
+| --- | --- | --- |
+| Local analyst running `improv`, `improv-tui`, `improv-gui` | trusted | everything |
+| A **model file** the analyst opens (emailed, downloaded, shared) | **untrusted** | stored `ExternalFn` bodies and their `pure` flag, `SqlSource.query`, names/text cells, EDN |
+| A CSV/SQL data source | untrusted content | import paths |
+| A network client of `improv-server` holding a token | semi-trusted (may be many people) | every protected route |
+| An anonymous network client | untrusted | `/health`, the TCP listener itself, and every route in open mode |
+
+The key consequence: **anything stored in a model is attacker-controlled.**
+Code or queries carried by a model must not run without the analyst's
+consent, and when it does run it must run sandboxed regardless of what
+the model says about itself.
+
+## Findings
+
+Severity: critical = remote code execution or a remote kill with no special access; high = data exfiltration, an easy remote DoS, or a sandbox bypass;
+medium = DoS by an authenticated user, a hardening gap; low = defence in depth.
+
+| ID | Sev | Component | Where | Finding | Remediation |
+| --- | --- | --- | --- | --- | --- |
+| S1 | critical | server | `scheduler.rs:96-133`, `main.rs:89-91` | The scheduler is on by default and runs every `CALL` measure with `OnLoad`/`Interval` refresh at startup, with no consent or allowlist: **opening a shared model in `improv-server` executes its code.** | Scheduler off by default (`IMPROV_SCHEDULER=1` to enable). Only run functions whose name+body hash is in an operator allowlist (`IMPROV_EXTFN_ALLOW` file); force `Restricted` policy. |
+| S2 | critical | extfn | `sandbox.rs:77-83`, `extfn_def.rs:43` | The sandbox policy comes from the model: `pure=false` ⇒ `Trusted` ⇒ no bwrap, no rlimits. A shared model sets `pure: false` and escapes the sandbox. | Policy is decided by the *host*, never by the model: always `Restricted` unless the operator sets `IMPROV_EXTFN_TRUSTED=1`. `pure` keeps only its caching meaning. |
+| S3 | critical | server, nl_formula | `nl_formula/src/lib.rs:218-266` | The recursive-descent parser has no depth limit. **Confirmed:** a 200 KB `POST /nl/parse` of nested parens overflows the stack and aborts the whole server process. | Add a depth counter like core_model's `MAX_PARSE_DEPTH=200` (`parser.rs:383,585`), returning `NlError::TooDeep`. Fuzz with deep inputs. |
+| S4 | high | extfn | `sandbox.rs:125-129,137-138` | Fail-open: without `bwrap` on PATH, `Restricted` is rlimits-only, with full filesystem and network access. bwrap is absent on stock Debian. | Fail closed: `Restricted` without bwrap ⇒ refuse with a clear error, unless `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`. |
+| S5 | high | extfn | `sandbox.rs:155-157` | `--ro-bind / /` exposes `$HOME` (ssh keys, `~/.aws`, cargo credentials) read-only, contrary to the doc comment. The return value is an exfiltration channel (a cell served by `/model`). | Bind only `/usr`, `/lib*`, `/bin`, `/etc/alternatives` and the interpreter's prefix read-only; `--tmpfs /home`, `--tmpfs /root`; `--clearenv`. |
+| S6 | high | extfn | runner (no `env_clear` anywhere) | The child inherits the full environment: `IMPROV_API_TOKEN(S)`, `AWS_*`, `DATABASE_URL` leak to untrusted bodies. | `env_clear()` plus an explicit `PATH`, `LANG` and `HOME=/tmp`. |
+| S7 | high | extfn | `runner.rs:86,98-105` | stdout/stderr are read with unbounded `read_to_string` *after* `wait()`. That gives (a) a memory DoS and (b) a deadlock once output exceeds the 64 KiB pipe buffer: legitimate large output always times out. | Drain both pipes concurrently on threads while waiting, capped at 1 MiB each (truncate and error). |
+| S8 | high | extfn | `runner.rs:159-163` | The timeout kill shells out `kill -9 <pid>` and kills only the leader. Grandchildren (`os.fork`, `subprocess`) are orphaned and keep running, and there is a pid-reuse race. | `process_group(0)` at spawn; on timeout, `libc::kill(-pgid, SIGKILL)` directly, then `child.wait()`. |
+| S9 | high | extfn | `wasm.rs:55-66,91,105-109` | WASM has no fuel and no memory limiter; on timeout the thread is detached and burns CPU forever. A body without the `wat:`/`base64:` prefix is read as a **filesystem path** (an arbitrary file read, and the error echoes the path). | `Config::consume_fuel(true)` + fuel budget; `StoreLimits` memory cap; epoch interruption for the wall clock; reject bodies without a prefix. |
+| S10 | high | server | `main.rs:118-122` | **Confirmed:** slow-loris. axum 0.7 `serve` sets no header-read timer; 1,143 half-open connections exhaust the fd limit and `/health` stops answering (unauthenticated). | Serve via `hyper_util` with `header_read_timeout(10s)`, a `tower::timeout::TimeoutLayer(30s)`, and a concurrency limit (`ConcurrencyLimitLayer`, e.g. 64). |
+| S11 | high | storage_sql | `lib.rs:87,211`, `duck.rs:14-21`, `pg.rs:11,19` | A stored `SqlSource.query` is arbitrary SQL run on refresh with the analyst's credentials (`DROP`, `COPY … PROGRAM` for a pg superuser, duckdb `read_csv('/etc/passwd')`). DuckDB opens read-write. Postgres uses `NoTls` unconditionally (password in cleartext). | Refresh runs queries inside a read-only transaction (`SET TRANSACTION READ ONLY` / `BEGIN READ ONLY`); DuckDB `access_mode=READ_ONLY` + `enable_external_access=false`; reject statements that aren't a single `SELECT`/`WITH`; Postgres TLS via `postgres-native-tls`/`rustls` when `sslmode` is `require` or the host isn't loopback. |
+| S12 | medium | server | `main.rs:341-364,440-464` | `persist: true` and `/cells` accept any measure id (derived, unknown) and arbitrary coordinates/values (NaN/Inf) and save the whole model; there is no read-only token class, and concurrent writers lose updates (load-modify-save without a lock). | Validate the measure exists and is an input; coordinates must name existing category/item pairs; finite values only. A per-store `tokio::Mutex` around load-modify-save. `IMPROV_API_TOKENS_RO` for read-only tokens. |
+| S13 | medium | server | `main.rs:366-392,328,395` | Per-request work is unbounded: `/eval` builds a fresh dataflow engine and does 2–3 full model loads per request; up to about 40k edits fit in the 2 MiB default body. No concurrency limit. | Cap edits per request (e.g. 10k), `DefaultBodyLimit::max(1 MiB)`, a concurrency limit (S10), and a single load per request. |
+| S14 | medium | server | `main.rs:187-196` | `ApiError::Internal(e.to_string())` returns store/SQLite errors including the DB path. | Log the detail server-side; return a generic `"internal error"` with a request id. |
+| S15 | medium | server | `main.rs:162` | The bearer check is `HashSet::contains`, so not constant-time. Open mode only warns, even on a non-loopback bind. | Constant-time compare (`subtle`, or a manual `fold`) over the token list. Refuse to start open on a non-loopback address unless `IMPROV_ALLOW_OPEN=1`. |
+| S16 | medium | storage_csv | export `value_text` (~`lib.rs:328`) | CSV/formula injection: cells beginning `=`, `+`, `-`, `@`, tab or CR are written verbatim and run as formulas in Excel/LibreOffice. | Prefix such text cells with `'` on export (an OWASP mitigation); numbers unaffected. |
+| S17 | medium | storage_csv | import | No per-field or per-record size cap. | Cap the field length (1 MiB) and the record count (configurable); error, don't OOM. |
+| S18 | low | extfn | `sandbox.rs:225-229` | `setrlimit` failures are ignored silently. | Treat a failure as a refusal under fail-closed (S4). |
+| S19 | low | extfn | `lib.rs:589` | The test `restricted_python_hits_memory_limit` is wrong: `bytearray(10**9)` = 0.93 GiB fits under the 1 GiB `RLIMIT_AS`. The limit *is* applied. | Allocate `2*10**9`. |
+| S20 | low | extfn | `python.rs:24-25` | The body is embedded in `r"""…"""` but backslashes are doubled, which changes the semantics of raw strings (a correctness bug, not injection; no shell is used anywhere). | Pass the body via stdin or a temp file instead of string embedding. |
+| P1 | high | storage_mentat | `lib.rs:527-534` | **Confirmed:** N+1 load, one `q_once` per cell for its value. A 100k-cell import took 18 s; `improv eval` (`load_partial`) took **287 s**; 1M cells did not finish in 580 s. The server loads the model 1–3× per request. | Fetch `(measure, coord, value)` in one datalog query (the value attribute joined in the `:find`), decode in one pass. Target: 100k load under 2 s. |
+| P2 | medium | storage_mentat | `lib.rs:191-201` | `save_model` never retracts stale values, so on-disk size grows without bound across re-saves (925 B/cell at 100k). | Retract the previous value datom when a cell's value changes (`:db/retract`), or `:db.cardinality/one` upsert semantics on the cell value. |
+| P3 | medium | engine | `session.rs:346` | Every `Engine::apply` clones the full snapshot of all tracked measures, so per-edit cost is O(model), not O(delta). 10k cells: 0.95 ms/edit; at 1M cells every commit copies about 1M entries. | Hand out `Arc` snapshots with copy-on-write per measure (`Arc<HashMap<MeasureId, Arc<MeasureValues>>>`); `apply` returns only changed measures. |
+| P4 | medium | server | `main.rs` per request | A full model load and a new engine per request (see P1, S13). | Cache the loaded `Model` + `Engine` per store behind a `RwLock`, invalidated on write. |
+| P5 | low | gui | `formula_rows`, `formula_source`, `values_for` per frame | Per-frame reparse and lookups (marked `ponytail:`); fine at current sizes; `selection_keys` capped at 10k cells. | Cache per frame keyed by model generation if profiling shows it. |
+| P6 | info | engine | stress | Measured eval, linear at about 750 B/cell: 100k = 0.30 s / 81 MiB; 1M = 4.9 s / 874 MiB; 2M = 11.4 s / 1.5 GiB. | none (baseline for regression). |
+
+`cargo deny check advisories`: clean on `main` (run in the gate).
+
+## Remediation plan (independent work packages, disjoint files)
+
+| Package | Findings | Files |
+| --- | --- | --- |
+| WP-A extfn hardening | S2, S4, S5, S6, S7, S8, S9, S18, S19, S20 | `crates/extfn/src/*` |
+| WP-B server hardening | S1, S10, S12, S13, S14, S15, P4 | `crates/server/src/*` |
+| WP-C parser depth | S3 | `crates/nl_formula/src/lib.rs` (+ fuzz) |
+| WP-D storage_sql | S11 | `crates/storage_sql/src/*` |
+| WP-E storage_csv | S16, S17 | `crates/storage_csv/src/lib.rs` |
+| WP-F storage_mentat | P1, P2 | `crates/storage_mentat/src/*` |
+| WP-G engine snapshots | P3 | `crates/engine/src/session.rs` |
+
+P5 is deferred (no measured problem).
+
+## Raw reviewer notes
+
+
+- extfn: sandbox policy is chosen by the model author: `policy_for(f.pure)` (sandbox.rs:77-83) maps `pure=false` -> `Trusted` (no bwrap, no rlimits). `pure` is a field of the stored `ExternalFn` (core_model/src/extfn_def.rs:43), i.e. attacker-controlled in a shared model.
+- extfn: fail-open: `try_bwrap` returns None when bwrap is absent (sandbox.rs:125-129, 137-138) -> rlimits only, full FS + network. bwrap is NOT installed on the dev box (`which bwrap` -> not found), so every Restricted run there is rlimits-only.
+- extfn: bwrap policy `--ro-bind / /` (sandbox.rs:155-157) exposes $HOME read-only (ssh keys, ~/.aws, ~/.cargo/credentials) despite the doc comment (sandbox.rs:150-151) claiming $HOME is not bound; the return value is an exfil channel (stored into a model cell, served by `/model`).
+- extfn: RLIMIT_AS = 1 GiB (sandbox.rs:96). Test `restricted_python_hits_memory_limit` (lib.rs:589) allocates 10**9 bytes = 0.93 GiB, which FITS under 1 GiB: `prlimit --as=1073741824 python3 -c "x=bytearray(10**9)"` succeeds (VmPeak 991140 kB); `bytearray(2*10**9)` -> MemoryError. The limit IS applied; the test is wrong (and on this box bwrap is absent so the rlimits-only path is the one exercised).
+- extfn: rlimit failures ignored (sandbox.rs:225-229); child inherits full parent env (no `env_clear` anywhere in crates/extfn or engine): IMPROV_API_TOKEN(S), AWS_*, DATABASE_URL leak to untrusted bodies.
+- extfn: stdout/stderr read with unbounded `read_to_string` (runner.rs:98-105) AFTER `child.wait()` (runner.rs:86): (a) memory DoS, (b) a child writing >64 KiB to a pipe blocks forever on a full pipe -> only the timeout rescues it, and legit large output always times out (deadlock).
+- extfn: timeout kill shells out `kill -9 <pid>` (runner.rs:159-163): forks a process per kill, kills only the leader (bwrap or interpreter), not the process group; grandchildren (`os.fork()`, `subprocess.Popen`) orphan and keep running; pid-reuse window between `done` check and kill.
+- extfn: wasm has no fuel and no memory limiter (wasm.rs:105-109: `Engine::default()`, `Store::new(&engine, ())`); on timeout the interpreter thread is detached and keeps burning CPU forever (wasm.rs:55-66). `loop br 0` module = permanent CPU leak per call. Body without `wat:`/`base64:` prefix is read as a filesystem path (wasm.rs:91): model-controlled arbitrary file read (error message echoes path).
+- extfn: python body escaping (python.rs:24-25) embeds body inside `r"""..."""` but escapes `\\` -> `\\\\` in a RAW string, changing body semantics (raw strings do not process escapes) - correctness, not injection; no shell is used anywhere (Command::new + args), so no argv/shell injection.
+- server: scheduler runs every model CALL measure with policy OnLoad/Interval on startup with no consent/allowlist (scheduler.rs:96-133, default enabled main.rs:89-91) -> opening a shared model in improv-server = RCE (combined with pure=false -> unsandboxed).
+- server/nl_formula: CONFIRMED remote crash. `nl_formula` recursive descent has no depth limit (nl_formula/src/lib.rs:254-266 `parse_factor` "(" -> `parse_expr` recursion; contrast core_model/src/parser.rs:381-383 MAX_PARSE_DEPTH=200). Repro: 200 KB body `{"text":"((((...1...))))"}` (1e5 parens, under the 2 MiB default body limit) to `POST /nl/parse` -> srv.log: `thread tokio-rt-worker has overflowed its stack / fatal runtime error: stack overflow, aborting`; the whole process dies. Any token holder (or anyone, in open mode) can kill the server with one request. The fuzz target `fuzz/fuzz_targets/fuzz_nl_formula.rs` exists but has evidently not been run with deep inputs.
+- storage_sql: identifiers validated (`ident` lib.rs:329-341, `sanitize_ident` lib.rs:344-358), values bound; postgres uses `NoTls` unconditionally (pg.rs:11,19) -> password + data in cleartext on the wire; errors redacted (pg.rs:24-35). Stored SQL source query text (`SqlSource.query`) is arbitrary SQL executed on refresh against the analyst-supplied connection (lib.rs:87, 211) -> a shared model can carry `DELETE`/`DROP`/`ATTACH`/`COPY ... PROGRAM` (pg superuser) run with the analyst credentials; duckdb `Connection::open` is read-write (duck.rs:14-21) and duckdb SQL can read local files (`read_csv(/etc/passwd)`) and with httpfs reach the network.
+- storage_csv: import streams via `csv::Reader` (lib.rs:89-97) but accumulates all cells in `Vec` (lib.rs:127) - fine (atomic import). No per-field/record size cap. Export writes `Value::Text` verbatim (lib.rs ~328 `value_text`) -> CSV/formula injection (`=HYPERLINK(...)`, `=cmd|...`) when opened in Excel/LibreOffice.
+- storage_mentat: `edn_str` escapes `"` and `\\` (convert.rs:10-30); chunking at 2000 datoms (lib.rs:55,97-111); measure category-width guard (lib.rs:205-230). save_model never retracts stale values (lib.rs:191-201): unbounded on-disk growth across re-saves.
+- server: CONFIRMED slow-loris / connection exhaustion, unauthenticated. `axum::serve` (main.rs:118-122) on axum 0.7.9 sets no hyper `Timer`, so hyper `header_read_timeout` is inert; no `TimeoutLayer`, no connection cap. Repro: open 1,143 TCP connections each sending a partial request line (`GET /health HTTP/1.1\r\nHost: x\r\n`, no terminating CRLF) -> `curl -m5 http://127.0.0.1:3917/health` returns `000` after 5.0 s (server is at its RLIMIT_NOFILE soft limit 1024); after releasing the sockets it answers 200. A single connection idled mid-headers for 45 s was still open.
+- server: bearer comparison is `HashSet::contains` (main.rs:162), i.e. SipHash + `==` on the matching bucket: not constant-time; leak is small (hash first) but trivially fixable. Token never logged (main.rs:147); `/health` public. Default bind 127.0.0.1:3000 (main.rs:79-82) good; open mode when no token (main.rs:85-87) only warns, even on a non-loopback bind.
+- server: no CORS layer (good: browsers cannot read cross-origin responses; but in open mode a malicious web page can still POST `text/plain`-free JSON? No: `Json` extractor requires `content-type: application/json`, which forces a CORS preflight that fails, so CSRF is blocked). OK.
+- server: error bodies echo internal errors: `ApiError::Internal(e.to_string())` from `ModelStore::open` / mentat (main.rs:187-196) can include the DB path and SQLite messages; JSON rejection `body_text()` (main.rs:325) is fine.
+- server: `persist: true` (main.rs:341-364) lets any token holder write ANY measure id (including derived, unknown, or `CALL`-output measures) and arbitrary coords (no check that `e.measure` exists, that coord categories/items exist, or that values are finite), then re-saves the whole model; there is no read-only vs write token distinction. `/measures/:id/cells` similarly accepts an arbitrary `Coordinate` (main.rs:440-464). Writes are load-modify-save with no lock: concurrent writers lose updates (last writer wins over the whole model).
+- server: per request work unbounded: `/eval` builds a fresh dataflow `Engine` over ALL derived measures (main.rs:366-392) plus 2-3 full model loads per request (main.rs:328, 395); edits list bounded only by the 2 MiB default body limit (~40k edits). No concurrency limit -> CPU/memory DoS by a token holder; `spawn_blocking` pool (512 threads) each holding a model + a timely worker.
+- engine stress (release, `target/release/deps/stress-*`, RSS via getrusage): 100k cells eval 0.30 s / 81 MiB; 1M eval 4.9 s / 874 MiB; 2M eval 11.4 s / 1541 MiB (~750 B/cell, linear); 3-D case 0.8 s / 158 MiB; `incremental_many_edits` 10k-cell model: 5000 single edits in 4.74 s = 1055 edits/s (~0.95 ms/edit). Each `Engine::apply` clones the full snapshot of ALL tracked measures (engine/src/session.rs:346 `snapshot.lock().unwrap().clone()`), so per-edit cost is O(model) not O(delta): at 1M cells every keystroke-commit copies ~1M entries.
+- storage_mentat: CONFIRMED N+1 load. `load_cells` runs one datalog query for (mid, coord) rows, then ONE `q_once` per cell to fetch its value (storage_mentat/src/lib.rs:527-534). Repro (release CLI, 100x1000 CSV): `improv import-csv` 100k cells: 18.0 s, 79 MiB, DB 92.5 MB (925 B/cell). `improv eval <db> 100` (load_partial of one input measure) 287.5 s before reporting. 1M-cell import did not finish within the remaining 580 s budget. The server does a full `load_model` 1-3x PER REQUEST (main.rs:187-196, 328, 395) -> a 100k-cell model makes every API call take minutes.
