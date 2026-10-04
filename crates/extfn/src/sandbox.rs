@@ -137,8 +137,8 @@ fn apply_with(
         return Ok(cmd);
     }
     match bwrap {
-        Some(bwrap) => Ok(with_rlimits(wrap_bwrap(&bwrap, &cmd))),
-        None if allow_unsandboxed => Ok(with_rlimits(cmd)),
+        Some(bwrap) => Ok(with_rlimits(scrub_env(wrap_bwrap(&bwrap, &cmd)))),
+        None if allow_unsandboxed => Ok(with_rlimits(scrub_env(cmd))),
         None => Err(ExtFnError::Sandbox(NO_BWRAP.into())),
     }
 }
@@ -152,39 +152,59 @@ fn bwrap_path() -> Option<PathBuf> {
     }
 }
 
+/// The only environment a `Restricted` child sees: no tokens, cloud
+/// credentials or database URLs from the host (S6).
+const SANDBOX_PATH: &str = "/usr/bin:/bin";
+const SANDBOX_HOME: &str = "/tmp";
+
+/// Replace the inherited environment with `PATH`, `HOME` and (if set) `LANG`.
+fn scrub_env(mut cmd: Command) -> Command {
+    cmd.env_clear()
+        .env("PATH", SANDBOX_PATH)
+        .env("HOME", SANDBOX_HOME);
+    if let Some(lang) = std::env::var_os("LANG") {
+        cmd.env("LANG", lang);
+    }
+    cmd
+}
+
 /// Rebuild `cmd` as `bwrap <sandbox flags> -- <original program> <args>`.
 fn wrap_bwrap(bwrap: &Path, cmd: &Command) -> Command {
     let mut wrapped = Command::new(bwrap);
-    wrapped.args(bwrap_args());
+    wrapped.args(BWRAP_ARGS);
+    if let Some(lang) = std::env::var_os("LANG") {
+        wrapped.arg("--setenv").arg("LANG").arg(lang);
+    }
+    wrapped.arg("--");
     wrapped.arg(cmd.get_program());
     wrapped.args(cmd.get_args());
     wrapped
 }
 
-/// Minimal unprivileged bubblewrap sandbox: read-only root (so the
-/// interpreter binary and its shared libraries resolve normally), a fresh
-/// empty `/tmp`, no network namespace, no IPC/UTS namespace sharing, and the
-/// sandbox is killed if Improv itself dies. Deliberately does NOT bind the
-/// real `$HOME` or CWD, so absolute paths outside the read-only root (e.g. a
-/// repo checkout under `$HOME`) are unreadable from inside the sandbox.
-fn bwrap_args() -> Vec<&'static str> {
-    vec![
-        "--ro-bind",
-        "/",
-        "/",
-        "--tmpfs",
-        "/tmp",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
-        "--unshare-net",
-        "--unshare-ipc",
-        "--unshare-uts",
-        "--die-with-parent",
-        "--",
-    ]
-}
+/// Unprivileged bubblewrap sandbox. The new root is empty except for the
+/// system directories the interpreter needs, bound read-only (`/usr`, plus
+/// `/bin`, `/lib`, `/lib64` and `/etc` where they exist). `/tmp`, `/home` and
+/// `/root` are fresh empty tmpfs, so the host's `$HOME` (ssh keys, `~/.aws`,
+/// cargo credentials) and CWD are invisible. Every namespace is unshared (no
+/// network), the environment is cleared, and the sandbox dies with Improv.
+#[rustfmt::skip]
+const BWRAP_ARGS: &[&str] = &[
+    "--ro-bind", "/usr", "/usr",
+    "--ro-bind-try", "/bin", "/bin",
+    "--ro-bind-try", "/lib", "/lib",
+    "--ro-bind-try", "/lib64", "/lib64",
+    "--ro-bind-try", "/etc", "/etc",
+    "--tmpfs", "/tmp",
+    "--tmpfs", "/home",
+    "--tmpfs", "/root",
+    "--dev", "/dev",
+    "--proc", "/proc",
+    "--unshare-all",
+    "--die-with-parent",
+    "--clearenv",
+    "--setenv", "PATH", SANDBOX_PATH,
+    "--setenv", "HOME", SANDBOX_HOME,
+];
 
 /// Search `PATH` for `name`, the same way the shell would. `std::process`
 /// doesn't expose this, so it's a small manual walk.
@@ -258,13 +278,11 @@ fn with_rlimits(cmd: Command) -> Command {
     cmd
 }
 
-/// Test-only hook exercising the rlimits-only fallback path directly
-/// (skipping the `bwrap`-lookup branch entirely), so a test asserting
-/// "rlimits-only still runs the interpreter" doesn't depend on whether this
-/// machine happens to have `bwrap` installed.
+/// Test hook: the `IMPROV_EXTFN_ALLOW_UNSANDBOXED` fallback (rlimits and a
+/// scrubbed environment, no `bwrap`), whatever this machine has installed.
 #[cfg(test)]
-pub(crate) fn apply_rlimits_only_for_test(cmd: Command) -> Command {
-    with_rlimits(cmd)
+pub(crate) fn apply_unsandboxed_for_test(cmd: Command) -> Command {
+    apply_with(cmd, SandboxPolicy::Restricted, None, true).expect("opt-out runs")
 }
 
 #[cfg(test)]
@@ -356,6 +374,13 @@ mod tests {
         assert_eq!(cmd.get_program(), "/usr/bin/bwrap");
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(&args[args.len() - 3..], ["--", "python3", "-"]);
+        for flag in ["--unshare-all", "--clearenv", "--die-with-parent"] {
+            assert!(args.contains(&std::ffi::OsStr::new(flag)), "{flag}");
+        }
+        // The host root is never bound wholesale.
+        assert!(!args.windows(2).any(|w| w[0] == "--ro-bind" && w[1] == "/"));
+        let envs: Vec<_> = cmd.get_envs().collect();
+        assert!(envs.contains(&("PATH".as_ref(), Some(SANDBOX_PATH.as_ref()))));
     }
 
     #[cfg(unix)]

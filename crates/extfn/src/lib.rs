@@ -708,26 +708,97 @@ mod tests {
         let _ = std::fs::remove_dir_all(&host_tmp_dir);
     }
 
-    /// The `Restricted` policy still runs the interpreter successfully when
-    /// exercising the rlimits-only path directly (bypassing the `bwrap`-lookup
-    /// branch entirely, so this test's outcome does not depend on whether this
-    /// machine happens to have `bwrap` installed). This is the "bwrap absent
-    /// -> fail open to rlimits-only, don't break functionality" guarantee,
-    /// runnable unconditionally (only needs python3).
+    /// The `IMPROV_EXTFN_ALLOW_UNSANDBOXED` fallback (rlimits only, no
+    /// `bwrap`) still runs the interpreter, with a scrubbed environment.
     #[test]
     fn rlimits_only_fallback_still_runs() {
         if !python_available() {
             println!("skipped: python3 not found");
             return;
         }
-        let cmd = std::process::Command::new("python3");
-        let mut cmd = crate::sandbox::apply_rlimits_only_for_test(cmd);
-        cmd.args(["-I", "-S", "-c", "print('rlimits-only-ok')"]);
+        std::env::set_var("IMPROV_API_TOKEN", "parent-secret");
+        let mut cmd =
+            crate::sandbox::apply_unsandboxed_for_test(std::process::Command::new("python3"));
+        cmd.args([
+            "-I",
+            "-S",
+            "-c",
+            "import os; print(os.environ.get('IMPROV_API_TOKEN', ''), os.environ['HOME'], os.environ['PATH'])",
+        ]);
         let out = cmd.output().expect("spawn python3 under rlimits-only");
         assert!(out.status.success(), "status: {:?}", out.status);
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),
-            "rlimits-only-ok"
+            "/tmp /usr/bin:/bin"
         );
+    }
+
+    fn py(body: &str, return_type: ValueType) -> ExternalFn {
+        ExternalFn {
+            name: "probe".into(),
+            language: Language::Python,
+            body: body.into(),
+            arg_types: vec![],
+            return_type,
+            pure: true,
+        }
+    }
+
+    /// S6: a `Restricted` body does not inherit the host environment.
+    #[test]
+    fn restricted_python_does_not_inherit_env() {
+        if !python_available() {
+            println!("skipped: python3 not found (or no sandbox)");
+            return;
+        }
+        std::env::set_var("IMPROV_API_TOKEN", "parent-secret");
+        let f = py(
+            "import os\nresult = os.environ.get('IMPROV_API_TOKEN', '')",
+            ValueType::Text,
+        );
+        let out = eval(&f, &[], Duration::from_secs(10)).expect("eval");
+        assert_eq!(out, Value::Text(String::new()));
+    }
+
+    /// S5: under bwrap neither `~` nor `/home` shows anything of the host.
+    #[test]
+    fn bwrap_hides_host_home() {
+        if !bwrap_available() || !python_available() {
+            println!("skipped: bwrap or python3 not found");
+            return;
+        }
+        let home = std::env::temp_dir().join(format!("improv_extfn_home_{}", std::process::id()));
+        std::fs::create_dir_all(&home).expect("create fake home");
+        std::fs::write(home.join("marker-secret"), "x").expect("write marker");
+        let real_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let f = py(
+            "import os\nh = os.path.expanduser('~')\n\
+             result = repr([h, sorted(os.listdir(h)), sorted(os.listdir('/home'))])",
+            ValueType::Text,
+        );
+        let out = eval(&f, &[], Duration::from_secs(10));
+        if let Some(h) = real_home {
+            std::env::set_var("HOME", h);
+        }
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(out.expect("eval"), Value::Text("['/tmp', [], []]".into()));
+    }
+
+    /// S5: under bwrap the network namespace is empty.
+    #[test]
+    fn bwrap_blocks_network() {
+        if !bwrap_available() || !python_available() {
+            println!("skipped: bwrap or python3 not found");
+            return;
+        }
+        let f = py(
+            "import socket\ns = socket.socket()\ns.settimeout(2)\n\
+             try:\n    s.connect(('1.1.1.1', 53))\n    result = 'connected'\n\
+             except OSError:\n    result = 'blocked'",
+            ValueType::Text,
+        );
+        let out = eval(&f, &[], Duration::from_secs(10)).expect("eval");
+        assert_eq!(out, Value::Text("blocked".into()));
     }
 }
