@@ -11,17 +11,41 @@ use crate::backend::{Backend, Cell, Table};
 use crate::{Result, SqlError};
 
 /// Open a DuckDB database at `path` (or `:memory:`). Embedded, no secret.
+///
+/// External access is disabled (`enable_external_access = false`), so a stored
+/// query cannot read host files (`read_csv('/etc/passwd')`), fetch URLs or
+/// `ATTACH` other databases. The database stays read-write because the same
+/// handle serves `export_measure`; refresh queries are confined by the
+/// read-only transaction in `duck_query` instead of `access_mode=READ_ONLY`.
 pub fn connect_duckdb(path: &str) -> Result<Backend> {
-    let conn = if path == ":memory:" {
-        duckdb::Connection::open_in_memory()
-    } else {
-        duckdb::Connection::open(path)
-    }
-    .map_err(|e| SqlError::Connect(format!("duckdb connect failed: {e}")))?;
+    let err = |e: duckdb::Error| SqlError::Connect(format!("duckdb connect failed: {e}"));
+    let config = duckdb::Config::default()
+        .enable_external_access(false)
+        .and_then(|c| c.enable_autoload_extension(false))
+        .map_err(err)?;
+    let conn = duckdb::Connection::open_with_flags(path, config).map_err(err)?;
     Ok(Backend::Duckdb(conn))
 }
 
+/// Run `sql` inside a DuckDB `READ ONLY` transaction, so it cannot write
+/// whatever statement type it turns out to be.
 pub(crate) fn duck_query(conn: &duckdb::Connection, sql: &str) -> Result<Table> {
+    let txn = |s: &str| {
+        conn.execute_batch(s)
+            .map_err(|e| SqlError::Import(format!("duckdb {s} failed: {e}")))
+    };
+    txn("BEGIN TRANSACTION READ ONLY")?;
+    let out = duck_query_inner(conn, sql);
+    match out {
+        Ok(_) => txn("COMMIT")?,
+        Err(_) => {
+            let _ = txn("ROLLBACK");
+        }
+    }
+    out
+}
+
+fn duck_query_inner(conn: &duckdb::Connection, sql: &str) -> Result<Table> {
     let mut stmt = conn
         .prepare(sql)
         .map_err(|e| SqlError::Import(format!("duckdb prepare failed: {e}")))?;

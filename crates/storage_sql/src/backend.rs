@@ -182,6 +182,12 @@ fn cell_to_rusqlite(c: &Cell) -> rusqlite::types::Value {
 fn sqlite_query(conn: &rusqlite::Connection, sql: &str) -> Result<Table> {
     use rusqlite::types::ValueRef;
     let mut stmt = conn.prepare(sql)?;
+    // SQLite's own verdict on whether the statement can write: refuse it.
+    if !stmt.readonly() {
+        return Err(SqlError::Import(
+            "refusing SQL query: statement is not read-only".into(),
+        ));
+    }
     let columns: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
     let ncols = columns.len();
     let mut rows_iter = stmt.query([])?;

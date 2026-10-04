@@ -26,6 +26,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **Server: model cache.** Requests share one cached model, reloaded only
   after a write, instead of loading the store up to three times per request
   (P4).
+- **SQL refresh is read-only.** A stored `SqlSource.query` must be a single
+  `SELECT`/`WITH` statement (`check_read_only_sql`; stacked statements are
+  refused), and every backend executes it read-only: Postgres in a
+  `READ ONLY` transaction, DuckDB in a `READ ONLY` transaction with
+  `enable_external_access = false` (no `read_csv('/etc/passwd')`, URLs or
+  `ATTACH`), SQLite only if `sqlite3_stmt_readonly`. A data-modifying CTE
+  (`WITH x AS (DELETE ...) SELECT ...`) is refused by the server.
+- **Postgres fails closed on cleartext:** this build has no TLS, so
+  `connect_postgres` refuses a non-loopback host unless the connection
+  string says `sslmode=disable` explicitly, and refuses `sslmode=require`
+  (it cannot be honoured). Use an SSH tunnel to a loopback port.
+- Postgres `NUMERIC` columns now import as numbers (they failed to decode).
 
 ### Changed
 
