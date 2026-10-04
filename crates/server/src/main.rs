@@ -26,7 +26,7 @@ use improv_engine::dataflow::evaluate;
 use improv_engine::session::{Edit, Engine};
 use improv_engine::{decode_coord, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
-use improv_storage_mentat::ModelStore;
+use improv_storage_mentat::{ModelStore, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tower::ServiceBuilder;
@@ -103,6 +103,9 @@ pub struct AppState {
     write_lock: tokio::sync::Mutex<()>,
     /// The loaded model, `None` until first read or after invalidation (P4).
     cache: tokio::sync::RwLock<Option<Arc<Model>>>,
+    /// The store high-water `cache` was loaded/saved at; a save from a stale
+    /// cache (another process wrote since) is refused with 409.
+    loaded_tx: std::sync::Mutex<Option<i64>>,
     /// Store loads performed, so tests can check the cache.
     #[cfg(test)]
     loads: AtomicU64,
@@ -116,6 +119,7 @@ impl AppState {
             scheduler_status,
             write_lock: tokio::sync::Mutex::new(()),
             cache: tokio::sync::RwLock::new(None),
+            loaded_tx: std::sync::Mutex::new(None),
             #[cfg(test)]
             loads: AtomicU64::new(0),
         }
@@ -341,6 +345,8 @@ enum ApiError {
     BadRequest(String),
     Forbidden(String),
     NotFound(String),
+    /// The store changed under the cached model (another process wrote).
+    Conflict(String),
     Internal(String),
 }
 
@@ -354,6 +360,7 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            ApiError::Conflict(m) => (StatusCode::CONFLICT, m),
             ApiError::Internal(detail) => {
                 // The detail (store/SQLite errors carry the DB path) stays in
                 // the server log; the client gets an id to quote (S14).
@@ -381,14 +388,16 @@ async fn load_model(state: &Arc<AppState>) -> Result<Arc<Model>, ApiError> {
     #[cfg(test)]
     state.loads.fetch_add(1, Ordering::Relaxed);
     let path = state.db_path.clone();
-    let model = tokio::task::spawn_blocking(move || {
+    let (model, tx) = tokio::task::spawn_blocking(move || {
         let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
-        store.load_model().map_err(|e| e.to_string())
+        let model = store.load_model().map_err(|e| e.to_string())?;
+        Ok((model, store.loaded_tx()))
     })
     .await
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
     .map_err(ApiError::Internal)?;
     let model = Arc::new(model);
+    *state.loaded_tx.lock().unwrap() = tx;
     *cache = Some(model.clone());
     Ok(model)
 }
@@ -397,15 +406,26 @@ async fn load_model(state: &Arc<AppState>) -> Result<Arc<Model>, ApiError> {
 /// `write_lock` held.
 async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, ApiError> {
     let path = state.db_path.clone();
-    let model = tokio::task::spawn_blocking(move || {
-        let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
-        store.save_model(&model).map_err(|e| e.to_string())?;
-        Ok(model)
+    let base = *state.loaded_tx.lock().unwrap();
+    let saved = tokio::task::spawn_blocking(move || {
+        let mut store = ModelStore::open(&path)?;
+        store.set_loaded_tx(base);
+        store.save_model(&model)?;
+        Ok((model, store.loaded_tx()))
     })
     .await
-    .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
-    .map_err(ApiError::Internal)?;
+    .map_err(|e| ApiError::Internal(format!("task join: {e}")))?;
+    let (model, tx) = match saved {
+        Ok(v) => v,
+        Err(e @ StoreError::Conflict(_)) => {
+            // Drop the stale cache so the client's retry reloads.
+            *state.cache.write().await = None;
+            return Err(ApiError::Conflict(e.to_string()));
+        }
+        Err(e) => return Err(ApiError::Internal(e.to_string())),
+    };
     let model = Arc::new(model);
+    *state.loaded_tx.lock().unwrap() = tx;
     *state.cache.write().await = Some(model.clone());
     Ok(model)
 }
@@ -1097,6 +1117,53 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let v = body_json(resp).await;
         assert_eq!(v["text"], "Price times Quantity");
+    }
+
+    /// Another process writes the store after the server cached its model: the
+    /// server's next write must 409 (not retract that write), and a retry,
+    /// which reloads, succeeds.
+    #[tokio::test]
+    async fn write_over_another_processes_change_is_409() {
+        let (app, p) = seeded_app();
+        let get = || Request::get("/measures").body(Body::empty()).unwrap();
+        assert_eq!(
+            app.clone().oneshot(get()).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let mut other = ModelStore::open(p.to_str().unwrap()).unwrap();
+        let mut m = other.load_model().unwrap();
+        let c = Coordinate::from_pairs([(improv_core_model::CategoryId(2), ItemId(21))]);
+        m.set_input(
+            MeasureId(100),
+            c.clone(),
+            improv_core_model::Value::Number(77.0),
+        );
+        other.save_model(&m).unwrap();
+
+        let post = || {
+            Request::post("/measures/100/cells")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"coord": {"dims": {"2": 20}}, "value": 42.0}).to_string(),
+                ))
+                .unwrap()
+        };
+        let resp = app.clone().oneshot(post()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(body_json(resp).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("reload"));
+        assert_eq!(app.oneshot(post()).await.unwrap().status(), StatusCode::OK);
+        let after = ModelStore::open(p.to_str().unwrap())
+            .unwrap()
+            .load_model()
+            .unwrap();
+        assert_eq!(
+            after.input(MeasureId(100), &c),
+            Some(&improv_core_model::Value::Number(77.0))
+        );
     }
 
     #[tokio::test]
