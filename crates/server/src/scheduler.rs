@@ -128,6 +128,8 @@ async fn tick_once(
 ) -> Result<Vec<MeasureId>, String> {
     let now_secs = start.elapsed().as_secs();
     let path = state.db_path.clone();
+    // Same lock as the API writers: this is a load-modify-save too.
+    let _write = state.write_lock.lock().await;
     let allow = allow.clone();
 
     // Load the model, compute due CALL measures against `last_run`, and
@@ -278,11 +280,11 @@ mod tests {
     }
 
     fn app_state(db_path: &str) -> Arc<AppState> {
-        Arc::new(AppState {
-            db_path: db_path.to_string(),
-            auth: crate::Auth::Disabled,
-            scheduler_status: None,
-        })
+        Arc::new(AppState::new(
+            db_path.to_string(),
+            crate::Auth::Disabled,
+            None,
+        ))
     }
 
     // The scheduler actually runs: a due CALL measure gets refreshed and the
