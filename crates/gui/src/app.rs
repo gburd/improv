@@ -286,12 +286,12 @@ const TILE_H: f32 = 17.0;
 /// cascade). See [`ImprovApp::add_matrix`].
 const CASCADE: f32 = 28.0;
 
-/// Where a fresh canvas's first matrix starts on the workspace: right of the
-/// application menu (at x 4, about 110 wide), as in the NeXT layout.
 /// Seconds a status message stays up before the status bar clears it.
 const STATUS_TTL: f64 = 5.0;
 
-const MENU_CLEAR: f32 = 120.0;
+/// Where a fresh canvas's first matrix starts on the workspace: right of the
+/// application menu (at x 4, about 110 wide), as in the NeXT layout.
+const MENU_CLEAR: f32 = crate::menu::MENU_W + 12.0;
 
 /// Smallest a worksheet window can be resized to. Below roughly this it has no
 /// room for its gutters and a cell, so shrinking further would only hide its
@@ -339,7 +339,7 @@ impl Matrix {
     /// canvas geometry.
     fn new(model: &Model, measure: Option<MeasureId>) -> Matrix {
         let axis_order = natural_axis_order(model, measure);
-        Matrix {
+        let mut m = Matrix {
             uid: next_matrix_uid(),
             measure,
             n_rows: 1.min(axis_order.len()),
@@ -351,7 +351,13 @@ impl Matrix {
                 ..CanvasRect::default()
             },
             ..Matrix::default()
-        }
+        };
+        // Fit the window to its grid (plus the formula pane), within bounds.
+        let lines = |cats: &[CategoryId]| product_len(&m.axis_item_lists(model, cats)) as f32;
+        let (rows, cols) = (lines(&m.row_cats(model)), lines(&m.col_cats(model)));
+        m.rect.w = (120.0 + 80.0 * cols).clamp(360.0, 900.0);
+        m.rect.h = (200.0 + 20.0 * rows + 110.0).clamp(300.0, 700.0);
+        m
     }
 
     /// A matrix restoring a saved [`MatrixPlacement`] verbatim: its measure,
@@ -9509,6 +9515,69 @@ mod tests {
             .expect("formula label on Revenue's row");
         assert!(kind.min.x > name.max.x, "right of the name");
         assert!(text_at(&out.shapes, "input").is_some(), "Price is an input");
+    }
+
+    /// A model whose one measure is `rows` × `cols` items (Row × Col).
+    fn grid_model(rows: u32, cols: u32) -> Model {
+        let mut m = Model::new();
+        let (r, c) = (CategoryId(1), CategoryId(2));
+        m.add_category(r, "Row");
+        m.add_category(c, "Col");
+        for i in 0..rows {
+            m.add_item(ItemId(100 + i), r, format!("r{i}"));
+        }
+        for i in 0..cols {
+            m.add_item(ItemId(200 + i), c, format!("c{i}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Grid".into()),
+            value_type: ValueType::Number,
+            categories: vec![r, c],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m
+    }
+
+    /// E6: a fresh worksheet window is sized to its grid, within bounds.
+    #[test]
+    fn a_fresh_matrix_fits_its_grid() {
+        let small = grid_model(4, 2);
+        let m = Matrix::new(&small, Some(MeasureId(1)));
+        assert_eq!(
+            product_len(&m.axis_item_lists(&small, &m.col_cats(&small))),
+            2
+        );
+        assert_eq!(
+            product_len(&m.axis_item_lists(&small, &m.row_cats(&small))),
+            4
+        );
+        assert!((360.0..=900.0).contains(&m.rect.w), "w {}", m.rect.w);
+        assert!((300.0..=700.0).contains(&m.rect.h), "h {}", m.rect.h);
+        let wide = grid_model(4, 12);
+        assert!(Matrix::new(&wide, Some(MeasureId(1))).rect.w > m.rect.w);
+    }
+
+    /// E1: the first worksheet window opens clear of the application menu.
+    #[test]
+    fn the_first_worksheet_window_clears_the_menu() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        for i in 0..4 {
+            let _ = full_frame(&ctx, &mut app, size, f64::from(i) / 60.0);
+        }
+        let menu = ctx
+            .memory(|m| m.area_rect(crate::menu::menu_id()))
+            .expect("menu shown");
+        let win = crate::nxwin::stored_rect(&ctx, matrix_window_id(app.matrices[0].uid))
+            .expect("window shown");
+        assert!(
+            !menu.intersects(win),
+            "menu {menu:?} overlaps window {win:?}"
+        );
     }
 
     /// A status message is drawn, then gone once [`STATUS_TTL`] has passed.

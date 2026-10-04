@@ -114,6 +114,9 @@ const PAD: f32 = 6.0;
 /// Room between a label and the right-hand marker, plus the marker itself.
 const RIGHT_SLOT: f32 = 28.0;
 const MIN_WIDTH: f32 = 96.0;
+/// Room the main menu takes from the workspace's left edge: its ~110 px panel
+/// plus its margin. A fresh worksheet window opens clear of it.
+pub(crate) const MENU_W: f32 = 120.0;
 const FONT_SIZE: f32 = 12.0;
 
 /// Where the menu sits and which submenu is open. Lives on the app.
