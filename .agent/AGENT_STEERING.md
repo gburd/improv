@@ -9,9 +9,12 @@ When a phase lands, update this file.
 ## Active priority — GUI UX review (2026-10-03)
 
 A hands-on UX review produced a 21-item plan in four batches
-(`docs/reviews/2026-10-03-gui-ux-review-plan.md`). **NEXT: Batch A** (tofu
-palette glyphs, 800×600 overlap, numeric alignment, header styling, CLI
-`--at`). Batches B–D follow in order; status is tracked in that file.
+(`docs/reviews/2026-10-03-gui-ux-review-plan.md`). Batches A, B and C are DONE (spec
+`docs/reviews/2026-10-03-nextstep-visual-spec.md` steps 1–6: palette, Arimo,
+nxwin chrome, application menu, worksheet/browser/Info windows, in-window
+formula pane, NeXT gutters, ruled grid with range selection). **NEXT: Batch D**
+(title/dirty marker, status feedback, browser labels) and **Batch E**
+(fidelity gaps: scrollers, white grid field, filters, browser view list).
 
 ## Released: v0.7.0 (2026-09-24)
 
