@@ -25,7 +25,7 @@ USAGE:
 
 COMMANDS:
     init <db>
-        Create/open the store (installs schema) and save an empty model.
+        Create/open the store and install the schema (an existing model is kept).
 
     add-category <db> <id> <name>
         Add a category (dimension). <id> is a number.
@@ -211,8 +211,10 @@ fn parse_u32(s: &str, name: &str) -> Result<u32, String> {
 
 fn cmd_init(rest: &[String]) -> Result<(), String> {
     let db = arg(rest, 0, "db")?;
-    let mut store = open(db)?;
-    store.save_model(&Model::new()).map_err(|e| e.to_string())?;
+    // Opening installs the schema; that is all `init` does. It must not save
+    // an empty model: `save_model` retracts stored cells the model lacks, so
+    // re-running `init` on a populated store would delete every cell.
+    open(db)?;
     println!("initialized store at '{db}'");
     Ok(())
 }
@@ -1524,6 +1526,21 @@ mod tests {
             model.input(MeasureId(100), &coord),
             Some(&Value::Number(10.5))
         );
+    }
+
+    /// Re-running `init` on a populated store must not wipe its cells.
+    #[test]
+    fn init_on_existing_store_keeps_cells() {
+        let db = tmp_db();
+        let _guard = scopeguard(&db);
+        run(&s(&["init", &db])).unwrap();
+        run(&s(&["add-category", &db, "1", "Product"])).unwrap();
+        run(&s(&["add-item", &db, "20", "1", "WidgetA"])).unwrap();
+        run(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
+        run(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
+        run(&s(&["init", &db])).unwrap();
+        let model = ModelStore::open(&db).unwrap().load_model().unwrap();
+        assert_eq!(model.inputs.len(), 1);
     }
 
     #[test]

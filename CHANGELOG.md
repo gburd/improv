@@ -258,6 +258,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   retracted instead of lingering on disk and coming back on the next load.
   An unchanged re-save of a 100k-cell model now adds no datoms (it added 200
   and grew the file ~30 KB) and takes 1.3 s instead of 317 s.
+- **`improv init` no longer wipes an existing store.** It installs the
+  schema only; it used to save an empty model, which under the cell diff
+  above would have retracted every stored cell.
 
 ### Performance
 

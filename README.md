@@ -73,7 +73,7 @@ cargo run -p improv_cli -- help
 
 | Command | What it does |
 |---------|--------------|
-| `init <db>` | Create an empty model. |
+| `init <db>` | Create a store (an existing model is kept). |
 | `add-category <db> <id> <name>` | Add a dimension. |
 | `add-item <db> <id> <cat-id> <name>` | Add an item to a category. |
 | `add-measure <db> <id> <name> <number\|boolean\|text> input [Category ...]` | Add an input measure over the named categories. |
