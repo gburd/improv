@@ -14,3 +14,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 proptest = "1"
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

@@ -42,6 +42,7 @@
 //! * A dimension phrase binds to the nearest preceding measure reference,
 //!   populating that `Ref`'s [`DimensionSpec`] (`over` -> aggregate over,
 //!   `by`/`for each` -> keep). `except` is not surfaced by the grammar.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use improv_core_model::{
     BinaryOp, CategoryId, DimensionSpec, Expr, Formula, FuncId, MeasureId, Model, Value,
@@ -491,6 +492,7 @@ fn fmt_num(n: f64) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{CategoryId, Measure, MeasureId, MeasureKind, Model, Name, ValueType};
