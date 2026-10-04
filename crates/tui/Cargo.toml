@@ -16,3 +16,8 @@ improv_engine = { path = "../engine" }
 thiserror.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; it gates the
+# `coverage(off)` exclusions on the real-terminal shell in main.rs.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
