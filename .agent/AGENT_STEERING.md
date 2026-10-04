@@ -6,20 +6,35 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — GUI UX review (2026-10-03)
+## Active priority — post-v0.7.0 hardening (2026-10-04)
 
-A hands-on UX review produced a 21-item plan in four batches
-(`docs/reviews/2026-10-03-gui-ux-review-plan.md`). Batches A, B and C are DONE (spec
-`docs/reviews/2026-10-03-nextstep-visual-spec.md` steps 1–6: palette, Arimo,
-nxwin chrome, application menu, worksheet/browser/Info windows, in-window
-formula pane, NeXT gutters, ruled grid with range selection). Batches D and E
-are DONE too (title/dirty marker, transient status, browser labels and view
-list, white grid field, tile-menu filters, NeXT scrollers with beveled
-knob and grouped arrows). CLI `save-view` landed and the screenshot demo
-saves two views. D5 landed: CI's `gui-shot` job compares a headless
-capture with `docs/reviews/golden/gui-1400x900.png`. **NEXT:** the rows-tile
-strip inline with the horizontal scroller (E2 remainder). Pixel fidelity to Improv 3.0 is still
-unverified.
+DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
+
+- **GUI UX batches A–E** (`docs/reviews/2026-10-03-gui-ux-review-plan.md`,
+  spec `docs/reviews/2026-10-03-nextstep-visual-spec.md`): NeXTSTEP palette,
+  Arimo, application menu, worksheet/browser/Info windows, in-window formula
+  pane, NeXT gutters, ruled grid with range selection, scroller bevel +
+  grouped arrows, CLI `save-view`, screenshot golden in CI.
+- **TUI**: 6 bugs fixed (invisible edit prompt, filtered-axis write, text/bool
+  edits, no scrolling, mouse column offset, paging past empty dims); formula
+  status line and Shift+arrow range Sum.
+- **Security + scalability review** (`docs/reviews/2026-10-04-security-scalability.md`):
+  all findings S1–S20 and P1–P4 fixed (P5 deferred, P6 baseline). Highlights:
+  scheduler off by default with an allowlist; host-decided, fail-closed
+  bubblewrap sandbox (no `$HOME`, no network, cleared env, bounded output,
+  process-group kill, wasm fuel/memory caps); nl_formula depth limit (remote
+  stack-overflow crash); slow-loris/body/concurrency limits; read-only SQL
+  refresh; CSV formula-injection neutralization; storage N+1 load (280 s → 0.6 s
+  at 100k cells); copy-on-write engine snapshots (100k-cell edit 5.6 ms → 71 µs).
+  Also: cross-process save conflict detection, measure category order
+  preserved, `init` no longer wipes a store, sandbox works on NixOS.
+- **Coverage gate**: every crate ≥ 90% functions and ≥ 90% branches (workspace
+  ≈ 96% / 95%), `scripts/coverage.sh` + CI `coverage` job. Run guide:
+  `docs/src/running.md`.
+
+NEXT: horizontal scroller arrows and the rows-tile strip inline with the
+horizontal scroller (E2 remainder); a GUI/TUI "reload" action after a save
+conflict; P5 per-frame caches if profiling warrants; cut v0.8.0.
 
 ## Released: v0.7.0 (2026-09-24)
 
