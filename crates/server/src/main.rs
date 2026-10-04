@@ -6,6 +6,7 @@
 //! sharing a non-Send store across tasks.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -261,13 +262,23 @@ enum ApiError {
     Internal(String),
 }
 
+/// Id logged with each internal error and echoed to the client as `request_id`.
+static NEXT_ERROR_ID: AtomicU64 = AtomicU64::new(1);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
             ApiError::Rejected(s, m) => (s, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
-            ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            ApiError::Internal(detail) => {
+                // The detail (store/SQLite errors carry the DB path) stays in
+                // the server log; the client gets an id to quote (S14).
+                let id = NEXT_ERROR_ID.fetch_add(1, Ordering::Relaxed);
+                eprintln!("request {id}: internal error: {detail}");
+                let body = json!({ "error": "internal error", "request_id": id });
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response();
+            }
         };
         (status, Json(json!({ "error": msg }))).into_response()
     }
@@ -1214,5 +1225,28 @@ mod tests {
     async fn slow_loris_closed_default_timeout() {
         let t = partial_request_closed_after(HEADER_READ_TIMEOUT).await;
         assert!(t < Duration::from_secs(11), "closed after {t:?}");
+    }
+
+    #[tokio::test]
+    async fn internal_error_hides_store_path() {
+        let state = Arc::new(AppState {
+            db_path: "/nonexistent-improv-dir/secret-store.db".into(),
+            auth: Auth::Disabled,
+            scheduler_status: None,
+        });
+        let resp = app(state)
+            .oneshot(Request::get("/measures").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("nonexistent-improv-dir"),
+            "path leaked: {text}"
+        );
+        let v: JsonValue = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "internal error");
+        assert!(v["request_id"].as_u64().is_some());
     }
 }
