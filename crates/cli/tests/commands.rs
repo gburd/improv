@@ -361,6 +361,18 @@ fn register_ext_define_call_and_refresh_ext() {
         "refreshed external measure 200 (1 cells)\n"
     );
     stdout_has(&ok(&["show", &db, "200"]), "200::{Product=WidgetA} = 20");
+    // No SQL-backed measures: refresh-all needs no source and prints no note.
+    let o = improv(&["refresh-all", &db]);
+    assert!(o.status.success());
+    stdout_has(
+        &String::from_utf8_lossy(&o.stdout),
+        "refresh-all: 1 cells refreshed",
+    );
+    assert!(
+        o.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
 
     // Two arguments sharing a category: the call ranges over their union.
     ok(&[
@@ -877,4 +889,131 @@ fn serve_refresh_rejects_a_bad_tick() {
         "--tick needs a value in seconds",
     );
     fails_with(&["serve-refresh"], "missing argument <db>");
+}
+
+/// Make every later `load_model`/`load_partial` of `db` fail: overwrite the
+/// stored external-functions JSON blob with garbage.
+fn corrupt_meta(db: &str) {
+    let n = rusqlite::Connection::open(db)
+        .unwrap()
+        .execute(
+            "UPDATE datoms SET v = 'not json' \
+             WHERE a = (SELECT e FROM idents WHERE v = ':meta/external-fns')",
+            [],
+        )
+        .unwrap();
+    assert_eq!(n, 1, "expected one external-fns blob to corrupt");
+}
+
+/// Make every later write of new data to `db` fail (reads, and the idempotent
+/// schema transaction `open` runs, still succeed).
+fn block_writes(db: &str) {
+    rusqlite::Connection::open(db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER improv_test_block BEFORE INSERT ON datoms \
+             WHEN NEW.a <> (SELECT e FROM idents WHERE v = ':db/txInstant') \
+             BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
+        )
+        .unwrap();
+}
+
+#[test]
+fn every_command_reports_a_store_load_failure() {
+    let (dir, db) = model("load-fail");
+    let src = sales_source(&dir);
+    let csv = file(&dir, "s.csv");
+    std::fs::write(&csv, "p,r\nA,1\n").unwrap();
+    let out = file(&dir, "out.sqlite");
+    let out_csv = file(&dir, "out.csv");
+    ok(&["register-ext", &db, "dbl", "1", "result = args[0] * 2"]);
+    corrupt_meta(&db);
+    let d = db.as_str();
+    let q = "SELECT p,r FROM sales";
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["add-category", d, "3", "C"],
+        vec!["add-item", d, "12", "1", "Q3"],
+        vec!["add-measure", d, "105", "X", "number", "input"],
+        vec!["add-derived", d, "106", "Y", "Price * 2"],
+        vec!["define", d, "107", "Z = Price * 3"],
+        vec!["register-ext", d, "f", "1", "result = 1"],
+        vec!["refresh-ext", d, "200"],
+        vec!["refresh-all", d],
+        vec!["serve-refresh", d, "--tick", "1"],
+        vec!["scenario", d, "s", "100", "1", "--at", "Product=WidgetA"],
+        vec!["set", d, "100", "1", "--at", "Product=WidgetA"],
+        vec!["list", d],
+        vec!["save-view", d, "1", "V", "102"],
+        vec!["show", d, "100"],
+        vec!["eval", d, "102"],
+        vec!["export", d],
+        vec!["stream", d, "102"],
+        vec!["import-sql", d, &src, "400", "R", q, "r", "p:6:Region"],
+        vec!["refresh-sql", d, &src, "400"],
+        vec!["export-sql", d, &out, "100", "t", "v"],
+        vec!["import-csv", d, &csv, "300", "S", "r", "p:6:Region"],
+        vec!["export-csv", d, &out_csv, "100"],
+    ];
+    for args in &cases {
+        fails_with(args, "serialization error");
+    }
+}
+
+#[test]
+fn every_mutating_command_reports_a_store_save_failure() {
+    let (dir, db) = model("save-fail");
+    let src = sales_source(&dir);
+    let csv = file(&dir, "s.csv");
+    std::fs::write(&csv, "p,r\nA,1\n").unwrap();
+    let d = db.as_str();
+    ok(&["register-ext", d, "dbl", "1", "result = args[0] * 2"]);
+    ok(&["define", d, "200", "D = CALL(dbl, Price)"]);
+    ok(&[
+        "import-sql",
+        d,
+        &src,
+        "400",
+        "Rev",
+        "SELECT p,r FROM sales",
+        "r",
+        "p:6:Region",
+    ]);
+    rusqlite::Connection::open(&src)
+        .unwrap()
+        .execute("UPDATE sales SET r = 9.0", [])
+        .unwrap();
+    let before = load(d);
+    block_writes(d);
+
+    let q = "SELECT p,r FROM sales";
+    let cases: Vec<Vec<&str>> = vec![
+        vec!["add-category", d, "3", "C"],
+        vec!["add-item", d, "12", "1", "Q3"],
+        vec!["add-measure", d, "105", "X", "number", "input"],
+        vec!["add-derived", d, "106", "Y", "Price * 2"],
+        vec!["define", d, "107", "Z = Price * 3"],
+        vec!["register-ext", d, "f", "1", "result = 1"],
+        vec!["refresh-ext", d, "200"],
+        vec!["refresh-all", d],
+        vec!["scenario", d, "s", "100", "1", "--at", "Product=WidgetA"],
+        vec!["set", d, "100", "99", "--at", "Product=WidgetA"],
+        vec!["save-view", d, "1", "V", "102"],
+        vec!["import-sql", d, &src, "401", "R2", q, "r", "p:7:Area"],
+        vec!["refresh-sql", d, &src, "400"],
+        vec!["import-csv", d, &csv, "300", "S", "r", "p:8:Zone"],
+    ];
+    for args in &cases {
+        fails_with(args, "mentat error");
+    }
+    let o = improv_stdin(&["stream", d, "Revenue"], b"Price 55 Product=WidgetA\n");
+    assert!(!o.status.success());
+    stdout_has(&String::from_utf8_lossy(&o.stderr), "mentat error");
+
+    // Nothing was written by any of the failed commands.
+    let after = load(d);
+    assert_eq!(after.categories.len(), before.categories.len());
+    assert_eq!(after.items.len(), before.items.len());
+    assert_eq!(after.measures.len(), before.measures.len());
+    assert_eq!(after.inputs, before.inputs);
+    assert!(after.views.is_empty() && after.scenarios.is_empty());
 }

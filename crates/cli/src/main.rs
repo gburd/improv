@@ -1531,7 +1531,7 @@ mod tests {
         assert!(model
             .items
             .values()
-            .any(|i| i.name.0 == "WidgetA" && i.category == CategoryId(1)));
+            .any(|i| (i.name.0.as_str(), i.category) == ("WidgetA", CategoryId(1))));
         let m = model.measure_by_name("Price").unwrap();
         assert_eq!(m.value_type as u8, ValueType::Number as u8);
         assert!(m.is_input());
@@ -1960,5 +1960,170 @@ mod tests {
             .is_ok(),
             "an undeclared measure must still accept a coordinate"
         );
+    }
+
+    fn sql_of(path: &str, sql: &str) {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .execute_batch(sql)
+            .unwrap();
+    }
+
+    fn cell(db: &str, mid: u32, cat: u32, item: u32) -> Option<Value> {
+        let model = ModelStore::open(db).unwrap().load_model().unwrap();
+        let coord = Coordinate::from_pairs([(CategoryId(cat), ItemId(item))]);
+        model.input(MeasureId(mid), &coord).cloned()
+    }
+
+    /// A store with SQL measure 400 `Rev` (interval:60) over Region{A} and the
+    /// CALL measure 200 `D = dbl(Rev)` (on-load). Returns (db, source, A's id).
+    fn serve_fixture(db: &str, src: &str) -> u32 {
+        sql_of(
+            src,
+            "CREATE TABLE sales(p TEXT, r REAL); INSERT INTO sales VALUES ('A', 1.0);",
+        );
+        run(&s(&["init", db])).unwrap();
+        run(&s(&[
+            "import-sql",
+            db,
+            src,
+            "400",
+            "Rev",
+            "SELECT p,r FROM sales",
+            "r",
+            "p:6:Region",
+            "--refresh",
+            "interval:60",
+        ]))
+        .unwrap();
+        run(&s(&[
+            "register-ext",
+            db,
+            "dbl",
+            "1",
+            "result = args[0] * 2",
+        ]))
+        .unwrap();
+        run(&s(&[
+            "define",
+            db,
+            "200",
+            "D = CALL(dbl, Rev)",
+            "--refresh",
+            "on-load",
+        ]))
+        .unwrap();
+        let model = ModelStore::open(db).unwrap().load_model().unwrap();
+        model.items.values().find(|i| i.name.0 == "A").unwrap().id.0
+    }
+
+    #[test]
+    fn serve_refresh_tick_refreshes_only_due_measures() {
+        let db = tmp_db();
+        let src = format!("{db}.src.sqlite");
+        let (_g, _s) = (scopeguard(&db), scopeguard(&src));
+        let a = serve_fixture(&db, &src);
+        let mut last_run = HashMap::new();
+
+        // t=0: both are due (never run); the CALL runs over Rev's cells.
+        serve_refresh_tick(&db, Some(&src), 0, &mut last_run).unwrap();
+        assert_eq!(
+            last_run,
+            HashMap::from([(MeasureId(200), 0), (MeasureId(400), 0)])
+        );
+        assert_eq!(cell(&db, 200, 6, a), Some(Value::Number(2.0)));
+
+        sql_of(&src, "UPDATE sales SET r = 5.0;");
+        // t=30: on-load already ran, the interval has not elapsed: nothing due.
+        serve_refresh_tick(&db, Some(&src), 30, &mut last_run).unwrap();
+        assert_eq!(cell(&db, 400, 6, a), Some(Value::Number(1.0)));
+        // t=60 with no source: the due SQL measure is skipped, not recorded.
+        serve_refresh_tick(&db, None, 60, &mut last_run).unwrap();
+        assert_eq!(last_run[&MeasureId(400)], 0);
+        assert_eq!(cell(&db, 400, 6, a), Some(Value::Number(1.0)));
+        // t=60 with the source: refreshed.
+        serve_refresh_tick(&db, Some(&src), 60, &mut last_run).unwrap();
+        assert_eq!(last_run[&MeasureId(400)], 60);
+        assert_eq!(cell(&db, 400, 6, a), Some(Value::Number(5.0)));
+    }
+
+    #[test]
+    fn serve_refresh_tick_propagates_every_failure() {
+        let db = tmp_db();
+        let src = format!("{db}.src.sqlite");
+        let empty = format!("{db}.empty.sqlite");
+        let (_g, _s, _e) = (scopeguard(&db), scopeguard(&src), scopeguard(&empty));
+        serve_fixture(&db, &src);
+        let only_sql_due = || HashMap::from([(MeasureId(200), 0)]);
+
+        // Unopenable source.
+        let e = serve_refresh_tick(
+            &db,
+            Some("/nonexistent-improv-dir/s.db"),
+            0,
+            &mut HashMap::new(),
+        );
+        assert!(e.is_err());
+        // Source without the table: the SQL refresh fails.
+        sql_of(&empty, "");
+        let e = serve_refresh_tick(&db, Some(&empty), 0, &mut only_sql_due()).unwrap_err();
+        assert!(e.contains("sales"), "{e}");
+        // The CALL fails once its function's arity no longer matches.
+        run(&s(&["register-ext", &db, "dbl", "2", "result = 0"])).unwrap();
+        let e = serve_refresh_tick(&db, None, 0, &mut HashMap::new()).unwrap_err();
+        assert!(e.contains("dbl"), "{e}");
+
+        // Save failure: new source data, but every new datom is blocked.
+        sql_of(&src, "UPDATE sales SET r = 7.0;");
+        sql_of(
+            &db,
+            "CREATE TRIGGER t BEFORE INSERT ON datoms \
+             WHEN NEW.a <> (SELECT e FROM idents WHERE v = ':db/txInstant') \
+             BEGIN SELECT RAISE(ABORT, 'blocked'); END;",
+        );
+        let e = serve_refresh_tick(&db, Some(&src), 0, &mut only_sql_due()).unwrap_err();
+        assert!(e.contains("mentat"), "{e}");
+        // Load failure: corrupt the stored external-functions JSON.
+        sql_of(
+            &db,
+            "UPDATE datoms SET v = 'not json' \
+             WHERE a = (SELECT e FROM idents WHERE v = ':meta/external-fns');",
+        );
+        let e = serve_refresh_tick(&db, None, 0, &mut HashMap::new()).unwrap_err();
+        assert!(e.contains("serialization"), "{e}");
+    }
+
+    #[test]
+    fn names_fall_back_to_ids_when_absent_from_the_model() {
+        let empty = Model::new();
+        assert_eq!(render_coord_key(&empty, &[(7, 8), (9, 1)]), "7=8, 9=1");
+        let coord = Coordinate::from_pairs([(CategoryId(7), ItemId(8))]);
+        assert_eq!(fmt_coord(&empty, &coord), "7=8");
+
+        let mut m = stream_test_model();
+        m.set_input(MeasureId(5), coord, Value::Enum(3));
+        assert!(input_lines(&m).contains(&"5::{7=8} = Enum(3)".to_string()));
+
+        // A declared dimension the model has no category for is named by id.
+        m.add_measure(Measure {
+            id: MeasureId(901),
+            name: Name("Ghost".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(99)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let err = resolve_coord(&m, MeasureId(901), &[]).unwrap_err();
+        assert!(err.contains("missing category 99"), "{err}");
+        // An unknown measure has no declared dimensions to check against.
+        let pairs = [("Product".to_string(), "WidgetA".to_string())];
+        assert!(resolve_coord(&m, MeasureId(12345), &pairs).is_ok());
+    }
+
+    #[test]
+    fn parse_value_rejects_types_the_cli_cannot_set() {
+        let e = parse_value("1", ValueType::DateTime).unwrap_err();
+        assert!(e.contains("cannot set a DateTime measure"), "{e}");
+        assert_eq!(fmt_value(&Value::Boolean(false)), "false");
     }
 }
