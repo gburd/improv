@@ -19,6 +19,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **CLI `save-view`.** `improv save-view <db> <view-id> <name> <measure>
+  [--rows Cat,Cat] [--cols Cat,...]` writes a named view the same shape the
+  GUI saves (stacked rows/cols, remaining categories as pages pinned to their
+  first item). `improv list` now prints a `views:` section.
+
 - **GUI screenshot harness (`scripts/gui-shot.sh`).** Builds the binaries,
   loads a fixed Time×Product×Scenario demo model, runs `improv-gui` on a
   headless Xvfb at 1400×900 and writes `target/gui-shot/gui.png` plus

@@ -42,6 +42,7 @@ by the binary, are:
 | `add-derived` | `<db> <id> <name> <formula>` |
 | `set` | `<db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]` |
 | `list` | `<db>` |
+| `save-view` | `<db> <view-id> <name> <measure> [--rows Cat,Cat] [--cols Cat,...]` |
 | `show` | `<db> <measure-id>` |
 | `eval` | `<db> <measure-id>` |
 | `export` | `<db>` |
@@ -106,10 +107,18 @@ items:
 measures:
   100 Price [input] Number
   101 Quantity [input] Number
+views:
 inputs:
   100::{Product=WidgetA} = 10
   100::{Product=WidgetB} = 20
   101::{Time=2025,Product=WidgetA} = 100
+```
+
+Save a named view (the GUI opens it from the model browser). `--rows` and
+`--cols` stack category names; leftover categories become pages:
+
+```sh
+improv save-view "$DB" 1 "Prices by product" Price --rows Product --cols Time
 ```
 
 Look at a single measure and its cells:
