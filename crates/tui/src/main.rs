@@ -119,15 +119,17 @@ fn event_loop<B: Backend>(
 /// Dispatch one terminal event by mode (edit / command prompt / normal).
 fn handle_event(app: &mut App, ev: Event, path: &str) {
     match ev {
-        Event::Key(k) if k.kind != KeyEventKind::Release => {
-            if app.edit.is_some() {
-                edit_key(app, k.code);
-            } else if app.command.is_some() {
-                command_key(app, k.code);
-            } else {
-                normal_key(app, k.code, path);
-            }
-        }
+        Event::Key(k) if k.kind != KeyEventKind::Release => match (k.code, &mut app.edit) {
+            (KeyCode::Enter, Some(_)) => app.commit_edit(),
+            (KeyCode::Esc, Some(_)) => app.cancel_edit(),
+            (code, Some(buf)) => line_key(buf, code),
+            (code, None) => match (code, &mut app.command) {
+                (KeyCode::Enter, Some(_)) => app.commit_command(),
+                (KeyCode::Esc, Some(_)) => app.cancel_command(),
+                (code, Some((_, buf))) => line_key(buf, code),
+                (code, None) => normal_key(app, code, path),
+            },
+        },
         // Mouse: left-click selects the cell under the pointer (hit-tested
         // against the last-rendered grid geometry stored on `app`).
         Event::Mouse(m) if app.edit.is_none() && app.command.is_none() => {
@@ -139,40 +141,13 @@ fn handle_event(app: &mut App, ev: Event, path: &str) {
     }
 }
 
-/// Key handling while a cell edit is in progress.
-fn edit_key(app: &mut App, code: KeyCode) {
+/// Line-editing keys shared by the cell edit and the command prompt.
+fn line_key(buf: &mut String, code: KeyCode) {
     match code {
-        KeyCode::Enter => app.commit_edit(),
-        KeyCode::Esc => app.cancel_edit(),
         KeyCode::Backspace => {
-            if let Some(buf) = app.edit.as_mut() {
-                buf.pop();
-            }
+            buf.pop();
         }
-        KeyCode::Char(c) => {
-            if let Some(buf) = app.edit.as_mut() {
-                buf.push(c);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Key handling while the import-csv/export-csv command prompt is active.
-fn command_key(app: &mut App, code: KeyCode) {
-    match code {
-        KeyCode::Enter => app.commit_command(),
-        KeyCode::Esc => app.cancel_command(),
-        KeyCode::Backspace => {
-            if let Some((_, buf)) = app.command.as_mut() {
-                buf.pop();
-            }
-        }
-        KeyCode::Char(c) => {
-            if let Some((_, buf)) = app.command.as_mut() {
-                buf.push(c);
-            }
-        }
+        KeyCode::Char(c) => buf.push(c),
         _ => {}
     }
 }

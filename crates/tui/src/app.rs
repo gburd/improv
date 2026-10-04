@@ -1482,6 +1482,141 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn small_branches_pivot_click_seed_and_no_buffer_commits() {
+        let mut app = App::new(revenue_model()).unwrap();
+        // Pivot on a 1-D measure is a no-op with a message.
+        view(&mut app, MeasureId(100));
+        app.axis_order = app.natural_axis_order();
+        app.pivot();
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .starts_with("nothing to pivot"));
+        // Clicks before any render, left of the grid, or past the window.
+        app.click_at(50, 50);
+        app.grid_geom = Some(GridGeom {
+            x0: 10,
+            y0: 5,
+            col_w: 12,
+            spacing: 1,
+            row0: 0,
+            col0: 0,
+            rows: 1,
+            cols: 1,
+        });
+        app.click_at(5, 6);
+        app.click_at(10, 6); // row 1 is outside the 1-row window
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        // Fractional values seed the edit buffer verbatim.
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 2.5).unwrap();
+        app.begin_edit();
+        assert_eq!(app.edit.as_deref(), Some("2.5"));
+        app.edit = Some("abc".into());
+        app.commit_edit();
+        assert_eq!(app.status.as_deref(), Some("not a number: 'abc'"));
+        app.edit = Some("false".into());
+        assert_eq!(
+            parse_typed("false", ValueType::Boolean),
+            Ok(Value::Boolean(false))
+        );
+        // Commits with no active buffer do nothing.
+        app.edit = None;
+        app.status = None;
+        app.commit_edit();
+        app.commit_command();
+        assert_eq!(app.status, None);
+        // A derived edit attempt routed straight at commit is refused.
+        view(&mut app, MeasureId(102));
+        app.edit = Some("1".into());
+        app.commit_edit();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("derived cells are computed, not editable")
+        );
+    }
+
+    #[test]
+    fn views_cycle_wrap_and_tolerate_missing_measures() {
+        let mut app = App::new(revenue_model()).unwrap();
+        app.cycle_view();
+        assert!(app.status.as_deref().unwrap().starts_with("no saved views"));
+        view(&mut app, MeasureId(101));
+        let v1 = app.save_view("one", None);
+        app.next_measure();
+        let v2 = app.save_view("two", None);
+        assert_eq!(v2.0, v1.0 + 1);
+        app.cycle_view();
+        assert_eq!(app.status.as_deref(), Some("view: one"));
+        app.cycle_view();
+        assert_eq!(app.status.as_deref(), Some("view: two"));
+        app.cycle_view();
+        assert_eq!(app.status.as_deref(), Some("view: one"), "wraps");
+        // A view with an empty axis order falls back to natural order; one
+        // whose measure is gone is refused.
+        let mut v = app.build_view(ViewId(99), "bare");
+        v.axis_order.clear();
+        app.apply_view(&v);
+        assert_eq!(app.axis_order, app.natural_axis_order());
+        v.measure = MeasureId(9999);
+        app.apply_view(&v);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("view's measure no longer exists")
+        );
+        // A save to an unwritable path reports the failure.
+        app.save_view("bad", Some("/nonexistent/dir/x.db"));
+        assert!(app.status.as_deref().unwrap().starts_with("save failed"));
+    }
+
+    #[test]
+    fn re_showing_every_filtered_item_drops_the_filter() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let time = CategoryId(1);
+        app.toggle_filter_item(time, ItemId(10));
+        app.toggle_filter_item(time, ItemId(11));
+        app.toggle_filter_item(time, ItemId(10));
+        assert_eq!(app.filters.len(), 1, "one item still hidden");
+        app.toggle_filter_item(time, ItemId(11));
+        assert!(app.filters.is_empty(), "all shown again => unfiltered");
+    }
+
+    #[test]
+    fn grid_falls_back_on_bad_axis_order_and_unknown_ids() {
+        let m = revenue_model();
+        let s = Snapshot::new();
+        // Not a permutation of the measure's categories: natural order wins.
+        let g = build_grid_pivoted(&m, MeasureId(101), &s, &[], Some(&[CategoryId(2)]), &[]);
+        assert_eq!(g.row_cat.unwrap().1, "Time");
+        // Unknown measure: id as name, a single synthetic cell.
+        let g = build_grid(&m, MeasureId(77), &s);
+        assert_eq!(
+            (g.measure_name.as_str(), g.n_rows(), g.n_cols()),
+            ("77", 1, 1)
+        );
+        // Dangling category/item ids render as their numbers.
+        let mut m = m;
+        m.categories
+            .get_mut(&CategoryId(2))
+            .unwrap()
+            .items
+            .push(ItemId(29));
+        let mut meas = m.measures[&MeasureId(101)].clone();
+        meas.id = MeasureId(400);
+        meas.categories = vec![CategoryId(2), CategoryId(8)];
+        m.add_measure(meas);
+        let g = build_grid(&m, MeasureId(400), &s);
+        assert_eq!(g.rows.last().unwrap().1, "29");
+        assert_eq!(g.col_cat.unwrap().1, "8");
+        let mut app = App::new(m).unwrap();
+        view(&mut app, MeasureId(400));
+        app.axis_order = app.natural_axis_order();
+        app.pivot();
+        assert_eq!(app.status.as_deref(), Some("pivot: rows=8 cols=Product"));
+    }
+
+    #[test]
     fn edit_on_fully_filtered_axis_is_refused_not_written() {
         // Regression: filtering out every row left a cursor on "no row"; an
         // edit then stored a cell whose coordinate lacked the row category.
