@@ -3872,6 +3872,13 @@ impl ImprovApp {
         // The cursor cell a click chose, applied after the closure.
         let mut clicked_cell: Option<(usize, usize)> = None;
         let mut begin_edit: Option<(CoordKey, String)> = None;
+        // The selected rectangle (item 2 widens it past the cursor).
+        let (sel_rows, sel_cols) = (cursor.0..=cursor.0, cursor.1..=cursor.1);
+        let formula_tip = if is_derived {
+            self.formula_source(measure)
+        } else {
+            None
+        };
 
         // An item header: plain text in a ruled band, as in Improv. Only the
         // category tiles look like draggable controls, so a header is a padded
@@ -3883,8 +3890,11 @@ impl ImprovApp {
             width: 1.0,
             color: crate::theme::BLACK,
         };
-        fn header_cell(ui: &mut egui::Ui, text: &str) {
+        fn header_cell(ui: &mut egui::Ui, text: &str, selected: bool) {
             let r = ui.available_rect_before_wrap();
+            if selected {
+                ui.painter().rect_filled(r, 0.0, crate::theme::LIGHT_GRAY);
+            }
             ui.painter().vline(r.right(), r.y_range(), RULE);
             if !text.is_empty() {
                 ui.painter().hline(r.x_range(), r.top(), RULE);
@@ -3912,7 +3922,7 @@ impl ImprovApp {
         // Salt the table id with the matrix uid: two matrices on one canvas are
         // two tables, and sharing an id would make them fight over column widths
         // and scroll offsets.
-        let mut table = TableBuilder::new(ui).id_salt(("grid", uid)).striped(true);
+        let mut table = TableBuilder::new(ui).id_salt(("grid", uid)).striped(false);
         // One stub column per stacked row category, then one column per col line.
         for _ in 0..n_row_stub {
             table = table.column(Column::auto().resizable(true));
@@ -3930,25 +3940,26 @@ impl ImprovApp {
                 for (si, rc) in row_cats.iter().enumerate() {
                     let _ = si;
                     header.col(|ui| {
-                        header_cell(ui, &cat_name(self, *rc));
+                        header_cell(ui, &cat_name(self, *rc), false);
                         band_bottom(ui);
                     });
                 }
                 if row_cats.is_empty() {
                     header.col(|ui| {
-                        header_cell(ui, "");
+                        header_cell(ui, "", false);
                         band_bottom(ui);
                     });
                 }
-                for line in &col_lines {
+                for (ci, line) in col_lines.iter().enumerate() {
+                    let selected = sel_cols.contains(&ci);
                     header.col(|ui| {
                         ui.vertical(|ui| {
                             if line.is_empty() {
-                                header_cell(ui, "");
+                                header_cell(ui, "", selected);
                             }
                             for (it, name) in line {
                                 let _ = it;
-                                header_cell(ui, name);
+                                header_cell(ui, name, selected);
                             }
                         });
                         band_bottom(ui);
@@ -3970,6 +3981,7 @@ impl ImprovApp {
                         None
                     };
                     // Stub columns: one per stacked row category.
+                    let row_selected = sel_rows.contains(&ri);
                     for si in 0..n_row_stub {
                         let cell = row_line.get(si);
                         // Centered vertically, level with the values.
@@ -3990,28 +4002,33 @@ impl ImprovApp {
                                         }),
                                     };
                                     if inner || changed {
-                                        header_cell(ui, name);
+                                        header_cell(ui, name, row_selected);
                                     } else {
-                                        header_cell(ui, "");
+                                        header_cell(ui, "", row_selected);
                                     }
                                 }
-                                None => header_cell(ui, ""),
+                                None => header_cell(ui, "", row_selected),
                             });
                         });
                     }
                     for (ci, col_line) in col_lines.iter().enumerate() {
                         let key =
                             cell_key_multi(&row_cats, &row_line, &col_cats, col_line, &pinned);
-                        let is_cursor = cursor == (ri, ci);
+                        let selected = sel_rows.contains(&ri) && sel_cols.contains(&ci);
                         let editing_here = editing.as_ref() == Some(&(measure, key.clone()));
                         row.col(|ui| {
-                            let mut frame = egui::Frame::default();
-                            if is_cursor {
-                                frame = frame.fill(ui.visuals().selection.bg_fill).stroke(
-                                    egui::Stroke::new(1.0_f32, ui.visuals().selection.stroke.color),
-                                );
-                            }
-                            frame.show(ui, |ui| {
+                            // NeXT cell: white (light gray when selected), ruled
+                            // right and bottom in black. No per-cell chrome.
+                            let r = ui.max_rect();
+                            let fill = if selected {
+                                crate::theme::LIGHT_GRAY
+                            } else {
+                                crate::theme::WHITE
+                            };
+                            ui.painter().rect_filled(r, 0.0, fill);
+                            ui.painter().vline(r.right(), r.y_range(), RULE);
+                            ui.painter().hline(r.x_range(), r.bottom(), RULE);
+                            {
                                 // Numbers right-align so their digits line up,
                                 // as in Improv; text, booleans and dates stay left.
                                 let value = self.cell_value(measure, &key);
@@ -4029,7 +4046,16 @@ impl ImprovApp {
                                 let text = value.map(|v| v.to_string()).unwrap_or_default();
                                 ui.with_layout(align, |ui| {
                                     if is_derived {
-                                        if ui.label(text).clicked() {
+                                        ui.add(egui::Label::new(text).selectable(false));
+                                        let mut resp = ui.interact(
+                                            r,
+                                            egui::Id::new(("cell", uid, ri, ci)),
+                                            egui::Sense::click(),
+                                        );
+                                        if let Some(src) = &formula_tip {
+                                            resp = resp.on_hover_text(format!("formula: {src}"));
+                                        }
+                                        if resp.clicked() {
                                             clicked_cell = Some((ri, ci));
                                             clicked_derived = true;
                                         }
@@ -4055,13 +4081,29 @@ impl ImprovApp {
                                         // Typed display: text, booleans, dates, and
                                         // #ERR all render as themselves (never blank
                                         // just because they are not numbers).
-                                        if ui.button(text.clone()).clicked() {
+                                        // Single click selects; double-click (or
+                                        // Enter) edits. The whole cell senses.
+                                        ui.add(egui::Label::new(text.clone()).selectable(false));
+                                        let resp = ui.interact(
+                                            r,
+                                            egui::Id::new(("cell", uid, ri, ci)),
+                                            egui::Sense::click(),
+                                        );
+                                        if resp.clicked() || resp.double_clicked() {
                                             clicked_cell = Some((ri, ci));
+                                        }
+                                        if resp.double_clicked() {
                                             begin_edit = Some((key.clone(), text));
                                         }
+                                        // Modern input mark: a faint inset underline.
+                                        ui.painter().hline(
+                                            r.left() + 2.0..=r.right() - 2.0,
+                                            r.bottom() - 2.0,
+                                            egui::Stroke::new(1.0_f32, crate::theme::LIGHT_GRAY),
+                                        );
                                     }
                                 });
-                            });
+                            }
                         });
                     }
                 });
@@ -8868,6 +8910,110 @@ mod tests {
         desk.click(&mut app, win.max - egui::vec2(20.0, 20.0));
         assert_eq!(app.focus_index(), 1);
         assert!(crate::nxwin::is_key(&desk.ctx, win_id(&app, 1)));
+    }
+
+    // -- NeXTSTEP spec step 6: ruled grid, header highlight, range selection
+
+    /// A one-matrix desk on Quantity (an input over Time x Product), settled.
+    fn grid_desk() -> (ImprovApp, Desk) {
+        let mut app = build_app(grid_2x2_model());
+        app.matrices[0].measure = Some(MeasureId(101));
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        (app, desk)
+    }
+
+    /// Data cell `(ri, ci)`'s rect in the last pass.
+    fn cell_rect(desk: &Desk, app: &ImprovApp, ri: usize, ci: usize) -> egui::Rect {
+        let id = egui::Id::new(("cell", app.matrices[0].uid, ri, ci));
+        desk.ctx
+            .viewport(|v| v.prev_pass.widgets.get(id).map(|w| w.rect))
+            .unwrap_or_else(|| panic!("cell ({ri},{ci}) was never shown"))
+    }
+
+    /// Every filled rect painted this frame, with its fill.
+    fn fills(out: &egui::FullOutput) -> Vec<(egui::Rect, egui::Color32)> {
+        fn walk(s: &egui::Shape, acc: &mut Vec<(egui::Rect, egui::Color32)>) {
+            match s {
+                egui::Shape::Rect(r) => acc.push((r.rect, r.fill)),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut acc));
+        acc
+    }
+
+    /// Header-sized LIGHT_GRAY rects in `cell`'s column (above it) and row (left
+    /// of it): `(column headers, row headers)`.
+    fn lit_headers(fills: &[(egui::Rect, egui::Color32)], cell: egui::Rect) -> (usize, usize) {
+        let lit = fills.iter().filter(|(r, c)| {
+            *c == crate::theme::LIGHT_GRAY && r.width() < 200.0 && r.height() < 100.0
+        });
+        let col = lit
+            .clone()
+            .filter(|(r, _)| {
+                r.width() <= cell.width() + 2.0
+                    && cell.x_range().contains(r.center().x)
+                    && (cell.top() - 10.0..=cell.top() + 1.0).contains(&r.bottom())
+            })
+            .count();
+        let row = lit
+            .filter(|(r, _)| {
+                r.height() <= cell.height() + 2.0
+                    && cell.y_range().contains(r.center().y)
+                    && (cell.left() - 10.0..=cell.left() + 1.0).contains(&r.right())
+            })
+            .count();
+        (col, row)
+    }
+
+    /// (a) Cells are plain: the cursor cell fills LIGHT_GRAY, the others WHITE.
+    #[test]
+    fn the_cursor_cell_is_gray_and_the_rest_white() {
+        let (mut app, mut desk) = grid_desk();
+        let out = desk.frame(&mut app, Vec::new());
+        let f = fills(&out);
+        let fill_of = |r: egui::Rect| f.iter().rev().find(|(x, _)| *x == r).map(|(_, c)| *c);
+        assert_eq!(
+            fill_of(cell_rect(&desk, &app, 0, 0)),
+            Some(crate::theme::LIGHT_GRAY)
+        );
+        assert_eq!(
+            fill_of(cell_rect(&desk, &app, 0, 1)),
+            Some(crate::theme::WHITE)
+        );
+        assert_eq!(
+            fill_of(cell_rect(&desk, &app, 1, 0)),
+            Some(crate::theme::WHITE)
+        );
+    }
+
+    /// (b) The cursor's row and column headers are lit; the other headers are not.
+    #[test]
+    fn the_cursor_lights_its_row_and_column_headers() {
+        let (mut app, mut desk) = grid_desk();
+        let out = desk.frame(&mut app, Vec::new());
+        let f = fills(&out);
+        let (c00, c11) = (cell_rect(&desk, &app, 0, 0), cell_rect(&desk, &app, 1, 1));
+        assert_eq!(lit_headers(&f, c00), (1, 1), "cursor's headers lit");
+        assert_eq!(lit_headers(&f, c11), (0, 0), "the others are not");
+    }
+
+    /// (c) A single click moves the cursor; a double-click opens the editor.
+    #[test]
+    fn double_click_edits_and_single_click_selects() {
+        let (mut app, mut desk) = grid_desk();
+        let at = cell_rect(&desk, &app, 1, 1).center();
+        desk.click(&mut app, at);
+        assert_eq!(
+            (app.matrices[0].cursor_row, app.matrices[0].cursor_col),
+            (1, 1)
+        );
+        assert!(app.matrices[0].editing.is_none(), "one click only selects");
+        desk.click(&mut app, at);
+        assert!(app.matrices[0].editing.is_some(), "a double-click edits");
     }
 
     /// (d) add_matrix focuses the new matrix, and its window becomes key.
