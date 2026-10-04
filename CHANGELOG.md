@@ -225,6 +225,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A save no longer clobbers another process's writes.** `save_model` retracts
+  stored cells the model lacks, so when two processes shared a store (`improv
+  set` beside a running GUI or server) the second saver deleted the first's
+  new cells. A save now checks the store's transaction high-water against the
+  one it loaded at and, if another writer committed since, fails with
+  `StoreError::Conflict` and writes nothing. The GUI and TUI report "reload and
+  retry"; the server answers `409 Conflict` and drops its cached model so a
+  retry reloads. New `ModelStore::{tx_high_water, loaded_tx, set_loaded_tx,
+  reload_model}`.
 - TUI: the grid scrolls to keep the cursor visible on models larger than
   the terminal (previously the cursor could move off-screen).
 - TUI: mouse clicks select the cell under the pointer (they were offset by

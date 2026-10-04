@@ -26,6 +26,30 @@ pub enum StoreError {
     Serde(#[from] serde_json::Error),
     #[error("data integrity: {0}")]
     Integrity(String),
+    /// Another writer committed to the store after this handle's model was
+    /// loaded; saving would clobber (and retract) its changes.
+    #[error("conflict: {0}")]
+    Conflict(String),
+}
+
+/// The store's high-water mark: the newest transaction that changed a datom
+/// other than `:db/txInstant` (entid 3, a Mentat bootstrap constant), read
+/// from the raw transaction log. Read from SQLite rather than
+/// `Store::last_tx_id`, whose cached partition map never sees another
+/// process's commits. Skipping `txInstant` ignores the no-op schema transact
+/// every [`ModelStore::open`] performs, so a reader merely opening the store
+/// does not count as a writer. Scans the log backwards by rowid, so it touches
+/// only the latest transaction's rows.
+const TX_HIGH_WATER_SQL: &str = "SELECT coalesce((SELECT tx FROM timelined_transactions \
+     WHERE timeline = 0 AND a <> 3 ORDER BY rowid DESC LIMIT 1), 0)";
+
+const CONFLICT_MSG: &str =
+    "the store was changed by another writer since it was loaded; reload and retry";
+
+fn high_water(ip: &InProgress) -> Result<i64> {
+    ip.transaction
+        .query_row(TX_HIGH_WATER_SQL, [], |r| r.get(0))
+        .map_err(|e| StoreError::Mentat(e.to_string()))
 }
 
 impl From<mentat::errors::MentatError> for StoreError {
@@ -131,6 +155,9 @@ fn value_attr(vt: ValueType) -> &'static str {
 /// in-memory).
 pub struct ModelStore {
     store: Store,
+    /// The high-water as of this handle's last load or save; `save_model`
+    /// refuses to commit if the store has moved past it. `None`: unchecked.
+    loaded_tx: Option<i64>,
     /// Test-only: how many `(measure, coord)` rows the last `load_cells` query
     /// *returned* (not how many survived a Rust-side filter). Lets a test prove
     /// the enumeration itself is bounded by `load_partial`'s closure rather
@@ -146,6 +173,7 @@ impl ModelStore {
         store.transact(schema::SCHEMA_EDN)?;
         Ok(ModelStore {
             store,
+            loaded_tx: None,
             #[cfg(test)]
             cell_rows_returned: 0,
         })
@@ -179,12 +207,23 @@ impl ModelStore {
     /// process on a transact of 5461+ datoms. The extra calls are still inside
     /// the same single `InProgress`/`commit()`, so atomicity is unaffected.
     ///
+    /// Optimistic concurrency: if this handle loaded (or saved) the model, the
+    /// save fails with [`StoreError::Conflict`], writing nothing, when another
+    /// writer has committed since. A handle that never loaded saves
+    /// unconditionally.
+    ///
     /// Chunking cannot rescue a *single* entity wider than that ceiling, so a
     /// measure with more than `MAX_CATEGORIES_PER_MEASURE` (5460) categories is
     /// rejected up front with `StoreError::Integrity` — a recoverable error
     /// instead of a killed process.
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
+        // IMMEDIATE: no other writer can commit between this check and ours.
         let mut ip = self.store.begin_transaction()?;
+        if let Some(loaded) = self.loaded_tx {
+            if high_water(&ip)? != loaded {
+                return Err(StoreError::Conflict(CONFLICT_MSG.into()));
+            }
+        }
 
         // `datoms_per_entity` arguments below are upper bounds on the
         // attributes each `convert::*_edn` helper can emit for one entity.
@@ -327,12 +366,42 @@ impl ModelStore {
             ip.transact(edn)?;
         }
 
+        // Read before commit, under our write lock, so a writer racing in right
+        // after the commit is never mistaken for our own transaction.
+        let new_tx = high_water(&ip)?;
         ip.commit()?;
+        self.loaded_tx = Some(new_tx);
         Ok(())
+    }
+
+    /// The store's latest transaction id, read live from SQLite (so it sees
+    /// other processes' commits).
+    pub fn tx_high_water(&mut self) -> Result<i64> {
+        high_water(&self.store.begin_read()?.in_progress)
+    }
+
+    /// The high-water this handle last loaded or saved at (`None` if it has
+    /// done neither). Callers that reopen the store for each save carry it
+    /// across handles with [`ModelStore::set_loaded_tx`].
+    pub fn loaded_tx(&self) -> Option<i64> {
+        self.loaded_tx
+    }
+
+    /// Adopt `tx` (an earlier handle's [`ModelStore::loaded_tx`]) as the base
+    /// `save_model` checks against. `None` saves unconditionally.
+    pub fn set_loaded_tx(&mut self, tx: Option<i64>) {
+        self.loaded_tx = tx;
+    }
+
+    /// Re-read the model after a [`StoreError::Conflict`]; same as
+    /// [`ModelStore::load_model`].
+    pub fn reload_model(&mut self) -> Result<Model> {
+        self.load_model()
     }
 
     /// Reconstruct the model by querying the store.
     pub fn load_model(&mut self) -> Result<Model> {
+        let tx = self.tx_high_water()?;
         let mut model = Model::new();
         self.load_categories(&mut model)?;
         self.load_items(&mut model)?;
@@ -340,6 +409,7 @@ impl ModelStore {
         self.load_cells(&mut model, None)?;
         self.load_views(&mut model)?;
         self.load_meta(&mut model)?;
+        self.loaded_tx = Some(tx);
         Ok(model)
     }
 
@@ -374,6 +444,7 @@ impl ModelStore {
     /// The result is read-only in spirit: saving it with
     /// [`ModelStore::save_model`] retracts every cell it did not load.
     pub fn load_partial(&mut self, measure_ids: &[MeasureId]) -> Result<Model> {
+        let tx = self.tx_high_water()?;
         let mut model = Model::new();
         self.load_categories(&mut model)?;
         self.load_items(&mut model)?;
@@ -382,6 +453,7 @@ impl ModelStore {
         self.load_meta(&mut model)?; // external_calls populated before the closure walk
         let closure = model.measure_dependency_closure(measure_ids);
         self.load_cells(&mut model, Some(&closure))?;
+        self.loaded_tx = Some(tx);
         Ok(model)
     }
 
@@ -1088,6 +1160,74 @@ mod tests {
     /// Sort the order-insensitive `Vec` fields (`measure.categories`,
     /// `category.items`) so two models differing only in that ordering
     /// compare equal.
+    fn temp_store_path(tag: &str) -> String {
+        let p = std::env::temp_dir().join(format!("improv-lock-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        p.to_str().expect("utf-8 temp path").to_owned()
+    }
+
+    /// Two handles on one file stand in for two processes. B's save lands
+    /// after A's load, so A's save must refuse rather than retract B's cell.
+    #[test]
+    fn stale_save_is_refused_and_keeps_the_other_writers_cell() {
+        let path = temp_store_path("stale");
+        ModelStore::open(&path)
+            .and_then(|mut s| s.save_model(&sample_model()))
+            .expect("seed");
+        let mut a = ModelStore::open(&path).expect("open a");
+        let mut b = ModelStore::open(&path).expect("open b");
+        let model_a = a.load_model().expect("a loads");
+        let mut model_b = b.load_model().expect("b loads");
+        let b_coord = Coordinate::from_pairs([(CategoryId(2), ItemId(21))]);
+        model_b.add_item(ItemId(21), CategoryId(2), "Widget B");
+        model_b.set_input(MeasureId(100), b_coord.clone(), Value::Number(7.0));
+        b.save_model(&model_b).expect("b saves");
+
+        let err = a.save_model(&model_a).expect_err("a's save is stale");
+        assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+
+        let after = ModelStore::open(&path)
+            .and_then(|mut s| s.load_model())
+            .expect("reopen");
+        assert_eq!(
+            after.input(MeasureId(100), &b_coord),
+            Some(&Value::Number(7.0))
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A handle's own commit advances its base, so it can keep saving; and a
+    /// handle that merely opened the store (a no-op schema transact) does not
+    /// count as a writer.
+    #[test]
+    fn own_saves_and_bare_opens_do_not_conflict() {
+        let path = temp_store_path("own");
+        ModelStore::open(&path)
+            .and_then(|mut s| s.save_model(&sample_model()))
+            .expect("seed");
+        let mut a = ModelStore::open(&path).expect("open a");
+        let mut m = a.load_model().expect("load");
+        a.save_model(&m).expect("first save");
+        let _reader = ModelStore::open(&path).expect("another process opens");
+        m.set_input(
+            MeasureId(100),
+            Coordinate::from_pairs([(CategoryId(2), ItemId(20))]),
+            Value::Number(11.0),
+        );
+        a.save_model(&m).expect("second save");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fresh_store_saves_without_a_prior_load() {
+        let path = temp_store_path("fresh");
+        let mut s = ModelStore::open(&path).expect("open");
+        assert_eq!(s.loaded_tx(), None);
+        s.save_model(&sample_model()).expect("unconditional save");
+        assert_eq!(s.loaded_tx(), Some(s.tx_high_water().expect("high water")));
+        let _ = std::fs::remove_file(&path);
+    }
+
     fn sort_vecs(mut m: Model) -> Model {
         for c in m.categories.values_mut() {
             c.items.sort();

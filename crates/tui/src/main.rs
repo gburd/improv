@@ -44,17 +44,22 @@ fn main() {
 
 /// Open the model at `path` and build the app state.
 fn load(path: &str) -> Result<App, String> {
-    let model = ModelStore::open(path)
-        .and_then(|mut s| s.load_model())
+    let (model, loaded_tx) = ModelStore::open(path)
+        .and_then(|mut s| Ok((s.load_model()?, s.loaded_tx())))
         .map_err(|e| format!("cannot open model '{path}': {e}"))?;
-    App::new(model)
+    let mut app = App::new(model)?;
+    app.loaded_tx = loaded_tx;
+    Ok(app)
 }
 
 /// Autosave the (possibly edited) model back to `path` on clean exit; edits
 /// are held in memory during the session.
 fn save(app: &App, path: &str) -> Result<(), String> {
     ModelStore::open(path)
-        .and_then(|mut s| s.save_model(&app.model))
+        .and_then(|mut s| {
+            s.set_loaded_tx(app.loaded_tx);
+            s.save_model(&app.model)
+        })
         .map_err(|e| format!("autosave failed: {e}"))
 }
 

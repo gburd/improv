@@ -163,6 +163,9 @@ pub struct ImprovApp {
     /// title's ` •`. (Canvas-layout changes since the last saved view are
     /// not tracked.)
     dirty: bool,
+    /// The store high-water this model was loaded/last saved at, so a save
+    /// refuses to clobber another process's writes (`StoreError::Conflict`).
+    loaded_tx: Option<i64>,
     /// The native title last sent, so `update` only sends a change.
     last_title: String,
     /// The `status` the status bar last drew, and when (egui time) it first
@@ -861,11 +864,12 @@ impl ImprovApp {
     /// Load a model from the store at `db` (`""` = fresh in-memory model) and
     /// build the live engine over its derived measures.
     pub fn load(db: &str) -> Result<ImprovApp, String> {
-        let model = if db.is_empty() {
-            Model::new()
+        let (model, loaded_tx) = if db.is_empty() {
+            (Model::new(), None)
         } else {
             let mut store = ModelStore::open(db).map_err(|e| e.to_string())?;
-            store.load_model().map_err(|e| e.to_string())?
+            let model = store.load_model().map_err(|e| e.to_string())?;
+            (model, store.loaded_tx())
         };
 
         let (engine, snapshot) = build_engine(&model);
@@ -874,6 +878,7 @@ impl ImprovApp {
 
         Ok(ImprovApp {
             db: db.to_string(),
+            loaded_tx,
             model,
             engine,
             snapshot,
@@ -1986,7 +1991,12 @@ impl ImprovApp {
             return Ok(());
         }
         let r = ModelStore::open(&self.db)
-            .and_then(|mut s| s.save_model(&self.model).map(|_| ()))
+            .and_then(|mut s| {
+                s.set_loaded_tx(self.loaded_tx);
+                s.save_model(&self.model)?;
+                self.loaded_tx = s.loaded_tx();
+                Ok(())
+            })
             .map_err(|e| format!("save failed: {e}"));
         self.dirty = r.is_err();
         r
@@ -5017,6 +5027,7 @@ mod tests {
         let matrices = vec![Matrix::new(&model, selected)];
         ImprovApp {
             db: String::new(),
+            loaded_tx: None,
             model,
             engine,
             snapshot,

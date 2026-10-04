@@ -477,6 +477,9 @@ pub struct App {
     pub edit: Option<String>,
     /// Transient status/error message (e.g. "derived cells are computed").
     pub status: Option<String>,
+    /// The store high-water the model was loaded/last saved at; saves refuse
+    /// to clobber another process's writes (`StoreError::Conflict`).
+    pub loaded_tx: Option<i64>,
     /// Selected item index for each extra (page) dimension of the viewed
     /// measure; `[` / `]` cycle the first one. Reset when the measure changes.
     pub page_idx: Vec<usize>,
@@ -548,6 +551,7 @@ impl App {
             applied_view: None,
             edit: None,
             status: None,
+            loaded_tx: None,
             page_idx,
             axis_order,
             filters: Vec::new(),
@@ -994,9 +998,12 @@ impl App {
         let view = self.build_view(id, name);
         self.model.add_view(view);
         if let Some(path) = path {
-            match improv_storage_mentat::ModelStore::open(path)
-                .and_then(|mut s| s.save_model(&self.model))
-            {
+            match improv_storage_mentat::ModelStore::open(path).and_then(|mut s| {
+                s.set_loaded_tx(self.loaded_tx);
+                s.save_model(&self.model)?;
+                self.loaded_tx = s.loaded_tx();
+                Ok(())
+            }) {
                 Ok(()) => self.status = Some(format!("saved view '{name}'")),
                 Err(e) => self.status = Some(format!("save failed: {e}")),
             }
