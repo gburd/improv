@@ -594,7 +594,7 @@ mod tests {
         let f = ExternalFn {
             name: "blow_memory".into(),
             language: Language::Python,
-            body: "x = bytearray(10**9)\nresult = len(x)".into(),
+            body: "x = bytearray(2 * 10**9)\nresult = len(x)".into(),
             arg_types: vec![],
             return_type: ValueType::Number,
             pure: true, // -> SandboxPolicy::Restricted
