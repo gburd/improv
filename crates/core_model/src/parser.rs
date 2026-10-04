@@ -977,6 +977,7 @@ pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::{Measure, MeasureKind, Name, ValueType};

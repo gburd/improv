@@ -4,6 +4,7 @@
 //! a tensor indexed by a subset of categories; a coordinate names one cell.
 //!
 //! Structure follows the project steering doc (AGENT_STEERING.md / IMPROV.txt).
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod extfn_def;
 pub mod formula;
@@ -571,6 +572,7 @@ impl Model {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
