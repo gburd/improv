@@ -1,9 +1,10 @@
 //! `improv-server`: a small JSON HTTP API over an Improv model store.
 //!
-//! State is just the DB path; every request opens the (blocking SQLite-backed)
-//! Mentat store inside `spawn_blocking` and loads the model. Models are small in
-//! v1, so open-per-request keeps the store off the async runtime and avoids
-//! sharing a non-Send store across tasks.
+//! The (blocking SQLite-backed) Mentat store is opened inside `spawn_blocking`
+//! and never shared across tasks. The loaded model is cached in [`AppState`]
+//! and replaced on every write this process makes (API or scheduler), so reads
+//! cost one store load per write, not per request. The server assumes it owns
+//! the store: a write from another process is not seen until restart.
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -100,6 +101,11 @@ pub struct AppState {
     /// Held across every load-modify-save of the store (API writes and the
     /// scheduler), so concurrent writers cannot lose each other's updates (S12).
     write_lock: tokio::sync::Mutex<()>,
+    /// The loaded model, `None` until first read or after invalidation (P4).
+    cache: tokio::sync::RwLock<Option<Arc<Model>>>,
+    /// Store loads performed, so tests can check the cache.
+    #[cfg(test)]
+    loads: AtomicU64,
 }
 
 impl AppState {
@@ -109,6 +115,9 @@ impl AppState {
             auth,
             scheduler_status,
             write_lock: tokio::sync::Mutex::new(()),
+            cache: tokio::sync::RwLock::new(None),
+            #[cfg(test)]
+            loads: AtomicU64::new(0),
         }
     }
 }
@@ -358,29 +367,47 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// Open the store and load the model on a blocking thread.
-async fn load_model(state: &Arc<AppState>) -> Result<Model, ApiError> {
+/// The current model: the cached copy, or (on a miss) one load from the store
+/// on a blocking thread. The cache write lock is held across the load, so a
+/// concurrent writer's [`save_model`] replaces it only after a stale load lands.
+async fn load_model(state: &Arc<AppState>) -> Result<Arc<Model>, ApiError> {
+    if let Some(m) = state.cache.read().await.as_ref() {
+        return Ok(m.clone());
+    }
+    let mut cache = state.cache.write().await;
+    if let Some(m) = cache.as_ref() {
+        return Ok(m.clone());
+    }
+    #[cfg(test)]
+    state.loads.fetch_add(1, Ordering::Relaxed);
     let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || {
+    let model = tokio::task::spawn_blocking(move || {
         let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
         store.load_model().map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
-    .map_err(ApiError::Internal)
+    .map_err(ApiError::Internal)?;
+    let model = Arc::new(model);
+    *cache = Some(model.clone());
+    Ok(model)
 }
 
-/// Save the model on a blocking thread; hands it back for further use.
-async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Model, ApiError> {
+/// Save the model on a blocking thread and make it the cached copy. Call with
+/// `write_lock` held.
+async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, ApiError> {
     let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || {
+    let model = tokio::task::spawn_blocking(move || {
         let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
         store.save_model(&model).map_err(|e| e.to_string())?;
         Ok(model)
     })
     .await
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
-    .map_err(ApiError::Internal)
+    .map_err(ApiError::Internal)?;
+    let model = Arc::new(model);
+    *state.cache.write().await = Some(model.clone());
+    Ok(model)
 }
 
 /// S12: a write must target an existing input measure, at a coordinate naming
@@ -442,8 +469,8 @@ async fn scheduler_status_handler(State(state): State<Arc<AppState>>) -> Json<Js
     }
 }
 
-async fn get_model(State(state): State<Arc<AppState>>) -> Result<Json<Model>, ApiError> {
-    Ok(Json(load_model(&state).await?))
+async fn get_model(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    Ok(Json(&*load_model(&state).await?).into_response())
 }
 
 #[derive(Serialize)]
@@ -591,19 +618,20 @@ async fn eval_measure(
     // Persist first (so a persisted edit is durable even if the caller only
     // wants the side effect); the engine below then sees the same values.
     if req.persist {
+        let mut updated = (*model).clone();
         for (e, coord) in req.edits.iter().zip(coords) {
             match e.value {
-                Some(v) => model.set_input(
+                Some(v) => updated.set_input(
                     MeasureId(e.measure),
                     coord,
                     improv_core_model::Value::Number(v),
                 ),
                 None => {
-                    model.inputs.remove(&(MeasureId(e.measure), coord));
+                    updated.inputs.remove(&(MeasureId(e.measure), coord));
                 }
             }
         }
-        model = save_model(&state, model).await?;
+        model = save_model(&state, updated).await?;
     }
     drop(write);
 
@@ -626,8 +654,10 @@ async fn eval_measure(
 
     // Engine owns a worker thread and holds a live dataflow: do it all on a
     // blocking thread and never across an await point.
+    let engine_model = model.clone();
     let values = tokio::task::spawn_blocking(move || {
-        let (mut engine, _initial) = Engine::new(&model, &targets).map_err(|e| e.to_string())?;
+        let (mut engine, _initial) =
+            Engine::new(&engine_model, &targets).map_err(|e| e.to_string())?;
         let mut snap = engine.apply(edits).map_err(|e| e.to_string())?;
         Ok::<_, String>(snap.remove(&mid).unwrap_or_default())
     })
@@ -635,8 +665,6 @@ async fn eval_measure(
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
     .map_err(ApiError::Internal)?;
 
-    // Re-borrow the model for coord rendering: load it once more (cheap, small).
-    let model = load_model(&state).await?;
     let cells = values
         .into_iter()
         .map(|(k, n)| readable_key(&model, &k, n.as_num().unwrap_or(f64::NAN)))
@@ -700,11 +728,12 @@ async fn set_cell(
     let mid = MeasureId(id);
 
     let _write = state.write_lock.lock().await;
-    let mut model = load_model(&state).await?;
+    let model = load_model(&state).await?;
     if !model.measures.contains_key(&mid) {
         return Err(ApiError::NotFound(format!("no measure {id}")));
     }
     validate_write(&model, mid, &req.coord, Some(req.value))?;
+    let mut model = (*model).clone();
     model.set_input(mid, req.coord, improv_core_model::Value::Number(req.value));
     save_model(&state, model).await?;
 
@@ -1557,5 +1586,33 @@ mod tests {
             vec![2020.0, 2021.0, 2120.0, 2121.0],
             "an update was lost"
         );
+    }
+
+    #[tokio::test]
+    async fn reads_share_one_load_until_a_write() {
+        let (_, path) = seeded_app();
+        let state = Arc::new(AppState::new(
+            path.to_str().unwrap().into(),
+            Auth::Disabled,
+            None,
+        ));
+        let app = app(state.clone());
+        let get = |uri: &str| Request::get(uri).body(Body::empty()).unwrap();
+        for uri in ["/measures", "/measures/102/values"] {
+            let resp = app.clone().oneshot(get(uri)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+        assert_eq!(state.loads.load(Ordering::Relaxed), 1, "two GETs, one load");
+
+        // A write replaces the cache: the next read sees it without reloading.
+        let body = json!({"coord": {"dims": {"2": 20}}, "value": 42.0});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/100/cells", body, None));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
+        let resp = app.oneshot(get("/measures/100/values")).await.unwrap();
+        let cells = body_json(resp).await;
+        assert!(cells.as_array().unwrap().iter().any(|c| c["value"] == 42.0));
+        assert_eq!(state.loads.load(Ordering::Relaxed), 1);
     }
 }

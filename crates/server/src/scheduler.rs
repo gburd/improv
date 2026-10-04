@@ -192,6 +192,10 @@ async fn tick_once(
     .await
     .map_err(|e| format!("task join: {e}"))??;
 
+    if !refreshed.is_empty() {
+        // The store changed under the API's cached model: drop it (P4).
+        *state.cache.write().await = None;
+    }
     for mid in &refreshed {
         last_run.insert(*mid, now_secs);
     }
