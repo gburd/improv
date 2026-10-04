@@ -2762,6 +2762,9 @@ impl ImprovApp {
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
+                                                    // Clear the window border
+                                                    // and the scroll bar.
+                                                    ui.add_space(8.0);
                                                     ui.label(
                                                         egui::RichText::new(kind)
                                                             .small()
@@ -9507,13 +9510,17 @@ mod tests {
             .iter()
             .filter_map(|c| match &c.shape {
                 egui::Shape::Text(t) if t.galley.text() == "formula" => {
-                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                    Some((t.galley.rect.translate(t.pos.to_vec2()), c.clip_rect))
                 }
                 _ => None,
             })
-            .find(|r| (r.center().y - name.center().y).abs() < 4.0)
+            .find(|(r, _)| (r.center().y - name.center().y).abs() < 4.0)
             .expect("formula label on Revenue's row");
-        assert!(kind.min.x > name.max.x, "right of the name");
+        assert!(kind.0.min.x > name.max.x, "right of the name");
+        assert!(
+            kind.1.shrink(4.0).contains_rect(kind.0),
+            "{kind:?} touches its clip edge"
+        );
         assert!(text_at(&out.shapes, "input").is_some(), "Price is an input");
     }
 
