@@ -1601,7 +1601,7 @@ pub(crate) mod tests {
 
     // -- CSV import/export command prompt -----------------------------------
 
-    fn tmp_path(suffix: &str) -> PathBuf {
+    pub(crate) fn tmp_path(suffix: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "improv_tui_test_{}_{}{}",
             std::process::id(),

@@ -224,3 +224,195 @@ fn save_current_view(app: &mut App, path: &str) {
     let n = app.model.views.len() + 1;
     app.save_view(&format!("view {n}"), Some(path));
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::tests::{revenue_model, tmp_path, view};
+    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+    use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, Value};
+    use ratatui::backend::TestBackend;
+
+    fn key(code: KeyCode) -> io::Result<Event> {
+        Ok(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
+    }
+    fn chars(s: &str) -> Vec<io::Result<Event>> {
+        s.chars().map(|c| key(KeyCode::Char(c))).collect()
+    }
+    fn click(kind: MouseEventKind, column: u16, row: u16) -> io::Result<Event> {
+        Ok(Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }))
+    }
+    fn load_err(p: &str) -> String {
+        load(p).err().expect("load should fail")
+    }
+    /// Run `events` against `app` on a 100x30 test terminal.
+    fn run_events(app: &mut App, path: &str, events: Vec<io::Result<Event>>) -> Result<(), String> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        event_loop(&mut term, app, path, events)
+    }
+
+    #[test]
+    fn typing_an_edit_updates_the_model() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let mut ev = vec![key(KeyCode::Enter), key(KeyCode::Backspace)];
+        ev.extend(chars("x"));
+        ev.extend([key(KeyCode::Backspace), key(KeyCode::Backspace)]);
+        ev.extend(chars("7"));
+        ev.extend([key(KeyCode::F(1)), key(KeyCode::Enter)]);
+        run_events(&mut app, "", ev).unwrap();
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        assert_eq!(
+            app.model.input(MeasureId(101), &at),
+            Some(&Value::Number(17.0))
+        );
+        // Esc cancels an edit without writing.
+        run_events(
+            &mut app,
+            "",
+            vec![key(KeyCode::Char('e')), key(KeyCode::Esc)],
+        )
+        .unwrap();
+        assert!(app.edit.is_none());
+    }
+
+    #[test]
+    fn navigation_keys_and_release_events() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let mut release = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        let ev = vec![
+            key(KeyCode::Down),
+            key(KeyCode::Right),
+            Ok(Event::Key(release)), // ignored
+            Ok(Event::FocusGained),  // ignored
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+        run_events(&mut app, "", vec![key(KeyCode::Up), key(KeyCode::Left)]).unwrap();
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        // Tab and m both cycle the measure; q quits before later events run.
+        let before = app.selected;
+        let ev = vec![
+            key(KeyCode::Tab),
+            key(KeyCode::Char('m')),
+            key(KeyCode::Char('q')),
+            key(KeyCode::Tab),
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert!(app.should_quit);
+        assert_eq!(app.selected, (before + 2) % app.measures.len());
+    }
+
+    #[test]
+    fn layout_keys_page_pivot_filter_and_status() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let ev = vec![
+            key(KeyCode::Char('[')),
+            key(KeyCode::Char(']')),
+            key(KeyCode::Esc),
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.status, None, "Esc clears the paging message");
+        run_events(&mut app, "", chars("f")).unwrap();
+        assert_eq!(app.grid.n_rows(), 1);
+        run_events(&mut app, "", chars("F")).unwrap();
+        assert_eq!(app.grid.n_rows(), 2);
+        run_events(&mut app, "", chars("p")).unwrap();
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Product");
+        run_events(&mut app, "", chars("v")).unwrap();
+        assert!(app.status.as_deref().unwrap().starts_with("no saved views"));
+        // A scalar measure has no row category to filter.
+        let mut m = improv_core_model::Model::new();
+        m.add_measure(improv_core_model::Measure {
+            id: MeasureId(1),
+            name: improv_core_model::Name("S".into()),
+            value_type: improv_core_model::ValueType::Number,
+            categories: vec![],
+            kind: improv_core_model::MeasureKind::Input,
+            description: None,
+        });
+        let mut scalar = App::new(m).unwrap();
+        run_events(&mut scalar, "", chars("f")).unwrap();
+        assert_eq!(scalar.status.as_deref(), Some("no row category to filter"));
+    }
+
+    #[test]
+    fn mouse_selects_only_in_normal_mode() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        // Status box is 4 rows here (title + 2 help + border); data starts
+        // after the grid border + header. Click well inside row 1, col 1.
+        run_events(&mut app, "", vec![]).unwrap();
+        let g = app.grid_geom.unwrap();
+        let (x, y) = (g.x0 + g.col_w + g.spacing + 1, g.y0 + 1);
+        let ev = vec![
+            click(MouseEventKind::Moved, x, y),
+            key(KeyCode::Char('e')),
+            click(MouseEventKind::Down(MouseButton::Left), x, y), // ignored while editing
+            key(KeyCode::Esc),
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        run_events(
+            &mut app,
+            "",
+            vec![click(MouseEventKind::Down(MouseButton::Left), x, y)],
+        )
+        .unwrap();
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+    }
+
+    #[test]
+    fn command_prompt_keys() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let mut ev = vec![key(KeyCode::Char('E'))];
+        ev.extend(chars("xy"));
+        ev.extend([
+            key(KeyCode::Backspace),
+            key(KeyCode::Home),
+            key(KeyCode::Enter),
+        ]);
+        run_events(&mut app, "", ev).unwrap();
+        assert!(app.command.is_none());
+        assert!(app.status.as_deref().unwrap().starts_with("export-csv:"));
+        run_events(
+            &mut app,
+            "",
+            vec![key(KeyCode::Char('I')), key(KeyCode::Esc)],
+        )
+        .unwrap();
+        assert!(app.command.is_none());
+    }
+
+    #[test]
+    fn event_errors_stop_the_loop() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let err = run_events(&mut app, "", vec![Err(io::Error::other("boom"))]);
+        assert_eq!(err, Err("boom".into()));
+    }
+
+    #[test]
+    fn load_save_round_trip_and_save_view_key() {
+        let path = tmp_path("tui-main.db");
+        let p = path.to_str().unwrap();
+        assert!(load_err(p).contains("no measures"), "fresh store is empty");
+        let mut app = App::new(revenue_model()).unwrap();
+        save(&app, p).unwrap();
+        run_events(&mut app, p, chars("S")).unwrap();
+        assert_eq!(app.status.as_deref(), Some("saved view 'view 1'"));
+        let loaded = load(p).unwrap();
+        assert_eq!(loaded.model.views.len(), 1);
+        assert!(load_err("/nonexistent/dir/x.db").starts_with("cannot open model"));
+        assert!(save(&app, "/nonexistent/dir/x.db")
+            .unwrap_err()
+            .starts_with("autosave failed"));
+    }
+}
