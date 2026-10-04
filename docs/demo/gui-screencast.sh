@@ -32,7 +32,7 @@ Screencast beats (record these, ~60s):
      recomputed incrementally.
   6. Toggle "Chart" (top or the tool palette): a bar chart of the selection.
   7. Type a name in Views -> "Save view"; click it to reload the layout.
-  8. Expand "Filters", uncheck a Product item; it disappears from the grid.
+  8. Right-click the Product tile, uncheck an item; it disappears from the grid.
 
 Save the capture to docs/src/img/gui-screencast.<mp4|gif|webm> and reference it in
 the README next to the screenshots.

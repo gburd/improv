@@ -24,6 +24,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI filtering moved to the tile menu.** The worksheet's **Filters**
+  shelf is gone; right-click a category tile for a checkbox per item (uncheck
+  to hide it from that worksheet) and **Show all**. A filtered tile reads
+  `Name*`.
+- **GUI grid field fills the table area.** The white field reaches the
+  worksheet's edges instead of stopping at the last cell.
 - **GUI model browser labels measures.** Each measure shows a small gray
   `input` or `formula` label instead of the `·` / `=` prefix.
 - **GUI first worksheet window.** A fresh window opens clear of the

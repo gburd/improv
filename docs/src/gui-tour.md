@@ -56,7 +56,9 @@ The window has five regions:
   tiles top-right, row tiles bottom-left beside the scroller. Drag a tile to
   another strip to re-pivot without touching the formula (the strips light up
   as drop targets only while you drag), or right-click it and choose
-  **Move to Rows / Columns / Pages**.
+  **Move to Rows / Columns / Pages**. The same menu filters the category:
+  uncheck an item to hide it from this worksheet, or choose **Show all**; a
+  filtered tile reads `Name*`.
   Cells are white with thin black rules; the selection and its row and column
   headers turn gray. Click a cell to select it; **double-click** it (or press
   Enter / F2) to edit, Enter to commit, Esc to cancel. Input cells carry a
