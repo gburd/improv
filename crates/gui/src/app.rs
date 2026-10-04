@@ -155,6 +155,13 @@ pub struct ImprovApp {
     /// Quit was picked once on an unsaved in-memory model; the next Quit
     /// closes. Any other command disarms it.
     quit_armed: bool,
+    /// The model has edits that are not persisted: an in-memory model with
+    /// undo history, or a db model whose last autosave failed. Shown as the
+    /// title's ` •`. (Canvas-layout changes since the last saved view are
+    /// not tracked.)
+    dirty: bool,
+    /// The native title last sent, so `update` only sends a change.
+    last_title: String,
     /// The floating application menu's position and open submenu.
     menu: menu::MenuState,
     export_form: ExportForm,
@@ -860,6 +867,8 @@ impl ImprovApp {
             show_inspector: false,
             show_browser: true,
             quit_armed: false,
+            dirty: false,
+            last_title: String::new(),
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -1947,9 +1956,11 @@ impl ImprovApp {
         if self.db.is_empty() {
             return Ok(());
         }
-        ModelStore::open(&self.db)
+        let r = ModelStore::open(&self.db)
             .and_then(|mut s| s.save_model(&self.model).map(|_| ()))
-            .map_err(|e| format!("save failed: {e}"))
+            .map_err(|e| format!("save failed: {e}"));
+        self.dirty = r.is_err();
+        r
     }
 
     /// Read-only inspector facts for `measure` (see `inspector` panel).
@@ -2524,6 +2535,7 @@ fn natural_axis_order(model: &Model, measure: Option<MeasureId>) -> Vec<Category
 impl eframe::App for ImprovApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.sync_axis_state();
+        self.sync_native_title(ctx);
         self.handle_command_keys(ctx);
         // Panel order IS layout order: a top/bottom panel claims its strip from
         // the outside in. The status bar goes below everything and the canvas
@@ -3355,6 +3367,28 @@ impl ImprovApp {
             "{} - Worksheet - {}",
             self.matrix_title(mi),
             self.file_name()
+        )
+    }
+
+    /// Send the native title when it changed. An in-memory model is dirty
+    /// whenever it has undo history (nothing ever persists it).
+    fn sync_native_title(&mut self, ctx: &egui::Context) {
+        if self.db.is_empty() {
+            self.dirty = self.can_undo();
+        }
+        let t = self.native_title();
+        if t != self.last_title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(t.clone()));
+            self.last_title = t;
+        }
+    }
+
+    /// The native window title: `Improv — <file>`, plus ` •` while dirty.
+    fn native_title(&self) -> String {
+        format!(
+            "Improv — {}{}",
+            self.file_name(),
+            if self.dirty { " •" } else { "" }
         )
     }
 
@@ -4872,6 +4906,8 @@ mod tests {
             show_inspector: false,
             show_browser: true,
             quit_armed: false,
+            dirty: false,
+            last_title: String::new(),
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -7074,6 +7110,7 @@ mod tests {
         };
         ctx.run(raw, |ctx| {
             app.sync_axis_state();
+            app.sync_native_title(ctx);
             app.status_bar(ctx);
             app.chart_panel(ctx);
             app.csv_wizard_panel(ctx);
@@ -9947,6 +9984,32 @@ mod tests {
             !closes(&press_command_key(&mut app, egui::Key::Q, None)),
             "Hide disarmed it"
         );
+    }
+
+    /// The native title names the document; an in-memory edit adds ` •`.
+    #[test]
+    fn native_title_marks_an_unsaved_in_memory_edit() {
+        let title = |out: &egui::FullOutput| {
+            out.viewport_output.values().find_map(|v| {
+                v.commands.iter().find_map(|c| match c {
+                    egui::ViewportCommand::Title(t) => Some(t.clone()),
+                    _ => None,
+                })
+            })
+        };
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        let out = full_frame(&ctx, &mut app, size, 0.0);
+        assert_eq!(title(&out).as_deref(), Some("Improv \u{2014} Untitled"));
+        let out = full_frame(&ctx, &mut app, size, 0.1);
+        assert_eq!(title(&out), None, "an unchanged title is not resent");
+
+        app.record_history(app.model.clone());
+        let out = full_frame(&ctx, &mut app, size, 0.2);
+        let t = title(&out).expect("the edit retitles the window");
+        assert!(t.ends_with(" \u{2022}"), "{t}");
     }
 
     /// Ctrl+S saves the model to its store; a text field's focus blocks it.
