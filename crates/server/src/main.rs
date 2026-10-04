@@ -127,6 +127,9 @@ impl AppState {
     }
 }
 
+// Coverage exclusion: process entry point (argv, env, bind, `process::exit`);
+// its parts (`Auth::from_env`, `startup_check`, `serve`, `app`) are tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
 #[tokio::main]
 async fn main() {
     // argv[1]: db path (default in-memory-ish temp file). argv[2] or
@@ -1683,5 +1686,159 @@ mod tests {
         let cells = body_json(resp).await;
         assert!(cells.as_array().unwrap().iter().any(|c| c["value"] == 42.0));
         assert_eq!(state.loads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn auth_from_env_reads_rw_and_ro_tokens() {
+        // The only test touching these vars (`main` is their only other reader).
+        std::env::set_var("IMPROV_API_TOKEN", " solo ");
+        std::env::set_var("IMPROV_API_TOKENS", "a, b,,");
+        std::env::set_var("IMPROV_API_TOKENS_RO", "r");
+        let Auth::Tokens { rw, ro } = Auth::from_env() else {
+            panic!("tokens are set");
+        };
+        assert_eq!(rw, HashSet::from(["solo", "a", "b"].map(String::from)));
+        assert_eq!(ro, HashSet::from(["r".to_string()]));
+
+        // A blank single token is ignored; read-only tokens alone still enable auth.
+        std::env::set_var("IMPROV_API_TOKEN", "  ");
+        std::env::remove_var("IMPROV_API_TOKENS");
+        let Auth::Tokens { rw, ro } = Auth::from_env() else {
+            panic!("a read-only token is set");
+        };
+        assert!(rw.is_empty());
+        assert_eq!(ro.len(), 1);
+
+        std::env::remove_var("IMPROV_API_TOKEN");
+        std::env::remove_var("IMPROV_API_TOKENS_RO");
+        assert!(matches!(Auth::from_env(), Auth::Disabled));
+    }
+
+    // A request still waiting when REQUEST_TIMEOUT elapses gets 408 (S10).
+    #[tokio::test(start_paused = true)]
+    async fn request_past_the_deadline_is_408() {
+        let state = Arc::new(AppState::new("unused.db".into(), Auth::Disabled, None));
+        let _held = state.write_lock.lock().await;
+        let body = json!({"coord": {"dims": {"2": 20}}, "value": 1.0});
+        let resp = app(state.clone())
+            .oneshot(post_cell("/measures/100/cells", body, None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn scheduler_status_reports_a_failing_tick() {
+        let status: SharedStatus = Arc::new(std::sync::Mutex::new(scheduler::SchedulerStatus {
+            tick_secs: 1,
+            ..Default::default()
+        }));
+        let state = Arc::new(AppState::new(
+            "/nonexistent-improv-dir/sched.db".into(),
+            Auth::Disabled,
+            Some(status.clone()),
+        ));
+        let handle = scheduler::spawn_scheduler(
+            state.clone(),
+            Duration::from_millis(10),
+            status.clone(),
+            Default::default(),
+        );
+        for _ in 0..500 {
+            if status.lock().unwrap().last_error.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        handle.abort();
+        let resp = app(state)
+            .oneshot(
+                Request::get("/scheduler/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let v = body_json(resp).await;
+        assert_eq!(v["enabled"], true);
+        assert_eq!(v["tick_secs"], 1);
+        assert!(v["last_error"].is_string(), "{v}");
+    }
+
+    #[tokio::test]
+    async fn get_model_returns_the_stored_model() {
+        let (app, _p) = seeded_app();
+        let resp = app
+            .oneshot(Request::get("/model").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            body_json(resp).await["measures"].as_object().unwrap().len(),
+            3
+        );
+    }
+
+    // A formula naming a missing measure is a 500, not a panic; a cell whose
+    // coordinate names a missing category/item renders a placeholder name.
+    #[tokio::test]
+    async fn unresolvable_model_parts_are_reported_not_panicked() {
+        let mut m = revenue_model();
+        m.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Broken".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1)],
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::Ref(
+                MeasureId(999),
+                DimensionSpec::default(),
+            ))),
+            description: None,
+        });
+        m.set_input(
+            MeasureId(100),
+            Coordinate::from_pairs([(CategoryId(9), ItemId(99))]),
+            Value::Number(1.0),
+        );
+        let (app, path) = seeded_app();
+        ModelStore::open(path.to_str().unwrap())
+            .unwrap()
+            .save_model(&m)
+            .unwrap();
+
+        let get = |uri: &str| Request::get(uri).body(Body::empty()).unwrap();
+        let resp = app
+            .clone()
+            .oneshot(get("/measures/103/values"))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let resp = app
+            .clone()
+            .oneshot(post_json("/measures/102/eval", "{}".into()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let resp = app
+            .clone()
+            .oneshot(get("/measures/100/values"))
+            .await
+            .unwrap();
+        let cells = body_json(resp).await;
+        assert!(
+            cells
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["coord"] == json!([["category 9", "item 99"]])),
+            "{cells}"
+        );
+
+        let resp = app
+            .oneshot(post_json("/nl/describe", json!({"formula": 5}).to_string()))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
