@@ -2746,14 +2746,24 @@ impl ImprovApp {
                                     white_selection(ui);
                                     for id in ids {
                                         let m = &self.model.measures[&id];
-                                        let tag = if m.is_derived() { "= " } else { "· " };
-                                        let label = format!("{tag}{}", m.name.0);
-                                        if ui
-                                            .selectable_label(self.selected() == Some(id), label)
-                                            .clicked()
-                                        {
-                                            self.focused_mut().select(Some(id));
-                                        }
+                                        let kind = if m.is_derived() { "formula" } else { "input" };
+                                        let name = m.name.0.clone();
+                                        let sel = self.selected() == Some(id);
+                                        ui.horizontal(|ui| {
+                                            if ui.selectable_label(sel, name).clicked() {
+                                                self.focused_mut().select(Some(id));
+                                            }
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(kind)
+                                                            .small()
+                                                            .color(crate::theme::DARK_GRAY),
+                                                    );
+                                                },
+                                            );
+                                        });
                                     }
                                 });
                             });
@@ -9473,6 +9483,34 @@ mod tests {
         assert!(!app.row_cats().contains(&time));
     }
 
+    /// The browser labels each measure `input` or `formula`, to the right of
+    /// its name.
+    #[test]
+    fn browser_labels_measures_input_or_formula() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        let mut out = full_frame(&ctx, &mut app, size, 0.0);
+        for i in 1..4 {
+            out = full_frame(&ctx, &mut app, size, f64::from(i) / 60.0);
+        }
+        let name = text_at(&out.shapes, "Revenue").expect("Revenue listed");
+        let kind = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "formula" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .find(|r| (r.center().y - name.center().y).abs() < 4.0)
+            .expect("formula label on Revenue's row");
+        assert!(kind.min.x > name.max.x, "right of the name");
+        assert!(text_at(&out.shapes, "input").is_some(), "Price is an input");
+    }
+
     /// A status message is drawn, then gone once [`STATUS_TTL`] has passed.
     #[test]
     fn status_messages_fade_after_a_few_seconds() {
@@ -9647,7 +9685,7 @@ mod tests {
             })
             .collect();
         assert_eq!(titles, ["Untitled - Model"]);
-        let at = text_rect("· Price").expect("Price is listed").center();
+        let at = text_rect("Price").expect("Price is listed").center();
         let browser = egui::LayerId::new(egui::Order::Middle, panel_win("browser"));
         assert_eq!(desk.ctx.layer_id_at(at), Some(browser), "in the window");
         desk.click(&mut app, at);
@@ -10166,8 +10204,8 @@ mod tests {
                 .min_by(|a, b| a.0.total_cmp(&b.0))
                 .map(|(_, fill)| fill)
         };
-        assert_eq!(fill_under("· Quantity"), Some(crate::theme::WHITE));
-        assert_ne!(fill_under("· Price"), Some(crate::theme::WHITE));
+        assert_eq!(fill_under("Quantity"), Some(crate::theme::WHITE));
+        assert_ne!(fill_under("Price"), Some(crate::theme::WHITE));
         assert!(text_rect("Worksheet").is_some(), "the menu is drawn");
     }
 
