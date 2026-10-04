@@ -159,6 +159,11 @@ impl ModelStore {
     /// keyed by their id; cells keyed by measure+coord), so re-saving updates
     /// in place.
     ///
+    /// Cells are diffed against the store, which ends up holding exactly
+    /// `model.inputs`: unchanged cells add no datoms, and a stored cell the
+    /// model lacks is retracted. So never save a [`ModelStore::load_partial`]
+    /// model; it would drop every cell outside its closure.
+    ///
     /// Transacted in dependency order (categories, then items, then measures,
     /// then cells, then views, then meta) as several `InProgress::transact`
     /// calls sharing ONE underlying SQLite transaction (via
@@ -243,10 +248,51 @@ impl ModelStore {
         // the widest measure in this model rather than guessing.
         transact_group(&mut ip, 7 + widest_categories, measures)?;
 
+        // Diff the cells against what is stored, so the store's cells end up
+        // exactly `model.inputs`: an unchanged cell is not re-asserted, a value
+        // left under another type's attribute is retracted, and a stored cell
+        // the model no longer has is retracted whole (it used to linger on
+        // disk and come back on the next load).
+        let mut stored = stored_cells(&ip)?;
         let mut cells = Vec::new();
+        let mut retracts = Vec::new();
         for ((mid, coord), val) in model.inputs.iter() {
-            cells.push(convert::cell_edn(*mid, coord, val)?);
+            let coord_json = serde_json::to_string(coord)?;
+            let key = convert::cell_key(*mid, &coord_json);
+            let (attr, v) = convert::cell_value_edn(val)?;
+            if let Some(old) = stored.remove(&key) {
+                let mut unchanged = false;
+                for (a, ov) in &old.values {
+                    if *a == attr {
+                        // Cardinality-one: asserting the new value replaces it.
+                        unchanged = *ov == v;
+                    } else {
+                        retracts.push(format!("[:db/retract {} :cell/{a} {ov}]", old.e));
+                    }
+                }
+                if unchanged {
+                    continue;
+                }
+            }
+            cells.push(convert::cell_edn(*mid, &coord_json, &key, attr, &v));
         }
+        for (key, old) in stored {
+            let e = old.e;
+            retracts.push(format!(
+                "[:db/retract {e} :cell/key {}]",
+                convert::edn_str_pub(&key)
+            ));
+            retracts.push(format!("[:db/retract {e} :cell/measure {}]", old.measure));
+            retracts.push(format!(
+                "[:db/retract {e} :cell/coord {}]",
+                convert::edn_str_pub(&old.coord)
+            ));
+            for (a, ov) in &old.values {
+                retracts.push(format!("[:db/retract {e} :cell/{a} {ov}]"));
+            }
+        }
+        // One datom per retraction.
+        transact_group(&mut ip, 1, retracts)?;
         // :cell/key + :cell/measure + :cell/coord + one typed value attribute.
         transact_group(&mut ip, 4, cells)?;
 
@@ -324,6 +370,9 @@ impl ModelStore {
     /// cell outside the closure. See `load_cells` for the one residual cost
     /// this does NOT remove (SQLite still scans the cell datom slices inside
     /// the query; only the returned row set is closure-bounded).
+    ///
+    /// The result is read-only in spirit: saving it with
+    /// [`ModelStore::save_model`] retracts every cell it did not load.
     pub fn load_partial(&mut self, measure_ids: &[MeasureId]) -> Result<Model> {
         let mut model = Model::new();
         self.load_categories(&mut model)?;
@@ -602,21 +651,64 @@ impl ModelStore {
     }
 
     fn rel(&self, query: &str) -> Result<Vec<Vec<TypedValue>>> {
-        use mentat::Queryable;
-        let out = self.store.q_once(query, None)?;
-        let rel = out
-            .results
-            .into_rel()
-            .map_err(|e| StoreError::Mentat(e.to_string()))?;
-        Ok(rel
-            .into_iter()
-            .map(|row| {
-                row.into_iter()
-                    .map(|b| b.into_scalar().expect("scalar binding"))
-                    .collect()
-            })
-            .collect())
+        rel_on(&self.store, query)
     }
+}
+
+/// A stored cell entity, as `save_model` needs it to diff or retract it.
+struct StoredCell {
+    e: i64,
+    /// The `:cell/measure` ref's entity id.
+    measure: i64,
+    coord: String,
+    /// (value attribute, EDN literal) for each typed value the entity holds.
+    values: Vec<(&'static str, String)>,
+}
+
+/// Every stored cell, by `:cell/key`. Four queries, whatever the cell count.
+fn stored_cells(q: &impl mentat::Queryable) -> Result<HashMap<String, StoredCell>> {
+    let mut out = HashMap::new();
+    let rows = rel_on(
+        q,
+        "[:find ?e ?key ?m ?coord :where \
+         [?e :cell/key ?key] [?e :cell/measure ?m] [?e :cell/coord ?coord]]",
+    )?;
+    for row in rows {
+        out.insert(
+            convert::as_string(&row[1])?,
+            StoredCell {
+                e: convert::as_entid(&row[0])?,
+                measure: convert::as_entid(&row[2])?,
+                coord: convert::as_string(&row[3])?,
+                values: Vec::new(),
+            },
+        );
+    }
+    for attr in [VALUE_NUMBER, VALUE_BOOLEAN, VALUE_TEXT] {
+        let q_attr = format!("[:find ?key ?v :where [?e :cell/key ?key] [?e :cell/{attr} ?v]]");
+        for row in rel_on(q, &q_attr)? {
+            if let Some(c) = out.get_mut(&convert::as_string(&row[0])?) {
+                c.values.push((attr, convert::stored_value_edn(&row[1])?));
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn rel_on(q: &impl mentat::Queryable, query: &str) -> Result<Vec<Vec<TypedValue>>> {
+    let out = q.q_once(query, None)?;
+    let rel = out
+        .results
+        .into_rel()
+        .map_err(|e| StoreError::Mentat(e.to_string()))?;
+    Ok(rel
+        .into_iter()
+        .map(|row| {
+            row.into_iter()
+                .map(|b| b.into_scalar().expect("scalar binding"))
+                .collect()
+        })
+        .collect())
 }
 
 // Silence unused-import warnings for HashMap in case the module trims; it's used
@@ -1568,5 +1660,62 @@ mod tests {
         let limit = if cfg!(debug_assertions) { 60 } else { 5 };
         eprintln!("100k-cell load_model: {took:?}");
         assert!(took.as_secs() < limit, "100k-cell load took {took:?}");
+    }
+
+    /// How many cell value datoms the store holds, across all three typed
+    /// value attributes, and how many cell entities.
+    fn cell_datom_counts(store: &ModelStore) -> (usize, usize) {
+        let values = [VALUE_NUMBER, VALUE_BOOLEAN, VALUE_TEXT]
+            .iter()
+            .map(|a| {
+                store
+                    .rel(&format!("[:find ?e ?v :where [?e :cell/{a} ?v]]"))
+                    .unwrap()
+                    .len()
+            })
+            .sum();
+        let entities = store
+            .rel("[:find ?e :where [?e :cell/key _]]")
+            .unwrap()
+            .len();
+        (values, entities)
+    }
+
+    /// P2: re-saving an unchanged model adds no cell datoms, a changed value
+    /// replaces the old one, and a cleared cell is retracted instead of
+    /// lingering on disk (and coming back on the next load).
+    #[test]
+    fn resave_keeps_cell_datoms_flat_and_retracts_stale_ones() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = mixed_type_model();
+        let n = m.inputs.len();
+        for _ in 0..3 {
+            store.save_model(&m).expect("save");
+            assert_eq!(cell_datom_counts(&store), (n, n));
+        }
+
+        // A changed value replaces the old one (cardinality-one).
+        let a = Coordinate::from_pairs([(CategoryId(1), ItemId(10))]);
+        m.set_input(MeasureId(100), a.clone(), Value::Number(42.0));
+        store.save_model(&m).expect("save changed");
+        assert_eq!(cell_datom_counts(&store), (n, n));
+        assert_eq!(store.load_model().unwrap().inputs, m.inputs);
+
+        // A cleared cell is gone from the store, not just from the model.
+        m.inputs.remove(&(MeasureId(101), a.clone()));
+        store.save_model(&m).expect("save cleared");
+        assert_eq!(cell_datom_counts(&store), (n - 1, n - 1));
+        assert_eq!(store.load_model().unwrap().inputs, m.inputs);
+
+        // A cell whose measure changed type keeps one value attribute, the new
+        // one: the old typed value is retracted.
+        let mut loaded = store.load_model().unwrap();
+        loaded.measures.get_mut(&MeasureId(100)).unwrap().value_type = ValueType::Text;
+        loaded.set_input(MeasureId(100), a.clone(), Value::Text("now text".into()));
+        let b = Coordinate::from_pairs([(CategoryId(1), ItemId(11))]);
+        loaded.set_input(MeasureId(100), b, Value::Text("also".into()));
+        store.save_model(&loaded).expect("save retyped");
+        assert_eq!(cell_datom_counts(&store), (n - 1, n - 1));
+        assert_eq!(store.load_model().unwrap().inputs, loaded.inputs);
     }
 }

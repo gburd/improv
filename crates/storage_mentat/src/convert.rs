@@ -1,9 +1,7 @@
 //! Conversions between the Improv model and Mentat EDN / `TypedValue`.
 
 use crate::{Result, StoreError};
-use improv_core_model::{
-    Category, Coordinate, Item, Measure, MeasureId, MeasureKind, Value, ValueType,
-};
+use improv_core_model::{Category, Item, Measure, MeasureId, MeasureKind, Value, ValueType};
 use mentat::TypedValue;
 
 /// Escape a Rust string as an EDN string literal (quotes + backslashes).
@@ -116,34 +114,68 @@ pub fn measure_edn(
     Ok(format!("{{{}}}", fields.join(" ")))
 }
 
-pub fn cell_edn(measure: MeasureId, coord: &Coordinate, value: &Value) -> Result<String> {
-    let coord_json = serde_json::to_string(coord)?;
-    // A stable unique key so re-saving a cell updates in place.
-    let key = format!("{}::{}", measure.0, coord_json);
+/// One cell entity's EDN map, its value already rendered by
+/// [`cell_value_edn`].
+pub fn cell_edn(
+    measure: MeasureId,
+    coord_json: &str,
+    key: &str,
+    attr: &str,
+    value_edn: &str,
+) -> String {
+    format!(
+        "{{:cell/key {} :cell/measure (lookup-ref :measure/id {}) :cell/coord {} :cell/{attr} {value_edn}}}",
+        edn_str(key),
+        measure.0,
+        edn_str(coord_json),
+    )
+}
 
-    let mut fields = vec![
-        format!(":cell/key {}", edn_str(&key)),
-        format!(":cell/measure (lookup-ref :measure/id {})", measure.0),
-        format!(":cell/coord {}", edn_str(&coord_json)),
-    ];
+/// A cell's stable unique `:cell/key` (measure id + coord JSON), so re-saving
+/// a cell updates it in place.
+pub fn cell_key(measure: MeasureId, coord_json: &str) -> String {
+    format!("{}::{}", measure.0, coord_json)
+}
 
-    match value {
-        Value::Number(n) => fields.push(format!(":cell/value-number {}", fmt_f64(*n))),
-        Value::Boolean(b) => fields.push(format!(":cell/value-boolean {}", b)),
-        Value::Text(t) => fields.push(format!(":cell/value-text {}", edn_str(t))),
-        Value::Enum(e) => fields.push(format!(":cell/value-number {}", fmt_f64(*e as f64))),
-        Value::DateTime(dt) => {
-            fields.push(format!(":cell/value-text {}", edn_str(&dt.to_rfc3339())))
-        }
+/// The typed `:cell/<attr>` a value is stored under, and its EDN literal.
+pub fn cell_value_edn(value: &Value) -> Result<(&'static str, String)> {
+    Ok(match value {
+        Value::Number(n) => (crate::VALUE_NUMBER, fmt_f64(*n)),
+        Value::Boolean(b) => (crate::VALUE_BOOLEAN, b.to_string()),
+        Value::Text(t) => (crate::VALUE_TEXT, edn_str(t)),
+        Value::Enum(e) => (crate::VALUE_NUMBER, fmt_f64(f64::from(*e))),
+        Value::DateTime(dt) => (crate::VALUE_TEXT, edn_str(&dt.to_rfc3339())),
         Value::Error(_) => {
             // Errors are computed, never stored as inputs.
             return Err(StoreError::Integrity(
                 "cannot persist an error value as input".into(),
             ));
         }
-    }
+    })
+}
 
-    Ok(format!("{{{}}}", fields.join(" ")))
+/// The EDN literal of a stored cell value, formatted exactly as
+/// [`cell_value_edn`] would write it (so the two compare equal when unchanged,
+/// and a retraction names the stored value exactly).
+pub fn stored_value_edn(v: &TypedValue) -> Result<String> {
+    match v {
+        TypedValue::Double(d) => Ok(fmt_f64(d.0)),
+        TypedValue::Boolean(b) => Ok(b.to_string()),
+        TypedValue::String(s) => Ok(edn_str(s)),
+        other => Err(StoreError::Integrity(format!(
+            "unexpected cell value {other:?}"
+        ))),
+    }
+}
+
+/// An entity id (a `?e` or ref binding).
+pub fn as_entid(v: &TypedValue) -> Result<i64> {
+    match v {
+        TypedValue::Ref(e) => Ok(*e),
+        other => Err(StoreError::Integrity(format!(
+            "expected entity, got {other:?}"
+        ))),
+    }
 }
 
 /// Format an f64 so it always parses back as a double in EDN (never bare int).

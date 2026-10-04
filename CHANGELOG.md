@@ -251,6 +251,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   cascades to the menu's left instead and is lifted to keep its bottom on
   screen, and the menu now opens on the workspace rather than over the formula
   bar's label.
+- **Re-saving a model no longer piles up cell datoms (P2).** `save_model`
+  diffs cells against the store: an unchanged cell is not re-asserted, a
+  value left under another type's attribute is retracted, and a cell removed
+  from the model (cleared in the GUI, deleted through the server) is
+  retracted instead of lingering on disk and coming back on the next load.
+  An unchanged re-save of a 100k-cell model now adds no datoms (it added 200
+  and grew the file ~30 KB) and takes 1.3 s instead of 317 s.
 
 ### Performance
 
