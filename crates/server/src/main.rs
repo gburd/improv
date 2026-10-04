@@ -6,6 +6,7 @@
 //! sharing a non-Send store across tasks.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,6 +101,15 @@ async fn main() {
     if matches!(auth, Auth::Disabled) {
         eprintln!("auth disabled: set IMPROV_API_TOKEN to require a bearer token");
     }
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
+    let local = listener.local_addr().expect("bound socket has an address");
+    let allow_open = std::env::var("IMPROV_ALLOW_OPEN").ok();
+    if let Err(e) = startup_check(local, &auth, allow_open.as_deref()) {
+        eprintln!("improv-server: {e}");
+        std::process::exit(2);
+    }
 
     let scheduler_enabled =
         scheduler::scheduler_enabled(std::env::var("IMPROV_SCHEDULER").ok().as_deref());
@@ -143,9 +153,6 @@ async fn main() {
         eprintln!("scheduler disabled (set IMPROV_SCHEDULER=1 to enable)");
     }
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
     eprintln!("improv-server listening on {addr}");
     let header_timeout = std::env::var("IMPROV_HEADER_TIMEOUT_MS")
         .ok()
@@ -153,6 +160,22 @@ async fn main() {
         .map(Duration::from_millis)
         .unwrap_or(HEADER_READ_TIMEOUT);
     serve(listener, app(state), header_timeout).await;
+}
+
+/// Refuse open mode (no tokens) on a non-loopback address unless the
+/// operator opts in with `IMPROV_ALLOW_OPEN=1` (S15).
+pub fn startup_check(
+    addr: SocketAddr,
+    auth: &Auth,
+    allow_open: Option<&str>,
+) -> Result<(), String> {
+    if matches!(auth, Auth::Disabled) && !addr.ip().is_loopback() && allow_open != Some("1") {
+        return Err(format!(
+            "refusing to serve {addr} without auth: set IMPROV_API_TOKEN, bind a \
+             loopback address, or set IMPROV_ALLOW_OPEN=1"
+        ));
+    }
+    Ok(())
 }
 
 /// Accept loop: hyper HTTP/1 with a header-read timeout (S10). `axum::serve`
@@ -236,9 +259,24 @@ async fn require_token(State(state): State<Arc<AppState>>, req: Request, next: N
         .filter(|t| !t.is_empty());
     match presented {
         None => (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
-        Some(t) if tokens.contains(t) => next.run(req).await,
+        Some(t) if token_matches(tokens, t) => next.run(req).await,
         Some(_) => (StatusCode::FORBIDDEN, "invalid bearer token").into_response(),
     }
+}
+
+/// Constant-time token check (S15): every accepted token is compared, and
+/// each comparison folds over all bytes, so timing reveals neither which token
+/// matched nor the length of a matching prefix.
+fn token_matches<'a>(tokens: impl IntoIterator<Item = &'a String>, presented: &str) -> bool {
+    tokens.into_iter().fold(false, |hit, t| {
+        hit | ct_eq(t.as_bytes(), presented.as_bytes())
+    })
+}
+
+/// Byte-wise xor accumulate; no early exit on the first differing byte.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    (a.len() == b.len()) & (diff == 0)
 }
 
 // --- error handling: never panic on request input ---
@@ -1248,5 +1286,31 @@ mod tests {
         let v: JsonValue = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(v["error"], "internal error");
         assert!(v["request_id"].as_u64().is_some());
+    }
+
+    #[test]
+    fn ct_eq_and_token_matches() {
+        assert!(ct_eq(b"secret", b"secret"));
+        assert!(!ct_eq(b"secret", b"secreT"));
+        assert!(!ct_eq(b"secret", b"secret2"));
+        assert!(!ct_eq(b"", b"x"));
+        let toks = HashSet::from(["a1".to_string(), "b2".to_string()]);
+        assert!(token_matches(&toks, "b2"));
+        assert!(!token_matches(&toks, "b"));
+    }
+
+    #[test]
+    fn startup_check_refuses_open_non_loopback() {
+        let open = Auth::Disabled;
+        let toks = Auth::Tokens(HashSet::from(["t".to_string()]));
+        let lo: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let lo6: SocketAddr = "[::1]:3000".parse().unwrap();
+        let any: SocketAddr = "0.0.0.0:3000".parse().unwrap();
+        assert!(startup_check(lo, &open, None).is_ok());
+        assert!(startup_check(lo6, &open, None).is_ok());
+        assert!(startup_check(any, &open, None).is_err());
+        assert!(startup_check(any, &open, Some("0")).is_err());
+        assert!(startup_check(any, &open, Some("1")).is_ok());
+        assert!(startup_check(any, &toks, None).is_ok());
     }
 }
