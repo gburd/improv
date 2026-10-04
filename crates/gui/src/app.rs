@@ -3606,8 +3606,10 @@ impl ImprovApp {
 
         // Whatever is left is the table, between the two strips.
         // On a white field: NeXT grid cells are white, not panel gray.
+        let field = ui.available_rect_before_wrap();
+        ui.painter()
+            .rect_filled(field, egui::Rounding::ZERO, crate::theme::WHITE);
         let table = egui::Frame::none()
-            .fill(crate::theme::WHITE)
             .show(ui, |ui| {
                 self.render_grid(ui, mi, measure);
             })
@@ -9112,6 +9114,25 @@ mod tests {
         let mut desk = Desk::new();
         desk.settle(&mut app);
         (app, desk)
+    }
+
+    /// E3: the white grid field fills the worksheet's whole table area, not
+    /// just the content-sized table (no gray right of / below the grid).
+    #[test]
+    fn the_white_field_fills_the_table_area() {
+        let (mut app, mut desk) = grid_desk();
+        let out = desk.frame(&mut app, Vec::new());
+        let last = cell_rect(&desk, &app, 0, 1);
+        let at = egui::pos2(last.right() + 20.0, last.center().y);
+        let win = win_rect(&desk.ctx, &app, 0);
+        assert!(win.contains(at), "{at:?} inside the window {win:?}");
+        let white = out.shapes.iter().any(|c| {
+            c.clip_rect.contains(at)
+                && matches!(&c.shape, egui::Shape::Rect(r)
+                    if r.fill == crate::theme::WHITE && r.rect.contains(at)
+                        && win.contains_rect(r.rect.shrink(1.0)))
+        });
+        assert!(white, "{at:?}, right of the grid, sits on the white field");
     }
 
     /// Data cell `(ri, ci)`'s rect in the last pass.
