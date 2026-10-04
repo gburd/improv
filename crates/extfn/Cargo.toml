@@ -31,3 +31,8 @@ optional = true
 # transitive dep of the workspace via several other crates). MIT/Apache-2.0.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

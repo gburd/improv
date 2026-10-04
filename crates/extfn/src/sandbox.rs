@@ -291,6 +291,7 @@ pub(crate) fn apply_unsandboxed_for_test(cmd: Command) -> Command {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -395,5 +396,28 @@ mod tests {
         // abort the spawn from `pre_exec`), not be swallowed.
         assert!(set_rlimit(9999, 1).is_err());
         assert!(set_rlimit(libc::RLIMIT_NOFILE, u64::MAX).is_ok());
+    }
+
+    /// Without `LANG` in the host env, neither the scrubbed env nor the bwrap
+    /// command line carries one.
+    #[test]
+    fn lang_is_forwarded_only_when_set() {
+        let saved = std::env::var_os("LANG");
+        std::env::remove_var("LANG");
+        let scrubbed = scrub_env(Command::new("python3"));
+        let wrapped = wrap_bwrap(Path::new("/usr/bin/bwrap"), &Command::new("python3"));
+        std::env::set_var("LANG", "C.UTF-8");
+        let scrubbed_lang = scrub_env(Command::new("python3"));
+        let wrapped_lang = wrap_bwrap(Path::new("/usr/bin/bwrap"), &Command::new("python3"));
+        match saved {
+            Some(v) => std::env::set_var("LANG", v),
+            None => std::env::remove_var("LANG"),
+        }
+        let has_lang = |c: &Command| c.get_envs().any(|(k, _)| k == "LANG");
+        let setenv = |c: &Command| c.get_args().any(|a| a == "LANG");
+        assert!(!has_lang(&scrubbed) && !setenv(&wrapped));
+        assert!(has_lang(&scrubbed_lang) && setenv(&wrapped_lang));
+        let args: Vec<_> = wrapped.get_args().collect();
+        assert_eq!(args.last().copied(), Some(std::ffi::OsStr::new("python3")));
     }
 }

@@ -87,3 +87,42 @@ _improv_to_json x = "true" if x === true;
                   = "\"" + x + "\"" if stringp x;
                   = "null" otherwise;
 "#;
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_become_a_pure_list_literal() {
+        let lit = pure_args_literal(&[
+            Value::Number(1.5),
+            Value::Boolean(true),
+            Value::Boolean(false),
+            Value::Text("a\"b".into()),
+        ])
+        .unwrap();
+        assert_eq!(lit, r#"[1.5,true,false,"a\"b"]"#);
+        assert_eq!(pure_args_literal(&[]).unwrap(), "[]");
+    }
+
+    #[test]
+    fn unsupported_arg_is_rejected() {
+        let err = pure_args_literal(&[Value::Enum(1)]).unwrap_err();
+        assert!(
+            format!("{err}").contains("unsupported argument type"),
+            "{err}"
+        );
+        assert!(program("x", &[Value::Enum(1)]).is_err());
+    }
+
+    #[test]
+    fn program_binds_args_then_body_then_prints_envelope() {
+        let p = program("let result = 1;", &[Value::Number(2.0)]).unwrap();
+        let args_at = p.find("let args = [2.0];").expect("args bound");
+        let body_at = p.find("let result = 1;").expect("body");
+        let puts_at = p.find("puts (").expect("envelope");
+        assert!(p.starts_with(PURE_PRELUDE));
+        assert!(args_at < body_at && body_at < puts_at);
+    }
+}

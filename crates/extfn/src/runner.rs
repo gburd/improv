@@ -208,3 +208,85 @@ pub fn parse_envelope(
         stderr: err.to_string(),
     })
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use improv_core_model::{Value, ValueType};
+
+    fn runtime_msg(r: Result<Value, ExtFnError>) -> String {
+        match r {
+            Err(ExtFnError::Runtime { message, .. }) => message,
+            other => panic!("expected Runtime, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn envelope_takes_last_line_and_type_checks() {
+        let out = "banner\n\n{\"ok\": 4}\n  \n";
+        assert_eq!(
+            parse_envelope(out, "", ValueType::Number, "x").unwrap(),
+            Value::Number(4.0)
+        );
+        let msg = runtime_msg(parse_envelope(
+            "{\"ok\": \"s\"}",
+            "",
+            ValueType::Number,
+            "x",
+        ));
+        assert!(msg.contains("return type mismatch"), "{msg}");
+    }
+
+    #[test]
+    fn envelope_errors_are_explicit() {
+        let msg = runtime_msg(parse_envelope("  \n", "e", ValueType::Number, "R"));
+        assert_eq!(msg, "R produced no output");
+        let msg = runtime_msg(parse_envelope("nope", "", ValueType::Number, "R"));
+        assert!(msg.contains("could not parse R output"), "{msg}");
+        let msg = runtime_msg(parse_envelope("{\"x\":1}", "", ValueType::Number, "R"));
+        assert!(msg.contains("missing `ok`/`error`"), "{msg}");
+        let r = parse_envelope("{\"error\":\"bad\"}", "trace", ValueType::Number, "R");
+        match r {
+            Err(ExtFnError::Runtime { message, stderr }) => {
+                assert_eq!((message.as_str(), stderr.as_str()), ("bad", "trace"))
+            }
+            other => panic!("expected Runtime, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_interpreter_is_language_unavailable() {
+        let r = run_interpreter(
+            "improv-no-such-interpreter",
+            &[],
+            "",
+            Duration::from_secs(1),
+            "ghost",
+            SandboxPolicy::Trusted,
+        );
+        assert!(
+            matches!(&r, Err(ExtFnError::LanguageUnavailable(m)) if m.starts_with("ghost")),
+            "{:?}",
+            r.err()
+        );
+    }
+
+    /// The child exits at once but a backgrounded grandchild keeps stdout
+    /// open: the reader wait is still bounded by the deadline.
+    #[cfg(unix)]
+    #[test]
+    fn grandchild_holding_pipe_open_times_out() {
+        let start = Instant::now();
+        let r = run_interpreter(
+            "sh",
+            &["-s"],
+            "sleep 5 &\nexit 0\n",
+            Duration::from_millis(300),
+            "sh",
+            SandboxPolicy::Trusted,
+        );
+        assert!(matches!(r, Err(ExtFnError::Timeout(_))), "{:?}", r.err());
+        assert!(start.elapsed() < Duration::from_secs(3));
+    }
+}

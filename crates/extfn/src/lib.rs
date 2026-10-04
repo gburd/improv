@@ -51,6 +51,7 @@
 //! [`SandboxPolicy::Restricted`] unless the operator sets
 //! `IMPROV_EXTFN_TRUSTED=1` (see `sandbox::policy_for`). [`ExternalFn::pure`]
 //! is model data and only affects caching.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 mod julia;
 mod marshal;
@@ -200,6 +201,7 @@ pub enum ExtFnError {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::Value;
@@ -218,6 +220,13 @@ mod tests {
     #[test]
     fn registry_roundtrip() {
         let mut reg = Registry::new();
+        assert_eq!(reg.timeout(), Duration::from_secs(5));
+        assert_eq!(
+            Registry::new()
+                .with_timeout(Duration::from_millis(7))
+                .timeout(),
+            Duration::from_millis(7)
+        );
         assert!(reg.is_empty());
         assert!(reg.register(add_fn()).is_none());
         assert_eq!(reg.len(), 1);

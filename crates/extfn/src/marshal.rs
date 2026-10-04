@@ -121,6 +121,7 @@ pub fn error_value(msg: impl Into<String>) -> Value {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -167,5 +168,64 @@ mod tests {
         assert!(arg_matches(&Value::Number(1.0), ValueType::Number));
         assert!(!arg_matches(&Value::Number(1.0), ValueType::Text));
         assert!(!arg_matches(&error_value("x"), ValueType::Number));
+    }
+
+    #[test]
+    fn error_values_encode_kind_and_message() {
+        use improv_core_model::ValueError;
+        let enc = |k: ValueErrorKind| value_to_json(&Value::Error(ValueError::new(k)));
+        for (k, name) in [
+            (ValueErrorKind::TypeMismatch, "type_mismatch"),
+            (ValueErrorKind::DimensionMismatch, "dimension_mismatch"),
+            (ValueErrorKind::DivisionByZero, "division_by_zero"),
+            (ValueErrorKind::MissingInput, "missing_input"),
+        ] {
+            assert_eq!(
+                enc(k),
+                json!({"__improv__": "error", "kind": name, "message": name})
+            );
+        }
+        assert_eq!(
+            enc(ValueErrorKind::Custom("boom".into())),
+            json!({"__improv__": "error", "kind": "custom", "message": "boom"})
+        );
+    }
+
+    #[test]
+    fn decode_untagged_and_mismatched_shapes() {
+        // Plain RFC 3339 string decodes as DateTime; plain u64 as Enum.
+        assert!(matches!(
+            json_to_value(&json!("2025-01-02T03:04:05Z"), ValueType::DateTime),
+            Ok(Value::DateTime(_))
+        ));
+        assert_eq!(
+            json_to_value(&json!(3), ValueType::Enum).unwrap(),
+            Value::Enum(3)
+        );
+        // A tagged object with the wrong tag falls through to the untagged path.
+        let wrong_tag = json!({"__improv__": "enum", "value": "x"});
+        assert!(json_to_value(&wrong_tag, ValueType::DateTime)
+            .unwrap_err()
+            .contains("expected DateTime"));
+        let wrong_tag = json!({"__improv__": "datetime", "value": 1});
+        assert!(json_to_value(&wrong_tag, ValueType::Enum)
+            .unwrap_err()
+            .contains("expected Enum"));
+        assert!(json_to_value(&json!("not a date"), ValueType::DateTime)
+            .unwrap_err()
+            .contains("invalid DateTime"));
+        assert!(json_to_value(&json!(1), ValueType::Text)
+            .unwrap_err()
+            .contains("expected Text"));
+        // Enum index past u32 is rejected, not truncated.
+        assert!(json_to_value(&json!(u64::MAX), ValueType::Enum).is_err());
+    }
+
+    #[test]
+    fn long_values_are_previewed_not_dumped() {
+        let long = json!("y".repeat(200));
+        let msg = json_to_value(&long, ValueType::Number).unwrap_err();
+        assert!(msg.ends_with('…'), "{msg}");
+        assert!(msg.len() < 100, "{msg}");
     }
 }

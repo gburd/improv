@@ -215,6 +215,7 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -301,5 +302,78 @@ mod tests {
         assert_eq!(fuel_for(Duration::from_secs(1)), FUEL_PER_SEC);
         assert_eq!(fuel_for(Duration::from_secs(3600)), MAX_FUEL);
         assert_eq!(fuel_for(Duration::ZERO), 1);
+    }
+
+    /// `(func (export "improv_call") (result f64) f64.const 2)`, base64-encoded.
+    const TWO_B64: &str = "AGFzbQEAAAABBQFgAAF8AwIBAAcPAQtpbXByb3ZfY2FsbAAACg0BCwBEAAAAAAAAAEAL";
+
+    fn wasm_fn(body: &str, arg_types: Vec<ValueType>) -> ExternalFn {
+        ExternalFn {
+            name: "w".into(),
+            language: crate::Language::Wasm,
+            body: body.into(),
+            arg_types,
+            return_type: ValueType::Number,
+            pure: true,
+        }
+    }
+
+    #[test]
+    fn base64_body_runs() {
+        let f = wasm_fn(&format!("base64: {TWO_B64}\n"), vec![]);
+        assert_eq!(
+            eval(&f, &[], Duration::from_secs(5)).unwrap(),
+            Value::Number(2.0)
+        );
+    }
+
+    #[test]
+    fn base64_decoder_handles_padding_and_rejects_garbage() {
+        assert_eq!(base64_decode("aGk=").unwrap(), b"hi");
+        assert_eq!(base64_decode("aGk").unwrap(), b"hi");
+        assert_eq!(base64_decode("aA==").unwrap(), b"h");
+        assert_eq!(base64_decode("aA").unwrap(), b"h");
+        assert_eq!(base64_decode("+/9z").unwrap(), [0xfb, 0xff, 0x73]);
+        assert_eq!(base64_decode("aG l\nz").unwrap(), b"his");
+        assert!(base64_decode("a").unwrap_err().contains("truncated"));
+        assert!(base64_decode("a!==").unwrap_err().contains("invalid"));
+        assert!(base64_decode("aG!=").unwrap_err().contains("invalid"));
+        assert!(base64_decode("aGk!").unwrap_err().contains("invalid"));
+    }
+
+    #[test]
+    fn non_number_arg_type_is_rejected() {
+        let f = wasm_fn("wat:(module)", vec![ValueType::Text]);
+        let err = eval(&f, &[Value::Text("x".into())], Duration::from_secs(5)).unwrap_err();
+        assert!(format!("{err}").contains("ABI"), "{err}");
+    }
+
+    /// Defensive: a non-Number value that slips past the ABI check is NaN.
+    #[cfg(feature = "wat")]
+    #[test]
+    fn mistyped_arg_becomes_nan() {
+        let f = wasm_fn(
+            r#"wat:(module (func (export "improv_call") (param f64) (result f64) local.get 0))"#,
+            vec![ValueType::Number],
+        );
+        let out = eval(&f, &[Value::Boolean(true)], Duration::from_secs(5)).unwrap();
+        assert!(matches!(out, Value::Number(n) if n.is_nan()), "{out:?}");
+    }
+
+    #[cfg(feature = "wat")]
+    #[test]
+    fn traps_and_start_failures_are_runtime_errors() {
+        let trap = module(r#"(module (func (export "improv_call") (result f64) unreachable))"#);
+        let err = run_wasm(&trap, &[], MAX_FUEL).unwrap_err();
+        assert!(format!("{err}").contains("wasm trap"), "{err}");
+
+        let start = module(
+            r#"(module (func $s unreachable) (start $s) (func (export "improv_call") (result f64) f64.const 0))"#,
+        );
+        let err = run_wasm(&start, &[], MAX_FUEL).unwrap_err();
+        assert!(format!("{err}").contains("start error"), "{err}");
+
+        let err = run_wasm(b"not wasm", &[], MAX_FUEL).unwrap_err();
+        assert!(format!("{err}").contains("compile error"), "{err}");
     }
 }
