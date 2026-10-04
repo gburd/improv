@@ -16,8 +16,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **GUI range selection.** Shift+arrow (or Shift+hjkl), Shift+click and
   dragging across cells select a rectangle; a plain arrow or click collapses
   it. The status-bar **Sum** adds the range's numbers.
+- **GUI window title.** The native title reads `Improv — <file>`, with a
+  trailing `•` while edits are unsaved (an edited in-memory model, or a
+  failed autosave).
+- **GUI transient status.** Status-bar messages (save, recalc, undo/redo,
+  added formula, errors) clear themselves after 5 seconds.
 
 ### Changed
+
+- **GUI model browser labels measures.** Each measure shows a small gray
+  `input` or `formula` label instead of the `·` / `=` prefix.
+- **GUI first worksheet window.** A fresh window opens clear of the
+  application menu and is sized to its grid (360–900 × 300–700 px).
 
 - **GUI grid follows NeXT Improv.** Cells are plain white with thin black
   rules (no stripes, no per-cell buttons); the selection and its row and

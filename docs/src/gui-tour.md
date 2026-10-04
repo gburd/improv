@@ -35,8 +35,8 @@ The window has five regions:
   `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
   field has focus.
 - **Model browser** (window, bottom left of the workspace) — titled
-  `<file> - Model`: Categories (with their items), Measures (`·` input,
-  `=` derived; click one to select it) and saved Views (name field, **Save
+  `<file> - Model`: Categories (with their items), Measures (each labeled
+  `input` or `formula` at the right; click one to select it) and saved Views (name field, **Save
   view**, click a view to open it). Its close box hides it; **View ▸ Model
   Browser** brings it back.
 - **Worksheet windows** (center) — the dark gray workspace holds one
@@ -46,7 +46,8 @@ The window has five regions:
   makes it key (black title bar) and gives its matrix the keyboard. With more
   than one matrix open, each window's close box removes its matrix.
   **Worksheet ▸ Add Matrix** opens another window, and **Save View** records
-  every window's place and size.
+  every window's place and size. A fresh window opens right of the menu,
+  sized to its grid.
 - **Pivot grid** (in each worksheet window) — the measure projected onto the
   current axes. Here Revenue is shown with **Product** on columns, **Time** on rows,
   and **Region** paged. The **category tiles** are dark-gray chips, placed as in
@@ -70,6 +71,13 @@ The window has five regions:
 - **Info panel** (window, top right of the workspace, closed at start) —
   opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
   type, dimensions, dependencies, and formula. Its close box closes it.
+- **Status bar** (bottom) — the last action's outcome (`saved model`,
+  `recalculated`, `undo`, `added Margin`, or an error) on the left, cleared
+  after 5 seconds, and the selection's **Sum** on the right.
+
+The native window title reads `Improv — <file>` (`Untitled` in memory), with
+a trailing `•` while the model has edits that are not saved: any edit of an
+in-memory model, or a model whose last autosave failed.
 
 ## Stacked axes
 

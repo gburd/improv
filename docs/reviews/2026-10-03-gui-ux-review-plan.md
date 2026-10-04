@@ -67,9 +67,9 @@ Items below are reworded where this direction supersedes them.
 
 | # | Item | Status |
 | --- | --- | --- |
-| D1 | Window title shows document name and a dirty marker. | planned |
-| D2 | Model tree `·`/`=` prefixes are cryptic; use labelled icons/tooltips. | planned |
-| D3 | Status-bar feedback on recalc/save. | planned |
+| D1 | Window title shows document name and a dirty marker. | done: `Improv — <file>`, ` •` after an unsaved in-memory edit or a failed autosave. Canvas-layout changes since the last saved view are not tracked |
+| D2 | Model tree `·`/`=` prefixes are cryptic; use labelled icons/tooltips. | done: a small dark-gray `input` / `formula` label right of each name |
+| D3 | Status-bar feedback on recalc/save. | done: save, Calc, undo/redo and add-formula report there; a message clears after 5 s |
 | D4 | Contrast: grey-on-grey text fails WCAG AA 4.5:1. The NeXT palette is high-contrast black-on-white; matching it fixes most of this. Optional dark variant is a modernization, off by default. | done for the default theme: black on `#AAAAAA` 9.0:1, black on white 21:1, white on `#555555` 7.5:1. Weak/disabled text (`#555555` on `#AAAAAA`) and non-key title text (`#AAAAAA` on `#555555`) are 3.2:1, per spec §1: enough for disabled text, which WCAG exempts, but empty-state hints drawn weak should become body text as B4/B5 rework them. Dark variant deferred |
 | D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | in progress (harness landed: `scripts/gui-shot.sh`) |
 
@@ -77,12 +77,12 @@ Items below are reworded where this direction supersedes them.
 
 | # | Item | Status |
 | --- | --- | --- |
-| E1 | Menu overlaps the first worksheet window's left edge; place the first window right of the menu's actual width. | planned |
+| E1 | Menu overlaps the first worksheet window's left edge; place the first window right of the menu's actual width. | done: `MENU_CLEAR = MENU_W + 12` |
 | E2 | No NeXT scrollers: grid needs a `#808080` trough scroller with grouped arrows; the rows-tile strip sits inline with the horizontal scroller (spec §4.4, §4.8). | planned |
 | E3 | Grid's white field stops at the last cell; NeXT fills the grid area white to the window's edges. | planned |
 | E4 | `Filters` collapsing header is not in NeXT; move filtering to the tile context menu (right-click → item checklist). | planned |
 | E5 | Model browser keeps the old tree; NeXT lists views (`Name - Worksheet` + icon) above a description area, double-click to open (spec §4.2). | planned |
-| E6 | Default window too small for its grid; size a fresh worksheet window to its content. | planned |
+| E6 | Default window too small for its grid; size a fresh worksheet window to its content. | done: `Matrix::new` sizes from its line counts, clamped to 360–900 × 300–700 |
 
 Note: B1/B4/C1 imply multiple OS windows. egui 0.29 supports this via
 `show_viewport_immediate`; where a platform can't, fall back to in-app
