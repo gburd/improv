@@ -16,6 +16,7 @@
 //!   `export_measure_csv`) has an `io::Read`/`io::Write` sibling
 //!   (`import_csv_from`, `export_measure_csv_to`) so tests exercise the real
 //!   logic against an in-memory buffer, no tempfiles required.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use improv_core_model::{CategoryId, Coordinate, MeasureId, Model, Value, ValueType};
 use std::io;
@@ -458,6 +459,7 @@ fn cell_text(v: &improv_engine::CellValue, neutralize_formulas: bool) -> Option<
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::ItemId;
@@ -1150,5 +1152,19 @@ mod tests {
             export_measure_csv_to(&model, MeasureId(101), &mut buf, b',').unwrap(),
             3
         );
+    }
+
+    /// An exhausted budget still allows a zero-length read (no error), but a
+    /// real read is refused.
+    #[test]
+    fn exhausted_budget_allows_only_empty_reads() {
+        use std::io::Read;
+        let mut b = Budget {
+            inner: Cursor::new(b"abc".to_vec()),
+            read: 0,
+            limit: std::rc::Rc::new(std::cell::Cell::new(0)),
+        };
+        assert_eq!(b.read(&mut []).unwrap(), 0);
+        assert!(b.read(&mut [0u8; 4]).is_err());
     }
 }

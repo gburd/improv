@@ -2620,6 +2620,7 @@ dependencies = [
 name = "improv_storage_csv"
 version = "0.7.0"
 dependencies = [
+ "chrono",
  "csv",
  "improv_core_model",
  "improv_data_source",
