@@ -20,6 +20,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **GUI screenshot regression in CI (review plan D5).** A `gui-shot` job
+  (GitHub and Forgejo, `rust:1.97-trixie`) runs `scripts/gui-shot-check.sh`,
+  which compares the headless 1400×900 capture against the golden
+  `docs/reviews/golden/gui-1400x900.png` and fails above 200 differing pixels
+  (`magick compare -metric AE -fuzz 2%`), uploading the diff. `--update`
+  refreshes the golden (see CONTRIBUTING.md).
 - **CLI `save-view`.** `improv save-view <db> <view-id> <name> <measure>
   [--rows Cat,Cat] [--cols Cat,...]` writes a named view the same shape the
   GUI saves (stacked rows/cols, remaining categories as pages pinned to their

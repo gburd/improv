@@ -16,8 +16,9 @@ formula pane, NeXT gutters, ruled grid with range selection). Batches D and E
 are DONE too (title/dirty marker, transient status, browser labels and view
 list, white grid field, tile-menu filters, NeXT scrollers with beveled
 knob and grouped arrows). CLI `save-view` landed and the screenshot demo
-saves two views. **NEXT:** D5 qualification (fixed-DPI screenshot
-comparison in CI). Pixel fidelity to Improv 3.0 is still
+saves two views. D5 landed: CI's `gui-shot` job compares a headless
+capture with `docs/reviews/golden/gui-1400x900.png`. **NEXT:** the rows-tile
+strip inline with the horizontal scroller (E2 remainder). Pixel fidelity to Improv 3.0 is still
 unverified.
 
 ## Released: v0.7.0 (2026-09-24)

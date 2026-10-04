@@ -71,7 +71,7 @@ Items below are reworded where this direction supersedes them.
 | D2 | Model tree `·`/`=` prefixes are cryptic; use labelled icons/tooltips. | done: a small dark-gray `input` / `formula` label right of each name |
 | D3 | Status-bar feedback on recalc/save. | done: save, Calc, undo/redo and add-formula report there; a message clears after 5 s |
 | D4 | Contrast: grey-on-grey text fails WCAG AA 4.5:1. The NeXT palette is high-contrast black-on-white; matching it fixes most of this. Optional dark variant is a modernization, off by default. | done for the default theme: black on `#AAAAAA` 9.0:1, black on white 21:1, white on `#555555` 7.5:1. Weak/disabled text (`#555555` on `#AAAAAA`) and non-key title text (`#AAAAAA` on `#555555`) are 3.2:1, per spec §1: enough for disabled text, which WCAG exempts, but empty-state hints drawn weak should become body text as B4/B5 rework them. Dark variant deferred |
-| D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | in progress (harness landed: `scripts/gui-shot.sh`) |
+| D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | done (`scripts/gui-shot-check.sh` vs `docs/reviews/golden/gui-1400x900.png`, CI job `gui-shot`) |
 
 ## Batch E — fidelity gaps found comparing step 6 against the refs (2026-10-04)
 

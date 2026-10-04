@@ -45,6 +45,25 @@ GUI on a headless Xvfb with a fixed demo model and writes
 `target/gui-shot/gui.png` and `compare.png` (beside the NeXT reference) for
 visual review. Missing X tools come from `nix shell`. See `--help`.
 
+## GUI screenshot golden
+
+CI's `gui-shot` job runs `scripts/gui-shot-check.sh`: it renders the demo
+model headless (Xvfb, Mesa llvmpipe) at 1400×900 and fails when more than
+200 pixels differ from `docs/reviews/golden/gui-1400x900.png` by over 2%
+(`magick compare -metric AE -fuzz 2%`). The capture and a highlighted
+`diff.png` are uploaded as the `gui-shot` artifact.
+
+A deliberate visual change refreshes the golden in the same commit. Render
+it on Debian 13 (trixie), the distro of CI's `rust:1.97-trixie` container,
+so Mesa and ImageMagick match:
+
+```sh
+scripts/gui-shot-check.sh --update   # writes the golden
+scripts/gui-shot-check.sh            # 0 pixels differ
+```
+
+Look at the new golden before committing it.
+
 ## Docs
 
 If you change a public API, the CLI surface, the formula/CNL grammar, or the
