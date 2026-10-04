@@ -14,8 +14,8 @@ mod ui;
 use app::App;
 use crossterm::{
     event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
-        MouseEventKind,
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers, MouseButton, MouseEventKind,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -127,7 +127,7 @@ fn handle_event(app: &mut App, ev: Event, path: &str) {
                 (KeyCode::Enter, Some(_)) => app.commit_command(),
                 (KeyCode::Esc, Some(_)) => app.cancel_command(),
                 (code, Some((_, buf))) => line_key(buf, code),
-                (code, None) => normal_key(app, code, path),
+                (_, None) => normal_key(app, k, path),
             },
         },
         // Mouse: left-click selects the cell under the pointer (hit-tested
@@ -153,15 +153,17 @@ fn line_key(buf: &mut String, code: KeyCode) {
 }
 
 /// Key handling in normal (navigation) mode.
-fn normal_key(app: &mut App, code: KeyCode, path: &str) {
-    match code {
+fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
+    let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+    match k.code {
         KeyCode::Char('q') => app.should_quit = true,
         KeyCode::Char('e') | KeyCode::Enter => app.begin_edit(),
         KeyCode::Tab | KeyCode::Char('m') => app.next_measure(),
-        KeyCode::Up => app.move_cursor(-1, 0),
-        KeyCode::Down => app.move_cursor(1, 0),
-        KeyCode::Left => app.move_cursor(0, -1),
-        KeyCode::Right => app.move_cursor(0, 1),
+        // Shift+arrow grows a range selection (its Sum shows in the status).
+        KeyCode::Up => app.step(-1, 0, shift),
+        KeyCode::Down => app.step(1, 0, shift),
+        KeyCode::Left => app.step(0, -1, shift),
+        KeyCode::Right => app.step(0, 1, shift),
         KeyCode::Char('[') => app.page(-1),
         KeyCode::Char(']') => app.page(1),
         KeyCode::Char('p') => app.pivot(),
@@ -204,7 +206,7 @@ fn save_current_view(app: &mut App, path: &str) {
 mod tests {
     use super::*;
     use crate::app::tests::{revenue_model, tmp_path, view};
-    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+    use crossterm::event::MouseEvent;
     use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, Value};
     use ratatui::backend::TestBackend;
 
@@ -343,6 +345,30 @@ mod tests {
         )
         .unwrap();
         assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+    }
+
+    #[test]
+    fn shift_arrows_extend_the_selection() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let shift = |c| Ok(Event::Key(KeyEvent::new(c, KeyModifiers::SHIFT)));
+        let ev = vec![
+            shift(KeyCode::Down),
+            shift(KeyCode::Right),
+            shift(KeyCode::Up),
+            shift(KeyCode::Left),
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.anchor, Some((0, 0)));
+        run_events(
+            &mut app,
+            "",
+            vec![shift(KeyCode::Right), shift(KeyCode::Down)],
+        )
+        .unwrap();
+        assert_eq!(app.selection_sum(), Some(350.0));
+        run_events(&mut app, "", vec![key(KeyCode::Left)]).unwrap();
+        assert_eq!(app.anchor, None);
     }
 
     #[test]

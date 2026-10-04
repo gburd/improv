@@ -489,6 +489,8 @@ pub struct App {
     pub filters: Vec<Filter>,
     /// Geometry of the last render, for mapping mouse clicks to cells.
     pub grid_geom: Option<GridGeom>,
+    /// Fixed corner of a Shift+arrow range selection; `None` = one cell.
+    pub anchor: Option<(usize, usize)>,
     /// When `Some`, the CSV import/export command prompt is active: which
     /// command and its in-progress typed line. Mirrors `edit`'s shape but for
     /// a whole command line rather than a single cell value.
@@ -549,6 +551,7 @@ impl App {
             axis_order,
             filters: Vec::new(),
             grid_geom: None,
+            anchor: None,
             command: None,
         })
     }
@@ -564,6 +567,7 @@ impl App {
         );
         self.cursor_row = self.cursor_row.min(self.grid.n_rows().saturating_sub(1));
         self.cursor_col = self.cursor_col.min(self.grid.n_cols().saturating_sub(1));
+        self.anchor = None;
     }
 
     /// The viewed measure's categories in natural (declared) order.
@@ -634,6 +638,46 @@ impl App {
         self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
     }
 
+    /// An arrow step: `extend` (Shift held) keeps or sets the range anchor
+    /// at the cursor before moving; a plain step collapses the range.
+    pub fn step(&mut self, drow: isize, dcol: isize, extend: bool) {
+        self.anchor = extend.then(|| self.anchor.unwrap_or((self.cursor_row, self.cursor_col)));
+        self.move_cursor(drow, dcol);
+    }
+
+    /// True if `[row][col]` is inside the selection (anchor..=cursor).
+    pub fn is_selected(&self, row: usize, col: usize) -> bool {
+        let (ar, ac) = self.anchor.unwrap_or((self.cursor_row, self.cursor_col));
+        let (cr, cc) = (self.cursor_row, self.cursor_col);
+        (ar.min(cr)..=ar.max(cr)).contains(&row) && (ac.min(cc)..=ac.max(cc)).contains(&col)
+    }
+
+    /// Sum of the numeric cells in the selection; `None` if there are none
+    /// (text/empty cells contribute nothing, as in the GUI's `Sum` readout).
+    pub fn selection_sum(&self) -> Option<f64> {
+        let g = &self.grid;
+        let nums: Vec<f64> = (0..g.n_rows())
+            .flat_map(|r| (0..g.n_cols()).map(move |c| (r, c)))
+            .filter(|&(r, c)| self.is_selected(r, c))
+            .filter_map(|(r, c)| g.value_at(r, c))
+            .collect();
+        (!nums.is_empty()).then(|| nums.iter().sum())
+    }
+
+    /// The viewed derived measure's formula as controlled English
+    /// (`Price times Quantity`); `None` for input measures.
+    pub fn formula_text(&self) -> Option<String> {
+        match &self.model.measures.get(&self.grid.measure)?.kind {
+            improv_core_model::MeasureKind::Derived(f) => {
+                Some(improv_nl_formula::describe_formula(
+                    &improv_nl_formula::NlContext::new(&self.model),
+                    f,
+                ))
+            }
+            _ => None,
+        }
+    }
+
     /// Cursor movement, clamped to the grid (never goes out of range).
     pub fn move_cursor(&mut self, drow: isize, dcol: isize) {
         let max_row = self.grid.n_rows().saturating_sub(1) as isize;
@@ -659,6 +703,7 @@ impl App {
         let (r, c) = (g.row0 + r, g.col0 + c);
         let in_window = r < g.row0 + g.rows && c < g.col0 + g.cols;
         if in_window && r < self.grid.n_rows() && c < self.grid.n_cols() {
+            self.anchor = None;
             self.cursor_row = r;
             self.cursor_col = c;
         }
@@ -1614,6 +1659,30 @@ pub(crate) mod tests {
         app.axis_order = app.natural_axis_order();
         app.pivot();
         assert_eq!(app.status.as_deref(), Some("pivot: rows=8 cols=Product"));
+    }
+
+    #[test]
+    fn shift_arrows_select_a_range_and_sum_it() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101)); // [[100, 50], [120, 80]]
+        assert_eq!(app.selection_sum(), Some(100.0));
+        app.step(1, 0, true);
+        app.step(0, 1, true);
+        assert_eq!(app.anchor, Some((0, 0)));
+        assert!(app.is_selected(1, 0) && app.is_selected(0, 1));
+        assert_eq!(app.selection_sum(), Some(350.0));
+        app.step(-1, 0, false);
+        assert_eq!((app.anchor, app.selection_sum()), (None, Some(50.0)));
+        app.step(0, -1, true);
+        app.clear_filters(); // any re-layout collapses the range
+        assert_eq!(app.anchor, None);
+        // Formula text for derived measures only; blank cells sum to None.
+        assert_eq!(app.formula_text(), None);
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.formula_text().as_deref(), Some("Price times Quantity"));
+        let mut m = revenue_model();
+        m.inputs.clear();
+        assert_eq!(App::new(m).unwrap().selection_sum(), None);
     }
 
     #[test]

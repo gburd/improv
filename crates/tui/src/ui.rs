@@ -13,6 +13,7 @@ use ratatui::{
 /// Key help entries, packed greedily into lines that fit the status box.
 const HELP: &[&str] = &[
     "arrows/click: move",
+    "Shift+arrows: range",
     "e/Enter: edit",
     "[ ]: page",
     "p: pivot",
@@ -62,8 +63,12 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     } else {
         "input"
     };
+    let sum = match app.selection_sum() {
+        Some(v) => format!("Sum {v}"),
+        None => "Sum \u{2014}".to_string(),
+    };
     let coord = format!(
-        "cell [{}, {}] = {}",
+        "cell [{}, {}] = {}   {sum}",
         g.rows
             .get(app.cursor_row)
             .map(|(_, n)| n.as_str())
@@ -79,6 +84,9 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         "{} [{}]   {axes}   {coord}",
         g.measure_name, kind
     ))];
+    if let Some(f) = app.formula_text() {
+        lines.push(Line::from(format!("{} = {f}", g.measure_name)));
+    }
     if let Some(buf) = &app.edit {
         lines.push(Line::from(format!("edit> {buf}")));
     } else if let Some((kind, buf)) = &app.command {
@@ -171,6 +179,7 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
         .add_modifier(Modifier::BOLD);
 
     let cols_r = cols.clone();
+    let range = Style::default().bg(Color::Cyan).fg(Color::Black);
     let rows = rows.map(move |r| {
         let rname = g.rows[r].1.clone();
         let mut cells =
@@ -180,6 +189,8 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
             let cell = Cell::from(text);
             let cell = if r == app.cursor_row && c == app.cursor_col {
                 cell.style(sel)
+            } else if app.is_selected(r, c) {
+                cell.style(range)
             } else {
                 cell
             };
@@ -313,6 +324,42 @@ mod tests {
             draw(&mut app, w, h);
             app.move_cursor(1, 1);
         }
+    }
+
+    #[test]
+    fn status_shows_formula_sum_and_pages_and_range_style() {
+        let mut m = revenue_model();
+        let mut q = m.measures[&improv_core_model::MeasureId(101)].clone();
+        q.id = improv_core_model::MeasureId(300);
+        m.add_category(improv_core_model::CategoryId(3), "Region");
+        m.add_item(
+            improv_core_model::ItemId(30),
+            improv_core_model::CategoryId(3),
+            "North",
+        );
+        q.categories.push(improv_core_model::CategoryId(3));
+        m.add_measure(q);
+        let mut app = App::new(m).unwrap();
+        let lines = text(&draw(&mut app, 100, 30));
+        row_of(&lines, "Revenue = Price times Quantity");
+        row_of(&lines, "Sum 1000");
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(300));
+        let lines = text(&draw(&mut app, 100, 30));
+        row_of(&lines, "pages: Region=North (1/1)");
+        row_of(&lines, "Sum \u{2014}");
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(101));
+        app.step(1, 0, true);
+        let buf = draw(&mut app, 100, 30);
+        let lines = text(&buf);
+        row_of(&lines, "Sum 220");
+        let (x, y) = find(&lines, "2025");
+        let data_x = x + LABEL_W + SPACING;
+        assert_eq!(
+            buf[(data_x, y)].bg,
+            Color::Cyan,
+            "anchor cell in range style"
+        );
+        assert_eq!(buf[(data_x, y + 1)].bg, Color::Blue, "cursor cell");
     }
 
     #[test]
