@@ -3964,9 +3964,9 @@ impl ImprovApp {
             if selected {
                 ui.painter().rect_filled(r, 0.0, crate::theme::LIGHT_GRAY);
             }
-            ui.painter().vline(r.right(), r.y_range(), RULE);
+            ui.painter().vline(r.right() - 0.5, r.y_range(), RULE);
             if !text.is_empty() {
-                ui.painter().hline(r.x_range(), r.top(), RULE);
+                ui.painter().hline(r.x_range(), r.top() + 0.5, RULE);
             }
             egui::Frame::none()
                 .inner_margin(egui::Margin::symmetric(4.0, 1.0))
@@ -3977,7 +3977,7 @@ impl ImprovApp {
         // The rule closing the header band from the body.
         fn band_bottom(ui: &egui::Ui) {
             let r = ui.max_rect();
-            ui.painter().hline(r.x_range(), r.bottom(), RULE);
+            ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
         }
         let cat_name = |app: &ImprovApp, c: CategoryId| {
             app.model
@@ -3991,6 +3991,9 @@ impl ImprovApp {
         // Salt the table id with the matrix uid: two matrices on one canvas are
         // two tables, and sharing an id would make them fight over column widths
         // and scroll offsets.
+        // Cells abut: the rules, not item spacing, separate them.
+        let spacing = ui.spacing().item_spacing;
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let mut table = TableBuilder::new(ui).id_salt(("grid", uid)).striped(false);
         // One stub column per stacked row category, then one column per col line.
         for _ in 0..n_row_stub {
@@ -4095,8 +4098,8 @@ impl ImprovApp {
                                 crate::theme::WHITE
                             };
                             ui.painter().rect_filled(r, 0.0, fill);
-                            ui.painter().vline(r.right(), r.y_range(), RULE);
-                            ui.painter().hline(r.x_range(), r.bottom(), RULE);
+                            ui.painter().vline(r.right() - 0.5, r.y_range(), RULE);
+                            ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
                             cell_rects.push(((ri, ci), r));
                             let cell_id = egui::Id::new(("cell", uid, ri, ci));
                             let mut sense_cell = |ui: &mut egui::Ui| {
@@ -4107,78 +4110,90 @@ impl ImprovApp {
                                 dragging |= resp.dragged();
                                 resp
                             };
-                            {
-                                // Numbers right-align so their digits line up,
-                                // as in Improv; text, booleans and dates stay left.
-                                let value = self.cell_value(measure, &key);
-                                let numeric = matches!(value, Some(CellValue::Num(_)));
-                                // Measure left-to-right in the table's sizing
-                                // pass: a right-to-left layout fills the cell,
-                                // which would size every auto column to its
-                                // fallback width instead of its content.
-                                let right = numeric || (editing_here && is_number);
-                                let align = if right && !ui.is_sizing_pass() {
-                                    egui::Layout::right_to_left(egui::Align::Center)
-                                } else {
-                                    egui::Layout::left_to_right(egui::Align::Center)
-                                };
-                                let text = value.map(|v| v.to_string()).unwrap_or_default();
-                                ui.with_layout(align, |ui| {
-                                    if is_derived {
-                                        ui.add(egui::Label::new(text).selectable(false));
-                                        let mut resp = sense_cell(ui);
-                                        if let Some(src) = &formula_tip {
-                                            resp = resp.on_hover_text(format!("formula: {src}"));
-                                        }
-                                        if resp.clicked() {
-                                            clicked_cell = Some((ri, ci));
-                                            clicked_derived = true;
-                                        }
-                                    } else if editing_here {
-                                        let resp = ui.add(
-                                            egui::TextEdit::singleline(&mut edit_buf)
-                                                .horizontal_align(if is_number {
-                                                    egui::Align::Max
-                                                } else {
-                                                    egui::Align::Min
-                                                })
-                                                .desired_width(f32::INFINITY),
-                                        );
-                                        resp.request_focus();
-                                        let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                        let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                        if esc {
-                                            cancel = true;
-                                        } else if resp.lost_focus() || enter {
-                                            commit = Some((key.clone(), edit_buf.clone()));
-                                        }
+                            egui::Frame::none()
+                                .inner_margin(egui::Margin::symmetric(4.0, 0.0))
+                                .show(ui, |ui| {
+                                    // Numbers right-align so their digits line up,
+                                    // as in Improv; text, booleans and dates stay left.
+                                    let value = self.cell_value(measure, &key);
+                                    let numeric = matches!(value, Some(CellValue::Num(_)));
+                                    // Measure left-to-right in the table's sizing
+                                    // pass: a right-to-left layout fills the cell,
+                                    // which would size every auto column to its
+                                    // fallback width instead of its content.
+                                    let right = numeric || (editing_here && is_number);
+                                    let align = if right && !ui.is_sizing_pass() {
+                                        egui::Layout::right_to_left(egui::Align::Center)
                                     } else {
-                                        // Typed display: text, booleans, dates, and
-                                        // #ERR all render as themselves (never blank
-                                        // just because they are not numbers).
-                                        // Single click selects; double-click (or
-                                        // Enter) edits. The whole cell senses.
-                                        ui.add(egui::Label::new(text.clone()).selectable(false));
-                                        let resp = sense_cell(ui);
-                                        if resp.clicked() || resp.double_clicked() {
-                                            clicked_cell = Some((ri, ci));
+                                        egui::Layout::left_to_right(egui::Align::Center)
+                                    };
+                                    let text = value.map(|v| v.to_string()).unwrap_or_default();
+                                    ui.with_layout(align, |ui| {
+                                        if is_derived {
+                                            ui.add(egui::Label::new(text).selectable(false));
+                                            let mut resp = sense_cell(ui);
+                                            if let Some(src) = &formula_tip {
+                                                resp =
+                                                    resp.on_hover_text(format!("formula: {src}"));
+                                            }
+                                            if resp.clicked() {
+                                                clicked_cell = Some((ri, ci));
+                                                clicked_derived = true;
+                                            }
+                                        } else if editing_here {
+                                            let resp = ui.add(
+                                                egui::TextEdit::singleline(&mut edit_buf)
+                                                    .horizontal_align(if is_number {
+                                                        egui::Align::Max
+                                                    } else {
+                                                        egui::Align::Min
+                                                    })
+                                                    .desired_width(f32::INFINITY),
+                                            );
+                                            resp.request_focus();
+                                            let enter =
+                                                ui.input(|i| i.key_pressed(egui::Key::Enter));
+                                            let esc =
+                                                ui.input(|i| i.key_pressed(egui::Key::Escape));
+                                            if esc {
+                                                cancel = true;
+                                            } else if resp.lost_focus() || enter {
+                                                commit = Some((key.clone(), edit_buf.clone()));
+                                            }
+                                        } else {
+                                            // Typed display: text, booleans, dates, and
+                                            // #ERR all render as themselves (never blank
+                                            // just because they are not numbers).
+                                            // Single click selects; double-click (or
+                                            // Enter) edits. The whole cell senses.
+                                            ui.add(
+                                                egui::Label::new(text.clone()).selectable(false),
+                                            );
+                                            let resp = sense_cell(ui);
+                                            if resp.clicked() || resp.double_clicked() {
+                                                clicked_cell = Some((ri, ci));
+                                            }
+                                            if resp.double_clicked() {
+                                                begin_edit = Some((key.clone(), text));
+                                            }
+                                            // Modern input mark: a faint inset underline.
+                                            ui.painter().hline(
+                                                r.left() + 2.0..=r.right() - 2.0,
+                                                r.bottom() - 2.0,
+                                                egui::Stroke::new(
+                                                    1.0_f32,
+                                                    crate::theme::LIGHT_GRAY,
+                                                ),
+                                            );
                                         }
-                                        if resp.double_clicked() {
-                                            begin_edit = Some((key.clone(), text));
-                                        }
-                                        // Modern input mark: a faint inset underline.
-                                        ui.painter().hline(
-                                            r.left() + 2.0..=r.right() - 2.0,
-                                            r.bottom() - 2.0,
-                                            egui::Stroke::new(1.0_f32, crate::theme::LIGHT_GRAY),
-                                        );
-                                    }
+                                    });
                                 });
-                            }
                         });
                     }
                 });
             });
+
+        ui.spacing_mut().item_spacing = spacing;
 
         // Apply what the closure recorded. A click in ANY matrix also focuses it,
         // so typing follows the mouse rather than staying on whichever matrix had
@@ -9026,11 +9041,11 @@ mod tests {
             .unwrap_or_else(|| panic!("cell ({ri},{ci}) was never shown"))
     }
 
-    /// Every filled rect painted this frame, with its fill.
+    /// Every filled (non-transparent) rect painted this frame, with its fill.
     fn fills(out: &egui::FullOutput) -> Vec<(egui::Rect, egui::Color32)> {
         fn walk(s: &egui::Shape, acc: &mut Vec<(egui::Rect, egui::Color32)>) {
             match s {
-                egui::Shape::Rect(r) => acc.push((r.rect, r.fill)),
+                egui::Shape::Rect(r) if r.fill.a() > 0 => acc.push((r.rect, r.fill)),
                 egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
                 _ => {}
             }
