@@ -7,7 +7,9 @@
 //! * `wat:<text>`  — WebAssembly Text, assembled at load time via the `wat`
 //!   crate. (Only enabled when the `wat` feature is on; on by default.)
 //! * `base64:<b64>` — base64-encoded `.wasm` bytes.
-//! * otherwise — a filesystem **path** to a `.wasm` module.
+//!
+//! Anything else is rejected. The body is model data, so it is never read as
+//! a filesystem path.
 //!
 //! # ABI (numeric only)
 //!
@@ -18,18 +20,43 @@
 //! deliberately narrow ABI — a richer bytes/string ABI (linear-memory marshal)
 //! is future work and would balloon scope.
 //!
-//! # Timeout
+//! # Limits
 //!
-//! Wasm runs in-process, so there is no pid to SIGKILL. The module is executed
-//! on a worker thread and joined with a wall-clock deadline; on overrun `eval`
-//! returns [`ExtFnError::Timeout`]. (The interpreter thread is left to unwind on
-//! its own — v1 assumes reviewed, numeric module bodies, same trust model as the
-//! scripting bodies.)
+//! Wasm runs in-process, so there is no pid to SIGKILL. Each call runs on a
+//! worker thread with:
+//!
+//! * a **fuel** budget of [`FUEL_PER_SEC`] per second of the timeout (capped
+//!   at [`MAX_FUEL`]). When it runs out the interpreter traps and the thread
+//!   ends, so a runaway loop cannot keep burning CPU after `eval` returns
+//!   [`ExtFnError::Timeout`] on the wall-clock deadline.
+//! * a [`StoreLimits`](wasmi::StoreLimits) cap of [`MAX_MEMORY`] bytes per
+//!   linear memory: `memory.grow` past it returns `-1`, and a module that
+//!   declares more fails to instantiate.
+//!
+//! ponytail: wasmi 0.32 has no epoch interruption (that is a wasmtime
+//! feature), so the wall clock cannot stop the interpreter thread directly;
+//! fuel is the stop. A fuel unit is roughly one instruction; the budget is
+//! sized for a debug build, so an optimized build exhausts it well before the
+//! deadline. Upgrade path: a wasmi release with resumable out-of-fuel calls
+//! (refuel in slices and check the deadline) or wasmtime's epochs.
 
 use crate::{ExtFnError, ExternalFn};
 use improv_core_model::{Value, ValueType};
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// Fuel per second of wall-clock timeout (about one unit per instruction).
+pub(crate) const FUEL_PER_SEC: u64 = 100_000_000;
+/// Fuel ceiling whatever the timeout.
+pub(crate) const MAX_FUEL: u64 = 1_000_000_000;
+/// Linear-memory cap per memory: 64 MiB.
+pub(crate) const MAX_MEMORY: usize = 64 << 20;
+
+/// The fuel budget for a call with `timeout`.
+fn fuel_for(timeout: Duration) -> u64 {
+    let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+    ms.saturating_mul(FUEL_PER_SEC / 1000).clamp(1, MAX_FUEL)
+}
 
 /// Run the function. Assumes arity/type checks already passed (so `args.len()`
 /// matches `arg_types.len()`), but re-checks the numeric ABI here.
@@ -50,11 +77,13 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
         .collect();
 
     let wasm = load_module_bytes(&f.body)?;
+    let fuel = fuel_for(timeout);
 
-    // Run on a worker thread and join with the wall-clock deadline.
+    // Run on a worker thread and join with the wall-clock deadline; the fuel
+    // budget ends the thread even if the deadline fires first.
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(run_wasm(&wasm, &inputs));
+        let _ = tx.send(run_wasm(&wasm, &inputs, fuel));
     });
     match rx.recv_timeout(timeout) {
         Ok(res) => res.map(Value::Number),
@@ -66,7 +95,8 @@ pub fn eval(f: &ExternalFn, args: &[Value], timeout: Duration) -> Result<Value, 
     }
 }
 
-/// Resolve `body` to Wasm bytes: `wat:`, `base64:`, or a filesystem path.
+/// Resolve `body` to Wasm bytes: `wat:` or `base64:`; anything else is an
+/// error (never a filesystem read).
 fn load_module_bytes(body: &str) -> Result<Vec<u8>, ExtFnError> {
     let runtime_err = |m: String| ExtFnError::Runtime {
         message: m,
@@ -88,25 +118,36 @@ fn load_module_bytes(body: &str) -> Result<Vec<u8>, ExtFnError> {
     if let Some(b64) = body.strip_prefix("base64:") {
         return base64_decode(b64.trim()).map_err(runtime_err);
     }
-    std::fs::read(body.trim())
-        .map_err(|e| runtime_err(format!("reading wasm module at {:?}: {e}", body.trim())))
+    Err(runtime_err(
+        "wasm body must start with `wat:` or `base64:`".into(),
+    ))
 }
 
 /// Instantiate the module and call `improv_call(f64...) -> f64` via the untyped
-/// API (so any arity works). Any wasmi error becomes a `Runtime` error.
-fn run_wasm(wasm: &[u8], inputs: &[f64]) -> Result<f64, ExtFnError> {
-    use wasmi::{Engine, Linker, Module, Store, Val};
+/// API (so any arity works), with `fuel` and the [`MAX_MEMORY`] cap. Running
+/// out of fuel is a `Runtime` "ran out of fuel" error, as is any other wasmi
+/// error.
+pub(crate) fn run_wasm(wasm: &[u8], inputs: &[f64], fuel: u64) -> Result<f64, ExtFnError> {
+    use wasmi::core::TrapCode;
+    use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
 
     let runtime_err = |m: String| ExtFnError::Runtime {
         message: m,
         stderr: String::new(),
     };
 
-    let engine = Engine::default();
+    let mut config = Config::default();
+    config.consume_fuel(true);
+    let engine = Engine::new(&config);
     let module =
         Module::new(&engine, wasm).map_err(|e| runtime_err(format!("wasm compile error: {e}")))?;
-    let mut store = Store::new(&engine, ());
-    let linker = <Linker<()>>::new(&engine);
+    let limits = StoreLimitsBuilder::new().memory_size(MAX_MEMORY).build();
+    let mut store = Store::new(&engine, limits);
+    store.limiter(|limits| limits);
+    store
+        .set_fuel(fuel)
+        .map_err(|e| runtime_err(format!("wasm fuel: {e}")))?;
+    let linker = <Linker<StoreLimits>>::new(&engine);
     let instance = linker
         .instantiate(&mut store, &module)
         .map_err(|e| runtime_err(format!("wasm instantiate error: {e}")))?
@@ -119,8 +160,17 @@ fn run_wasm(wasm: &[u8], inputs: &[f64]) -> Result<f64, ExtFnError> {
 
     let params: Vec<Val> = inputs.iter().map(|n| Val::F64((*n).into())).collect();
     let mut results = [Val::F64(0.0f64.into())];
-    func.call(&mut store, &params, &mut results)
-        .map_err(|e| runtime_err(format!("wasm trap: {e}")))?;
+    let out_of_fuel = |e: &wasmi::Error| e.as_trap_code() == Some(TrapCode::OutOfFuel);
+    func.call(&mut store, &params, &mut results).map_err(|e| {
+        if out_of_fuel(&e) {
+            ExtFnError::Runtime {
+                message: format!("wasm ran out of fuel ({fuel} units)"),
+                stderr: String::new(),
+            }
+        } else {
+            runtime_err(format!("wasm trap: {e}"))
+        }
+    })?;
 
     match results[0] {
         Val::F64(v) => Ok(f64::from(v)),
@@ -162,4 +212,94 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn module(wat: &str) -> Vec<u8> {
+        load_module_bytes(&format!("wat:{wat}")).expect("valid wat")
+    }
+
+    /// An infinite loop runs out of fuel and the interpreter thread ends.
+    #[cfg(feature = "wat")]
+    #[test]
+    fn infinite_loop_runs_out_of_fuel_and_thread_ends() {
+        let wasm = module(
+            r#"(module (func (export "improv_call") (result f64)
+                 (loop br 0) f64.const 0))"#,
+        );
+        let start = std::time::Instant::now();
+        let handle =
+            std::thread::spawn(move || run_wasm(&wasm, &[], fuel_for(Duration::from_millis(500))));
+        while !handle.is_finished() && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            handle.is_finished(),
+            "interpreter thread still running after 2 s"
+        );
+        let err = handle.join().unwrap().unwrap_err();
+        assert!(format!("{err}").contains("out of fuel"), "got {err:?}");
+    }
+
+    /// Through `eval`, the same loop is an error (timeout or fuel), not a hang.
+    #[cfg(feature = "wat")]
+    #[test]
+    fn eval_infinite_loop_is_an_error() {
+        let f = ExternalFn {
+            name: "spin".into(),
+            language: crate::Language::Wasm,
+            body:
+                r#"wat:(module (func (export "improv_call") (result f64) (loop br 0) f64.const 0))"#
+                    .into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let err = eval(&f, &[], Duration::from_millis(300)).unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("timed out") || msg.contains("out of fuel"),
+            "{msg}"
+        );
+    }
+
+    /// `memory.grow` past [`MAX_MEMORY`] returns -1; within it succeeds.
+    #[cfg(feature = "wat")]
+    #[test]
+    fn memory_grow_past_cap_fails() {
+        let grow = |pages: u32| {
+            let wasm = module(&format!(
+                r#"(module (memory 1)
+                     (func (export "improv_call") (result f64)
+                       (f64.convert_i32_s (memory.grow (i32.const {pages})))))"#
+            ));
+            run_wasm(&wasm, &[], MAX_FUEL).expect("call")
+        };
+        // 64 KiB pages: 1 + 1023 = 64 MiB is the cap exactly.
+        assert_eq!(grow(1023), 1.0);
+        assert_eq!(grow(1024), -1.0);
+        let too_big = module(
+            r#"(module (memory 2000) (func (export "improv_call") (result f64) f64.const 0))"#,
+        );
+        assert!(run_wasm(&too_big, &[], MAX_FUEL).is_err());
+    }
+
+    /// A body without a prefix is rejected without touching the filesystem.
+    #[test]
+    fn bare_path_body_is_rejected() {
+        let err = load_module_bytes("/etc/passwd").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("must start with"), "{msg}");
+        assert!(!msg.contains("/etc/passwd"), "{msg}");
+    }
+
+    #[test]
+    fn fuel_scales_with_timeout() {
+        assert_eq!(fuel_for(Duration::from_secs(1)), FUEL_PER_SEC);
+        assert_eq!(fuel_for(Duration::from_secs(3600)), MAX_FUEL);
+        assert_eq!(fuel_for(Duration::ZERO), 1);
+    }
 }
