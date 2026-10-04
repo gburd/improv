@@ -830,4 +830,52 @@ mod tests {
             other => panic!("expected Runtime, got {other:?}"),
         }
     }
+
+    /// S8: the timeout kills the whole process group, so a forked grandchild
+    /// does not outlive the call. Runs `Trusted` (no bwrap pid namespace) so
+    /// the group kill is the only thing that can stop it, and the marker file
+    /// is visible to the host.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn timeout_kills_grandchildren() {
+        let probe = python::eval_with(
+            &py("result = 1", ValueType::Number),
+            &[],
+            Duration::from_secs(5),
+            SandboxPolicy::Trusted,
+        );
+        if probe.is_err() {
+            println!("skipped: python3 not found");
+            return;
+        }
+        let marker =
+            std::env::temp_dir().join(format!("improv_extfn_grandchild_{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let body = format!(
+            "import os, time\n\
+             if os.fork() == 0:\n\
+             \x20   open({path:?}, 'w').write(str(os.getpid()))\n\
+             \x20   time.sleep(30)\n\
+             \x20   os._exit(0)\n\
+             time.sleep(30)\nresult = 1",
+            path = marker.to_string_lossy()
+        );
+        let timeout = Duration::from_secs(1);
+        let err = python::eval_with(
+            &py(&body, ValueType::Number),
+            &[],
+            timeout,
+            SandboxPolicy::Trusted,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ExtFnError::Timeout(_)), "got {err:?}");
+        std::thread::sleep(Duration::from_secs(1));
+        let pid = std::fs::read_to_string(&marker).expect("grandchild wrote its pid");
+        let _ = std::fs::remove_file(&marker);
+        let proc_dir = format!("/proc/{}", pid.trim());
+        assert!(
+            !std::path::Path::new(&proc_dir).exists(),
+            "grandchild {pid} survived the timeout"
+        );
+    }
 }

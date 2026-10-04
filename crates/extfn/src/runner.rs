@@ -53,6 +53,9 @@ pub fn run_interpreter(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Own process group, so the timeout kill reaches forked grandchildren.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command
         .spawn()
         .map_err(|e| ExtFnError::LanguageUnavailable(format!("{runtime_name} ({cmd}): {e}")))?;
@@ -140,7 +143,20 @@ fn spawn_reader(
     });
 }
 
-/// SIGKILL the child (`TerminateProcess` on Windows) and reap it.
+/// SIGKILL the child's whole process group (grandchildren included), then
+/// reap the child. The group id stays reserved while any member is alive, so
+/// this cannot hit a recycled pid.
+#[cfg(unix)]
+fn kill(child: &mut Child) {
+    unsafe {
+        libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+    }
+    let _ = child.wait();
+}
+
+/// `TerminateProcess` the child and reap it (Windows has no process groups
+/// here; a Job Object would be the upgrade path).
+#[cfg(not(unix))]
 fn kill(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
