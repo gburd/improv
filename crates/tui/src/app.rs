@@ -304,6 +304,9 @@ fn cell_key(
     key
 }
 
+/// Status shown when the cursor is not on a real cell (empty/filtered axis).
+const NO_CELL: &str = "no cell here (an axis is empty or fully filtered)";
+
 /// Which CSV command is active in the command-prompt (`self.command`).
 /// Mirrors the cell-edit buffer (`self.edit`) but for a full command line
 /// instead of a single value, and covers the two storage_csv entry points.
@@ -635,6 +638,19 @@ impl App {
         }
     }
 
+    /// True if `[row][col]` names a full coordinate: one item for every
+    /// category of the measure. False when an axis or page is empty (a
+    /// category with no items, or every item filtered out); writing there
+    /// would store a cell with a missing dimension.
+    fn addressable(&self, row: usize, col: usize) -> bool {
+        let dims = self
+            .model
+            .measures
+            .get(&self.grid.measure)
+            .map_or(0, |m| m.categories.len());
+        self.grid.coord_key(row, col).len() == dims
+    }
+
     /// True if the currently viewed measure is an input measure (editable).
     pub fn viewed_is_input(&self) -> bool {
         self.model
@@ -649,6 +665,10 @@ impl App {
     pub fn begin_edit(&mut self) {
         if !self.viewed_is_input() {
             self.status = Some("derived cells are computed, not editable".into());
+            return;
+        }
+        if !self.addressable(self.cursor_row, self.cursor_col) {
+            self.status = Some(NO_CELL.into());
             return;
         }
         // Seed the buffer with the current value so editing is a tweak, not a
@@ -701,6 +721,9 @@ impl App {
             return Err("derived cells are computed, not editable".into());
         }
         let measure = self.grid.measure;
+        if !self.addressable(row, col) {
+            return Err(NO_CELL.into());
+        }
         let key = self.grid.coord_key(row, col);
         let coord = decode_coord(&key);
 
@@ -1320,6 +1343,24 @@ mod tests {
         app.pivot();
         assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Time");
         assert_eq!(app.grid.col_cat.as_ref().unwrap().1, "Product");
+    }
+
+    #[test]
+    fn edit_on_fully_filtered_axis_is_refused_not_written() {
+        // Regression: filtering out every row left a cursor on "no row"; an
+        // edit then stored a cell whose coordinate lacked the row category.
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let time = CategoryId(1);
+        app.toggle_filter_item(time, ItemId(10));
+        app.toggle_filter_item(time, ItemId(11));
+        assert!(app.grid.rows.is_empty());
+        let before = app.model.inputs.len();
+        app.begin_edit();
+        assert!(app.edit.is_none());
+        assert_eq!(app.status.as_deref(), Some(NO_CELL));
+        assert_eq!(app.apply_edit(0, 0, 7.0), Err(NO_CELL.to_string()));
+        assert_eq!(app.model.inputs.len(), before);
     }
 
     #[test]
