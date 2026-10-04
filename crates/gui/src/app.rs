@@ -330,6 +330,16 @@ pub enum Axis {
     Pages,
 }
 
+/// A filter change asked for from a category tile's menu, applied to that
+/// tile's matrix after the gutters are laid out (like a re-pivot move).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterReq {
+    /// Show/hide one item of the category.
+    Toggle(CategoryId, ItemId),
+    /// Show every item of the category again.
+    Clear(CategoryId),
+}
+
 /// The resolved pivot for the chart: the ROW category stack, the COLUMN stack,
 /// and the pinned `(category, item)` for every PAGE dimension.
 pub(crate) type ChartAxes = (Vec<CategoryId>, Vec<CategoryId>, Vec<(CategoryId, ItemId)>);
@@ -702,9 +712,9 @@ impl Matrix {
         self.clamp_cursor(model);
     }
 
-    /// Clear this matrix's filters, showing every item again.
-    fn clear_filters(&mut self, model: &Model) {
-        self.filters.clear();
+    /// Drop THIS matrix's filter on `category`, showing all its items again.
+    fn clear_filter(&mut self, model: &Model, category: CategoryId) {
+        self.filters.retain(|f| f.category != category);
         self.clamp_cursor(model);
     }
 
@@ -3372,8 +3382,6 @@ impl ImprovApp {
             win = win.closable(&mut open);
         }
         let _ = win.show(ctx, |ui| {
-            self.filter_shelf(ui, mi);
-            ui.separator();
             let outer_clip = ui.clip_rect();
             egui::TopBottomPanel::bottom(ui.id().with("formula_pane"))
                 .resizable(true)
@@ -3512,6 +3520,7 @@ impl ImprovApp {
         };
         let uid = m.uid;
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
+        let mut freqs: Vec<FilterReq> = Vec::new();
         let col_stack = m.col_cats(&self.model);
         let row_stack = m.row_cats(&self.model);
         // Each page category with its item names and the current item's index.
@@ -3553,7 +3562,7 @@ impl ImprovApp {
                     Self::gutter_drop_zone(ui, Axis::Rows, true, &mut moves, |ui, moves| {
                         ui.horizontal(|ui| {
                             for c in &row_stack {
-                                Self::tile(ui, &self.model, uid, *c, Axis::Rows, moves);
+                                Self::tile(ui, &self.model, m, *c, Axis::Rows, moves, &mut freqs);
                             }
                         });
                     });
@@ -3575,7 +3584,15 @@ impl ImprovApp {
                             ui.horizontal_top(|ui| {
                                 for (i, (c, items, cur)) in pages.iter().enumerate() {
                                     ui.vertical(|ui| {
-                                        Self::tile(ui, &self.model, uid, *c, Axis::Pages, moves);
+                                        Self::tile(
+                                            ui,
+                                            &self.model,
+                                            m,
+                                            *c,
+                                            Axis::Pages,
+                                            moves,
+                                            &mut freqs,
+                                        );
                                         if let Some(pick) =
                                             Self::page_field(ui, uid, *c, items, *cur)
                                         {
@@ -3588,7 +3605,15 @@ impl ImprovApp {
                         Self::gutter_drop_zone(ui, Axis::Columns, true, &mut moves, |ui, moves| {
                             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                                 for c in &col_stack {
-                                    Self::tile(ui, &self.model, uid, *c, Axis::Columns, moves);
+                                    Self::tile(
+                                        ui,
+                                        &self.model,
+                                        m,
+                                        *c,
+                                        Axis::Columns,
+                                        moves,
+                                        &mut freqs,
+                                    );
                                 }
                             });
                         });
@@ -3637,13 +3662,17 @@ impl ImprovApp {
             }
         }
 
-        // A drop re-pivots THIS matrix, not the focused one: dragging a tile in
-        // one matrix must not move another matrix's axis.
-        if !moves.is_empty() {
-            let model = &self.model;
-            if let Some(m) = self.matrices.get_mut(mi) {
-                for (c, axis) in moves {
-                    m.set_axis(model, c, axis);
+        // A drop (or a tile-menu filter) changes THIS matrix, not the focused
+        // one: a tile in one matrix must not touch another matrix.
+        let model = &self.model;
+        if let Some(m) = self.matrices.get_mut(mi) {
+            for (c, axis) in moves {
+                m.set_axis(model, c, axis);
+            }
+            for r in freqs {
+                match r {
+                    FilterReq::Toggle(c, i) => m.toggle_filter_item(model, c, i),
+                    FilterReq::Clear(c) => m.clear_filter(model, c),
                 }
             }
         }
@@ -3728,20 +3757,35 @@ impl ImprovApp {
     /// category name in white. The whole chip is a drag source, so dragging it
     /// into another gutter re-pivots (the drop is handled by
     /// [`ImprovApp::gutter_drop_zone`]). Right-click opens a "Move to …" menu,
-    /// the drag-free (and accessible) way to re-pivot.
+    /// the drag-free (and accessible) way to re-pivot, and below it a checkbox
+    /// per item filtering `c` in matrix `m` (plus "Show all"). A filtered
+    /// category's tile reads `Name*`.
     fn tile(
         ui: &mut egui::Ui,
         model: &Model,
-        uid: u64,
+        m: &Matrix,
         c: CategoryId,
         from: Axis,
         moves: &mut Vec<(CategoryId, Axis)>,
+        freqs: &mut Vec<FilterReq>,
     ) {
-        let name = model
-            .categories
-            .get(&c)
-            .map(|x| x.name.0.clone())
-            .unwrap_or_else(|| format!("category {}", c.0));
+        let uid = m.uid;
+        let filter = m.filters.iter().find(|f| f.category == c);
+        let cat = model.categories.get(&c);
+        let mut name = cat.map_or_else(|| format!("category {}", c.0), |x| x.name.0.clone());
+        if filter.is_some() {
+            name.push('*');
+        }
+        // The full (unfiltered) item list, so hidden items can be re-shown.
+        let mut items: Vec<(ItemId, String)> = cat
+            .map(|cat| {
+                cat.items
+                    .iter()
+                    .filter_map(|id| model.items.get(id).map(|it| (*id, it.name.0.clone())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        items.sort_by_key(|(id, _)| id.0);
         // The id is per MATRIX as well as per category: two matrices showing
         // the same category are two distinct drag sources.
         let resp = ui
@@ -3768,77 +3812,18 @@ impl ImprovApp {
                     ui.close_menu();
                 }
             }
-        });
-    }
-
-    /// Filter shelf for matrix `mi`: for each category on an axis, a collapsing
-    /// checkbox list of its items. Unchecking an item hides it from THIS matrix's
-    /// grid (presentation only); a "Clear filters" button restores all. Mirrors
-    /// the TUI's f/F.
-    fn filter_shelf(&mut self, ui: &mut egui::Ui, mi: usize) {
-        let Some(matrix) = self.matrices.get(mi) else {
-            return;
-        };
-        let cats: Vec<CategoryId> = matrix.axis_order.clone();
-        let filters = matrix.filters.clone();
-        let uid = matrix.uid;
-        if cats.is_empty() {
-            return;
-        }
-        let mut toggles: Vec<(CategoryId, ItemId)> = Vec::new();
-        let mut clear = false;
-        ui.collapsing("Filters", |ui| {
-            for c in &cats {
-                let cname = self
-                    .model
-                    .categories
-                    .get(c)
-                    .map(|x| x.name.0.clone())
-                    .unwrap_or_default();
-                // Full (unfiltered) item list so hidden items can be re-shown.
-                let mut items: Vec<(ItemId, String)> = self
-                    .model
-                    .categories
-                    .get(c)
-                    .map(|cat| {
-                        cat.items
-                            .iter()
-                            .filter_map(|id| {
-                                self.model.items.get(id).map(|it| (*id, it.name.0.clone()))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                items.sort_by_key(|(id, _)| id.0);
-                let f = filters.iter().find(|f| f.category == *c);
-                egui::CollapsingHeader::new(&cname)
-                    .id_salt(("filter", uid, c.0))
-                    .show(ui, |ui| {
-                        for (id, name) in &items {
-                            let shown = match f {
-                                Some(f) => f.items.contains(id),
-                                None => true,
-                            };
-                            let mut checked = shown;
-                            if ui.checkbox(&mut checked, name).changed() {
-                                toggles.push((*c, *id));
-                            }
-                        }
-                    });
+            ui.separator();
+            for (id, item) in &items {
+                let mut shown = filter.is_none_or(|f| f.items.contains(id));
+                if ui.checkbox(&mut shown, item).changed() {
+                    freqs.push(FilterReq::Toggle(c, *id));
+                }
             }
-            if !filters.is_empty() && ui.button("Clear filters").clicked() {
-                clear = true;
+            if ui.button("Show all").clicked() {
+                freqs.push(FilterReq::Clear(c));
+                ui.close_menu();
             }
         });
-        let model = &self.model;
-        if let Some(m) = self.matrices.get_mut(mi) {
-            for (c, i) in toggles {
-                m.toggle_filter_item(model, c, i);
-            }
-            if clear {
-                m.clear_filters(model);
-            }
-        }
     }
 
     /// Handle keyboard navigation for the grid. Arrow keys (and h/j/k/l) move
@@ -9715,6 +9700,70 @@ mod tests {
     }
 
     // -- NeXTSTEP spec step 3, second half: model browser and Info panel
+
+    /// Right-click matrix 0's tile for `c`, leaving its context menu open.
+    fn open_tile_menu(desk: &mut Desk, app: &mut ImprovApp, c: CategoryId) {
+        let at = tile_rect(desk, app, c).center();
+        let right = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = desk.frame(app, vec![egui::Event::PointerMoved(at)]);
+        let _ = desk.frame(app, vec![right(true), right(false)]);
+    }
+
+    /// The LAST painted text equal to `label` (a popup paints after the grid,
+    /// so this is the menu's copy of a label the grid also shows).
+    fn last_text_at(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Rect> {
+        shapes.iter().rev().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(t.galley.rect.translate(t.pos.to_vec2()))
+            }
+            _ => None,
+        })
+    }
+
+    /// E4: filtering lives on the tile's menu, not a "Filters" shelf.
+    /// Unchecking an item hides its row; "Show all" brings it back; a
+    /// filtered tile reads `Name*`.
+    #[test]
+    fn a_tile_menu_filters_its_category() {
+        let (mut app, mut desk) = grid_desk();
+        let (time, y2026) = (CategoryId(1), ItemId(11));
+        assert_eq!(app.row_cats(), vec![time]);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(text_at(&shapes, "Filters").is_none(), "no filter shelf");
+        let row_shown = |desk: &Desk, app: &ImprovApp, ri: usize| {
+            let id = egui::Id::new(("cell", app.matrices[0].uid, ri, 0_usize));
+            desk.ctx.viewport(|v| v.prev_pass.widgets.get(id).is_some())
+        };
+        assert!(row_shown(&desk, &app, 1), "2026's row is shown");
+
+        open_tile_menu(&mut desk, &mut app, time);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let item = last_text_at(&shapes, "2026").expect("the menu lists 2026");
+        desk.click(&mut app, item.center());
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert_eq!(app.matrices[0].grid_dims(&app.model).0, 1);
+        assert!(!row_shown(&desk, &app, 1), "2026's row is hidden");
+        assert!(app.matrices[0]
+            .filters
+            .iter()
+            .any(|f| f.category == time && !f.items.contains(&y2026)));
+        assert!(
+            text_at(&shapes, "Time*").is_some(),
+            "filtered tile reads Time*"
+        );
+
+        let all = last_text_at(&shapes, "Show all").expect("the menu is still open");
+        desk.click(&mut app, all.center());
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(app.matrices[0].filters.is_empty());
+        assert!(row_shown(&desk, &app, 1), "2026's row is back");
+        assert!(text_at(&shapes, "Time").is_some(), "tile reads Time again");
+    }
 
     /// The NxWindow id of the model browser (`"browser"`) or Info panel
     /// (`"info"`).
