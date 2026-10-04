@@ -11222,4 +11222,96 @@ mod tests {
         assert_eq!(app.model.views.len(), 1);
         assert!(app.view_name.is_empty());
     }
+
+    #[test]
+    fn the_enabled_checkbox_toggles_a_formula_and_says_so() {
+        let (mut app, mut desk) = grid_desk();
+        app.matrices[0].measure = Some(MeasureId(101)); // the row is not the editor
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        // The checkbox sits left of the row's `1.` number.
+        let num = painted(&shapes, "1.").expect("row numbered");
+        let at = egui::pos2(num.left() - 12.0, num.center().y);
+        desk.click(&mut app, at);
+        assert_eq!(app.status, "formula Revenue disabled");
+        assert!(formula_disabled(&app.model.measures[&MeasureId(102)]));
+        desk.time += 1.0;
+        desk.click(&mut app, at);
+        assert_eq!(app.status, "formula Revenue enabled");
+    }
+
+    #[test]
+    fn the_browser_lists_each_categorys_items_when_expanded() {
+        let (mut app, mut desk) = grid_desk();
+        let open = |desk: &mut Desk, app: &mut ImprovApp, label: &str| {
+            let shapes = desk.frame(app, Vec::new()).shapes;
+            let at = painted(&shapes, label)
+                .unwrap_or_else(|| panic!("{label} not shown"))
+                .center();
+            desk.click(app, at);
+            desk.settle(app);
+        };
+        open(&mut desk, &mut app, "Categories");
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let product = shapes
+            .iter()
+            .rev()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Product" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .expect("Product header");
+        desk.click(&mut app, product.center());
+        desk.settle(&mut app);
+        let texts = texts_of(&desk.frame(&mut app, Vec::new()));
+        assert!(
+            texts.iter().filter(|t| *t == "WidgetB").count() >= 2,
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn pivoting_a_columns_only_layout_moves_it_to_rows() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(100)); // Price[Product]
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Columns);
+        app.pivot_rotate();
+        assert_eq!(
+            (app.row_cats(), app.col_cats()),
+            (vec![CategoryId(2)], vec![])
+        );
+    }
+
+    #[test]
+    fn a_new_measure_needs_a_name_and_ignores_unknown_refs_for_categories() {
+        let mut app = build_app(revenue_model());
+        assert_eq!(
+            app.add_derived_measure("  ", "Price").unwrap_err(),
+            "measure name is required"
+        );
+        // A formula over a scalar literal infers no categories.
+        let id = app.add_derived_measure("Two", "1 + 1").expect("adds");
+        assert!(app.model.measures[&id].categories.is_empty());
+    }
+
+    #[test]
+    fn a_text_cell_edits_left_aligned_and_commits() {
+        let mut app = build_app(typed_model());
+        app.matrices[0].measure = Some(MeasureId(2)); // Label (Text)
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let at = cell_rect(&desk, &app, 0, 0).center();
+        desk.click(&mut app, at);
+        desk.click(&mut app, at);
+        assert!(app.matrices[0].editing.is_some());
+        app.matrices[0].edit_buf = "bye".into();
+        key(&mut desk, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(
+            app.cell_text(MeasureId(2), &typed_key()).as_deref(),
+            Some("bye")
+        );
+    }
 }
