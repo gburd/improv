@@ -271,6 +271,9 @@ fn gutters_have_room(g: &GutterRects) -> bool {
 /// `layout_no_wrap`) if long category names turn out to be common.
 const GUTTER_W: f32 = 120.0;
 
+/// A category tile's height (the NeXT tiles are 17 px tall).
+const TILE_H: f32 = 17.0;
+
 /// How far a newly added matrix is offset from the last one, in points, so a
 /// fresh matrix never lands exactly on top of its predecessor (the classic
 /// cascade). See [`ImprovApp::add_matrix`].
@@ -3579,14 +3582,11 @@ impl ImprovApp {
         }
     }
 
-    /// One category tile: the Quantrix `|| Name v` chip — a grip glyph to drag by,
-    /// the category name, and a dropdown arrow (its menu of per-category actions
-    /// — filter / sort / collapse — arrives in Step 4; for now the arrow is the
-    /// mouse-only *cycle* affordance, rows→columns→pages, which is also the
-    /// keyboard-free fallback for re-pivoting without a drag).
-    ///
-    /// The whole chip is a drag source, so dragging it into another gutter
-    /// re-pivots (the drop is handled by [`ImprovApp::gutter_drop_zone`]).
+    /// One category tile: the NeXT chip — a fixed 17 px dark-gray box with the
+    /// category name in white. The whole chip is a drag source, so dragging it
+    /// into another gutter re-pivots (the drop is handled by
+    /// [`ImprovApp::gutter_drop_zone`]). Right-click opens a "Move to …" menu,
+    /// the drag-free (and accessible) way to re-pivot.
     fn tile(
         ui: &mut egui::Ui,
         model: &Model,
@@ -3600,44 +3600,32 @@ impl ImprovApp {
             .get(&c)
             .map(|x| x.name.0.clone())
             .unwrap_or_else(|| format!("category {}", c.0));
-        let next = match from {
-            Axis::Rows => Axis::Columns,
-            Axis::Columns => Axis::Pages,
-            Axis::Pages => Axis::Rows,
-        };
         // The id is per MATRIX as well as per category: two matrices showing
         // the same category are two distinct drag sources.
-        ui.dnd_drag_source(egui::Id::new(("tile", uid, c.0)), c, |ui| {
-            egui::Frame::default()
-                .fill(crate::theme::DARK_GRAY)
-                .stroke(egui::Stroke::new(1.0_f32, crate::theme::BLACK))
-                .inner_margin(egui::Margin::symmetric(4.0, 2.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // Grip: egui's default font has no `⋮`/`⁞`, so the grip is
-                        // a pair of broken bars, which it does have.
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("¦¦")
-                                    .monospace()
-                                    .color(crate::theme::LIGHT_GRAY),
-                            )
-                            .selectable(false),
-                        );
+        let resp = ui
+            .dnd_drag_source(egui::Id::new(("tile", uid, c.0)), c, |ui| {
+                egui::Frame::default()
+                    .fill(crate::theme::DARK_GRAY)
+                    .stroke(egui::Stroke::new(1.0_f32, crate::theme::BLACK))
+                    .inner_margin(egui::Margin::symmetric(6.0, 1.0))
+                    .show(ui, |ui| {
+                        // 17 px outer = 15 inner + 2 x 1 px margin.
+                        ui.set_height(TILE_H - 2.0);
                         ui.add(
                             egui::Label::new(egui::RichText::new(&name).color(crate::theme::WHITE))
                                 .selectable(false)
                                 .truncate(),
                         );
-                        if ui
-                            .small_button("⏷")
-                            .on_hover_text(format!("move {name} to {next:?}"))
-                            .clicked()
-                        {
-                            moves.push((c, next));
-                        }
                     });
-                });
+            })
+            .response;
+        resp.context_menu(|ui| {
+            for to in [Axis::Rows, Axis::Columns, Axis::Pages] {
+                if to != from && ui.button(format!("Move to {to:?}")).clicked() {
+                    moves.push((c, to));
+                    ui.close_menu();
+                }
+            }
         });
     }
 
@@ -4236,12 +4224,8 @@ mod tests {
         crate::theme::install_fonts(&ctx);
         let _ = ctx.run(egui::RawInput::default(), |_| {});
         let prop = egui::FontId::proportional(14.0);
-        let mono = egui::FontId::monospace(14.0);
         ctx.fonts(|f| {
-            for g in ["⏷", "⚠"] {
-                assert!(f.has_glyphs(&prop, g), "{g:?} is tofu");
-            }
-            assert!(f.has_glyphs(&mono, "¦¦"), "tile grip is tofu");
+            assert!(f.has_glyphs(&prop, "⚠"), "⚠ is tofu");
         });
     }
 
@@ -7504,14 +7488,13 @@ mod tests {
         assert!(gutters_frame_table(&g), "{g:?}");
     }
 
-    /// The per-tile dropdown arrow is the mouse-only fallback: it cycles the
-    /// category rows -> columns -> pages -> rows through the same `set_axis`.
+    /// `set_axis` (what a tile's drop and "Move to" menu call) round-trips a
+    /// category rows -> columns -> pages -> rows.
     #[test]
-    fn the_tile_arrow_cycles_a_category_through_all_three_axes() {
+    fn set_axis_cycles_a_category_through_all_three_axes() {
         let mut app = gutter_app();
         let time = CategoryId(1);
         assert_eq!(app.row_cats(), vec![time]);
-        // Rows -> Columns -> Pages -> Rows, the `tile` next-axis sequence.
         app.set_axis(time, Axis::Columns);
         assert!(app.col_cats().contains(&time));
         app.set_axis(time, Axis::Pages);
@@ -9086,6 +9069,53 @@ mod tests {
             "Time moved to columns: {:?}",
             app.col_cats()
         );
+        assert!(!app.row_cats().contains(&time));
+    }
+
+    /// The last-frame rect of matrix 0's tile for category `c`.
+    fn tile_rect(desk: &Desk, app: &ImprovApp, c: CategoryId) -> egui::Rect {
+        desk.ctx
+            .viewport(|v| {
+                v.prev_pass
+                    .widgets
+                    .get(egui::Id::new(("tile", app.matrices[0].uid, c.0)))
+                    .copied()
+            })
+            .expect("the tile")
+            .rect
+    }
+
+    /// Tiles are the NeXT 17 px chips, and right-clicking one offers
+    /// "Move to …" (the drag-free way to re-pivot).
+    #[test]
+    fn a_tile_context_menu_moves_it() {
+        let mut app = gutter_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let time = CategoryId(1);
+        let tile = tile_rect(&desk, &app, time);
+        assert!((tile.height() - TILE_H).abs() < 0.5, "{tile:?}");
+        let at = tile.center();
+        let right = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = desk.frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let _ = desk.frame(&mut app, vec![right(true), right(false)]);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let item = shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Move to Columns" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .expect("the context menu is open");
+        desk.click(&mut app, item.center());
+        assert!(app.col_cats().contains(&time), "{:?}", app.col_cats());
         assert!(!app.row_cats().contains(&time));
     }
 
