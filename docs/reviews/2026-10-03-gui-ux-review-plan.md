@@ -71,14 +71,14 @@ Items below are reworded where this direction supersedes them.
 | D2 | Model tree `·`/`=` prefixes are cryptic; use labelled icons/tooltips. | done: a small dark-gray `input` / `formula` label right of each name |
 | D3 | Status-bar feedback on recalc/save. | done: save, Calc, undo/redo and add-formula report there; a message clears after 5 s |
 | D4 | Contrast: grey-on-grey text fails WCAG AA 4.5:1. The NeXT palette is high-contrast black-on-white; matching it fixes most of this. Optional dark variant is a modernization, off by default. | done for the default theme: black on `#AAAAAA` 9.0:1, black on white 21:1, white on `#555555` 7.5:1. Weak/disabled text (`#555555` on `#AAAAAA`) and non-key title text (`#AAAAAA` on `#555555`) are 3.2:1, per spec §1: enough for disabled text, which WCAG exempts, but empty-state hints drawn weak should become body text as B4/B5 rework them. Dark variant deferred |
-| D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | in progress (harness landed: `scripts/gui-shot.sh`) |
+| D5 | Fixed-geometry screenshot regression (Xvfb + `xwd`, scripted) compared side by side with the refs — GUI steering gate #5. | done (`scripts/gui-shot-check.sh` vs `docs/reviews/golden/gui-1400x900.png`, CI job `gui-shot`) |
 
 ## Batch E — fidelity gaps found comparing step 6 against the refs (2026-10-04)
 
 | # | Item | Status |
 | --- | --- | --- |
 | E1 | Menu overlaps the first worksheet window's left edge; place the first window right of the menu's actual width. | done: `MENU_CLEAR = MENU_W + 12` |
-| E2 | No NeXT scrollers: grid needs a `#808080` trough scroller with grouped arrows; the rows-tile strip sits inline with the horizontal scroller (spec §4.4, §4.8). | done (trough/knob; bevel + grouped arrows deferred, spec §4.8) |
+| E2 | No NeXT scrollers: grid needs a `#808080` trough scroller with grouped arrows; the rows-tile strip sits inline with the horizontal scroller (spec §4.4, §4.8). | done (trough, beveled knob, grouped arrows; the tile strip inline with the horizontal scroller remains) |
 | E3 | Grid's white field stops at the last cell; NeXT fills the grid area white to the window's edges. | done |
 | E4 | `Filters` collapsing header is not in NeXT; move filtering to the tile context menu (right-click → item checklist). | done |
 | E5 | Model browser keeps the old tree; NeXT lists views (`Name - Worksheet` + icon) above a description area, double-click to open (spec §4.2). | done |

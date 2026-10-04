@@ -230,9 +230,15 @@ dependencies, and the formula in English. The id appears only here.
 - NeXT style: an `#808080` trough with a raised `#AAAAAA` knob.
 - Both arrow buttons sit together at the bottom or right end.
 - The bottom-right corner holds the resize glyph ⇕ (P).
-- egui's scroll bars are restyled through `Spacing.scroll` and visuals where
-  possible. Grouped arrows need a custom scroller. Accept egui arrows-less
-  bars first, then add arrows later (**deferred**, cosmetic).
+- egui's scroll bars are restyled through `Spacing.scroll` and visuals.
+  `theme::scroller_chrome` then repaints the vertical bar from the
+  `ScrollAreaOutput`: a 1 px bevel on the knob (white top-left, black
+  bottom-right) and two 18×18 arrow buttons grouped at the trough's bottom
+  end, one line per click. It applies to every `next_scroll` area (formula
+  list, model browser) and the grid, whose `TableBody::body` returns the
+  output. egui still handles knob drags over the whole trough, so the knob
+  lags the pointer by the arrows' share of the trough. Horizontal arrows are
+  not drawn.
 
 ## 5. Window model
 

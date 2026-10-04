@@ -21,14 +21,25 @@ this project follows [Semantic Versioning](https://semver.org/).
   pages); a double-click opens it. Categories and Measures move below as
   collapsible sections.
 - GUI: NeXT scrollers. The grid, model browser and formula list show an
-  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob
-  (the knob's bevel and NeXT's grouped arrow buttons are deferred).
+  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob,
+  a 1 px bevel on the knob and NeXT's two arrow buttons grouped at the
+  bottom of the vertical trough (one line per click).
 
 ### Added
 
 - TUI: Shift+arrows select a range, drawn highlighted, and the status line
   shows its `Sum` (numeric cells only; `Sum —` when there are none), as the
   GUI does. A plain arrow, a click, or any re-layout collapses the range.
+- **GUI screenshot regression in CI (review plan D5).** A `gui-shot` job
+  (GitHub and Forgejo, `rust:1.97-trixie`) runs `scripts/gui-shot-check.sh`,
+  which compares the headless 1400×900 capture against the golden
+  `docs/reviews/golden/gui-1400x900.png` and fails above 200 differing pixels
+  (`magick compare -metric AE -fuzz 2%`), uploading the diff. `--update`
+  refreshes the golden (see CONTRIBUTING.md).
+- **CLI `save-view`.** `improv save-view <db> <view-id> <name> <measure>
+  [--rows Cat,Cat] [--cols Cat,...]` writes a named view the same shape the
+  GUI saves (stacked rows/cols, remaining categories as pages pinned to their
+  first item). `improv list` now prints a `views:` section.
 
 - **GUI screenshot harness (`scripts/gui-shot.sh`).** Builds the binaries,
   loads a fixed Time×Product×Scenario demo model, runs `improv-gui` on a

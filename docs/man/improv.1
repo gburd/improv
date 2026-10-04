@@ -126,7 +126,18 @@ verbatim text for
 maps category names to item names; omit it for a scalar cell.
 .TP
 .B list \fI<db>\fR
-Print all categories, items, measures, and input cells.
+Print all categories, items, measures, saved views, and input cells.
+.TP
+.B save\-view \fI<db> <view-id> <name> <measure>\fR [\fB\-\-rows\fR \fICat,Cat\fR] [\fB\-\-cols\fR \fICat,...\fR]
+Save a named view of
+.I <measure>
+(an id or a name), the same shape the GUI's Save View writes.
+.B \-\-rows
+and
+.B \-\-cols
+stack category names outer-to-inner; each defaults to the next unused
+category of the measure. The remaining categories become pages, pinned to
+their first item. A view with the same id is replaced.
 .TP
 .B show \fI<db> <measure-id>\fR
 Print one measure and its input cells.
@@ -169,6 +180,7 @@ improv add-measure   model.db 100 Price    number input
 improv add-measure   model.db 101 Quantity number input
 improv set           model.db 100 10 --at Product=WidgetA
 improv set           model.db 101 100 --at Time=2025,Product=WidgetA
+improv save-view     model.db 1 Prices 100 --rows Product --cols Time
 improv list          model.db
 improv show          model.db 100
 improv export        model.db

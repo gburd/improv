@@ -69,6 +69,33 @@ jobs:
         working-directory: improv
         run: cargo test --workspace --all-features
 
+  # Review plan D5; mirrors the GitHub gui-shot job.
+  gui-shot:
+    name: GUI screenshot vs golden
+    runs-on: docker
+    container:
+      image: rust:1.97-trixie
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: improv
+      - name: Install Xvfb, ImageMagick, xdotool, GL/X11 runtime
+        run: >
+          apt-get update && apt-get install -y --no-install-recommends
+          xvfb x11-apps imagemagick xdotool
+          libgl1 libegl1 libgl1-mesa-dri libxkbcommon-x11-0
+          libxcursor1 libxi6 libxrandr2
+      - name: Screenshot regression
+        working-directory: improv
+        run: scripts/gui-shot-check.sh
+      - name: Upload capture and diff
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: gui-shot
+          path: improv/target/gui-shot/
+
   deny:
     name: cargo-deny
     runs-on: docker

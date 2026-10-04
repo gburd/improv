@@ -7,7 +7,8 @@ usage() {
 Usage: scripts/gui-shot.sh [-h|--help] [OUTDIR]
 
 Builds improv and improv-gui (debug), creates a fixed demo model
-(Time x Product x Scenario; Price, Quantity, Revenue, Total), runs the GUI
+(Time x Product x Scenario; Price, Quantity, Revenue, Total; two saved
+views), runs the GUI
 on a headless Xvfb and writes:
   OUTDIR/gui.png      the capture
   OUTDIR/compare.png  the capture beside docs/reviews/refs/improv-next-workspace-1.0.png
@@ -92,6 +93,9 @@ for q in 0 1 2 3; do
 		done
 	done
 done
+
+im save-view "$db" 1 "Revenue by quarter" Revenue --rows Time --cols Product
+im save-view "$db" 2 "Price plan" Price --rows Product,Time --cols Scenario
 
 # Xvfb picks a free display and reports it on fd 3 once it accepts clients.
 Xvfb -displayfd 3 -screen 0 "${w}x${h}x24" -nolisten tcp 3>"$tmp/display" 2>"$tmp/xvfb.log" &

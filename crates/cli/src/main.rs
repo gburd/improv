@@ -7,8 +7,9 @@
 //! the loaded model, e.g. `--at Time=2025,Product=WidgetA`.
 
 use improv_core_model::{
-    parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, Measure, MeasureId,
-    MeasureKind, Model, Name, RefreshPolicy, Scenario, ScenarioId, Value, ValueType,
+    parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, MatrixPlacement,
+    Measure, MeasureId, MeasureKind, Model, Name, RefreshPolicy, Scenario, ScenarioId, Value,
+    ValueType, View, ViewId,
 };
 use improv_storage_mentat::ModelStore;
 use improv_storage_sql::{
@@ -65,7 +66,13 @@ COMMANDS:
         Value is parsed by the measure's declared type.
 
     list <db>
-        Print categories, items, measures, and input cells.
+        Print categories, items, measures, views, and input cells.
+
+    save-view <db> <view-id> <name> <measure> [--rows Cat,Cat] [--cols Cat,...]
+        Save a named view of <measure> (id or name), as the GUI does: --rows
+        and --cols stack category NAMES outer-to-inner (each defaults to the
+        next unused category of the measure); the remaining categories are
+        pages, pinned to their first item. Replaces a view with the same id.
 
     show <db> <measure-id>
         Print one measure and its input cells.
@@ -167,6 +174,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "refresh-ext" => cmd_refresh_ext(rest),
         "set" => cmd_set(rest),
         "list" => cmd_list(rest),
+        "save-view" => cmd_save_view(rest),
         "show" => cmd_show(rest),
         "eval" => cmd_eval(rest),
         "export" => cmd_export(rest),
@@ -694,10 +702,109 @@ fn cmd_list(rest: &[String]) -> Result<(), String> {
         let kind = if m.is_input() { "input" } else { "derived" };
         println!("  {} {} [{}] {:?}", m.id.0, m.name, kind, m.value_type);
     }
+    println!("views:");
+    for v in sorted_by(model.views.values(), |v| v.id.0) {
+        let measure = model
+            .measures
+            .get(&v.measure)
+            .map_or("?", |m| m.name.0.as_str());
+        let n = v.matrices().len();
+        println!("  {} {} (measure {measure}, {n} matrices)", v.id.0, v.name);
+    }
     println!("inputs:");
     for line in input_lines(&model) {
         println!("  {line}");
     }
+    Ok(())
+}
+
+/// `save-view <db> <view-id> <name> <measure> [--rows ..] [--cols ..]`: write
+/// a single-matrix `View` filled the way the GUI's `build_view` fills it:
+/// `axis_order` = rows ++ cols ++ the measure's remaining categories (pages),
+/// each page pinned to its lowest-id item, no filters, default geometry.
+fn cmd_save_view(rest: &[String]) -> Result<(), String> {
+    let db = arg(rest, 0, "db")?;
+    let id = ViewId(parse_u32(arg(rest, 1, "view-id")?, "view-id")?);
+    let name = arg(rest, 2, "name")?.trim();
+    if name.is_empty() {
+        return Err("view name is required".into());
+    }
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let mid = resolve_measure(&model, arg(rest, 3, "measure")?)?;
+    let cats = model.measures[&mid].categories.clone();
+    let (mut rows, mut cols) = (None, None);
+    let mut flags = rest[4.min(rest.len())..].iter();
+    while let Some(flag) = flags.next() {
+        let slot = match flag.as_str() {
+            "--rows" => &mut rows,
+            "--cols" => &mut cols,
+            other => return Err(format!("unexpected argument '{other}'")),
+        };
+        *slot = Some(
+            flags
+                .next()
+                .ok_or(format!("{flag} needs a value"))?
+                .as_str(),
+        );
+    }
+    // Rows then cols: named categories, or the next unused one by default.
+    let mut order: Vec<CategoryId> = Vec::new();
+    let mut counts = [0; 2];
+    for (k, spec) in [rows, cols].into_iter().enumerate() {
+        let picked: Vec<CategoryId> = match spec {
+            Some(s) => s
+                .split(',')
+                .filter(|n| !n.is_empty())
+                .map(|n| {
+                    model
+                        .category_by_name(n)
+                        .map(|c| c.id)
+                        .filter(|c| cats.contains(c))
+                        .ok_or_else(|| format!("'{n}' is not a category of measure {}", mid.0))
+                })
+                .collect::<Result<_, _>>()?,
+            None => cats
+                .iter()
+                .find(|c| !order.contains(c))
+                .into_iter()
+                .copied()
+                .collect(),
+        };
+        for c in picked {
+            if order.contains(&c) {
+                return Err(format!("category {} is used twice", c.0));
+            }
+            order.push(c);
+            counts[k] += 1;
+        }
+    }
+    let pages: Vec<CategoryId> = cats
+        .iter()
+        .filter(|c| !order.contains(c))
+        .copied()
+        .collect();
+    let mut primary = MatrixPlacement::new(mid);
+    primary.page_items = pages
+        .iter()
+        .filter_map(|c| {
+            Some((
+                *c,
+                *model.categories.get(c)?.items.iter().min_by_key(|i| i.0)?,
+            ))
+        })
+        .collect();
+    order.extend(pages);
+    primary.axis_order = order;
+    [primary.n_rows, primary.n_cols] = counts;
+    model.add_view(View::from_matrices(
+        id,
+        Name(name.to_string()),
+        primary,
+        Vec::new(),
+    ));
+    store.save_model(&model).map_err(|e| e.to_string())?;
+    println!("saved view {} '{name}'", id.0);
     Ok(())
 }
 
