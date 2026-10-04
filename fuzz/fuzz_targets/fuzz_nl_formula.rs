@@ -1,5 +1,7 @@
 //! Fuzz `parse_nl_formula` with arbitrary UTF-8 against a fixed fixture model.
 //! Property: it never panics. Ok or Err are both acceptable.
+//! Deep-nesting seeds (S3) live in `fuzz/seeds/fuzz_nl_formula`:
+//! `cargo fuzz run fuzz_nl_formula fuzz/corpus/fuzz_nl_formula fuzz/seeds/fuzz_nl_formula`.
 #![no_main]
 
 use improv_core_model::{CategoryId, Measure, MeasureId, MeasureKind, Model, Name, ValueType};

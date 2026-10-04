@@ -70,6 +70,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   (checked while streaming, so an unterminated quote can't buffer the
   file) or more than `ImportSpec::max_records` records (default
   10,000,000) is an error instead of an out-of-memory (S17).
+- **CNL parser depth bound (S3).** The `nl_formula` recursive-descent parser
+  had no nesting limit: one ~200 KB `POST /nl/parse` of nested parens
+  overflowed the stack and aborted `improv-server`. Paren nesting plus
+  operator count is now capped at 200 (as in the formula parser), returning
+  the new `NlError::TooDeep`; tested on a 2 MiB stack with 100k parens.
 
 ### Performance
 

@@ -101,7 +101,15 @@ pub enum NlError {
     Unexpected(String),
     #[error("empty input")]
     Empty,
+    #[error("formula nested too deeply (limit {MAX_PARSE_DEPTH})")]
+    TooDeep,
 }
+
+/// Bound on parser recursion (paren nesting) plus binary-operator nodes, so
+/// both the parser and anything that later walks the AST recursively
+/// (describe, serialize, drop) stay far from the stack limit on hostile input.
+/// Matches `improv_core_model`'s formula-parser limit.
+pub const MAX_PARSE_DEPTH: usize = 200;
 
 // ---------------------------------------------------------------------------
 // Tokenizer
@@ -143,6 +151,9 @@ struct Parser<'a, 'm> {
     toks: &'a [String],
     pos: usize,
     ctx: &'a NlContext<'m>,
+    /// Open parens on the current path plus every binary-op node built so far:
+    /// an upper bound on both recursion depth and AST depth.
+    depth: usize,
 }
 
 /// Reserved words that can never be a measure/category name.
@@ -196,6 +207,15 @@ impl<'a, 'm> Parser<'a, 'm> {
     }
 
     /// sentence = [ subject copula ] expr
+    /// Charge one unit of depth; error once over [`MAX_PARSE_DEPTH`].
+    fn deeper(&mut self) -> Result<(), NlError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(NlError::TooDeep);
+        }
+        Ok(())
+    }
+
     fn parse_sentence(&mut self) -> Result<Expr, NlError> {
         if self.toks.is_empty() {
             return Err(NlError::Empty);
@@ -224,6 +244,7 @@ impl<'a, 'm> Parser<'a, 'm> {
                 _ => break,
             };
             self.bump();
+            self.deeper()?;
             let rhs = self.parse_term()?;
             lhs = Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs));
         }
@@ -244,6 +265,7 @@ impl<'a, 'm> Parser<'a, 'm> {
                 _ => break,
             };
             self.bump(); // operator token ("times"/"*"/"/"/"by")
+            self.deeper()?;
             let rhs = self.parse_factor()?;
             lhs = Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs));
         }
@@ -256,7 +278,9 @@ impl<'a, 'm> Parser<'a, 'm> {
             None => Err(NlError::UnexpectedEof),
             Some("(") => {
                 self.bump();
+                self.deeper()?;
                 let e = self.parse_expr()?;
+                self.depth -= 1; // parens add recursion, not AST depth
                 if !self.eat(")") {
                     return Err(NlError::Unexpected(
                         self.peek().unwrap_or("<eof>").to_string(),
@@ -368,6 +392,7 @@ pub fn parse_nl_formula(ctx: &NlContext, text: &str) -> Result<Formula, NlError>
         toks: &toks,
         pos: 0,
         ctx,
+        depth: 0,
     };
     Ok(Formula::new(p.parse_sentence()?))
 }
@@ -665,5 +690,49 @@ mod tests {
         let ctx = NlContext::new(&m);
         let err = parse_nl_formula(&ctx, "the sum of revenue over region").unwrap_err();
         assert_eq!(err, NlError::UnknownCategory("region".into()));
+    }
+
+    /// Run `f` on a thread with the default 2 MiB stack (what tokio workers
+    /// get), so an unbounded recursion would abort the test process.
+    fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    #[test]
+    fn deep_parens_error_without_overflow() {
+        // The S3 repro: ~200 KB of nested parens used to overflow the stack.
+        let err = on_small_stack(|| {
+            let m = fixture();
+            let text = format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000));
+            parse_nl_formula(&NlContext::new(&m), &text).unwrap_err()
+        });
+        assert_eq!(err, NlError::TooDeep);
+    }
+
+    #[test]
+    fn long_operator_chain_errors_without_overflow() {
+        // A flat chain builds a left-deep AST; bounding it keeps describe and
+        // drop (both recursive) safe too.
+        let err = on_small_stack(|| {
+            let m = fixture();
+            let text = vec!["1"; 100_000].join(" plus ");
+            parse_nl_formula(&NlContext::new(&m), &text).unwrap_err()
+        });
+        assert_eq!(err, NlError::TooDeep);
+    }
+
+    #[test]
+    fn moderate_nesting_still_parses() {
+        let m = fixture();
+        let ctx = NlContext::new(&m);
+        let text = format!("{}price{}", "(".repeat(150), ")".repeat(150));
+        assert_eq!(parse_nl_formula(&ctx, &text).unwrap().expr, refr(PRICE));
+        let chain = vec!["price"; 150].join(" plus ");
+        assert!(parse_nl_formula(&ctx, &chain).is_ok());
     }
 }
