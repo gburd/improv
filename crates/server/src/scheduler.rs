@@ -17,7 +17,16 @@
 //! therefore refreshes only `CALL` (external-function) measures
 //! automatically; SQL-sourced measures still need `improv serve-refresh
 //! <db> <source.sqlite>` or a manual refresh path.
-use std::collections::HashMap;
+//!
+//! # Consent: off by default, allowlisted functions only
+//!
+//! Refreshing a `CALL` measure executes code stored *in the model*, so serving
+//! a shared model must not run it implicitly. The scheduler only starts when
+//! `IMPROV_SCHEDULER=1`, and then only runs functions whose
+//! [`fn_digest`] (`sha256(name + "\0" + body)`, lowercase hex) is listed, one
+//! per line, in the file named by `IMPROV_EXTFN_ALLOW`. Anything else is
+//! skipped with a logged warning.
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -39,6 +48,34 @@ pub struct SchedulerStatus {
 
 pub type SharedStatus = Arc<Mutex<SchedulerStatus>>;
 
+/// Operator allowlist of external-function digests (see [`fn_digest`]).
+pub type Allowlist = Arc<HashSet<String>>;
+
+/// `IMPROV_SCHEDULER` value -> enabled? Only an explicit `1` turns it on.
+pub fn scheduler_enabled(env: Option<&str>) -> bool {
+    env.map(str::trim) == Some("1")
+}
+
+/// `sha256(name + "\0" + body)` as lowercase hex: the allowlist key.
+pub fn fn_digest(name: &str, body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(name.as_bytes());
+    h.update([0u8]);
+    h.update(body.as_bytes());
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Parse an allowlist file: one hex digest per line; blank lines and `#`
+/// comments ignored; case-insensitive.
+pub fn parse_allowlist(text: &str) -> HashSet<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
 /// Spawn the background refresh loop: every `tick`, reload the model, refresh
 /// any due `CALL` measures, and save if anything changed. Never panics or
 /// exits on a tick error — it logs (`eprintln!`, matching the CLI daemon's
@@ -47,6 +84,7 @@ pub fn spawn_scheduler(
     state: Arc<AppState>,
     tick: Duration,
     status: SharedStatus,
+    allow: Allowlist,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let start = Instant::now();
@@ -60,7 +98,7 @@ pub fn spawn_scheduler(
         );
         loop {
             tokio::time::sleep(tick).await;
-            match tick_once(&state, &mut last_run, start).await {
+            match tick_once(&state, &allow, &mut last_run, start).await {
                 Ok(refreshed) => {
                     if let Ok(mut s) = status.lock() {
                         s.last_tick_refreshed = refreshed.iter().map(|m| m.0).collect();
@@ -84,11 +122,15 @@ pub fn spawn_scheduler(
 /// thread, matching the request handlers' `spawn_blocking` pattern.
 async fn tick_once(
     state: &Arc<AppState>,
+    allow: &Allowlist,
     last_run: &mut HashMap<MeasureId, u64>,
     start: Instant,
 ) -> Result<Vec<MeasureId>, String> {
     let now_secs = start.elapsed().as_secs();
     let path = state.db_path.clone();
+    // Same lock as the API writers: this is a load-modify-save too.
+    let _write = state.write_lock.lock().await;
+    let allow = allow.clone();
 
     // Load the model, compute due CALL measures against `last_run`, and
     // refresh them, all on a blocking thread (Mentat's store and the external
@@ -107,8 +149,30 @@ async fn tick_once(
             let due =
                 improv_core_model::schedule::due_measures(&policies, now_secs, &last_run_snapshot);
 
+            // Force the Restricted sandbox: extfn derives the policy from the
+            // model-controlled `pure` flag (`pure: false` => Trusted), and the
+            // allowlist digest covers only name + body. Restored before save.
+            let authored: Vec<(String, bool)> = model
+                .external_fns
+                .iter_mut()
+                .map(|(k, f)| (k.clone(), std::mem::replace(&mut f.pure, true)))
+                .collect();
+
             let mut refreshed = Vec::new();
             for mid in &due {
+                let allowed = model
+                    .external_calls
+                    .get(mid)
+                    .and_then(|c| model.external_fns.get(&c.func))
+                    .is_some_and(|f| allow.contains(&fn_digest(&f.name, &f.body)));
+                if !allowed {
+                    eprintln!(
+                        "scheduler: WARNING skipping measure {}: its function is not in \
+                         the IMPROV_EXTFN_ALLOW allowlist",
+                        mid.0
+                    );
+                    continue;
+                }
                 match improv_engine::external::refresh_external_measure(
                     &mut model,
                     improv_engine::external::DEFAULT_TIMEOUT,
@@ -128,6 +192,11 @@ async fn tick_once(
                     }
                 }
             }
+            for (k, pure) in authored {
+                if let Some(f) = model.external_fns.get_mut(&k) {
+                    f.pure = pure;
+                }
+            }
             if !refreshed.is_empty() {
                 store.save_model(&model).map_err(|e| e.to_string())?;
             }
@@ -137,6 +206,10 @@ async fn tick_once(
     .await
     .map_err(|e| format!("task join: {e}"))??;
 
+    if !refreshed.is_empty() {
+        // The store changed under the API's cached model: drop it (P4).
+        *state.cache.write().await = None;
+    }
     for mid in &refreshed {
         last_run.insert(*mid, now_secs);
     }
@@ -225,11 +298,11 @@ mod tests {
     }
 
     fn app_state(db_path: &str) -> Arc<AppState> {
-        Arc::new(AppState {
-            db_path: db_path.to_string(),
-            auth: crate::Auth::Disabled,
-            scheduler_status: None,
-        })
+        Arc::new(AppState::new(
+            db_path.to_string(),
+            crate::Auth::Disabled,
+            None,
+        ))
     }
 
     // The scheduler actually runs: a due CALL measure gets refreshed and the
@@ -251,7 +324,9 @@ mod tests {
             tick_secs: 0,
             ..Default::default()
         }));
-        let handle = spawn_scheduler(state, Duration::from_millis(50), status.clone());
+        let f = &call_model(RefreshPolicy::Manual).external_fns["double"];
+        let allow: Allowlist = Arc::new(HashSet::from([fn_digest(&f.name, &f.body)]));
+        let handle = spawn_scheduler(state, Duration::from_millis(50), status.clone(), allow);
 
         // Give it a few ticks to run; python3 subprocess startup can take a
         // while under load, so poll instead of a single fixed sleep.
@@ -299,7 +374,7 @@ mod tests {
 
         let state = app_state(path.to_str().unwrap());
         let mut last_run = HashMap::new();
-        let refreshed = tick_once(&state, &mut last_run, Instant::now())
+        let refreshed = tick_once(&state, &Allowlist::default(), &mut last_run, Instant::now())
             .await
             .expect("a no-op tick must not error");
         assert!(refreshed.is_empty());
@@ -325,7 +400,12 @@ mod tests {
 
         let state = app_state(path.to_str().unwrap());
         let status: SharedStatus = Arc::new(Mutex::new(SchedulerStatus::default()));
-        let handle = spawn_scheduler(state, Duration::from_millis(50), status);
+        let handle = spawn_scheduler(
+            state,
+            Duration::from_millis(50),
+            status,
+            Allowlist::default(),
+        );
 
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert!(
@@ -333,5 +413,44 @@ mod tests {
             "a per-measure refresh error must not end the scheduler task"
         );
         handle.abort();
+    }
+
+    // S1: an unlisted function never runs, even when it is due.
+    #[tokio::test]
+    async fn unlisted_function_is_skipped() {
+        let path = temp_db_path("unlisted");
+        let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
+        store
+            .save_model(&call_model(RefreshPolicy::Interval { secs: 0 }))
+            .unwrap();
+        let state = app_state(path.to_str().unwrap());
+        let other: Allowlist = Arc::new(HashSet::from([fn_digest("double", "evil")]));
+        let refreshed = tick_once(&state, &other, &mut HashMap::new(), Instant::now())
+            .await
+            .unwrap();
+        assert!(refreshed.is_empty(), "unlisted function must be skipped");
+        let model = ModelStore::open(path.to_str().unwrap())
+            .unwrap()
+            .load_model()
+            .unwrap();
+        let coord = improv_core_model::Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);
+        assert!(model.input(MeasureId(200), &coord).is_none());
+    }
+
+    #[test]
+    fn scheduler_is_off_by_default() {
+        assert!(!scheduler_enabled(None));
+        assert!(!scheduler_enabled(Some("0")));
+        assert!(!scheduler_enabled(Some("true")));
+        assert!(scheduler_enabled(Some("1")));
+    }
+
+    #[test]
+    fn digest_and_allowlist_parse() {
+        let d = fn_digest("double", "result = args[0] * 2");
+        assert_eq!(d.len(), 64);
+        assert_ne!(d, fn_digest("doubl", "eresult = args[0] * 2"));
+        let set = parse_allowlist(&format!("# ops\n\n  {}  \n", d.to_uppercase()));
+        assert_eq!(set, HashSet::from([d]));
     }
 }

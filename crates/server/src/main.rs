@@ -1,20 +1,25 @@
 //! `improv-server`: a small JSON HTTP API over an Improv model store.
 //!
-//! State is just the DB path; every request opens the (blocking SQLite-backed)
-//! Mentat store inside `spawn_blocking` and loads the model. Models are small in
-//! v1, so open-per-request keeps the store off the async runtime and avoids
-//! sharing a non-Send store across tasks.
+//! The (blocking SQLite-backed) Mentat store is opened inside `spawn_blocking`
+//! and never shared across tasks. The loaded model is cached in [`AppState`]
+//! and replaced on every write this process makes (API or scheduler), so reads
+//! cost one store load per write, not per request. The server assumes it owns
+//! the store: a write from another process is not seen until restart.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
-    extract::{Path, Request, State},
+    error_handling::HandleErrorLayer,
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
-    Json, Router,
+    Extension, Json, Router,
 };
 use improv_core_model::{Coordinate, MeasureId, MeasureKind, Model};
 use improv_engine::dataflow::evaluate;
@@ -24,6 +29,7 @@ use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use tower::ServiceBuilder;
 
 mod scheduler;
 use scheduler::SharedStatus;
@@ -31,43 +37,89 @@ use scheduler::SharedStatus;
 /// Accepted bearer tokens, or open mode.
 ///
 /// `Disabled` = no auth (local dev / tests, preserves v1 behavior);
-/// `Tokens` = require `Authorization: Bearer <t>` for a `t` in the set.
+/// `Tokens` = require `Authorization: Bearer <t>`: a `t` in `rw` may read and
+/// write, a `t` in `ro` may only read (S12).
 #[derive(Clone)]
 pub enum Auth {
     Disabled,
-    Tokens(HashSet<String>),
+    Tokens {
+        rw: HashSet<String>,
+        ro: HashSet<String>,
+    },
 }
 
 impl Auth {
-    /// Build from `IMPROV_API_TOKEN` (single) + `IMPROV_API_TOKENS` (comma-sep).
+    /// Build from `IMPROV_API_TOKEN` (single) + `IMPROV_API_TOKENS` (comma-sep)
+    /// for read-write, and `IMPROV_API_TOKENS_RO` (comma-sep) for read-only.
     /// Empty/whitespace tokens are ignored; no tokens => `Disabled`.
     fn from_env() -> Self {
-        let mut tokens = HashSet::new();
+        let list = |var: &str| -> HashSet<String> {
+            std::env::var(var)
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .map(String::from)
+                .collect()
+        };
+        let mut rw = list("IMPROV_API_TOKENS");
         if let Ok(t) = std::env::var("IMPROV_API_TOKEN") {
             let t = t.trim();
             if !t.is_empty() {
-                tokens.insert(t.to_string());
+                rw.insert(t.to_string());
             }
         }
-        if let Ok(list) = std::env::var("IMPROV_API_TOKENS") {
-            for t in list.split(',').map(str::trim).filter(|t| !t.is_empty()) {
-                tokens.insert(t.to_string());
-            }
-        }
-        if tokens.is_empty() {
+        let ro = list("IMPROV_API_TOKENS_RO");
+        if rw.is_empty() && ro.is_empty() {
             Auth::Disabled
         } else {
-            Auth::Tokens(tokens)
+            Auth::Tokens { rw, ro }
         }
     }
 }
 
-#[derive(Clone)]
+/// Request extension set by [`require_token`] for a read-only token.
+#[derive(Clone, Copy)]
+struct ReadOnly;
+
+/// Request body cap (S13). Over-limit bodies get 413.
+const MAX_BODY_BYTES: usize = 1 << 20;
+/// Edits accepted per `/eval` request (S13). More gets 400.
+const MAX_EDITS: usize = 10_000;
+/// Whole-request deadline, including time queued for a concurrency slot (S10).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Requests in flight across all routes (S10); the rest wait (then time out).
+const MAX_IN_FLIGHT: usize = 64;
+/// Default deadline for a client to finish sending request headers (S10).
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub struct AppState {
     db_path: String,
     auth: Auth,
-    /// `None` when the scheduler is disabled (`IMPROV_SCHEDULER=0`).
+    /// `None` when the scheduler is disabled (the default; `IMPROV_SCHEDULER=1` enables).
     scheduler_status: Option<SharedStatus>,
+    /// Held across every load-modify-save of the store (API writes and the
+    /// scheduler), so concurrent writers cannot lose each other's updates (S12).
+    write_lock: tokio::sync::Mutex<()>,
+    /// The loaded model, `None` until first read or after invalidation (P4).
+    cache: tokio::sync::RwLock<Option<Arc<Model>>>,
+    /// Store loads performed, so tests can check the cache.
+    #[cfg(test)]
+    loads: AtomicU64,
+}
+
+impl AppState {
+    pub fn new(db_path: String, auth: Auth, scheduler_status: Option<SharedStatus>) -> Self {
+        AppState {
+            db_path,
+            auth,
+            scheduler_status,
+            write_lock: tokio::sync::Mutex::new(()),
+            cache: tokio::sync::RwLock::new(None),
+            #[cfg(test)]
+            loads: AtomicU64::new(0),
+        }
+    }
 }
 
 #[tokio::main]
@@ -85,10 +137,18 @@ async fn main() {
     if matches!(auth, Auth::Disabled) {
         eprintln!("auth disabled: set IMPROV_API_TOKEN to require a bearer token");
     }
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
+    let local = listener.local_addr().expect("bound socket has an address");
+    let allow_open = std::env::var("IMPROV_ALLOW_OPEN").ok();
+    if let Err(e) = startup_check(local, &auth, allow_open.as_deref()) {
+        eprintln!("improv-server: {e}");
+        std::process::exit(2);
+    }
 
-    let scheduler_enabled = std::env::var("IMPROV_SCHEDULER")
-        .map(|v| v != "0")
-        .unwrap_or(true);
+    let scheduler_enabled =
+        scheduler::scheduler_enabled(std::env::var("IMPROV_SCHEDULER").ok().as_deref());
     let tick_secs = std::env::var("IMPROV_SCHEDULER_TICK_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -100,26 +160,81 @@ async fn main() {
             ..Default::default()
         }))
     });
-    let state = Arc::new(AppState {
-        db_path,
-        auth,
-        scheduler_status: scheduler_status.clone(),
-    });
+    let state = Arc::new(AppState::new(db_path, auth, scheduler_status.clone()));
     if let Some(status) = scheduler_status {
+        let allow = match std::env::var("IMPROV_EXTFN_ALLOW") {
+            Ok(file) => match std::fs::read_to_string(&file) {
+                Ok(text) => scheduler::parse_allowlist(&text),
+                Err(e) => {
+                    eprintln!("scheduler: cannot read IMPROV_EXTFN_ALLOW {file}: {e}; no function will run");
+                    Default::default()
+                }
+            },
+            Err(_) => {
+                eprintln!("scheduler: IMPROV_EXTFN_ALLOW unset; no function will run");
+                Default::default()
+            }
+        };
         scheduler::spawn_scheduler(
             state.clone(),
             std::time::Duration::from_secs(tick_secs),
             status,
+            Arc::new(allow),
         );
     } else {
-        eprintln!("scheduler disabled (IMPROV_SCHEDULER=0)");
+        eprintln!("scheduler disabled (set IMPROV_SCHEDULER=1 to enable)");
     }
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
     eprintln!("improv-server listening on {addr}");
-    axum::serve(listener, app(state)).await.expect("serve");
+    let header_timeout = std::env::var("IMPROV_HEADER_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(HEADER_READ_TIMEOUT);
+    serve(listener, app(state), header_timeout).await;
+}
+
+/// Refuse open mode (no tokens) on a non-loopback address unless the
+/// operator opts in with `IMPROV_ALLOW_OPEN=1` (S15).
+pub fn startup_check(
+    addr: SocketAddr,
+    auth: &Auth,
+    allow_open: Option<&str>,
+) -> Result<(), String> {
+    if matches!(auth, Auth::Disabled) && !addr.ip().is_loopback() && allow_open != Some("1") {
+        return Err(format!(
+            "refusing to serve {addr} without auth: set IMPROV_API_TOKEN, bind a \
+             loopback address, or set IMPROV_ALLOW_OPEN=1"
+        ));
+    }
+    Ok(())
+}
+
+/// Accept loop: hyper HTTP/1 with a header-read timeout (S10). `axum::serve`
+/// (0.7) sets no header timer, so a client that never finishes its request
+/// line holds a socket forever (slow-loris). HTTP/1 only: the `hyper-util`
+/// `auto` builder would pull in h2, which the API does not need.
+async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: Duration) {
+    use hyper_util::rt::{TokioIo, TokioTimer};
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                // EMFILE etc.: back off instead of spinning.
+                eprintln!("accept: {e}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let svc = hyper_util::service::TowerToHyperService::new(app.clone());
+        tokio::spawn(async move {
+            let _ = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_timeout)
+                .serve_connection(TokioIo::new(stream), svc)
+                .await;
+        });
+    }
 }
 
 /// Build the router. Exposed so tests can drive it via `oneshot`.
@@ -136,63 +251,199 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/scheduler/status", get(scheduler_status_handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
 
+    // Global (not per-route) limit: `Router::layer` clones the layer per
+    // route, and `GlobalConcurrencyLimitLayer` shares one semaphore.
+    let limits = ServiceBuilder::new()
+        .layer(HandleErrorLayer::new(|e: tower::BoxError| async move {
+            if e.is::<tower::timeout::error::Elapsed>() {
+                (StatusCode::REQUEST_TIMEOUT, "request timed out")
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            }
+        }))
+        .layer(tower::timeout::TimeoutLayer::new(REQUEST_TIMEOUT))
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+            MAX_IN_FLIGHT,
+        ));
+
     Router::new()
         .route("/health", get(health))
         .merge(protected)
+        .layer(limits)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
 /// Bearer-token gate. In open mode every request passes. Otherwise:
-/// missing/blank `Authorization` -> 401; present but not an accepted token -> 403.
+/// missing/blank `Authorization` -> 401; present but not an accepted token -> 403;
+/// a read-only token passes with a [`ReadOnly`] extension the write paths refuse.
 /// The token value is never logged.
-async fn require_token(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
-    let tokens = match &state.auth {
+async fn require_token(
+    State(state): State<Arc<AppState>>,
+    mut req: Request,
+    next: Next,
+) -> Response {
+    let (rw, ro) = match &state.auth {
         Auth::Disabled => return next.run(req).await,
-        Auth::Tokens(t) => t,
+        Auth::Tokens { rw, ro } => (rw, ro),
     };
-    let presented = req
+    // Check both classes every time so timing does not reveal which matched.
+    let class = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::trim)
-        .filter(|t| !t.is_empty());
-    match presented {
+        .filter(|t| !t.is_empty())
+        .map(|t| (token_matches(rw, t), token_matches(ro, t)));
+    match class {
         None => (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
-        Some(t) if tokens.contains(t) => next.run(req).await,
-        Some(_) => (StatusCode::FORBIDDEN, "invalid bearer token").into_response(),
+        Some((true, _)) => next.run(req).await,
+        Some((false, true)) => {
+            req.extensions_mut().insert(ReadOnly);
+            next.run(req).await
+        }
+        Some((false, false)) => (StatusCode::FORBIDDEN, "invalid bearer token").into_response(),
     }
+}
+
+/// Constant-time token check (S15): every accepted token is compared, and
+/// each comparison folds over all bytes, so timing reveals neither which token
+/// matched nor the length of a matching prefix.
+fn token_matches<'a>(tokens: impl IntoIterator<Item = &'a String>, presented: &str) -> bool {
+    tokens.into_iter().fold(false, |hit, t| {
+        hit | ct_eq(t.as_bytes(), presented.as_bytes())
+    })
+}
+
+/// Byte-wise xor accumulate; no early exit on the first differing byte.
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    (a.len() == b.len()) & (diff == 0)
 }
 
 // --- error handling: never panic on request input ---
 
+impl From<JsonRejection> for ApiError {
+    fn from(e: JsonRejection) -> Self {
+        // Keep the v1 contract (any bad body -> 400) except an oversized one.
+        let status = match e.status() {
+            StatusCode::PAYLOAD_TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        ApiError::Rejected(status, e.body_text())
+    }
+}
+
 enum ApiError {
+    /// A rejected JSON body (malformed -> 400, oversized -> 413).
+    Rejected(StatusCode, String),
     BadRequest(String),
+    Forbidden(String),
     NotFound(String),
     Internal(String),
 }
 
+/// Id logged with each internal error and echoed to the client as `request_id`.
+static NEXT_ERROR_ID: AtomicU64 = AtomicU64::new(1);
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
+            ApiError::Rejected(s, m) => (s, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
+            ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
-            ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            ApiError::Internal(detail) => {
+                // The detail (store/SQLite errors carry the DB path) stays in
+                // the server log; the client gets an id to quote (S14).
+                let id = NEXT_ERROR_ID.fetch_add(1, Ordering::Relaxed);
+                eprintln!("request {id}: internal error: {detail}");
+                let body = json!({ "error": "internal error", "request_id": id });
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response();
+            }
         };
         (status, Json(json!({ "error": msg }))).into_response()
     }
 }
 
-/// Open the store and load the model on a blocking thread.
-async fn load_model(state: &Arc<AppState>) -> Result<Model, ApiError> {
+/// The current model: the cached copy, or (on a miss) one load from the store
+/// on a blocking thread. The cache write lock is held across the load, so a
+/// concurrent writer's [`save_model`] replaces it only after a stale load lands.
+async fn load_model(state: &Arc<AppState>) -> Result<Arc<Model>, ApiError> {
+    if let Some(m) = state.cache.read().await.as_ref() {
+        return Ok(m.clone());
+    }
+    let mut cache = state.cache.write().await;
+    if let Some(m) = cache.as_ref() {
+        return Ok(m.clone());
+    }
+    #[cfg(test)]
+    state.loads.fetch_add(1, Ordering::Relaxed);
     let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || {
+    let model = tokio::task::spawn_blocking(move || {
         let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
         store.load_model().map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
-    .map_err(ApiError::Internal)
+    .map_err(ApiError::Internal)?;
+    let model = Arc::new(model);
+    *cache = Some(model.clone());
+    Ok(model)
+}
+
+/// Save the model on a blocking thread and make it the cached copy. Call with
+/// `write_lock` held.
+async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, ApiError> {
+    let path = state.db_path.clone();
+    let model = tokio::task::spawn_blocking(move || {
+        let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
+        store.save_model(&model).map_err(|e| e.to_string())?;
+        Ok(model)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
+    .map_err(ApiError::Internal)?;
+    let model = Arc::new(model);
+    *state.cache.write().await = Some(model.clone());
+    Ok(model)
+}
+
+/// S12: a write must target an existing input measure, at a coordinate naming
+/// exactly the measure's categories, each with an item of that category, and
+/// carry a finite value (`None` clears the cell).
+fn validate_write(
+    model: &Model,
+    mid: MeasureId,
+    coord: &Coordinate,
+    value: Option<f64>,
+) -> Result<(), ApiError> {
+    let bad = |m: String| Err(ApiError::BadRequest(m));
+    let Some(measure) = model.measures.get(&mid) else {
+        return bad(format!("no measure {}", mid.0));
+    };
+    if !measure.is_input() {
+        return bad(format!("measure {} is derived; cannot set a cell", mid.0));
+    }
+    if value.is_some_and(|v| !v.is_finite()) {
+        return bad("value must be a finite number".into());
+    }
+    let dims_ok = coord.dims.len() == measure.categories.len()
+        && measure.categories.iter().all(|c| {
+            coord
+                .dims
+                .get(c)
+                .and_then(|i| model.items.get(i))
+                .is_some_and(|item| item.category == *c)
+        });
+    if !dims_ok {
+        return bad(format!(
+            "coordinate must name one item for each category of measure {}",
+            mid.0
+        ));
+    }
+    Ok(())
 }
 
 // --- handlers ---
@@ -218,8 +469,8 @@ async fn scheduler_status_handler(State(state): State<Arc<AppState>>) -> Json<Js
     }
 }
 
-async fn get_model(State(state): State<Arc<AppState>>) -> Result<Json<Model>, ApiError> {
-    Ok(Json(load_model(&state).await?))
+async fn get_model(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
+    Ok(Json(&*load_model(&state).await?).into_response())
 }
 
 #[derive(Serialize)]
@@ -319,12 +570,26 @@ struct EvalReq {
 /// which case each edit is also written to the model store.
 async fn eval_measure(
     State(state): State<Arc<AppState>>,
+    ro: Option<Extension<ReadOnly>>,
     Path(id): Path<u32>,
-    body: Result<Json<EvalReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<EvalReq>, JsonRejection>,
 ) -> Result<Json<Vec<Cell>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
+    if req.persist && ro.is_some() {
+        return Err(ApiError::Forbidden("read-only token cannot persist".into()));
+    }
+    if req.edits.len() > MAX_EDITS {
+        return Err(ApiError::BadRequest(format!(
+            "too many edits ({}); at most {MAX_EDITS} per request",
+            req.edits.len()
+        )));
+    }
     let mid = MeasureId(id);
 
+    let write = match req.persist {
+        true => Some(state.write_lock.lock().await),
+        false => None,
+    };
     let mut model = load_model(&state).await?;
     let measure = model
         .measures
@@ -336,32 +601,39 @@ async fn eval_measure(
         )));
     }
 
+    // Validate every edit, what-if ones too: the engine never sees junk.
+    let coords = req
+        .edits
+        .iter()
+        .map(|e| {
+            let coord = decode_coord(&e.coord);
+            if coord.dims.len() != e.coord.len() {
+                return Err(ApiError::BadRequest("coordinate repeats a category".into()));
+            }
+            validate_write(&model, MeasureId(e.measure), &coord, e.value)?;
+            Ok(coord)
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+
     // Persist first (so a persisted edit is durable even if the caller only
     // wants the side effect); the engine below then sees the same values.
     if req.persist {
-        for e in &req.edits {
-            let coord = decode_coord(&e.coord);
+        let mut updated = (*model).clone();
+        for (e, coord) in req.edits.iter().zip(coords) {
             match e.value {
-                Some(v) => model.set_input(
+                Some(v) => updated.set_input(
                     MeasureId(e.measure),
                     coord,
                     improv_core_model::Value::Number(v),
                 ),
                 None => {
-                    model.inputs.remove(&(MeasureId(e.measure), coord));
+                    updated.inputs.remove(&(MeasureId(e.measure), coord));
                 }
             }
         }
-        let path = state.db_path.clone();
-        let to_save = model.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
-            store.save_model(&to_save).map_err(|e| e.to_string())
-        })
-        .await
-        .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
-        .map_err(ApiError::Internal)?;
+        model = save_model(&state, updated).await?;
     }
+    drop(write);
 
     // All derived measures are the engine's targets.
     let targets: Vec<MeasureId> = model
@@ -382,8 +654,10 @@ async fn eval_measure(
 
     // Engine owns a worker thread and holds a live dataflow: do it all on a
     // blocking thread and never across an await point.
+    let engine_model = model.clone();
     let values = tokio::task::spawn_blocking(move || {
-        let (mut engine, _initial) = Engine::new(&model, &targets).map_err(|e| e.to_string())?;
+        let (mut engine, _initial) =
+            Engine::new(&engine_model, &targets).map_err(|e| e.to_string())?;
         let mut snap = engine.apply(edits).map_err(|e| e.to_string())?;
         Ok::<_, String>(snap.remove(&mid).unwrap_or_default())
     })
@@ -391,8 +665,6 @@ async fn eval_measure(
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
     .map_err(ApiError::Internal)?;
 
-    // Re-borrow the model for coord rendering: load it once more (cheap, small).
-    let model = load_model(&state).await?;
     let cells = values
         .into_iter()
         .map(|(k, n)| readable_key(&model, &k, n.as_num().unwrap_or(f64::NAN)))
@@ -407,9 +679,9 @@ struct NlParseReq {
 
 async fn nl_parse(
     State(state): State<Arc<AppState>>,
-    body: Result<Json<NlParseReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<NlParseReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
     let model = load_model(&state).await?;
     let ctx = NlContext::new(&model);
     match parse_nl_formula(&ctx, &req.text) {
@@ -427,9 +699,9 @@ struct NlDescribeReq {
 
 async fn nl_describe(
     State(state): State<Arc<AppState>>,
-    body: Result<Json<NlDescribeReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<NlDescribeReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
     let formula = serde_json::from_value(req.formula)
         .map_err(|e| ApiError::BadRequest(format!("invalid formula: {e}")))?;
     let model = load_model(&state).await?;
@@ -445,32 +717,25 @@ struct SetCellReq {
 
 async fn set_cell(
     State(state): State<Arc<AppState>>,
+    ro: Option<Extension<ReadOnly>>,
     Path(id): Path<u32>,
-    body: Result<Json<SetCellReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<SetCellReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    if ro.is_some() {
+        return Err(ApiError::Forbidden("read-only token cannot write".into()));
+    }
+    let Json(req) = body?;
     let mid = MeasureId(id);
 
-    let mut model = load_model(&state).await?;
-    let measure = model
-        .measures
-        .get(&mid)
-        .ok_or_else(|| ApiError::NotFound(format!("no measure {id}")))?;
-    if !measure.is_input() {
-        return Err(ApiError::BadRequest(format!(
-            "measure {id} is derived; cannot set a cell"
-        )));
+    let _write = state.write_lock.lock().await;
+    let model = load_model(&state).await?;
+    if !model.measures.contains_key(&mid) {
+        return Err(ApiError::NotFound(format!("no measure {id}")));
     }
+    validate_write(&model, mid, &req.coord, Some(req.value))?;
+    let mut model = (*model).clone();
     model.set_input(mid, req.coord, improv_core_model::Value::Number(req.value));
-
-    let path = state.db_path.clone();
-    tokio::task::spawn_blocking(move || {
-        let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
-        store.save_model(&model).map_err(|e| e.to_string())
-    })
-    .await
-    .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
-    .map_err(ApiError::Internal)?;
+    save_model(&state, model).await?;
 
     Ok(Json(json!({ "ok": true })))
 }
@@ -611,22 +876,25 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
         store.save_model(&revenue_model()).unwrap();
-        let state = Arc::new(AppState {
-            db_path: path.to_str().unwrap().to_string(),
-            auth: Auth::Disabled,
-            scheduler_status: None,
-        });
+        let state = Arc::new(AppState::new(
+            path.to_str().unwrap().to_string(),
+            Auth::Disabled,
+            None,
+        ));
         (app(state), path)
     }
 
     // Same seeded store, but auth enabled with a single accepted token.
     fn authed_app(token: &str) -> (Router, std::path::PathBuf) {
         let (_, path) = seeded_app();
-        let state = Arc::new(AppState {
-            db_path: path.to_str().unwrap().to_string(),
-            auth: Auth::Tokens(HashSet::from([token.to_string()])),
-            scheduler_status: None,
-        });
+        let state = Arc::new(AppState::new(
+            path.to_str().unwrap().to_string(),
+            Auth::Tokens {
+                rw: HashSet::from([token.to_string()]),
+                ro: HashSet::new(),
+            },
+            None,
+        ));
         (app(state), path)
     }
 
@@ -1048,5 +1316,303 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn post_json(uri: &str, body: String) -> Request<Body> {
+        Request::post(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn over_limit_body_is_413() {
+        let (app, _p) = seeded_app();
+        let big = format!("{{\"text\":\"{}\"}}", "x".repeat(MAX_BODY_BYTES + 1));
+        let resp = app.oneshot(post_json("/nl/parse", big)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn too_many_edits_is_400() {
+        let (app, _p) = seeded_app();
+        let edit = json!({"measure": 101, "coord": [[1, 10], [2, 20]], "value": 1.0});
+        let body = json!({ "edits": vec![edit; MAX_EDITS + 1] }).to_string();
+        assert!(
+            body.len() < MAX_BODY_BYTES,
+            "must hit the edit cap, not the body cap"
+        );
+        let resp = app
+            .oneshot(post_json("/measures/102/eval", body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(body_json(resp).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("too many edits"));
+    }
+
+    // Slow-loris: a partial request must be dropped once the header timeout
+    // passes, not held open forever. Returns the time until the server closes.
+    async fn partial_request_closed_after(header_timeout: Duration) -> Duration {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (app, _p) = seeded_app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, app, header_timeout));
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
+        let start = std::time::Instant::now();
+        let mut buf = Vec::new();
+        // EOF (or a reset) is the server hanging up; cap the wait well past it.
+        let _ = tokio::time::timeout(header_timeout * 3, c.read_to_end(&mut buf))
+            .await
+            .expect("server should close a stalled connection");
+        server.abort();
+        start.elapsed()
+    }
+
+    #[tokio::test]
+    async fn slow_loris_closed_fast_timeout() {
+        let t = partial_request_closed_after(Duration::from_millis(200)).await;
+        assert!(t < Duration::from_secs(2), "closed after {t:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "takes ~10 s (default header timeout)"]
+    async fn slow_loris_closed_default_timeout() {
+        let t = partial_request_closed_after(HEADER_READ_TIMEOUT).await;
+        assert!(t < Duration::from_secs(11), "closed after {t:?}");
+    }
+
+    #[tokio::test]
+    async fn internal_error_hides_store_path() {
+        let state = Arc::new(AppState::new(
+            "/nonexistent-improv-dir/secret-store.db".into(),
+            Auth::Disabled,
+            None,
+        ));
+        let resp = app(state)
+            .oneshot(Request::get("/measures").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("nonexistent-improv-dir"),
+            "path leaked: {text}"
+        );
+        let v: JsonValue = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["error"], "internal error");
+        assert!(v["request_id"].as_u64().is_some());
+    }
+
+    #[test]
+    fn ct_eq_and_token_matches() {
+        assert!(ct_eq(b"secret", b"secret"));
+        assert!(!ct_eq(b"secret", b"secreT"));
+        assert!(!ct_eq(b"secret", b"secret2"));
+        assert!(!ct_eq(b"", b"x"));
+        let toks = HashSet::from(["a1".to_string(), "b2".to_string()]);
+        assert!(token_matches(&toks, "b2"));
+        assert!(!token_matches(&toks, "b"));
+    }
+
+    #[test]
+    fn startup_check_refuses_open_non_loopback() {
+        let open = Auth::Disabled;
+        let toks = Auth::Tokens {
+            rw: HashSet::from(["t".to_string()]),
+            ro: HashSet::new(),
+        };
+        let lo: SocketAddr = "127.0.0.1:3000".parse().unwrap();
+        let lo6: SocketAddr = "[::1]:3000".parse().unwrap();
+        let any: SocketAddr = "0.0.0.0:3000".parse().unwrap();
+        assert!(startup_check(lo, &open, None).is_ok());
+        assert!(startup_check(lo6, &open, None).is_ok());
+        assert!(startup_check(any, &open, None).is_err());
+        assert!(startup_check(any, &open, Some("0")).is_err());
+        assert!(startup_check(any, &open, Some("1")).is_ok());
+        assert!(startup_check(any, &toks, None).is_ok());
+    }
+
+    fn post_cell(uri: &str, body: JsonValue, token: Option<&str>) -> Request<Body> {
+        let mut b = Request::post(uri).header("content-type", "application/json");
+        if let Some(t) = token {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        b.body(Body::from(body.to_string())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn write_to_derived_or_unknown_measure_is_rejected() {
+        let (app, _p) = seeded_app();
+        let cell = json!({"coord": {"dims": {"1": 10, "2": 20}}, "value": 1.0});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/102/cells", cell.clone(), None));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::BAD_REQUEST);
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/999/cells", cell, None));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::NOT_FOUND);
+        // /eval edits must target an existing input measure too.
+        for m in [102, 999] {
+            let body = json!({"persist": true,
+                "edits": [{"measure": m, "coord": [[1, 10], [2, 20]], "value": 1.0}]});
+            let resp = app
+                .clone()
+                .oneshot(post_cell("/measures/102/eval", body, None));
+            assert_eq!(
+                resp.await.unwrap().status(),
+                StatusCode::BAD_REQUEST,
+                "measure {m}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn write_with_bad_coordinate_is_400() {
+        let (app, _p) = seeded_app();
+        // Price is dimensioned by Product (cat 2) only.
+        for dims in [
+            json!({"1": 10}),          // wrong category
+            json!({"2": 10}),          // item 10 belongs to Time, not Product
+            json!({"2": 20, "1": 10}), // extra dimension
+            json!({"2": 99}),          // unknown item
+            json!({}),                 // missing dimension
+        ] {
+            let body = json!({"coord": {"dims": dims}, "value": 1.0});
+            let resp = app
+                .clone()
+                .oneshot(post_cell("/measures/100/cells", body, None));
+            assert_eq!(
+                resp.await.unwrap().status(),
+                StatusCode::BAD_REQUEST,
+                "{dims}"
+            );
+        }
+        for coord in [json!([[2, 20]]), json!([[1, 10], [1, 11], [2, 20]])] {
+            let body = json!({"edits": [{"measure": 101, "coord": coord, "value": 1.0}]});
+            let resp = app
+                .clone()
+                .oneshot(post_cell("/measures/102/eval", body, None));
+            assert_eq!(
+                resp.await.unwrap().status(),
+                StatusCode::BAD_REQUEST,
+                "{coord}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_write_rejects_non_finite() {
+        let m = revenue_model();
+        let c = Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);
+        assert!(validate_write(&m, MeasureId(100), &c, Some(1.0)).is_ok());
+        assert!(validate_write(&m, MeasureId(100), &c, None).is_ok());
+        for v in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(validate_write(&m, MeasureId(100), &c, Some(v)).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn read_only_token_can_read_not_write() {
+        let (_, path) = seeded_app();
+        let auth = Auth::Tokens {
+            rw: HashSet::from(["w".to_string()]),
+            ro: HashSet::from(["r".to_string()]),
+        };
+        let app = app(Arc::new(AppState::new(
+            path.to_str().unwrap().to_string(),
+            auth,
+            None,
+        )));
+        let resp = app.clone().oneshot(get_with_bearer("/measures", Some("r")));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
+        let cell = json!({"coord": {"dims": {"2": 20}}, "value": 5.0});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/100/cells", cell.clone(), Some("r")));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::FORBIDDEN);
+        let edit = json!([{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 1.0}]);
+        let persist = json!({"persist": true, "edits": edit});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/102/eval", persist, Some("r")));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::FORBIDDEN);
+        let what_if = json!({"edits": edit});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/102/eval", what_if, Some("r")));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
+        let resp = app.oneshot(post_cell("/measures/100/cells", cell, Some("w")));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_writes_do_not_lose_updates() {
+        let (app, _p) = seeded_app();
+        let mut tasks = Vec::new();
+        for (t, p) in [(10, 20), (10, 21), (11, 20), (11, 21)] {
+            let app = app.clone();
+            tasks.push(tokio::spawn(async move {
+                let body = json!({"coord": {"dims": {"1": t, "2": p}}, "value": 1000.0 + f64::from(t * 100 + p)});
+                app.oneshot(post_cell("/measures/101/cells", body, None)).await.unwrap().status()
+            }));
+        }
+        for t in tasks {
+            assert_eq!(t.await.unwrap(), StatusCode::OK);
+        }
+        let resp = app.oneshot(
+            Request::get("/measures/101/values")
+                .body(Body::empty())
+                .unwrap(),
+        );
+        let cells = body_json(resp.await.unwrap()).await;
+        let mut vals: Vec<f64> = cells
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["value"].as_f64().unwrap())
+            .collect();
+        vals.sort_by(f64::total_cmp);
+        assert_eq!(
+            vals,
+            vec![2020.0, 2021.0, 2120.0, 2121.0],
+            "an update was lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn reads_share_one_load_until_a_write() {
+        let (_, path) = seeded_app();
+        let state = Arc::new(AppState::new(
+            path.to_str().unwrap().into(),
+            Auth::Disabled,
+            None,
+        ));
+        let app = app(state.clone());
+        let get = |uri: &str| Request::get(uri).body(Body::empty()).unwrap();
+        for uri in ["/measures", "/measures/102/values"] {
+            let resp = app.clone().oneshot(get(uri)).await.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+        assert_eq!(state.loads.load(Ordering::Relaxed), 1, "two GETs, one load");
+
+        // A write replaces the cache: the next read sees it without reloading.
+        let body = json!({"coord": {"dims": {"2": 20}}, "value": 42.0});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/measures/100/cells", body, None));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
+        let resp = app.oneshot(get("/measures/100/values")).await.unwrap();
+        let cells = body_json(resp).await;
+        assert!(cells.as_array().unwrap().iter().any(|c| c["value"] == 42.0));
+        assert_eq!(state.loads.load(Ordering::Relaxed), 1);
     }
 }

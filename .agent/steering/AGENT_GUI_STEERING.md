@@ -159,12 +159,29 @@ A JSON HTTP API built on **axum** + **tokio**, over a model store.
 
 ### 5.2 Design Notes
 
-- Stateless request handlers over a shared model store.
-- **Bearer-token authentication** (`IMPROV_API_TOKEN`/`IMPROV_API_TOKENS`;
-  `/health` stays public; open mode when no token is configured).
+- Handlers share one cached `Arc<Model>` per store (`tokio::RwLock`), replaced
+  on every API write and dropped after a scheduler refresh. The server assumes
+  it is the store's only writer. The engine is still built per `/eval`.
+- Writes (`/cells`, `/eval` with `persist`) hold a per-store `tokio::Mutex`
+  across load-modify-save (shared with the scheduler) and are validated:
+  existing input measure, a coordinate covering exactly its categories, and
+  finite values.
+- **Bearer-token authentication**: read-write `IMPROV_API_TOKEN`/`IMPROV_API_TOKENS`,
+  read-only `IMPROV_API_TOKENS_RO`, compared in constant time. `/health` stays
+  public. Open mode (no tokens) refuses a non-loopback bind unless
+  `IMPROV_ALLOW_OPEN=1`.
+- Limits: hyper HTTP/1 accept loop with a 10 s header-read timeout
+  (`IMPROV_HEADER_TIMEOUT_MS`; `axum::serve` 0.7 has none), a 30 s
+  `tower` timeout, a global 64-request concurrency limit, 1 MiB bodies, and
+  10,000 edits per `/eval`. The `hyper-util` `auto` builder is avoided: it would
+  pull in h2.
+- Internal errors are logged with a request id; clients get only
+  `{"error":"internal error","request_id":N}`.
 - The server reuses the same evaluate/persist path as the other interfaces.
-- A **hosted refresh scheduler** runs as a background task alongside the API
-  (`IMPROV_SCHEDULER`/`IMPROV_SCHEDULER_TICK_SECS`; `GET /scheduler/status`).
+- A **hosted refresh scheduler** (`GET /scheduler/status`) is off by default:
+  `IMPROV_SCHEDULER=1` enables it, and it runs only functions whose
+  `sha256(name NUL body)` is listed in the `IMPROV_EXTFN_ALLOW` file, always in
+  the `Restricted` sandbox. User docs: `docs/src/server.md`.
 
 ---
 
