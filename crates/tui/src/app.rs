@@ -797,7 +797,7 @@ impl App {
         self.apply_value(row, col, Value::Number(value))
     }
 
-    /// Typed edit-apply (see [`App::apply_edit`]). Numbers flow through the
+    /// Set input `[row][col]` to a typed `value`. Numbers flow through the
     /// engine incrementally; the engine's edit delta is numeric-only, so a
     /// text/boolean edit rebuilds the engine from the updated model instead.
     pub fn apply_value(&mut self, row: usize, col: usize, value: Value) -> Result<(), String> {
