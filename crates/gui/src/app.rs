@@ -108,7 +108,7 @@ pub struct ImprovApp {
     /// its `placements`.
     matrices: Vec<Matrix>,
     /// Which matrix has the keyboard: the only one that consumes grid shortcuts
-    /// and the one every "selected measure" surface (formula bar, inspector,
+    /// and the one every "selected measure" surface (formula editor, inspector,
     /// chart, status readout) reads from. Always a valid index into `matrices`.
     focus: usize,
     /// The saved view this canvas was loaded from, if any — the highlighted
@@ -123,13 +123,16 @@ pub struct ImprovApp {
     /// the buffer when the selection changes).
     formula_for: Option<MeasureId>,
     /// The byte offset of the last `commit_formula` parse error, if any (for
-    /// the formula bar's inline red-underline highlight + error label). Set on
+    /// the formula editor's inline red-underline highlight + error label). Set on
     /// a failed commit; cleared on a successful commit or when the buffer is
     /// edited again.
     formula_error_pos: Option<usize>,
     /// The message of the last `commit_formula` parse error, shown directly
-    /// under the formula bar. Cleared alongside `formula_error_pos`.
+    /// under the formula editor. Cleared alongside `formula_error_pos`.
     formula_error_msg: String,
+    /// Text buffer for the formula list's last line, where `Name = formula`
+    /// adds a derived measure.
+    new_formula_line: String,
     /// Text buffer for the "Save view" name field.
     view_name: String,
 
@@ -820,12 +823,13 @@ impl ImprovApp {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             formula_row_rects: Vec::new(),
+            new_formula_line: String::new(),
         })
     }
 
     // -- the canvas: N matrices, one focused -------------------------------
 
-    /// The focused matrix — the one the keyboard, the formula bar, the
+    /// The focused matrix — the one the keyboard, the formula editor, the
     /// inspector, the chart and the selection readout all follow.
     ///
     /// `matrices` is never empty (an empty model still has one matrix, showing
@@ -1503,7 +1507,7 @@ impl ImprovApp {
         m.edit_buf = seed;
     }
 
-    /// The editable source text the formula bar shows for `measure`: symbolic
+    /// The editable source text the formula editor shows for `measure`: symbolic
     /// DSL (`Price * Quantity`) whenever the v1 grammar can spell the formula
     /// exactly, else the controlled-English description (`Price times
     /// Quantity`).
@@ -1548,7 +1552,7 @@ impl ImprovApp {
     /// text that has no error at that offset.
     ///
     /// `text` may be either the symbolic DSL (`Price * Quantity`) or the
-    /// controlled English the formula bar displays (`Price times Quantity`);
+    /// controlled English the formula editor displays (`Price times Quantity`);
     /// see [`Self::formula_source`].
     pub fn commit_formula(&mut self, measure: MeasureId, text: &str) -> Result<(), String> {
         let formula = match self.parse_formula_text(text) {
@@ -1580,6 +1584,7 @@ impl ImprovApp {
     /// Whether `measure`'s formula is currently enabled (the reference's `✓`).
     /// True for an input measure too — it has no formula to disable, so there is
     /// no unchecked state for it to be in.
+    #[cfg(test)]
     pub fn formula_enabled(&self, measure: MeasureId) -> bool {
         self.model
             .measures
@@ -1831,7 +1836,7 @@ impl ImprovApp {
                 m.measure = fallback;
             }
         }
-        // Force the formula bar to reload from the restored model.
+        // Force the formula editor to reload from the restored model.
         self.formula_for = None;
         self.formula_error_pos = None;
         self.formula_error_msg.clear();
@@ -1843,10 +1848,6 @@ impl ImprovApp {
     /// rule as the CLI's `add-derived`). Rebuilds the engine and autosaves. On
     /// any failure (parse error, duplicate name, engine build failure, failed
     /// store write) the model, engine, and snapshot are unchanged.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the step-4b formula line calls it")
-    )]
     pub fn add_derived_measure(&mut self, name: &str, text: &str) -> Result<MeasureId, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -1982,7 +1983,7 @@ fn push_bounded(stack: &mut Vec<Model>, state: Model) {
 /// * `other_focus` — some egui widget owns keyboard focus. While a cell is
 ///   being edited that widget IS the cell editor, so the two flags overlap;
 ///   either one suppresses the bindings. Any *other* focused widget (the
-///   formula bar, the new-measure name/formula fields, the CSV wizard's text
+///   formula editor, the new-measure name/formula fields, the CSV wizard's text
 ///   fields, the view-name box) must get the keystroke instead of the grid —
 ///   otherwise typing `n` cycles measures and `h`/`j`/`k`/`l` moves the cursor
 ///   mid-word.
@@ -2037,6 +2038,12 @@ pub struct FormulaRow {
     /// Why this row is not sound, shown inline beneath it. `None` when the
     /// formula compiles and has an editable spelling.
     pub error: Option<String>,
+}
+
+/// Swallow this frame's Enter once a text field has acted on it, so the
+/// grid (drawn later, and now seeing no focus) doesn't start a cell edit.
+fn consume_enter(ui: &egui::Ui) {
+    ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
 }
 
 /// Build a live engine over all derived measures in `model`, plus its initial
@@ -2478,7 +2485,7 @@ impl eframe::App for ImprovApp {
         // Panel order IS layout order: a top/bottom panel claims its strip from
         // the outside in. The status bar goes below everything and the canvas
         // takes what is left.
-        self.formula_bar(ctx);
+
         self.status_bar(ctx);
         self.chart_panel(ctx);
         self.csv_wizard_panel(ctx);
@@ -2795,115 +2802,6 @@ impl ImprovApp {
         self.show_inspector = open;
     }
 
-    /// The Lotus Improv **formula bar**: a compact single-line bar across the
-    /// top that shows and edits the *selected measure's* formula. Input
-    /// measures show a hint. Committing re-typechecks and rebuilds the engine.
-    fn formula_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("formula_bar").show(ctx, |ui| {
-            // Reload the buffer when the selection changes, clearing any
-            // stale inline error from the previously selected measure.
-            if self.formula_for != self.selected() {
-                self.formula_for = self.selected();
-                self.formula_buf = self
-                    .selected()
-                    .and_then(|m| self.formula_source(m))
-                    .unwrap_or_default();
-                self.formula_error_pos = None;
-                self.formula_error_msg.clear();
-            }
-            ui.horizontal(|ui| match self.selected() {
-                Some(mid)
-                    if self.model.measures.get(&mid).map(|m| m.is_derived()) == Some(true) =>
-                {
-                    ui.strong(format!("{} =", self.model.measures[&mid].name.0));
-                    // A disabled formula is still shown and still editable — it
-                    // is part of the model's logic — but the bar says so, so a
-                    // blank grid is never a mystery.
-                    if !self.formula_enabled(mid) {
-                        ui.weak("(disabled)").on_hover_text(
-                            "This formula is switched off in the formula list \
-                             below, so it computes nothing.",
-                        );
-                    }
-                    // No spelling either surface language accepts (e.g. a
-                    // measure named "Unit Price" from a CSV header): show the
-                    // formula read-only rather than invite a commit of text
-                    // that cannot parse. See `formula_source`.
-                    //
-                    // ponytail: this reparses the one-line formula per frame.
-                    // Cache it next to `formula_buf` (same invalidation as
-                    // `formula_for`) if a profile ever shows it.
-                    if self.formula_source(mid).is_none() {
-                        let english = self
-                            .model
-                            .measures
-                            .get(&mid)
-                            .and_then(|m| match &m.kind {
-                                MeasureKind::Derived(f) => {
-                                    Some(describe_formula(&NlContext::new(&self.model), f))
-                                }
-                                MeasureKind::Input => None,
-                            })
-                            .unwrap_or_default();
-                        ui.weak(english);
-                        ui.weak(
-                            "(not editable here: this formula has no editable spelling \u{2014} \
-                             rename the measure(s)/category(ies) it uses to simple identifiers \
-                             to edit it)",
-                        );
-                        return;
-                    }
-                    let error_pos = self.formula_error_pos;
-                    let font = egui::TextStyle::Body.resolve(ui.style());
-                    let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
-                        let mut job = crate::formula_highlight::highlight_formula(
-                            text,
-                            font.clone(),
-                            error_pos,
-                        );
-                        job.wrap.max_width = wrap_width;
-                        ui.fonts(|f| f.layout_job(job))
-                    };
-                    let resp = ui.add(
-                        egui::TextEdit::singleline(&mut self.formula_buf)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("e.g. Price * Quantity")
-                            .layouter(&mut layouter),
-                    );
-                    if resp.changed() {
-                        // The user edited the buffer: the previous error no
-                        // longer describes what's on screen.
-                        self.formula_error_pos = None;
-                        self.formula_error_msg.clear();
-                    }
-                    let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                    if ui.button("Commit").clicked() || enter {
-                        let text = self.formula_buf.clone();
-                        match self.commit_formula(mid, &text) {
-                            Ok(()) => self.status = "formula updated".into(),
-                            Err(e) => self.status = format!("formula error: {e}"),
-                        }
-                    }
-                }
-                Some(mid) => {
-                    ui.strong(format!("{} ", self.model.measures[&mid].name.0));
-                    ui.weak("(input measure — edit cells in the grid)");
-                }
-                None => {
-                    ui.weak("No measure selected.");
-                }
-            });
-            // Inline error label directly under the formula bar (in addition
-            // to the general status line), cleared alongside the highlight.
-            if !self.formula_error_msg.is_empty() {
-                ui.colored_label(
-                    crate::formula_highlight::ERROR_COLOR,
-                    format!("⚠ {}", self.formula_error_msg),
-                );
-            }
-        });
-    }
-
     /// **The Step 2 formula pane** (plan
     /// `docs/reviews/2026-09-22-gui-reconstruction-plan.md`): the whole model's
     /// logic as one persistent, numbered, individually-checkable list — the
@@ -2920,9 +2818,11 @@ impl ImprovApp {
     ///   measure so the grid follows;
     /// * inline error text under a row whose formula does not compile.
     ///
-    /// The editor for the selected row stays the top [`Self::formula_bar`], as
-    /// the reference also has both (a `Formula:` edit line *and* the list).
-    fn formula_list(&mut self, ui: &mut egui::Ui) {
+    /// The selected row *is* the editor ([`Self::formula_editor`]), and a last
+    /// line takes `Name = formula` to add one; there is no separate bar.
+    fn formula_list(&mut self, ui: &mut egui::Ui, mi: usize) {
+        // Only the focused window edits, so the editor's global id is unique.
+        let editing = mi == self.focus_index();
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Calc").clicked() {
@@ -2933,11 +2833,6 @@ impl ImprovApp {
         });
         ui.separator();
         let rows = self.formula_rows();
-        if rows.is_empty() {
-            self.formula_row_rects.clear();
-            ui.weak("Type a formula on the line below.");
-            return;
-        }
         // What the user clicked, applied after the loop so the model is
         // not mutated while `rows` borrows nothing from it but the UI
         // still reads `self.selected` per row.
@@ -2972,7 +2867,11 @@ impl ImprovApp {
                         } else {
                             egui::RichText::new(label).weak().strikethrough()
                         };
-                        let resp = ui.selectable_label(selected, text);
+                        let resp = if selected && editing {
+                            self.formula_editor(ui, row.measure, &row.target)
+                        } else {
+                            ui.selectable_label(selected, text)
+                        };
                         // Only the part the scroll area shows is clickable.
                         let shown = resp.rect.intersect(ui.clip_rect());
                         if shown.is_positive() {
@@ -2982,7 +2881,9 @@ impl ImprovApp {
                             select = Some(row.measure);
                         }
                     });
-                    if let Some(err) = &row.error {
+                    let edit_err = (selected && editing && !self.formula_error_msg.is_empty())
+                        .then(|| self.formula_error_msg.clone());
+                    if let Some(err) = edit_err.as_ref().or(row.error.as_ref()) {
                         ui.horizontal(|ui| {
                             // Indent under the row's text, past the
                             // checkbox and number.
@@ -2994,8 +2895,14 @@ impl ImprovApp {
                         });
                     }
                 }
+                self.new_formula_line(ui, editing);
             });
         self.formula_row_rects = rects;
+        // Selection left the rows (an input measure, or none): re-seed the
+        // editor next time, as the old bar did on every selection change.
+        if editing && !rows.iter().any(|r| Some(r.measure) == self.selected()) {
+            self.formula_for = None;
+        }
         if let Some(id) = select {
             self.focused_mut().select(Some(id));
         }
@@ -3014,6 +2921,122 @@ impl ImprovApp {
                 }
                 Err(e) => self.status = format!("toggle failed: {e}"),
             }
+        }
+    }
+
+    /// The selected row's in-place editor: `Name =` and a highlighted
+    /// single-line edit over `formula_buf`. Enter commits (errors show under
+    /// the row), Esc reverts. A formula with no editable spelling shows its
+    /// English text read-only (see [`Self::formula_source`]).
+    fn formula_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        mid: MeasureId,
+        target: &str,
+    ) -> egui::Response {
+        let source = self.formula_source(mid);
+        // Reload the buffer when the selection changes, clearing any stale
+        // inline error from the previously selected measure.
+        if self.formula_for != Some(mid) {
+            self.formula_for = Some(mid);
+            self.formula_buf = source.clone().unwrap_or_default();
+            self.formula_error_pos = None;
+            self.formula_error_msg.clear();
+        }
+        let Some(source) = source else {
+            let english = self
+                .model
+                .measures
+                .get(&mid)
+                .and_then(|m| match &m.kind {
+                    MeasureKind::Derived(f) => {
+                        Some(describe_formula(&NlContext::new(&self.model), f))
+                    }
+                    MeasureKind::Input => None,
+                })
+                .unwrap_or_default();
+            return ui.selectable_label(true, format!("{target} = {english}"));
+        };
+        ui.strong(format!("{target} ="));
+        let error_pos = self.formula_error_pos;
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+            let mut job =
+                crate::formula_highlight::highlight_formula(text, font.clone(), error_pos);
+            job.wrap.max_width = wrap_width;
+            ui.fonts(|f| f.layout_job(job))
+        };
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut self.formula_buf)
+                .id(egui::Id::new("formula_edit"))
+                .desired_width(f32::INFINITY)
+                .hint_text("e.g. Price * Quantity")
+                .layouter(&mut layouter),
+        );
+        if resp.changed() {
+            // The previous error no longer describes what's on screen.
+            self.formula_error_pos = None;
+            self.formula_error_msg.clear();
+        }
+        let (enter, esc) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::Enter),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if esc && (resp.has_focus() || resp.lost_focus()) {
+            self.formula_buf = source;
+            self.formula_error_pos = None;
+            self.formula_error_msg.clear();
+            resp.surrender_focus();
+        } else if enter && resp.lost_focus() {
+            consume_enter(ui);
+            let text = self.formula_buf.clone();
+            match self.commit_formula(mid, &text) {
+                Ok(()) => self.status = "formula updated".into(),
+                Err(e) => self.status = format!("formula error: {e}"),
+            }
+        }
+        resp
+    }
+
+    /// The formula list's last line: type `Name = formula`, press Enter, and a
+    /// derived measure is added and selected. `editing` (the focused window)
+    /// gets the global id `formula_new`; other windows scope theirs.
+    fn new_formula_line(&mut self, ui: &mut egui::Ui, editing: bool) {
+        let id = if editing {
+            egui::Id::new("formula_new")
+        } else {
+            ui.id().with("formula_new")
+        };
+        let resp = ui
+            .horizontal(|ui| {
+                // Past the checkbox and number, under the rows' text.
+                ui.add_space(44.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.new_formula_line)
+                        .id(id)
+                        .hint_text("Name = formula")
+                        .desired_width(f32::INFINITY),
+                )
+            })
+            .inner;
+        if !(resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
+            return;
+        }
+        consume_enter(ui);
+        let line = self.new_formula_line.clone();
+        let Some((name, expr)) = line.split_once('=') else {
+            self.status = "type Name = formula".into();
+            return;
+        };
+        match self.add_derived_measure(name.trim(), expr.trim()) {
+            Ok(id) => {
+                self.focused_mut().select(Some(id));
+                self.new_formula_line.clear();
+                self.status = format!("added {}", name.trim());
+            }
+            Err(e) => self.status = format!("formula error: {e}"),
         }
     }
 
@@ -3259,7 +3282,7 @@ impl ImprovApp {
                 .show_separator_line(false)
                 .show_inside(ui, |ui| {
                     ui.shrink_clip_rect(outer_clip);
-                    self.formula_list(ui);
+                    self.formula_list(ui, mi);
                 });
             self.gutter_frame(ui, mi);
         });
@@ -3740,7 +3763,7 @@ impl ImprovApp {
     /// PageUp/PageDown page the first page dimension; `n`/`N` cycle the
     /// selected measure; Ctrl/Cmd+Z undoes and Ctrl/Cmd+Shift+Z (or Ctrl+Y)
     /// redoes. Swallowed while a cell text field is open, or while ANY other
-    /// egui widget owns keyboard focus (so typing in the formula bar, the
+    /// egui widget owns keyboard focus (so typing in the formula editor, the
     /// new-measure form, the CSV wizard, or the view-name box never also drives
     /// the grid). `n`/`N` (not Tab) drive measure cycling because egui reserves
     /// Tab for widget focus.
@@ -4373,7 +4396,7 @@ mod tests {
         assert!(!app.formula_error_msg.is_empty());
         assert!(err.contains("Widgets") || err.contains("measure"));
 
-        // Clearing the error (what the formula bar does when the buffer is
+        // Clearing the error (what the formula editor does when the buffer is
         // edited again) resets both fields.
         app.formula_error_pos = None;
         app.formula_error_msg.clear();
@@ -4401,9 +4424,9 @@ mod tests {
 
     // -- BUG 2: the displayed formula must commit unchanged ----------------
 
-    /// Every formula shape the formula bar can display, for the round-trip.
+    /// Every formula shape the formula editor can display, for the round-trip.
     /// `SQL(...)`/`CALL(...)` are measure *definitions* whose measures stay
-    /// `MeasureKind::Input` (see `cli::cmd_define`), so the formula bar shows
+    /// `MeasureKind::Input` (see `cli::cmd_define`), so the formula editor shows
     /// them the input hint, never editable formula text — nothing to round-trip.
     fn displayable_formulas() -> Vec<(&'static str, Formula)> {
         let (t, p) = (CategoryId(1), CategoryId(2));
@@ -4518,7 +4541,7 @@ mod tests {
         ]
     }
 
-    /// The invariant: the text the formula bar puts in its buffer commits
+    /// The invariant: the text the formula editor puts in its buffer commits
     /// successfully UNCHANGED, leaving the AST and the computed snapshot alone.
     #[test]
     fn displayed_formula_commits_unchanged() {
@@ -4529,7 +4552,7 @@ mod tests {
             let mut app = build_app(model);
             select(&mut app, MeasureId(102));
 
-            // Exactly what `formula_bar` seeds the buffer with.
+            // Exactly what `formula_editor` seeds the buffer with.
             let buf = app
                 .formula_source(MeasureId(102))
                 .unwrap_or_else(|| panic!("{label}: nothing displayed"));
@@ -4775,6 +4798,7 @@ mod tests {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             formula_row_rects: Vec::new(),
+            new_formula_line: String::new(),
         }
     }
 
@@ -6468,7 +6492,7 @@ mod tests {
         )
     }
 
-    /// Typing in the formula bar / new-measure form / CSV wizard / view-name
+    /// Typing in the formula editor / new-measure form / CSV wizard / view-name
     /// box must not drive the grid: with focus elsewhere, `n`, `j`/`l` and `]`
     /// change nothing. Pre-fix each of them cycled the measure, moved the cell
     /// cursor, and paged a dimension mid-word.
@@ -6485,7 +6509,7 @@ mod tests {
 
         use egui::Key;
         let keys = [Key::N, Key::J, Key::L, Key::CloseBracket, Key::Enter];
-        for field in ["formula_bar", "csv_path", "view_name"] {
+        for field in ["formula_edit", "csv_path", "view_name"] {
             let after = frame_with_keys(&mut app, &keys, Some(field));
             assert_eq!(after, before, "{field} focused, yet the grid reacted");
             assert!(
@@ -6587,7 +6611,7 @@ mod tests {
             });
         };
 
-        press_undo(&mut app, Some("formula_bar"));
+        press_undo(&mut app, Some("formula_edit"));
         assert_eq!(
             app.cell_text(MeasureId(101), &key).as_deref(),
             Some("999"),
@@ -6962,7 +6986,6 @@ mod tests {
         };
         ctx.run(raw, |ctx| {
             app.sync_axis_state();
-            app.formula_bar(ctx);
             app.status_bar(ctx);
             app.chart_panel(ctx);
             app.csv_wizard_panel(ctx);
@@ -7693,7 +7716,6 @@ mod tests {
             };
             let _ = ctx.run(raw, |ctx| {
                 app.sync_axis_state();
-                app.formula_bar(ctx);
                 let ws = app.canvas_panel(ctx);
                 app.model_browser(ctx, ws);
                 app.info_panel(ctx, ws);
@@ -8117,7 +8139,6 @@ mod tests {
                 };
                 let _ = ctx.run(raw, |ctx| {
                     app.sync_axis_state();
-                    app.formula_bar(ctx);
                     app.canvas_panel(ctx);
                 });
             }
@@ -8998,7 +9019,7 @@ mod tests {
     }
 
     /// Windows stay on the workspace: a title dragged up stops at its top,
-    /// below the formula bar.
+    /// the top of the app now that no formula bar sits above it.
     #[test]
     fn a_window_cannot_be_dragged_above_the_workspace() {
         let mut app = build_app(grid_2x2_model());
@@ -9008,11 +9029,11 @@ mod tests {
         let grab = egui::pos2(win.center().x, win.top() + 12.0);
         desk.drag(&mut app, grab, grab - egui::vec2(0.0, 300.0));
         assert_eq!(app.matrices[0].rect.y, 0.0);
-        let bar =
+        assert!(
             egui::containers::panel::PanelState::load(&desk.ctx, egui::Id::new("formula_bar"))
-                .expect("formula bar shown")
-                .rect;
-        assert!(win_rect(&desk.ctx, &app, 0).top() >= bar.bottom());
+                .is_none()
+        );
+        assert!(win_rect(&desk.ctx, &app, 0).top() >= 0.0);
     }
 
     /// Resizing a window persists into its matrix, and never below the
@@ -9082,7 +9103,7 @@ mod tests {
     }
 
     /// (a) With no side panels, the workspace spans the whole window width at
-    /// 1400x900, between the formula bar and the bottom panels, even with the
+    /// 1400x900, from the top down to the bottom panels, even with the
     /// Info panel open.
     #[test]
     fn the_workspace_spans_the_full_window_width() {
@@ -9104,7 +9125,7 @@ mod tests {
             .max_by(|a, b| a.area().total_cmp(&b.area()))
             .expect("the workspace is painted");
         assert_eq!((ws.left(), ws.right()), (0.0, 1400.0), "{ws:?}");
-        assert!(ws.top() > 0.0 && ws.bottom() < 900.0, "{ws:?}");
+        assert!(ws.top() == 0.0 && ws.bottom() < 900.0, "{ws:?}");
         assert!(close_box_of(&ctx, panel_win("info")).is_some());
         assert!(close_box_of(&ctx, panel_win("browser")).is_some());
     }
@@ -9208,7 +9229,7 @@ mod tests {
         assert_eq!(app.focus_index(), 0);
     }
 
-    /// The formula bar, inspector and chart all follow the FOCUSED matrix: they
+    /// The formula editor, inspector and chart all follow the FOCUSED matrix: they
     /// are single-measure surfaces, and on a canvas "the selected measure" can
     /// only mean "the one with the keyboard".
     #[test]
@@ -9538,16 +9559,16 @@ mod tests {
                 .clone()
         };
 
-        let _ = press_command_key(&mut app, egui::Key::S, Some("formula_bar"));
+        let _ = press_command_key(&mut app, egui::Key::S, Some("formula_edit"));
         assert_eq!(described(&db), None, "Ctrl+S fired while typing in a field");
         let _ = press_command_key(&mut app, egui::Key::S, None);
         assert_eq!(app.status, "saved model");
         assert_eq!(described(&db).as_deref(), Some("saved by ctrl+s"));
     }
 
-    /// The menu opens on the workspace, not over the formula bar's label.
+    /// The menu opens on the workspace, clear of the first worksheet's title.
     #[test]
-    fn menu_starts_clear_of_the_formula_bar() {
+    fn menu_starts_on_the_workspace() {
         let mut app = build_app(grid_2x2_model());
         let ctx = egui::Context::default();
         crate::theme::apply(&ctx);
@@ -9555,10 +9576,10 @@ mod tests {
         let menu = ctx
             .memory(|m| m.area_rect(menu::menu_id()))
             .expect("menu shown");
-        let bar = egui::containers::panel::PanelState::load(&ctx, egui::Id::new("formula_bar"))
-            .expect("formula bar shown")
-            .rect;
-        assert!(!menu.intersects(bar), "{menu:?} over {bar:?}");
+        assert!(menu.top() >= 0.0, "{menu:?}");
+        let win = win_rect(&ctx, &app, 0);
+        let title = egui::Rect::from_min_size(win.min, egui::vec2(win.width(), 23.0));
+        assert!(!menu.intersects(title), "{menu:?} over {title:?}");
     }
 
     /// Holding Ctrl+S saves once: the auto-repeat events that follow are
@@ -9655,5 +9676,77 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
+    }
+
+    /// One whole-app frame on `ctx` with `id` focused, delivering `events`.
+    fn focused_frame(ctx: &egui::Context, app: &mut ImprovApp, id: &str, events: Vec<egui::Event>) {
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new(id)));
+        let _ = full_frame_with(ctx, app, egui::vec2(1200.0, 800.0), 0.0, events, |_| ());
+    }
+
+    fn enter() -> egui::Event {
+        egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// The formula list's last line adds a measure from `Name = formula`.
+    #[test]
+    fn typing_name_equals_formula_adds_a_measure() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let text = egui::Event::Text("Margin = Revenue - 1".into());
+        focused_frame(&ctx, &mut app, "formula_new", vec![text]);
+        focused_frame(&ctx, &mut app, "formula_new", vec![enter()]);
+        let (&id, _) = app
+            .model
+            .measures
+            .iter()
+            .find(|(_, m)| m.name.0 == "Margin")
+            .unwrap_or_else(|| panic!("Margin not added: {}", app.status));
+        assert_eq!(app.status, "added Margin");
+        assert_eq!(app.selected(), Some(id));
+        assert!(app.new_formula_line.is_empty());
+        assert_eq!(app.values_for(id).get(&vec![(1, 10), (2, 20)]), Some(&69.0));
+    }
+
+    /// The selected row is the editor: Enter commits a good formula, and a
+    /// bad one errors inline and leaves the model alone.
+    #[test]
+    fn editing_the_selected_row_commits_and_errors_inline() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(102));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        assert_eq!(app.formula_buf, "Price * Quantity");
+        app.formula_buf = "Price + Quantity".into();
+        focused_frame(&ctx, &mut app, "formula_edit", vec![enter()]);
+        assert_eq!(app.status, "formula updated");
+        let key = vec![(1, 10), (2, 20)];
+        assert_eq!(app.values_for(MeasureId(102)).get(&key), Some(&17.0));
+        let before = app.model.measures[&MeasureId(102)].kind.clone();
+        app.formula_buf = "Price *".into();
+        focused_frame(&ctx, &mut app, "formula_edit", vec![enter()]);
+        assert!(!app.formula_error_msg.is_empty(), "{}", app.status);
+        assert_eq!(app.model.measures[&MeasureId(102)].kind, before);
+    }
+
+    /// No formula bar across the top: the workspace starts at the menu.
+    #[test]
+    fn no_top_formula_bar() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        assert!(
+            egui::containers::panel::PanelState::load(&ctx, egui::Id::new("formula_bar")).is_none()
+        );
     }
 }

@@ -121,7 +121,9 @@ baseline on hotdog; its temporary instance was terminated after collection.
   half: each matrix is a NeXT worksheet window (`nxwin`) on a `#555555`
   workspace. Step 3, second half: the explorer and inspector became the model
   browser and Info panel windows, so the workspace is full width (B1, B4
-  done). Step 4 (formula pane, B5/B6) is next.
+  done). Step 4 (formula pane, B5/B6) landed: the formula list lives in each
+  worksheet window, the selected row edits in place, and `Name = formula` on
+  its last line adds a measure; the top formula bar is gone.
 - **Scale remains unfinished:** partial loads still enumerate all coordinate
   rows before filtering; GUI charts and columns materialize products. No
   billion-cell usability claim follows from row virtualization.

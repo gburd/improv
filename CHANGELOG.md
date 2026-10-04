@@ -16,12 +16,16 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI formulas are edited in place in the formula list.** The top formula
+  bar is gone: the selected row is the editor (Enter commits, errors show
+  under the row, Esc reverts), and typing `Name = formula` on the list's
+  last line adds a derived measure.
 - **GUI formula list lives in each worksheet window**, under the grid, with a
   `Calc` button. The operator palette and the "New derived measure" form are
   gone.
 - **GUI model browser and Info panel are NeXT windows.** The docked
   explorer and inspector side panels are gone, so the dark workspace spans
-  the full width between the formula bar and the bottom panels. The model
+  the full width above the bottom panels. The model
   browser (`<file> - Model`, bottom left; Categories, Measures, Views) has a
   close box and **View ▸ Model Browser** toggles it. The Info panel (top
   right, closed at start) opens from **Info ▸ Info Panel…** and closes from

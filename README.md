@@ -208,7 +208,7 @@ Time × Product.
 The egui/eframe desktop app, styled in a NeXTSTEP-*inspired* look-and-feel
 (built from general knowledge of the original Lotus Improv, not a verified
 side-by-side comparison) — a model browser window, editable pivot grid, on-grid margin
-**category tiles** for drag-to-pivot, a top **formula bar**, an Info panel, saved
+**category tiles** for drag-to-pivot, an in-place **formula list**, an Info panel, saved
 views,
 per-category filters, a bar/line **chart**, and **multi-category-per-axis
 stacking**.
@@ -216,7 +216,7 @@ stacking**.
 ![Improv GUI — pivot grid](docs/src/img/gui-pivot-grid.png)
 
 *The 3-D sample model: Revenue over Time × Product × Region. Product is on
-columns, Time on rows, Region paged (North [1/2]); the formula bar shows
+columns, Time on rows, Region paged (North [1/2]); the formula list shows
 `Revenue = Price times Quantity`, and the inspector shows its dependencies.*
 
 ![Improv GUI — stacked axes](docs/src/img/gui-stacked-axes.png)

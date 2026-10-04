@@ -3,7 +3,7 @@
 `improv-gui` is the egui/eframe desktop front-end, styled after the original
 NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
 selection), flat controls with 1 px black outlines, worksheet windows with NeXT
-title bars on a dark gray workspace, white grid cells, a top formula bar, a floating application menu,
+title bars on a dark gray workspace, white grid cells, a formula list in each worksheet window, a floating application menu,
 on-grid category tiles for pivoting, a model browser window and an Info panel.
 
 Run it (from the Nix dev shell, which provides the GUI runtime libraries):
@@ -39,8 +39,6 @@ The window has five regions:
   `=` derived; click one to select it) and saved Views (name field, **Save
   view**, click a view to open it). Its close box hides it; **View ▸ Model
   Browser** brings it back.
-- **Formula bar** (top) — the selected measure's formula
-  (`Revenue = Price times Quantity`); editing it re-typechecks and recomputes.
 - **Worksheet windows** (center) — the dark gray workspace holds one
   window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
   to move a window and its bottom bar to resize it (the left third drags the
@@ -54,8 +52,12 @@ The window has five regions:
   and **Region** paged (`North [1/2]`, steppable). The **category tiles** at the
   Columns / Rows / Pages margins are drag sources; drag one to another margin to
   re-pivot without touching the formula.
-- **Formula list** (in each worksheet window) — the formula list sits at the
-  bottom of each worksheet window, with a Calc button.
+- **Formula list** (bottom of each worksheet window) — every formula,
+  numbered, with a **Calc** button above and a checkbox that enables it.
+  Click a row to select its measure; the selected row becomes an editor:
+  Enter commits (re-typechecks and recomputes, errors show under the row),
+  Esc reverts. Type `Name = formula` on the last line and press Enter to add
+  a measure.
 - **Info panel** (window, top right of the workspace, closed at start) —
   opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
   type, dimensions, dependencies, and formula. Its close box closes it.

@@ -1,4 +1,4 @@
-//! Pure syntax highlighting for the formula bar: `&str -> LayoutJob`.
+//! Pure syntax highlighting for the formula editor: `&str -> LayoutJob`.
 //!
 //! A small independent char-class scanner (identifiers / numbers / strings /
 //! date literals / operators), good enough for visually useful highlighting —
