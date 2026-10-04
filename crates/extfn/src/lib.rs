@@ -801,4 +801,33 @@ mod tests {
         let out = eval(&f, &[], Duration::from_secs(10)).expect("eval");
         assert_eq!(out, Value::Text("blocked".into()));
     }
+
+    /// S7: output past the 64 KiB pipe buffer used to deadlock until the
+    /// timeout; 200 KB now succeeds.
+    #[test]
+    fn python_large_output_succeeds() {
+        if !python_available() {
+            println!("skipped: python3 not found (or no sandbox)");
+            return;
+        }
+        let f = py("print('x' * 200000)\nresult = 1", ValueType::Number);
+        let out = eval(&f, &[], Duration::from_secs(10)).expect("eval");
+        assert_eq!(out, Value::Number(1.0));
+    }
+
+    /// S7: stdout is capped at 1 MiB; 5 MB is an "output too large" error.
+    #[test]
+    fn python_huge_output_is_rejected() {
+        if !python_available() {
+            println!("skipped: python3 not found (or no sandbox)");
+            return;
+        }
+        let f = py("print('x' * 5000000)\nresult = 1", ValueType::Number);
+        match eval(&f, &[], Duration::from_secs(10)).unwrap_err() {
+            ExtFnError::Runtime { message, .. } => {
+                assert!(message.contains("output too large"), "{message}")
+            }
+            other => panic!("expected Runtime, got {other:?}"),
+        }
+    }
 }
