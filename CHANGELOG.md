@@ -78,6 +78,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Performance
 
+- **Store load is no longer one query per cell (P1).** `load_model` /
+  `load_partial` fetch (measure, coord, value) in one query per value
+  attribute (three in all) instead of a query per cell. On a 100k-cell
+  model (release CLI, 100×1000 CSV) `improv eval` went from 279.9 s to
+  0.58 s and `improv list` from 283.2 s to 0.67 s. Date cells now load back
+  as dates instead of text.
 - **Engine edits cost O(changed measures), not O(model)** (P3).
   `session::Engine` now returns a copy-on-write `session::Snapshot`
   (`Arc<HashMap<MeasureId, Arc<MeasureValues>>>`): an edit shares every
@@ -257,19 +263,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   from the model (cleared in the GUI, deleted through the server) is
   retracted instead of lingering on disk and coming back on the next load.
   An unchanged re-save of a 100k-cell model now adds no datoms (it added 200
-  and grew the file ~30 KB) and takes 1.3 s instead of 317 s.
+  and grew the file ~30 KB) and takes 1.3 s instead of 321 s.
 - **`improv init` no longer wipes an existing store.** It installs the
   schema only; it used to save an empty model, which under the cell diff
   above would have retracted every stored cell.
-
-### Performance
-
-- **Store load is no longer one query per cell (P1).** `load_model` /
-  `load_partial` fetch (measure, coord, value) in one query per value
-  attribute (three in all) instead of a query per cell. On a 100k-cell
-  model (release CLI, 100×1000 CSV) `improv eval` went from 290.7 s to
-  0.61 s and `improv list` from 289.7 s to 0.71 s. Date cells now load back
-  as dates instead of text.
 
 ## [0.7.0] - 2026-09-24
 
