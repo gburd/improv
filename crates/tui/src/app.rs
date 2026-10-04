@@ -65,6 +65,12 @@ pub struct GridGeom {
     /// Width of each data column and the inter-column spacing.
     pub col_w: u16,
     pub spacing: u16,
+    /// First visible data row/column (the scroll offset).
+    pub row0: usize,
+    pub col0: usize,
+    /// How many data rows/columns the window shows.
+    pub rows: usize,
+    pub cols: usize,
 }
 
 impl Grid {
@@ -236,12 +242,18 @@ pub fn build_grid_pivoted(
 
     // Extra dims pinned to the selected page item (default first).
     let mut pages = Vec::new();
-    for (pi, c) in cats.iter().skip(2).enumerate() {
+    for c in cats.iter().skip(2) {
         let its = items_of(model, *c, filters);
         if its.is_empty() {
             continue;
         }
-        let sel = page_idx.get(pi).copied().unwrap_or(0).min(its.len() - 1);
+        // Indexed by rendered page (empty dims are skipped), matching how
+        // `App` fills `page_idx` from `grid.pages`.
+        let sel = page_idx
+            .get(pages.len())
+            .copied()
+            .unwrap_or(0)
+            .min(its.len() - 1);
         let (id, name) = its[sel].clone();
         pages.push(PageDim {
             cat: *c,
@@ -303,6 +315,9 @@ fn cell_key(
     key.sort();
     key
 }
+
+/// Status shown when the cursor is not on a real cell (empty/filtered axis).
+const NO_CELL: &str = "no cell here (an axis is empty or fully filtered)";
 
 /// Which CSV command is active in the command-prompt (`self.command`).
 /// Mirrors the cell-edit buffer (`self.edit`) but for a full command line
@@ -404,6 +419,23 @@ pub fn parse_export_line(line: &str) -> Result<(String, MeasureId, u8), String> 
     Ok((target, MeasureId(measure_id), delimiter))
 }
 
+/// Parse an edit buffer as a `vt`-typed value (mirrors the CLI's `set`).
+pub fn parse_typed(text: &str, vt: ValueType) -> Result<Value, String> {
+    match vt {
+        ValueType::Number => text
+            .parse()
+            .map(Value::Number)
+            .map_err(|_| format!("not a number: '{text}'")),
+        ValueType::Boolean => match text {
+            "true" => Ok(Value::Boolean(true)),
+            "false" => Ok(Value::Boolean(false)),
+            _ => Err(format!("not true|false: '{text}'")),
+        },
+        ValueType::Text => Ok(Value::Text(text.to_string())),
+        other => Err(format!("cannot edit a {other:?} cell here")),
+    }
+}
+
 /// Measures sorted for stable cycling: derived first, then by id.
 pub fn measure_order(model: &Model) -> Vec<MeasureId> {
     let mut ids: Vec<MeasureId> = model.measures.keys().copied().collect();
@@ -457,6 +489,8 @@ pub struct App {
     pub filters: Vec<Filter>,
     /// Geometry of the last render, for mapping mouse clicks to cells.
     pub grid_geom: Option<GridGeom>,
+    /// Fixed corner of a Shift+arrow range selection; `None` = one cell.
+    pub anchor: Option<(usize, usize)>,
     /// When `Some`, the CSV import/export command prompt is active: which
     /// command and its in-progress typed line. Mirrors `edit`'s shape but for
     /// a whole command line rather than a single cell value.
@@ -517,6 +551,7 @@ impl App {
             axis_order,
             filters: Vec::new(),
             grid_geom: None,
+            anchor: None,
             command: None,
         })
     }
@@ -532,6 +567,7 @@ impl App {
         );
         self.cursor_row = self.cursor_row.min(self.grid.n_rows().saturating_sub(1));
         self.cursor_col = self.cursor_col.min(self.grid.n_cols().saturating_sub(1));
+        self.anchor = None;
     }
 
     /// The viewed measure's categories in natural (declared) order.
@@ -582,16 +618,11 @@ impl App {
             self.status = Some("no extra dimensions to page".into());
             return;
         };
-        let count = pd.item_count.max(1);
-        // Ensure page_idx has an entry per current page dim.
-        if self.page_idx.len() != self.grid.pages.len() {
-            self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
-        }
-        let cur = self.page_idx.first().copied().unwrap_or(0);
-        let next = (cur as isize + delta).rem_euclid(count as isize) as usize;
-        if let Some(slot) = self.page_idx.first_mut() {
-            *slot = next;
-        }
+        // Resync from the grid (an empty page dim is skipped, so indices
+        // follow the rendered pages), then step the first one.
+        let next = (pd.item_index as isize + delta).rem_euclid(pd.item_count as isize) as usize;
+        self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
+        self.page_idx[0] = next;
         self.reselect();
     }
 
@@ -605,6 +636,46 @@ impl App {
         self.reselect();
         // Size page_idx to the new grid so `[`/`]` work immediately.
         self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
+    }
+
+    /// An arrow step: `extend` (Shift held) keeps or sets the range anchor
+    /// at the cursor before moving; a plain step collapses the range.
+    pub fn step(&mut self, drow: isize, dcol: isize, extend: bool) {
+        self.anchor = extend.then(|| self.anchor.unwrap_or((self.cursor_row, self.cursor_col)));
+        self.move_cursor(drow, dcol);
+    }
+
+    /// True if `[row][col]` is inside the selection (anchor..=cursor).
+    pub fn is_selected(&self, row: usize, col: usize) -> bool {
+        let (ar, ac) = self.anchor.unwrap_or((self.cursor_row, self.cursor_col));
+        let (cr, cc) = (self.cursor_row, self.cursor_col);
+        (ar.min(cr)..=ar.max(cr)).contains(&row) && (ac.min(cc)..=ac.max(cc)).contains(&col)
+    }
+
+    /// Sum of the numeric cells in the selection; `None` if there are none
+    /// (text/empty cells contribute nothing, as in the GUI's `Sum` readout).
+    pub fn selection_sum(&self) -> Option<f64> {
+        let g = &self.grid;
+        let nums: Vec<f64> = (0..g.n_rows())
+            .flat_map(|r| (0..g.n_cols()).map(move |c| (r, c)))
+            .filter(|&(r, c)| self.is_selected(r, c))
+            .filter_map(|(r, c)| g.value_at(r, c))
+            .collect();
+        (!nums.is_empty()).then(|| nums.iter().sum())
+    }
+
+    /// The viewed derived measure's formula as controlled English
+    /// (`Price times Quantity`); `None` for input measures.
+    pub fn formula_text(&self) -> Option<String> {
+        match &self.model.measures.get(&self.grid.measure)?.kind {
+            improv_core_model::MeasureKind::Derived(f) => {
+                Some(improv_nl_formula::describe_formula(
+                    &improv_nl_formula::NlContext::new(&self.model),
+                    f,
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Cursor movement, clamped to the grid (never goes out of range).
@@ -624,15 +695,31 @@ impl App {
         if row < g.y0 || col < g.x0 {
             return;
         }
-        // Which data row: each grid row is one terminal line from y0.
+        // Which window row: each grid row is one terminal line from y0.
         let r = (row - g.y0) as usize;
-        // Which data column: columns are col_w + spacing wide, starting at x0.
+        // Which window column: columns are col_w + spacing wide, from x0.
         let stride = (g.col_w + g.spacing) as usize;
         let c = ((col - g.x0) as usize) / stride.max(1);
-        if r < self.grid.n_rows() && c < self.grid.n_cols() {
+        let (r, c) = (g.row0 + r, g.col0 + c);
+        let in_window = r < g.row0 + g.rows && c < g.col0 + g.cols;
+        if in_window && r < self.grid.n_rows() && c < self.grid.n_cols() {
+            self.anchor = None;
             self.cursor_row = r;
             self.cursor_col = c;
         }
+    }
+
+    /// True if `[row][col]` names a full coordinate: one item for every
+    /// category of the measure. False when an axis or page is empty (a
+    /// category with no items, or every item filtered out); writing there
+    /// would store a cell with a missing dimension.
+    fn addressable(&self, row: usize, col: usize) -> bool {
+        let dims = self
+            .model
+            .measures
+            .get(&self.grid.measure)
+            .map_or(0, |m| m.categories.len());
+        self.grid.coord_key(row, col).len() == dims
     }
 
     /// True if the currently viewed measure is an input measure (editable).
@@ -651,12 +738,17 @@ impl App {
             self.status = Some("derived cells are computed, not editable".into());
             return;
         }
+        if !self.addressable(self.cursor_row, self.cursor_col) {
+            self.status = Some(NO_CELL.into());
+            return;
+        }
         // Seed the buffer with the current value so editing is a tweak, not a
         // retype. Blank cell -> empty buffer.
         let seed = match self.grid.value_at(self.cursor_row, self.cursor_col) {
             Some(n) if n.fract() == 0.0 => format!("{n:.0}"),
             Some(n) => format!("{n}"),
-            None => String::new(),
+            // Text/boolean cells seed with their display text.
+            None => self.grid.display_at(self.cursor_row, self.cursor_col),
         };
         self.edit = Some(seed);
         self.status = None;
@@ -668,22 +760,26 @@ impl App {
         self.status = None;
     }
 
-    /// Commit the in-progress edit buffer. Parses the number, applies it to the
-    /// model + engine, refreshes the grid, and exits edit mode. On a parse
-    /// error the buffer stays open with a status message.
+    /// Commit the in-progress edit buffer. Parses it per the measure's value
+    /// type, applies it to the model + engine, refreshes the grid, and exits
+    /// edit mode. On a parse error the buffer stays open with a status message.
     pub fn commit_edit(&mut self) {
         let Some(buf) = self.edit.clone() else {
             return;
         };
-        let text = buf.trim();
-        let value: f64 = match text.parse() {
+        let vt = self
+            .model
+            .measures
+            .get(&self.grid.measure)
+            .map_or(ValueType::Number, |m| m.value_type);
+        let value = match parse_typed(buf.trim(), vt) {
             Ok(v) => v,
-            Err(_) => {
-                self.status = Some(format!("not a number: '{text}'"));
+            Err(e) => {
+                self.status = Some(e);
                 return;
             }
         };
-        match self.apply_edit(self.cursor_row, self.cursor_col, value) {
+        match self.apply_value(self.cursor_row, self.cursor_col, value) {
             Ok(()) => {
                 self.edit = None;
                 self.status = None;
@@ -696,20 +792,45 @@ impl App {
     /// in-memory model and the live engine, then rebuild the grid from the new
     /// snapshot. Returns `Err` (no state change committed) if the viewed
     /// measure is derived. Terminal-free -> unit-testable.
+    #[cfg(test)]
     pub fn apply_edit(&mut self, row: usize, col: usize, value: f64) -> Result<(), String> {
+        self.apply_value(row, col, Value::Number(value))
+    }
+
+    /// Set input `[row][col]` to a typed `value`. Numbers flow through the
+    /// engine incrementally; the engine's edit delta is numeric-only, so a
+    /// text/boolean edit rebuilds the engine from the updated model instead.
+    pub fn apply_value(&mut self, row: usize, col: usize, value: Value) -> Result<(), String> {
         if !self.viewed_is_input() {
             return Err("derived cells are computed, not editable".into());
         }
         let measure = self.grid.measure;
+        if !self.addressable(row, col) {
+            return Err(NO_CELL.into());
+        }
         let key = self.grid.coord_key(row, col);
         let coord = decode_coord(&key);
 
-        self.model.set_input(measure, coord, Value::Number(value));
+        let num = match value {
+            Value::Number(n) => Some(n),
+            _ => None,
+        };
+        self.model.set_input(measure, coord, value);
 
         // Push the delta through the engine (if any derived measures exist) and
         // keep the recomputed snapshot for rendering.
         if let Some(engine) = &mut self.engine {
-            self.snapshot = engine.set(measure, key, value).map_err(|e| e.to_string())?;
+            self.snapshot = match num {
+                Some(n) => engine.set(measure, key, n),
+                None => {
+                    let derived: Vec<MeasureId> = self.snapshot.keys().copied().collect();
+                    Engine::new(&self.model, &derived).map(|(e, s)| {
+                        *engine = e;
+                        s
+                    })
+                }
+            }
+            .map_err(|e| e.to_string())?;
         }
         self.reselect();
         Ok(())
@@ -990,14 +1111,14 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use improv_core_model::{
         BinaryOp, DimensionSpec, Expr, Formula, Measure, MeasureKind, Name, ValueType,
     };
 
     // Canonical Time x Product revenue model (mirrors engine's fixture).
-    fn revenue_model() -> Model {
+    pub(crate) fn revenue_model() -> Model {
         let mut m = Model::new();
         let (time, product) = (CategoryId(1), CategoryId(2));
         m.add_category(time, "Time");
@@ -1161,7 +1282,7 @@ mod tests {
     }
 
     // Position the app on a specific measure by id.
-    fn view(app: &mut App, measure: MeasureId) {
+    pub(crate) fn view(app: &mut App, measure: MeasureId) {
         app.selected = app.measures.iter().position(|m| *m == measure).unwrap();
         app.reselect();
     }
@@ -1323,6 +1444,266 @@ mod tests {
     }
 
     #[test]
+    fn text_and_boolean_cells_are_editable() {
+        // Regression: commit_edit only parsed f64, so a Text/Boolean input
+        // measure could never be edited ("not a number: 'hi'").
+        let mut m = revenue_model();
+        let time = CategoryId(1);
+        for (id, name, vt) in [
+            (200, "Note", ValueType::Text),
+            (201, "Flag", ValueType::Boolean),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: vt,
+                categories: vec![time],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let mut app = App::new(m).unwrap();
+        let at = Coordinate::from_pairs([(time, ItemId(10))]);
+        view(&mut app, MeasureId(200));
+        app.edit = Some("hi there".into());
+        app.commit_edit();
+        assert_eq!(app.status, None);
+        assert_eq!(
+            app.model.input(MeasureId(200), &at),
+            Some(&Value::Text("hi there".into()))
+        );
+        app.begin_edit(); // seeds with the text, not blank
+        assert_eq!(app.edit.as_deref(), Some("hi there"));
+
+        view(&mut app, MeasureId(201));
+        app.edit = Some("maybe".into());
+        app.commit_edit();
+        assert_eq!(app.status.as_deref(), Some("not true|false: 'maybe'"));
+        assert!(app.edit.is_some(), "bad input keeps the buffer open");
+        app.edit = Some("true".into());
+        app.commit_edit();
+        assert_eq!(
+            app.model.input(MeasureId(201), &at),
+            Some(&Value::Boolean(true))
+        );
+        // Derived values survive the engine rebuild a non-number edit triggers.
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
+        assert!(parse_typed("x", ValueType::DateTime).is_err());
+    }
+
+    /// Revenue model plus `Sales[Time, Product, Empty, Region]`: `Empty` has
+    /// no items, so it is skipped as a page and `Region` is the first page.
+    fn model_with_empty_page() -> Model {
+        let mut m = revenue_model();
+        m.add_category(CategoryId(3), "Empty");
+        m.add_category(CategoryId(4), "Region");
+        m.add_item(ItemId(40), CategoryId(4), "North");
+        m.add_item(ItemId(41), CategoryId(4), "South");
+        m.add_measure(Measure {
+            id: MeasureId(300),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: (1..=4).map(CategoryId).collect(),
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m
+    }
+
+    #[test]
+    fn paging_past_an_empty_page_dim_wraps_and_edits_are_refused() {
+        let mut app = App::new(model_with_empty_page()).unwrap();
+        view(&mut app, MeasureId(300));
+        app.page_idx.clear(); // stale/short page_idx is resynced
+        app.page(-1);
+        assert_eq!(app.grid.pages.len(), 1);
+        assert_eq!(app.grid.pages[0].item_name, "South", "wrapped backwards");
+        app.page(1);
+        assert_eq!(app.grid.pages[0].item_name, "North");
+        // No full coordinate exists (Empty has no item): editing is refused.
+        app.begin_edit();
+        assert_eq!(app.status.as_deref(), Some(NO_CELL));
+    }
+
+    #[test]
+    fn small_branches_pivot_click_seed_and_no_buffer_commits() {
+        let mut app = App::new(revenue_model()).unwrap();
+        // Pivot on a 1-D measure is a no-op with a message.
+        view(&mut app, MeasureId(100));
+        app.axis_order = app.natural_axis_order();
+        app.pivot();
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .starts_with("nothing to pivot"));
+        // Clicks before any render, left of the grid, or past the window.
+        app.click_at(50, 50);
+        app.grid_geom = Some(GridGeom {
+            x0: 10,
+            y0: 5,
+            col_w: 12,
+            spacing: 1,
+            row0: 0,
+            col0: 0,
+            rows: 1,
+            cols: 1,
+        });
+        app.click_at(5, 6);
+        app.click_at(10, 6); // row 1 is outside the 1-row window
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        // Fractional values seed the edit buffer verbatim.
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 2.5).unwrap();
+        app.begin_edit();
+        assert_eq!(app.edit.as_deref(), Some("2.5"));
+        app.edit = Some("abc".into());
+        app.commit_edit();
+        assert_eq!(app.status.as_deref(), Some("not a number: 'abc'"));
+        app.edit = Some("false".into());
+        assert_eq!(
+            parse_typed("false", ValueType::Boolean),
+            Ok(Value::Boolean(false))
+        );
+        // Commits with no active buffer do nothing.
+        app.edit = None;
+        app.status = None;
+        app.commit_edit();
+        app.commit_command();
+        assert_eq!(app.status, None);
+        // A derived edit attempt routed straight at commit is refused.
+        view(&mut app, MeasureId(102));
+        app.edit = Some("1".into());
+        app.commit_edit();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("derived cells are computed, not editable")
+        );
+    }
+
+    #[test]
+    fn views_cycle_wrap_and_tolerate_missing_measures() {
+        let mut app = App::new(revenue_model()).unwrap();
+        app.cycle_view();
+        assert!(app.status.as_deref().unwrap().starts_with("no saved views"));
+        view(&mut app, MeasureId(101));
+        let v1 = app.save_view("one", None);
+        app.next_measure();
+        let v2 = app.save_view("two", None);
+        assert_eq!(v2.0, v1.0 + 1);
+        app.cycle_view();
+        assert_eq!(app.status.as_deref(), Some("view: one"));
+        app.cycle_view();
+        assert_eq!(app.status.as_deref(), Some("view: two"));
+        app.cycle_view();
+        assert_eq!(app.status.as_deref(), Some("view: one"), "wraps");
+        // A view with an empty axis order falls back to natural order; one
+        // whose measure is gone is refused.
+        let mut v = app.build_view(ViewId(99), "bare");
+        v.axis_order.clear();
+        app.apply_view(&v);
+        assert_eq!(app.axis_order, app.natural_axis_order());
+        v.measure = MeasureId(9999);
+        app.apply_view(&v);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("view's measure no longer exists")
+        );
+        // A save to an unwritable path reports the failure.
+        app.save_view("bad", Some("/nonexistent/dir/x.db"));
+        assert!(app.status.as_deref().unwrap().starts_with("save failed"));
+    }
+
+    #[test]
+    fn re_showing_every_filtered_item_drops_the_filter() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let time = CategoryId(1);
+        app.toggle_filter_item(time, ItemId(10));
+        app.toggle_filter_item(time, ItemId(11));
+        app.toggle_filter_item(time, ItemId(10));
+        assert_eq!(app.filters.len(), 1, "one item still hidden");
+        app.toggle_filter_item(time, ItemId(11));
+        assert!(app.filters.is_empty(), "all shown again => unfiltered");
+    }
+
+    #[test]
+    fn grid_falls_back_on_bad_axis_order_and_unknown_ids() {
+        let m = revenue_model();
+        let s = Snapshot::new();
+        // Not a permutation of the measure's categories: natural order wins.
+        let g = build_grid_pivoted(&m, MeasureId(101), &s, &[], Some(&[CategoryId(2)]), &[]);
+        assert_eq!(g.row_cat.unwrap().1, "Time");
+        // Unknown measure: id as name, a single synthetic cell.
+        let g = build_grid(&m, MeasureId(77), &s);
+        assert_eq!(
+            (g.measure_name.as_str(), g.n_rows(), g.n_cols()),
+            ("77", 1, 1)
+        );
+        // Dangling category/item ids render as their numbers.
+        let mut m = m;
+        m.categories
+            .get_mut(&CategoryId(2))
+            .unwrap()
+            .items
+            .push(ItemId(29));
+        let mut meas = m.measures[&MeasureId(101)].clone();
+        meas.id = MeasureId(400);
+        meas.categories = vec![CategoryId(2), CategoryId(8)];
+        m.add_measure(meas);
+        let g = build_grid(&m, MeasureId(400), &s);
+        assert_eq!(g.rows.last().unwrap().1, "29");
+        assert_eq!(g.col_cat.unwrap().1, "8");
+        let mut app = App::new(m).unwrap();
+        view(&mut app, MeasureId(400));
+        app.axis_order = app.natural_axis_order();
+        app.pivot();
+        assert_eq!(app.status.as_deref(), Some("pivot: rows=8 cols=Product"));
+    }
+
+    #[test]
+    fn shift_arrows_select_a_range_and_sum_it() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101)); // [[100, 50], [120, 80]]
+        assert_eq!(app.selection_sum(), Some(100.0));
+        app.step(1, 0, true);
+        app.step(0, 1, true);
+        assert_eq!(app.anchor, Some((0, 0)));
+        assert!(app.is_selected(1, 0) && app.is_selected(0, 1));
+        assert_eq!(app.selection_sum(), Some(350.0));
+        app.step(-1, 0, false);
+        assert_eq!((app.anchor, app.selection_sum()), (None, Some(50.0)));
+        app.step(0, -1, true);
+        app.clear_filters(); // any re-layout collapses the range
+        assert_eq!(app.anchor, None);
+        // Formula text for derived measures only; blank cells sum to None.
+        assert_eq!(app.formula_text(), None);
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.formula_text().as_deref(), Some("Price times Quantity"));
+        let mut m = revenue_model();
+        m.inputs.clear();
+        assert_eq!(App::new(m).unwrap().selection_sum(), None);
+    }
+
+    #[test]
+    fn edit_on_fully_filtered_axis_is_refused_not_written() {
+        // Regression: filtering out every row left a cursor on "no row"; an
+        // edit then stored a cell whose coordinate lacked the row category.
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let time = CategoryId(1);
+        app.toggle_filter_item(time, ItemId(10));
+        app.toggle_filter_item(time, ItemId(11));
+        assert!(app.grid.rows.is_empty());
+        let before = app.model.inputs.len();
+        app.begin_edit();
+        assert!(app.edit.is_none());
+        assert_eq!(app.status.as_deref(), Some(NO_CELL));
+        assert_eq!(app.apply_edit(0, 0, 7.0), Err(NO_CELL.to_string()));
+        assert_eq!(app.model.inputs.len(), before);
+    }
+
+    #[test]
     fn click_moves_cursor_to_cell() {
         let mut app = App::new(revenue_model()).unwrap();
         view(&mut app, MeasureId(101)); // 2x2
@@ -1332,6 +1713,10 @@ mod tests {
             y0: 5,
             col_w: 12,
             spacing: 1,
+            row0: 0,
+            col0: 0,
+            rows: 10,
+            cols: 10,
         });
         // Click in data row 1, column 1: x within the 2nd column (stride 13).
         app.click_at(2 + 13, 5 + 1);
@@ -1455,7 +1840,7 @@ mod tests {
 
     // -- CSV import/export command prompt -----------------------------------
 
-    fn tmp_path(suffix: &str) -> PathBuf {
+    pub(crate) fn tmp_path(suffix: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "improv_tui_test_{}_{}{}",
             std::process::id(),

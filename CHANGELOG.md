@@ -8,6 +8,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- TUI: the status box grows to fit its content, so the edit/command prompt
+  and messages stay visible when `pages:`/`filters:` lines are shown. The
+  key help wraps to the terminal width, and the prompt sits right under the
+  title so a short terminal clips the help first.
+- TUI: a derived measure's formula shows on a status line in controlled
+  English (`Revenue = Price times Quantity`).
+
 - GUI: the model browser now leads with a NeXT-style white list of saved
   views (`Name - Worksheet` rows with a worksheet icon). A single click
   selects a view and shows its computed description (measure, categories,
@@ -18,6 +25,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   (the knob's bevel and NeXT's grouped arrow buttons are deferred).
 
 ### Added
+
+- TUI: Shift+arrows select a range, drawn highlighted, and the status line
+  shows its `Sum` (numeric cells only; `Sum —` when there are none), as the
+  GUI does. A plain arrow, a click, or any re-layout collapses the range.
 
 - **GUI screenshot harness (`scripts/gui-shot.sh`).** Builds the binaries,
   loads a fixed Time×Product×Scenario demo model, runs `improv-gui` on a
@@ -113,6 +124,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   with rule lines, as in Improv, so only the category tiles look draggable.
 
 ### Fixed
+
+- TUI: the grid scrolls to keep the cursor visible on models larger than
+  the terminal (previously the cursor could move off-screen).
+- TUI: mouse clicks select the cell under the pointer (they were offset by
+  the row-label column and selected the column to the right).
+- TUI: text and boolean input cells can be edited (parsed per the measure's
+  type, as `improv set` does); previously every edit had to be a number.
+- TUI: editing is refused when an axis is empty or fully filtered. It used
+  to store a cell with a missing dimension.
+- TUI: `[` / `]` page correctly when an empty category precedes another
+  page dimension.
 
 - **CLI `--at` accepts every natural spelling of a coordinate.** `set` and
   `scenario` now take repeated flags (`--at Time=Q1 --at Product=Widget`) and

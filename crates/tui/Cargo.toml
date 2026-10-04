@@ -13,6 +13,12 @@ improv_core_model = { path = "../core_model" }
 improv_storage_mentat = { path = "../storage_mentat" }
 improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }
+improv_nl_formula = { path = "../nl_formula" }
 thiserror.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; it gates the
+# `coverage(off)` exclusions on the real-terminal shell in main.rs.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
