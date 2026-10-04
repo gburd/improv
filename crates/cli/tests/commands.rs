@@ -699,8 +699,7 @@ fn import_sql_refresh_sql_and_export_sql() {
         ok(&["refresh-sql", &db, &src, "400"]),
         "refreshed measure 400 from SQL: 2 cells\n"
     );
-    // Single dimension: a 2-dim SQL measure's column->category mapping is not
-    // stable across a store round-trip (storage_mentat category order).
+    // Two dimensions: see `refresh_sql_keeps_a_two_dim_mapping_across_reload`.
     stdout_has(&ok(&["show", &db, "400"]), "400::{Region=A} = 2000");
 
     let target = file(&dir, "out.sqlite");
@@ -713,6 +712,47 @@ fn import_sql_refresh_sql_and_export_sql() {
         .query_row("SELECT SUM(val) FROM sales_out", [], |r| r.get(0))
         .unwrap();
     assert_eq!(total, 2500.0);
+}
+
+/// A 2-dim SQL measure whose dimension order is NOT ascending by category id
+/// (Year=7 before Region=6) maps SQL columns to the same categories after a
+/// store reload. The store used to hand the categories back sorted by id, so
+/// `refresh-sql` wrote `{Year=A,Region=2025}`.
+#[test]
+fn refresh_sql_keeps_a_two_dim_mapping_across_reload() {
+    let (dir, db) = model("sql-2dim");
+    let src = sales_source(&dir);
+    ok(&[
+        "import-sql",
+        &db,
+        &src,
+        "400",
+        "Rev",
+        "SELECT t,p,r FROM sales",
+        "r",
+        "t:7:Year",
+        "p:6:Region",
+    ]);
+    let m400 = improv_core_model::MeasureId(400);
+    let cats = |db: &str| load(db).measures[&m400].categories.clone();
+    let want = vec![
+        improv_core_model::CategoryId(7),
+        improv_core_model::CategoryId(6),
+    ];
+    assert_eq!(cats(&db), want);
+    rusqlite::Connection::open(&src)
+        .unwrap()
+        .execute("UPDATE sales SET r = 2000.0 WHERE p = 'A'", [])
+        .unwrap();
+    ok(&["refresh-sql", &db, &src, "400"]);
+    assert_eq!(cats(&db), want);
+    let shown = ok(&["show", &db, "400"]);
+    stdout_has(&shown, "400::{Region=A,Year=2025} = 2000");
+    stdout_has(&shown, "400::{Region=B,Year=2025} = 500");
+    assert!(
+        !shown.contains("Region=2025"),
+        "swapped categories:\n{shown}"
+    );
 }
 
 #[test]

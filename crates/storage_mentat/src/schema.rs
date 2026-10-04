@@ -41,6 +41,12 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :measure/categories
   :db/valueType :db.type/ref
   :db/cardinality :db.cardinality/many}
+ ;; The order of :measure/categories (a set), as a JSON array of category
+ ;; ids. Positional data (coordinates, SQL/CSV columns) depends on it. Absent
+ ;; in stores written before it existed; those load sorted by id.
+ {:db/ident :measure/category-order
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
  {:db/ident :measure/kind
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}

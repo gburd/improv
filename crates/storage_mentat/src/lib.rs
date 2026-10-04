@@ -578,6 +578,23 @@ impl ModelStore {
         for row in self.rel(&q)? {
             cats.push(CategoryId(convert::as_u32(&row[0])?));
         }
+        // `:measure/categories` is a set, so its query order is arbitrary.
+        // Restore the saved order; a store written before
+        // `:measure/category-order` existed falls back to id order, and an id
+        // the order does not list (a stale ref) sorts after those it does.
+        let order: Vec<u32> = match self.scalar_string(&format!(
+            "[:find ?o . :where [?e :measure/id {}] [?e :measure/category-order ?o]]",
+            measure.0
+        ))? {
+            Some(json) => serde_json::from_str(&json)?,
+            None => Vec::new(),
+        };
+        cats.sort_by_key(|c| {
+            (
+                order.iter().position(|&o| o == c.0).unwrap_or(usize::MAX),
+                c.0,
+            )
+        });
         Ok(cats)
     }
 
@@ -939,6 +956,115 @@ mod tests {
         // before comparing so the assertion isn't flaky while still checking
         // every field of every entity.
         assert_eq!(sort_vecs(loaded), sort_vecs(original));
+    }
+
+    /// A three-category model whose measure lists its categories out of id
+    /// order, `[3, 1, 2]`.
+    fn unordered_categories_model() -> Model {
+        let mut m = Model::new();
+        for (id, name) in [(1, "Year"), (2, "Region"), (3, "Product")] {
+            m.add_category(CategoryId(id), name);
+        }
+        m.add_measure(Measure {
+            id: MeasureId(400),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(3), CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m
+    }
+
+    /// `:measure/categories` is a set; the order positional data (SQL/CSV
+    /// columns, coordinates) is mapped by must survive save/load and
+    /// load_partial anyway.
+    #[test]
+    fn measure_category_order_round_trips() {
+        let want = vec![CategoryId(3), CategoryId(1), CategoryId(2)];
+        let mut store = ModelStore::open("").expect("open in-memory");
+        store
+            .save_model(&unordered_categories_model())
+            .expect("save");
+        let loaded = store.load_model().expect("load");
+        assert_eq!(loaded.measures[&MeasureId(400)].categories, want);
+        let partial = store.load_partial(&[MeasureId(400)]).expect("partial");
+        assert_eq!(partial.measures[&MeasureId(400)].categories, want);
+
+        // A re-save with a new order replaces the old one.
+        let mut m = loaded;
+        m.measures
+            .get_mut(&MeasureId(400))
+            .unwrap()
+            .categories
+            .reverse();
+        store.save_model(&m).expect("re-save");
+        assert_eq!(
+            store.load_model().expect("re-load").measures[&MeasureId(400)].categories,
+            vec![CategoryId(2), CategoryId(1), CategoryId(3)]
+        );
+    }
+
+    /// A store written before `:measure/category-order` existed (old schema,
+    /// measure without the attribute) still opens -- installing the new
+    /// schema over it is idempotent -- and loads its categories in id order.
+    #[test]
+    fn store_without_category_order_still_loads() {
+        let dir = std::env::temp_dir().join(format!("improv-catorder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        let path = path.to_str().unwrap();
+
+        let start = schema::SCHEMA_EDN
+            .find(" ;; The order of :measure/categories")
+            .expect("category-order block");
+        let tail = ":db.cardinality/one}";
+        let end = start + schema::SCHEMA_EDN[start..].find(tail).unwrap() + tail.len();
+        let old_schema = format!(
+            "{}{}",
+            &schema::SCHEMA_EDN[..start],
+            &schema::SCHEMA_EDN[end..]
+        );
+        assert!(!old_schema.contains("category-order"));
+        {
+            let mut old = Store::open(path).expect("open old");
+            old.transact(&old_schema).expect("old schema");
+            old.transact(
+                r#"[{:category/id 1 :category/name "Year"}
+                    {:category/id 2 :category/name "Region"}
+                    {:category/id 3 :category/name "Product"}]"#,
+            )
+            .expect("old categories");
+            old.transact(
+                r#"[{:measure/id 400 :measure/name "Sales"
+                     :measure/value-type "number" :measure/kind "input"
+                     :measure/categories [(lookup-ref :category/id 3)
+                                          (lookup-ref :category/id 1)
+                                          (lookup-ref :category/id 2)]}]"#,
+            )
+            .expect("old measure");
+        }
+
+        // Opening twice installs the schema twice: both must succeed.
+        drop(ModelStore::open(path).expect("open old store with new schema"));
+        let mut store = ModelStore::open(path).expect("re-open");
+        let loaded = store.load_model().expect("load old store");
+        assert_eq!(
+            loaded.measures[&MeasureId(400)].categories,
+            vec![CategoryId(1), CategoryId(2), CategoryId(3)]
+        );
+        // Re-saving writes the order, after which it is preserved.
+        let mut m = loaded;
+        m.measures.get_mut(&MeasureId(400)).unwrap().categories =
+            vec![CategoryId(3), CategoryId(1), CategoryId(2)];
+        store.save_model(&m).expect("upgrade save");
+        assert_eq!(
+            store.load_model().expect("load").measures[&MeasureId(400)].categories,
+            vec![CategoryId(3), CategoryId(1), CategoryId(2)]
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A view saved by a PRE-CANVAS build of Improv must still load. Those

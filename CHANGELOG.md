@@ -234,6 +234,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   retry"; the server answers `409 Conflict` and drops its cached model so a
   retry reloads. New `ModelStore::{tx_high_water, loaded_tx, set_loaded_tx,
   reload_model}`.
+- Storage: a measure's category order survives save/load. `:measure/categories`
+  is a set, so a reload returned the categories sorted by id, and anything
+  mapped by position (SQL/CSV columns, coordinates) landed on swapped
+  categories: `refresh-sql` on a 2-dimension measure wrote
+  `{Year=A,Region=2025}`. The order is now stored in a new
+  `:measure/category-order` attribute. Stores written before it load as
+  before (id order) and gain it on their next save; no migration needed.
 - TUI: the grid scrolls to keep the cursor visible on models larger than
   the terminal (previously the cursor could move off-screen).
 - TUI: mouse clicks select the cell under the pointer (they were offset by

@@ -109,6 +109,12 @@ pub fn measure_edn(
             .map(|c| format!("(lookup-ref :category/id {})", c.0))
             .collect();
         fields.push(format!(":measure/categories [{}]", refs.join(" ")));
+        // The ref set is unordered; persist the order alongside it.
+        let order: Vec<u32> = m.categories.iter().map(|c| c.0).collect();
+        fields.push(format!(
+            ":measure/category-order {}",
+            edn_str(&serde_json::to_string(&order)?)
+        ));
     }
 
     Ok(format!("{{{}}}", fields.join(" ")))
