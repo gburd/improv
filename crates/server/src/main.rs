@@ -7,9 +7,11 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
-    extract::{Path, Request, State},
+    error_handling::HandleErrorLayer,
+    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Request, State},
     http::StatusCode,
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -24,6 +26,7 @@ use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_storage_mentat::ModelStore;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
+use tower::ServiceBuilder;
 
 mod scheduler;
 use scheduler::SharedStatus;
@@ -61,6 +64,17 @@ impl Auth {
         }
     }
 }
+
+/// Request body cap (S13). Over-limit bodies get 413.
+const MAX_BODY_BYTES: usize = 1 << 20;
+/// Edits accepted per `/eval` request (S13). More gets 400.
+const MAX_EDITS: usize = 10_000;
+/// Whole-request deadline, including time queued for a concurrency slot (S10).
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Requests in flight across all routes (S10); the rest wait (then time out).
+const MAX_IN_FLIGHT: usize = 64;
+/// Default deadline for a client to finish sending request headers (S10).
+const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -132,7 +146,39 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("bind {addr}: {e}"));
     eprintln!("improv-server listening on {addr}");
-    axum::serve(listener, app(state)).await.expect("serve");
+    let header_timeout = std::env::var("IMPROV_HEADER_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(HEADER_READ_TIMEOUT);
+    serve(listener, app(state), header_timeout).await;
+}
+
+/// Accept loop: hyper HTTP/1 with a header-read timeout (S10). `axum::serve`
+/// (0.7) sets no header timer, so a client that never finishes its request
+/// line holds a socket forever (slow-loris). HTTP/1 only: the `hyper-util`
+/// `auto` builder would pull in h2, which the API does not need.
+async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: Duration) {
+    use hyper_util::rt::{TokioIo, TokioTimer};
+    loop {
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                // EMFILE etc.: back off instead of spinning.
+                eprintln!("accept: {e}");
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let svc = hyper_util::service::TowerToHyperService::new(app.clone());
+        tokio::spawn(async move {
+            let _ = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(header_timeout)
+                .serve_connection(TokioIo::new(stream), svc)
+                .await;
+        });
+    }
 }
 
 /// Build the router. Exposed so tests can drive it via `oneshot`.
@@ -149,9 +195,26 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/scheduler/status", get(scheduler_status_handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
 
+    // Global (not per-route) limit: `Router::layer` clones the layer per
+    // route, and `GlobalConcurrencyLimitLayer` shares one semaphore.
+    let limits = ServiceBuilder::new()
+        .layer(HandleErrorLayer::new(|e: tower::BoxError| async move {
+            if e.is::<tower::timeout::error::Elapsed>() {
+                (StatusCode::REQUEST_TIMEOUT, "request timed out")
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+            }
+        }))
+        .layer(tower::timeout::TimeoutLayer::new(REQUEST_TIMEOUT))
+        .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
+            MAX_IN_FLIGHT,
+        ));
+
     Router::new()
         .route("/health", get(health))
         .merge(protected)
+        .layer(limits)
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(state)
 }
 
@@ -179,7 +242,20 @@ async fn require_token(State(state): State<Arc<AppState>>, req: Request, next: N
 
 // --- error handling: never panic on request input ---
 
+impl From<JsonRejection> for ApiError {
+    fn from(e: JsonRejection) -> Self {
+        // Keep the v1 contract (any bad body -> 400) except an oversized one.
+        let status = match e.status() {
+            StatusCode::PAYLOAD_TOO_LARGE => StatusCode::PAYLOAD_TOO_LARGE,
+            _ => StatusCode::BAD_REQUEST,
+        };
+        ApiError::Rejected(status, e.body_text())
+    }
+}
+
 enum ApiError {
+    /// A rejected JSON body (malformed -> 400, oversized -> 413).
+    Rejected(StatusCode, String),
     BadRequest(String),
     NotFound(String),
     Internal(String),
@@ -188,6 +264,7 @@ enum ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
+            ApiError::Rejected(s, m) => (s, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
@@ -333,9 +410,15 @@ struct EvalReq {
 async fn eval_measure(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u32>,
-    body: Result<Json<EvalReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<EvalReq>, JsonRejection>,
 ) -> Result<Json<Vec<Cell>>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
+    if req.edits.len() > MAX_EDITS {
+        return Err(ApiError::BadRequest(format!(
+            "too many edits ({}); at most {MAX_EDITS} per request",
+            req.edits.len()
+        )));
+    }
     let mid = MeasureId(id);
 
     let mut model = load_model(&state).await?;
@@ -420,9 +503,9 @@ struct NlParseReq {
 
 async fn nl_parse(
     State(state): State<Arc<AppState>>,
-    body: Result<Json<NlParseReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<NlParseReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
     let model = load_model(&state).await?;
     let ctx = NlContext::new(&model);
     match parse_nl_formula(&ctx, &req.text) {
@@ -440,9 +523,9 @@ struct NlDescribeReq {
 
 async fn nl_describe(
     State(state): State<Arc<AppState>>,
-    body: Result<Json<NlDescribeReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<NlDescribeReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
     let formula = serde_json::from_value(req.formula)
         .map_err(|e| ApiError::BadRequest(format!("invalid formula: {e}")))?;
     let model = load_model(&state).await?;
@@ -459,9 +542,9 @@ struct SetCellReq {
 async fn set_cell(
     State(state): State<Arc<AppState>>,
     Path(id): Path<u32>,
-    body: Result<Json<SetCellReq>, axum::extract::rejection::JsonRejection>,
+    body: Result<Json<SetCellReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let Json(req) = body?;
     let mid = MeasureId(id);
 
     let mut model = load_model(&state).await?;
@@ -1061,5 +1144,75 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    fn post_json(uri: &str, body: String) -> Request<Body> {
+        Request::post(uri)
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn over_limit_body_is_413() {
+        let (app, _p) = seeded_app();
+        let big = format!("{{\"text\":\"{}\"}}", "x".repeat(MAX_BODY_BYTES + 1));
+        let resp = app.oneshot(post_json("/nl/parse", big)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[tokio::test]
+    async fn too_many_edits_is_400() {
+        let (app, _p) = seeded_app();
+        let edit = json!({"measure": 101, "coord": [[1, 10], [2, 20]], "value": 1.0});
+        let body = json!({ "edits": vec![edit; MAX_EDITS + 1] }).to_string();
+        assert!(
+            body.len() < MAX_BODY_BYTES,
+            "must hit the edit cap, not the body cap"
+        );
+        let resp = app
+            .oneshot(post_json("/measures/102/eval", body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(body_json(resp).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("too many edits"));
+    }
+
+    // Slow-loris: a partial request must be dropped once the header timeout
+    // passes, not held open forever. Returns the time until the server closes.
+    async fn partial_request_closed_after(header_timeout: Duration) -> Duration {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (app, _p) = seeded_app();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, app, header_timeout));
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        c.write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n")
+            .await
+            .unwrap();
+        let start = std::time::Instant::now();
+        let mut buf = Vec::new();
+        // EOF (or a reset) is the server hanging up; cap the wait well past it.
+        let _ = tokio::time::timeout(header_timeout * 3, c.read_to_end(&mut buf))
+            .await
+            .expect("server should close a stalled connection");
+        server.abort();
+        start.elapsed()
+    }
+
+    #[tokio::test]
+    async fn slow_loris_closed_fast_timeout() {
+        let t = partial_request_closed_after(Duration::from_millis(200)).await;
+        assert!(t < Duration::from_secs(2), "closed after {t:?}");
+    }
+
+    #[tokio::test]
+    #[ignore = "takes ~10 s (default header timeout)"]
+    async fn slow_loris_closed_default_timeout() {
+        let t = partial_request_closed_after(HEADER_READ_TIMEOUT).await;
+        assert!(t < Duration::from_secs(11), "closed after {t:?}");
     }
 }

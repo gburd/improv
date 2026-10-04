@@ -2601,6 +2601,8 @@ name = "improv_server"
 version = "0.7.0"
 dependencies = [
  "axum",
+ "hyper",
+ "hyper-util",
  "improv_core_model",
  "improv_engine",
  "improv_nl_formula",
@@ -5385,6 +5387,7 @@ dependencies = [
  "pin-project-lite",
  "sync_wrapper",
  "tokio",
+ "tokio-util",
  "tower-layer",
  "tower-service",
  "tracing",
