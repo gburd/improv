@@ -1986,4 +1986,94 @@ mod tests {
         assert_eq!(cell_datom_counts(&store), (n - 1, n - 1));
         assert_eq!(store.load_model().unwrap().inputs, loaded.inputs);
     }
+
+    /// Paths the main fixture skips: a SQL-sourced measure, a CALL blob with
+    /// no function defs, a cell re-saved under another value type (the old
+    /// attribute is retracted; a value whose type differs from the measure's
+    /// still loads), `reload_model`, and an empty `load_partial` closure.
+    #[test]
+    fn sql_source_call_blob_and_retyped_cell_round_trip() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let product = CategoryId(2);
+        let mut m = Model::new();
+        m.add_category(product, "Product");
+        m.add_item(ItemId(20), product, "Widget A");
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Price".into()),
+            value_type: ValueType::Number,
+            categories: vec![product],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        m.sql_sources.insert(
+            MeasureId(100),
+            improv_core_model::SqlSource {
+                query: "SELECT p, v FROM t".into(),
+                dimension_columns: vec!["p".into()],
+                value_column: "v".into(),
+                refresh_policy: Default::default(),
+            },
+        );
+        m.external_calls.insert(
+            MeasureId(100),
+            improv_core_model::ExternalCall {
+                func: "f".into(),
+                arg_measures: vec![],
+                refresh_policy: Default::default(),
+            },
+        );
+        let coord = Coordinate::from_pairs([(product, ItemId(20))]);
+        m.set_input(MeasureId(100), coord.clone(), Value::Number(1.0));
+        store.save_model(&m).expect("save");
+        m.set_input(MeasureId(100), coord.clone(), Value::Text("n/a".into()));
+        store.save_model(&m).expect("re-save");
+
+        let loaded = store.reload_model().expect("reload");
+        assert_eq!(loaded.sql_sources, m.sql_sources);
+        assert_eq!(loaded.external_calls, m.external_calls);
+        assert_eq!(loaded.inputs, m.inputs);
+
+        let partial = store.load_partial(&[]).expect("partial");
+        assert!(partial.inputs.is_empty());
+        assert_eq!(partial.measures.len(), 1);
+    }
+
+    /// A meta blob carrying only scenarios survives a round trip. A non-finite
+    /// number has no EDN double spelling, so its save is a recoverable error
+    /// (not an abort) that leaves the store untouched.
+    #[test]
+    fn scenarios_only_meta_round_trips_and_infinite_cell_is_refused() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = Model::new();
+        m.add_category(CategoryId(1), "Time");
+        m.add_item(ItemId(10), CategoryId(1), "2025");
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let coord = Coordinate::from_pairs([(CategoryId(1), ItemId(10))]);
+        m.set_input(MeasureId(1), coord.clone(), Value::Number(2.5));
+        m.add_scenario(improv_core_model::Scenario {
+            id: improv_core_model::ScenarioId(1),
+            name: Name("Up".into()),
+            overrides: [((MeasureId(1), coord.clone()), Value::Number(2.0))]
+                .into_iter()
+                .collect(),
+        });
+        store.save_model(&m).expect("save");
+        let loaded = store.load_model().expect("load");
+        assert_eq!(loaded.scenarios, m.scenarios);
+        assert_eq!(loaded.inputs, m.inputs);
+
+        let mut inf = m.clone();
+        inf.set_input(MeasureId(1), coord, Value::Number(f64::INFINITY));
+        let err = store.save_model(&inf).expect_err("inf has no EDN form");
+        assert!(matches!(err, StoreError::Mentat(_)), "got {err:?}");
+        assert_eq!(store.load_model().expect("reload").inputs, m.inputs);
+    }
 }
