@@ -207,8 +207,8 @@ impl Default for CanvasRect {
         CanvasRect {
             x: 0.0,
             y: 0.0,
-            w: 480.0,
-            h: 320.0,
+            w: 560.0,
+            h: 420.0,
         }
     }
 }
