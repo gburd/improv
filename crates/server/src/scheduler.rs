@@ -149,6 +149,15 @@ async fn tick_once(
             let due =
                 improv_core_model::schedule::due_measures(&policies, now_secs, &last_run_snapshot);
 
+            // Force the Restricted sandbox: extfn derives the policy from the
+            // model-controlled `pure` flag (`pure: false` => Trusted), and the
+            // allowlist digest covers only name + body. Restored before save.
+            let authored: Vec<(String, bool)> = model
+                .external_fns
+                .iter_mut()
+                .map(|(k, f)| (k.clone(), std::mem::replace(&mut f.pure, true)))
+                .collect();
+
             let mut refreshed = Vec::new();
             for mid in &due {
                 let allowed = model
@@ -181,6 +190,11 @@ async fn tick_once(
                         // others, nor crash the tick: log and continue.
                         eprintln!("scheduler: measure {} refresh failed: {e}", mid.0);
                     }
+                }
+            }
+            for (k, pure) in authored {
+                if let Some(f) = model.external_fns.get_mut(&k) {
+                    f.pure = pure;
                 }
             }
             if !refreshed.is_empty() {
