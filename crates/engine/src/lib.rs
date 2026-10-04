@@ -16,6 +16,7 @@
 //! * diff `R` stays `isize` multiplicity; a `reduce` collapses to one value/key.
 //!
 //! `core_model` types convert to/from these encodings at the edge.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod compiler;
 pub mod dataflow;
@@ -120,6 +121,7 @@ pub fn project_key(k: &CoordKey, keep: &[u32]) -> CoordKey {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod spike {
     //! The DD-viability spike. If this compiles and passes, differential
     //! dataflow is a viable engine substrate for Improv's cube model.
@@ -240,5 +242,53 @@ mod spike {
         let cv = CellValue::from_model_value(&Value::DateTime(dt)).expect("date -> cell");
         assert_eq!(cv, CellValue::Date(1_700_000_000_000));
         assert!(format!("{cv}").starts_with("2023-11-"));
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use improv_core_model::{ValueError, ValueErrorKind};
+
+    #[test]
+    fn cell_value_conversions_and_display() {
+        assert_eq!(CellValue::from_bool_numeric(true), CellValue::num(1.0));
+        assert_eq!(CellValue::from_bool_numeric(false), CellValue::num(0.0));
+        assert_eq!(CellValue::Bool(true).as_num(), None);
+        let cv = |v: Value| CellValue::from_model_value(&v).unwrap();
+        assert_eq!(cv(Value::Boolean(true)), CellValue::Bool(true));
+        assert_eq!(cv(Value::Text("t".into())), CellValue::Text("t".into()));
+        assert_eq!(cv(Value::Enum(3)), CellValue::num(3.0));
+        assert_eq!(
+            cv(Value::Error(ValueError::new(ValueErrorKind::MissingInput))),
+            CellValue::Err(0)
+        );
+        let shown: Vec<String> = [
+            CellValue::num(1.5),
+            CellValue::Bool(false),
+            CellValue::Text("hi".into()),
+            CellValue::Date(0),
+            CellValue::Date(i64::MAX),
+            CellValue::Err(1),
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert_eq!(
+            shown[..4],
+            ["1.5", "false", "hi", "1970-01-01T00:00:00+00:00"]
+        );
+        assert_eq!(shown[4], format!("date({})", i64::MAX));
+        assert_eq!(shown[5], "#ERR");
+    }
+
+    #[test]
+    fn coord_keys_round_trip_and_project() {
+        let c = Coordinate::from_pairs([(CategoryId(2), ItemId(20)), (CategoryId(1), ItemId(10))]);
+        let k = encode_coord(&c);
+        assert_eq!(k, vec![(1, 10), (2, 20)]);
+        assert_eq!(decode_coord(&k), c);
+        assert_eq!(project_key(&k, &[2]), vec![(2, 20)]);
     }
 }

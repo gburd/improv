@@ -113,6 +113,7 @@ pub fn refresh_external_measure(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{
@@ -250,5 +251,51 @@ mod tests {
             Some(Value::Number(v)) => assert!((v - 500.0_f64.sqrt()).abs() < 1e-9),
             other => panic!("expected number, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn zero_arg_function_fills_one_scalar_cell_and_errors_are_values() {
+        let mut m = base_model();
+        let wasm = |name: &str, body: &str| ExternalFn {
+            name: name.into(),
+            language: Language::Wasm,
+            body: body.into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        m.external_fns.insert(
+            "seven".into(),
+            wasm(
+                "seven",
+                r#"wat:(module (func (export "improv_call") (result f64) f64.const 7))"#,
+            ),
+        );
+        m.external_fns
+            .insert("bad".into(), wasm("bad", "wat:(module)"));
+        for (mid, func) in [(MeasureId(300), "seven"), (MeasureId(301), "bad")] {
+            m.external_calls.insert(
+                mid,
+                ExternalCall {
+                    func: func.into(),
+                    arg_measures: vec![],
+                    refresh_policy: Default::default(),
+                },
+            );
+            assert_eq!(
+                refresh_external_measure(&mut m, DEFAULT_TIMEOUT, mid).unwrap(),
+                1
+            );
+        }
+        let here = Coordinate::new();
+        assert_eq!(m.input(MeasureId(300), &here), Some(&Value::Number(7.0)));
+        assert!(matches!(
+            m.input(MeasureId(301), &here),
+            Some(Value::Error(_))
+        ));
+        assert!(matches!(
+            refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(100)),
+            Err(ExternalError::NotExternal(_))
+        ));
     }
 }

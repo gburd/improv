@@ -401,6 +401,7 @@ fn split_join(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{CategoryId, DimensionSpec, MeasureKind, Name, Value};
@@ -617,5 +618,83 @@ mod tests {
             infer(&ctx, MeasureId(200), &unknown),
             Err(CompileError::UnknownFunction(FuncId(50)))
         );
+    }
+
+    fn with_flag() -> (HashMap<MeasureId, Measure>, MeasureId) {
+        let mut measures = fixture();
+        let flag = MeasureId(103);
+        measures.insert(
+            flag,
+            Measure {
+                value_type: ValueType::Boolean,
+                ..num_measure(flag, "Flag", vec![PRODUCT])
+            },
+        );
+        (measures, flag)
+    }
+
+    fn bin(op: BinaryOp, l: Expr, r: Expr) -> Expr {
+        Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    fn lit(n: f64) -> Expr {
+        Expr::Literal(Value::Number(n))
+    }
+
+    #[test]
+    fn infer_rejects_ill_typed_and_unbroadcastable_exprs() {
+        let (measures, flag) = with_flag();
+        let ctx = CompileContext::new(&measures);
+        let err = |e: &Expr| infer(&ctx, MeasureId(200), e).unwrap_err();
+        let msg = |e: &Expr| err(e).to_string();
+
+        let e = Expr::Literal(Value::Error(improv_core_model::ValueError::new(
+            improv_core_model::ValueErrorKind::DivisionByZero,
+        )));
+        assert!(msg(&e).contains("error literal"));
+        // Arithmetic needs Numbers; logic needs Booleans.
+        assert!(msg(&bin(BinaryOp::Add, refr(flag), lit(1.0))).contains("requires Number"));
+        assert!(msg(&bin(BinaryOp::And, refr(flag), refr(PRICE))).contains("requires Boolean"));
+        assert!(msg(&bin(BinaryOp::Or, refr(PRICE), refr(flag))).contains("requires Boolean"));
+        // Scalar call: a bad arg propagates; disjoint dims don't broadcast.
+        assert_eq!(
+            err(&Expr::Call(FuncId(10), vec![refr(MeasureId(999))])),
+            CompileError::UnknownMeasure(MeasureId(999))
+        );
+        assert!(matches!(
+            err(&Expr::Call(FuncId(20), vec![refr(PRICE), refr(HEADCOUNT)])),
+            CompileError::DimensionMismatch(_)
+        ));
+        // Aggregations take exactly one Number arg.
+        assert!(msg(&Expr::Call(FuncId(1), vec![refr(PRICE), refr(PRICE)])).contains("exactly 1"));
+        assert!(msg(&Expr::Call(FuncId(1), vec![refr(flag)])).contains("expects Number"));
+    }
+
+    #[test]
+    fn infer_accepts_logic_broadcast_calls_and_folds_literals() {
+        let (measures, flag) = with_flag();
+        let ctx = CompileContext::new(&measures);
+        let ok = |e: &Expr| infer(&ctx, MeasureId(200), e).unwrap();
+
+        let t = ok(&bin(BinaryOp::And, refr(flag), refr(flag)));
+        assert_eq!(t.ty.value_type, ValueType::Boolean);
+        // MIN2(Quantity[Time,Product], Price[Product]) broadcasts to the union.
+        let t = ok(&Expr::Call(FuncId(20), vec![refr(QTY), refr(PRICE)]));
+        assert_eq!(t.ty.dim, Dim::of(vec![TIME, PRODUCT]));
+        // SUM over a non-ref arg has no `over`, so it collapses nothing.
+        let t = ok(&Expr::Call(
+            FuncId(1),
+            vec![bin(BinaryOp::Mul, refr(PRICE), lit(2.0))],
+        ));
+        assert_eq!(t.ty.dim, Dim::of(vec![PRODUCT]));
+        // A scalar literal on the left folds into the map: no Join.
+        let typed = ok(&bin(BinaryOp::Mul, lit(2.0), refr(QTY)));
+        match build_plan(&ctx, &typed).unwrap().kind {
+            PlanNodeKind::MapBinary(BinaryOp::Mul, l, r) => {
+                assert!(matches!(l.kind, PlanNodeKind::Literal(_)));
+                assert_eq!(r.kind, PlanNodeKind::InputMeasure(QTY));
+            }
+            other => panic!("expected MapBinary, got {other:?}"),
+        }
     }
 }

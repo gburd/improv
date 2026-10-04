@@ -17,7 +17,6 @@
 //! `Send`-friendly to hold across calls, so the worker lives on its own thread
 //! and communicates over channels. `Engine` is the `Send` handle.
 
-use crate::compiler::{compile_formula, CompileContext};
 use crate::plan::PlanNode;
 use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{MeasureId, MeasureKind, Model};
@@ -26,9 +25,8 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use crate::dataflow::{build_coll, derived_build_order, EngineError};
+use crate::dataflow::{build_derived, compile_plans, EngineError};
 use differential_dataflow::input::InputSession;
-use differential_dataflow::operators::Reduce;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
 
 /// A single input-cell edit: set `measure[coord]` to `value` (or remove it when
@@ -80,16 +78,7 @@ impl Engine {
     pub fn new(model: &Model, targets: &[MeasureId]) -> Result<(Engine, Snapshot), EngineError> {
         // Compile plans up front (outside the worker), so a compile error is
         // reported synchronously rather than on the worker thread.
-        let ctx = CompileContext::new(&model.measures);
-        let order = derived_build_order(model, targets)?;
-        let mut plans: Vec<(MeasureId, PlanNode)> = Vec::new();
-        for m in &order {
-            if let Some(measure) = model.measures.get(m) {
-                if let MeasureKind::Derived(f) = &measure.kind {
-                    plans.push((*m, compile_formula(&ctx, *m, f)?));
-                }
-            }
-        }
+        let plans = compile_plans(model, targets)?;
 
         // Which input measures need sessions? Every input measure referenced by
         // any tracked plan, plus any that already has cells. We over-approximate
@@ -103,16 +92,12 @@ impl Engine {
             .collect();
 
         // Seed edits: the model's current numeric input cells.
-        let mut seed: Vec<Edit> = Vec::new();
+        let mut seed: Vec<(MeasureId, CoordKey, f64)> = Vec::new();
         let mut current: HashMap<(MeasureId, CoordKey), f64> = HashMap::new();
         for ((mid, coord), val) in &model.inputs {
             if let improv_core_model::Value::Number(n) = val {
                 let key = encode_coord(coord);
-                seed.push(Edit {
-                    measure: *mid,
-                    coord: key.clone(),
-                    value: Some(*n),
-                });
+                seed.push((*mid, key.clone(), *n));
                 current.insert((*mid, key), *n);
             }
         }
@@ -213,7 +198,7 @@ impl Drop for Engine {
 fn worker_loop(
     input_ids: Vec<MeasureId>,
     plans: Vec<(MeasureId, PlanNode)>,
-    seed: Vec<Edit>,
+    seed: Vec<(MeasureId, CoordKey, f64)>,
     cmd_rx: Receiver<Cmd>,
     ready_tx: Sender<()>,
 ) {
@@ -254,33 +239,21 @@ fn worker_loop(
                 input_colls.insert(*id, coll);
             }
 
-            let mut derived = HashMap::new();
-            for (mid, plan) in &plans {
-                if let Ok(coll) = build_coll(plan, scope, &input_colls, &derived) {
-                    let mid = *mid;
-                    let snap = snap.clone();
-                    let reduced = coll.reduce(|_k, inp, out| {
-                        for (val, mult) in inp {
-                            if *mult > 0 {
-                                out.push(((*val).clone(), 1isize));
-                            }
+            for (mid, reduced) in build_derived(scope, &plans, &input_colls) {
+                let snap = snap.clone();
+                reduced
+                    .inspect(move |((k, val), _t, diff)| {
+                        // Maintain the running snapshot from the delta
+                        // stream: a +1 sets the value, a -1 removes it.
+                        let mut s = snap.lock().unwrap();
+                        let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
+                        if *diff > 0 {
+                            m.insert(k.clone(), val.clone());
+                        } else if *diff < 0 {
+                            m.remove(k);
                         }
-                    });
-                    derived.insert(mid, reduced.clone());
-                    reduced
-                        .inspect(move |((k, val), _t, diff)| {
-                            // Maintain the running snapshot from the delta
-                            // stream: a +1 sets the value, a -1 removes it.
-                            let mut s = snap.lock().unwrap();
-                            let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
-                            if *diff > 0 {
-                                m.insert(k.clone(), val.clone());
-                            } else if *diff < 0 {
-                                m.remove(k);
-                            }
-                        })
-                        .probe_with(&mut probe);
-                }
+                    })
+                    .probe_with(&mut probe);
             }
         });
 
@@ -302,11 +275,9 @@ fn worker_loop(
         };
 
         // Apply the seed at time 0, then advance to 1 and run.
-        for e in &seed {
-            if let Some(session) = sessions.get_mut(&e.measure) {
-                if let Some(v) = e.value {
-                    session.insert((e.coord.clone(), CellValue::num(v)));
-                }
+        for (mid, coord, v) in &seed {
+            if let Some(session) = sessions.get_mut(mid) {
+                session.insert((coord.clone(), CellValue::num(*v)));
             }
         }
         let mut t: u64 = 1;
@@ -318,10 +289,8 @@ fn worker_loop(
         // We track the previous value of each cell so a "set" is a proper
         // retract(old)+assert(new) on the cardinality-one cell.
         let mut prev: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
-        for e in &seed {
-            if let Some(v) = e.value {
-                prev.insert((e.measure, e.coord.clone()), CellValue::num(v));
-            }
+        for (mid, coord, v) in &seed {
+            prev.insert((*mid, coord.clone()), CellValue::num(*v));
         }
 
         while let Ok(cmd) = cmd_rx.recv() {
@@ -358,6 +327,7 @@ fn worker_loop(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{
@@ -536,6 +506,39 @@ mod tests {
         assert_eq!(
             rev.get(&key(&[(1, 10), (2, 21)])).and_then(|v| v.as_num()),
             Some(1000.0)
+        );
+    }
+
+    #[test]
+    fn edits_to_untracked_measures_and_new_cells() {
+        let mut model = revenue_model();
+        // A non-numeric input and an orphan cell (no such measure) aren't seeded.
+        model.set_input(
+            MeasureId(100),
+            Coordinate::from_pairs([(CategoryId(2), ItemId(22))]),
+            Value::Text("n/a".into()),
+        );
+        model.set_input(MeasureId(999), Coordinate::new(), Value::Number(1.0));
+        let (mut engine, snap) = Engine::new(&model, &[MeasureId(102)]).expect("engine");
+        assert_eq!(engine.targets(), [MeasureId(102)]);
+        assert_eq!(snap[&MeasureId(102)].len(), 2);
+        // An edit to a measure with no input session changes nothing.
+        let s = engine.set(MeasureId(999), key(&[]), 5.0).expect("set");
+        assert_eq!(s[&MeasureId(102)], snap[&MeasureId(102)]);
+        // A brand-new Price cell (no previous value) has no Quantity yet...
+        let s = engine
+            .set(MeasureId(100), key(&[(2, 22)]), 7.0)
+            .expect("set");
+        assert_eq!(s[&MeasureId(102)].len(), 2);
+        // ...until a matching Quantity arrives.
+        let s = engine
+            .set(MeasureId(101), key(&[(1, 10), (2, 22)]), 3.0)
+            .expect("set");
+        assert_eq!(
+            s[&MeasureId(102)]
+                .get(&key(&[(1, 10), (2, 22)]))
+                .and_then(|v| v.as_num()),
+            Some(21.0)
         );
     }
 }

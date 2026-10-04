@@ -21,7 +21,9 @@ use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::{Join as _, Reduce};
 use differential_dataflow::AsCollection;
 use differential_dataflow::Collection;
-use improv_core_model::{BinaryOp, CategoryId, FuncId, MeasureId, MeasureKind, Model, UnaryOp};
+use improv_core_model::{
+    BinaryOp, CategoryId, Formula, FuncId, MeasureId, MeasureKind, Model, UnaryOp,
+};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use timely::dataflow::operators::ToStream;
@@ -42,7 +44,7 @@ pub enum EngineError {
 }
 
 /// A DD collection of `(coordinate, cell value)`.
-type Coll<G> = Collection<G, (CoordKey, CellValue), isize>;
+pub(crate) type Coll<G> = Collection<G, (CoordKey, CellValue), isize>;
 
 /// Recursively build a collection for a plan node.
 ///
@@ -336,18 +338,18 @@ fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
 /// Compute the derived measures transitively needed by `targets`, in
 /// dependency order (a measure comes after every derived measure it
 /// references). Rejects cycles.
-pub(crate) fn derived_build_order(
-    model: &Model,
+pub(crate) fn derived_build_order<'m>(
+    model: &'m Model,
     targets: &[MeasureId],
-) -> Result<Vec<MeasureId>, EngineError> {
-    let mut order: Vec<MeasureId> = Vec::new();
+) -> Result<Vec<(MeasureId, &'m Formula)>, EngineError> {
+    let mut order: Vec<(MeasureId, &'m Formula)> = Vec::new();
     let mut visited: std::collections::HashSet<MeasureId> = std::collections::HashSet::new();
     let mut on_stack: std::collections::HashSet<MeasureId> = std::collections::HashSet::new();
 
-    fn visit(
-        model: &Model,
+    fn visit<'m>(
+        model: &'m Model,
         m: MeasureId,
-        order: &mut Vec<MeasureId>,
+        order: &mut Vec<(MeasureId, &'m Formula)>,
         visited: &mut std::collections::HashSet<MeasureId>,
         on_stack: &mut std::collections::HashSet<MeasureId>,
     ) -> Result<(), EngineError> {
@@ -376,7 +378,7 @@ pub(crate) fn derived_build_order(
         }
         on_stack.remove(&m);
         visited.insert(m);
-        order.push(m);
+        order.push((m, formula));
         Ok(())
     }
 
@@ -384,6 +386,48 @@ pub(crate) fn derived_build_order(
         visit(model, *t, &mut order, &mut visited, &mut on_stack)?;
     }
     Ok(order)
+}
+
+/// Compile every derived measure `targets` transitively needs, in build order.
+pub(crate) fn compile_plans(
+    model: &Model,
+    targets: &[MeasureId],
+) -> Result<Vec<(MeasureId, PlanNode)>, EngineError> {
+    let ctx = CompileContext::new(&model.measures);
+    derived_build_order(model, targets)?
+        .into_iter()
+        .map(|(m, f)| Ok((m, compile_formula(&ctx, m, f)?)))
+        .collect()
+}
+
+/// Build each plan's collection, collapsed to one value per key, in order (so
+/// a later plan can reference an earlier one). A plan that fails to build, such
+/// as a ref to an input measure with no collection, is left out.
+pub(crate) fn build_derived<G: Scope>(
+    scope: &mut G,
+    plans: &[(MeasureId, PlanNode)],
+    inputs: &HashMap<MeasureId, Coll<G>>,
+) -> Vec<(MeasureId, Coll<G>)>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
+{
+    let mut derived = HashMap::new();
+    let mut built = Vec::new();
+    for (mid, plan) in plans {
+        let Ok(coll) = build_coll(plan, scope, inputs, &derived) else {
+            continue;
+        };
+        let reduced = coll.reduce(|_k, inp, out| {
+            for (val, mult) in inp {
+                if *mult > 0 {
+                    out.push(((*val).clone(), 1isize));
+                }
+            }
+        });
+        derived.insert(*mid, reduced.clone());
+        built.push((*mid, reduced));
+    }
+    built
 }
 
 /// Run `model` to completion and return computed values for the requested
@@ -397,22 +441,9 @@ pub fn evaluate(
     model: &Model,
     targets: &[MeasureId],
 ) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
-    let ctx = CompileContext::new(&model.measures);
-
-    // Determine every derived measure transitively needed by `targets`, in
-    // dependency (topological) order: a measure appears after all derived
-    // measures it references.
-    let order = derived_build_order(model, targets)?;
-
-    // Compile each derived measure in that order.
-    let mut plans: Vec<(MeasureId, PlanNode)> = Vec::new();
-    for m in &order {
-        if let Some(measure) = model.measures.get(m) {
-            if let MeasureKind::Derived(f) = &measure.kind {
-                plans.push((*m, compile_formula(&ctx, *m, f)?));
-            }
-        }
-    }
+    // Compile every derived measure transitively needed by `targets`, in
+    // dependency (topological) order.
+    let plans = compile_plans(model, targets)?;
 
     // Gather input cells to feed, grouped by measure. Every model value type
     // maps into the DD lane: Number, Boolean, Text, Enum, DateTime (as
@@ -449,50 +480,32 @@ pub fn evaluate(
                 input_colls.insert(*id, coll);
             }
 
-            let mut derived: HashMap<MeasureId, Coll<_>> = HashMap::new();
-            for (mid, plan) in &plans_arc {
-                if let Ok(coll) = build_coll(plan, scope, &input_colls, &derived) {
-                    let mid = *mid;
-                    let res = res.clone();
-                    // Collapse to one value per key.
-                    let reduced = coll.reduce(|_k, inp, out| {
-                        for (val, mult) in inp {
-                            if *mult > 0 {
-                                out.push(((*val).clone(), 1isize));
-                            }
-                        }
-                    });
-                    // Register this derived measure so later layers can
-                    // reference it as an InputMeasure.
-                    derived.insert(mid, reduced.clone());
-                    reduced.inspect(move |((k, val), _t, diff)| {
-                        if *diff > 0 {
-                            res.lock()
-                                .unwrap()
-                                .entry(mid)
-                                .or_default()
-                                .insert(k.clone(), val.clone());
-                        }
-                    });
-                }
+            for (mid, reduced) in build_derived(scope, &plans_arc, &input_colls) {
+                let res = res.clone();
+                reduced.inspect(move |((k, val), _t, diff)| {
+                    if *diff > 0 {
+                        res.lock()
+                            .unwrap()
+                            .entry(mid)
+                            .or_default()
+                            .insert(k.clone(), val.clone());
+                    }
+                });
             }
         });
 
         // Feed all input cells at time 0, advance, and run to completion.
-        for (id, session) in sessions.iter_mut() {
-            session.advance_to(0);
-            if let Some(cells) = input_cells.get(id) {
-                for (k, v) in cells {
-                    session.insert((k.clone(), v.clone()));
-                }
+        for (id, cells) in &input_cells {
+            let session = sessions.get_mut(id).expect("a session per input measure");
+            for (k, v) in cells {
+                session.insert((k.clone(), v.clone()));
             }
         }
+        // Closing the sessions (on return) lets `execute_directly` run the
+        // dataflow to completion before it returns.
         for session in sessions.values_mut() {
             session.advance_to(1);
             session.flush();
-        }
-        while sessions.values().any(|s| s.time() < &1) {
-            worker.step();
         }
     });
 
@@ -501,6 +514,7 @@ pub fn evaluate(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{
@@ -896,5 +910,140 @@ mod tests {
             evaluate(&model, &[MeasureId(1)]).is_err(),
             "cycle must be rejected"
         );
+    }
+
+    /// Run `build_coll` for a hand-built plan in a throwaway scope.
+    fn build_err(plan: PlanNode) -> String {
+        timely::execute::execute_directly(move |worker| {
+            worker.dataflow::<u64, _, _>(|scope| {
+                match build_coll(&plan, scope, &HashMap::new(), &HashMap::new()) {
+                    Ok(_) => panic!("expected a build error"),
+                    Err(e) => e.to_string(),
+                }
+            })
+        })
+    }
+
+    #[test]
+    fn malformed_func_call_plans_are_build_errors() {
+        use crate::typed::{Dim, TypeInfo};
+        let ty = TypeInfo {
+            value_type: ValueType::Number,
+            dim: Dim::scalar(),
+        };
+        let lit = PlanNode {
+            kind: PlanNodeKind::Literal(Value::Number(1.0)),
+            ty: ty.clone(),
+        };
+        let call = |func, args| PlanNode {
+            kind: PlanNodeKind::FuncCall {
+                func: FuncId(func),
+                args,
+            },
+            ty: ty.clone(),
+        };
+        assert!(build_err(call(99, vec![])).contains("unknown scalar func"));
+        assert!(build_err(call(10, vec![lit.clone(), lit])).contains("arity 1, got 2"));
+    }
+
+    #[test]
+    fn cell_ops_cover_every_operator() {
+        let n = CellValue::num;
+        let b = CellValue::Bool;
+        assert_eq!(apply_binary(BinaryOp::Add, &n(2.0), &n(3.0)), n(5.0));
+        assert_eq!(apply_binary(BinaryOp::Div, &n(1.0), &n(4.0)), n(0.25));
+        assert!(apply_binary(BinaryOp::Div, &n(1.0), &n(0.0))
+            .as_num()
+            .unwrap()
+            .is_nan());
+        for (x, y) in [(true, true), (true, false), (false, true), (false, false)] {
+            assert_eq!(apply_binary(BinaryOp::And, &b(x), &b(y)), b(x && y));
+            assert_eq!(apply_binary(BinaryOp::Or, &b(x), &b(y)), b(x || y));
+        }
+        for (op, want) in [
+            (BinaryOp::Lt, true),
+            (BinaryOp::Le, true),
+            (BinaryOp::Gt, false),
+            (BinaryOp::Ge, false),
+            (BinaryOp::Eq, false),
+            (BinaryOp::Ne, true),
+        ] {
+            assert_eq!(apply_binary(op, &n(1.0), &n(2.0)), b(want), "{op:?}");
+        }
+        assert_eq!(apply_unary(UnaryOp::Neg, &n(2.0)), n(-2.0));
+        assert_eq!(apply_unary(UnaryOp::Not, &b(true)), b(false));
+        assert!(truthy(&n(1.0)) && !truthy(&n(0.0)));
+        assert!(truthy(&CellValue::Text("x".into())) && !truthy(&CellValue::Text(String::new())));
+        assert!(truthy(&CellValue::Date(1)) && !truthy(&CellValue::Date(0)));
+        assert!(!truthy(&CellValue::Err(0)));
+    }
+
+    #[test]
+    fn scalar_funcs_and_aggregates() {
+        for (id, x, want) in [
+            (10, -2.5, 2.5),
+            (11, 2.5, 3.0),
+            (12, 2.5, 2.0),
+            (13, 2.1, 3.0),
+            (14, 9.0, 3.0),
+            (15, 4.0, -4.0),
+        ] {
+            assert_eq!(apply_scalar(FuncId(id), &[x]), want, "func {id}");
+        }
+        assert!(apply_scalar(FuncId(14), &[-1.0]).is_nan());
+        assert_eq!(apply_scalar(FuncId(20), &[1.0, 2.0]), 1.0);
+        assert_eq!(apply_scalar(FuncId(21), &[1.0, 2.0]), 2.0);
+        assert!(apply_scalar(FuncId(99), &[1.0]).is_nan());
+        let v = [4.0, 1.0, 7.0];
+        assert_eq!(
+            [SUM, AVG, MIN, MAX].map(|f| aggregate(f, &v)),
+            [12.0, 4.0, 1.0, 7.0]
+        );
+        assert!(aggregate(FuncId(99), &v).is_nan());
+    }
+
+    #[test]
+    fn evaluate_unary_literal_operands_and_missing_inputs() {
+        let mut model = revenue_model();
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let refr = |id| Expr::Ref(MeasureId(id), DimensionSpec::default());
+        let lit = |n: f64| Expr::Literal(Value::Number(n));
+        let bin = |op, l, r| Expr::BinaryOp(op, Box::new(l), Box::new(r));
+        let mk = |id: u32, cats: Vec<CategoryId>, kind| Measure {
+            id: MeasureId(id),
+            name: Name(format!("M{id}")),
+            value_type: ValueType::Number,
+            categories: cats,
+            kind,
+            description: None,
+        };
+        let derived = |f| MeasureKind::Derived(improv_core_model::Formula::new(f));
+        model.add_measure(mk(
+            150,
+            vec![product],
+            derived(Expr::UnaryOp(UnaryOp::Neg, Box::new(refr(100)))),
+        ));
+        model.add_measure(mk(
+            151,
+            vec![product],
+            derived(bin(BinaryOp::Mul, lit(2.0), refr(100))),
+        ));
+        model.add_measure(mk(
+            152,
+            vec![],
+            derived(bin(BinaryOp::Add, lit(2.0), lit(3.0))),
+        ));
+        // A ref to an input measure with no cells has no collection: skipped.
+        model.add_measure(mk(160, vec![time], MeasureKind::Input));
+        model.add_measure(mk(153, vec![time], derived(refr(160))));
+        let ids = [150, 151, 152, 153].map(MeasureId);
+        let out = evaluate(&model, &ids).unwrap();
+        let a = key(&[(2, 20)]);
+        assert_eq!(out[&MeasureId(150)][&a], CellValue::num(-10.0));
+        assert_eq!(out[&MeasureId(151)][&a], CellValue::num(20.0));
+        assert_eq!(out[&MeasureId(152)][&key(&[])], CellValue::num(5.0));
+        assert!(!out.contains_key(&MeasureId(153)));
+        // An unknown target is ignored here (the compiler reports bad refs).
+        assert!(evaluate(&model, &[MeasureId(999)]).unwrap().is_empty());
     }
 }
