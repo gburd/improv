@@ -162,6 +162,10 @@ pub struct ImprovApp {
     dirty: bool,
     /// The native title last sent, so `update` only sends a change.
     last_title: String,
+    /// The `status` the status bar last drew, and when (egui time) it first
+    /// drew it: a message clears itself [`STATUS_TTL`] seconds later.
+    status_shown: String,
+    status_at: f64,
     /// The floating application menu's position and open submenu.
     menu: menu::MenuState,
     export_form: ExportForm,
@@ -284,6 +288,9 @@ const CASCADE: f32 = 28.0;
 
 /// Where a fresh canvas's first matrix starts on the workspace: right of the
 /// application menu (at x 4, about 110 wide), as in the NeXT layout.
+/// Seconds a status message stays up before the status bar clears it.
+const STATUS_TTL: f64 = 5.0;
+
 const MENU_CLEAR: f32 = 120.0;
 
 /// Smallest a worksheet window can be resized to. Below roughly this it has no
@@ -869,6 +876,8 @@ impl ImprovApp {
             quit_armed: false,
             dirty: false,
             last_title: String::new(),
+            status_shown: String::new(),
+            status_at: 0.0,
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -3226,7 +3235,21 @@ impl ImprovApp {
     /// The **status bar** (plan Step 5): the status message on the left and the
     /// selection-aggregate readout on the right, which is where Quantrix puts
     /// its `Sum`.
-    fn status_bar(&self, ctx: &egui::Context) {
+    fn status_bar(&mut self, ctx: &egui::Context) {
+        let now = ctx.input(|i| i.time);
+        if self.status != self.status_shown {
+            self.status_shown.clone_from(&self.status);
+            self.status_at = now;
+        }
+        if !self.status.is_empty() {
+            let age = now - self.status_at;
+            if age >= STATUS_TTL {
+                self.status.clear();
+                self.status_shown.clear();
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(STATUS_TTL - age));
+            }
+        }
         egui::TopBottomPanel::bottom("status_bar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(&self.status);
@@ -4908,6 +4931,8 @@ mod tests {
             quit_armed: false,
             dirty: false,
             last_title: String::new(),
+            status_shown: String::new(),
+            status_at: 0.0,
             menu: menu::MenuState::default(),
             export_form: ExportForm::default(),
             undo_stack: Vec::new(),
@@ -9446,6 +9471,24 @@ mod tests {
             app.col_cats()
         );
         assert!(!app.row_cats().contains(&time));
+    }
+
+    /// A status message is drawn, then gone once [`STATUS_TTL`] has passed.
+    #[test]
+    fn status_messages_fade_after_a_few_seconds() {
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        let _ = full_frame(&ctx, &mut app, size, 10.0);
+        app.status = "recalculated".into();
+        let out = full_frame(&ctx, &mut app, size, 10.1);
+        assert!(text_at(&out.shapes, "recalculated").is_some(), "drawn");
+        let out = full_frame(&ctx, &mut app, size, 13.0);
+        assert!(text_at(&out.shapes, "recalculated").is_some(), "still up");
+        let out = full_frame(&ctx, &mut app, size, 16.2);
+        assert!(text_at(&out.shapes, "recalculated").is_none(), "faded");
+        assert!(app.status.is_empty());
     }
 
     /// The screen rect of the first painted text exactly equal to `label`.
