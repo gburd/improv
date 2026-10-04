@@ -14,6 +14,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ops::RangeInclusive;
 
 use improv_core_model::{
     parser, BinaryOp, CanvasRect, CategoryId, Expr, Filter, FuncId, ItemId, MatrixPlacement,
@@ -74,6 +75,9 @@ pub(crate) struct Matrix {
     /// to its dimensions.
     cursor_row: usize,
     cursor_col: usize,
+    /// The fixed corner of a range selection (Shift+arrow, Shift+click,
+    /// drag); `None` selects just the cursor cell. Transient, never persisted.
+    anchor: Option<(usize, usize)>,
     /// The cell currently being edited in THIS matrix, and its text buffer.
     editing: Option<(MeasureId, CoordKey)>,
     edit_buf: String,
@@ -418,6 +422,7 @@ impl Matrix {
             self.filters.clear();
             self.cursor_row = 0;
             self.cursor_col = 0;
+            self.anchor = None;
         } else if self.page_idx.len() != self.page_cats(model).len() {
             // Keep page_idx sized to the current page-dimension count.
             let n = self.page_cats(model).len();
@@ -708,12 +713,66 @@ impl Matrix {
         self.cursor_col = (self.cursor_col as isize + dcol).clamp(0, max_col) as usize;
     }
 
+    /// An arrow step: `extend` (Shift held) keeps or sets the anchor at the
+    /// current cursor before moving, growing a range; otherwise it collapses.
+    fn step(&mut self, model: &Model, drow: isize, dcol: isize, extend: bool) {
+        self.anchor = extend.then(|| self.anchor.unwrap_or((self.cursor_row, self.cursor_col)));
+        self.move_cursor(model, drow, dcol);
+    }
+
+    /// The selected rectangle's (rows, cols): anchor to cursor, inclusive.
+    fn selection(&self) -> (RangeInclusive<usize>, RangeInclusive<usize>) {
+        let (r, c) = (self.cursor_row, self.cursor_col);
+        let (ar, ac) = self.anchor.unwrap_or((r, c));
+        (ar.min(r)..=ar.max(r), ac.min(c)..=ac.max(c))
+    }
+
+    /// The `CoordKey`s of every selected cell, row-major (see
+    /// [`Self::cursor_key`] for when there are none).
+    fn selection_keys(&self, model: &Model) -> Vec<CoordKey> {
+        let Some(pinned) = self.pinned_pages_opt(model) else {
+            return Vec::new();
+        };
+        let row_cats = self.row_cats(model);
+        let col_cats = self.col_cats(model);
+        let row_lists = self.axis_item_lists(model, &row_cats);
+        let col_lists = self.axis_item_lists(model, &col_cats);
+        let (n_rows, n_cols) = (product_len(&row_lists), product_len(&col_lists));
+        let line = |lists: &[Vec<(ItemId, String)>], i: usize| {
+            if lists.is_empty() {
+                Vec::new()
+            } else {
+                nth_tuple(lists, i)
+            }
+        };
+        let (rows, cols) = self.selection();
+        let cols: Vec<_> = cols
+            .filter(|c| *c < n_cols)
+            .map(|c| line(&col_lists, c))
+            .collect();
+        // ponytail: capped at 10,000 cells so a select-all on a huge grid stays
+        // cheap; stream the sum instead if Sum must cover bigger ranges.
+        rows.filter(|r| *r < n_rows)
+            .flat_map(|r| {
+                let rt = line(&row_lists, r);
+                cols.iter()
+                    .map(|ct| cell_key_multi(&row_cats, &rt, &col_cats, ct, &pinned))
+                    .collect::<Vec<_>>()
+            })
+            .take(10_000)
+            .collect()
+    }
+
     /// Clamp the cursor into this matrix's grid (called after a pivot / measure
     /// switch that may have shrunk it).
     fn clamp_cursor(&mut self, model: &Model) {
         let (rows, cols) = self.grid_dims(model);
         self.cursor_row = self.cursor_row.min(rows.saturating_sub(1));
         self.cursor_col = self.cursor_col.min(cols.saturating_sub(1));
+        if let Some((r, c)) = &mut self.anchor {
+            *r = (*r).min(rows.saturating_sub(1));
+            *c = (*c).min(cols.saturating_sub(1));
+        }
     }
 
     /// The `CoordKey` of the cell under this matrix's cursor, or `None` when
@@ -1445,9 +1504,10 @@ impl ImprovApp {
     }
 
     /// Move the focused matrix's cursor by `(drow, dcol)`, clamped to its grid.
-    /// Mirrors the TUI's `move_cursor`.
+    /// Mirrors the TUI's `move_cursor`; collapses any range selection.
+    #[cfg(test)]
     pub fn move_cursor(&mut self, drow: isize, dcol: isize) {
-        self.with_focused(|m, model| m.move_cursor(model, drow, dcol));
+        self.with_focused(|m, model| m.step(model, drow, dcol, false));
     }
 
     /// The `CoordKey` of the cell under the focused matrix's cursor (see
@@ -3187,8 +3247,13 @@ impl ImprovApp {
     /// cell, or a text/boolean/date/error cell). See [`Self::selection_readout`].
     pub fn selection_sum(&self) -> Option<f64> {
         let measure = self.selected()?;
-        let key = self.cursor_key()?;
-        self.cell_value(measure, &key).and_then(|v| v.as_num())
+        let nums: Vec<f64> = self
+            .focused()
+            .selection_keys(&self.model)
+            .iter()
+            .filter_map(|k| self.cell_value(measure, k).and_then(|v| v.as_num()))
+            .collect();
+        (!nums.is_empty()).then(|| nums.iter().sum())
     }
 
     /// The workspace: a `#555555` desktop with each matrix floating on it as
@@ -3739,16 +3804,16 @@ impl ImprovApp {
         }
 
         if k(Key::ArrowUp) || k(Key::K) {
-            self.move_cursor(-1, 0);
+            self.with_focused(|m, model| m.step(model, -1, 0, modifiers.shift));
         }
         if k(Key::ArrowDown) || k(Key::J) {
-            self.move_cursor(1, 0);
+            self.with_focused(|m, model| m.step(model, 1, 0, modifiers.shift));
         }
         if k(Key::ArrowLeft) || k(Key::H) {
-            self.move_cursor(0, -1);
+            self.with_focused(|m, model| m.step(model, 0, -1, modifiers.shift));
         }
         if k(Key::ArrowRight) || k(Key::L) {
-            self.move_cursor(0, 1);
+            self.with_focused(|m, model| m.step(model, 0, 1, modifiers.shift));
         }
         if k(Key::Enter) || k(Key::F2) {
             self.begin_edit_cursor();
@@ -3800,7 +3865,8 @@ impl ImprovApp {
         let Some(m) = self.matrices.get(mi) else {
             return;
         };
-        let cursor = (m.cursor_row, m.cursor_col);
+        let (sel_rows, sel_cols) = m.selection();
+        let shift = ui.input(|i| i.modifiers.shift);
         let editing = m.editing.clone();
         let mut edit_buf = m.edit_buf.clone();
         let uid = m.uid;
@@ -3872,8 +3938,11 @@ impl ImprovApp {
         // The cursor cell a click chose, applied after the closure.
         let mut clicked_cell: Option<(usize, usize)> = None;
         let mut begin_edit: Option<(CoordKey, String)> = None;
-        // The selected rectangle (item 2 widens it past the cursor).
-        let (sel_rows, sel_cols) = (cursor.0..=cursor.0, cursor.1..=cursor.1);
+        // Drag-select: where a drag began, whether one is live, and the visible
+        // cells' rects to find the one under the pointer.
+        let mut drag_from: Option<(usize, usize)> = None;
+        let mut dragging = false;
+        let mut cell_rects: Vec<((usize, usize), egui::Rect)> = Vec::new();
         let formula_tip = if is_derived {
             self.formula_source(measure)
         } else {
@@ -4028,6 +4097,16 @@ impl ImprovApp {
                             ui.painter().rect_filled(r, 0.0, fill);
                             ui.painter().vline(r.right(), r.y_range(), RULE);
                             ui.painter().hline(r.x_range(), r.bottom(), RULE);
+                            cell_rects.push(((ri, ci), r));
+                            let cell_id = egui::Id::new(("cell", uid, ri, ci));
+                            let mut sense_cell = |ui: &mut egui::Ui| {
+                                let resp = ui.interact(r, cell_id, egui::Sense::click_and_drag());
+                                if resp.drag_started() {
+                                    drag_from = Some((ri, ci));
+                                }
+                                dragging |= resp.dragged();
+                                resp
+                            };
                             {
                                 // Numbers right-align so their digits line up,
                                 // as in Improv; text, booleans and dates stay left.
@@ -4047,11 +4126,7 @@ impl ImprovApp {
                                 ui.with_layout(align, |ui| {
                                     if is_derived {
                                         ui.add(egui::Label::new(text).selectable(false));
-                                        let mut resp = ui.interact(
-                                            r,
-                                            egui::Id::new(("cell", uid, ri, ci)),
-                                            egui::Sense::click(),
-                                        );
+                                        let mut resp = sense_cell(ui);
                                         if let Some(src) = &formula_tip {
                                             resp = resp.on_hover_text(format!("formula: {src}"));
                                         }
@@ -4084,11 +4159,7 @@ impl ImprovApp {
                                         // Single click selects; double-click (or
                                         // Enter) edits. The whole cell senses.
                                         ui.add(egui::Label::new(text.clone()).selectable(false));
-                                        let resp = ui.interact(
-                                            r,
-                                            egui::Id::new(("cell", uid, ri, ci)),
-                                            egui::Sense::click(),
-                                        );
+                                        let resp = sense_cell(ui);
                                         if resp.clicked() || resp.double_clicked() {
                                             clicked_cell = Some((ri, ci));
                                         }
@@ -4115,8 +4186,23 @@ impl ImprovApp {
         if let Some(m) = self.matrices.get_mut(mi) {
             m.edit_buf = edit_buf;
             if let Some((ri, ci)) = clicked_cell {
+                // Shift+click extends from the anchor (or the old cursor).
+                m.anchor = shift.then(|| m.anchor.unwrap_or((m.cursor_row, m.cursor_col)));
                 m.cursor_row = ri;
                 m.cursor_col = ci;
+            }
+            if let Some(start) = drag_from {
+                m.anchor = Some(start);
+                (m.cursor_row, m.cursor_col) = start;
+            }
+            if dragging {
+                let p = ui.ctx().pointer_latest_pos();
+                if let Some((at, _)) = cell_rects
+                    .iter()
+                    .find(|(_, r)| p.is_some_and(|p| r.contains(p)))
+                {
+                    (m.cursor_row, m.cursor_col) = *at;
+                }
             }
             if let Some((key, text)) = begin_edit {
                 m.editing = Some((measure, key));
@@ -6959,6 +7045,15 @@ mod tests {
         let raw = egui::RawInput {
             time: Some(time),
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            // As a backend does: the held modifiers ride along with the events.
+            modifiers: events
+                .iter()
+                .find_map(|e| match e {
+                    egui::Event::Key { modifiers, .. }
+                    | egui::Event::PointerButton { modifiers, .. } => Some(*modifiers),
+                    _ => None,
+                })
+                .unwrap_or_default(),
             events,
             ..Default::default()
         };
@@ -9014,6 +9109,121 @@ mod tests {
         assert!(app.matrices[0].editing.is_none(), "one click only selects");
         desk.click(&mut app, at);
         assert!(app.matrices[0].editing.is_some(), "a double-click edits");
+    }
+
+    /// One key press (with `modifiers`) as a desk frame.
+    fn key(desk: &mut Desk, app: &mut ImprovApp, key: egui::Key, modifiers: egui::Modifiers) {
+        let ev = egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let _ = desk.frame(app, vec![ev]);
+    }
+
+    /// A 1x3 Quantity grid (Product on columns, Time paged) holding 1, 2, 4.
+    fn three_wide() -> (ImprovApp, Desk) {
+        let mut model = grid_2x2_model();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        model.add_item(ItemId(22), p, "WidgetC");
+        let c = |pairs: &[(CategoryId, ItemId)]| {
+            improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
+        };
+        for (pi, q) in [(ItemId(20), 1.0), (ItemId(21), 2.0), (ItemId(22), 4.0)] {
+            model.set_input(
+                MeasureId(101),
+                c(&[(t, ItemId(10)), (p, pi)]),
+                Value::Number(q),
+            );
+        }
+        let mut app = build_app(model);
+        app.matrices[0].measure = Some(MeasureId(101));
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        // Time on rows (2 lines), Product on columns (3 lines): row 0 = 2025.
+        assert_eq!(app.matrices[0].grid_dims(&app.model), (2, 3));
+        (app, desk)
+    }
+
+    /// (d) Shift+Right twice from (0,0) selects 3 cells and Sum adds them; (e) a
+    /// plain arrow collapses the range to one cell.
+    #[test]
+    fn shift_arrows_select_a_range_and_a_plain_arrow_collapses_it() {
+        let (mut app, mut desk) = three_wide();
+        assert_eq!(app.selection_sum(), Some(1.0));
+        for _ in 0..2 {
+            key(
+                &mut desk,
+                &mut app,
+                egui::Key::ArrowRight,
+                egui::Modifiers::SHIFT,
+            );
+        }
+        assert_eq!(app.focused().selection_keys(&app.model).len(), 3);
+        assert_eq!(app.selection_sum(), Some(7.0), "1 + 2 + 4");
+        key(
+            &mut desk,
+            &mut app,
+            egui::Key::ArrowDown,
+            egui::Modifiers::NONE,
+        );
+        assert_eq!(app.focused().selection_keys(&app.model).len(), 1);
+        assert_eq!((app.focused().cursor_row, app.focused().cursor_col), (1, 2));
+    }
+
+    /// (f) Every selected column's header is lit, and the row's header.
+    #[test]
+    fn a_range_lights_every_selected_column_header() {
+        let (mut app, mut desk) = three_wide();
+        key(
+            &mut desk,
+            &mut app,
+            egui::Key::ArrowRight,
+            egui::Modifiers::SHIFT,
+        );
+        let f = fills(&desk.frame(&mut app, Vec::new()));
+        for ci in 0..2 {
+            assert_eq!(
+                lit_headers(&f, cell_rect(&desk, &app, 0, ci)),
+                (1, 1),
+                "col {ci}"
+            );
+        }
+        assert_eq!(lit_headers(&f, cell_rect(&desk, &app, 1, 2)), (0, 0));
+    }
+
+    /// Shift+click extends; a plain click collapses; a drag selects its span.
+    #[test]
+    fn shift_click_and_drag_select_ranges() {
+        let (mut app, mut desk) = three_wide();
+        let at = |desk: &Desk, app: &ImprovApp, r, c| cell_rect(desk, app, r, c).center();
+        let p = at(&desk, &app, 1, 2);
+        let shift_click = vec![
+            egui::Event::PointerMoved(p),
+            egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::SHIFT,
+            },
+            egui::Event::PointerButton {
+                pos: p,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::SHIFT,
+            },
+        ];
+        let _ = desk.frame(&mut app, shift_click);
+        let _ = desk.frame(&mut app, Vec::new());
+        assert_eq!(app.focused().selection_keys(&app.model).len(), 6);
+        let p = at(&desk, &app, 0, 1);
+        desk.click(&mut app, p);
+        assert_eq!(app.focused().selection_keys(&app.model).len(), 1);
+        let (from, to) = (at(&desk, &app, 0, 0), at(&desk, &app, 1, 1));
+        desk.drag(&mut app, from, to);
+        assert_eq!(app.focused().selection(), (0..=1, 0..=1));
     }
 
     /// (d) add_matrix focuses the new matrix, and its window becomes key.
