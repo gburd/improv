@@ -10662,4 +10662,176 @@ mod tests {
             egui::containers::panel::PanelState::load(&ctx, egui::Id::new("formula_bar")).is_none()
         );
     }
+
+    // -- branch coverage: pure Matrix / app logic ---------------------------
+
+    #[test]
+    fn from_placement_restores_valid_page_pins_and_ignores_stale_ones() {
+        let model = sales_3d_model();
+        let (region, south) = (CategoryId(3), ItemId(31));
+        let mut p = MatrixPlacement::new(MeasureId(200));
+        p.page_items = vec![(region, south)];
+        let m = Matrix::from_placement(&model, &p).expect("measure exists");
+        // An empty saved order falls back to the measure's natural order.
+        assert_eq!(m.axis_order, vec![CategoryId(1), CategoryId(2), region]);
+        assert_eq!(m.page_idx, vec![1], "South is the second Region item");
+        for stale in [(region, ItemId(999)), (CategoryId(9), south)] {
+            p.page_items = vec![stale];
+            let m = Matrix::from_placement(&model, &p).unwrap();
+            assert_eq!(m.page_idx, vec![0], "{stale:?} falls back to the first");
+        }
+        p.axis_order = vec![region, CategoryId(2), CategoryId(1)];
+        let m = Matrix::from_placement(&model, &p).unwrap();
+        assert_eq!(m.page_cats(&model), vec![CategoryId(1)]);
+        assert!(Matrix::from_placement(&model, &MatrixPlacement::new(MeasureId(9))).is_none());
+    }
+
+    #[test]
+    fn axis_and_page_ops_ignore_what_the_matrix_cannot_address() {
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200));
+        app.sync_axis_state();
+        let before = app.focused().axis_order.clone();
+        app.set_axis(CategoryId(77), Axis::Rows);
+        assert_eq!(app.focused().axis_order, before, "not a dimension: no-op");
+
+        app.set_page(5, 0); // no such page dimension
+        assert_eq!(app.focused().page_idx, vec![0]);
+        app.focused_mut().page_idx.clear(); // stale length is resized
+        app.set_page(0, 1);
+        assert_eq!(app.focused().page_idx, vec![1]);
+
+        hide_all_items(&mut app, CategoryId(3)); // the page has no item
+        app.set_page(0, 0);
+        app.page_first(1);
+        assert_eq!(app.focused().page_idx, vec![1], "nothing to page to");
+        assert!(app.focused().selection_keys(&app.model).is_empty());
+
+        // A matrix with no categories at all has nothing to pivot or page.
+        let model = Model::new();
+        let mut m = Matrix::new(&model, None);
+        m.pivot_rotate(&model);
+        m.page_first(&model, 1);
+        assert!(m.axis_order.is_empty() && m.page_idx.is_empty());
+    }
+
+    #[test]
+    fn a_filter_holding_a_stale_item_is_kept_even_at_full_length() {
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200));
+        let region = CategoryId(3);
+        app.focused_mut().filters = vec![Filter {
+            category: region,
+            items: vec![ItemId(999)],
+        }];
+        app.toggle_filter_item(region, ItemId(30));
+        // Two items like the category, but not ITS two: still a filter.
+        assert_eq!(
+            app.focused().filters[0].items,
+            vec![ItemId(999), ItemId(30)]
+        );
+    }
+
+    #[test]
+    fn a_scalar_row_axis_still_addresses_the_cursor_cell() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(100)); // Price[Product]
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Columns);
+        assert!(app.row_cats().is_empty());
+        assert_eq!(app.cursor_key(), Some(vec![(2, 20)]));
+    }
+
+    #[test]
+    fn matrix_list_guards_and_an_empty_canvas() {
+        let mut app = ImprovApp::load("").expect("in-memory model");
+        assert!(app.model.measures.is_empty());
+        assert_eq!(app.save_view("v"), None, "no measure: nothing to save");
+        app.begin_edit_cursor();
+        app.cycle_measure(1);
+        assert_eq!(
+            (app.selected(), app.focused().editing.clone()),
+            (None, None)
+        );
+
+        let mut app = build_app(revenue_model());
+        app.add_matrix(Some(MeasureId(100)));
+        assert!(!app.remove_matrix(5));
+        assert_eq!(app.matrix_count(), 2);
+        app.matrices.clear();
+        app.sync_axis_state();
+        assert_eq!(app.matrix_count(), 1, "the canvas is never empty");
+    }
+
+    #[test]
+    fn blank_view_name_and_no_op_formula_toggles_leave_no_undo_point() {
+        let mut app = build_app(revenue_model());
+        assert_eq!(app.save_view("  "), None);
+        assert_eq!(app.status, "view name is required");
+        app.set_formula_enabled(MeasureId(100), false).unwrap(); // an input
+        app.set_formula_enabled(MeasureId(102), true).unwrap(); // already on
+        assert!(!app.can_undo());
+        app.undo_with_status();
+        assert_eq!(app.status, "nothing to undo");
+        app.redo_with_status();
+        assert_eq!(app.status, "nothing to redo");
+    }
+
+    #[test]
+    fn csv_wizard_keeps_a_typed_measure_id() {
+        let mut app = build_app(revenue_model());
+        app.import_form.measure_id = "42".into();
+        app.toggle_csv_wizard();
+        assert!(app.show_csv_wizard);
+        assert_eq!(app.import_form.measure_id, "42");
+        app.toggle_csv_wizard();
+        assert!(!app.show_csv_wizard);
+    }
+
+    #[test]
+    fn quit_warns_once_only_for_an_edited_in_memory_model() {
+        let mut app = build_app(revenue_model());
+        assert!(app.quit_allowed(), "nothing to lose");
+        app.undo_stack.push(app.model.clone());
+        app.db = "/some/file.db".into();
+        assert!(app.quit_allowed(), "a file-backed model is saved");
+        app.db.clear();
+        assert!(!app.quit_allowed());
+        assert!(app.status.contains("Quit again"));
+        assert!(app.quit_allowed(), "the second Quit closes");
+    }
+
+    #[test]
+    fn literals_without_a_dsl_token_are_refused() {
+        assert_eq!(literal_dsl(&Value::Number(f64::INFINITY)), None);
+        assert_eq!(
+            literal_dsl(&Value::Boolean(false)).as_deref(),
+            Some("FALSE")
+        );
+        assert_eq!(literal_dsl(&Value::Text("a\"b".into())), None);
+        assert_eq!(literal_dsl(&Value::Text("a\\b".into())), None);
+        assert_eq!(
+            literal_dsl(&Value::Text("ok".into())).as_deref(),
+            Some("\"ok\"")
+        );
+        // A literal of the wrong type is no boolean.
+        assert!(parse_typed(&Model::new(), ValueType::Boolean, "1").is_err());
+    }
+
+    #[test]
+    fn view_descriptions_name_rows_columns_and_pages() {
+        let app = build_app(revenue_model());
+        let mut v = View::from_matrices(
+            ViewId(1),
+            Name("v".into()),
+            MatrixPlacement::new(MeasureId(101)),
+            vec![],
+        );
+        assert_eq!(app.view_description(&v), "Quantity by Time \u{d7} Product");
+        v.n_rows = 0;
+        v.n_cols = 0;
+        assert_eq!(app.view_description(&v), "Quantity; pages: Time, Product");
+        v.measure = MeasureId(999);
+        assert_eq!(app.view_description(&v), "v: measure no longer exists");
+    }
 }
