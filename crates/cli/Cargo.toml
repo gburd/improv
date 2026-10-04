@@ -20,3 +20,8 @@ serde_json.workspace = true
 [dependencies.rusqlite]
 version = "0.40"
 features = ["bundled"]
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

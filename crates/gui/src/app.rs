@@ -4482,6 +4482,7 @@ fn nth_tuple(lists: &[Vec<(ItemId, String)>], mut i: usize) -> Vec<(ItemId, Stri
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     /// Every glyph the GUI draws from a literal (tile grip/menu, error marker)
     /// must be covered by the fonts `theme::install_fonts` installs (Arimo plus

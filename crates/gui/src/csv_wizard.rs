@@ -170,6 +170,7 @@ pub fn build_export_args(form: &ExportForm) -> Result<(MeasureId, PathBuf, u8), 
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{Coordinate, ItemId, Measure, MeasureKind, Model, Name, Value};

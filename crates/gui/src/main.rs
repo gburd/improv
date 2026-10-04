@@ -4,6 +4,7 @@
 //! `.agent/steering/AGENT_GUI_STEERING.md` §9). It loads a model from a Mentat
 //! store, renders a measure as a pivot grid, and (Phase 5 increments) offers a
 //! model browser, formula editor, and Info panel.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 mod app;
 mod chart;

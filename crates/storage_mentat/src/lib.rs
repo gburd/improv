@@ -7,6 +7,7 @@
 //!
 //! Formulas and coordinates are stored as JSON strings (the AST/coordinate are
 //! serialized with serde); everything else maps to native datom value types.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use improv_core_model::{
     Category, CategoryId, Coordinate, Formula, Item, ItemId, Measure, MeasureId, MeasureKind,
@@ -806,6 +807,7 @@ fn rel_on(q: &impl mentat::Queryable, query: &str) -> Result<Vec<Vec<TypedValue>
 use HashMap as _HashMap;
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use improv_core_model::{BinaryOp, DimensionSpec, Expr, ItemId};

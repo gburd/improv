@@ -421,6 +421,7 @@ fn paint_row(p: &Painter, r: Rect, row: &Row, face: Color32) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use egui::{Event, Modifiers, PointerButton, RawInput};

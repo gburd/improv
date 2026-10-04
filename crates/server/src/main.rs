@@ -5,6 +5,7 @@
 //! and replaced on every write this process makes (API or scheduler), so reads
 //! cost one store load per write, not per request. The server assumes it owns
 //! the store: a write from another process is not seen until restart.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -798,6 +799,7 @@ fn readable_key(model: &Model, key: &CoordKey, value: f64) -> Cell {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};

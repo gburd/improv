@@ -5,6 +5,7 @@
 //!
 //! Coordinates (`--at`) resolve category *names* and item *names* to ids via
 //! the loaded model, e.g. `--at Time=2025,Product=WidgetA`.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use improv_core_model::{
     parser, parser::Definition, CategoryId, Coordinate, ExternalCall, ItemId, MatrixPlacement,
@@ -1481,6 +1482,7 @@ fn fmt_value(v: &Value) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

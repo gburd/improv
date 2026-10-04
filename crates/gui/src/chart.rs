@@ -299,6 +299,7 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use egui::epaint::Shape;

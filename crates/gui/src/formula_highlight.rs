@@ -204,6 +204,7 @@ pub fn highlight_formula(text: &str, font: FontId, error_pos: Option<usize>) -> 
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
