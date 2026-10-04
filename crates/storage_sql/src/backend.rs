@@ -209,6 +209,7 @@ fn sqlite_query(conn: &rusqlite::Connection, sql: &str) -> Result<Table> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -227,5 +228,65 @@ mod tests {
         assert_eq!(Cell::Text("1.5".into()).as_number().unwrap(), 1.5);
         assert!(Cell::Text("nope".into()).as_number().is_err());
         assert!(Cell::Null.as_number().is_err());
+    }
+
+    #[test]
+    fn cell_text_and_number_coercions_cover_every_variant() {
+        assert_eq!(Cell::Null.as_text(), "");
+        assert_eq!(Cell::Int(-4).as_text(), "-4");
+        assert_eq!(Cell::Float(1.5).as_text(), "1.5");
+        assert_eq!(Cell::Bool(true).as_text(), "true");
+        assert_eq!(Cell::Text("t".into()).as_text(), "t");
+        assert_eq!(Cell::Float(0.5).as_number().unwrap(), 0.5);
+        assert_eq!(Cell::Bool(true).as_number().unwrap(), 1.0);
+        assert_eq!(Cell::Bool(false).as_number().unwrap(), 0.0);
+    }
+
+    /// The bare `&rusqlite::Connection` impl binds every `Cell` kind and reads
+    /// NULL/INTEGER/REAL/TEXT back; a BLOB cell is a clean error.
+    #[test]
+    fn raw_sqlite_conn_binds_and_reads_all_cell_kinds() {
+        let raw = rusqlite::Connection::open_in_memory().unwrap();
+        let mut c = &raw;
+        assert_eq!((c.placeholder(3), c.real_type()), ("?".into(), "REAL"));
+        SqlConn::execute(&mut c, "CREATE TABLE t (a, b, c, d, e)", &[]).unwrap();
+        SqlConn::execute(
+            &mut c,
+            "INSERT INTO t VALUES (?, ?, ?, ?, ?)",
+            &[
+                Cell::Null,
+                Cell::Int(7),
+                Cell::Float(2.5),
+                Cell::Text("x".into()),
+                Cell::Bool(true),
+            ],
+        )
+        .unwrap();
+        let t = SqlConn::query(&mut c, "SELECT a, b, c, d, e FROM t").unwrap();
+        assert_eq!(t.columns, ["a", "b", "c", "d", "e"]);
+        assert_eq!(
+            t.rows,
+            vec![vec![
+                Cell::Null,
+                Cell::Int(7),
+                Cell::Float(2.5),
+                Cell::Text("x".into()),
+                Cell::Int(1),
+            ]]
+        );
+        let err = SqlConn::query(&mut c, "SELECT x'00'")
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(err.contains("blob"), "{err}");
+        assert!(t.column_index("zz").is_err());
+    }
+
+    #[test]
+    fn backend_dialect_per_driver() {
+        let s = Backend::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        let d = Backend::Duckdb(duckdb::Connection::open_in_memory().unwrap());
+        assert_eq!((s.placeholder(2), s.real_type()), ("?".into(), "REAL"));
+        assert_eq!((d.placeholder(2), d.real_type()), ("?".into(), "DOUBLE"));
     }
 }

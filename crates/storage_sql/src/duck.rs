@@ -137,3 +137,111 @@ fn cell_to_duck(c: &Cell) -> duckdb::types::Value {
         Cell::Bool(b) => V::Boolean(*b),
     }
 }
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    fn mem() -> duckdb::Connection {
+        duckdb::Connection::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn duck_maps_every_value_kind() {
+        let t = duck_query(
+            &mem(),
+            "SELECT NULL AS n, true AS b, 1::TINYINT AS ti, 2::SMALLINT AS si, \
+             3::INTEGER AS i, 4::BIGINT AS bi, 5::HUGEINT AS hi, 6::UTINYINT AS uti, \
+             7::USMALLINT AS usi, 8::UINTEGER AS ui, 9::UBIGINT AS ubi, \
+             1.5::FLOAT AS f, 2.5::DOUBLE AS d, 3.25::DECIMAL(5,2) AS dec, \
+             'x' AS t, DATE '2025-01-02' AS dt",
+        )
+        .unwrap();
+        assert_eq!(t.columns.len(), 16);
+        let r = &t.rows[0];
+        assert_eq!(
+            r[..15],
+            [
+                Cell::Null,
+                Cell::Bool(true),
+                Cell::Int(1),
+                Cell::Int(2),
+                Cell::Int(3),
+                Cell::Int(4),
+                Cell::Float(5.0),
+                Cell::Int(6),
+                Cell::Int(7),
+                Cell::Int(8),
+                Cell::Int(9),
+                Cell::Float(1.5),
+                Cell::Float(2.5),
+                Cell::Float(3.25),
+                Cell::Text("x".into()),
+            ]
+        );
+        // Dates are stringified defensively, not an error.
+        assert!(matches!(&r[15], Cell::Text(s) if !s.is_empty()));
+    }
+
+    #[test]
+    fn empty_result_keeps_column_names() {
+        let t = duck_query(&mem(), "SELECT 1 AS a, 'q' AS b WHERE false").unwrap();
+        assert_eq!(t.columns, ["a", "b"]);
+        assert!(t.rows.is_empty());
+    }
+
+    #[test]
+    fn execute_binds_every_cell_kind_and_reports_errors() {
+        let c = mem();
+        duck_execute(
+            &c,
+            "CREATE TABLE t (a INTEGER, b BIGINT, c DOUBLE, d VARCHAR, e BOOLEAN)",
+            &[],
+        )
+        .unwrap();
+        duck_execute(
+            &c,
+            "INSERT INTO t VALUES (?, ?, ?, ?, ?)",
+            &[
+                Cell::Null,
+                Cell::Int(2),
+                Cell::Float(0.5),
+                Cell::Text("s".into()),
+                Cell::Bool(false),
+            ],
+        )
+        .unwrap();
+        let t = duck_query(&c, "SELECT * FROM t").unwrap();
+        assert_eq!(
+            t.rows,
+            [[
+                Cell::Null,
+                Cell::Int(2),
+                Cell::Float(0.5),
+                Cell::Text("s".into()),
+                Cell::Bool(false)
+            ]]
+        );
+        let err = duck_execute(&c, "INSERT INTO nope VALUES (1)", &[]).unwrap_err();
+        assert!(err.to_string().contains("duckdb execute failed"), "{err}");
+        let err = duck_query(&c, "FROBNICATE everything").err().unwrap();
+        assert!(err.to_string().contains("duckdb prepare failed"), "{err}");
+        // The failed read rolled back; the connection still works.
+        assert_eq!(
+            duck_query(&c, "SELECT count(*) AS n FROM t")
+                .unwrap()
+                .rows
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn connect_failure_is_a_connect_error() {
+        let Err(err) = connect_duckdb("/nonexistent-dir-improv/x/y.duckdb") else {
+            panic!("opened a path under a missing directory");
+        };
+        assert!(err.to_string().contains("duckdb connect failed"), "{err}");
+    }
+}

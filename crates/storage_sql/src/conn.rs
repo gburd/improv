@@ -131,6 +131,7 @@ pub fn assert_no_inline_secret(c: &Connection) -> Result<()> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -185,5 +186,52 @@ mod tests {
         assert!(assert_no_inline_secret(&c).is_err());
         let ok = postgres("c4", "Good", "postgres://u@h/db", "PGPASSWORD");
         assert!(assert_no_inline_secret(&ok).is_ok());
+    }
+
+    #[test]
+    fn open_dispatches_on_kind() {
+        let mut mem = open(&sqlite("m", "mem", ":memory:")).unwrap();
+        assert!(matches!(mem, Backend::Sqlite(_)));
+        assert_eq!(
+            mem.query("SELECT 1 AS one").unwrap().rows,
+            [[crate::Cell::Int(1)]]
+        );
+        let duck = open(&duckdb("d", "duck", ":memory:")).unwrap();
+        assert!(matches!(duck, Backend::Duckdb(_)));
+    }
+
+    /// The password is appended from the env var only when it is non-empty;
+    /// either way a remote cleartext host is refused before any network I/O.
+    #[test]
+    fn open_postgres_resolves_password_env() {
+        let var = format!("IMPROV_CONN_TEST_PW_{}", std::process::id());
+        let remote = postgres("p", "remote", "host=db.example.com user=u", &var);
+        std::env::set_var(&var, "s3cret");
+        let with_pw = open(&remote).err().expect("refused").to_string();
+        std::env::set_var(&var, "");
+        let empty_pw = open(&remote).err().expect("refused").to_string();
+        std::env::remove_var(&var);
+        let unset = open(&remote).err().expect("refused").to_string();
+        for e in [&with_pw, &empty_pw, &unset] {
+            assert!(e.contains("TLS isn't built in"), "{e}");
+            assert!(!e.contains("s3cret"), "{e}");
+        }
+    }
+
+    #[test]
+    fn inline_secret_guard_shapes() {
+        // Non-Postgres descriptors never carry a secret.
+        assert!(assert_no_inline_secret(&sqlite("s", "s", "/tmp/x.db")).is_ok());
+        // A URI with user:password before `@` is refused.
+        let uri = postgres("k", "k", "postgresql://u:p@h:5432/db", "PGPASSWORD");
+        assert!(assert_no_inline_secret(&uri).is_err());
+        // URI with a port but no password: one colon before `@` is fine.
+        let port = postgres("u", "u", "postgres://u@h:5432/db", "PGPASSWORD");
+        assert!(assert_no_inline_secret(&port).is_ok());
+        // URI without `@` / keyword DSN without a password pass.
+        let no_at = postgres("n", "n", "postgres://h:5432/db", "PGPASSWORD");
+        assert!(assert_no_inline_secret(&no_at).is_ok());
+        let plain = postgres("p", "p", "host=h user=u", "PGPASSWORD");
+        assert!(assert_no_inline_secret(&plain).is_ok());
     }
 }

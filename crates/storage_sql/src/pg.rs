@@ -259,6 +259,7 @@ fn redact_str(s: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -376,5 +377,58 @@ mod tests {
         let t = be.query("SELECT v FROM improv_pg_ro").unwrap();
         assert_eq!(t.rows, vec![vec![Cell::Int(7)]]);
         be.execute("DROP TABLE improv_pg_ro", &[]).unwrap();
+    }
+
+    #[test]
+    fn numeric_decoder_rejects_truncated_input() {
+        use postgres::types::FromSql;
+        let err = PgNumeric::from_sql(&Type::NUMERIC, &[0, 1]).err().unwrap();
+        assert_eq!(err.to_string(), "truncated numeric");
+        // ndigits=1 but the digit word is missing.
+        let err = PgNumeric::from_sql(&Type::NUMERIC, &[0, 1, 0, 0, 0, 0, 0, 0])
+            .err()
+            .unwrap();
+        assert_eq!(err.to_string(), "truncated numeric");
+        assert!(PgNumeric::accepts(&Type::NUMERIC) && !PgNumeric::accepts(&Type::TEXT));
+    }
+
+    /// Nothing listens on loopback port 1: a non-database (I/O) error, redacted.
+    #[test]
+    fn refused_connection_is_redacted() {
+        let Err(err) = connect_postgres("host=127.0.0.1 port=1 user=u password=hunter2") else {
+            panic!("connected to port 1");
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("connection error (redacted)"), "{msg}");
+        assert!(!msg.contains("hunter2"), "{msg}");
+    }
+
+    #[test]
+    fn pg_binds_null_and_bool_and_redacts_execute_errors() {
+        let Some(mut be) = live() else { return };
+        be.execute("DROP TABLE IF EXISTS improv_pg_params", &[])
+            .unwrap();
+        be.execute("CREATE TABLE improv_pg_params (a int8, b bool)", &[])
+            .unwrap();
+        be.execute(
+            "INSERT INTO improv_pg_params VALUES ($1, $2), ($3, $4)",
+            &[Cell::Null, Cell::Bool(true), Cell::Int(1), Cell::Null],
+        )
+        .unwrap();
+        let t = be
+            .query("SELECT a, b FROM improv_pg_params ORDER BY a NULLS FIRST")
+            .unwrap();
+        assert_eq!(
+            t.rows,
+            [[Cell::Null, Cell::Bool(true)], [Cell::Int(1), Cell::Null]]
+        );
+        let err = be
+            .execute("INSERT INTO no_such_table VALUES (1)", &[])
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("database error (redacted)"),
+            "{err}"
+        );
+        be.execute("DROP TABLE improv_pg_params", &[]).unwrap();
     }
 }

@@ -24,6 +24,7 @@
 //! Postgres. Both produce a common typed [`backend::Table`], so the column→model
 //! mapping below is backend-agnostic. Connections are described out of band by
 //! [`conn::Connection`] (no plaintext secrets) and opened via [`conn::open`].
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod backend;
 pub mod conn;
@@ -417,6 +418,7 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -810,5 +812,125 @@ mod tests {
         assert_eq!(n, 3);
         assert_eq!(model.inputs.len(), 3);
         be.execute("DROP TABLE improv_pg_sales", &[]).unwrap();
+    }
+
+    #[test]
+    fn identifier_validation_and_sanitizing() {
+        assert!(ident("ok_1").is_ok());
+        assert!(ident("_x").is_ok());
+        assert!(ident("").is_err());
+        assert!(ident("1abc").is_err());
+        assert!(ident("a-b").is_err());
+        assert_eq!(sanitize_ident("Product Line"), "Product_Line");
+        assert_eq!(sanitize_ident("2025"), "_2025");
+        assert_eq!(sanitize_ident(""), "_");
+        assert_eq!(truncate("abc", 5), "abc");
+        assert_eq!(truncate("abcdef", 3), "abc…");
+    }
+
+    #[test]
+    fn non_numeric_value_column_is_an_import_error() {
+        let raw = rusqlite::Connection::open_in_memory().unwrap();
+        raw.execute_batch("CREATE TABLE s (k TEXT, v TEXT); INSERT INTO s VALUES ('a','x');")
+            .unwrap();
+        let mut spec = revenue_spec();
+        spec.query = "SELECT k, v FROM s".into();
+        spec.dimensions.truncate(1);
+        spec.dimensions[0].column = "k".into();
+        spec.value_column = "v".into();
+        let err = import_query(&raw, &mut Model::new(), &spec).unwrap_err();
+        assert!(err.to_string().contains("is not numeric"), "{err}");
+    }
+
+    #[test]
+    fn long_query_is_truncated_in_the_measure_description() {
+        let mut spec = revenue_spec();
+        spec.query = format!(
+            "SELECT time, product, revenue FROM sales {}",
+            " ".repeat(100)
+        );
+        let mut model = Model::new();
+        import_query(&source_db(), &mut model, &spec).unwrap();
+        let desc = model.measures[&MeasureId(100)].description.clone().unwrap();
+        assert!(desc.ends_with('…'), "{desc}");
+    }
+
+    #[test]
+    fn refresh_rejects_inconsistent_sources() {
+        let mut model = Model::new();
+        add_sql_measure(&source_db(), &mut model, &revenue_spec()).unwrap();
+        // Source maps more columns than the measure has categories.
+        let mut bad = model.clone();
+        bad.sql_sources
+            .get_mut(&MeasureId(100))
+            .unwrap()
+            .dimension_columns
+            .push("extra".into());
+        let err = refresh_sql_measure(&source_db(), &mut bad, MeasureId(100)).unwrap_err();
+        assert!(err.to_string().contains("maps 3 columns"), "{err}");
+        // Source without its measure.
+        let mut orphan = model.clone();
+        orphan.measures.remove(&MeasureId(100));
+        let err = refresh_sql_measure(&source_db(), &mut orphan, MeasureId(100)).unwrap_err();
+        assert!(err.to_string().contains("no measure"), "{err}");
+        // A category missing from the model falls back to its numeric id.
+        model.categories.remove(&CategoryId(2));
+        assert_eq!(
+            refresh_sql_measure(&source_db(), &mut model, MeasureId(100)).unwrap(),
+            3
+        );
+        assert_eq!(model.categories[&CategoryId(2)].name.0, "2");
+    }
+
+    #[test]
+    fn export_skips_other_measures_and_non_numeric_cells() {
+        let mut model = Model::new();
+        import_query(&source_db(), &mut model, &revenue_spec()).unwrap();
+        // A second measure's cell and a non-numeric cell of ours are skipped.
+        let coord = model.inputs.keys().next().unwrap().1.clone();
+        model.set_input(MeasureId(7), coord.clone(), Value::Number(1.0));
+        model.set_input(MeasureId(100), coord, Value::Text("n/a".into()));
+        // A category name that needs sanitizing, and one absent from the model.
+        model.categories.get_mut(&CategoryId(1)).unwrap().name.0 = "Fiscal Year".into();
+        model.categories.remove(&CategoryId(2));
+        let out = rusqlite::Connection::open_in_memory().unwrap();
+        let n = export_measure(&out, &model, MeasureId(100), "o", "v").unwrap();
+        assert_eq!(n, 2);
+        let cols: Vec<String> = out
+            .prepare("SELECT * FROM o")
+            .unwrap()
+            .column_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(cols, ["Fiscal_Year", "cat2", "v"]);
+        let err = export_measure(&out, &model, MeasureId(999), "o", "v").unwrap_err();
+        assert!(err.to_string().contains("no measure"), "{err}");
+        assert!(export_measure(&out, &model, MeasureId(100), "o", "1v").is_err());
+    }
+
+    /// Live Postgres export: `$n` placeholders and `DOUBLE PRECISION`.
+    #[test]
+    fn postgres_export_when_available() {
+        let Ok(uri) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return;
+        };
+        let mut model = Model::new();
+        import_query(&source_db(), &mut model, &revenue_spec()).unwrap();
+        let mut be = crate::connect_postgres(&uri).expect("connect IMPROV_TEST_PG");
+        assert_eq!(
+            (be.placeholder(2), be.real_type()),
+            ("$2".into(), "DOUBLE PRECISION")
+        );
+        be.execute("DROP TABLE IF EXISTS improv_pg_export", &[])
+            .unwrap();
+        let n = export_measure(&mut be, &model, MeasureId(100), "improv_pg_export", "v").unwrap();
+        assert_eq!(n, 3);
+        let t = be
+            .query("SELECT sum(v) AS s FROM improv_pg_export")
+            .unwrap();
+        assert_eq!(t.rows, [[Cell::Float(2700.0)]]);
+        be.execute("DROP TABLE improv_pg_export", &[]).unwrap();
     }
 }
