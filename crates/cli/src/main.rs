@@ -527,7 +527,6 @@ fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
 /// source.sqlite is given; external (CALL) measures always can be. Ctrl-C to
 /// stop. The scheduling decision is the pure `core_model::schedule::due_measures`.
 fn cmd_serve_refresh(rest: &[String]) -> Result<(), String> {
-    use improv_core_model::schedule;
     use std::time::{Duration, Instant};
 
     let db = arg(rest, 0, "db")?;
@@ -548,50 +547,69 @@ fn cmd_serve_refresh(rest: &[String]) -> Result<(), String> {
 
     eprintln!("serve-refresh: honoring refresh policies every {tick_secs}s (Ctrl-C to stop)");
     loop {
-        let now_secs = start.elapsed().as_secs();
-        let mut store = open(db)?;
-        let mut model = store.load_model().map_err(|e| e.to_string())?;
-
-        // Gather policies from both source kinds.
-        let mut policies: HashMap<MeasureId, RefreshPolicy> = HashMap::new();
-        for (id, s) in &model.sql_sources {
-            policies.insert(*id, s.refresh_policy);
-        }
-        for (id, c) in &model.external_calls {
-            policies.insert(*id, c.refresh_policy);
-        }
-
-        let due = schedule::due_measures(&policies, now_secs, &last_run);
-        if !due.is_empty() {
-            let conn = match &source {
-                Some(src) => Some(rusqlite::Connection::open(src).map_err(|e| e.to_string())?),
-                None => None,
-            };
-            for mid in due {
-                let refreshed = if model.external_calls.contains_key(&mid) {
-                    improv_engine::external::refresh_external_measure(
-                        &mut model,
-                        improv_engine::external::DEFAULT_TIMEOUT,
-                        mid,
-                    )
-                    .map(Some)
-                    .map_err(|e| e.to_string())?
-                } else if let Some(c) = &conn {
-                    refresh_sql_measure(c, &mut model, mid)
-                        .map(Some)
-                        .map_err(|e| e.to_string())?
-                } else {
-                    None // SQL measure but no source given; skip quietly
-                };
-                if let Some(n) = refreshed {
-                    last_run.insert(mid, now_secs);
-                    eprintln!("[{now_secs}s] refreshed measure {} ({n} cells)", mid.0);
-                }
-            }
-            store.save_model(&model).map_err(|e| e.to_string())?;
-        }
+        serve_refresh_tick(
+            db,
+            source.as_deref(),
+            start.elapsed().as_secs(),
+            &mut last_run,
+        )?;
         std::thread::sleep(Duration::from_secs(tick_secs));
     }
+}
+
+/// One `serve-refresh` cycle at `now_secs`: reload the model, refresh every
+/// measure whose policy is due (recording it in `last_run`), and save. SQL
+/// measures are skipped when no `source` is given.
+fn serve_refresh_tick(
+    db: &str,
+    source: Option<&str>,
+    now_secs: u64,
+    last_run: &mut HashMap<MeasureId, u64>,
+) -> Result<(), String> {
+    use improv_core_model::schedule;
+
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+
+    // Gather policies from both source kinds.
+    let mut policies: HashMap<MeasureId, RefreshPolicy> = HashMap::new();
+    for (id, s) in &model.sql_sources {
+        policies.insert(*id, s.refresh_policy);
+    }
+    for (id, c) in &model.external_calls {
+        policies.insert(*id, c.refresh_policy);
+    }
+
+    let due = schedule::due_measures(&policies, now_secs, last_run);
+    if !due.is_empty() {
+        let conn = match source {
+            Some(src) => Some(rusqlite::Connection::open(src).map_err(|e| e.to_string())?),
+            None => None,
+        };
+        for mid in due {
+            let refreshed = if model.external_calls.contains_key(&mid) {
+                improv_engine::external::refresh_external_measure(
+                    &mut model,
+                    improv_engine::external::DEFAULT_TIMEOUT,
+                    mid,
+                )
+                .map(Some)
+                .map_err(|e| e.to_string())?
+            } else if let Some(c) = &conn {
+                refresh_sql_measure(c, &mut model, mid)
+                    .map(Some)
+                    .map_err(|e| e.to_string())?
+            } else {
+                None // SQL measure but no source given; skip quietly
+            };
+            if let Some(n) = refreshed {
+                last_run.insert(mid, now_secs);
+                eprintln!("[{now_secs}s] refreshed measure {} ({n} cells)", mid.0);
+            }
+        }
+        store.save_model(&model).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// `refresh-ext <db> <measure-id>` — (re)populate an external-call measure by
