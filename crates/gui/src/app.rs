@@ -139,6 +139,9 @@ pub struct ImprovApp {
     new_formula_line: String,
     /// Text buffer for the "Save view" name field.
     view_name: String,
+    /// The model browser's selected view row (single click). A double-click
+    /// opens it; `None` or a deleted id falls back to the current view.
+    browser_sel: Option<ViewId>,
 
     /// Whether the read-only chart panel is shown, and its bar/line toggle.
     show_chart: bool,
@@ -883,6 +886,7 @@ impl ImprovApp {
             formula_error_pos: None,
             formula_error_msg: String::new(),
             view_name: String::new(),
+            browser_sel: None,
             show_chart: false,
             chart_line: false,
             show_csv_wizard: false,
@@ -2730,8 +2734,10 @@ impl ImprovApp {
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
+                        self.views_section(ui);
+
                         egui::CollapsingHeader::new("Categories")
-                            .default_open(true)
+                            .default_open(false)
                             .show(ui, |ui| {
                                 let mut cats: Vec<CategoryId> =
                                     self.model.categories.keys().copied().collect();
@@ -2786,15 +2792,47 @@ impl ImprovApp {
                                     }
                                 });
                             });
-
-                        self.views_section(ui);
                     });
             });
         self.show_browser = open;
     }
 
-    /// Views section in the model browser: a name field + "Save view" button that
-    /// captures the current CANVAS, and a list of saved views (click to load).
+    /// A saved view's description for the browser: its primary measure, the
+    /// row and column categories, then any pages — `Revenue by Time ×
+    /// Product; pages: Scenario`. Computed (a view stores no description).
+    fn view_description(&self, v: &View) -> String {
+        let Some(m) = self.model.measures.get(&v.measure) else {
+            return format!("{}: measure no longer exists", v.name.0);
+        };
+        let cats = if v.axis_order.is_empty() {
+            &m.categories
+        } else {
+            &v.axis_order
+        };
+        let names: Vec<&str> = cats
+            .iter()
+            .map(|c| {
+                self.model
+                    .categories
+                    .get(c)
+                    .map_or("?", |c| c.name.0.as_str())
+            })
+            .collect();
+        let shown = (v.n_rows + v.n_cols).min(names.len());
+        let mut s = m.name.0.clone();
+        if shown > 0 {
+            s += &format!(" by {}", names[..shown].join(" \u{d7} "));
+        }
+        if shown < names.len() {
+            s += &format!("; pages: {}", names[shown..].join(", "));
+        }
+        s
+    }
+
+    /// Views section at the top of the model browser (spec §4.2): a white list
+    /// of saved views as `Name - Worksheet` rows with a worksheet icon (click
+    /// selects, double-click opens), a description of the selected view, then
+    /// a name field + "Save view" button that captures the current CANVAS.
     ///
     /// This is the NeXTSTEP reference's model navigator
     /// (`docs/reviews/refs/improv-next-nested-headers.jpg`: a `Model of
@@ -2802,41 +2840,89 @@ impl ImprovApp {
     /// same set the application menu's View submenu lists. The current view is
     /// highlighted in both.
     fn views_section(&mut self, ui: &mut egui::Ui) {
-        egui::CollapsingHeader::new("Views")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // Leave the button room in the narrow browser window.
-                    ui.add(egui::TextEdit::singleline(&mut self.view_name).desired_width(120.0));
-                    if ui.button("Save view").clicked() {
-                        let name = self.view_name.clone();
-                        if self.save_view(&name).is_some() {
-                            self.view_name.clear();
-                        }
-                    }
-                });
-                let mut ids: Vec<ViewId> = self.model.views.keys().copied().collect();
-                if ids.is_empty() {
-                    ui.weak("(no saved views)");
+        use crate::theme::{BLACK, WHITE};
+        let mut ids: Vec<ViewId> = self.model.views.keys().copied().collect();
+        ids.sort_by_key(|v| v.0);
+        if self
+            .browser_sel
+            .is_none_or(|s| !self.model.views.contains_key(&s))
+        {
+            self.browser_sel = self.current_view.or(ids.first().copied());
+        }
+        let box_frame = || {
+            egui::Frame::none()
+                .fill(WHITE)
+                .stroke(egui::Stroke::new(1.0_f32, BLACK))
+                .inner_margin(2.0)
+        };
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+        // Clear the window border and the scroll bar.
+        let width = ui.available_width() - 8.0;
+        let mut open: Option<View> = None;
+        box_frame().show(ui, |ui| {
+            ui.set_width(width - 4.0);
+            ui.set_min_height(3.0 * row_h);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for &id in &ids {
+                let (rect, resp) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), row_h),
+                    egui::Sense::click(),
+                );
+                let v = &self.model.views[&id];
+                let p = ui.painter();
+                if self.browser_sel == Some(id) {
+                    p.rect_filled(rect, 0.0, crate::theme::LIGHT_GRAY);
                 }
-                ids.sort_by_key(|v| v.0);
-                let mut load: Option<View> = None;
-                ui.scope(|ui| {
-                    white_selection(ui);
-                    for id in ids {
-                        let v = &self.model.views[&id];
-                        if ui
-                            .selectable_label(self.current_view == Some(id), &v.name.0)
-                            .clicked()
-                        {
-                            load = Some(v.clone());
-                        }
-                    }
-                });
-                if let Some(v) = load {
-                    self.apply_view(&v);
+                p.text(
+                    rect.left_center() + egui::vec2(4.0, 0.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{} - Worksheet", v.name.0),
+                    font.clone(),
+                    BLACK,
+                );
+                // The worksheet icon: a 10×8 sheet with two ruled lines.
+                let icon = egui::Rect::from_center_size(
+                    egui::pos2(rect.right() - 9.0, rect.center().y),
+                    egui::vec2(10.0, 8.0),
+                );
+                let ink = egui::Stroke::new(1.0_f32, BLACK);
+                p.rect_stroke(icon, 0.0, ink);
+                for y in [icon.top() + 8.0 / 3.0, icon.top() + 16.0 / 3.0] {
+                    p.hline(icon.x_range(), y, ink);
                 }
-            });
+                if resp.clicked() {
+                    self.browser_sel = Some(id);
+                }
+                if resp.double_clicked() {
+                    open = Some(v.clone());
+                }
+            }
+        });
+        if let Some(v) = open {
+            self.apply_view(&v);
+        }
+        let desc = match self.browser_sel.and_then(|s| self.model.views.get(&s)) {
+            Some(v) => self.view_description(v),
+            None => "(no saved views)".to_owned(),
+        };
+        ui.add_space(4.0);
+        box_frame().inner_margin(4.0).show(ui, |ui| {
+            ui.set_width(width - 8.0);
+            ui.set_min_height(2.0 * row_h);
+            ui.label(egui::RichText::new(desc).color(BLACK));
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            // Leave the button room in the narrow browser window.
+            ui.add(egui::TextEdit::singleline(&mut self.view_name).desired_width(120.0));
+            if ui.button("Save view").clicked() {
+                let name = self.view_name.clone();
+                if self.save_view(&name).is_some() {
+                    self.view_name.clear();
+                }
+            }
+        });
     }
 
     /// The Info panel (spec §4.7): a NeXT panel window at the workspace's top
@@ -4928,6 +5014,7 @@ mod tests {
             formula_error_pos: None,
             formula_error_msg: String::new(),
             view_name: String::new(),
+            browser_sel: None,
             show_chart: false,
             chart_line: false,
             show_csv_wizard: false,
@@ -9836,6 +9923,72 @@ mod tests {
         assert_eq!(desk.ctx.layer_id_at(at), Some(browser), "in the window");
         desk.click(&mut app, at);
         assert_eq!(app.selected(), Some(MeasureId(100)));
+    }
+
+    /// The rect of the first painted text exactly `label`.
+    fn painted(shapes: &[egui::epaint::ClippedShape], label: &str) -> Option<egui::Rect> {
+        shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.galley.text() == label => {
+                Some(t.galley.rect.translate(t.pos.to_vec2()))
+            }
+            _ => None,
+        })
+    }
+
+    /// E5 (spec §4.2): the browser lists saved views as `Name - Worksheet`
+    /// rows; a single click selects one (shown in the description) without
+    /// opening it, a double-click opens it.
+    #[test]
+    fn browser_lists_views_click_selects_double_click_opens() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        let a = app.save_view("A").expect("saved A");
+        select(&mut app, MeasureId(102));
+        let b = app.save_view("B").expect("saved B");
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(painted(&shapes, "B - Worksheet").is_some(), "B listed");
+        let at = painted(&shapes, "A - Worksheet")
+            .expect("A listed")
+            .center();
+        let browser = egui::LayerId::new(egui::Order::Middle, panel_win("browser"));
+        assert_eq!(desk.ctx.layer_id_at(at), Some(browser), "in the window");
+
+        desk.click(&mut app, at);
+        assert_eq!(app.browser_sel, Some(a), "single click selects A");
+        assert_eq!(app.current_view, Some(b), "...without opening it");
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(
+            painted(&shapes, &app.view_description(&app.model.views[&a])).is_some(),
+            "the description shows A"
+        );
+
+        desk.click(&mut app, at);
+        desk.click(&mut app, at);
+        assert_eq!(app.current_view, Some(a), "double-click opens A");
+        assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
+    }
+
+    /// A view's description names its measure and categories.
+    #[test]
+    fn view_description_names_the_measure() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(102));
+        let id = app.save_view("Rev").expect("saved");
+        let d = app.view_description(&app.model.views[&id]);
+        assert!(d.starts_with("Revenue by "), "{d}");
+        assert!(d.contains(" \u{d7} "), "rows × columns: {d}");
+    }
+
+    /// With no saved views the description reads `(no saved views)`.
+    #[test]
+    fn browser_without_views_says_so() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(painted(&shapes, "(no saved views)").is_some());
     }
 
     /// (c) Info ▸ Info Panel… opens the Info window; its close box closes it.

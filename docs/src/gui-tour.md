@@ -35,10 +35,13 @@ The window has five regions:
   `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
   field has focus.
 - **Model browser** (window, bottom left of the workspace) — titled
-  `<file> - Model`: Categories (with their items), Measures (each labeled
-  `input` or `formula` at the right; click one to select it) and saved Views (name field, **Save
-  view**, click a view to open it). Its close box hides it; **View ▸ Model
-  Browser** brings it back.
+  `<file> - Model`. It leads with a white list of saved views, one
+  `Name - Worksheet` row each with a worksheet icon: click a row to select it
+  and read its description below (measure, categories, pages); double-click
+  to open it. Under that, a name field and **Save view** save the current
+  canvas. Collapsed below are Categories (with their items) and Measures (each
+  labeled `input` or `formula` at the right; click one to select it). Its
+  close box hides it; **View ▸ Model Browser** brings it back.
 - **Worksheet windows** (center) — the dark gray workspace holds one
   window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
   to move a window and its bottom bar to resize it (the left third drags the

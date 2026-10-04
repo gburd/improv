@@ -6,6 +6,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- GUI: the model browser now leads with a NeXT-style white list of saved
+  views (`Name - Worksheet` rows with a worksheet icon). A single click
+  selects a view and shows its computed description (measure, categories,
+  pages); a double-click opens it. Categories and Measures move below as
+  collapsible sections.
+
 ### Added
 
 - **GUI screenshot harness (`scripts/gui-shot.sh`).** Builds the binaries,

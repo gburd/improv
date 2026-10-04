@@ -81,7 +81,7 @@ Items below are reworded where this direction supersedes them.
 | E2 | No NeXT scrollers: grid needs a `#808080` trough scroller with grouped arrows; the rows-tile strip sits inline with the horizontal scroller (spec §4.4, §4.8). | planned |
 | E3 | Grid's white field stops at the last cell; NeXT fills the grid area white to the window's edges. | done |
 | E4 | `Filters` collapsing header is not in NeXT; move filtering to the tile context menu (right-click → item checklist). | done |
-| E5 | Model browser keeps the old tree; NeXT lists views (`Name - Worksheet` + icon) above a description area, double-click to open (spec §4.2). | planned |
+| E5 | Model browser keeps the old tree; NeXT lists views (`Name - Worksheet` + icon) above a description area, double-click to open (spec §4.2). | done |
 | E6 | Default window too small for its grid; size a fresh worksheet window to its content. | done: `Matrix::new` sizes from its line counts, clamped to 360–900 × 300–700 |
 
 Note: B1/B4/C1 imply multiple OS windows. egui 0.29 supports this via
