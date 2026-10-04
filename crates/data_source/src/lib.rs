@@ -20,6 +20,7 @@
 //! is also no shared `DataSource` trait: SQL's source is an open connection,
 //! CSV's is a path/reader, and nothing in the workspace calls either backend
 //! generically — a trait with no generic caller is indirection, not reuse.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 use improv_core_model::{
     Category, CategoryId, Item, ItemId, Measure, MeasureId, MeasureKind, Model, Name, ValueType,
@@ -129,9 +130,10 @@ impl ItemInterner {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use improv_core_model::Coordinate;
+    use improv_core_model::{Coordinate, ItemId};
 
     #[test]
     fn ensure_categories_is_idempotent_and_preserves_existing_items() {
@@ -226,5 +228,21 @@ mod tests {
             model.input(MeasureId(1), &coord),
             Some(&improv_core_model::Value::Number(1.0))
         );
+    }
+
+    #[test]
+    fn register_skips_known_items_and_unknown_categories() {
+        let mut model = Model::new();
+        model.add_category(CategoryId(1), "Time");
+        model.add_item(ItemId(5), CategoryId(1), "2025");
+        let mut interner = ItemInterner::seeded_from(&model, 100);
+        // Seeded: re-interning "2025" reuses id 5, already on the category.
+        assert_eq!(interner.intern(CategoryId(1), "2025"), ItemId(5));
+        let orphan = interner.intern(CategoryId(9), "x");
+        interner.register(&mut model);
+        assert_eq!(model.categories[&CategoryId(1)].items, [ItemId(5)]);
+        // An item for a category the model lacks is stored, attached to nothing.
+        assert_eq!(model.items[&orphan].category, CategoryId(9));
+        assert!(!model.categories.contains_key(&CategoryId(9)));
     }
 }
