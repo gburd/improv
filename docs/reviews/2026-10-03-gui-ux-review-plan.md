@@ -46,8 +46,8 @@ Items below are reworded where this direction supersedes them.
 | # | Item | Status |
 | --- | --- | --- |
 | B1 | Canvas gets a small fraction of the window. Replace the docked Model/Inspector panels with NeXTSTEP-style separate windows (model browser; Inspector as an Info panel opened from the menu); the worksheet fills its window. | done: matrices are worksheet windows on a full-width workspace (`nxwin`); the model browser (`<file> - Model`, View ▸ Model Browser) and the Info panel (Info ▸ Info Panel…) are NeXT windows on it |
-| B2 | Empty gutter wells: row gutter is a tall grey box for one tile; top-right gutter mostly empty. Size gutters to their tiles; highlight as drop zones only during a drag. | planned |
-| B3 | Pages has two controls (tile + separate `< Plan [1/2] >` stepper). Merge into the tile (`Scenario: Plan ▾`). | planned |
+| B2 | Empty gutter wells: row gutter is a tall grey box for one tile; top-right gutter mostly empty. Size gutters to their tiles; highlight as drop zones only during a drag. | done: gutters size to their tiles, no placeholders, drop highlight only while dragging |
+| B3 | Pages has two controls (tile + separate `< Plan [1/2] >` stepper). Merge into the tile (`Scenario: Plan ▾`). | done: page tile + white item field (ComboBox); stepper removed |
 | B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | done: the tab strip is gone (step 2); views are listed in the model browser window and the View submenu and open on the workspace's worksheet windows; Add/Remove Matrix and Save View are in the Worksheet submenu |
 | B5 | Third formula entry point ("New derived measure" form). Add formulas by typing `X = …` on a new formula-list line; drop the form. | done: the form and the top formula bar are gone; the selected formula-list row edits in place and typing `Name = formula` on the list's last line adds one (step 4b) |
 | B6 | Operator palette (`= + - * / ( ) [ ]`) is not in Improv. Remove it; formula pane gets the ✓ column and a `Calc` button. | done: palette removed, formula list moved into each worksheet window with a `Calc` button |
@@ -60,7 +60,7 @@ Items below are reworded where this direction supersedes them.
 | C1 | No menus. Add the NeXTSTEP vertical application menu (Info/File/Edit/Format/Worksheet/View/Graph/Print/Services/Hide/Quit) with cascading submenus and key equivalents. | done (`crates/gui/src/menu.rs`); File New/Open/Save As/Close, Format, Print and Services draw disabled until they exist |
 | C2 | Input vs derived cells look identical (modernization). Keep within the grayscale palette, e.g. derived cells in a light-gray band or italic; lock hint on hover. | planned |
 | C3 | No range selection; `Sum` readout is one cell. Drag / Shift+arrow ranges. | planned |
-| C4 | Verify tile-drag ghost + drop-zone highlight and nested group-header result match the reference (needs screenshot/recording, not just a headless test). | planned |
+| C4 | Verify tile-drag ghost + drop-zone highlight and nested group-header result match the reference (needs screenshot/recording, not just a headless test). | done: drop-zone highlight only during a drag; the ghost is egui's dnd default; checked by screenshot |
 | C5 | Selection is a hard blue box on the value. Thin focus ring plus highlighted matching row/column headers. | planned |
 
 ## Batch D — polish and qualification

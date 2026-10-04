@@ -16,6 +16,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI category tiles follow NeXT Improv.** Tiles are 17 px dark-gray chips
+  with white names (no grip, no ⏷ button; right-click for
+  **Move to Rows / Columns / Pages**). Page tiles sit top-left, each above a
+  white item field that picks the page (replacing the `< item [i/n] >`
+  stepper); column tiles sit top-right and row tiles bottom-left. Gutters size
+  to their tiles, with no placeholder text, and highlight as drop targets
+  only during a drag.
+- **GUI worksheet windows open at 560×420** (was 480×320) so the grid and
+  formula list fit.
 - **GUI formulas are edited in place in the formula list.** The top formula
   bar is gone: the selected row is the editor (Enter commits, errors show
   under the row, Esc reverts), and typing `Name = formula` on the list's

@@ -49,9 +49,13 @@ The window has five regions:
   every window's place and size.
 - **Pivot grid** (in each worksheet window) — the measure projected onto the
   current axes. Here Revenue is shown with **Product** on columns, **Time** on rows,
-  and **Region** paged (`North [1/2]`, steppable). The **category tiles** at the
-  Columns / Rows / Pages margins are drag sources; drag one to another margin to
-  re-pivot without touching the formula.
+  and **Region** paged. The **category tiles** are dark-gray chips, placed as in
+  NeXT Improv: page tiles top-left, each above a white item field (click it to
+  pick the page shown; `[` / `]` and PageUp / PageDown step it too), column
+  tiles top-right, row tiles bottom-left beside the scroller. Drag a tile to
+  another strip to re-pivot without touching the formula (the strips light up
+  as drop targets only while you drag), or right-click it and choose
+  **Move to Rows / Columns / Pages**.
 - **Formula list** (bottom of each worksheet window) — every formula,
   numbered, with a **Calc** button above and a checkbox that enables it.
   Click a row to select its measure; the selected row becomes an editor:
@@ -64,7 +68,7 @@ The window has five regions:
 
 ## Stacked axes
 
-Drag the **Region** tile from the Pages margin onto the **Rows** margin and the
+Drag the **Region** tile from the top-left pages strip onto the bottom row strip and the
 row axis becomes the *stacked* product of Time × Region:
 
 ![Improv GUI — stacked axes](./img/gui-stacked-axes.png)
