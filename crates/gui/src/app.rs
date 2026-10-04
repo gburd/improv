@@ -10673,4 +10673,656 @@ mod tests {
             egui::containers::panel::PanelState::load(&ctx, egui::Id::new("formula_bar")).is_none()
         );
     }
+
+    // -- branch coverage: pure Matrix / app logic ---------------------------
+
+    #[test]
+    fn from_placement_restores_valid_page_pins_and_ignores_stale_ones() {
+        let model = sales_3d_model();
+        let (region, south) = (CategoryId(3), ItemId(31));
+        let mut p = MatrixPlacement::new(MeasureId(200));
+        p.page_items = vec![(region, south)];
+        let m = Matrix::from_placement(&model, &p).expect("measure exists");
+        // An empty saved order falls back to the measure's natural order.
+        assert_eq!(m.axis_order, vec![CategoryId(1), CategoryId(2), region]);
+        assert_eq!(m.page_idx, vec![1], "South is the second Region item");
+        for stale in [(region, ItemId(999)), (CategoryId(9), south)] {
+            p.page_items = vec![stale];
+            let m = Matrix::from_placement(&model, &p).unwrap();
+            assert_eq!(m.page_idx, vec![0], "{stale:?} falls back to the first");
+        }
+        p.axis_order = vec![region, CategoryId(2), CategoryId(1)];
+        let m = Matrix::from_placement(&model, &p).unwrap();
+        assert_eq!(m.page_cats(&model), vec![CategoryId(1)]);
+        assert!(Matrix::from_placement(&model, &MatrixPlacement::new(MeasureId(9))).is_none());
+    }
+
+    #[test]
+    fn axis_and_page_ops_ignore_what_the_matrix_cannot_address() {
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200));
+        app.sync_axis_state();
+        let before = app.focused().axis_order.clone();
+        app.set_axis(CategoryId(77), Axis::Rows);
+        assert_eq!(app.focused().axis_order, before, "not a dimension: no-op");
+
+        app.set_page(5, 0); // no such page dimension
+        assert_eq!(app.focused().page_idx, vec![0]);
+        app.focused_mut().page_idx.clear(); // stale length is resized
+        app.set_page(0, 1);
+        assert_eq!(app.focused().page_idx, vec![1]);
+
+        hide_all_items(&mut app, CategoryId(3)); // the page has no item
+        app.set_page(0, 0);
+        app.page_first(1);
+        assert_eq!(app.focused().page_idx, vec![1], "nothing to page to");
+        assert!(app.focused().selection_keys(&app.model).is_empty());
+
+        // A matrix with no categories at all has nothing to pivot or page.
+        let model = Model::new();
+        let mut m = Matrix::new(&model, None);
+        m.pivot_rotate(&model);
+        m.page_first(&model, 1);
+        assert!(m.axis_order.is_empty() && m.page_idx.is_empty());
+    }
+
+    #[test]
+    fn a_filter_holding_a_stale_item_is_kept_even_at_full_length() {
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200));
+        let region = CategoryId(3);
+        app.focused_mut().filters = vec![Filter {
+            category: region,
+            items: vec![ItemId(999)],
+        }];
+        app.toggle_filter_item(region, ItemId(30));
+        // Two items like the category, but not ITS two: still a filter.
+        assert_eq!(
+            app.focused().filters[0].items,
+            vec![ItemId(999), ItemId(30)]
+        );
+    }
+
+    #[test]
+    fn a_scalar_row_axis_still_addresses_the_cursor_cell() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(100)); // Price[Product]
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Columns);
+        assert!(app.row_cats().is_empty());
+        assert_eq!(app.cursor_key(), Some(vec![(2, 20)]));
+    }
+
+    #[test]
+    fn matrix_list_guards_and_an_empty_canvas() {
+        let mut app = ImprovApp::load("").expect("in-memory model");
+        assert!(app.model.measures.is_empty());
+        assert_eq!(app.save_view("v"), None, "no measure: nothing to save");
+        app.begin_edit_cursor();
+        app.cycle_measure(1);
+        assert_eq!(
+            (app.selected(), app.focused().editing.clone()),
+            (None, None)
+        );
+
+        let mut app = build_app(revenue_model());
+        app.add_matrix(Some(MeasureId(100)));
+        assert!(!app.remove_matrix(5));
+        assert_eq!(app.matrix_count(), 2);
+        app.matrices.clear();
+        app.sync_axis_state();
+        assert_eq!(app.matrix_count(), 1, "the canvas is never empty");
+    }
+
+    #[test]
+    fn blank_view_name_and_no_op_formula_toggles_leave_no_undo_point() {
+        let mut app = build_app(revenue_model());
+        assert_eq!(app.save_view("  "), None);
+        assert_eq!(app.status, "view name is required");
+        app.set_formula_enabled(MeasureId(100), false).unwrap(); // an input
+        app.set_formula_enabled(MeasureId(102), true).unwrap(); // already on
+        assert!(!app.can_undo());
+        app.undo_with_status();
+        assert_eq!(app.status, "nothing to undo");
+        app.redo_with_status();
+        assert_eq!(app.status, "nothing to redo");
+    }
+
+    #[test]
+    fn csv_wizard_keeps_a_typed_measure_id() {
+        let mut app = build_app(revenue_model());
+        app.import_form.measure_id = "42".into();
+        app.toggle_csv_wizard();
+        assert!(app.show_csv_wizard);
+        assert_eq!(app.import_form.measure_id, "42");
+        app.toggle_csv_wizard();
+        assert!(!app.show_csv_wizard);
+    }
+
+    #[test]
+    fn quit_warns_once_only_for_an_edited_in_memory_model() {
+        let mut app = build_app(revenue_model());
+        assert!(app.quit_allowed(), "nothing to lose");
+        app.undo_stack.push(app.model.clone());
+        app.db = "/some/file.db".into();
+        assert!(app.quit_allowed(), "a file-backed model is saved");
+        app.db.clear();
+        assert!(!app.quit_allowed());
+        assert!(app.status.contains("Quit again"));
+        assert!(app.quit_allowed(), "the second Quit closes");
+    }
+
+    #[test]
+    fn literals_without_a_dsl_token_are_refused() {
+        assert_eq!(literal_dsl(&Value::Number(f64::INFINITY)), None);
+        assert_eq!(
+            literal_dsl(&Value::Boolean(false)).as_deref(),
+            Some("FALSE")
+        );
+        assert_eq!(literal_dsl(&Value::Text("a\"b".into())), None);
+        assert_eq!(literal_dsl(&Value::Text("a\\b".into())), None);
+        assert_eq!(
+            literal_dsl(&Value::Text("ok".into())).as_deref(),
+            Some("\"ok\"")
+        );
+        // A literal of the wrong type is no boolean.
+        assert!(parse_typed(&Model::new(), ValueType::Boolean, "1").is_err());
+    }
+
+    #[test]
+    fn view_descriptions_name_rows_columns_and_pages() {
+        let app = build_app(revenue_model());
+        let mut v = View::from_matrices(
+            ViewId(1),
+            Name("v".into()),
+            MatrixPlacement::new(MeasureId(101)),
+            vec![],
+        );
+        assert_eq!(app.view_description(&v), "Quantity by Time \u{d7} Product");
+        v.n_rows = 0;
+        v.n_cols = 0;
+        assert_eq!(app.view_description(&v), "Quantity; pages: Time, Product");
+        v.measure = MeasureId(999);
+        assert_eq!(app.view_description(&v), "v: measure no longer exists");
+    }
+
+    // -- branch coverage: UI paths ------------------------------------------
+
+    /// One frame delivering `key` (held with `modifiers`) to the focused
+    /// matrix's `handle_grid_keys`.
+    fn grid_key(app: &mut ImprovApp, key: egui::Key, modifiers: egui::Modifiers) {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            modifiers,
+            events: vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            ..Default::default()
+        };
+        let mi = app.focus_index();
+        let _ = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| app.handle_grid_keys(ui, mi));
+        });
+    }
+
+    #[test]
+    fn every_grid_key_binding_moves_edits_pages_or_cycles() {
+        use egui::{Key, Modifiers as M};
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        let cur = |app: &ImprovApp| (app.focused().cursor_row, app.focused().cursor_col);
+        for (k, want) in [
+            (Key::J, (1, 0)),
+            (Key::K, (0, 0)),
+            (Key::L, (0, 1)),
+            (Key::H, (0, 0)),
+            (Key::ArrowDown, (1, 0)),
+            (Key::ArrowRight, (1, 1)),
+            (Key::ArrowUp, (0, 1)),
+            (Key::ArrowLeft, (0, 0)),
+        ] {
+            grid_key(&mut app, k, M::NONE);
+            assert_eq!(cur(&app), want, "{k:?}");
+        }
+        grid_key(&mut app, Key::J, M::COMMAND);
+        assert_eq!(cur(&app), (0, 0), "a chord is not a grid key");
+        grid_key(&mut app, Key::ArrowDown, M::SHIFT);
+        assert_eq!(app.focused().selection(), (0..=1, 0..=0));
+        grid_key(&mut app, Key::F2, M::NONE);
+        assert!(app.focused().editing.is_some(), "F2 edits");
+        app.focused_mut().editing = None;
+        grid_key(&mut app, Key::N, M::NONE);
+        assert_eq!(app.selected(), Some(MeasureId(102)));
+        grid_key(&mut app, Key::N, M::SHIFT);
+        assert_eq!(app.selected(), Some(MeasureId(101)));
+
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200));
+        app.sync_axis_state();
+        let page = |app: &ImprovApp| app.focused().page_idx[0];
+        grid_key(&mut app, Key::PageDown, M::NONE);
+        assert_eq!(page(&app), 1);
+        grid_key(&mut app, Key::PageUp, M::NONE);
+        assert_eq!(page(&app), 0);
+        grid_key(&mut app, Key::OpenBracket, M::NONE);
+        assert_eq!(page(&app), 1, "paging wraps");
+    }
+
+    #[test]
+    fn a_cell_edit_cancels_on_escape_and_commits_on_enter() {
+        use egui::{Key, Modifiers as M};
+        let (mut app, mut desk) = grid_desk();
+        let at = cell_rect(&desk, &app, 1, 1).center();
+        desk.click(&mut app, at);
+        desk.click(&mut app, at);
+        assert!(app.matrices[0].editing.is_some());
+        key(&mut desk, &mut app, Key::Escape, M::NONE);
+        assert!(app.matrices[0].editing.is_none());
+        assert_eq!(app.status, "edit cancelled");
+
+        desk.time += 1.0; // a fresh double-click, not a triple
+        desk.click(&mut app, at);
+        desk.click(&mut app, at);
+        assert!(app.matrices[0].editing.is_some());
+        app.matrices[0].edit_buf = "9".into();
+        key(&mut desk, &mut app, Key::Enter, M::NONE);
+        assert!(app.matrices[0].editing.is_none());
+        assert_eq!(app.status, "cell updated");
+        let k = vec![(1, 11), (2, 21)];
+        assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some("9"));
+    }
+
+    #[test]
+    fn clicking_a_derived_cell_says_it_is_computed() {
+        let (mut app, mut desk) = grid_desk();
+        app.matrices[0].measure = Some(MeasureId(102));
+        desk.settle(&mut app);
+        let at = cell_rect(&desk, &app, 0, 0).center();
+        desk.click(&mut app, at);
+        assert_eq!(app.status, "derived cells are computed, not editable");
+        assert!(app.matrices[0].editing.is_none());
+    }
+
+    #[test]
+    fn a_page_with_no_pinnable_item_renders_no_cells() {
+        let mut app = build_app(sales_3d_model());
+        select(&mut app, MeasureId(200));
+        app.sync_axis_state();
+        hide_all_items(&mut app, CategoryId(3));
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let id = egui::Id::new(("cell", app.matrices[0].uid, 0usize, 0usize));
+        assert!(desk.ctx.viewport(|v| v.prev_pass.widgets.get(id).is_none()));
+    }
+
+    fn texts_of(out: &egui::FullOutput) -> Vec<String> {
+        fn walk(s: &egui::Shape, acc: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => acc.push(t.galley.text().to_owned()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut acc));
+        acc
+    }
+
+    #[test]
+    fn the_info_panel_describes_inputs_scalars_and_erroring_formulas() {
+        let mut model = revenue_model();
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Rate".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let mut app = build_app(model);
+        app.show_inspector = true;
+        // One #ERR cell in Revenue's snapshot.
+        let mut snap = (*app.snapshot).clone();
+        let errs: improv_engine::session::MeasureValues =
+            [(vec![(1, 10), (2, 20)], CellValue::Err(0))].into();
+        snap.insert(MeasureId(102), std::sync::Arc::new(errs));
+        app.snapshot = std::sync::Arc::new(snap);
+        let mut desk = Desk::new();
+        let mut shown = |app: &mut ImprovApp, m: u32| {
+            select(app, MeasureId(m));
+            desk.settle(app);
+            texts_of(&desk.frame(app, Vec::new()))
+        };
+        let t = shown(&mut app, 100);
+        assert!(t.iter().any(|t| t == "kind: input"), "{t:?}");
+        assert!(t.iter().any(|t| t == "dimensions: Product"));
+        let t = shown(&mut app, 103);
+        assert!(t.iter().any(|t| t == "dimensions: (scalar)"), "{t:?}");
+        let t = shown(&mut app, 102);
+        assert!(t.iter().any(|t| t == "kind: derived"));
+        assert!(t.iter().any(|t| t.starts_with("depends on: ")));
+        assert!(t.iter().any(|t| t.starts_with("formula: ")));
+        assert!(t.iter().any(|t| t.contains("cell(s) have errors")), "{t:?}");
+    }
+
+    #[test]
+    fn an_empty_canvas_says_so_and_a_store_titles_the_window() {
+        let mut app = ImprovApp::load("").unwrap();
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let out = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        assert!(texts_of(&out).iter().any(|t| t.starts_with("No measures.")));
+
+        let mut app = build_app(revenue_model());
+        app.db = "/nowhere/sales.db".into();
+        app.undo_stack.push(app.model.clone());
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 1.0);
+        assert!(!app.dirty, "a store-backed model is not dirtied by history");
+        assert_eq!(app.last_title, "Improv \u{2014} sales");
+    }
+
+    #[test]
+    fn the_chart_panel_shows_when_toggled_on() {
+        let mut app = build_app(revenue_model());
+        app.show_chart = true;
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert!(texts_of(&desk.frame(&mut app, Vec::new()))
+            .iter()
+            .any(|t| t == "Chart"));
+    }
+
+    #[test]
+    fn the_csv_forms_add_and_remove_rows_and_report_errors() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut time = 0.0;
+        let mut frame = |app: &mut ImprovApp, events: Vec<egui::Event>| {
+            time += 1.0;
+            let raw = egui::RawInput {
+                time: Some(time),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    app.csv_import_form(ui);
+                    app.csv_export_form(ui);
+                });
+            })
+        };
+        let mut click = |app: &mut ImprovApp, label: &str| {
+            let shapes = frame(app, Vec::new()).shapes;
+            let at = last_text_at(&shapes, label)
+                .unwrap_or_else(|| panic!("{label} not painted"))
+                .center();
+            let _ = frame(app, vec![egui::Event::PointerMoved(at)]);
+            let _ = frame(app, vec![press(at, true), press(at, false)]);
+        };
+        click(&mut app, "+ dimension");
+        assert_eq!(app.import_form.dimensions.len(), 2);
+        click(&mut app, "-");
+        assert_eq!(app.import_form.dimensions.len(), 1);
+        click(&mut app, "Import");
+        assert!(app.status.starts_with("import error"), "{}", app.status);
+        click(&mut app, "Export");
+        assert_eq!(app.status, "export error: select a measure to export");
+    }
+
+    #[test]
+    fn closing_the_csv_window_hides_it() {
+        let mut app = build_app(revenue_model());
+        app.show_csv_wizard = true;
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        // egui's close button: the window layer's square, icon-sized widget
+        // at the title bar's right end.
+        let win = desk
+            .ctx
+            .memory(|m| m.area_rect(egui::Id::new("Import / Export CSV")))
+            .expect("window shown");
+        let icon = desk.ctx.style().spacing.icon_width;
+        let at = desk
+            .ctx
+            .viewport(|v| {
+                v.prev_pass.widgets.layers().find_map(|(_, ws)| {
+                    ws.iter().find_map(|w| {
+                        let r = w.rect;
+                        ((r.width() - icon).abs() < 0.5
+                            && (r.height() - icon).abs() < 0.5
+                            && win.contains_rect(r)
+                            && r.right() > win.right() - 2.0 * icon)
+                            .then(|| r.center())
+                    })
+                })
+            })
+            .expect("close button laid out");
+        desk.click(&mut app, at);
+        assert!(!app.show_csv_wizard);
+    }
+
+    #[test]
+    fn calc_recalculates_and_a_disabled_formula_is_struck_through() {
+        let (mut app, mut desk) = grid_desk();
+        app.set_formula_enabled(MeasureId(102), false).unwrap();
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        let struck = out.shapes.iter().any(|c| match &c.shape {
+            egui::Shape::Text(t) => {
+                t.galley.text() == "Revenue = Price * Quantity"
+                    && t.galley
+                        .job
+                        .sections
+                        .iter()
+                        .any(|s| s.format.strikethrough.width > 0.0)
+            }
+            _ => false,
+        });
+        assert!(struck, "{:?}", texts_of(&out));
+        let calc = painted(&out.shapes, "Calc").expect("Calc shown").center();
+        desk.click(&mut app, calc);
+        assert_eq!(app.status, "recalculated");
+    }
+
+    #[test]
+    fn typing_clears_a_stale_formula_error_and_escape_reverts() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(102));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        app.formula_error_pos = Some(1);
+        app.formula_error_msg = "old".into();
+        let x = egui::Event::Text("x".into());
+        focused_frame(&ctx, &mut app, "formula_edit", vec![x]);
+        assert_ne!(app.formula_buf, "Price * Quantity");
+        assert_eq!(
+            (app.formula_error_pos, app.formula_error_msg.as_str()),
+            (None, "")
+        );
+        let esc = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        focused_frame(&ctx, &mut app, "formula_edit", vec![esc.clone()]);
+        assert_eq!(app.formula_buf, "Price * Quantity");
+
+        // The new-formula line: Escape leaves it without adding; a line with
+        // no `=` is refused.
+        let n = app.model.measures.len();
+        let t = egui::Event::Text("oops".into());
+        focused_frame(&ctx, &mut app, "formula_new", vec![t]);
+        focused_frame(&ctx, &mut app, "formula_new", vec![esc]);
+        assert_eq!(
+            (app.model.measures.len(), app.new_formula_line.as_str()),
+            (n, "oops")
+        );
+        focused_frame(&ctx, &mut app, "formula_new", vec![enter()]);
+        assert_eq!(app.status, "type Name = formula");
+        assert_eq!(app.model.measures.len(), n);
+    }
+
+    #[test]
+    fn the_menu_runs_what_it_picks_and_plain_keys_are_no_chords() {
+        let mut app = build_app(revenue_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let quit = painted(&shapes, "Quit").expect("menu shows Quit").center();
+        let _ = desk.frame(&mut app, vec![egui::Event::PointerMoved(quit)]);
+        let out = desk.frame(&mut app, vec![press(quit, true), press(quit, false)]);
+        assert!(closes(&out), "Quit with nothing to lose closes");
+
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Q,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| app.handle_command_keys(ctx));
+        assert!(!closes(&out), "a bare Q is not Cmd+Q");
+    }
+
+    #[test]
+    fn save_view_command_uses_the_typed_name_or_saves_nothing() {
+        let ctx = egui::Context::default();
+        let mut app = build_app(revenue_model());
+        app.view_name = "Mine".into();
+        app.run_command(&ctx, Command::SaveView);
+        assert_eq!(app.status, "saved view 'Mine'");
+        assert!(app.view_name.is_empty());
+        let mut empty = ImprovApp::load("").unwrap();
+        empty.run_command(&ctx, Command::SaveView);
+        assert!(empty.model.views.is_empty());
+        assert!(empty.status.is_empty());
+    }
+
+    #[test]
+    fn the_browsers_save_view_button_saves_a_named_view_only() {
+        let (mut app, mut desk) = grid_desk();
+        let button = |desk: &mut Desk, app: &mut ImprovApp| {
+            let shapes = desk.frame(app, Vec::new()).shapes;
+            painted(&shapes, "Save view")
+                .expect("button shown")
+                .center()
+        };
+        let p = button(&mut desk, &mut app);
+        desk.click(&mut app, p);
+        assert_eq!(app.status, "view name is required");
+        app.view_name = "V".into();
+        let p = button(&mut desk, &mut app);
+        desk.click(&mut app, p);
+        assert_eq!(app.model.views.len(), 1);
+        assert!(app.view_name.is_empty());
+    }
+
+    #[test]
+    fn the_enabled_checkbox_toggles_a_formula_and_says_so() {
+        let (mut app, mut desk) = grid_desk();
+        app.matrices[0].measure = Some(MeasureId(101)); // the row is not the editor
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        // The checkbox sits left of the row's `1.` number.
+        let num = painted(&shapes, "1.").expect("row numbered");
+        let at = egui::pos2(num.left() - 12.0, num.center().y);
+        desk.click(&mut app, at);
+        assert_eq!(app.status, "formula Revenue disabled");
+        assert!(formula_disabled(&app.model.measures[&MeasureId(102)]));
+        desk.time += 1.0;
+        desk.click(&mut app, at);
+        assert_eq!(app.status, "formula Revenue enabled");
+    }
+
+    #[test]
+    fn the_browser_lists_each_categorys_items_when_expanded() {
+        let (mut app, mut desk) = grid_desk();
+        let open = |desk: &mut Desk, app: &mut ImprovApp, label: &str| {
+            let shapes = desk.frame(app, Vec::new()).shapes;
+            let at = painted(&shapes, label)
+                .unwrap_or_else(|| panic!("{label} not shown"))
+                .center();
+            desk.click(app, at);
+            desk.settle(app);
+        };
+        open(&mut desk, &mut app, "Categories");
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let product = shapes
+            .iter()
+            .rev()
+            .find_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Product" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .expect("Product header");
+        desk.click(&mut app, product.center());
+        desk.settle(&mut app);
+        let texts = texts_of(&desk.frame(&mut app, Vec::new()));
+        assert!(
+            texts.iter().filter(|t| *t == "WidgetB").count() >= 2,
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn pivoting_a_columns_only_layout_moves_it_to_rows() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(100)); // Price[Product]
+        app.sync_axis_state();
+        app.set_axis(CategoryId(2), Axis::Columns);
+        app.pivot_rotate();
+        assert_eq!(
+            (app.row_cats(), app.col_cats()),
+            (vec![CategoryId(2)], vec![])
+        );
+    }
+
+    #[test]
+    fn a_new_measure_needs_a_name_and_ignores_unknown_refs_for_categories() {
+        let mut app = build_app(revenue_model());
+        assert_eq!(
+            app.add_derived_measure("  ", "Price").unwrap_err(),
+            "measure name is required"
+        );
+        // A formula over a scalar literal infers no categories.
+        let id = app.add_derived_measure("Two", "1 + 1").expect("adds");
+        assert!(app.model.measures[&id].categories.is_empty());
+    }
+
+    #[test]
+    fn a_text_cell_edits_left_aligned_and_commits() {
+        let mut app = build_app(typed_model());
+        app.matrices[0].measure = Some(MeasureId(2)); // Label (Text)
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let at = cell_rect(&desk, &app, 0, 0).center();
+        desk.click(&mut app, at);
+        desk.click(&mut app, at);
+        assert!(app.matrices[0].editing.is_some());
+        app.matrices[0].edit_buf = "bye".into();
+        key(&mut desk, &mut app, egui::Key::Enter, egui::Modifiers::NONE);
+        assert_eq!(
+            app.cell_text(MeasureId(2), &typed_key()).as_deref(),
+            Some("bye")
+        );
+    }
 }

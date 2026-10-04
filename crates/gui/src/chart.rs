@@ -297,3 +297,168 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::epaint::Shape;
+
+    /// Paint `data` in one headless 600x400 frame; return every shape drawn.
+    fn paint(data: &ChartData, line: bool) -> Vec<Shape> {
+        let ctx = egui::Context::default();
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(600.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| render_chart(ui, data, line));
+        });
+        fn flat(s: Shape, acc: &mut Vec<Shape>) {
+            match s {
+                Shape::Vec(v) => v.into_iter().for_each(|s| flat(s, acc)),
+                s => acc.push(s),
+            }
+        }
+        let mut acc = Vec::new();
+        out.shapes.into_iter().for_each(|c| flat(c.shape, &mut acc));
+        acc
+    }
+
+    fn texts(shapes: &[Shape]) -> Vec<String> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text(t) => Some(t.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn count(shapes: &[Shape], pred: impl Fn(&Shape) -> bool) -> usize {
+        shapes.iter().filter(|s| pred(s)).count()
+    }
+
+    /// A chart bar or legend swatch: a rect outlined 1px black (the panel's
+    /// own background rect is not).
+    fn is_bar(s: &Shape) -> bool {
+        use crate::theme::BLACK;
+        matches!(s, Shape::Rect(r) if r.stroke == egui::Stroke::new(1.0_f32, BLACK))
+    }
+
+    #[test]
+    fn y_range_of_no_or_flat_data_is_zero_to_one_above() {
+        assert_eq!(ChartData::default().y_range(), (0.0, 1.0));
+        let flat = ChartData {
+            series: vec![Series {
+                name: String::new(),
+                points: vec![Some(0.0), None],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(flat.y_range(), (0.0, 1.0));
+        let mixed = ChartData {
+            series: vec![Series {
+                name: String::new(),
+                points: vec![Some(-2.0), Some(5.0)],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(mixed.y_range(), (-2.0, 5.0));
+    }
+
+    #[test]
+    fn empty_chart_says_no_data_and_draws_no_bars() {
+        for data in [
+            ChartData::default(),
+            ChartData {
+                x_labels: vec!["a".into()],
+                ..Default::default()
+            },
+        ] {
+            let shapes = paint(&data, true);
+            assert!(texts(&shapes).iter().any(|t| t.contains("no data")));
+            assert_eq!(count(&shapes, is_bar), 0);
+        }
+    }
+
+    #[test]
+    fn two_series_with_gaps_and_negatives_draw_bars_lines_zero_and_legend() {
+        let data = ChartData {
+            x_title: "Time".into(),
+            x_labels: vec!["q1".into(), "q2".into(), "q3".into(), "q4".into()],
+            series: vec![
+                Series {
+                    name: "North".into(),
+                    points: vec![Some(1.0), None, Some(-2.0), Some(3.0)],
+                },
+                Series {
+                    name: "South".into(),
+                    points: vec![Some(4.0), Some(5.0), None, None],
+                },
+            ],
+        };
+        let bars_lines = paint(&data, true);
+        let bars_only = paint(&data, false);
+        let rects = |s: &[Shape]| count(s, is_bar);
+        let circles = |s: &[Shape]| count(s, |s| matches!(s, Shape::Circle(_)));
+        let segs = |s: &[Shape]| count(s, |s| matches!(s, Shape::LineSegment { .. }));
+        // 5 numeric points -> 5 bars, + 2 legend swatches (n_s > 1).
+        assert_eq!(rects(&bars_only), 7);
+        assert_eq!(rects(&bars_lines), 7);
+        assert_eq!(circles(&bars_only), 0);
+        assert_eq!(circles(&bars_lines), 5);
+        // Line overlay: North joins q3-q4 only (q2 gap breaks it), South q1-q2;
+        // each join is a black under-stroke plus a colored stroke.
+        assert_eq!(segs(&bars_lines) - segs(&bars_only), 4);
+        // 2 axes + 3 gridlines + the zero line (range straddles 0).
+        assert_eq!(segs(&bars_only), 6);
+        let t = texts(&bars_only);
+        for want in ["Time", "North", "South", "q1", "q4"] {
+            assert!(t.iter().any(|x| x == want), "{want} missing from {t:?}");
+        }
+    }
+
+    #[test]
+    fn one_positive_untitled_series_has_no_zero_line_or_legend() {
+        let data = ChartData {
+            x_title: String::new(),
+            x_labels: vec!["a".into(), "b".into()],
+            series: vec![Series {
+                name: "only".into(),
+                points: vec![Some(1.0), Some(2.0)],
+            }],
+        };
+        let shapes = paint(&data, false);
+        assert_eq!(count(&shapes, is_bar), 2);
+        assert_eq!(
+            count(&shapes, |s| matches!(s, Shape::LineSegment { .. })),
+            5
+        );
+        assert!(!texts(&shapes).iter().any(|t| t == "only"));
+    }
+
+    #[test]
+    fn no_measure_charts_nothing_and_all_negative_data_has_no_zero_line() {
+        let app = ImprovApp::load("").expect("in-memory model");
+        assert_eq!(app.chart_series(), ChartData::default());
+        let data = ChartData {
+            x_title: String::new(),
+            x_labels: vec!["a".into(), "b".into()],
+            series: vec![Series {
+                name: String::new(),
+                points: vec![Some(-1.0), Some(-2.0)],
+            }],
+        };
+        assert_eq!(data.y_range(), (-2.0, 0.0));
+        let shapes = paint(&data, false);
+        assert_eq!(count(&shapes, is_bar), 2);
+        // Axes + 3 gridlines; 0 is the top of the range, so no zero line.
+        assert_eq!(
+            count(&shapes, |s| matches!(s, Shape::LineSegment { .. })),
+            5
+        );
+    }
+}
