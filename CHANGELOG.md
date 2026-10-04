@@ -16,6 +16,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **GUI formula list lives in each worksheet window**, under the grid, with a
+  `Calc` button. The operator palette and the "New derived measure" form are
+  gone.
 - **GUI model browser and Info panel are NeXT windows.** The docked
   explorer and inspector side panels are gone, so the dark workspace spans
   the full width between the formula bar and the bottom panels. The model

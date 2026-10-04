@@ -130,9 +130,6 @@ pub struct ImprovApp {
     /// The message of the last `commit_formula` parse error, shown directly
     /// under the formula bar. Cleared alongside `formula_error_pos`.
     formula_error_msg: String,
-    /// New-derived-measure form: name + formula text.
-    new_name: String,
-    new_formula: String,
     /// Text buffer for the "Save view" name field.
     view_name: String,
 
@@ -163,7 +160,7 @@ pub struct ImprovApp {
 
     /// Where each formula-list row landed in the last laid-out frame, as
     /// `(measure, row rect)` in display order. Recorded by
-    /// [`ImprovApp::formula_list_panel`]; empty until the pane has rendered.
+    /// [`ImprovApp::formula_list`]; empty until the pane has rendered.
     /// Layout output, not model state — the same role `gutters` plays for the
     /// grid, and what lets a headless test click a row where a user would.
     formula_row_rects: Vec<(MeasureId, egui::Rect)>,
@@ -285,6 +282,10 @@ const MENU_CLEAR: f32 = 120.0;
 /// own chrome; [`gutters_have_room`] is the same judgement about the window.
 const MATRIX_MIN_W: f32 = 240.0;
 const MATRIX_MIN_H: f32 = 180.0;
+
+/// Height a worksheet window keeps for its gutters and grid: its formula pane
+/// grows (or defaults) no taller than what leaves this much above it.
+const GRID_MIN_H: f32 = 120.0;
 
 /// How many model states the undo (and redo) stack keeps; older entries are
 /// evicted.
@@ -806,8 +807,6 @@ impl ImprovApp {
             formula_for: None,
             formula_error_pos: None,
             formula_error_msg: String::new(),
-            new_name: String::new(),
-            new_formula: String::new(),
             view_name: String::new(),
             show_chart: false,
             chart_line: false,
@@ -1623,7 +1622,7 @@ impl ImprovApp {
     }
 
     /// Every formula in the model, in id order, as the formula pane lists them
-    /// (see [`FormulaRow`] and [`Self::formula_list_panel`]). Numbering is the
+    /// (see [`FormulaRow`] and [`Self::formula_list`]). Numbering is the
     /// caller's: row `i` is displayed as `i + 1`, matching the reference's
     /// 1-based list.
     ///
@@ -1844,6 +1843,10 @@ impl ImprovApp {
     /// rule as the CLI's `add-derived`). Rebuilds the engine and autosaves. On
     /// any failure (parse error, duplicate name, engine build failure, failed
     /// store write) the model, engine, and snapshot are unchanged.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the step-4b formula line calls it")
+    )]
     pub fn add_derived_measure(&mut self, name: &str, text: &str) -> Result<MeasureId, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -2477,8 +2480,6 @@ impl eframe::App for ImprovApp {
         // takes what is left.
         self.formula_bar(ctx);
         self.status_bar(ctx);
-        self.formula_panel(ctx);
-        self.formula_list_panel(ctx);
         self.chart_panel(ctx);
         self.csv_wizard_panel(ctx);
         let ws = self.canvas_panel(ctx);
@@ -2794,8 +2795,6 @@ impl ImprovApp {
         self.show_inspector = open;
     }
 
-    /// Bottom: formula editor for the selected derived measure, plus a form to
-    /// add a new derived measure.
     /// The Lotus Improv **formula bar**: a compact single-line bar across the
     /// top that shows and edits the *selected measure's* formula. Input
     /// measures show a hint. Committing re-typechecks and rebuilds the engine.
@@ -2914,8 +2913,7 @@ impl ImprovApp {
     ///
     /// Reference-faithful in the parts that carry meaning:
     ///
-    /// * a `Formulas` label and an operator palette (`= + - * / ^ ( ) [ ]`)
-    ///   across the top, each button inserting its token into the editor above;
+    /// * a split bar across the top with a `Calc` button that recomputes;
     /// * one row per derived measure: a checkbox (the `✓`), a **bold 1-based
     ///   number**, then `Target = formula`;
     /// * the selected row highlighted, and clicking any row selecting that
@@ -2924,158 +2922,99 @@ impl ImprovApp {
     ///
     /// The editor for the selected row stays the top [`Self::formula_bar`], as
     /// the reference also has both (a `Formula:` edit line *and* the list).
-    fn formula_list_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("formula_list")
-            .resizable(true)
-            .default_height(140.0)
-            .show(ctx, |ui| {
-                self.operator_palette(ui);
-                ui.separator();
-                let rows = self.formula_rows();
-                if rows.is_empty() {
-                    self.formula_row_rects.clear();
-                    ui.weak("No formulas yet — define a derived measure below.");
-                    return;
+    fn formula_list(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Calc").clicked() {
+                    self.rebuild_engine();
+                    self.status = "recalculated".into();
                 }
-                // What the user clicked, applied after the loop so the model is
-                // not mutated while `rows` borrows nothing from it but the UI
-                // still reads `self.selected` per row.
-                let mut select: Option<MeasureId> = None;
-                let mut toggle: Option<(MeasureId, bool)> = None;
-                let mut rects: Vec<(MeasureId, egui::Rect)> = Vec::new();
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, true])
-                    .show(ui, |ui| {
-                        white_selection(ui);
-                        for (i, row) in rows.iter().enumerate() {
-                            let selected = self.selected() == Some(row.measure);
-                            ui.horizontal(|ui| {
-                                let mut on = row.enabled;
-                                if ui
-                                    .add(egui::Checkbox::without_text(&mut on))
-                                    .on_hover_text(
-                                        "Enabled. Uncheck to stop this formula \
+            });
+        });
+        ui.separator();
+        let rows = self.formula_rows();
+        if rows.is_empty() {
+            self.formula_row_rects.clear();
+            ui.weak("Type a formula on the line below.");
+            return;
+        }
+        // What the user clicked, applied after the loop so the model is
+        // not mutated while `rows` borrows nothing from it but the UI
+        // still reads `self.selected` per row.
+        let mut select: Option<MeasureId> = None;
+        let mut toggle: Option<(MeasureId, bool)> = None;
+        let mut rects: Vec<(MeasureId, egui::Rect)> = Vec::new();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                white_selection(ui);
+                for (i, row) in rows.iter().enumerate() {
+                    let selected = self.selected() == Some(row.measure);
+                    ui.horizontal(|ui| {
+                        let mut on = row.enabled;
+                        if ui
+                            .add(egui::Checkbox::without_text(&mut on))
+                            .on_hover_text(
+                                "Enabled. Uncheck to stop this formula \
                                          computing (dependents recompute without it).",
-                                    )
-                                    .changed()
-                                {
-                                    toggle = Some((row.measure, on));
-                                }
-                                // `1.` `2.` … bold, as the reference numbers them.
-                                ui.strong(format!("{}.", i + 1));
-                                // A disabled formula is dimmed, not hidden: it is
-                                // still part of the model's logic.
-                                let label = format!("{} = {}", row.target, row.text);
-                                let text = if row.enabled {
-                                    egui::RichText::new(label)
-                                } else {
-                                    egui::RichText::new(label).weak().strikethrough()
-                                };
-                                let resp = ui.selectable_label(selected, text);
-                                rects.push((row.measure, resp.rect));
-                                if resp.clicked() {
-                                    select = Some(row.measure);
-                                }
-                            });
-                            if let Some(err) = &row.error {
-                                ui.horizontal(|ui| {
-                                    // Indent under the row's text, past the
-                                    // checkbox and number.
-                                    ui.add_space(44.0);
-                                    ui.colored_label(
-                                        crate::formula_highlight::ERROR_COLOR,
-                                        format!("⚠ {err}"),
-                                    );
-                                });
-                            }
+                            )
+                            .changed()
+                        {
+                            toggle = Some((row.measure, on));
+                        }
+                        // `1.` `2.` … bold, as the reference numbers them.
+                        ui.strong(format!("{}.", i + 1));
+                        // A disabled formula is dimmed, not hidden: it is
+                        // still part of the model's logic.
+                        let label = format!("{} = {}", row.target, row.text);
+                        let text = if row.enabled {
+                            egui::RichText::new(label)
+                        } else {
+                            egui::RichText::new(label).weak().strikethrough()
+                        };
+                        let resp = ui.selectable_label(selected, text);
+                        // Only the part the scroll area shows is clickable.
+                        let shown = resp.rect.intersect(ui.clip_rect());
+                        if shown.is_positive() {
+                            rects.push((row.measure, shown));
+                        }
+                        if resp.clicked() {
+                            select = Some(row.measure);
                         }
                     });
-                self.formula_row_rects = rects;
-                if let Some(id) = select {
-                    self.focused_mut().select(Some(id));
-                }
-                if let Some((id, on)) = toggle {
-                    match self.set_formula_enabled(id, on) {
-                        Ok(()) => {
-                            self.status = format!(
-                                "formula {} {}",
-                                self.model
-                                    .measures
-                                    .get(&id)
-                                    .map(|m| m.name.0.clone())
-                                    .unwrap_or_default(),
-                                if on { "enabled" } else { "disabled" }
+                    if let Some(err) = &row.error {
+                        ui.horizontal(|ui| {
+                            // Indent under the row's text, past the
+                            // checkbox and number.
+                            ui.add_space(44.0);
+                            ui.colored_label(
+                                crate::formula_highlight::ERROR_COLOR,
+                                format!("⚠ {err}"),
                             );
-                        }
-                        Err(e) => self.status = format!("toggle failed: {e}"),
+                        });
                     }
                 }
             });
-    }
-
-    /// The reference's operator palette above the formula list: each button
-    /// appends its token to the formula editor's buffer, so the mouse can build
-    /// an expression without the keyboard.
-    ///
-    /// Inert (greyed) unless the selected measure's formula is actually editable
-    /// — appending to a buffer the bar is showing read-only would be a lie.
-    ///
-    /// Skipped from the reference's palette: `‥ : ::` (range/scope operators this
-    /// grammar does not have), `In`/`Skip` (Quantrix scope keywords), `[THIS]`,
-    /// and the `ƒ` function browser (plan Step 5).
-    fn operator_palette(&mut self, ui: &mut egui::Ui) {
-        const TOKENS: &[&str] = &["=", "+", "-", "*", "/", "(", ")", "[", "]"];
-        let editable = self
-            .selected()
-            .is_some_and(|m| self.formula_source(m).is_some());
-        ui.horizontal(|ui| {
-            ui.strong("Formulas");
-            ui.separator();
-            for tok in TOKENS {
-                // `=` is the target separator the bar prints itself, so the
-                // palette inserts the operators only.
-                if ui
-                    .add_enabled(editable, egui::Button::new(*tok).small())
-                    .clicked()
-                {
-                    if !self.formula_buf.is_empty() && !self.formula_buf.ends_with(' ') {
-                        self.formula_buf.push(' ');
-                    }
-                    self.formula_buf.push_str(tok);
+        self.formula_row_rects = rects;
+        if let Some(id) = select {
+            self.focused_mut().select(Some(id));
+        }
+        if let Some((id, on)) = toggle {
+            match self.set_formula_enabled(id, on) {
+                Ok(()) => {
+                    self.status = format!(
+                        "formula {} {}",
+                        self.model
+                            .measures
+                            .get(&id)
+                            .map(|m| m.name.0.clone())
+                            .unwrap_or_default(),
+                        if on { "enabled" } else { "disabled" }
+                    );
                 }
+                Err(e) => self.status = format!("toggle failed: {e}"),
             }
-        });
-    }
-
-    /// Bottom panel: the "new derived measure" definition form. (The selected
-    /// measure's formula is edited in the top formula bar; the whole model's
-    /// formulas are listed in [`Self::formula_list_panel`]; the status message
-    /// and the selection aggregate are in [`Self::status_bar`].)
-    fn formula_panel(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("definitions")
-            .resizable(true)
-            .default_height(80.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.strong("New derived measure:");
-                    ui.label("name");
-                    ui.text_edit_singleline(&mut self.new_name);
-                    ui.label("=");
-                    ui.text_edit_singleline(&mut self.new_formula);
-                    if ui.button("Add").clicked() {
-                        let (name, text) = (self.new_name.clone(), self.new_formula.clone());
-                        match self.add_derived_measure(&name, &text) {
-                            Ok(id) => {
-                                self.status = format!("added derived measure {}", id.0);
-                                self.focused_mut().select(Some(id));
-                                self.new_name.clear();
-                                self.new_formula.clear();
-                            }
-                            Err(e) => self.status = format!("add failed: {e}"),
-                        }
-                    }
-                });
-            });
+        }
     }
 
     /// Bottom-right chart panel (shown only when the "Chart" toggle is on): a
@@ -3288,7 +3227,7 @@ impl ImprovApp {
     }
 
     /// Matrix `mi` as a worksheet window on the workspace `ws`: filter shelf,
-    /// then the gutter-framed grid. Returns `false` when its close box was
+    /// the gutter-framed grid, and the formula list (with Calc) below it. Returns `false` when its close box was
     /// clicked (shown only while there is more than one matrix).
     fn matrix_window(&mut self, ctx: &egui::Context, ws: egui::Rect, mi: usize) -> bool {
         let Matrix { uid, rect: r, .. } = self.matrices[mi];
@@ -3310,6 +3249,18 @@ impl ImprovApp {
         let _ = win.show(ctx, |ui| {
             self.filter_shelf(ui, mi);
             ui.separator();
+            let outer_clip = ui.clip_rect();
+            egui::TopBottomPanel::bottom(ui.id().with("formula_pane"))
+                .resizable(true)
+                .default_height(110.0)
+                // Never squeeze the gutters and grid below what framing needs.
+                .max_height((ui.available_height() - GRID_MIN_H).max(0.0))
+                .frame(egui::Frame::none().fill(crate::theme::WHITE))
+                .show_separator_line(false)
+                .show_inside(ui, |ui| {
+                    ui.shrink_clip_rect(outer_clip);
+                    self.formula_list(ui);
+                });
             self.gutter_frame(ui, mi);
         });
         if let Some(after) = crate::nxwin::stored_rect(ctx, id).filter(|a| *a != rect) {
@@ -4811,8 +4762,6 @@ mod tests {
             formula_for: None,
             formula_error_pos: None,
             formula_error_msg: String::new(),
-            new_name: String::new(),
-            new_formula: String::new(),
             view_name: String::new(),
             show_chart: false,
             chart_line: false,
@@ -6536,7 +6485,7 @@ mod tests {
 
         use egui::Key;
         let keys = [Key::N, Key::J, Key::L, Key::CloseBracket, Key::Enter];
-        for field in ["formula_bar", "new_measure_name", "csv_path", "view_name"] {
+        for field in ["formula_bar", "csv_path", "view_name"] {
             let after = frame_with_keys(&mut app, &keys, Some(field));
             assert_eq!(after, before, "{field} focused, yet the grid reacted");
             assert!(
@@ -7015,8 +6964,6 @@ mod tests {
             app.sync_axis_state();
             app.formula_bar(ctx);
             app.status_bar(ctx);
-            app.formula_panel(ctx);
-            app.formula_list_panel(ctx);
             app.chart_panel(ctx);
             app.csv_wizard_panel(ctx);
             let ws = app.canvas_panel(ctx);
@@ -7747,8 +7694,6 @@ mod tests {
             let _ = ctx.run(raw, |ctx| {
                 app.sync_axis_state();
                 app.formula_bar(ctx);
-                app.formula_panel(ctx);
-                app.formula_list_panel(ctx);
                 let ws = app.canvas_panel(ctx);
                 app.model_browser(ctx, ws);
                 app.info_panel(ctx, ws);
@@ -7785,6 +7730,42 @@ mod tests {
             1.0,
         );
         true
+    }
+
+    /// Plan step 4a: the formula list is part of each worksheet window, under
+    /// its grid, not an app-wide bottom panel. With two windows, the rows are
+    /// laid out inside each window in turn (the last one drawn records them).
+    #[test]
+    fn formula_list_lives_in_each_worksheet_window() {
+        let mut app = build_app(four_formula_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1200.0, 800.0);
+        let check = |app: &ImprovApp, ctx: &egui::Context, mi: usize| {
+            let win = crate::nxwin::stored_rect(ctx, matrix_window_id(app.matrices[mi].uid))
+                .expect("window shown");
+            let table = app.matrices[mi].gutters.expect("laid out").table;
+            assert!(!app.formula_row_rects.is_empty(), "rows laid out");
+            for (m, r) in &app.formula_row_rects {
+                assert!(
+                    win.contains_rect(*r),
+                    "row {m:?} {r:?} outside window {win:?}"
+                );
+                assert!(
+                    r.min.y >= table.max.y,
+                    "row {m:?} {r:?} not below grid {table:?}"
+                );
+            }
+        };
+        for i in 0..4 {
+            let _ = full_frame(&ctx, &mut app, size, f64::from(i) / 60.0);
+        }
+        check(&app, &ctx, 0);
+        let last = app.add_matrix(Some(MeasureId(101)));
+        for i in 4..8 {
+            let _ = full_frame(&ctx, &mut app, size, f64::from(i) / 60.0);
+        }
+        check(&app, &ctx, last);
     }
 
     /// **Step 2 acceptance, part 3:** toggling a formula off recomputes
@@ -8137,8 +8118,6 @@ mod tests {
                 let _ = ctx.run(raw, |ctx| {
                     app.sync_axis_state();
                     app.formula_bar(ctx);
-                    app.formula_panel(ctx);
-                    app.formula_list_panel(ctx);
                     app.canvas_panel(ctx);
                 });
             }

@@ -49,8 +49,8 @@ Items below are reworded where this direction supersedes them.
 | B2 | Empty gutter wells: row gutter is a tall grey box for one tile; top-right gutter mostly empty. Size gutters to their tiles; highlight as drop zones only during a drag. | planned |
 | B3 | Pages has two controls (tile + separate `< Plan [1/2] >` stepper). Merge into the tile (`Scenario: Plan ▾`). | planned |
 | B4 | Top bar leads with an empty-state message. Remove the tab strip; views are listed in the model browser and open as worksheet windows; `+ Canvas`/`+ Matrix` move to the Worksheet/View menu. | done: the tab strip is gone (step 2); views are listed in the model browser window and the View submenu and open on the workspace's worksheet windows; Add/Remove Matrix and Save View are in the Worksheet submenu |
-| B5 | Third formula entry point ("New derived measure" form). Add formulas by typing `X = …` on a new formula-list line; drop the form. | planned |
-| B6 | Operator palette (`= + - * / ( ) [ ]`) is not in Improv. Remove it; formula pane gets the ✓ column and a `Calc` button. | planned |
+| B5 | Third formula entry point ("New derived measure" form). Add formulas by typing `X = …` on a new formula-list line; drop the form. | partial: the form is gone; typing `X = …` on a new formula-list line is step 4b |
+| B6 | Operator palette (`= + - * / ( ) [ ]`) is not in Improv. Remove it; formula pane gets the ✓ column and a `Calc` button. | done: palette removed, formula list moved into each worksheet window with a `Calc` button |
 | B7 | NeXTSTEP chrome: grayscale palette (no blue), Helvetica-like bundled font (license-checked), black title bars, dark tiles with white text, NeXT scrollers, inverted selection. Drop the left tool palette (actions live in the menu). | partial: grayscale palette, square corners, gray selection and dark tiles (spec §1) and bundled Arimo 12 (§2) landed; title bars, scrollers and the tool palette remain |
 
 ## Batch C — interaction basics (closes GUI steering gate #4)

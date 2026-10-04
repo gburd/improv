@@ -54,6 +54,8 @@ The window has five regions:
   and **Region** paged (`North [1/2]`, steppable). The **category tiles** at the
   Columns / Rows / Pages margins are drag sources; drag one to another margin to
   re-pivot without touching the formula.
+- **Formula list** (in each worksheet window) — the formula list sits at the
+  bottom of each worksheet window, with a Calc button.
 - **Info panel** (window, top right of the workspace, closed at start) —
   opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
   type, dimensions, dependencies, and formula. Its close box closes it.
