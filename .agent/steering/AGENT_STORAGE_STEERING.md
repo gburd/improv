@@ -27,10 +27,14 @@ a hard requirement from the source design.
   Not a path dependency: `path = "../mentat"` made a fresh clone unbuildable
   (cargo could not even read the manifest), which CI masked by cloning Mentat
   beside the checkout. Cargo forbids `branch` together with `rev`, so the
-  revision is pinned and the branch it tracks (**`improv-base`**) is recorded in
-  a comment beside it.
-- When Improv needs newer Mentat behavior: commit and push to `improv-base`,
-  bump the `rev`, and commit the updated `Cargo.lock`. To develop Mentat locally,
+  revision is pinned and the branch it tracks (Mentat **`master`**, at a
+  release tag) is recorded in a comment beside it. The former `improv-base`
+  branch was never pushed, which left the old pin unfetchable from a clean
+  machine; never pin a commit that is not on a pushed branch.
+- When Improv needs newer Mentat behavior: land it on Mentat `master`, bump the
+  `rev`, commit the updated `Cargo.lock`, and run the A/B benchmark
+  (`docs/reviews/bench/bench-mentat.sh`; last run:
+  `docs/reviews/2026-10-10-mentat-1.11-upgrade.md`). To develop Mentat locally,
   use a temporary `[patch]` / `cargo add --path` — never commit it.
 - Mentat is backed by SQLite, giving durable, transactional, cross-platform
   persistence for free.

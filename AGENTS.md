@@ -112,9 +112,11 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   clone could not even parse its manifest, so nobody outside a machine with a
   sibling checkout could build Improv, and CI hid this by cloning Mentat first.
   The `rev` is pinned for reproducibility (cargo forbids `branch` + `rev`
-  together); the revision tracks the tip of **`improv-base`**. When Improv needs
-  newer Mentat behavior: commit + push to `improv-base`, then bump the `rev` and
-  commit the resulting `Cargo.lock`. A local checkout is still handy for
+  together); the revision tracks Mentat's **`master`** (a released tag's
+  commit, currently v1.11.1). When Improv needs newer Mentat behavior: land it
+  on Mentat `master` (pushed to Codeberg, so the rev is fetchable), then bump
+  the `rev`, commit the resulting `Cargo.lock`, and record an A/B storage
+  benchmark (`docs/reviews/bench/bench-mentat.sh`). A local checkout is still handy for
   *developing* Mentat — use `[patch]` or `cargo add --path` temporarily, but
   never commit that.
 - **GitHub** (`.github/workflows/`): `ci.yml` (fmt, clippy `-D warnings` on our

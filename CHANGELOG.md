@@ -6,6 +6,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Mentat 0.14 → 1.11.1** (pin `6fc2bc7f`, Mentat `master` at v1.11.1).
+  No Improv API changes were needed. Measured on 100k/200k-cell models
+  (`docs/reviews/2026-10-10-mentat-1.11-upgrade.md`): loads, partial loads,
+  evaluation and edits 9–26% faster, re-import 13–15% faster, first import
+  ~10% slower, store files ~29% larger (new history and value indexes).
+  Reported RSS is higher because Mentat now memory-maps the store (1 GiB cap);
+  set `MENTAT_MMAP_SIZE=0` to turn that off. The old pin `1af15e15` lived on
+  an unpushed branch and was not fetchable from a clean clone; the new pin is
+  on Mentat's pushed `master`.
+
 ### Security
 
 - **External functions: the host picks the sandbox.** Every body runs

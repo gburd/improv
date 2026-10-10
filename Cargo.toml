@@ -47,7 +47,9 @@ timely = "=0.13.0"
 # with `rev`, so the branch is recorded here instead: the revision below is the
 # tip of `improv-base`. To take newer Mentat behavior, push to that branch and
 # bump this `rev`.
-mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "1af15e1553651a6b4ebb0bbad79bdec367e13281" }
+# Mentat v1.11.1 (master @ 6fc2bc7f). Tracks Mentat master at a release tag;
+# bump procedure + benchmark: AGENTS.md "CI / storage-backend pin".
+mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9" }
 # TUI (Phase 2).
 ratatui = "0.29"
 crossterm = "0.28"

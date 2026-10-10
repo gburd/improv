@@ -369,7 +369,7 @@ mod tests {
     }
 
     // A tick with no due measures (Manual policy) is a no-op: it must not
-    // error, and must not rewrite the file (checked via unchanged mtime).
+    // error, and must not commit a transaction (unchanged tx high-water).
     #[tokio::test]
     async fn no_due_measures_is_a_noop() {
         let path = temp_db_path("noop");
@@ -377,7 +377,11 @@ mod tests {
         store
             .save_model(&call_model(RefreshPolicy::Manual))
             .unwrap();
-        let mtime_before = std::fs::metadata(&path).unwrap().modified().unwrap();
+        // The store's transaction high-water, not the file mtime: opening a
+        // Mentat >= 1.11 store touches the file (WAL checkpoint/restart) even
+        // for a read, so the mtime no longer says whether anything was written.
+        let tx_before = store.tx_high_water().unwrap();
+        drop(store);
 
         let state = app_state(path.to_str().unwrap());
         let mut last_run = HashMap::new();
@@ -386,10 +390,13 @@ mod tests {
             .expect("a no-op tick must not error");
         assert!(refreshed.is_empty());
 
-        let mtime_after = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let tx_after = ModelStore::open(path.to_str().unwrap())
+            .unwrap()
+            .tx_high_water()
+            .unwrap();
         assert_eq!(
-            mtime_before, mtime_after,
-            "a tick that refreshes nothing must not rewrite the store"
+            tx_before, tx_after,
+            "a tick that refreshes nothing must not write to the store"
         );
     }
 
