@@ -10,8 +10,9 @@
 //! concurrency token.
 //!
 //! Encoding (v1; the extension must read the same):
-//! - `measure.formula`: serde JSON of the `Formula` AST (the DSL printer lives
-//!   in the GUI crate, so source text is not available here yet);
+//! - `measure.formula`: written as serde JSON of the `Formula` AST (the DSL
+//!   printer lives in the GUI crate); read as JSON or, failing that, as DSL
+//!   text (`Target = expr`, what the extension's `improv.define` writes);
 //! - `measure.value_type`: `number | boolean | text | datetime | enum`;
 //! - `cell.coord`: `{"<category id>": <item id>, …}`;
 //! - cell values: plain JSON scalars (number, bool, string; datetimes as
@@ -21,8 +22,9 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use improv_core_model::{
-    CategoryId, Coordinate, ExternalCall, ExternalFn, ItemId, Measure, MeasureId, MeasureKind,
-    Model, Name, Scenario, ScenarioId, SqlSource, Value, ValueType,
+    parse_definition, parse_expr, CategoryId, Coordinate, Definition, ExternalCall, ExternalFn,
+    Formula, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Scenario, ScenarioId, SqlSource,
+    Value, ValueType,
 };
 use postgres::config::{Host, SslMode};
 use postgres::{Client, Config, GenericClient, IsolationLevel, NoTls};
@@ -274,6 +276,18 @@ fn value_type_of(model: &Model, m: MeasureId) -> Result<ValueType> {
         .ok_or_else(|| StoreError::Integrity(format!("cell for unknown measure {}", m.0)))
 }
 
+/// A formula stored as DSL text: `Target = expr` (the extension's form) or a
+/// bare `expr`.
+fn parse_formula_text(
+    model: &Model,
+    text: &str,
+) -> std::result::Result<Formula, improv_core_model::ParseError> {
+    match parse_definition(model, text) {
+        Ok(Definition::Formula(ft)) => Ok(ft.formula),
+        _ => parse_expr(model, text),
+    }
+}
+
 /// The non-structural parts of a model, as `improv.meta.blob`.
 #[derive(serde::Deserialize, Default)]
 struct Meta {
@@ -454,6 +468,7 @@ impl PgModelStore {
             let (id, cat) = (ItemId(id32(r.get(0))?), CategoryId(id32(r.get(1))?));
             model.add_item(id, cat, r.get::<_, String>(2));
         }
+        let mut dsl = Vec::new();
         for r in tx.query(
             "SELECT id, name, value_type, kind, formula, description, categories \
              FROM improv.measure WHERE model_id = $1 ORDER BY id",
@@ -462,11 +477,19 @@ impl PgModelStore {
             let id = MeasureId(id32(r.get(0))?);
             let kind = match r.get::<_, &str>(3) {
                 "derived" => {
-                    let f: Option<&str> = r.get(4);
+                    let f: Option<String> = r.get(4);
                     let f = f.ok_or_else(|| {
                         StoreError::Integrity(format!("derived measure {} has no formula", id.0))
                     })?;
-                    MeasureKind::Derived(serde_json::from_str(f)?)
+                    match serde_json::from_str(&f) {
+                        Ok(f) => MeasureKind::Derived(f),
+                        // DSL text (what `improv.define` writes): parsed once
+                        // every measure name is known.
+                        Err(_) => {
+                            dsl.push((id, f));
+                            MeasureKind::Input
+                        }
+                    }
                 }
                 _ => MeasureKind::Input,
             };
@@ -483,6 +506,14 @@ impl PgModelStore {
                 kind,
                 description: r.get(5),
             });
+        }
+        for (id, text) in dsl {
+            let f = parse_formula_text(&model, &text).map_err(|e| {
+                StoreError::Integrity(format!("measure {}: bad formula {text:?}: {e}", id.0))
+            })?;
+            if let Some(m) = model.measures.get_mut(&id) {
+                m.kind = MeasureKind::Derived(f);
+            }
         }
         for r in tx.query(
             "SELECT layout::text FROM improv.view WHERE model_id = $1",

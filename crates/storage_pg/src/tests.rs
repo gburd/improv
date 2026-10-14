@@ -420,6 +420,29 @@ fn corrupt_rows_are_integrity_errors() {
         c.execute(undo, &[&mid]).unwrap();
     }
     s.load_model().unwrap();
+    // Formulas written as DSL text (by the extension) load too. (Restore the
+    // rows the undo steps above deleted first.)
+    s.set_loaded_tx(None);
+    s.save_model(&sample()).unwrap();
+    for text in ["Revenue = Price * Quantity", "Price * Quantity"] {
+        c.execute(
+            "UPDATE improv.measure SET formula = $2 WHERE model_id = $1 AND id = 102",
+            &[&mid, &text],
+        )
+        .unwrap();
+        assert_eq!(s.load_model().unwrap(), sample(), "{text}");
+    }
+    c.execute(
+        "UPDATE improv.measure SET formula = 'Price * Nope' WHERE model_id = $1 AND id = 102",
+        &[&mid],
+    )
+    .unwrap();
+    assert!(matches!(s.load_model(), Err(StoreError::Integrity(_))));
+    c.execute(
+        "UPDATE improv.measure SET formula = 'Price' WHERE model_id = $1 AND id = 102",
+        &[&mid],
+    )
+    .unwrap();
     // A meta blob of the wrong shape is a serde error.
     c.execute(
         "UPDATE improv.meta SET blob = '\"x\"' WHERE model_id = $1",
