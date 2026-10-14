@@ -17,6 +17,8 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 
 ::pgrx::pg_module_magic!();
 
+mod trigger;
+
 /// Errors returned to SQL as `ERROR`s.
 type Res<T> = Result<T, Box<dyn Error>>;
 
@@ -503,6 +505,7 @@ fn drop_model(name: &str) -> Res<()> {
     // The version row goes with the model; bumping first still row-locks it,
     // so a GUI save in flight (it holds `FOR UPDATE` on it) is serialized.
     bump_version(mid)?;
+    trigger::remove_triggers(&stored)?;
     Spi::run(&format!(
         "DROP SCHEMA IF EXISTS {} CASCADE",
         pm::quote_ident(&pm::result_schema(&stored))
