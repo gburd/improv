@@ -1,0 +1,20 @@
+[package]
+name = "improv_store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "improv_store"
+path = "src/lib.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+improv_storage_mentat = { path = "../storage_mentat" }
+improv_storage_pg = { path = "../storage_pg" }
+thiserror.workspace = true
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
