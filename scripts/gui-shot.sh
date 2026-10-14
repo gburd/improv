@@ -19,6 +19,9 @@ Environment:
   GUI_SHOT_GEOMETRY  screen and window size, WxH (default 1400x900)
   GUI_SHOT_TIMEOUT   seconds to wait for the window (default 60)
   GUI_SHOT_SETTLE    seconds to let the GUI repaint after sizing (default 3)
+  GUI_SHOT_DB        where to build the demo model (default: a temp Mentat
+                     file); e.g. postgres://u:p@127.0.0.1/db?model=demo to
+                     shoot a Postgres-hosted model (use a fresh model name)
 EOF
 }
 
@@ -70,7 +73,7 @@ cargo build --quiet -p improv_cli -p improv_gui
 bin=${CARGO_TARGET_DIR:-$root/target}/debug
 
 # Demo model: fixed ids, fixed values.
-db=$tmp/demo.db
+db=${GUI_SHOT_DB:-$tmp/demo.db}
 im() { "$bin/improv" "$@" >/dev/null; }
 im init "$db"
 im add-category "$db" 1 Time
