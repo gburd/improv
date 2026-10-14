@@ -132,11 +132,11 @@ Trade-off table goes in the user docs verbatim.
 | L4 | Benchmarks on kiwi: trigger vs logical vs recalc — writer latency, end-to-end freshness, throughput at 100k/1M cells | `docs/reviews/<date>-pg-improv-bench.md` |
 | L5 | Docs (mdBook page, README, man), CI job (pgrx test on pg17), CHANGELOG | gate green |
 
-**Status.** L3 landed on `work/pg-store` (through `fb95d75`): crates
+**Status.** L3 landed on `work/pg-store` (through `76656ce`): crates
 `improv_storage_pg` (`PgModelStore`, `CATALOG_SQL`) and `improv_store`
 (`Store::open`); CLI, TUI, GUI, server and scheduler all open through
-`Store::open`. v1 stores `measure.formula` as serde JSON of the `Formula` AST
-(the DSL printer lives in the GUI crate), and structure is written by plain
+`Store::open`. v1 writes `measure.formula` as serde JSON of the `Formula` AST
+(the DSL printer lives in the GUI crate) and reads JSON or `Target = expr` text, and structure is written by plain
 upserts, not `improv.save_structure`, until the extension ships it.
 
 ## 7. Safety rules (non-negotiable, from the security review)
