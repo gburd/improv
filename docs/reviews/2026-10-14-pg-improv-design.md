@@ -126,7 +126,7 @@ Trade-off table goes in the user docs verbatim.
 | Layer | Deliverable | Proof | Status |
 | --- | --- | --- | --- |
 | L0 | `crates/pg_improv` skeleton (pgrx 0.17, pg17), catalog SQL, `improv.create_model/define/bind_*`, `improv.recalc` (full recompute, backend thread) | `cargo pgrx test pg17`: define Revenue over a `sales` table, recalc, assert oracle values | done (`eff870a`) |
-| L1 | Triggers mode: `on_change` + statement transition tables, closure-restricted recompute | pg_test: UPDATE price in a txn → result row changes in the same txn; ROLLBACK leaves results unchanged | — |
+| L1 | Triggers mode: `on_change` + statement transition tables, closure-restricted recompute | pg_test: UPDATE price in a txn → result row changes in the same txn; ROLLBACK leaves results unchanged | done (`4e91590`) |
 | L2 | Logical mode: bgworker, slot/publication lifecycle, pgoutput decode, live Engine, atomic write+advance | pg_test (+ integration script): UPDATE commits → result updates within N ms; kill -9 worker → no loss/no dupes | — |
 | L3 | `improv_storage_pg` + `Store::open` seam; GUI/TUI/CLI open `postgres://` | test: CLI `list postgres://…` shows the model; GUI headless test loads it; screenshot via gui-shot against a pg model | done (`76656ce`) |
 | L4 | Benchmarks on kiwi: trigger vs logical vs recalc — writer latency, end-to-end freshness, throughput at 100k/1M cells | `docs/reviews/<date>-pg-improv-bench.md` | — |
@@ -153,6 +153,26 @@ mints items. Deferred: binding `agg` (L1); making the extension the only
 minter of bound items, since storage_pg also mints client-side on load
 today (L2); `improv.status`; `what_if`; non-number value types for bound
 or derived measures.
+
+**L1 status.** Landed on `work/pg-l1` (through `4e91590`): `crates/pg_improv/src/trigger.rs`
+(`set_sync_mode`, `on_change`, `recalc(model, measures)`, `what_if`) and
+`crates/pg_model/src/delta.rs` (the pure plan). Deviations from §4.2: the
+triggers are **statement-level** (one firing per statement, with transition
+tables), one per event (`improv_<model>_sync_{ins,upd,del,trn}`), because
+Postgres forbids transition tables on multi-event triggers. The recompute is
+"the changed inputs' dependents". It is restricted to the touched
+coordinates only when the dependency closure is element-wise (no
+aggregation, projection or external call). Otherwise it is a full recompute
+of those dependents. The restricted path still reads every bound row; the
+restriction only shrinks the engine input and the result diff. The
+`recalc(model, measures)` overload has no `DEFAULT NULL`, which would make
+`recalc('m')` ambiguous with L0's `recalc(text)`. Benchmark sketch
+(`docs/reviews/bench/bench-pg-trigger.sh`, 10k input cells): a 1000-row
+UPDATE costs 4.3 ms in manual mode, 32 ms in trigger mode (element-wise) and
+45 ms (with `SUM`), against a 34 ms full recalc. Deferred: reading only the
+touched coordinates' bound rows (a `WHERE dims IN (…)` load, the real L4
+win); restricting through aggregations (a reverse projection of the
+touched keys); binding `agg`.
 
 ## 7. Safety rules (non-negotiable, from the security review)
 

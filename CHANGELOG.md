@@ -17,6 +17,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.max_cells` (default 5M) caps the input size. The Postgres-free
   logic is the new workspace crate `improv_pg_model`. Install and quick
   start: `crates/pg_improv/README.md`.
+- **`pg_improv` layer L1: trigger-mode sync.**
+  `improv.set_sync_mode(model, mode)` installs (for `trigger`) or removes
+  statement-level `AFTER INSERT/UPDATE/DELETE/TRUNCATE` triggers with
+  transition tables on every bound relation. `improv.on_change` recomputes,
+  inside the writer's transaction, only the derived measures that depend on
+  the changed inputs. It restricts the recompute to the touched coordinates
+  when the chain is element-wise. Also new: `improv.recalc(model, measures
+  text[])` recomputes a measure subset and its dependents, and
+  `improv.what_if(model, edits jsonb)` returns the derived cells an in-memory
+  edit would change, without writing anything. README has the
+  trigger/logical/recalc trade-off table.
 
 - **Postgres-hosted models** (pg_improv layer L3). The CLI, TUI, GUI and
   server open `postgres://…?model=<name>` as well as a Mentat file, through
@@ -263,6 +274,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `pg_improv`: `recalc`, `define` and `bind_*` no longer fail with "SELECT
+  FOR UPDATE is not allowed in a non-volatile function" when they are the
+  first statement of a transaction.
 - **Broadcast binary ops with the larger operand on the left.** A formula
   such as `Net = Price[Time,Product] - Discount[Product]` (or `*`, `+`, `/`)
   evaluated to no cells. Only the mirrored `Discount - Price` worked. The

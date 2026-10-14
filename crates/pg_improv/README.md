@@ -5,9 +5,10 @@ Postgres data. You bind fact-table columns to Improv categories and measures,
 define derived measures in Improv's formula language, and read the results
 from ordinary tables (`improv_<model>.<measure>`).
 
-Status: **layer L0** (see `docs/reviews/2026-10-14-pg-improv-design.md` §6).
-Only the explicit `improv.recalc` is implemented; the trigger and logical
-sync modes come in L1 and L2.
+Status: **layers L0 and L1** (see `docs/reviews/2026-10-14-pg-improv-design.md`
+§6). The explicit `improv.recalc` and the `trigger` sync mode are
+implemented. The `logical` mode (the default `sync_mode`) comes in L2; until
+then a `logical` model updates only through `recalc`.
 
 ## Install
 
@@ -63,6 +64,9 @@ SELECT improv.recalc('plan');           -- 2: one revenue row, one total row
 | `bind_measure(model, measure, rel regclass, value_col text)` | Creates an input measure read from `rel.value_col`. Its dimensions are the categories already bound on `rel`, in category-id order. |
 | `define(model, definition text) → bigint` | Adds a derived measure from `Target = expr` and creates its result table. `SQL(...)` and `CALL(...)` are rejected. |
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
+| `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
+| `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once. `logical`/`manual`: removes them. Re-run it after binding a new relation. |
+| `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value float8)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. |
 | `drop_model(name)` | Drops the catalog rows and the result schema. |
 
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
@@ -77,6 +81,49 @@ Bound data rules: a NULL value means no cell, and a row with a NULL dimension
 is skipped. Two rows on the same coordinate are an ERROR (the `agg` option
 from the design is not implemented yet). Item ids for bound values are
 minted once, in lexical order, and are never reused.
+
+## Keeping results current: trigger vs logical vs recalc
+
+| | `trigger` (L1) | `logical` (L2, default) | `recalc` (explicit) |
+| --- | --- | --- | --- |
+| When results update | In the writer's statement, before it returns | After the commit, by a background worker (eventual) | When you call it, in your transaction |
+| Consistency | Transactional: commit both or neither; read-your-writes | Lags the commit | Transactional, in your snapshot |
+| Writer cost | Added latency and result-row locks on every write statement (batched per statement) | None | None until you call it |
+| Requirements | None | `wal_level=logical`, `REPLICA IDENTITY` (FULL or a PK) on bound tables | None |
+| Failure mode | A failing recompute fails the writer's statement | A stuck worker retains WAL (bounded by `max_slot_wal_keep_size`) | Errors are yours to handle |
+| Best for | Small, read-your-writes models | Busy tables, replicas | Bulk loads, migrations, `manual` mode |
+
+### Trigger mode
+
+`set_sync_mode(model, 'trigger')` installs four `AFTER … FOR EACH STATEMENT`
+triggers per bound relation (`improv_<model>_sync_{ins,upd,del,trn}`; Postgres
+allows transition tables only on single-event triggers). Each calls
+`improv.on_change(model)`. That function reads the touched dimension values
+from the statement's transition tables (`improv_old` ∪ `improv_new`) and
+recomputes only the derived measures that depend on the relation's bound
+measures. If every measure in that chain is element-wise (operators and
+scalar functions over references to measures with the same or fewer
+dimensions, so no `SUM … OVER`, `BY`, `EXCEPT` or `CALL`), it loads and
+rewrites only the touched coordinates. Otherwise it recomputes those measures
+in full. Unchanged result rows are never rewritten. `TRUNCATE` recomputes the
+dependents in full. New dimension values mint items, as `recalc` does.
+
+```sql
+SELECT improv.set_sync_mode('plan', 'trigger');
+BEGIN;
+UPDATE sales SET price = 11 WHERE product = 'Widget';
+SELECT value FROM improv_plan.revenue WHERE product = 'Widget';  -- already 1100, …
+ROLLBACK;                                                         -- results revert too
+
+SELECT * FROM improv.what_if('plan',
+  '[{"measure": "Price", "coord": {"Time": "Q1", "Product": "Widget"}, "value": 12}]');
+```
+
+Benchmark sketch, from `docs/reviews/bench/bench-pg-trigger.sh` (c7i.4xlarge,
+release build, 10 000 input cells, medians): a 1000-row UPDATE takes 4.3 ms in
+manual mode, 32 ms in trigger mode when the chain is element-wise, and 45 ms
+when it contains a `SUM`. A full `recalc` takes 34 ms. Loading the whole model
+dominates the cost, so trigger mode costs about one recalc per statement.
 
 ## Catalog
 
