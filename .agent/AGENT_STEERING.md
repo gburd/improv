@@ -37,6 +37,10 @@ DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
 opening `postgres://` models (C). Design and layer plan:
 `docs/reviews/2026-10-14-pg-improv-design.md`. Dev/bench on the `kiwi` EC2
 account (Debian 13).
+  - **L3 DONE (branch `work/pg-store`)**: `improv_storage_pg::PgModelStore` +
+    `improv_store::Store::open` seam; CLI/TUI/GUI/server open
+    `postgres://…?model=`. Catalog contract = `storage_pg::CATALOG_SQL`, to be
+    reconciled with the extension's catalog (L0).
 
 Then: horizontal scroller arrows and the rows-tile strip inline with the
 horizontal scroller (E2 remainder); a GUI/TUI "reload" action after a save
@@ -216,6 +220,8 @@ GUI later.
   value types. GUI/storage-free. **[Phase 0: DONE]**
 - `crates/storage_mentat` — persistence via the embedded Mentat. [Phase 0]
 - `crates/storage_sql` — SQL import/export (SQLite). [Phase 7]
+- `crates/storage_pg` — Postgres-hosted model store (`improv.*` catalog). [pg_improv L3]
+- `crates/store` — `Store::open`: Mentat path or `postgres://` URL. [pg_improv L3]
 - `crates/engine` — formula compiler (AST -> typed -> plan) + DD integration. [Phase 1]
 - `crates/cli` — headless model runner / import-export. [Phase 2]
 - `crates/tui` — VisiCalc-like terminal UI. [Phase 2]

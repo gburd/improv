@@ -6,7 +6,7 @@
 # Usage: scripts/coverage.sh [--html] [MIN_PERCENT]
 #   needs: rustup nightly with llvm-tools-preview, cargo-llvm-cov.
 #   optional: IMPROV_TEST_PG="host=... user=... password=... dbname=..." to
-#   include the live Postgres tests (storage_sql/pg.rs).
+#   include the live Postgres tests (storage_sql, storage_pg, store, cli, gui).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

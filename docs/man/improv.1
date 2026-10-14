@@ -10,7 +10,15 @@ improv \- headless multidimensional spreadsheet model CLI
 .B improv
 is the command-line front-end to the Improv multidimensional spreadsheet.
 It operates on a model store backed by an embedded (SQLite) Mentat datom
-database. Each invocation opens the store, mutates the loaded model, and saves
+database, or, when
+.I <db>
+is a
+.BI postgres:// ...?model= name
+(or
+.BR postgresql:// )
+URL, on that model in a Postgres database's
+.B improv
+catalog. Each invocation opens the store, mutates the loaded model, and saves
 it back.
 .PP
 A model is built from

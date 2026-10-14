@@ -6,6 +6,16 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Postgres-hosted models** (pg_improv layer L3). The CLI, TUI, GUI and
+  server open `postgres://…?model=<name>` as well as a Mentat file, through
+  the new `improv_store::Store` seam. The new `improv_storage_pg::PgModelStore`
+  keeps the model in the `improv.*` catalog: bound input measures read and
+  write their fact table, unbound cells live in `improv.cell`, and
+  `improv.model_version` drives the existing reload-and-retry conflict check.
+  `scripts/gui-shot.sh` takes `GUI_SHOT_DB` to capture such a model.
+
 ### Changed
 
 - **Mentat 0.14 → 1.11.1** (pin `6fc2bc7f`, Mentat `master` at v1.11.1).

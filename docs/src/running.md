@@ -61,6 +61,27 @@ curl -s -H 'Authorization: Bearer secret' -X POST localhost:3000/measures/102/ev
   -H 'content-type: application/json' -d '{"edits":[]}'
 ```
 
+## Open a Postgres-hosted model
+
+Every front end also accepts a Postgres URL naming a model instead of a file:
+
+```sh
+improv list      'postgres://me:pw@127.0.0.1/sales?model=plan'
+improv-tui       'postgres://me:pw@127.0.0.1/sales?model=plan'
+improv-gui       'postgres://me:pw@127.0.0.1/sales?model=plan'
+improv-server    'postgres://me:pw@127.0.0.1/sales?model=plan'
+```
+
+`?model=` is required; the other parameters go to libpq as usual. The model
+lives in the `improv.*` catalog (created on first open when the `pg_improv`
+extension isn't installed). Input measures bound to a table
+(`improv.binding`) are read from it, and their edited cells are written back
+to that table with `UPDATE`/`INSERT` (values only, no DDL). Unbound cells go
+to `improv.cell`. As with a file store, a save fails with "reload and retry"
+when another writer changed the model after you loaded it. There is no TLS
+in this build, so a non-loopback host needs an explicit `sslmode=disable`
+(use an SSH tunnel to a loopback port instead).
+
 ## Security defaults (and how to relax them)
 
 Everything stored in a model is treated as untrusted: a shared model can
@@ -90,7 +111,7 @@ Live Postgres tests run when `IMPROV_TEST_PG` is set, e.g.
 
 ```sh
 IMPROV_TEST_PG="host=127.0.0.1 user=improv password=improv dbname=improv_test" \
-  cargo test -p improv_storage_sql
+  cargo test -p improv_storage_sql -p improv_storage_pg -p improv_store
 ```
 
 The sandbox tests need `python3` and `bubblewrap`; without them they skip
