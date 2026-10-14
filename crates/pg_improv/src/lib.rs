@@ -124,8 +124,10 @@ CREATE TABLE improv.category_binding (
 /// The id and stored name of model `name`, row-locked so concurrent
 /// structural changes and recalcs of one model serialize.
 fn lock_model(name: &str) -> Res<(i64, String)> {
-    Spi::connect(|c| {
-        let t = c.select(
+    // `update`, not `select`: pgrx runs a `select` read-only until the
+    // transaction has an xid, and Postgres rejects a read-only FOR UPDATE.
+    Spi::connect_mut(|c| {
+        let t = c.update(
             "SELECT id, name FROM improv.model WHERE name = $1 FOR UPDATE",
             None,
             &[name.into()],

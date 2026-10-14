@@ -540,6 +540,14 @@ mod tests {
             .unwrap()
     }
 
+    /// Every entry point locks its model first; that must work as the first
+    /// statement of a transaction, before anything has assigned an xid.
+    #[pg_test]
+    fn lock_model_works_before_any_write() {
+        let e = crate::lock_model("nope").unwrap_err();
+        assert!(e.to_string().contains("does not exist"), "{e}");
+    }
+
     #[pg_test]
     fn set_sync_mode_installs_and_removes_triggers() {
         setup("trigger");
