@@ -15,6 +15,7 @@ members = [
     "crates/server",
     "crates/gui",
     "crates/extfn",
+    "crates/pg_model",
 ]
 
 [workspace.package]

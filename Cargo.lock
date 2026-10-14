@@ -2647,6 +2647,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_pg_model"
+version = "0.7.0"
+dependencies = [
+ "improv_core_model",
+ "improv_data_source",
+ "improv_engine",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "improv_server"
 version = "0.7.0"
 dependencies = [
