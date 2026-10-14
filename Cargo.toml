@@ -17,6 +17,8 @@ members = [
     "crates/extfn",
     "crates/pg_model",
 ]
+# pg_improv is its own workspace (pgrx needs pg_config + libclang); see its Cargo.toml.
+exclude = ["crates/pg_improv"]
 
 [workspace.package]
 version = "0.7.0"

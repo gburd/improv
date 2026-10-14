@@ -1,0 +1,7 @@
+comment = 'Improv multidimensional models over Postgres data'
+default_version = '@CARGO_VERSION@'
+module_pathname = '$libdir/pg_improv'
+relocatable = false
+schema = improv
+superuser = true
+trusted = false
