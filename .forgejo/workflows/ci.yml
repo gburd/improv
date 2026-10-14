@@ -40,6 +40,7 @@ jobs:
           -p improv_storage_csv
           -p improv_engine
           -p improv_extfn
+          -p improv_pg_model
           -p improv_nl_formula
           -p improv_cli
           -p improv_tui
@@ -56,6 +57,7 @@ jobs:
           -p improv_storage_csv
           -p improv_engine
           -p improv_extfn
+          -p improv_pg_model
           -p improv_nl_formula
           -p improv_cli
           -p improv_tui

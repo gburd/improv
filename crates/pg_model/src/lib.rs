@@ -17,6 +17,8 @@
 //! `measure.value_type` is `number | boolean | text | datetime | enum`, a
 //! measure's `categories` keep their stored order, and `cell.coord` is
 //! `{"<category id>": <item id>}`.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+#![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
