@@ -32,6 +32,12 @@ use improv_data_source::ItemInterner;
 use improv_engine::compiler::{infer, CompileContext};
 use improv_engine::{CellValue, CoordKey};
 
+mod delta;
+pub use delta::{
+    apply_edits, cell_changes, coord_json, dependents, measure_ids, plan, quote_literal,
+    sync_trigger_name, touched_sql, Plan, Scope,
+};
+
 /// Longest accepted model/category/measure name. Postgres truncates
 /// identifiers at 63 bytes and the result schema is `improv_<model>`.
 pub const MAX_NAME_LEN: usize = 56;
