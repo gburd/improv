@@ -537,7 +537,13 @@ impl PgModelStore {
                 .map(|(_, c)| format!("{}::text", ident(c)))
                 .collect();
             cols.push(format!("to_jsonb({})::text", ident(&b.value_col)));
-            let sql = format!("SELECT {} FROM {}", cols.join(", "), b.table);
+            // Lexical by dimension values (design §8), so minted item ids
+            // are the same on every load.
+            let order: Vec<String> = (1..=b.dims.len()).map(|i| i.to_string()).collect();
+            let mut sql = format!("SELECT {} FROM {}", cols.join(", "), b.table);
+            if !order.is_empty() {
+                sql += &format!(" ORDER BY {}", order.join(", "));
+            }
             'row: for r in tx.query(&sql, &[])? {
                 // NULL value: no cell. NULL dimension: the row is ignored.
                 let Some(v) = r.get::<_, Option<&str>>(b.dims.len()) else {

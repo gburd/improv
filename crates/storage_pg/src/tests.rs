@@ -292,8 +292,14 @@ fn bound_measures_read_and_write_the_fact_table() {
             .unwrap()
             .id
     };
-    // Widget kept its id; Q1, Q2, Gadget were minted from column values.
+    // Widget kept its id; Q1, Q2, Gadget were minted from column values, in
+    // row order (dims sorted by category name: product, then quarter) after
+    // the highest existing id.
     assert_eq!(item(&m, P, "Widget"), ItemId(20));
+    assert_eq!(
+        [item(&m, P, "Gadget"), item(&m, T, "Q1"), item(&m, T, "Q2")],
+        [ItemId(21), ItemId(22), ItemId(23)]
+    );
     let (q1, q2, w, g) = (
         item(&m, T, "Q1"),
         item(&m, T, "Q2"),
