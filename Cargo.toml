@@ -5,6 +5,7 @@ members = [
     "crates/data_source",
     "crates/storage_mentat",
     "crates/storage_sql",
+    "crates/storage_pg",
     "crates/storage_csv",
     "crates/engine",
     "crates/cli",

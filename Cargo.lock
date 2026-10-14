@@ -2692,6 +2692,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_storage_pg"
+version = "0.7.0"
+dependencies = [
+ "chrono",
+ "improv_core_model",
+ "postgres",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "improv_storage_sql"
 version = "0.7.0"
 dependencies = [

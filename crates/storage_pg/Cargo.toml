@@ -1,0 +1,23 @@
+[package]
+name = "improv_storage_pg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "improv_storage_pg"
+path = "src/lib.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+chrono.workspace = true
+# Same sync client (and version) storage_sql already uses.
+postgres = "0.19"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
