@@ -296,6 +296,18 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
                 .execute()
         });
         for (mid, name) in models {
+            // Slot creation needs a transaction that has not written (and a
+            // failed attempt leaves a half-made slot with no plugin), so it
+            // gets its own transaction, before the model's poll.
+            let created = BackgroundWorker::transaction(|| {
+                PgTryBuilder::new(|| ensure_slot(&name).map_err(|e| e.to_string()))
+                    .catch_others(|e| Err(format!("{e:?}")))
+                    .execute()
+            });
+            if let Err(e) = created {
+                log!("pg_improv sync: model {name}: creating its slot: {e}");
+                continue;
+            }
             let r = BackgroundWorker::transaction(|| {
                 PgTryBuilder::new(|| tick(mid, &name).map_err(|e| e.to_string()))
                     .catch_others(|e| Err(format!("{e:?}")))
@@ -322,6 +334,13 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         });
     }
     log!("pg_improv sync worker stopping");
+    // A bgworker that exits with status 0 is never restarted. Exit 1 so a
+    // `pg_terminate_backend` (or SIGTERM) brings the worker back after
+    // `bgw_restart_time`; the slot position makes that restart lossless.
+    // During a server shutdown the postmaster starts no workers, so this is
+    // harmless then.
+    // SAFETY: `proc_exit` runs the backend's exit callbacks and never returns.
+    unsafe { pg_sys::proc_exit(1) };
 }
 
 /// Whether pg_improv's L2 catalog exists in the worker's database.
@@ -350,23 +369,66 @@ fn list_models() -> Res<Vec<(i64, String)>> {
 }
 
 /// One poll of one model, inside the caller's (worker) transaction.
-fn tick(mid: i64, name: &str) -> Res<()> {
+/// Make sure model `name`'s slot exists with the `pgoutput` plugin. Runs in
+/// its own worker transaction, before anything in it writes (Postgres
+/// refuses to create a slot otherwise). A slot left without a plugin by an
+/// earlier failed creation is dropped and recreated. Returns whether it
+/// created the slot (the caller then catches up with a full recompute).
+fn ensure_slot(name: &str) -> Res<bool> {
+    // Read-only SPI only (`Spi::connect` + `select`): pgrx's `get_one*` and
+    // `run*` helpers go through `connect_mut`, which assigns a transaction
+    // id, and Postgres refuses to create a slot in a transaction that has
+    // one ("…that has performed writes").
     let slot = pm::slot_name(name)?;
-    let slot_exists = Spi::get_one_with_args::<bool>(
-        "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
-        &[slot.clone().into()],
-    )? == Some(true);
-    if !slot_exists {
-        // A fresh transaction that has written nothing yet: slot creation is
-        // allowed here (not in bind_measure's, which may have written, and
-        // whose PgRelation argument keeps the table open against ALTER).
-        // The slot starts at the current WAL position, so recompute once to
-        // catch up with everything before it.
-        Spi::run_with_args(
-            "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
+    let plugin: Option<String> = Spi::connect(|c| -> Res<_> {
+        let t = c.select(
+            "SELECT plugin::text FROM pg_replication_slots WHERE slot_name = $1",
+            None,
             &[slot.clone().into()],
         )?;
+        Ok(if t.is_empty() {
+            None
+        } else {
+            t.first().get::<String>(1)?
+        })
+    })?;
+    match plugin.as_deref() {
+        Some("pgoutput") => return Ok(false),
+        Some(_) => {
+            Spi::connect(|c| -> Res<()> {
+                c.select(
+                    "SELECT pg_drop_replication_slot($1)",
+                    None,
+                    &[slot.clone().into()],
+                )?;
+                Ok(())
+            })?;
+        }
+        None => {}
+    }
+    Spi::connect(|c| -> Res<()> {
+        c.select(
+            "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
+            None,
+            &[slot.into()],
+        )?;
+        Ok(())
+    })?;
+    Ok(true)
+}
+
+fn tick(mid: i64, name: &str) -> Res<()> {
+    let slot = pm::slot_name(name)?;
+    // A brand-new slot starts at the current WAL position: everything
+    // committed before it is caught up by one full recompute.
+    let caught_up = Spi::get_one_with_args::<bool>(
+        "SELECT confirmed_lsn IS NOT NULL OR last_applied_at IS NOT NULL \
+         FROM improv.sync_state WHERE model_id = $1",
+        &[mid.into()],
+    )? == Some(true);
+    if !caught_up {
         ensure_replica_identity(mid)?;
+        let _ = lock_model(name)?;
         let changed = super::trigger::recompute_all(mid, name)?;
         record(mid, changed, None)?;
         return Ok(());
