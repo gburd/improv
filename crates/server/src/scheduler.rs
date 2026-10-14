@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use improv_core_model::{MeasureId, RefreshPolicy};
-use improv_storage_mentat::ModelStore;
+use improv_store::Store;
 
 use crate::AppState;
 
@@ -138,7 +138,7 @@ async fn tick_once(
     let refreshed = tokio::task::spawn_blocking({
         let last_run_snapshot = last_run.clone();
         move || -> Result<Vec<MeasureId>, String> {
-            let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
+            let mut store = Store::open(&path).map_err(|e| e.to_string())?;
             let mut model = store.load_model().map_err(|e| e.to_string())?;
 
             let policies: HashMap<MeasureId, RefreshPolicy> = model
@@ -224,7 +224,7 @@ mod tests {
         CategoryId, ExternalFn, ItemId, Language, Measure, MeasureKind, Model, Name, Value,
         ValueType,
     };
-    use improv_storage_mentat::ModelStore;
+    use improv_store::Store;
 
     fn python_available() -> bool {
         // python3 must run through the host sandbox: Restricted fails closed
@@ -321,7 +321,7 @@ mod tests {
             return;
         }
         let path = temp_db_path("due");
-        let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
+        let mut store = Store::open(path.to_str().unwrap()).unwrap();
         store
             .save_model(&call_model(RefreshPolicy::Interval { secs: 0 }))
             .unwrap();
@@ -340,7 +340,7 @@ mod tests {
         let mut refreshed_val = None;
         for _ in 0..50 {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            let mut probe = ModelStore::open(path.to_str().unwrap()).unwrap();
+            let mut probe = Store::open(path.to_str().unwrap()).unwrap();
             let model = probe.load_model().unwrap();
             let coord = improv_core_model::Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);
             if let Some(v) = model.input(MeasureId(200), &coord) {
@@ -373,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn no_due_measures_is_a_noop() {
         let path = temp_db_path("noop");
-        let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
+        let mut store = Store::open(path.to_str().unwrap()).unwrap();
         store
             .save_model(&call_model(RefreshPolicy::Manual))
             .unwrap();
@@ -390,7 +390,7 @@ mod tests {
             .expect("a no-op tick must not error");
         assert!(refreshed.is_empty());
 
-        let tx_after = ModelStore::open(path.to_str().unwrap())
+        let tx_after = Store::open(path.to_str().unwrap())
             .unwrap()
             .tx_high_water()
             .unwrap();
@@ -409,7 +409,7 @@ mod tests {
         let mut model = call_model(RefreshPolicy::Interval { secs: 0 });
         // Point the CALL measure at a function that isn't registered.
         model.external_calls.get_mut(&MeasureId(200)).unwrap().func = "nope".into();
-        let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
+        let mut store = Store::open(path.to_str().unwrap()).unwrap();
         store.save_model(&model).unwrap();
 
         let state = app_state(path.to_str().unwrap());
@@ -433,7 +433,7 @@ mod tests {
     #[tokio::test]
     async fn unlisted_function_is_skipped() {
         let path = temp_db_path("unlisted");
-        let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
+        let mut store = Store::open(path.to_str().unwrap()).unwrap();
         store
             .save_model(&call_model(RefreshPolicy::Interval { secs: 0 }))
             .unwrap();
@@ -443,7 +443,7 @@ mod tests {
             .await
             .unwrap();
         assert!(refreshed.is_empty(), "unlisted function must be skipped");
-        let model = ModelStore::open(path.to_str().unwrap())
+        let model = Store::open(path.to_str().unwrap())
             .unwrap()
             .load_model()
             .unwrap();

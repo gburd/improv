@@ -103,10 +103,7 @@ fn model(name: &str) -> (PathBuf, String) {
 }
 
 fn load(db: &str) -> improv_core_model::Model {
-    improv_storage_mentat::ModelStore::open(db)
-        .unwrap()
-        .load_model()
-        .unwrap()
+    improv_store::Store::open(db).unwrap().load_model().unwrap()
 }
 
 #[test]
@@ -253,7 +250,7 @@ fn show_prints_one_measure_and_only_its_cells() {
 fn show_prints_a_measure_description() {
     let (_dir, db) = model("show-desc");
     {
-        let mut store = improv_storage_mentat::ModelStore::open(&db).unwrap();
+        let mut store = improv_store::Store::open(&db).unwrap();
         let mut m = store.load_model().unwrap();
         m.measures
             .get_mut(&improv_core_model::MeasureId(100))

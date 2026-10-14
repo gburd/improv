@@ -24,7 +24,7 @@ use improv_core_model::{
 use improv_engine::session::{Engine, Snapshot};
 use improv_engine::{encode_coord, CellValue, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
-use improv_storage_mentat::ModelStore;
+use improv_store::Store;
 
 use crate::csv_wizard::{self, ExportForm, ImportForm};
 use crate::menu::{self, Command};
@@ -867,7 +867,7 @@ impl ImprovApp {
         let (model, loaded_tx) = if db.is_empty() {
             (Model::new(), None)
         } else {
-            let mut store = ModelStore::open(db).map_err(|e| e.to_string())?;
+            let mut store = Store::open(db).map_err(|e| e.to_string())?;
             let model = store.load_model().map_err(|e| e.to_string())?;
             (model, store.loaded_tx())
         };
@@ -1990,7 +1990,7 @@ impl ImprovApp {
         if self.db.is_empty() {
             return Ok(());
         }
-        let r = ModelStore::open(&self.db)
+        let r = Store::open(&self.db)
             .and_then(|mut s| {
                 s.set_loaded_tx(self.loaded_tx);
                 s.save_model(&self.model)?;
@@ -7138,7 +7138,7 @@ mod tests {
         }
         let _cleanup = Cleanup(db.clone());
 
-        ModelStore::open(&db)
+        Store::open(&db)
             .and_then(|mut s| s.save_model(&grid_2x2_model()))
             .expect("seed the store");
         let mut app = ImprovApp::load(&db).expect("load");
@@ -7148,7 +7148,7 @@ mod tests {
             .expect("edit");
         app.undo().expect("undo");
 
-        let reloaded = ModelStore::open(&db)
+        let reloaded = Store::open(&db)
             .and_then(|mut s| s.load_model())
             .expect("reload");
         assert_eq!(
@@ -8159,7 +8159,7 @@ mod tests {
         }
         let _cleanup = Cleanup(db.clone());
 
-        ModelStore::open(&db)
+        Store::open(&db)
             .and_then(|mut s| s.save_model(&four_formula_model()))
             .expect("seed the store");
         let mut app = ImprovApp::load(&db).expect("load");
@@ -8602,7 +8602,7 @@ mod tests {
     fn save_reload_round_trips_a_multi_matrix_canvas() {
         let db = temp_db("multi_matrix");
         let _cleanup = Cleanup(db.clone());
-        ModelStore::open(&db)
+        Store::open(&db)
             .and_then(|mut s| s.save_model(&sales_3d_model()))
             .expect("seed the store");
 
@@ -10469,7 +10469,7 @@ mod tests {
     fn ctrl_s_saves_the_model_unless_a_field_has_focus() {
         let db = temp_db("ctrl_s");
         let _cleanup = Cleanup(db.clone());
-        ModelStore::open(&db)
+        Store::open(&db)
             .and_then(|mut s| s.save_model(&grid_2x2_model()))
             .expect("seed the store");
         let mut app = ImprovApp::load(&db).expect("load");
@@ -10513,7 +10513,7 @@ mod tests {
     fn ctrl_s_auto_repeat_does_not_save_again() {
         let db = temp_db("ctrl_s_repeat");
         let _cleanup = Cleanup(db.clone());
-        ModelStore::open(&db)
+        Store::open(&db)
             .and_then(|mut s| s.save_model(&grid_2x2_model()))
             .expect("seed the store");
         let mut app = ImprovApp::load(&db).expect("load");

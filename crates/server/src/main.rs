@@ -30,7 +30,7 @@ use improv_engine::dataflow::evaluate;
 use improv_engine::session::{Edit, Engine};
 use improv_engine::{decode_coord, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
-use improv_storage_mentat::{ModelStore, StoreError};
+use improv_store::{Store, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tower::ServiceBuilder;
@@ -396,7 +396,7 @@ async fn load_model(state: &Arc<AppState>) -> Result<Arc<Model>, ApiError> {
     state.loads.fetch_add(1, Ordering::Relaxed);
     let path = state.db_path.clone();
     let (model, tx) = tokio::task::spawn_blocking(move || {
-        let mut store = ModelStore::open(&path).map_err(|e| e.to_string())?;
+        let mut store = Store::open(&path).map_err(|e| e.to_string())?;
         let model = store.load_model().map_err(|e| e.to_string())?;
         Ok((model, store.loaded_tx()))
     })
@@ -415,7 +415,7 @@ async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, A
     let path = state.db_path.clone();
     let base = *state.loaded_tx.lock().unwrap();
     let saved = tokio::task::spawn_blocking(move || {
-        let mut store = ModelStore::open(&path)?;
+        let mut store = Store::open(&path)?;
         store.set_loaded_tx(base);
         store.save_model(&model)?;
         Ok((model, store.loaded_tx()))
@@ -902,7 +902,7 @@ mod tests {
                 .as_nanos()
         ));
         let _ = std::fs::remove_file(&path);
-        let mut store = ModelStore::open(path.to_str().unwrap()).unwrap();
+        let mut store = Store::open(path.to_str().unwrap()).unwrap();
         store.save_model(&revenue_model()).unwrap();
         let state = Arc::new(AppState::new(
             path.to_str().unwrap().to_string(),
@@ -1139,7 +1139,7 @@ mod tests {
             StatusCode::OK
         );
 
-        let mut other = ModelStore::open(p.to_str().unwrap()).unwrap();
+        let mut other = Store::open(p.to_str().unwrap()).unwrap();
         let mut m = other.load_model().unwrap();
         let c = Coordinate::from_pairs([(improv_core_model::CategoryId(2), ItemId(21))]);
         m.set_input(
@@ -1164,7 +1164,7 @@ mod tests {
             .unwrap()
             .contains("reload"));
         assert_eq!(app.oneshot(post()).await.unwrap().status(), StatusCode::OK);
-        let after = ModelStore::open(p.to_str().unwrap())
+        let after = Store::open(p.to_str().unwrap())
             .unwrap()
             .load_model()
             .unwrap();
@@ -1804,7 +1804,7 @@ mod tests {
             Value::Number(1.0),
         );
         let (app, path) = seeded_app();
-        ModelStore::open(path.to_str().unwrap())
+        Store::open(path.to_str().unwrap())
             .unwrap()
             .save_model(&m)
             .unwrap();

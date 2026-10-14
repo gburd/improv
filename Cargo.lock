@@ -2569,8 +2569,8 @@ dependencies = [
  "improv_core_model",
  "improv_engine",
  "improv_storage_csv",
- "improv_storage_mentat",
  "improv_storage_sql",
+ "improv_store",
  "rusqlite",
  "serde_json",
  "thiserror 2.0.20",
@@ -2633,7 +2633,7 @@ dependencies = [
  "improv_engine",
  "improv_nl_formula",
  "improv_storage_csv",
- "improv_storage_mentat",
+ "improv_store",
  "thiserror 2.0.20",
 ]
 
@@ -2657,7 +2657,7 @@ dependencies = [
  "improv_engine",
  "improv_extfn",
  "improv_nl_formula",
- "improv_storage_mentat",
+ "improv_store",
  "serde",
  "serde_json",
  "sha2",
@@ -2736,7 +2736,7 @@ dependencies = [
  "improv_engine",
  "improv_nl_formula",
  "improv_storage_csv",
- "improv_storage_mentat",
+ "improv_store",
  "ratatui",
  "thiserror 2.0.20",
 ]

@@ -1,6 +1,7 @@
 //! Improv CLI (Phase 2, headless subset).
 //!
-//! A thin front-end over `improv_storage_mentat::ModelStore`. Each subcommand
+//! A thin front-end over `improv_store::Store` (a Mentat file or a
+//! `postgres://…?model=` Postgres model). Each subcommand
 //! opens the store, mutates the loaded `Model`, and saves it back.
 //!
 //! Coordinates (`--at`) resolve category *names* and item *names* to ids via
@@ -15,10 +16,10 @@ use improv_core_model::{
     Measure, MeasureId, MeasureKind, Model, Name, RefreshPolicy, Scenario, ScenarioId, Value,
     ValueType, View, ViewId,
 };
-use improv_storage_mentat::ModelStore;
 use improv_storage_sql::{
     add_sql_measure, export_measure, refresh_sql_measure, DimensionMapping, ImportSpec,
 };
+use improv_store::Store;
 use std::collections::HashMap;
 
 const USAGE: &str = "\
@@ -196,8 +197,8 @@ fn run(args: &[String]) -> Result<(), String> {
 
 // --- helpers ---
 
-fn open(db: &str) -> Result<ModelStore, String> {
-    ModelStore::open(db).map_err(|e| e.to_string())
+fn open(db: &str) -> Result<Store, String> {
+    Store::open(db).map_err(|e| e.to_string())
 }
 
 fn arg<'a>(rest: &'a [String], i: usize, name: &str) -> Result<&'a str, String> {
@@ -1532,7 +1533,7 @@ mod tests {
         run(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
         run(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
 
-        let mut store = ModelStore::open(&db).unwrap();
+        let mut store = Store::open(&db).unwrap();
         let model = store.load_model().unwrap();
 
         assert!(model.category_by_name("Product").is_some());
@@ -1562,7 +1563,7 @@ mod tests {
         run(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
         run(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
         run(&s(&["init", &db])).unwrap();
-        let model = ModelStore::open(&db).unwrap().load_model().unwrap();
+        let model = Store::open(&db).unwrap().load_model().unwrap();
         assert_eq!(model.inputs.len(), 1);
     }
 
@@ -1669,7 +1670,7 @@ mod tests {
         .unwrap();
 
         // The derived measure exists, is derived, and inferred its categories.
-        let mut store = ModelStore::open(&db).unwrap();
+        let mut store = Store::open(&db).unwrap();
         let model = store.load_model().unwrap();
         let rev = model.measure_by_name("Revenue").unwrap();
         assert!(rev.is_derived());
@@ -1716,7 +1717,7 @@ mod tests {
         ]))
         .unwrap();
 
-        let mut store = ModelStore::open(&db).unwrap();
+        let mut store = Store::open(&db).unwrap();
         let model = store.load_model().unwrap();
         let m = model.measure_by_name("Revenue").unwrap();
         assert!(m.is_input());
@@ -1993,7 +1994,7 @@ mod tests {
     }
 
     fn cell(db: &str, mid: u32, cat: u32, item: u32) -> Option<Value> {
-        let model = ModelStore::open(db).unwrap().load_model().unwrap();
+        let model = Store::open(db).unwrap().load_model().unwrap();
         let coord = Coordinate::from_pairs([(CategoryId(cat), ItemId(item))]);
         model.input(MeasureId(mid), &coord).cloned()
     }
@@ -2036,7 +2037,7 @@ mod tests {
             "on-load",
         ]))
         .unwrap();
-        let model = ModelStore::open(db).unwrap().load_model().unwrap();
+        let model = Store::open(db).unwrap().load_model().unwrap();
         model.items.values().find(|i| i.name.0 == "A").unwrap().id.0
     }
 

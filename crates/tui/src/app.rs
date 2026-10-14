@@ -998,7 +998,7 @@ impl App {
         let view = self.build_view(id, name);
         self.model.add_view(view);
         if let Some(path) = path {
-            match improv_storage_mentat::ModelStore::open(path).and_then(|mut s| {
+            match improv_store::Store::open(path).and_then(|mut s| {
                 s.set_loaded_tx(self.loaded_tx);
                 s.save_model(&self.model)?;
                 self.loaded_tx = s.loaded_tx();

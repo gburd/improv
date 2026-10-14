@@ -23,7 +23,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use improv_storage_mentat::ModelStore;
+use improv_store::Store;
 use ratatui::{
     backend::{Backend, CrosstermBackend},
     Terminal,
@@ -47,7 +47,7 @@ fn main() {
 
 /// Open the model at `path` and build the app state.
 fn load(path: &str) -> Result<App, String> {
-    let (model, loaded_tx) = ModelStore::open(path)
+    let (model, loaded_tx) = Store::open(path)
         .and_then(|mut s| Ok((s.load_model()?, s.loaded_tx())))
         .map_err(|e| format!("cannot open model '{path}': {e}"))?;
     let mut app = App::new(model)?;
@@ -58,7 +58,7 @@ fn load(path: &str) -> Result<App, String> {
 /// Autosave the (possibly edited) model back to `path` on clean exit; edits
 /// are held in memory during the session.
 fn save(app: &App, path: &str) -> Result<(), String> {
-    ModelStore::open(path)
+    Store::open(path)
         .and_then(|mut s| {
             s.set_loaded_tx(app.loaded_tx);
             s.save_model(&app.model)
