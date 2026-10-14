@@ -538,6 +538,10 @@ fn value_codecs() {
         Value::Text("soon".into())
     );
     assert!(json_to_value(ValueType::Enum, &j!(-1)).is_err());
+    assert!(json_to_value(ValueType::Enum, &j!(5_000_000_000u64)).is_err());
+    assert_eq!(value_to_json(&Value::Number(3.0)).unwrap(), j!(3));
+    assert_eq!(value_to_json(&Value::Number(1e20)).unwrap(), j!(1e20));
+    assert_eq!(value_to_json(&Value::Number(0.5)).unwrap(), j!(0.5));
     assert!(json_to_value(ValueType::Boolean, &j!(1)).is_err());
     assert_eq!(
         StoreError::Mentat("m".into()).to_string(),
