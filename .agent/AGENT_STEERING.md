@@ -32,7 +32,13 @@ DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
   ≈ 96% / 95%), `scripts/coverage.sh` + CI `coverage` job. Run guide:
   `docs/src/running.md`.
 
-NEXT: horizontal scroller arrows and the rows-tile strip inline with the
+**NEXT (active): pg_improv** — Improv models over Postgres data, live
+(B2: logical-decoding default, triggers, explicit `improv.recalc`) + the GUI
+opening `postgres://` models (C). Design and layer plan:
+`docs/reviews/2026-10-14-pg-improv-design.md`. Dev/bench on the `kiwi` EC2
+account (Debian 13).
+
+Then: horizontal scroller arrows and the rows-tile strip inline with the
 horizontal scroller (E2 remainder); a GUI/TUI "reload" action after a save
 conflict; P5 per-frame caches if profiling warrants; cut v0.8.0.
 
