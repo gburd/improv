@@ -1054,3 +1054,62 @@ fn every_mutating_command_reports_a_store_save_failure() {
     assert_eq!(after.inputs, before.inputs);
     assert!(after.views.is_empty() && after.scenarios.is_empty());
 }
+
+/// `IMPROV_TEST_PG` (a URL or a libpq `key=value` DSN) as a `postgres://`
+/// URL for a fresh model, or `None` (test skipped) when it is unset.
+fn pg_model_url(tag: &str) -> Option<String> {
+    let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+        println!("skipped: IMPROV_TEST_PG not set");
+        return None;
+    };
+    let base = if dsn.starts_with("postgres") {
+        dsn
+    } else {
+        let kv: std::collections::HashMap<_, _> = dsn
+            .split_whitespace()
+            .filter_map(|p| p.split_once('='))
+            .collect();
+        let get = |k| kv.get(k).copied().unwrap_or_default();
+        format!(
+            "postgres://{}:{}@{}/{}",
+            get("user"),
+            get("password"),
+            get("host"),
+            get("dbname")
+        )
+    };
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    Some(format!("{base}?model=cli_{tag}_{nonce}"))
+}
+
+/// The CLI builds and lists a model hosted in Postgres, through the same
+/// subcommands it uses for a Mentat file.
+#[test]
+fn list_a_postgres_model() {
+    let Some(url) = pg_model_url("list") else {
+        return;
+    };
+    let d = url.as_str();
+    ok(&["init", d]);
+    ok(&["add-category", d, "1", "Time"]);
+    ok(&["add-item", d, "10", "1", "Q1"]);
+    ok(&["add-measure", d, "100", "Price", "number", "input", "Time"]);
+    ok(&["set", d, "100", "4", "--at", "Time=Q1"]);
+    ok(&["add-derived", d, "102", "Double", "Price * 2"]);
+    ok(&["save-view", d, "1", "Prices", "Price", "--rows", "Time"]);
+    let out = ok(&["list", d]);
+    for want in [
+        "  1 Time",
+        "  10 Q1 (category 1)",
+        "  100 Price [input] Number",
+        "  102 Double [derived] Number",
+        "  1 Prices (measure Price, 1 matrices)",
+        "  100::{Time=Q1} = 4",
+    ] {
+        assert!(out.contains(want), "missing {want:?} in:\n{out}");
+    }
+    assert!(err(&["list", "postgres://u@localhost/d"]).contains("?model="));
+}
