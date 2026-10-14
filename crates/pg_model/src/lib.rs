@@ -540,14 +540,15 @@ pub fn dim_columns(model: &Model, measure: MeasureId) -> Result<Vec<String>> {
         .collect()
 }
 
-/// `CREATE TABLE` for a derived measure's result table.
+/// `CREATE TABLE IF NOT EXISTS` for a derived measure's result table (a
+/// measure defined through the GUI gets its table on the first recalc).
 pub fn create_table_sql(table: &str, dim_cols: &[String]) -> String {
     let cols: Vec<String> = dim_cols
         .iter()
         .map(|c| format!("{} text NOT NULL", quote_ident(c)))
         .collect();
     format!(
-        "CREATE TABLE {table} ({}, value double precision, PRIMARY KEY ({}))",
+        "CREATE TABLE IF NOT EXISTS {table} ({}, value double precision, PRIMARY KEY ({}))",
         cols.join(", "),
         quoted_list(dim_cols)
     )
@@ -746,7 +747,7 @@ mod tests {
         let cols = vec![s("time"), s("product")];
         assert_eq!(
             create_table_sql("t", &cols),
-            "CREATE TABLE t (\"time\" text NOT NULL, \"product\" text NOT NULL, \
+            "CREATE TABLE IF NOT EXISTS t (\"time\" text NOT NULL, \"product\" text NOT NULL, \
              value double precision, PRIMARY KEY (\"time\", \"product\"))"
         );
         assert_eq!(
