@@ -3542,6 +3542,13 @@ impl ImprovApp {
 
     /// The store's file stem, or `Untitled` when in memory.
     fn file_name(&self) -> &str {
+        if improv_store::is_postgres(&self.db) {
+            // `postgres://…?model=<name>`: the model's name, never the DSN.
+            return self
+                .db
+                .rsplit_once("model=")
+                .map_or("Untitled", |(_, m)| m.split('&').next().unwrap_or(m));
+        }
         std::path::Path::new(&self.db)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -11325,5 +11332,40 @@ mod tests {
             app.cell_text(MeasureId(2), &typed_key()).as_deref(),
             Some("bye")
         );
+    }
+
+    /// `ImprovApp::load` opens a Postgres-hosted model (`postgres://…?model=`),
+    /// builds its engine, and autosaves edits back. Skipped without
+    /// `IMPROV_TEST_PG` (a libpq `key=value` DSN or a URL).
+    #[test]
+    fn loads_and_saves_a_postgres_model() {
+        let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return;
+        };
+        let base = if improv_store::is_postgres(&dsn) {
+            dsn
+        } else {
+            let kv: HashMap<_, _> = dsn
+                .split_whitespace()
+                .filter_map(|p| p.split_once('='))
+                .collect();
+            let get = |k| kv.get(k).copied().unwrap_or_default();
+            let (u, pw, h, d) = (get("user"), get("password"), get("host"), get("dbname"));
+            format!("postgres://{u}:{pw}@{h}/{d}")
+        };
+        let url = format!("{base}?model=gui_{}", std::process::id());
+        let mut store = improv_store::Store::open(&url).unwrap();
+        store.save_model(&revenue_model()).unwrap();
+
+        let mut app = ImprovApp::load(&url).expect("load postgres model");
+        assert_eq!(app.model, revenue_model());
+        assert_eq!(app.file_name(), format!("gui_{}", std::process::id()));
+        let revenue = app.model.measure_by_name("Revenue").unwrap().id;
+        assert!(app.formula_source(revenue).is_some());
+        app.model.items.get_mut(&ItemId(10)).unwrap().name = Name("Q1x".into());
+        app.save().expect("save to postgres");
+        let back = store.reload_model().unwrap();
+        assert_eq!(back.items[&ItemId(10)].name.0, "Q1x");
     }
 }
