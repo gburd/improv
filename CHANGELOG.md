@@ -8,6 +8,16 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pg_improv` Postgres extension, layer L0** (in progress). A pgrx 0.17
+  extension (`crates/pg_improv`, pg17) with an `improv.*` catalog that is a
+  superset of `improv_storage_pg`'s, plus `improv.create_model`,
+  `bind_category`, `bind_measure`, `define`, `recalc` and `drop_model`.
+  `recalc` recomputes every derived measure in the caller's transaction and
+  writes only the changed rows to `improv_<model>.<measure>`. The new GUC
+  `improv.max_cells` (default 5M) caps the input size. The Postgres-free
+  logic is the new workspace crate `improv_pg_model`. Install and quick
+  start: `crates/pg_improv/README.md`.
+
 - **Postgres-hosted models** (pg_improv layer L3). The CLI, TUI, GUI and
   server open `postgres://…?model=<name>` as well as a Mentat file, through
   the new `improv_store::Store` seam. The new `improv_storage_pg::PgModelStore`

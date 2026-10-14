@@ -123,14 +123,14 @@ Trade-off table goes in the user docs verbatim.
 
 ## 6. Layers (each lands green, in order)
 
-| Layer | Deliverable | Proof |
-| --- | --- | --- |
-| L0 | `crates/pg_improv` skeleton (pgrx 0.17, pg17), catalog SQL, `improv.create_model/define/bind_*`, `improv.recalc` (full recompute, backend thread) | `cargo pgrx test pg17`: define Revenue over a `sales` table, recalc, assert oracle values |
-| L1 | Triggers mode: `on_change` + statement transition tables, closure-restricted recompute | pg_test: UPDATE price in a txn → result row changes in the same txn; ROLLBACK leaves results unchanged |
-| L2 | Logical mode: bgworker, slot/publication lifecycle, pgoutput decode, live Engine, atomic write+advance | pg_test (+ integration script): UPDATE commits → result updates within N ms; kill -9 worker → no loss/no dupes |
-| L3 | `improv_storage_pg` + `Store::open` seam; GUI/TUI/CLI open `postgres://` | test: CLI `list postgres://…` shows the model; GUI headless test loads it; screenshot via gui-shot against a pg model |
-| L4 | Benchmarks on kiwi: trigger vs logical vs recalc — writer latency, end-to-end freshness, throughput at 100k/1M cells | `docs/reviews/<date>-pg-improv-bench.md` |
-| L5 | Docs (mdBook page, README, man), CI job (pgrx test on pg17), CHANGELOG | gate green |
+| Layer | Deliverable | Proof | Status |
+| --- | --- | --- | --- |
+| L0 | `crates/pg_improv` skeleton (pgrx 0.17, pg17), catalog SQL, `improv.create_model/define/bind_*`, `improv.recalc` (full recompute, backend thread) | `cargo pgrx test pg17`: define Revenue over a `sales` table, recalc, assert oracle values | done (`eff870a`) |
+| L1 | Triggers mode: `on_change` + statement transition tables, closure-restricted recompute | pg_test: UPDATE price in a txn → result row changes in the same txn; ROLLBACK leaves results unchanged | — |
+| L2 | Logical mode: bgworker, slot/publication lifecycle, pgoutput decode, live Engine, atomic write+advance | pg_test (+ integration script): UPDATE commits → result updates within N ms; kill -9 worker → no loss/no dupes | — |
+| L3 | `improv_storage_pg` + `Store::open` seam; GUI/TUI/CLI open `postgres://` | test: CLI `list postgres://…` shows the model; GUI headless test loads it; screenshot via gui-shot against a pg model | done (`76656ce`) |
+| L4 | Benchmarks on kiwi: trigger vs logical vs recalc — writer latency, end-to-end freshness, throughput at 100k/1M cells | `docs/reviews/<date>-pg-improv-bench.md` | — |
+| L5 | Docs (mdBook page, README, man), CI job (pgrx test on pg17), CHANGELOG | gate green | — |
 
 **Status.** L3 landed on `work/pg-store` (through `76656ce`): crates
 `improv_storage_pg` (`PgModelStore`, `CATALOG_SQL`) and `improv_store`
@@ -138,6 +138,21 @@ Trade-off table goes in the user docs verbatim.
 `Store::open`. v1 writes `measure.formula` as serde JSON of the `Formula` AST
 (the DSL printer lives in the GUI crate) and reads JSON or `Target = expr` text, and structure is written by plain
 upserts, not `improv.save_structure`, until the extension ships it.
+
+**L0 status.** Landed on `work/pg-l0`: `crates/pg_model` (`improv_pg_model`,
+a pure workspace crate holding the logic) and `crates/pg_improv` (the pgrx
+shell: its own workspace and `Cargo.lock`, excluded from the root workspace
+because pgrx-pg-sys needs `pg_config` and libclang). The catalog is a
+superset of `CATALOG_SQL`; the extension adds `improv.category_binding`, and
+a pg_test checks the superset property. `recalc` builds the model from the
+catalog, bound rows and unbound `improv.cell` rows, runs
+`dataflow::evaluate` on the backend thread under `catch_unwind`, and applies
+one batched upsert plus one batched delete per result table. Every
+structural change bumps `improv.model_version`, including a `recalc` that
+mints items. Deferred: binding `agg` (L1); making the extension the only
+minter of bound items, since storage_pg also mints client-side on load
+today (L2); `improv.status`; `what_if`; non-number value types for bound
+or derived measures.
 
 ## 7. Safety rules (non-negotiable, from the security review)
 
