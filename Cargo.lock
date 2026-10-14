@@ -2653,6 +2653,7 @@ dependencies = [
  "improv_core_model",
  "improv_data_source",
  "improv_engine",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 

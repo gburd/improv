@@ -8,9 +8,15 @@
 //! * catalog rows → [`Model`] ([`build_model`]) and new derived measures
 //!   ([`define`]);
 //! * bound fact-table rows → input cells with stable item minting
-//!   ([`load_inputs`]);
+//!   ([`load_inputs`]), and unbound `improv.cell` rows ([`load_cells`]);
 //! * engine results → upsert/delete statements ([`result_rows`],
 //!   [`diff_statements`]).
+//!
+//! The catalog encoding is shared with `improv_storage_pg` (the GUI's store):
+//! `measure.formula` is `Target = expr` text (JSON `Formula` is also read),
+//! `measure.value_type` is `number | boolean | text | datetime | enum`, a
+//! measure's `categories` keep their stored order, and `cell.coord` is
+//! `{"<category id>": <item id>}`.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -124,18 +130,65 @@ pub struct ItemRow {
     pub name: String,
 }
 
-/// `improv.measure` row. `formula` is the full `Target = expr` definition for
-/// a derived measure and `None` for an input measure.
+/// `improv.measure` row.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MeasureRow {
     /// Measure id (unique within the model).
     pub id: u32,
     /// Measure name.
     pub name: String,
-    /// The `Target = expr` text of a derived measure; `None` for inputs.
+    /// `number | boolean | text | datetime | enum`.
+    pub value_type: String,
+    /// `input | derived`.
+    pub kind: String,
+    /// A derived measure's `Target = expr` text (or JSON `Formula`).
     pub formula: Option<String>,
-    /// Dimension category ids, sorted ascending.
+    /// Free-text description.
+    pub description: Option<String>,
+    /// Dimension category ids, in stored order.
     pub categories: Vec<u32>,
+}
+
+impl MeasureRow {
+    /// An input measure row of type `number`.
+    pub fn input(id: u32, name: &str, categories: Vec<u32>) -> Self {
+        MeasureRow {
+            id,
+            name: name.to_string(),
+            value_type: "number".into(),
+            kind: "input".into(),
+            formula: None,
+            description: None,
+            categories,
+        }
+    }
+
+    /// Whether this row is a derived measure.
+    pub fn is_derived(&self) -> bool {
+        self.kind == "derived"
+    }
+}
+
+/// The catalog spelling of a value type.
+pub fn value_type_name(vt: ValueType) -> &'static str {
+    match vt {
+        ValueType::Number => "number",
+        ValueType::Boolean => "boolean",
+        ValueType::Text => "text",
+        ValueType::DateTime => "datetime",
+        ValueType::Enum => "enum",
+    }
+}
+
+fn value_type_parse(s: &str) -> Result<ValueType> {
+    Ok(match s {
+        "number" => ValueType::Number,
+        "boolean" => ValueType::Boolean,
+        "text" => ValueType::Text,
+        "datetime" => ValueType::DateTime,
+        "enum" => ValueType::Enum,
+        other => return Err(Error::Catalog(format!("unknown value type {other:?}"))),
+    })
 }
 
 /// One model's catalog rows.
@@ -162,7 +215,7 @@ fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
 
 /// Build a [`Model`] (structure only, no input cells) from catalog rows.
 /// Input measures are added first, then derived measures in id order, so a
-/// formula may reference any input and any earlier derived measure.
+/// text formula may reference any input and any earlier derived measure.
 pub fn build_model(catalog: &Catalog) -> Result<Model> {
     let mut model = Model::new();
     for c in &catalog.categories {
@@ -178,28 +231,37 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
         model.add_item(ItemId(i.id), CategoryId(i.category_id), i.name.clone());
     }
     let mut rows: Vec<&MeasureRow> = catalog.measures.iter().collect();
-    rows.sort_by_key(|r| (r.formula.is_some(), r.id));
+    rows.sort_by_key(|r| (r.is_derived(), r.id));
     for r in rows {
-        let kind = match &r.formula {
-            None => MeasureKind::Input,
-            Some(text) => {
-                let (target, formula) = parse_formula(&model, text)?;
-                if target != r.name {
-                    return Err(Error::Catalog(format!(
-                        "measure {} has a formula for {target}",
-                        r.name
-                    )));
+        let kind = match (r.kind.as_str(), &r.formula) {
+            ("input", _) => MeasureKind::Input,
+            ("derived", Some(text)) => match serde_json::from_str::<Formula>(text) {
+                Ok(f) => MeasureKind::Derived(f),
+                Err(_) => {
+                    let (target, formula) = parse_formula(&model, text)?;
+                    if target != r.name {
+                        return Err(Error::Catalog(format!(
+                            "measure {} has a formula for {target}",
+                            r.name
+                        )));
+                    }
+                    MeasureKind::Derived(formula)
                 }
-                MeasureKind::Derived(formula)
+            },
+            (kind, _) => {
+                return Err(Error::Catalog(format!(
+                    "measure {} has kind {kind:?} and formula {:?}",
+                    r.name, r.formula
+                )))
             }
         };
         model.add_measure(Measure {
             id: MeasureId(r.id),
             name: Name(r.name.clone()),
-            value_type: ValueType::Number,
+            value_type: value_type_parse(&r.value_type)?,
             categories: r.categories.iter().map(|&c| CategoryId(c)).collect(),
             kind,
-            description: None,
+            description: r.description.clone(),
         });
     }
     Ok(model)
@@ -227,6 +289,12 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
         &formula.expr,
     )
     .map_err(|e| Error::Definition(e.to_string()))?;
+    if typed.ty.value_type != ValueType::Number {
+        return Err(Error::Definition(format!(
+            "{target} is {}; only number results are supported yet",
+            value_type_name(typed.ty.value_type)
+        )));
+    }
     if typed.ty.dim.categories.is_empty() {
         return Err(Error::Definition(format!(
             "{target} has no dimensions; dimensionless results are not supported yet"
@@ -235,7 +303,10 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
     Ok(MeasureRow {
         id,
         name: target,
+        value_type: value_type_name(typed.ty.value_type).into(),
+        kind: "derived".into(),
         formula: Some(text.trim().to_string()),
+        description: None,
         categories: typed.ty.dim.categories.iter().map(|c| c.0).collect(),
     })
 }
@@ -279,6 +350,13 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
             .ok_or_else(|| {
                 Error::Catalog(format!("binding for unknown measure {}", b.measure_id))
             })?;
+        if m.value_type != ValueType::Number {
+            return Err(Error::Catalog(format!(
+                "{} is bound but is {}; only number bindings are supported yet",
+                m.name.0,
+                value_type_name(m.value_type)
+            )));
+        }
         for (dims, _) in &b.rows {
             if dims.len() != m.categories.len() {
                 return Err(Error::Catalog(format!(
@@ -361,6 +439,38 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
         cells: n,
         null_dim_rows,
     })
+}
+
+/// Add unbound input cells (`improv.cell` rows: measure id, `coord` JSON
+/// `{"<category id>": <item id>}`, `value` JSON scalar). Returns the count.
+pub fn load_cells(model: &mut Model, cells: &[(u32, String, String)]) -> Result<usize> {
+    use serde_json::Value as J;
+    for (mid, coord, value) in cells {
+        let bad = |what: &str| Error::Catalog(format!("improv.cell {mid} {coord}: {what}"));
+        let vt = model
+            .measures
+            .get(&MeasureId(*mid))
+            .ok_or_else(|| bad("unknown measure"))?
+            .value_type;
+        let dims: BTreeMap<CategoryId, ItemId> =
+            serde_json::from_str(coord).map_err(|e| bad(&e.to_string()))?;
+        let json: J = serde_json::from_str(value).map_err(|e| bad(&e.to_string()))?;
+        let v = match (vt, &json) {
+            (ValueType::Number, J::Number(n)) => n.as_f64().map(Value::Number),
+            (ValueType::Enum, J::Number(n)) => n
+                .as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .map(Value::Enum),
+            (ValueType::Boolean, J::Bool(b)) => Some(Value::Boolean(*b)),
+            (ValueType::Text, J::String(s)) => Some(Value::Text(s.clone())),
+            // ponytail: datetime cells are not decoded yet (needs chrono);
+            // add when a datetime measure feeds a derived one.
+            _ => None,
+        }
+        .ok_or_else(|| bad(&format!("{json} is not a {} value", value_type_name(vt))))?;
+        model.set_input(MeasureId(*mid), Coordinate { dims }, v);
+    }
+    Ok(cells.len())
 }
 
 /// Refuse a model whose input exceeds the `improv.max_cells` budget.
@@ -570,18 +680,8 @@ mod tests {
             ],
             items: vec![],
             measures: vec![
-                MeasureRow {
-                    id: 1,
-                    name: s("Price"),
-                    formula: None,
-                    categories: vec![1, 2],
-                },
-                MeasureRow {
-                    id: 2,
-                    name: s("Quantity"),
-                    formula: None,
-                    categories: vec![1, 2],
-                },
+                MeasureRow::input(1, "Price", vec![1, 2]),
+                MeasureRow::input(2, "Quantity", vec![1, 2]),
             ],
         }
     }
@@ -710,6 +810,9 @@ mod tests {
             err("value = Price * 2"),
             Error::InvalidName { .. }
         ));
+        assert!(
+            matches!(err("Big = Price > 2"), Error::Definition(m) if m.contains("only number"))
+        );
         assert!(matches!(err("garbage"), Error::Definition(_)));
     }
 
@@ -724,13 +827,30 @@ mod tests {
         assert!(matches!(build_model(&cat), Err(Error::Catalog(_))));
 
         let mut cat = catalog();
-        cat.measures.push(MeasureRow {
-            id: 3,
-            name: s("Revenue"),
-            formula: Some(s("Other = Price * 2")),
-            categories: vec![1, 2],
-        });
+        let mut bad = MeasureRow::input(3, "Revenue", vec![1, 2]);
+        bad.kind = s("derived");
+        bad.formula = Some(s("Other = Price * 2"));
+        cat.measures.push(bad.clone());
         assert!(matches!(build_model(&cat), Err(Error::Catalog(_))));
+        bad.formula = None;
+        cat.measures[2] = bad.clone();
+        assert!(matches!(build_model(&cat), Err(Error::Catalog(m)) if m.contains("kind")));
+        bad.kind = s("input");
+        bad.value_type = s("money");
+        cat.measures[2] = bad;
+        assert!(matches!(build_model(&cat), Err(Error::Catalog(m)) if m.contains("money")));
+
+        let mut cat = catalog();
+        cat.measures[0].value_type = s("text");
+        let mut model = build_model(&cat).unwrap();
+        let text_bound = BoundRows {
+            measure_id: 1,
+            rows: vec![],
+        };
+        assert!(matches!(
+            load_inputs(&mut model, &[text_bound]),
+            Err(Error::Catalog(m)) if m.contains("number bindings")
+        ));
 
         let mut model = build_model(&catalog()).unwrap();
         let unknown = BoundRows {
@@ -751,6 +871,96 @@ mod tests {
         ));
         assert!(dim_columns(&model, MeasureId(99)).is_err());
         assert!(result_rows(&model, MeasureId(99), &HashMap::new()).is_err());
+    }
+
+    #[test]
+    fn catalog_contract_with_storage_pg() {
+        // Stored category order is kept (not re-sorted); description and
+        // value type are honoured; a JSON formula (what storage_pg wrote
+        // before it switched to text) is read too.
+        let mut cat = catalog();
+        cat.measures[0].categories = vec![2, 1];
+        cat.measures[0].description = Some(s("list price"));
+        let model = build_model(&cat).unwrap();
+        let price = model.measure_by_name("Price").unwrap();
+        assert_eq!(price.categories, vec![CategoryId(2), CategoryId(1)]);
+        assert_eq!(price.description.as_deref(), Some("list price"));
+        assert_eq!(
+            dim_columns(&model, MeasureId(1)).unwrap(),
+            vec![s("product"), s("time")]
+        );
+
+        let rev = define(&model, "Revenue = Price * Quantity", 3).unwrap();
+        let mut with_text = cat.clone();
+        with_text.measures.push(rev.clone());
+        let parsed = build_model(&with_text).unwrap().measures[&MeasureId(3)]
+            .kind
+            .clone();
+        let MeasureKind::Derived(f) = parsed else {
+            panic!("derived")
+        };
+        let mut json = rev;
+        json.formula = Some(serde_json::to_string(&f).unwrap());
+        cat.measures.push(json);
+        let model = build_model(&cat).unwrap();
+        assert_eq!(model.measures[&MeasureId(3)].kind, MeasureKind::Derived(f));
+        assert_eq!(value_type_name(ValueType::Enum), "enum");
+    }
+
+    #[test]
+    fn unbound_cells_from_improv_cell() {
+        let mut cat = catalog();
+        cat.items = vec![
+            ItemRow {
+                id: 1,
+                category_id: 1,
+                name: s("Q1"),
+            },
+            ItemRow {
+                id: 2,
+                category_id: 2,
+                name: s("Widget"),
+            },
+        ];
+        for (id, vt) in [(5, "boolean"), (6, "text"), (7, "enum"), (8, "datetime")] {
+            let mut m = MeasureRow::input(id, &format!("M{id}"), vec![1, 2]);
+            m.value_type = s(vt);
+            cat.measures.push(m);
+        }
+        let mut model = build_model(&cat).unwrap();
+        let c = s(r#"{"1": 1, "2": 2}"#);
+        let cell = |m: u32, v: &str| (m, c.clone(), s(v));
+        let n = load_cells(
+            &mut model,
+            &[
+                cell(1, "4.5"),
+                cell(5, "true"),
+                cell(6, "\"x\""),
+                cell(7, "3"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(n, 4);
+        let coord =
+            Coordinate::from_pairs([(CategoryId(1), ItemId(1)), (CategoryId(2), ItemId(2))]);
+        assert_eq!(
+            model.inputs[&(MeasureId(1), coord.clone())],
+            Value::Number(4.5)
+        );
+        assert_eq!(model.inputs[&(MeasureId(7), coord)], Value::Enum(3));
+
+        for bad in [
+            cell(9, "1"),
+            cell(1, "\"x\""),
+            cell(8, "\"2026-01-01T00:00:00Z\""),
+            (1, s("[1]"), s("1")),
+            (1, c.clone(), s("nope")),
+        ] {
+            assert!(matches!(
+                load_cells(&mut model, &[bad]),
+                Err(Error::Catalog(_))
+            ));
+        }
     }
 
     #[test]

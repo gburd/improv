@@ -13,6 +13,7 @@ path = "src/lib.rs"
 improv_core_model = { path = "../core_model" }
 improv_data_source = { path = "../data_source" }
 improv_engine = { path = "../engine" }
+serde_json.workspace = true
 thiserror.workspace = true
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
