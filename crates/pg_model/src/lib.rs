@@ -36,7 +36,7 @@ use improv_engine::{CellValue, CoordKey};
 
 mod delta;
 pub use delta::{
-    apply_edits, cell_changes, coord_json, dependents, measure_ids, plan, quote_literal,
+    apply_edits, cell_changes, coord_json, dependents, measure_ids, plan, quote_literal, slot_name,
     sync_trigger_name, touched_sql, Plan, Scope,
 };
 

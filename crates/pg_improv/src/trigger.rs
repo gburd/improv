@@ -236,6 +236,11 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
         "UPDATE improv.model SET sync_mode = $2 WHERE id = $1",
         &[mid.into(), mode.into()],
     )?;
+    if mode == "logical" {
+        super::worker::enable(mid, &name)?;
+    } else {
+        super::worker::disable(mid, &name)?;
+    }
     if mode == "trigger" {
         let rels: Vec<String> = Spi::connect(|c| -> Res<_> {
             c.select(
@@ -394,6 +399,21 @@ fn recalc_measures(model: &str, measures: Option<Vec<String>>) -> Res<i64> {
         Some(ms) => pm::dependents(&l.model, &pm::measure_ids(&l.model, &ms)?),
         None => all_derived(&l.model),
     };
+    recompute(
+        &mut l,
+        &pm::Plan {
+            targets,
+            scope: None,
+        },
+    )
+}
+
+/// Recompute every derived measure of model `mid` (named `name`) in the
+/// caller's transaction: the shared path behind `recalc(model, NULL)`, the
+/// logical worker, and entering trigger mode. Returns the rows changed.
+pub(crate) fn recompute_all(mid: i64, name: &str) -> Res<i64> {
+    let mut l = load(mid, name.to_string(), true)?;
+    let targets = all_derived(&l.model);
     recompute(
         &mut l,
         &pm::Plan {

@@ -346,6 +346,19 @@ pub fn sync_trigger_name(model: &str, op: &str) -> Result<String> {
     Ok(name)
 }
 
+/// The logical replication slot (and publication) syncing `model`:
+/// `improv_<lower(model)>`, within Postgres' 63-byte name limit.
+pub fn slot_name(model: &str) -> Result<String> {
+    let name = format!("improv_{}", model.to_ascii_lowercase());
+    if name.len() > MAX_IDENT {
+        return Err(Error::Catalog(format!(
+            "model name {model:?} is too long for logical mode (at most {} bytes)",
+            MAX_IDENT + model.len() - name.len()
+        )));
+    }
+    Ok(name)
+}
+
 /// A SQL string literal.
 pub fn quote_literal(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
@@ -685,5 +698,11 @@ mod tests {
             vec![COST, PRICE]
         );
         assert!(measure_ids(&m, &["nope".into()]).is_err());
+    }
+
+    #[test]
+    fn slot_name_is_lowercased_and_bounded() {
+        assert_eq!(slot_name("Plan").unwrap(), "improv_plan");
+        assert!(slot_name(&"x".repeat(MAX_IDENT)).is_err());
     }
 }

@@ -18,6 +18,7 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 ::pgrx::pg_module_magic!();
 
 mod trigger;
+mod worker;
 
 /// Errors returned to SQL as `ERROR`s.
 type Res<T> = Result<T, Box<dyn Error>>;
@@ -38,6 +39,7 @@ pub extern "C-unwind" fn _PG_init() {
         GucContext::Userset,
         GucFlags::default(),
     );
+    worker::init();
 }
 
 extension_sql!(
@@ -314,6 +316,21 @@ fn bind_measure(model: &str, measure: &str, rel: PgRelation, value_col: &str) ->
          WHERE b.model_id = $1 AND b.rel = $3::oid::regclass",
         &[mid.into(), id.into(), rel.oid().into(), value_col.into()],
     )?;
+    // `ALTER TABLE … REPLICA IDENTITY` (in enable) refuses while this
+    // function's own PgRelation keeps the table open.
+    drop(rel);
+    let mode = Spi::get_one_with_args::<String>(
+        "SELECT sync_mode FROM improv.model WHERE id = $1",
+        &[mid.into()],
+    )?;
+    if mode.as_deref() == Some("logical") {
+        let name = Spi::get_one_with_args::<String>(
+            "SELECT name FROM improv.model WHERE id = $1",
+            &[mid.into()],
+        )?
+        .unwrap_or_default();
+        worker::enable(mid, &name)?;
+    }
     bump_version(mid)
 }
 
@@ -508,6 +525,7 @@ fn drop_model(name: &str) -> Res<()> {
     // so a GUI save in flight (it holds `FOR UPDATE` on it) is serialized.
     bump_version(mid)?;
     trigger::remove_triggers(&stored)?;
+    worker::disable(mid, &stored)?;
     Spi::run(&format!(
         "DROP SCHEMA IF EXISTS {} CASCADE",
         pm::quote_ident(&pm::result_schema(&stored))
@@ -771,6 +789,67 @@ mod tests {
         assert_eq!(count("improv.measure"), 0);
         assert_eq!(count("pg_namespace WHERE nspname = 'improv_plan'"), 0);
     }
+
+    /// Binding a measure in the default (logical) mode creates the
+    /// publication over the bound table (the worker later gives a PK-less
+    /// table `REPLICA IDENTITY FULL`) and records sync state; `status` reports it;
+    /// `drop_model` removes the publication and queues the slot for the
+    /// worker to drop.
+    #[pg_test]
+    fn logical_mode_publication_lifecycle() {
+        setup_plan();
+        let pubs = Spi::get_one::<Vec<String>>(
+            "SELECT array_agg(tablename::text) FROM pg_publication_tables WHERE pubname = 'improv_plan'",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(pubs, vec!["sales".to_string()]);
+        let (mode, slot) =
+            Spi::get_two::<String, String>("SELECT sync_mode, slot FROM improv.status('plan')")
+                .unwrap();
+        assert_eq!(mode.as_deref(), Some("logical"));
+        assert_eq!(slot.as_deref(), Some("improv_plan"));
+        Spi::run("SELECT improv.drop_model('plan')").unwrap();
+        let left = Spi::get_one::<i64>(
+            "SELECT count(*) FROM pg_publication WHERE pubname = 'improv_plan'",
+        )
+        .unwrap();
+        assert_eq!(left, Some(0));
+        let queued = Spi::get_one::<i64>(
+            "SELECT count(*) FROM improv.slot_to_drop WHERE slot = 'improv_plan'",
+        )
+        .unwrap();
+        assert_eq!(queued, Some(1));
+    }
+
+    /// Leaving logical mode drops the publication; returning recreates it.
+    #[pg_test]
+    fn sync_mode_switch_manages_the_publication() {
+        setup_plan();
+        let count = || {
+            Spi::get_one::<i64>("SELECT count(*) FROM pg_publication WHERE pubname = 'improv_plan'")
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(count(), 1);
+        Spi::run("SELECT improv.set_sync_mode('plan', 'manual')").unwrap();
+        assert_eq!(count(), 0);
+        Spi::run("SELECT improv.set_sync_mode('plan', 'logical')").unwrap();
+        assert_eq!(count(), 1);
+    }
+
+    /// The sync worker is registered when preloaded and connected to
+    /// `improv.database` (left at its default, `postgres`, in the test
+    /// cluster so pgrx can still drop and recreate its own test database).
+    #[pg_test]
+    fn sync_worker_is_running() {
+        let n = Spi::get_one::<i64>(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE backend_type = 'pg_improv sync' AND datname = 'postgres'",
+        )
+        .unwrap();
+        assert_eq!(n, Some(1));
+    }
 }
 
 /// Required by `cargo pgrx test`.
@@ -780,6 +859,13 @@ pub mod pg_test {
 
     #[must_use]
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        vec![]
+        // Preloaded, so the L2 sync worker runs in the test cluster too
+        // (its polls find no logical-mode model with a slot and do nothing).
+        vec![
+            "shared_preload_libraries = 'pg_improv'",
+            "wal_level = logical",
+            "max_replication_slots = 10",
+            "max_wal_senders = 10",
+        ]
     }
 }
