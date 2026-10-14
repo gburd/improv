@@ -244,12 +244,15 @@ fn worker_loop(
                 reduced
                     .inspect(move |((k, val), _t, diff)| {
                         // Maintain the running snapshot from the delta
-                        // stream: a +1 sets the value, a -1 removes it.
+                        // stream: a +1 sets the value, a -1 removes it. A
+                        // changed cell's `+new` may arrive before its `-old`
+                        // (updates are ordered by value), so a retraction
+                        // only removes the value it retracts.
                         let mut s = snap.lock().unwrap();
                         let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
                         if *diff > 0 {
                             m.insert(k.clone(), val.clone());
-                        } else if *diff < 0 {
+                        } else if *diff < 0 && m.get(k) == Some(val) {
                             m.remove(k);
                         }
                     })
@@ -488,6 +491,23 @@ mod tests {
             rev.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
             Some(1500.0)
         ); // 15*100
+    }
+
+    #[test]
+    fn edit_that_lowers_a_value_keeps_the_cell() {
+        let model = revenue_model();
+        let (mut engine, _snap) = Engine::new(&model, &[MeasureId(102)]).expect("engine");
+        // Price[WidgetA] 10 -> 5: Revenue[2025,A] 1000 -> 500. The `+500`
+        // update sorts before the `-1000` one; the cell must survive.
+        let snap = engine
+            .set(MeasureId(100), key(&[(2, 20)]), 5.0)
+            .expect("edit");
+        let rev = snap.get(&MeasureId(102)).expect("revenue");
+        assert_eq!(
+            rev.get(&key(&[(1, 10), (2, 20)])).and_then(|v| v.as_num()),
+            Some(500.0)
+        );
+        assert_eq!(rev.len(), 2);
     }
 
     #[test]

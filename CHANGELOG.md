@@ -263,6 +263,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Incremental recalculation no longer drops cells whose value went down.**
+  The engine's update stream orders a changed cell's `+new` before `-old`
+  when the new value sorts lower, and the session snapshot applied the
+  retraction by deleting the key, which wiped the value just written. So
+  `Engine::set` lost, for example, `Revenue` when a `Price` decreased. A
+  retraction now removes a key only if it still holds the retracted value.
+
 - **Sandboxed external functions on non-FHS hosts (NixOS).** The interpreter
   is now run by its canonical host path, and `/nix/store` is bound read-only
   when present. Before, every sandboxed call failed on NixOS with
