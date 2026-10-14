@@ -98,7 +98,7 @@ where
                 (None, None) => {
                     let l = build_coll(left, scope, inputs, derived)?;
                     let r = build_coll(right, scope, inputs, derived)?;
-                    Ok(l.join(&r)
+                    Ok(align(&l, &r, shared_cats(left, right))
                         .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))))
                 }
             }
@@ -109,24 +109,12 @@ where
             right,
             join_keys,
         } => {
-            // Re-key both sides to the shared join categories, join, then
-            // rebuild the union key. The union of the two full keys is the
-            // result coordinate.
+            // Broadcast the left value onto the union coordinate. A MapBinary
+            // above re-aligns this with its right operand on their shared
+            // categories, so it sees both values.
             let l = build_coll(left, scope, inputs, derived)?;
             let r = build_coll(right, scope, inputs, derived)?;
-            let keys = join_keys.clone();
-            let keys2 = keys.clone();
-            let l_keyed = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
-            let r_keyed = r.map(move |(k, v)| (project(&k, &keys2), (k, v)));
-            Ok(l_keyed.join(&r_keyed).map(|(_jk, ((lk, lv), (rk, _rv)))| {
-                // Union the two coordinates (rk contributes its extra dims).
-                let merged = union_keys(&lk, &rk);
-                // Value carried is the left operand's; MapBinary above
-                // re-fetches both operands, so a Join feeding a MapBinary
-                // is handled by MapBinary. When a Join stands alone we keep
-                // the left value.
-                (merged, lv)
-            }))
+            Ok(align(&l, &r, join_keys.clone()).map(|(k, (lv, _rv))| (k, lv)))
         }
 
         PlanNodeKind::Aggregate {
@@ -190,24 +178,11 @@ where
                 }
                 [a, b] => {
                     // Align by shared categories (broadcast the smaller dim
-                    // over the larger), join, apply the function on both
-                    // decoded values, rebuild the union coordinate.
+                    // over the larger), then apply the function.
                     let l = build_coll(a, scope, inputs, derived)?;
                     let r = build_coll(b, scope, inputs, derived)?;
-                    let keys: Vec<CategoryId> =
-                        a.ty.dim
-                            .categories
-                            .iter()
-                            .copied()
-                            .filter(|c| b.ty.dim.categories.contains(c))
-                            .collect();
-                    let keys2 = keys.clone();
-                    let l_keyed = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
-                    let r_keyed = r.map(move |(k, v)| (project(&k, &keys2), (k, v)));
-                    Ok(l_keyed
-                        .join(&r_keyed)
-                        .map(move |(_jk, ((lk, lv), (rk, rv)))| {
-                            let merged = union_keys(&lk, &rk);
+                    Ok(
+                        align(&l, &r, shared_cats(a, b)).map(move |(merged, (lv, rv))| {
                             let out = apply_scalar(
                                 func,
                                 &[
@@ -216,7 +191,8 @@ where
                                 ],
                             );
                             (merged, CellValue::num(out))
-                        }))
+                        }),
+                    )
                 }
                 _ => Err(EngineError::Unsupported(format!(
                     "scalar func arity {} unsupported",
@@ -225,6 +201,36 @@ where
             }
         }
     }
+}
+
+/// Broadcast-join two collections on `keys`, the categories both range over.
+/// Every pair that agrees on `keys` yields one row at the union coordinate
+/// carrying both values, so either side may have extra dimensions. This is the
+/// single alignment primitive for `Join`, `MapBinary` and two-arg `FuncCall`.
+#[allow(clippy::type_complexity)]
+fn align<G: Scope>(
+    l: &Coll<G>,
+    r: &Coll<G>,
+    keys: Vec<CategoryId>,
+) -> Collection<G, (CoordKey, (CellValue, CellValue)), isize>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice,
+{
+    let keys2 = keys.clone();
+    let l = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
+    let r = r.map(move |(k, v)| (project(&k, &keys2), (k, v)));
+    l.join(&r)
+        .map(|(_jk, ((lk, lv), (rk, rv)))| (union_keys(&lk, &rk), (lv, rv)))
+}
+
+/// The categories both plan nodes range over: their broadcast join key.
+fn shared_cats(a: &PlanNode, b: &PlanNode) -> Vec<CategoryId> {
+    a.ty.dim
+        .categories
+        .iter()
+        .copied()
+        .filter(|c| b.ty.dim.categories.contains(c))
+        .collect()
 }
 
 /// If a plan node is a literal, return its `CellValue` (for folding a constant
@@ -517,9 +523,359 @@ pub fn evaluate(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::decode_coord;
+    use crate::typed::{Dim, TypeInfo};
     use improv_core_model::{
         Coordinate, DimensionSpec, Expr, ItemId, Measure, MeasureKind, Name, Value, ValueType,
     };
+
+    /// Two numeric inputs A (`MeasureId(100)`) and B (`MeasureId(101)`) and a
+    /// derived `R = A op B` (or `B op A` when `!a_left`) at `MeasureId(102)`.
+    /// Category `c` has items `10*c + 0..3`; cells are `(item ids, value)` in
+    /// the order of the measure's categories.
+    fn bcast_model(
+        a_cats: &[u32],
+        a: &[(Vec<u32>, f64)],
+        b_cats: &[u32],
+        b: &[(Vec<u32>, f64)],
+        op: BinaryOp,
+        a_left: bool,
+    ) -> Model {
+        let mut m = Model::new();
+        for c in 1..=3u32 {
+            m.add_category(CategoryId(c), format!("C{c}"));
+            for i in 0..3u32 {
+                m.add_item(ItemId(10 * c + i), CategoryId(c), format!("I{c}_{i}"));
+            }
+        }
+        let cats = |cs: &[u32]| cs.iter().map(|c| CategoryId(*c)).collect::<Vec<_>>();
+        let mut union: Vec<u32> = a_cats.iter().chain(b_cats).copied().collect();
+        union.sort_unstable();
+        union.dedup();
+        let input = |id: u32, name: &str, cs: &[u32]| Measure {
+            id: MeasureId(id),
+            name: Name(name.into()),
+            value_type: ValueType::Number,
+            categories: cats(cs),
+            kind: MeasureKind::Input,
+            description: None,
+        };
+        m.add_measure(input(100, "A", a_cats));
+        m.add_measure(input(101, "B", b_cats));
+        let r = |id: u32| Box::new(Expr::Ref(MeasureId(id), DimensionSpec::default()));
+        let (l, rr) = if a_left {
+            (r(100), r(101))
+        } else {
+            (r(101), r(100))
+        };
+        m.add_measure(Measure {
+            id: MeasureId(102),
+            name: Name("R".into()),
+            value_type: ValueType::Number,
+            categories: cats(&union),
+            kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::BinaryOp(op, l, rr))),
+            description: None,
+        });
+        for (id, cs, cells) in [(100, a_cats, a), (101, b_cats, b)] {
+            for (items, v) in cells {
+                let coord = Coordinate::from_pairs(
+                    cs.iter()
+                        .zip(items)
+                        .map(|(c, i)| (CategoryId(*c), ItemId(*i))),
+                );
+                m.set_input(MeasureId(id), coord, Value::Number(*v));
+            }
+        }
+        m
+    }
+
+    /// Evaluate `R` (`MeasureId(102)`) to a `CoordKey -> f64` map.
+    fn eval_r(m: &Model) -> BTreeMap<CoordKey, f64> {
+        let out = evaluate(m, &[MeasureId(102)]).expect("evaluate");
+        out.get(&MeasureId(102))
+            .map(|r| {
+                r.iter()
+                    .map(|(k, v)| (k.clone(), v.as_num().unwrap()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Price[Time,Product] and Discount[Product]: (cats, cells) pairs.
+    #[allow(clippy::type_complexity)]
+    fn price_discount() -> (
+        (Vec<u32>, Vec<(Vec<u32>, f64)>),
+        (Vec<u32>, Vec<(Vec<u32>, f64)>),
+    ) {
+        (
+            (
+                vec![1, 2],
+                vec![
+                    (vec![10, 20], 100.0),
+                    (vec![10, 21], 50.0),
+                    (vec![11, 20], 120.0),
+                ],
+            ),
+            (vec![2], vec![(vec![20], 10.0), (vec![21], 5.0)]),
+        )
+    }
+
+    /// `Price op Discount` (larger on the left) and `Discount op Price`
+    /// (larger on the right), exact values for every arithmetic operator.
+    #[test]
+    fn broadcast_larger_left_and_larger_right() {
+        let ((pc, p), (dc, d)) = price_discount();
+        let at = [
+            key(&[(1, 10), (2, 20)]),
+            key(&[(1, 10), (2, 21)]),
+            key(&[(1, 11), (2, 20)]),
+        ];
+        let cases: [(BinaryOp, [f64; 3], [f64; 3]); 4] = [
+            (BinaryOp::Add, [110.0, 55.0, 130.0], [110.0, 55.0, 130.0]),
+            (BinaryOp::Sub, [90.0, 45.0, 110.0], [-90.0, -45.0, -110.0]),
+            (
+                BinaryOp::Mul,
+                [1000.0, 250.0, 1200.0],
+                [1000.0, 250.0, 1200.0],
+            ),
+            (
+                BinaryOp::Div,
+                [10.0, 10.0, 12.0],
+                [10.0 / 100.0, 5.0 / 50.0, 10.0 / 120.0],
+            ),
+        ];
+        for (op, larger_left, larger_right) in cases {
+            for (a_left, want) in [(true, larger_left), (false, larger_right)] {
+                let got = eval_r(&bcast_model(&pc, &p, &dc, &d, op, a_left));
+                let want: BTreeMap<CoordKey, f64> = at.iter().cloned().zip(want).collect();
+                assert_eq!(got, want, "{op:?}, price on the left: {a_left}");
+            }
+        }
+    }
+
+    /// Run hand-built plan `plan` as derived `MeasureId(102)` over `cells`.
+    fn run_plan(
+        plan: PlanNode,
+        cells: Vec<(MeasureId, Vec<(CoordKey, f64)>)>,
+    ) -> BTreeMap<CoordKey, f64> {
+        let out = Arc::new(Mutex::new(BTreeMap::new()));
+        let out2 = out.clone();
+        timely::execute::execute_directly(move |worker| {
+            let mut sessions = Vec::new();
+            worker.dataflow::<u64, _, _>(|scope| {
+                let mut inputs = HashMap::new();
+                for (mid, _) in &cells {
+                    let mut session = InputSession::new();
+                    inputs.insert(*mid, session.to_collection(scope));
+                    sessions.push(session);
+                }
+                for (_, coll) in build_derived(scope, &[(MeasureId(102), plan)], &inputs) {
+                    let out = out2.clone();
+                    coll.inspect(move |((k, v), _t, d)| {
+                        if *d > 0 {
+                            out.lock().unwrap().insert(k.clone(), v.as_num().unwrap());
+                        }
+                    });
+                }
+            });
+            for ((_, cs), session) in cells.iter().zip(&mut sessions) {
+                for (k, v) in cs {
+                    session.insert((k.clone(), CellValue::num(*v)));
+                }
+                session.advance_to(1);
+                session.flush();
+            }
+        });
+        let got = out.lock().unwrap().clone();
+        got
+    }
+
+    /// Both operands carry an extra dim the other lacks:
+    /// `A[T,P] * B[P,R]` lands on `[T,P,R]` in the dataflow builder, whichever
+    /// side is on the left and whether or not a `Join` feeds the map. (The
+    /// compiler rejects such formulas: one dim must be a subset of the other.)
+    #[test]
+    fn broadcast_disjoint_extra_dims() {
+        let a = vec![
+            (vec![10, 20], 2.0),
+            (vec![11, 20], 3.0),
+            (vec![10, 21], 5.0),
+        ];
+        let b = vec![
+            (vec![20, 30], 7.0),
+            (vec![20, 31], 11.0),
+            (vec![21, 30], 13.0),
+        ];
+        let want: BTreeMap<CoordKey, f64> = [
+            (key(&[(1, 10), (2, 20), (3, 30)]), 14.0),
+            (key(&[(1, 10), (2, 20), (3, 31)]), 22.0),
+            (key(&[(1, 11), (2, 20), (3, 30)]), 21.0),
+            (key(&[(1, 11), (2, 20), (3, 31)]), 33.0),
+            (key(&[(1, 10), (2, 21), (3, 30)]), 65.0),
+        ]
+        .into_iter()
+        .collect();
+        let cells = |cs: [u32; 2], v: &[(Vec<u32>, f64)]| {
+            let pairs = |items: &[u32]| {
+                cs.iter()
+                    .copied()
+                    .zip(items.iter().copied())
+                    .collect::<Vec<_>>()
+            };
+            v.iter()
+                .map(|(items, x)| (key(&pairs(items)), *x))
+                .collect::<Vec<_>>()
+        };
+        let input = vec![
+            (MeasureId(100), cells([1, 2], &a)),
+            (MeasureId(101), cells([2, 3], &b)),
+        ];
+        let ty = |cs: &[u32]| TypeInfo {
+            value_type: ValueType::Number,
+            dim: Dim::of(cs.iter().map(|c| CategoryId(*c)).collect()),
+        };
+        let leaf = |id: u32, cs: &[u32]| PlanNode {
+            kind: PlanNodeKind::InputMeasure(MeasureId(id)),
+            ty: ty(cs),
+        };
+        let mul = |l: PlanNode, r: PlanNode| PlanNode {
+            kind: PlanNodeKind::MapBinary(BinaryOp::Mul, Box::new(l), Box::new(r)),
+            ty: ty(&[1, 2, 3]),
+        };
+        let (pa, pb) = (leaf(100, &[1, 2]), leaf(101, &[2, 3]));
+        let joined = PlanNode {
+            kind: PlanNodeKind::Join {
+                left: Box::new(pa.clone()),
+                right: Box::new(pb.clone()),
+                join_keys: vec![CategoryId(2)],
+            },
+            ty: ty(&[1, 2, 3]),
+        };
+        for plan in [
+            mul(pa.clone(), pb.clone()),
+            mul(pb.clone(), pa),
+            mul(joined, pb),
+        ] {
+            assert_eq!(run_plan(plan.clone(), input.clone()), want, "{plan:?}");
+        }
+        let m = bcast_model(&[1, 2], &a, &[2, 3], &b, BinaryOp::Mul, true);
+        assert!(matches!(
+            evaluate(&m, &[MeasureId(102)]),
+            Err(EngineError::Compile(
+                crate::compiler::CompileError::DimensionMismatch(_)
+            ))
+        ));
+    }
+
+    /// `session::Engine` (incremental) agrees with `evaluate` on broadcasts,
+    /// both at build time and after edits to either operand.
+    #[test]
+    fn broadcast_session_matches_evaluate() {
+        let snap_r = |snap: &crate::session::Snapshot| -> BTreeMap<CoordKey, f64> {
+            snap.get(&MeasureId(102))
+                .map(|r| {
+                    r.iter()
+                        .map(|(k, v)| (k.clone(), v.as_num().unwrap()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let ((pc, p), (dc, d)) = price_discount();
+        for op in [BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div] {
+            for a_left in [true, false] {
+                let mut m = bcast_model(&pc, &p, &dc, &d, op, a_left);
+                let (mut engine, snap) =
+                    crate::session::Engine::new(&m, &[MeasureId(102)]).expect("engine");
+                assert_eq!(snap_r(&snap), eval_r(&m), "initial {op:?} {a_left}");
+                assert_eq!(snap_r(&snap).len(), 3);
+                // Edit the smaller operand and add a cell to the larger one.
+                engine
+                    .set(MeasureId(101), key(&[(2, 21)]), 4.0)
+                    .expect("edit");
+                let snap = engine
+                    .set(MeasureId(100), key(&[(1, 11), (2, 21)]), 7.0)
+                    .expect("edit");
+                let c = |pairs: &[(u32, u32)]| decode_coord(&key(pairs));
+                m.set_input(MeasureId(101), c(&[(2, 21)]), Value::Number(4.0));
+                m.set_input(MeasureId(100), c(&[(1, 11), (2, 21)]), Value::Number(7.0));
+                assert_eq!(snap_r(&snap), eval_r(&m), "edited {op:?} {a_left}");
+                if (op, a_left) == (BinaryOp::Sub, true) {
+                    let want: BTreeMap<CoordKey, f64> = [
+                        (key(&[(1, 10), (2, 20)]), 90.0),
+                        (key(&[(1, 10), (2, 21)]), 46.0),
+                        (key(&[(1, 11), (2, 20)]), 110.0),
+                        (key(&[(1, 11), (2, 21)]), 3.0),
+                    ]
+                    .into_iter()
+                    .collect();
+                    assert_eq!(snap_r(&snap), want);
+                }
+            }
+        }
+    }
+
+    /// All coordinates over `cats`, two items per category (`10c`, `10c+1`).
+    fn coords(cats: &[u32]) -> Vec<Vec<u32>> {
+        cats.iter().fold(vec![vec![]], |acc, c| {
+            acc.into_iter()
+                .flat_map(|pre| {
+                    (0..2).map(move |i| {
+                        let mut v = pre.clone();
+                        v.push(10 * c + i);
+                        v
+                    })
+                })
+                .collect()
+        })
+    }
+
+    proptest::proptest! {
+        /// `evaluate(A op B)` equals a naive reference: iterate the union's
+        /// Cartesian coordinates, look up each broadcast operand by projecting,
+        /// and apply `op` where both exist. Non-broadcastable dims must error.
+        #[test]
+        fn broadcast_matches_naive_reference(
+            a_mask in 0u8..8,
+            b_mask in 0u8..8,
+            a_vals in proptest::collection::vec(proptest::option::of(1i32..=9), 8),
+            b_vals in proptest::collection::vec(proptest::option::of(-9i32..=-1), 8),
+            op_ix in 0usize..4,
+            a_left: bool,
+        ) {
+            let op = [BinaryOp::Add, BinaryOp::Sub, BinaryOp::Mul, BinaryOp::Div][op_ix];
+            let cats = |mask: u8| (1..=3u32).filter(|c| mask & (1 << (c - 1)) != 0).collect::<Vec<_>>();
+            let (ac, bc) = (cats(a_mask), cats(b_mask));
+            let cells = |cs: &[u32], vals: &[Option<i32>]| -> Vec<(Vec<u32>, f64)> {
+                coords(cs).into_iter().zip(vals).filter_map(|(c, v)| v.map(|v| (c, f64::from(v)))).collect()
+            };
+            let (a, b) = (cells(&ac, &a_vals), cells(&bc, &b_vals));
+            let m = bcast_model(&ac, &a, &bc, &b, op, a_left);
+            let subset = |x: u8, y: u8| x & y == x;
+            if !subset(a_mask, b_mask) && !subset(b_mask, a_mask) {
+                proptest::prop_assert!(evaluate(&m, &[MeasureId(102)]).is_err());
+                return Ok(());
+            }
+            let union = cats(a_mask | b_mask);
+            let lookup = |cs: &[u32], cells: &[(Vec<u32>, f64)], u: &[u32]| {
+                let want: Vec<u32> = union.iter().zip(u).filter(|(c, _)| cs.contains(c)).map(|(_, i)| *i).collect();
+                cells.iter().find(|(c, _)| *c == want).map(|(_, v)| *v)
+            };
+            let mut reference = BTreeMap::new();
+            for u in coords(&union) {
+                let (Some(x), Some(y)) = (lookup(&ac, &a, &u), lookup(&bc, &b, &u)) else { continue };
+                let (x, y) = if a_left { (x, y) } else { (y, x) };
+                let v = match op {
+                    BinaryOp::Add => x + y,
+                    BinaryOp::Sub => x - y,
+                    BinaryOp::Mul => x * y,
+                    _ => x / y,
+                };
+                let k: Vec<(u32, u32)> = union.iter().copied().zip(u).collect();
+                reference.insert(key(&k), v);
+            }
+            proptest::prop_assert_eq!(eval_r(&m), reference);
+        }
+    }
 
     // The canonical Time x Product revenue model with known results.
     fn revenue_model() -> Model {

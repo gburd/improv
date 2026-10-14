@@ -263,6 +263,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Broadcast binary ops with the larger operand on the left.** A formula
+  such as `Net = Price[Time,Product] - Discount[Product]` (or `*`, `+`, `/`)
+  evaluated to no cells. Only the mirrored `Discount - Price` worked. The
+  dataflow `MapBinary` joined its operands on the full coordinate, so a row
+  matched only when the right operand already spanned the result's
+  dimensions. `Join`, `MapBinary` and two-argument scalar calls now share one
+  broadcast-join helper that keys both sides on their shared categories.
+
 - **Incremental recalculation no longer drops cells whose value went down.**
   The engine's update stream orders a changed cell's `+new` before `-old`
   when the new value sorts lower, and the session snapshot applied the
