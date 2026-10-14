@@ -8,6 +8,21 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **pg_improv: Improv models over Postgres data** (`crates/pg_improv`,
+  `crates/pg_model`, `crates/storage_pg`, `crates/store`). Bind fact-table
+  columns to categories and measures, define formulas, read results from
+  `improv_<model>.<measure>` tables. Three update paths: **logical decoding**
+  (default; a background worker tails a slot and applies each batch with the
+  slot advance in one transaction), **triggers** (in the writer's
+  transaction), and **`improv.recalc()`** (explicit, in your transaction);
+  plus `improv.what_if` and `improv.status`. The GUI, TUI, CLI and server
+  open `postgres://…?model=<name>`. Measured on a c7i.4xlarge at 100k cells:
+  logical keeps a writer's UPDATE at 8 ms (results ~1.2 s later); a trigger
+  makes them visible at commit for ~1.1 s per write. See
+  `docs/src/postgres.md`.
+
+### Added
+
 - **`pg_improv` Postgres extension, layer L0** (in progress). A pgrx 0.17
   extension (`crates/pg_improv`, pg17) with an `improv.*` catalog that is a
   superset of `improv_storage_pg`'s, plus `improv.create_model`,

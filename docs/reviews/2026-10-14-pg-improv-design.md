@@ -1,6 +1,6 @@
 # pg_improv — Improv models over Postgres data (design + build plan)
 
-Status: **approved 2026-10-14, in progress.** Approach B2 (Improv's own
+Status: **approved 2026-10-14; L0–L5 done.** v1 apply strategy in logical mode is a full recompute per batch; the live incremental engine in the worker is the next step (§4.1). Approach B2 (Improv's own
 incremental engine, live, inside Postgres) + C (the model lives in Postgres;
 `improv-gui postgres://…` edits it). Supersedes nothing; extends
 `AGENT_DATABASE_CONNECTIVITY.md` (external SQL) and
@@ -127,10 +127,10 @@ Trade-off table goes in the user docs verbatim.
 | --- | --- | --- | --- |
 | L0 | `crates/pg_improv` skeleton (pgrx 0.17, pg17), catalog SQL, `improv.create_model/define/bind_*`, `improv.recalc` (full recompute, backend thread) | `cargo pgrx test pg17`: define Revenue over a `sales` table, recalc, assert oracle values | done (`eff870a`) |
 | L1 | Triggers mode: `on_change` + statement transition tables, closure-restricted recompute | pg_test: UPDATE price in a txn → result row changes in the same txn; ROLLBACK leaves results unchanged | done (`4e91590`) |
-| L2 | Logical mode: bgworker, slot/publication lifecycle, pgoutput decode, live Engine, atomic write+advance | pg_test (+ integration script): UPDATE commits → result updates within N ms; kill -9 worker → no loss/no dupes | — |
+| L2 | Logical mode: bgworker, slot/publication lifecycle, pgoutput decode, live Engine, atomic write+advance | pg_test (+ integration script): UPDATE commits → result updates within N ms; kill -9 worker → no loss/no dupes | done (`0928fc9`, `eecb8c4`; e2e `crates/pg_improv/tests/logical.sh`) |
 | L3 | `improv_storage_pg` + `Store::open` seam; GUI/TUI/CLI open `postgres://` | test: CLI `list postgres://…` shows the model; GUI headless test loads it; screenshot via gui-shot against a pg model | done (`76656ce`) |
-| L4 | Benchmarks on kiwi: trigger vs logical vs recalc — writer latency, end-to-end freshness, throughput at 100k/1M cells | `docs/reviews/<date>-pg-improv-bench.md` | — |
-| L5 | Docs (mdBook page, README, man), CI job (pgrx test on pg17), CHANGELOG | gate green | — |
+| L4 | Benchmarks on kiwi: trigger vs logical vs recalc — writer latency, end-to-end freshness, throughput at 100k/1M cells | `docs/reviews/<date>-pg-improv-bench.md` | done (`docs/reviews/bench/bench-pg-modes.sh`; table in `crates/pg_improv/README.md`) |
+| L5 | Docs (mdBook page, README, man), CI job (pgrx test on pg17), CHANGELOG | gate green | done (mdBook `postgres.md`, README, CI `pg_improv` job, CHANGELOG) |
 
 **Status.** L3 landed on `work/pg-store` (through `76656ce`): crates
 `improv_storage_pg` (`PgModelStore`, `CATALOG_SQL`) and `improv_store`
