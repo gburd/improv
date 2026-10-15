@@ -206,7 +206,7 @@ CREATE FUNCTION margin(price float8, cost float8) RETURNS float8
 CREATE FUNCTION bonus(sales float8, target float8) RETURNS float8
   LANGUAGE improv AS $$
     Ratio = sales / target
-    IF(Ratio > 1, (Ratio - 1) * 1000, 0)
+    MAX2(Ratio - 1, 0) * 1000
   $$;
 CREATE FUNCTION revenue(price float8, qty float8) RETURNS float8
   LANGUAGE improv AS 'price times qty';                -- controlled English too
