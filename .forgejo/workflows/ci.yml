@@ -108,9 +108,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: improv
-      - name: Install nightly + llvm-cov, bubblewrap, python3, postgres
+      # A container has no user namespaces, so bwrap cannot run here: leave it
+      # out and let IMPROV_EXTFN_ALLOW_UNSANDBOXED=1 run the Python extfn paths
+      # under rlimits only (GitHub's job covers the bwrap path on the host).
+      - name: Install nightly + llvm-cov, python3, postgres
         run: |
-          apt-get update && apt-get install -y --no-install-recommends bubblewrap python3 postgresql
+          apt-get update && apt-get install -y --no-install-recommends python3 postgresql
           rustup toolchain install nightly --profile minimal -c llvm-tools-preview
           cargo install cargo-llvm-cov --locked
           service postgresql start
@@ -119,6 +122,7 @@ jobs:
         working-directory: improv
         env:
           IMPROV_TEST_PG: "host=127.0.0.1 user=improv password=improv dbname=improv_test"
+          IMPROV_EXTFN_ALLOW_UNSANDBOXED: "1"
         run: scripts/coverage.sh 90
 
   # pg_improv (see .github/workflows/ci.yml for the rationale).
@@ -142,7 +146,7 @@ jobs:
           run() { sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"; }
           run cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
           cargo fmt --check
-          cargo clippy --features pg17 --all-targets -- -D warnings
+          run cargo clippy --features pg17 --all-targets -- -D warnings
           run cargo pgrx test pg17
           run cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config
           run env N_SINGLE=10 N_BULK=3 ./tests/logical.sh

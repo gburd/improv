@@ -226,7 +226,7 @@ jobs:
         working-directory: improv/crates/pg_improv
         run: |
           cargo fmt --check
-          cargo clippy --features pg17 --all-targets -- -D warnings
+          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo clippy --features pg17 --all-targets -- -D warnings
       - name: pg_test
         working-directory: improv/crates/pg_improv
         run: sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx test pg17
