@@ -63,6 +63,27 @@ returns the derived cells that would change, writing nothing.
 writer must read derived results in its own transaction. Use `recalc` after
 bulk loads or inside migrations.
 
+## Functions written in Improv's language
+
+`LANGUAGE improv` lets any role write a SQL function as an Improv formula:
+
+```sql
+CREATE FUNCTION bonus(sales float8, target float8) RETURNS float8
+  LANGUAGE improv IMMUTABLE AS $$
+    Ratio = sales / target
+    MAX2(Ratio - 1, 0) * 1000
+  $$;
+SELECT rep, bonus(sales, target) FROM quota;
+```
+
+The SQL arguments are the inputs, by name; `Name = expr` lines define
+intermediate measures; the last line is the result. Lines may be the DSL or
+controlled English (`price times qty`). The semantics are the engine's: a
+NULL argument gives NULL wherever the result depends on it, and division by
+zero gives `NaN`. Aggregations need categories, so `SUM(x OVER Time)` is
+rejected; put it in a model. A call costs about 0.14 µs. See
+`crates/pg_improv/README.md` for the types and rules.
+
 ## Durability
 
 In logical mode the worker writes a batch of results and advances its slot
