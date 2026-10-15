@@ -91,7 +91,7 @@ impl CellValue {
 impl std::fmt::Display for CellValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CellValue::Num(bits) => write!(f, "{}", f64::from_bits(*bits)),
+            CellValue::Num(bits) => f.write_str(&display_number(f64::from_bits(*bits))),
             CellValue::Bool(b) => write!(f, "{b}"),
             CellValue::Text(t) => write!(f, "{t}"),
             CellValue::Date(ms) => {
@@ -104,6 +104,20 @@ impl std::fmt::Display for CellValue {
             CellValue::Err(_) => write!(f, "#ERR"),
         }
     }
+}
+
+/// A number as people read it: at most 15 significant digits, the precision
+/// an `f64` always carries through decimal, so binary noise like
+/// `58.650000000000006` (from `1173 * 0.05`) shows as `58.65`. The value
+/// itself is untouched; exports (CSV, SQL, Postgres) keep every bit.
+pub fn display_number(n: f64) -> String {
+    if !n.is_finite() || n == 0.0 {
+        return if n == 0.0 { "0".into() } else { n.to_string() };
+    }
+    // `{:.14e}` rounds to 15 significant digits; parsing it back and printing
+    // with `{}` gives the shortest decimal for that rounded value.
+    let rounded: f64 = format!("{n:.14e}").parse().unwrap_or(n);
+    rounded.to_string()
 }
 
 /// Encode a `Coordinate` as its dataflow key (BTreeMap already iterates sorted).
@@ -252,6 +266,25 @@ mod spike {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    #[test]
+    fn display_number_hides_binary_noise_not_digits() {
+        use super::display_number as d;
+        assert_eq!(d(1173.0 * 0.05), "58.65");
+        assert_eq!(d(936.0 * 0.05), "46.8");
+        assert_eq!(d(0.1 + 0.2), "0.3");
+        assert_eq!(d(1000.0), "1000");
+        assert_eq!(d(-2.5), "-2.5");
+        assert_eq!(d(0.0), "0");
+        assert_eq!(d(-0.0), "0");
+        assert_eq!(d(1.0 / 3.0), "0.333333333333333");
+        assert_eq!(d(123_456_789_012_345.0), "123456789012345");
+        assert_eq!(d(1e300), 1e300.to_string(), "no exponent form, as before");
+        assert_eq!(d(1.5e-7), "0.00000015");
+        assert_eq!(d(f64::NAN), "NaN");
+        assert_eq!(d(f64::INFINITY), "inf");
+        assert_eq!(super::CellValue::num(1173.0 * 0.05).to_string(), "58.65");
+    }
+
     use super::*;
     use improv_core_model::{ValueError, ValueErrorKind};
 

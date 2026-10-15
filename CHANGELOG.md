@@ -6,6 +6,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Numbers display without binary noise.** Every front end showed a value
+  at full `f64` precision, so `1173 * 0.05` read `58.650000000000006`. They
+  now show 15 significant digits (`58.65`); stored values and exports keep
+  every bit.
+
 ### Added
 
 - **GUI: grids scroll sideways.** A worksheet wider than its window has a
