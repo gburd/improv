@@ -828,3 +828,46 @@ fn rows_added_by_another_client_survive_a_save() {
         .batch_execute(&format!("DROP TABLE {table}"))
         .unwrap();
 }
+
+/// Without a snapshot a save writes every bound cell, unchecked (the
+/// pre-G2 behaviour); a guard matching several rows is a conflict.
+#[test]
+fn snapshotless_saves_overwrite_and_duplicate_rows_conflict() {
+    let Some(url) = live("g2_blind") else { return };
+    let table = format!("g2_blind_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut m = s.load_model().unwrap();
+    client()
+        .execute(
+            &format!("UPDATE {table} SET price = 99 WHERE quarter = 'Q2'"),
+            &[],
+        )
+        .unwrap();
+    m.add_item(ItemId(500), T, "Q9");
+    m.set_input(PRICE, at(&m, "Q9", "Widget"), Value::Number(1.0));
+    s.set_snapshot(None);
+    s.save_model(&m).unwrap();
+    assert_eq!(
+        fact_rows(&table),
+        [
+            row("Q1", "Gadget", Some(20.0), None),
+            row("Q1", "Widget", Some(10.0), Some(100)),
+            row("Q2", "Widget", Some(11.0), Some(110)),
+            row("Q9", "Widget", Some(1.0), None),
+        ]
+    );
+    // The save took a snapshot; a duplicate row then makes the guard match
+    // two rows.
+    client()
+        .batch_execute(&format!(
+            "ALTER TABLE {table} DROP CONSTRAINT {table}_pkey; \
+             INSERT INTO {table} VALUES ('Q9', 'Widget', 1, NULL)"
+        ))
+        .unwrap();
+    m.set_input(PRICE, at(&m, "Q9", "Widget"), Value::Number(2.0));
+    let e = s.save_model(&m).unwrap_err();
+    assert!(e.to_string().contains("Price[Widget, Q9]"), "{e}");
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
