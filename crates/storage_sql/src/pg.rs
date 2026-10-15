@@ -274,11 +274,14 @@ mod tests {
             "host=127.0.0.1 user=u",
             "host=::1 user=u",
             "postgresql://u@localhost:5433/db",
-            "host=/var/run/postgresql user=u",
             "host=db.example.com user=u sslmode=disable",
         ] {
             assert!(transport(ok).is_ok(), "{ok:?}");
         }
+        // A socket directory is a `Host::Unix` only on unix; elsewhere the
+        // driver parses it as a TCP host name, which is not loopback.
+        #[cfg(unix)]
+        assert!(transport("host=/var/run/postgresql user=u").is_ok());
     }
 
     #[test]

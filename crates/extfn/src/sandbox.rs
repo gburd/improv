@@ -96,6 +96,7 @@ fn allow_unsandboxed() -> bool {
 /// Resource ceilings applied via `setrlimit` under [`SandboxPolicy::Restricted`].
 /// Generous enough not to break legitimate small computations, tight enough to
 /// blunt runaway memory growth and fork bombs.
+#[cfg(unix)]
 mod limits {
     /// CPU time, seconds. Defense-in-depth alongside the wall-clock kill in
     /// `runner.rs` (which also bounds wall time even for CPU-light but
@@ -423,7 +424,10 @@ mod tests {
         // An unknown resource id is EINVAL: the error must surface (and so
         // abort the spawn from `pre_exec`), not be swallowed.
         assert!(set_rlimit(9999, 1).is_err());
-        assert!(set_rlimit(libc::RLIMIT_NOFILE, u64::MAX).is_ok());
+        // Clamped to the hard limit, so asking for more succeeds. CPU, not
+        // NOFILE: macOS refuses an unlimited RLIMIT_NOFILE (setrlimit(2)),
+        // and its default NOFILE hard limit is unlimited.
+        assert!(set_rlimit(libc::RLIMIT_CPU, u64::MAX).is_ok());
     }
 
     /// The program is run by its canonical path, so a symlinked interpreter

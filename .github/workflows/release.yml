@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,12 +21,18 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            test: true
           - os: macos-latest
             target: aarch64-apple-darwin
-          - os: macos-13
+            test: true
+          # Intel macOS runners are gone (macos-13 retired): cross-compile on
+          # the arm64 runner; its tests run only for the native target above.
+          - os: macos-latest
             target: x86_64-apple-darwin
+            test: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            test: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -40,33 +46,73 @@ jobs:
           workspaces: improv
           key: release-${{ matrix.target }}
       - name: Test (release)
+        if: matrix.test
         working-directory: improv
-        run: cargo test --workspace --release
-      - name: Build CLI (release)
+        run: cargo test --workspace --release --target ${{ matrix.target }}
+      - name: Build binaries (release)
         working-directory: improv
-        run: cargo build --release --target ${{ matrix.target }} -p improv_cli
+        run: >
+          cargo build --release --target ${{ matrix.target }}
+          -p improv_cli -p improv_tui -p improv_server -p improv_gui
       - name: Package
         working-directory: improv
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          bin=improv
+          set -euo pipefail
           ext=""
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then ext=".exe"; fi
-          staging="improv-${{ github.ref_name }}-${{ matrix.target }}"
-          mkdir -p "$staging"
-          cp "target/${{ matrix.target }}/release/${bin}${ext}" "$staging/"
+          case "$TARGET" in *windows*) ext=".exe" ;; esac
+          staging="improv-${REF_NAME}-${TARGET}"
+          mkdir -p "$staging/man"
+          for bin in improv improv-tui improv-server improv-gui; do
+            cp "target/$TARGET/release/${bin}${ext}" "$staging/"
+          done
+          cp docs/man/*.1 "$staging/man/"
           cp README.md LICENSE-APACHE LICENSE-MIT CHANGELOG.md "$staging/"
-          cp docs/man/improv.1 "$staging/" 2>/dev/null || true
-          if [ "$ext" = ".exe" ]; then
-            7z a "${staging}.zip" "$staging"
-            echo "ASSET=improv/${staging}.zip" >> "$GITHUB_ENV"
+          mkdir -p dist
+          if [ -n "$ext" ]; then
+            7z a "dist/${staging}.zip" "$staging"
           else
-            tar czf "${staging}.tar.gz" "$staging"
-            echo "ASSET=improv/${staging}.tar.gz" >> "$GITHUB_ENV"
+            tar czf "dist/${staging}.tar.gz" "$staging"
           fi
-      - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          files: ${{ env.ASSET }}
+          name: dist-${{ matrix.target }}
+          path: improv/dist/*
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: qualify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Release notes from CHANGELOG
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          # The `## [X.Y.Z] - date` section for this tag, up to the next one.
+          awk -v h="## [${REF_NAME#v}]" \
+            'index($0, h) == 1 { f = 1; next } f && /^## \[/ { exit } f' \
+            CHANGELOG.md > release-notes.md
+          test -s release-notes.md || {
+            echo "CHANGELOG.md has no '## [${REF_NAME#v}]' section" >&2
+            exit 1
+          }
+      - uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
+        with:
+          body_path: release-notes.md
+          files: dist/*
           fail_on_unmatched_files: true

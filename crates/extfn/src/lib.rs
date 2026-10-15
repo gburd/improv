@@ -396,25 +396,29 @@ mod tests {
 
     // ---- Interpreter availability probe (shared) ----
 
-    /// True if `cmd --version` exits successfully. Round-trip tests for R/Julia/
-    /// Pure early-return (logging a skip) when their interpreter is missing so CI
-    /// without them still passes.
-    fn cmd_available(cmd: &str) -> bool {
-        std::process::Command::new(cmd)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
+    /// True if a trivial `language` body (`body` sets `result` to 1) runs
+    /// under the host sandbox policy, like [`python_available`]. R/Julia/Pure
+    /// tests early-return (logging a skip) when false: the interpreter is
+    /// missing, or `Restricted` fails closed (no working `bwrap`), or it is
+    /// too slow to start within `timeout`.
+    fn sandboxed_available(language: Language, body: &str, timeout: Duration) -> bool {
+        let probe = ExternalFn {
+            name: "probe".into(),
+            language,
+            body: body.into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        eval(&probe, &[], timeout).is_ok_and(|v| v == Value::Number(1.0))
     }
 
     // ---- R (guarded) ----
 
     #[test]
     fn r_hypot() {
-        if !cmd_available("Rscript") {
-            println!("skipped: Rscript not found");
+        if !sandboxed_available(Language::R, "result <- 1", Duration::from_secs(10)) {
+            println!("skipped: Rscript not found (or no sandbox)");
             return;
         }
         let f = ExternalFn {
@@ -438,8 +442,8 @@ mod tests {
 
     #[test]
     fn julia_sum() {
-        if !cmd_available("julia") {
-            println!("skipped: julia not found");
+        if !sandboxed_available(Language::Julia, "    result = 1", Duration::from_secs(30)) {
+            println!("skipped: julia not found (or no sandbox)");
             return;
         }
         let f = ExternalFn {
@@ -463,8 +467,8 @@ mod tests {
 
     #[test]
     fn pure_sum() {
-        if !cmd_available("pure") {
-            println!("skipped: pure not found");
+        if !sandboxed_available(Language::Pure, "let result = 1;", Duration::from_secs(10)) {
+            println!("skipped: pure not found (or no sandbox)");
             return;
         }
         let f = ExternalFn {
@@ -600,7 +604,9 @@ mod tests {
     /// well past the sandbox's `RLIMIT_AS` ceiling must fail (Python raises
     /// `MemoryError`, which the driver catches and reports as an error
     /// envelope) rather than succeed. This is the rlimit half of the sandbox,
-    /// independent of whether `bwrap` is present.
+    /// independent of whether `bwrap` is present. Linux only: macOS accepts
+    /// `RLIMIT_AS` but does not enforce it.
+    #[cfg(target_os = "linux")]
     #[test]
     fn restricted_python_hits_memory_limit() {
         if !python_available() {
