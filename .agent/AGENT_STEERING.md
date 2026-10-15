@@ -44,11 +44,10 @@ incrementally with a live engine per model (G1 DONE: 100k-cell freshness
 in the formula language, 0.14 µs/call); G2 diff-based saves carried through
 GUI/TUI via `store::SaveToken`; G3 one minter (`improv.mint_items`); G4
 `binding.agg`; G5 boolean/text/date measures and typed result tables; G6 the
-new CI jobs run green in their real container. **NEXT for pg_improv:** typed
-values in `session::Edit` so the live worker covers non-number models
-(today they recompute per batch); `what_if` output for non-number measures
-(`jsonb` value column); engine output deltas to drop the per-measure diff
-scan at 1M cells.
+new CI jobs run green in their real container; typed `session::Edit` values,
+so the live worker applies boolean/text/date models cell by cell. **NEXT for
+pg_improv:** `what_if` output for non-number measures (`jsonb` value
+column); engine output deltas to drop the per-measure diff scan at 1M cells.
 
 Then: horizontal scroller arrows and the rows-tile strip inline with the
 horizontal scroller (E2 remainder); P5 per-frame caches if profiling

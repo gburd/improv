@@ -183,4 +183,35 @@ wait_for "$PR" f "typed catch-up" >/dev/null
 q "UPDATE goods SET price = 20"
 wait_for "$PR" t "typed update" >/dev/null
 echo "ok: a derived boolean follows a committed UPDATE (f -> t)"
+
+# 12. text, bool and date inputs apply cell by cell: an UPDATE rewrites one
+#     row of each result and does not rebuild
+q "CREATE TABLE tags (product text PRIMARY KEY, kind text, active bool, due date)"
+q "INSERT INTO tags SELECT 'P'||p, 'a', true, date '2024-01-01' FROM generate_series(1,3) p"
+q "SELECT improv.create_model('tagged')"
+q "SELECT improv.bind_category('tagged','Product','tags','product')"
+q "SELECT improv.bind_measure('tagged','Kind','tags','kind')"
+q "SELECT improv.bind_measure('tagged','Active','tags','active')"
+q "SELECT improv.bind_measure('tagged','Due','tags','due')"
+q "SELECT improv.define('tagged','Label = Kind')"
+q "SELECT improv.define('tagged','Live = Active')"
+q "SELECT improv.define('tagged','Deadline = Due')"
+TL="SELECT value FROM improv_tagged.label WHERE product='P2'"
+q "UPDATE tags SET kind = 'b' WHERE product = 'P1'" # warm the live state
+wait_for "SELECT value FROM improv_tagged.label WHERE product='P1'" b "typed warm-up" >/dev/null
+wait_for "SELECT count(*) FROM improv_tagged.deadline" 3 "typed catch-up" >/dev/null
+txm() { q "SELECT max(xmin::text::bigint) FROM improv_tagged.$1"; }
+lx=$(txm label) vx=$(txm live) dx=$(txm deadline) logpos=$(wc -c <"$D/log")
+q "UPDATE tags SET kind = 'z', active = false, due = date '2024-02-29' WHERE product = 'P2'"
+wait_for "$TL" z "text update" >/dev/null
+wait_for "SELECT value FROM improv_tagged.live WHERE product='P2'" f "bool update" >/dev/null
+wait_for "SELECT value::date FROM improv_tagged.deadline WHERE product='P2'" 2024-02-29 "date update" >/dev/null
+n=$(q "SELECT (SELECT count(*) FROM improv_tagged.label WHERE xmin::text::bigint > $lx) || ' ' ||
+              (SELECT count(*) FROM improv_tagged.live WHERE xmin::text::bigint > $vx) || ' ' ||
+              (SELECT count(*) FROM improv_tagged.deadline WHERE xmin::text::bigint > $dx)")
+[ "$n" = "1 1 1" ] || { echo "FAIL: typed update rewrote $n label/live/deadline rows"; exit 1; }
+if tail -c +$((logpos + 1)) "$D/log" | grep -q "model tagged: rebuilding"; then
+	echo "FAIL: a typed update rebuilt the model"; exit 1
+fi
+echo "ok: text/bool/date UPDATE applied cell by cell (1 row per result, no rebuild)"
 echo "PASS"

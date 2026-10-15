@@ -19,7 +19,7 @@
 
 use crate::plan::PlanNode;
 use crate::{encode_coord, CellValue, CoordKey};
-use improv_core_model::{MeasureId, MeasureKind, Model};
+use improv_core_model::{MeasureId, MeasureKind, Model, Value, ValueType};
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
@@ -35,7 +35,7 @@ use timely::dataflow::operators::probe::Handle as ProbeHandle;
 pub struct Edit {
     pub measure: MeasureId,
     pub coord: CoordKey,
-    pub value: Option<f64>,
+    pub value: Option<CellValue>,
 }
 
 /// A snapshot of a computed derived measure after an edit round.
@@ -68,7 +68,7 @@ pub struct Engine {
     targets: Vec<MeasureId>,
     /// Current known value of each input cell, so `set` can emit the correct
     /// retract+assert delta for a cardinality-one cell.
-    current: HashMap<(MeasureId, CoordKey), f64>,
+    current: HashMap<(MeasureId, CoordKey), CellValue>,
 }
 
 impl Engine {
@@ -91,14 +91,22 @@ impl Engine {
             .map(|(id, _)| *id)
             .collect();
 
-        // Seed edits: the model's current numeric input cells.
-        let mut seed: Vec<(MeasureId, CoordKey, f64)> = Vec::new();
-        let mut current: HashMap<(MeasureId, CoordKey), f64> = HashMap::new();
+        // Seed edits: the model's current input cells of their measure's
+        // type (a mistyped value, e.g. text in a number measure, is no cell).
+        let mut seed: Vec<(MeasureId, CoordKey, CellValue)> = Vec::new();
+        let mut current: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
         for ((mid, coord), val) in &model.inputs {
-            if let improv_core_model::Value::Number(n) = val {
+            let typed = matches!(
+                (model.measures.get(mid).map(|m| m.value_type), val),
+                (Some(ValueType::Number), Value::Number(_))
+                    | (Some(ValueType::Boolean), Value::Boolean(_))
+                    | (Some(ValueType::Text), Value::Text(_))
+                    | (Some(ValueType::DateTime), Value::DateTime(_))
+            );
+            if let Some(cv) = CellValue::from_model_value(val).filter(|_| typed) {
                 let key = encode_coord(coord);
-                seed.push((*mid, key.clone(), *n));
-                current.insert((*mid, key), *n);
+                seed.push((*mid, key.clone(), cv.clone()));
+                current.insert((*mid, key), cv);
             }
         }
 
@@ -140,7 +148,7 @@ impl Engine {
         self.apply(vec![Edit {
             measure,
             coord,
-            value: Some(value),
+            value: Some(CellValue::num(value)),
         }])
     }
 
@@ -159,9 +167,9 @@ impl Engine {
         // Update our shadow of current input values so retract deltas are exact.
         for e in &edits {
             let k = (e.measure, e.coord.clone());
-            match e.value {
+            match &e.value {
                 Some(v) => {
-                    self.current.insert(k, v);
+                    self.current.insert(k, v.clone());
                 }
                 None => {
                     self.current.remove(&k);
@@ -198,7 +206,7 @@ impl Drop for Engine {
 fn worker_loop(
     input_ids: Vec<MeasureId>,
     plans: Vec<(MeasureId, PlanNode)>,
-    seed: Vec<(MeasureId, CoordKey, f64)>,
+    seed: Vec<(MeasureId, CoordKey, CellValue)>,
     cmd_rx: Receiver<Cmd>,
     ready_tx: Sender<()>,
 ) {
@@ -280,7 +288,7 @@ fn worker_loop(
         // Apply the seed at time 0, then advance to 1 and run.
         for (mid, coord, v) in &seed {
             if let Some(session) = sessions.get_mut(mid) {
-                session.insert((coord.clone(), CellValue::num(*v)));
+                session.insert((coord.clone(), v.clone()));
             }
         }
         let mut t: u64 = 1;
@@ -293,7 +301,7 @@ fn worker_loop(
         // retract(old)+assert(new) on the cardinality-one cell.
         let mut prev: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
         for (mid, coord, v) in &seed {
-            prev.insert((*mid, coord.clone()), CellValue::num(*v));
+            prev.insert((*mid, coord.clone()), v.clone());
         }
 
         while let Ok(cmd) = cmd_rx.recv() {
@@ -306,11 +314,10 @@ fn worker_loop(
                             if let Some(old_val) = old {
                                 session.remove((e.coord.clone(), old_val));
                             }
-                            match e.value {
-                                Some(v) => {
-                                    let cv = CellValue::num(v);
+                            match &e.value {
+                                Some(cv) => {
                                     session.insert((e.coord.clone(), cv.clone()));
-                                    prev.insert(key, cv);
+                                    prev.insert(key, cv.clone());
                                 }
                                 None => {
                                     prev.remove(&key);
@@ -433,6 +440,58 @@ mod tests {
         let rev = |s: &Snapshot| s[&MeasureId(102)][&key(&[(1, 10), (2, 20)])].as_num();
         assert_eq!(rev(&before), Some(1000.0), "old snapshot unchanged");
         assert_eq!(rev(&after), Some(1500.0));
+    }
+
+    /// Typed inputs seed and edit like numbers: a text input feeding a
+    /// derived copy follows a text edit.
+    #[test]
+    fn typed_inputs_seed_and_edit() {
+        let mut model = revenue_model();
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Kind".into()),
+            value_type: ValueType::Text,
+            categories: vec![CategoryId(2)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        model.add_measure(Measure {
+            id: MeasureId(104),
+            name: Name("Label".into()),
+            value_type: ValueType::Text,
+            categories: vec![CategoryId(2)],
+            kind: MeasureKind::Derived(Formula::new(Expr::Ref(
+                MeasureId(103),
+                DimensionSpec::default(),
+            ))),
+            description: None,
+        });
+        model.set_input(
+            MeasureId(103),
+            Coordinate::from_pairs([(CategoryId(2), ItemId(20))]),
+            Value::Text("a".into()),
+        );
+        // A number in the text measure is mistyped: no cell.
+        model.set_input(
+            MeasureId(103),
+            Coordinate::from_pairs([(CategoryId(2), ItemId(21))]),
+            Value::Number(1.0),
+        );
+        let (mut engine, before) = Engine::new(&model, &[MeasureId(104)]).expect("engine");
+        assert_eq!(before[&MeasureId(104)].len(), 1);
+        let label = |s: &Snapshot| s[&MeasureId(104)].get(&key(&[(2, 20)])).cloned();
+        assert_eq!(label(&before), Some(CellValue::Text("a".into())));
+        let edit = |value| Edit {
+            measure: MeasureId(103),
+            coord: key(&[(2, 20)]),
+            value,
+        };
+        let after = engine
+            .apply(vec![edit(Some(CellValue::Text("b".into())))])
+            .expect("edit");
+        assert_eq!(label(&after), Some(CellValue::Text("b".into())));
+        let cleared = engine.apply(vec![edit(None)]).expect("clear");
+        assert_eq!(label(&cleared), None);
     }
 
     fn key(pairs: &[(u32, u32)]) -> CoordKey {
