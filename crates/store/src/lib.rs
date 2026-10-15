@@ -109,6 +109,50 @@ impl Store {
             Store::Pg(s) => s.set_loaded_tx(tx),
         }
     }
+
+    /// Everything a later handle needs to save safely over what this one
+    /// loaded or saved: the optimistic-concurrency token and (Postgres) the
+    /// snapshot a save diffs against, so it writes only what changed.
+    /// Callers that reopen the store per save carry this across handles.
+    pub fn save_token(&self) -> SaveToken {
+        match self {
+            Store::Mentat(s) => SaveToken {
+                tx: s.loaded_tx(),
+                pg: None,
+            },
+            Store::Pg(s) => SaveToken {
+                tx: s.loaded_tx(),
+                pg: s.snapshot().cloned(),
+            },
+        }
+    }
+
+    /// Adopt a token from [`Store::save_token`] before saving.
+    pub fn set_save_token(&mut self, token: &SaveToken) {
+        match self {
+            Store::Mentat(s) => s.set_loaded_tx(token.tx),
+            Store::Pg(s) => {
+                s.set_loaded_tx(token.tx);
+                s.set_snapshot(token.pg.clone());
+            }
+        }
+    }
+}
+
+/// What a store handle last loaded or saved, carried to the next handle (see
+/// [`Store::save_token`]). `Default` is "nothing loaded": the save writes the
+/// whole model unchecked.
+#[derive(Debug, Clone, Default)]
+pub struct SaveToken {
+    tx: Option<i64>,
+    pg: Option<improv_storage_pg::PgSnapshot>,
+}
+
+impl SaveToken {
+    /// The optimistic-concurrency high-water this token carries.
+    pub fn tx(&self) -> Option<i64> {
+        self.tx
+    }
 }
 
 #[cfg(test)]

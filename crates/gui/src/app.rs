@@ -165,7 +165,7 @@ pub struct ImprovApp {
     dirty: bool,
     /// The store high-water this model was loaded/last saved at, so a save
     /// refuses to clobber another process's writes (`StoreError::Conflict`).
-    loaded_tx: Option<i64>,
+    save_token: improv_store::SaveToken,
     /// The native title last sent, so `update` only sends a change.
     last_title: String,
     /// The `status` the status bar last drew, and when (egui time) it first
@@ -864,12 +864,12 @@ impl ImprovApp {
     /// Load a model from the store at `db` (`""` = fresh in-memory model) and
     /// build the live engine over its derived measures.
     pub fn load(db: &str) -> Result<ImprovApp, String> {
-        let (model, loaded_tx) = if db.is_empty() {
-            (Model::new(), None)
+        let (model, save_token) = if db.is_empty() {
+            (Model::new(), improv_store::SaveToken::default())
         } else {
             let mut store = Store::open(db).map_err(|e| e.to_string())?;
             let model = store.load_model().map_err(|e| e.to_string())?;
-            (model, store.loaded_tx())
+            (model, store.save_token())
         };
 
         let (engine, snapshot) = build_engine(&model);
@@ -878,7 +878,7 @@ impl ImprovApp {
 
         Ok(ImprovApp {
             db: db.to_string(),
-            loaded_tx,
+            save_token,
             model,
             engine,
             snapshot,
@@ -1992,9 +1992,9 @@ impl ImprovApp {
         }
         let r = Store::open(&self.db)
             .and_then(|mut s| {
-                s.set_loaded_tx(self.loaded_tx);
+                s.set_save_token(&self.save_token);
                 s.save_model(&self.model)?;
-                self.loaded_tx = s.loaded_tx();
+                self.save_token = s.save_token();
                 Ok(())
             })
             .map_err(|e| format!("save failed: {e}"));
@@ -5035,7 +5035,7 @@ mod tests {
         let matrices = vec![Matrix::new(&model, selected)];
         ImprovApp {
             db: String::new(),
-            loaded_tx: None,
+            save_token: improv_store::SaveToken::default(),
             model,
             engine,
             snapshot,
@@ -11367,5 +11367,116 @@ mod tests {
         app.save().expect("save to postgres");
         let back = store.reload_model().unwrap();
         assert_eq!(back.items[&ItemId(10)].name.0, "Q1x");
+    }
+
+    /// G2 through the GUI's real save path (it reopens the store for every
+    /// save and carries a `SaveToken`): a SQL edit to one bound cell made
+    /// after the GUI loaded survives a GUI save of a different cell, and a
+    /// GUI edit of a cell SQL changed meanwhile is a conflict, not a silent
+    /// overwrite.
+    #[test]
+    fn gui_save_keeps_concurrent_sql_edits_to_bound_cells() {
+        let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return;
+        };
+        let pid = std::process::id();
+        let (model, table) = (format!("guig2_{pid}"), format!("guig2_sales_{pid}"));
+        // `Store::open` needs a URL (it dispatches on `postgres://`); the
+        // test DSN is libpq key=value form.
+        let kv: HashMap<_, _> = dsn
+            .split_whitespace()
+            .filter_map(|p| p.split_once('='))
+            .collect();
+        let get = |k| kv.get(k).copied().unwrap_or_default();
+        let url = format!(
+            "postgres://{}:{}@{}/{}?model={model}",
+            get("user"),
+            get("password"),
+            get("host"),
+            get("dbname")
+        );
+        // An empty model with Time × Product, saved through the store so the
+        // catalog rows exist; then a fact table bound to Price by SQL.
+        let mut m = Model::new();
+        m.add_category(CategoryId(1), "Time");
+        m.add_category(CategoryId(2), "Product");
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Price".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let mut store = improv_store::Store::open(&url).unwrap();
+        store.save_model(&m).unwrap();
+        let mut sql = postgres::Client::connect(&dsn, postgres::NoTls).unwrap();
+        sql.batch_execute(&format!(
+            "DROP TABLE IF EXISTS {table};
+             CREATE TABLE {table} (quarter text, product text, price float8,
+                                   PRIMARY KEY (quarter, product));
+             INSERT INTO {table} VALUES ('Q1','Widget',10), ('Q2','Widget',20);
+             INSERT INTO improv.binding (model_id, measure_id, rel, value_col, dim_cols)
+             SELECT id, 100, '{table}'::regclass, 'price',
+                    '{{\"Time\":\"quarter\",\"Product\":\"product\"}}'
+             FROM improv.model WHERE name = '{model}';"
+        ))
+        .unwrap();
+        let price = |sql: &mut postgres::Client, q: &str| -> f64 {
+            sql.query_one(
+                &format!("SELECT price FROM {table} WHERE quarter = $1"),
+                &[&q],
+            )
+            .unwrap()
+            .get(0)
+        };
+
+        let mut app = ImprovApp::load(&url).expect("load");
+        let item = |app: &ImprovApp, n: &str| {
+            app.model
+                .items
+                .values()
+                .find(|i| i.name.0 == n)
+                .map(|i| i.id)
+                .unwrap()
+        };
+        let (q1, w) = (item(&app, "Q1"), item(&app, "Widget"));
+        let at =
+            |t| improv_core_model::Coordinate::from_pairs([(CategoryId(1), t), (CategoryId(2), w)]);
+
+        // SQL edits Q2 after the GUI loaded; the GUI edits Q1 and saves.
+        sql.execute(
+            &format!("UPDATE {table} SET price = 25 WHERE quarter = 'Q2'"),
+            &[],
+        )
+        .unwrap();
+        app.model
+            .set_input(MeasureId(100), at(q1), Value::Number(11.0));
+        app.save().expect("saving an unrelated cell succeeds");
+        assert_eq!(price(&mut sql, "Q1"), 11.0, "the GUI's edit was written");
+        assert_eq!(
+            price(&mut sql, "Q2"),
+            25.0,
+            "the SQL edit survived the GUI save"
+        );
+
+        // SQL edits Q1; the GUI, still holding 11, edits Q1 too.
+        sql.execute(
+            &format!("UPDATE {table} SET price = 99 WHERE quarter = 'Q1'"),
+            &[],
+        )
+        .unwrap();
+        app.model
+            .set_input(MeasureId(100), at(q1), Value::Number(12.0));
+        let err = app
+            .save()
+            .expect_err("overwriting a concurrent SQL edit is a conflict");
+        assert!(err.contains("conflict"), "{err}");
+        assert_eq!(price(&mut sql, "Q1"), 99.0, "the SQL value is untouched");
+        sql.batch_execute(&format!(
+            "DROP TABLE {table}; DELETE FROM improv.model WHERE name = '{model}'"
+        ))
+        .unwrap();
     }
 }

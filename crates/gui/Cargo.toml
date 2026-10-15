@@ -23,3 +23,6 @@ thiserror.workspace = true
 # `coverage(off)` so the report measures library code only.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[dev-dependencies]
+postgres = "0.19"

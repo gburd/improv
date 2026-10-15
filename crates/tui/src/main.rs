@@ -47,11 +47,11 @@ fn main() {
 
 /// Open the model at `path` and build the app state.
 fn load(path: &str) -> Result<App, String> {
-    let (model, loaded_tx) = Store::open(path)
-        .and_then(|mut s| Ok((s.load_model()?, s.loaded_tx())))
+    let (model, save_token) = Store::open(path)
+        .and_then(|mut s| Ok((s.load_model()?, s.save_token())))
         .map_err(|e| format!("cannot open model '{path}': {e}"))?;
     let mut app = App::new(model)?;
-    app.loaded_tx = loaded_tx;
+    app.save_token = save_token;
     Ok(app)
 }
 
@@ -60,7 +60,7 @@ fn load(path: &str) -> Result<App, String> {
 fn save(app: &App, path: &str) -> Result<(), String> {
     Store::open(path)
         .and_then(|mut s| {
-            s.set_loaded_tx(app.loaded_tx);
+            s.set_save_token(&app.save_token);
             s.save_model(&app.model)
         })
         .map_err(|e| format!("autosave failed: {e}"))

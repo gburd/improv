@@ -2634,6 +2634,7 @@ dependencies = [
  "improv_nl_formula",
  "improv_storage_csv",
  "improv_store",
+ "postgres",
  "thiserror 2.0.20",
 ]
 

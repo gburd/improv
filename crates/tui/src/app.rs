@@ -479,7 +479,7 @@ pub struct App {
     pub status: Option<String>,
     /// The store high-water the model was loaded/last saved at; saves refuse
     /// to clobber another process's writes (`StoreError::Conflict`).
-    pub loaded_tx: Option<i64>,
+    pub save_token: improv_store::SaveToken,
     /// Selected item index for each extra (page) dimension of the viewed
     /// measure; `[` / `]` cycle the first one. Reset when the measure changes.
     pub page_idx: Vec<usize>,
@@ -551,7 +551,7 @@ impl App {
             applied_view: None,
             edit: None,
             status: None,
-            loaded_tx: None,
+            save_token: improv_store::SaveToken::default(),
             page_idx,
             axis_order,
             filters: Vec::new(),
@@ -999,9 +999,9 @@ impl App {
         self.model.add_view(view);
         if let Some(path) = path {
             match improv_store::Store::open(path).and_then(|mut s| {
-                s.set_loaded_tx(self.loaded_tx);
+                s.set_save_token(&self.save_token);
                 s.save_model(&self.model)?;
-                self.loaded_tx = s.loaded_tx();
+                self.save_token = s.save_token();
                 Ok(())
             }) {
                 Ok(()) => self.status = Some(format!("saved view '{name}'")),
