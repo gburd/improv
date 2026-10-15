@@ -336,8 +336,9 @@ pub struct BoundRows {
 /// What [`load_inputs`] did.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Loaded {
-    /// Items minted for values seen for the first time; persist them to
-    /// `improv.item` so their ids stay stable.
+    /// Items minted in memory for values the model had no item for. A
+    /// persisting caller mints through `improv.mint_items` first (see
+    /// [`unknown_items`]), so this is empty for it.
     pub new_items: Vec<ItemRow>,
     /// Input cells now in the model.
     pub cells: usize,
@@ -345,15 +346,17 @@ pub struct Loaded {
     pub null_dim_rows: usize,
 }
 
-/// Turn bound fact rows into input cells. Existing items keep their ids; new
-/// distinct values are minted above the model's highest item id, in lexical
-/// order per category, so the same data always mints the same ids. A NULL
-/// value is no cell; a NULL dimension skips (and counts) the row; two rows on
-/// one coordinate are an error.
-pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
-    let known: BTreeSet<ItemId> = model.items.keys().copied().collect();
+/// A bound measure's id, name and categories.
+type Shaped = (MeasureId, String, Vec<CategoryId>);
+
+/// The distinct non-NULL dimension values per category.
+type Distinct<'a> = BTreeMap<CategoryId, BTreeSet<&'a str>>;
+
+/// Validate `bound` against `model`; per measure its shape, and the distinct
+/// non-NULL dimension values per category.
+fn shape<'a>(model: &Model, bound: &'a [BoundRows]) -> Result<(Vec<Shaped>, Distinct<'a>)> {
     let mut shaped = Vec::with_capacity(bound.len());
-    let mut distinct: BTreeMap<CategoryId, BTreeSet<&str>> = BTreeMap::new();
+    let mut distinct = Distinct::new();
     for b in bound {
         let m = model
             .measures
@@ -389,6 +392,35 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
             m.categories.clone(),
         ));
     }
+    Ok((shaped, distinct))
+}
+
+/// The `(category, name)` pairs `bound` uses that `model` has no item for,
+/// sorted. A persisting caller mints them through `improv.mint_items` and
+/// adds the returned items before [`load_inputs`], so it mints nothing.
+pub fn unknown_items(model: &Model, bound: &[BoundRows]) -> Result<Vec<(CategoryId, String)>> {
+    let known: BTreeSet<(CategoryId, &str)> = model
+        .items
+        .values()
+        .map(|i| (i.category, i.name.0.as_str()))
+        .collect();
+    let (_, distinct) = shape(model, bound)?;
+    Ok(distinct
+        .into_iter()
+        .flat_map(|(c, vs)| vs.into_iter().map(move |v| (c, v)))
+        .filter(|k| !known.contains(k))
+        .map(|(c, v)| (c, v.to_string()))
+        .collect())
+}
+
+/// Turn bound fact rows into input cells. Existing items keep their ids; new
+/// distinct values are minted above the model's highest item id, in lexical
+/// order per category, so the same data always mints the same ids. A NULL
+/// value is no cell; a NULL dimension skips (and counts) the row; two rows on
+/// one coordinate are an error.
+pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
+    let known: BTreeSet<ItemId> = model.items.keys().copied().collect();
+    let (shaped, distinct) = shape(model, bound)?;
 
     let mut interner = ItemInterner::seeded_from(model, 1);
     for (c, values) in &distinct {
@@ -1017,6 +1049,10 @@ mod tests {
         let mut model = build_model(&cat).unwrap();
         let mut more = sales();
         more[0].rows.push(row("Q1", "Doohickey", 5.0));
+        assert_eq!(
+            unknown_items(&model, &more).unwrap(),
+            vec![(CategoryId(2), s("Doohickey"))]
+        );
         let again = load_inputs(&mut model, &more).unwrap();
         assert_eq!(again.cells, 17);
         assert_eq!(

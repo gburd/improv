@@ -21,6 +21,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   makes them visible at commit for ~1.1 s per write. See
   `docs/src/postgres.md`.
 
+### Fixed
+
+- **pg_improv: item ids are minted in one place.** `improv.mint_items`
+  (created by both the extension and `improv_storage_pg::CATALOG_SQL`) mints
+  ids for new dimension values, serialized per model, with a unique
+  `(model_id, category_id, name)` index. `improv.recalc`, the trigger and
+  worker paths and the GUI's store all call it, so concurrent loads agree on
+  ids and nothing is minted twice. Minting no longer bumps `model_version`.
+
 ### Added
 
 - **`pg_improv` Postgres extension, layer L0** (in progress). A pgrx 0.17

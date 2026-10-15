@@ -279,6 +279,70 @@ fn bound_model(url: &str, table: &str) -> PgModelStore {
     s
 }
 
+/// Two clients loading one bound model at once, with dimension values no
+/// item exists for yet, get identical ids: `improv.mint_items` mints each
+/// value once (`item_name_uniq` holds) and does not bump the version.
+#[test]
+fn concurrent_loads_mint_identical_item_ids() {
+    let Some(url) = live("mint") else { return };
+    let table = format!("sales_mint_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut c = client();
+    c.execute(
+        &format!("INSERT INTO {table} SELECT 'Q' || q, 'P' || p, 1, 1 FROM generate_series(3, 40) q, generate_series(1, 20) p"),
+        &[],
+    )
+    .unwrap();
+    let before = s.tx_high_water().unwrap();
+    let ids = |m: &Model| -> Vec<(u32, u32, String)> {
+        let mut v: Vec<_> = m
+            .items
+            .values()
+            .map(|i| (i.id.0, i.category.0, i.name.0.clone()))
+            .collect();
+        v.sort();
+        v
+    };
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let loads: Vec<_> = (0..2)
+        .map(|_| {
+            let (url, barrier) = (url.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let mut s = PgModelStore::open(&url).unwrap();
+                barrier.wait();
+                s.load_model().unwrap()
+            })
+        })
+        .collect();
+    let models: Vec<Model> = loads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(ids(&models[0]), ids(&models[1]));
+    assert_eq!(models[0].inputs, models[1].inputs);
+    assert_eq!(
+        models[0].items.len(),
+        1 + 40 + 21,
+        "Widget, Q1..Q40, Gadget + P1..P20"
+    );
+    let dup: i64 = c
+        .query_one(
+            "SELECT count(*) - count(DISTINCT (category_id, name)) FROM improv.item \
+             WHERE model_id = $1",
+            &[&s.model_id],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(dup, 0);
+    assert_eq!(
+        ids(&s.load_model().unwrap()),
+        ids(&models[0]),
+        "a reload re-mints nothing"
+    );
+    assert_eq!(
+        s.tx_high_water().unwrap(),
+        before,
+        "minting does not bump the version"
+    );
+}
+
 #[test]
 fn bound_measures_read_and_write_the_fact_table() {
     let Some(url) = live("bound") else { return };
@@ -292,12 +356,12 @@ fn bound_measures_read_and_write_the_fact_table() {
             .unwrap()
             .id
     };
-    // Widget kept its id; Q1, Q2, Gadget were minted from column values, in
-    // row order (dims sorted by category name: product, then quarter) after
-    // the highest existing id.
+    // Widget kept its id; Q1, Q2, Gadget were minted by improv.mint_items
+    // from column values, ordered by (category id, name), after the highest
+    // existing id.
     assert_eq!(item(&m, P, "Widget"), ItemId(20));
     assert_eq!(
-        [item(&m, P, "Gadget"), item(&m, T, "Q1"), item(&m, T, "Q2")],
+        [item(&m, T, "Q1"), item(&m, T, "Q2"), item(&m, P, "Gadget")],
         [ItemId(21), ItemId(22), ItemId(23)]
     );
     let (q1, q2, w, g) = (
