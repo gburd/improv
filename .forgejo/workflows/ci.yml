@@ -115,7 +115,7 @@ jobs:
         run: |
           apt-get update && apt-get install -y --no-install-recommends python3 postgresql
           rustup toolchain install nightly --profile minimal -c llvm-tools-preview
-          cargo install cargo-llvm-cov --locked
+          cargo install cargo-llvm-cov --version =0.9.1 --locked
           service postgresql start
           runuser -u postgres -- psql -c "CREATE ROLE improv LOGIN PASSWORD 'improv'" -c "CREATE DATABASE improv_test OWNER improv"
       - name: Coverage gate

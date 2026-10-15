@@ -176,9 +176,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
+      # Pinned: the install-action's default (0.6.x) cannot read current
+      # nightly's profiles; its report silently drops files and functions.
       - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # cargo-llvm-cov
         with:
-          tool: cargo-llvm-cov
+          tool: cargo-llvm-cov@0.9.1
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
           workspaces: improv
