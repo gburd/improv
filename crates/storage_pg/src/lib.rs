@@ -290,6 +290,14 @@ fn json_to_value(vt: ValueType, j: &serde_json::Value) -> Result<Value> {
     })
 }
 
+/// The SQL aggregate a `binding.agg` names.
+fn agg_fn(agg: &str) -> Result<&'static str> {
+    ["sum", "avg", "min", "max", "count"]
+        .into_iter()
+        .find(|a| *a == agg)
+        .ok_or_else(|| StoreError::Integrity(format!("unknown binding agg {agg:?}")))
+}
+
 fn value_type_of(model: &Model, m: MeasureId) -> Result<ValueType> {
     model
         .measures
@@ -331,11 +339,15 @@ struct Binding {
     value_col: String,
     /// `(category, column)`, in `dim_cols` key order.
     dims: Vec<(CategoryId, String)>,
+    /// `sum | avg | min | max | count`: rows per coordinate are aggregated
+    /// on load and the measure is read-only.
+    agg: Option<String>,
 }
 
 fn bindings(c: &mut impl GenericClient, model: &Model, mid: i64) -> Result<Vec<Binding>> {
     let rows = c.query(
-        "SELECT b.measure_id, n.nspname::text, c.relname::text, b.value_col, b.dim_cols::text \
+        "SELECT b.measure_id, n.nspname::text, c.relname::text, b.value_col, b.dim_cols::text, \
+                b.agg \
          FROM improv.binding b JOIN pg_class c ON c.oid = b.rel \
          JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE b.model_id = $1 ORDER BY b.measure_id",
@@ -360,6 +372,7 @@ fn bindings(c: &mut impl GenericClient, model: &Model, mid: i64) -> Result<Vec<B
                 table: format!("{}.{}", ident(r.get(1)), ident(r.get(2))),
                 value_col: r.get(3),
                 dims,
+                agg: r.get(5),
             })
         })
         .collect()
@@ -478,6 +491,11 @@ fn write_bound(
         return Ok(());
     };
     let snap = base.map(|s| &s.bound);
+    // An aggregated measure is never written; without a snapshot there is
+    // no telling what changed, so nothing is checked either.
+    if b.agg.is_some() && snap.is_none() {
+        return Ok(());
+    }
     // (coordinate, value now, value as loaded); `None`: no cell.
     let mut diff = Vec::new();
     for (k, v) in &model.inputs {
@@ -496,6 +514,12 @@ fn write_bound(
     }
     if diff.is_empty() {
         return Ok(());
+    }
+    if b.agg.is_some() {
+        return Err(StoreError::Integrity(format!(
+            "aggregated measure {} is read-only",
+            measure.name.0
+        )));
     }
     let json = |v: Option<&Value>| v.map_or(Ok(serde_json::Value::Null), value_to_json);
     let (mut xs, mut labels) = (Vec::new(), Vec::new());
@@ -838,8 +862,27 @@ impl PgModelStore {
                 .iter()
                 .map(|(_, c)| format!("{}::text", ident(c)))
                 .collect();
-            cols.push(format!("to_jsonb({})::text", ident(&b.value_col)));
-            let sql = format!("SELECT {} FROM {}", cols.join(", "), b.table);
+            let mut v = ident(&b.value_col);
+            if let Some(a) = b.agg.as_deref() {
+                v = format!("{}({v})", agg_fn(a)?);
+            }
+            // A date/timestamp column as timestamptz: its JSON is RFC 3339.
+            if vt == ValueType::DateTime {
+                v = format!("({v})::timestamptz");
+            }
+            cols.push(format!("to_jsonb({v})::text"));
+            let sql = match b.agg {
+                None => format!("SELECT {} FROM {}", cols.join(", "), b.table),
+                Some(_) => {
+                    let by: Vec<String> = (1..cols.len()).map(|i| i.to_string()).collect();
+                    format!(
+                        "SELECT {} FROM {} GROUP BY {}",
+                        cols.join(", "),
+                        b.table,
+                        by.join(", ")
+                    )
+                }
+            };
             'row: for r in tx.query(&sql, &[])? {
                 // NULL value: no cell. NULL dimension: the row is ignored.
                 let Some(v) = r.get::<_, Option<&str>>(b.dims.len()) else {

@@ -7,9 +7,9 @@
 //! ever called from another thread.
 
 use std::error::Error;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use improv_core_model::{CategoryId, ItemId, MeasureId, Model};
+use improv_core_model::{CategoryId, ItemId, MeasureId, Model, ValueType};
+use improv_engine::CellValue;
 use improv_pg_model as pm;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
@@ -230,6 +230,84 @@ fn check_column(rel: &PgRelation, col: &str) -> Res<()> {
     }
 }
 
+/// `rel.col`'s type: its `pg_type.typname` and `format_type`.
+fn column_type(rel: &PgRelation, col: &str) -> Res<(String, String)> {
+    Spi::connect(|c| -> Res<_> {
+        let r = c
+            .select(
+                "SELECT t.typname::text, format_type(a.atttypid, a.atttypmod) \
+                 FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid \
+                 WHERE a.attrelid = $1 AND a.attname = $2 AND a.attnum > 0 \
+                   AND NOT a.attisdropped",
+                None,
+                &[rel.oid().into(), col.into()],
+            )?
+            .next()
+            .ok_or_else(|| format!("relation {} has no column {col:?}", rel.name()))?;
+        Ok((req(&r, 1)?, req(&r, 2)?))
+    })
+}
+
+/// Column `i` of `r`, read as [`pm::select_bound_sql`] /
+/// [`pm::select_result_sql`] select a `vt` value (`None`: NULL).
+fn get_value(r: &pgrx::spi::SpiHeapTupleData, i: usize, vt: ValueType) -> Res<Option<CellValue>> {
+    Ok(match vt {
+        ValueType::Number => r.get::<f64>(i)?.map(CellValue::num),
+        ValueType::Boolean => r.get::<bool>(i)?.map(CellValue::Bool),
+        ValueType::Text => r.get::<String>(i)?.map(CellValue::Text),
+        ValueType::DateTime => r.get::<i64>(i)?.map(CellValue::Date),
+        ValueType::Enum => return Err("enum measures are not supported".into()),
+    })
+}
+
+/// Create result table `table` of model `model` for a `vt` measure (and the
+/// result schema) if missing; refuse an existing one whose `value` column
+/// holds another type.
+fn ensure_table(model: &str, table: &str, dims: &[String], vt: ValueType) -> Res<()> {
+    // Checked first: `IF NOT EXISTS` would NOTICE on every statement.
+    let found = Spi::get_one_with_args::<String>(
+        "SELECT (SELECT format_type(atttypid, atttypmod) FROM pg_attribute \
+         WHERE attrelid = to_regclass($1) AND attname = 'value' AND NOT attisdropped)",
+        &[table.into()],
+    )?;
+    if let Some(t) = found {
+        return Ok(pm::check_value_column(table, vt, &t)?);
+    }
+    let schema = pm::result_schema(model);
+    let have = Spi::get_one_with_args::<bool>(
+        "SELECT to_regnamespace(quote_ident($1)) IS NOT NULL",
+        &[schema.as_str().into()],
+    )?;
+    if have != Some(true) {
+        Spi::run(&format!("CREATE SCHEMA {}", pm::quote_ident(&schema)))?;
+    }
+    Spi::run(&pm::create_table_sql(table, dims, vt)?)?;
+    Ok(())
+}
+
+/// Run the statements that turn result rows `old` of a `vt` measure into
+/// `new`; returns the rows changed.
+fn write_results(
+    table: &str,
+    dims: &[String],
+    vt: ValueType,
+    old: &pm::ResultRows,
+    new: &pm::ResultRows,
+) -> Res<i64> {
+    let mut changed = 0;
+    for st in pm::diff_statements(table, dims, vt, old, new)? {
+        let mut args: Vec<DatumWithOid> = st.dims.iter().map(|d| d.clone().into()).collect();
+        match &st.values {
+            Some(pm::Values::Number(v)) => args.push(v.clone().into()),
+            Some(pm::Values::Text(v)) => args.push(v.clone().into()),
+            None => {}
+        }
+        Spi::run_with_args(&st.sql, &args)?;
+        changed += st.rows() as i64;
+    }
+    Ok(changed)
+}
+
 /// The next free id in an `improv.*` table keyed by `(model_id, id)`.
 fn next_id(table: &str, model_id: i64) -> Res<i64> {
     let sql = format!("SELECT coalesce(max(id), 0) + 1 FROM improv.{table} WHERE model_id = $1");
@@ -339,10 +417,17 @@ fn bind_category(model: &str, category: &str, rel: PgRelation, col: &str) -> Res
 /// Bind input measure `measure` to `rel.value_col`. Its dimensions are the
 /// categories already bound on `rel`.
 #[pg_extern(security_invoker)]
-fn bind_measure(model: &str, measure: &str, rel: PgRelation, value_col: &str) -> Res<()> {
+fn bind_measure(
+    model: &str,
+    measure: &str,
+    rel: PgRelation,
+    value_col: &str,
+    agg: default!(Option<&str>, "NULL"),
+) -> Res<()> {
     pm::validate_name("measure", measure)?;
     let (mid, _) = lock_model(model)?;
-    check_column(&rel, value_col)?;
+    let (typname, shown) = column_type(&rel, value_col)?;
+    let vt = pm::value_type_name(pm::bound_value_type(&typname, &shown, agg)?);
     let taken = Spi::get_one_with_args::<bool>(
         "SELECT EXISTS (SELECT 1 FROM improv.measure WHERE model_id = $1 AND lower(name) = lower($2))",
         &[mid.into(), measure.into()],
@@ -359,16 +444,28 @@ fn bind_measure(model: &str, measure: &str, rel: PgRelation, value_col: &str) ->
     let id = next_id("measure", mid)?;
     Spi::run_with_args(
         "INSERT INTO improv.measure (model_id, id, name, value_type, kind, categories) \
-         VALUES ($1, $2, $3, 'number', 'input', $4)",
-        &[mid.into(), id.into(), measure.into(), cats.into()],
+         VALUES ($1, $2, $3, $5, 'input', $4)",
+        &[
+            mid.into(),
+            id.into(),
+            measure.into(),
+            cats.into(),
+            vt.into(),
+        ],
     )?;
     Spi::run_with_args(
-        "INSERT INTO improv.binding (model_id, measure_id, rel, value_col, dim_cols) \
-         SELECT $1, $2, $3::oid::regclass, $4, jsonb_object_agg(c.name, b.col) \
+        "INSERT INTO improv.binding (model_id, measure_id, rel, value_col, dim_cols, agg) \
+         SELECT $1, $2, $3::oid::regclass, $4, jsonb_object_agg(c.name, b.col), $5 \
          FROM improv.category_binding b JOIN improv.category c \
            ON c.model_id = b.model_id AND c.id = b.category_id \
          WHERE b.model_id = $1 AND b.rel = $3::oid::regclass",
-        &[mid.into(), id.into(), rel.oid().into(), value_col.into()],
+        &[
+            mid.into(),
+            id.into(),
+            rel.oid().into(),
+            value_col.into(),
+            agg.into(),
+        ],
     )?;
     // `ALTER TABLE … REPLICA IDENTITY` (in enable) refuses while this
     // function's own PgRelation keeps the table open.
@@ -413,8 +510,10 @@ fn define(model: &str, definition: &str) -> Res<i64> {
     )?;
     let table = pm::result_table(&model_name, &row.name);
     cat.measures.push(row);
-    let dims = pm::dim_columns(&pm::build_model(&cat)?, MeasureId(id32(id)?))?;
-    Spi::run(&pm::create_table_sql(&table, &dims))?;
+    let m = pm::build_model(&cat)?;
+    let target = MeasureId(id32(id)?);
+    let dims = pm::dim_columns(&m, target)?;
+    ensure_table(&model_name, &table, &dims, m.measures[&target].value_type)?;
     bump_version(mid)?;
     Ok(id)
 }
@@ -423,120 +522,13 @@ fn define(model: &str, definition: &str) -> Res<i64> {
 /// transaction, and return the number of result rows changed.
 #[pg_extern(security_invoker)]
 fn recalc(model: &str) -> Res<i64> {
-    let (mid, model_name) = lock_model(model)?;
-    // Models and measures may come from the GUI's store, which does not
-    // validate names: check them before they become identifiers.
-    pm::validate_name("model", &model_name)?;
-    let cat = read_catalog(mid)?;
-    let mut m = pm::build_model(&cat)?;
-
-    // Bound fact rows, one SELECT per input binding.
-    let bindings: Vec<(i64, String, String, Vec<String>)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT b.measure_id, b.rel::text, b.value_col, \
-                    ARRAY(SELECT b.dim_cols ->> c.name \
-                          FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
-                          JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
-                          ORDER BY u.ord) \
-             FROM improv.binding b \
-             JOIN improv.measure m ON m.model_id = b.model_id AND m.id = b.measure_id \
-             WHERE b.model_id = $1 ORDER BY b.measure_id",
-            None,
-            &[mid.into()],
-        )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?, req(&r, 3)?, req(&r, 4)?)))
-        .collect::<Res<_>>()
-    })?;
-    let mut bound = Vec::with_capacity(bindings.len());
-    for (measure_id, rel, value_col, dims) in bindings {
-        check_for_interrupts!();
-        let sql = pm::select_bound_sql(&rel, &dims, &value_col);
-        let rows = Spi::connect(|c| {
-            c.select(&sql, None, &[])?
-                .map(|r| {
-                    let d = (1..=dims.len())
-                        .map(|i| r.get::<String>(i))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok((d, r.get::<f64>(dims.len() + 1)?))
-                })
-                .collect::<Res<Vec<_>>>()
-        })?;
-        bound.push(pm::BoundRows {
-            measure_id: id32(measure_id)?,
-            rows,
-        });
-    }
-
-    mint_items(mid, &mut m, &bound)?;
-    let loaded = pm::load_inputs(&mut m, &bound)?;
-    // Unbound input cells (typed in the GUI), for measures with no binding.
-    let cells: Vec<(u32, String, String)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT measure_id, coord::text, value::text FROM improv.cell c \
-             WHERE model_id = $1 AND NOT EXISTS (SELECT 1 FROM improv.binding b \
-               WHERE b.model_id = c.model_id AND b.measure_id = c.measure_id)",
-            None,
-            &[mid.into()],
-        )?
-        .map(|r| Ok((id32(req(&r, 1)?)?, req(&r, 2)?, req(&r, 3)?)))
-        .collect()
-    })?;
-    let unbound = pm::load_cells(&mut m, &cells)?;
-    pm::check_cell_budget(loaded.cells + unbound, MAX_CELLS.get().max(0) as usize)?;
-
-    let mut targets: Vec<MeasureId> = cat
-        .measures
-        .iter()
-        .filter(|r| r.formula.is_some())
-        .map(|r| MeasureId(r.id))
-        .collect();
-    targets.sort();
-    check_for_interrupts!();
-    let out = match catch_unwind(AssertUnwindSafe(|| {
-        improv_engine::dataflow::evaluate(&m, &targets)
-    })) {
-        Ok(r) => r?,
-        Err(p) => {
-            let msg = p
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            error!("improv engine panicked: {msg}")
-        }
-    };
-
-    Spi::run(&format!(
-        "CREATE SCHEMA IF NOT EXISTS {}",
-        pm::quote_ident(&pm::result_schema(&model_name))
-    ))?;
-    let mut changed = 0i64;
-    let empty = Default::default();
-    for target in targets {
-        check_for_interrupts!();
-        let new = pm::result_rows(&m, target, out.get(&target).unwrap_or(&empty))?;
-        let dims = pm::dim_columns(&m, target)?;
-        let name = &m.measures[&target].name.0;
-        pm::validate_name("measure", name)?;
-        let table = pm::result_table(&model_name, name);
-        // A measure defined through the GUI has no table until now.
-        Spi::run(&pm::create_table_sql(&table, &dims))?;
-        let old = read_results(&table, &dims)?;
-        for st in pm::diff_statements(&table, &dims, &old, &new) {
-            let mut args: Vec<DatumWithOid> = st.dims.iter().map(|d| d.clone().into()).collect();
-            if let Some(v) = &st.values {
-                args.push(v.clone().into());
-            }
-            Spi::run_with_args(&st.sql, &args)?;
-            changed += st.rows() as i64;
-        }
-    }
-    Ok(changed)
+    let (mid, name) = lock_model(model)?;
+    trigger::recompute_all(mid, &name)
 }
 
 /// A result table's current rows.
-fn read_results(table: &str, dims: &[String]) -> Res<pm::ResultRows> {
-    let sql = pm::select_result_sql(table, dims);
+fn read_results(table: &str, dims: &[String], vt: ValueType) -> Res<pm::ResultRows> {
+    let sql = pm::select_result_sql(table, dims, vt)?;
     Spi::connect(|c| {
         let mut rows = pm::ResultRows::new();
         for r in c.select(&sql, None, &[])? {
@@ -544,7 +536,7 @@ fn read_results(table: &str, dims: &[String]) -> Res<pm::ResultRows> {
                 .map(|i| req::<String>(&r, i))
                 .collect::<Result<Vec<_>, _>>()?;
             // A NULL value is left out, so the diff rewrites it.
-            if let Some(v) = r.get::<f64>(dims.len() + 1)? {
+            if let Some(v) = get_value(&r, dims.len() + 1, vt)? {
                 rows.insert(key, v);
             }
         }
@@ -622,6 +614,127 @@ mod tests {
         Spi::get_one::<i64>(&format!("SELECT count(*) FROM {table}"))
             .unwrap()
             .unwrap()
+    }
+
+    fn by_product(table: &str, p: &str) -> Option<f64> {
+        Spi::get_one_with_args::<f64>(
+            &format!("SELECT (SELECT value FROM improv_plan.{table} WHERE product = $1)"),
+            &[p.into()],
+        )
+        .unwrap()
+    }
+
+    /// G4: `agg` folds duplicate rows per coordinate, in `recalc` and in
+    /// trigger mode.
+    #[pg_test]
+    fn aggregated_bindings_fold_duplicate_rows() {
+        for sql in [
+            "CREATE TABLE orders (product text, amount float8)",
+            "INSERT INTO orders VALUES ('Widget', 10), ('Widget', 30), ('Gadget', 5)",
+            "SELECT improv.create_model('plan')",
+            "SELECT improv.bind_category('plan', 'Product', 'orders', 'product')",
+            "SELECT improv.bind_measure('plan', 'Amount', 'orders', 'amount', agg => 'sum')",
+            "SELECT improv.bind_measure('plan', 'Mean', 'orders', 'amount', agg => 'avg')",
+            "SELECT improv.define('plan', 'Total = Amount * 1')",
+            "SELECT improv.define('plan', 'Average = Mean * 1')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        assert_eq!(recalc(), 4);
+        assert_eq!(by_product("total", "Widget"), Some(40.0));
+        assert_eq!(by_product("average", "Widget"), Some(20.0));
+        assert_eq!(by_product("total", "Gadget"), Some(5.0));
+        assert_eq!(
+            Spi::get_one::<String>("SELECT agg FROM improv.binding WHERE measure_id = 2"),
+            Ok(Some("avg".into()))
+        );
+
+        Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
+        Spi::run("INSERT INTO orders VALUES ('Widget', 50)").unwrap();
+        assert_eq!(by_product("total", "Widget"), Some(90.0));
+        assert_eq!(by_product("average", "Widget"), Some(30.0));
+        Spi::run("UPDATE orders SET amount = 7 WHERE product = 'Gadget'").unwrap();
+        assert_eq!(by_product("total", "Gadget"), Some(7.0));
+        Spi::run("DELETE FROM orders WHERE amount = 10").unwrap();
+        assert_eq!(by_product("total", "Widget"), Some(80.0));
+        assert_eq!(by_product("average", "Widget"), Some(40.0));
+    }
+
+    fn text(sql: &str) -> String {
+        Spi::get_one::<String>(&format!("SELECT ({sql})::text"))
+            .unwrap()
+            .unwrap_or_default()
+    }
+
+    /// G5: a text input, a derived Boolean and a date input passed through
+    /// a derived measure get typed result tables, in `recalc` and trigger
+    /// mode.
+    #[pg_test]
+    fn typed_measures_get_typed_result_tables() {
+        for sql in [
+            "CREATE TABLE products (product text, category varchar(10), launched date, price numeric)",
+            "INSERT INTO products VALUES ('Widget', 'tools', '2026-01-02', 10), \
+                                         ('Gadget', 'toys', '2025-06-30', 20)",
+            "SELECT improv.create_model('plan')",
+            "SELECT improv.bind_category('plan', 'Product', 'products', 'product')",
+            "SELECT improv.bind_measure('plan', 'Category', 'products', 'category')",
+            "SELECT improv.bind_measure('plan', 'Launched', 'products', 'launched')",
+            "SELECT improv.bind_measure('plan', 'Price', 'products', 'price')",
+            "SELECT improv.define('plan', 'Pricey = Price > 15')",
+            "SELECT improv.define('plan', 'Kind = Category')",
+            "SELECT improv.define('plan', 'Launch = Launched')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        assert_eq!(
+            text(
+                "SELECT string_agg(name || ':' || value_type, ' ' ORDER BY id) FROM improv.measure"
+            ),
+            "Category:text Launched:datetime Price:number Pricey:boolean Kind:text Launch:datetime"
+        );
+        assert_eq!(
+            text(
+                "SELECT string_agg(attrelid::regclass || '=' || format_type(atttypid, atttypmod), ' ' \
+                 ORDER BY attrelid::regclass::text) FROM pg_attribute \
+                 WHERE attname = 'value' AND attrelid::regclass::text LIKE 'improv_plan.%'"
+            ),
+            "improv_plan.kind=text improv_plan.launch=timestamp with time zone \
+             improv_plan.pricey=boolean"
+        );
+        assert_eq!(recalc(), 6);
+        let rows = |t: &str| {
+            text(&format!(
+                "SELECT string_agg(product || '=' || value, ' ' ORDER BY product) FROM improv_plan.{t}"
+            ))
+        };
+        assert_eq!(rows("pricey"), "Gadget=true Widget=false");
+        assert_eq!(rows("kind"), "Gadget=toys Widget=tools");
+        assert_eq!(
+            text(
+                "SELECT string_agg(product || '=' || (value = launched::timestamptz), ' ' \
+                 ORDER BY product) FROM improv_plan.launch JOIN products USING (product)"
+            ),
+            "Gadget=true Widget=true"
+        );
+        assert_eq!(recalc(), 0, "typed values diff as unchanged");
+
+        Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
+        Spi::run("UPDATE products SET price = 30, category = 'gear' WHERE product = 'Widget'")
+            .unwrap();
+        assert_eq!(rows("pricey"), "Gadget=true Widget=true");
+        assert_eq!(rows("kind"), "Gadget=toys Widget=gear");
+    }
+
+    #[pg_test(error = "catalog: cannot bind a measure to a column of type jsonb")]
+    fn unsupported_column_types_are_refused() {
+        for sql in [
+            "CREATE TABLE docs (product text, body jsonb)",
+            "SELECT improv.create_model('plan')",
+            "SELECT improv.bind_category('plan', 'Product', 'docs', 'product')",
+            "SELECT improv.bind_measure('plan', 'Body', 'docs', 'body')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
     }
 
     #[pg_test]

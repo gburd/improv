@@ -12,15 +12,15 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use improv_core_model::{CategoryId, MeasureId, Model};
+use improv_core_model::{CategoryId, MeasureId, Model, ValueType};
 use improv_engine::{CellValue, CoordKey};
 use improv_pg_model as pm;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::JsonB;
 
 use super::{
-    bump_version, id32, lock_model, mint_items, read_catalog, read_results, req, Res, MAX_CELLS,
+    bump_version, ensure_table, get_value, id32, lock_model, mint_items, read_catalog,
+    read_results, req, write_results, Res, MAX_CELLS,
 };
 
 /// Per event: trigger-name suffix, event, transition tables.
@@ -49,9 +49,11 @@ pub(crate) struct Loaded {
 pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
     pm::validate_name("model", &name)?;
     let mut model = pm::build_model(&read_catalog(mid)?)?;
-    let bindings: Vec<(i64, String, String, Vec<String>)> = Spi::connect(|c| -> Res<_> {
+    // (measure id, relation, value column, agg, dimension columns)
+    type Row = (i64, String, String, Option<String>, Vec<String>);
+    let bindings: Vec<Row> = Spi::connect(|c| -> Res<_> {
         c.select(
-            "SELECT b.measure_id, b.rel::text, b.value_col, \
+            "SELECT b.measure_id, b.rel::text, b.value_col, b.agg, \
                     ARRAY(SELECT b.dim_cols ->> c.name \
                           FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
                           JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
@@ -62,25 +64,39 @@ pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
             None,
             &[mid.into()],
         )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?, req(&r, 3)?, req(&r, 4)?)))
+        .map(|r| {
+            Ok((
+                req(&r, 1)?,
+                req(&r, 2)?,
+                req(&r, 3)?,
+                r.get(4)?,
+                req(&r, 5)?,
+            ))
+        })
         .collect::<Res<_>>()
     })?;
     let mut bound = Vec::with_capacity(bindings.len());
-    for (measure_id, rel, value_col, dims) in bindings {
+    for (measure_id, rel, value_col, agg, dims) in bindings {
         check_for_interrupts!();
-        let sql = pm::select_bound_sql(&rel, &dims, &value_col);
+        let measure = MeasureId(id32(measure_id)?);
+        let vt = model
+            .measures
+            .get(&measure)
+            .ok_or("binding for an unknown measure")?
+            .value_type;
+        let sql = pm::select_bound_sql(&rel, &dims, &value_col, agg.as_deref(), vt)?;
         let rows = Spi::connect(|c| {
             c.select(&sql, None, &[])?
                 .map(|r| {
                     let d = (1..=dims.len())
                         .map(|i| r.get::<String>(i))
                         .collect::<Result<Vec<_>, _>>()?;
-                    Ok((d, r.get::<f64>(dims.len() + 1)?))
+                    Ok((d, get_value(&r, dims.len() + 1, vt)?))
                 })
                 .collect::<Res<Vec<_>>>()
         })?;
         bound.push(pm::BoundRows {
-            measure_id: id32(measure_id)?,
+            measure_id: measure.0,
             rows,
         });
     }
@@ -164,27 +180,14 @@ fn recompute(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
         let name = &l.model.measures[&target].name.0;
         pm::validate_name("measure", name)?;
         let table = pm::result_table(&l.name, name);
-        // Checked first: `IF NOT EXISTS` would NOTICE on every statement.
-        if !exists(&table)? {
-            Spi::run(&format!(
-                "CREATE SCHEMA IF NOT EXISTS {}",
-                pm::quote_ident(&pm::result_schema(&l.name))
-            ))?;
-            Spi::run(&pm::create_table_sql(&table, &dims))?;
-        }
-        let mut old = read_results(&table, &dims)?;
+        let vt = l.model.measures[&target].value_type;
+        ensure_table(&l.name, &table, &dims, vt)?;
+        let mut old = read_results(&table, &dims, vt)?;
         if let Some(s) = &plan.scope {
             s.retain_rows(&l.model, target, &mut old)?;
             s.retain_rows(&l.model, target, &mut new)?;
         }
-        for st in pm::diff_statements(&table, &dims, &old, &new) {
-            let mut args: Vec<DatumWithOid> = st.dims.iter().map(|d| d.clone().into()).collect();
-            if let Some(v) = &st.values {
-                args.push(v.clone().into());
-            }
-            Spi::run_with_args(&st.sql, &args)?;
-            changed += st.rows() as i64;
-        }
+        changed += write_results(&table, &dims, vt, &old, &new)?;
     }
     Ok(changed)
 }
@@ -457,13 +460,18 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
     let empty = Default::default();
     let mut rows = Vec::new();
     for target in targets {
+        // ponytail: `value` is float8, so only number measures are reported;
+        // a jsonb value column would carry the other types.
+        if l.model.measures[&target].value_type != ValueType::Number {
+            continue;
+        }
         let new = pm::result_rows(&l.model, target, out.get(&target).unwrap_or(&empty))?;
         let dims = pm::dim_columns(&l.model, target)?;
         let mname = l.model.measures[&target].name.0.clone();
         pm::validate_name("measure", &mname)?;
         let table = pm::result_table(&l.name, &mname);
         let old = if exists(&table)? {
-            read_results(&table, &dims)?
+            read_results(&table, &dims, ValueType::Number)?
         } else {
             Default::default()
         };
@@ -471,7 +479,7 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
             rows.push((
                 mname.clone(),
                 JsonB(pm::coord_json(&l.model, target, &key)?),
-                v,
+                v.and_then(|v| v.as_num()),
             ));
         }
     }

@@ -90,7 +90,7 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | --- | --- |
 | `create_model(name text) → bigint` | Creates the model and its result schema `improv_<lower(name)>`. |
 | `bind_category(model, category, rel regclass, col text)` | Creates the category if missing and records that `rel.col` supplies its items. |
-| `bind_measure(model, measure, rel regclass, value_col text)` | Creates an input measure read from `rel.value_col`. Its dimensions are the categories already bound on `rel`, in category-id order. |
+| `bind_measure(model, measure, rel regclass, value_col text, agg text DEFAULT NULL)` | Creates an input measure read from `rel.value_col`. Its dimensions are the categories already bound on `rel`, in category-id order. Two rows on one coordinate are an error unless `agg` (`sum`, `avg`, `min`, `max`, `count`) folds them; an aggregated measure is read-only in the GUI. |
 | `define(model, definition text) → bigint` | Adds a derived measure from `Target = expr` and creates its result table. `SQL(...)` and `CALL(...)` are rejected. |
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
@@ -102,8 +102,23 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
 `value`). Result tables are `improv_<model>.<lower(measure)>` with one `text`
-column per dimension (named `lower(category)`), `value double precision`, and
-a primary key on the dimensions.
+column per dimension (named `lower(category)`), a typed `value` column, and a
+primary key on the dimensions.
+
+`bind_measure` takes the measure's type from its column, and a derived
+measure has the type its formula gives (`Price > 15` is boolean):
+
+| Column type | Measure type | Result `value` column |
+| --- | --- | --- |
+| `float4`, `float8`, `numeric`, `int2`, `int4`, `int8` | number | `double precision` |
+| `bool` | boolean | `boolean` |
+| `text`, `varchar`, `bpchar` | text | `text` |
+| `date`, `timestamp`, `timestamptz` | datetime (millisecond UTC) | `timestamptz` |
+
+Any other column type is an ERROR. `agg => 'count'` is a number; `sum` and
+`avg` need a number column. A measure's type cannot change: if a result
+table exists with another `value` type, drop the model and rebuild it.
+`what_if` reports number measures only.
 
 `improv.max_cells` (default 5 000 000, settable per session) caps the number
 of input cells `recalc` loads; above it, `recalc` raises an ERROR.

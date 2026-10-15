@@ -58,6 +58,25 @@ Switch with `SELECT improv.set_sync_mode('plan', 'trigger')` (or `'logical'`,
 returns the derived cells that would change, writing nothing.
 `improv.status('plan')` shows the mode and, in logical mode, the slot's lag.
 
+## Several rows per coordinate
+
+A fact table often has many rows per coordinate (one per order, say). Bind
+the measure with an aggregate and each coordinate's rows are folded into
+one input cell: `improv.bind_measure('plan', 'Amount', 'orders', 'amount',
+agg => 'sum')` (also `avg`, `min`, `max`, `count`). Without `agg`, two rows on
+one coordinate are an error. An aggregated measure is read-only from the
+GUI: a save that edits one of its cells fails, so change the rows in SQL.
+
+## Value types
+
+A measure's type comes from its column: numbers (`int*`, `float*`,
+`numeric`), `bool`, text (`text`, `varchar`, `char`) and dates (`date`,
+`timestamp`, `timestamptz`, kept to the millisecond in UTC). A derived
+measure has the type of its formula, so `improv.define('plan', 'Pricey =
+Price > 15')` makes `improv_plan.pricey` a `boolean` column. Result tables'
+`value` columns are `double precision`, `boolean`, `text` or `timestamptz`.
+Other column types are refused by `bind_measure`.
+
 **Choosing:** use `logical` for busy tables (writers stay fast; measured
 at 100k cells: 8 ms per UPDATE and its results visible ~50 ms later, vs
 ~1.1 s with a trigger). Use `trigger` when a
