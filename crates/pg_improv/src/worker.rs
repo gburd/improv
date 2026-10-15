@@ -301,6 +301,8 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         // (A Postgres ERROR is not a Rust `Err`: querying a missing
         // `improv.*` table would unwind out of the worker and kill it.)
         if !BackgroundWorker::transaction(installed) {
+            // A re-created extension reuses model ids: forget them.
+            LIVE.with(|l| l.borrow_mut().clear());
             continue;
         }
         // Each model in its own transaction, so one model's error neither
