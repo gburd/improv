@@ -51,8 +51,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   `date`/`timestamp`/`timestamptz`; the number types as before) and refuses
   others; `define` accepts boolean, text and datetime results, and result
   tables get a matching `value` column (`boolean`, `text`, `timestamptz`).
-  A model with a non-number measure recomputes in full per batch in
-  logical mode.
+  Logical mode applies their row changes cell by cell like numbers' (the
+  worker reads the slot's text with `TimeZone = UTC`, `DateStyle = ISO`).
+
+### Changed
+
+- **`improv_engine::session::Edit::value` is a `CellValue`** (was `f64`), so
+  the live engine takes boolean, text and date edits and seeds every typed
+  input cell. `Engine::set` still takes an `f64`.
+- **`improv.what_if` returns `jsonb` values** (was `float8`), so it reports
+  boolean, text and date measures too (dates as RFC 3339 strings), and its
+  edits may set inputs of those types.
 
 ### Fixed
 

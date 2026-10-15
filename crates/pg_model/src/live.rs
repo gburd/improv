@@ -5,8 +5,14 @@
 //! the input-cell [`Edit`]s it makes (one per touched cell, its final value),
 //! or says the batch cannot be applied cell by cell ([`Rebuild`]) and the
 //! caller must reload the model: a TRUNCATE, a dimension value with no item
-//! yet, two rows on one coordinate, an aggregated or non-number binding, or
-//! an old row whose dimension values were not replicated.
+//! yet, two rows on one coordinate, an aggregated binding, a value the
+//! loader would not read, or an old row whose dimension values were not
+//! replicated.
+//!
+//! Values are the `pgoutput` text of the column, read by the measure's type
+//! as the loader's `::float8`/`::bool`/`::text`/`timestamptz` casts read the
+//! row. A date or timestamp without a zone is taken as UTC: the sync worker
+//! runs with `TimeZone = UTC` and `DateStyle = ISO`.
 //!
 //! Replay: a rebuild reads the bound tables as they are *now*, which may
 //! already include transactions the slot has not yet delivered. Those are
@@ -18,8 +24,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, Model, Value, ValueType};
-use improv_engine::encode_coord;
 use improv_engine::session::Edit;
+use improv_engine::{encode_coord, CellValue};
 
 use crate::pgoutput::{Datum, Message, Relation, Tuple, Txn};
 
@@ -94,16 +100,14 @@ impl Mapper {
                 self.change(model, rels, change, replay, &mut touched)?;
             }
         }
-        let num = |v: Option<&Value>| match v {
-            Some(Value::Number(n)) => Some(n.to_bits()),
-            _ => None,
-        };
+        // As engine values: numbers compare by bits, like the engine's.
+        let cell = |v: Option<&Value>| v.and_then(CellValue::from_model_value);
         Ok(touched
             .into_iter()
             .filter_map(|((measure, c), before): (_, Option<Value>)| {
-                let now = num(model.inputs.get(&(measure, c.clone())));
-                (now != num(before.as_ref())).then(|| Edit {
-                    value: now.map(f64::from_bits),
+                let now = cell(model.inputs.get(&(measure, c.clone())));
+                (now != cell(before.as_ref())).then(|| Edit {
+                    value: now,
                     coord: encode_coord(&c),
                     measure,
                 })
@@ -154,9 +158,11 @@ impl Mapper {
         if b.aggregated {
             return Err(Rebuild("aggregated binding"));
         }
-        if model.measures.get(&b.measure).map(|m| m.value_type) != Some(ValueType::Number) {
-            return Err(Rebuild("not a number binding"));
-        }
+        let vt = model
+            .measures
+            .get(&b.measure)
+            .ok_or(Rebuild("unknown measure"))?
+            .value_type;
         // REPLICA IDENTITY FULL sends the whole old row. A key identity sends
         // only the key (and nothing when it is unchanged); usable only when
         // the key is exactly the dimension columns, so the old dimension
@@ -182,7 +188,7 @@ impl Mapper {
             if let Some(c) = self.coord(r, b, t)? {
                 // A NULL-valued row was no cell (and may share its coordinate
                 // with one that is).
-                if !value_known || value(r, b, t)?.is_some() {
+                if !value_known || value(r, b, t, vt)?.is_some() {
                     let k = (b.measure, c);
                     let before = model.inputs.remove(&k);
                     touched.entry(k).or_insert(before);
@@ -190,12 +196,12 @@ impl Mapper {
             }
         }
         if let Some(t) = new {
-            if let (Some(c), Some(v)) = (self.coord(r, b, t)?, value(r, b, t)?) {
+            if let (Some(c), Some(v)) = (self.coord(r, b, t)?, value(r, b, t, vt)?) {
                 let k = (b.measure, c);
                 if !replay && model.inputs.contains_key(&k) {
                     return Err(Rebuild("two rows on one coordinate"));
                 }
-                let before = model.inputs.insert(k.clone(), Value::Number(v));
+                let before = model.inputs.insert(k.clone(), v);
                 touched.entry(k).or_insert(before);
             }
         }
@@ -224,17 +230,57 @@ impl Mapper {
     }
 }
 
-/// The value of tuple `t` (`None` = SQL NULL).
-fn value(r: &Relation, b: &Binding, t: &Tuple) -> Result<Option<f64>, Rebuild> {
-    match r.get(t, &b.value_col) {
-        None => Err(Rebuild("bound column missing")),
-        Some(Datum::Null) => Ok(None),
-        Some(Datum::Unchanged) => Err(Rebuild("unchanged TOAST value")),
-        Some(Datum::Text(s)) => s
-            .parse()
-            .map(Some)
-            .map_err(|_| Rebuild("value is not a number")),
-    }
+/// `bpchar`'s oid: its text keeps the padding `::text` strips.
+const BPCHAR: u32 = 1042;
+
+/// The value of tuple `t` as a `vt` (`None` = SQL NULL).
+fn value(r: &Relation, b: &Binding, t: &Tuple, vt: ValueType) -> Result<Option<Value>, Rebuild> {
+    let s = match r.get(t, &b.value_col) {
+        None => return Err(Rebuild("bound column missing")),
+        Some(Datum::Null) => return Ok(None),
+        Some(Datum::Unchanged) => return Err(Rebuild("unchanged TOAST value")),
+        Some(Datum::Text(s)) => s,
+    };
+    let v = match vt {
+        ValueType::Number => s.parse().ok().map(Value::Number),
+        ValueType::Boolean => match s.as_str() {
+            "t" => Some(Value::Boolean(true)),
+            "f" => Some(Value::Boolean(false)),
+            _ => None,
+        },
+        ValueType::Text => {
+            let bpchar = r
+                .columns
+                .iter()
+                .any(|c| c.name == b.value_col && c.type_oid == BPCHAR);
+            Some(Value::Text(
+                if bpchar { s.trim_end_matches(' ') } else { s }.to_string(),
+            ))
+        }
+        ValueType::DateTime => datetime(s).map(Value::DateTime),
+        ValueType::Enum => None,
+    };
+    v.map(Some)
+        .ok_or(Rebuild("value the loader would not read"))
+}
+
+/// ISO `timestamptz`, `timestamp` or `date` text (the last two in UTC) at
+/// the millisecond, rounded half away from zero as the loader's
+/// `(extract(epoch from v) * 1000)::int8` rounds. `None` for anything else
+/// (`infinity`, BC dates), which the loader cannot read either.
+fn datetime(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{DateTime, NaiveDate, NaiveDateTime};
+    let t = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f%#z")
+        .map(|d| d.naive_utc())
+        .or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f"))
+        .or_else(|_| {
+            NaiveDate::parse_from_str(s, "%Y-%m-%d").map(|d| d.and_time(Default::default()))
+        })
+        .ok()?
+        .and_utc();
+    let us = t.timestamp_micros();
+    let ms = us / 1000 + (us % 1000) / 500;
+    DateTime::from_timestamp_millis(ms)
 }
 
 #[cfg(test)]
@@ -349,7 +395,10 @@ mod tests {
         let mut m = model();
         let edits = mapper(&m, aggregated).map(&mut m, &rels, &txn(changes), 0)?;
         assert!(edits.iter().all(|e| e.measure == MeasureId(5)));
-        Ok(edits.into_iter().map(|e| (e.coord, e.value)).collect())
+        Ok(edits
+            .into_iter()
+            .map(|e| (e.coord, e.value.map(|v| v.as_num().expect("a number"))))
+            .collect())
     }
 
     fn ins(t: Tuple) -> Message {
@@ -486,7 +535,7 @@ mod tests {
         );
         assert_eq!(
             run(vec![ins(full("Q2", "abc"))]),
-            Err(Rebuild("value is not a number"))
+            Err(Rebuild("value the loader would not read"))
         );
         let mut t = full("Q2", "1");
         t[2] = Datum::Unchanged;
@@ -509,15 +558,61 @@ mod tests {
                 .err(),
             Some(Rebuild("undescribed relation"))
         );
-        // The live engine's edits are numbers: a typed binding rebuilds.
-        let mut text = model();
-        text.measures.get_mut(&MeasureId(5)).unwrap().value_type = ValueType::Text;
+        let mut gone = model();
+        let m = mapper(&gone, false);
+        gone.measures.clear();
         assert_eq!(
-            mapper(&text, false)
-                .map(&mut text.clone(), &rels(b'f', &[]), &changes, 0)
-                .err(),
-            Some(Rebuild("not a number binding"))
+            m.map(&mut gone, &rels(b'f', &[]), &changes, 0).err(),
+            Some(Rebuild("unknown measure"))
         );
+    }
+
+    /// Map one insert of `price` text onto Price[Q2,P1], with Price of type
+    /// `vt` in a column of type `type_oid`.
+    fn typed(vt: ValueType, type_oid: u32, price: &str) -> Result<Option<CellValue>, Rebuild> {
+        let mut m = model();
+        m.measures.get_mut(&MeasureId(5)).unwrap().value_type = vt;
+        let mut r = rels(b'f', &[]);
+        r.get_mut(&F).unwrap().columns[2].type_oid = type_oid;
+        let edits = mapper(&m, false).map(&mut m, &r, &txn(vec![ins(full("Q2", price))]), 0)?;
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].coord, key(12, 21));
+        Ok(edits[0].value.clone())
+    }
+
+    #[test]
+    fn typed_bindings_read_values_as_the_loader_does() {
+        use ValueType::{Boolean, DateTime, Enum, Text};
+        let ok = |v| Ok(Some(v));
+        assert_eq!(typed(Boolean, 16, "t"), ok(CellValue::Bool(true)));
+        assert_eq!(typed(Boolean, 16, "f"), ok(CellValue::Bool(false)));
+        assert_eq!(typed(Text, 25, "a b "), ok(CellValue::Text("a b ".into())));
+        // `char(n)` pads; `::text` strips the padding.
+        assert_eq!(
+            typed(Text, BPCHAR, "ab  "),
+            ok(CellValue::Text("ab".into()))
+        );
+        let day = 19_723 * 86_400_000; // 2024-01-01
+        assert_eq!(
+            typed(DateTime, 1082, "2024-01-01"),
+            ok(CellValue::Date(day))
+        );
+        assert_eq!(
+            typed(DateTime, 1114, "2024-01-01 00:00:01.5"),
+            ok(CellValue::Date(day + 1500))
+        );
+        assert_eq!(
+            typed(DateTime, 1184, "2024-01-01 05:30:00.0005+05:30"),
+            ok(CellValue::Date(day + 1))
+        );
+        assert_eq!(
+            typed(DateTime, 1184, "1969-12-31 23:59:59.9985+00"),
+            ok(CellValue::Date(-2))
+        );
+        let no = Err(Rebuild("value the loader would not read"));
+        for (vt, s) in [(Boolean, "true"), (DateTime, "infinity"), (Enum, "1")] {
+            assert_eq!(typed(vt, 25, s), no, "{vt:?} {s}");
+        }
     }
 
     #[test]
@@ -581,7 +676,10 @@ mod tests {
             },
         ];
         let edits = mp.map(&mut m, &r, &replayed, 20).unwrap();
-        assert_eq!((edits.len(), edits[0].value), (1, Some(2.0)));
+        assert_eq!(
+            (edits.len(), edits[0].value.clone()),
+            (1, Some(CellValue::num(2.0)))
+        );
         assert!(mp.map(&mut m, &r, &replayed, 20).unwrap().is_empty());
         let later = txn(vec![ins(full("Q1", "3"))]);
         assert_eq!(

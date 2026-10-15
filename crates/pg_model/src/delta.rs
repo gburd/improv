@@ -8,9 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use improv_core_model::{
-    CategoryId, Coordinate, Expr, ItemId, MeasureId, MeasureKind, Model, Value, ValueType,
-};
+use improv_core_model::{CategoryId, Coordinate, Expr, ItemId, MeasureId, MeasureKind, Model};
 use improv_engine::compiler::scalar_arity;
 
 use crate::{quote_ident, Error, Result, ResultRows};
@@ -234,8 +232,9 @@ fn find_measure(model: &Model, name: &str) -> Option<MeasureId> {
 
 /// Apply what-if `edits` to `model`'s input cells in memory and return the
 /// edited measures. `edits` is a JSON array of `{"measure": name, "coord":
-/// {category: item}, "value": number | null}` (measure and category names
-/// case-insensitive; `null` removes the cell).
+/// {category: item}, "value": v | null}`: `v` a number, a bool, a string, or
+/// a datetime as an RFC 3339 string, by the measure's type (measure and
+/// category names case-insensitive; `null` removes the cell).
 pub fn apply_edits(model: &mut Model, edits: &str) -> Result<Vec<MeasureId>> {
     use serde_json::Value as J;
     let bad = |what: String| Error::Catalog(format!("what_if edit: {what}"));
@@ -252,9 +251,10 @@ pub fn apply_edits(model: &mut Model, edits: &str) -> Result<Vec<MeasureId>> {
         let id =
             find_measure(model, name).ok_or_else(|| bad(format!("unknown measure {name:?}")))?;
         let m = &model.measures[&id];
-        if m.value_type != ValueType::Number || !m.is_input() {
-            return Err(bad(format!("{name} is not a number input measure")));
+        if !m.is_input() {
+            return Err(bad(format!("{name} is not an input measure")));
         }
+        let vt = m.value_type;
         let want: BTreeSet<CategoryId> = m.categories.iter().copied().collect();
         let coord = e
             .get("coord")
@@ -282,16 +282,18 @@ pub fn apply_edits(model: &mut Model, edits: &str) -> Result<Vec<MeasureId>> {
         }
         let coord = Coordinate { dims };
         match e.get("value") {
-            Some(J::Number(n)) => {
-                let v = n
-                    .as_f64()
-                    .ok_or_else(|| bad(format!("{n} is out of range")))?;
-                model.set_input(id, coord, Value::Number(v));
-            }
             Some(J::Null) => {
                 model.inputs.remove(&(id, coord));
             }
-            _ => return Err(bad(format!("{e} needs a number or null \"value\""))),
+            v => {
+                let v = v.and_then(|v| crate::json_value(vt, v)).ok_or_else(|| {
+                    bad(format!(
+                        "{e} needs a {} or null \"value\"",
+                        crate::value_type_name(vt)
+                    ))
+                })?;
+                model.set_input(id, coord, v);
+            }
         }
         changed.insert(id);
     }
@@ -334,6 +336,37 @@ pub fn coord_json(model: &Model, measure: MeasureId, key: &[String]) -> Result<s
         obj.insert(cat.name.0.clone(), item.clone().into());
     }
     Ok(obj.into())
+}
+
+/// A result value as JSON: a number (`"NaN"`, `"Infinity"` or `"-Infinity"`
+/// when not finite, as `float8` prints them), a bool, a string, or a
+/// datetime as an RFC 3339 string. An error is `null`.
+pub fn value_json(v: &improv_engine::CellValue) -> serde_json::Value {
+    use improv_engine::CellValue as C;
+    use serde_json::Value as J;
+    match v {
+        C::Num(_) => {
+            let n = v.as_num().unwrap_or(f64::NAN);
+            // Whole numbers print as float8 does (`7`, not serde's `7.0`).
+            if n.fract() == 0.0 && n.abs() < 2f64.powi(53) {
+                return J::from(n as i64);
+            }
+            serde_json::Number::from_f64(n).map_or_else(
+                || {
+                    J::from(match n {
+                        f64::INFINITY => "Infinity",
+                        f64::NEG_INFINITY => "-Infinity",
+                        _ => "NaN",
+                    })
+                },
+                J::Number,
+            )
+        }
+        C::Bool(b) => J::Bool(*b),
+        C::Text(t) => J::from(t.as_str()),
+        C::Date(_) => J::from(v.to_string()),
+        C::Err(_) => J::Null,
+    }
 }
 
 /// The sync trigger for `op` (`ins` / `upd` / `del`):
@@ -391,6 +424,7 @@ pub fn touched_sql(old: Option<&str>, new: Option<&str>, cols: &[String]) -> Opt
 mod tests {
     use super::*;
     use crate::{build_model, define, result_rows, Catalog, CategoryRow, ItemRow, MeasureRow};
+    use improv_core_model::{Value, ValueType};
     use improv_engine::dataflow::evaluate;
     use improv_engine::CellValue;
 
@@ -653,16 +687,36 @@ mod tests {
             Some(&Value::Number(11.0))
         );
         assert_eq!(m.input(COST, &coord(&[(2, 4)])), None);
-        let mut typed = m.clone();
-        typed.measures.get_mut(&COST).unwrap().value_type = ValueType::Text;
-        let e = apply_edits(&mut typed, r#"[{"measure": "Cost"}]"#).unwrap_err();
-        assert!(e.to_string().contains("not a number input"), "{e}");
+        // A typed input takes a value of its type.
+        let at = |vt, json: &str| {
+            let mut m = m.clone();
+            m.measures.get_mut(&COST).unwrap().value_type = vt;
+            let edit = format!(
+                r#"[{{"measure": "Cost", "coord": {{"Product": "Widget"}}, "value": {json}}}]"#
+            );
+            apply_edits(&mut m, &edit).map(|_| m.input(COST, &coord(&[(2, 3)])).cloned())
+        };
+        assert_eq!(
+            at(ValueType::Text, r#""x""#).unwrap(),
+            Some(Value::Text("x".into()))
+        );
+        assert_eq!(
+            at(ValueType::Boolean, "true").unwrap(),
+            Some(Value::Boolean(true))
+        );
+        let day = chrono::DateTime::from_timestamp_millis(86_400_000).unwrap();
+        assert_eq!(
+            at(ValueType::DateTime, r#""1970-01-02T01:00:00+01:00""#).unwrap(),
+            Some(Value::DateTime(day))
+        );
+        let e = at(ValueType::Boolean, "1").unwrap_err().to_string();
+        assert!(e.contains("needs a boolean or null"), "{e}");
         for (edits, err) in [
             ("{", "what_if edit"),
             ("{}", "array"),
             (r#"[{"coord": {}}]"#, "\"measure\""),
             (r#"[{"measure": "Nope"}]"#, "unknown measure"),
-            (r#"[{"measure": "Revenue"}]"#, "not a number input"),
+            (r#"[{"measure": "Revenue"}]"#, "not an input"),
             (r#"[{"measure": "Cost", "value": 1}]"#, "\"coord\""),
             (
                 r#"[{"measure": "Cost", "coord": {"Shape": "Round"}}]"#,
@@ -717,6 +771,26 @@ mod tests {
             serde_json::json!({"Time": "Q1", "Product": "Widget"})
         );
         assert!(coord_json(&m, MeasureId(99), &[]).is_err());
+    }
+
+    #[test]
+    fn values_as_json() {
+        use improv_engine::CellValue as C;
+        use serde_json::json;
+        for (v, want) in [
+            (C::num(1.5), json!(1.5)),
+            (C::num(7.0), json!(7)),
+            (C::num(1e300), json!(1e300)),
+            (C::num(f64::NAN), json!("NaN")),
+            (C::num(f64::INFINITY), json!("Infinity")),
+            (C::num(f64::NEG_INFINITY), json!("-Infinity")),
+            (C::Bool(true), json!(true)),
+            (C::Text("a".into()), json!("a")),
+            (C::Date(86_400_000), json!("1970-01-02T00:00:00+00:00")),
+            (C::Err(0), json!(null)),
+        ] {
+            assert_eq!(value_json(&v), want, "{v:?}");
+        }
     }
 
     #[test]

@@ -55,7 +55,9 @@ Switch with `SELECT improv.set_sync_mode('plan', 'trigger')` (or `'logical'`,
 `'manual'`). `improv.recalc('plan')` works in every mode, and
 `improv.recalc('plan', ARRAY['Price'])` recomputes only what depends on Price.
 `improv.what_if('plan', '[{"measure":"Price","coord":{"Time":"Q1","Product":"Widget"},"value":12}]')`
-returns the derived cells that would change, writing nothing.
+returns the derived cells that would change, writing nothing. Its `value`
+column is `jsonb`: a number, `true`/`false`, a string, or a date as an RFC
+3339 string, and an edit's `"value"` takes the same forms.
 `improv.status('plan')` shows the mode and, in logical mode, the slot's lag.
 
 ## Several rows per coordinate

@@ -28,7 +28,7 @@ use axum::{
 use improv_core_model::{Coordinate, MeasureId, MeasureKind, Model};
 use improv_engine::dataflow::evaluate;
 use improv_engine::session::{Edit, Engine};
-use improv_engine::{decode_coord, CoordKey};
+use improv_engine::{decode_coord, CellValue, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_store::{Store, StoreError};
 use serde::{Deserialize, Serialize};
@@ -675,7 +675,7 @@ async fn eval_measure(
         .map(|e| Edit {
             measure: MeasureId(e.measure),
             coord: e.coord,
-            value: e.value,
+            value: e.value.map(CellValue::num),
         })
         .collect();
 

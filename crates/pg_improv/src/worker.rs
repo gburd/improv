@@ -33,7 +33,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 
-use improv_core_model::{MeasureId, Model, Value, ValueType};
+use improv_core_model::{MeasureId, Model};
 use improv_engine::session::{Engine, MeasureValues, Snapshot};
 use improv_pg_model as pm;
 use improv_pg_model::live::{self, Rebuild};
@@ -289,6 +289,11 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         .and_then(|c| c.into_string().ok())
         .unwrap_or_else(|| "postgres".into());
     BackgroundWorker::connect_worker_to_spi(Some(&db), None);
+    // The slot sends values as text in this session's style; `live` reads
+    // dates as ISO and a zoneless `timestamp` as UTC, as the docs promise.
+    BackgroundWorker::transaction(|| {
+        Spi::run("SET TimeZone = 'UTC'; SET DateStyle = 'ISO'").expect("set the session style")
+    });
     log!("pg_improv sync worker started on database {db:?}");
     loop {
         let poll = Duration::from_millis(POLL_MS.get().max(10) as u64);
@@ -650,20 +655,6 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         .as_deref()
         .and_then(pgoutput::parse_lsn)
         .ok_or("cannot read the WAL insert position")?;
-    if model
-        .inputs
-        .values()
-        .any(|v| !matches!(v, Value::Number(_)))
-        || model
-            .measures
-            .values()
-            .any(|m| m.value_type != ValueType::Number)
-    {
-        // ponytail: the live engine (`session::Edit`) takes numbers only, so
-        // a model with any boolean/text/datetime measure recomputes in full
-        // per batch (reloading once more) until it types its input lanes.
-        return Ok((None, super::trigger::recompute_all(mid, name)?));
-    }
     let mapper = live::Mapper::new(&model, bindings(mid)?);
     let version = model_version(mid)?;
     let targets = super::trigger::all_derived(&model);

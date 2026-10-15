@@ -717,6 +717,18 @@ mod tests {
             "Gadget=true Widget=true"
         );
         assert_eq!(recalc(), 0, "typed values diff as unchanged");
+        // what_if takes and reports typed values as JSON.
+        assert_eq!(
+            text(
+                r#"SELECT string_agg(measure || '=' || value::text, ' ' ORDER BY measure)
+                   FROM improv.what_if('plan', '[
+                     {"measure": "Category", "coord": {"Product": "Widget"}, "value": "gear"},
+                     {"measure": "Launched", "coord": {"Product": "Widget"},
+                      "value": "2026-03-04T05:06:07.008+01:00"},
+                     {"measure": "Price", "coord": {"Product": "Widget"}, "value": 16}]')"#
+            ),
+            r#"Kind="gear" Launch="2026-03-04T04:06:07.008+00:00" Pricey=true"#
+        );
 
         Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
         Spi::run("UPDATE products SET price = 30, category = 'gear' WHERE product = 'Widget'")

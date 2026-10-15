@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use improv_core_model::{CategoryId, MeasureId, Model, ValueType};
+use improv_core_model::{CategoryId, MeasureId, Model};
 use improv_engine::{CellValue, CoordKey};
 use improv_pg_model as pm;
 use pgrx::prelude::*;
@@ -418,7 +418,8 @@ pub(crate) fn recompute_all(mid: i64, name: &str) -> Res<i64> {
 
 /// Evaluate `model` with `edits` applied to its input cells in memory and
 /// return the derived cells that differ from the stored results (`value`
-/// NULL: the cell would vanish). Writes nothing.
+/// NULL: the cell would vanish; else JSON of the measure's type, a datetime
+/// as an RFC 3339 string). Writes nothing.
 #[pg_extern(security_invoker)]
 fn what_if(
     model: &str,
@@ -428,7 +429,7 @@ fn what_if(
     (
         name!(measure, String),
         name!(coord, JsonB),
-        name!(value, Option<f64>),
+        name!(value, Option<JsonB>),
     ),
 > {
     // pgrx 0.17 cannot generate SQL for a `Result<TableIterator>`.
@@ -439,7 +440,7 @@ fn what_if(
 }
 
 /// One `what_if` result row.
-type WhatIfRow = (String, JsonB, Option<f64>);
+type WhatIfRow = (String, JsonB, Option<JsonB>);
 
 fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
     let (mid, name) = Spi::connect(|c| -> Res<(i64, String)> {
@@ -460,18 +461,13 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
     let empty = Default::default();
     let mut rows = Vec::new();
     for target in targets {
-        // ponytail: `value` is float8, so only number measures are reported;
-        // a jsonb value column would carry the other types.
-        if l.model.measures[&target].value_type != ValueType::Number {
-            continue;
-        }
         let new = pm::result_rows(&l.model, target, out.get(&target).unwrap_or(&empty))?;
         let dims = pm::dim_columns(&l.model, target)?;
         let mname = l.model.measures[&target].name.0.clone();
         pm::validate_name("measure", &mname)?;
         let table = pm::result_table(&l.name, &mname);
         let old = if exists(&table)? {
-            read_results(&table, &dims, ValueType::Number)?
+            read_results(&table, &dims, l.model.measures[&target].value_type)?
         } else {
             Default::default()
         };
@@ -479,7 +475,7 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
             rows.push((
                 mname.clone(),
                 JsonB(pm::coord_json(&l.model, target, &key)?),
-                v.and_then(|v| v.as_num()),
+                v.map(|v| JsonB(pm::value_json(&v))),
             ));
         }
     }
