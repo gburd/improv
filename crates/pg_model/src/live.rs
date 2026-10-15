@@ -509,6 +509,15 @@ mod tests {
                 .err(),
             Some(Rebuild("undescribed relation"))
         );
+        // The live engine's edits are numbers: a typed binding rebuilds.
+        let mut text = model();
+        text.measures.get_mut(&MeasureId(5)).unwrap().value_type = ValueType::Text;
+        assert_eq!(
+            mapper(&text, false)
+                .map(&mut text.clone(), &rels(b'f', &[]), &changes, 0)
+                .err(),
+            Some(Rebuild("not a number binding"))
+        );
     }
 
     #[test]

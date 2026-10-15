@@ -518,10 +518,49 @@ mod tests {
         assert_eq!(plan(&m2, &[MeasureId(11)], s.clone()).scope, None);
         // Scalar functions are element-wise.
         let m3 = model(&["Spread = ABS(Price - Cost)", "Neg = -Spread"]);
-        assert_eq!(plan(&m3, &[PRICE], s.clone()).scope, Some(s));
+        assert_eq!(plan(&m3, &[PRICE], s.clone()).scope, Some(s.clone()));
         // Nothing touched: nothing to do.
         let p = plan(&m, &[PRICE], Scope::default());
         assert!(p.targets.is_empty());
+        // A projected reference (BY/OVER/EXCEPT) or an external call is not
+        // element-wise, wherever it sits in the expression.
+        let m4 = model(&["Spread = Price - Cost", "Neg = -Spread"]);
+        for spec in [
+            improv_core_model::DimensionSpec {
+                by: vec![T],
+                ..Default::default()
+            },
+            improv_core_model::DimensionSpec {
+                over: vec![T],
+                ..Default::default()
+            },
+            improv_core_model::DimensionSpec {
+                except: vec![T],
+                ..Default::default()
+            },
+        ] {
+            let mut m = m4.clone();
+            let MeasureKind::Derived(f) = &mut m.measures.get_mut(&MeasureId(10)).unwrap().kind
+            else {
+                unreachable!()
+            };
+            f.expr = Expr::BinaryOp(
+                improv_core_model::BinaryOp::Sub,
+                Box::new(Expr::Ref(PRICE, Default::default())),
+                Box::new(Expr::Ref(COST, spec)),
+            );
+            assert_eq!(plan(&m, &[PRICE], s.clone()).scope, None);
+        }
+        let mut m = m4.clone();
+        m.external_calls.insert(
+            MeasureId(11),
+            improv_core_model::ExternalCall {
+                func: "f".into(),
+                arg_measures: vec![MeasureId(10)],
+                refresh_policy: Default::default(),
+            },
+        );
+        assert_eq!(plan(&m, &[PRICE], s.clone()).scope, None);
     }
 
     #[test]
@@ -614,6 +653,10 @@ mod tests {
             Some(&Value::Number(11.0))
         );
         assert_eq!(m.input(COST, &coord(&[(2, 4)])), None);
+        let mut typed = m.clone();
+        typed.measures.get_mut(&COST).unwrap().value_type = ValueType::Text;
+        let e = apply_edits(&mut typed, r#"[{"measure": "Cost"}]"#).unwrap_err();
+        assert!(e.to_string().contains("not a number input"), "{e}");
         for (edits, err) in [
             ("{", "what_if edit"),
             ("{}", "array"),
