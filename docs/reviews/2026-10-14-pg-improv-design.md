@@ -194,3 +194,78 @@ touched keys); binding `agg`.
 - Item ordering for bound categories (lexical by default; `ORDER BY` per binding later).
 - `numeric` precision: engine is f64; result columns are `double precision` in v1.
 - Multi-database: one worker per database listed in `improv.databases` GUC.
+
+
+## 9. Phase 2 (2026-10-15): `LANGUAGE improv` + closing the v1 gaps
+
+### 9.1 `LANGUAGE improv` — SQL functions written in Improv's formula language
+
+```sql
+CREATE FUNCTION margin(price float8, cost float8) RETURNS float8
+  LANGUAGE improv IMMUTABLE AS $$ price - cost $$;
+CREATE FUNCTION bonus(sales float8, target float8) RETURNS float8
+  LANGUAGE improv AS $$
+    Ratio = sales / target
+    IF(Ratio > 1, (Ratio - 1) * 1000, 0)
+  $$;
+CREATE FUNCTION revenue(price float8, qty float8) RETURNS float8
+  LANGUAGE improv AS 'price times qty';                -- controlled English too
+SELECT product, margin(price, cost) FROM sales;
+```
+
+- A **trusted** procedural language (pure computation: no file, network or
+  catalog access), so non-superusers may `CREATE FUNCTION … LANGUAGE improv`.
+- Arguments are scalar input measures named after the SQL argument names
+  (named arguments are required). The body is one or more `Name = expr`
+  lines; the result is a trailing bare expression, else the last definition.
+  The DSL and the controlled-English form are both accepted (as in the GUI).
+- Types: `float8/float4/numeric/int2/int4/int8 → Number`, `bool → Boolean`,
+  `text/varchar → Text`, `date/timestamp/timestamptz → DateTime`; the return
+  type likewise. Anything else is a validation error.
+- Semantics are the engine's: a pure **scalar evaluator** in `improv_engine`
+  that shares the per-cell operators with the dataflow engine (identical
+  results, identical error values). A NULL argument is a missing input (the
+  result is NULL where it depends on it); an Improv error value (e.g. division
+  by zero) raises an ERROR carrying its message. Aggregations (`SUM … OVER`)
+  need dimensions and are rejected with a pointer to models.
+- A **validator** parses and type-checks at `CREATE FUNCTION` time (honouring
+  `check_function_bodies`). Compiled bodies are cached per function OID and
+  invalidated when the `pg_proc` row changes (`CREATE OR REPLACE`).
+
+### 9.2 Closing the v1 gaps
+
+| # | Gap | Fix |
+| --- | --- | --- |
+| G1 | Logical mode recomputes the whole model per batch (~11 µs/cell) | The worker keeps a live `session::Engine` per model, applies decoded row changes as edits, and writes only the changed result cells. Rebuilt on a structural change (`model_version` moved), TRUNCATE, or an error. |
+| G2 | A GUI save rewrites every bound cell it loaded, clobbering SQL edits | `storage_pg` saves are diff-based against the loaded snapshot, with a per-cell optimistic check (`… WHERE value IS NOT DISTINCT FROM <loaded>`; zero rows → `Conflict`). A removed bound cell sets the value column to NULL (never deletes the row, which may hold other measures). Structural saves never delete rows the saver did not load. |
+| G3 | Client and extension both mint item ids | One SQL function, `improv.mint_items(model_id, category_ids[], names[])`, used by both, serialized per model; unique index on `(model_id, category_id, name)`. Minting is append-only and does **not** bump `model_version`. |
+| G4 | Duplicate rows per coordinate are rejected | `improv.binding.agg ∈ {sum, avg, min, max, count}` (NULL = duplicates are an error). `bind_measure(…, agg => 'sum')`. Aggregated measures are read-only in the GUI. |
+| G5 | Measures must be numbers | `bind_measure` infers the value type from the column type (§9.1 mapping); result tables get a typed `value` column; `define` accepts boolean, text and date results. |
+| G6 | The `pg_improv` CI job has never run | Run the job's steps in the same `rust:1.97-trixie` container on the kiwi box before merge. |
+
+Shared catalog DDL (added to both `improv_storage_pg::CATALOG_SQL` and the
+extension's catalog, verbatim):
+
+```sql
+ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
+  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count'));
+CREATE UNIQUE INDEX IF NOT EXISTS item_name_uniq ON improv.item (model_id, category_id, name);
+CREATE OR REPLACE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
+RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM 1 FROM improv.model m WHERE m.id = p_model FOR UPDATE;
+  INSERT INTO improv.item (model_id, id, category_id, name)
+  SELECT p_model,
+         (SELECT coalesce(max(i.id), 0) FROM improv.item i WHERE i.model_id = p_model)
+           + row_number() OVER (ORDER BY s.c, s.n),
+         s.c, s.n
+  FROM (SELECT DISTINCT u.c, u.n FROM unnest(p_cats, p_names) AS u(c, n)
+        WHERE NOT EXISTS (SELECT 1 FROM improv.item i
+                          WHERE i.model_id = p_model AND i.category_id = u.c AND i.name = u.n)) s
+  ON CONFLICT DO NOTHING;
+  RETURN QUERY
+    SELECT i.category_id, i.name, i.id FROM improv.item i
+    JOIN (SELECT DISTINCT u.c, u.n FROM unnest(p_cats, p_names) AS u(c, n)) w
+      ON i.model_id = p_model AND i.category_id = w.c AND i.name = w.n;
+END $$;
+```
