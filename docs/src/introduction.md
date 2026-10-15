@@ -1,64 +1,55 @@
 # Introduction
 
-Improv is a cross-platform, standalone **multidimensional spreadsheet** written
-in Rust, inspired by Lotus Improv and Quantrix. It separates three things a
+![The Improv workspace](./img/gui-workspace.png)
+
+Improv is a cross-platform **multidimensional spreadsheet** written in Rust,
+in the line of Lotus Improv and Quantrix. It separates three things a
 traditional grid tangles together:
 
-- **Structure** — the named dimensions of a model (categories and their items).
-- **Logic** — formulas defined over dimensions, not cell addresses.
-- **Data** — the raw input values.
+- **Structure**: the named dimensions of a model (categories and their items).
+- **Logic**: formulas over dimensions, not cell addresses.
+- **Data**: the raw input values.
 
-You model in named **categories**, **items**, and **measures** instead of `A1`
-cell coordinates, and derived values flow through a
+You model in named **categories**, **items** and **measures** instead of `A1`
+cell coordinates:
+
+```text
+Revenue = Price * Quantity
+Total   = SUM(Revenue OVER Time)
+```
+
+Derived values flow through a
 [differential-dataflow](https://github.com/TimelyDataflow/differential-dataflow)
-graph so recalculation is always incremental: an edit propagates only to the
+graph, so recalculation is always incremental: an edit propagates only to the
 cells it actually affects.
 
-## What works today
+## One model, many ways in
 
-- **`improv_core_model`** — categories, items, measures, coordinates, formulas,
-  values. GUI-free and storage-free.
-- **`improv_storage_mentat`** — persists a model as datoms in an embedded
-  (SQLite-backed) [Mentat](https://codeberg.org/gregburd/mentat) store.
-- **`improv_engine`** — the formula compiler
-  (`Formula → TypedExpr → PlanNode`) and its differential-dataflow evaluator
-  for numeric measures.
-- **`improv_nl_formula`** — a controlled-natural-language grammar that parses to
-  and renders from a formula.
-- **`improv_cli`** — the headless `improv` command-line tool.
-- **`improv_tui`** — a VisiCalc-style terminal pivot viewer (`improv-tui`).
-- **`improv_server`** — a JSON HTTP API over a model store (`improv-server`).
-- **`improv_gui`** — the egui/eframe desktop app (`improv-gui`).
-- **`improv_storage_sql`** — SQL import/export + live-query refresh (SQLite,
-  PostgreSQL).
-- **`improv_extfn`** — the external-language function runtime (isolated Python).
+The same model opens in a NeXTSTEP-style **desktop GUI**, a **terminal UI**,
+a scriptable **CLI**, a **streaming** pipe, a JSON **HTTP server**, and
+**inside Postgres**, where `pg_improv` keeps results current as your tables
+change and `LANGUAGE improv` turns a formula into a SQL function. A model is
+a single store file, or lives in a Postgres database. [Ways to Use
+Improv](./ways.md) says which to reach for and when.
 
-## What is planned
+## Status
 
-The following are named in the design but **not yet implemented**:
-
-- Scenario management and virtualized rendering for very large grids in the
-  desktop GUI (pivoting, keyboard navigation, charts, saved views, and filters
-  are built).
-- An OS sandbox for external functions outside Linux. Linux runs them under
-  `bwrap` (bubblewrap) with rlimits; elsewhere they are refused unless the
-  operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`.
-- Interval/on-load SQL refresh scheduling and GUI import/export wizards
-  (manual `import-sql`/`refresh-sql`/`export-sql` work today); DuckDB.
-- Server authentication (the API is localhost-only for now).
-
-Per-phase status is tracked in `.agent/AGENT_STEERING.md`; the detailed design
-is in `.agent/steering/`.
+Version 0.8.0 builds and passes its tests on Linux, macOS and Windows; the
+Postgres extension targets Postgres 17. External functions (Python, R,
+Julia) run under a bubblewrap sandbox on Linux. On other systems they are
+refused unless the operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`. The
+GUI has no Save As, Open or Print yet, and the Postgres connection has no
+TLS (use a loopback port or an SSH tunnel). See the
+[changelog](https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md)
+for what changed in each release.
 
 ## Reading order
 
-1. [The Improv Model](./model.md) — the vocabulary: categories, items,
-   measures, coordinates.
-2. [Getting Started](./getting-started.md) — build the workspace and drive a
-   model from the CLI.
-3. [The Formula Language](./formulas.md) — dimension-aware formulas and
+1. [Ways to Use Improv](./ways.md): pick a front end.
+2. [The Improv Model](./model.md): categories, items, measures, coordinates.
+3. [Getting Started](./getting-started.md): build a model from the CLI.
+4. [The Formula Language](./formulas.md): dimension-aware formulas and
    aggregation.
-4. [Controlled Natural Language](./cnl.md) — the English-ish formula surface.
-5. [Architecture & Design](./architecture.md) — the compile-to-dataflow
-   pipeline.
-6. [Storage & Persistence](./storage.md) — the Mentat datom schema.
+5. [The Desktop GUI](./gui-tour.md) and [Improv in Postgres](./postgres.md).
+6. [Architecture & Design](./architecture.md) and
+   [Storage & Persistence](./storage.md): how it works inside.

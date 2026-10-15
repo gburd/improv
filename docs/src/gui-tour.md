@@ -13,6 +13,15 @@ bash docs/demo/sample-model.sh sample.db
 nix develop -c cargo run -p improv_gui -- sample.db
 ```
 
+<video src="./img/gui-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/gui-workspace.png">
+  <img src="./img/gui-demo.gif" alt="The GUI: pivoting, editing and adding a formula">
+</video>
+
+*Pivoting by dragging the Region tile, paging, editing a Quantity cell while
+the Revenue worksheet recomputes, selecting a range for its Sum, and adding
+a formula. Recorded by `docs/demo/gui-movie.sh`.*
+
 ## The pivot grid
 
 ![Improv GUI — pivot grid](./img/gui-pivot-grid.png)
@@ -105,9 +114,19 @@ the touched cells and their dependents recompute. The same behavior on the CLI:
 
 ![Incremental recalculation](./img/recalc-demo.svg)
 
-## Capturing a screencast
+## A model in Postgres
 
-`docs/demo/gui-screencast.sh` builds the demo model and prints a click-by-click
-script (select Revenue → stack Region onto rows → edit a Quantity cell → watch
-Revenue/Margin update → toggle the chart → save a view → filter a product) for
-recording a walkthrough with your screen recorder of choice.
+The GUI opens a model stored in Postgres from its URL,
+`improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'`. Input
+measures bound to a table show that table's rows, and editing a cell updates
+the row. Here the price of Q1 Widget was changed in SQL, and the GUI shows
+the recomputed revenue (1200):
+
+![The GUI on a Postgres model](./img/gui-postgres.png)
+
+## Recording the movie and screenshots
+
+`docs/demo/gui-movie.sh` rebuilds the demo model, runs the GUI on a headless
+X server and records the movie above with `ffmpeg`, driving it with
+`xdotool`. `scripts/gui-shot.sh` takes the screenshot the CI compares
+against its golden image.

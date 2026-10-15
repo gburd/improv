@@ -40,12 +40,18 @@ by the binary, are:
 | `add-item` | `<db> <id> <category-id> <name>` |
 | `add-measure` | `<db> <id> <name> <number\|boolean\|text> input [Category ...]` |
 | `add-derived` | `<db> <id> <name> <formula>` |
+| `define` | `<db> <id> "<Name> = <formula>"` or `"<Name> = CALL(fn, Arg, ...)"` |
 | `set` | `<db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]` |
+| `scenario` | `<db> <scenario> <measure-id> <value> [--at Cat=Item,...]` |
 | `list` | `<db>` |
-| `save-view` | `<db> <view-id> <name> <measure> [--rows Cat,Cat] [--cols Cat,...]` |
 | `show` | `<db> <measure-id>` |
-| `eval` | `<db> <measure-id>` |
-| `export` | `<db>` |
+| `eval` | `<db> <measure-id> [--scenario <name>]` |
+| `save-view` | `<db> <view-id> <name> <measure> [--rows Cat,Cat] [--cols Cat,...]` |
+| `export` | `<db>` (JSON) |
+| `stream` | `<db> <target-measure> ...` (edits on stdin, changed cells on stdout) |
+| `import-csv`, `export-csv` | see `man improv` |
+| `import-sql`, `refresh-sql`, `export-sql` | see `man improv` |
+| `register-ext`, `refresh-ext`, `refresh-all`, `serve-refresh` | external functions; see `man improv` |
 | `help` | (also `--help`, `-h`) |
 
 Notes:
@@ -87,6 +93,9 @@ improv add-measure   "$DB" 101 Quantity number input Time Product
 improv set           "$DB" 100 10 --at Product=WidgetA
 improv set           "$DB" 100 20 --at Product=WidgetB
 improv set           "$DB" 101 100 --at Time=2025,Product=WidgetA
+improv set           "$DB" 101 50  --at Time=2025,Product=WidgetB
+improv set           "$DB" 101 120 --at Time=2026,Product=WidgetA
+improv set           "$DB" 101 80  --at Time=2026,Product=WidgetB
 ```
 
 Inspect the model:
@@ -112,13 +121,16 @@ inputs:
   100::{Product=WidgetA} = 10
   100::{Product=WidgetB} = 20
   101::{Time=2025,Product=WidgetA} = 100
+  101::{Time=2025,Product=WidgetB} = 50
+  101::{Time=2026,Product=WidgetA} = 120
+  101::{Time=2026,Product=WidgetB} = 80
 ```
 
 Save a named view (the GUI opens it from the model browser). `--rows` and
 `--cols` stack category names; leftover categories become pages:
 
 ```sh
-improv save-view "$DB" 1 "Prices by product" Price --rows Product --cols Time
+improv save-view "$DB" 1 "Quantity by year" Quantity --rows Time --cols Product
 ```
 
 Look at a single measure and its cells:
@@ -173,11 +185,9 @@ eval 103 'RevByProduct' (2 cells):
 
 ## Beyond the CLI
 
-The CLI defines categories, items, input and derived measures, sets input
-cells, evaluates derived measures through the engine, imports/exports SQL, and
-registers and runs external Python functions. For interactive use, the
-`improv-tui` terminal viewer edits input cells and re-pivots live, and the
-`improv-gui` desktop app adds drag-and-drop pivoting, charts, saved views, and
-filters. See the [architecture chapter](./architecture.md) for the full
-pipeline and the [README](https://codeberg.org/gregburd/improv#readme) for the
-per-interface run instructions and keybindings.
+Open the same file interactively: `improv-tui model.db` in a terminal, or
+`improv-gui model.db` on the desktop, where the saved view shows up in the
+model browser. Feed it new numbers with `improv stream model.db Revenue`.
+[Ways to Use Improv](./ways.md) compares the front ends, and `man improv`
+lists every CLI command, including CSV and SQL import and export and
+sandboxed Python functions.

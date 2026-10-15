@@ -9,16 +9,25 @@ conventions.
 Every commit keeps the tree green. Run the full gate locally:
 
 ```sh
-# fmt/clippy target only our 11 crates (not `--all`/`--workspace`): that would
-# also walk the vendored Mentat path dependency (../mentat) and, transitively,
-# whatever it depends on.
-IMPROV_CRATES=$(ls crates | sed 's/^/-p improv_/')
+# fmt/clippy target only our crates (not `--all`/`--workspace`), which would
+# also lint the Mentat dependency. pg_improv is its own Cargo workspace (pgrx).
+IMPROV_CRATES=$(ls crates | grep -v '^pg_improv$' | sed 's/^/-p improv_/')
 cargo fmt $IMPROV_CRATES -- --check
 cargo clippy $IMPROV_CRATES --all-targets --all-features -- -D warnings
 cargo test --workspace          # or: cargo nextest run --workspace
 cargo deny check
 typos
-cargo doc --workspace --no-deps
+RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
+mdbook build docs               # the guide (mdbook, mdbook-mermaid, mdbook-linkcheck)
+```
+
+The Postgres extension, from `crates/pg_improv` (needs `cargo-pgrx` 0.17 and
+Postgres 17):
+
+```sh
+cargo fmt --check && cargo clippy --features pg17 --all-targets -- -D warnings
+cargo pgrx test pg17
+cargo pgrx install --release && ./tests/logical.sh
 ```
 
 A warning is a failure (`RUSTFLAGS=-Dwarnings` in CI).
@@ -84,9 +93,20 @@ Look at the new golden before committing it.
 
 ## Docs
 
-If you change a public API, the CLI surface, the formula/CNL grammar, or the
-Mentat schema, update the rustdoc, the mdBook page under `/docs`, the man page,
-and `CHANGELOG.md` in the same change. Stale docs are treated as defects.
+If you change a public API, the CLI surface, the formula/CNL grammar, the
+Mentat schema or the `pg_improv` SQL API, update the rustdoc, the guide page
+under `docs/src/`, the man pages under `docs/man/`, and `CHANGELOG.md` in the
+same change. Stale docs are treated as defects.
+
+The README's movies are reproducible: `docs/demo/tui-demo.sh` and
+`docs/demo/pg-demo.sh` record the terminal ones (asciinema-style casts
+rendered with `agg`), and `docs/demo/gui-movie.sh` records the GUI on a
+headless X server. Re-record them when the UI they show changes.
+
+The guide and API docs publish from `main`: GitHub Pages through
+`.github/workflows/docs.yml`, and Codeberg Pages through
+`.forgejo/workflows/pages.yml`, which pushes the built site to the `pages`
+branch (it needs a `PAGES_PUSH_TOKEN` secret).
 
 ## License
 

@@ -49,9 +49,13 @@ $I save-view m.db 1 "Revenue by quarter" 102 --rows Time --cols Product
 | Front end | Command | Notes |
 | --- | --- | --- |
 | CLI | `improv --help` | Scriptable; see `man docs/man/improv.1`. |
-| TUI | `improv-tui m.db` | Arrows move, `e`/Enter edit, Shift+arrows select a range (Sum in the status line), `p` pivot, `[ ]` page, `f`/`F` filter, `Tab` measure, `q` quit (autosaves). |
+| TUI | `improv-tui m.db` | Arrows move, `e`/Enter edit, Shift+arrows select a range (Sum in the status line), `p` pivot, `[ ]` page, `f`/`F` filter, `Tab` measure, `R` revert to saved, `q` quit (autosaves). |
 | GUI | `improv-gui m.db` | NeXTSTEP-style workspace: application menu top-left, worksheet windows, model browser. Double-click or Enter edits a cell; right-click a tile to move or filter it; type `Name = formula` on the formula list's last line. Run inside `nix develop` on NixOS so the GL/X11 libraries are found. |
+| Streaming | `producer \| improv stream m.db Revenue` | Edits in on stdin, changed cells out on stdout; saved at end of input. |
 | Server | `IMPROV_API_TOKEN=secret improv-server m.db` | JSON API on `127.0.0.1:3000`; see [The HTTP Server](./server.md). |
+| Postgres | `CREATE EXTENSION pg_improv` | Models over your tables; see [Improv in Postgres](./postgres.md). |
+
+[Ways to Use Improv](./ways.md) explains when to pick which.
 
 Example server calls:
 
@@ -103,7 +107,7 @@ carry code or SQL.
 ## Tests
 
 ```sh
-cargo test --workspace                          # ~660 tests, ~1 min
+cargo test --workspace                          # ~750 tests, ~1 min
 cargo test --workspace --release -- --ignored   # stress: up to 10M cells, ~3 min
 ```
 
@@ -133,7 +137,7 @@ library code. CI runs the same gate (`coverage` job).
 ## Full quality gate
 
 ```sh
-P=$(ls crates | sed 's/^/-p improv_/')
+P=$(ls crates | grep -v '^pg_improv$' | sed 's/^/-p improv_/')   # pg_improv has its own workspace
 cargo fmt $P -- --check
 cargo clippy $P --all-targets --all-features -- -D warnings
 cargo test --workspace
@@ -142,4 +146,7 @@ typos
 RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
 scripts/gui-shot-check.sh       # GUI screenshot vs golden (needs Xvfb, ImageMagick, xdotool)
 scripts/coverage.sh             # coverage gate (nightly)
+(cd crates/pg_improv && cargo fmt --check \
+  && cargo clippy --features pg17 --all-targets -- -D warnings \
+  && cargo pgrx test pg17 && ./tests/logical.sh)   # the extension
 ```

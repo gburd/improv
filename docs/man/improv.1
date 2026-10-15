@@ -1,5 +1,5 @@
 .\" Man page for the Improv CLI.
-.TH IMPROV 1 "2026-09-24" "improv 0.7.0" "Improv Manual"
+.TH IMPROV 1 "2026-10-15" "improv 0.8.0" "Improv Manual"
 .SH NAME
 improv \- headless multidimensional spreadsheet model CLI
 .SH SYNOPSIS
@@ -147,11 +147,37 @@ stack category names outer-to-inner; each defaults to the next unused
 category of the measure. The remaining categories become pages, pinned to
 their first item. A view with the same id is replaced.
 .TP
+.B save-view \fI<db> <view-id> <name> <measure>\fR [\fB\-\-rows\fR \fICat,Cat\fR] [\fB\-\-cols\fR \fICat,...\fR]
+Save a named view of
+.I <measure>
+(id or name), as the GUI does:
+.B \-\-rows
+and
+.B \-\-cols
+stack category names outer to inner (each defaults to the next unused
+category of the measure); the remaining categories are pages, pinned to their
+first item. Replaces a view with the same id.
+.TP
 .B show \fI<db> <measure-id>\fR
 Print one measure and its input cells.
 .TP
-.B eval \fI<db> <measure-id>\fR
-Compute a derived measure through the engine and print its cells.
+.B eval \fI<db> <measure-id>\fR [\fB\-\-scenario\fR \fIname\fR]
+Compute a derived measure through the engine and print its cells, optionally
+under a named scenario's overrides.
+.TP
+.B stream \fI<db> <target-measure>\fR...
+Read input-cell edits from standard input, one per line, as
+.IR "<measure> <value> [Cat=Item,...]"
+(the measure by id or name; no coordinate for a scalar measure). Each line is
+applied to a live incremental engine, a delta rather than a re-evaluation,
+and every cell of a target measure that changed is printed to standard output
+as
+.IR "<measure> <Cat=Item,...> = <value>" .
+A malformed line is reported on standard error and skipped. At end of input
+the final state is saved back to
+.IR <db> .
+Use it to put Improv in a pipeline:
+.BR "producer | improv stream m.db Revenue | consumer" .
 .TP
 .B export \fI<db>\fR
 Print the whole model as pretty-printed JSON.
@@ -164,6 +190,39 @@ maps a result column to a category (distinct values become items); the
 column supplies the numeric measure value. SQL data enters as ordinary input
 cells.
 .TP
+.B refresh-sql \fI<db> <source.sqlite> <measure-id>\fR
+Re-run an SQL-backed measure's stored query and replace its cells with the
+fresh result (new dimension values become new items).
+.TP
+.B refresh-all \fI<db>\fR [\fIsource.sqlite\fR]
+Refresh every externally sourced measure at once: all
+.B CALL(...)
+measures, plus every SQL-backed measure when a source is given.
+.TP
+.B serve-refresh \fI<db>\fR [\fIsource.sqlite\fR] [\fB\-\-tick\fR \fIsecs\fR]
+Run until interrupted, refreshing on each tick (default 5 s) the measures
+whose refresh policy is due:
+.B on-load
+once,
+.BI interval: N
+every
+.I N
+seconds. SQL measures refresh only when a source is given.
+.TP
+.B import-csv \fI<db> <file.csv> <measure-id> <measure-name> <value-col> <dim-col:cat-id:cat-name>...\fR [\fB\-\-tsv\fR] [\fB\-\-no\-header\fR]
+Import a CSV or TSV file into a new input measure. Columns are header names
+(0-based indices with
+.BR \-\-no\-header ).
+The delimiter is a comma unless
+.B \-\-tsv
+is given or the file ends in
+.BR .tsv .
+.TP
+.B export-csv \fI<db> <target.csv> <measure-id>\fR [\fB\-\-tsv\fR]
+Write a measure's input cells to a CSV or TSV file: one column per dimension
+category plus the value column, header row first. Text that a spreadsheet
+would run as a formula is prefixed with a quote.
+.TP
 .B export-sql \fI<db> <target.sqlite> <measure-id> <table> <value-col>\fR
 Write a measure's input cells to a SQLite table (one column per dimension
 category plus the value column; the table is created if absent). Identifiers
@@ -174,6 +233,10 @@ Show usage. Also accepted as
 .B \-\-help
 and
 .BR \-h .
+.TP
+.B \-\-version
+Print the version. Also accepted as
+.BR \-V .
 .SH EXAMPLES
 Build a small Time \(mu Product model:
 .PP
@@ -194,21 +257,49 @@ improv show          model.db 100
 improv export        model.db
 .fi
 .RE
+Pipe new data through a model and print what it changes:
+.PP
+.RS
+.nf
+printf \(aqPrice 15 Product=WidgetA\en\(aq | improv stream model.db Revenue
+.fi
+.RE
+.PP
+Work on a model stored in Postgres:
+.PP
+.RS
+.nf
+improv list \(aqpostgres://me@127.0.0.1/sales?model=plan\(aq
+.fi
+.RE
 .SH FILES
 .TP
 .I <db>
 The model store: a single SQLite file created and read by
-.BR improv .
-An empty string names an in-memory database that is discarded on exit.
+.BR improv ,
+or a
+.BI postgres:// ...?model= name
+URL. An empty string names an in-memory database that is discarded on exit.
+.SH ENVIRONMENT
+.TP
+.B IMPROV_EXTFN_TRUSTED=1
+Run external functions without the sandbox.
+.TP
+.B IMPROV_EXTFN_ALLOW_UNSANDBOXED=1
+Without bubblewrap, run external functions under resource limits only
+(otherwise they are refused).
+.TP
+.B MENTAT_MMAP_SIZE
+Bytes of the store file SQLite may memory-map;
+.B 0
+turns mapping off.
 .SH AUTHOR
 Greg Burd <greg@burd.me>
 .SH LICENSE
 Dual-licensed under Apache-2.0 OR MIT, at your option.
 .SH SEE ALSO
-The Improv guide (mdBook) under
-.IR docs/ ,
-and
-.I .agent/AGENT_STEERING.md
-for live per-phase status
-(with the detailed design in
-.IR .agent/steering/ ).
+.BR improv-tui (1),
+.BR improv-gui (1),
+.BR improv-server (1).
+The user guide: https://gregburd.codeberg.page/improv/ (also
+https://gburd.github.io/improv/).

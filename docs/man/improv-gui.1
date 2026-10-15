@@ -1,0 +1,49 @@
+.\" Man page for improv-gui.
+.TH IMPROV-GUI 1 "2026-10-15" "improv 0.8.0" "Improv Manual"
+.SH NAME
+improv-gui \- desktop workspace for Improv models
+.SH SYNOPSIS
+.B improv-gui
+.RI [ model ]
+.SH DESCRIPTION
+.B improv-gui
+opens a model in a NeXTSTEP-style workspace: an application menu, one
+worksheet window per matrix, and a model browser. Pivot by dragging a
+category tile between a worksheet's strips; edit an input cell by
+double-clicking it; add a formula by typing
+.I Name = formula
+on the last line of a worksheet's formula list. Every change is saved as it
+is made. Without an argument the model is in memory only.
+.PP
+A model is a store file made by
+.BR improv (1),
+or a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR.
+
+.SH KEYS
+Key equivalents take Ctrl (Cmd on macOS):
+.BR s " save, " z " undo, " Z " or " y " redo, " h " hide, " q " quit."
+In a grid: arrows or
+.B hjkl
+move, Shift+arrows select a range (the status bar shows its sum), Enter or
+F2 edits,
+.BR [ " and " ]
+page,
+.B n
+cycles the measure.
+.SH ENVIRONMENT
+.TP
+.B MENTAT_MMAP_SIZE
+As for
+.BR improv (1).
+.SH EXAMPLES
+.nf
+improv-gui sample.db
+improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
+.fi
+.SH AUTHOR
+Greg Burd <greg@burd.me>
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-tui (1),
+.BR improv-server (1).

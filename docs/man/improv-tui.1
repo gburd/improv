@@ -1,0 +1,68 @@
+.\" Man page for improv-tui.
+.TH IMPROV-TUI 1 "2026-10-15" "improv 0.8.0" "Improv Manual"
+.SH NAME
+improv-tui \- terminal pivot viewer and editor for Improv models
+.SH SYNOPSIS
+.B improv-tui
+.I model
+.SH DESCRIPTION
+.B improv-tui
+shows one measure of a model as a pivot grid in the terminal: one category
+down the rows, one across the columns, the rest as pages. Input cells are
+edited in place; derived measures recompute incrementally as you type.
+The model is saved when you quit.
+.PP
+A model is a store file made by
+.BR improv (1),
+or a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR.
+
+.SH KEYS
+.TP
+.B arrows\fR, mouse click
+Move the cell cursor.
+.TP
+.B Shift+arrows
+Select a range; its sum shows in the status line.
+.TP
+.BR e ", " Enter
+Edit the selected input cell; Enter commits, Esc cancels.
+.TP
+.BR Tab ", " m
+Show the next measure.
+.TP
+.B p
+Pivot: rotate the axis order.
+.TP
+.BR [ " and " ]
+Page through the page dimensions.
+.TP
+.BR f " / " F
+Hide the cursor row's item / clear all filters.
+.TP
+.B S
+Save the current layout as a view.
+.TP
+.B v
+Cycle through the saved views.
+.TP
+.BR I " / " E
+Import a CSV into a new measure / export the shown measure (a prompt opens).
+.TP
+.B R
+Revert to the saved model, dropping this session's edits. Use it after a
+save conflict, when another writer changed the model.
+.TP
+.B q
+Quit and save.
+.SH EXAMPLES
+.nf
+improv-tui sample.db
+improv-tui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
+.fi
+.SH AUTHOR
+Greg Burd <greg@burd.me>
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-gui (1),
+.BR improv-server (1).

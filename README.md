@@ -1,288 +1,176 @@
 # Improv
 
-A cross-platform, standalone **multidimensional spreadsheet** in Rust, inspired
-by Lotus Improv and Quantrix. Improv separates *structure*, *logic*, and *data*:
-you model in named **categories**, **items**, and **measures** instead of cell
-coordinates, and derived values flow from a **differential-dataflow** graph so
-recalculation is always incremental.
+A **multidimensional spreadsheet** in Rust, in the line of Lotus Improv and
+Quantrix. You model in named **categories**, **items** and **measures**
+instead of cell addresses, write formulas over dimensions, and every derived
+value recomputes **incrementally** through a differential-dataflow graph. The
+same model opens in a NeXTSTEP-style desktop GUI, a terminal UI, a CLI, a
+streaming pipe, an HTTP server, and **inside Postgres**.
 
-- **Modeling first, grid second.** Think in dimensions (Time, Product, Region),
-  not rows and columns.
-- **Always-incremental recalculation.** Each measure is a materialized view;
-  edits propagate as deltas through differential dataflow.
-- **Durable, scriptable, auditable.** The model persists as immutable facts in
-  an embedded (SQLite-backed) [Mentat](https://codeberg.org/gregburd/mentat)
-  datom store.
-- **Four ways in.** A scriptable **CLI**, a VisiCalc-style **TUI**, a desktop
-  **GUI** (pivoting, charts, saved views, filters), and a JSON **HTTP server** —
-  all over the same model. Controlled-natural-language formulas too.
+**Guide:** <https://gregburd.codeberg.page/improv/> (mirrored at
+<https://gburd.github.io/improv/>) · **API docs:** the same sites, under `/api/`
 
-> See [`.agent/AGENT_STEERING.md`](.agent/AGENT_STEERING.md) for live phase
-> status and [`.agent/steering/`](.agent/steering/) for the design.
-
-## The idea, in one formula
+![The Improv workspace: worksheets, formulas and the model browser](docs/src/img/gui-workspace.png)
 
 ```text
 Revenue[Time, Product] = Price[Product] * Quantity[Time, Product]
+Total[Product]         = SUM(Revenue OVER Time)
 ```
 
-`Price` is broadcast over `Time`; `Revenue` recomputes only for the cells an
-edit actually touches. `SUM(Revenue OVER Time)` aggregates to `Revenue[Product]`.
+`Price` is broadcast over `Time`. Editing one Quantity cell recomputes one
+Revenue cell and one Total, not the sheet.
 
-## Workspace layout
+## Ways to use it
 
-| Crate | Binary | Purpose |
-|-------|--------|---------|
-| `improv_core_model` | — | Categories, items, measures, coordinates, formulas, values, saved views/filters. GUI/storage-free. |
-| `improv_storage_mentat` | — | Persistence: model ⇄ datoms on embedded Mentat (SQLite). |
-| `improv_storage_sql` | — | SQL import/export + live-query refresh (SQLite and PostgreSQL). |
-| `improv_engine` | — | Formula compiler (`Formula → TypedExpr → PlanNode`) + differential-dataflow evaluation. |
-| `improv_extfn` | — | External-language function runtime (isolated Python subprocess). |
-| `improv_nl_formula` | — | Controlled-natural-language ⇄ formula translation. |
-| `improv_cli` | `improv` | Command-line tool. |
-| `improv_tui` | `improv-tui` | VisiCalc-style terminal pivot viewer. |
-| `improv_server` | `improv-server` | JSON HTTP API over a model store. |
-| `improv_gui` | `improv-gui` | egui/eframe desktop app. |
+| | Use it for | Start with |
+| --- | --- | --- |
+| **GUI** `improv-gui` | building and exploring a model by hand: drag tiles to pivot, edit cells, add formulas, several worksheets at once | `improv-gui sample.db` |
+| **TUI** `improv-tui` | the same in a terminal or over SSH | `improv-tui sample.db` |
+| **CLI** `improv` | scripting a model, bulk CSV/SQL import and export, CI | `improv --help`, `man improv` |
+| **Streaming** `improv stream` | pushing a live feed through a model and reading the changed results | `producer \| improv stream m.db Revenue` |
+| **Postgres** `pg_improv` | modeling data already in Postgres; results land in tables any SQL client reads | `CREATE EXTENSION pg_improv` |
+| **SQL functions** `LANGUAGE improv` | writing a SQL function as a formula | `CREATE FUNCTION … LANGUAGE improv` |
+| **Server** `improv-server` | serving a model to other programs as JSON over HTTP | `improv-server sample.db` |
 
-## Setup
+Each front end takes a model file or a Postgres model URL
+(`postgres://user@host/db?model=plan`). The guide's
+[Ways to Use Improv](docs/src/ways.md) chapter explains when to use which.
 
-With [Nix](https://nixos.org) (flakes): `nix develop` drops you into a dev shell
-with the right Rust toolchain, the GUI runtime libraries (Wayland/X11/libGL) on
-`LD_LIBRARY_PATH`, and the tooling (`nextest`, `deny`, `mdbook`, `typos`,
-`sqlite3`, `asciinema`). A `.envrc` (`use flake`) makes `direnv` load it
-automatically. The desktop GUI needs those libs, so run it from inside the shell.
+### The desktop GUI
+
+![The GUI: pivoting, paging, editing, a range Sum and a new formula](docs/src/img/gui-demo.gif)
+
+### The terminal UI
+
+![The TUI: moving, editing an input and watching Revenue recompute, pivoting, paging](docs/src/img/tui-demo.gif)
+
+### Improv in Postgres
+
+![pg_improv: a model over a sales table, an UPDATE flowing to the results, a LANGUAGE improv function, then the TUI editing the same model](docs/src/img/pg-demo.gif)
+
+## Install
+
+Pre-built CLI, TUI, GUI and server binaries for Linux, macOS and Windows are
+attached to each [release](https://github.com/gburd/improv/releases). To
+build from source you need Rust **1.97** or newer:
 
 ```sh
-cargo build --workspace
-cargo test  --workspace
+git clone https://codeberg.org/gregburd/improv && cd improv
+cargo build --release      # target/release/{improv,improv-tui,improv-gui,improv-server}
 ```
 
-Without Nix you need a Rust toolchain (MSRV **1.97**) and, for the GUI, the
-usual Wayland/X11/libGL development libraries; the external-function runtime
-needs `python3` on `PATH`.
+The GUI needs the usual Wayland/X11/OpenGL runtime libraries
+(`libxkbcommon-x11-0 libgl1 libegl1` on Debian/Ubuntu). With
+[Nix](https://nixos.org), `nix develop` provides the toolchain, those
+libraries and the dev tools. External functions need `python3` and, on
+Linux, `bubblewrap` for the sandbox.
 
----
+The Postgres extension is built separately with `cargo-pgrx`; see
+[`crates/pg_improv/README.md`](crates/pg_improv/README.md).
 
-## CLI (`improv`)
+## Quick start
 
-A headless, scriptable driver over a model file. Full command list:
+Build the 3-D sample model (Time × Product × Region, with Price, UnitCost,
+Quantity, Revenue, COGS and Margin) and open it:
 
 ```sh
-cargo run -p improv_cli -- help
+IMPROV=target/release/improv bash docs/demo/sample-model.sh sample.db
+target/release/improv-gui sample.db     # or improv-tui sample.db
 ```
 
-| Command | What it does |
-|---------|--------------|
-| `init <db>` | Create a store (an existing model is kept). |
-| `add-category <db> <id> <name>` | Add a dimension. |
-| `add-item <db> <id> <cat-id> <name>` | Add an item to a category. |
-| `add-measure <db> <id> <name> <number\|boolean\|text> input [Category ...]` | Add an input measure over the named categories. |
-| `add-derived <db> <id> <name> <formula>` | Add a formula measure. |
-| `define <db> <id> "<Target = ...>"` | Add a measure from a definition string (formula or `CALL(...)` form). |
-| `set <db> <measure-id> <value> [--at Cat=Item,...]` | Set an input cell. |
-| `list <db>` / `show <db> <measure-id>` | Inspect the model / one measure. |
-| `eval <db> <measure-id>` | Compute a derived measure through the engine. |
-| `export <db>` | Dump the model as JSON. |
-| `import-sql` / `refresh-sql` / `export-sql` | SQL ⇄ measure (see below). |
-| `refresh-all <db> [source.sqlite]` | Refresh every external-sourced measure (CALL + SQL) at once. |
-| `serve-refresh <db> [source.sqlite] [--tick SECS]` | Daemon that honors each measure's refresh policy (on-load / interval). |
-| `register-ext <db> <name> <arity> "<python body>"` | Register a pure Python function. |
-| `refresh-ext <db> <measure-id>` | Populate a `CALL(...)` measure host-side. |
-| `import-csv <db> <file> <id> <name> <value-col> <dim:cat-id:cat-name>... [--tsv] [--no-header]` | CSV/TSV ⇄ measure. |
-| `export-csv <db> <file> <measure-id> [--tsv]` | Write a measure's cells to CSV/TSV. |
-| `stream <db> <target-measure>...` | Stream edits from stdin, print changed cells to stdout (see below). |
-
-### Try it — the revenue model
+Or build a model by hand with the CLI:
 
 ```sh
-cargo run -p improv_cli -- init model.db
-cargo run -p improv_cli -- add-category model.db 1 Time
-cargo run -p improv_cli -- add-category model.db 2 Product
-cargo run -p improv_cli -- add-item model.db 10 1 2025
-cargo run -p improv_cli -- add-item model.db 11 1 2026
-cargo run -p improv_cli -- add-item model.db 20 2 WidgetA
-cargo run -p improv_cli -- add-item model.db 21 2 WidgetB
-cargo run -p improv_cli -- add-measure model.db 100 Price number input Product
-cargo run -p improv_cli -- add-measure model.db 101 Quantity number input Time Product
-cargo run -p improv_cli -- set model.db 100 10 --at Product=WidgetA
-cargo run -p improv_cli -- set model.db 100 20 --at Product=WidgetB
-cargo run -p improv_cli -- set model.db 101 100 --at Time=2025,Product=WidgetA
-cargo run -p improv_cli -- set model.db 101 120 --at Time=2026,Product=WidgetA
-cargo run -p improv_cli -- define model.db 102 "Revenue = Price * Quantity"
-cargo run -p improv_cli -- eval model.db 102
-cargo run -p improv_cli -- define model.db 103 "TotalRevenue = SUM(Revenue OVER Time)"
-cargo run -p improv_cli -- eval model.db 103
+improv init m.db
+improv add-category m.db 1 Time;    improv add-item m.db 10 1 Q1
+improv add-category m.db 2 Product; improv add-item m.db 20 2 Widget
+improv add-measure m.db 100 Price    number input Product
+improv add-measure m.db 101 Quantity number input Time Product
+improv set m.db 100 10  --at Product=Widget
+improv set m.db 101 100 --at Time=Q1,Product=Widget
+improv define m.db 102 "Revenue = Price * Quantity"
+improv eval m.db 102
+# Revenue[Time=Q1, Product=Widget] = 1000
 ```
 
-The whole flow, recorded: **[`docs/demo/cli-demo.cast`](docs/demo/cli-demo.cast)**
-(play with `asciinema play docs/demo/cli-demo.cast`, or re-record with
-[`docs/demo/cli-demo.sh`](docs/demo/cli-demo.sh)).
-
-**Incremental recalculation**, recorded: build a model, then flow in new numbers
-and watch the derived measures recompute:
-
-![Incremental recalculation demo](docs/src/img/recalc-demo.svg)
-
-Raw cast: **[`docs/demo/recalc-demo.cast`](docs/demo/recalc-demo.cast)**
-(`asciinema play docs/demo/recalc-demo.cast`; re-record with
-[`docs/demo/recalc-demo.sh`](docs/demo/recalc-demo.sh); the SVG above is rendered
-from the cast with `svg-term`).
-
-For a richer playground — a 3-D **Time × Product × Region** sales model with
-Price/Cost/Quantity inputs and Revenue/COGS/Margin + aggregated derived measures
-— run [`docs/demo/sample-model.sh`](docs/demo/sample-model.sh):
+and stream new data through it:
 
 ```sh
-bash docs/demo/sample-model.sh sample.db
-nix develop -c cargo run -p improv_gui -- sample.db
+printf 'Price 15 Product=Widget\n' | improv stream m.db Revenue
+# Revenue Time=Q1, Product=Widget = 1500
 ```
 
-In the GUI: select `Revenue`, then drag the **Region** tile onto the Rows
-margin to stack it under Time (nested row headers), or onto Pages to slice by
-region; toggle the chart, save a view, or filter Product to a subset.
+The CLI also imports and exports CSV and SQLite, runs sandboxed Python
+functions (`register-ext`, then `CALL(...)`), and refreshes external
+measures on a schedule. [Getting Started](docs/src/getting-started.md) is the tutorial;
+[`docs/man/improv.1`](docs/man/improv.1) lists every command.
 
-### SQL and external functions
+## In Postgres
 
-```sh
-# Import a SQLite query into a measure; refresh re-runs the query.
-cargo run -p improv_cli -- import-sql model.db sales.db 300 Sales \
-    "SELECT t,p,r FROM sales" r t:1:Time p:2:Product
-cargo run -p improv_cli -- refresh-sql model.db sales.db 300
+```sql
+-- postgresql.conf: shared_preload_libraries = 'pg_improv', wal_level = logical
+CREATE EXTENSION pg_improv;
+SELECT improv.create_model('plan');
+SELECT improv.bind_category('plan', 'Time',    'sales', 'quarter');
+SELECT improv.bind_category('plan', 'Product', 'sales', 'product');
+SELECT improv.bind_measure ('plan', 'Price',    'sales', 'price');
+SELECT improv.bind_measure ('plan', 'Quantity', 'sales', 'qty');
+SELECT improv.define('plan', 'Revenue = Price * Quantity');
+SELECT * FROM improv_plan.revenue;    -- kept current as sales changes
 
-# A pure Python function, evaluated host-side (never on the engine's hot path).
-cargo run -p improv_cli -- register-ext model.db hypot 2 \
-    "result = (args[0]**2 + args[1]**2) ** 0.5"
-cargo run -p improv_cli -- define model.db 200 "H = CALL(hypot, Price, Price)"
-cargo run -p improv_cli -- refresh-ext model.db 200
+CREATE FUNCTION bonus(sales float8, target float8) RETURNS float8
+  LANGUAGE improv AS $$ Ratio = sales / target
+                        MAX2(Ratio - 1, 0) * 1000 $$;
 ```
 
-`storage_sql` also speaks **PostgreSQL**; connection descriptors keep credentials
-out of band (a password-less DSN plus an env-var name resolved at connect time).
+By default a background worker applies committed changes incrementally (at
+100k cells, a one-row UPDATE shows up about 50 ms after commit, and the
+writer pays nothing). Trigger mode updates the results inside the writer's
+transaction, and `improv.recalc()` updates them when you call it.
+`improv-gui 'postgres://me@host/sales?model=plan'` opens the same model, and
+editing a cell there updates the row in `sales`. See
+[Improv in Postgres](docs/src/postgres.md).
 
-### Streaming compute (stdin → stdout)
+## Keys
 
-`stream` reads edits from stdin and prints changed cells to stdout as they're
-computed incrementally (a live engine, not a reload-and-recompute per line) —
-for piping a producer of new data straight through Improv:
+**TUI:** arrows move · `e`/Enter edit · Tab next measure · `p` pivot ·
+`[` `]` page · Shift+arrows select a range (its sum in the status line) ·
+`f`/`F` filter · `S` save view · `v` cycle views · `I`/`E` CSV import/export ·
+`R` revert to saved · `q` quit and save.
 
-```sh
-printf 'Price 15 Product=WidgetA\nQuantity 8 Time=2025,Product=WidgetA\n' \
-  | cargo run -p improv_cli -- stream model.db Revenue
-# Revenue Time=2025, Product=WidgetA = 75
-# Revenue Time=2025, Product=WidgetA = 120
-```
+**GUI:** drag a tile between strips to pivot (or right-click it) ·
+double-click or Enter to edit · type `Name = formula` on the formula list's
+last line · Shift+click or drag selects a range (its Sum in the status bar) ·
+Ctrl+S save, Ctrl+Z undo, Ctrl+Y redo · **File ▸ Revert to Saved** after a
+save conflict.
 
-Each line is `<measure> <value> [Cat=Item,...]` (measure by id or name; the
-coordinate is omitted for a scalar measure). A malformed line warns on stderr
-and is skipped, not fatal; on EOF the final state saves back to the model file.
+## Workspace
 
----
-
-## TUI (`improv-tui`)
-
-A terminal pivot viewer over an existing model file:
-
-```sh
-cargo run -p improv_tui -- model.db
-```
-
-| Key | Action |
-|-----|--------|
-| arrows / mouse click | Move the cell cursor |
-| `e` / `Enter` | Edit the selected cell |
-| `[` / `]` | Page through extra (page) dimensions |
-| `p` | Pivot (rotate the axis order) |
-| `f` / `F` | Toggle a filter on the cursor's row item / clear all filters |
-| `S` | Save the current layout as a view |
-| `v` | Cycle through saved views |
-| `Tab` / `m` | Cycle the measure shown |
-| `R` | Revert to the saved model (after a save conflict) |
-| `q` | Quit (autosaves) |
-
-Run against the `model.db` built above to see `Revenue` pivoted over
-Time × Product.
-
----
-
-## GUI (`improv-gui`)
-
-The egui/eframe desktop app, styled in a NeXTSTEP-*inspired* look-and-feel
-(built from general knowledge of the original Lotus Improv, not a verified
-side-by-side comparison) — a model browser window, editable pivot grid, on-grid margin
-**category tiles** for drag-to-pivot, an in-place **formula list**, an Info panel, saved
-views,
-per-category filters, a bar/line **chart**, and **multi-category-per-axis
-stacking**.
-
-![Improv GUI — pivot grid](docs/src/img/gui-pivot-grid.png)
-
-*The 3-D sample model: Revenue over Time × Product × Region. Product is on
-columns, Time on rows, Region paged (North [1/2]); the formula list shows
-`Revenue = Price times Quantity`, and the inspector shows its dependencies.*
-
-![Improv GUI — stacked axes](docs/src/img/gui-stacked-axes.png)
-
-*The same measure after dragging **Region** onto the Rows margin: rows are now
-the stacked product Time × Region (2024Q1 North/South, 2024Q2 …), with the outer
-Time label printed once per group.*
-
-Run it from inside the Nix dev shell (it needs the GUI runtime libs):
-
-```sh
-nix develop -c cargo run -p improv_gui -- model.db
-# or build the richer sample model first:
-bash docs/demo/sample-model.sh sample.db && \
-  nix develop -c cargo run -p improv_gui -- sample.db
-```
-
-Grid keyboard navigation (mouse also works throughout):
-
-| Key | Action |
-|-----|--------|
-| arrows / `hjkl` | Move the cell cursor |
-| `Enter` / `F2` | Edit the selected cell |
-| `[` / `]` (or `PageUp` / `PageDown`) | Page the first page dimension |
-| `n` / `Shift+n` | Cycle the measure forward / back |
-
-`Tab` is reserved by egui for focus, so measures cycle on `n`.
-
----
-
-## Server (`improv-server`)
-
-A JSON HTTP API over a model store (default `127.0.0.1:3000`; override with
-`IMPROV_ADDR` or a second arg):
-
-```sh
-cargo run -p improv_server -- model.db
-# then, e.g.
-curl -s localhost:3000/measures
-curl -s -X POST localhost:3000/measures/102/eval
-```
-
-Routes: `/health`, `/model`, `/measures`, `/measures/:id/{values,eval,cells}`,
-`/nl/parse`, `/nl/describe`.
-
----
+| Crate | Binary | What it is |
+| --- | --- | --- |
+| `improv_core_model` | | Categories, items, measures, coordinates, formulas, values, views |
+| `improv_engine` | | Formula compiler and differential-dataflow evaluator; the live incremental engine |
+| `improv_nl_formula` | | Controlled-English ⇄ formula |
+| `improv_storage_mentat` | | A model as datoms in an embedded [Mentat](https://codeberg.org/gregburd/mentat) (SQLite) store |
+| `improv_storage_pg` | | A model in a Postgres `improv` catalog, with columns bound to tables |
+| `improv_store` | | Opens a file or a `postgres://` URL |
+| `improv_storage_sql`, `improv_storage_csv`, `improv_data_source` | | SQL and CSV import, export and refresh |
+| `improv_extfn` | | Sandboxed external functions (Python, R, Julia, Wasm) |
+| `improv_cli` | `improv` | Command-line tool and `stream` |
+| `improv_tui` | `improv-tui` | Terminal UI |
+| `improv_gui` | `improv-gui` | Desktop GUI (egui) |
+| `improv_server` | `improv-server` | JSON HTTP API |
+| `improv_pg_model` | | Postgres-free core of the extension |
+| `pg_improv` | (extension) | The Postgres extension (pgrx, its own workspace) |
 
 ## Development
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md). The quality gate (all warning-free):
-
-```sh
-# fmt/clippy are scoped to our 11 crates: cargo --all/--workspace would also
-# walk the vendored Mentat path dependency (../mentat) and, transitively,
-# whatever IT depends on.
-IMPROV_CRATES=$(ls crates | sed 's/^/-p improv_/')
-cargo fmt $IMPROV_CRATES -- --check
-cargo clippy $IMPROV_CRATES --all-targets --all-features -- -D warnings
-cargo test --workspace
-cargo deny check
-typos
-```
-
-Documentation lives in [`docs/`](docs/) (mdBook) and a man page at
-[`docs/man/improv.1`](docs/man/improv.1).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the quality gate (fmt, clippy
+with `-D warnings`, tests, `cargo deny`, typos, rustdoc, the GUI screenshot
+golden and the ≥ 90% per-crate coverage gate). Design notes are in
+[`docs/reviews/`](docs/reviews/) and [`.agent/steering/`](.agent/steering/).
+The guide's source is [`docs/src/`](docs/src/) (`mdbook build docs`); man
+pages are in [`docs/man/`](docs/man/).
 
 ## License
 
