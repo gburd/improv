@@ -15,7 +15,7 @@
 //! that is not idempotent, an insert onto an occupied coordinate, overwrites
 //! instead of rebuilding for transactions that ended by `replay_until`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, Model, Value, ValueType};
 use improv_engine::encode_coord;
@@ -36,6 +36,9 @@ pub struct Binding {
     /// to such a binding always rebuilds.
     pub aggregated: bool,
 }
+
+/// Each cell a batch touched, with its value before the batch.
+type Touched = BTreeMap<(MeasureId, Coordinate), Option<Value>>;
 
 /// Why a batch cannot be applied incrementally; the caller rebuilds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,7 +74,8 @@ impl Mapper {
 
     /// Apply the changes of `txns` (tuples of the relations in `rels`) to
     /// `model`'s input cells, as the loader would see the rows, and return
-    /// one edit per touched cell with its final value. Changes to relations
+    /// one edit per cell whose value the batch changed, with its final value
+    /// (a cell set back to its old value makes none). Changes to relations
     /// without a binding are ignored. Transactions that ended at or before
     /// `replay_until` may already be in `model` (see the module docs). On
     /// `Err` the model's inputs are half-updated: discard the model.
@@ -82,22 +86,27 @@ impl Mapper {
         txns: &[Txn],
         replay_until: u64,
     ) -> Result<Vec<Edit>, Rebuild> {
-        let mut touched = BTreeSet::new();
+        // Each touched cell, with its value before the batch.
+        let mut touched = BTreeMap::new();
         for txn in txns {
             let replay = txn.end_lsn <= replay_until;
             for change in &txn.changes {
                 self.change(model, rels, change, replay, &mut touched)?;
             }
         }
+        let num = |v: Option<&Value>| match v {
+            Some(Value::Number(n)) => Some(n.to_bits()),
+            _ => None,
+        };
         Ok(touched
             .into_iter()
-            .map(|(measure, c)| Edit {
-                value: match model.inputs.get(&(measure, c.clone())) {
-                    Some(Value::Number(n)) => Some(*n),
-                    _ => None,
-                },
-                coord: encode_coord(&c),
-                measure,
+            .filter_map(|((measure, c), before): (_, Option<Value>)| {
+                let now = num(model.inputs.get(&(measure, c.clone())));
+                (now != num(before.as_ref())).then(|| Edit {
+                    value: now.map(f64::from_bits),
+                    coord: encode_coord(&c),
+                    measure,
+                })
             })
             .collect())
     }
@@ -108,7 +117,7 @@ impl Mapper {
         rels: &HashMap<u32, Relation>,
         change: &Message,
         replay: bool,
-        touched: &mut BTreeSet<(MeasureId, Coordinate)>,
+        touched: &mut Touched,
     ) -> Result<(), Rebuild> {
         // `old`: None = no old row (insert); Some(None) = an update that
         // did not send its old row (the replica identity is unchanged).
@@ -140,7 +149,7 @@ impl Mapper {
         b: &Binding,
         (old, new): (Option<Option<&Tuple>>, Option<&Tuple>),
         replay: bool,
-        touched: &mut BTreeSet<(MeasureId, Coordinate)>,
+        touched: &mut Touched,
     ) -> Result<(), Rebuild> {
         if b.aggregated {
             return Err(Rebuild("aggregated binding"));
@@ -174,8 +183,9 @@ impl Mapper {
                 // A NULL-valued row was no cell (and may share its coordinate
                 // with one that is).
                 if !value_known || value(r, b, t)?.is_some() {
-                    model.inputs.remove(&(b.measure, c.clone()));
-                    touched.insert((b.measure, c));
+                    let k = (b.measure, c);
+                    let before = model.inputs.remove(&k);
+                    touched.entry(k).or_insert(before);
                 }
             }
         }
@@ -185,8 +195,8 @@ impl Mapper {
                 if !replay && model.inputs.contains_key(&k) {
                     return Err(Rebuild("two rows on one coordinate"));
                 }
-                model.inputs.insert(k.clone(), Value::Number(v));
-                touched.insert(k);
+                let before = model.inputs.insert(k.clone(), Value::Number(v));
+                touched.entry(k).or_insert(before);
             }
         }
         Ok(())
@@ -389,9 +399,17 @@ mod tests {
             ]),
             Ok(vec![(key(11, 21), Some(2.0)), (key(12, 21), Some(5.0))])
         );
+        // Net no-ops make no edit.
         assert_eq!(
             run(vec![ins(full("Q2", "3")), del(full("Q2", "3"))]),
-            Ok(vec![(key(12, 21), None)])
+            Ok(vec![])
+        );
+        assert_eq!(
+            run(vec![
+                upd(Some(full("Q1", "1")), full("Q1", "2")),
+                upd(Some(full("Q1", "2")), full("Q1", "1")),
+            ]),
+            Ok(vec![])
         );
     }
 
@@ -447,15 +465,11 @@ mod tests {
                 options: 0,
                 rels: vec![OTHER],
             },
-            // Only `note` changed: the cell is re-set to the same value.
+            // Only `note` changed: the cell keeps its value, no edit.
             upd(Some(full("Q1", "1")), full("Q1", "1")),
         ]);
         let edits = mapper(&m, false).map(&mut m, &r, &changes, 0).unwrap();
-        assert_eq!(edits.len(), 1);
-        assert_eq!(
-            (edits[0].coord.clone(), edits[0].value),
-            (key(11, 21), Some(1.0))
-        );
+        assert!(edits.is_empty());
     }
 
     #[test]
@@ -559,6 +573,7 @@ mod tests {
         ];
         let edits = mp.map(&mut m, &r, &replayed, 20).unwrap();
         assert_eq!((edits.len(), edits[0].value), (1, Some(2.0)));
+        assert!(mp.map(&mut m, &r, &replayed, 20).unwrap().is_empty());
         let later = txn(vec![ins(full("Q1", "3"))]);
         assert_eq!(
             mp.map(&mut m, &r, &later, 9).err(),
