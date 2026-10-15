@@ -289,6 +289,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Postgres saves no longer clobber SQL edits to bound fact tables**
+  (`storage_pg`, design §9.2 G2). `save_model` now writes only what changed
+  since the handle loaded (or last saved). Each bound cell it changes or
+  removes is guarded by its loaded value (`… WHERE value IS NOT DISTINCT FROM
+  <loaded>`), so a cell SQL changed in the meantime fails the whole save
+  with `Conflict` ("reload and retry"). A removed bound cell sets the value
+  column to NULL and keeps the row. A save deletes only the catalog rows
+  (categories, items, measures, views, `improv.cell` cells) it had loaded, so
+  rows added by another client survive. A save with no changes writes no
+  cells. `PgModelStore::snapshot` / `set_snapshot` carry the base across
+  handles, like `loaded_tx`; without a snapshot a save writes everything
+  unchecked, as before.
 - `pg_improv`: `recalc`, `define` and `bind_*` no longer fail with "SELECT
   FOR UPDATE is not allowed in a non-volatile function" when they are the
   first statement of a transaction.

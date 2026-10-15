@@ -548,3 +548,283 @@ fn value_codecs() {
         "mentat error: m"
     );
 }
+
+/// The `bound_model` fact table's rows, sorted by dimensions.
+type FactRow = (String, String, Option<f64>, Option<i32>);
+fn fact_rows(table: &str) -> Vec<FactRow> {
+    client()
+        .query(&format!("SELECT * FROM {table} ORDER BY 1, 2"), &[])
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+        .collect()
+}
+
+fn row(q: &str, p: &str, pr: Option<f64>, qt: Option<i32>) -> FactRow {
+    (q.to_string(), p.to_string(), pr, qt)
+}
+
+/// Row versions: an unchanged xmin means the row was not written.
+fn xmins(sql: &str) -> Vec<String> {
+    client()
+        .query(sql, &[])
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect()
+}
+
+/// The coordinate of the `bound_model` cell at quarter `q`, product `p`.
+fn at(m: &Model, q: &str, p: &str) -> Coordinate {
+    let id = |c: CategoryId, n: &str| {
+        m.items
+            .values()
+            .find(|i| i.category == c && i.name.0 == n)
+            .unwrap()
+            .id
+    };
+    Coordinate::from_pairs([(T, id(T, q)), (P, id(P, p))])
+}
+
+const PRICE: MeasureId = MeasureId(100);
+const QTY: MeasureId = MeasureId(101);
+
+/// G2 (a): a SQL edit to a bound row survives a save that changed another
+/// cell, here through a second handle carrying the loading one's snapshot.
+#[test]
+fn a_save_keeps_sql_edits_to_cells_it_did_not_change() {
+    let Some(url) = live("g2_keep") else { return };
+    let table = format!("g2_keep_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut m = s.load_model().unwrap();
+    client()
+        .execute(
+            &format!("UPDATE {table} SET price = 99 WHERE quarter = 'Q2'"),
+            &[],
+        )
+        .unwrap();
+    m.set_input(PRICE, at(&m, "Q1", "Widget"), Value::Number(12.5));
+    let mut h = PgModelStore::open(&url).unwrap();
+    h.set_loaded_tx(s.loaded_tx());
+    h.set_snapshot(s.snapshot().cloned());
+    h.save_model(&m).unwrap();
+    assert_eq!(
+        fact_rows(&table),
+        [
+            row("Q1", "Gadget", Some(20.0), None),
+            row("Q1", "Widget", Some(12.5), Some(100)),
+            row("Q2", "Widget", Some(99.0), Some(110)),
+        ]
+    );
+    // The snapshot is now the saved state: the next save is diffed from it.
+    m.set_input(PRICE, at(&m, "Q1", "Widget"), Value::Number(13.0));
+    h.save_model(&m).unwrap();
+    assert_eq!(fact_rows(&table)[1].2, Some(13.0));
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
+
+/// G2 (b): editing a cell SQL changed since the load is a conflict, and the
+/// whole save rolls back. The same for removing such a cell, and for adding
+/// a cell whose row SQL has since filled.
+#[test]
+fn editing_a_cell_changed_in_sql_conflicts() {
+    let Some(url) = live("g2_conflict") else {
+        return;
+    };
+    let table = format!("g2_conflict_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let loaded = s.load_model().unwrap();
+    let tx = s.loaded_tx();
+    let snap = s.snapshot().cloned();
+    let retry = |s: &mut PgModelStore, m: &Model| {
+        s.set_loaded_tx(tx);
+        s.set_snapshot(snap.clone());
+        let e = s.save_model(m).unwrap_err();
+        assert!(matches!(e, StoreError::Conflict(_)), "{e}");
+        e.to_string()
+    };
+    client()
+        .execute(
+            &format!("UPDATE {table} SET qty = 5 WHERE quarter = 'Q1' AND product = 'Widget'"),
+            &[],
+        )
+        .unwrap();
+    let before = fact_rows(&table);
+
+    // Price (written first) changes too: it must roll back with the rest.
+    let mut m = loaded.clone();
+    m.set_input(PRICE, at(&m, "Q2", "Widget"), Value::Number(1.0));
+    m.set_input(QTY, at(&m, "Q1", "Widget"), Value::Number(7.0));
+    let e = retry(&mut s, &m);
+    assert!(
+        e.contains("bound cell Quantity[Widget, Q1] was changed in the database"),
+        "{e}"
+    );
+    assert!(e.contains("reload and retry"), "{e}");
+    assert_eq!(fact_rows(&table), before);
+    assert_eq!(s.tx_high_water().unwrap(), tx.unwrap());
+
+    // Removing the SQL-changed cell conflicts as well.
+    let mut m = loaded.clone();
+    m.inputs.remove(&(QTY, at(&m, "Q1", "Widget")));
+    retry(&mut s, &m);
+    assert_eq!(fact_rows(&table), before);
+
+    // An added cell whose row now holds a value: conflict; the INSERT of
+    // another added cell in the same save rolls back.
+    client()
+        .execute(
+            &format!("UPDATE {table} SET qty = 3 WHERE product = 'Gadget'"),
+            &[],
+        )
+        .unwrap();
+    let before = fact_rows(&table);
+    let mut m = loaded.clone();
+    m.set_input(QTY, at(&m, "Q1", "Gadget"), Value::Number(8.0));
+    m.add_item(ItemId(500), T, "Q9");
+    m.set_input(QTY, at(&m, "Q9", "Widget"), Value::Number(1.0));
+    let e = retry(&mut s, &m);
+    assert!(e.contains("Quantity[Gadget, Q1]"), "{e}");
+    assert_eq!(fact_rows(&table), before);
+
+    // After a reload the same edit goes through.
+    let mut m = s.reload_model().unwrap();
+    m.set_input(QTY, at(&m, "Q1", "Widget"), Value::Number(7.0));
+    s.save_model(&m).unwrap();
+    assert_eq!(fact_rows(&table)[1].3, Some(7));
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
+
+/// G2 (c): a removed bound cell NULLs its value column and keeps the row,
+/// even when its item was deleted too.
+#[test]
+fn a_removed_bound_cell_nulls_only_its_column() {
+    let Some(url) = live("g2_remove") else { return };
+    let table = format!("g2_remove_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut m = s.load_model().unwrap();
+    m.inputs.remove(&(PRICE, at(&m, "Q1", "Widget")));
+    // Delete item Q2 with its cells.
+    let q2 = at(&m, "Q2", "Widget").get(T).unwrap();
+    m.inputs.retain(|(_, c), _| c.get(T) != Some(q2));
+    m.items.remove(&q2);
+    s.save_model(&m).unwrap();
+    assert_eq!(
+        fact_rows(&table),
+        [
+            row("Q1", "Gadget", Some(20.0), None),
+            row("Q1", "Widget", None, Some(100)),
+            row("Q2", "Widget", None, None),
+        ]
+    );
+    assert_eq!(s.load_model().unwrap().inputs, m.inputs);
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
+
+/// G2 (d): an unchanged save writes no fact-table or `improv.cell` row.
+#[test]
+fn an_unchanged_save_writes_no_cells() {
+    let Some(url) = live("g2_noop") else { return };
+    let table = format!("g2_noop_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut m = s.load_model().unwrap();
+    m.add_measure(measure(103, "Note", &[P], MeasureKind::Input));
+    let w = Coordinate::from_pairs([(P, ItemId(20))]);
+    m.set_input(MeasureId(103), w, Value::Number(1.0));
+    s.save_model(&m).unwrap();
+    let fact = format!("SELECT xmin::text FROM {table} ORDER BY quarter, product");
+    let cell = format!(
+        "SELECT xmin::text FROM improv.cell WHERE model_id = {} ORDER BY coord",
+        s.model_id
+    );
+    let (f0, c0) = (xmins(&fact), xmins(&cell));
+    assert_eq!((f0.len(), c0.len()), (3, 1));
+    let fresh = s.load_model().unwrap();
+    s.save_model(&fresh).unwrap();
+    s.save_model(&m).unwrap();
+    assert_eq!((xmins(&fact), xmins(&cell)), (f0, c0));
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
+
+/// G2 (e): rows another client added after the load survive a save (the
+/// saver deletes only rows it loaded), and so does its unbound cell, while
+/// what the saver itself dropped is deleted. Dropping a bound measure
+/// leaves its column alone.
+#[test]
+fn rows_added_by_another_client_survive_a_save() {
+    let Some(url) = live("g2_others") else { return };
+    let table = format!("g2_others_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut m = s.load_model().unwrap();
+    m.add_measure(measure(103, "Note", &[P], MeasureKind::Input));
+    let (w, g) = (
+        Coordinate::from_pairs([(P, ItemId(20))]),
+        Coordinate::from_pairs([(P, ItemId(21))]),
+    );
+    m.set_input(MeasureId(103), w.clone(), Value::Number(1.0));
+    m.set_input(MeasureId(103), g.clone(), Value::Number(2.0));
+    let mut v = sample().views[&ViewId(1)].clone();
+    v.measure = PRICE;
+    m.add_view(v);
+    s.save_model(&m).unwrap();
+    let mid = s.model_id;
+    client()
+        .batch_execute(&format!(
+            "INSERT INTO improv.category VALUES ({mid}, 9, 'Region'); \
+             INSERT INTO improv.item VALUES ({mid}, 900, 9, 'East'); \
+             INSERT INTO improv.measure(model_id, id, name, value_type, kind) \
+                 VALUES ({mid}, 900, 'Extra', 'number', 'input'); \
+             INSERT INTO improv.view VALUES ({mid}, 9, 'Theirs', \
+                 (SELECT layout FROM improv.view WHERE model_id = {mid} AND id = 1)); \
+             INSERT INTO improv.cell VALUES ({mid}, 900, '{{}}', '5')"
+        ))
+        .unwrap();
+    m.inputs.remove(&(MeasureId(103), g));
+    m.set_input(MeasureId(103), w, Value::Number(3.0));
+    m.measures.remove(&MeasureId(102));
+    m.views.clear();
+    s.save_model(&m).unwrap();
+    let ids = |t: &str| -> Vec<i64> {
+        client()
+            .query(
+                &format!("SELECT id FROM improv.{t} WHERE model_id = $1 ORDER BY id"),
+                &[&mid],
+            )
+            .unwrap()
+            .iter()
+            .map(|r| r.get(0))
+            .collect()
+    };
+    assert_eq!(ids("category"), [1, 2, 9]);
+    assert!(ids("item").contains(&900));
+    assert_eq!(ids("measure"), [100, 101, 103, 900]);
+    assert_eq!(ids("view"), [9]);
+    let cells: Vec<(i64, String)> = client()
+        .query(
+            "SELECT measure_id, value::text FROM improv.cell WHERE model_id = $1 ORDER BY 1",
+            &[&mid],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect();
+    assert_eq!(cells, [(103, "3".to_string()), (900, "5".to_string())]);
+
+    // Deleting a bound measure (and so its cells) keeps its column's values.
+    let before = fact_rows(&table);
+    m.inputs.retain(|(id, _), _| *id != QTY);
+    m.measures.remove(&QTY);
+    s.save_model(&m).unwrap();
+    assert_eq!(fact_rows(&table), before);
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}

@@ -352,6 +352,231 @@ fn version(c: &mut impl GenericClient, mid: i64, lock: bool) -> Result<i64> {
     Ok(c.query_one(sql, &[&mid])?.get(0))
 }
 
+/// What a [`PgModelStore`] last loaded or saved: the base `save_model` diffs
+/// against, so a save writes only what this client changed. Carry it across
+/// handles with [`PgModelStore::set_snapshot`], as with `loaded_tx`.
+#[derive(Debug, Clone)]
+pub struct PgSnapshot {
+    /// Bound input cells, as read from their fact tables.
+    bound: HashMap<(MeasureId, Coordinate), Value>,
+    /// Unbound input cells, as read from `improv.cell`.
+    cells: HashMap<(MeasureId, Coordinate), Value>,
+    /// Row ids per catalog table (`category`, `item`, `measure`, `view`).
+    ids: HashMap<&'static str, HashSet<i64>>,
+    /// Item names, to address a removed bound cell whose item is gone.
+    names: HashMap<ItemId, String>,
+}
+
+impl PgSnapshot {
+    /// `model` as stored; `cells` is its unbound part.
+    fn new(model: &Model, cells: HashMap<(MeasureId, Coordinate), Value>) -> Self {
+        let bound = model
+            .inputs
+            .iter()
+            .filter(|(k, _)| !cells.contains_key(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        let ids = HashMap::from([
+            (
+                "category",
+                model.categories.keys().map(|i| i64::from(i.0)).collect(),
+            ),
+            ("item", model.items.keys().map(|i| i64::from(i.0)).collect()),
+            (
+                "measure",
+                model.measures.keys().map(|i| i64::from(i.0)).collect(),
+            ),
+            ("view", model.views.keys().map(|i| i64::from(i.0)).collect()),
+        ]);
+        let names = model
+            .items
+            .values()
+            .map(|i| (i.id, i.name.0.clone()))
+            .collect();
+        PgSnapshot {
+            bound,
+            cells,
+            ids,
+            names,
+        }
+    }
+}
+
+/// Delete the `improv.<table>` rows the model dropped: with a snapshot
+/// (`loaded`), only those it held, so rows another client added since
+/// survive; without one, every row the model lacks.
+fn delete_dropped(
+    tx: &mut impl GenericClient,
+    mid: i64,
+    table: &str,
+    keep: &[i64],
+    loaded: Option<&HashSet<i64>>,
+) -> Result<()> {
+    let Some(loaded) = loaded else {
+        tx.execute(
+            &format!("DELETE FROM improv.{table} WHERE model_id = $1 AND id <> ALL($2)"),
+            &[&mid, &keep],
+        )?;
+        return Ok(());
+    };
+    let keep: HashSet<&i64> = keep.iter().collect();
+    let gone: Vec<i64> = loaded
+        .iter()
+        .filter(|i| !keep.contains(i))
+        .copied()
+        .collect();
+    if !gone.is_empty() {
+        tx.execute(
+            &format!("DELETE FROM improv.{table} WHERE model_id = $1 AND id = ANY($2)"),
+            &[&mid, &gone],
+        )?;
+    }
+    Ok(())
+}
+
+/// Write binding `b`'s input cells to its fact table: values only, never DDL
+/// or a row delete (a row may hold other measures).
+///
+/// With a snapshot (`base`) only the cells added, changed or removed since it
+/// are written, each guarded by its loaded value: `UPDATE … SET value = <new>
+/// WHERE <dims> AND value IS NOT DISTINCT FROM <loaded>` (a removed cell's
+/// new value is NULL; an added cell's loaded one is NULL), and an added cell
+/// no row holds is `INSERT`ed. A guard matching no row (or several) means the
+/// cell changed in the database since the load: [`StoreError::Conflict`].
+/// Without a snapshot every cell is written, unchecked.
+/// `jsonb_populate_record` casts each JSON value to its column's type.
+fn write_bound(
+    tx: &mut impl GenericClient,
+    model: &Model,
+    b: &Binding,
+    base: Option<&PgSnapshot>,
+) -> Result<()> {
+    // Deleting a measure must not wipe its column.
+    let Some(measure) = model.measures.get(&b.measure) else {
+        return Ok(());
+    };
+    let snap = base.map(|s| &s.bound);
+    // (coordinate, value now, value as loaded); `None`: no cell.
+    let mut diff = Vec::new();
+    for (k, v) in &model.inputs {
+        if k.0 != b.measure {
+            continue;
+        }
+        let old = snap.and_then(|s| s.get(k));
+        if snap.is_none() || old != Some(v) {
+            diff.push((&k.1, Some(v), old));
+        }
+    }
+    for (k, v) in snap.into_iter().flatten() {
+        if k.0 == b.measure && !model.inputs.contains_key(k) {
+            diff.push((&k.1, None, Some(v)));
+        }
+    }
+    if diff.is_empty() {
+        return Ok(());
+    }
+    let json = |v: Option<&Value>| v.map_or(Ok(serde_json::Value::Null), value_to_json);
+    let (mut xs, mut labels) = (Vec::new(), Vec::new());
+    for (coord, new, old) in &diff {
+        let mut n = serde_json::Map::new();
+        let mut names = Vec::new();
+        for (cat, col) in &b.dims {
+            let name = coord
+                .get(*cat)
+                .and_then(|i| {
+                    let gone = || base.and_then(|s| s.names.get(&i)).map(String::as_str);
+                    model.items.get(&i).map(|i| i.name.0.as_str()).or_else(gone)
+                })
+                .ok_or_else(|| {
+                    StoreError::Integrity(format!(
+                        "a cell of measure {} lacks a {} item",
+                        b.measure.0, col
+                    ))
+                })?;
+            n.insert(col.clone(), name.into());
+            names.push(name);
+        }
+        n.insert(b.value_col.clone(), json(*new)?);
+        let mut x = serde_json::Map::from_iter([("n".to_string(), n.into())]);
+        if base.is_some() {
+            let o = serde_json::Map::from_iter([(b.value_col.clone(), json(*old)?)]);
+            x.insert("o".into(), o.into());
+        }
+        xs.push(serde_json::Value::Object(x));
+        labels.push(names.join(", "));
+    }
+
+    let (t, v) = (&b.table, ident(&b.value_col));
+    let on = b
+        .dims
+        .iter()
+        .map(|(_, c)| format!("t.{0} = n.{0}", ident(c)))
+        .chain(std::iter::once("true".to_string()))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let src = format!(
+        "jsonb_array_elements($1::text::jsonb) WITH ORDINALITY e(x, i), \
+         LATERAL jsonb_populate_record(NULL::{t}, e.x->'n') n"
+    );
+    let guard = match base {
+        Some(_) => {
+            format!("t.{v} IS NOT DISTINCT FROM (jsonb_populate_record(NULL::{t}, e.x->'o')).{v}")
+        }
+        None => format!("t.{v} IS DISTINCT FROM n.{v}"),
+    };
+    // Rows each cell's UPDATE matched, by its 1-based ordinal.
+    let mut hits = vec![0; diff.len()];
+    for r in tx.query(
+        &format!("UPDATE {t} t SET {v} = n.{v} FROM {src} WHERE {on} AND {guard} RETURNING e.i"),
+        &[&serde_json::to_string(&xs)?],
+    )? {
+        hits[r.get::<_, i64>(0) as usize - 1] += 1;
+    }
+
+    // Added cells the UPDATE missed: INSERT where no row has their
+    // dimensions. The data-modifying CTE runs once and the outer SELECT sees
+    // the table as before it: the added cells whose row already existed.
+    let added: Vec<usize> = (0..diff.len())
+        .filter(|&i| hits[i] == 0 && (base.is_none() || diff[i].2.is_none()))
+        .collect();
+    let mut taken = vec![false; diff.len()];
+    if !added.is_empty() {
+        let cols: Vec<String> = b
+            .dims
+            .iter()
+            .map(|(_, c)| ident(c))
+            .chain(std::iter::once(v.clone()))
+            .collect();
+        let ncols: Vec<String> = cols.iter().map(|c| format!("n.{c}")).collect();
+        let sub: Vec<&serde_json::Value> = added.iter().map(|&i| &xs[i]).collect();
+        for r in tx.query(
+            &format!(
+                "WITH ins AS (INSERT INTO {t} ({}) SELECT {} FROM {src} \
+                 WHERE NOT EXISTS (SELECT 1 FROM {t} t WHERE {on})) \
+                 SELECT e.i FROM {src} WHERE EXISTS (SELECT 1 FROM {t} t WHERE {on})",
+                cols.join(", "),
+                ncols.join(", ")
+            ),
+            &[&serde_json::to_string(&sub)?],
+        )? {
+            taken[added[r.get::<_, i64>(0) as usize - 1]] = true;
+        }
+    }
+    if base.is_none() {
+        return Ok(());
+    }
+    let lost = (0..diff.len())
+        .find(|&i| hits[i] > 1 || (hits[i] == 0 && (diff[i].2.is_some() || taken[i])));
+    match lost {
+        Some(i) => Err(StoreError::Conflict(format!(
+            "bound cell {}[{}] was changed in the database since it was loaded; \
+             reload and retry",
+            measure.name.0, labels[i]
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// A model store over one named model in a Postgres database.
 pub struct PgModelStore {
     client: Client,
@@ -359,6 +584,9 @@ pub struct PgModelStore {
     /// `improv.model_version.tx` as of this handle's last load or save;
     /// `save_model` refuses to commit if it moved. `None`: unchecked.
     loaded_tx: Option<i64>,
+    /// What this handle last loaded or saved; `save_model` writes the diff
+    /// against it. `None`: write everything, unchecked.
+    loaded: Option<PgSnapshot>,
 }
 
 impl PgModelStore {
@@ -408,6 +636,7 @@ impl PgModelStore {
             client,
             model_id,
             loaded_tx: None,
+            loaded: None,
         })
     }
 
@@ -427,6 +656,18 @@ impl PgModelStore {
         self.loaded_tx = tx;
     }
 
+    /// What this handle last loaded or saved: the base `save_model` diffs
+    /// against (`None` if neither).
+    pub fn snapshot(&self) -> Option<&PgSnapshot> {
+        self.loaded.as_ref()
+    }
+
+    /// Adopt `snapshot` (e.g. from the handle that loaded) as the save base;
+    /// `None` makes `save_model` write the whole model, unchecked.
+    pub fn set_snapshot(&mut self, snapshot: Option<PgSnapshot>) {
+        self.loaded = snapshot;
+    }
+
     /// Re-read the model after a [`StoreError::Conflict`].
     pub fn reload_model(&mut self) -> Result<Model> {
         self.load_model()
@@ -439,8 +680,9 @@ impl PgModelStore {
     }
 
     /// Like [`Self::load_model`], but only the cells of `measure_ids` and
-    /// their dependency closure. Saving the result drops every other
-    /// unbound cell, as with the Mentat store.
+    /// their dependency closure. Saving the result through this handle
+    /// writes only what changed against what it loaded, so the cells it did
+    /// not load are left alone.
     pub fn load_partial(&mut self, measure_ids: &[MeasureId]) -> Result<Model> {
         self.load(Some(measure_ids))
     }
@@ -548,6 +790,8 @@ impl PgModelStore {
             let v = json_to_value(vt, &serde_json::from_str(r.get(2))?)?;
             model.set_input(m, Coordinate { dims }, v);
         }
+        // The unbound cells as read; the rest of `model.inputs` is bound.
+        let cells = model.inputs.clone();
 
         // Bound cells: dimension values map to items by name; unseen values
         // mint a new item (persisted by the next save).
@@ -605,17 +849,24 @@ impl PgModelStore {
         }
         tx.commit()?;
         self.loaded_tx = Some(tx_now);
+        self.loaded = Some(PgSnapshot::new(&model, cells));
         Ok(model)
     }
 
-    /// Persist the whole model in ONE transaction: structure rows are upserted
-    /// (rows the model no longer has are deleted), bound input cells are
-    /// written to their fact table (values only: `UPDATE` by dimensions,
-    /// `INSERT` if absent), unbound ones to `improv.cell`, and
-    /// `improv.model_version` is bumped.
+    /// Persist the model in ONE transaction and bump `improv.model_version`.
+    ///
+    /// The save is a diff against this handle's snapshot (what it last loaded
+    /// or saved): structure rows are upserted, and only rows the snapshot
+    /// held but the model dropped are deleted (rows another client added
+    /// survive); input cells added, changed or removed since are written,
+    /// bound ones to their fact table under a per-cell optimistic guard
+    /// (a removed one's value column is set to NULL, the row kept), unbound
+    /// ones to `improv.cell`. Without a snapshot ([`Self::set_snapshot`]) the
+    /// whole model is written unchecked and rows it lacks are deleted.
     ///
     /// Optimistic concurrency: fails with [`StoreError::Conflict`], writing
-    /// nothing, if the version moved since this handle loaded or saved.
+    /// nothing, if the version moved since this handle loaded or saved, or a
+    /// bound cell it writes was changed in the database since.
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
         let mid = self.model_id;
         let mut tx = self.client.transaction()?;
@@ -687,106 +938,70 @@ impl PgModelStore {
             measure_ids.push(id);
         }
         // Children before parents, should the catalog grow foreign keys.
-        for (table, ids) in [
+        let base = self.loaded.as_ref();
+        for (table, keep) in [
             ("measure", &measure_ids),
             ("item", &item_ids),
             ("category", &cat_ids),
         ] {
-            tx.execute(
-                &format!("DELETE FROM improv.{table} WHERE model_id = $1 AND id <> ALL($2)"),
-                &[&mid, ids],
-            )?;
+            delete_dropped(&mut tx, mid, table, keep, base.map(|s| &s.ids[table]))?;
         }
 
-        // Bound cells: values only, never DDL. One UPDATE + one INSERT per
-        // binding; jsonb_populate_recordset casts each JSON value to its
-        // column's type.
+        // Bound cells: values only, never DDL (see `write_bound`).
         let bound = bindings(&mut tx, model, mid)?;
         for b in &bound {
-            let mut rows = Vec::new();
-            for ((m, coord), v) in &model.inputs {
-                if *m != b.measure {
-                    continue;
-                }
-                let mut row = serde_json::Map::new();
-                for (cat, col) in &b.dims {
-                    let item = coord
-                        .get(*cat)
-                        .and_then(|i| model.items.get(&i))
-                        .ok_or_else(|| {
-                            StoreError::Integrity(format!(
-                                "a cell of measure {} lacks a {} item",
-                                m.0, col
-                            ))
-                        })?;
-                    row.insert(col.clone(), item.name.0.as_str().into());
-                }
-                row.insert(b.value_col.clone(), value_to_json(v)?);
-                rows.push(serde_json::Value::Object(row));
-            }
-            let rows = serde_json::Value::Array(rows).to_string();
-            let v = ident(&b.value_col);
-            let on = b
-                .dims
-                .iter()
-                .map(|(_, c)| format!("t.{0} = r.{0}", ident(c)))
-                .chain(std::iter::once("true".to_string()))
-                .collect::<Vec<_>>()
-                .join(" AND ");
-            let rs = format!(
-                "jsonb_populate_recordset(NULL::{}, $1::text::jsonb) r",
-                b.table
-            );
-            let t = &b.table;
-            tx.execute(
-                &format!(
-                    "UPDATE {t} t SET {v} = r.{v} FROM {rs} \
-                     WHERE {on} AND t.{v} IS DISTINCT FROM r.{v}"
-                ),
-                &[&rows],
-            )?;
-            let cols: Vec<String> = b
-                .dims
-                .iter()
-                .map(|(_, c)| ident(c))
-                .chain(std::iter::once(v.clone()))
-                .collect();
-            let rcols: Vec<String> = cols.iter().map(|c| format!("r.{c}")).collect();
-            tx.execute(
-                &format!(
-                    "INSERT INTO {t} ({}) SELECT {} FROM {rs} \
-                     WHERE NOT EXISTS (SELECT 1 FROM {t} t WHERE {on})",
-                    cols.join(", "),
-                    rcols.join(", ")
-                ),
-                &[&rows],
-            )?;
+            write_bound(&mut tx, model, b, base)?;
         }
 
-        // Unbound cells: improv.cell ends up holding exactly the model's.
+        // Unbound cells: with a snapshot, upsert those added or changed since
+        // and delete those removed; without, improv.cell ends up holding
+        // exactly the model's.
         let bound: HashSet<MeasureId> = bound.iter().map(|b| b.measure).collect();
+        let cells: HashMap<(MeasureId, Coordinate), Value> = model
+            .inputs
+            .iter()
+            .filter(|((m, _), _)| !bound.contains(m))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
         let (mut ms, mut coords, mut vals) = (Vec::new(), Vec::new(), Vec::new());
-        for ((m, coord), v) in &model.inputs {
-            if bound.contains(m) {
+        for (k @ (m, coord), v) in &cells {
+            if base.is_some_and(|s| s.cells.get(k) == Some(v)) {
                 continue;
             }
             ms.push(i64::from(m.0));
             coords.push(serde_json::to_string(&coord.dims)?);
             vals.push(value_to_json(v)?.to_string());
         }
-        tx.execute(
-            "DELETE FROM improv.cell c WHERE c.model_id = $1 AND NOT EXISTS \
-             (SELECT 1 FROM unnest($2::int8[], $3::text[]) u(m, k) \
-              WHERE c.measure_id = u.m AND c.coord = u.k::jsonb)",
-            &[&mid, &ms, &coords],
-        )?;
-        tx.execute(
-            "INSERT INTO improv.cell(model_id, measure_id, coord, value) \
-             SELECT $1, m, k::jsonb, v::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(m, k, v) \
-             ON CONFLICT (model_id, measure_id, coord) DO UPDATE SET value = EXCLUDED.value \
-             WHERE improv.cell.value IS DISTINCT FROM EXCLUDED.value",
-            &[&mid, &ms, &coords, &vals],
-        )?;
+        if let Some(s) = base {
+            let (mut gm, mut gk) = (Vec::new(), Vec::new());
+            for (m, coord) in s.cells.keys().filter(|k| !cells.contains_key(*k)) {
+                gm.push(i64::from(m.0));
+                gk.push(serde_json::to_string(&coord.dims)?);
+            }
+            if !gm.is_empty() {
+                tx.execute(
+                    "DELETE FROM improv.cell c USING unnest($2::int8[], $3::text[]) u(m, k) \
+                     WHERE c.model_id = $1 AND c.measure_id = u.m AND c.coord = u.k::jsonb",
+                    &[&mid, &gm, &gk],
+                )?;
+            }
+        } else {
+            tx.execute(
+                "DELETE FROM improv.cell c WHERE c.model_id = $1 AND NOT EXISTS \
+                 (SELECT 1 FROM unnest($2::int8[], $3::text[]) u(m, k) \
+                  WHERE c.measure_id = u.m AND c.coord = u.k::jsonb)",
+                &[&mid, &ms, &coords],
+            )?;
+        }
+        if !ms.is_empty() {
+            tx.execute(
+                "INSERT INTO improv.cell(model_id, measure_id, coord, value) \
+                 SELECT $1, m, k::jsonb, v::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(m, k, v) \
+                 ON CONFLICT (model_id, measure_id, coord) DO UPDATE SET value = EXCLUDED.value \
+                 WHERE improv.cell.value IS DISTINCT FROM EXCLUDED.value",
+                &[&mid, &ms, &coords, &vals],
+            )?;
+        }
 
         let (mut ids, mut names, mut layouts) = (Vec::new(), Vec::new(), Vec::new());
         for v in model.views.values() {
@@ -800,10 +1015,7 @@ impl PgModelStore {
              ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, layout = EXCLUDED.layout",
             &[&mid, &ids, &names, &layouts],
         )?;
-        tx.execute(
-            "DELETE FROM improv.view WHERE model_id = $1 AND id <> ALL($2)",
-            &[&mid, &ids],
-        )?;
+        delete_dropped(&mut tx, mid, "view", &ids, base.map(|s| &s.ids["view"]))?;
 
         let blob = serde_json::json!({
             "external_fns": model.external_fns,
@@ -826,6 +1038,7 @@ impl PgModelStore {
             .get(0);
         tx.commit()?;
         self.loaded_tx = Some(new_tx);
+        self.loaded = Some(PgSnapshot::new(model, cells));
         Ok(())
     }
 }
