@@ -38,9 +38,9 @@ DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
 trigger sync, explicit `improv.recalc`, `what_if`, `status`; GUI/TUI/CLI open
 `postgres://…?model=`. Design: `docs/reviews/2026-10-14-pg-improv-design.md`;
 user guide `docs/src/postgres.md`; e2e `crates/pg_improv/tests/{logical,user-story}.sh`;
-benchmark `docs/reviews/bench/bench-pg-modes.sh`. **NEXT for pg_improv:** live
-incremental engine in the worker (removes the per-batch reload, ~11 µs/cell);
-GUI saves only changed cells (today it rewrites every bound cell it loaded);
+benchmark `docs/reviews/bench/bench-pg-modes.sh`. Logical mode applies changes
+incrementally with a live engine per model (G1 DONE: 100k-cell freshness
+1161 -> 52 ms). **NEXT for pg_improv:** GUI saves only changed cells (today it rewrites every bound cell it loaded);
 extension-owned item minting; `binding.agg`; non-number measures.
 
 Then: horizontal scroller arrows and the rows-tile strip inline with the
