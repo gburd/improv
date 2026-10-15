@@ -209,6 +209,9 @@ pub(crate) struct GutterRects {
     table: egui::Rect,
     /// The bottom strip: row-axis categories.
     well: egui::Rect,
+    /// The horizontal scroller, inline in the bottom strip right of the row
+    /// tiles (spec §4.4).
+    hbar: egui::Rect,
 }
 
 /// Tolerance, in points, for the gutter-adjacency invariant. The edges are
@@ -283,6 +286,11 @@ fn anchored_rect(ctx: &egui::Context, win: egui::Id, home: egui::Rect) -> egui::
 fn gutters_have_room(g: &GutterRects) -> bool {
     g.well.min.y >= g.top.max.y && g.left.height() > 0.0
 }
+
+/// A grid's horizontal scroll area, wrapping its table's vertical one and
+/// the rect that vertical scroller was laid out in.
+type GridScroll =
+    egui::scroll_area::ScrollAreaOutput<(egui::scroll_area::ScrollAreaOutput<()>, egui::Rect)>;
 
 /// A category tile's height (the NeXT tiles are 17 px tall).
 const TILE_H: f32 = 17.0;
@@ -3687,6 +3695,7 @@ impl ImprovApp {
         // narrows its clip back to the canvas, then paints the gutter frame
         // itself, so the frame and everything in it stay clipped.
         let outer_clip = ui.clip_rect();
+        let mut hbar = egui::Rect::NOTHING;
 
         // The row gutter: the bottom strip, row tiles left to right (the
         // reference puts them inline with the horizontal scrollbar).
@@ -3701,6 +3710,16 @@ impl ImprovApp {
                             for c in &row_stack {
                                 Self::tile(ui, &self.model, m, *c, Axis::Rows, moves, &mut freqs);
                             }
+                            // §4.4: the horizontal scroller runs inline, right
+                            // of the row tiles (painted once the grid is laid
+                            // out and its scroll extent known).
+                            let h = ui.spacing().scroll.bar_width;
+                            hbar = ui
+                                .allocate_exact_size(
+                                    egui::vec2(ui.available_width(), h),
+                                    egui::Sense::hover(),
+                                )
+                                .0;
                         });
                     });
                 });
@@ -3771,18 +3790,23 @@ impl ImprovApp {
         let field = ui.available_rect_before_wrap();
         ui.painter()
             .rect_filled(field, egui::Rounding::ZERO, crate::theme::WHITE);
+        let mut hscroll = None;
         let table = egui::Frame::none()
             .show(ui, |ui| {
-                self.render_grid(ui, mi, measure);
+                hscroll = self.render_grid(ui, mi, measure);
             })
             .response
             .rect;
+        if let Some(h) = hscroll.filter(|_| hbar.is_positive()) {
+            crate::theme::hscroller_chrome(ui, &h, hbar, 20.0);
+        }
 
         let rects = GutterRects {
             top,
             left,
             table,
             well,
+            hbar,
         };
         debug_assert!(
             !gutters_have_room(&rects) || gutters_frame_table(&rects),
@@ -4060,11 +4084,14 @@ impl ImprovApp {
     /// Every read here goes through matrix `mi`, so two matrices showing the same
     /// measure with different pivots render differently, and only the focused one
     /// takes keystrokes (see [`Self::handle_grid_keys`]).
-    fn render_grid(&mut self, ui: &mut egui::Ui, mi: usize, measure: MeasureId) {
+    fn render_grid(
+        &mut self,
+        ui: &mut egui::Ui,
+        mi: usize,
+        measure: MeasureId,
+    ) -> Option<GridScroll> {
         self.handle_grid_keys(ui, mi);
-        let Some(m) = self.matrices.get(mi) else {
-            return;
-        };
+        let m = self.matrices.get(mi)?;
         let (sel_rows, sel_cols) = m.selection();
         let shift = ui.input(|i| i.modifiers.shift);
         let editing = m.editing.clone();
@@ -4094,9 +4121,7 @@ impl ImprovApp {
         if let Some(m) = self.matrices.get_mut(mi) {
             m.rendered_axes = Some((row_cats.clone(), col_cats.clone()));
         }
-        let Some(m) = self.matrices.get(mi) else {
-            return;
-        };
+        let m = self.matrices.get(mi)?;
         // A page category filtered to zero items pins nothing, so no coordinate
         // would fully specify the measure's dimensions: render no cells at all.
         let pinned = m.pinned_pages_opt(&self.model);
@@ -4196,215 +4221,239 @@ impl ImprovApp {
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         // §4.8: the trough is `extreme_bg_color`; restored after the table.
         ui.visuals_mut().extreme_bg_color = crate::theme::TROUGH;
-        let mut table = TableBuilder::new(ui)
-            .id_salt(("grid", uid))
-            .striped(false)
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
-        // One stub column per stacked row category, then one column per col line.
-        for _ in 0..n_row_stub {
-            table = table.column(Column::auto().resizable(true));
-        }
-        for _ in &col_lines {
-            table = table.column(Column::auto().resizable(true));
-        }
+        // A grid wider than its window scrolls sideways: the table sits in a
+        // horizontal area whose own bar is hidden, because the NeXT scroller
+        // runs in the bottom strip beside the row tiles (`gutter_frame`).
+        let hscroll = egui::ScrollArea::horizontal()
+            .id_salt(("hgrid", uid))
+            .drag_to_scroll(false)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                let mut table = TableBuilder::new(ui)
+                    .id_salt(("grid", uid))
+                    .striped(false)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible);
+                // One stub column per stacked row category, then one column per col line.
+                for _ in 0..n_row_stub {
+                    table = table.column(Column::auto().resizable(true));
+                }
+                for _ in &col_lines {
+                    table = table.column(Column::auto().resizable(true));
+                }
 
-        let body = table
-            .header(22.0 * n_col_hdr as f32, |mut header| {
-                // Corner stub: the row category names stacked, then a header
-                // block spanning the column-category rows. With egui_extras we
-                // render the stacked column-category labels inside one tall
-                // header cell per column line (outer→inner, top→bottom).
-                for (si, rc) in row_cats.iter().enumerate() {
-                    let _ = si;
-                    header.col(|ui| {
-                        header_cell(ui, &cat_name(self, *rc), false);
-                        band_bottom(ui);
-                    });
-                }
-                if row_cats.is_empty() {
-                    header.col(|ui| {
-                        header_cell(ui, "", false);
-                        band_bottom(ui);
-                    });
-                }
-                for (ci, line) in col_lines.iter().enumerate() {
-                    let selected = sel_cols.contains(&ci);
-                    header.col(|ui| {
-                        ui.vertical(|ui| {
-                            if line.is_empty() {
-                                header_cell(ui, "", selected);
-                            }
-                            for (it, name) in line {
-                                let _ = it;
-                                header_cell(ui, name, selected);
-                            }
-                        });
-                        band_bottom(ui);
-                    });
-                }
-            })
-            .body(|body| {
-                // Virtualized rows: `body.rows` only invokes the closure for the
-                // rows currently visible in the viewport. Because rows are not
-                // built contiguously, group outlining can't rely on a running
-                // `prev` tracker — for row `ri` we decode row `ri-1`'s tuple on
-                // demand and blank an outer stub cell when it matches.
-                body.rows(20.0, total_rows, |mut row| {
-                    let ri = row.index();
-                    let row_line = row_tuple_at(&row_lists, ri);
-                    let prev_line = if ri > 0 {
-                        Some(row_tuple_at(&row_lists, ri - 1))
-                    } else {
-                        None
-                    };
-                    // Stub columns: one per stacked row category.
-                    let row_selected = sel_rows.contains(&ri);
-                    for si in 0..n_row_stub {
-                        let cell = row_line.get(si);
-                        // Centered vertically, level with the values.
-                        row.col(|ui| {
-                            let centered = egui::Layout::left_to_right(egui::Align::Center);
-                            ui.with_layout(centered, |ui| match cell {
-                                Some((_id, name)) => {
-                                    // Show the label on the innermost stub always,
-                                    // and on an outer stub only when this level or
-                                    // any enclosing outer level changed from the
-                                    // row above — group outlining.
-                                    let inner = si + 1 == n_row_stub;
-                                    let changed = match &prev_line {
-                                        None => true,
-                                        Some(p) => (0..=si).any(|k| {
-                                            row_line.get(k).map(|(id, _)| id)
-                                                != p.get(k).map(|(id, _)| id)
-                                        }),
-                                    };
-                                    if inner || changed {
-                                        header_cell(ui, name, row_selected);
-                                    } else {
-                                        header_cell(ui, "", row_selected);
-                                    }
-                                }
-                                None => header_cell(ui, "", row_selected),
+                let body = table
+                    .header(22.0 * n_col_hdr as f32, |mut header| {
+                        // Corner stub: the row category names stacked, then a header
+                        // block spanning the column-category rows. With egui_extras we
+                        // render the stacked column-category labels inside one tall
+                        // header cell per column line (outer→inner, top→bottom).
+                        for (si, rc) in row_cats.iter().enumerate() {
+                            let _ = si;
+                            header.col(|ui| {
+                                header_cell(ui, &cat_name(self, *rc), false);
+                                band_bottom(ui);
                             });
-                        });
-                    }
-                    for (ci, col_line) in col_lines.iter().enumerate() {
-                        let key =
-                            cell_key_multi(&row_cats, &row_line, &col_cats, col_line, &pinned);
-                        let selected = sel_rows.contains(&ri) && sel_cols.contains(&ci);
-                        let editing_here = editing.as_ref() == Some(&(measure, key.clone()));
-                        row.col(|ui| {
-                            // NeXT cell: white (light gray when selected), ruled
-                            // right and bottom in black. No per-cell chrome.
-                            let r = ui.max_rect();
-                            let fill = if selected {
-                                crate::theme::LIGHT_GRAY
+                        }
+                        if row_cats.is_empty() {
+                            header.col(|ui| {
+                                header_cell(ui, "", false);
+                                band_bottom(ui);
+                            });
+                        }
+                        for (ci, line) in col_lines.iter().enumerate() {
+                            let selected = sel_cols.contains(&ci);
+                            header.col(|ui| {
+                                ui.vertical(|ui| {
+                                    if line.is_empty() {
+                                        header_cell(ui, "", selected);
+                                    }
+                                    for (it, name) in line {
+                                        let _ = it;
+                                        header_cell(ui, name, selected);
+                                    }
+                                });
+                                band_bottom(ui);
+                            });
+                        }
+                    })
+                    .body(|body| {
+                        // Virtualized rows: `body.rows` only invokes the closure for the
+                        // rows currently visible in the viewport. Because rows are not
+                        // built contiguously, group outlining can't rely on a running
+                        // `prev` tracker — for row `ri` we decode row `ri-1`'s tuple on
+                        // demand and blank an outer stub cell when it matches.
+                        body.rows(20.0, total_rows, |mut row| {
+                            let ri = row.index();
+                            let row_line = row_tuple_at(&row_lists, ri);
+                            let prev_line = if ri > 0 {
+                                Some(row_tuple_at(&row_lists, ri - 1))
                             } else {
-                                crate::theme::WHITE
+                                None
                             };
-                            ui.painter().rect_filled(r, 0.0, fill);
-                            ui.painter().vline(r.right() - 0.5, r.y_range(), RULE);
-                            ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
-                            cell_rects.push(((ri, ci), r));
-                            let cell_id = egui::Id::new(("cell", uid, ri, ci));
-                            let mut sense_cell = |ui: &mut egui::Ui| {
-                                let resp = ui.interact(r, cell_id, egui::Sense::click_and_drag());
-                                if resp.drag_started() {
-                                    drag_from = Some((ri, ci));
-                                }
-                                dragging |= resp.dragged();
-                                resp
-                            };
-                            egui::Frame::none()
-                                .inner_margin(egui::Margin::symmetric(4.0, 0.0))
-                                .show(ui, |ui| {
-                                    // Numbers right-align so their digits line up,
-                                    // as in Improv; text, booleans and dates stay left.
-                                    let value = self.cell_value(measure, &key);
-                                    let numeric = matches!(value, Some(CellValue::Num(_)));
-                                    // Measure left-to-right in the table's sizing
-                                    // pass: a right-to-left layout fills the cell,
-                                    // which would size every auto column to its
-                                    // fallback width instead of its content.
-                                    let right = numeric || (editing_here && is_number);
-                                    let align = if right && !ui.is_sizing_pass() {
-                                        egui::Layout::right_to_left(egui::Align::Center)
-                                    } else {
-                                        egui::Layout::left_to_right(egui::Align::Center)
-                                    };
-                                    let text = value.map(|v| v.to_string()).unwrap_or_default();
-                                    ui.with_layout(align, |ui| {
-                                        if is_derived {
-                                            ui.add(egui::Label::new(text).selectable(false));
-                                            let mut resp = sense_cell(ui);
-                                            if let Some(src) = &formula_tip {
-                                                resp =
-                                                    resp.on_hover_text(format!("formula: {src}"));
+                            // Stub columns: one per stacked row category.
+                            let row_selected = sel_rows.contains(&ri);
+                            for si in 0..n_row_stub {
+                                let cell = row_line.get(si);
+                                // Centered vertically, level with the values.
+                                row.col(|ui| {
+                                    let centered = egui::Layout::left_to_right(egui::Align::Center);
+                                    ui.with_layout(centered, |ui| match cell {
+                                        Some((_id, name)) => {
+                                            // Show the label on the innermost stub always,
+                                            // and on an outer stub only when this level or
+                                            // any enclosing outer level changed from the
+                                            // row above — group outlining.
+                                            let inner = si + 1 == n_row_stub;
+                                            let changed = match &prev_line {
+                                                None => true,
+                                                Some(p) => (0..=si).any(|k| {
+                                                    row_line.get(k).map(|(id, _)| id)
+                                                        != p.get(k).map(|(id, _)| id)
+                                                }),
+                                            };
+                                            if inner || changed {
+                                                header_cell(ui, name, row_selected);
+                                            } else {
+                                                header_cell(ui, "", row_selected);
                                             }
-                                            if resp.clicked() {
-                                                clicked_cell = Some((ri, ci));
-                                                clicked_derived = true;
-                                            }
-                                        } else if editing_here {
-                                            crate::theme::content(ui);
-                                            let resp = ui.add(
-                                                egui::TextEdit::singleline(&mut edit_buf)
-                                                    .horizontal_align(if is_number {
-                                                        egui::Align::Max
-                                                    } else {
-                                                        egui::Align::Min
-                                                    })
-                                                    .desired_width(f32::INFINITY),
-                                            );
-                                            resp.request_focus();
-                                            let enter =
-                                                ui.input(|i| i.key_pressed(egui::Key::Enter));
-                                            let esc =
-                                                ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                            if esc {
-                                                cancel = true;
-                                            } else if resp.lost_focus() || enter {
-                                                commit = Some((key.clone(), edit_buf.clone()));
-                                            }
-                                        } else {
-                                            // Typed display: text, booleans, dates, and
-                                            // #ERR all render as themselves (never blank
-                                            // just because they are not numbers).
-                                            // Single click selects; double-click (or
-                                            // Enter) edits. The whole cell senses.
-                                            ui.add(
-                                                egui::Label::new(text.clone()).selectable(false),
-                                            );
-                                            let resp = sense_cell(ui);
-                                            if resp.clicked() || resp.double_clicked() {
-                                                clicked_cell = Some((ri, ci));
-                                            }
-                                            if resp.double_clicked() {
-                                                begin_edit = Some((key.clone(), text));
-                                            }
-                                            // Modern input mark: a faint inset underline.
-                                            ui.painter().hline(
-                                                r.left() + 2.0..=r.right() - 2.0,
-                                                r.bottom() - 2.0,
-                                                egui::Stroke::new(
-                                                    1.0_f32,
-                                                    crate::theme::LIGHT_GRAY,
-                                                ),
-                                            );
                                         }
+                                        None => header_cell(ui, "", row_selected),
                                     });
                                 });
+                            }
+                            for (ci, col_line) in col_lines.iter().enumerate() {
+                                let key = cell_key_multi(
+                                    &row_cats, &row_line, &col_cats, col_line, &pinned,
+                                );
+                                let selected = sel_rows.contains(&ri) && sel_cols.contains(&ci);
+                                let editing_here =
+                                    editing.as_ref() == Some(&(measure, key.clone()));
+                                row.col(|ui| {
+                                    // NeXT cell: white (light gray when selected), ruled
+                                    // right and bottom in black. No per-cell chrome.
+                                    let r = ui.max_rect();
+                                    let fill = if selected {
+                                        crate::theme::LIGHT_GRAY
+                                    } else {
+                                        crate::theme::WHITE
+                                    };
+                                    ui.painter().rect_filled(r, 0.0, fill);
+                                    ui.painter().vline(r.right() - 0.5, r.y_range(), RULE);
+                                    ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
+                                    cell_rects.push(((ri, ci), r));
+                                    let cell_id = egui::Id::new(("cell", uid, ri, ci));
+                                    let mut sense_cell = |ui: &mut egui::Ui| {
+                                        let resp =
+                                            ui.interact(r, cell_id, egui::Sense::click_and_drag());
+                                        if resp.drag_started() {
+                                            drag_from = Some((ri, ci));
+                                        }
+                                        dragging |= resp.dragged();
+                                        resp
+                                    };
+                                    egui::Frame::none()
+                                        .inner_margin(egui::Margin::symmetric(4.0, 0.0))
+                                        .show(ui, |ui| {
+                                            // Numbers right-align so their digits line up,
+                                            // as in Improv; text, booleans and dates stay left.
+                                            let value = self.cell_value(measure, &key);
+                                            let numeric = matches!(value, Some(CellValue::Num(_)));
+                                            // Measure left-to-right in the table's sizing
+                                            // pass: a right-to-left layout fills the cell,
+                                            // which would size every auto column to its
+                                            // fallback width instead of its content.
+                                            let right = numeric || (editing_here && is_number);
+                                            let align = if right && !ui.is_sizing_pass() {
+                                                egui::Layout::right_to_left(egui::Align::Center)
+                                            } else {
+                                                egui::Layout::left_to_right(egui::Align::Center)
+                                            };
+                                            let text =
+                                                value.map(|v| v.to_string()).unwrap_or_default();
+                                            ui.with_layout(align, |ui| {
+                                                if is_derived {
+                                                    ui.add(
+                                                        egui::Label::new(text).selectable(false),
+                                                    );
+                                                    let mut resp = sense_cell(ui);
+                                                    if let Some(src) = &formula_tip {
+                                                        resp = resp.on_hover_text(format!(
+                                                            "formula: {src}"
+                                                        ));
+                                                    }
+                                                    if resp.clicked() {
+                                                        clicked_cell = Some((ri, ci));
+                                                        clicked_derived = true;
+                                                    }
+                                                } else if editing_here {
+                                                    crate::theme::content(ui);
+                                                    let resp = ui.add(
+                                                        egui::TextEdit::singleline(&mut edit_buf)
+                                                            .horizontal_align(if is_number {
+                                                                egui::Align::Max
+                                                            } else {
+                                                                egui::Align::Min
+                                                            })
+                                                            .desired_width(f32::INFINITY),
+                                                    );
+                                                    resp.request_focus();
+                                                    let enter = ui
+                                                        .input(|i| i.key_pressed(egui::Key::Enter));
+                                                    let esc = ui.input(|i| {
+                                                        i.key_pressed(egui::Key::Escape)
+                                                    });
+                                                    if esc {
+                                                        cancel = true;
+                                                    } else if resp.lost_focus() || enter {
+                                                        commit =
+                                                            Some((key.clone(), edit_buf.clone()));
+                                                    }
+                                                } else {
+                                                    // Typed display: text, booleans, dates, and
+                                                    // #ERR all render as themselves (never blank
+                                                    // just because they are not numbers).
+                                                    // Single click selects; double-click (or
+                                                    // Enter) edits. The whole cell senses.
+                                                    ui.add(
+                                                        egui::Label::new(text.clone())
+                                                            .selectable(false),
+                                                    );
+                                                    let resp = sense_cell(ui);
+                                                    if resp.clicked() || resp.double_clicked() {
+                                                        clicked_cell = Some((ri, ci));
+                                                    }
+                                                    if resp.double_clicked() {
+                                                        begin_edit = Some((key.clone(), text));
+                                                    }
+                                                    // Modern input mark: a faint inset underline.
+                                                    ui.painter().hline(
+                                                        r.left() + 2.0..=r.right() - 2.0,
+                                                        r.bottom() - 2.0,
+                                                        egui::Stroke::new(
+                                                            1.0_f32,
+                                                            crate::theme::LIGHT_GRAY,
+                                                        ),
+                                                    );
+                                                }
+                                            });
+                                        });
+                                });
+                            }
                         });
-                    }
-                });
-            });
+                    });
 
-        // §4.8 bevel + grouped arrows; one click = one 20 px row. The table's
-        // area auto-shrinks to its content, plus the bar on the right.
-        let size = body.content_size.min(body.inner_rect.size())
-            + egui::vec2(ui.spacing().scroll.bar_width, 0.0);
-        let outer = egui::Rect::from_min_size(body.inner_rect.min, size);
-        crate::theme::scroller_chrome(ui, &body, outer, 20.0);
+                // §4.8 bevel + grouped arrows; one click = one 20 px row. The table's
+                // area auto-shrinks to its content, plus the bar on the right.
+                let size = body.content_size.min(body.inner_rect.size())
+                    + egui::vec2(ui.spacing().scroll.bar_width, 0.0);
+                let outer = egui::Rect::from_min_size(body.inner_rect.min, size);
+                (body, outer)
+            });
+        // The vertical scroller stays at the window's right edge, not the
+        // far end of a grid scrolled sideways.
+        let (body, outer) = &hscroll.inner;
+        let outer = outer.with_max_x(outer.max.x.min(hscroll.inner_rect.max.x));
+        crate::theme::scroller_chrome(ui, body, outer, 20.0);
         ui.spacing_mut().item_spacing = spacing;
         crate::theme::content(ui);
 
@@ -4455,6 +4504,7 @@ impl ImprovApp {
                 Err(e) => format!("edit error: {e}"),
             };
         }
+        Some(hscroll)
     }
 }
 
@@ -7854,6 +7904,7 @@ mod tests {
             left: r(126.0, 0.0, 246.0, 30.0),
             well: r(252.0, 0.0, 372.0, 30.0),
             table: r(0.0, 40.0, 800.0, 600.0),
+            hbar: egui::Rect::NOTHING,
         };
         assert!(
             !gutters_frame_table(&shelf),
@@ -7865,8 +7916,77 @@ mod tests {
             left: r(0.0, 40.0, 120.0, 600.0),
             table: r(120.0, 40.0, 800.0, 600.0),
             well: r(0.0, 600.0, 800.0, 634.0),
+            hbar: egui::Rect::NOTHING,
         };
         assert!(gutters_frame_table(&docked), "{docked:?}");
+    }
+
+    /// Spec §4.4/§4.8: the horizontal scroller runs in the bottom strip,
+    /// right of the row tiles, and a grid wider than its window scrolls
+    /// sideways with it (before, the far columns could not be reached).
+    #[test]
+    fn a_wide_grid_scrolls_sideways_with_the_inline_scroller() {
+        // Quantity[Time, Product] with 40 products: far wider than the window.
+        let mut m = grid_2x2_model();
+        for i in 0..40 {
+            m.add_item(ItemId(100 + i), CategoryId(2), format!("Product{i:02}"));
+        }
+        let mut app = build_app(m);
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let g = app.focused().gutters.expect("laid out");
+        let win = win_rect(&desk.ctx, &app, 0);
+        assert!(g.hbar.is_positive(), "the scroller has room: {g:?}");
+        assert!(g.well.contains_rect(g.hbar), "inline in the bottom strip");
+        let tile = tile_rect(&desk, &app, CategoryId(1));
+        assert!(tile.right() <= g.hbar.left(), "right of the row tile");
+        assert!(
+            (g.hbar.center().y - tile.center().y).abs() < 6.0,
+            "level with it"
+        );
+        assert!(g.hbar.right() <= win.right(), "inside the window");
+
+        let header_x = |desk: &mut Desk, app: &mut ImprovApp, name: &str| {
+            desk.frame(app, Vec::new())
+                .shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Text(t) if t.galley.text() == name => Some(t.pos.x),
+                    _ => None,
+                })
+        };
+        let first = header_x(&mut desk, &mut app, "Product00").expect("first column shown");
+        // Three clicks on the right arrow move the columns left by 3 lines.
+        let [_, right, _] = crate::theme::hscroller_rects(g.hbar);
+        for _ in 0..3 {
+            desk.click(&mut app, right.center());
+        }
+        let moved = header_x(&mut desk, &mut app, "Product00").expect("still shown");
+        assert!((first - moved - 60.0).abs() < 1.0, "{first} -> {moved}");
+        // Dragging the knob to the far end brings the last column into view,
+        // inside the window's right edge.
+        // Back to the start (the left arrow), so the knob begins the track.
+        let [left, _, _] = crate::theme::hscroller_rects(g.hbar);
+        for _ in 0..3 {
+            desk.click(&mut app, left.center());
+        }
+        assert_eq!(header_x(&mut desk, &mut app, "Product00"), Some(first));
+        let knob_from = egui::pos2(
+            g.hbar.left() + 2.0 * crate::theme::ARROW + 4.0,
+            g.hbar.center().y,
+        );
+        desk.drag(
+            &mut app,
+            knob_from,
+            egui::pos2(win.right() + 400.0, g.hbar.center().y),
+        );
+        let last = header_x(&mut desk, &mut app, "Product39").expect("last column reachable");
+        assert!(last < win.right(), "{last} vs {win:?}");
+        // The vertical scroller stays at the window's right edge.
+        let g2 = app.focused().gutters.expect("laid out");
+        assert!(g2.table.right() <= win.right() + EDGE_EPS, "{g2:?} {win:?}");
     }
 
     // -- STEP 2: the formula list pane

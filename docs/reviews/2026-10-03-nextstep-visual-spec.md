@@ -237,8 +237,15 @@ dependencies, and the formula in English. The id appears only here.
   end, one line per click. It applies to every `next_scroll` area (formula
   list, model browser) and the grid, whose `TableBody::body` returns the
   output. egui still handles knob drags over the whole trough, so the knob
-  lags the pointer by the arrows' share of the trough. Horizontal arrows are
-  not drawn.
+  lags the pointer by the arrows' share of the trough. The knob is now
+  dragged by `scroller_chrome` itself, 1:1 over the track minus the arrows.
+- The grid scrolls sideways too: its table sits in a horizontal
+  `ScrollArea` with egui's bar hidden, and `theme::hscroller_chrome` draws
+  the NeXT horizontal scroller in the bottom strip, right of the row tiles
+  (§4.4). The ◄ ► arrows are grouped at its LEFT end, as in the reference,
+  then the trough and beveled knob. Arrows step a 20 px line, a trough click
+  beside the knob pages by a view, and the knob drags. The vertical scroller
+  stays at the window's right edge while the grid scrolls under it.
 
 ## 5. Window model
 

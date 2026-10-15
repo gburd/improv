@@ -8,6 +8,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **GUI: grids scroll sideways.** A worksheet wider than its window has a
+  NeXT horizontal scroller in the bottom strip, right of the row tiles, with
+  the arrows grouped at its left end (spec §4.4). Before, the far columns
+  could not be reached.
 - **Revert to Saved** after a save conflict: GUI *File ▸ Revert to Saved*
   and TUI `R` reload the model from the store (with a fresh save token),
   picking up the other writer's changes, so the conflicting edit can be

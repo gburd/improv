@@ -124,13 +124,65 @@ pub fn scroller_rects(outer: Rect, bar_width: f32) -> [Rect; 3] {
     [trough, button(2.0), button(1.0)]
 }
 
+/// Where a scroller knob spans along `track` for a `view` long window at
+/// `offset` into `content`: grown to `min_len`, kept inside the track.
+fn knob_span(
+    offset: f32,
+    view: f32,
+    content: f32,
+    track: std::ops::RangeInclusive<f32>,
+    min_len: f32,
+) -> (f32, f32) {
+    let at = |v: f32| egui::remap_clamp(v, 0.0..=content.max(view), track.clone());
+    let (a, b) = (at(offset), at(offset + view));
+    let grow = (min_len - (b - a)).max(0.0) / 2.0;
+    ((a - grow).max(*track.start()), (b + grow).min(*track.end()))
+}
+
+/// Drag `knob` (it senses clicks too, so the egui bar under it never jumps):
+/// the scroll offset change for this frame's drag, mapping the knob's free
+/// travel (`track_len` minus the knob) onto the `max` scrollable points.
+fn knob_drag(
+    ui: &egui::Ui,
+    id: egui::Id,
+    knob: Rect,
+    axis: usize,
+    track_len: f32,
+    max: f32,
+) -> f32 {
+    let r = ui.interact(knob, id, egui::Sense::click_and_drag());
+    if !r.dragged() {
+        return 0.0;
+    }
+    let free = (track_len - knob.size()[axis]).max(1.0);
+    r.drag_delta()[axis] * max / free
+}
+
+/// Store `offset` (clamped to `0..=max`) on `axis` of `out`'s area if it
+/// moved, and repaint so the area shows it.
+fn scroll_to<R>(
+    ui: &egui::Ui,
+    out: &egui::scroll_area::ScrollAreaOutput<R>,
+    axis: usize,
+    offset: f32,
+    max: f32,
+) {
+    let offset = offset.clamp(0.0, max);
+    if offset != out.state.offset[axis] {
+        let mut state = out.state;
+        state.offset[axis] = offset;
+        state.store(ui.ctx(), out.id);
+        ui.ctx().request_repaint();
+    }
+}
+
 /// Repaint a shown vertical scroller NeXT-style: a knob with a 1 px bevel
 /// (white top-left, black bottom-right) above two grouped arrow buttons, each
 /// click scrolling `line` points. `outer` is the area plus its bar as laid
-/// out (`out.inner_rect` is the pre-shrink rect, so it can't be used).
-// ponytail: egui still owns knob drags and trough clicks, mapped over the
-// WHOLE trough, so the knob (drawn in the trough minus the arrows) trails the
-// pointer by 2*ARROW/height; a hand-rolled scroller fixes it if it matters.
+/// out (`out.inner_rect` is the pre-shrink rect, so it can't be used). The
+/// knob drags 1:1 with the pointer (ours, not egui's whole-trough mapping),
+/// so it also works when the bar is drawn at a viewport edge egui's own bar
+/// is scrolled away from (a grid wider than its window).
 pub fn scroller_chrome<R>(
     ui: &egui::Ui,
     out: &egui::scroll_area::ScrollAreaOutput<R>,
@@ -143,18 +195,17 @@ pub fn scroller_chrome<R>(
     p.rect_filled(trough, Rounding::ZERO, TROUGH);
     let track = trough.min.y..=up.min.y.max(trough.min.y);
     let view = trough.height();
-    let at = |y: f32| egui::remap_clamp(y, 0.0..=out.content_size.y.max(view), track.clone());
-    let (mut y0, mut y1) = (at(out.state.offset.y), at(out.state.offset.y + view));
-    let grow = (scroll.handle_min_length - (y1 - y0)).max(0.0) / 2.0;
-    (y0, y1) = (
-        (y0 - grow).max(*track.start()),
-        (y1 + grow).min(*track.end()),
+    let (y0, y1) = knob_span(
+        out.state.offset.y,
+        view,
+        out.content_size.y,
+        track.clone(),
+        scroll.handle_min_length,
     );
-    raised(
-        p,
-        p.round_rect_to_pixels(Rect::from_x_y_ranges(trough.x_range(), y0..=y1)),
-    );
+    let knob = p.round_rect_to_pixels(Rect::from_x_y_ranges(trough.x_range(), y0..=y1));
+    raised(p, knob);
     let max = (out.content_size.y - view).max(0.0);
+    let mut offset = out.state.offset.y;
     for (rect, sign) in [(up, -1.0), (down, 1.0)] {
         raised(p, rect);
         let c = rect.center();
@@ -172,12 +223,86 @@ pub fn scroller_chrome<R>(
             )
             .clicked()
         {
-            let mut state = out.state;
-            state.offset.y = (state.offset.y + sign * line).clamp(0.0, max);
-            state.store(ui.ctx(), out.id);
-            ui.ctx().request_repaint();
+            offset += sign * line;
         }
     }
+    let track_len = track.end() - track.start();
+    offset += knob_drag(ui, out.id.with("knob"), knob, 1, track_len, max);
+    scroll_to(ui, out, 1, offset, max);
+}
+
+/// The §4.4 horizontal scroller in `bar` (the bottom strip, right of the row
+/// tiles): its left and right arrow buttons grouped at the LEFT end, as in
+/// the reference, then the knob's track.
+pub fn hscroller_rects(bar: Rect) -> [Rect; 3] {
+    let button = |n: f32| {
+        Rect::from_min_size(
+            pos2(bar.min.x + n * ARROW, bar.max.y - ARROW),
+            vec2(ARROW, ARROW),
+        )
+    };
+    let track = bar.with_min_x((bar.min.x + 2.0 * ARROW).min(bar.max.x));
+    [button(0.0), button(1.0), track]
+}
+
+/// Draw and run a horizontal scroller in `bar` for `out` (an area whose own
+/// bar is hidden): grouped arrows scroll `line` points per click, the beveled
+/// knob drags, and a click in the trough beside the knob pages by a view.
+pub fn hscroller_chrome<R>(
+    ui: &egui::Ui,
+    out: &egui::scroll_area::ScrollAreaOutput<R>,
+    bar: Rect,
+    line: f32,
+) {
+    let [left, right, track] = hscroller_rects(bar);
+    let p = ui.painter();
+    p.rect_filled(bar, Rounding::ZERO, TROUGH);
+    let view = out.inner_rect.width();
+    let max = (out.content_size.x - view).max(0.0);
+    let (x0, x1) = knob_span(
+        out.state.offset.x,
+        view,
+        out.content_size.x,
+        track.min.x..=track.max.x,
+        ui.spacing().scroll.handle_min_length,
+    );
+    let knob = p.round_rect_to_pixels(Rect::from_x_y_ranges(x0..=x1, bar.y_range()));
+    let mut offset = out.state.offset.x;
+    let trough = ui.interact(track, out.id.with("htrough"), egui::Sense::click());
+    if let Some(at) = trough
+        .clicked()
+        .then(|| trough.interact_pointer_pos().or(trough.hover_pos()))
+        .flatten()
+    {
+        if at.x < knob.min.x {
+            offset -= view;
+        } else if at.x > knob.max.x {
+            offset += view;
+        }
+    }
+    raised(p, knob);
+    for (rect, sign) in [(left, -1.0), (right, 1.0)] {
+        raised(p, rect);
+        let c = rect.center();
+        let (tip, base) = (c.x + sign * 4.0, c.x - sign * 4.0);
+        p.add(egui::Shape::convex_polygon(
+            vec![pos2(tip, c.y), pos2(base, c.y + 5.0), pos2(base, c.y - 5.0)],
+            BLACK,
+            Stroke::NONE,
+        ));
+        if ui
+            .interact(
+                rect,
+                out.id.with(("harrow", sign as i8)),
+                egui::Sense::click(),
+            )
+            .clicked()
+        {
+            offset += sign * line;
+        }
+    }
+    offset += knob_drag(ui, out.id.with("hknob"), knob, 0, track.width(), max);
+    scroll_to(ui, out, 0, offset, max);
 }
 
 /// A raised NeXT face: [`LIGHT_GRAY`] with a white top-left, black
@@ -432,6 +557,101 @@ mod tests {
             .y;
         // Exactly one line (17 px row + 4 px spacing), not a trough jump.
         assert_eq!(offset, 21.0, "down arrow scrolled one line");
+    }
+
+    /// The horizontal scroller: arrows grouped at the bar's left end; the
+    /// right arrow scrolls a line, the left one clamps at 0, a trough click
+    /// right of the knob pages by a view, and the knob drags.
+    #[test]
+    fn horizontal_scroller_groups_arrows_left_and_scrolls() {
+        let ctx = egui::Context::default();
+        ctx.set_style(next_style());
+        let bar = Rect::from_min_size(pos2(10.0, 260.0), vec2(300.0, 19.0));
+        let frame = |events: Vec<egui::Event>| {
+            let mut out = None;
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(400.0, 300.0))),
+                events,
+                ..Default::default()
+            };
+            let full = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let o = egui::ScrollArea::horizontal()
+                        .max_width(200.0)
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                        .show(ui, |ui| {
+                            ui.allocate_exact_size(vec2(1000.0, 20.0), egui::Sense::hover())
+                        });
+                    hscroller_chrome(ui, &o, bar, 20.0);
+                    out = Some((o.state.offset.x, o.inner_rect.width()));
+                });
+            });
+            (full, out.unwrap())
+        };
+        let click = |at: egui::Pos2| {
+            let b = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            frame(vec![egui::Event::PointerMoved(at)]);
+            frame(vec![b(true)]);
+            frame(vec![b(false)]);
+            frame(Vec::new()).1
+        };
+        let (full, (x, view)) = frame(Vec::new());
+        assert_eq!((x, view), (0.0, 200.0));
+        let [left, right, track] = hscroller_rects(bar);
+        assert_eq!(left.min, pos2(bar.min.x, bar.max.y - ARROW));
+        assert_eq!(right.min.x, left.max.x, "the arrows are grouped");
+        assert_eq!(track.min.x, right.max.x);
+        let tips: Vec<egui::Pos2> = full
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Path(p) if p.points.len() == 3 => Some(p.points[0]),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            tips.iter()
+                .any(|t| left.contains(*t) && t.x < left.center().x),
+            "left points left"
+        );
+        assert!(
+            tips.iter()
+                .any(|t| right.contains(*t) && t.x > right.center().x),
+            "right points right"
+        );
+
+        assert_eq!(click(left.center()).0, 0.0, "clamped at the start");
+        assert_eq!(click(right.center()).0, 20.0, "one line right");
+        assert_eq!(
+            click(pos2(track.max.x - 2.0, track.center().y)).0,
+            220.0,
+            "a page right"
+        );
+        // Drag the knob 10 px: the free travel maps onto the 800 px scroll.
+        let (x0, x1) = knob_span(220.0, 200.0, 1000.0, track.min.x..=track.max.x, 19.0);
+        let from = pos2((x0 + x1) / 2.0, track.center().y);
+        let to = from + vec2(10.0, 0.0);
+        let b = |at, pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(from)]);
+        frame(vec![b(from, true)]);
+        frame(vec![egui::Event::PointerMoved(to)]);
+        frame(vec![b(to, false)]);
+        let after = frame(Vec::new()).1 .0;
+        let free = track.width() - (x1 - x0);
+        assert!(
+            (after - (220.0 + 10.0 * 800.0 / free)).abs() < 0.5,
+            "{after}"
+        );
     }
 
     #[test]
