@@ -26,6 +26,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   into one input cell, in `recalc`, trigger and logical mode and in the GUI's
   load; without `agg` duplicate rows remain an error. The GUI's store refuses
   to save an edit to an aggregated measure (`Integrity`).
+- **pg_improv: boolean, text and date measures.** `bind_measure` takes the
+  measure's type from its column (`bool`; `text`/`varchar`/`char`;
+  `date`/`timestamp`/`timestamptz`; the number types as before) and refuses
+  others; `define` accepts boolean, text and datetime results, and result
+  tables get a matching `value` column (`boolean`, `text`, `timestamptz`).
+  A model with a non-number measure recomputes in full per batch in
+  logical mode.
 
 ### Fixed
 

@@ -102,8 +102,23 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
 `value`). Result tables are `improv_<model>.<lower(measure)>` with one `text`
-column per dimension (named `lower(category)`), `value double precision`, and
-a primary key on the dimensions.
+column per dimension (named `lower(category)`), a typed `value` column, and a
+primary key on the dimensions.
+
+`bind_measure` takes the measure's type from its column, and a derived
+measure has the type its formula gives (`Price > 15` is boolean):
+
+| Column type | Measure type | Result `value` column |
+| --- | --- | --- |
+| `float4`, `float8`, `numeric`, `int2`, `int4`, `int8` | number | `double precision` |
+| `bool` | boolean | `boolean` |
+| `text`, `varchar`, `bpchar` | text | `text` |
+| `date`, `timestamp`, `timestamptz` | datetime (millisecond UTC) | `timestamptz` |
+
+Any other column type is an ERROR. `agg => 'count'` is a number; `sum` and
+`avg` need a number column. A measure's type cannot change: if a result
+table exists with another `value` type, drop the model and rebuild it.
+`what_if` reports number measures only.
 
 `improv.max_cells` (default 5 000 000, settable per session) caps the number
 of input cells `recalc` loads; above it, `recalc` raises an ERROR.

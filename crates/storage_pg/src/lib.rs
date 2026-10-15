@@ -862,15 +862,19 @@ impl PgModelStore {
                 .iter()
                 .map(|(_, c)| format!("{}::text", ident(c)))
                 .collect();
-            let v = ident(&b.value_col);
-            let sql = match b.agg.as_deref() {
-                None => {
-                    cols.push(format!("to_jsonb({v})::text"));
-                    format!("SELECT {} FROM {}", cols.join(", "), b.table)
-                }
-                Some(a) => {
-                    let by: Vec<String> = (1..=cols.len()).map(|i| i.to_string()).collect();
-                    cols.push(format!("to_jsonb({}({v}))::text", agg_fn(a)?));
+            let mut v = ident(&b.value_col);
+            if let Some(a) = b.agg.as_deref() {
+                v = format!("{}({v})", agg_fn(a)?);
+            }
+            // A date/timestamp column as timestamptz: its JSON is RFC 3339.
+            if vt == ValueType::DateTime {
+                v = format!("({v})::timestamptz");
+            }
+            cols.push(format!("to_jsonb({v})::text"));
+            let sql = match b.agg {
+                None => format!("SELECT {} FROM {}", cols.join(", "), b.table),
+                Some(_) => {
+                    let by: Vec<String> = (1..cols.len()).map(|i| i.to_string()).collect();
                     format!(
                         "SELECT {} FROM {} GROUP BY {}",
                         cols.join(", "),

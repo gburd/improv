@@ -300,11 +300,14 @@ pub fn apply_edits(model: &mut Model, edits: &str) -> Result<Vec<MeasureId>> {
 
 /// The cells of `new` that differ from `old` (`Some`), and the cells of
 /// `old` that `new` lacks (`None`), in key order.
-pub fn cell_changes(old: &ResultRows, new: &ResultRows) -> Vec<(Vec<String>, Option<f64>)> {
-    let mut out: Vec<(Vec<String>, Option<f64>)> = new
+pub fn cell_changes(
+    old: &ResultRows,
+    new: &ResultRows,
+) -> Vec<(Vec<String>, Option<improv_engine::CellValue>)> {
+    let mut out: Vec<_> = new
         .iter()
-        .filter(|(k, v)| old.get(*k).map(|o| o.to_bits()) != Some(v.to_bits()))
-        .map(|(k, v)| (k.clone(), Some(*v)))
+        .filter(|(k, v)| old.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), Some(v.clone())))
         .collect();
     out.extend(
         old.keys()
@@ -389,6 +392,7 @@ mod tests {
     use super::*;
     use crate::{build_model, define, result_rows, Catalog, CategoryRow, ItemRow, MeasureRow};
     use improv_engine::dataflow::evaluate;
+    use improv_engine::CellValue;
 
     const PRICE: MeasureId = MeasureId(1);
     const QTY: MeasureId = MeasureId(2);
@@ -546,7 +550,7 @@ mod tests {
             ("Q2", "Gadget"),
         ]
         .into_iter()
-        .map(|(t, p)| (vec![t.to_string(), p.to_string()], 1.0))
+        .map(|(t, p)| (vec![t.to_string(), p.to_string()], CellValue::num(1.0)))
         .collect();
         let kept = |s: Scope| {
             let mut rows = all.clone();
@@ -650,16 +654,18 @@ mod tests {
     #[test]
     fn changes_and_coord_json() {
         let rows = |v: &[(&str, f64)]| -> ResultRows {
-            v.iter().map(|(k, x)| (vec![k.to_string()], *x)).collect()
+            v.iter()
+                .map(|(k, x)| (vec![k.to_string()], CellValue::num(*x)))
+                .collect()
         };
         let old = rows(&[("a", 1.0), ("b", 2.0), ("c", 3.0)]);
         let new = rows(&[("a", 1.0), ("b", 5.0), ("d", 4.0)]);
         assert_eq!(
             cell_changes(&old, &new),
             vec![
-                (vec!["b".to_string()], Some(5.0)),
+                (vec!["b".to_string()], Some(CellValue::num(5.0))),
                 (vec!["c".to_string()], None),
-                (vec!["d".to_string()], Some(4.0)),
+                (vec!["d".to_string()], Some(CellValue::num(4.0))),
             ]
         );
         let m = model(&[]);

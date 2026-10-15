@@ -170,4 +170,17 @@ wait_for "$AT" 40 "aggregated catch-up" >/dev/null
 q "UPDATE orders SET amount = 50 WHERE product='Widget' AND amount = 30"
 wait_for "$AT" 60 "aggregated update" >/dev/null
 echo "ok: agg => 'sum' over duplicate rows; UPDATE of one duplicate re-summed (60)"
+
+# 11. typed measures: a numeric input feeds a derived boolean
+q "CREATE TABLE goods (product text PRIMARY KEY, price numeric)"
+q "INSERT INTO goods VALUES ('Widget', 10)"
+q "SELECT improv.create_model('typed')"
+q "SELECT improv.bind_category('typed','Product','goods','product')"
+q "SELECT improv.bind_measure('typed','Price','goods','price')"
+q "SELECT improv.define('typed','Pricey = Price > 15')"
+PR="SELECT value FROM improv_typed.pricey WHERE product='Widget'"
+wait_for "$PR" f "typed catch-up" >/dev/null
+q "UPDATE goods SET price = 20"
+wait_for "$PR" t "typed update" >/dev/null
+echo "ok: a derived boolean follows a committed UPDATE (f -> t)"
 echo "PASS"

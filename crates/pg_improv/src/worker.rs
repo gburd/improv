@@ -33,17 +33,18 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::Duration;
 
-use improv_core_model::{MeasureId, Model, Value};
+use improv_core_model::{MeasureId, Model, Value, ValueType};
 use improv_engine::session::{Engine, MeasureValues, Snapshot};
 use improv_pg_model as pm;
 use improv_pg_model::live::{self, Rebuild};
 use improv_pg_model::pgoutput;
 use pgrx::bgworkers::*;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting};
 
-use super::{bump_version, id32, lock_model, read_results, req, Res, MAX_CELLS};
+use super::{
+    bump_version, ensure_table, id32, lock_model, read_results, req, write_results, Res, MAX_CELLS,
+};
 
 /// `improv.database`: the database the sync worker connects to.
 pub(crate) static DATABASE: GucSetting<Option<std::ffi::CString>> =
@@ -627,9 +628,10 @@ fn apply(l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, Rebuild>> {
                 was.insert(k.clone(), v.clone());
             }
         }
-        changed += write(
+        changed += write_results(
             table,
             dims,
+            l.model.measures[target].value_type,
             &pm::result_rows(&l.model, *target, &was)?,
             &pm::result_rows(&l.model, *target, &now)?,
         )?;
@@ -652,10 +654,14 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         .inputs
         .values()
         .any(|v| !matches!(v, Value::Number(_)))
+        || model
+            .measures
+            .values()
+            .any(|m| m.value_type != ValueType::Number)
     {
-        // ponytail: the live engine takes numeric inputs only; such models
-        // recompute in full per batch (reloading once more) until it types
-        // its input lanes.
+        // ponytail: the live engine (`session::Edit`) takes numbers only, so
+        // a model with any boolean/text/datetime measure recomputes in full
+        // per batch (reloading once more) until it types its input lanes.
         return Ok((None, super::trigger::recompute_all(mid, name)?));
     }
     let mapper = live::Mapper::new(&model, bindings(mid)?);
@@ -671,16 +677,11 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         pm::validate_name("measure", measure)?;
         let table = pm::result_table(name, measure);
         let dims = pm::dim_columns(&model, target)?;
-        // Checked first: `IF NOT EXISTS` would NOTICE on every statement.
-        if !super::trigger::exists(&table)? {
-            Spi::run(&format!(
-                "CREATE SCHEMA IF NOT EXISTS {}",
-                pm::quote_ident(&pm::result_schema(name))
-            ))?;
-            Spi::run(&pm::create_table_sql(&table, &dims))?;
-        }
+        let vt = model.measures[&target].value_type;
+        ensure_table(name, &table, &dims, vt)?;
         let new = pm::result_rows(&model, target, snapshot.get(&target).map_or(&empty, |m| m))?;
-        changed += write(&table, &dims, &read_results(&table, &dims)?, &new)?;
+        let old = read_results(&table, &dims, vt)?;
+        changed += write_results(&table, &dims, vt, &old, &new)?;
         tables.push((target, table, dims));
     }
     let l = Live {
@@ -710,21 +711,6 @@ fn start_engine(model: &Model, targets: &[MeasureId]) -> Res<(Engine, Snapshot)>
         Ok(r) => Ok(r?),
         Err(_) => Err("improv engine panicked while starting".into()),
     }
-}
-
-/// Run the statements that turn result rows `old` into `new`; returns the
-/// rows changed.
-fn write(table: &str, dims: &[String], old: &pm::ResultRows, new: &pm::ResultRows) -> Res<i64> {
-    let mut changed = 0;
-    for st in pm::diff_statements(table, dims, old, new) {
-        let mut args: Vec<DatumWithOid> = st.dims.iter().map(|d| d.clone().into()).collect();
-        if let Some(v) = &st.values {
-            args.push(v.clone().into());
-        }
-        Spi::run_with_args(&st.sql, &args)?;
-        changed += st.rows() as i64;
-    }
-    Ok(changed)
 }
 
 /// Model `mid`'s bindings, per relation oid.

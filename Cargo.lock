@@ -2651,6 +2651,7 @@ dependencies = [
 name = "improv_pg_model"
 version = "0.7.0"
 dependencies = [
+ "chrono",
  "improv_core_model",
  "improv_data_source",
  "improv_engine",

@@ -696,6 +696,86 @@ fn aggregated_bindings_load_folded_and_are_read_only() {
         .unwrap();
 }
 
+/// G5: bool, text and date/timestamp columns load as their value types and a
+/// GUI edit of a bool cell writes the bool column.
+#[test]
+fn typed_bound_columns_load_and_save() {
+    let Some(url) = live("g5_types") else { return };
+    let table = format!("g5_types_{}", std::process::id());
+    client()
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS {table}; \
+             CREATE TABLE {table} (product text PRIMARY KEY, active bool, category varchar(20), \
+                                   launched date, seen timestamptz); \
+             INSERT INTO {table} VALUES ('Widget', true, 'tools', '2026-01-02', \
+                                         '2026-03-04 05:06:07+00')"
+        ))
+        .unwrap();
+    let mut s = PgModelStore::open(&url).unwrap();
+    let mut m = Model::new();
+    m.add_category(P, "Product");
+    let typed = [
+        (100, "Active", ValueType::Boolean, "active"),
+        (101, "Category", ValueType::Text, "category"),
+        (102, "Launched", ValueType::DateTime, "launched"),
+        (103, "Seen", ValueType::DateTime, "seen"),
+    ];
+    for (id, name, vt, _) in typed {
+        let mut me = measure(id, name, &[P], MeasureKind::Input);
+        me.value_type = vt;
+        m.add_measure(me);
+    }
+    s.save_model(&m).unwrap();
+    for (id, _, _, col) in typed {
+        s.client
+            .execute(
+                "INSERT INTO improv.binding(model_id, measure_id, rel, value_col, dim_cols) \
+                 VALUES ($1, $2, $3::text::regclass, $4, '{\"Product\":\"product\"}')",
+                &[&s.model_id, &i64::from(id), &table, &col],
+            )
+            .unwrap();
+    }
+    let mut m = s.load_model().unwrap();
+    let w = Coordinate::from_pairs([(
+        P,
+        m.items.values().find(|i| i.name.0 == "Widget").unwrap().id,
+    )]);
+    let get = |m: &Model, id| m.inputs[&(MeasureId(id), w.clone())].clone();
+    for (id, _, vt, _) in typed {
+        assert_eq!(m.measures[&MeasureId(id)].value_type, vt);
+    }
+    assert_eq!(get(&m, 100), Value::Boolean(true));
+    assert_eq!(get(&m, 101), Value::Text("tools".into()));
+    let ts = |s: &str| {
+        Value::DateTime(
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc),
+        )
+    };
+    assert!(
+        matches!(get(&m, 102), Value::DateTime(d) if d.date_naive().to_string() == "2026-01-02")
+    );
+    assert_eq!(get(&m, 103), ts("2026-03-04T05:06:07Z"));
+
+    m.set_input(MeasureId(100), w.clone(), Value::Boolean(false));
+    m.set_input(MeasureId(103), w.clone(), ts("2027-01-01T00:00:00Z"));
+    s.save_model(&m).unwrap();
+    let r = client()
+        .query_one(
+            &format!("SELECT active, category, launched::text, seen = '2027-01-01Z' FROM {table}"),
+            &[],
+        )
+        .unwrap();
+    assert!(!r.get::<_, bool>(0));
+    assert_eq!(r.get::<_, String>(1), "tools");
+    assert_eq!(r.get::<_, String>(2), "2026-01-02");
+    assert!(r.get::<_, bool>(3));
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
+
 /// G2 (a): a SQL edit to a bound row survives a save that changed another
 /// cell, here through a second handle carrying the loading one's snapshot.
 #[test]

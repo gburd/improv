@@ -300,10 +300,9 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
         &formula.expr,
     )
     .map_err(|e| Error::Definition(e.to_string()))?;
-    if typed.ty.value_type != ValueType::Number {
+    if typed.ty.value_type == ValueType::Enum {
         return Err(Error::Definition(format!(
-            "{target} is {}; only number results are supported yet",
-            value_type_name(typed.ty.value_type)
+            "{target} is an enum; enum results are not supported yet"
         )));
     }
     if typed.ty.dim.categories.is_empty() {
@@ -324,13 +323,13 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
 
 /// The rows of one bound input measure, as read from its fact table: one
 /// `Option<String>` per dimension (in the measure's category order) and the
-/// value (`None` = SQL NULL).
+/// value as the measure's type reads it (`None` = SQL NULL).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BoundRows {
     /// The input measure the rows feed.
     pub measure_id: u32,
     /// `(dimension values, value)` per fact row.
-    pub rows: Vec<(Vec<Option<String>>, Option<f64>)>,
+    pub rows: Vec<(Vec<Option<String>>, Option<CellValue>)>,
 }
 
 /// What [`load_inputs`] did.
@@ -364,13 +363,6 @@ fn shape<'a>(model: &Model, bound: &'a [BoundRows]) -> Result<(Vec<Shaped>, Dist
             .ok_or_else(|| {
                 Error::Catalog(format!("binding for unknown measure {}", b.measure_id))
             })?;
-        if m.value_type != ValueType::Number {
-            return Err(Error::Catalog(format!(
-                "{} is bound but is {}; only number bindings are supported yet",
-                m.name.0,
-                value_type_name(m.value_type)
-            )));
-        }
         for (dims, _) in &b.rows {
             if dims.len() != m.categories.len() {
                 return Err(Error::Catalog(format!(
@@ -429,7 +421,7 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
         }
     }
 
-    let mut cells: BTreeMap<(MeasureId, Coordinate), f64> = BTreeMap::new();
+    let mut cells: BTreeMap<(MeasureId, Coordinate), Value> = BTreeMap::new();
     let mut null_dim_rows = 0;
     for (b, (mid, name, cats)) in bound.iter().zip(&shaped) {
         for (dims, value) in &b.rows {
@@ -442,6 +434,8 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
                 continue;
             };
             let Some(v) = value else { continue };
+            let v = to_value(v)
+                .ok_or_else(|| Error::Catalog(format!("{name}: {v} is out of range")))?;
             let coord = Coordinate::from_pairs(
                 cats.iter()
                     .zip(&names)
@@ -455,7 +449,7 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
                     })
                 }
                 Entry::Vacant(e) => {
-                    e.insert(*v);
+                    e.insert(v);
                 }
             }
         }
@@ -475,7 +469,7 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
     new_items.sort_by_key(|i| i.id);
     let n = cells.len();
     for ((mid, coord), v) in cells {
-        model.set_input(mid, coord, Value::Number(v));
+        model.set_input(mid, coord, v);
     }
     Ok(Loaded {
         new_items,
@@ -506,8 +500,9 @@ pub fn load_cells(model: &mut Model, cells: &[(u32, String, String)]) -> Result<
                 .map(Value::Enum),
             (ValueType::Boolean, J::Bool(b)) => Some(Value::Boolean(*b)),
             (ValueType::Text, J::String(s)) => Some(Value::Text(s.clone())),
-            // ponytail: datetime cells are not decoded yet (needs chrono);
-            // add when a datetime measure feeds a derived one.
+            (ValueType::DateTime, J::String(s)) => chrono::DateTime::parse_from_rfc3339(s)
+                .ok()
+                .map(|d| Value::DateTime(d.with_timezone(&chrono::Utc))),
             _ => None,
         }
         .ok_or_else(|| bad(&format!("{json} is not a {} value", value_type_name(vt))))?;
@@ -526,12 +521,97 @@ pub fn check_cell_budget(cells: usize, max: usize) -> Result<()> {
 }
 
 /// A result table's contents: item names in dimension order → value.
-pub type ResultRows = BTreeMap<Vec<String>, f64>;
+pub type ResultRows = BTreeMap<Vec<String>, CellValue>;
 
-/// Name the engine's cells for `measure` in its dimension order.
-// ponytail: non-numeric cells (text/bool/error) are dropped because v1 result
-// columns are double precision; add a typed value column when non-numeric
-// derived measures are supported.
+/// An engine cell as a model value (`None`: an error, or a timestamp chrono
+/// cannot hold).
+fn to_value(v: &CellValue) -> Option<Value> {
+    Some(match v {
+        CellValue::Num(b) => Value::Number(f64::from_bits(*b)),
+        CellValue::Bool(b) => Value::Boolean(*b),
+        CellValue::Text(t) => Value::Text(t.clone()),
+        CellValue::Date(ms) => Value::DateTime(chrono::DateTime::from_timestamp_millis(*ms)?),
+        CellValue::Err(_) => return None,
+    })
+}
+
+/// Whether `v` is a value of type `vt`.
+fn is_a(vt: ValueType, v: &CellValue) -> bool {
+    matches!(
+        (vt, v),
+        (ValueType::Number, CellValue::Num(_))
+            | (ValueType::Boolean, CellValue::Bool(_))
+            | (ValueType::Text, CellValue::Text(_))
+            | (ValueType::DateTime, CellValue::Date(_))
+    )
+}
+
+fn no_enum() -> Error {
+    Error::Catalog("enum measures have no Postgres column type yet".into())
+}
+
+/// The value type of an input measure bound to a column of Postgres type
+/// `typname` (`pg_type.typname`; `shown` is its `format_type`, for errors),
+/// read through `agg`.
+pub fn bound_value_type(typname: &str, shown: &str, agg: Option<&str>) -> Result<ValueType> {
+    let vt = match typname {
+        "float4" | "float8" | "numeric" | "int2" | "int4" | "int8" => ValueType::Number,
+        "bool" => ValueType::Boolean,
+        "text" | "varchar" | "bpchar" => ValueType::Text,
+        "date" | "timestamp" | "timestamptz" => ValueType::DateTime,
+        _ => {
+            return Err(Error::Catalog(format!(
+                "cannot bind a measure to a column of type {shown}"
+            )))
+        }
+    };
+    match agg.map(agg_sql).transpose()? {
+        Some("count") => Ok(ValueType::Number),
+        Some(a @ ("sum" | "avg")) if vt != ValueType::Number => Err(Error::Catalog(format!(
+            "agg {a} needs a number column, not {shown}"
+        ))),
+        _ => Ok(vt),
+    }
+}
+
+/// A result table's `value` column type for `vt` (as `format_type` names it).
+pub fn sql_type(vt: ValueType) -> Result<&'static str> {
+    Ok(match vt {
+        ValueType::Number => "double precision",
+        ValueType::Boolean => "boolean",
+        ValueType::Text => "text",
+        ValueType::DateTime => "timestamp with time zone",
+        ValueType::Enum => return Err(no_enum()),
+    })
+}
+
+/// SQL reading expression `e` as a `vt` value: `float8`, `bool`, `text`, or
+/// a datetime as `int8` epoch milliseconds (the engine's resolution).
+fn read_expr(vt: ValueType, e: &str) -> Result<String> {
+    Ok(match vt {
+        ValueType::Number => format!("{e}::float8"),
+        ValueType::Boolean => format!("{e}::bool"),
+        ValueType::Text => format!("{e}::text"),
+        ValueType::DateTime => format!("(extract(epoch from {e}::timestamptz) * 1000)::int8"),
+        ValueType::Enum => return Err(no_enum()),
+    })
+}
+
+/// Refuse a result table whose `value` column (of type `found`, as
+/// `format_type` names it) does not hold `vt`.
+pub fn check_value_column(table: &str, vt: ValueType, found: &str) -> Result<()> {
+    if found == sql_type(vt)? {
+        return Ok(());
+    }
+    Err(Error::Catalog(format!(
+        "{table}.value is {found} but the measure is {}; changing a measure's type is \
+         not supported: drop the model (improv.drop_model) and rebuild it",
+        value_type_name(vt)
+    )))
+}
+
+/// Name the engine's cells for `measure` in its dimension order. Cells that
+/// are not of the measure's type (errors) are left out.
 pub fn result_rows(
     model: &Model,
     measure: MeasureId,
@@ -543,7 +623,9 @@ pub fn result_rows(
         .ok_or_else(|| Error::Catalog(format!("unknown measure {}", measure.0)))?;
     let mut out = ResultRows::new();
     for (key, val) in cells {
-        let Some(v) = val.as_num() else { continue };
+        if !is_a(m.value_type, val) {
+            continue;
+        }
         let names = m
             .categories
             .iter()
@@ -560,7 +642,7 @@ pub fn result_rows(
                     m.name.0
                 ))
             })?;
-        out.insert(names, v);
+        out.insert(names, val.clone());
     }
     Ok(out)
 }
@@ -585,21 +667,27 @@ pub fn dim_columns(model: &Model, measure: MeasureId) -> Result<Vec<String>> {
 
 /// `CREATE TABLE IF NOT EXISTS` for a derived measure's result table (a
 /// measure defined through the GUI gets its table on the first recalc).
-pub fn create_table_sql(table: &str, dim_cols: &[String]) -> String {
+pub fn create_table_sql(table: &str, dim_cols: &[String], vt: ValueType) -> Result<String> {
     let cols: Vec<String> = dim_cols
         .iter()
         .map(|c| format!("{} text NOT NULL", quote_ident(c)))
         .collect();
-    format!(
-        "CREATE TABLE IF NOT EXISTS {table} ({}, value double precision, PRIMARY KEY ({}))",
+    Ok(format!(
+        "CREATE TABLE IF NOT EXISTS {table} ({}, value {}, PRIMARY KEY ({}))",
         cols.join(", "),
+        sql_type(vt)?,
         quoted_list(dim_cols)
-    )
+    ))
 }
 
-/// `SELECT` of a result table's current rows (dims…, value).
-pub fn select_result_sql(table: &str, dim_cols: &[String]) -> String {
-    format!("SELECT {}, value FROM {table}", quoted_list(dim_cols))
+/// `SELECT` of a result table's current rows (dims…, value read as `vt`,
+/// see [`select_bound_sql`]).
+pub fn select_result_sql(table: &str, dim_cols: &[String], vt: ValueType) -> Result<String> {
+    Ok(format!(
+        "SELECT {}, {} FROM {table}",
+        quoted_list(dim_cols),
+        read_expr(vt, "value")?
+    ))
 }
 
 /// The SQL aggregate a `binding.agg` names (`sum | avg | min | max | count`).
@@ -618,14 +706,16 @@ pub fn agg_sql(agg: &str) -> Result<&'static str> {
     })
 }
 
-/// `SELECT` of a binding's fact rows (dims as text…, value as float8): with
-/// `agg`, one row per coordinate, its rows' values aggregated. `rel` is a
-/// `regclass::text`, which Postgres has already quoted.
+/// `SELECT` of a binding's fact rows: dims as text…, then the value read as
+/// `vt` (`float8`, `bool`, `text`, or a datetime as `int8` epoch
+/// milliseconds). With `agg`, one row per coordinate, its rows' values
+/// aggregated. `rel` is a `regclass::text`, which Postgres has already quoted.
 pub fn select_bound_sql(
     rel: &str,
     dim_cols: &[String],
     value_col: &str,
     agg: Option<&str>,
+    vt: ValueType,
 ) -> Result<String> {
     let dims: Vec<String> = dim_cols
         .iter()
@@ -633,13 +723,17 @@ pub fn select_bound_sql(
         .collect();
     let v = quote_ident(value_col);
     Ok(match agg {
-        None => format!("SELECT {}, {v}::float8 FROM {rel}", dims.join(", ")),
+        None => format!(
+            "SELECT {}, {} FROM {rel}",
+            dims.join(", "),
+            read_expr(vt, &v)?
+        ),
         Some(a) => {
             let by: Vec<String> = (1..=dims.len()).map(|i| i.to_string()).collect();
             format!(
-                "SELECT {}, {}({v})::float8 FROM {rel} GROUP BY {}",
+                "SELECT {}, {} FROM {rel} GROUP BY {}",
                 dims.join(", "),
-                agg_sql(a)?,
+                read_expr(vt, &format!("{}({v})", agg_sql(a)?))?,
                 by.join(", ")
             )
         }
@@ -654,16 +748,38 @@ fn quoted_list(cols: &[String]) -> String {
 }
 
 /// One SQL statement with column-major array parameters: `$1..$n` are the
-/// `text[]` dimension columns of [`Statement::dims`], then (upserts only) a
-/// `float8[]` of [`Statement::values`].
+/// `text[]` dimension columns of [`Statement::dims`], then (upserts only)
+/// [`Statement::values`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Statement {
     /// The SQL text.
     pub sql: String,
     /// One `text[]` parameter per dimension column.
     pub dims: Vec<Vec<String>>,
-    /// The `float8[]` value parameter (upserts only).
-    pub values: Option<Vec<f64>>,
+    /// The value parameter (upserts only).
+    pub values: Option<Values>,
+}
+
+/// An upsert's value parameter: `float8[]` for numbers, else `text[]` the
+/// SQL casts to the column type.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Values {
+    /// A `float8[]`.
+    Number(Vec<f64>),
+    /// A `text[]` (booleans as `true`/`false`, datetimes as RFC 3339).
+    Text(Vec<String>),
+}
+
+/// `v` as the text Postgres reads back as a `vt` value.
+fn sql_text(vt: ValueType, v: &CellValue) -> Option<String> {
+    match (vt, v) {
+        (ValueType::Boolean, CellValue::Bool(b)) => Some(b.to_string()),
+        (ValueType::Text, CellValue::Text(t)) => Some(t.clone()),
+        (ValueType::DateTime, CellValue::Date(ms)) => {
+            chrono::DateTime::from_timestamp_millis(*ms).map(|d| d.to_rfc3339())
+        }
+        _ => None,
+    }
 }
 
 impl Statement {
@@ -674,14 +790,16 @@ impl Statement {
 }
 
 /// The statements that turn `old` (the table's rows) into `new` (the engine's
-/// rows): at most one batched upsert of new/changed rows and one batched
-/// delete of vanished rows. Unchanged rows (bit-identical value) are skipped.
+/// rows) of a `vt` measure: at most one batched upsert of new/changed rows
+/// and one batched delete of vanished rows. Unchanged rows (bit-identical
+/// value) are skipped; a value that is not a `vt` is an error.
 pub fn diff_statements(
     table: &str,
     dim_cols: &[String],
+    vt: ValueType,
     old: &ResultRows,
     new: &ResultRows,
-) -> Vec<Statement> {
+) -> Result<Vec<Statement>> {
     let n = dim_cols.len();
     let columns = |keys: &mut dyn Iterator<Item = &Vec<String>>| {
         let mut cols = vec![Vec::new(); n];
@@ -699,20 +817,42 @@ pub fn diff_statements(
     let cols = quoted_list(dim_cols);
     let mut out = Vec::new();
 
-    let changed: Vec<(&Vec<String>, f64)> = new
+    let changed: Vec<(&Vec<String>, &CellValue)> = new
         .iter()
-        .filter(|(k, v)| old.get(*k).map(|o| o.to_bits()) != Some(v.to_bits()))
-        .map(|(k, v)| (k, *v))
+        .filter(|(k, v)| old.get(*k) != Some(*v))
         .collect();
     if !changed.is_empty() {
+        let bad = |v: &CellValue| {
+            Error::Catalog(format!("{table}: {v} is not a {}", value_type_name(vt)))
+        };
+        let (values, param) = match vt {
+            ValueType::Number => (
+                Values::Number(
+                    changed
+                        .iter()
+                        .map(|(_, v)| v.as_num().ok_or_else(|| bad(v)))
+                        .collect::<Result<_>>()?,
+                ),
+                "float8[]".to_string(),
+            ),
+            _ => (
+                Values::Text(
+                    changed
+                        .iter()
+                        .map(|(_, v)| sql_text(vt, v).ok_or_else(|| bad(v)))
+                        .collect::<Result<_>>()?,
+                ),
+                format!("text[]::{}[]", sql_type(vt)?),
+            ),
+        };
         out.push(Statement {
             sql: format!(
                 "INSERT INTO {table} ({cols}, value) SELECT * FROM {} \
                  ON CONFLICT ({cols}) DO UPDATE SET value = EXCLUDED.value",
-                unnest(&format!(", ${}::float8[]", n + 1))
+                unnest(&format!(", ${}::{param}", n + 1))
             ),
             dims: columns(&mut changed.iter().map(|(k, _)| *k)),
-            values: Some(changed.iter().map(|(_, v)| *v).collect()),
+            values: Some(values),
         });
     }
 
@@ -727,7 +867,7 @@ pub fn diff_statements(
             values: None,
         });
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -760,8 +900,12 @@ mod tests {
         }
     }
 
-    fn row(t: &str, p: &str, v: f64) -> (Vec<Option<String>>, Option<f64>) {
-        (vec![Some(s(t)), Some(s(p))], Some(v))
+    fn row(t: &str, p: &str, v: f64) -> (Vec<Option<String>>, Option<CellValue>) {
+        (vec![Some(s(t)), Some(s(p))], Some(CellValue::num(v)))
+    }
+
+    fn n(v: f64) -> CellValue {
+        CellValue::num(v)
     }
 
     /// The canonical 4 quarters × 2 products fact table, price/qty columns.
@@ -819,23 +963,37 @@ mod tests {
         );
         let cols = vec![s("time"), s("product")];
         assert_eq!(
-            create_table_sql("t", &cols),
+            create_table_sql("t", &cols, ValueType::Number).unwrap(),
             "CREATE TABLE IF NOT EXISTS t (\"time\" text NOT NULL, \"product\" text NOT NULL, \
              value double precision, PRIMARY KEY (\"time\", \"product\"))"
         );
+        assert!(create_table_sql("t", &cols, ValueType::Boolean)
+            .unwrap()
+            .contains("value boolean,"));
+        assert!(create_table_sql("t", &cols, ValueType::Enum).is_err());
         assert_eq!(
-            select_result_sql("t", &cols),
-            "SELECT \"time\", \"product\", value FROM t"
+            select_result_sql("t", &cols, ValueType::Number).unwrap(),
+            "SELECT \"time\", \"product\", value::float8 FROM t"
         );
         assert_eq!(
-            select_bound_sql("public.sales", &cols, "price", None).unwrap(),
+            select_result_sql("t", &cols, ValueType::DateTime).unwrap(),
+            "SELECT \"time\", \"product\", \
+             (extract(epoch from value::timestamptz) * 1000)::int8 FROM t"
+        );
+        let num = ValueType::Number;
+        assert_eq!(
+            select_bound_sql("public.sales", &cols, "price", None, num).unwrap(),
             "SELECT \"time\"::text, \"product\"::text, \"price\"::float8 FROM public.sales"
         );
         assert_eq!(
-            select_bound_sql("s", &cols, "price", Some("avg")).unwrap(),
+            select_bound_sql("s", &cols, "price", Some("avg"), num).unwrap(),
             "SELECT \"time\"::text, \"product\"::text, avg(\"price\")::float8 FROM s GROUP BY 1, 2"
         );
-        assert!(select_bound_sql("s", &cols, "price", Some("median; --")).is_err());
+        assert_eq!(
+            select_bound_sql("s", &cols, "ok", Some("max"), ValueType::Boolean).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, max(\"ok\")::bool FROM s GROUP BY 1, 2"
+        );
+        assert!(select_bound_sql("s", &cols, "price", Some("median; --"), num).is_err());
         assert_eq!(agg_sql("count").unwrap(), "count");
     }
 
@@ -890,9 +1048,7 @@ mod tests {
             err("value = Price * 2"),
             Error::InvalidName { .. }
         ));
-        assert!(
-            matches!(err("Big = Price > 2"), Error::Definition(m) if m.contains("only number"))
-        );
+        assert!(define(&model, "Big = Price > 2", 9).unwrap().value_type == "boolean");
         assert!(matches!(err("garbage"), Error::Definition(_)));
     }
 
@@ -923,13 +1079,13 @@ mod tests {
         let mut cat = catalog();
         cat.measures[0].value_type = s("text");
         let mut model = build_model(&cat).unwrap();
-        let text_bound = BoundRows {
+        let errs = BoundRows {
             measure_id: 1,
-            rows: vec![],
+            rows: vec![(vec![Some(s("Q1")), Some(s("W"))], Some(CellValue::Err(0)))],
         };
         assert!(matches!(
-            load_inputs(&mut model, &[text_bound]),
-            Err(Error::Catalog(m)) if m.contains("number bindings")
+            load_inputs(&mut model, &[errs]),
+            Err(Error::Catalog(m)) if m.contains("out of range")
         ));
 
         let mut model = build_model(&catalog()).unwrap();
@@ -943,7 +1099,7 @@ mod tests {
         ));
         let short = BoundRows {
             measure_id: 1,
-            rows: vec![(vec![Some(s("Q1"))], Some(1.0))],
+            rows: vec![(vec![Some(s("Q1"))], Some(n(1.0)))],
         };
         assert!(matches!(
             load_inputs(&mut model, &[short]),
@@ -1027,12 +1183,17 @@ mod tests {
             model.inputs[&(MeasureId(1), coord.clone())],
             Value::Number(4.5)
         );
-        assert_eq!(model.inputs[&(MeasureId(7), coord)], Value::Enum(3));
+        assert_eq!(model.inputs[&(MeasureId(7), coord.clone())], Value::Enum(3));
+        load_cells(&mut model, &[cell(8, "\"2026-01-01T00:00:00Z\"")]).unwrap();
+        assert!(matches!(
+            model.inputs[&(MeasureId(8), coord)],
+            Value::DateTime(_)
+        ));
 
         for bad in [
             cell(9, "1"),
             cell(1, "\"x\""),
-            cell(8, "\"2026-01-01T00:00:00Z\""),
+            cell(8, "\"yesterday\""),
             (1, s("[1]"), s("1")),
             (1, c.clone(), s("nope")),
         ] {
@@ -1109,7 +1270,7 @@ mod tests {
         let b = BoundRows {
             measure_id: 1,
             rows: vec![
-                (vec![None, Some(s("Widget"))], Some(1.0)),
+                (vec![None, Some(s("Widget"))], Some(n(1.0))),
                 (vec![Some(s("Q1")), Some(s("Widget"))], None),
                 row("Q2", "Widget", 3.0),
             ],
@@ -1157,44 +1318,45 @@ mod tests {
         let out = improv_engine::dataflow::evaluate(&model, &[MeasureId(3), MeasureId(4)]).unwrap();
         let rev = result_rows(&model, MeasureId(3), &out[&MeasureId(3)]).unwrap();
         assert_eq!(rev.len(), 8);
-        assert_eq!(rev[&vec![s("Q3"), s("Widget")]], 3000.0);
-        assert_eq!(rev[&vec![s("Q4"), s("Gadget")]], 4000.0);
+        assert_eq!(rev[&vec![s("Q3"), s("Widget")]], n(3000.0));
+        assert_eq!(rev[&vec![s("Q4"), s("Gadget")]], n(4000.0));
         let total = result_rows(&model, MeasureId(4), &out[&MeasureId(4)]).unwrap();
         // Widget: 10*(100+200+300+400) ; Gadget: 20*(50+100+150+200)
         assert_eq!(
             total,
-            BTreeMap::from([(vec![s("Gadget")], 10000.0), (vec![s("Widget")], 10000.0)])
+            BTreeMap::from([
+                (vec![s("Gadget")], n(10000.0)),
+                (vec![s("Widget")], n(10000.0))
+            ])
         );
 
         let cols = dim_columns(&model, MeasureId(3)).unwrap();
         let table = result_table("plan", "Revenue");
-        let fresh = diff_statements(&table, &cols, &ResultRows::new(), &rev);
+        let num = ValueType::Number;
+        let fresh = diff_statements(&table, &cols, num, &ResultRows::new(), &rev).unwrap();
         assert_eq!(fresh.len(), 1);
         assert_eq!(fresh[0].rows(), 8);
         assert!(fresh[0].sql.starts_with(
             "INSERT INTO \"improv_plan\".\"revenue\" (\"time\", \"product\", value) \
              SELECT * FROM unnest($1::text[], $2::text[], $3::float8[]) ON CONFLICT"
         ));
-        assert!(diff_statements(&table, &cols, &rev, &rev).is_empty());
+        assert!(diff_statements(&table, &cols, num, &rev, &rev)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn diff_upserts_changes_and_deletes_vanished() {
         let cols = vec![s("product")];
-        let old = ResultRows::from([
-            (vec![s("a")], 1.0),
-            (vec![s("b")], 2.0),
-            (vec![s("c")], 3.0),
-        ]);
-        let new = ResultRows::from([
-            (vec![s("a")], 1.0),
-            (vec![s("b")], 2.5),
-            (vec![s("d")], 4.0),
-        ]);
-        let st = diff_statements("t", &cols, &old, &new);
+        let rows = |v: &[(&str, f64)]| -> ResultRows {
+            v.iter().map(|(k, x)| (vec![s(k)], n(*x))).collect()
+        };
+        let old = rows(&[("a", 1.0), ("b", 2.0), ("c", 3.0)]);
+        let new = rows(&[("a", 1.0), ("b", 2.5), ("d", 4.0)]);
+        let st = diff_statements("t", &cols, ValueType::Number, &old, &new).unwrap();
         assert_eq!(st.len(), 2);
         assert_eq!(st[0].dims, vec![vec![s("b"), s("d")]]);
-        assert_eq!(st[0].values, Some(vec![2.5, 4.0]));
+        assert_eq!(st[0].values, Some(Values::Number(vec![2.5, 4.0])));
         assert_eq!(
             st[1].sql,
             "DELETE FROM t WHERE (\"product\") IN (SELECT * FROM unnest($1::text[]))"
@@ -1234,8 +1396,91 @@ mod tests {
             (vec![(1, 1), (2, 2), (3, 3)], CellValue::Text(s("x"))),
         ]);
         let rows = result_rows(&model, MeasureId(1), &cells).unwrap();
-        assert_eq!(rows, ResultRows::from([(vec![s("Q1"), s("Widget")], 7.0)]));
+        assert_eq!(
+            rows,
+            ResultRows::from([(vec![s("Q1"), s("Widget")], n(7.0))])
+        );
         let foreign = HashMap::from([(vec![(1, 1)], CellValue::num(1.0))]);
         assert!(result_rows(&model, MeasureId(1), &foreign).is_err());
+    }
+
+    /// G5: column types map to value types; typed rows load, and typed
+    /// results diff into `text[]` upserts cast to the column type.
+    #[test]
+    fn typed_bindings_and_results() {
+        let vt = |t: &str, agg| bound_value_type(t, t, agg);
+        for (t, want) in [
+            ("numeric", ValueType::Number),
+            ("int8", ValueType::Number),
+            ("bool", ValueType::Boolean),
+            ("varchar", ValueType::Text),
+            ("bpchar", ValueType::Text),
+            ("date", ValueType::DateTime),
+            ("timestamptz", ValueType::DateTime),
+        ] {
+            assert_eq!(vt(t, None).unwrap(), want, "{t}");
+        }
+        assert_eq!(vt("text", Some("count")).unwrap(), ValueType::Number);
+        assert_eq!(vt("bool", Some("max")).unwrap(), ValueType::Boolean);
+        assert!(matches!(vt("jsonb", None), Err(Error::Catalog(m)) if m.contains("type jsonb")));
+        assert!(matches!(vt("text", Some("sum")), Err(Error::Catalog(m)) if m.contains("number")));
+        assert!(vt("int4", Some("median")).is_err());
+        assert_eq!(sql_type(ValueType::Text).unwrap(), "text");
+        check_value_column("t", ValueType::Boolean, "boolean").unwrap();
+        assert!(matches!(
+            check_value_column("t", ValueType::Boolean, "double precision"),
+            Err(Error::Catalog(m)) if m.contains("drop the model")
+        ));
+
+        let mut cat = catalog();
+        cat.measures[0].value_type = s("text");
+        cat.measures[1].value_type = s("datetime");
+        let mut model = build_model(&cat).unwrap();
+        let at = |v: CellValue| vec![(vec![Some(s("Q1")), Some(s("Widget"))], Some(v))];
+        let bound = [
+            BoundRows {
+                measure_id: 1,
+                rows: at(CellValue::Text(s("tools"))),
+            },
+            BoundRows {
+                measure_id: 2,
+                rows: at(CellValue::Date(86_400_000)),
+            },
+        ];
+        load_inputs(&mut model, &bound).unwrap();
+        let got: BTreeSet<String> = model.inputs.values().map(|v| format!("{v:?}")).collect();
+        assert!(got.contains("Text(\"tools\")"), "{got:?}");
+        assert!(
+            got.iter().any(|v| v.starts_with("DateTime(1970-01-02")),
+            "{got:?}"
+        );
+        let huge = [BoundRows {
+            measure_id: 2,
+            rows: at(CellValue::Date(i64::MAX)),
+        }];
+        assert!(load_inputs(&mut model, &huge).is_err());
+
+        let cols = vec![s("product")];
+        let one = |v: CellValue| ResultRows::from([(vec![s("a")], v)]);
+        let st = diff_statements(
+            "t",
+            &cols,
+            ValueType::Boolean,
+            &ResultRows::new(),
+            &one(CellValue::Bool(true)),
+        )
+        .unwrap();
+        assert!(st[0].sql.contains("$2::text[]::boolean[]"), "{}", st[0].sql);
+        assert_eq!(st[0].values, Some(Values::Text(vec![s("true")])));
+        let dt = ValueType::DateTime;
+        let st =
+            diff_statements("t", &cols, dt, &ResultRows::new(), &one(CellValue::Date(0))).unwrap();
+        assert_eq!(
+            st[0].values,
+            Some(Values::Text(vec![s("1970-01-01T00:00:00+00:00")]))
+        );
+        let text = one(CellValue::Text(s("x")));
+        assert!(diff_statements("t", &cols, ValueType::Number, &ResultRows::new(), &text).is_err());
+        assert!(diff_statements("t", &cols, dt, &ResultRows::new(), &text).is_err());
     }
 }
