@@ -17,6 +17,7 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 
 ::pgrx::pg_module_magic!();
 
+mod language;
 mod trigger;
 mod worker;
 

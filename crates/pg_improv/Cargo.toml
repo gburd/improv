@@ -29,6 +29,7 @@ pg_test = []
 pgrx = "=0.17.0"
 improv_core_model = { path = "../core_model" }
 improv_engine = { path = "../engine" }
+improv_nl_formula = { path = "../nl_formula" }
 improv_pg_model = { path = "../pg_model" }
 
 [dev-dependencies]
