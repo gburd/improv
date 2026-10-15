@@ -34,3 +34,6 @@ lcov.info
 # maki permissions), wherever they land.
 **/.maki/
 **/.memelord/
+
+# A libpq DSN mistaken for a store path creates a file named after it.
+**/host=*
