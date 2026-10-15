@@ -231,15 +231,18 @@ mod tests {
             r#"(module (func (export "improv_call") (result f64)
                  (loop br 0) f64.const 0))"#,
         );
+        // A small budget, and a deadline far above what it needs: the point is
+        // that fuel ends the loop at all (coverage-instrumented builds on a
+        // loaded CI runner are many times slower than a release build).
         let start = std::time::Instant::now();
         let handle =
-            std::thread::spawn(move || run_wasm(&wasm, &[], fuel_for(Duration::from_millis(500))));
-        while !handle.is_finished() && start.elapsed() < Duration::from_secs(2) {
+            std::thread::spawn(move || run_wasm(&wasm, &[], fuel_for(Duration::from_millis(20))));
+        while !handle.is_finished() && start.elapsed() < Duration::from_secs(30) {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(
             handle.is_finished(),
-            "interpreter thread still running after 2 s"
+            "interpreter thread still running after 30 s"
         );
         let err = handle.join().unwrap().unwrap_err();
         assert!(format!("{err}").contains("out of fuel"), "got {err:?}");
