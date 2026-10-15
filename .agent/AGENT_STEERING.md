@@ -49,10 +49,11 @@ so the live worker applies boolean/text/date models cell by cell; `what_if`
 takes and returns typed `jsonb` values. **NEXT for pg_improv:** engine output
 deltas to drop the per-measure diff scan at 1M cells.
 
-Then: horizontal scroller arrows and the rows-tile strip inline with the
-horizontal scroller (E2 remainder); P5 per-frame caches if profiling
-warrants; cut v0.8.0. (GUI File ▸ Revert to Saved / TUI `R` after a save
-conflict: DONE.)
+GUI: E2 DONE (horizontal NeXT scroller inline with the row tiles, arrows
+grouped left; wide grids scroll sideways); typed edits reach the live engine;
+File ▸ Revert to Saved / TUI `R` after a save conflict. CI's pg_improv,
+coverage and gui-shot jobs pass in `rust:1.97-trixie` (run with podman on
+kiwi). Then: P5 per-frame caches if profiling warrants; cut v0.8.0.
 
 ## Released: v0.7.0 (2026-09-24)
 
