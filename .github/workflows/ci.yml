@@ -109,7 +109,9 @@ jobs:
     name: Build & Test (${{ matrix.os }} / ${{ matrix.features }})
     runs-on: ${{ matrix.os }}
     needs: [fmt, clippy]
-    timeout-minutes: 30
+    # A cold cache compiles the bundled DuckDB C++ (several minutes on a
+    # 3-4 core runner, longest on Windows/MSVC) before any test runs.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
