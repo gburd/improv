@@ -102,6 +102,28 @@ CREATE TABLE IF NOT EXISTS improv.model_version (
     model_id bigint PRIMARY KEY REFERENCES improv.model(id) ON DELETE CASCADE,
     tx       bigint NOT NULL DEFAULT 0
 );
+-- Shared with the pg_improv extension (design §9.2), verbatim.
+ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
+  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count'));
+CREATE UNIQUE INDEX IF NOT EXISTS item_name_uniq ON improv.item (model_id, category_id, name);
+CREATE OR REPLACE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
+RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql AS $$
+BEGIN
+  PERFORM 1 FROM improv.model m WHERE m.id = p_model FOR UPDATE;
+  INSERT INTO improv.item (model_id, id, category_id, name)
+  SELECT p_model,
+         (SELECT coalesce(max(i.id), 0) FROM improv.item i WHERE i.model_id = p_model)
+           + row_number() OVER (ORDER BY s.c, s.n),
+         s.c, s.n
+  FROM (SELECT DISTINCT u.c, u.n FROM unnest(p_cats, p_names) AS u(c, n)
+        WHERE NOT EXISTS (SELECT 1 FROM improv.item i
+                          WHERE i.model_id = p_model AND i.category_id = u.c AND i.name = u.n)) s
+  ON CONFLICT DO NOTHING;
+  RETURN QUERY
+    SELECT i.category_id, i.name, i.id FROM improv.item i
+    JOIN (SELECT DISTINCT u.c, u.n FROM unnest(p_cats, p_names) AS u(c, n)) w
+      ON i.model_id = p_model AND i.category_id = w.c AND i.name = w.n;
+END $$;
 "#;
 
 #[derive(Debug, thiserror::Error)]
