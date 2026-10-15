@@ -602,18 +602,48 @@ pub fn select_result_sql(table: &str, dim_cols: &[String]) -> String {
     format!("SELECT {}, value FROM {table}", quoted_list(dim_cols))
 }
 
-/// `SELECT` of a binding's fact rows (dims as text…, value as float8).
-/// `rel` is a `regclass::text`, which Postgres has already quoted.
-pub fn select_bound_sql(rel: &str, dim_cols: &[String], value_col: &str) -> String {
+/// The SQL aggregate a `binding.agg` names (`sum | avg | min | max | count`).
+pub fn agg_sql(agg: &str) -> Result<&'static str> {
+    Ok(match agg {
+        "sum" => "sum",
+        "avg" => "avg",
+        "min" => "min",
+        "max" => "max",
+        "count" => "count",
+        other => {
+            return Err(Error::Catalog(format!(
+                "agg must be sum, avg, min, max or count, not {other:?}"
+            )))
+        }
+    })
+}
+
+/// `SELECT` of a binding's fact rows (dims as text…, value as float8): with
+/// `agg`, one row per coordinate, its rows' values aggregated. `rel` is a
+/// `regclass::text`, which Postgres has already quoted.
+pub fn select_bound_sql(
+    rel: &str,
+    dim_cols: &[String],
+    value_col: &str,
+    agg: Option<&str>,
+) -> Result<String> {
     let dims: Vec<String> = dim_cols
         .iter()
         .map(|c| format!("{}::text", quote_ident(c)))
         .collect();
-    format!(
-        "SELECT {}, {}::float8 FROM {rel}",
-        dims.join(", "),
-        quote_ident(value_col)
-    )
+    let v = quote_ident(value_col);
+    Ok(match agg {
+        None => format!("SELECT {}, {v}::float8 FROM {rel}", dims.join(", ")),
+        Some(a) => {
+            let by: Vec<String> = (1..=dims.len()).map(|i| i.to_string()).collect();
+            format!(
+                "SELECT {}, {}({v})::float8 FROM {rel} GROUP BY {}",
+                dims.join(", "),
+                agg_sql(a)?,
+                by.join(", ")
+            )
+        }
+    })
 }
 
 fn quoted_list(cols: &[String]) -> String {
@@ -798,9 +828,15 @@ mod tests {
             "SELECT \"time\", \"product\", value FROM t"
         );
         assert_eq!(
-            select_bound_sql("public.sales", &cols, "price"),
+            select_bound_sql("public.sales", &cols, "price", None).unwrap(),
             "SELECT \"time\"::text, \"product\"::text, \"price\"::float8 FROM public.sales"
         );
+        assert_eq!(
+            select_bound_sql("s", &cols, "price", Some("avg")).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, avg(\"price\")::float8 FROM s GROUP BY 1, 2"
+        );
+        assert!(select_bound_sql("s", &cols, "price", Some("median; --")).is_err());
+        assert_eq!(agg_sql("count").unwrap(), "count");
     }
 
     #[test]

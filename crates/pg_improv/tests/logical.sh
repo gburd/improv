@@ -156,4 +156,18 @@ echo "ok: 100k-cell model, one-cell UPDATE rewrote 1 revenue + 1 total row, no r
 q "TRUNCATE wide"
 wait_for "SELECT count(*) FROM improv_wide.revenue" 0 "truncate" >/dev/null
 echo "ok: TRUNCATE emptied the results"
+
+# 10. an aggregated binding (agg => 'sum') over duplicate rows: an UPDATE of
+#     one duplicate re-sums its coordinate
+q "CREATE TABLE orders (product text, amount float8)"
+q "INSERT INTO orders VALUES ('Widget',10), ('Widget',30), ('Gadget',5)"
+q "SELECT improv.create_model('agg')"
+q "SELECT improv.bind_category('agg','Product','orders','product')"
+q "SELECT improv.bind_measure('agg','Amount','orders','amount', agg => 'sum')"
+q "SELECT improv.define('agg','Total = Amount * 1')"
+AT="SELECT value FROM improv_agg.total WHERE product='Widget'"
+wait_for "$AT" 40 "aggregated catch-up" >/dev/null
+q "UPDATE orders SET amount = 50 WHERE product='Widget' AND amount = 30"
+wait_for "$AT" 60 "aggregated update" >/dev/null
+echo "ok: agg => 'sum' over duplicate rows; UPDATE of one duplicate re-summed (60)"
 echo "PASS"

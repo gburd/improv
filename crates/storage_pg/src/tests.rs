@@ -653,6 +653,49 @@ fn at(m: &Model, q: &str, p: &str) -> Coordinate {
 const PRICE: MeasureId = MeasureId(100);
 const QTY: MeasureId = MeasureId(101);
 
+/// G4: an aggregated binding loads one aggregated cell per coordinate, and
+/// a save that edits one is refused.
+#[test]
+fn aggregated_bindings_load_folded_and_are_read_only() {
+    let Some(url) = live("g4_agg") else { return };
+    let table = format!("g4_agg_{}", std::process::id());
+    client()
+        .batch_execute(&format!(
+            "DROP TABLE IF EXISTS {table}; \
+             CREATE TABLE {table} (quarter text, product text, price float8); \
+             INSERT INTO {table} VALUES ('Q1','Widget',10), ('Q1','Widget',30), ('Q2','Widget',5)"
+        ))
+        .unwrap();
+    let mut s = PgModelStore::open(&url).unwrap();
+    let mut m = Model::new();
+    m.add_category(T, "Time");
+    m.add_category(P, "Product");
+    m.add_measure(measure(100, "Price", &[T, P], MeasureKind::Input));
+    s.save_model(&m).unwrap();
+    s.client
+        .execute(
+            "INSERT INTO improv.binding(model_id, measure_id, rel, value_col, dim_cols, agg) \
+             VALUES ($1, 100, $2::text::regclass, 'price', \
+                     '{\"Time\":\"quarter\",\"Product\":\"product\"}', 'sum')",
+            &[&s.model_id, &table],
+        )
+        .unwrap();
+    let mut m = s.load_model().unwrap();
+    let cell = |m: &Model, q| m.inputs.get(&(PRICE, at(m, q, "Widget"))).cloned();
+    assert_eq!(cell(&m, "Q1"), Some(Value::Number(40.0)));
+    assert_eq!(cell(&m, "Q2"), Some(Value::Number(5.0)));
+    s.save_model(&m).unwrap();
+    m.set_input(PRICE, at(&m, "Q1", "Widget"), Value::Number(1.0));
+    let e = s.save_model(&m).unwrap_err();
+    assert!(
+        matches!(&e, StoreError::Integrity(msg) if msg == "aggregated measure Price is read-only"),
+        "{e}"
+    );
+    client()
+        .batch_execute(&format!("DROP TABLE {table}"))
+        .unwrap();
+}
+
 /// G2 (a): a SQL edit to a bound row survives a save that changed another
 /// cell, here through a second handle carrying the loading one's snapshot.
 #[test]

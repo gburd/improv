@@ -49,9 +49,11 @@ pub(crate) struct Loaded {
 pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
     pm::validate_name("model", &name)?;
     let mut model = pm::build_model(&read_catalog(mid)?)?;
-    let bindings: Vec<(i64, String, String, Vec<String>)> = Spi::connect(|c| -> Res<_> {
+    // (measure id, relation, value column, agg, dimension columns)
+    type Row = (i64, String, String, Option<String>, Vec<String>);
+    let bindings: Vec<Row> = Spi::connect(|c| -> Res<_> {
         c.select(
-            "SELECT b.measure_id, b.rel::text, b.value_col, \
+            "SELECT b.measure_id, b.rel::text, b.value_col, b.agg, \
                     ARRAY(SELECT b.dim_cols ->> c.name \
                           FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
                           JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
@@ -62,13 +64,21 @@ pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
             None,
             &[mid.into()],
         )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?, req(&r, 3)?, req(&r, 4)?)))
+        .map(|r| {
+            Ok((
+                req(&r, 1)?,
+                req(&r, 2)?,
+                req(&r, 3)?,
+                r.get(4)?,
+                req(&r, 5)?,
+            ))
+        })
         .collect::<Res<_>>()
     })?;
     let mut bound = Vec::with_capacity(bindings.len());
-    for (measure_id, rel, value_col, dims) in bindings {
+    for (measure_id, rel, value_col, agg, dims) in bindings {
         check_for_interrupts!();
-        let sql = pm::select_bound_sql(&rel, &dims, &value_col);
+        let sql = pm::select_bound_sql(&rel, &dims, &value_col, agg.as_deref())?;
         let rows = Spi::connect(|c| {
             c.select(&sql, None, &[])?
                 .map(|r| {

@@ -21,6 +21,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   makes them visible at commit for ~1.1 s per write. See
   `docs/src/postgres.md`.
 
+- **pg_improv: aggregated bindings.** `improv.bind_measure(…, agg => 'sum')`
+  (or `avg`, `min`, `max`, `count`) folds a fact table's rows per coordinate
+  into one input cell, in `recalc`, trigger and logical mode and in the GUI's
+  load; without `agg` duplicate rows remain an error. The GUI's store refuses
+  to save an edit to an aggregated measure (`Integrity`).
+
 ### Fixed
 
 - **pg_improv: item ids are minted in one place.** `improv.mint_items`

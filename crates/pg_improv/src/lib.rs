@@ -7,11 +7,9 @@
 //! ever called from another thread.
 
 use std::error::Error;
-use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use improv_core_model::{CategoryId, ItemId, MeasureId, Model};
 use improv_pg_model as pm;
-use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 
@@ -338,7 +336,16 @@ fn bind_category(model: &str, category: &str, rel: PgRelation, col: &str) -> Res
 /// Bind input measure `measure` to `rel.value_col`. Its dimensions are the
 /// categories already bound on `rel`.
 #[pg_extern(security_invoker)]
-fn bind_measure(model: &str, measure: &str, rel: PgRelation, value_col: &str) -> Res<()> {
+fn bind_measure(
+    model: &str,
+    measure: &str,
+    rel: PgRelation,
+    value_col: &str,
+    agg: default!(Option<&str>, "NULL"),
+) -> Res<()> {
+    if let Some(a) = agg {
+        pm::agg_sql(a)?;
+    }
     pm::validate_name("measure", measure)?;
     let (mid, _) = lock_model(model)?;
     check_column(&rel, value_col)?;
@@ -362,12 +369,18 @@ fn bind_measure(model: &str, measure: &str, rel: PgRelation, value_col: &str) ->
         &[mid.into(), id.into(), measure.into(), cats.into()],
     )?;
     Spi::run_with_args(
-        "INSERT INTO improv.binding (model_id, measure_id, rel, value_col, dim_cols) \
-         SELECT $1, $2, $3::oid::regclass, $4, jsonb_object_agg(c.name, b.col) \
+        "INSERT INTO improv.binding (model_id, measure_id, rel, value_col, dim_cols, agg) \
+         SELECT $1, $2, $3::oid::regclass, $4, jsonb_object_agg(c.name, b.col), $5 \
          FROM improv.category_binding b JOIN improv.category c \
            ON c.model_id = b.model_id AND c.id = b.category_id \
          WHERE b.model_id = $1 AND b.rel = $3::oid::regclass",
-        &[mid.into(), id.into(), rel.oid().into(), value_col.into()],
+        &[
+            mid.into(),
+            id.into(),
+            rel.oid().into(),
+            value_col.into(),
+            agg.into(),
+        ],
     )?;
     // `ALTER TABLE … REPLICA IDENTITY` (in enable) refuses while this
     // function's own PgRelation keeps the table open.
@@ -422,115 +435,8 @@ fn define(model: &str, definition: &str) -> Res<i64> {
 /// transaction, and return the number of result rows changed.
 #[pg_extern(security_invoker)]
 fn recalc(model: &str) -> Res<i64> {
-    let (mid, model_name) = lock_model(model)?;
-    // Models and measures may come from the GUI's store, which does not
-    // validate names: check them before they become identifiers.
-    pm::validate_name("model", &model_name)?;
-    let cat = read_catalog(mid)?;
-    let mut m = pm::build_model(&cat)?;
-
-    // Bound fact rows, one SELECT per input binding.
-    let bindings: Vec<(i64, String, String, Vec<String>)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT b.measure_id, b.rel::text, b.value_col, \
-                    ARRAY(SELECT b.dim_cols ->> c.name \
-                          FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
-                          JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
-                          ORDER BY u.ord) \
-             FROM improv.binding b \
-             JOIN improv.measure m ON m.model_id = b.model_id AND m.id = b.measure_id \
-             WHERE b.model_id = $1 ORDER BY b.measure_id",
-            None,
-            &[mid.into()],
-        )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?, req(&r, 3)?, req(&r, 4)?)))
-        .collect::<Res<_>>()
-    })?;
-    let mut bound = Vec::with_capacity(bindings.len());
-    for (measure_id, rel, value_col, dims) in bindings {
-        check_for_interrupts!();
-        let sql = pm::select_bound_sql(&rel, &dims, &value_col);
-        let rows = Spi::connect(|c| {
-            c.select(&sql, None, &[])?
-                .map(|r| {
-                    let d = (1..=dims.len())
-                        .map(|i| r.get::<String>(i))
-                        .collect::<Result<Vec<_>, _>>()?;
-                    Ok((d, r.get::<f64>(dims.len() + 1)?))
-                })
-                .collect::<Res<Vec<_>>>()
-        })?;
-        bound.push(pm::BoundRows {
-            measure_id: id32(measure_id)?,
-            rows,
-        });
-    }
-
-    mint_items(mid, &mut m, &bound)?;
-    let loaded = pm::load_inputs(&mut m, &bound)?;
-    // Unbound input cells (typed in the GUI), for measures with no binding.
-    let cells: Vec<(u32, String, String)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT measure_id, coord::text, value::text FROM improv.cell c \
-             WHERE model_id = $1 AND NOT EXISTS (SELECT 1 FROM improv.binding b \
-               WHERE b.model_id = c.model_id AND b.measure_id = c.measure_id)",
-            None,
-            &[mid.into()],
-        )?
-        .map(|r| Ok((id32(req(&r, 1)?)?, req(&r, 2)?, req(&r, 3)?)))
-        .collect()
-    })?;
-    let unbound = pm::load_cells(&mut m, &cells)?;
-    pm::check_cell_budget(loaded.cells + unbound, MAX_CELLS.get().max(0) as usize)?;
-
-    let mut targets: Vec<MeasureId> = cat
-        .measures
-        .iter()
-        .filter(|r| r.formula.is_some())
-        .map(|r| MeasureId(r.id))
-        .collect();
-    targets.sort();
-    check_for_interrupts!();
-    let out = match catch_unwind(AssertUnwindSafe(|| {
-        improv_engine::dataflow::evaluate(&m, &targets)
-    })) {
-        Ok(r) => r?,
-        Err(p) => {
-            let msg = p
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            error!("improv engine panicked: {msg}")
-        }
-    };
-
-    Spi::run(&format!(
-        "CREATE SCHEMA IF NOT EXISTS {}",
-        pm::quote_ident(&pm::result_schema(&model_name))
-    ))?;
-    let mut changed = 0i64;
-    let empty = Default::default();
-    for target in targets {
-        check_for_interrupts!();
-        let new = pm::result_rows(&m, target, out.get(&target).unwrap_or(&empty))?;
-        let dims = pm::dim_columns(&m, target)?;
-        let name = &m.measures[&target].name.0;
-        pm::validate_name("measure", name)?;
-        let table = pm::result_table(&model_name, name);
-        // A measure defined through the GUI has no table until now.
-        Spi::run(&pm::create_table_sql(&table, &dims))?;
-        let old = read_results(&table, &dims)?;
-        for st in pm::diff_statements(&table, &dims, &old, &new) {
-            let mut args: Vec<DatumWithOid> = st.dims.iter().map(|d| d.clone().into()).collect();
-            if let Some(v) = &st.values {
-                args.push(v.clone().into());
-            }
-            Spi::run_with_args(&st.sql, &args)?;
-            changed += st.rows() as i64;
-        }
-    }
-    Ok(changed)
+    let (mid, name) = lock_model(model)?;
+    trigger::recompute_all(mid, &name)
 }
 
 /// A result table's current rows.
@@ -621,6 +527,50 @@ mod tests {
         Spi::get_one::<i64>(&format!("SELECT count(*) FROM {table}"))
             .unwrap()
             .unwrap()
+    }
+
+    fn by_product(table: &str, p: &str) -> Option<f64> {
+        Spi::get_one_with_args::<f64>(
+            &format!("SELECT (SELECT value FROM improv_plan.{table} WHERE product = $1)"),
+            &[p.into()],
+        )
+        .unwrap()
+    }
+
+    /// G4: `agg` folds duplicate rows per coordinate, in `recalc` and in
+    /// trigger mode.
+    #[pg_test]
+    fn aggregated_bindings_fold_duplicate_rows() {
+        for sql in [
+            "CREATE TABLE orders (product text, amount float8)",
+            "INSERT INTO orders VALUES ('Widget', 10), ('Widget', 30), ('Gadget', 5)",
+            "SELECT improv.create_model('plan')",
+            "SELECT improv.bind_category('plan', 'Product', 'orders', 'product')",
+            "SELECT improv.bind_measure('plan', 'Amount', 'orders', 'amount', agg => 'sum')",
+            "SELECT improv.bind_measure('plan', 'Mean', 'orders', 'amount', agg => 'avg')",
+            "SELECT improv.define('plan', 'Total = Amount * 1')",
+            "SELECT improv.define('plan', 'Average = Mean * 1')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        assert_eq!(recalc(), 4);
+        assert_eq!(by_product("total", "Widget"), Some(40.0));
+        assert_eq!(by_product("average", "Widget"), Some(20.0));
+        assert_eq!(by_product("total", "Gadget"), Some(5.0));
+        assert_eq!(
+            Spi::get_one::<String>("SELECT agg FROM improv.binding WHERE measure_id = 2"),
+            Ok(Some("avg".into()))
+        );
+
+        Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
+        Spi::run("INSERT INTO orders VALUES ('Widget', 50)").unwrap();
+        assert_eq!(by_product("total", "Widget"), Some(90.0));
+        assert_eq!(by_product("average", "Widget"), Some(30.0));
+        Spi::run("UPDATE orders SET amount = 7 WHERE product = 'Gadget'").unwrap();
+        assert_eq!(by_product("total", "Gadget"), Some(7.0));
+        Spi::run("DELETE FROM orders WHERE amount = 10").unwrap();
+        assert_eq!(by_product("total", "Widget"), Some(80.0));
+        assert_eq!(by_product("average", "Widget"), Some(40.0));
     }
 
     #[pg_test]
