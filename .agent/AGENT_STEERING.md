@@ -40,12 +40,20 @@ trigger sync, explicit `improv.recalc`, `what_if`, `status`; GUI/TUI/CLI open
 user guide `docs/src/postgres.md`; e2e `crates/pg_improv/tests/{logical,user-story}.sh`;
 benchmark `docs/reviews/bench/bench-pg-modes.sh`. Logical mode applies changes
 incrementally with a live engine per model (G1 DONE: 100k-cell freshness
-1161 -> 52 ms). **NEXT for pg_improv:** GUI saves only changed cells (today it rewrites every bound cell it loaded);
-extension-owned item minting; `binding.agg`; non-number measures.
+1161 -> 52 ms). Phase 2 (design §9) DONE: `LANGUAGE improv` (SQL functions
+in the formula language, 0.14 µs/call); G2 diff-based saves carried through
+GUI/TUI via `store::SaveToken`; G3 one minter (`improv.mint_items`); G4
+`binding.agg`; G5 boolean/text/date measures and typed result tables; G6 the
+new CI jobs run green in their real container. **NEXT for pg_improv:** typed
+values in `session::Edit` so the live worker covers non-number models
+(today they recompute per batch); `what_if` output for non-number measures
+(`jsonb` value column); engine output deltas to drop the per-measure diff
+scan at 1M cells.
 
 Then: horizontal scroller arrows and the rows-tile strip inline with the
-horizontal scroller (E2 remainder); a GUI/TUI "reload" action after a save
-conflict; P5 per-frame caches if profiling warrants; cut v0.8.0.
+horizontal scroller (E2 remainder); P5 per-frame caches if profiling
+warrants; cut v0.8.0. (GUI File ▸ Revert to Saved / TUI `R` after a save
+conflict: DONE.)
 
 ## Released: v0.7.0 (2026-09-24)
 
