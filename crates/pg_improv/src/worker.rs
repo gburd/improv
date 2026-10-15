@@ -516,8 +516,9 @@ fn tick(mid: i64, name: &str) -> Res<()> {
             Ok(n) => n,
             Err(why) => {
                 log!("pg_improv sync: model {name}: rebuilding ({})", why.0);
-                drop(state.take()); // free the old engine before building one
-                                    // The load runs after the peek: it already holds the batch.
+                // Free the old engine before building one. The load runs
+                // after the peek, so it already holds this batch.
+                drop(state.take());
                 let (l, n) = rebuild(mid, name)?;
                 state = l;
                 n
