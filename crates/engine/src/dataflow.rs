@@ -242,7 +242,7 @@ fn literal_value(node: &PlanNode) -> Option<CellValue> {
     }
 }
 
-fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellValue {
+pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellValue {
     // Equality/inequality work on any value type (Text, Bool, Num, Err);
     // everything else operates on the numeric lane.
     match op {
@@ -269,7 +269,7 @@ fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellValue {
     }
 }
 
-fn apply_unary(op: UnaryOp, v: &CellValue) -> CellValue {
+pub(crate) fn apply_unary(op: UnaryOp, v: &CellValue) -> CellValue {
     match op {
         UnaryOp::Neg => CellValue::num(-v.as_num().unwrap_or(f64::NAN)),
         UnaryOp::Not => CellValue::Bool(!truthy(v)),
@@ -292,7 +292,7 @@ fn truthy(v: &CellValue) -> bool {
 /// `scalar_arity` registry. Domain errors (SQRT of a negative) yield NaN,
 /// consistent with the Div-by-zero -> NaN convention. Deterministic: pure f64
 /// arithmetic, no ordering dependence.
-fn apply_scalar(func: FuncId, args: &[f64]) -> f64 {
+pub(crate) fn apply_scalar(func: FuncId, args: &[f64]) -> f64 {
     match (func.0, args) {
         (10, [a]) => a.abs(),
         (11, [a]) => a.round(),
