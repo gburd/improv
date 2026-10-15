@@ -6,15 +6,30 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Fixed
+## [0.8.0] - 2026-10-15
 
-- **Numbers display without binary noise.** Every front end showed a value
-  at full `f64` precision, so `1173 * 0.05` read `58.650000000000006`. They
-  now show 15 significant digits (`58.65`); stored values and exports keep
-  every bit.
+Improv runs inside Postgres, and a formula can be a SQL function. The
+`pg_improv` extension models your own tables and keeps results current
+incrementally (at 100k cells, a one-row change is visible about 50 ms after
+commit); `LANGUAGE improv` writes SQL functions in the formula language;
+the desktop and terminal apps open a Postgres-hosted model by URL and edit
+its rows. The GUI now follows NeXTSTEP Lotus Improv closely, scrolls wide
+grids sideways and can revert after a save conflict. A security review's
+findings are fixed, and every crate is held at 90% function and branch
+coverage.
 
 ### Added
 
+- **Documentation.** A *Ways to Use Improv* chapter (GUI, TUI, CLI,
+  streaming, Postgres, `LANGUAGE improv`, server: what each is for and how
+  to start), a refreshed introduction, getting-started and running pages,
+  and man pages for `improv-tui`, `improv-gui` and `improv-server`
+  (`improv(1)` gains `stream`, `save-view`, the CSV and refresh commands).
+  The guide and API docs publish to Codeberg Pages and GitHub Pages.
+- **Demo movies:** the README and guide show the GUI, the TUI and Improv in
+  Postgres in motion, each recorded by a script under `docs/demo/`.
+- **Release binaries** for Linux, macOS (arm64 and x86_64) and Windows: the
+  CLI, TUI, GUI and server, with the man pages.
 - **GUI: grids scroll sideways.** A worksheet wider than its window has a
   NeXT horizontal scroller in the bottom strip, right of the row tiles, with
   the arrows grouped at its left end (spec §4.4). Before, the far columns
@@ -61,26 +76,6 @@ this project follows [Semantic Versioning](https://semver.org/).
   Logical mode applies their row changes cell by cell like numbers' (the
   worker reads the slot's text with `TimeZone = UTC`, `DateStyle = ISO`).
 
-### Changed
-
-- **`improv_engine::session::Edit::value` is a `CellValue`** (was `f64`), so
-  the live engine takes boolean, text and date edits and seeds every typed
-  input cell. `Engine::set` still takes an `f64`.
-- **`improv.what_if` returns `jsonb` values** (was `float8`), so it reports
-  boolean, text and date measures too (dates as RFC 3339 strings), and its
-  edits may set inputs of those types.
-
-### Fixed
-
-- **pg_improv: item ids are minted in one place.** `improv.mint_items`
-  (created by both the extension and `improv_storage_pg::CATALOG_SQL`) mints
-  ids for new dimension values, serialized per model, with a unique
-  `(model_id, category_id, name)` index. `improv.recalc`, the trigger and
-  worker paths and the GUI's store all call it, so concurrent loads agree on
-  ids and nothing is minted twice. Minting no longer bumps `model_version`.
-
-### Added
-
 - **`pg_improv` Postgres extension, layer L0** (in progress). A pgrx 0.17
   extension (`crates/pg_improv`, pg17) with an `improv.*` catalog that is a
   superset of `improv_storage_pg`'s, plus `improv.create_model`,
@@ -109,136 +104,6 @@ this project follows [Semantic Versioning](https://semver.org/).
   write their fact table, unbound cells live in `improv.cell`, and
   `improv.model_version` drives the existing reload-and-retry conflict check.
   `scripts/gui-shot.sh` takes `GUI_SHOT_DB` to capture such a model.
-
-### Changed
-
-- **Mentat 0.14 → 1.11.1** (pin `6fc2bc7f`, Mentat `master` at v1.11.1).
-  No Improv API changes were needed. Measured on 100k/200k-cell models
-  (`docs/reviews/2026-10-10-mentat-1.11-upgrade.md`): loads, partial loads,
-  evaluation and edits 9–26% faster, re-import 13–15% faster, first import
-  ~10% slower, store files ~29% larger (new history and value indexes).
-  Reported RSS is higher because Mentat now memory-maps the store (1 GiB cap);
-  set `MENTAT_MMAP_SIZE=0` to turn that off. The old pin `1af15e15` lived on
-  an unpushed branch and was not fetchable from a clean clone; the new pin is
-  on Mentat's pushed `master`.
-
-### Security
-
-- **External functions: the host picks the sandbox.** Every body runs
-  `Restricted` unless the operator sets `IMPROV_EXTFN_TRUSTED=1`; a model's
-  `pure: false` no longer turns the sandbox off (S2).
-- **External functions fail closed.** Without `bwrap` (bubblewrap) a
-  `Restricted` body is refused with "bwrap not found; install bubblewrap or
-  set IMPROV_EXTFN_ALLOW_UNSANDBOXED=1"; that variable falls back to rlimits
-  only. A failed `setrlimit` aborts the spawn (S4, S18).
-- **External functions: tighter bwrap.** Only `/usr`, `/bin`, `/lib`,
-  `/lib64` and `/etc` are bound read-only; `/tmp`, `/home` and `/root` are
-  empty tmpfs; all namespaces are unshared (no network). The child
-  environment is cleared to `PATH=/usr/bin:/bin`, `HOME=/tmp` and `LANG`, so
-  API tokens and cloud credentials no longer leak (S5, S6).
-- **External functions: bounded output.** stdout and stderr are drained
-  concurrently and capped at 1 MiB each; output over 64 KiB no longer
-  deadlocks into a timeout (S7).
-- **External functions: the timeout kills the process group**, so forked
-  grandchildren die with the body (S8).
-- **Wasm functions:** a fuel budget stops runaway loops (the worker thread
-  ends), linear memory is capped at 64 MiB, and bodies must start with
-  `wat:` or `base64:` (a bare path is no longer read from disk) (S9).
-- **Python functions:** the body is passed verbatim as JSON data instead of
-  inside an escaped raw string, so backslashes keep their meaning (S20).
-- **Server: the refresh scheduler is off by default** (`IMPROV_SCHEDULER=1`
-  enables it) and runs only external functions listed by digest in the
-  `IMPROV_EXTFN_ALLOW` file, always in the `Restricted` sandbox. Serving a
-  shared model no longer runs its code (S1).
-- **Server: request limits.** 10 s header-read timeout (slow-loris), 30 s
-  request timeout, 64 requests in flight, 1 MiB bodies, 10,000 edits per
-  `/eval` (S10, S13).
-- **Server: write validation.** Writes need an existing input measure, a
-  coordinate covering exactly its categories, and finite values. Writes are
-  serialized, so concurrent ones no longer lose updates. New
-  `IMPROV_API_TOKENS_RO` read-only tokens (S12).
-- **Server: internal errors** return `{"error":"internal error","request_id":N}`
-  and log the detail, instead of echoing store paths (S14).
-- **Server: auth hardening.** Constant-time token comparison; open mode on a
-  non-loopback address needs `IMPROV_ALLOW_OPEN=1` (S15).
-- **Server: model cache.** Requests share one cached model, reloaded only
-  after a write, instead of loading the store up to three times per request
-  (P4).
-- **SQL refresh is read-only.** A stored `SqlSource.query` must be a single
-  `SELECT`/`WITH` statement (`check_read_only_sql`; stacked statements are
-  refused), and every backend executes it read-only: Postgres in a
-  `READ ONLY` transaction, DuckDB in a `READ ONLY` transaction with
-  `enable_external_access = false` (no `read_csv('/etc/passwd')`, URLs or
-  `ATTACH`), SQLite only if `sqlite3_stmt_readonly`. A data-modifying CTE
-  (`WITH x AS (DELETE ...) SELECT ...`) is refused by the server.
-- **Postgres fails closed on cleartext:** this build has no TLS, so
-  `connect_postgres` refuses a non-loopback host unless the connection
-  string says `sslmode=disable` explicitly, and refuses `sslmode=require`
-  (it cannot be honoured). Use an SSH tunnel to a loopback port.
-- Postgres `NUMERIC` columns now import as numbers (they failed to decode).
-- **CSV export neutralizes formula injection.** Text cells, item names and
-  headers starting with `=`, `+`, `-`, `@`, tab or CR are written with a
-  leading `'`, so Excel/LibreOffice show them as text instead of running
-  them (S16). Numbers are untouched. `ExportSpec { neutralize_formulas:
-  false, .. }` with `export_measure_csv_with` turns it off for an exact
-  round trip.
-- **CSV import is size-capped.** A field over 1 MiB, a record over 64 MiB
-  (checked while streaming, so an unterminated quote can't buffer the
-  file) or more than `ImportSpec::max_records` records (default
-  10,000,000) is an error instead of an out-of-memory (S17).
-- **CNL parser depth bound (S3).** The `nl_formula` recursive-descent parser
-  had no nesting limit: one ~200 KB `POST /nl/parse` of nested parens
-  overflowed the stack and aborted `improv-server`. Paren nesting plus
-  operator count is now capped at 200 (as in the formula parser), returning
-  the new `NlError::TooDeep`; tested on a 2 MiB stack with 100k parens.
-
-### Performance
-
-- **pg_improv logical mode applies changes incrementally (G1).** The sync
-  worker keeps each model loaded with a live engine, turns decoded row
-  changes into input-cell edits, and writes only the result rows that
-  changed (a one-row UPDATE on a 100k-cell model rewrites two result rows).
-  It rebuilds on a structural change, TRUNCATE, a new item, or an error. It
-  also logs a standby snapshot after each batch so polls decode only new
-  WAL. Commit → result visible at 100k cells (p50): 1161 → 52 ms for one
-  row, 1552 → 559 ms for a bulk UPDATE.
-- **Store load is no longer one query per cell (P1).** `load_model` /
-  `load_partial` fetch (measure, coord, value) in one query per value
-  attribute (three in all) instead of a query per cell. On a 100k-cell
-  model (release CLI, 100×1000 CSV) `improv eval` went from 279.9 s to
-  0.58 s and `improv list` from 283.2 s to 0.67 s. Date cells now load back
-  as dates instead of text.
-- **Engine edits cost O(changed measures), not O(model)** (P3).
-  `session::Engine` now returns a copy-on-write `session::Snapshot`
-  (`Arc<HashMap<MeasureId, Arc<MeasureValues>>>`): an edit shares every
-  unchanged measure with the previous snapshot instead of cloning all
-  tracked cells. On the `incremental_many_edits` stress test (release,
-  5,000 single-cell edits) the time per edit drops from 950 us to 62 us at
-  10k cells (1,052 to 16,097 edits/s), and from 5,639 us to 71 us at 100k
-  cells (177 to 14,039 edits/s). It is now almost flat in model size.
-  `Engine::new`/`set`/`clear`/`apply` return `Snapshot`, and callers clone
-  it cheaply.
-
-### Changed
-
-- TUI: the status box grows to fit its content, so the edit/command prompt
-  and messages stay visible when `pages:`/`filters:` lines are shown. The
-  key help wraps to the terminal width, and the prompt sits right under the
-  title so a short terminal clips the help first.
-- TUI: a derived measure's formula shows on a status line in controlled
-  English (`Revenue = Price times Quantity`).
-
-- GUI: the model browser now leads with a NeXT-style white list of saved
-  views (`Name - Worksheet` rows with a worksheet icon). A single click
-  selects a view and shows its computed description (measure, categories,
-  pages); a double-click opens it. Categories and Measures move below as
-  collapsible sections.
-- GUI: NeXT scrollers. The grid, model browser and formula list show an
-  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob,
-  a 1 px bevel on the knob and NeXT's two arrow buttons grouped at the
-  bottom of the vertical trough (one line per click).
-
-### Added
 
 - **Coverage gate.** `scripts/coverage.sh` (and a `coverage` CI job on
   GitHub and Forgejo) fails when any crate drops below 90% of functions or
@@ -275,6 +140,40 @@ this project follows [Semantic Versioning](https://semver.org/).
   added formula, errors) clear themselves after 5 seconds.
 
 ### Changed
+
+- **`improv_engine::session::Edit::value` is a `CellValue`** (was `f64`), so
+  the live engine takes boolean, text and date edits and seeds every typed
+  input cell. `Engine::set` still takes an `f64`.
+- **`improv.what_if` returns `jsonb` values** (was `float8`), so it reports
+  boolean, text and date measures too (dates as RFC 3339 strings), and its
+  edits may set inputs of those types.
+
+- **Mentat 0.14 → 1.11.1** (pin `6fc2bc7f`, Mentat `master` at v1.11.1).
+  No Improv API changes were needed. Measured on 100k/200k-cell models
+  (`docs/reviews/2026-10-10-mentat-1.11-upgrade.md`): loads, partial loads,
+  evaluation and edits 9–26% faster, re-import 13–15% faster, first import
+  ~10% slower, store files ~29% larger (new history and value indexes).
+  Reported RSS is higher because Mentat now memory-maps the store (1 GiB cap);
+  set `MENTAT_MMAP_SIZE=0` to turn that off. The old pin `1af15e15` lived on
+  an unpushed branch and was not fetchable from a clean clone; the new pin is
+  on Mentat's pushed `master`.
+
+- TUI: the status box grows to fit its content, so the edit/command prompt
+  and messages stay visible when `pages:`/`filters:` lines are shown. The
+  key help wraps to the terminal width, and the prompt sits right under the
+  title so a short terminal clips the help first.
+- TUI: a derived measure's formula shows on a status line in controlled
+  English (`Revenue = Price times Quantity`).
+
+- GUI: the model browser now leads with a NeXT-style white list of saved
+  views (`Name - Worksheet` rows with a worksheet icon). A single click
+  selects a view and shows its computed description (measure, categories,
+  pages); a double-click opens it. Categories and Measures move below as
+  collapsible sections.
+- GUI: NeXT scrollers. The grid, model browser and formula list show an
+  always-visible 19 px `#808080` trough with a square `#AAAAAA` knob,
+  a 1 px bevel on the knob and NeXT's two arrow buttons grouped at the
+  bottom of the vertical trough (one line per click).
 
 - **GUI filtering moved to the tile menu.** The worksheet's **Filters**
   shelf is gone; right-click a category tile for a checkbox per item (uncheck
@@ -353,7 +252,45 @@ this project follows [Semantic Versioning](https://semver.org/).
   (`Q1`, `Widget`) were beveled button chips. They now draw as plain dark text
   with rule lines, as in Improv, so only the category tiles look draggable.
 
+### Performance
+
+- **pg_improv logical mode applies changes incrementally (G1).** The sync
+  worker keeps each model loaded with a live engine, turns decoded row
+  changes into input-cell edits, and writes only the result rows that
+  changed (a one-row UPDATE on a 100k-cell model rewrites two result rows).
+  It rebuilds on a structural change, TRUNCATE, a new item, or an error. It
+  also logs a standby snapshot after each batch so polls decode only new
+  WAL. Commit → result visible at 100k cells (p50): 1161 → 52 ms for one
+  row, 1552 → 559 ms for a bulk UPDATE.
+- **Store load is no longer one query per cell (P1).** `load_model` /
+  `load_partial` fetch (measure, coord, value) in one query per value
+  attribute (three in all) instead of a query per cell. On a 100k-cell
+  model (release CLI, 100×1000 CSV) `improv eval` went from 279.9 s to
+  0.58 s and `improv list` from 283.2 s to 0.67 s. Date cells now load back
+  as dates instead of text.
+- **Engine edits cost O(changed measures), not O(model)** (P3).
+  `session::Engine` now returns a copy-on-write `session::Snapshot`
+  (`Arc<HashMap<MeasureId, Arc<MeasureValues>>>`): an edit shares every
+  unchanged measure with the previous snapshot instead of cloning all
+  tracked cells. On the `incremental_many_edits` stress test (release,
+  5,000 single-cell edits) the time per edit drops from 950 us to 62 us at
+  10k cells (1,052 to 16,097 edits/s), and from 5,639 us to 71 us at 100k
+  cells (177 to 14,039 edits/s). It is now almost flat in model size.
+  `Engine::new`/`set`/`clear`/`apply` return `Snapshot`, and callers clone
+  it cheaply.
+
 ### Fixed
+
+- **Numbers display without binary noise.** Every front end showed a value
+  at full `f64` precision, so `1173 * 0.05` read `58.650000000000006`. They
+  now show 15 significant digits (`58.65`); stored values and exports keep
+  every bit.
+- **pg_improv: item ids are minted in one place.** `improv.mint_items`
+  (created by both the extension and `improv_storage_pg::CATALOG_SQL`) mints
+  ids for new dimension values, serialized per model, with a unique
+  `(model_id, category_id, name)` index. `improv.recalc`, the trigger and
+  worker paths and the GUI's store all call it, so concurrent loads agree on
+  ids and nothing is minted twice. Minting no longer bumps `model_version`.
 
 - **Postgres saves no longer clobber SQL edits to bound fact tables**
   (`storage_pg`, design §9.2 G2). `save_model` now writes only what changed
@@ -448,6 +385,76 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **`improv init` no longer wipes an existing store.** It installs the
   schema only; it used to save an empty model, which under the cell diff
   above would have retracted every stored cell.
+
+### Security
+
+- **External functions: the host picks the sandbox.** Every body runs
+  `Restricted` unless the operator sets `IMPROV_EXTFN_TRUSTED=1`; a model's
+  `pure: false` no longer turns the sandbox off (S2).
+- **External functions fail closed.** Without `bwrap` (bubblewrap) a
+  `Restricted` body is refused with "bwrap not found; install bubblewrap or
+  set IMPROV_EXTFN_ALLOW_UNSANDBOXED=1"; that variable falls back to rlimits
+  only. A failed `setrlimit` aborts the spawn (S4, S18).
+- **External functions: tighter bwrap.** Only `/usr`, `/bin`, `/lib`,
+  `/lib64` and `/etc` are bound read-only; `/tmp`, `/home` and `/root` are
+  empty tmpfs; all namespaces are unshared (no network). The child
+  environment is cleared to `PATH=/usr/bin:/bin`, `HOME=/tmp` and `LANG`, so
+  API tokens and cloud credentials no longer leak (S5, S6).
+- **External functions: bounded output.** stdout and stderr are drained
+  concurrently and capped at 1 MiB each; output over 64 KiB no longer
+  deadlocks into a timeout (S7).
+- **External functions: the timeout kills the process group**, so forked
+  grandchildren die with the body (S8).
+- **Wasm functions:** a fuel budget stops runaway loops (the worker thread
+  ends), linear memory is capped at 64 MiB, and bodies must start with
+  `wat:` or `base64:` (a bare path is no longer read from disk) (S9).
+- **Python functions:** the body is passed verbatim as JSON data instead of
+  inside an escaped raw string, so backslashes keep their meaning (S20).
+- **Server: the refresh scheduler is off by default** (`IMPROV_SCHEDULER=1`
+  enables it) and runs only external functions listed by digest in the
+  `IMPROV_EXTFN_ALLOW` file, always in the `Restricted` sandbox. Serving a
+  shared model no longer runs its code (S1).
+- **Server: request limits.** 10 s header-read timeout (slow-loris), 30 s
+  request timeout, 64 requests in flight, 1 MiB bodies, 10,000 edits per
+  `/eval` (S10, S13).
+- **Server: write validation.** Writes need an existing input measure, a
+  coordinate covering exactly its categories, and finite values. Writes are
+  serialized, so concurrent ones no longer lose updates. New
+  `IMPROV_API_TOKENS_RO` read-only tokens (S12).
+- **Server: internal errors** return `{"error":"internal error","request_id":N}`
+  and log the detail, instead of echoing store paths (S14).
+- **Server: auth hardening.** Constant-time token comparison; open mode on a
+  non-loopback address needs `IMPROV_ALLOW_OPEN=1` (S15).
+- **Server: model cache.** Requests share one cached model, reloaded only
+  after a write, instead of loading the store up to three times per request
+  (P4).
+- **SQL refresh is read-only.** A stored `SqlSource.query` must be a single
+  `SELECT`/`WITH` statement (`check_read_only_sql`; stacked statements are
+  refused), and every backend executes it read-only: Postgres in a
+  `READ ONLY` transaction, DuckDB in a `READ ONLY` transaction with
+  `enable_external_access = false` (no `read_csv('/etc/passwd')`, URLs or
+  `ATTACH`), SQLite only if `sqlite3_stmt_readonly`. A data-modifying CTE
+  (`WITH x AS (DELETE ...) SELECT ...`) is refused by the server.
+- **Postgres fails closed on cleartext:** this build has no TLS, so
+  `connect_postgres` refuses a non-loopback host unless the connection
+  string says `sslmode=disable` explicitly, and refuses `sslmode=require`
+  (it cannot be honoured). Use an SSH tunnel to a loopback port.
+- Postgres `NUMERIC` columns now import as numbers (they failed to decode).
+- **CSV export neutralizes formula injection.** Text cells, item names and
+  headers starting with `=`, `+`, `-`, `@`, tab or CR are written with a
+  leading `'`, so Excel/LibreOffice show them as text instead of running
+  them (S16). Numbers are untouched. `ExportSpec { neutralize_formulas:
+  false, .. }` with `export_measure_csv_with` turns it off for an exact
+  round trip.
+- **CSV import is size-capped.** A field over 1 MiB, a record over 64 MiB
+  (checked while streaming, so an unterminated quote can't buffer the
+  file) or more than `ImportSpec::max_records` records (default
+  10,000,000) is an error instead of an out-of-memory (S17).
+- **CNL parser depth bound (S3).** The `nl_formula` recursive-descent parser
+  had no nesting limit: one ~200 KB `POST /nl/parse` of nested parens
+  overflowed the stack and aborted `improv-server`. Paren nesting plus
+  operator count is now capped at 200 (as in the formula parser), returning
+  the new `NlError::TooDeep`; tested on a 2 MiB stack with 100k parens.
 
 ## [0.7.0] - 2026-09-24
 
@@ -742,4 +749,5 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.8.0...main
+[0.8.0]: https://codeberg.org/gregburd/improv/compare/v0.7.0...v0.8.0
