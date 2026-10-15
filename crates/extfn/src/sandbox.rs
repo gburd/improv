@@ -96,6 +96,7 @@ fn allow_unsandboxed() -> bool {
 /// Resource ceilings applied via `setrlimit` under [`SandboxPolicy::Restricted`].
 /// Generous enough not to break legitimate small computations, tight enough to
 /// blunt runaway memory growth and fork bombs.
+#[cfg(unix)]
 mod limits {
     /// CPU time, seconds. Defense-in-depth alongside the wall-clock kill in
     /// `runner.rs` (which also bounds wall time even for CPU-light but
