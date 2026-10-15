@@ -28,7 +28,7 @@ use improv_core_model::{
 };
 use postgres::config::{Host, SslMode};
 use postgres::{Client, Config, GenericClient, IsolationLevel, NoTls};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[cfg(test)]
 mod tests;
@@ -629,7 +629,9 @@ impl PgModelStore {
         })?;
         let installed: bool = client
             .query_one(
-                "SELECT to_regclass('improv.model_version') IS NOT NULL",
+                // The newest catalog object: an older catalog is upgraded in
+                // place (CATALOG_SQL is idempotent).
+                "SELECT to_regprocedure('improv.mint_items(bigint, bigint[], text[])') IS NOT NULL",
                 &[],
             )?
             .get(0);
@@ -815,15 +817,18 @@ impl PgModelStore {
         // The unbound cells as read; the rest of `model.inputs` is bound.
         let cells = model.inputs.clone();
 
-        // Bound cells: dimension values map to items by name; unseen values
-        // mint a new item (persisted by the next save).
+        // Bound cells: dimension values map to items by name. Values with no
+        // item are minted by `improv.mint_items` (the one minter, shared with
+        // the pg_improv extension) once this snapshot closes: it must see
+        // concurrent mints, so it runs read-committed, not in this snapshot.
         let mut names: HashMap<(CategoryId, String), ItemId> = model
             .items
             .values()
             .map(|i| ((i.category, i.name.0.clone()), i.id))
             .collect();
-        let mut next_item = model.items.keys().map(|i| i.0 + 1).max().unwrap_or(1);
-        for b in bindings(&mut tx, &model, mid)? {
+        let bound = bindings(&mut tx, &model, mid)?;
+        let mut rows = Vec::new();
+        for (bi, b) in bound.iter().enumerate() {
             if keep.as_ref().is_some_and(|k| !k.contains(&b.measure)) {
                 continue;
             }
@@ -834,42 +839,59 @@ impl PgModelStore {
                 .map(|(_, c)| format!("{}::text", ident(c)))
                 .collect();
             cols.push(format!("to_jsonb({})::text", ident(&b.value_col)));
-            // Lexical by dimension values (design §8), so minted item ids
-            // are the same on every load.
-            let order: Vec<String> = (1..=b.dims.len()).map(|i| i.to_string()).collect();
-            let mut sql = format!("SELECT {} FROM {}", cols.join(", "), b.table);
-            if !order.is_empty() {
-                sql += &format!(" ORDER BY {}", order.join(", "));
-            }
+            let sql = format!("SELECT {} FROM {}", cols.join(", "), b.table);
             'row: for r in tx.query(&sql, &[])? {
                 // NULL value: no cell. NULL dimension: the row is ignored.
                 let Some(v) = r.get::<_, Option<&str>>(b.dims.len()) else {
                     continue;
                 };
-                let mut coord = Coordinate::new();
+                let mut dims = Vec::with_capacity(b.dims.len());
                 for (i, (cat, _)) in b.dims.iter().enumerate() {
                     let Some(name) = r.get::<_, Option<String>>(i) else {
                         continue 'row;
                     };
-                    let item = *names.entry((*cat, name.clone())).or_insert_with(|| {
-                        next_item += 1;
-                        ItemId(next_item - 1)
-                    });
-                    if !model.items.contains_key(&item) {
-                        model.add_item(item, *cat, name);
-                    }
-                    coord = coord.with(*cat, item);
+                    dims.push((*cat, name));
                 }
-                let v = json_to_value(vt, &serde_json::from_str(v)?)?;
-                if model.inputs.insert((b.measure, coord), v).is_some() {
-                    return Err(StoreError::Integrity(format!(
-                        "{} has two rows for one coordinate of measure {}",
-                        b.table, b.measure.0
-                    )));
-                }
+                rows.push((bi, dims, json_to_value(vt, &serde_json::from_str(v)?)?));
             }
         }
         tx.commit()?;
+        let new: BTreeSet<&(CategoryId, String)> = rows
+            .iter()
+            .flat_map(|(_, dims, _)| dims)
+            .filter(|k| !names.contains_key(*k))
+            .collect();
+        if !new.is_empty() {
+            let (cats, new): (Vec<i64>, Vec<&str>) = new
+                .into_iter()
+                .map(|(c, n)| (i64::from(c.0), n.as_str()))
+                .unzip();
+            for r in self.client.query(
+                "SELECT category_id, name, id FROM improv.mint_items($1, $2::int8[], $3::text[])",
+                &[&mid, &cats, &new],
+            )? {
+                let (cat, id) = (CategoryId(id32(r.get(0))?), ItemId(id32(r.get(2))?));
+                let name: String = r.get(1);
+                model.add_item(id, cat, name.clone());
+                names.insert((cat, name), id);
+            }
+        }
+        for (bi, dims, v) in rows {
+            let b = &bound[bi];
+            let mut coord = Coordinate::new();
+            for k in &dims {
+                let item = names.get(k).ok_or_else(|| {
+                    StoreError::Integrity(format!("improv.mint_items returned no id for {:?}", k.1))
+                })?;
+                coord = coord.with(k.0, *item);
+            }
+            if model.inputs.insert((b.measure, coord), v).is_some() {
+                return Err(StoreError::Integrity(format!(
+                    "{} has two rows for one coordinate of measure {}",
+                    b.table, b.measure.0
+                )));
+            }
+        }
         self.loaded_tx = Some(tx_now);
         self.loaded = Some(PgSnapshot::new(&model, cells));
         Ok(model)

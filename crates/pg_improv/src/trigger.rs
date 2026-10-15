@@ -19,7 +19,9 @@ use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::JsonB;
 
-use super::{bump_version, id32, lock_model, read_catalog, read_results, req, Res, MAX_CELLS};
+use super::{
+    bump_version, id32, lock_model, mint_items, read_catalog, read_results, req, Res, MAX_CELLS,
+};
 
 /// Per event: trigger-name suffix, event, transition tables.
 const EVENTS: [(&str, &str, &str); 4] = [
@@ -40,8 +42,8 @@ struct Loaded {
 }
 
 /// Load model `mid` (named `name`) with its bound and unbound input cells.
-/// Items minted for new dimension values are persisted (a structural
-/// change: the version is bumped) when `persist`, else kept in memory.
+/// Items for new dimension values are minted through `improv.mint_items`
+/// when `persist`, else kept in memory.
 // ponytail: duplicates L0 `recalc`'s loading; fold `recalc(text)` onto
 // `load` + `recompute` once L1 and L2 have merged.
 fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
@@ -82,6 +84,9 @@ fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
             rows,
         });
     }
+    if persist {
+        mint_items(mid, &mut model, &bound)?;
+    }
     let loaded = pm::load_inputs(&mut model, &bound)?;
     let cells: Vec<(u32, String, String)> = Spi::connect(|c| -> Res<_> {
         c.select(
@@ -96,21 +101,6 @@ fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
     })?;
     let unbound = pm::load_cells(&mut model, &cells)?;
     pm::check_cell_budget(loaded.cells + unbound, MAX_CELLS.get().max(0) as usize)?;
-    if persist && !loaded.new_items.is_empty() {
-        let ids: Vec<i64> = loaded.new_items.iter().map(|i| i64::from(i.id)).collect();
-        let cats: Vec<i64> = loaded
-            .new_items
-            .iter()
-            .map(|i| i64::from(i.category_id))
-            .collect();
-        let names: Vec<String> = loaded.new_items.iter().map(|i| i.name.clone()).collect();
-        Spi::run_with_args(
-            "INSERT INTO improv.item (model_id, id, category_id, name) \
-             SELECT $1, * FROM unnest($2::int8[], $3::int8[], $4::text[])",
-            &[mid.into(), ids.into(), cats.into(), names.into()],
-        )?;
-        bump_version(mid)?;
-    }
     Ok(Loaded { name, model })
 }
 

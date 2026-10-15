@@ -9,7 +9,7 @@
 use std::error::Error;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use improv_core_model::MeasureId;
+use improv_core_model::{CategoryId, ItemId, MeasureId, Model};
 use improv_pg_model as pm;
 use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
@@ -179,6 +179,30 @@ fn req<T: IntoDatum + FromDatum>(r: &pgrx::spi::SpiHeapTupleData, i: usize) -> R
 /// A catalog id as the engine's `u32`.
 fn id32(v: i64) -> Res<u32> {
     Ok(u32::try_from(v).map_err(|_| format!("catalog id {v} is out of range"))?)
+}
+
+/// Mint ids for the dimension values in `bound` that `m` has no item for,
+/// through `improv.mint_items` (the one minter, shared with the GUI's store),
+/// and add them to `m`. Minting is append-only: no `model_version` bump.
+fn mint_items(mid: i64, m: &mut Model, bound: &[pm::BoundRows]) -> Res<()> {
+    let new = pm::unknown_items(m, bound)?;
+    if new.is_empty() {
+        return Ok(());
+    }
+    let (cats, names): (Vec<i64>, Vec<String>) =
+        new.into_iter().map(|(c, n)| (i64::from(c.0), n)).unzip();
+    Spi::connect_mut(|c| {
+        let t = c.update(
+            "SELECT category_id, name, id FROM improv.mint_items($1, $2::int8[], $3::text[])",
+            None,
+            &[mid.into(), cats.into(), names.into()],
+        )?;
+        for r in t {
+            let cat = CategoryId(id32(req(&r, 1)?)?);
+            m.add_item(ItemId(id32(req(&r, 3)?)?), cat, req::<String>(&r, 2)?);
+        }
+        Ok(())
+    })
 }
 
 /// Bump `improv.model_version`: the optimistic-concurrency token the GUI's
@@ -402,7 +426,7 @@ fn recalc(model: &str) -> Res<i64> {
     // Models and measures may come from the GUI's store, which does not
     // validate names: check them before they become identifiers.
     pm::validate_name("model", &model_name)?;
-    let mut cat = read_catalog(mid)?;
+    let cat = read_catalog(mid)?;
     let mut m = pm::build_model(&cat)?;
 
     // Bound fact rows, one SELECT per input binding.
@@ -442,6 +466,7 @@ fn recalc(model: &str) -> Res<i64> {
         });
     }
 
+    mint_items(mid, &mut m, &bound)?;
     let loaded = pm::load_inputs(&mut m, &bound)?;
     // Unbound input cells (typed in the GUI), for measures with no binding.
     let cells: Vec<(u32, String, String)> = Spi::connect(|c| -> Res<_> {
@@ -457,26 +482,6 @@ fn recalc(model: &str) -> Res<i64> {
     })?;
     let unbound = pm::load_cells(&mut m, &cells)?;
     pm::check_cell_budget(loaded.cells + unbound, MAX_CELLS.get().max(0) as usize)?;
-    if !loaded.new_items.is_empty() {
-        // ponytail: the extension mints bound items here, but the GUI's store
-        // (storage_pg) also mints them client-side on load; L2 makes the
-        // extension the only minter.
-        let ids: Vec<i64> = loaded.new_items.iter().map(|i| i64::from(i.id)).collect();
-        let cats: Vec<i64> = loaded
-            .new_items
-            .iter()
-            .map(|i| i64::from(i.category_id))
-            .collect();
-        let names: Vec<String> = loaded.new_items.iter().map(|i| i.name.clone()).collect();
-        Spi::run_with_args(
-            "INSERT INTO improv.item (model_id, id, category_id, name) \
-             SELECT $1, * FROM unnest($2::int8[], $3::int8[], $4::text[])",
-            &[mid.into(), ids.into(), cats.into(), names.into()],
-        )?;
-        cat.items.extend(loaded.new_items);
-        // New items are structure: a GUI holding the old item set must reload.
-        bump_version(mid)?;
-    }
 
     let mut targets: Vec<MeasureId> = cat
         .measures
@@ -708,15 +713,47 @@ mod tests {
             .unwrap(),
             "Price={1,2} Quantity={1,2} Revenue={1,2} Total={2}"
         );
-        // create + 2 bind_category + 2 bind_measure + 2 define = 7, then one
-        // bump per recalc that minted items (2 above).
-        assert_eq!(count("improv.model_version WHERE tx = 9"), 1);
+        // create + 2 bind_category + 2 bind_measure + 2 define = 7; the two
+        // recalcs above minted items through improv.mint_items, which is
+        // append-only and does not bump the version.
+        assert_eq!(count("improv.model_version WHERE tx = 7"), 1);
+        recalc();
+        assert_eq!(count("improv.model_version WHERE tx = 7"), 1);
+        assert_eq!(count("improv.item"), 7, "item_name_uniq: nothing re-minted");
+    }
+
+    /// The extension and the GUI's store mint through the same function, so
+    /// they agree on ids whichever mints a value first.
+    #[pg_test]
+    fn extension_and_store_agree_on_item_ids() {
+        setup_plan();
+        recalc();
+        // storage_pg's statement, verbatim, for a value no recalc saw yet.
+        let store = |cat: i64, name: &str| {
+            Spi::get_one_with_args::<i64>(
+                "SELECT id FROM improv.mint_items(\
+                   (SELECT id FROM improv.model), $1::int8[], $2::text[])",
+                &[vec![cat].into(), vec![name.to_string()].into()],
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let doohickey = store(2, "Doohickey");
+        assert_eq!(doohickey, 7);
+        Spi::run("INSERT INTO sales VALUES ('Q5', 'Doohickey', 1, 1)").unwrap();
         recalc();
         assert_eq!(
-            count("improv.model_version WHERE tx = 9"),
-            1,
-            "no new items, no bump"
+            item_id("Doohickey"),
+            doohickey,
+            "recalc reused the store's id"
         );
+        assert_eq!(
+            store(1, "Q5"),
+            item_id("Q5"),
+            "the store reuses recalc's id"
+        );
+        assert_eq!(item_id("Q5"), 8);
+        assert_eq!(count("improv.item"), 8);
     }
 
     #[pg_test]
@@ -807,6 +844,23 @@ mod tests {
             "storage_pg columns missing or different here"
         );
         assert!(count("information_schema.columns WHERE table_schema = 'improv_ref'") > 30);
+        // ...and every index and function it declares, with the same definition.
+        let missing = Spi::get_one::<String>(
+            "SELECT string_agg(r.def, ', ') FROM (
+               SELECT replace(indexdef, 'improv_ref.', 'improv.') def
+                 FROM pg_indexes WHERE schemaname = 'improv_ref'
+               UNION ALL
+               SELECT replace(pg_get_functiondef(p.oid), 'improv_ref.', 'improv.')
+                 FROM pg_proc p WHERE p.pronamespace = 'improv_ref'::regnamespace) r
+             WHERE r.def NOT IN (
+               SELECT indexdef FROM pg_indexes WHERE schemaname = 'improv'
+               UNION ALL
+               SELECT pg_get_functiondef(p.oid)
+                 FROM pg_proc p WHERE p.pronamespace = 'improv'::regnamespace)",
+        )
+        .unwrap();
+        assert_eq!(missing, None, "storage_pg indexes or functions differ here");
+        assert_eq!(count("pg_indexes WHERE indexname = 'item_name_uniq'"), 2);
     }
 
     #[pg_test]
