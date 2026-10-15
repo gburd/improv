@@ -332,6 +332,30 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
                     .catch_others(|e| Err(format!("{e:?}")))
                     .execute()
             });
+            if r == Ok(true) {
+                // The slot's restart point only moves past a running-xacts
+                // WAL record (the bgwriter logs one every 15 s), and every
+                // peek and advance re-decodes from it. Log one now, in a
+                // transaction without an xid (one logged inside the tick
+                // names the tick as running and pins the restart point), so
+                // the next advance moves it here and a poll re-reads about
+                // one batch of WAL, not everything since the bgwriter's last.
+                BackgroundWorker::transaction(|| {
+                    PgTryBuilder::new(|| {
+                        Spi::connect(|c| {
+                            c.select(
+                                "SELECT pg_log_standby_snapshot() WHERE NOT pg_is_in_recovery()",
+                                None,
+                                &[],
+                            )
+                            .map(|_| ())
+                        })
+                    })
+                    .catch_others(|_| Ok(()))
+                    .execute()
+                    .unwrap_or(())
+                });
+            }
             if let Err(e) = r {
                 BackgroundWorker::transaction(|| {
                     let _ = Spi::run_with_args(
@@ -460,7 +484,8 @@ struct Live {
 }
 
 /// One poll of one model, inside the caller's (worker) transaction.
-fn tick(mid: i64, name: &str) -> Res<()> {
+/// Returns whether it advanced the slot.
+fn tick(mid: i64, name: &str) -> Res<bool> {
     // Taken out for the poll and put back only on success: any error (or a
     // Postgres ERROR unwinding through here) drops it, and the next poll
     // rebuilds from the tables.
@@ -480,7 +505,7 @@ fn tick(mid: i64, name: &str) -> Res<()> {
         let (state, changed) = rebuild(mid, name)?;
         record(mid, changed, None)?;
         keep(mid, state);
-        return Ok(());
+        return Ok(false);
     }
     let max = MAX_CHANGES.get().max(1);
     let rows: Vec<(String, Vec<u8>)> = Spi::connect(|c| -> Res<_> {
@@ -501,7 +526,7 @@ fn tick(mid: i64, name: &str) -> Res<()> {
     // by `max_changes` is re-read next poll.
     let Some(last) = stream.done.last() else {
         keep(mid, state);
-        return Ok(());
+        return Ok(false);
     };
     let advance_to = last.end_lsn;
     let touched = stream.done.iter().any(|t| !t.changes.is_empty());
@@ -533,7 +558,7 @@ fn tick(mid: i64, name: &str) -> Res<()> {
     )?;
     record(mid, changed, Some(advance_to))?;
     keep(mid, state);
-    Ok(())
+    Ok(true)
 }
 
 fn keep(mid: i64, state: Option<Live>) {
