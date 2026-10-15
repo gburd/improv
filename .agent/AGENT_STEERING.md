@@ -32,15 +32,16 @@ DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
   ≈ 96% / 95%), `scripts/coverage.sh` + CI `coverage` job. Run guide:
   `docs/src/running.md`.
 
-**NEXT (active): pg_improv** — Improv models over Postgres data, live
-(B2: logical-decoding default, triggers, explicit `improv.recalc`) + the GUI
-opening `postgres://` models (C). Design and layer plan:
-`docs/reviews/2026-10-14-pg-improv-design.md`. Dev/bench on the `kiwi` EC2
-account (Debian 13).
-  - **L3 DONE (branch `work/pg-store`)**: `improv_storage_pg::PgModelStore` +
-    `improv_store::Store::open` seam; CLI/TUI/GUI/server open
-    `postgres://…?model=`. Catalog contract = `storage_pg::CATALOG_SQL`, to be
-    reconciled with the extension's catalog (L0).
+**pg_improv: DONE (L0–L5)** — Improv models over Postgres data
+(`crates/pg_improv` pgrx extension + `crates/pg_model` core +
+`crates/storage_pg`/`crates/store` client). Logical-decoding sync (default),
+trigger sync, explicit `improv.recalc`, `what_if`, `status`; GUI/TUI/CLI open
+`postgres://…?model=`. Design: `docs/reviews/2026-10-14-pg-improv-design.md`;
+user guide `docs/src/postgres.md`; e2e `crates/pg_improv/tests/{logical,user-story}.sh`;
+benchmark `docs/reviews/bench/bench-pg-modes.sh`. **NEXT for pg_improv:** live
+incremental engine in the worker (removes the per-batch reload, ~11 µs/cell);
+GUI saves only changed cells (today it rewrites every bound cell it loaded);
+extension-owned item minting; `binding.agg`; non-number measures.
 
 Then: horizontal scroller arrows and the rows-tile strip inline with the
 horizontal scroller (E2 remainder); a GUI/TUI "reload" action after a save
