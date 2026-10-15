@@ -14,8 +14,6 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
-env:
-
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,9 +25,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install mdBook toolchain
         run: |
-          cargo install mdbook --version ^0.4 --locked || true
-          cargo install mdbook-linkcheck --locked || true
-          cargo install mdbook-mermaid --locked || true
+          # Pinned as a set: mdbook-linkcheck has no mdbook 0.5 release, and
+          # mdbook-mermaid >= 0.17 targets mdbook 0.5 (the preprocessor
+          # protocol changed), so all three stay on the 0.4 line.
+          cargo install mdbook --version =0.4.52 --locked
+          cargo install mdbook-linkcheck --version =0.7.7 --locked
+          cargo install mdbook-mermaid --version =0.16.2 --locked
       - name: Build mdBook guide
         working-directory: improv
         run: mdbook build docs
