@@ -17,7 +17,7 @@ this project follows [Semantic Versioning](https://semver.org/).
   transaction), and **`improv.recalc()`** (explicit, in your transaction);
   plus `improv.what_if` and `improv.status`. The GUI, TUI, CLI and server
   open `postgres://…?model=<name>`. Measured on a c7i.4xlarge at 100k cells:
-  logical keeps a writer's UPDATE at 8 ms (results ~1.2 s later); a trigger
+  logical keeps a writer's UPDATE at 8 ms (results ~50 ms later); a trigger
   makes them visible at commit for ~1.1 s per write. See
   `docs/src/postgres.md`.
 
@@ -136,6 +136,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Performance
 
+- **pg_improv logical mode applies changes incrementally (G1).** The sync
+  worker keeps each model loaded with a live engine, turns decoded row
+  changes into input-cell edits, and writes only the result rows that
+  changed (a one-row UPDATE on a 100k-cell model rewrites two result rows).
+  It rebuilds on a structural change, TRUNCATE, a new item, or an error. It
+  also logs a standby snapshot after each batch so polls decode only new
+  WAL. Commit → result visible at 100k cells (p50): 1161 → 52 ms for one
+  row, 1552 → 559 ms for a bulk UPDATE.
 - **Store load is no longer one query per cell (P1).** `load_model` /
   `load_partial` fetch (measure, coord, value) in one query per value
   attribute (three in all) instead of a query per cell. On a 100k-cell

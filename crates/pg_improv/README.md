@@ -162,10 +162,10 @@ A background worker (`pg_improv sync`, one per server, serving
 `improv.database`) polls, for each model in `logical` mode, a logical
 replication slot `improv_<model>` (plugin `pgoutput`) over the publication
 `improv_<model>`. When committed source transactions touched a bound
-relation it recomputes the model and writes the results **in one worker
-transaction that also advances the slot**. A crash or `pg_terminate_backend`
-therefore re-reads and re-applies (the writes are idempotent upserts and
-deletes); nothing is lost or applied twice. Rolled-back source transactions
+relation it applies their row changes and writes the changed results **in
+one worker transaction that also advances the slot**. A crash or
+`pg_terminate_backend` therefore re-reads and re-applies (the writes are
+idempotent upserts and deletes); nothing is lost or applied twice. Rolled-back source transactions
 never appear. The worker restarts itself 5 s after it is killed.
 
 The slot retains WAL until the worker confirms it: watch `lag_bytes` in
@@ -173,8 +173,26 @@ The slot retains WAL until the worker confirms it: watch `lag_bytes` in
 worker (Postgres forbids creating one in a transaction that has written), so
 a new model in logical mode starts updating within one poll of being bound.
 
-Apply strategy: one full recompute per poll that saw changes. A live
-incremental engine fed with the decoded deltas is the planned next step.
+Apply strategy: incremental. The worker keeps each model loaded, with a
+live engine (its own compute thread; it never calls Postgres). Decoded row
+changes become input-cell edits: an INSERT sets a cell, a DELETE removes
+one, an UPDATE sets it (or, when it moved a dimension value, removes the old
+cell and sets the new one). A NULL value removes the cell; a row with a NULL
+dimension is ignored, as `recalc` ignores it. The engine recomputes only
+what the edits reach, and only the derived measures whose output changed
+are diffed and written, so a one-row UPDATE rewrites only its own result
+rows. The worker rebuilds (a full load and recompute, diffed against the
+result tables) when the model's structure changed (`model_version` moved: a
+new measure, binding or formula), on a `TRUNCATE`, when a change brings a
+dimension value with no item yet (it mints the item), when two rows land on
+one coordinate, and after any error. A rebuild costs what a `recalc` costs.
+The loaded model counts against `improv.max_cells`; leaving logical mode or
+dropping the model frees it.
+
+After each batch the worker logs a standby snapshot
+(`pg_log_standby_snapshot()`), so the slot's restart point keeps up and a
+poll decodes only new WAL rather than everything since the bgwriter's last
+snapshot (up to 15 s of it).
 
 ### Benchmark
 
@@ -185,24 +203,31 @@ another session.
 
 | cells | change | mode | writer | fresh |
 | ---: | --- | --- | ---: | ---: |
-| 10k | 1 row | logical | **8 ms** | 99 ms |
-| 10k | 1 row | trigger | 82 ms | **92 ms** |
-| 10k | 1 row | recalc in txn | 83 ms | 92 ms |
-| 10k | 1k rows | logical | **14 ms** | 153 ms |
-| 10k | 1k rows | trigger | 171 ms | 181 ms |
-| 10k | 1k rows | recalc in txn | 102 ms | **112 ms** |
-| 100k | 1 row | logical | **8 ms** | 1161 ms |
-| 100k | 1 row | trigger | 1100 ms | 1111 ms |
-| 100k | 1 row | recalc in txn | 1088 ms | **1098 ms** |
-| 100k | 1k rows | logical | **72 ms** | 1552 ms |
-| 100k | 1k rows | trigger | 2355 ms | 2366 ms |
-| 100k | 1k rows | recalc in txn | 1312 ms | **1323 ms** |
+| 10k | 1 row | logical | **8 ms** | **40 ms** |
+| 10k | 1 row | trigger | 82 ms | 92 ms |
+| 10k | 1 row | recalc in txn | 83 ms | 93 ms |
+| 10k | 1k rows | logical | **15 ms** | **94 ms** |
+| 10k | 1k rows | trigger | 172 ms | 182 ms |
+| 10k | 1k rows | recalc in txn | 105 ms | 115 ms |
+| 100k | 1 row | logical | **8 ms** | **52 ms** |
+| 100k | 1 row | trigger | 1108 ms | 1118 ms |
+| 100k | 1 row | recalc in txn | 1121 ms | 1131 ms |
+| 100k | 1k rows | logical | **72 ms** | **559 ms** |
+| 100k | 1k rows | trigger | 2406 ms | 2416 ms |
+| 100k | 1k rows | recalc in txn | 1330 ms | 1341 ms |
+| 1M | 1 row | logical | **8 ms** | 234 ms |
+| 1M | 1k rows | logical | 468 ms | 6214 ms |
 
-Logical mode keeps the writer fast at any model size; results trail by about
-one recompute. Trigger mode makes results visible at commit but charges that
-recompute to every write statement. All three are dominated by reloading the
-model's inputs per recompute (about 11 µs per cell); the live incremental
-engine in the worker is what removes it.
+Logical mode keeps the writer fast and, with the incremental apply, now also
+gives the freshest results: at 100k cells a one-row UPDATE is visible about
+50 ms after its commit (it was 1161 ms with a full recompute per batch; 1k
+rows: 559 ms, was 1552 ms). Trigger mode and `recalc` reload the model's
+inputs per recompute (about 11 µs per cell), so they grow with the model.
+The "1k rows" UPDATE (`product <= 'P1999'`, a text comparison) actually
+matches ~11k rows at 100k cells and ~111k at 1M. At 1M cells its cost is the
+engine absorbing ~111k edits (~1.5 s), decoding them (~1.5 s), and scanning
+each changed measure's snapshot for the diff (`MODES=logical SIZES=1000000`;
+the p95s are 2.0 s and 8.0 s).
 
 ## Catalog
 

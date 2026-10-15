@@ -47,8 +47,8 @@ redefines it in Postgres; editing an input cell updates the bound row of
 | | `logical` (default) | `trigger` | `improv.recalc()` |
 | --- | --- | --- | --- |
 | Results update | after the commit, by a background worker | inside the writer's statement | when you call it |
-| Consistency | eventual (lags by about one recompute) | transactional, read-your-writes | transactional, in your snapshot |
-| Writer pays | nothing | the recompute, on every write statement | the recompute, when you choose |
+| Consistency | eventual (lags the commit by one poll plus the change's own work) | transactional, read-your-writes | transactional, in your snapshot |
+| Writer pays | nothing (the worker applies only the changed cells) | the recompute, on every write statement | the recompute, when you choose |
 | Needs | `wal_level = logical`, preload, a PK or `REPLICA IDENTITY FULL` (set for you) | nothing | nothing |
 
 Switch with `SELECT improv.set_sync_mode('plan', 'trigger')` (or `'logical'`,
@@ -59,7 +59,8 @@ returns the derived cells that would change, writing nothing.
 `improv.status('plan')` shows the mode and, in logical mode, the slot's lag.
 
 **Choosing:** use `logical` for busy tables (writers stay fast; measured
-8 ms per UPDATE at 100k cells vs ~1.1 s with a trigger). Use `trigger` when a
+at 100k cells: 8 ms per UPDATE and its results visible ~50 ms later, vs
+~1.1 s with a trigger). Use `trigger` when a
 writer must read derived results in its own transaction. Use `recalc` after
 bulk loads or inside migrations.
 
