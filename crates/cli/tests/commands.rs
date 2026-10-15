@@ -25,6 +25,26 @@ fn improv_stdin(args: &[&str], input: &[u8]) -> Output {
     child.wait_with_output().expect("wait improv")
 }
 
+/// Whether a `Restricted` Python body can run here: it needs python3 and a
+/// working `bwrap` (the sandbox fails closed, e.g. in a container without
+/// user namespaces). Tests that refresh a Python CALL measure skip otherwise.
+fn python_sandbox() -> bool {
+    use improv_core_model::{ExternalFn, Language, ValueType};
+    let probe = ExternalFn {
+        name: "probe".into(),
+        language: Language::Python,
+        body: "result = 1".into(),
+        arg_types: vec![],
+        return_type: ValueType::Number,
+        pure: true,
+    };
+    let ok = improv_extfn::eval(&probe, &[], std::time::Duration::from_secs(5)).is_ok();
+    if !ok {
+        println!("skipped: python3 cannot run in the extfn sandbox here");
+    }
+    ok
+}
+
 fn ok(args: &[&str]) -> String {
     let o = improv(args);
     assert!(
@@ -337,6 +357,9 @@ fn define_formula_and_its_errors() {
 
 #[test]
 fn register_ext_define_call_and_refresh_ext() {
+    if !python_sandbox() {
+        return;
+    }
     let (_dir, db) = model("ext");
     assert_eq!(
         ok(&["register-ext", &db, "dbl", "1", "result = args[0] * 2"]),
@@ -826,6 +849,9 @@ fn sql_commands_report_their_errors() {
 
 #[test]
 fn refresh_all_refreshes_external_and_sql_measures() {
+    if !python_sandbox() {
+        return;
+    }
     let (dir, db) = model("refresh-all");
     let src = sales_source(&dir);
     ok(&["register-ext", &db, "dbl", "1", "result = args[0] * 2"]);
@@ -1039,7 +1065,13 @@ fn every_mutating_command_reports_a_store_save_failure() {
         vec!["refresh-sql", d, &src, "400"],
         vec!["import-csv", d, &csv, "300", "S", "r", "p:8:Zone"],
     ];
-    for args in &cases {
+    // refresh-ext / refresh-all run the Python body before saving; without a
+    // usable sandbox they fail there (covered by the engine), not at the save.
+    let sandbox = python_sandbox();
+    for args in cases
+        .iter()
+        .filter(|a| sandbox || !a[0].starts_with("refresh-"))
+    {
         fails_with(args, "mentat error");
     }
     let o = improv_stdin(&["stream", d, "Revenue"], b"Price 55 Product=WidgetA\n");

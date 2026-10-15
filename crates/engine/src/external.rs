@@ -26,6 +26,12 @@ pub enum ExternalError {
     NotExternal(MeasureId),
     #[error("external function {0:?} is not registered on the model")]
     UnknownFunction(String),
+    #[error("external function {func:?} failed at {coord}: {msg}")]
+    Eval {
+        func: String,
+        coord: String,
+        msg: String,
+    },
     #[error("external function {func:?} takes {expected} args but the measure supplies {got}")]
     ArgCountMismatch {
         func: String,
@@ -36,8 +42,10 @@ pub enum ExternalError {
 
 /// Recompute an external-function measure's cells by invoking its function over
 /// its argument measures, coordinate by coordinate. Returns the number of cells
-/// written. A per-coordinate evaluation failure is stored as `Value::Error` in
-/// that cell (errors are values), not surfaced as a hard error.
+/// written. If the function fails at any coordinate (an exception, a timeout,
+/// no usable sandbox), this returns [`ExternalError::Eval`] and leaves the
+/// measure's previous cells untouched: the results are input cells, and an
+/// error value cannot be stored as one.
 ///
 /// The measure is populated over the set of coordinates for which *every*
 /// argument measure has a value (the natural join of the arguments' cells).
@@ -93,23 +101,49 @@ pub fn refresh_external_measure(
         None => vec![Coordinate::new()],
     };
 
-    // Clear this measure's old cells before repopulating.
-    model.inputs.retain(|(m, _), _| *m != measure);
-
-    let mut count = 0usize;
+    // Evaluate everything first: a failure leaves the old cells in place.
+    let mut results = Vec::with_capacity(coords.len());
     for coord in coords {
         let args: Vec<Value> = arg_cells
             .iter()
             .map(|m| m.get(&coord).cloned().unwrap_or(Value::Number(f64::NAN)))
             .collect();
-        let result = match improv_extfn::eval(&func, &args, timeout) {
-            Ok(v) => v,
-            Err(e) => improv_extfn::error_value(e.to_string()),
-        };
-        model.set_input(measure, coord, result);
-        count += 1;
+        let v = improv_extfn::eval(&func, &args, timeout).map_err(|e| ExternalError::Eval {
+            func: call.func.clone(),
+            coord: coord_label(model, &coord),
+            msg: e.to_string(),
+        })?;
+        results.push((coord, v));
+    }
+    model.inputs.retain(|(m, _), _| *m != measure);
+    let count = results.len();
+    for (coord, v) in results {
+        model.set_input(measure, coord, v);
     }
     Ok(count)
+}
+
+/// `Product=WidgetA, Time=Q1` (item names, falling back to ids).
+fn coord_label(model: &Model, coord: &Coordinate) -> String {
+    if coord.dims.is_empty() {
+        return "the scalar cell".into();
+    }
+    coord
+        .dims
+        .iter()
+        .map(|(c, i)| {
+            let cat = model
+                .categories
+                .get(c)
+                .map_or(c.0.to_string(), |c| c.name.0.clone());
+            let item = model
+                .items
+                .get(i)
+                .map_or(i.0.to_string(), |i| i.name.0.clone());
+            format!("{cat}={item}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[cfg(test)]
@@ -254,7 +288,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_arg_function_fills_one_scalar_cell_and_errors_are_values() {
+    fn zero_arg_function_fills_one_scalar_cell_and_a_failure_keeps_old_cells() {
         let mut m = base_model();
         let wasm = |name: &str, body: &str| ExternalFn {
             name: name.into(),
@@ -282,17 +316,22 @@ mod tests {
                     refresh_policy: Default::default(),
                 },
             );
-            assert_eq!(
-                refresh_external_measure(&mut m, DEFAULT_TIMEOUT, mid).unwrap(),
-                1
-            );
         }
+        assert_eq!(
+            refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(300)).unwrap(),
+            1
+        );
         let here = Coordinate::new();
         assert_eq!(m.input(MeasureId(300), &here), Some(&Value::Number(7.0)));
-        assert!(matches!(
-            m.input(MeasureId(301), &here),
-            Some(Value::Error(_))
-        ));
+        // A failing call is an error naming the function and cell, and the
+        // measure keeps the cells it had (here: one left from earlier).
+        m.set_input(MeasureId(301), here.clone(), Value::Number(1.0));
+        let err = refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(301)).unwrap_err();
+        assert!(
+            matches!(&err, ExternalError::Eval { func, coord, .. } if func == "bad" && coord == "the scalar cell"),
+            "{err}"
+        );
+        assert_eq!(m.input(MeasureId(301), &here), Some(&Value::Number(1.0)));
         assert!(matches!(
             refresh_external_measure(&mut m, DEFAULT_TIMEOUT, MeasureId(100)),
             Err(ExternalError::NotExternal(_))

@@ -2568,6 +2568,7 @@ version = "0.7.0"
 dependencies = [
  "improv_core_model",
  "improv_engine",
+ "improv_extfn",
  "improv_storage_csv",
  "improv_storage_sql",
  "improv_store",

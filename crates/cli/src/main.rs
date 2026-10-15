@@ -1999,6 +1999,25 @@ mod tests {
         model.input(MeasureId(mid), &coord).cloned()
     }
 
+    /// Whether a `Restricted` Python body can run here (python3 + a working
+    /// `bwrap`); see `tests/commands.rs`.
+    fn python_sandbox() -> bool {
+        use improv_core_model::{ExternalFn, Language, ValueType};
+        let probe = ExternalFn {
+            name: "probe".into(),
+            language: Language::Python,
+            body: "result = 1".into(),
+            arg_types: vec![],
+            return_type: ValueType::Number,
+            pure: true,
+        };
+        let ok = improv_extfn::eval(&probe, &[], std::time::Duration::from_secs(5)).is_ok();
+        if !ok {
+            println!("skipped: python3 cannot run in the extfn sandbox here");
+        }
+        ok
+    }
+
     /// A store with SQL measure 400 `Rev` (interval:60) over Region{A} and the
     /// CALL measure 200 `D = dbl(Rev)` (on-load). Returns (db, source, A's id).
     fn serve_fixture(db: &str, src: &str) -> u32 {
@@ -2043,6 +2062,9 @@ mod tests {
 
     #[test]
     fn serve_refresh_tick_refreshes_only_due_measures() {
+        if !python_sandbox() {
+            return;
+        }
         let db = tmp_db();
         let src = format!("{db}.src.sqlite");
         let (_g, _s) = (scopeguard(&db), scopeguard(&src));
