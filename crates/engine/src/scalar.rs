@@ -229,17 +229,26 @@ mod tests {
                 Err(ScalarError::NeedsDimensions(_))
             ));
         }
-        let over = Expr::Ref(
-            A,
+        let cats = vec![CategoryId(1)];
+        for spec in [
             DimensionSpec {
-                over: vec![CategoryId(1)],
+                by: cats.clone(),
                 ..DimensionSpec::default()
             },
-        );
-        assert!(matches!(
-            eval(&over, &none),
-            Err(ScalarError::NeedsDimensions(_))
-        ));
+            DimensionSpec {
+                over: cats.clone(),
+                ..DimensionSpec::default()
+            },
+            DimensionSpec {
+                except: cats.clone(),
+                ..DimensionSpec::default()
+            },
+        ] {
+            assert!(matches!(
+                eval(&Expr::Ref(A, spec), &none),
+                Err(ScalarError::NeedsDimensions(_))
+            ));
+        }
         // Rejected even when the inputs are missing (no NULL-dependent errors).
         let nested = bin(BinaryOp::Add, r(B), call(1, vec![r(A)]));
         assert!(eval(&nested, &none).is_err());

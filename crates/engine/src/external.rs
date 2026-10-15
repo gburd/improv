@@ -288,6 +288,17 @@ mod tests {
     }
 
     #[test]
+    fn coord_label_names_items_and_falls_back_to_ids() {
+        let m = base_model();
+        let product = CategoryId(2);
+        let c = Coordinate::from_pairs([(product, ItemId(20))]);
+        assert_eq!(coord_label(&m, &c), "Product=A");
+        let unknown = Coordinate::from_pairs([(CategoryId(9), ItemId(99)), (product, ItemId(21))]);
+        assert_eq!(coord_label(&m, &unknown), "Product=B, 9=99");
+        assert_eq!(coord_label(&m, &Coordinate::new()), "the scalar cell");
+    }
+
+    #[test]
     fn zero_arg_function_fills_one_scalar_cell_and_a_failure_keeps_old_cells() {
         let mut m = base_model();
         let wasm = |name: &str, body: &str| ExternalFn {
