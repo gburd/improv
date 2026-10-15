@@ -38,6 +38,21 @@ pub struct Edit {
     pub value: Option<CellValue>,
 }
 
+/// The engine cell an input of type `ty` holding `val` contributes: `None`
+/// for a value of another type (text in a number measure, an error), which is
+/// no cell. One rule for the seed and for callers' edits, so an edit and a
+/// rebuild always agree.
+pub fn input_cell(ty: ValueType, val: &Value) -> Option<CellValue> {
+    let typed = matches!(
+        (ty, val),
+        (ValueType::Number, Value::Number(_))
+            | (ValueType::Boolean, Value::Boolean(_))
+            | (ValueType::Text, Value::Text(_))
+            | (ValueType::DateTime, Value::DateTime(_))
+    );
+    CellValue::from_model_value(val).filter(|_| typed)
+}
+
 /// A snapshot of a computed derived measure after an edit round.
 pub type MeasureValues = HashMap<CoordKey, CellValue>;
 
@@ -96,14 +111,8 @@ impl Engine {
         let mut seed: Vec<(MeasureId, CoordKey, CellValue)> = Vec::new();
         let mut current: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
         for ((mid, coord), val) in &model.inputs {
-            let typed = matches!(
-                (model.measures.get(mid).map(|m| m.value_type), val),
-                (Some(ValueType::Number), Value::Number(_))
-                    | (Some(ValueType::Boolean), Value::Boolean(_))
-                    | (Some(ValueType::Text), Value::Text(_))
-                    | (Some(ValueType::DateTime), Value::DateTime(_))
-            );
-            if let Some(cv) = CellValue::from_model_value(val).filter(|_| typed) {
+            let ty = model.measures.get(mid).map(|m| m.value_type);
+            if let Some(cv) = ty.and_then(|t| input_cell(t, val)) {
                 let key = encode_coord(coord);
                 seed.push((*mid, key.clone(), cv.clone()));
                 current.insert((*mid, key), cv);

@@ -1191,11 +1191,12 @@ impl ImprovApp {
     /// Push one input-cell edit through the live engine and adopt the recomputed
     /// snapshot. No engine (no derived measures) -> nothing to do.
     ///
-    /// Only NUMBERS enter the dataflow's numeric lane, so a typed
-    /// (text/boolean/date/error) value CLEARS the engine's cell — exactly what a
-    /// reload would seed (`Engine::new` seeds numeric inputs only). Without
-    /// that, retyping a numeric cell as text would leave derived measures
-    /// computing with a number the cell no longer holds.
+    /// A value of the measure's type (number, boolean, text, date) enters the
+    /// engine as that cell; anything else (text in a number measure, an
+    /// error) CLEARS it, exactly what a rebuild would seed
+    /// ([`improv_engine::session::input_cell`]). Without that, retyping a
+    /// numeric cell as text would leave derived measures computing with a
+    /// number the cell no longer holds.
     fn push_engine(
         &mut self,
         measure: MeasureId,
@@ -1205,11 +1206,17 @@ impl ImprovApp {
         let Some(engine) = &mut self.engine else {
             return Ok(());
         };
-        let snapshot = match value.and_then(|v| v.as_number()) {
-            Some(n) => engine.set(measure, coord.clone(), n),
-            None => engine.clear(measure, coord.clone()),
-        }
-        .map_err(|e| e.to_string())?;
+        let ty = self.model.measures.get(&measure).map(|m| m.value_type);
+        let cell = ty
+            .zip(value)
+            .and_then(|(t, v)| improv_engine::session::input_cell(t, v));
+        let snapshot = engine
+            .apply(vec![improv_engine::session::Edit {
+                measure,
+                coord: coord.clone(),
+                value: cell,
+            }])
+            .map_err(|e| e.to_string())?;
         self.snapshot = snapshot;
         Ok(())
     }
@@ -6540,6 +6547,63 @@ mod tests {
         vec![(1u32, 10u32)]
     }
 
+    /// A typed edit flows through the live engine: a derived measure over a
+    /// Text input (`Label = "go"`) and one over a Boolean (`NOT Active`)
+    /// recompute on the edit itself, not only after a rebuild. Before, a
+    /// non-number edit cleared the engine cell, so both went blank.
+    #[test]
+    fn typed_edits_recompute_their_dependents_live() {
+        let mut m = typed_model();
+        let p = CategoryId(1);
+        let derived = |id: u32, name: &str, expr: Expr| Measure {
+            id: MeasureId(id),
+            name: Name(name.into()),
+            value_type: ValueType::Boolean,
+            categories: vec![p],
+            kind: MeasureKind::Derived(Formula::new(expr)),
+            description: None,
+        };
+        m.add_measure(derived(
+            10,
+            "IsGo",
+            Expr::BinaryOp(
+                improv_core_model::BinaryOp::Eq,
+                Box::new(Expr::Ref(MeasureId(2), Default::default())),
+                Box::new(Expr::Literal(Value::Text("go".into()))),
+            ),
+        ));
+        m.add_measure(derived(
+            11,
+            "Idle",
+            Expr::UnaryOp(
+                improv_core_model::UnaryOp::Not,
+                Box::new(Expr::Ref(MeasureId(3), Default::default())),
+            ),
+        ));
+        let mut app = build_app(m);
+        let key = typed_key();
+        let shown = |app: &ImprovApp, id| app.cell_text(MeasureId(id), &key);
+        assert_eq!(shown(&app, 10).as_deref(), Some("false"));
+        assert_eq!(shown(&app, 11).as_deref(), Some("false"));
+        app.commit_cell_text(MeasureId(2), key.clone(), "go")
+            .unwrap();
+        app.commit_cell_text(MeasureId(3), key.clone(), "false")
+            .unwrap();
+        assert_eq!(
+            shown(&app, 10).as_deref(),
+            Some("true"),
+            "text edit recomputed"
+        );
+        assert_eq!(
+            shown(&app, 11).as_deref(),
+            Some("true"),
+            "bool edit recomputed"
+        );
+        // Clearing the input clears what depends on it.
+        app.commit_cell_text(MeasureId(2), key.clone(), "").unwrap();
+        assert_eq!(shown(&app, 10), None);
+    }
+
     /// Every declared type RENDERS its value. Pre-fix the grid projected input
     /// cells through `f64`, so Text/Boolean/DateTime cells were blank.
     #[test]
@@ -6719,10 +6783,12 @@ mod tests {
             Some("n/a"),
             "the text value is what the grid shows"
         );
-        assert_eq!(
-            app.values_for(MeasureId(102)).get(&key),
-            None,
-            "derived cell must not keep computing from the retracted number"
+        // The text value replaces the number in the engine (typed edits reach
+        // it), and arithmetic over text is NaN, never the stale 70.
+        let revenue = app.values_for(MeasureId(102)).get(&key).copied();
+        assert!(
+            !revenue.is_some_and(f64::is_finite),
+            "derived cell must not keep computing from the retracted number: {revenue:?}"
         );
     }
 
