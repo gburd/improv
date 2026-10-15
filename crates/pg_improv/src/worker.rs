@@ -4,10 +4,11 @@
 //! `shared_preload_libraries`) polls, per model in `logical` mode, a logical
 //! replication slot `improv_<model>` (plugin `pgoutput`, publication
 //! `improv_<model>` over the model's bound relations). When committed source
-//! transactions touched a bound relation it recomputes the model's derived
-//! results and writes them **in one worker transaction that also advances
-//! the slot**, so a crash re-reads and re-applies (the result writes are
-//! idempotent upserts and deletes) and never loses a change.
+//! transactions touched a bound relation it applies their row changes to
+//! the model's derived results and writes them **in one worker transaction
+//! that also advances the slot**, so a crash re-reads and re-applies (the
+//! result writes are idempotent upserts and deletes) and never loses a
+//! change.
 //!
 //! Slots cannot be created in a transaction that has already written, so
 //! `improv.enable_logical` (called by `bind_measure` and
@@ -15,20 +16,34 @@
 //! the intent in `improv.sync_state`; the worker creates the slot at the
 //! start of its own fresh transaction.
 //!
-//! Apply strategy v1: a full recompute per batch (correct and simple; the
-//! cost is one `recalc` per poll that saw changes). A live
-//! `improv_engine::session::Engine` fed with the decoded deltas is the v1.1
-//! follow-up.
+//! Apply strategy (G1): incremental. The worker keeps, per model, a [`Live`]
+//! state: the loaded model, a live [`Engine`] (its own compute thread, which
+//! never calls Postgres) and its last [`Snapshot`]. Each batch's row changes
+//! become input-cell edits ([`live::Mapper`]); the engine recomputes only
+//! what they affect, and only the measures whose snapshot changed are diffed
+//! and written. The worker rebuilds (a full load + compute + diff against
+//! the result tables) when there is no live state, the model's
+//! `model_version` moved (a structural change), or the batch cannot be
+//! applied cell by cell (TRUNCATE, a new dimension value, …). Any error
+//! drops the live state, so the next poll rebuilds from the tables.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::Arc;
 use std::time::Duration;
 
+use improv_core_model::{MeasureId, Model, Value};
+use improv_engine::session::{Engine, MeasureValues, Snapshot};
 use improv_pg_model as pm;
+use improv_pg_model::live::{self, Rebuild};
 use improv_pg_model::pgoutput;
 use pgrx::bgworkers::*;
+use pgrx::datum::DatumWithOid;
 use pgrx::prelude::*;
 use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting};
 
-use super::{bump_version, lock_model, req, Res};
+use super::{bump_version, id32, lock_model, read_results, req, Res, MAX_CELLS};
 
 /// `improv.database`: the database the sync worker connects to.
 pub(crate) static DATABASE: GucSetting<Option<std::ffi::CString>> =
@@ -286,6 +301,8 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         // (A Postgres ERROR is not a Rust `Err`: querying a missing
         // `improv.*` table would unwind out of the worker and kill it.)
         if !BackgroundWorker::transaction(installed) {
+            // A re-created extension reuses model ids: forget them.
+            LIVE.with(|l| l.borrow_mut().clear());
             continue;
         }
         // Each model in its own transaction, so one model's error neither
@@ -294,6 +311,10 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
             PgTryBuilder::new(|| list_models().unwrap_or_default())
                 .catch_others(|_| Vec::new())
                 .execute()
+        });
+        LIVE.with(|l| {
+            l.borrow_mut()
+                .retain(|mid, _| models.iter().any(|(m, _)| m == mid))
         });
         for (mid, name) in models {
             // Slot creation needs a transaction that has not written (and a
@@ -313,6 +334,30 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
                     .catch_others(|e| Err(format!("{e:?}")))
                     .execute()
             });
+            if r == Ok(true) {
+                // The slot's restart point only moves past a running-xacts
+                // WAL record (the bgwriter logs one every 15 s), and every
+                // peek and advance re-decodes from it. Log one now, in a
+                // transaction without an xid (one logged inside the tick
+                // names the tick as running and pins the restart point), so
+                // the next advance moves it here and a poll re-reads about
+                // one batch of WAL, not everything since the bgwriter's last.
+                BackgroundWorker::transaction(|| {
+                    PgTryBuilder::new(|| {
+                        Spi::connect(|c| {
+                            c.select(
+                                "SELECT pg_log_standby_snapshot() WHERE NOT pg_is_in_recovery()",
+                                None,
+                                &[],
+                            )
+                            .map(|_| ())
+                        })
+                    })
+                    .catch_others(|_| Ok(()))
+                    .execute()
+                    .unwrap_or(())
+                });
+            }
             if let Err(e) = r {
                 BackgroundWorker::transaction(|| {
                     let _ = Spi::run_with_args(
@@ -368,7 +413,6 @@ fn list_models() -> Res<Vec<(i64, String)>> {
     })
 }
 
-/// One poll of one model, inside the caller's (worker) transaction.
 /// Make sure model `name`'s slot exists with the `pgoutput` plugin. Runs in
 /// its own worker transaction, before anything in it writes (Postgres
 /// refuses to create a slot otherwise). A slot left without a plugin by an
@@ -417,7 +461,37 @@ fn ensure_slot(name: &str) -> Res<bool> {
     Ok(true)
 }
 
-fn tick(mid: i64, name: &str) -> Res<()> {
+thread_local! {
+    /// The worker's live state per model id (the worker is one thread).
+    static LIVE: RefCell<HashMap<i64, Live>> = RefCell::new(HashMap::new());
+}
+
+/// A model kept loaded between polls, with its live engine.
+struct Live {
+    /// The model's name and `model_version` when this was built: a change
+    /// to either rebuilds.
+    name: String,
+    version: i64,
+    /// The model with its current input cells (the mapper keeps it current).
+    model: Model,
+    mapper: live::Mapper,
+    engine: Engine,
+    /// The engine's output as last written to the result tables.
+    snapshot: Snapshot,
+    /// Per derived measure: its result table and dimension columns.
+    tables: Vec<(MeasureId, String, Vec<String>)>,
+    /// Transactions that ended at or before this WAL position may already
+    /// be in the load this was built from.
+    replay_until: u64,
+}
+
+/// One poll of one model, inside the caller's (worker) transaction.
+/// Returns whether it advanced the slot.
+fn tick(mid: i64, name: &str) -> Res<bool> {
+    // Taken out for the poll and put back only on success: any error (or a
+    // Postgres ERROR unwinding through here) drops it, and the next poll
+    // rebuilds from the tables.
+    let mut state = LIVE.with(|l| l.borrow_mut().remove(&mid));
     let slot = pm::slot_name(name)?;
     // A brand-new slot starts at the current WAL position: everything
     // committed before it is caught up by one full recompute.
@@ -429,9 +503,11 @@ fn tick(mid: i64, name: &str) -> Res<()> {
     if !caught_up {
         ensure_replica_identity(mid)?;
         let _ = lock_model(name)?;
-        let changed = super::trigger::recompute_all(mid, name)?;
+        drop(state);
+        let (state, changed) = rebuild(mid, name)?;
         record(mid, changed, None)?;
-        return Ok(());
+        keep(mid, state);
+        return Ok(false);
     }
     let max = MAX_CHANGES.get().max(1);
     let rows: Vec<(String, Vec<u8>)> = Spi::connect(|c| -> Res<_> {
@@ -444,9 +520,6 @@ fn tick(mid: i64, name: &str) -> Res<()> {
         .map(|r| Ok((req(&r, 1)?, req(&r, 2)?)))
         .collect()
     })?;
-    if rows.is_empty() {
-        return Ok(());
-    }
     let mut stream = pgoutput::Stream::default();
     for (_, data) in &rows {
         stream.feed(data)?;
@@ -454,13 +527,30 @@ fn tick(mid: i64, name: &str) -> Res<()> {
     // Only whole committed transactions are applied; a transaction cut off
     // by `max_changes` is re-read next poll.
     let Some(last) = stream.done.last() else {
-        return Ok(());
+        keep(mid, state);
+        return Ok(false);
     };
     let advance_to = last.end_lsn;
     let touched = stream.done.iter().any(|t| !t.changes.is_empty());
     let changed = if touched {
         let _ = lock_model(name)?;
-        super::trigger::recompute_all(mid, name)?
+        let version = model_version(mid)?;
+        let applied = match state.as_mut() {
+            Some(l) if l.version == version && l.name == name => apply(l, &stream)?,
+            _ => Err(Rebuild("no live state")),
+        };
+        match applied {
+            Ok(n) => n,
+            Err(why) => {
+                log!("pg_improv sync: model {name}: rebuilding ({})", why.0);
+                // Free the old engine before building one. The load runs
+                // after the peek, so it already holds this batch.
+                drop(state.take());
+                let (l, n) = rebuild(mid, name)?;
+                state = l;
+                n
+            }
+        }
     } else {
         0
     };
@@ -469,7 +559,225 @@ fn tick(mid: i64, name: &str) -> Res<()> {
         &[slot.into(), pgoutput::format_lsn(advance_to).into()],
     )?;
     record(mid, changed, Some(advance_to))?;
-    Ok(())
+    keep(mid, state);
+    Ok(true)
+}
+
+fn keep(mid: i64, state: Option<Live>) {
+    if let Some(l) = state {
+        LIVE.with(|m| m.borrow_mut().insert(mid, l));
+    }
+}
+
+fn model_version(mid: i64) -> Res<i64> {
+    Ok(Spi::get_one_with_args::<i64>(
+        "SELECT tx FROM improv.model_version WHERE model_id = $1",
+        &[mid.into()],
+    )?
+    .unwrap_or(0))
+}
+
+/// Apply a batch to live state `l` incrementally and write the changed
+/// result rows; `Ok(Err(_))` when the batch needs a rebuild instead (then
+/// `l` is stale: drop it).
+fn apply(l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, Rebuild>> {
+    let edits = match l.mapper.map(
+        &mut l.model,
+        &stream.relations,
+        &stream.done,
+        l.replay_until,
+    ) {
+        Ok(e) => e,
+        Err(why) => return Ok(Err(why)),
+    };
+    pm::check_cell_budget(l.model.inputs.len(), MAX_CELLS.get().max(0) as usize)?;
+    if edits.is_empty() {
+        return Ok(Ok(0));
+    }
+    check_for_interrupts!();
+    let snapshot = l.engine.apply(edits)?;
+    let mut changed = 0;
+    for (target, table, dims) in &l.tables {
+        let (old, new) = (l.snapshot.get(target), snapshot.get(target));
+        // Copy-on-write: a measure the edits did not reach is the same Arc.
+        let same = match (old, new) {
+            (Some(o), Some(n)) => Arc::ptr_eq(o, n),
+            (o, n) => o.is_none() && n.is_none(),
+        };
+        if same {
+            continue;
+        }
+        let empty = MeasureValues::new();
+        let (old, new) = (old.map_or(&empty, |m| m), new.map_or(&empty, |m| m));
+        // ponytail: O(cells of each changed measure) per batch (and the engine
+        // copies a changed measure whole while `l.snapshot` holds it); an
+        // engine API returning the output delta lifts both.
+        let mut was = MeasureValues::new();
+        let mut now = MeasureValues::new();
+        for (k, v) in new {
+            if old.get(k) != Some(v) {
+                now.insert(k.clone(), v.clone());
+                if let Some(o) = old.get(k) {
+                    was.insert(k.clone(), o.clone());
+                }
+            }
+        }
+        for (k, v) in old {
+            if !new.contains_key(k) {
+                was.insert(k.clone(), v.clone());
+            }
+        }
+        changed += write(
+            table,
+            dims,
+            &pm::result_rows(&l.model, *target, &was)?,
+            &pm::result_rows(&l.model, *target, &now)?,
+        )?;
+    }
+    l.snapshot = snapshot;
+    Ok(Ok(changed))
+}
+
+/// Load model `mid` from its tables, compute every derived measure, and
+/// write the result rows that differ from the tables. Returns the live state
+/// (none for a model the live engine cannot serve) and the rows changed.
+fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
+    let model = super::trigger::load(mid, name.to_string(), true)?.model;
+    // Everything the load saw committed before this position.
+    let replay_until = Spi::get_one::<String>("SELECT pg_current_wal_insert_lsn()::text")?
+        .as_deref()
+        .and_then(pgoutput::parse_lsn)
+        .ok_or("cannot read the WAL insert position")?;
+    if model
+        .inputs
+        .values()
+        .any(|v| !matches!(v, Value::Number(_)))
+    {
+        // ponytail: the live engine takes numeric inputs only; such models
+        // recompute in full per batch (reloading once more) until it types
+        // its input lanes.
+        return Ok((None, super::trigger::recompute_all(mid, name)?));
+    }
+    let mapper = live::Mapper::new(&model, bindings(mid)?);
+    let version = model_version(mid)?;
+    let targets = super::trigger::all_derived(&model);
+    let (engine, snapshot) = start_engine(&model, &targets)?;
+    let mut tables = Vec::with_capacity(targets.len());
+    let mut changed = 0;
+    let empty = MeasureValues::new();
+    for &target in &targets {
+        check_for_interrupts!();
+        let measure = &model.measures[&target].name.0;
+        pm::validate_name("measure", measure)?;
+        let table = pm::result_table(name, measure);
+        let dims = pm::dim_columns(&model, target)?;
+        // Checked first: `IF NOT EXISTS` would NOTICE on every statement.
+        if !super::trigger::exists(&table)? {
+            Spi::run(&format!(
+                "CREATE SCHEMA IF NOT EXISTS {}",
+                pm::quote_ident(&pm::result_schema(name))
+            ))?;
+            Spi::run(&pm::create_table_sql(&table, &dims))?;
+        }
+        let new = pm::result_rows(&model, target, snapshot.get(&target).map_or(&empty, |m| m))?;
+        changed += write(&table, &dims, &read_results(&table, &dims)?, &new)?;
+        tables.push((target, table, dims));
+    }
+    let l = Live {
+        name: name.to_string(),
+        version,
+        model,
+        mapper,
+        engine,
+        snapshot,
+        tables,
+        replay_until,
+    };
+    Ok((Some(l), changed))
+}
+
+/// `Engine::new` with every Postgres-handled signal blocked, so the compute
+/// thread it spawns inherits a mask that never runs a Postgres signal
+/// handler off the worker's main thread.
+fn start_engine(model: &Model, targets: &[MeasureId]) -> Res<(Engine, Snapshot)> {
+    // SAFETY: sets this thread's signal mask to Postgres' BlockSig; restored
+    // to the worker's usual mask (UnBlockSig) below, panic or not.
+    unsafe { pg_sys::BackgroundWorkerBlockSignals() };
+    let r = catch_unwind(AssertUnwindSafe(|| Engine::new(model, targets)));
+    // SAFETY: as above.
+    unsafe { pg_sys::BackgroundWorkerUnblockSignals() };
+    match r {
+        Ok(r) => Ok(r?),
+        Err(_) => Err("improv engine panicked while starting".into()),
+    }
+}
+
+/// Run the statements that turn result rows `old` into `new`; returns the
+/// rows changed.
+fn write(table: &str, dims: &[String], old: &pm::ResultRows, new: &pm::ResultRows) -> Res<i64> {
+    let mut changed = 0;
+    for st in pm::diff_statements(table, dims, old, new) {
+        let mut args: Vec<DatumWithOid> = st.dims.iter().map(|d| d.clone().into()).collect();
+        if let Some(v) = &st.values {
+            args.push(v.clone().into());
+        }
+        Spi::run_with_args(&st.sql, &args)?;
+        changed += st.rows() as i64;
+    }
+    Ok(changed)
+}
+
+/// Model `mid`'s bindings, per relation oid.
+fn bindings(mid: i64) -> Res<HashMap<u32, Vec<live::Binding>>> {
+    type Row = (i64, i64, String, Vec<i64>, Vec<String>, bool);
+    let rows: Vec<Row> = Spi::connect(|c| -> Res<_> {
+        c.select(
+            // `agg` via to_jsonb: the column is newer than this query.
+            "SELECT b.measure_id, b.rel::oid::int8, b.value_col, \
+                    ARRAY(SELECT c.id FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
+                          JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
+                          ORDER BY u.ord), \
+                    ARRAY(SELECT b.dim_cols ->> c.name \
+                          FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
+                          JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
+                          ORDER BY u.ord), \
+                    to_jsonb(b) ->> 'agg' IS NOT NULL \
+             FROM improv.binding b \
+             JOIN improv.measure m ON m.model_id = b.model_id AND m.id = b.measure_id \
+             WHERE b.model_id = $1",
+            None,
+            &[mid.into()],
+        )?
+        .map(|r| {
+            Ok((
+                req(&r, 1)?,
+                req(&r, 2)?,
+                req(&r, 3)?,
+                req(&r, 4)?,
+                req(&r, 5)?,
+                req(&r, 6)?,
+            ))
+        })
+        .collect()
+    })?;
+    let mut out: HashMap<u32, Vec<live::Binding>> = HashMap::new();
+    for (measure, rel, value_col, cats, cols, aggregated) in rows {
+        let dims = cats
+            .into_iter()
+            .map(|c| id32(c).map(improv_core_model::CategoryId))
+            .zip(cols)
+            .map(|(c, col)| c.map(|c| (c, col)))
+            .collect::<Res<Vec<_>>>()?;
+        out.entry(u32::try_from(rel)?)
+            .or_default()
+            .push(live::Binding {
+                measure: MeasureId(id32(measure)?),
+                value_col,
+                dims,
+                aggregated,
+            });
+    }
+    Ok(out)
 }
 
 fn record(mid: i64, changed: i64, lsn: Option<u64>) -> Res<()> {

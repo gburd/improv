@@ -76,6 +76,19 @@ group by source transaction, apply each source transaction's deltas to the
 engine, write the result delta to the result tables **in one worker
 transaction that also advances the slot** (`pg_replication_slot_advance`) —
 so a crash re-reads and re-applies (idempotent upserts), never loses.
+- Built (G1): the worker keeps per model the loaded `Model`, the live
+  `Engine` and its last `Snapshot` (a worker-thread-local map; the engine
+  thread is spawned with Postgres' signals blocked). `pg_model::live::Mapper`
+  turns a batch's row changes into one edit per changed input cell (INSERT
+  sets, DELETE removes, UPDATE sets or moves; NULL value = remove, NULL
+  dimension = skip). Only measures whose snapshot `Arc` changed are diffed,
+  old against new snapshot, and written. It rebuilds (full load, compute,
+  diff against the tables) when there is no state, `model_version` moved,
+  on TRUNCATE, a new item, a duplicate coordinate, an aggregated binding, or
+  an old row whose dimensions were not replicated; any error drops the
+  state. After each batch it logs a standby snapshot so the slot's restart
+  point keeps up and each poll decodes only new WAL. 100k cells, p50
+  freshness: 1-row 1161 → 52 ms, bulk 1552 → 559 ms.
 - ✚ zero cost in the writer's transaction; batching; survives restarts
   (slot position is the checkpoint); replicas get result tables via WAL.
 - ✖ results lag the commit (eventual); needs `wal_level=logical` and
@@ -236,8 +249,8 @@ SELECT product, margin(price, cost) FROM sales;
 
 | # | Gap | Fix |
 | --- | --- | --- |
-| G1 | Logical mode recomputes the whole model per batch (~11 µs/cell) | The worker keeps a live `session::Engine` per model, applies decoded row changes as edits, and writes only the changed result cells. Rebuilt on a structural change (`model_version` moved), TRUNCATE, or an error. |
-| G2 | A GUI save rewrites every bound cell it loaded, clobbering SQL edits | `storage_pg` saves are diff-based against the loaded snapshot, with a per-cell optimistic check (`… WHERE value IS NOT DISTINCT FROM <loaded>`; zero rows → `Conflict`). A removed bound cell sets the value column to NULL (never deletes the row, which may hold other measures). Structural saves never delete rows the saver did not load. **Done** (`work/pgstore`): `PgModelStore` keeps a `PgSnapshot` from load/save; an added cell fills a NULL-valued row or inserts a missing one, and a filled row is a `Conflict`. The GUI/TUI open a fresh handle per save and must carry the snapshot (`snapshot`/`set_snapshot`) as they carry `loaded_tx`. Until they do, those saves write everything unchecked. |
+| G1 | Logical mode recomputes the whole model per batch (~11 µs/cell) | **Done.** The worker keeps a live `session::Engine` per model, applies decoded row changes as edits (`pg_model::live`), and writes only the changed result cells. Rebuilt on a structural change (`model_version` moved), TRUNCATE, a new item, or an error. 100k-cell freshness p50: 1161 → 52 ms (1 row), 1552 → 559 ms (bulk). |
+| G2 | A GUI save rewrites every bound cell it loaded, clobbering SQL edits | `storage_pg` saves are diff-based against the loaded snapshot, with a per-cell optimistic check (`… WHERE value IS NOT DISTINCT FROM <loaded>`; zero rows → `Conflict`). A removed bound cell sets the value column to NULL (never deletes the row, which may hold other measures). Structural saves never delete rows the saver did not load. |
 | G3 | Client and extension both mint item ids | One SQL function, `improv.mint_items(model_id, category_ids[], names[])`, used by both, serialized per model; unique index on `(model_id, category_id, name)`. Minting is append-only and does **not** bump `model_version`. |
 | G4 | Duplicate rows per coordinate are rejected | `improv.binding.agg ∈ {sum, avg, min, max, count}` (NULL = duplicates are an error). `bind_measure(…, agg => 'sum')`. Aggregated measures are read-only in the GUI. |
 | G5 | Measures must be numbers | `bind_measure` infers the value type from the column type (§9.1 mapping); result tables get a typed `value` column; `define` accepts boolean, text and date results. |

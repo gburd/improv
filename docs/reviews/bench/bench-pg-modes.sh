@@ -11,6 +11,7 @@ D=${PGI_DATA:-$HOME/pgi-bench}
 P=${PGI_PORT:-55434}
 SIZES=${SIZES:-"10000 100000"}
 REPS=${REPS:-15}
+MODES=${MODES:-"logical trigger manual"}
 OUT=${OUT:-$HOME/pgi-bench.csv}
 
 cleanup() {
@@ -85,7 +86,7 @@ measure() { # mode cells op i
 }
 
 for n in $SIZES; do
-	for mode in logical trigger manual; do
+	for mode in $MODES; do
 		echo "== $mode @ $n cells"
 		setup "$mode" "$n"
 		for op in single bulk1k; do

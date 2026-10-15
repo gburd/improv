@@ -114,7 +114,46 @@ q "CREATE TABLE big AS SELECT 'Q'||(g%4+1) quarter, 'P'||g product, 1.0::float8 
 q "INSERT INTO sales SELECT * FROM big"
 wait_for "SELECT count(*) FROM improv_plan.revenue" 2008 "bulk load" >/dev/null
 bulk() { q "UPDATE sales SET qty = qty + 1 WHERE product LIKE 'P%' AND product <= 'P1999'; UPDATE sales SET price = $((300 + $1)) WHERE quarter='Q1' AND product='Widget'"; echo $(( (300 + $1) * 200 )); }
-echo "latency (commit -> derived result visible; improv.poll_ms=50; full recompute per batch):"
+echo "latency (commit -> derived result visible; improv.poll_ms=50; incremental apply):"
 lat "$N_SINGLE" single "1-row UPDATE (~2k-cell model)"
 lat "$N_BULK" bulk "~2k-row UPDATE (~2k-cell model)"
+
+# 7. a structural change (a new derived measure) rebuilds the live state
+q "SELECT improv.define('plan','Double = Revenue * 2')"
+q "UPDATE sales SET price = 7 WHERE quarter='Q1' AND product='Widget'"
+wait_for "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'" 2800 "new measure" >/dev/null
+echo "ok: a measure defined while live is computed on the next change (2800)"
+
+# 8. incremental at 100k cells: a one-cell UPDATE rewrites exactly the
+#    affected result rows (Revenue[Q1,P1] and Total[P1]) and does not rebuild
+q "CREATE TABLE wide (quarter text, product text, price float8, qty float8)"
+q "INSERT INTO wide SELECT 'Q'||q, 'P'||p, 1, 1 FROM generate_series(1,4) q, generate_series(1,25000) p"
+q "SELECT improv.create_model('wide')"
+q "SELECT improv.bind_category('wide','Time','wide','quarter')"
+q "SELECT improv.bind_category('wide','Product','wide','product')"
+q "SELECT improv.bind_measure('wide','Price','wide','price')"
+q "SELECT improv.bind_measure('wide','Quantity','wide','qty')"
+q "SELECT improv.define('wide','Revenue = Price * Quantity')"
+q "SELECT improv.define('wide','Total = SUM(Revenue OVER Time)')"
+WREV="SELECT value FROM improv_wide.revenue WHERE time='Q1' AND product='P1'"
+q "UPDATE wide SET price = 2 WHERE quarter='Q1' AND product='P1'" # warm the live state
+wait_for "$WREV" 2 "wide warm-up" >/dev/null
+wait_for "SELECT count(*) FROM improv_wide.revenue" 100000 "wide catch-up" >/dev/null
+xmax() { q "SELECT max(xmin::text::bigint) FROM improv_wide.$1"; }
+rx=$(xmax revenue) tx=$(xmax total) logpos=$(wc -c <"$D/log")
+q "UPDATE wide SET price = 3 WHERE quarter='Q1' AND product='P1'"
+wait_for "$WREV" 3 "wide one-cell update" >/dev/null
+wait_for "SELECT value FROM improv_wide.total WHERE product='P1'" 6 "wide total" >/dev/null
+nr=$(q "SELECT count(*) FROM improv_wide.revenue WHERE xmin::text::bigint > $rx")
+nt=$(q "SELECT count(*) FROM improv_wide.total WHERE xmin::text::bigint > $tx")
+[ "$nr $nt" = "1 1" ] || { echo "FAIL: one-cell update rewrote $nr revenue + $nt total rows"; exit 1; }
+if tail -c +$((logpos + 1)) "$D/log" | grep -q "model wide: rebuilding"; then
+	echo "FAIL: one-cell update rebuilt the model"; exit 1
+fi
+echo "ok: 100k-cell model, one-cell UPDATE rewrote 1 revenue + 1 total row, no rebuild"
+
+# 9. TRUNCATE rebuilds: every result row goes
+q "TRUNCATE wide"
+wait_for "SELECT count(*) FROM improv_wide.revenue" 0 "truncate" >/dev/null
+echo "ok: TRUNCATE emptied the results"
 echo "PASS"

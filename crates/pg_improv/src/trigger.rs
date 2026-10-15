@@ -34,9 +34,9 @@ const EVENTS: [(&str, &str, &str); 4] = [
 ];
 
 /// A model with every input cell loaded.
-struct Loaded {
+pub(crate) struct Loaded {
     name: String,
-    model: Model,
+    pub(crate) model: Model,
 }
 
 /// Load model `mid` (named `name`) with its bound and unbound input cells.
@@ -44,7 +44,7 @@ struct Loaded {
 /// change: the version is bumped) when `persist`, else kept in memory.
 // ponytail: duplicates L0 `recalc`'s loading; fold `recalc(text)` onto
 // `load` + `recompute` once L1 and L2 have merged.
-fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
+pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
     pm::validate_name("model", &name)?;
     let mut model = pm::build_model(&read_catalog(mid)?)?;
     let bindings: Vec<(i64, String, String, Vec<String>)> = Spi::connect(|c| -> Res<_> {
@@ -115,7 +115,7 @@ fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
 }
 
 /// Every derived measure, sorted.
-fn all_derived(m: &Model) -> Vec<MeasureId> {
+pub(crate) fn all_derived(m: &Model) -> Vec<MeasureId> {
     let mut v: Vec<MeasureId> = m
         .measures
         .values()
@@ -148,7 +148,7 @@ fn evaluate(m: &Model, targets: &[MeasureId]) -> Res<Cells> {
 }
 
 /// Whether relation `table` exists.
-fn exists(table: &str) -> Res<bool> {
+pub(crate) fn exists(table: &str) -> Res<bool> {
     Ok(
         Spi::get_one_with_args::<bool>("SELECT to_regclass($1) IS NOT NULL", &[table.into()])?
             == Some(true),
