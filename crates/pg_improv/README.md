@@ -95,7 +95,7 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
 | `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once. `logical`/`manual`: removes them. Re-run it after binding a new relation. |
-| `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value float8)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. |
+| `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value jsonb)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. |
 | `enable_logical(model)` | Creates (or resets) the publication `improv_<model>` over the bound relations and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
 | `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error)` | How the model is kept current, and how far the logical worker is behind. |
 | `drop_model(name)` | Drops the catalog rows, the result schema, the triggers and the publication, and queues the slot for the worker to drop. |
@@ -118,7 +118,8 @@ measure has the type its formula gives (`Price > 15` is boolean):
 Any other column type is an ERROR. `agg => 'count'` is a number; `sum` and
 `avg` need a number column. A measure's type cannot change: if a result
 table exists with another `value` type, drop the model and rebuild it.
-`what_if` reports number measures only.
+`what_if` edits and results are JSON of the measure's type: a number, a
+bool, a string, or a datetime as an RFC 3339 string (`"2026-01-02T00:00:00+00:00"`).
 
 `improv.max_cells` (default 5 000 000, settable per session) caps the number
 of input cells `recalc` loads; above it, `recalc` raises an ERROR.

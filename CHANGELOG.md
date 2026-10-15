@@ -55,6 +55,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **`improv_engine::session::Edit::value` is a `CellValue`** (was `f64`), so
   the live engine takes boolean, text and date edits and seeds every typed
   input cell. `Engine::set` still takes an `f64`.
+- **`improv.what_if` returns `jsonb` values** (was `float8`), so it reports
+  boolean, text and date measures too (dates as RFC 3339 strings), and its
+  edits may set inputs of those types.
 
 ### Fixed
 

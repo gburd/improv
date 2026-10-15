@@ -38,7 +38,7 @@ use improv_engine::{CellValue, CoordKey};
 mod delta;
 pub use delta::{
     apply_edits, cell_changes, coord_json, dependents, measure_ids, plan, quote_literal, slot_name,
-    sync_trigger_name, touched_sql, Plan, Scope,
+    sync_trigger_name, touched_sql, value_json, Plan, Scope,
 };
 
 /// Longest accepted model/category/measure name. Postgres truncates
@@ -492,23 +492,30 @@ pub fn load_cells(model: &mut Model, cells: &[(u32, String, String)]) -> Result<
         let dims: BTreeMap<CategoryId, ItemId> =
             serde_json::from_str(coord).map_err(|e| bad(&e.to_string()))?;
         let json: J = serde_json::from_str(value).map_err(|e| bad(&e.to_string()))?;
-        let v = match (vt, &json) {
-            (ValueType::Number, J::Number(n)) => n.as_f64().map(Value::Number),
-            (ValueType::Enum, J::Number(n)) => n
-                .as_u64()
-                .and_then(|n| u32::try_from(n).ok())
-                .map(Value::Enum),
-            (ValueType::Boolean, J::Bool(b)) => Some(Value::Boolean(*b)),
-            (ValueType::Text, J::String(s)) => Some(Value::Text(s.clone())),
-            (ValueType::DateTime, J::String(s)) => chrono::DateTime::parse_from_rfc3339(s)
-                .ok()
-                .map(|d| Value::DateTime(d.with_timezone(&chrono::Utc))),
-            _ => None,
-        }
-        .ok_or_else(|| bad(&format!("{json} is not a {} value", value_type_name(vt))))?;
+        let v = json_value(vt, &json)
+            .ok_or_else(|| bad(&format!("{json} is not a {} value", value_type_name(vt))))?;
         model.set_input(MeasureId(*mid), Coordinate { dims }, v);
     }
     Ok(cells.len())
+}
+
+/// A JSON scalar as a `vt` value: a number, an enum ordinal, a bool, a
+/// string, or a datetime as an RFC 3339 string. `None` when it is not one.
+pub(crate) fn json_value(vt: ValueType, json: &serde_json::Value) -> Option<Value> {
+    use serde_json::Value as J;
+    match (vt, json) {
+        (ValueType::Number, J::Number(n)) => n.as_f64().map(Value::Number),
+        (ValueType::Enum, J::Number(n)) => n
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .map(Value::Enum),
+        (ValueType::Boolean, J::Bool(b)) => Some(Value::Boolean(*b)),
+        (ValueType::Text, J::String(s)) => Some(Value::Text(s.clone())),
+        (ValueType::DateTime, J::String(s)) => chrono::DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| Value::DateTime(d.with_timezone(&chrono::Utc))),
+        _ => None,
+    }
 }
 
 /// Refuse a model whose input exceeds the `improv.max_cells` budget.
