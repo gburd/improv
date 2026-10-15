@@ -196,6 +196,7 @@ cargo run -p improv_tui -- model.db
 | `S` | Save the current layout as a view |
 | `v` | Cycle through saved views |
 | `Tab` / `m` | Cycle the measure shown |
+| `R` | Revert to the saved model (after a save conflict) |
 | `q` | Quit (autosaves) |
 
 Run against the `model.db` built above to see `Revenue` pivoted over

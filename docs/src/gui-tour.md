@@ -23,7 +23,8 @@ The window has five regions:
   its black `Improv` title bar to move it. An item marked with a triangle opens
   a submenu to its right; click it again, press Escape or click elsewhere to
   close it. **Info ▸ Info Panel…** shows or hides the Info panel; **File ▸
-  Save** saves the model, and **Import/Export CSV…** opens the CSV wizard;
+  Save** saves the model, **Revert to Saved** reloads it from the store (the
+  way out of a save conflict), and **Import/Export CSV…** opens the CSV wizard;
   **Edit** has Undo and Redo; **Worksheet** has Pivot, Add Matrix, Remove
   Matrix and Save View; **View** has **Model Browser**, which shows or hides the model browser,
   then lists the saved views, with a check on the

@@ -8,6 +8,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Revert to Saved** after a save conflict: GUI *File ▸ Revert to Saved*
+  and TUI `R` reload the model from the store (with a fresh save token),
+  picking up the other writer's changes, so the conflicting edit can be
+  redone. Undo history is dropped; a failed reload changes nothing.
 - **`LANGUAGE improv`: SQL functions written in Improv's formula language**
   (`crates/pg_improv`). `CREATE FUNCTION margin(price float8, cost float8)
   RETURNS float8 LANGUAGE improv AS $$ price - cost $$`. A trusted language:

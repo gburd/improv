@@ -2002,6 +2002,32 @@ impl ImprovApp {
         r
     }
 
+    /// File ▸ Revert to Saved: reload the model from the store (with a fresh
+    /// save token) and rebuild the engine. After a save conflict this is the
+    /// way forward: the edit that conflicted was already rolled back, and the
+    /// reload picks up the other writer's changes. Undo history is dropped
+    /// (it describes a model that no longer matches the store). On failure
+    /// nothing changes.
+    pub fn revert_to_saved(&mut self) -> Result<(), String> {
+        if self.db.is_empty() {
+            return Ok(());
+        }
+        let mut store = Store::open(&self.db).map_err(|e| format!("revert failed: {e}"))?;
+        let model = store
+            .load_model()
+            .map_err(|e| format!("revert failed: {e}"))?;
+        let (engine, snapshot) = try_build_engine(&model)?;
+        self.model = model;
+        self.engine = engine;
+        self.snapshot = snapshot;
+        self.save_token = store.save_token();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.dirty = false;
+        self.after_history_restore();
+        Ok(())
+    }
+
     /// Read-only inspector facts for `measure` (see `inspector` panel).
     fn inspector_data(&self, measure: MeasureId) -> Option<InspectorData> {
         let m = self.model.measures.get(&measure)?;
@@ -2651,7 +2677,7 @@ impl ImprovApp {
             Command::Redo => self.can_redo(),
             Command::RemoveMatrix => self.matrix_count() > 1,
             // In-memory models have no store: never claim "saved".
-            Command::SaveModel => !self.db.is_empty(),
+            Command::SaveModel | Command::RevertToSaved => !self.db.is_empty(),
             _ => true,
         }
     }
@@ -2667,6 +2693,12 @@ impl ImprovApp {
             Command::SaveModel => {
                 self.status = match self.save() {
                     Ok(()) => "saved model".into(),
+                    Err(e) => e,
+                };
+            }
+            Command::RevertToSaved => {
+                self.status = match self.revert_to_saved() {
+                    Ok(()) => "reverted to the saved model".into(),
                     Err(e) => e,
                 };
             }
@@ -11474,6 +11506,19 @@ mod tests {
             .expect_err("overwriting a concurrent SQL edit is a conflict");
         assert!(err.contains("conflict"), "{err}");
         assert_eq!(price(&mut sql, "Q1"), 99.0, "the SQL value is untouched");
+
+        // File ▸ Revert to Saved picks up the SQL edit; the retried edit saves.
+        assert!(app.command_enabled(Command::RevertToSaved));
+        app.revert_to_saved().expect("revert");
+        assert_eq!(
+            app.model.input(MeasureId(100), &at(q1)),
+            Some(&Value::Number(99.0))
+        );
+        assert!(!app.can_undo() && !app.dirty);
+        app.model
+            .set_input(MeasureId(100), at(q1), Value::Number(12.0));
+        app.save().expect("the retried edit saves after the revert");
+        assert_eq!(price(&mut sql, "Q1"), 12.0);
         sql.batch_execute(&format!(
             "DROP TABLE {table}; DELETE FROM improv.model WHERE name = '{model}'"
         ))

@@ -20,6 +20,9 @@ pub enum Command {
     /// Show or hide the model browser window.
     ModelBrowser,
     SaveModel,
+    /// Reload the model from the store, dropping in-memory state (the way
+    /// out of a save conflict: another writer changed the model).
+    RevertToSaved,
     Undo,
     Redo,
     PivotRotate,
@@ -67,6 +70,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Open…", None, None),
             ("Save", Some('s'), Some(C::SaveModel)),
             ("Save As…", None, None),
+            ("Revert to Saved", None, Some(C::RevertToSaved)),
             ("Import/Export CSV…", None, Some(C::ToggleCsv)),
             ("Close", None, None),
         ]),

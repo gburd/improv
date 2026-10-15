@@ -184,8 +184,24 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         // CSV import/export: 'I' opens the import-csv prompt, 'E' export-csv.
         KeyCode::Char('I') => app.begin_import_csv(),
         KeyCode::Char('E') => app.begin_export_csv(),
+        // 'R' reverts to the saved model (e.g. after another writer saved).
+        KeyCode::Char('R') => revert(app, path),
         KeyCode::Esc => app.status = None,
         _ => {}
+    }
+}
+
+/// Reload the model from `path`, dropping this session's unsaved edits. The
+/// way out of a save conflict: the quit autosave refuses to clobber another
+/// writer, so revert, pick up their changes, and redo yours. On failure the
+/// session is untouched.
+fn revert(app: &mut App, path: &str) {
+    match load(path) {
+        Ok(fresh) => {
+            *app = fresh;
+            app.status = Some("reverted to the saved model".into());
+        }
+        Err(e) => app.status = Some(format!("revert failed: {e}")),
     }
 }
 
@@ -423,5 +439,29 @@ mod tests {
         assert!(save(&app, "/nonexistent/dir/x.db")
             .unwrap_err()
             .starts_with("autosave failed"));
+    }
+
+    /// Two sessions on one store: the second's autosave conflicts after the
+    /// first saved; 'R' reverts it to the saved model and its next save works.
+    #[test]
+    fn revert_key_recovers_from_a_save_conflict() {
+        let path = tmp_path("tui-revert.db");
+        let p = path.to_str().unwrap();
+        save(&App::new(revenue_model()).unwrap(), p).unwrap();
+        let mut a = load(p).unwrap();
+        let mut b = load(p).unwrap();
+        run_events(&mut a, p, chars("S")).unwrap();
+        b.model.views.clear();
+        b.model
+            .add_view(b.build_view(improv_core_model::ViewId(77), "mine"));
+        let e = save(&b, p).unwrap_err();
+        assert!(e.contains("conflict") || e.contains("changed"), "{e}");
+        run_events(&mut b, p, chars("R")).unwrap();
+        assert_eq!(b.status.as_deref(), Some("reverted to the saved model"));
+        assert_eq!(b.model.views.len(), 1, "picked up the other session's view");
+        save(&b, p).expect("saves after the revert");
+        run_events(&mut b, "/nonexistent/dir/x.db", chars("R")).unwrap();
+        assert!(b.status.as_deref().unwrap().starts_with("revert failed"));
+        assert_eq!(b.model.views.len(), 1, "a failed revert keeps the session");
     }
 }

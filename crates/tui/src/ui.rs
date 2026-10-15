@@ -23,6 +23,7 @@ const HELP: &[&str] = &[
     "Tab/m: measure",
     "I: import-csv",
     "E: export-csv",
+    "R: revert",
     "q: quit",
 ];
 
