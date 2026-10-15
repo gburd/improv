@@ -114,7 +114,7 @@ jobs:
           rustup toolchain install nightly --profile minimal -c llvm-tools-preview
           cargo install cargo-llvm-cov --locked
           service postgresql start
-          su postgres -c "psql -c \"CREATE ROLE improv LOGIN PASSWORD improv\" -c \"CREATE DATABASE improv_test OWNER improv\""
+          runuser -u postgres -- psql -c "CREATE ROLE improv LOGIN PASSWORD 'improv'" -c "CREATE DATABASE improv_test OWNER improv"
       - name: Coverage gate
         working-directory: improv
         env:
@@ -135,10 +135,11 @@ jobs:
         working-directory: improv/crates/pg_improv
         run: |
           apt-get update && apt-get install -y --no-install-recommends postgresql-17 postgresql-server-dev-17 libclang-dev clang sudo
+          rustup component add rustfmt clippy
           cargo install cargo-pgrx --version 0.17.0 --locked
           chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
           useradd -m pgi && chown -R pgi ../.. "$CARGO_HOME"
-          run() { sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" "$@"; }
+          run() { sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"; }
           run cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
           cargo fmt --check
           cargo clippy --features pg17 --all-targets -- -D warnings

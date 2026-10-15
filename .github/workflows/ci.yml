@@ -166,7 +166,11 @@ jobs:
           persist-credentials: false
           path: improv
       - name: Install bubblewrap and python3
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap python3
+        # ubuntu-24.04 restricts unprivileged user namespaces (AppArmor), which
+        # bwrap needs; lift it so the sandboxed extfn paths run, not fail.
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap python3
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: llvm-tools-preview
@@ -213,10 +217,11 @@ jobs:
           key: pg_improv
       - name: cargo-pgrx
         run: |
+          rustup component add rustfmt clippy
           cargo install cargo-pgrx --version 0.17.0 --locked
           chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
           useradd -m pgi && chown -R pgi improv "$CARGO_HOME"
-          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
+          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
       - name: fmt + clippy
         working-directory: improv/crates/pg_improv
         run: |
@@ -224,12 +229,12 @@ jobs:
           cargo clippy --features pg17 --all-targets -- -D warnings
       - name: pg_test
         working-directory: improv/crates/pg_improv
-        run: sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" cargo pgrx test pg17
+        run: sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx test pg17
       - name: logical decoding end to end
         working-directory: improv/crates/pg_improv
         run: |
-          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config
-          sudo -u pgi env PATH="$PATH" N_SINGLE=10 N_BULK=3 ./tests/logical.sh
+          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config
+          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" N_SINGLE=10 N_BULK=3 ./tests/logical.sh
 
   # Review plan D5: the GUI rendered headless (Xvfb + llvmpipe) must match the
   # committed golden. Debian 13 like the box that made the golden, so Mesa and

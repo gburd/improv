@@ -14,6 +14,7 @@ html=0
 if [[ ${1:-} == --html ]]; then html=1; shift; fi
 min=${1:-90}
 
+mkdir -p target
 cargo +nightly llvm-cov --workspace --branch --no-fail-fast --summary-only \
 	>target/coverage-summary.txt
 if ((html)); then
