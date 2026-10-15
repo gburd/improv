@@ -137,6 +137,16 @@ fn help_prints_usage_for_every_spelling_and_no_args() {
 }
 
 #[test]
+fn version_prints_the_crate_version() {
+    for flag in ["--version", "-V"] {
+        assert_eq!(
+            ok(&[flag]),
+            format!("improv {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+}
+
+#[test]
 fn unknown_command_is_an_error_with_usage() {
     let e = err(&["frobnicate"]);
     stdout_has(&e, "unknown command 'frobnicate'");

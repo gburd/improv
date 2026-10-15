@@ -139,6 +139,9 @@ COMMANDS:
     help | --help
         Show this help.
 
+    --version | -V
+        Print the version.
+
     stream <db> <target-measure> [<target-measure> ...]
         Read input-cell edits from stdin, one per line:
           <measure> <value> [Cat=Item,Cat=Item,...]
@@ -166,6 +169,10 @@ fn run(args: &[String]) -> Result<(), String> {
     match cmd {
         "help" | "--help" | "-h" => {
             print!("{USAGE}");
+            Ok(())
+        }
+        "--version" | "-V" => {
+            println!("improv {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
         "init" => cmd_init(rest),
