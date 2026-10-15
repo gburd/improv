@@ -118,11 +118,15 @@ echo "latency (commit -> derived result visible; improv.poll_ms=50; incremental 
 lat "$N_SINGLE" single "1-row UPDATE (~2k-cell model)"
 lat "$N_BULK" bulk "~2k-row UPDATE (~2k-cell model)"
 
-# 7. a structural change (a new derived measure) rebuilds the live state
+# 7. a structural change rebuilds the live state, even with no data change:
+#    a measure defined after the worker caught up is computed on its own
+#    (a person typing define() then SELECT must not see an empty table)
 q "SELECT improv.define('plan','Double = Revenue * 2')"
+want=$(( $(q "$REV") * 2 ))
+wait_for "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'" "$want" "defined, no data change" >/dev/null
 q "UPDATE sales SET price = 7 WHERE quarter='Q1' AND product='Widget'"
 wait_for "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'" 2800 "new measure" >/dev/null
-echo "ok: a measure defined while live is computed on the next change (2800)"
+echo "ok: a measure defined while live is computed at once ($want), then follows changes (2800)"
 
 # 8. incremental at 100k cells: a one-cell UPDATE rewrites exactly the
 #    affected result rows (Revenue[Q1,P1] and Total[P1]) and does not rebuild

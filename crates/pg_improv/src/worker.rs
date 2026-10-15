@@ -22,10 +22,11 @@
 //! become input-cell edits ([`live::Mapper`]); the engine recomputes only
 //! what they affect, and only the measures whose snapshot changed are diffed
 //! and written. The worker rebuilds (a full load + compute + diff against
-//! the result tables) when there is no live state, the model's
-//! `model_version` moved (a structural change), or the batch cannot be
-//! applied cell by cell (TRUNCATE, a new dimension value, …). Any error
-//! drops the live state, so the next poll rebuilds from the tables.
+//! the result tables) when there is no live state or the model's
+//! `model_version` moved (a structural change such as `define`, checked on
+//! every poll, data change or not), and when a batch cannot be applied cell
+//! by cell (TRUNCATE, a new dimension value, …). Any error drops the live
+//! state, so the next poll rebuilds from the tables.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -530,6 +531,25 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
     for (_, data) in &rows {
         stream.feed(data)?;
     }
+    // A structural change (`define`, a new binding) bumps `model_version`
+    // but may touch no bound row, so no decoded change would ever prompt a
+    // rebuild: check the version on every poll, and build the live state
+    // when there is none (after a worker restart), so results always follow
+    // the model as it is now.
+    let version = model_version(mid)?;
+    if state
+        .as_ref()
+        .is_none_or(|l| l.version != version || l.name != name)
+    {
+        if state.is_some() {
+            log!("pg_improv sync: model {name}: rebuilding (model changed)");
+        }
+        let _ = lock_model(name)?;
+        drop(state.take());
+        let (l, n) = rebuild(mid, name)?;
+        record(mid, n, None)?;
+        state = l;
+    }
     // Only whole committed transactions are applied; a transaction cut off
     // by `max_changes` is re-read next poll.
     let Some(last) = stream.done.last() else {
@@ -540,7 +560,6 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
     let touched = stream.done.iter().any(|t| !t.changes.is_empty());
     let changed = if touched {
         let _ = lock_model(name)?;
-        let version = model_version(mid)?;
         let applied = match state.as_mut() {
             Some(l) if l.version == version && l.name == name => apply(l, &stream)?,
             _ => Err(Rebuild("no live state")),
