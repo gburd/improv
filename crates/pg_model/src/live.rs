@@ -7,6 +7,13 @@
 //! caller must reload the model: a TRUNCATE, a dimension value with no item
 //! yet, two rows on one coordinate, an aggregated or non-number binding, or
 //! an old row whose dimension values were not replicated.
+//!
+//! Replay: a rebuild reads the bound tables as they are *now*, which may
+//! already include transactions the slot has not yet delivered. Those are
+//! re-applied afterwards. Each change is a per-cell "remove" or "set", so
+//! re-applying converges (the last change to a cell wins); the one check
+//! that is not idempotent, an insert onto an occupied coordinate, overwrites
+//! instead of rebuilding for transactions that ended by `replay_until`.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -14,7 +21,7 @@ use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, Model, Value,
 use improv_engine::encode_coord;
 use improv_engine::session::Edit;
 
-use crate::pgoutput::{Datum, Message, Relation, Tuple};
+use crate::pgoutput::{Datum, Message, Relation, Tuple, Txn};
 
 /// How one input measure is bound to the columns of one relation.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,36 +69,24 @@ impl Mapper {
         self.bindings.contains_key(&oid)
     }
 
-    /// Apply `changes` (tuples of the relations in `rels`) to `model`'s input
-    /// cells, as the loader would see the rows, and return one edit per
-    /// touched cell with its final value. Changes to relations without a
-    /// binding are ignored. On `Err` the model's inputs are half-updated:
-    /// discard the model.
+    /// Apply the changes of `txns` (tuples of the relations in `rels`) to
+    /// `model`'s input cells, as the loader would see the rows, and return
+    /// one edit per touched cell with its final value. Changes to relations
+    /// without a binding are ignored. Transactions that ended at or before
+    /// `replay_until` may already be in `model` (see the module docs). On
+    /// `Err` the model's inputs are half-updated: discard the model.
     pub fn map(
         &self,
         model: &mut Model,
         rels: &HashMap<u32, Relation>,
-        changes: &[Message],
+        txns: &[Txn],
+        replay_until: u64,
     ) -> Result<Vec<Edit>, Rebuild> {
         let mut touched = BTreeSet::new();
-        for change in changes {
-            // `old`: None = no old row (insert); Some(None) = an update that
-            // did not send its old row (the replica identity is unchanged).
-            let (rel, old, new) = match change {
-                Message::Insert { rel, new } => (*rel, None, Some(new)),
-                Message::Update { rel, old, new } => (*rel, Some(old.as_ref()), Some(new)),
-                Message::Delete { rel, old } => (*rel, Some(Some(old)), None),
-                Message::Truncate { rels, .. } if rels.iter().any(|r| self.binds(*r)) => {
-                    return Err(Rebuild("truncate"))
-                }
-                _ => continue,
-            };
-            let Some(bindings) = self.bindings.get(&rel) else {
-                continue;
-            };
-            let r = rels.get(&rel).ok_or(Rebuild("undescribed relation"))?;
-            for b in bindings {
-                self.row(model, r, b, old, new, &mut touched)?;
+        for txn in txns {
+            let replay = txn.end_lsn <= replay_until;
+            for change in &txn.changes {
+                self.change(model, rels, change, replay, &mut touched)?;
             }
         }
         Ok(touched
@@ -107,6 +102,35 @@ impl Mapper {
             .collect())
     }
 
+    fn change(
+        &self,
+        model: &mut Model,
+        rels: &HashMap<u32, Relation>,
+        change: &Message,
+        replay: bool,
+        touched: &mut BTreeSet<(MeasureId, Coordinate)>,
+    ) -> Result<(), Rebuild> {
+        // `old`: None = no old row (insert); Some(None) = an update that
+        // did not send its old row (the replica identity is unchanged).
+        let (rel, old, new) = match change {
+            Message::Insert { rel, new } => (*rel, None, Some(new)),
+            Message::Update { rel, old, new } => (*rel, Some(old.as_ref()), Some(new)),
+            Message::Delete { rel, old } => (*rel, Some(Some(old)), None),
+            Message::Truncate { rels, .. } if rels.iter().any(|r| self.binds(*r)) => {
+                return Err(Rebuild("truncate"))
+            }
+            _ => return Ok(()),
+        };
+        let Some(bindings) = self.bindings.get(&rel) else {
+            return Ok(());
+        };
+        let r = rels.get(&rel).ok_or(Rebuild("undescribed relation"))?;
+        for b in bindings {
+            self.row(model, r, b, (old, new), replay, touched)?;
+        }
+        Ok(())
+    }
+
     /// One row change through one binding: retract the old row's cell, then
     /// assert the new row's.
     fn row(
@@ -114,8 +138,8 @@ impl Mapper {
         model: &mut Model,
         r: &Relation,
         b: &Binding,
-        old: Option<Option<&Tuple>>,
-        new: Option<&Tuple>,
+        (old, new): (Option<Option<&Tuple>>, Option<&Tuple>),
+        replay: bool,
         touched: &mut BTreeSet<(MeasureId, Coordinate)>,
     ) -> Result<(), Rebuild> {
         if b.aggregated {
@@ -158,7 +182,7 @@ impl Mapper {
         if let Some(t) = new {
             if let (Some(c), Some(v)) = (self.coord(r, b, t)?, value(r, b, t)?) {
                 let k = (b.measure, c);
-                if model.inputs.contains_key(&k) {
+                if !replay && model.inputs.contains_key(&k) {
                     return Err(Rebuild("two rows on one coordinate"));
                 }
                 model.inputs.insert(k.clone(), Value::Number(v));
@@ -303,9 +327,17 @@ mod tests {
         run_with(rels(b'f', &[]), false, changes)
     }
 
+    fn txn(changes: Vec<Message>) -> Vec<Txn> {
+        vec![Txn {
+            xid: 1,
+            end_lsn: 10,
+            changes,
+        }]
+    }
+
     fn run_with(rels: HashMap<u32, Relation>, aggregated: bool, changes: Vec<Message>) -> Out {
         let mut m = model();
-        let edits = mapper(&m, aggregated).map(&mut m, &rels, &changes)?;
+        let edits = mapper(&m, aggregated).map(&mut m, &rels, &txn(changes), 0)?;
         assert!(edits.iter().all(|e| e.measure == MeasureId(5)));
         Ok(edits.into_iter().map(|e| (e.coord, e.value)).collect())
     }
@@ -406,7 +438,7 @@ mod tests {
         let mut other = r[&F].clone();
         other.id = OTHER;
         r.insert(OTHER, other);
-        let changes = [
+        let changes = txn(vec![
             Message::Insert {
                 rel: OTHER,
                 new: full("Q2", "3"),
@@ -417,8 +449,8 @@ mod tests {
             },
             // Only `note` changed: the cell is re-set to the same value.
             upd(Some(full("Q1", "1")), full("Q1", "1")),
-        ];
-        let edits = mapper(&m, false).map(&mut m, &r, &changes).unwrap();
+        ]);
+        let edits = mapper(&m, false).map(&mut m, &r, &changes, 0).unwrap();
         assert_eq!(edits.len(), 1);
         assert_eq!(
             (edits[0].coord.clone(), edits[0].value),
@@ -456,10 +488,10 @@ mod tests {
             Err(Rebuild("bound column missing"))
         );
         let mut m = model();
-        let changes = [ins(full("Q2", "1"))];
+        let changes = txn(vec![ins(full("Q2", "1"))]);
         assert_eq!(
             mapper(&m, false)
-                .map(&mut m, &HashMap::new(), &changes)
+                .map(&mut m, &HashMap::new(), &changes, 0)
                 .err(),
             Some(Rebuild("undescribed relation"))
         );
@@ -503,6 +535,34 @@ mod tests {
         assert_eq!(
             run_with(id_key(), false, vec![del(full("Q1", "1"))]),
             Err(Rebuild("old row not replicated"))
+        );
+    }
+
+    #[test]
+    fn replayed_transactions_converge() {
+        // Price[Q1,P1] = 1 is already loaded; the slot re-delivers its insert
+        // and a later update, then a fresh insert onto the same cell.
+        let mut m = model();
+        let mp = mapper(&m, false);
+        let r = rels(b'f', &[]);
+        let replayed = vec![
+            Txn {
+                xid: 1,
+                end_lsn: 10,
+                changes: vec![ins(full("Q1", "1"))],
+            },
+            Txn {
+                xid: 2,
+                end_lsn: 20,
+                changes: vec![upd(Some(full("Q1", "1")), full("Q1", "2"))],
+            },
+        ];
+        let edits = mp.map(&mut m, &r, &replayed, 20).unwrap();
+        assert_eq!((edits.len(), edits[0].value), (1, Some(2.0)));
+        let later = txn(vec![ins(full("Q1", "3"))]);
+        assert_eq!(
+            mp.map(&mut m, &r, &later, 9).err(),
+            Some(Rebuild("two rows on one coordinate"))
         );
     }
 }
