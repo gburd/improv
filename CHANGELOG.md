@@ -6,6 +6,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-15
+
+### Fixed
+
+- **pg_improv: a measure defined after the sync worker caught up is
+  computed at once.** In logical mode the worker rebuilt only when a
+  decoded transaction touched a bound row, and `improv.define()` changes
+  the model, not the data, so the new result table stayed empty until the
+  next write to the fact table, with no error in `improv.status`. The
+  worker now checks `model_version` on every poll. `logical.sh` covers a
+  `define` with no data change.
+
 ## [0.8.0] - 2026-10-15
 
 Improv runs inside Postgres, and a formula can be a SQL function. The
@@ -749,5 +761,6 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.8.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.8.1...main
+[0.8.1]: https://codeberg.org/gregburd/improv/compare/v0.8.0...v0.8.1
 [0.8.0]: https://codeberg.org/gregburd/improv/compare/v0.7.0...v0.8.0
