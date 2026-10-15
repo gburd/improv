@@ -62,7 +62,7 @@ const AVG: FuncId = FuncId(2);
 const MIN: FuncId = FuncId(3);
 const MAX: FuncId = FuncId(4);
 
-fn is_aggregation(f: FuncId) -> bool {
+pub(crate) fn is_aggregation(f: FuncId) -> bool {
     matches!(f, SUM | AVG | MIN | MAX)
 }
 

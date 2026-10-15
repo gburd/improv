@@ -903,6 +903,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_nl_formula"
+version = "0.7.0"
+dependencies = [
+ "improv_core_model",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "improv_pg_model"
 version = "0.7.0"
 dependencies = [
@@ -1211,6 +1219,7 @@ version = "0.7.0"
 dependencies = [
  "improv_core_model",
  "improv_engine",
+ "improv_nl_formula",
  "improv_pg_model",
  "pgrx",
  "pgrx-tests",

@@ -8,6 +8,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`LANGUAGE improv`: SQL functions written in Improv's formula language**
+  (`crates/pg_improv`). `CREATE FUNCTION margin(price float8, cost float8)
+  RETURNS float8 LANGUAGE improv AS $$ price - cost $$`. A trusted language:
+  arguments are named inputs, `Name = expr` lines define intermediates, the
+  last line is the result, and the DSL and controlled English both work.
+  Numbers, booleans, text and dates/timestamps; NULL in gives NULL out where
+  the result depends on it; division by zero is `NaN`; aggregations are
+  rejected. Validated at `CREATE FUNCTION`; compiled once per backend
+  (0.14 µs per call over inline SQL). Evaluation is the new
+  `improv_engine::scalar`, which shares the dataflow engine's per-cell
+  operators.
+
 - **pg_improv: Improv models over Postgres data** (`crates/pg_improv`,
   `crates/pg_model`, `crates/storage_pg`, `crates/store`). Bind fact-table
   columns to categories and measures, define formulas, read results from

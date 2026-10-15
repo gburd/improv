@@ -113,6 +113,60 @@ is skipped. Two rows on the same coordinate are an ERROR (the `agg` option
 from the design is not implemented yet). Item ids for bound values are
 minted once, in lexical order, and are never reused.
 
+## Writing SQL functions in Improv's language
+
+`CREATE EXTENSION pg_improv` also installs `LANGUAGE improv`: SQL functions
+whose bodies are Improv formulas.
+
+```sql
+CREATE FUNCTION margin(price float8, cost float8) RETURNS float8
+  LANGUAGE improv IMMUTABLE AS $$ price - cost $$;
+CREATE FUNCTION bonus(sales float8, target float8) RETURNS float8
+  LANGUAGE improv AS $$
+    Ratio = sales / target
+    MAX2(Ratio - 1, 0) * 1000
+  $$;
+CREATE FUNCTION revenue(price float8, qty float8) RETURNS float8
+  LANGUAGE improv AS 'price times qty';                -- controlled English
+SELECT product, margin(price, cost) FROM sales;
+```
+
+- **Body.** Each SQL argument is an input measure with the argument's name;
+  arguments must be named, and the body uses the name as Postgres stores it
+  (unquoted names are folded to lower case: `(Sales float8)` is `sales`). Each `Name = expr` line defines a measure the
+  following lines can use. The result is the last line: a bare expression,
+  or the last definition. A line is the formula DSL or controlled English,
+  as in the GUI's formula bar. Built-ins: `ABS ROUND FLOOR CEIL SQRT NEG`,
+  `MIN2 MAX2`.
+- **Types.** `float8 float4 numeric int2 int4 int8` are Numbers (f64, so
+  `numeric` and `int8` are exact to 2⁵³), `bool` is Boolean, `text varchar`
+  are Text, and `date timestamp timestamptz` are DateTimes (millisecond
+  precision). The return type is one of these. An integer return type rounds
+  half to even, as Postgres's casts do. No sets or `OUT` arguments.
+- **NULL.** A NULL argument is a missing input: the result is NULL when it
+  depends on that argument (`margin(NULL, 1)`), and computed when it does not.
+  There is no short-circuit (`TRUE OR NULL` is NULL), as in the engine.
+- **Division by zero and domain errors are `NaN`** (`1 / 0`, `0 / 0`,
+  `SQRT(-1)`), the engine's convention, never ±Infinity. `NaN` is a valid
+  `float8`/`numeric` result; an integer return type raises `integer out of
+  range`. An Improv error value raises an ERROR.
+- **No dimensions.** `SUM(x OVER Time)` and other aggregations or category
+  references are rejected: a scalar function has no categories. Use a model.
+- **Checking.** The validator rejects unnamed or unsupported arguments at
+  `CREATE FUNCTION`, and parses and type-checks the body unless
+  `check_function_bodies` is off (then the first call reports it).
+- **Trusted.** Bodies compute and nothing else (no I/O, no catalog access),
+  so any role with `CREATE` on a schema may write one.
+- **Cost.** Each backend compiles a body once and caches it by function OID
+  until `CREATE OR REPLACE` changes it. On a c7i.4xlarge (release build,
+  `docs/reviews/bench/bench-plimprov.sh`), over a million rows: `margin` adds
+  0.14 µs per call over the inline `x - x / 2`; `bonus` 0.24 µs; the same
+  margin in PL/pgSQL 0.21 µs, and as a non-inlined SQL function 0.91 µs.
+
+The evaluator is `improv_engine::scalar`, which calls the dataflow engine's
+own per-cell operators, so a body gives the value a model would give at one
+cell.
+
 ## Keeping results current: trigger vs logical vs recalc
 
 | | `trigger` (L1) | `logical` (L2, default) | `recalc` (explicit) |
