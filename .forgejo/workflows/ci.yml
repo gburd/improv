@@ -130,26 +130,17 @@ jobs:
     runs-on: docker
     container:
       image: rust:1.97-trixie
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      matrix:
+        pg: [15, 16, 17, 18]
     steps:
       - uses: actions/checkout@v4
         with:
           path: improv
-      - name: Postgres 17, cargo-pgrx, pg_test, logical e2e
-        working-directory: improv/crates/pg_improv
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends postgresql-17 postgresql-server-dev-17 libclang-dev clang sudo
-          rustup component add rustfmt clippy
-          cargo install cargo-pgrx --version 0.17.0 --locked
-          chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
-          useradd -m pgi && chown -R pgi ../.. "$CARGO_HOME"
-          run() { sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"; }
-          run cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
-          cargo fmt --check
-          run cargo clippy --features pg17 --all-targets -- -D warnings
-          run cargo pgrx test pg17
-          run cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config
-          run env N_SINGLE=10 N_BULK=3 ./tests/logical.sh
+          fetch-depth: 0
+      - name: pg_improv on PG ${{ matrix.pg }} (see .github/workflows/ci.yml)
+        run: improv/ci/pg_improv.sh ${{ matrix.pg }}
 
   deny:
     name: cargo-deny

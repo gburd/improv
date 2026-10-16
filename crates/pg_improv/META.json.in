@@ -1,0 +1,57 @@
+{
+   "name": "pg_improv",
+   "abstract": "Improv multidimensional models over PostgreSQL tables, kept current incrementally",
+   "description": "pg_improv runs Improv's multidimensional modeling engine over your own tables. Bind table columns to categories (dimensions) and measures, define derived measures in a dimension-aware formula language (Revenue = Price * Quantity, SUM(Revenue OVER Time)), and read the results from ordinary result tables. Results are kept current incrementally by a background worker on logical decoding (the default; writers pay nothing), by statement triggers inside the writer's transaction, or by improv.recalc() in the caller's snapshot. improv.what_if previews edits without writing. LANGUAGE improv writes SQL functions as Improv formulas. The Improv desktop GUI, terminal UI and CLI open the same model with a postgres:// URL. Built with pgrx (Rust): install with cargo-pgrx.",
+   "version": "@VERSION@",
+   "maintainer": [
+      "Greg Burd <greg@burd.me>"
+   ],
+   "license": {
+      "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0",
+      "MIT": "https://opensource.org/licenses/MIT"
+   },
+   "provides": {
+      "pg_improv": {
+         "abstract": "Improv multidimensional models over PostgreSQL tables",
+         "file": "crates/pg_improv/sql/pg_improv--@VERSION@.sql",
+         "docfile": "crates/pg_improv/README.md",
+         "version": "@VERSION@"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "15.0.0"
+         }
+      }
+   },
+   "resources": {
+      "homepage": "https://gregburd.codeberg.page/improv/",
+      "repository": {
+         "url": "https://codeberg.org/gregburd/improv.git",
+         "web": "https://codeberg.org/gregburd/improv",
+         "type": "git"
+      },
+      "bugtracker": {
+         "web": "https://codeberg.org/gregburd/improv/issues"
+      }
+   },
+   "generated_by": "Greg Burd",
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "https://pgxn.org/meta/spec.txt"
+   },
+   "tags": [
+      "olap",
+      "multidimensional",
+      "spreadsheet",
+      "incremental view maintenance",
+      "logical decoding",
+      "background worker",
+      "procedural language",
+      "planning",
+      "budgeting",
+      "pgrx"
+   ],
+   "release_status": "stable"
+}

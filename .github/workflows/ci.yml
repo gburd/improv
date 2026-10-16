@@ -200,10 +200,14 @@ jobs:
   # pg_config + libclang). Runs the #[pg_test] suite on PG 17 with the sync
   # worker preloaded, then the end-to-end logical-decoding script.
   pg_improv:
-    name: pg_improv (pgrx, PG 17)
+    name: pg_improv (pgrx, PG ${{ matrix.pg }})
     runs-on: ubuntu-latest
     needs: [fmt, clippy]
-    timeout-minutes: 60
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [15, 16, 17, 18]
     container:
       image: rust:1.97-trixie
     steps:
@@ -211,34 +215,17 @@ jobs:
         with:
           persist-credentials: false
           path: improv
-      - name: Install Postgres 17 + build deps
-        run: >
-          apt-get update && apt-get install -y --no-install-recommends
-          postgresql-17 postgresql-server-dev-17 libclang-dev clang sudo
+          # tests/upgrade.sh builds each earlier release from its tag.
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
           workspaces: improv/crates/pg_improv
-          key: pg_improv
-      - name: cargo-pgrx
-        run: |
-          rustup component add rustfmt clippy
-          cargo install cargo-pgrx --version 0.17.0 --locked
-          chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
-          useradd -m pgi && chown -R pgi improv "$CARGO_HOME"
-          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config
-      - name: fmt + clippy
-        working-directory: improv/crates/pg_improv
-        run: |
-          cargo fmt --check
-          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo clippy --features pg17 --all-targets -- -D warnings
-      - name: pg_test
-        working-directory: improv/crates/pg_improv
-        run: sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx test pg17
-      - name: logical decoding end to end
-        working-directory: improv/crates/pg_improv
-        run: |
-          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" cargo pgrx install --release --pg-config /usr/lib/postgresql/17/bin/pg_config
-          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" N_SINGLE=10 N_BULK=3 ./tests/logical.sh
+          key: pg_improv-${{ matrix.pg }}
+      # One script for GitHub, Forgejo and a local run: fmt, clippy, pg_test,
+      # pgspot, tests/txn.sh, tests/logical.sh; on 17 also tests/upgrade.sh
+      # and the PGXN dist build.
+      - name: pg_improv on PG ${{ matrix.pg }}
+        run: improv/ci/pg_improv.sh ${{ matrix.pg }}
 
   # Review plan D5: the GUI rendered headless (Xvfb + llvmpipe) must match the
   # committed golden. Debian 13 like the box that made the golden, so Mesa and

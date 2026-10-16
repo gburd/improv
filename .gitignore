@@ -37,3 +37,8 @@ lcov.info
 
 # A libpq DSN mistaken for a store path creates a file named after it.
 **/host=*
+
+# pg_improv PGXN dist (ci/pgxn-dist.sh): generated per release.
+/META.json
+/pg_improv-*.zip
+/crates/pg_improv/sql/pg_improv--[0-9]*[0-9].sql
