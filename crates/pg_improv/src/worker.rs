@@ -57,14 +57,23 @@ pub(crate) static MAX_CHANGES: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 
 /// Register the L2 GUCs (always) and the worker (only under preload).
 pub(crate) fn init() {
-    GucRegistry::define_string_guc(
-        c"improv.database",
-        c"Database the pg_improv sync worker connects to.",
-        c"The logical-decoding worker serves the Improv models of this one database.",
-        &DATABASE,
-        GucContext::Postmaster,
-        GucFlags::default(),
-    );
+    // SAFETY: a plain read of a postmaster global during _PG_init.
+    let preload = unsafe { pg_sys::process_shared_preload_libraries_in_progress };
+    // `improv.database` picks the worker's database at postmaster start, so
+    // it is a Postmaster GUC; Postgres refuses to define one after startup
+    // (a FATAL that kills the backend), so a plain `CREATE EXTENSION`
+    // without the preload must not register it. There is no worker then
+    // either, so nothing reads it.
+    if preload {
+        GucRegistry::define_string_guc(
+            c"improv.database",
+            c"Database the pg_improv sync worker connects to.",
+            c"The logical-decoding worker serves the Improv models of this one database.",
+            &DATABASE,
+            GucContext::Postmaster,
+            GucFlags::default(),
+        );
+    }
     GucRegistry::define_int_guc(
         c"improv.poll_ms",
         c"How often the pg_improv sync worker polls each slot, in ms.",
@@ -85,8 +94,7 @@ pub(crate) fn init() {
         GucContext::Sighup,
         GucFlags::default(),
     );
-    // SAFETY: a plain read of a postmaster global during _PG_init.
-    if unsafe { pg_sys::process_shared_preload_libraries_in_progress } {
+    if preload {
         BackgroundWorkerBuilder::new("pg_improv sync")
             .set_function("improv_worker_main")
             .set_library("pg_improv")
