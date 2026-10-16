@@ -16,6 +16,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Saving a partially loaded Mentat model no longer deletes data.** A
+  model from `load_partial` saved through its handle used to retract every
+  cell outside the loaded closure; the save now only retracts the closure's
+  missing cells, as the Postgres store already did.
 - **The TUI edits text, boolean and date cells incrementally**, as it does
   numbers (through `session::input_cell`, like the GUI); it used to rebuild
   the whole engine for every non-number edit.

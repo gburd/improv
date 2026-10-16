@@ -162,6 +162,11 @@ pub struct ModelStore {
     /// The high-water as of this handle's last load or save; `save_model`
     /// refuses to commit if the store has moved past it. `None`: unchecked.
     loaded_tx: Option<i64>,
+    /// The measures whose cells the last load read: `None` after a full load
+    /// (or none), the dependency closure after [`ModelStore::load_partial`].
+    /// `save_model` only retracts stored cells of these measures, so saving a
+    /// partial model leaves every other measure's cells alone.
+    loaded_scope: Option<std::collections::HashSet<MeasureId>>,
     /// Test-only: how many `(measure, coord)` rows the last `load_cells` query
     /// *returned* (not how many survived a Rust-side filter). Lets a test prove
     /// the enumeration itself is bounded by `load_partial`'s closure rather
@@ -178,6 +183,7 @@ impl ModelStore {
         Ok(ModelStore {
             store,
             loaded_tx: None,
+            loaded_scope: None,
             #[cfg(test)]
             cell_rows_returned: 0,
         })
@@ -193,8 +199,9 @@ impl ModelStore {
     ///
     /// Cells are diffed against the store, which ends up holding exactly
     /// `model.inputs`: unchanged cells add no datoms, and a stored cell the
-    /// model lacks is retracted. So never save a [`ModelStore::load_partial`]
-    /// model; it would drop every cell outside its closure.
+    /// model lacks is retracted. After [`ModelStore::load_partial`] only the
+    /// loaded closure's cells are diffed that way; cells of measures the load
+    /// skipped are left as they are.
     ///
     /// Transacted in dependency order (categories, then items, then measures,
     /// then cells, then views, then meta) as several `InProgress::transact`
@@ -320,6 +327,13 @@ impl ModelStore {
             cells.push(convert::cell_edn(*mid, &coord_json, &key, attr, &v));
         }
         for (key, old) in stored {
+            // A partial load never saw this measure's cells: not ours to drop.
+            if let Some(scope) = &self.loaded_scope {
+                let mid = key.split_once("::").and_then(|(m, _)| m.parse().ok());
+                if !mid.is_some_and(|m| scope.contains(&MeasureId(m))) {
+                    continue;
+                }
+            }
             let e = old.e;
             retracts.push(format!(
                 "[:db/retract {e} :cell/key {}]",
@@ -414,6 +428,7 @@ impl ModelStore {
         self.load_views(&mut model)?;
         self.load_meta(&mut model)?;
         self.loaded_tx = Some(tx);
+        self.loaded_scope = None;
         Ok(model)
     }
 
@@ -445,8 +460,8 @@ impl ModelStore {
     /// this does NOT remove (SQLite still scans the cell datom slices inside
     /// the query; only the returned row set is closure-bounded).
     ///
-    /// The result is read-only in spirit: saving it with
-    /// [`ModelStore::save_model`] retracts every cell it did not load.
+    /// Saving the result with [`ModelStore::save_model`] writes the closure's
+    /// cells and leaves every other measure's cells alone.
     pub fn load_partial(&mut self, measure_ids: &[MeasureId]) -> Result<Model> {
         let tx = self.tx_high_water()?;
         let mut model = Model::new();
@@ -458,6 +473,7 @@ impl ModelStore {
         let closure = model.measure_dependency_closure(measure_ids);
         self.load_cells(&mut model, Some(&closure))?;
         self.loaded_tx = Some(tx);
+        self.loaded_scope = Some(closure);
         Ok(model)
     }
 
@@ -1458,6 +1474,32 @@ mod tests {
         let out_partial =
             improv_engine::dataflow::evaluate(&partial, &[MeasureId(102)]).expect("eval partial");
         assert_eq!(out_full, out_partial);
+
+        // Saving a partial model keeps the cells it never loaded, and still
+        // diffs the closure's: an edit lands, a removed closure cell goes.
+        let mut partial = store
+            .load_partial(&[MeasureId(102)])
+            .expect("reload partial");
+        partial.set_input(MeasureId(100), price_coord.clone(), Value::Number(11.0));
+        partial.inputs.remove(&(MeasureId(101), qty_coord.clone()));
+        store.save_model(&partial).expect("save partial");
+        let after = store.load_model().expect("load after");
+        assert_eq!(
+            after.input(MeasureId(200), &Coordinate::new()),
+            Some(&Value::Number(999.0)),
+            "a cell outside the closure survives a partial save"
+        );
+        assert_eq!(
+            after.input(MeasureId(100), &price_coord),
+            Some(&Value::Number(11.0))
+        );
+        assert_eq!(after.input(MeasureId(101), &qty_coord), None);
+        // A full load lifts the scope again: dropping Unrelated now retracts it.
+        let mut full = after;
+        full.inputs.remove(&(MeasureId(200), Coordinate::new()));
+        store.save_model(&full).expect("save full");
+        let last = store.load_model().expect("load last");
+        assert_eq!(last.input(MeasureId(200), &Coordinate::new()), None);
     }
 
     /// `load_partial`'s cell *enumeration* must be bounded by the closure, not

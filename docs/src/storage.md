@@ -192,8 +192,9 @@ writer's changes are picked up.
 `load_partial(measure_ids)` loads the same structure, views and meta, but only
 the cells of `measure_ids` and their dependency closure (every measure reached
 through a derived formula or an external call's arguments). The filter is in
-the query. **Never save a partial model:** the save would retract every cell
-it did not load.
+the query. The handle remembers that closure, and its next save retracts
+only the closure's missing cells, so a partial model saves safely: cells of
+measures it never loaded stay as they are. A full load lifts the limit again.
 
 ## The Postgres store
 
@@ -282,7 +283,7 @@ returns `Conflict` if `tx` moved since this handle loaded. Then it writes the
 - the meta blob is replaced, and `model_version.tx` is incremented.
 
 A handle with no snapshot (it never loaded) writes the whole model unchecked
-and deletes rows the model lacks. Unlike the Mentat store, a partial model
+and deletes rows the model lacks. As with the Mentat store, a partial model
 from `load_partial` saves safely through the handle that loaded it, since the
 diff only touches what it loaded.
 
