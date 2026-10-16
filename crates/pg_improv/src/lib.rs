@@ -255,6 +255,38 @@ fn check_column(rel: &PgRelation, col: &str) -> Res<()> {
     }
 }
 
+/// `rel`'s relkind as a char (`r` table, `p` partitioned, `v` view, `m`
+/// materialized view, `f` foreign table).
+pub(crate) fn relkind(rel: pg_sys::Oid) -> Res<char> {
+    let k = Spi::get_one_with_args::<String>(
+        "SELECT relkind::text FROM pg_class WHERE oid = $1",
+        &[rel.into()],
+    )?;
+    Ok(k.and_then(|k| k.chars().next()).unwrap_or('?'))
+}
+
+/// Logical and trigger sync read a bound relation's row changes (logical
+/// decoding or statement triggers' transition tables), which only tables
+/// have. Name the problem instead of letting Postgres refuse an
+/// `ALTER TABLE … REPLICA IDENTITY` or a transition-table trigger.
+pub(crate) fn check_syncable(rel_name: &str, kind: char, mode: &str) -> Res<()> {
+    if mode == "manual" || matches!(kind, 'r' | 'p') {
+        return Ok(());
+    }
+    let what = match kind {
+        'v' => "a view",
+        'm' => "a materialized view",
+        'f' => "a foreign table",
+        _ => "not a table",
+    };
+    Err(format!(
+        "{rel_name} is {what}: {mode} sync follows a table's row changes, so it can bind only \
+         tables. Bind a table, or put the model in manual mode \
+         (improv.set_sync_mode(model, 'manual')) and refresh with improv.recalc()"
+    )
+    .into())
+}
+
 /// `rel.col`'s type: its `pg_type.typname` and `format_type`.
 fn column_type(rel: &PgRelation, col: &str) -> Res<(String, String)> {
     Spi::connect(|c| -> Res<_> {
@@ -451,6 +483,12 @@ fn bind_measure(
 ) -> Res<()> {
     pm::validate_name("measure", measure)?;
     let (mid, _) = lock_model(model)?;
+    let mode = Spi::get_one_with_args::<String>(
+        "SELECT sync_mode FROM improv.model WHERE id = $1",
+        &[mid.into()],
+    )?
+    .unwrap_or_default();
+    check_syncable(rel.name(), relkind(rel.oid())?, &mode)?;
     let (typname, shown) = column_type(&rel, value_col)?;
     let vt = pm::value_type_name(pm::bound_value_type(&typname, &shown, agg)?);
     let taken = Spi::get_one_with_args::<bool>(

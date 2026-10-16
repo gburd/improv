@@ -224,6 +224,18 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
     }
     let (mid, name) = lock_model(model)?;
     pm::validate_name("model", &name)?;
+    let bound: Vec<(String, pg_sys::Oid)> = Spi::connect(|c| -> Res<_> {
+        c.select(
+            "SELECT DISTINCT rel::text, rel::oid FROM improv.binding WHERE model_id = $1",
+            None,
+            &[mid.into()],
+        )?
+        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?)))
+        .collect()
+    })?;
+    for (rel, oid) in &bound {
+        crate::check_syncable(rel, crate::relkind(*oid)?, mode)?;
+    }
     remove_triggers(&name)?;
     Spi::run_with_args(
         "UPDATE improv.model SET sync_mode = $2 WHERE id = $1",
@@ -560,6 +572,38 @@ mod tests {
     fn lock_model_works_before_any_write() {
         let e = crate::lock_model("nope").unwrap_err();
         assert!(e.to_string().contains("does not exist"), "{e}");
+    }
+
+    #[pg_test]
+    fn views_bind_only_in_manual_mode() {
+        Spi::run(
+            "CREATE TABLE vt (g text PRIMARY KEY, v float8); \
+             INSERT INTO vt VALUES ('a', 2); \
+             CREATE VIEW vv AS SELECT * FROM vt; \
+             SELECT improv.create_model('vm'); \
+             SELECT improv.bind_category('vm', 'G', 'vv', 'g');",
+        )
+        .unwrap();
+        // Logical is the default: a view is refused with a clear message
+        // (the check bind_measure runs, before it writes anything).
+        let oid = Spi::get_one::<pg_sys::Oid>("SELECT 'vv'::regclass::oid")
+            .unwrap()
+            .unwrap();
+        let err = crate::check_syncable("vv", crate::relkind(oid).unwrap(), "logical").unwrap_err();
+        assert!(err.to_string().contains("vv is a view"), "{err}");
+        assert!(crate::check_syncable("vt", 'r', "logical").is_ok());
+        Spi::run("SELECT improv.set_sync_mode('vm', 'manual')").unwrap();
+        Spi::run("SELECT improv.bind_measure('vm', 'A', 'vv', 'v')").unwrap();
+        Spi::run("SELECT improv.define('vm', 'B = A * 3')").unwrap();
+        Spi::run("SELECT improv.recalc('vm')").unwrap();
+        assert_eq!(
+            Spi::get_one::<f64>("SELECT value FROM improv_vm.b WHERE g = 'a'").unwrap(),
+            Some(6.0)
+        );
+        for mode in ["trigger", "logical"] {
+            let err = crate::trigger::set_sync_mode("vm", mode).unwrap_err();
+            assert!(err.to_string().contains("vv is a view"), "{mode}: {err}");
+        }
     }
 
     #[pg_test]
