@@ -46,10 +46,11 @@ From lowest to highest precedence:
 |-------|-----------|-------|
 | 1 | `OR` | left-associative |
 | 2 | `AND` | left-associative |
-| 3 | `==` `<>` `!=` `<` `<=` `>` `>=` | at most one per level: `a < b < c` is an error |
-| 4 | `+` `-` | left-associative |
-| 5 | `*` `/` | left-associative |
-| 6 | unary `-`, `NOT` | prefix; apply to the next primary |
+| 3 | `NOT` | prefix; applies to a whole comparison |
+| 4 | `==` `<>` `!=` `<` `<=` `>` `>=` | at most one per level: `a < b < c` is an error |
+| 5 | `+` `-` | left-associative |
+| 6 | `*` `/` | left-associative |
+| 7 | unary `-` | prefix; applies to the next primary |
 
 Parentheses group as usual. Keywords (`AND`, `OR`, `NOT`, `OVER`, `TRUE`,
 `FALSE`, function names) are case-insensitive.
@@ -58,9 +59,9 @@ Parentheses group as usual. Keywords (`AND`, `OR`, `NOT`, `OVER`, `TRUE`,
 `==`, and `<>` and `!=` both mean not-equal. So `Flag = Price == 10` is a
 formula, and `X = Price = 10` is an error.
 
-`NOT` and unary `-` bind tighter than any binary operator. `NOT Price > 15`
-parses as `(NOT Price) > 15`, which fails type checking. Write
-`NOT (Price > 15)`.
+`NOT` binds looser than a comparison, as in SQL: `NOT Price > 15` means
+`NOT (Price > 15)`, and `NOT a AND b` means `(NOT a) AND b`. Unary `-` binds
+tighter than any binary operator.
 
 Type rules, checked when the formula compiles:
 

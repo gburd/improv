@@ -2345,12 +2345,14 @@ fn prec(e: &Expr) -> u8 {
             | BinaryOp::Lt
             | BinaryOp::Le
             | BinaryOp::Gt
-            | BinaryOp::Ge => 3,
-            BinaryOp::Add | BinaryOp::Sub => 4,
-            BinaryOp::Mul | BinaryOp::Div => 5,
+            | BinaryOp::Ge => 4,
+            BinaryOp::Add | BinaryOp::Sub => 5,
+            BinaryOp::Mul | BinaryOp::Div => 6,
         },
-        Expr::UnaryOp(_, _) => 6,
-        _ => 7,
+        // NOT sits between AND and the comparisons; unary minus takes a Primary.
+        Expr::UnaryOp(UnaryOp::Not, _) => 3,
+        Expr::UnaryOp(UnaryOp::Neg, _) => 7,
+        _ => 8,
     }
 }
 
@@ -2376,9 +2378,9 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
             ref_dsl(model, *id, &spec.by)
         }
         Expr::UnaryOp(op, inner) => {
-            // Both unary operators take a Primary, so anything looser than a
-            // unary chain needs parentheses.
-            let s = child_dsl(model, inner, 6)?;
+            // NOT takes a NotExpr (a comparison or looser-binding NOT); unary
+            // minus takes a Primary.
+            let s = child_dsl(model, inner, prec(e))?;
             Some(match op {
                 UnaryOp::Neg => format!("-{s}"),
                 UnaryOp::Not => format!("NOT {s}"),
@@ -2404,7 +2406,7 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
             // parenthesize a same-level RIGHT child; comparisons are
             // non-associative, so a same-level child needs parens on either
             // side (`a < b < c` does not parse).
-            let (lmin, rmin) = if p == 3 { (4, 4) } else { (p, p + 1) };
+            let (lmin, rmin) = if p == 4 { (5, 5) } else { (p, p + 1) };
             Some(format!(
                 "{} {sym} {}",
                 child_dsl(model, l, lmin)?,
@@ -4839,6 +4841,27 @@ mod tests {
                         UnaryOp::Not,
                         Box::new(bin(BinaryOp::Eq, qty(), Expr::Literal(Value::Number(0.0)))),
                     ),
+                )),
+            ),
+            (
+                // `NOT a == b` parses as NOT (a == b), so a NOT that is itself
+                // compared must be parenthesized.
+                "a compared NOT",
+                Formula::new(bin(
+                    BinaryOp::Eq,
+                    Expr::UnaryOp(UnaryOp::Not, Box::new(bin(BinaryOp::Gt, price(), qty()))),
+                    Expr::Literal(Value::Boolean(false)),
+                )),
+            ),
+            (
+                "NOT of an AND",
+                Formula::new(Expr::UnaryOp(
+                    UnaryOp::Not,
+                    Box::new(bin(
+                        BinaryOp::And,
+                        bin(BinaryOp::Gt, price(), qty()),
+                        bin(BinaryOp::Lt, price(), qty()),
+                    )),
                 )),
             ),
             (

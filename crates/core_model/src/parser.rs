@@ -12,7 +12,8 @@
 //! Formula      = Identifier "=" Expression ;
 //! Expression   = OrExpr ;
 //! OrExpr       = AndExpr { "OR" AndExpr } ;
-//! AndExpr      = Comparison { "AND" Comparison } ;
+//! AndExpr      = NotExpr { "AND" NotExpr } ;
+//! NotExpr      = "NOT" NotExpr | Comparison ;               (* NOT a > b == NOT (a > b) *)
 //! Comparison   = Additive [ ("==" | "<>" | "!=" | "<" | "<=" | ">" | ">=") Additive ] ;
 //! Additive     = Term { ("+" | "-") Term } ;
 //! Term         = Factor { ("*" | "/") Factor } ;
@@ -21,7 +22,7 @@
 //!              | Aggregation
 //!              | MeasureRef
 //!              | "(" Expression ")"
-//!              | ("-" | "NOT") Primary ;
+//!              | "-" Primary ;
 //! MeasureRef   = Name [ "[" DimList "]" ] ;                (* DimList -> DimensionSpec.by *)
 //! DimList      = Name { "," Name } ;
 //! Aggregation  = AggFunc "(" MeasureRef "OVER" Name ")" ;
@@ -498,15 +499,34 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// AndExpr = Comparison { "AND" Comparison }
+    /// AndExpr = NotExpr { "AND" NotExpr }
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_comparison()?;
+        let mut lhs = self.parse_not()?;
         while self.peek_kw("and") {
             self.bump();
-            let rhs = self.parse_comparison()?;
+            let rhs = self.parse_not()?;
             lhs = Expr::BinaryOp(BinaryOp::And, Box::new(lhs), Box::new(rhs));
         }
         Ok(lhs)
+    }
+
+    /// NotExpr = "NOT" NotExpr | Comparison
+    ///
+    /// NOT binds looser than a comparison (as in SQL and spreadsheets), so
+    /// `NOT Price > 15` is `NOT (Price > 15)`.
+    fn parse_not(&mut self) -> Result<Expr, ParseError> {
+        if !self.peek_kw("not") {
+            return self.parse_comparison();
+        }
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(self.err("expression nested too deeply"));
+        }
+        self.bump();
+        let inner = self.parse_not();
+        self.depth -= 1;
+        Ok(Expr::UnaryOp(UnaryOp::Not, Box::new(inner?)))
     }
 
     /// Comparison = Additive [ cmp-op Additive ]  (non-associative)
@@ -579,7 +599,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Primary = Literal | Aggregation | MeasureRef | "(" Expression ")"
-    ///         | ("-"|"NOT") Primary
+    ///         | "-" Primary
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
@@ -629,7 +649,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Identifier-headed primary: NOT, TRUE/FALSE, aggregation, or a measure ref.
+    /// Identifier-headed primary: TRUE/FALSE, aggregation, or a measure ref.
     fn parse_ident_primary(&mut self) -> Result<Expr, ParseError> {
         // Peek the identifier text without holding the borrow.
         let word = match self.peek() {
@@ -637,11 +657,6 @@ impl<'a> Parser<'a> {
             _ => return Err(self.err("expected identifier")),
         };
 
-        if word.eq_ignore_ascii_case("not") {
-            self.bump();
-            let inner = self.parse_primary()?;
-            return Ok(Expr::UnaryOp(UnaryOp::Not, Box::new(inner)));
-        }
         if word.eq_ignore_ascii_case("true") {
             self.bump();
             return Ok(Expr::Literal(Value::Boolean(true)));
@@ -1113,6 +1128,31 @@ mod tests {
                     except: vec![],
                 }
             )
+        );
+    }
+
+    /// NOT binds looser than a comparison and tighter than AND, as in SQL:
+    /// `NOT Price > 15` is `NOT (Price > 15)`, and `NOT a AND b` is
+    /// `(NOT a) AND b`.
+    #[test]
+    fn not_binds_looser_than_comparison() {
+        let m = fixture();
+        assert_eq!(
+            parse_expr(&m, "NOT Price > 15").unwrap(),
+            parse_expr(&m, "NOT (Price > 15)").unwrap()
+        );
+        assert_eq!(
+            parse_expr(&m, "NOT Price > 15 AND Price < 20").unwrap(),
+            parse_expr(&m, "(NOT (Price > 15)) AND Price < 20").unwrap()
+        );
+        assert_eq!(
+            parse_expr(&m, "NOT NOT Price > 15").unwrap(),
+            parse_expr(&m, "NOT (NOT (Price > 15))").unwrap()
+        );
+        let deep = format!("{}Price > 1", "NOT ".repeat(10_000));
+        assert!(
+            parse_expr(&m, &deep).is_err(),
+            "deep NOT chains are bounded"
         );
     }
 

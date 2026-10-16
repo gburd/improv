@@ -6,6 +6,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`NOT` binds looser than a comparison**, as in SQL: `NOT Price > 15` is
+  `NOT (Price > 15)`. It used to parse as `(NOT Price) > 15`, a type error.
+  Only a formula comparing a `NOT` of a boolean measure with `<`, `<=`, `>`
+  or `>=` changes meaning (`NOT a == b` and `NOT a <> b` give the same
+  values either way); write `(NOT a) < b` to keep the old reading.
+
 ### Fixed
 
 - **`Measure[Cat]` outside an aggregation is refused** when the list leaves
