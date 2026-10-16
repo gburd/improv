@@ -1,6 +1,20 @@
 # Built-in functions: a five-product inventory and a plan for Improv
 
-Date: 2026-10-16 · Status: **plan, awaiting approval. Nothing is built.**
+Date: 2026-10-16 · Status: **approved 2026-10-16, with the §9 decisions
+below. Nothing is built yet.**
+
+## Decisions (2026-10-16)
+
+| # | Question | Decision |
+|---|---|---|
+| 1 | Canonical names | **Excel names canonical**; Quantrix names are aliases. |
+| 2 | Errors | **Typed errors** (`#DIV/0!`, `#N/A`, `#NUM!`, `#VALUE!`, …) that propagate, per §6.6. |
+| 3 | Indexing | **1-based**, as in every product surveyed. |
+| 4 | Dates | **Real `DateTime` values**; serial numbers only at import/export, `N()` and `DATEVALUE`. |
+| 5 | LAMBDA | **Yes**: `LAMBDA`, `MAP`, `REDUCE`, `SCAN`, `MAKEARRAY`, `BYROW`, `BYCOL`, plus named `LAMBDA` definitions. See §6.12 for recursion. |
+| 6 | Locale | **Locale-aware formula entry**: decimal comma, `;` argument separator, and translated function names, alongside the canonical locale-independent form (§6.13). |
+| 7 | `^` | **Mathematical convention**: `^` is right-associative and binds tighter than unary minus, so `-2^2` = −4 and `2^3^2` = 512. This deliberately differs from Excel and LibreOffice; a formula imported from a spreadsheet is parenthesized on import so its value is kept. |
+
 
 This review lists every built-in function of Excel (Microsoft 365), LibreOffice
 Calc, Gnumeric, Apple Numbers and Quantrix Modeler. It sorts their union into
@@ -1072,13 +1086,16 @@ Random numbers. <!-- sec:out-rand -->
 
 ### 6.2 `^` and `POWER`
 
-- **Recommendation: the spreadsheet rule.** Unary minus binds tighter than
-  `^`, `^` is left-associative, then `* /`, then `+ -`. LibreOffice confirms
-  `-2^2` = 4 and `2^3^2` = 64. Quantrix 5.1 documents the order negation, `%`,
-  `^`, `* /`, `+ -`, comparisons, `&`.
-- `AGENT_FORMULA_LANGUAGE.md` §4 currently specifies right-associative `^`,
-  so the choice goes to the user (question 7). `0^0` = 1 (LibreOffice
-  behaviour).
+- **Decided: the mathematical rule** (question 7), as `AGENT_FORMULA_LANGUAGE.md`
+  §4 already specifies: `^` is right-associative and binds tighter than unary
+  minus, so `-2^2` = −(2²) = −4 and `2^3^2` = 2⁹ = 512. The order, tightest
+  first: `%`, `^`, unary `-`, `* /`, `+ -`, `&`, comparisons, `NOT`, `AND`,
+  `OR`.
+- The spreadsheets differ (LibreOffice: `-2^2` = 4, `2^3^2` = 64; Quantrix
+  likewise puts negation above `^`). Importing a spreadsheet formula
+  (CSV/XLSX import, a pasted formula in Excel mode) parenthesizes so the
+  value is kept: Excel `-2^2` imports as `(-2)^2`, `2^3^2` as `(2^3)^2`.
+- `0^0` = 1 (LibreOffice behaviour).
 - Add `BinaryOp::Pow` rather than a call, so the CNL can say "to the power of".
 
 ### 6.3 `&`, text concatenation
@@ -1185,6 +1202,95 @@ re-run with the same as-of is identical. The `RAND` family is out (§5.28).
   item. Too few items is a compile-time `#SPILL!`-equivalent error. Too many
   leaves no cells. This is the biggest design risk in the plan and is kept to
   P6.
+
+### 6.12 Is the language Turing complete? Should it be?
+
+**Today: no.** A formula is an expression over measures; the measure graph
+must be acyclic (`derived_build_order` rejects every cycle); there is no
+conditional, no iteration and no user-defined function. Every formula
+evaluates in time bounded by the model's size. This is a *total* language:
+every model terminates, and that is what makes incremental recalculation on
+differential dataflow sound and the results reproducible.
+
+**After this plan, still no, on purpose.** Each addition keeps evaluation
+total:
+
+- `IF`/`IFS`/`SWITCH` add branching, not looping.
+- `PREV`-recurrences (§6.7) are bounded by the category's item count: an
+  ordered scan of N items is N steps.
+- Windows, reductions, `MAP`/`REDUCE`/`SCAN`/`BYROW`/`MAKEARRAY` iterate over
+  a finite, known collection (a category's items or an array).
+- `LAMBDA` is compile-time expanded and **non-recursive**: a named lambda may
+  call only lambdas defined before it, so expansion terminates.
+
+The result is like SQL without recursive CTEs, or Excel before LAMBDA: very
+expressive, and every evaluation terminates. Excel itself became Turing
+complete only through recursive `LAMBDA` (2021).
+
+**Should it be?** Not in the formula engine. What Turing completeness would
+cost:
+
+- **Termination.** A model could hang. The engine would need fuel (an
+  evaluation-step budget) and a "did not converge" error, as `Wasm` external
+  functions already have.
+- **Incrementality.** Differential dataflow handles fixed points
+  (`iterate`), but an unbounded recursion has no small delta: one edit could
+  re-run an arbitrarily long computation.
+- **Determinism and explainability.** "Why is this cell 7?" no longer has a
+  finite dependency answer.
+
+Improv already has the escape hatch where general computation belongs:
+`CALL(...)` external functions (Python, R, Julia, Pure, Wasm) are Turing
+complete, run sandboxed with fuel and memory limits, and are evaluated
+host-side outside the incremental hot path.
+
+**What could be added, if a real model needs it** (none is in the phases;
+each would be its own proposal):
+
+1. **Recursive `LAMBDA` with fuel.** Allow self-reference in a named lambda,
+   bounded by a per-cell step budget, returning `#NUM!` when exhausted. This
+   is exactly what makes Excel Turing complete. Cost: low in the scalar
+   evaluator, but it cannot be expanded at compile time, so it runs as an
+   interpreted call per cell (like `CALL`).
+2. **Iterative calculation (circular references).** Excel's "enable iterative
+   calculation" and Quantrix's circular iteration: allow a cycle among
+   measures, iterate until values change less than ε or N iterations pass.
+   Maps onto differential dataflow's `iterate` scope. Needed by some
+   financial models (interest on an average balance that depends on the
+   interest). Cost: medium; it changes cycle detection and needs a
+   convergence report.
+3. **Goal seek / solver.** Find the input that makes a result hit a target.
+   Not a language feature: a GUI/CLI command over the existing engine
+   (`what_if` already evaluates scenarios).
+
+Recommendation: ship the plan total; add (2) iterative calculation when a
+model needs a circular reference; add (1) only on demand, gated by fuel.
+
+### 6.13 Locale-aware entry
+
+Decided (question 6): formulas can be typed in a locale's own spelling.
+
+- **Canonical form.** Stored formulas stay locale-independent (`.` decimal,
+  `,` separator, English canonical names, as JSON of the AST). A model opened
+  in another locale shows the same formula in that locale's spelling.
+- **Per-locale table:** decimal separator, argument separator (`;` where the
+  decimal separator is `,`), array row/column separators, and translated
+  function names. LibreOffice ships translated names for every function in
+  its own locale data (its `formula/inc/core_resource.hrc` and the
+  translations), the source for the translation table. Translations go in the
+  registry as an extra alias list per locale.
+- **Where the locale comes from:** the OS locale for the GUI and TUI, a
+  `--locale` option for the CLI, and an `improv.locale` GUC for
+  `LANGUAGE improv`. The canonical form is always accepted too, so a formula
+  written in documentation works everywhere.
+- **Ambiguity.** In a `,`-decimal locale `ROUND(1,5)` would be one argument;
+  the separator is `;`, so it is `ROUND(1,5; 0)`. The tokenizer reads numbers
+  by the active locale.
+- **Rendering:** the GUI formula editor and the CNL describe in the active
+  locale; `improv show` gains `--locale`.
+- **Phase:** the parser and table mechanism in P1 (with `en` and one
+  `,`-decimal locale, `de`, as the test pair); further locales as data, any
+  time after.
 
 ## 7. Architecture
 
@@ -1383,18 +1489,18 @@ L two to four weeks.
 
 | Phase | Functions | Size | What ships |
 |---|---|---|---|
-| **P1** | 121 | M–L | **Foundation.** The registry (§7.1) replaces the five id tables; n-ary `FuncCall`; `CellValue`-typed function arguments; typed errors (§6.6, if approved). Language: `^`, `&`, `%`, IF/IFS/SWITCH/CHOOSE (lazy), error functions. Functions: core math and trig, rounding (with optional digits, decimal-correct), core text. Generated `functions.md`. LibreOffice golden harness. |
+| **P1** | 121 | M–L | **Foundation.** The registry (§7.1) replaces the five id tables; n-ary `FuncCall`; `CellValue`-typed function arguments; typed errors (§6.6). Language: `^` (right-associative, §6.2), `&`, `%`, IF/IFS/SWITCH/CHOOSE (lazy), error functions; locale-aware entry with `en` and `de` (§6.13). Functions: core math and trig, rounding (with optional digits, decimal-correct), core text. Generated `functions.md`. LibreOffice golden harness. |
 | **P2** | 66 | M | **Dates, info, formatting.** DATE…WORKDAY.INTL on `DateTime` (§6.9 as-of for NOW/TODAY); IS* functions, N, T, TYPE; TEXT/FIXED/DOLLAR format codes; REGEX family. |
 | **P3** | 9 | L | **Dimensional core.** Multi-category `OVER`, `EXCEPT`, `WHERE`; `PREV`/`NEXT`/`POSITION`/`FIRST`/`LAST`; windows `OVER T[a..b]` (running and trailing totals); self-recurrence via `PREV` (ordered scan); Quantrix `@ITEM`/`@ID`/`@ITEMCOUNT`/`SUMMARY`/`TIMELINEDATE`; `TEXTJOIN`; trigger-mode planning learns positional kinds. Few names, but the most Improv-specific value: it closes the "no previous-period" gap. |
 | **P4** | 124 | L | **Statistics.** Generalised reduce (item-ordered, multi-measure, per-item results); descriptive and conditional aggregates; distributions (via `statrs`); tests; core regression; special functions; ERF/ERFC; SUMPRODUCT family. |
 | **P5** | 55 | M | **Financial.** TVM, depreciation, NPV/IRR/XIRR on ordered categories, bonds and day-count bases. Iterative solvers are deterministic (fixed start, cap, bisection fallback). |
-| **P6** | 44 | L | **Lookup, database, arrays.** XLOOKUP/XMATCH/MATCH/LOOKUP/INDEX; Quantrix SELECT family; D… functions as aliases of `WHERE` reductions; FILTER/SORT/SORTBY/UNIQUE/SEQUENCE/TAKE/DROP onto positional categories (§6.11); LET; LAMBDA family (9) if approved. |
+| **P6** | 44 | L | **Lookup, database, arrays.** XLOOKUP/XMATCH/MATCH/LOOKUP/INDEX; Quantrix SELECT family; D… functions as aliases of `WHERE` reductions; FILTER/SORT/SORTBY/UNIQUE/SEQUENCE/TAKE/DROP onto positional categories (§6.11); LET; LAMBDA family (9), non-recursive (§6.12). |
 | **P7** | 253 | L (spread) | **The long tail, on demand.** Engineering (bases, bits, complex, Bessel, CONVERT); matrices; number theory and float; R-style kernels; option pricing; Erlang; Gnumeric/LibreOffice extra distributions, ETS forecasting, time-series analysis; calendars; text tail; `@DESCRIPTOR`/`@LEVEL` (needs item descriptors and groups in the model first). Each family is independent and can ship separately. |
 
 P2 and P3 do not depend on each other. If previous-period modelling is the
 priority, swap them. P4 depends on P3's generalised reduce only for windows.
 
-## 9. Open questions for the user
+## 9. Open questions for the user (answered: see Decisions at the top)
 
 1. **Names.** Where Excel and Quantrix spell or mean the same thing
    differently, which is canonical? Examples: Quantrix `switch` is Excel
