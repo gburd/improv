@@ -7,8 +7,14 @@ value recomputes **incrementally** through a differential-dataflow graph. The
 same model opens in a NeXTSTEP-style desktop GUI, a terminal UI, a CLI, a
 streaming pipe, an HTTP server, and **inside Postgres**.
 
-**Guide:** <https://gregburd.codeberg.page/improv/> (mirrored at
-<https://gburd.github.io/improv/>) · **API docs:** the same sites, under `/api/`
+[![Docs](https://img.shields.io/badge/docs-gburd.github.io%2Fimprov-blue)](https://gburd.github.io/improv/)
+[![CI](https://github.com/gburd/improv/actions/workflows/ci.yml/badge.svg)](https://github.com/gburd/improv/actions/workflows/ci.yml)
+
+**Documentation:** [the Improv guide on GitHub Pages](https://gburd.github.io/improv/)
+(also on [Codeberg Pages](https://gregburd.codeberg.page/improv/)) ·
+[API reference (rustdoc)](https://gburd.github.io/improv/api/) ·
+[Ways to use Improv](https://gburd.github.io/improv/ways.html) ·
+[Improv in Postgres](https://gburd.github.io/improv/postgres.html)
 
 ![The Improv workspace: worksheets, formulas and the model browser](docs/src/img/gui-workspace.png)
 
@@ -158,7 +164,7 @@ save conflict.
 | `improv_storage_pg` | | A model in a Postgres `improv` catalog, with columns bound to tables |
 | `improv_store` | | Opens a file or a `postgres://` URL |
 | `improv_storage_sql`, `improv_storage_csv`, `improv_data_source` | | SQL and CSV import, export and refresh |
-| `improv_extfn` | | Sandboxed external functions (Python, R, Julia, Wasm) |
+| `improv_extfn` | | Sandboxed external functions (Python, R, Julia, Pure, Wasm) |
 | `improv_cli` | `improv` | Command-line tool and `stream` |
 | `improv_tui` | `improv-tui` | Terminal UI |
 | `improv_gui` | `improv-gui` | Desktop GUI (egui) |

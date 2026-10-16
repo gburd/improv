@@ -50,6 +50,17 @@ jobs:
           fi
           mkdir -p "$site/api"
           cp -r target/doc/* "$site/api"/
+          # rustdoc writes one directory per crate and no /api/ landing page.
+          {
+            echo '<!doctype html><meta charset="utf-8"><title>Improv API reference</title>'
+            echo '<h1>Improv API reference (rustdoc)</h1><ul>'
+            for d in "$site"/api/improv_*/; do
+              c=$(basename "$d")
+              echo "<li><a href=\"$c/index.html\">$c</a></li>"
+            done
+            echo '</ul><p><a href="../">The Improv guide</a></p>'
+          } > "$site/api/index.html"
+          test -s "$site/api/index.html"
           # Landing redirect to the guide.
           printf '<meta http-equiv="refresh" content="0; url=./index.html">' > "$site/404.html"
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1

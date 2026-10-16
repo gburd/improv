@@ -1,6 +1,14 @@
-# Forgejo / Codeberg Pages — build the mdBook guide + rustdoc API and publish
-# to the `pages` branch, which Codeberg Pages serves at
-# https://gregburd.codeberg.page/improv/ (or the repo's configured Pages URL).
+# Codeberg Pages: build the mdBook guide and publish it to
+# https://gregburd.codeberg.page/improv/ with git-pages (Forge Wildcard
+# Authorization: the automatic token (github.token, Forgejo's alias of
+# forge.token) is enough for the matching
+# <owner>.codeberg.page/<repo>/ site, so no secret is needed).
+#
+# Runs on Codeberg's hosted runner (codeberg-small, a 5-minute job): the
+# mdBook tools are prebuilt binaries, so the guide builds in seconds. The
+# rustdoc API reference needs a full Rust build that does not fit there, so
+# /api/ redirects to the GitHub Pages copy, which .github/workflows/docs.yml
+# builds on every push.
 
 name: pages
 
@@ -10,60 +18,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  build-and-publish:
-    runs-on: docker
+  publish:
+    runs-on: codeberg-small
     container:
-      image: rust:1.97-bookworm
+      image: debian:trixie-slim
     steps:
+      - name: Tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl git unzip nodejs >/dev/null
+          cd /usr/local/bin
+          curl -sSfL https://github.com/rust-lang/mdBook/releases/download/v0.4.52/mdbook-v0.4.52-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          curl -sSfL https://github.com/badboy/mdbook-mermaid/releases/download/v0.16.2/mdbook-mermaid-v0.16.2-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          curl -sSfL -o /tmp/lc.zip https://github.com/Michael-F-Bryan/mdbook-linkcheck/releases/download/v0.7.7/mdbook-linkcheck.x86_64-unknown-linux-gnu.zip
+          unzip -qo /tmp/lc.zip mdbook-linkcheck && chmod +x mdbook-linkcheck
+          mdbook --version
       - uses: actions/checkout@v4
-        with:
-          path: improv
-          fetch-depth: 0
-      - name: Install mdBook toolchain
+      - name: Build the guide
         run: |
-          # Pinned as a set: mdbook-linkcheck has no mdbook 0.5 release, and
-          # mdbook-mermaid >= 0.17 targets mdbook 0.5 (the preprocessor
-          # protocol changed), so all three stay on the 0.4 line.
-          cargo install mdbook --version =0.4.52 --locked
-          cargo install mdbook-linkcheck --version =0.7.7 --locked
-          cargo install mdbook-mermaid --version =0.16.2 --locked
-      - name: Build mdBook guide
-        working-directory: improv
-        run: mdbook build docs
-      - name: Build rustdoc API
-        working-directory: improv
-        run: cargo doc --workspace --no-deps
-      - name: Assemble site
-        working-directory: improv
-        run: |
-          site="$GITHUB_WORKSPACE/public"
-          mkdir -p "$site"
-          if [ -d docs/book/html ]; then
-            cp -r docs/book/html/* "$site"/
-          else
-            cp -r docs/book/* "$site"/
-          fi
+          mdbook build docs
+          site=docs/book/html
+          test -f "$site/index.html"
           mkdir -p "$site/api"
-          cp -r target/doc/* "$site/api"/
-          # Codeberg Pages: a .domains file or plain static content works as-is.
-          touch "$site/.nojekyll"
-      - name: Publish to pages branch
-        working-directory: improv
-        env:
-          # A push token with contents:write must be provided as a repo secret.
-          FORGEJO_TOKEN: ${{ secrets.PAGES_PUSH_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${FORGEJO_TOKEN:-}" ]; then
-            echo "PAGES_PUSH_TOKEN not set; skipping publish (build succeeded)."
-            exit 0
-          fi
-          git config --global user.name "Greg Burd"
-          git config --global user.email "greg@burd.me"
-          cd "$GITHUB_WORKSPACE/public"
-          git init -q
-          git checkout -q -b pages
-          git add -A
-          git commit -q -m "docs: publish site for ${GITHUB_SHA}"
-          origin="https://x-access-token:${FORGEJO_TOKEN}@codeberg.org/gregburd/improv.git"
-          git push -f "$origin" pages
+          printf '<!doctype html><meta http-equiv="refresh" content="0; url=https://gburd.github.io/improv/api/"><title>Improv API docs</title><a href="https://gburd.github.io/improv/api/">Improv API docs (rustdoc)</a>\n' > "$site/api/index.html"
+          echo "SITE=$site" >> "$GITHUB_ENV"
+      - name: Publish to Codeberg Pages
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        uses: actions/git-pages@v2
+        with:
+          site: https://gregburd.codeberg.page/improv/
+          token: ${{ github.token }}
+          source: ${{ env.SITE }}/

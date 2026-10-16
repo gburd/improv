@@ -1,8 +1,8 @@
-# actionlint config (`actionlint` finds it here). The Forgejo workflows run on
-# Codeberg runners: `docker` is their runner label, and Forgejo artifact
-# storage speaks the v3 upload-artifact protocol, not v4.
+# actionlint config (`actionlint` finds it here). Forgejo runner labels:
+# `docker` (a self-hosted runner) and Codeberg's hosted `codeberg-*` ones.
+# Forgejo artifact storage speaks the v3 upload-artifact protocol, not v4.
 self-hosted-runner:
-  labels: [docker]
+  labels: [docker, codeberg-tiny, codeberg-small, codeberg-medium]
 paths:
   .forgejo/workflows/*.yml:
     ignore:
