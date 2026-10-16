@@ -15,6 +15,13 @@ ignore = [
     "RUSTSEC-2026-0192", # ttf-parser unmaintained (egui font rasterizer)
     "RUSTSEC-2026-0194", # quick-xml quadratic tag scan (egui svg/icon path)
     "RUSTSEC-2026-0195", # quick-xml NsReader alloc DoS (egui svg/icon path)
+    # zip 6.0.0 is yanked (every zip 6.x and 7.x release is), and it is a
+    # BUILD dependency of libduckdb-sys (`zip = "6"`, unpacking the bundled
+    # DuckDB sources at build time). No unyanked version satisfies it;
+    # OSV lists no advisory against 6.0.0: zip-rs yanked its old majors when
+    # 9.x shipped extraction-hardening fixes, and libduckdb-sys only reads
+    # its own vendored archive with it. Revisit when it moves past zip 6.
+    { crate = "zip@6.0.0", reason = "build-dep of libduckdb-sys; all zip 6.x/7.x yanked" },
 ]
 
 [licenses]
