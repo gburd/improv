@@ -6,6 +6,70 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-16
+
+pg_improv is ready for real databases: it builds and is tested on
+Postgres 15, 16, 17 and 18; it upgrades in place with ALTER EXTENSION;
+pg_dump keeps its models; it installs without the preload; and it is
+published to PGXN, with binary packages per Postgres major. A worked
+family-finance example shows a household's accounts, statement
+reconciliation, budgets, net worth and savings goals in one model.
+
+### Added
+
+- **pg_improv on Postgres 15, 16, 17 and 18** (pgrx features `pg15`…`pg18`;
+  17 stays the default). CI runs the whole suite on each.
+- **Upgrades:** `sql/pg_improv--0.8.0--0.9.0.sql` and `--0.8.1--0.9.0.sql`,
+  so `ALTER EXTENSION pg_improv UPDATE` moves a live database forward.
+  `tests/upgrade.sh` builds each earlier release, puts a logical-mode model
+  on it, upgrades, and checks results, the worker, `define` and `pg_dump`.
+- **`tests/txn.sh`:** the transactional guarantees, end to end. In trigger
+  mode a writer reads its own results, other sessions see them only after
+  commit, and ROLLBACK, an error or a rolled-back savepoint undo them. In
+  logical mode aborted work never reaches the results. Also checks a
+  no-preload `CREATE EXTENSION`, that every object is in schema `improv`,
+  and dump/restore.
+- **PGXN:** `crates/pg_improv/META.json.in` and `ci/pgxn-dist.sh`, which
+  builds a buildable source dist (the extension and the six crates it links)
+  that CI builds on every push and the release uploads with `pgxn-release`.
+- **Release packages:** `pg_improv-<ver>-pg<N>-x86_64-linux.tar.gz` for each
+  supported major, from `cargo pgrx package` against that major's PGDG build.
+- **Release announcements:** `ci/announce.sh` drafts and submits the
+  postgresql.org news item (which feeds pgsql-announce) for feature and
+  major releases. A patch release is skipped unless its CHANGELOG section
+  has `### Security`.
+- **CI:** `ci/pg_improv.sh <PG>`, one script for GitHub, Forgejo and a
+  local run: fmt, clippy, `#[pg_test]`, pgspot, `txn.sh`, `logical.sh`,
+  and on 17 also `upgrade.sh` and the PGXN dist build.
+- **Family-finance example** (`crates/pg_improv/examples/family-finance`,
+  guide chapter *Improv in Postgres: a family's finances*).
+
+### Fixed
+
+- **pg_improv: `CREATE EXTENSION` without `shared_preload_libraries` killed
+  the session.** `_PG_init` defined the postmaster-level GUC
+  `improv.database` on every load; Postgres refuses that after startup with
+  a FATAL. It is now defined only when preloading.
+- **pg_improv: `pg_dump` lost every model.** The `improv.*` catalog was not
+  registered as extension configuration, so a dump held the result tables
+  but restored the models empty. The catalog and its sequence are now
+  dumped, and a restored database's worker creates a new slot and catches
+  up instead of trusting the dumped slot position.
+- **pg_improv: binding a view gave an obscure error and left the model half
+  bound.** Logical and trigger sync need a table's row changes, so
+  `bind_measure` and `set_sync_mode` now refuse a view (or materialized or
+  foreign table) up front with a message saying to bind a table or use manual
+  mode. Views still bind in manual mode.
+- **pg_improv on PG 18:** `HeapTupleHeaderGetRawXmin` is ambiguous there
+  (PG 18 exports a C function of that name), which broke the build.
+
+### Security
+
+- **pg_improv's install and update scripts pass pgspot.** `improv.mint_items`
+  pins `search_path`, and the extension creates its objects with plain
+  `CREATE` instead of `IF NOT EXISTS` / `OR REPLACE`, so it cannot adopt an
+  object another role created first. CI runs pgspot on every change.
+
 ## [0.8.1] - 2026-10-15
 
 ### Fixed
@@ -761,6 +825,7 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.8.1...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.9.0...main
+[0.9.0]: https://codeberg.org/gregburd/improv/compare/v0.8.1...v0.9.0
 [0.8.1]: https://codeberg.org/gregburd/improv/compare/v0.8.0...v0.8.1
 [0.8.0]: https://codeberg.org/gregburd/improv/compare/v0.7.0...v0.8.0

@@ -34,7 +34,7 @@ Improv](./ways.md) says which to reach for and when.
 
 ## Status
 
-Version 0.8.1 builds and passes its tests on Linux, macOS and Windows; the
+Version 0.9.0 builds and passes its tests on Linux, macOS and Windows; the
 Postgres extension supports Postgres 15 to 18. External functions (Python, R,
 Julia) run under a bubblewrap sandbox on Linux. On other systems they are
 refused unless the operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`. The
