@@ -6,13 +6,13 @@
 //! computation (`Revenue = Price * Quantity`) works on differential dataflow,
 //! including a live delta after the initial run.
 //!
-//! Key encoding decisions proven here (timely 0.12 requires `ExchangeData`,
-//! i.e. `Abomonation`, on all dataflow data — `BTreeMap` and `f64` don't
-//! satisfy that cleanly, so we encode at the dataflow boundary):
+//! Encoding at the dataflow boundary (timely 0.13's exchange bound is serde
+//! `Serialize + Deserialize` plus `Ord + Hash` for keys; a `Coordinate`'s
+//! `BTreeMap` and a raw `f64` are encoded rather than used directly):
 //! * DD *key* = the coordinate as a sorted `Vec<(u32, u32)>` (category, item).
-//!   Deterministic, `Ord + Hash`, and Abomonation-friendly.
-//! * numeric cell *value* = `f64::to_bits()` as `u64` in DD data position
-//!   (primitive, exchange-safe); decoded with `f64::from_bits`.
+//!   Deterministic and `Ord + Hash`.
+//! * cell *value* = [`CellValue`]: a number as `f64::to_bits()` (so it is
+//!   `Eq + Hash`), or a boolean, text, date (epoch ms) or error.
 //! * diff `R` stays `isize` multiplicity; a `reduce` collapses to one value/key.
 //!
 //! `core_model` types convert to/from these encodings at the edge.

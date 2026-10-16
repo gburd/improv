@@ -75,8 +75,10 @@ The window has five regions:
   Cells are white with thin black rules; the selection and its row and column
   headers turn gray. Click a cell to select it; **double-click** it (or press
   Enter / F2) to edit, Enter to commit, Esc to cancel. Input cells carry a
-  faint underline; hover a derived cell to see its formula. **Shift+arrows**,
-  Shift+click or a drag select a range, and the status bar shows its **Sum**.
+  faint underline; hover a derived cell to see its formula. Arrows (or
+  `h` `j` `k` `l`) move the cursor, and `n` / Shift+`n` show the next or
+  previous measure. **Shift+arrows**, Shift+click or a drag select a range,
+  and the status bar shows its **Sum**.
 - **Formula list** (bottom of each worksheet window) — every formula,
   numbered, with a **Calc** button above and a checkbox that enables it.
   Click a row to select its measure; the selected row becomes an editor:

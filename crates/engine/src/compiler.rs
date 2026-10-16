@@ -74,7 +74,7 @@ pub(crate) fn is_aggregation(f: FuncId) -> bool {
 /// | id | name  | arity | meaning                          |
 /// |----|-------|-------|----------------------------------|
 /// | 10 | ABS   | 1     | absolute value                   |
-/// | 11 | ROUND | 1     | round half-to-even (f64::round)  |
+/// | 11 | ROUND | 1     | round half away from zero (f64::round) |
 /// | 12 | FLOOR | 1     | floor                            |
 /// | 13 | CEIL  | 1     | ceil                             |
 /// | 14 | SQRT  | 1     | sqrt (NaN for negative input)    |

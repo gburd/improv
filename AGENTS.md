@@ -47,16 +47,21 @@ is tool-generated, local, and gitignored — not part of the steering set.)
 The full "tidy" gate — all must be error- AND warning-free:
 
 1. `cargo fmt -p improv_<crate> ... -- --check` for every crate under
-   `crates/` (rustfmt, config in `rustfmt.toml`). Scope to our crates, not
-   `--all` — `--all` also walks the vendored Mentat path dependency
-   (`../mentat`) and, transitively, whatever IT depends on.
+   `crates/` except `pg_improv` (rustfmt, config in `rustfmt.toml`). Scope to
+   our crates, not `--all`, which would also lint the Mentat git dependency.
 2. `cargo clippy -p improv_<crate> ... --all-targets --all-features -- -D
-   warnings` (config in `clippy.toml`), same per-crate scoping (the vendored
-   Mentat dep emits its own upstream warnings that must not fail our gate).
-3. `cargo test --workspace` (all suites green)
+   warnings` (config in `clippy.toml`), same scoping.
+3. `cargo test --workspace` (all suites green; `IMPROV_TEST_PG` set runs the
+   live Postgres tests too)
 4. `cargo deny check` (licenses, advisories, bans — config in `deny.toml`)
 5. `typos` (spell-check code + docs)
-6. `cargo doc --workspace --no-deps` builds without warnings
+6. `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps`, and
+   `mdbook build docs` (the guide, with link checking)
+7. `scripts/gui-shot-check.sh` (GUI screenshot vs the golden) and
+   `scripts/coverage.sh` (≥ 90% functions and branches per crate)
+8. pg_improv, its own Cargo workspace: `ci/pg_improv.sh <PGMAJOR>` runs
+   fmt, clippy, `cargo pgrx test`, pgspot, `tests/txn.sh`, `tests/logical.sh`,
+   and on 17 `tests/upgrade.sh` and the PGXN dist build (see CONTRIBUTING.md)
 
 `RUSTFLAGS=-Dwarnings` in CI: a warning is a failure. New code must not
 introduce warnings anywhere in the workspace.
@@ -97,8 +102,11 @@ Prefer `cargo nextest run` for the fast suite. Property/fuzz crates:
 
 ## Layout
 
-Cargo workspace, `crates/*`: `core_model`, `storage_mentat`, `engine`, `cli`,
-`tui`, `server`, `nl_formula`. Shared deps pinned in
+Cargo workspace, `crates/*`: `core_model`, `engine`, `nl_formula`,
+`storage_mentat`, `storage_pg`, `store`, `storage_sql`, `storage_csv`,
+`data_source`, `extfn`, `cli`, `tui`, `gui`, `server`, `pg_model`, and
+`pg_improv` (the Postgres extension: its own workspace and `Cargo.lock`,
+excluded from the root because pgrx needs `pg_config` to build). Shared deps pinned in
 `[workspace.dependencies]`; the `differential-dataflow`/`timely` pin is delicate
 (see `.agent/steering/AGENT_ENGINE_STEERING.md` §2 — do not bump blindly). MSRV
 is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
@@ -121,12 +129,19 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   never commit that.
 - **GitHub** (`.github/workflows/`): `ci.yml` (fmt, clippy `-D warnings` on our
   crates only, typos, cargo-deny, matrix build+test on Linux/macOS/Windows ×
-  default/all-features via nextest, MSRV, rustdoc+mdBook build); `docs.yml`
-  (build guide+API, deploy to GitHub Pages); `release.yml` (tag-triggered
-  cross-platform qualify + CLI artifact upload).
-- **Codeberg/Forgejo** (`.forgejo/workflows/`): `ci.yml` mirrors the gate;
-  `pages.yml` publishes the site to the `pages` branch (needs a
-  `PAGES_PUSH_TOKEN` repo secret with contents:write).
-- Clippy in CI lints only Improv crates (`-p improv_*`); the vendored Mentat
+  default/all-features via nextest, MSRV, rustdoc+mdBook build, the
+  coverage gate, the GUI screenshot golden, and `pg_improv` on PG 15–18 via
+  `ci/pg_improv.sh`); `docs.yml` (guide + API on every push to main,
+  deployed to GitHub Pages, https://gburd.github.io/improv/); `release.yml`
+  (on a `v*` tag: qualify on four targets, all four binaries per target,
+  pg_improv packages per PG major, the GitHub Release from the CHANGELOG
+  section, PGXN upload, and `ci/announce.sh` for X.Y.0 releases).
+- **Codeberg/Forgejo** (`.forgejo/workflows/`): `pages.yml` builds the guide on
+  Codeberg's hosted `codeberg-small` runner and publishes it to
+  https://gregburd.codeberg.page/improv/ with `actions/git-pages` (the
+  automatic token; no secret); its `/api/` redirects to the GitHub Pages
+  rustdoc. `ci.yml` mirrors the gate but needs a self-hosted runner with the
+  `docker` label (Codeberg's hosted runners stop jobs after 2–10 minutes).
+- Clippy in CI lints only Improv crates (`-p improv_*`); the Mentat git
   dependency emits its own upstream warnings that must not fail our gate.
 - Action versions are pinned by commit SHA; keep them current but pinned.

@@ -23,7 +23,7 @@ book chapter [A family's finances in Postgres](../../../../docs/src/postgres-fin
 ## Run it
 
 ```sh
-crates/pg_improv/tests/finance.sh            # scratch cluster, checks 51 values, ~10 s
+crates/pg_improv/tests/finance.sh            # scratch cluster, checks 49 values, ~10 s
 KEEP=1 crates/pg_improv/tests/finance.sh     # leave it running (port 55460)
 psql -h ~/pgi-finance -p 55460 -U improv family -f crates/pg_improv/examples/family-finance/queries.sql
 ```

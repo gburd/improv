@@ -5,7 +5,7 @@ Postgres data. You bind fact-table columns to Improv categories and measures,
 define derived measures in Improv's formula language, and read the results
 from ordinary tables (`improv_<model>.<measure>`).
 
-Status: **layers L0–L4 done** (see `docs/reviews/2026-10-14-pg-improv-design.md`
+Status: **layers L0–L5 done** (see `docs/reviews/2026-10-14-pg-improv-design.md`
 §6). All three ways of keeping results current work: `logical` (the default,
 a background worker tailing a logical replication slot), `trigger` (inside
 the writer's transaction), and an explicit `improv.recalc` you call in your
@@ -16,7 +16,8 @@ own transaction. The desktop apps open a Postgres-hosted model directly:
 
 Supports Postgres **15, 16, 17 and 18**. Three ways to get it:
 
-- **Binary:** each [release](https://codeberg.org/gregburd/improv/releases)
+- **Binary:** each release ([GitHub](https://github.com/gburd/improv/releases),
+  [Codeberg](https://codeberg.org/gregburd/improv/releases))
   has `pg_improv-<version>-pg<N>-x86_64-linux.tar.gz`. Unpack it over `/`
   (it holds the `.so`, the control file, and the install and update scripts
   under the paths `pg_config` reports).
@@ -52,7 +53,7 @@ decoding (then restart Postgres):
 # postgresql.conf
 shared_preload_libraries = 'pg_improv'
 wal_level = logical
-improv.database = 'sales'       # the database the sync worker serves
+improv.database = 'sales'       # the database the sync worker serves (default: postgres)
 #improv.poll_ms = 200           # how often it polls each model's slot
 #improv.max_changes = 10000     # most decoded changes per poll
 max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retain
@@ -109,7 +110,6 @@ edits formulas and input cells, and writes the bound fact table):
 ```sh
 improv-gui "postgres://me@localhost/sales?model=plan"
 ```
-```
 
 ## SQL API (schema `improv`, all `SECURITY INVOKER`)
 
@@ -152,8 +152,10 @@ bool, a string, or a datetime as an RFC 3339 string (`"2026-01-02T00:00:00+00:00
 of input cells `recalc` loads; above it, `recalc` raises an ERROR.
 
 Bound data rules: a NULL value means no cell, and a row with a NULL dimension
-is skipped. Two rows on the same coordinate are an ERROR (the `agg` option
-from the design is not implemented yet). Item ids for bound values are
+is skipped. Two rows on the same coordinate are an ERROR unless the
+measure was bound with `agg` (`sum`, `avg`, `min`, `max`, `count`), which
+folds them into one cell. A derived measure must keep at least one
+dimension: `define` refuses a result with none. Item ids for bound values are
 minted once, in lexical order, and are never reused.
 
 ## Writing SQL functions in Improv's language
@@ -359,5 +361,8 @@ it and checks the numbers; the guide chapter is
 The `improv.*` tables are a compatible superset of the catalog that
 `improv_storage_pg` (the GUI/CLI's `postgres://` store) creates, so a model
 created in SQL opens in the GUI and vice versa. The extension adds
-`improv.category_binding`. A pg_test checks the superset property against
+`improv.category_binding` (category ⇄ column bindings) and, for logical
+mode, `improv.sync_state` (each model's slot, progress and last error) and
+`improv.slot_to_drop` (slots the worker drops after a model leaves logical
+mode). A pg_test checks the superset property against
 `improv_storage_pg::CATALOG_SQL`.

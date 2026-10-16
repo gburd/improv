@@ -3,7 +3,8 @@
 This directory holds the Improv documentation:
 
 - `src/` + `book.toml` — the mdBook user and design guide.
-- `man/improv.1` — the `improv(1)` man page for the CLI.
+- `man/` — man pages: `improv(1)` (CLI), `improv-tui(1)`, `improv-gui(1)`,
+  `improv-server(1)`.
 
 ## Building the guide
 
@@ -22,12 +23,19 @@ The build uses two preprocessors:
 All three tools (`mdbook`, `mdbook-mermaid`, `mdbook-linkcheck`) must be on
 `PATH` for `mdbook build` to succeed.
 
-## Viewing the man page
+## Viewing the man pages
 
 ```sh
-man -l docs/man/improv.1                 # render and page it
+man -l docs/man/improv.1                 # render and page it (also improv-tui.1, …)
 groff -man -Tascii docs/man/improv.1     # render to stdout
 ```
+
+## Where the docs are published
+
+Every push to `main` publishes the guide: to GitHub Pages
+(https://gburd.github.io/improv/, with the rustdoc API reference at `/api/`)
+by `.github/workflows/docs.yml`, and to Codeberg Pages
+(https://gregburd.codeberg.page/improv/) by `.forgejo/workflows/pages.yml`.
 
 ## Steering rule: docs track code
 
@@ -43,6 +51,15 @@ When the code changes, update the docs in the same change:
   *Controlled Natural Language* chapter.
 - The datom schema (`crates/storage_mentat/src/schema.rs`) ⇄ the
   *Storage & Persistence* chapter.
+- The Postgres store (`crates/storage_pg`, `crates/store`) ⇄ *Storage &
+  Persistence* and *Running Improv*.
+- The pg_improv SQL API, GUCs and sync modes (`crates/pg_improv/src`) ⇄ the
+  *Improv in Postgres* chapter and `crates/pg_improv/README.md`; its example
+  (`crates/pg_improv/examples/family-finance`) ⇄ *A Family's Finances*.
+- The HTTP routes and environment (`crates/server/src/main.rs`) ⇄ *The HTTP
+  Server* chapter and `man/improv-server.1`.
+- TUI and GUI keys and menus (`crates/tui/src/main.rs`, `crates/gui/src/menu.rs`)
+  ⇄ the README, *The Desktop GUI*, `man/improv-tui.1` and `man/improv-gui.1`.
 
 `.agent/AGENT_STEERING.md` is the source of truth for live per-phase status;
 `.agent/steering/` holds the detailed architecture and constraints.

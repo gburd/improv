@@ -10,7 +10,7 @@ job, and switch when the job changes.
 | explore a model, pivot it, edit numbers, add formulas with a mouse | [the desktop GUI](#the-desktop-gui-improv-gui) | a store file, or Postgres |
 | do the same over SSH or in a terminal | [the TUI](#the-terminal-ui-improv-tui) | a store file, or Postgres |
 | script a model, build it in CI, diff it, load data in bulk | [the CLI](#the-cli-improv) | a store file, or Postgres |
-| push a live feed through a model and get the changed results out | [streaming](#streaming-improv-stream) | a store file |
+| push a live feed through a model and get the changed results out | [streaming](#streaming-improv-stream) | a store file, or Postgres |
 | model data that already lives in Postgres, and read results with SQL | [pg_improv](#in-postgres-pg_improv) | Postgres tables plus the `improv` catalog |
 | write a SQL function as a formula | [`LANGUAGE improv`](#sql-functions-language-improv) | the function body |
 | serve a model to other programs over HTTP | [the server](#the-http-server-improv-server) | a store file, or Postgres |
@@ -184,15 +184,16 @@ SELECT rep, bonus(sales, target) FROM quota;
 ```
 
 Arguments are the inputs, by name; each `Name = expr` line is an
-intermediate; the last line is the result. A call costs about 0.14 µs, less
-than the same function in PL/pgSQL.
+intermediate; the last line is the result. A call costs about 0.14–0.24 µs
+(this two-line `bonus` is the 0.24), about what PL/pgSQL costs.
 
 ## The HTTP server (`improv-server`)
 
 **Use it for:** letting another program read a model, ask what-if questions,
 or write input cells over HTTP.
 
-With the model `m.db` from [the CLI](#the-cli-improv) example:
+With the model `m.db` from [the CLI](#the-cli-improv) example, after the
+[streaming](#streaming-improv-stream) example set Price to 15:
 
 ```sh
 IMPROV_API_TOKEN=secret improv-server m.db 127.0.0.1:3000 &

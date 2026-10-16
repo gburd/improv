@@ -5,18 +5,24 @@ the ones below it.
 
 ## Crate layout
 
-| Crate | Package | Purpose | Status |
-|-------|---------|---------|--------|
-| `core_model` | `improv_core_model` | Categories, items, measures, coordinates, formulas, values. GUI/storage-free. | Done |
-| `storage_mentat` | `improv_storage_mentat` | Model ⇄ datoms on embedded (SQLite) Mentat. | Done |
-| `engine` | `improv_engine` | Formula compiler + differential-dataflow evaluation. | Done (numeric core) |
-| `nl_formula` | `improv_nl_formula` | Controlled-natural-language ⇄ formula translation. | Done (initial grammar) |
-| `cli` | `improv_cli` | The `improv` command-line tool. | Done (headless subset) |
-| *(tui)* | `improv_tui` | VisiCalc-style terminal pivot viewer. | Done |
-| *(server)* | `improv_server` | JSON HTTP API over a model store. | Done |
-| *(gui)* | `improv_gui` | Desktop GUI (pivoting, charts, views, filters). | Done |
-| *(storage_sql)* | `improv_storage_sql` | SQL import/export + refresh (SQLite, PostgreSQL). | Done |
-| *(extfn)* | `improv_extfn` | External-language function runtime (Python). | Done (Python) |
+| Crate | Package | Purpose |
+|-------|---------|---------|
+| `core_model` | `improv_core_model` | Categories, items, measures, coordinates, formulas, values, and the formula text parser. No GUI or storage code. |
+| `engine` | `improv_engine` | Formula compiler and differential-dataflow evaluation: one-shot `evaluate` and the live `session::Engine`. |
+| `nl_formula` | `improv_nl_formula` | Controlled natural language ⇄ formula translation. |
+| `storage_mentat` | `improv_storage_mentat` | Model ⇄ datoms in an embedded, SQLite-backed Mentat file. |
+| `storage_pg` | `improv_storage_pg` | Model ⇄ the `improv.*` catalog in Postgres, with bound measures read from and written to their fact tables. |
+| `store` | `improv_store` | `Store`: one store type over both backends, picked by `Store::open` from the target (path or `postgres://…?model=`). |
+| `storage_sql` | `improv_storage_sql` | Import SQL query results into a model, export a measure to a table, refresh. SQLite, PostgreSQL, DuckDB. |
+| `storage_csv` | `improv_storage_csv` | Import a CSV/TSV file into a model; export a measure's cells (input or computed) to CSV/TSV. |
+| `data_source` | `improv_data_source` | The import bookkeeping shared by `storage_sql` and `storage_csv`: create categories and the measure, intern dimension values as items. |
+| `extfn` | `improv_extfn` | External functions. Python, R, Julia and Pure run in a sandboxed subprocess (`bwrap` on Linux); Wasm runs in-process on `wasmi` with fuel and memory limits. |
+| `cli` | `improv_cli` | The `improv` command-line tool. |
+| `tui` | `improv_tui` | `improv-tui`, a VisiCalc-style terminal pivot grid. |
+| `gui` | `improv_gui` | `improv-gui`, the desktop GUI (`egui`/`eframe`). |
+| `server` | `improv_server` | `improv-server`, a JSON HTTP API over a model store. |
+| `pg_model` | `improv_pg_model` | The Postgres-free core of `pg_improv`: catalog rows → `Model`, bound rows → cells, engine results → SQL. |
+| `pg_improv` | `pg_improv` | The Postgres extension (pgrx): Improv models over Postgres tables. A thin shell over SPI and `pg_model`. |
 
 ## The computation pipeline
 
@@ -33,8 +39,8 @@ graph TD
     E --> F["PlanNode graph"]
     F --> G["dataflow builder"]
     G --> H["differential-dataflow<br/>InputSession -> operators -> reduce"]
-    A -. "numeric input cells" .-> H
-    H --> I["computed values<br/>measure -> (coord -> f64)"]
+    A -. "typed input cells" .-> H
+    H --> I["computed values<br/>measure -> (coord -> CellValue)"]
 ```
 
 The two compiler passes (`infer`, `build_plan`) live in
@@ -45,14 +51,17 @@ and the one-shot `evaluate` entry point in `engine::dataflow`.
 
 | `PlanNodeKind` | Dataflow operator |
 |----------------|-------------------|
-| `InputMeasure` | an `InputSession` collection |
+| `InputMeasure` | an `InputSession` collection (or an already built derived measure) |
+| `Literal`      | a one-cell collection at the empty coordinate; as a `MapBinary` operand it is folded into the `map` closure instead |
 | `MapUnary`     | `map` |
-| `MapBinary`    | `join` on coordinate key, then `map` element-wise |
+| `MapBinary`    | `join` on the shared categories, then `map` element-wise |
 | `Join`         | re-key both sides to shared categories, `join`, rebuild the union key |
 | `Aggregate`    | re-key to the group-by coordinate, then `reduce` (SUM/AVG/MIN/MAX) |
+| `FuncCall`     | a scalar function (ABS, ROUND, …): `map` for one argument, `join` then `map` for two |
 
 A final `reduce` collapses each key to a single value before results are
-captured.
+captured. Derived measures are built in dependency order, so one derived
+measure can feed another; a cycle is rejected.
 
 ## Why differential dataflow
 
@@ -69,26 +78,108 @@ not compile on the project's rustc; an older DD compiles but aborts on a
 `merge_batcher` bug under debug assertions. `0.13.0` is the pair that both
 compiles and runs. Do not bump it without re-validating.
 
+## The live engine
+
+`evaluate` runs a model once and returns. Interactive users need more: change
+one cell and see what it affects, without a rebuild. That is
+`engine::session::Engine`.
+
+`Engine::new(model, targets)` compiles the plans for the target derived
+measures, then starts a dataflow on its own thread (timely's
+`execute_directly`, one worker). Every input measure gets an `InputSession`.
+The model's input cells are fed in at time 0. `new` returns the handle and
+the first `Snapshot`.
+
+After that the engine is fed edits:
+
+```rust
+pub struct Edit {
+    pub measure: MeasureId,
+    pub coord: CoordKey,
+    pub value: Option<CellValue>, // None removes the cell
+}
+```
+
+`apply(edits)` sends a batch over a channel. The worker retracts each cell's
+old value, inserts the new one, advances time by one, and steps the dataflow
+until the probe passes that time. Only the deltas flow, so only the affected
+cells recompute. `set` and `clear` are one-edit shortcuts. The reply is the
+new `Snapshot`.
+
+A `Snapshot` is `Arc<HashMap<MeasureId, Arc<MeasureValues>>>`, where
+`MeasureValues` is `HashMap<CoordKey, CellValue>`. It is copy-on-write:
+cloning one is a reference-count bump, and measures an edit did not change are
+shared with the previous snapshot. A changed measure is copied whole only
+while a caller still holds the old snapshot.
+
+The structure is fixed when the engine is built. Changing a formula or adding
+a measure means building a new `Engine`. Dropping the handle stops the
+thread.
+
+`session::input_cell(type, value)` is the one rule for which model values are
+engine cells. A value counts only when it matches its measure's declared type:
+`Number`, `Boolean`, `Text` or `DateTime`. Text in a number measure, or an
+error value, is no cell. `Engine::new` uses it to pick the seed cells, and the
+GUI uses it to turn a cell edit into an `Edit`, so an edit and a rebuild
+agree.
+
+Users of the live engine:
+
+| User | How |
+|------|-----|
+| TUI (`improv-tui`) | one engine per session; a numeric edit is `Engine::set`, any other value rebuilds the engine |
+| GUI (`improv-gui`) | one engine per session; edits go through `input_cell` and `apply`; rebuilt on structural changes |
+| `improv stream` | edits read from stdin, changed cells written to stdout |
+| server `POST /measures/:id/eval` | a short-lived engine per request, for what-if edits |
+| pg_improv's logical worker | one engine per model in `logical` mode, fed the row changes of each batch |
+
 ## The coordinate / value encoding for dataflow
 
-Differential dataflow requires its data to be fixed, ordered, hashable, and
-exchangeable (`Abomonation`). The model's `Coordinate` is a dynamic-arity
-`BTreeMap` and `Value` carries an `f64`, neither of which satisfies that
-directly. The engine encodes at the dataflow boundary:
+Timely 0.13 needs dataflow data to be `Clone + 'static`, and data that crosses
+an exchange channel to also be `Send + Sync` and serde
+`Serialize + Deserialize`. Differential dataflow adds `Ord + Debug`, and keys
+must be hashable. The model's `Coordinate` is a dynamic-arity `BTreeMap` and
+`Value` holds an `f64`, which is neither `Ord` nor `Hash`. The engine encodes
+at the dataflow boundary:
 
 - **Key** — a coordinate becomes a sorted `Vec<(u32, u32)>` of
   `(category_id, item_id)` pairs (`CoordKey`). The `BTreeMap` already iterates
-  in sorted order, so the encoding is deterministic, `Ord + Hash`, and
-  exchange-safe. `encode_coord` / `decode_coord` convert at the edge;
-  `project_key` narrows a key to a subset of categories (used for joins and
-  group-bys).
-- **Value** — a numeric cell's `f64` is stored as its bit pattern
-  (`f64::to_bits()` → `u64`) in the data position, and decoded with
-  `f64::from_bits`. This keeps the value a primitive, exchange-safe scalar; the
-  arithmetic happens after decoding inside `map`/`reduce` closures.
+  in sorted order, so the encoding is deterministic and `Ord + Hash`.
+  `encode_coord` / `decode_coord` convert at the edge; `project_key` narrows a
+  key to a subset of categories (used for joins and group-bys).
+- **Value** — the `CellValue` enum:
+
+  | Variant | Holds |
+  |---------|-------|
+  | `Num(u64)` | an `f64` as `f64::to_bits()`; decoded with `f64::from_bits` |
+  | `Bool(bool)` | a boolean |
+  | `Text(String)` | text |
+  | `Date(i64)` | a UTC timestamp, milliseconds since the Unix epoch |
+  | `Err(u8)` | an error, by kind, so errors propagate through operators |
+
+  `CellValue::from_model_value` converts a model `Value`; `Enum` becomes a
+  `Num`. Arithmetic happens after decoding, inside `map` and `reduce`
+  closures.
 - **Diff** — the differential multiplicity `R` stays `isize`.
 
 This encoding is what cleared the project's Phase 1 viability gate.
+
+## Stores and front ends
+
+Every front end opens a model through `improv_store::Store::open`. A path
+opens a Mentat file; a `postgres://…?model=<name>` URL opens that model in
+Postgres. Both backends have the same methods and the same conflict error, so
+the GUI, TUI, CLI and server work on either without knowing which. See
+[Storage & Persistence](./storage.md).
+
+`pg_improv` runs the same engine inside Postgres. A model's categories and
+measures are **bound** to columns of ordinary tables, and each derived measure
+is written to a **result table** (`improv_<model>.<measure>`) that any SQL
+client can read. Three sync modes keep the results current: `logical` (the
+default; a background worker follows the commit through logical decoding),
+`trigger` (statement triggers recompute inside the writer's transaction), and
+`manual` (results change when you call `improv.recalc`). See
+[Improv in Postgres](./postgres.md).
 
 ## Determinism
 

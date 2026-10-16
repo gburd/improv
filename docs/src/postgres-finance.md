@@ -464,5 +464,5 @@ them current from committed changes to the bound tables. The test measures
 | `schema.sql` | Schema `finance`: tables, keys, checks, comments, the `ledger_month` and `goal_horizon` refreshers. |
 | `data.sql` | Six months of books, deterministic, with the five planted problems. |
 | `model.sql` | The four models. |
-| `queries.sql` | Fifteen questions, answered from the result tables, and two what-ifs. |
-| `tests/finance.sh` | Runs everything on a scratch cluster and checks 51 values, including the logical-sync fix-up. |
+| `queries.sql` | Fifteen questions answered from the result tables, the last two of them what-ifs. |
+| `tests/finance.sh` | Runs everything on a scratch cluster and checks 49 values, including the logical-sync fix-up. |

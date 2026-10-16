@@ -4,8 +4,7 @@
 improv-server \- JSON HTTP API over an Improv model
 .SH SYNOPSIS
 .B improv-server
-.I model
-.RI [ addr ]
+.RI [ model " [" addr ]]
 .SH DESCRIPTION
 .B improv-server
 serves one model over HTTP/1.1 as JSON: read the model and measures, compute
@@ -13,6 +12,9 @@ what-if edits through the live engine, and write input cells. It listens on
 .I addr
 (default 127.0.0.1:3000, or
 .BR IMPROV_ADDR ).
+.I model
+defaults to
+.IR improv.db .
 .PP
 A model is a store file made by
 .BR improv (1),
@@ -46,6 +48,19 @@ server refuses to start).
 Refresh external-function measures in the background. It runs only functions
 whose digest is listed in the file named by
 .BR IMPROV_EXTFN_ALLOW .
+.TP
+.B IMPROV_ADDR
+The address to listen on when no
+.I addr
+argument is given.
+.TP
+.B IMPROV_EXTFN_ALLOW
+The allowlist file for the scheduler: one lowercase hex SHA-256 of
+.IR name \e0 body
+per line.
+.TP
+.B IMPROV_SCHEDULER_TICK_SECS
+The scheduler's tick period (default 5).
 .TP
 .B IMPROV_HEADER_TIMEOUT_MS
 Header read timeout (default 10000).

@@ -86,7 +86,12 @@ A measure's type comes from its column: numbers (`int*`, `float*`,
 measure has the type of its formula, so `improv.define('plan', 'Pricey =
 Price > 15')` makes `improv_plan.pricey` a `boolean` column. Result tables'
 `value` columns are `double precision`, `boolean`, `text` or `timestamptz`.
-Other column types are refused by `bind_measure`.
+Other column types are refused by `bind_measure`. A derived measure must
+keep at least one dimension: `define` refuses a formula whose result has
+none (for example `SUM(x OVER Time)` over a measure of Time alone).
+Logical and trigger sync follow a table's row changes, so in those modes
+only tables bind; a view binds in `manual` mode (refresh with
+`improv.recalc()`).
 
 **Choosing:** use `logical` for busy tables (writers stay fast; measured
 at 100k cells: 8 ms per UPDATE and its results visible ~50 ms later, vs
@@ -112,7 +117,8 @@ intermediate measures; the last line is the result. Lines may be the DSL or
 controlled English (`price times qty`). The semantics are the engine's: a
 NULL argument gives NULL wherever the result depends on it, and division by
 zero gives `NaN`. Aggregations need categories, so `SUM(x OVER Time)` is
-rejected; put it in a model. A call costs about 0.14 µs. See
+rejected; put it in a model. A call costs about 0.14 µs for a one-line
+body and 0.24 µs for `bonus` above. See
 `crates/pg_improv/README.md` for the types and rules.
 
 ## Upgrades and backups

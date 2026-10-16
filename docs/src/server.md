@@ -3,21 +3,25 @@
 `improv-server` serves a JSON HTTP API over one model store:
 
 ```sh
-improv-server model.db 127.0.0.1:3000   # or IMPROV_ADDR=...
+improv-server model.db 127.0.0.1:3000   # or IMPROV_ADDR=...; model defaults to improv.db
+improv-server 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 ```
 
 ## Endpoints
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| GET | `/health` | Public liveness probe. |
-| GET | `/model` | The whole model. |
-| GET | `/measures` | Id, name, kind, categories. |
-| GET | `/measures/:id/values` | Stored inputs, or computed values. |
-| POST | `/measures/:id/eval` | What-if edits through the live engine; `"persist": true` writes through. |
-| POST | `/measures/:id/cells` | Set one input cell. |
-| POST | `/nl/parse`, `/nl/describe` | CNL to formula and back. |
-| GET | `/scheduler/status` | Refresh scheduler state. |
+| Method | Path | Body | Notes |
+| --- | --- | --- | --- |
+| GET | `/health` | | Public liveness probe. |
+| GET | `/model` | | The whole model. |
+| GET | `/measures` | | Id, name, kind, categories. |
+| GET | `/measures/:id/values` | | Stored inputs, or computed values. |
+| POST | `/measures/:id/eval` | `{"edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 90}], "persist": false}` | What-if edits through the live engine; `"persist": true` writes them. Ids are numeric; `"value": null` clears a cell. The answer names coordinates by category and item name. |
+| POST | `/measures/:id/cells` | `{"coord": {"dims": {"1": 10, "2": 20}}, "value": 90}` | Set one input cell (category id → item id). |
+| POST | `/nl/parse` | `{"text": "revenue is price times quantity"}` | Controlled English to a formula. |
+| POST | `/nl/describe` | `{"formula": …}` | A formula (as `/nl/parse` returns it) to controlled English. |
+| GET | `/scheduler/status` | | Refresh scheduler state. |
+
+Values written through the API are numbers.
 
 ## Authentication
 
@@ -35,9 +39,11 @@ token is configured. Tokens are compared in constant time.
 A write must name an existing **input** measure and a coordinate with exactly
 one item for each of the measure's categories; values must be finite. Anything
 else is a 400. Writes are serialized, so concurrent writers do not lose
-updates. The server caches the loaded model and replaces the cache on each
-write, so it assumes it is the store's only writer: changes made by another
-process show up after a restart.
+updates. The server caches the loaded model. If another process (the GUI,
+the CLI, SQL on a Postgres model) saved since the server loaded it, the
+server's next write is refused with **409 Conflict**, writing nothing, and
+the cache is dropped, so a retry reloads and succeeds. Reads serve the
+cached model until then.
 
 ## Limits
 

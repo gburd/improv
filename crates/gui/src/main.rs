@@ -1,8 +1,8 @@
 //! Improv desktop GUI (`improv-gui`) — Phase 5.
 //!
 //! An `egui`/`eframe` front-end: a *view* over the engine (see
-//! `.agent/steering/AGENT_GUI_STEERING.md` §9). It loads a model from a Mentat
-//! store, renders a measure as a pivot grid, and (Phase 5 increments) offers a
+//! `.agent/steering/AGENT_GUI_STEERING.md` §9). It loads a model from a store
+//! (a Mentat file or a `postgres://…?model=` URL), renders a measure as a pivot grid, and (Phase 5 increments) offers a
 //! model browser, formula editor, and Info panel.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // The attribute is only used inside #[cfg(test)] modules, so non-test

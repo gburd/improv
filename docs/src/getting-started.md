@@ -26,9 +26,10 @@ The examples below use the built binary.
 
 ## The CLI
 
-The CLI is a headless front-end over the Mentat-backed model store. Every
-subcommand opens a store (a single SQLite file, or an in-memory database if you
-pass `""`), mutates the loaded model, and saves it back.
+The CLI is a headless front-end over the model store. Every subcommand opens
+a store (a single SQLite file, a Postgres model named by a
+`postgres://…?model=` URL, or an in-memory database if you pass `""`),
+mutates the loaded model, and saves it back.
 
 Run `improv help` for the full command list. The commands, exactly as accepted
 by the binary, are:
@@ -53,6 +54,7 @@ by the binary, are:
 | `import-sql`, `refresh-sql`, `export-sql` | see `man improv` |
 | `register-ext`, `refresh-ext`, `refresh-all`, `serve-refresh` | external functions; see `man improv` |
 | `help` | (also `--help`, `-h`) |
+| `--version` | (also `-V`) |
 
 Notes:
 

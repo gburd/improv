@@ -28,9 +28,11 @@ A measure is one of two kinds:
 - **Derived** — computed from a [formula](./formulas.md).
 
 Every measure declares a value type: `Number`, `Boolean`, `Text`, `DateTime`,
-or `Enum`. (The engine and CLI operate on `Number`, `Boolean`, and `Text`
-today; `DateTime` and `Enum` exist in the model but are not yet exercised
-end-to-end.)
+or `Enum`. The engine computes with all of them: dates are written as
+`#2025-01-31#` literals in formulas, come from `date`/`timestamp` columns in
+Postgres, and display as RFC 3339; an `Enum` computes as its number. The
+GUI edits `DateTime` cells; the TUI and the CLI's `add-measure` and `set`
+take `number`, `boolean` or `text` (CSV and SQL imports bring in numbers).
 
 ## Coordinates
 

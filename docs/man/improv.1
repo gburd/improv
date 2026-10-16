@@ -104,6 +104,14 @@ or an external call (
 .BR \(dqH = CALL(hypot, Price, Quantity)\(dq ),
 which registers an external-function measure populated by
 .BR refresh-ext .
+A
+.B CALL(...)
+measure also takes
+.B \-\-refresh
+.RI manual | on-load | interval: SECS
+(when
+.B serve-refresh
+re-runs it).
 .TP
 .B register-ext \fI<db> <name> <arity> \(dq<python body>\(dq\fR
 Register a pure Python external function (Number arguments and result). The
@@ -147,17 +155,6 @@ stack category names outer-to-inner; each defaults to the next unused
 category of the measure. The remaining categories become pages, pinned to
 their first item. A view with the same id is replaced.
 .TP
-.B save-view \fI<db> <view-id> <name> <measure>\fR [\fB\-\-rows\fR \fICat,Cat\fR] [\fB\-\-cols\fR \fICat,...\fR]
-Save a named view of
-.I <measure>
-(id or name), as the GUI does:
-.B \-\-rows
-and
-.B \-\-cols
-stack category names outer to inner (each defaults to the next unused
-category of the measure); the remaining categories are pages, pinned to their
-first item. Replaces a view with the same id.
-.TP
 .B show \fI<db> <measure-id>\fR
 Print one measure and its input cells.
 .TP
@@ -189,6 +186,12 @@ maps a result column to a category (distinct values become items); the
 .I value-col
 column supplies the numeric measure value. SQL data enters as ordinary input
 cells.
+Add
+.B \-\-refresh
+.RI manual | on-load | interval: SECS
+to record when
+.B serve-refresh
+re-runs the query.
 .TP
 .B refresh-sql \fI<db> <source.sqlite> <measure-id>\fR
 Re-run an SQL-backed measure's stored query and replace its cells with the
@@ -219,7 +222,8 @@ is given or the file ends in
 .BR .tsv .
 .TP
 .B export-csv \fI<db> <target.csv> <measure-id>\fR [\fB\-\-tsv\fR]
-Write a measure's input cells to a CSV or TSV file: one column per dimension
+Write a measure's cells (an input measure's stored cells, or a derived
+measure's computed ones) to a CSV or TSV file: one column per dimension
 category plus the value column, header row first. Text that a spreadsheet
 would run as a formula is prefixed with a quote.
 .TP
@@ -261,6 +265,7 @@ Pipe new data through a model and print what it changes:
 .PP
 .RS
 .nf
+improv define model.db 102 \(dqRevenue = Price * Quantity\(dq
 printf \(aqPrice 15 Product=WidgetA\en\(aq | improv stream model.db Revenue
 .fi
 .RE

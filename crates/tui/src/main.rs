@@ -1,6 +1,6 @@
-//! `improv-tui`: a VisiCalc-style pivot grid over a Mentat-backed Improv model.
+//! `improv-tui`: a VisiCalc-style pivot grid over an Improv model.
 //!
-//! Usage: `improv-tui <model.db>`
+//! Usage: `improv-tui <model.db | postgres://…?model=NAME>`
 //!
 //! The binary is a thin shell: [`run`] owns the real terminal (raw mode, alt
 //! screen, panic hook) and feeds `crossterm` events into [`event_loop`], which

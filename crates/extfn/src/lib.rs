@@ -4,8 +4,9 @@
 //! (`improv_engine`'s `scalar_arity`/`scalar_func`) for NON-builtin functions:
 //! it evaluates a registered external function on typed
 //! [`improv_core_model::Value`] arguments, deterministically and in a
-//! subprocess sandbox. It is intentionally NOT wired into the engine yet — the
-//! engine's `Expr::Call` path can later dispatch here.
+//! subprocess sandbox. The engine calls it host-side, outside the dataflow
+//! (`improv_engine::external::refresh_external_measure`), so external calls
+//! never run on the incremental hot path.
 //!
 //! # Invariant (see `AGENT_MASTER_STEERING.md` §7)
 //!

@@ -14,7 +14,7 @@ cargo build --workspace --release
 # Or plain Debian/Ubuntu (what the EC2 dev box used):
 sudo apt-get install -y build-essential pkg-config libssl-dev libsqlite3-dev \
   libxkbcommon-x11-0 libgl1 libegl1 libgl1-mesa-dri python3 bubblewrap
-curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.0
+curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.0   # MSRV; any newer stable works
 cargo build --workspace --release
 ```
 
@@ -108,7 +108,7 @@ carry code or SQL.
 
 ```sh
 cargo test --workspace                          # ~750 tests, ~1 min
-cargo test --workspace --release -- --ignored   # stress: up to 10M cells, ~3 min
+cargo test --workspace --release -- --ignored   # stress: 5M cells verified; the 10M case needs ~7 GB
 ```
 
 Live Postgres tests run when `IMPROV_TEST_PG` is set, e.g.
