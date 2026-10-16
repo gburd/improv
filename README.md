@@ -129,7 +129,10 @@ writer pays nothing). Trigger mode updates the results inside the writer's
 transaction, and `improv.recalc()` updates them when you call it.
 `improv-gui 'postgres://me@host/sales?model=plan'` opens the same model, and
 editing a cell there updates the row in `sales`. See
-[Improv in Postgres](docs/src/postgres.md).
+[Improv in Postgres](docs/src/postgres.md). For a worked example (statement
+reconciliation, budgets, net worth and savings goals for a family with jobs,
+consulting income, several accounts, cards, crypto, foreign currency, a
+house and cars), see [A family's finances in Postgres](docs/src/postgres-finance.md).
 
 ## Keys
 

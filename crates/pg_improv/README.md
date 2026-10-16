@@ -345,6 +345,15 @@ engine absorbing ~111k edits (~1.5 s), decoding them (~1.5 s), and scanning
 each changed measure's snapshot for the diff (`MODES=logical SIZES=1000000`;
 the p95s are 2.0 s and 8.0 s).
 
+## Worked example
+
+`examples/family-finance/` models a household's books: statement
+reconciliation per account and month, budgets and variances, net worth across
+bank, card, retirement, 529, brokerage, crypto, foreign-currency and property
+accounts, and savings-goal projections with what-if. `tests/finance.sh` runs
+it and checks the numbers; the guide chapter is
+[A family's finances](../../docs/src/postgres-finance.md).
+
 ## Catalog
 
 The `improv.*` tables are a compatible superset of the catalog that

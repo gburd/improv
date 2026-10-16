@@ -166,7 +166,8 @@ Choose how results follow your writes:
 Open the same model in the GUI or TUI with its `postgres://…?model=plan`
 URL: editing a cell there updates the row in `sales`.
 [Improv in Postgres](./postgres.md) covers setup, value types, aggregated
-bindings and durability.
+bindings and durability, and [A Family's Finances](./postgres-finance.md)
+is a complete worked example.
 
 ## SQL functions (`LANGUAGE improv`)
 
