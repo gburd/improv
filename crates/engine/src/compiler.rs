@@ -12,7 +12,9 @@
 
 use crate::plan::{PlanNode, PlanNodeKind};
 use crate::typed::{Dim, ResolvedDimSpec, TypeInfo, TypedExpr, TypedExprKind};
-use improv_core_model::{BinaryOp, Expr, Formula, FuncId, Measure, MeasureId, UnaryOp, ValueType};
+use improv_core_model::{
+    BinaryOp, DimensionSpec, Expr, Formula, FuncId, Measure, MeasureId, UnaryOp, ValueType,
+};
 use std::collections::HashMap;
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -111,37 +113,23 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             })
         }
         Expr::Ref(mid, spec) => {
-            let measure = ctx
-                .measures
-                .get(mid)
-                .ok_or(CompileError::UnknownMeasure(*mid))?;
-
-            // Base dim = measure's categories. `by` keeps only those; `except`
-            // drops; `over` marks categories to aggregate away. All three are
-            // removed-or-kept relative to the base set.
-            let base = &measure.categories;
-            let keep_by =
-                |c: &improv_core_model::CategoryId| spec.by.is_empty() || spec.by.contains(c);
-            let result: Vec<_> = base
+            let typed = infer_ref(ctx, *mid, spec)?;
+            // Outside an aggregation nothing collapses the categories a
+            // `[…]` list leaves out: the cells would keep them while the type
+            // said otherwise. Refuse, and say how to collapse one.
+            let m = &ctx.measures[mid];
+            if let Some(c) = m
+                .categories
                 .iter()
-                .copied()
-                .filter(keep_by)
-                .filter(|c| !spec.except.contains(c))
-                .filter(|c| !spec.over.contains(c))
-                .collect();
-
-            let resolved = ResolvedDimSpec {
-                by: spec.by.clone(),
-                over: spec.over.clone(),
-                except: spec.except.clone(),
-            };
-            Ok(TypedExpr {
-                kind: TypedExprKind::Ref(*mid, resolved),
-                ty: TypeInfo {
-                    value_type: measure.value_type,
-                    dim: Dim::of(result),
-                },
-            })
+                .find(|c| !typed.ty.dim.categories.contains(c))
+            {
+                return Err(CompileError::DimensionMismatch(format!(
+                    "{0}[…] leaves out category {c:?}, which only an aggregation \
+                     can collapse: write SUM({0} OVER <category>) (or AVG/MIN/MAX)",
+                    m.name.0
+                )));
+            }
+            Ok(typed)
         }
         Expr::UnaryOp(op, e) => {
             let inner = infer(ctx, target, e)?;
@@ -227,6 +215,8 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
         Expr::Call(func, args) => {
             // Aggregation: single arg, collapse its `over` categories.
             let arg = match args.as_slice() {
+                // The aggregation collapses what the `[…]` list leaves out.
+                [Expr::Ref(mid, spec)] => infer_ref(ctx, *mid, spec)?,
                 [a] => infer(ctx, target, a)?,
                 _ => {
                     return Err(CompileError::Unsupported(format!(
@@ -259,6 +249,37 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             })
         }
     }
+}
+
+/// A measure reference's type: the measure's categories, kept by `by`,
+/// minus `except` and `over`. [`infer`] adds the bare-reference check.
+fn infer_ref(ctx: &CompileContext, mid: MeasureId, spec: &DimensionSpec) -> Result<TypedExpr> {
+    let measure = ctx
+        .measures
+        .get(&mid)
+        .ok_or(CompileError::UnknownMeasure(mid))?;
+    let result: Vec<_> = measure
+        .categories
+        .iter()
+        .copied()
+        .filter(|c| spec.by.is_empty() || spec.by.contains(c))
+        .filter(|c| !spec.except.contains(c))
+        .filter(|c| !spec.over.contains(c))
+        .collect();
+    Ok(TypedExpr {
+        kind: TypedExprKind::Ref(
+            mid,
+            ResolvedDimSpec {
+                by: spec.by.clone(),
+                over: spec.over.clone(),
+                except: spec.except.clone(),
+            },
+        ),
+        ty: TypeInfo {
+            value_type: measure.value_type,
+            dim: Dim::of(result),
+        },
+    })
 }
 
 /// Categories an aggregation collapses: the arg ref's `over`, restricted to the
@@ -499,6 +520,46 @@ mod tests {
             }
             other => panic!("expected Aggregate, got {other:?}"),
         }
+    }
+
+    // 3b. A bare `Quantity[Product]` would leave Time in the cells but not in
+    // the type, so it is refused; a list naming every category is fine, and
+    // inside an aggregation the list's left-out categories are collapsed.
+    #[test]
+    fn by_list_must_not_drop_categories_outside_an_aggregation() {
+        let measures = fixture();
+        let ctx = CompileContext::new(&measures);
+        let by = |cats: Vec<CategoryId>| {
+            Expr::Ref(
+                QTY,
+                DimensionSpec {
+                    by: cats,
+                    ..Default::default()
+                },
+            )
+        };
+        let err = infer(&ctx, MeasureId(200), &by(vec![PRODUCT])).unwrap_err();
+        match err {
+            CompileError::DimensionMismatch(msg) => {
+                assert!(msg.contains("SUM(Quantity OVER"), "{msg}")
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+        let full = infer(&ctx, MeasureId(200), &by(vec![TIME, PRODUCT])).expect("full list");
+        assert_eq!(full.ty.dim, Dim::of(vec![TIME, PRODUCT]));
+        let agg = Expr::Call(
+            FuncId(1),
+            vec![Expr::Ref(
+                QTY,
+                DimensionSpec {
+                    by: vec![PRODUCT],
+                    over: vec![TIME],
+                    except: vec![],
+                },
+            )],
+        );
+        let typed = infer(&ctx, MeasureId(200), &agg).expect("aggregated");
+        assert_eq!(typed.ty.dim, Dim::of(vec![PRODUCT]));
     }
 
     // 4. Unknown measure ref errors with UnknownMeasure.

@@ -111,8 +111,11 @@ qualifier.
 ### Measure references and BY
 
 `Measure[Cat, …]` sets the reference's `by` list: keep only the listed
-categories. `Quantity[Product]` is `Quantity` restricted to `Product` (see
-[Dimension projection](#dimension-projection-by--over--except) below).
+categories. Inside an aggregation the categories it leaves out are collapsed,
+so `SUM(Quantity[Product] OVER Time)` is a per-Product total. Outside one,
+the list must name every category of the measure (`Quantity[Time, Product]`):
+`Quantity[Product]` alone is refused, because nothing would collapse Time
+(see [Dimension projection](#dimension-projection-by--over--except) below).
 
 ### Aggregations
 
@@ -213,11 +216,11 @@ passes `by` (or `by` is empty), is not in `except`, and is not in `over`. The
 In the text syntax, `Measure[Cat, …]` fills `by` and `AGG(Measure OVER Cat)`
 fills `over`. Nothing fills `except`.
 
-`by` changes the dimension the type checker sees, not the cells. The dataflow
-reads the measure's whole collection, so the dropped categories are neither
-removed nor summed: `X = Quantity[Product]`, with `Quantity` over
-`[Time, Product]`, evaluates to every `[Time, Product]` cell of `Quantity`. To
-collapse a category, aggregate it with `OVER`.
+Only an aggregation collapses categories. So a bare reference whose `by`
+leaves a category out is a compile error: `X = Quantity[Product]`, with
+`Quantity` over `[Time, Product]`, says "Quantity[…] leaves out category
+Time, which only an aggregation can collapse". Inside an aggregation, the
+result keeps the categories that `by` keeps and `over` does not name.
 
 ## Aggregation
 

@@ -6,6 +6,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Measure[Cat]` outside an aggregation is refused** when the list leaves
+  out one of the measure's categories. It used to change only the type the
+  checker saw: `X = Quantity[Product]` still produced every Time×Product cell.
+  Inside an aggregation (`SUM(Quantity[Product] OVER Time)`) it works as
+  before.
+
 ## [0.9.0] - 2026-10-16
 
 pg_improv is ready for real databases: it builds and is tested on
