@@ -16,6 +16,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The TUI edits text, boolean and date cells incrementally**, as it does
+  numbers (through `session::input_cell`, like the GUI); it used to rebuild
+  the whole engine for every non-number edit.
 - **`Measure[Cat]` outside an aggregation is refused** when the list leaves
   out one of the measure's categories. It used to change only the type the
   checker saw: `X = Quantity[Product]` still produced every Time×Product cell.

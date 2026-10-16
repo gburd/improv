@@ -802,9 +802,10 @@ impl App {
         self.apply_value(row, col, Value::Number(value))
     }
 
-    /// Set input `[row][col]` to a typed `value`. Numbers flow through the
-    /// engine incrementally; the engine's edit delta is numeric-only, so a
-    /// text/boolean edit rebuilds the engine from the updated model instead.
+    /// Set input `[row][col]` to a typed `value`, pushed through the live
+    /// engine as one incremental edit. A value of the measure's type enters
+    /// the engine as that cell; anything else clears it, exactly what a
+    /// rebuild would seed ([`improv_engine::session::input_cell`]).
     pub fn apply_value(&mut self, row: usize, col: usize, value: Value) -> Result<(), String> {
         if !self.viewed_is_input() {
             return Err("derived cells are computed, not editable".into());
@@ -816,26 +817,23 @@ impl App {
         let key = self.grid.coord_key(row, col);
         let coord = decode_coord(&key);
 
-        let num = match value {
-            Value::Number(n) => Some(n),
-            _ => None,
-        };
+        let cell = self
+            .model
+            .measures
+            .get(&measure)
+            .and_then(|m| improv_engine::session::input_cell(m.value_type, &value));
         self.model.set_input(measure, coord, value);
 
         // Push the delta through the engine (if any derived measures exist) and
         // keep the recomputed snapshot for rendering.
         if let Some(engine) = &mut self.engine {
-            self.snapshot = match num {
-                Some(n) => engine.set(measure, key, n),
-                None => {
-                    let derived: Vec<MeasureId> = self.snapshot.keys().copied().collect();
-                    Engine::new(&self.model, &derived).map(|(e, s)| {
-                        *engine = e;
-                        s
-                    })
-                }
-            }
-            .map_err(|e| e.to_string())?;
+            self.snapshot = engine
+                .apply(vec![improv_engine::session::Edit {
+                    measure,
+                    coord: key,
+                    value: cell,
+                }])
+                .map_err(|e| e.to_string())?;
         }
         self.reselect();
         Ok(())
@@ -1494,10 +1492,52 @@ pub(crate) mod tests {
             app.model.input(MeasureId(201), &at),
             Some(&Value::Boolean(true))
         );
-        // Derived values survive the engine rebuild a non-number edit triggers.
+        // Derived values survive a non-number edit.
         view(&mut app, MeasureId(102));
         assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
         assert!(parse_typed("x", ValueType::DateTime).is_err());
+    }
+
+    /// A boolean edit flows through the live engine as one delta (no rebuild):
+    /// a derived `Hot = NOT Flag` follows it, and the untouched `Revenue`
+    /// keeps its shared snapshot (a rebuild would compute it afresh).
+    #[test]
+    fn typed_edits_are_incremental() {
+        let mut m = revenue_model();
+        let time = CategoryId(1);
+        m.add_measure(Measure {
+            id: MeasureId(201),
+            name: Name("Flag".into()),
+            value_type: ValueType::Boolean,
+            categories: vec![time],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let at = Coordinate::from_pairs([(time, ItemId(10))]);
+        m.set_input(MeasureId(201), at.clone(), Value::Boolean(false));
+        let hot = improv_core_model::parser::parse_formula(&m, "Hot = NOT Flag").unwrap();
+        m.add_measure(Measure {
+            id: MeasureId(202),
+            name: Name("Hot".into()),
+            value_type: ValueType::Boolean,
+            categories: vec![time],
+            kind: MeasureKind::Derived(hot.formula),
+            description: None,
+        });
+        let mut app = App::new(m).unwrap();
+        let key = encode_coord(&at);
+        let hot_at = |app: &App| app.snapshot[&MeasureId(202)].get(&key).cloned();
+        assert_eq!(hot_at(&app), Some(CellValue::Bool(true)));
+        let revenue = app.snapshot[&MeasureId(102)].clone();
+        view(&mut app, MeasureId(201));
+        app.edit = Some("true".into());
+        app.commit_edit();
+        assert_eq!(app.status, None);
+        assert_eq!(hot_at(&app), Some(CellValue::Bool(false)));
+        assert!(std::sync::Arc::ptr_eq(
+            &revenue,
+            &app.snapshot[&MeasureId(102)]
+        ));
     }
 
     /// Revenue model plus `Sales[Time, Product, Empty, Region]`: `Empty` has
