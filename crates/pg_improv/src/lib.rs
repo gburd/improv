@@ -153,6 +153,28 @@ END $$;
     requires = ["catalog"]
 );
 
+// The catalog's rows are the user's models, not the extension's: without
+// this, pg_dump writes only the extension's DDL and a restore loses every
+// model (its tables come back empty from CREATE EXTENSION). The sequence
+// behind improv.model.id is dumped too, so restored ids keep minting.
+extension_sql!(
+    r#"
+SELECT pg_catalog.pg_extension_config_dump('improv.model', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.model_id_seq', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.category', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.item', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.measure', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.binding', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.category_binding', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.cell', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.view', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.meta', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.model_version', '');
+"#,
+    name = "dump_catalog",
+    requires = ["phase2_catalog"]
+);
+
 /// The id and stored name of model `name`, row-locked so concurrent
 /// structural changes and recalcs of one model serialize.
 fn lock_model(name: &str) -> Res<(i64, String)> {

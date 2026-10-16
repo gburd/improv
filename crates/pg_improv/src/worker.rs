@@ -119,6 +119,10 @@ CREATE TABLE improv.sync_state (
 );
 -- Slots whose model left logical mode (or was dropped): the worker drops them.
 CREATE TABLE improv.slot_to_drop (slot text PRIMARY KEY);
+-- A model's sync state is part of it, so a dump keeps it. A restored
+-- database has no slot: the worker creates one and resets the row's
+-- progress, then catches up with one full recompute.
+SELECT pg_catalog.pg_extension_config_dump('improv.sync_state', '');
 "#,
     name = "l2_logical",
     requires = ["catalog"]
@@ -340,9 +344,22 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
                     .catch_others(|e| Err(format!("{e:?}")))
                     .execute()
             });
-            if let Err(e) = created {
-                log!("pg_improv sync: model {name}: creating its slot: {e}");
-                continue;
+            match created {
+                Err(e) => {
+                    log!("pg_improv sync: model {name}: creating its slot: {e}");
+                    continue;
+                }
+                // A new slot starts at the current WAL position, so the
+                // model's recorded progress (a restored dump's, or a slot
+                // dropped by hand) no longer applies: catch up from scratch.
+                Ok(true) => BackgroundWorker::transaction(|| {
+                    let _ = Spi::run_with_args(
+                        "UPDATE improv.sync_state SET confirmed_lsn = NULL, \
+                           last_applied_at = NULL WHERE model_id = $1",
+                        &[mid.into()],
+                    );
+                }),
+                Ok(false) => {}
             }
             let r = BackgroundWorker::transaction(|| {
                 PgTryBuilder::new(|| tick(mid, &name).map_err(|e| e.to_string()))
