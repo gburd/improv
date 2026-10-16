@@ -107,7 +107,9 @@ echo "ok: logical mode: ROLLBACK, errors and rolled-back savepoints never reach 
 # worker serves it: the model, its sync mode and its results come back, and
 # the restored worker creates its own slot and follows new writes.
 "$PG_BIN/pg_dump" -h "$D" -p "$P" -U improv -Fc t >"$D/t.dump"
-"$PG_BIN/pg_ctl" -D "$D/data" stop -m fast >/dev/null
+# The dump is taken; this cluster is discarded, so stop it immediately: a
+# fast shutdown on a loaded CI runner once outlasted pg_ctl's 60 s wait.
+"$PG_BIN/pg_ctl" -D "$D/data" stop -m immediate >/dev/null
 find "$D/data" -delete
 "$PG_BIN/initdb" -D "$D/data" -A trust -U improv >/dev/null
 start "shared_preload_libraries = 'pg_improv'

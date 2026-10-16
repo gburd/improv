@@ -90,7 +90,7 @@ for from in "$@"; do
 	eq "$(q "SELECT array_to_string(proconfig, ',') FROM pg_proc WHERE oid = 'improv.mint_items(bigint,bigint[],text[])'::regprocedure")" \
 		"search_path=pg_catalog, pg_temp" "mint_items search_path after the update"
 	echo "ok: $from -> $to: results kept, worker follows writes, define works, pg_dump keeps the model"
-	"$PG_BIN/pg_ctl" -D "$W/data" stop -m fast >/dev/null
+	"$PG_BIN/pg_ctl" -D "$W/data" stop -m immediate >/dev/null  # discarded next
 	find "$W/data" -delete
 done
 echo PASS
