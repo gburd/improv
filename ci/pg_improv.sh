@@ -44,8 +44,9 @@ id pgi >/dev/null 2>&1 || useradd -m pgi
 chmod -R a+w "/usr/share/postgresql/$pg/extension" "/usr/lib/postgresql/$pg/lib"
 chown -R pgi "$root" "${CARGO_HOME:-$HOME/.cargo}"
 git config --global --add safe.directory "$root"
+# (CARGO_BUILD_JOBS only when set: cargo rejects an empty value.)
 run() { sudo -u pgi env PATH="$PATH" CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}" \
-	RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-}" "$@"; }
+	RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}" ${CARGO_BUILD_JOBS:+CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS"} "$@"; }
 run sh -c "git config --global --add safe.directory '$root'"
 run cargo pgrx init "--pg$pg" "$PG_CONFIG" >/dev/null
 end
