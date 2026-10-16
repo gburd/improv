@@ -126,12 +126,15 @@ CREATE TABLE improv.category_binding (
 
 extension_sql!(
     r#"
--- Shared with the pg_improv extension (design §9.2), verbatim.
+-- Shared with storage_pg (design §9.2). Here plain CREATE: an extension owns
+-- these, and IF NOT EXISTS / OR REPLACE could adopt a hostile role's object
+-- (pgspot PS014/PS002). storage_pg keeps the idempotent forms.
 ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
   CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count'));
-CREATE UNIQUE INDEX IF NOT EXISTS item_name_uniq ON improv.item (model_id, category_id, name);
-CREATE OR REPLACE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
-RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql AS $$
+CREATE UNIQUE INDEX item_name_uniq ON improv.item (model_id, category_id, name);
+CREATE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
+RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
   PERFORM 1 FROM improv.model m WHERE m.id = p_model FOR UPDATE;
   INSERT INTO improv.item (model_id, id, category_id, name)

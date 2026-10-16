@@ -102,12 +102,15 @@ CREATE TABLE IF NOT EXISTS improv.model_version (
     model_id bigint PRIMARY KEY REFERENCES improv.model(id) ON DELETE CASCADE,
     tx       bigint NOT NULL DEFAULT 0
 );
--- Shared with the pg_improv extension (design §9.2), verbatim.
+-- Shared with the pg_improv extension (design §9.2): the same DDL in
+-- idempotent form (this runs against an existing database); the extension
+-- uses plain CREATE. Both pin mint_items' search_path.
 ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
   CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count'));
 CREATE UNIQUE INDEX IF NOT EXISTS item_name_uniq ON improv.item (model_id, category_id, name);
 CREATE OR REPLACE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
-RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql AS $$
+RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp AS $$
 BEGIN
   PERFORM 1 FROM improv.model m WHERE m.id = p_model FOR UPDATE;
   INSERT INTO improv.item (model_id, id, category_id, name)

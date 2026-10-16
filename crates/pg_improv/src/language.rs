@@ -359,7 +359,10 @@ fn row_version(oid: Oid) -> Result<RowVersion, String> {
                 u32::from(oid)
             ));
         }
-        let xmin = pg_sys::HeapTupleHeaderGetRawXmin((*tup).t_data);
+        // The raw xmin field (HeapTupleHeaderGetRawXmin). Read directly:
+        // PG 18's headers export a C function of the same name, which pgrx
+        // also defines, so the name is ambiguous there.
+        let xmin = (*(*tup).t_data).t_choice.t_heap.t_xmin;
         let tid = pgrx::itemptr::item_pointer_get_both((*tup).t_self);
         pg_sys::ReleaseSysCache(tup);
         Ok((xmin, tid))
