@@ -44,6 +44,15 @@ redefines it in Postgres; editing an input cell updates the bound row of
 
 ## Three ways to keep results current
 
+**Transactions.** In `trigger` mode, and with `improv.recalc()`, the results
+change inside the writer's transaction: it reads its own new results, other
+sessions see them only once it commits, and `ROLLBACK`, an error or
+`ROLLBACK TO SAVEPOINT` undo them with the change. In `logical` mode the
+results follow the commit in the worker's own transaction, and an aborted
+write never reaches them at all, because logical decoding carries committed
+transactions only. A batch's results and the slot's position commit
+together, so a crash neither loses nor doubles a change.
+
 | | `logical` (default) | `trigger` | `improv.recalc()` |
 | --- | --- | --- | --- |
 | Results update | after the commit, by a background worker | inside the writer's statement | when you call it |
@@ -105,6 +114,13 @@ NULL argument gives NULL wherever the result depends on it, and division by
 zero gives `NaN`. Aggregations need categories, so `SUM(x OVER Time)` is
 rejected; put it in a model. A call costs about 0.14 µs. See
 `crates/pg_improv/README.md` for the types and rules.
+
+## Upgrades and backups
+
+pg_improv supports Postgres 15–18. To upgrade, install the new release,
+restart Postgres, then run `ALTER EXTENSION pg_improv UPDATE`. `pg_dump`
+keeps the models and their results. A restored database's worker makes a
+new replication slot and catches up with one recompute.
 
 ## Durability
 

@@ -14,14 +14,36 @@ own transaction. The desktop apps open a Postgres-hosted model directly:
 
 ## Install
 
-Needs Postgres 17 and `cargo-pgrx` 0.17 (`cargo install cargo-pgrx
---version 0.17.0 --locked && cargo pgrx init --pg17 $(which pg_config)`).
+Supports Postgres **15, 16, 17 and 18**. Three ways to get it:
+
+- **Binary:** each [release](https://codeberg.org/gregburd/improv/releases)
+  has `pg_improv-<version>-pg<N>-x86_64-linux.tar.gz`. Unpack it over `/`
+  (it holds the `.so`, the control file, and the install and update scripts
+  under the paths `pg_config` reports).
+- **PGXN:** `pgxn download pg_improv`, then build it as below. It is a pgrx
+  (Rust) extension, so it builds with `cargo pgrx`, not `make`.
+- **Source:** needs `cargo-pgrx` 0.17 (`cargo install cargo-pgrx --version
+  0.17.0 --locked && cargo pgrx init --pg17 $(which pg_config)`).
 
 ```sh
 cd crates/pg_improv
-cargo pgrx install --release      # into the pg_config on PATH
-cargo pgrx test pg17              # the extension's tests
+cargo pgrx install --release --pg-config $(which pg_config)    # PG 17 (default)
+cargo pgrx install --release --no-default-features --features pg18 \
+  --pg-config /usr/lib/postgresql/18/bin/pg_config              # another major
+cargo pgrx test pg17                                             # the extension's tests
 ```
+
+**Upgrading:** install the new release, restart Postgres (the preloaded
+library is loaded at startup), then `ALTER EXTENSION pg_improv UPDATE`. The
+update scripts (`sql/pg_improv--<old>--<new>.sql`) ship with every release,
+and `tests/upgrade.sh` checks each one against a live model.
+
+**Backups:** `pg_dump` keeps your models (the `improv.*` catalog is
+registered with `pg_extension_config_dump`) and their result tables.
+After a restore, the sync worker creates a fresh replication slot and
+catches up with one recompute. Before 0.9.0 a dump restored every model
+empty.
+
 
 For the default `logical` mode, preload the library and enable logical
 decoding (then restart Postgres):
@@ -38,7 +60,12 @@ max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retai
 
 Without the preload, `CREATE EXTENSION` still works and `trigger` / `manual`
 models (and `recalc`) behave the same; `logical` models then update only
-through `recalc`. `CREATE EXTENSION` needs a superuser.
+through `recalc`. (Before 0.9.0, `CREATE EXTENSION` without the preload
+crashed the session; `tests/txn.sh` now checks it.) `CREATE EXTENSION` needs
+a superuser. Everything it creates is in the `improv` schema: every function
+is `improv.<name>()`, and the only object outside it is the procedural
+language `improv` (languages have no schema). Each model's results go in
+its own schema, `improv_<model>`.
 
 This crate is **not** part of the root Cargo workspace (pgrx needs
 `pg_config` and libclang to build), so it has its own `Cargo.lock`, and
@@ -184,6 +211,25 @@ own per-cell operators, so a body gives the value a model would give at one
 cell.
 
 ## Keeping results current: trigger vs logical vs recalc
+
+**Is a result in the same transaction as the write that caused it?** In
+`trigger` mode and with `improv.recalc()`, yes. In `logical` mode (the
+default), no: it follows shortly after the commit, in a transaction of its
+own. In every mode a write that does not commit never changes a result:
+
+| A write that… | `trigger` | `logical` |
+| --- | --- | --- |
+| commits | results commit with it, atomically, visible to others at the same moment | results follow one poll later (~50–100 ms), all of one batch at once |
+| is rolled back (`ROLLBACK`, an error, a lost connection) | its result changes roll back with it | never seen: logical decoding sends committed transactions only |
+| is undone by `ROLLBACK TO SAVEPOINT` | that part's result changes are undone; the rest commit | the undone part is never decoded; the committed rest is applied |
+| is read back in the same transaction | **sees** its own new results | sees the old ones (call `improv.recalc()` to see new ones) |
+
+In logical mode the worker applies a batch of committed transactions and
+moves its replication slot forward **in one transaction**: all of a batch's
+result writes and the slot position commit together or not at all. A crash
+or a killed worker re-applies the batch, and the writes are idempotent, so
+nothing is lost or counted twice. `tests/txn.sh` checks every row of the
+table above, and `tests/logical.sh` checks crash recovery.
 
 | | `trigger` (L1) | `logical` (L2, default) | `recalc` (explicit) |
 | --- | --- | --- | --- |
