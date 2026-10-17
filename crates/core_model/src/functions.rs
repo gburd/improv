@@ -455,6 +455,16 @@ pub static CORE: &[FnDef] = &[
     s(325, "COUNTMATCHES", C::Text, &[T, T], V::Number, "how many times search occurs in text"),
 ];
 
+/// The reserved id of a `WHERE` clause: an aggregation's trailing argument
+/// `Call(WHERE, [predicate])` (`SUM(x OVER T WHERE x > 0)`). Not a callable
+/// function, so not in the registry.
+pub const WHERE: FuncId = FuncId(990);
+/// The reserved id of a window: an aggregation's trailing argument
+/// `Call(WINDOW, [from, to])` (`SUM(x OVER T[FIRST..THIS])`). Each bound is a
+/// number (an offset from this item; `0` is THIS) or the text `FIRST` /
+/// `LAST`.
+pub const WINDOW: FuncId = FuncId(991);
+
 mod date;
 mod dimensional;
 mod financial;

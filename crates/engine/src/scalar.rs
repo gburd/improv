@@ -57,6 +57,7 @@ pub fn eval(
 pub fn check(expr: &Expr) -> Result<(), ScalarError> {
     match expr {
         Expr::Literal(_) => Ok(()),
+        Expr::Category(_) => Err(ScalarError::NeedsDimensions("a category argument".into())),
         Expr::Ref(_, spec) => {
             if spec.by.is_empty() && spec.over.is_empty() && spec.except.is_empty() {
                 Ok(())
@@ -71,10 +72,16 @@ pub fn check(expr: &Expr) -> Result<(), ScalarError> {
         Expr::Call(func, args) => {
             if is_aggregation(*func) {
                 return Err(ScalarError::NeedsDimensions(
-                    "an aggregation (SUM/AVG/MIN/MAX)".into(),
+                    "an aggregation (SUM(x OVER …))".into(),
                 ));
             }
             let def = functions::by_id(*func).ok_or(ScalarError::UnknownFunction(*func))?;
+            if def.category == functions::Category::Dimensional {
+                return Err(ScalarError::NeedsDimensions(format!(
+                    "{} (it reads a category)",
+                    def.name
+                )));
+            }
             if !def.accepts(args.len()) {
                 return Err(ScalarError::Arity {
                     func: *func,
@@ -90,6 +97,7 @@ pub fn check(expr: &Expr) -> Result<(), ScalarError> {
 fn eval_checked(expr: &Expr, env: &HashMap<MeasureId, CellValue>) -> Option<CellValue> {
     match expr {
         Expr::Literal(v) => CellValue::from_model_value(v),
+        Expr::Category(_) => None,
         Expr::Ref(m, _) => env.get(m).cloned(),
         Expr::UnaryOp(op, a) => Some(apply_unary(*op, &eval_checked(a, env)?)),
         Expr::BinaryOp(op, a, b) => {

@@ -338,8 +338,11 @@ fn eval_reports_an_engine_compile_error() {
     let (_dir, db) = model("eval-bad");
     ok(&["add-measure", &db, "105", "A", "number", "input", "Time"]);
     ok(&["add-measure", &db, "106", "B", "number", "input", "Product"]);
-    ok(&["add-derived", &db, "107", "Bad", "A + B"]);
-    fails_with(&["eval", &db, "107"], "neither operand dim");
+    // add-derived checks the formula now (its shape comes from the engine).
+    fails_with(
+        &["add-derived", &db, "107", "Bad", "A + B"],
+        "neither operand dim",
+    );
 }
 
 #[test]
@@ -945,10 +948,10 @@ fn stream_errors() {
 
     ok(&["add-measure", &db, "105", "A", "number", "input", "Time"]);
     ok(&["add-measure", &db, "106", "B", "number", "input", "Product"]);
-    ok(&["add-derived", &db, "107", "Bad", "A + B"]);
-    let o = improv_stdin(&["stream", &db, "Bad"], b"");
-    assert!(!o.status.success());
-    stdout_has(&String::from_utf8_lossy(&o.stderr), "neither operand dim");
+    fails_with(
+        &["add-derived", &db, "107", "Bad", "A + B"],
+        "neither operand dim",
+    );
 }
 
 #[test]

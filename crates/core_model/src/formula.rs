@@ -60,6 +60,9 @@ pub enum Expr {
     UnaryOp(UnaryOp, Box<Expr>),
     BinaryOp(BinaryOp, Box<Expr>, Box<Expr>),
     Call(FuncId, Vec<Expr>),
+    /// A category named as a function argument (`POSITION(Time)`,
+    /// `PREV(x, Time)`); not a value on its own.
+    Category(CategoryId),
 }
 
 impl Expr {
@@ -73,7 +76,7 @@ impl Expr {
 
     fn collect_refs(&self, acc: &mut Vec<MeasureId>) {
         match self {
-            Expr::Literal(_) => {}
+            Expr::Literal(_) | Expr::Category(_) => {}
             Expr::Ref(m, _) => acc.push(*m),
             Expr::UnaryOp(_, e) => e.collect_refs(acc),
             Expr::BinaryOp(_, l, r) => {

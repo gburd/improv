@@ -8,7 +8,6 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use improv_core_model::functions::Kind;
 use improv_core_model::{CategoryId, Coordinate, Expr, ItemId, MeasureId, MeasureKind, Model};
 
 use crate::{quote_ident, Error, Result, ResultRows};
@@ -192,7 +191,7 @@ fn elementwise(model: &Model, id: MeasureId) -> bool {
 
 fn expr_elementwise(model: &Model, cats: &[CategoryId], e: &Expr) -> bool {
     match e {
-        Expr::Literal(_) => true,
+        Expr::Literal(_) | Expr::Category(_) => true,
         Expr::Ref(r, spec) => {
             spec.by.is_empty()
                 && spec.over.is_empty()
@@ -206,10 +205,13 @@ fn expr_elementwise(model: &Model, cats: &[CategoryId], e: &Expr) -> bool {
         Expr::BinaryOp(_, a, b) => {
             expr_elementwise(model, cats, a) && expr_elementwise(model, cats, b)
         }
-        // Scalar and lazy (IF-family) calls read only their own coordinate.
+        // Scalar and lazy (IF-family) calls read only their own coordinate;
+        // the dimensional ones (PREV, POSITION) read other items.
         Expr::Call(f, args) => {
-            improv_core_model::functions::by_id(*f).is_some_and(|d| d.kind != Kind::Aggregate)
-                && args.iter().all(|a| expr_elementwise(model, cats, a))
+            improv_core_model::functions::by_id(*f).is_some_and(|d| {
+                !d.kind.reduces()
+                    && d.category != improv_core_model::functions::Category::Dimensional
+            }) && args.iter().all(|a| expr_elementwise(model, cats, a))
         }
     }
 }

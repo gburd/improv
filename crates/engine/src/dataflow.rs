@@ -17,9 +17,10 @@
 use crate::builtins::{self, err};
 use crate::compiler::{compile_formula, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
+use crate::reduce::{self, Rows};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
-use differential_dataflow::operators::{Join as _, Reduce};
+use differential_dataflow::operators::{Join as _, Reduce, Threshold};
 use differential_dataflow::AsCollection;
 use differential_dataflow::Collection;
 use improv_core_model::{
@@ -113,24 +114,151 @@ where
         }
 
         PlanNodeKind::Aggregate {
-            input,
+            inputs: ins,
+            params,
+            pred,
             group_by,
             func,
+            order,
+            window,
+            per_item,
+        } => build_aggregate(
+            scope,
+            inputs,
+            derived,
+            AggSpec {
+                ins,
+                params,
+                pred: pred.as_deref(),
+                group_by,
+                func: *func,
+                order,
+                window: *window,
+                per_item: *per_item,
+            },
+        ),
+
+        PlanNodeKind::Items(cat, vals) => {
+            let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
+            let rows: Vec<_> = vals
+                .iter()
+                .filter_map(|(item, v)| {
+                    let cv = CellValue::from_model_value(v)?;
+                    Some(((vec![(cat.0, item.0)], cv), t.clone(), 1isize))
+                })
+                .collect();
+            Ok(rows.to_stream(scope).as_collection())
+        }
+
+        PlanNodeKind::Recurrence {
+            body,
+            refs,
+            slots,
+            cat,
+            order,
         } => {
-            let c = build_coll(input, scope, inputs, derived)?;
-            let gb = group_by.clone();
-            let func = *func;
-            // Re-key to the group-by coordinate, then reduce.
-            let keyed = c.map(move |(k, v)| (project(&k, &gb), v));
-            Ok(keyed.reduce(move |_key, input, output| {
-                let vals: Vec<&CellValue> = input
+            // Rows: every read measure aligned on the coordinate.
+            let ids: Vec<MeasureId> = refs.iter().map(|(id, _)| *id).collect();
+            let (_, p0) = &refs[0];
+            let mut rows = build_coll(p0, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+            let mut dim = p0.ty.dim.clone();
+            for (_, p) in &refs[1..] {
+                let c = build_coll(p, scope, inputs, derived)?;
+                let keys: Vec<CategoryId> = dim
+                    .categories
                     .iter()
-                    .flat_map(|(v, mult)| std::iter::repeat_n(*v, (*mult).max(0) as usize))
+                    .copied()
+                    .filter(|c| p.ty.dim.categories.contains(c))
                     .collect();
-                if !vals.is_empty() {
-                    output.push((aggregate(func, &vals), 1isize));
-                }
+                rows = align_with(&rows, &c, keys).map(|(k, (mut vs, v))| {
+                    vs.push(v);
+                    (k, vs)
+                });
+                dim = dim.union(&p.ty.dim);
+            }
+            let pos: HashMap<u32, u32> = order
+                .iter()
+                .enumerate()
+                .map(|(i, it)| (it.0, i as u32))
+                .collect();
+            let c = cat.0;
+            let keyed = rows.map(move |(k, vs)| {
+                let item = k.iter().find(|(cc, _)| *cc == c).map_or(0, |(_, i)| *i);
+                let p = pos.get(&item).copied().unwrap_or(u32::MAX / 2 + item);
+                let group: CoordKey = k.into_iter().filter(|(cc, _)| *cc != c).collect();
+                (group, ((p, item), vs))
+            });
+            let (body, slots) = (body.clone(), slots.clone());
+            let scan = keyed.reduce(
+                move |_g, input, output: &mut Vec<((u32, CellValue), isize)>| {
+                    let mut done: HashMap<i64, CellValue> = HashMap::new();
+                    for (((p, item), vs), mult) in input {
+                        if *mult <= 0 {
+                            continue;
+                        }
+                        let mut env: HashMap<MeasureId, CellValue> =
+                            ids.iter().copied().zip(vs.iter().cloned()).collect();
+                        for (slot, back, default) in &slots {
+                            let earlier =
+                                done.get(&(i64::from(*p) - back)).cloned().or_else(|| {
+                                    default
+                                        .as_ref()
+                                        .and_then(|d| crate::scalar::eval(d, &env).ok().flatten())
+                                });
+                            if let Some(v) = earlier {
+                                env.insert(*slot, v);
+                            }
+                        }
+                        if let Ok(Some(v)) = crate::scalar::eval(&body, &env) {
+                            done.insert(i64::from(*p), v.clone());
+                            output.push(((*item, v), 1isize));
+                        }
+                    }
+                },
+            );
+            Ok(scan.map(move |(g, (item, v))| {
+                let mut k = g;
+                k.push((c, item));
+                k.sort_unstable();
+                (k, v)
             }))
+        }
+
+        PlanNodeKind::Shift {
+            input,
+            cat,
+            offset,
+            order,
+            default,
+        } => {
+            let x = build_coll(input, scope, inputs, derived)?;
+            let pos: HashMap<u32, usize> =
+                order.iter().enumerate().map(|(i, it)| (it.0, i)).collect();
+            let (cat, offset, order) = (cat.0, *offset, order.clone());
+            // Each cell moves to the item `-offset` away: the value at item i
+            // is the input's value at item i + offset.
+            let moved = x.flat_map(move |(k, v)| {
+                let mut k2 = k.clone();
+                let slot = k2.iter_mut().find(|(c, _)| *c == cat)?;
+                let p = *pos.get(&slot.1)? as i64 - offset;
+                let it = order.get(usize::try_from(p).ok()?)?;
+                slot.1 = it.0;
+                Some((k2, v))
+            });
+            let Some(d) = default else {
+                return Ok(moved);
+            };
+            // Where nothing moved in, the default, at the input's own cells.
+            let dflt = build_coll(d, scope, inputs, derived)?;
+            let own = x.map(|(k, _)| k);
+            let landed = moved.map(|(k, _)| k);
+            let holes = own
+                .concat(&landed.negate())
+                .threshold(|_, m| if *m > 0 { 1 } else { 0 });
+            let holes = holes.map(|k| (k, CellValue::Bool(true)));
+            let filled =
+                align(&holes, &dflt, d.ty.dim.categories.clone()).map(|(k, (_, v))| (k, v));
+            Ok(moved.concat(&filled))
         }
 
         PlanNodeKind::Literal(v) => {
@@ -229,6 +357,216 @@ where
             Ok(out.concat(&dom.filter(|(_, v)| matches!(v, CellValue::Err(_)))))
         }
     }
+}
+
+/// A reduction row as the `reduce` sees it: (item positions along the
+/// reduced categories, the first reduced category's item), then the values.
+type AggRow = ((Vec<u32>, u32), Vec<CellValue>);
+
+/// The pieces of an `Aggregate` plan node, for [`build_aggregate`].
+struct AggSpec<'p> {
+    ins: &'p [PlanNode],
+    params: &'p [PlanNode],
+    pred: Option<&'p PlanNode>,
+    group_by: &'p [CategoryId],
+    func: FuncId,
+    order: &'p [(CategoryId, Vec<improv_core_model::ItemId>)],
+    window: Option<crate::typed::Window>,
+    per_item: bool,
+}
+
+/// A reduction's rows: the reduced measures aligned on their coordinate
+/// (and filtered by `pred`), parameters appended, re-keyed to the group,
+/// each row carrying its item positions so the reduction sees item order.
+fn build_aggregate<G: Scope>(
+    scope: &mut G,
+    inputs: &HashMap<MeasureId, Coll<G>>,
+    derived: &HashMap<MeasureId, Coll<G>>,
+    a: AggSpec<'_>,
+) -> Result<Coll<G>, EngineError>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
+{
+    let (first, rest) = a
+        .ins
+        .split_first()
+        .ok_or_else(|| EngineError::Unsupported("aggregation with no input".into()))?;
+    let full: Vec<CategoryId> = first
+        .ty
+        .dim
+        .categories
+        .iter()
+        .chain(a.order.iter().map(|(c, _)| c))
+        .copied()
+        .collect();
+    let mut rows = build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+    for n in rest {
+        let c = build_coll(n, scope, inputs, derived)?;
+        rows = align_with(&rows, &c, full.clone()).map(|(k, (mut vs, v))| {
+            vs.push(v);
+            (k, vs)
+        });
+    }
+    let n_in = a.ins.len();
+    if let Some(p) = a.pred {
+        let pc = build_coll(p, scope, inputs, derived)?;
+        rows = align_with(&rows, &pc, p.ty.dim.categories.clone()).flat_map(|(k, (vs, t))| {
+            match t {
+                CellValue::Bool(true) => Some((k, vs)),
+                // An error in the condition makes the row that error.
+                CellValue::Err(_) => Some((k, vec![t; vs.len()])),
+                _ => None,
+            }
+        });
+    }
+    // Parameters: literals fold; the rest join per row on their categories
+    // (a subset of the group's).
+    let mut consts: Vec<Option<CellValue>> = Vec::new();
+    for p in a.params {
+        match literal_value(p) {
+            Some(v) => consts.push(Some(v)),
+            None => {
+                consts.push(None);
+                let pc = build_coll(p, scope, inputs, derived)?;
+                rows =
+                    align_with(&rows, &pc, p.ty.dim.categories.clone()).map(|(k, (mut vs, v))| {
+                        vs.push(v);
+                        (k, vs)
+                    });
+            }
+        }
+    }
+    let order: Vec<(u32, HashMap<u32, u32>)> = a
+        .order
+        .iter()
+        .map(|(c, items)| {
+            let pos = items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| (it.0, i as u32))
+                .collect();
+            (c.0, pos)
+        })
+        .collect();
+    let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
+    let gb = a.group_by.to_vec();
+    // (group key, ((positions, item of the first reduced category), values))
+    let keyed = rows.map(move |(k, vs)| {
+        let pos: Vec<u32> = order
+            .iter()
+            .map(|(c, m)| {
+                let item = k.iter().find(|(cc, _)| cc == c).map_or(0, |(_, i)| *i);
+                // Unknown items (no model order) sort by id after known ones.
+                m.get(&item).copied().unwrap_or(u32::MAX / 2 + item)
+            })
+            .collect();
+        let item = order
+            .first()
+            .and_then(|(c, _)| k.iter().find(|(cc, _)| cc == c))
+            .map_or(0, |(_, i)| *i);
+        (project(&k, &gb), ((pos, item), vs))
+    });
+    let func = a.func;
+    let to_rows = move |input: &[(&AggRow, isize)]| {
+        let mut rs = Rows {
+            pos: Vec::new(),
+            vals: Vec::new(),
+            capacity,
+        };
+        let mut params: Vec<CellValue> = Vec::new();
+        let mut items = Vec::new();
+        for ((pk, vs), mult) in input {
+            for _ in 0..(*mult).max(0) {
+                rs.pos.push(pk.0.clone());
+                rs.vals.push(vs[..n_in].to_vec());
+                items.push(pk.1);
+                if params.is_empty() {
+                    // Joined parameters follow the inputs, in order.
+                    let mut joined = vs[n_in..].iter();
+                    params = consts
+                        .iter()
+                        .map(|c| match c {
+                            Some(v) => v.clone(),
+                            None => joined.next().cloned().unwrap_or(CellValue::Err(err::NA)),
+                        })
+                        .collect();
+                }
+            }
+        }
+        if params.is_empty() {
+            params = consts
+                .iter()
+                .map(|c| c.clone().unwrap_or(CellValue::Err(err::NA)))
+                .collect();
+        }
+        (rs, params, items)
+    };
+    let cat0 = a.order.first().map(|(c, _)| c.0);
+    if a.window.is_none() && !a.per_item {
+        return Ok(keyed.reduce(move |_k, input, output| {
+            let (rs, params, _) = to_rows(input);
+            if !rs.is_empty() {
+                output.push((reduce::reduce(func, &rs, &params), 1isize));
+            }
+        }));
+    }
+    // One result per item of the (single) reduced category.
+    let window = a.window;
+    let per = keyed.reduce(
+        move |_k, input, output: &mut Vec<((u32, CellValue), isize)>| {
+            let (rs, params, items) = to_rows(input);
+            let outs = match window {
+                None => reduce::per_item(func, &rs, &params),
+                Some(w) => windows(func, &rs, &params, w),
+            };
+            for (item, v) in items.into_iter().zip(outs) {
+                output.push(((item, v), 1isize));
+            }
+        },
+    );
+    let cat0 = cat0.unwrap_or(0);
+    Ok(per.map(move |(gk, (item, v))| {
+        let mut k = gk;
+        k.push((cat0, item));
+        k.sort_unstable();
+        (k, v)
+    }))
+}
+
+/// One result per row: the reduction over the rows whose position lies in
+/// the row's window (positions along the single reduced category).
+fn windows(
+    func: FuncId,
+    rs: &Rows,
+    params: &[CellValue],
+    w: crate::typed::Window,
+) -> Vec<CellValue> {
+    use crate::typed::Bound;
+    let positions: Vec<i64> = rs.pos.iter().map(|p| i64::from(p[0])).collect();
+    let (lo_all, hi_all) = (i64::MIN, i64::MAX);
+    (0..rs.len())
+        .map(|i| {
+            let me = positions[i];
+            let at = |b: Bound, end: i64| match b {
+                Bound::First | Bound::Last => end,
+                Bound::Offset(o) => me + o,
+            };
+            let lo = at(w.0, if w.0 == Bound::Last { hi_all } else { lo_all });
+            let hi = at(w.1, if w.1 == Bound::First { lo_all } else { hi_all });
+            let pick: Vec<usize> = (0..rs.len())
+                .filter(|j| (lo..=hi).contains(&positions[*j]))
+                .collect();
+            if pick.is_empty() {
+                return CellValue::Err(err::NA);
+            }
+            let sub = Rows {
+                pos: pick.iter().map(|j| rs.pos[*j].clone()).collect(),
+                vals: pick.iter().map(|j| rs.vals[*j].clone()).collect(),
+                capacity: rs.capacity,
+            };
+            reduce::reduce(func, &sub, params)
+        })
+        .collect()
 }
 
 /// A constant at the empty coordinate (broadcasts into any join).
@@ -390,30 +728,6 @@ fn truthy(v: &CellValue) -> bool {
     }
 }
 
-/// Reduce one group's values (sorted, as `reduce` hands them over) with
-/// aggregation `func`. An error among them is the result; with several, the
-/// first in value order (the smallest `ERROR.TYPE` code), so the result
-/// never depends on arrival order.
-fn aggregate(func: FuncId, vals: &[&CellValue]) -> CellValue {
-    if let Some(bad) = vals.iter().find(|v| matches!(v, CellValue::Err(_))) {
-        return (*bad).clone();
-    }
-    let scalar_twin = match func.0 {
-        1 => 22,
-        2 => 23,
-        3 => 20,
-        4 => 21,
-        5 => 24,
-        6 => 25,
-        7 => 26,
-        8 => 27,
-        9 => 28,
-        _ => return CellValue::Err(err::NAME),
-    };
-    let owned: Vec<CellValue> = vals.iter().map(|v| (*v).clone()).collect();
-    builtins::eval(FuncId(scalar_twin), &owned)
-}
-
 /// Project a coordinate key down to a subset of category ids.
 fn project(k: &CoordKey, keep: &[CategoryId]) -> CoordKey {
     let keep: Vec<u32> = keep.iter().map(|c| c.0).collect();
@@ -471,8 +785,13 @@ pub(crate) fn derived_build_order<'m>(
                 "cyclic measure dependency at {m:?}"
             )));
         }
+        // A measure's references to itself are a recurrence (`Bal =
+        // PREV(Bal, Time, 1, Open) + Flow`), checked by the compiler, not a
+        // cycle; any other way back to it still is one.
         for dep in formula.referenced_measures() {
-            visit(model, dep, order, visited, on_stack)?;
+            if dep != m {
+                visit(model, dep, order, visited, on_stack)?;
+            }
         }
         on_stack.remove(&m);
         visited.insert(m);
@@ -1058,7 +1377,7 @@ mod tests {
     fn define(m: &mut Model, id: u32, cats: Vec<CategoryId>, text: &str) {
         let f = improv_core_model::parse_formula(m, text).expect("parses");
         let vt = crate::compiler::infer(
-            &CompileContext::new(&m.measures),
+            &CompileContext::for_model(m),
             MeasureId(id),
             &f.formula.expr,
         )
@@ -1150,6 +1469,185 @@ mod tests {
         // CLEARERROR without an alternative drops the error cells.
         assert_eq!(at(205, 10, 20), None);
         assert_eq!(at(205, 10, 21), Some(n(100.0)));
+    }
+
+    /// The P3 dimensional forms end to end: positions and names, neighbours,
+    /// running windows, several OVER categories, ALL EXCEPT, WHERE, and the
+    /// ordered reductions.
+    #[test]
+    fn dimensional_forms() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        let tp = vec![time, product];
+        define(&mut m, 200, tp.clone(), "Pos = Quantity * POSITION(Time)");
+        define(&mut m, 201, vec![time], "Year = @ITEM(Time)");
+        define(&mut m, 202, tp.clone(), "Before = PREV(Quantity, Time)");
+        define(
+            &mut m,
+            203,
+            tp.clone(),
+            "Growth = Quantity - PREV(Quantity, Time, 1, 0)",
+        );
+        define(&mut m, 204, tp.clone(), "After = NEXT(Quantity, Time)");
+        define(
+            &mut m,
+            205,
+            tp.clone(),
+            "Run = SUM(Quantity OVER Time[FIRST..THIS])",
+        );
+        define(
+            &mut m,
+            206,
+            vec![],
+            "All = SUM(Quantity OVER Time, Product)",
+        );
+        define(
+            &mut m,
+            207,
+            vec![product],
+            "Ex = SUM(Quantity OVER ALL EXCEPT Product)",
+        );
+        define(
+            &mut m,
+            208,
+            vec![product],
+            "Big = SUM(Quantity OVER Time WHERE Quantity > 90)",
+        );
+        define(&mut m, 209, vec![product], "F = FIRST(Quantity OVER Time)");
+        define(&mut m, 210, vec![product], "L = LAST(Quantity OVER Time)");
+        define(
+            &mut m,
+            211,
+            vec![],
+            "J = TEXTJOIN(\"-\", TRUE, Year OVER Time)",
+        );
+        define(&mut m, 212, vec![], "N = @ITEMCOUNT(Product)");
+        define(
+            &mut m,
+            213,
+            tp.clone(),
+            "ToGo = SUM(Quantity OVER Time[THIS..LAST])",
+        );
+        define(
+            &mut m,
+            214,
+            tp,
+            "Prior = SUM(Quantity OVER Time[THIS-1..THIS-1])",
+        );
+        let out = evaluate(&m, &(200..=214).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let at =
+            |id: u32, t: u32, p: u32| out[&MeasureId(id)].get(&key(&[(1, t), (2, p)])).cloned();
+        let one = |id: u32, k: &[(u32, u32)]| out[&MeasureId(id)].get(&key(k)).cloned();
+        let n = CellValue::num;
+        // Quantity: 2025 A 100, B 50; 2026 A 120, B 80.
+        assert_eq!(at(200, 11, 20), Some(n(240.0)), "2026 is position 2");
+        assert_eq!(one(201, &[(1, 11)]), Some(CellValue::Text("2026".into())));
+        assert_eq!(at(202, 10, 20), None, "no year before 2025");
+        assert_eq!(at(202, 11, 20), Some(n(100.0)));
+        assert_eq!(
+            at(203, 10, 20),
+            Some(n(100.0)),
+            "default 0 before the first year"
+        );
+        assert_eq!(at(203, 11, 21), Some(n(30.0)));
+        assert_eq!(at(204, 10, 21), Some(n(80.0)));
+        assert_eq!(at(204, 11, 21), None);
+        assert_eq!(at(205, 10, 20), Some(n(100.0)));
+        assert_eq!(at(205, 11, 20), Some(n(220.0)), "running total");
+        assert_eq!(one(206, &[]), Some(n(350.0)));
+        assert_eq!(one(207, &[(2, 20)]), Some(n(220.0)));
+        assert_eq!(one(208, &[(2, 20)]), Some(n(220.0)));
+        assert_eq!(one(208, &[(2, 21)]), None, "no row passes WHERE: no cell");
+        assert_eq!(one(209, &[(2, 21)]), Some(n(50.0)));
+        assert_eq!(one(210, &[(2, 21)]), Some(n(80.0)));
+        assert_eq!(one(211, &[]), Some(CellValue::Text("2025-2026".into())));
+        assert_eq!(one(212, &[]), Some(n(2.0)));
+        assert_eq!(at(213, 10, 20), Some(n(220.0)), "to go");
+        assert_eq!(at(213, 11, 20), Some(n(120.0)));
+        assert_eq!(
+            at(214, 10, 20),
+            Some(CellValue::Err(err::NA)),
+            "an empty window"
+        );
+        assert_eq!(at(214, 11, 20), Some(n(100.0)));
+    }
+
+    /// A recurrence: a balance carried forward along Time, per Product,
+    /// opening from a per-product measure; it updates incrementally.
+    #[test]
+    fn recurrence_carries_a_balance_forward() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        m.add_item(ItemId(12), time, "2027");
+        let set = |m: &mut Model, id: u32, pairs: &[(CategoryId, ItemId)], v: f64| {
+            m.set_input(
+                MeasureId(id),
+                Coordinate::from_pairs(pairs.iter().copied()),
+                Value::Number(v),
+            )
+        };
+        set(
+            &mut m,
+            101,
+            &[(time, ItemId(12)), (product, ItemId(20))],
+            10.0,
+        );
+        // Open[Product] = Price; Bal = PREV(Bal, Time, 1, Open) + Quantity.
+        m.add_measure(Measure {
+            id: MeasureId(300),
+            name: Name("Bal".into()),
+            value_type: ValueType::Number,
+            categories: vec![time, product],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let f = improv_core_model::parse_formula(&m, "Bal = PREV(Bal, Time, 1, Price) + Quantity")
+            .unwrap();
+        m.measures.get_mut(&MeasureId(300)).unwrap().kind = MeasureKind::Derived(f.formula);
+        let out = evaluate(&m, &[MeasureId(300)]).unwrap();
+        let bal = &out[&MeasureId(300)];
+        let at = |t: u32, p: u32| bal.get(&key(&[(1, t), (2, p)])).cloned();
+        // WidgetA: price 10; 10+100 = 110, +120 = 230, +10 = 240.
+        assert_eq!(at(10, 20), Some(CellValue::num(110.0)));
+        assert_eq!(at(11, 20), Some(CellValue::num(230.0)));
+        assert_eq!(at(12, 20), Some(CellValue::num(240.0)));
+        // WidgetB: price 20; 70, 150; no 2027 Quantity, so no 2027 balance.
+        assert_eq!(at(11, 21), Some(CellValue::num(150.0)));
+        assert_eq!(at(12, 21), None);
+        // Incremental: changing 2025's Quantity re-runs WidgetA's chain.
+        let (mut engine, _) = crate::session::Engine::new(&m, &[MeasureId(300)]).unwrap();
+        let snap = engine
+            .set(MeasureId(101), key(&[(1, 10), (2, 20)]), 0.0)
+            .unwrap();
+        assert_eq!(
+            snap[&MeasureId(300)][&key(&[(1, 12), (2, 20)])],
+            CellValue::num(140.0)
+        );
+        // Not a recurrence: a self-reference outside PREV, or along a
+        // category the measure lacks.
+        let mut bad = m.clone();
+        let f = improv_core_model::parse_formula(&bad, "Bal = Bal + 1").unwrap();
+        bad.measures.get_mut(&MeasureId(300)).unwrap().kind = MeasureKind::Derived(f.formula);
+        let e = evaluate(&bad, &[MeasureId(300)]).unwrap_err().to_string();
+        assert!(e.contains("only PREV"), "{e}");
+    }
+
+    /// A parameter that is a measure (one value per group) joins per row.
+    #[test]
+    fn measure_parameters_join_per_group() {
+        let product = CategoryId(2);
+        let mut m = revenue_model();
+        define(
+            &mut m,
+            200,
+            vec![product],
+            "J = TEXTJOIN(@ITEM(Product), TRUE, Quantity OVER Time)",
+        );
+        let out = evaluate(&m, &[MeasureId(200)]).unwrap();
+        assert_eq!(
+            out[&MeasureId(200)].get(&key(&[(2, 20)])),
+            Some(&CellValue::Text("100WidgetA120".into()))
+        );
     }
 
     /// The else-branch spans (the then-branch is a literal), the test is an
@@ -1664,35 +2162,36 @@ mod tests {
 
     #[test]
     fn aggregates() {
-        let v = [
+        let rows = |vals: Vec<CellValue>| Rows {
+            pos: (0..vals.len() as u32).map(|i| vec![i]).collect(),
+            vals: vals.into_iter().map(|v| vec![v]).collect(),
+            capacity: 3,
+        };
+        let r = rows(vec![
             CellValue::num(4.0),
             CellValue::num(1.0),
             CellValue::num(7.0),
-        ];
-        let refs: Vec<&CellValue> = v.iter().collect();
+        ]);
         assert_eq!(
-            [1, 2, 3, 4, 5, 6].map(|f| aggregate(FuncId(f), &refs)),
+            [1, 2, 3, 4, 5, 6].map(|f| reduce::reduce(FuncId(f), &r, &[])),
             [12.0, 4.0, 1.0, 7.0, 28.0, 66.0].map(CellValue::num)
         );
-        let bools = [
+        let b = rows(vec![
             CellValue::Bool(true),
             CellValue::Bool(false),
             CellValue::Bool(true),
-        ];
-        let refs: Vec<&CellValue> = bools.iter().collect();
+        ]);
         assert_eq!(
-            [7, 8, 9].map(|f| aggregate(FuncId(f), &refs)),
+            [7, 8, 9].map(|f| reduce::reduce(FuncId(f), &b, &[])),
             [false, true, false].map(CellValue::Bool)
         );
-        // An error in the group is the result (the smallest code first).
-        let errs = [
+        // An error in the group is the result: the first in item order.
+        let e = rows(vec![
             CellValue::num(1.0),
             CellValue::Err(err::NA),
             CellValue::Err(err::DIV0),
-        ];
-        let refs: Vec<&CellValue> = errs.iter().collect();
-        assert_eq!(aggregate(FuncId(1), &refs), CellValue::Err(err::NA));
-        assert_eq!(aggregate(FuncId(99), &refs[..1]), CellValue::Err(err::NAME));
+        ]);
+        assert_eq!(reduce::reduce(FuncId(1), &e, &[]), CellValue::Err(err::NA));
     }
 
     #[test]

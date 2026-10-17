@@ -26,6 +26,7 @@ pub mod compiler;
 pub mod dataflow;
 pub mod external;
 pub mod plan;
+pub mod reduce;
 pub mod scalar;
 pub mod session;
 pub mod typed;

@@ -32,7 +32,6 @@ use improv_core_model::{
     ValueType,
 };
 use improv_data_source::ItemInterner;
-use improv_engine::compiler::{infer, CompileContext};
 use improv_engine::{CellValue, CoordKey};
 
 mod delta;
@@ -249,7 +248,9 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
             ("derived", Some(text)) => match serde_json::from_str::<Formula>(text) {
                 Ok(f) => MeasureKind::Derived(f),
                 Err(_) => {
-                    let (target, formula) = parse_formula(&model, text)?;
+                    // A recurrence refers to itself: parse with its name known.
+                    let (target, formula) =
+                        parse_formula(&model.with_provisional(MeasureId(r.id), &r.name), text)?;
                     if target != r.name {
                         return Err(Error::Catalog(format!(
                             "measure {} has a formula for {target}",
@@ -283,7 +284,10 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
 /// engine-inferred result dimensions (an `OVER` aggregation drops the
 /// aggregated category), which is exactly the result table's shape.
 pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
-    let (target, formula) = parse_formula(model, text)?;
+    // A new measure may refer to itself (a PREV recurrence): parse with its
+    // name provisionally known.
+    let name = text.split('=').next().unwrap_or("").trim();
+    let (target, formula) = parse_formula(&model.with_provisional(MeasureId(id), name), text)?;
     validate_name("measure", &target)?;
     if model
         .measures
@@ -294,18 +298,15 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
             "measure {target} already exists"
         )));
     }
-    let typed = infer(
-        &CompileContext::new(&model.measures),
-        MeasureId(id),
-        &formula.expr,
-    )
-    .map_err(|e| Error::Definition(e.to_string()))?;
-    if typed.ty.value_type == ValueType::Enum {
+    let (value_type, categories) =
+        improv_engine::compiler::derived_shape(model, MeasureId(id), &target, &formula)
+            .map_err(|e| Error::Definition(e.to_string()))?;
+    if value_type == ValueType::Enum {
         return Err(Error::Definition(format!(
             "{target} is an enum; enum results are not supported yet"
         )));
     }
-    if typed.ty.dim.categories.is_empty() {
+    if categories.is_empty() {
         return Err(Error::Definition(format!(
             "{target} has no dimensions; dimensionless results are not supported yet"
         )));
@@ -313,11 +314,11 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
     Ok(MeasureRow {
         id,
         name: target,
-        value_type: value_type_name(typed.ty.value_type).into(),
+        value_type: value_type_name(value_type).into(),
         kind: "derived".into(),
         formula: Some(text.trim().to_string()),
         description: None,
-        categories: typed.ty.dim.categories.iter().map(|c| c.0).collect(),
+        categories: categories.iter().map(|c| c.0).collect(),
     })
 }
 

@@ -438,7 +438,20 @@ fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
             format!("{} {word} {}", describe_expr(ctx, l), describe_expr(ctx, r))
         }
         Expr::Call(func, args) => {
+            // The CNL's own words cover one-argument SUM/AVERAGE/MIN/MAX; a
+            // WHERE or window, or any other function, is described as itself.
+            let markers = args.iter().any(|a| {
+                matches!(a, Expr::Call(id, _) if *id == improv_core_model::functions::WHERE
+                    || *id == improv_core_model::functions::WINDOW)
+            });
             let name = match *func {
+                _ if markers || args.len() != 1 => {
+                    let rendered: Vec<String> =
+                        args.iter().map(|a| describe_expr(ctx, a)).collect();
+                    let name = improv_core_model::functions::by_id(*func)
+                        .map_or_else(|| format!("function {}", func.0), |d| d.name.to_string());
+                    return format!("{name}({})", rendered.join(", "));
+                }
                 FUNC_SUM => "sum",
                 FUNC_AVERAGE => "average",
                 FUNC_MIN => "min",
@@ -453,6 +466,9 @@ fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
             };
             format!("the {name} of {}", join_args(ctx, args))
         }
+        Expr::Category(c) => ctx
+            .category_name(*c)
+            .map_or_else(|| format!("category {}", c.0), str::to_string),
     }
 }
 

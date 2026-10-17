@@ -5,7 +5,7 @@
 //! consumed by the dataflow builder (`dataflow::build_collection`).
 
 use crate::typed::TypeInfo;
-use improv_core_model::{BinaryOp, CategoryId, FuncId, MeasureId, UnaryOp, Value};
+use improv_core_model::{BinaryOp, CategoryId, FuncId, ItemId, MeasureId, UnaryOp, Value};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PlanNodeKind {
@@ -25,11 +25,43 @@ pub enum PlanNodeKind {
         /// Categories both sides are joined on.
         join_keys: Vec<CategoryId>,
     },
-    /// Aggregate `input` down to `group_by`, collapsing all other categories.
+    /// Reduce `inputs` (aligned on their full coordinate; `pred` filters
+    /// them) down to `group_by`. `params` broadcast one value per group.
+    /// Rows reach the reduction in item order along `order` (the reduced
+    /// categories). With a `window` (one category, kept), one result per
+    /// item, each over its window; a [`improv_core_model::functions::Kind::PerItem`]
+    /// function also keeps the category.
     Aggregate {
-        input: Box<PlanNode>,
+        inputs: Vec<PlanNode>,
+        params: Vec<PlanNode>,
+        pred: Option<Box<PlanNode>>,
         group_by: Vec<CategoryId>,
         func: FuncId,
+        order: Vec<(CategoryId, Vec<ItemId>)>,
+        window: Option<crate::typed::Window>,
+        per_item: bool,
+    },
+    /// A static per-item collection of a category: one cell per item.
+    Items(CategoryId, Vec<(ItemId, Value)>),
+    /// A recurrence along `cat`: per group of the other categories, items in
+    /// `order`, each cell is `body` evaluated (by the scalar evaluator) with
+    /// `refs` at its coordinate and each slot's placeholder bound to this
+    /// measure's own value `back` items earlier (or the slot's default).
+    Recurrence {
+        body: improv_core_model::Expr,
+        refs: Vec<(MeasureId, PlanNode)>,
+        slots: Vec<(MeasureId, i64, Option<improv_core_model::Expr>)>,
+        cat: CategoryId,
+        order: Vec<ItemId>,
+    },
+    /// `input` moved `offset` items along `cat` (in `order`); where no cell
+    /// lands, `default` (when given) at the input's own coordinates.
+    Shift {
+        input: Box<PlanNode>,
+        cat: CategoryId,
+        offset: i64,
+        order: Vec<ItemId>,
+        default: Option<Box<PlanNode>>,
     },
     /// A (non-aggregating) function call over its argument plans.
     FuncCall {

@@ -11,7 +11,7 @@
 //! IMPLEMENTED. This file defines the public API contract and both passes.
 
 use crate::plan::{PlanNode, PlanNodeKind};
-use crate::typed::{Dim, ResolvedDimSpec, TypeInfo, TypedExpr, TypedExprKind};
+use crate::typed::{Bound, Dim, ResolvedDimSpec, TypeInfo, TypedExpr, TypedExprKind};
 use improv_core_model::functions::{self, Arg, Kind, Ret};
 use improv_core_model::{
     BinaryOp, Category, CategoryId, DimensionSpec, Expr, Formula, FuncId, Item, ItemId, Measure,
@@ -87,8 +87,224 @@ pub fn compile_formula(
     target: MeasureId,
     formula: &Formula,
 ) -> Result<PlanNode> {
+    if formula.referenced_measures().contains(&target) {
+        return compile_recurrence(ctx, target, &formula.expr);
+    }
     let typed = infer(ctx, target, &formula.expr)?;
     build_plan(ctx, &typed)
+}
+
+/// The shape a new derived measure `target` named `name` takes from its
+/// formula: its value type and its categories, as the engine computes them
+/// (an `OVER` drops categories, `@ITEM` is text, `DATE` a date). A formula
+/// that reads the measure itself (a `PREV` recurrence) is typed with a
+/// provisional measure over the categories of the other measures it reads.
+pub fn derived_shape(
+    model: &improv_core_model::Model,
+    target: MeasureId,
+    name: &str,
+    formula: &Formula,
+) -> Result<(ValueType, Vec<CategoryId>)> {
+    let ctx = CompileContext::for_model(model);
+    if !formula.referenced_measures().contains(&target) {
+        let t = infer(&ctx, target, &formula.expr)?;
+        return Ok((t.ty.value_type, t.ty.dim.categories));
+    }
+    // A recurrence: the measure's categories are its inputs' union.
+    let mut cats: Vec<CategoryId> = Vec::new();
+    for m in formula.referenced_measures() {
+        if let Some(measure) = model.measures.get(&m).filter(|_| m != target) {
+            cats.extend(measure.categories.iter().copied());
+        }
+    }
+    let cats = Dim::of(cats).categories;
+    let mut provisional = model.clone();
+    let existing = model.measures.get(&target).map(|m| m.value_type);
+    for vt in existing.into_iter().chain([
+        ValueType::Number,
+        ValueType::Text,
+        ValueType::Boolean,
+        ValueType::DateTime,
+    ]) {
+        provisional.measures.insert(
+            target,
+            Measure {
+                id: target,
+                name: improv_core_model::Name(name.to_string()),
+                value_type: vt,
+                categories: cats.clone(),
+                kind: improv_core_model::MeasureKind::Derived(formula.clone()),
+                description: None,
+            },
+        );
+        let pctx = CompileContext::for_model(&provisional);
+        match compile_recurrence(&pctx, target, &formula.expr) {
+            Ok(_) => return Ok((vt, cats)),
+            Err(CompileError::TypeMismatch(_)) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(CompileError::TypeMismatch(format!(
+        "{name}'s formula has no consistent type"
+    )))
+}
+
+/// The first placeholder id for a recurrence's own earlier values.
+const SLOT_BASE: u32 = u32::MAX - 1024;
+
+/// A formula that reads its own measure through `PREV(M, T, n, [default])`
+/// (`Bal = PREV(Bal, Time, 1, Open) + Flow`): an ordered scan along `T`.
+/// Every self-reference must be such a `PREV` along one category; the rest
+/// of the formula must be scalar (no aggregation, no other positional
+/// function), and its references must together range over the measure's
+/// categories (they supply the cells).
+fn compile_recurrence(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<PlanNode> {
+    use improv_core_model::Value;
+    let m = ctx
+        .measures
+        .get(&target)
+        .ok_or(CompileError::UnknownMeasure(target))?;
+    let bad = |why: &str| {
+        CompileError::Unsupported(format!(
+            "{} refers to itself; {why} (write PREV({0}, Category, n, default))",
+            m.name.0
+        ))
+    };
+    let mut slots: Vec<(MeasureId, i64, Option<Expr>)> = Vec::new();
+    let mut cat: Option<CategoryId> = None;
+    // Replace each PREV(target, T, n, d) with a placeholder reference.
+    fn rewrite(
+        e: &Expr,
+        target: MeasureId,
+        slots: &mut Vec<(MeasureId, i64, Option<Expr>)>,
+        cat: &mut Option<CategoryId>,
+        bad: &dyn Fn(&str) -> CompileError,
+    ) -> Result<Expr> {
+        Ok(match e {
+            Expr::Call(f, args)
+                if f.0 == dim::PREV
+                    && matches!(args.first(), Some(Expr::Ref(r, _)) if *r == target) =>
+            {
+                let Some(Expr::Category(c)) = args.get(1) else {
+                    return Err(bad("PREV needs a category"));
+                };
+                if cat.is_some_and(|x| x != *c) {
+                    return Err(bad("every PREV of it must run along the same category"));
+                }
+                *cat = Some(*c);
+                let n = match args.get(2) {
+                    None => 1,
+                    Some(Expr::Literal(improv_core_model::Value::Number(n)))
+                        if n.fract() == 0.0 && *n >= 1.0 =>
+                    {
+                        *n as i64
+                    }
+                    Some(_) => return Err(bad("PREV of itself needs a whole number of items ≥ 1")),
+                };
+                let default = args.get(3).cloned();
+                if default
+                    .as_ref()
+                    .is_some_and(|d| d.referenced_measures().contains(&target))
+                {
+                    return Err(bad("the default must not refer to it"));
+                }
+                let id = MeasureId(SLOT_BASE + slots.len() as u32);
+                slots.push((id, n, default));
+                Expr::Ref(id, DimensionSpec::default())
+            }
+            Expr::Ref(r, _) if *r == target => {
+                return Err(bad("only PREV may read its earlier values"))
+            }
+            Expr::UnaryOp(op, a) => {
+                Expr::UnaryOp(*op, Box::new(rewrite(a, target, slots, cat, bad)?))
+            }
+            Expr::BinaryOp(op, a, b) => Expr::BinaryOp(
+                *op,
+                Box::new(rewrite(a, target, slots, cat, bad)?),
+                Box::new(rewrite(b, target, slots, cat, bad)?),
+            ),
+            Expr::Call(f, args) => Expr::Call(
+                *f,
+                args.iter()
+                    .map(|a| rewrite(a, target, slots, cat, bad))
+                    .collect::<Result<_>>()?,
+            ),
+            other => other.clone(),
+        })
+    }
+    let body = rewrite(expr, target, &mut slots, &mut cat, &bad)?;
+    let cat = cat.ok_or_else(|| bad("only PREV may read its earlier values"))?;
+    if !m.categories.contains(&cat) {
+        return Err(bad("PREV must run along one of its own categories"));
+    }
+    crate::scalar::check(&body).map_err(|e| bad(&format!("the rest must be scalar: {e}")))?;
+    for (_, _, d) in &slots {
+        if let Some(d) = d {
+            crate::scalar::check(d)
+                .map_err(|e| bad(&format!("the default must be scalar: {e}")))?;
+        }
+    }
+    // Type the body with each placeholder standing for the measure itself.
+    let mut measures = ctx.measures.clone();
+    for (id, _, _) in &slots {
+        measures.insert(
+            *id,
+            Measure {
+                id: *id,
+                ..m.clone()
+            },
+        );
+    }
+    let typed_ctx = CompileContext {
+        measures: &measures,
+        categories: ctx.categories,
+        items: ctx.items,
+    };
+    let typed = infer(&typed_ctx, target, &body)?;
+    if typed.ty.value_type != m.value_type {
+        return Err(CompileError::TypeMismatch(format!(
+            "{} is {:?} but its formula yields {:?}",
+            m.name.0, m.value_type, typed.ty.value_type
+        )));
+    }
+    // The other measures the body and defaults read, each a plain input to
+    // align on the measure's categories.
+    let mut ids: Vec<MeasureId> = body.referenced_measures();
+    for (_, _, d) in &slots {
+        ids.extend(d.iter().flat_map(|d| d.referenced_measures()));
+    }
+    ids.retain(|i| i.0 < SLOT_BASE);
+    ids.sort();
+    ids.dedup();
+    let mut refs = Vec::new();
+    let mut dim = Dim::scalar();
+    for id in ids {
+        let r = infer_ref(ctx, id, &DimensionSpec::default())?;
+        if !r.ty.dim.is_subset_of(&Dim::of(m.categories.clone())) {
+            return Err(bad("it may only read measures within its own categories"));
+        }
+        dim = dim.union(&r.ty.dim);
+        refs.push((id, build_plan(ctx, &r)?));
+    }
+    if dim != Dim::of(m.categories.clone()) {
+        return Err(bad(
+            "the measures it reads must together range over all of its categories",
+        ));
+    }
+    let _ = Value::Number(0.0);
+    Ok(PlanNode {
+        kind: PlanNodeKind::Recurrence {
+            body,
+            refs,
+            slots,
+            cat,
+            order: ctx.items_of(cat),
+        },
+        ty: TypeInfo {
+            value_type: m.value_type,
+            dim,
+        },
+    })
 }
 
 /// Whether `f` is an aggregation (`SUM(x OVER T)`), per the registry.
@@ -105,7 +321,7 @@ pub fn scalar_arity(f: FuncId) -> Option<usize> {
         .map(|d| d.params.len())
 }
 
-/// The lazy functions' ids (see `functions::FUNCTIONS`).
+/// The lazy functions' ids (see `functions::CORE`).
 pub(crate) mod lazy {
     pub const IF: u32 = 30;
     pub const IFS: u32 = 31;
@@ -155,6 +371,10 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             }
             Ok(typed)
         }
+        Expr::Category(c) => Err(CompileError::TypeMismatch(format!(
+            "category {} is not a value; use it as a function argument (POSITION({0}))",
+            ctx.category_name(*c)
+        ))),
         Expr::UnaryOp(op, e) => {
             let inner = infer(ctx, target, e)?;
             let want = match op {
@@ -204,6 +424,9 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                     args.len()
                 )));
             }
+            if let Some(t) = infer_dimensional(ctx, target, def, args)? {
+                return Ok(t);
+            }
             if def.kind == Kind::Lazy {
                 return infer_lazy(ctx, target, def, args);
             }
@@ -223,41 +446,286 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                 ty: TypeInfo { value_type, dim },
             })
         }
-        Expr::Call(func, args) => {
-            // Aggregation: single arg, collapse its `over` categories.
-            let arg = match args.as_slice() {
-                // The aggregation collapses what the `[…]` list leaves out.
-                [Expr::Ref(mid, spec)] => infer_ref(ctx, *mid, spec)?,
-                [a] => infer(ctx, target, a)?,
-                _ => {
+        Expr::Call(func, args) => infer_aggregate(ctx, target, *func, args),
+    }
+}
+
+/// The ids of the dimensional functions (see `functions/dimensional.rs`).
+mod dim {
+    pub const POSITION: u32 = 900;
+    pub const ITEM: u32 = 901;
+    pub const ID: u32 = 902;
+    pub const ITEMCOUNT: u32 = 903;
+    pub const PREV: u32 = 904;
+    pub const NEXT: u32 = 905;
+}
+
+/// `POSITION`, `@ITEM`, `@ID`, `@ITEMCOUNT`, `PREV` and `NEXT`, which read
+/// the categories; `None` for any other function.
+fn infer_dimensional(
+    ctx: &CompileContext,
+    target: MeasureId,
+    def: &functions::FnDef,
+    args: &[Expr],
+) -> Result<Option<TypedExpr>> {
+    let cat = |e: &Expr| match e {
+        Expr::Category(c) => Ok(*c),
+        _ => Err(CompileError::TypeMismatch(format!(
+            "{} takes a category name ({})",
+            def.name,
+            def.signature()
+        ))),
+    };
+    let items_of = |c: CategoryId| {
+        let items = ctx.items_of(c);
+        if items.is_empty() && ctx.categories.is_none() {
+            return Err(CompileError::Unsupported(format!(
+                "{} needs the model's categories",
+                def.name
+            )));
+        }
+        Ok(items)
+    };
+    let name_of = |i: ItemId| {
+        ctx.items
+            .and_then(|m| m.get(&i))
+            .map_or_else(|| format!("{}", i.0), |it| it.name.0.clone())
+    };
+    let items_node = |c: CategoryId, vals: Vec<(ItemId, improv_core_model::Value)>, vt| TypedExpr {
+        kind: TypedExprKind::Items(c, vals),
+        ty: TypeInfo {
+            value_type: vt,
+            dim: Dim::of(vec![c]),
+        },
+    };
+    use improv_core_model::Value;
+    Ok(Some(match def.id.0 {
+        dim::POSITION => {
+            let c = cat(&args[0])?;
+            let vals = items_of(c)?
+                .into_iter()
+                .enumerate()
+                .map(|(i, it)| (it, Value::Number(i as f64 + 1.0)))
+                .collect();
+            items_node(c, vals, ValueType::Number)
+        }
+        dim::ITEM | dim::ID => {
+            let c = cat(&args[0])?;
+            let vals = items_of(c)?
+                .into_iter()
+                .map(|it| (it, Value::Text(name_of(it))))
+                .collect();
+            items_node(c, vals, ValueType::Text)
+        }
+        dim::ITEMCOUNT => {
+            let c = cat(&args[0])?;
+            let n = items_of(c)?.len();
+            TypedExpr {
+                kind: TypedExprKind::Literal(Value::Number(n as f64)),
+                ty: TypeInfo {
+                    value_type: ValueType::Number,
+                    dim: Dim::scalar(),
+                },
+            }
+        }
+        dim::PREV | dim::NEXT => {
+            let input = infer(ctx, target, &args[0])?;
+            let c = cat(&args[1])?;
+            if !input.ty.dim.categories.contains(&c) {
+                return Err(CompileError::DimensionMismatch(format!(
+                    "{}: the value does not range over {}",
+                    def.name,
+                    ctx.category_name(c)
+                )));
+            }
+            let n = match args.get(2) {
+                None => 1,
+                Some(Expr::Literal(Value::Number(n))) if n.fract() == 0.0 && *n >= 0.0 => *n as i64,
+                Some(Expr::UnaryOp(UnaryOp::Neg, inner)) if matches!(**inner, Expr::Literal(Value::Number(n)) if n.fract() == 0.0) =>
+                {
+                    let Expr::Literal(Value::Number(n)) = **inner else {
+                        unreachable!()
+                    };
+                    -(n as i64)
+                }
+                Some(_) => {
                     return Err(CompileError::Unsupported(format!(
-                        "aggregation {func:?} expects exactly 1 arg, got {}",
-                        args.len()
+                        "{} takes a whole number of items as its third argument",
+                        def.name
                     )))
                 }
             };
-            let def = functions::by_id(*func).ok_or(CompileError::UnknownFunction(*func))?;
-            check_arg(def, 0, &arg)?;
-            let Ret::Fixed(value_type) = def.ret else {
-                unreachable!("aggregations have a fixed result type")
+            let default = match args.get(3) {
+                Some(d) => {
+                    let d = infer(ctx, target, d)?;
+                    if d.ty.value_type != input.ty.value_type && !is_error_only(&d) {
+                        return Err(CompileError::TypeMismatch(format!(
+                            "{} default must be {:?}, got {:?}",
+                            def.name, input.ty.value_type, d.ty.value_type
+                        )));
+                    }
+                    if !d.ty.dim.is_subset_of(&input.ty.dim) {
+                        return Err(CompileError::DimensionMismatch(format!(
+                            "{} default ranges over more categories than the value",
+                            def.name
+                        )));
+                    }
+                    Some(Box::new(d))
+                }
+                None => None,
             };
-            let over = aggregation_over(&arg);
-            let reduced: Vec<_> = arg
-                .ty
-                .dim
-                .categories
-                .iter()
-                .copied()
-                .filter(|c| !over.contains(c))
-                .collect();
-            Ok(TypedExpr {
-                kind: TypedExprKind::Call(*func, vec![arg]),
-                ty: TypeInfo {
-                    value_type,
-                    dim: Dim::of(reduced),
+            let ty = input.ty.clone();
+            TypedExpr {
+                kind: TypedExprKind::Shift {
+                    input: Box::new(input),
+                    cat: c,
+                    offset: if def.id.0 == dim::PREV { -n } else { n },
+                    default,
                 },
-            })
+                ty,
+            }
         }
+        _ => return Ok(None),
+    }))
+}
+
+/// A reduction `AGG(args…)`: the registry's reduced arguments (measure
+/// references carrying the `OVER` categories) are aligned on their full
+/// coordinate; the others are parameters with one value per group.
+fn infer_aggregate(
+    ctx: &CompileContext,
+    target: MeasureId,
+    func: FuncId,
+    args: &[Expr],
+) -> Result<TypedExpr> {
+    let def = functions::by_id(func).ok_or(CompileError::UnknownFunction(func))?;
+    let mut pred = None;
+    let mut window = None;
+    let mut rest: Vec<&Expr> = Vec::new();
+    for a in args {
+        match a {
+            Expr::Call(id, p) if *id == functions::WHERE => {
+                let t = infer(ctx, target, &p[0])?;
+                if t.ty.value_type != ValueType::Boolean {
+                    return Err(CompileError::TypeMismatch(format!(
+                        "WHERE needs a Boolean condition, got {:?}",
+                        t.ty.value_type
+                    )));
+                }
+                pred = Some(Box::new(t));
+            }
+            Expr::Call(id, b) if *id == functions::WINDOW => {
+                window = Some((bound(&b[0])?, bound(&b[1])?));
+            }
+            other => rest.push(other),
+        }
+    }
+    if !def.accepts(rest.len()) {
+        return Err(CompileError::Unsupported(format!(
+            "{} expects {}, got {} argument(s)",
+            def.name,
+            def.signature(),
+            rest.len()
+        )));
+    }
+    let mut inputs = Vec::new();
+    let mut params = Vec::new();
+    for (i, a) in rest.iter().enumerate() {
+        if def.over.contains(i) {
+            let t = match a {
+                // The aggregation collapses what the `[…]` list leaves out.
+                Expr::Ref(mid, spec) => infer_ref(ctx, *mid, spec)?,
+                _ => {
+                    return Err(CompileError::Unsupported(format!(
+                        "{} argument {} must be a measure reference",
+                        def.name,
+                        i + 1
+                    )))
+                }
+            };
+            check_arg(def, i, &t)?;
+            inputs.push(t);
+        } else {
+            let t = infer(ctx, target, a)?;
+            check_arg(def, i, &t)?;
+            params.push(t);
+        }
+    }
+    let first = inputs.first().ok_or_else(|| {
+        CompileError::Unsupported(format!("{} needs a measure OVER a category", def.name))
+    })?;
+    // All reduced measures range over the same categories and collapse the
+    // same ones.
+    let over = aggregation_over(ctx, first);
+    let full = first_full_dim(ctx, first);
+    for t in &inputs[1..] {
+        if first_full_dim(ctx, t) != full || aggregation_over(ctx, t) != over {
+            return Err(CompileError::DimensionMismatch(format!(
+                "{}: the measures reduced together must range over the same categories",
+                def.name
+            )));
+        }
+    }
+    // No OVER category (`the sum of Quantity` in the CNL) collapses
+    // nothing: each group is one cell.
+    let mut kept: Vec<CategoryId> = first.ty.dim.categories.clone();
+    if window.is_some() || def.kind == Kind::PerItem {
+        if over.len() != 1 {
+            return Err(CompileError::Unsupported(format!(
+                "{} over a window or per item takes exactly one OVER category",
+                def.name
+            )));
+        }
+        kept.push(over[0]);
+    }
+    let dim = Dim::of(kept);
+    if let Some(p) = &pred {
+        if !p.ty.dim.is_subset_of(&full) {
+            return Err(CompileError::DimensionMismatch(format!(
+                "{}: the WHERE condition ranges over categories the measure does not",
+                def.name
+            )));
+        }
+    }
+    for p in &params {
+        if !p.ty.dim.is_subset_of(&dim) {
+            return Err(CompileError::DimensionMismatch(format!(
+                "{}: a parameter must not range over the reduced categories",
+                def.name
+            )));
+        }
+    }
+    let value_type = match def.ret {
+        Ret::Fixed(v) => v,
+        Ret::Unify => first.ty.value_type,
+    };
+    Ok(TypedExpr {
+        kind: TypedExprKind::Aggregate {
+            func,
+            inputs,
+            params,
+            over,
+            pred,
+            window,
+        },
+        ty: TypeInfo { value_type, dim },
+    })
+}
+
+/// A reduced reference's dimension before the reduction: its own plus the
+/// categories it collapses.
+fn first_full_dim(ctx: &CompileContext, t: &TypedExpr) -> Dim {
+    t.ty.dim.union(&Dim::of(aggregation_over(ctx, t)))
+}
+
+/// A window bound literal (see `functions::WINDOW`).
+fn bound(e: &Expr) -> Result<Bound> {
+    use improv_core_model::Value;
+    match e {
+        Expr::Literal(Value::Text(t)) if t == "FIRST" => Ok(Bound::First),
+        Expr::Literal(Value::Text(t)) if t == "LAST" => Ok(Bound::Last),
+        Expr::Literal(Value::Number(n)) if n.fract() == 0.0 => Ok(Bound::Offset(*n as i64)),
+        _ => Err(CompileError::Unsupported("malformed window bound".into())),
     }
 }
 
@@ -508,16 +976,19 @@ fn infer_ref(ctx: &CompileContext, mid: MeasureId, spec: &DimensionSpec) -> Resu
     })
 }
 
-/// Categories an aggregation collapses: the arg ref's `over`, restricted to the
-/// categories actually present in the arg's dim.
-fn aggregation_over(arg: &TypedExpr) -> Vec<improv_core_model::CategoryId> {
+/// Categories an aggregation collapses: the arg ref's `over`, restricted to
+/// the measure's own categories (an `OVER` category the measure lacks
+/// collapses nothing).
+fn aggregation_over(ctx: &CompileContext, arg: &TypedExpr) -> Vec<CategoryId> {
     match &arg.kind {
-        TypedExprKind::Ref(_, spec) => spec
-            .over
-            .iter()
-            .copied()
-            .filter(|c| arg.ty.dim.categories.contains(c))
-            .collect(),
+        TypedExprKind::Ref(mid, spec) => {
+            let own = ctx.measures.get(mid).map(|m| &m.categories);
+            spec.over
+                .iter()
+                .copied()
+                .filter(|c| own.is_some_and(|o| o.contains(c)))
+                .collect()
+        }
         _ => Vec::new(),
     }
 }
@@ -646,15 +1117,64 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                 args: arg_plans,
             }
         }
-        TypedExprKind::Call(func, args) => {
-            let arg = &args[0];
-            let input = build_plan(ctx, arg)?;
+        TypedExprKind::Call(func, _) => return Err(CompileError::UnknownFunction(*func)),
+        TypedExprKind::Aggregate {
+            func,
+            inputs,
+            params,
+            over,
+            pred,
+            window,
+        } => {
+            let per_item = functions::by_id(*func).is_some_and(|d| d.kind == Kind::PerItem);
+            let group_by = if window.is_some() || per_item {
+                // The reduced category is kept in the result but grouped
+                // across.
+                ty.dim
+                    .categories
+                    .iter()
+                    .copied()
+                    .filter(|c| !over.contains(c))
+                    .collect()
+            } else {
+                ty.dim.categories.clone()
+            };
             PlanNodeKind::Aggregate {
-                input: Box::new(input),
-                group_by: typed.ty.dim.categories.clone(),
+                inputs: inputs
+                    .iter()
+                    .map(|a| build_plan(ctx, a))
+                    .collect::<Result<_>>()?,
+                params: params
+                    .iter()
+                    .map(|a| build_plan(ctx, a))
+                    .collect::<Result<_>>()?,
+                pred: pred
+                    .as_ref()
+                    .map(|p| build_plan(ctx, p).map(Box::new))
+                    .transpose()?,
+                group_by,
                 func: *func,
+                order: over.iter().map(|c| (*c, ctx.items_of(*c))).collect(),
+                window: *window,
+                per_item,
             }
         }
+        TypedExprKind::Items(c, vals) => PlanNodeKind::Items(*c, vals.clone()),
+        TypedExprKind::Shift {
+            input,
+            cat,
+            offset,
+            default,
+        } => PlanNodeKind::Shift {
+            input: Box::new(build_plan(ctx, input)?),
+            cat: *cat,
+            offset: *offset,
+            order: ctx.items_of(*cat),
+            default: default
+                .as_ref()
+                .map(|d| build_plan(ctx, d).map(Box::new))
+                .transpose()?,
+        },
     };
     Ok(PlanNode { kind, ty })
 }
@@ -1129,8 +1649,8 @@ mod tests {
             err(&Expr::Call(FuncId(20), vec![refr(PRICE), refr(HEADCOUNT)])),
             CompileError::DimensionMismatch(_)
         ));
-        // Aggregations take exactly one Number arg.
-        assert!(msg(&Expr::Call(FuncId(1), vec![refr(PRICE), refr(PRICE)])).contains("exactly 1"));
+        // Aggregations take their registry arity, of measure references.
+        assert!(msg(&Expr::Call(FuncId(1), vec![refr(PRICE), refr(PRICE)])).contains("expects"));
         assert!(msg(&Expr::Call(FuncId(1), vec![refr(flag)])).contains("must be Number"));
         // AND(flag OVER …) takes booleans; SUM(flag, …) does not.
         assert!(msg(&Expr::Call(FuncId(22), vec![refr(flag)]))
@@ -1148,11 +1668,20 @@ mod tests {
         // MIN2(Quantity[Time,Product], Price[Product]) broadcasts to the union.
         let t = ok(&Expr::Call(FuncId(20), vec![refr(QTY), refr(PRICE)]));
         assert_eq!(t.ty.dim, Dim::of(vec![TIME, PRODUCT]));
-        // SUM over a non-ref arg has no `over`, so it collapses nothing.
-        let t = ok(&Expr::Call(
-            FuncId(1),
-            vec![bin(BinaryOp::Mul, refr(PRICE), lit(2.0))],
-        ));
+        // An aggregation reduces measure references only.
+        let e = infer(
+            &ctx,
+            MeasureId(200),
+            &Expr::Call(FuncId(1), vec![bin(BinaryOp::Mul, refr(PRICE), lit(2.0))]),
+        );
+        assert!(matches!(e, Err(CompileError::Unsupported(_))));
+        // Without OVER, nothing collapses (each cell is its own group).
+        let t = infer(
+            &ctx,
+            MeasureId(200),
+            &Expr::Call(FuncId(1), vec![refr(PRICE)]),
+        )
+        .unwrap();
         assert_eq!(t.ty.dim, Dim::of(vec![PRODUCT]));
         // A scalar literal on the left folds into the map: no Join.
         let typed = ok(&bin(BinaryOp::Mul, lit(2.0), refr(QTY)));

@@ -63,9 +63,10 @@ net-worth results follow too.
 
 ## What is SQL and what is Improv
 
-Improv's formulas have no `IF`, no `POWER`, no previous-period reference,
-and no dimensionless results, and a formula over a missing cell has no cell.
-So:
+When this example was written, Improv's formulas had no `IF`, no `POWER`,
+no previous-period reference and no dimensionless results (they have all
+of these now: `IF`, `^`, `PREV`, running windows); a formula over a
+missing cell still has no cell. So the example does these in SQL:
 
 - **Running balances** are SQL: `finance.ledger_month`, a table kept by
   statement triggers on `txn`. It is a table, not a view, because pg_improv

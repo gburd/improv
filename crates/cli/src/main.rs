@@ -305,27 +305,17 @@ fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
 
     // Parse the RHS expression, resolving measure/category names against the model.
     let formula_text = improv_core_model::Locale::from_env().canonicalize(formula_text);
-    let formula = parser::parse_expr(&model, &formula_text).map_err(|e| e.to_string())?;
+    let formula = parser::parse_expr(&model.with_provisional(id, name), &formula_text)
+        .map_err(|e| e.to_string())?;
 
-    // Infer the derived measure's categories as the union of the categories of
-    // every measure the formula references (aggregation collapses are handled
-    // by the engine at evaluation time; this is the declared shape).
-    let mut cats: Vec<CategoryId> = Vec::new();
-    for m in formula.referenced_measures() {
-        if let Some(measure) = model.measures.get(&m) {
-            for c in &measure.categories {
-                if !cats.contains(c) {
-                    cats.push(*c);
-                }
-            }
-        }
-    }
-    cats.sort_by_key(|c| c.0);
-
+    // The measure's type and categories, as the engine computes them (an
+    // aggregation drops the categories it reduces).
+    let (value_type, cats) = improv_engine::compiler::derived_shape(&model, id, name, &formula)
+        .map_err(|e| e.to_string())?;
     model.add_measure(Measure {
         id,
         name: Name(name.to_string()),
-        value_type: ValueType::Number,
+        value_type,
         categories: cats,
         kind: MeasureKind::Derived(formula),
         description: None,
@@ -349,23 +339,27 @@ fn cmd_define(rest: &[String]) -> Result<(), String> {
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
     let text = improv_core_model::Locale::from_env().canonicalize(text);
-    match parser::parse_definition(&model, &text).map_err(|e| e.to_string())? {
+    // A new measure may refer to itself (a PREV recurrence): parse with its
+    // name provisionally known.
+    let target = parser::parse_formula(&model, &text)
+        .map(|f| f.target.0)
+        .or_else(|_| {
+            text.split('=')
+                .next()
+                .map(|t| t.trim().to_string())
+                .ok_or(())
+        })
+        .unwrap_or_default();
+    let parse_model = model.with_provisional(id, &target);
+    match parser::parse_definition(&parse_model, &text).map_err(|e| e.to_string())? {
         Definition::Formula(ft) => {
-            let mut cats: Vec<CategoryId> = Vec::new();
-            for m in ft.formula.referenced_measures() {
-                if let Some(measure) = model.measures.get(&m) {
-                    for c in &measure.categories {
-                        if !cats.contains(c) {
-                            cats.push(*c);
-                        }
-                    }
-                }
-            }
-            cats.sort_by_key(|c| c.0);
+            let (value_type, cats) =
+                improv_engine::compiler::derived_shape(&model, id, &ft.target.0, &ft.formula)
+                    .map_err(|e| e.to_string())?;
             model.add_measure(Measure {
                 id,
                 name: ft.target.clone(),
-                value_type: ValueType::Number,
+                value_type,
                 categories: cats,
                 kind: MeasureKind::Derived(ft.formula),
                 description: None,

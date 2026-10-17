@@ -1039,7 +1039,11 @@ mod tests {
     /// through to `#NAME?`).
     #[test]
     fn every_scalar_function_is_implemented() {
-        for d in all().filter(|d| d.kind == Kind::Scalar) {
+        // The dimensional ones compile to their own plan nodes.
+        for d in all().filter(|d| {
+            d.kind == Kind::Scalar
+                && d.category != improv_core_model::functions::Category::Dimensional
+        }) {
             let args: Vec<CellValue> = (0..d.required.max(1).min(d.params.len().max(1)))
                 .take(d.required)
                 .map(|i| match d.param(i) {

@@ -25,6 +25,10 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `AND(Measure OVER Category)` | boolean | whether every value over a category is true |
 | `OR(Measure OVER Category)` | boolean | whether any value over a category is true |
 | `XOR(Measure OVER Category)` | boolean | whether an odd number of values over a category are true |
+| `FIRST(Measure OVER Category)` | the branches' type | the value at the first item (in category order) that has one |
+| `LAST(Measure OVER Category)` | the branches' type | the value at the last item that has one |
+| `S(Measure OVER Category)` | text | the first value, as text (Quantrix) |
+| `TEXTJOIN(text, boolean, value OVER category)` | text | the values in item order joined by the separator (skipping empty text when skip_empty is TRUE) |
 
 ## Logical
 
@@ -182,3 +186,16 @@ Lengths and positions count characters, not bytes.
 | `TEXTAFTER(text, text, [number], [number], [number], [value])` | text | text after the instance-th delimiter |
 | `TEXTBETWEEN(text, text, text)` | text | text between the first start delimiter and the next end delimiter |
 | `COUNTMATCHES(text, text)` | number | how many times search occurs in text |
+
+## Dimensional
+
+Functions of a cell's position in a category, and the ordered (previous/next, running) forms.
+
+| Function | Returns | Description |
+|---|---|---|
+| `POSITION(category)` | number | 1-based position of this cell's item along the category |
+| `@ITEM(category)` | text | the name of this cell's item along the category |
+| `@ID(category)` | text | the item name (Improv item names are unique within a category) |
+| `@ITEMCOUNT(category)` | number | the number of items in the category |
+| `PREV(value, category, [number], [value])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
+| `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |

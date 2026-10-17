@@ -8,6 +8,23 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Positions, neighbours, running totals and recurrences** (the plan's
+  phase P3). `POSITION(T)`, `@ITEM(T)`, `@ID(T)`, `@ITEMCOUNT(T)`;
+  `PREV(x, T, [n], [default])` and `NEXT`; windows `SUM(x OVER
+  T[FIRST..THIS])`, `AVERAGE(x OVER T[THIS-2..THIS])`; and recurrences, a
+  measure that reads its own earlier values (`Balance = PREV(Balance, Time,
+  1, Opening) + Deposits`), computed as an incremental scan in item order.
+- **Aggregations grow up:** several `OVER` categories (`SUM(x OVER Time,
+  Region)`), `OVER ALL EXCEPT Region`, `WHERE` filters, parameters (one
+  value per group, literal or a measure), reductions of several measures at
+  once, and rows in item order. New: `FIRST`, `LAST`, `S`, `TEXTJOIN`.
+- **Date arithmetic** in days: a date plus a number is a date, the
+  difference of two dates a number of days.
+- New measures (`improv add-derived` / `define`, the GUI's formula list,
+  pg_improv `define`) take their type and categories from the engine, so a
+  text- or date-valued formula is a text or date measure, and an
+  aggregation's result drops the categories it reduces.
+
 - **118 built-in functions**, with Excel's names (the plan's phase P1):
   - the logical family `IF`, `IFS`, `SWITCH`, `CHOOSE`, `IFERROR`, `IFNA`,
     `CLEARERROR`, `CLEARZERO` and `BETWEEN`, all lazy: an error or a missing

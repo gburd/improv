@@ -454,6 +454,25 @@ impl Model {
         Model::default()
     }
 
+    /// This model plus a provisional input measure `id` named `name` (when
+    /// no measure has the name), so a definition of a new measure can refer
+    /// to itself (`Bal = PREV(Bal, Time, 1, 0) + Flow`) while it is parsed.
+    pub fn with_provisional(&self, id: MeasureId, name: &str) -> std::borrow::Cow<'_, Model> {
+        if self.measure_by_name(name).is_some() {
+            return std::borrow::Cow::Borrowed(self);
+        }
+        let mut m = self.clone();
+        m.add_measure(Measure {
+            id,
+            name: Name(name.to_string()),
+            value_type: ValueType::Number,
+            categories: Vec::new(),
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        std::borrow::Cow::Owned(m)
+    }
+
     // --- builders (return the new id for convenience) ---
 
     pub fn add_category(&mut self, id: CategoryId, name: impl Into<String>) {

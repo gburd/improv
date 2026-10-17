@@ -1969,27 +1969,25 @@ impl ImprovApp {
         if self.model.measure_by_name(name).is_some() {
             return Err(format!("a measure named {name:?} already exists"));
         }
-        let formula = self.parse_formula_text(text).map_err(|e| e.to_string())?;
-
-        // Infer categories: union of referenced measures' categories.
-        let mut cats: Vec<CategoryId> = Vec::new();
-        for m in formula.referenced_measures() {
-            if let Some(measure) = self.model.measures.get(&m) {
-                for c in &measure.categories {
-                    if !cats.contains(c) {
-                        cats.push(*c);
-                    }
-                }
-            }
-        }
-        cats.sort_by_key(|c| c.0);
-
         let id = MeasureId(self.next_measure_id());
+        // A new measure may refer to itself (a PREV recurrence).
+        let formula = {
+            let provisional = self.model.with_provisional(id, name);
+            let canonical = self.locale.canonicalize(text);
+            parser::parse_expr(&provisional, &canonical)
+                .or_else(|e| parse_nl_formula(&NlContext::new(&provisional), text).map_err(|_| e))
+                .map_err(|e| e.to_string())?
+        };
+        // The engine's shape: an aggregation drops what it reduces, `@ITEM`
+        // is text, and so on.
+        let (value_type, cats) =
+            improv_engine::compiler::derived_shape(&self.model, id, name, &formula)
+                .map_err(|e| e.to_string())?;
         let mut candidate = self.model.clone();
         candidate.add_measure(Measure {
             id,
             name: Name(name.to_string()),
-            value_type: ValueType::Number,
+            value_type,
             categories: cats,
             kind: MeasureKind::Derived(formula),
             description: None,
@@ -2437,6 +2435,7 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
             ))
         }
         Expr::Call(func, args) => call_dsl(model, *func, args),
+        Expr::Category(c) => ident(category_name(model, *c)?),
     }
 }
 
@@ -2449,20 +2448,80 @@ fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
     // `SUM(Price * Quantity)` are rejected by `parse_expr`. Return `None` so
     // the caller falls back to the controlled-English description.
     if is_aggregation(func) {
-        let [Expr::Ref(id, spec)] = args else {
-            return None;
-        };
-        if spec.over.len() != 1 || !spec.except.is_empty() {
-            return None;
-        }
-        return Some(format!(
-            "{name}({} OVER {})",
-            ref_dsl(model, *id, &spec.by)?,
-            ident(category_name(model, spec.over[0])?)?
-        ));
+        return aggregation_dsl(model, func, name, args);
     }
     let rendered: Option<Vec<String>> = args.iter().map(|a| expr_dsl(model, a)).collect();
     Some(format!("{name}({})", rendered?.join(", ")))
+}
+
+/// `AGG(args…)` with its `OVER` clause after the first reduced argument (the
+/// parser accepts it after any), the window or `WHERE` there too. `None`
+/// when the shape has no spelling (a reduced argument that is not a plain
+/// reference, reduced arguments with different `OVER` lists, `EXCEPT`).
+fn aggregation_dsl(model: &Model, func: FuncId, name: &str, args: &[Expr]) -> Option<String> {
+    let def = improv_core_model::functions::by_id(func)?;
+    let mut pred = None;
+    let mut window = None;
+    let mut rest = Vec::new();
+    for a in args {
+        match a {
+            Expr::Call(id, p) if *id == improv_core_model::functions::WHERE => pred = p.first(),
+            Expr::Call(id, b) if *id == improv_core_model::functions::WINDOW => window = Some(b),
+            other => rest.push(other),
+        }
+    }
+    let mut over: Option<&Vec<CategoryId>> = None;
+    let mut parts = Vec::new();
+    for (i, a) in rest.iter().enumerate() {
+        if !def.over.contains(i) {
+            parts.push(expr_dsl(model, a)?);
+            continue;
+        }
+        let Expr::Ref(id, spec) = a else {
+            return None;
+        };
+        if !spec.except.is_empty() || spec.over.is_empty() || over.is_some_and(|o| *o != spec.over)
+        {
+            return None;
+        }
+        let mut part = ref_dsl(model, *id, &spec.by)?;
+        if over.is_none() {
+            let cats: Option<Vec<String>> = spec
+                .over
+                .iter()
+                .map(|c| ident(category_name(model, *c)?))
+                .collect();
+            part.push_str(" OVER ");
+            part.push_str(&cats?.join(", "));
+            if let Some(b) = window {
+                if spec.over.len() != 1 || b.len() != 2 {
+                    return None;
+                }
+                part.push_str(&format!("[{}..{}]", bound_dsl(&b[0])?, bound_dsl(&b[1])?));
+            }
+            if let Some(p) = pred {
+                part.push_str(" WHERE ");
+                part.push_str(&expr_dsl(model, p)?);
+            }
+            over = Some(&spec.over);
+        }
+        parts.push(part);
+    }
+    over?;
+    Some(format!("{name}({})", parts.join(", ")))
+}
+
+/// A window bound literal as written: `FIRST`, `LAST`, `THIS`, `THIS-2`.
+fn bound_dsl(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Literal(Value::Text(t)) if t == "FIRST" || t == "LAST" => Some(t.clone()),
+        Expr::Literal(Value::Number(n)) if *n == 0.0 => Some("THIS".into()),
+        Expr::Literal(Value::Number(n)) if n.fract() == 0.0 && *n > 0.0 => {
+            Some(format!("THIS+{n}"))
+        }
+        Expr::Literal(Value::Number(n)) if n.fract() == 0.0 => Some(format!("THIS-{}", -n)),
+        _ => None,
+    }
 }
 
 /// Whether `func` aggregates (`SUM(x OVER T)`), per the function registry.
@@ -5001,8 +5060,8 @@ mod tests {
 
     #[test]
     fn shapes_without_a_dsl_spelling_fall_back_to_cnl_and_still_commit() {
-        // `SUM(x OVER Time AND Product)` has no v1 DSL spelling (one category
-        // per OVER), so the bar shows controlled English — which commits.
+        // `SUM(x OVER Time, Product)`: several OVER categories print as DSL
+        // and commit back to the same formula.
         let mut model = revenue_model();
         let f = Formula::new(Expr::Call(
             FuncId(1),
@@ -5019,7 +5078,7 @@ mod tests {
         let mut app = build_app(model);
 
         let buf = app.formula_source(MeasureId(102)).expect("displayable");
-        assert_eq!(buf, "the sum of Quantity over Time and Product");
+        assert_eq!(buf, "SUM(Quantity OVER Time, Product)");
         app.commit_formula(MeasureId(102), &buf).expect("commits");
         match &app.model.measures[&MeasureId(102)].kind {
             MeasureKind::Derived(got) => assert_eq!(*got, f),
@@ -5116,12 +5175,12 @@ mod tests {
         let before_model = app.model.clone();
         let before_snapshot = app.snapshot.clone();
 
-        // Revenue = Revenue + Price parses fine but is a dependency cycle, so
-        // the engine cannot build.
+        // Revenue = Revenue + Price parses fine but reads itself outside a
+        // PREV recurrence, so the engine cannot build.
         let err = app
             .commit_formula(MeasureId(102), "Revenue + Price")
-            .expect_err("a cyclic formula must be rejected");
-        assert!(err.contains("cyclic"), "got {err:?}");
+            .expect_err("a self-referencing formula must be rejected");
+        assert!(err.contains("refers to itself"), "got {err:?}");
 
         assert_eq!(app.model, before_model, "model preserved");
         assert_eq!(app.snapshot, before_snapshot, "snapshot preserved");
@@ -6360,6 +6419,30 @@ mod tests {
     /// [`ident`], so an awkward CATEGORY name is spellable too — the other half
     /// of the read-only defect (a CSV import names categories from headers as
     /// well).
+    /// The P3 forms print as DSL that commits back to the same formula.
+    #[test]
+    fn dimensional_forms_round_trip_through_the_bar() {
+        let mut model = revenue_model();
+        model.add_category(CategoryId(3), "Region");
+        model.add_item(ItemId(30), CategoryId(3), "North");
+        for text in [
+            "Quantity - PREV(Quantity, Time, 1, 0)",
+            "NEXT(Quantity, Time)",
+            "Quantity * POSITION(Time)",
+            "SUM(Quantity OVER Time[FIRST..THIS])",
+            "SUM(Quantity OVER Time[THIS-2..THIS+1])",
+            "SUM(Quantity OVER Time WHERE Quantity > 90)",
+            "TEXTJOIN(\"-\", TRUE, Quantity OVER Time)",
+            "FIRST(Quantity OVER Time)",
+        ] {
+            let mut app = build_app(model.clone());
+            app.commit_formula(MeasureId(102), text)
+                .unwrap_or_else(|e| panic!("{text}: {e}"));
+            let shown = app.formula_source(MeasureId(102)).expect(text);
+            assert_eq!(shown, text, "displayed as typed");
+        }
+    }
+
     /// In a German locale the formula bar shows and accepts German names,
     /// a decimal comma and `;` separators; the model stores the canonical form.
     #[test]

@@ -69,10 +69,14 @@ bank fees. Each is `essential`, `discretionary`, `savings`, `tax` or `fees`.
 ## What Improv does, and what SQL does
 
 Improv's formulas compute over categories: `SUM(Actual OVER Month)` and
-`Price * Units`. They have no `IF`, no `POWER`, no "previous month", and a
-result must keep at least one dimension. A formula over a missing cell has
-no cell either (there is no `COALESCE`). The example handles each of these
-in SQL and leaves the rest to the models:
+`Price * Units`. When this example was written they had no `IF`, no
+`POWER`, no "previous month", and a result had to keep at least one
+dimension, so it handles those in SQL. Improv now has all three (`IF`,
+`^` / `POWER`, `PREV` and running windows such as `SUM(x OVER
+Month[FIRST..THIS])`; see [The Formula Language](./formulas.md)); the
+example still shows the SQL route, which works on every Improv version. A
+formula over a missing cell still has no cell (there is no `COALESCE`;
+`IFERROR` covers errors, not missing cells):
 
 | Need | Where | How |
 | --- | --- | --- |
@@ -314,7 +318,8 @@ reads it back from the net-worth model's result tables with an ordinary
 `goal_horizon` holds, for each goal and each plan anniversary up to its
 target date, `Growth = (1 + r/12)^n` and `Annuity = ((1 + r/12)^n − 1) / (r/12)`
 (monthly compounding, end-of-month contributions), and `IsTargetYear` (1 on
-the target date). SQL computes these because Improv has no `POWER`.
+the target date). SQL computes these; today `(1 + Rate/12)^N` in a
+formula does it too.
 
 ```text
 EssentialPart     = Budget * IsEssential

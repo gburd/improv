@@ -101,7 +101,7 @@ pub const FUNC_MIN: FuncId = FuncId(3);
 pub const FUNC_MAX: FuncId = FuncId(4);
 
 /// The built-in a name calls as `NAME(args...)` (aggregations excluded):
-/// its id and parameter count, from [`crate::functions::FUNCTIONS`]
+/// its id and parameter count, from [`crate::functions::all`]
 /// (case-insensitive, aliases included).
 pub fn scalar_func(name: &str) -> Option<(FuncId, usize)> {
     functions::callable(name).map(|d| (d.id, d.params.len()))
@@ -259,7 +259,13 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 });
             }
             c if c.is_ascii_digit() => {
-                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                // Digits, then `.digits` (a `.` not followed by a digit ends
+                // the number: the `..` of a window, `THIS-1..THIS`). A second
+                // `.` stays in the number so `1.2.3` is an invalid number.
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_digit()
+                        || (bytes[i] == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)))
+                {
                     i += 1;
                 }
                 let raw = &text[start..i];
@@ -307,7 +313,10 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                     pos: start,
                 });
             }
-            c if c.is_alphabetic() || c == '_' => {
+            c if c.is_alphabetic()
+                || c == '_'
+                || (c == '@' && text[i + 1..].starts_with(char::is_alphabetic)) =>
+            {
                 i += c.len_utf8();
                 while i < bytes.len() {
                     let b = text[i..].chars().next().expect("i < len");
@@ -355,6 +364,18 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
+
+/// An aggregation's `OVER …` clause as parsed.
+#[derive(Default)]
+struct OverClause {
+    cats: Vec<CategoryId>,
+    /// `OVER ALL [EXCEPT …]`.
+    all: bool,
+    except: Vec<CategoryId>,
+    /// `OVER T[from..to]`: bound literals (see `functions::WINDOW`).
+    window: Option<(Expr, Expr)>,
+    pred: Option<Expr>,
+}
 
 struct Parser<'a> {
     toks: &'a [Spanned],
@@ -761,12 +782,27 @@ impl<'a> Parser<'a> {
         if !self.eat_op("(") {
             return Err(self.err("expected '(' after function name"));
         }
+        // The callable's parameter kinds, to read category arguments
+        // (`POSITION(Time)`) as categories rather than measures.
+        let callable = functions::callable(name);
         let mut args = Vec::new();
+        let mut over: Option<OverClause> = None;
         if !matches!(self.toks.get(self.pos).map(|s| &s.tok), Some(Tok::Op(o)) if o == ")") {
             loop {
-                args.push(self.parse_expr()?);
-                if args.len() == 1 && self.peek_kw("over") {
-                    return self.finish_aggregation(name, args.pop().expect("one arg"));
+                let i = args.len();
+                let is_cat = over.is_none()
+                    && callable.is_some_and(|d| d.param(i) == functions::Arg::Category)
+                    && functions::aggregation(name).is_none();
+                if is_cat {
+                    args.push(Expr::Category(self.parse_category_name()?));
+                } else {
+                    args.push(self.parse_expr()?);
+                }
+                if self.peek_kw("over") {
+                    if over.is_some() {
+                        return Err(self.err("only one OVER clause per aggregation"));
+                    }
+                    over = Some(self.parse_over_clause()?);
                 }
                 if self.eat_op(",") {
                     continue;
@@ -777,7 +813,10 @@ impl<'a> Parser<'a> {
         if !self.eat_op(")") {
             return Err(self.err("expected ')' to close function call"));
         }
-        let def = functions::callable(name).ok_or_else(|| {
+        if let Some(clause) = over {
+            return self.finish_aggregation(name, args, clause);
+        }
+        let def = callable.ok_or_else(|| {
             self.err(format!(
                 "{name} aggregates: write {name}(Measure OVER Category)"
             ))
@@ -793,23 +832,159 @@ impl<'a> Parser<'a> {
         Ok(Expr::Call(def.id, args))
     }
 
-    /// The rest of `AGG(MeasureRef OVER Category)` after the argument.
-    fn finish_aggregation(&mut self, name: &str, arg: Expr) -> Result<Expr, ParseError> {
+    /// `OVER Cat {, Cat} [ "[" Bound ".." Bound "]" ] [WHERE pred]` or
+    /// `OVER ALL [EXCEPT Cat {, Cat}] [WHERE pred]`. A `,` continues the
+    /// category list only when a category name follows and is not itself
+    /// followed by `(`; otherwise it starts the next argument.
+    fn parse_over_clause(&mut self) -> Result<OverClause, ParseError> {
+        self.bump(); // OVER
+        let mut clause = OverClause::default();
+        if self.peek_kw("all") && !self.next_is_open_paren() {
+            self.bump();
+            clause.all = true;
+            if self.peek_kw("except") {
+                self.bump();
+                clause.except.push(self.parse_category_name()?);
+                while self.comma_then_category() {
+                    self.bump(); // ,
+                    clause.except.push(self.parse_category_name()?);
+                }
+            }
+        } else {
+            clause.cats.push(self.parse_category_name()?);
+            if self.eat_op("[") {
+                let from = self.parse_bound()?;
+                if !self.eat_op(".") || !self.eat_op(".") {
+                    return Err(self.err("expected '..' in a window: OVER T[FIRST..THIS]"));
+                }
+                let to = self.parse_bound()?;
+                if !self.eat_op("]") {
+                    return Err(self.err("expected ']' to close the window"));
+                }
+                clause.window = Some((from, to));
+            } else {
+                while self.comma_then_category() {
+                    self.bump(); // ,
+                    clause.cats.push(self.parse_category_name()?);
+                }
+            }
+        }
+        if self.peek_kw("where") {
+            self.bump();
+            clause.pred = Some(self.parse_expr()?);
+        }
+        Ok(clause)
+    }
+
+    /// A window bound: `FIRST`, `LAST`, `THIS`, `THIS-n`, `THIS+n`, as the
+    /// literal the `WINDOW` marker stores (text, or an offset number).
+    fn parse_bound(&mut self) -> Result<Expr, ParseError> {
+        let word = match self.peek() {
+            Some(Tok::Ident(w)) => w.to_ascii_uppercase(),
+            _ => return Err(self.err("expected FIRST, LAST or THIS in a window")),
+        };
+        self.bump();
+        let lit = |v| Ok(Expr::Literal(v));
+        match word.as_str() {
+            "FIRST" | "LAST" => lit(Value::Text(word)),
+            "THIS" => {
+                let sign = match self.peek() {
+                    Some(Tok::Op(o)) if o == "+" => 1.0,
+                    Some(Tok::Op(o)) if o == "-" => -1.0,
+                    _ => return lit(Value::Number(0.0)),
+                };
+                self.bump();
+                match self.peek() {
+                    Some(Tok::Number(n)) if n.fract() == 0.0 => {
+                        let n = *n;
+                        self.bump();
+                        lit(Value::Number(sign * n))
+                    }
+                    _ => Err(self.err("expected a whole number after THIS+ / THIS-")),
+                }
+            }
+            _ => Err(self.err("expected FIRST, LAST or THIS in a window")),
+        }
+    }
+
+    fn next_is_open_paren(&self) -> bool {
+        matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(")
+    }
+
+    /// Whether the next tokens are `, Category` (and not `, Name(` or a
+    /// measure): the OVER category list continues.
+    fn comma_then_category(&self) -> bool {
+        let at = |k: usize| self.toks.get(self.pos + k).map(|s| &s.tok);
+        let name = match (at(0), at(1)) {
+            (Some(Tok::Op(c)), Some(Tok::Ident(n) | Tok::QIdent(n))) if c == "," => n,
+            _ => return false,
+        };
+        let followed_ok = !matches!(at(2), Some(Tok::Op(o)) if o == "(" || o == ".");
+        followed_ok
+            && self.model.category_by_name(name).is_some()
+            && self.model.measure_by_name(name).is_none()
+    }
+
+    /// Build `AGG(args…)` once its OVER clause is read: every argument the
+    /// registry marks as reduced must be a measure reference and gets the
+    /// OVER categories; a `WHERE` and a window become trailing markers.
+    fn finish_aggregation(
+        &mut self,
+        name: &str,
+        mut args: Vec<Expr>,
+        clause: OverClause,
+    ) -> Result<Expr, ParseError> {
         let def = functions::aggregation(name)
             .ok_or_else(|| self.err(format!("{name} does not aggregate OVER a category")))?;
-        self.bump(); // OVER
-        let cat = self.parse_category_name()?;
-        if !self.eat_op(")") {
-            return Err(self.err("expected ')' to close aggregation"));
+        if !def.accepts(args.len()) {
+            return Err(self.err(format!(
+                "{} takes {}, got {} argument(s)",
+                def.name,
+                def.signature(),
+                args.len()
+            )));
         }
-        // Attach the collapsed category to the arg ref's DimensionSpec.over.
-        match arg {
-            Expr::Ref(id, mut spec) => {
-                spec.over.push(cat);
-                Ok(Expr::Call(def.id, vec![Expr::Ref(id, spec)]))
+        if clause.window.is_some() && def.kind == functions::Kind::PerItem {
+            return Err(self.err(format!("{} cannot take a window", def.name)));
+        }
+        for (i, a) in args.iter_mut().enumerate() {
+            if !def.over.contains(i) {
+                continue;
             }
-            _ => Err(self.err("aggregation argument must be a measure reference")),
+            let Expr::Ref(id, spec) = a else {
+                return Err(self.err(format!(
+                    "{} argument {} must be a measure reference (it is reduced OVER the \
+                     categories)",
+                    def.name,
+                    i + 1
+                )));
+            };
+            let mut s = spec.clone();
+            if clause.all {
+                // OVER ALL [EXCEPT …]: every category of the measure but the
+                // excepted ones (resolved now, from the measure).
+                let m = self.model.measures.get(id);
+                s.over = m
+                    .map(|m| {
+                        m.categories
+                            .iter()
+                            .copied()
+                            .filter(|c| !clause.except.contains(c))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+            } else {
+                s.over = clause.cats.clone();
+            }
+            *a = Expr::Ref(*id, s);
         }
+        if let Some(p) = clause.pred {
+            args.push(Expr::Call(functions::WHERE, vec![p]));
+        }
+        if let Some((from, to)) = clause.window {
+            args.push(Expr::Call(functions::WINDOW, vec![from, to]));
+        }
+        Ok(Expr::Call(def.id, args))
     }
 
     /// MeasureRef = Name [ "[" DimList "]" ]

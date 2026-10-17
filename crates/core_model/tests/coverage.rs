@@ -243,7 +243,7 @@ fn parse_errors_name_the_problem() {
         ),
         ("X = ABS()", "ABS takes ABS(number), got 0 argument(s)"),
         ("X = SUM(Price Time)", "expected ')' to close function call"),
-        ("X = SUM(Price OVER Time", "')' to close aggregation"),
+        ("X = SUM(Price OVER Time", "')' to close function call"),
         ("X = Price[Time", "']'"),
         ("X = + 1", "expected"),
         ("X[Time = 1", "unterminated '['"),

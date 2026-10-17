@@ -67,7 +67,40 @@ pub enum TypedExprKind {
     UnaryOp(UnaryOp, Box<TypedExpr>),
     BinaryOp(BinaryOp, Box<TypedExpr>, Box<TypedExpr>),
     Call(FuncId, Vec<TypedExpr>),
+    /// A reduction over the `over` categories: `inputs` are the reduced
+    /// measures (same dimensions), `params` the other arguments (one value
+    /// per group), both in argument order.
+    Aggregate {
+        func: FuncId,
+        inputs: Vec<TypedExpr>,
+        params: Vec<TypedExpr>,
+        over: Vec<CategoryId>,
+        pred: Option<Box<TypedExpr>>,
+        window: Option<Window>,
+    },
+    /// A per-item value of a category (`POSITION`, `@ITEM`): one cell per
+    /// item.
+    Items(CategoryId, Vec<(improv_core_model::ItemId, Value)>),
+    /// The value `offset` items along `cat` (`PREV` is −1), or `default`.
+    Shift {
+        input: Box<TypedExpr>,
+        cat: CategoryId,
+        offset: i64,
+        default: Option<Box<TypedExpr>>,
+    },
 }
+
+/// A window bound, relative to this item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bound {
+    First,
+    Last,
+    /// This item's position plus the offset.
+    Offset(i64),
+}
+
+/// `OVER T[from..to]`: a reduction per item over a window of items.
+pub type Window = (Bound, Bound);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TypedExpr {

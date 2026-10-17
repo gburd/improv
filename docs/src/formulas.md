@@ -175,19 +175,85 @@ the list must name every category of the measure (`Quantity[Time, Product]`):
 Total = SUM(Revenue OVER Time)
 ```
 
-The form is `SUM|AVG|MIN|MAX ( MeasureRef OVER Category )`:
+The form is `AGG(Measure OVER Categories, …)`. The aggregations include
+`SUM`, `AVERAGE` (or `AVG`), `MIN`, `MAX`, `PRODUCT`, `SUMSQ`, over booleans
+`AND`, `OR` and `XOR`, and the ordered `FIRST`, `LAST`, `S` and `TEXTJOIN`;
+see the [Function Reference](./functions.md).
 
-The aggregations are `SUM`, `AVERAGE` (or `AVG`), `MIN`, `MAX`, `PRODUCT`,
-`SUMSQ`, and over booleans `AND`, `OR` and `XOR`; see the
-[Function Reference](./functions.md).
+```text
+Total    = SUM(Revenue OVER Time, Region)        -- several categories
+Others   = SUM(Revenue OVER ALL EXCEPT Product)  -- all but Product
+Big      = SUM(Revenue OVER Time WHERE Revenue > 1000)
+Names    = TEXTJOIN(", ", TRUE, Label OVER Product)
+Opening  = FIRST(Balance OVER Time)
+```
 
-- the argument must be a measure reference (with an optional `[…]` list), not
-  an expression: `SUM(Price * 2 OVER Product)` is an error;
-- exactly one category follows `OVER`: `SUM(Q OVER Time, Product)` is an
-  error, and so is `SUM(Q)` with no `OVER`.
+- The reduced arguments must be measure references (with an optional `[…]`
+  list), not expressions: `SUM(Price * 2 OVER Product)` is an error; define
+  the expression as a measure first.
+- `OVER` follows a reduced argument and applies to all of them. Several
+  categories are separated by commas; a comma followed by anything but a
+  category name starts the next argument (`TEXTJOIN("-", TRUE, x OVER T)`).
+- `OVER ALL EXCEPT Cat, …` reduces every category of the measure but those.
+- `WHERE condition` keeps only the cells where the condition is true; the
+  condition may use the measure and any measure over its categories. If no
+  cell passes, the group has no cell.
+- Rows reach the reduction in **item order** along the reduced categories,
+  which is what `FIRST`, `LAST` and `TEXTJOIN` see.
+- Other arguments are parameters with one value per group: a literal, or a
+  measure over the categories the result keeps (`TEXTJOIN(Sep, TRUE, x OVER
+  T)` with `Sep` per Product).
+- Without `OVER`, nothing is reduced (each cell is its own group).
 
 `SUM` etc. are functions only when `(` follows; otherwise the word is an
 ordinary measure name.
+
+### Positions, neighbours and running totals
+
+Every category has an order: its items' order. Formulas can use it.
+
+```text
+Rank     = POSITION(Time)                          -- 1, 2, 3, …
+Year     = @ITEM(Time)                             -- the item's name
+Growth   = Revenue - PREV(Revenue, Time, 1, 0)     -- change since last year
+Ahead    = NEXT(Revenue, Time)                     -- next year's value
+Running  = SUM(Revenue OVER Time[FIRST..THIS])     -- running total
+Trailing = AVERAGE(Revenue OVER Time[THIS-2..THIS])-- three-period average
+ToGo     = SUM(Budget OVER Time[THIS..LAST])
+```
+
+- `POSITION(T)` is the 1-based position of each item of `T`; `@ITEM(T)` its
+  name; `@ITEMCOUNT(T)` how many items `T` has. They are measures over `T`,
+  so they broadcast like any other.
+- `PREV(x, T, [n = 1], [default])` is `x` at the n-th previous item along
+  `T`, `NEXT` at the n-th next. Before the first item (or where that item
+  has no cell) the result is the `default`, or no cell without one.
+- A **window** `OVER T[from..to]` gives one result per item: the
+  aggregation over the items from `from` to `to`, where each bound is
+  `FIRST`, `LAST`, `THIS`, `THIS-n` or `THIS+n`. An empty window is `#N/A`.
+
+### Recurrences
+
+A measure may read its own earlier values through `PREV`:
+
+```text
+Balance = PREV(Balance, Time, 1, Opening) + Deposits - Withdrawals
+```
+
+Along `Time`, each period's balance starts from the previous period's
+(`Opening`, a measure per account, before the first). The engine computes it
+as a scan in item order, per group of the other categories, and updates it
+incrementally: an edit re-runs the chain it is in. Rules:
+
+- every reference to the measure itself is `PREV(itself, T, n, default)`
+  along one of its own categories (`NEXT` cannot refer back);
+- the rest of the formula is element-wise (no aggregation or other
+  positional function inside it; define those as measures first);
+- the measures it reads together range over all of its categories (they
+  supply its cells);
+- other cycles between measures are still errors.
+
+Every evaluation still terminates: a scan is as long as the category.
 
 ### Functions
 
@@ -355,6 +421,6 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 
 **Gaps:**
 
-- no `EXCEPT` syntax (the AST field exists; the parser never sets it);
-- one `OVER` category per aggregation;
-- no reference to the previous period (or any relative item).
+- no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
+  aggregation) (the AST field exists; the parser never sets it);
+- a window or per-item reduction takes one `OVER` category.
