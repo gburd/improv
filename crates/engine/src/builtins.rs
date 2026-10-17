@@ -1054,6 +1054,140 @@ mod tests {
         assert_eq!(num_of(202, &[123.456, 2.0]), CellValue::num(120.0));
     }
 
+    /// The edge cases of each family: one line per branch the goldens do not
+    /// already reach (Excel's documented results).
+    #[test]
+    fn edge_cases() {
+        let n = CellValue::num;
+        let s = |x: &str| CellValue::Text(x.into());
+        let b = CellValue::Bool;
+        let e = CellValue::Err;
+        let call = |f: u32, a: &[CellValue]| eval(FuncId(f), a);
+        // Booleans and dates read as numbers; errors propagate first-come.
+        assert_eq!(call(10, &[b(true)]), n(1.0));
+        assert_eq!(call(10, &[CellValue::Date(5)]), n(5.0));
+        assert_eq!(call(22, &[n(1.0), e(err::NA), e(err::DIV0)]), e(err::NA));
+        assert_eq!(call(10, &[s("x")]), e(err::VALUE));
+        // BETWEEN inclusive and strict; ISERR on a non-error.
+        assert_eq!(call(38, &[n(1.0), n(1.0), n(2.0)]), b(true));
+        assert_eq!(call(38, &[n(1.0), n(1.0), n(2.0), b(false)]), b(false));
+        assert_eq!(call(38, &[n(1.5), n(1.0), n(2.0), b(false)]), b(true));
+        assert_eq!(call(51, &[n(1.0)]), b(false));
+        assert_eq!(call(55, &[e(0)]), e(err::NA));
+        assert_eq!(call(54, &[s("#bogus")]), e(err::VALUE));
+        // Logs, MOD/QUOTIENT, ATAN2 and the poles.
+        assert_eq!(call(106, &[n(8.0), n(1.0)]), e(err::DIV0));
+        assert_eq!(call(106, &[n(8.0), n(2.0)]), n(3.0));
+        assert_eq!(call(110, &[n(5.0), n(0.0)]), e(err::DIV0));
+        assert_eq!(call(110, &[n(-5.0), n(3.0)]), n(1.0));
+        assert_eq!(call(111, &[n(5.0), n(0.0)]), e(err::DIV0));
+        assert_eq!(call(121, &[n(0.0), n(0.0)]), e(err::DIV0));
+        assert_eq!(call(130, &[n(0.0)]), e(err::DIV0));
+        assert_eq!(call(128, &[n(2e8)]), e(err::NUM));
+        assert_eq!(call(138, &[n(0.5)]), e(err::NUM));
+        assert_eq!(call(139, &[n(0.0)]), e(err::NUM));
+        assert_eq!(call(136, &[n(0.5)]), n(1.0));
+        assert_eq!(call(136, &[n(1.5)]), n(-1.0));
+        assert_eq!(call(136, &[n(2.0)]), n(0.0));
+        assert_eq!(call(137, &[n(1.0)]), n(-1.0));
+        assert_eq!(call(137, &[n(2.0)]), n(1.0));
+        assert_eq!(call(137, &[n(1.5)]), n(0.0));
+        // Combinatorics.
+        assert_eq!(call(142, &[n(1.0)]), n(1.0));
+        assert_eq!(call(142, &[n(-1.0)]), e(err::NUM));
+        assert_eq!(call(143, &[n(2.0), n(3.0)]), e(err::NUM));
+        assert_eq!(call(144, &[n(0.0), n(0.0)]), n(1.0));
+        assert_eq!(call(144, &[n(0.0), n(2.0)]), e(err::NUM));
+        assert_eq!(call(145, &[n(2.0), n(3.0)]), e(err::NUM));
+        assert_eq!(call(148, &[n(4.0), n(0.0)]), n(0.0));
+        assert_eq!(call(148, &[n(4.0), n(6.0)]), n(12.0));
+        assert_eq!(call(141, &[n(-1.0)]), e(err::NUM));
+        assert_eq!(call(151, &[n(2.0), n(0.0)]), n(0.0));
+        assert_eq!(call(151, &[n(-2.0)]), e(err::VALUE));
+        // Rounding: zero, zero significance, modes, MROUND signs.
+        assert_eq!(call(202, &[n(0.0), n(3.0)]), n(0.0));
+        assert_eq!(call(202, &[n(5.0), n(0.0)]), e(err::NUM));
+        assert_eq!(call(12, &[n(0.0), n(0.0)]), n(0.0));
+        assert_eq!(call(12, &[n(3.0), n(0.0)]), e(err::DIV0));
+        assert_eq!(call(205, &[n(3.0), n(0.0)]), n(0.0));
+        assert_eq!(call(205, &[n(3.0), n(-1.0)]), e(err::NUM));
+        assert_eq!(call(206, &[n(-5.5), n(2.0), n(1.0)]), n(-4.0));
+        assert_eq!(call(206, &[n(5.0), n(0.0)]), n(0.0));
+        assert_eq!(call(207, &[n(-5.5), n(2.0), n(1.0)]), n(-6.0));
+        assert_eq!(call(207, &[n(5.0), n(0.0)]), n(0.0));
+        assert_eq!(call(208, &[n(5.0), n(0.0)]), n(0.0));
+        assert_eq!(call(209, &[n(5.0), n(0.0)]), n(0.0));
+        assert_eq!(call(211, &[n(5.0), n(0.0)]), n(0.0));
+        assert_eq!(call(211, &[n(5.0), n(-2.0)]), e(err::NUM));
+        assert_eq!(call(211, &[n(-5.0), n(-2.0)]), n(-6.0));
+        assert_eq!(call(213, &[n(-2.0)]), n(-3.0));
+        assert_eq!(call(213, &[n(3.0)]), n(3.0));
+        // Text out of range.
+        assert_eq!(call(300, &[n(0.0)]), e(err::VALUE));
+        assert_eq!(call(300, &[n(65.0)]), s("A"));
+        assert_eq!(call(301, &[n(0.0)]), e(err::VALUE));
+        assert_eq!(
+            call(301, &[n(55_296.0)]),
+            e(err::VALUE),
+            "a surrogate is no char"
+        );
+        assert_eq!(call(302, &[s("")]), e(err::VALUE));
+        assert_eq!(call(308, &[s("a"), s("abc"), n(0.0)]), e(err::VALUE));
+        assert_eq!(call(308, &[s("a"), s("abc"), n(5.0)]), e(err::VALUE));
+        assert_eq!(call(308, &[s(""), s("abc"), n(2.0)]), n(2.0));
+        assert_eq!(call(308, &[s("abcd"), s("abc")]), e(err::VALUE));
+        assert_eq!(call(310, &[s("abc"), n(-1.0)]), e(err::VALUE));
+        assert_eq!(call(311, &[s("abc"), n(9.0)]), s("abc"));
+        assert_eq!(call(312, &[s("abc"), n(0.0), n(1.0)]), e(err::VALUE));
+        assert_eq!(call(312, &[s("abc"), n(9.0), n(1.0)]), s(""));
+        assert_eq!(
+            call(317, &[s("abc"), n(0.0), n(1.0), s("x")]),
+            e(err::VALUE)
+        );
+        assert_eq!(call(317, &[s("abc"), n(2.0), n(1.0), s("XY")]), s("aXYc"));
+        assert_eq!(call(318, &[s("ab"), n(-1.0)]), e(err::VALUE));
+        assert_eq!(call(318, &[s("ab"), n(20_000.0)]), e(err::VALUE));
+        assert_eq!(call(319, &[s("abc"), s(""), s("x")]), s("abc"));
+        assert_eq!(
+            call(319, &[s("abc"), s("b"), s("x"), n(0.0)]),
+            e(err::VALUE)
+        );
+        assert_eq!(call(319, &[s("abc"), s("b"), s("x"), n(5.0)]), s("abc"));
+        assert_eq!(call(321, &[s("")]), e(err::VALUE));
+        assert_eq!(call(321, &[s("1,234")]), n(1234.0));
+        assert_eq!(call(324, &[s("abc"), s("["), s("]")]), e(err::NA));
+        assert_eq!(call(325, &[s("abc"), s("")]), e(err::VALUE));
+        // SEARCH: a case mapping that changes length; `~` escapes; `*`.
+        assert_eq!(call(309, &[s("x"), s("İx")]), n(2.0));
+        assert_eq!(call(309, &[s("~*"), s("a*b")]), n(2.0));
+        assert_eq!(call(309, &[s("~"), s("a~b")]), n(2.0));
+        assert_eq!(call(309, &[s("a*c"), s("xabbc")]), n(2.0));
+        assert_eq!(call(309, &[s("a*z"), s("abc")]), e(err::VALUE));
+        // TEXTBEFORE/AFTER: bad instance, empty delimiter, case, match_end,
+        // a fallback value.
+        assert_eq!(call(322, &[s("a-b"), s("-"), n(0.0)]), e(err::VALUE));
+        assert_eq!(call(322, &[s("a-b"), s(""), n(1.0)]), s(""));
+        assert_eq!(call(323, &[s("aXb"), s("x"), n(1.0), n(1.0)]), s("b"));
+        assert_eq!(
+            call(323, &[s("a-b"), s("-"), n(2.0), n(0.0), n(1.0)]),
+            s("")
+        );
+        assert_eq!(
+            call(322, &[s("a-b"), s("-"), n(-2.0), n(0.0), n(1.0)]),
+            s("")
+        );
+        assert_eq!(
+            call(322, &[s("ab"), s("-"), n(1.0), n(0.0), n(0.0), s("none")]),
+            s("none")
+        );
+        assert_eq!(call(322, &[s("a-b-c"), s("-"), n(-5.0)]), e(err::NA));
+        assert_eq!(call(322, &[s("a-b"), s("-"), n(-9.0)]), e(err::VALUE));
+        // POWER edge cases.
+        assert_eq!(power(0.0, -1.0), Err(err::DIV0));
+        assert_eq!(power(-8.0, 1.0 / 3.0), Err(err::NUM));
+        assert_eq!(power(-2.0, 3.0), Ok(n(-8.0)));
+    }
+
     #[test]
     fn text_positions_are_characters() {
         let s = |x: &str| CellValue::Text(x.into());

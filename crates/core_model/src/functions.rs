@@ -558,7 +558,10 @@ mod docs_test {
         if std::env::var_os("UPDATE_DOCS").is_some() {
             std::fs::write(path, &want).unwrap();
         }
-        let have = std::fs::read_to_string(path).unwrap_or_default();
+        // A Windows checkout may have turned LF into CRLF.
+        let have = std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .replace("\r\n", "\n");
         assert!(
             have == want,
             "docs/src/functions.md is stale: run UPDATE_DOCS=1 cargo test -p improv_core_model"

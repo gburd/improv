@@ -904,6 +904,114 @@ mod tests {
         Expr::BinaryOp(op, Box::new(l), Box::new(r))
     }
 
+    /// IF's type and dimension rules, and the lazy desugarings' arity rules.
+    #[test]
+    fn if_family_type_and_dimension_rules() {
+        let (measures, flag) = with_flag();
+        let ctx = CompileContext::new(&measures);
+        let infer_ = |e: &Expr| infer(&ctx, MeasureId(200), e);
+        let call = |id: u32, args: Vec<Expr>| Expr::Call(FuncId(id), args);
+        let na = || call(53, vec![]);
+        let text = |s: &str| Expr::Literal(Value::Text(s.into()));
+        // The test must be Boolean; NA() as a test is accepted (it errors).
+        assert!(matches!(
+            infer_(&call(30, vec![refr(PRICE), lit(1.0)])),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        assert!(infer_(&call(30, vec![na(), lit(1.0)])).is_ok());
+        // Branches unify; an error-only branch takes the other's type.
+        assert!(matches!(
+            infer_(&call(30, vec![refr(flag), lit(1.0), text("x")])),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        let t = infer_(&call(30, vec![refr(flag), na(), text("x")])).unwrap();
+        assert_eq!(t.ty.value_type, ValueType::Text);
+        let t = infer_(&call(30, vec![refr(flag), text("x"), na()])).unwrap();
+        assert_eq!(t.ty.value_type, ValueType::Text);
+        // Spanning: Flag over Product, Quantity over Time×Product spans via
+        // either branch; Headcount over Region cannot broadcast at all.
+        let t = infer_(&call(30, vec![refr(flag), lit(0.0), refr(QTY)])).unwrap();
+        assert_eq!(t.ty.dim, Dim::of(vec![TIME, PRODUCT]));
+        let plan = build_plan(&ctx, &t).unwrap();
+        assert!(matches!(
+            plan.kind,
+            PlanNodeKind::If {
+                spanning: Some(1),
+                ..
+            }
+        ));
+        let t = infer_(&call(30, vec![refr(flag), refr(QTY), lit(0.0)])).unwrap();
+        assert!(matches!(
+            build_plan(&ctx, &t).unwrap().kind,
+            PlanNodeKind::If {
+                spanning: Some(0),
+                ..
+            }
+        ));
+        assert!(matches!(
+            infer_(&call(30, vec![refr(flag), refr(HEADCOUNT), lit(0.0)])),
+            Err(CompileError::DimensionMismatch(_))
+        ));
+        // A test over Time with branches over Time×Product and
+        // Time×Product×Region spans through the wider (else) branch.
+        let mut m2 = measures.clone();
+        let wide = MeasureId(105);
+        m2.insert(wide, num_measure(wide, "W", vec![TIME, PRODUCT, REGION]));
+        let tflag = MeasureId(106);
+        m2.insert(
+            tflag,
+            Measure {
+                value_type: ValueType::Boolean,
+                ..num_measure(tflag, "TF", vec![TIME])
+            },
+        );
+        let ctx2 = CompileContext::new(&m2);
+        let e = call(30, vec![refr(tflag), refr(QTY), refr(wide)]);
+        let t = infer(&ctx2, MeasureId(200), &e).unwrap();
+        assert!(matches!(
+            build_plan(&ctx2, &t).unwrap().kind,
+            PlanNodeKind::If {
+                spanning: Some(1),
+                ..
+            }
+        ));
+        // IFS needs pairs; SWITCH with and without a default; arity errors.
+        assert!(matches!(
+            infer_(&call(31, vec![refr(flag), lit(1.0), refr(flag)])),
+            Err(CompileError::Unsupported(_))
+        ));
+        assert!(infer_(&call(32, vec![refr(PRICE), lit(1.0), text("a"), text("z")])).is_ok());
+        assert!(infer_(&call(32, vec![refr(PRICE), lit(1.0), text("a")])).is_ok());
+        assert!(matches!(
+            infer_(&call(312, vec![refr(PRICE)])),
+            Err(CompileError::Unsupported(_))
+        ));
+        assert_eq!(
+            infer_(&call(999, vec![])),
+            Err(CompileError::UnknownFunction(FuncId(999)))
+        );
+        // A Text argument where a number is wanted; an error-only argument fits.
+        assert!(matches!(
+            infer_(&call(10, vec![text("x")])),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        assert!(infer_(&call(10, vec![na()])).is_ok());
+        assert!(matches!(
+            infer_(&call(22, vec![refr(PRICE), refr(HEADCOUNT)])),
+            Err(CompileError::DimensionMismatch(_))
+        ));
+        // desugar_lazy on a non-lazy id.
+        assert_eq!(
+            desugar_lazy(FuncId(10), &[]),
+            Err(CompileError::UnknownFunction(FuncId(10)))
+        );
+        // NOT on a number.
+        assert!(matches!(
+            infer_(&Expr::UnaryOp(UnaryOp::Not, Box::new(refr(PRICE)))),
+            Err(CompileError::TypeMismatch(_))
+        ));
+    }
+
     fn lit(n: f64) -> Expr {
         Expr::Literal(Value::Number(n))
     }

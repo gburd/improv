@@ -1136,6 +1136,42 @@ mod tests {
         assert_eq!(at(205, 10, 21), Some(n(100.0)));
     }
 
+    /// The else-branch spans (the then-branch is a literal), the test is an
+    /// error somewhere, and an aggregation meets an error in its group.
+    #[test]
+    fn if_else_spans_and_errors_flow() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        // Price - 10 is 0 for WidgetA: Ratio is #DIV/0! there.
+        define(&mut m, 200, vec![product], "Ratio = 1 / (Price - 10)");
+        define(
+            &mut m,
+            201,
+            vec![time, product],
+            "Pick = IF(Ratio > 0, 0, Revenue)",
+        );
+        define(&mut m, 202, vec![], "Total = SUM(Ratio OVER Product)");
+        define(
+            &mut m,
+            203,
+            vec![time, product],
+            "Gate = IF(Price > 15, Revenue)",
+        );
+        let out = evaluate(&m, &(200..=203).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let at =
+            |id: u32, t: u32, p: u32| out[&MeasureId(id)].get(&key(&[(1, t), (2, p)])).cloned();
+        // WidgetA: the test is #DIV/0!, so each spanned cell is that error.
+        assert_eq!(at(201, 10, 20), Some(CellValue::Err(err::DIV0)));
+        assert_eq!(at(201, 11, 20), Some(CellValue::Err(err::DIV0)));
+        // WidgetB: Ratio 0.1 > 0 selects the literal 0, at Revenue's cells.
+        assert_eq!(at(201, 10, 21), Some(CellValue::num(0.0)));
+        assert_eq!(out[&MeasureId(201)].len(), 4);
+        assert_eq!(out[&MeasureId(202)][&Vec::new()], CellValue::Err(err::DIV0));
+        // No else-branch: a false test is no cell.
+        assert_eq!(at(203, 10, 20), None);
+        assert_eq!(at(203, 10, 21), Some(CellValue::num(1000.0)));
+    }
+
     /// n-ary scalar calls align every collection argument and fold literals;
     /// an aggregation of booleans and a product reduce typed values.
     #[test]
