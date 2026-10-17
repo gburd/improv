@@ -107,6 +107,25 @@ several). `ISERROR`, `ISERR`, `ISNA` and `ERROR.TYPE` inspect errors, and
 A missing cell is not an error: where an input has no cell, the result has
 no cell either (an aggregation skips it).
 
+### Typing formulas in your language
+
+The formula bar (GUI) and `improv define` / `add-derived` (CLI) read
+formulas in the **formula locale**: `IMPROV_LOCALE`, else the OS locale
+(`LANG`). In German (`de`) a formula uses LibreOffice's German function
+names, a decimal comma and `;` between arguments, and the GUI shows stored
+formulas the same way:
+
+| English (stored) | German |
+|---|---|
+| `IF(Price > 1.5, ROUND(Price, 2), 0)` | `WENN(Price > 1,5; RUNDEN(Price; 2); 0)` |
+| `SUM(Revenue OVER Time)` | `SUMME(Revenue OVER Time)` |
+
+The English spelling is always accepted as well. Models store formulas in
+the English form, so a model opens the same in every locale. Measure and
+category names, text in `"…"` and `OVER` are never translated. English and
+German are the locales so far; another is a table of names
+(`crates/core_model/src/locale/<tag>.tsv`).
+
 ### Literals
 
 | Literal | Example | Notes |

@@ -131,6 +131,10 @@ pub struct ImprovApp {
     /// a failed commit; cleared on a successful commit or when the buffer is
     /// edited again.
     formula_error_pos: Option<usize>,
+    /// The formula locale: how formulas are typed and shown (decimal comma,
+    /// `;`, translated names). `Locale::from_env` in the real app; English
+    /// in tests so they do not depend on the machine's locale.
+    locale: improv_core_model::Locale,
     /// The message of the last `commit_formula` parse error, shown directly
     /// under the formula editor. Cleared alongside `formula_error_pos`.
     formula_error_msg: String,
@@ -897,6 +901,11 @@ impl ImprovApp {
             formula_buf: String::new(),
             formula_for: None,
             formula_error_pos: None,
+            locale: if cfg!(test) {
+                improv_core_model::Locale::en()
+            } else {
+                improv_core_model::Locale::from_env()
+            },
             formula_error_msg: String::new(),
             view_name: String::new(),
             browser_sel: None,
@@ -1632,7 +1641,7 @@ impl ImprovApp {
         else {
             return None;
         };
-        let dsl = formula_dsl(&self.model, f);
+        let dsl = formula_dsl(&self.model, f).map(|d| self.locale.localize(&d));
         let cnl = describe_formula(&NlContext::new(&self.model), f);
         dsl.into_iter()
             .chain(std::iter::once(cnl))
@@ -1793,7 +1802,10 @@ impl ImprovApp {
     /// formula bar highlights), then the controlled English of
     /// `improv_nl_formula`. The DSL error is what surfaces if both fail.
     fn parse_formula_text(&self, text: &str) -> Result<improv_core_model::Formula, ParseError> {
-        match parser::parse_expr(&self.model, text) {
+        // Typed in the user's locale (`IMPROV_LOCALE` / the OS locale):
+        // decimal comma, `;` separators and translated names are accepted.
+        let canonical = self.locale.canonicalize(text);
+        match parser::parse_expr(&self.model, &canonical) {
             Ok(f) => Ok(f),
             Err(dsl_err) => {
                 parse_nl_formula(&NlContext::new(&self.model), text).map_err(|_| dsl_err)
@@ -5184,6 +5196,11 @@ mod tests {
             formula_buf: String::new(),
             formula_for: None,
             formula_error_pos: None,
+            locale: if cfg!(test) {
+                improv_core_model::Locale::en()
+            } else {
+                improv_core_model::Locale::from_env()
+            },
             formula_error_msg: String::new(),
             view_name: String::new(),
             browser_sel: None,
@@ -6343,6 +6360,28 @@ mod tests {
     /// [`ident`], so an awkward CATEGORY name is spellable too — the other half
     /// of the read-only defect (a CSV import names categories from headers as
     /// well).
+    /// In a German locale the formula bar shows and accepts German names,
+    /// a decimal comma and `;` separators; the model stores the canonical form.
+    #[test]
+    fn formulas_are_typed_and_shown_in_the_locale() {
+        let mut app = build_app(revenue_model());
+        app.locale = improv_core_model::Locale::de();
+        app.commit_formula(MeasureId(102), "RUNDEN(Price * Quantity * 1,5; 0)")
+            .expect("German commits");
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("RUNDEN(Price * Quantity * 1,5; 0)")
+        );
+        let MeasureKind::Derived(f) = &app.model.measures[&MeasureId(102)].kind else {
+            panic!("derived")
+        };
+        app.locale = improv_core_model::Locale::en();
+        assert_eq!(
+            formula_dsl(&app.model, f).as_deref(),
+            Some("ROUND(Price * Quantity * 1.5, 0)")
+        );
+    }
+
     #[test]
     fn awkward_category_names_are_quoted_in_dim_lists_and_over() {
         let mut model = revenue_model();

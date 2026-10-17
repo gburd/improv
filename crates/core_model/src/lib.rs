@@ -13,6 +13,7 @@ pub mod extfn_def;
 pub mod formula;
 pub mod functions;
 pub mod ids;
+pub mod locale;
 pub mod parser;
 pub mod schedule;
 pub mod value;
@@ -20,6 +21,7 @@ pub mod value;
 pub use extfn_def::{ExternalFn, Language};
 pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
+pub use locale::Locale;
 pub use parser::{
     parse_definition, parse_expr, parse_formula, Definition, FormulaText, ParseError,
 };

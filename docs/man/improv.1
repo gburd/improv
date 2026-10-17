@@ -287,6 +287,23 @@ or a
 URL. An empty string names an in-memory database that is discarded on exit.
 .SH ENVIRONMENT
 .TP
+.B IMPROV_LOCALE
+The formula locale for
+.B define
+and
+.BR add-derived ,
+else the OS locale
+.RB ( LC_ALL ,
+.BR LC_MESSAGES ,
+.BR LANG ).
+In German
+.RB ( de )
+a formula may use the German function names, a decimal comma and
+.B ;
+between arguments:
+.BR "WENN(Price > 1,5; RUNDEN(Price; 2); 0)" .
+The English spelling is always accepted; models store it.
+.TP
 .B IMPROV_EXTFN_TRUSTED=1
 Run external functions without the sandbox.
 .TP

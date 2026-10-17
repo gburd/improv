@@ -4,6 +4,7 @@ use std::process::{Command, Output};
 
 fn improv(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_improv"))
+        .env("IMPROV_LOCALE", "en")
         .args(args)
         .output()
         .expect("run improv")

@@ -8,6 +8,7 @@ use std::process::{Command, Output, Stdio};
 
 fn improv(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_improv"))
+        .env("IMPROV_LOCALE", "en")
         .args(args)
         .output()
         .expect("run improv")
@@ -1154,4 +1155,55 @@ fn list_a_postgres_model() {
         assert!(out.contains(want), "missing {want:?} in:\n{out}");
     }
     assert!(err(&["list", "postgres://u@localhost/d"]).contains("?model="));
+}
+
+/// `IMPROV_LOCALE=de`: a formula typed with German names, decimal comma and
+/// `;` separators is stored canonically.
+#[test]
+fn german_formula_entry() {
+    let dir = std::env::temp_dir().join(format!("improv-de-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("de.db");
+    let db = db.to_str().unwrap();
+    let run = |locale: &str, args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_improv"))
+            .env("IMPROV_LOCALE", locale)
+            .args(args)
+            .output()
+            .expect("run improv");
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    run("en", &["init", db]);
+    run("en", &["add-category", db, "1", "Time"]);
+    run("en", &["add-item", db, "10", "1", "2025"]);
+    run(
+        "en",
+        &["add-measure", db, "100", "Price", "number", "input", "Time"],
+    );
+    run("en", &["set", db, "100", "2.675", "--at", "Time=2025"]);
+    run(
+        "de",
+        &[
+            "define",
+            db,
+            "101",
+            "R = WENN(Price > 1,5; RUNDEN(Price; 2); 0)",
+        ],
+    );
+    // Evaluated in English: the stored formula is canonical.
+    let out = run("en", &["eval", db, "101"]);
+    assert!(out.contains("R[Time=2025] = 2.68"), "{out}");
+    // German names are not English names: the same text fails in `en`.
+    let bad = Command::new(env!("CARGO_BIN_EXE_improv"))
+        .env("IMPROV_LOCALE", "en")
+        .args(["define", db, "102", "S = RUNDEN(Price; 2)"])
+        .output()
+        .unwrap();
+    assert!(!bad.status.success());
+    std::fs::remove_file(db).ok();
 }

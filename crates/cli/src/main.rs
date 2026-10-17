@@ -304,7 +304,8 @@ fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
     // Parse the RHS expression, resolving measure/category names against the model.
-    let formula = parser::parse_expr(&model, formula_text).map_err(|e| e.to_string())?;
+    let formula_text = improv_core_model::Locale::from_env().canonicalize(formula_text);
+    let formula = parser::parse_expr(&model, &formula_text).map_err(|e| e.to_string())?;
 
     // Infer the derived measure's categories as the union of the categories of
     // every measure the formula references (aggregation collapses are handled
@@ -347,7 +348,8 @@ fn cmd_define(rest: &[String]) -> Result<(), String> {
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
-    match parser::parse_definition(&model, text).map_err(|e| e.to_string())? {
+    let text = improv_core_model::Locale::from_env().canonicalize(text);
+    match parser::parse_definition(&model, &text).map_err(|e| e.to_string())? {
         Definition::Formula(ft) => {
             let mut cats: Vec<CategoryId> = Vec::new();
             for m in ft.formula.referenced_measures() {

@@ -43,6 +43,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   512, `-2^2` is −4; the spreadsheets give 64 and 4). `&` joins two values
   as text, below `+`/`-` and above the comparisons. `%` divides by 100.
 
+- **Formulas in your language.** The GUI formula bar and `improv define` /
+  `add-derived` read formulas in the formula locale (`IMPROV_LOCALE`, else
+  the OS locale); in German: LibreOffice's German names, a decimal comma and
+  `;` separators (`WENN(Price > 1,5; RUNDEN(Price; 2); 0)`). The GUI shows
+  formulas the same way. Models store the English form.
+
 ### Changed
 
 - **Errors are typed values**, shown as the spreadsheets show them:
