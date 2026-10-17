@@ -52,6 +52,18 @@ this project follows [Semantic Versioning](https://semver.org/).
     `.INTL` forms (no holidays argument yet), `NOW`, `TODAY`, LibreOffice's
     `DAYSINMONTH`…`YEARS`, Gnumeric's `UNIX2DATE`/`DATE2UNIX`, and Numbers'
     `DUR2*` over durations as days.
+- **Statistical functions** (the plan's phase P4, scalars): 10 special
+  functions (`GAMMA`, `GAMMALN`, `BETA`, `BETALN`, `DIGAMMA`, `IGAMMA`,
+  `POCHHAMMER`, `ERF`, `ERF.PRECISE`, `ERFC`) and 44 distributions under
+  Excel's names, with legacy names as aliases where they mean the same
+  thing (`NORMDIST` = `NORM.DIST`) and their own entries where they do not
+  (`NORMSDIST`, `TDIST`, `BETADIST`, `HYPGEOMDIST`, …): the beta, binomial,
+  chi-square, exponential, F, gamma, hypergeometric, log-normal, negative
+  binomial, normal, Poisson, Student's t and Weibull distributions and
+  quantiles, plus `GAUSS`, `PHI`, `FISHER`, `FISHERINV`, `CONFIDENCE.NORM`,
+  `CONFIDENCE.T` and `STANDARDIZE`. 326 more golden values
+  (`scripts/goldens/statistical.py`). `NORM.S.DIST` and `T.DIST.2T` do not
+  parse yet (use `NORMSDIST` for the cumulative form).
 - **More aggregations:** `PRODUCT`, `SUMSQ`, and over booleans `AND`, `OR`
   and `XOR`; `AVERAGE` (with `AVG` as an alias). `SUM`, `MIN`, `MAX` and the
   rest also take a list of arguments (`SUM(a, b, c)`).

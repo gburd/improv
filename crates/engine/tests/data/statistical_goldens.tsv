@@ -1,0 +1,327 @@
+formula	expected	source
+GAMMA(5)	24	LibreOffice
+GAMMA(0.5)	1.7724538509055159	LibreOffice
+GAMMA(2.5)	1.329340388179137	LibreOffice
+GAMMA(-0.5)	-3.5449077018110318	LibreOffice
+GAMMA(-1.5)	2.3632718012073517	LibreOffice
+GAMMA(10.1)	454760.7514415854	LibreOffice
+GAMMA(0)	{"error": "#NUM!"}	LibreOffice
+GAMMA(-2)	{"error": "#NUM!"}	LibreOffice
+GAMMA(172)	{"error": "#NUM!"}	LibreOffice
+GAMMA(170.5)	5.56209241456e+305	LibreOffice
+GAMMALN(4)	1.791759469228055	LibreOffice
+GAMMALN(0.5)	0.5723649429247	LibreOffice
+GAMMALN(100)	359.1342053695754	LibreOffice
+GAMMALN(1.5)	-0.1207822376352453	LibreOffice
+GAMMALN(0.001)	6.907178885383853	LibreOffice
+GAMMALN(0)	{"error": "#NUM!"}	LibreOffice
+GAMMALN(-1)	{"error": "#NUM!"}	LibreOffice
+GAMMALN.PRECISE(4.5)	2.4537365708424423	LibreOffice
+GAMMALN.PRECISE(0.25)	1.2880225246980774	LibreOffice
+ERF(0.745)	0.7079289200957377	LibreOffice
+ERF(1)	0.8427007929497149	LibreOffice
+ERF(0,1.5)	0.9661051464753108	LibreOffice
+ERF(1,2)	0.15262147206923782	LibreOffice
+ERF(-1)	-0.8427007929497149	LibreOffice
+ERF(3)	0.9999779095030014	LibreOffice
+ERF(2,1)	-0.15262147206923782	LibreOffice
+ERF.PRECISE(0.745)	0.7079289200957377	LibreOffice
+ERF.PRECISE(1)	0.8427007929497149	LibreOffice
+ERF.PRECISE(-0.5)	-0.5204998778130465	LibreOffice
+ERFC(1)	0.15729920705028513	LibreOffice
+ERFC(0)	1	LibreOffice
+ERFC(-1)	1.842700792949715	LibreOffice
+ERFC(3)	2.2090496998585438e-05	LibreOffice
+ERFC(10)	2.088487583762545e-45	LibreOffice
+ERFC.PRECISE(1)	0.15729920705028513	LibreOffice
+ERFC.PRECISE(2)	0.004677734981047265	LibreOffice
+BETA.DIST(2,8,10,TRUE,1,3)	0.6854705810546875	LibreOffice
+BETA.DIST(2,8,10,FALSE,1,3)	1.4837646484374998	LibreOffice
+BETA.DIST(0.3,2,3,TRUE)	0.34829999999999983	LibreOffice
+BETA.DIST(0.3,2,3,FALSE)	1.7639999999999996	LibreOffice
+BETA.DIST(0.5,0.5,0.5,TRUE)	0.4999999999999995	LibreOffice
+BETA.DIST(4,8,10,TRUE,1,3)	{"error": "#NUM!"}	LibreOffice
+BETA.DIST(0.5,0,3,TRUE)	{"error": "#NUM!"}	LibreOffice
+BETA.DIST(0.9,5,1.5,FALSE)	2.808234117921243	LibreOffice
+BETADIST(2,8,10,1,3)	0.6854705810546875	LibreOffice
+BETADIST(0.3,2,3)	0.34829999999999983	LibreOffice
+BETADIST(0.9,5,1.5)	0.7761721343162156	LibreOffice
+BETA.INV(0.685470581,8,10,1,3)	1.9999999999631426	LibreOffice
+BETA.INV(0.2,2,3)	0.21231712827795127	LibreOffice
+BETA.INV(0.9,0.5,0.5)	0.9755282581475768	LibreOffice
+BETA.INV(0.5,2,3,-1,1)	-0.22854486373522098	LibreOffice
+BETA.INV(1.5,2,3)	{"error": "#NUM!"}	LibreOffice
+BETA.INV(1,2,3)	1	LibreOffice
+BETAINV(0.01,5,1.5)	0.3371892307430419	LibreOffice
+BINOM.DIST(6,10,0.5,FALSE)	0.205078125	LibreOffice
+BINOM.DIST(6,10,0.5,TRUE)	0.828125	LibreOffice
+BINOM.DIST(6.9,10,0.5,FALSE)	0.205078125	LibreOffice
+BINOM.DIST(0,10,0.3,TRUE)	0.028247524899999984	LibreOffice
+BINOM.DIST(11,10,0.5,TRUE)	{"error": "#NUM!"}	LibreOffice
+BINOM.DIST(3,10,1.5,TRUE)	{"error": "#NUM!"}	LibreOffice
+BINOMDIST(50,100,0.3,TRUE)	0.9999909653137989	LibreOffice
+BINOM.DIST(3,10,0,FALSE)	0	LibreOffice
+BINOM.DIST(0,10,0,FALSE)	1	LibreOffice
+BINOM.INV(6,0.5,0.75)	4	LibreOffice
+CRITBINOM(10,0.3,0.5)	3	LibreOffice
+BINOM.INV(100,0.3,0.05)	23	LibreOffice
+BINOM.INV(10,0.5,0)	0	LibreOffice
+BINOM.INV(10,0.5,1)	10	LibreOffice
+BINOM.INV(10,1.5,0.5)	{"error": "#NUM!"}	LibreOffice
+BINOM.INV(-1,0.5,0.5)	{"error": "#NUM!"}	LibreOffice
+BINOM.INV(10,0.9,0.3)	9	LibreOffice
+BINOM.DIST.RANGE(60,0.75,48)	0.08397496742904749	LibreOffice
+BINOM.DIST.RANGE(60,0.75,45,50)	0.5236297934718871	LibreOffice
+BINOM.DIST.RANGE(10,0.5,0,10)	1	LibreOffice
+BINOM.DIST.RANGE(10,0.5,6,5)	{"error": "#NUM!"}	LibreOffice
+BINOM.DIST.RANGE(10,0.5,11)	{"error": "#NUM!"}	LibreOffice
+BINOM.DIST.RANGE(10,0,0,3)	1	LibreOffice
+B(20,0.3,5)	0.17886305056987947	LibreOffice
+CHISQ.DIST(0.5,1,TRUE)	0.5204998778130466	LibreOffice
+CHISQ.DIST(2,3,FALSE)	0.20755374871029736	LibreOffice
+CHISQ.DIST(3,4,TRUE)	0.44217459962892536	LibreOffice
+CHISQ.DIST(-1,2,TRUE)	{"error": "#NUM!"}	LibreOffice
+CHISQ.DIST(1,0,TRUE)	{"error": "#NUM!"}	LibreOffice
+CHISQ.DIST(5,2.7,TRUE)	0.9179150013761012	LibreOffice
+CHISQDIST(1.5,3,TRUE)	0.3177296696637874	LibreOffice
+CHISQ.DIST.RT(18.307,10)	0.05000058909139812	LibreOffice
+CHIDIST(3,4)	0.5578254003710746	LibreOffice
+CHISQ.DIST.RT(0,3)	1	LibreOffice
+CHISQ.DIST.RT(-1,3)	{"error": "#NUM!"}	LibreOffice
+CHISQ.DIST.RT(50,10)	2.669083424904495e-07	LibreOffice
+CHISQ.DIST.RT(2,0.5)	{"error": "#NUM!"}	LibreOffice
+CHISQ.INV(0.93,1)	3.2830202867595366	LibreOffice
+CHISQ.INV(0.6,2)	1.83258146374831	LibreOffice
+CHISQ.INV(0,3)	0	LibreOffice
+CHISQ.INV(1,3)	{"error": "#NUM!"}	LibreOffice
+CHISQ.INV(0.5,10)	9.341817765591966	LibreOffice
+CHISQINV(0.01,5)	0.5542980767282772	LibreOffice
+CHISQ.INV(-0.1,2)	{"error": "#NUM!"}	LibreOffice
+CHISQ.INV.RT(0.050001,10)	18.306973456961057	LibreOffice
+CHIINV(0.5,3)	2.365973884375338	LibreOffice
+CHISQ.INV.RT(0.999,4)	0.09080403553897881	LibreOffice
+CHISQ.INV.RT(1,3)	0	LibreOffice
+CHISQ.INV.RT(0,3)	{"error": "#NUM!"}	LibreOffice
+CHISQ.INV.RT(0.05,0)	{"error": "#NUM!"}	LibreOffice
+EXPON.DIST(0.2,10,TRUE)	0.8646647167633873	LibreOffice
+EXPON.DIST(0.2,10,FALSE)	1.353352832366127	LibreOffice
+EXPONDIST(0,2,FALSE)	2	LibreOffice
+EXPON.DIST(0,2,TRUE)	0	LibreOffice
+EXPON.DIST(1,0,TRUE)	{"error": "#NUM!"}	LibreOffice
+EXPON.DIST(3,0.5,TRUE)	0.7768698398515702	LibreOffice
+F.DIST(15.2069,6,4,TRUE)	0.9900000430027627	LibreOffice
+F.DIST(15.2069,6,4,FALSE)	0.0012237917087831731	LibreOffice
+F.DIST(1,2,3,TRUE)	0.53524199845511	LibreOffice
+F.DIST(0,2,3,FALSE)	1	LibreOffice
+F.DIST(-1,2,3,TRUE)	{"error": "#NUM!"}	LibreOffice
+F.DIST(1,0,3,TRUE)	{"error": "#NUM!"}	LibreOffice
+F.DIST(2,5.9,10.5,TRUE)	0.8358050491002612	LibreOffice
+F.DIST.RT(15.2069,6,4)	0.009999956997237313	LibreOffice
+FDIST(1,2,3)	0.46475800154489	LibreOffice
+F.DIST.RT(0,2,3)	1	LibreOffice
+F.DIST.RT(-1,2,3)	{"error": "#NUM!"}	LibreOffice
+F.DIST.RT(3,10,20)	0.017509541478400014	LibreOffice
+F.INV(0.01,6,4)	0.10930991412457856	LibreOffice
+F.INV(0.5,2,3)	0.881101577952299	LibreOffice
+F.INV(0.99,6,4)	15.20686486115752	LibreOffice
+F.INV(1.5,2,3)	{"error": "#NUM!"}	LibreOffice
+F.INV(0.5,0,3)	{"error": "#NUM!"}	LibreOffice
+F.INV.RT(0.01,6,4)	15.20686486115753	LibreOffice
+FINV(0.5,2,3)	0.881101577952299	LibreOffice
+F.INV.RT(0.95,10,20)	0.36048813576055844	LibreOffice
+F.INV.RT(0,2,3)	{"error": "#NUM!"}	LibreOffice
+GAMMA.DIST(10.00001131,9,2,FALSE)	0.032639130418294	LibreOffice
+GAMMA.DIST(10.00001131,9,2,TRUE)	0.0680940038697872	LibreOffice
+GAMMADIST(0,1,2,FALSE)	0.5	LibreOffice
+GAMMA.DIST(-1,2,2,TRUE)	{"error": "#NUM!"}	LibreOffice
+GAMMA.DIST(1,0,2,TRUE)	{"error": "#NUM!"}	LibreOffice
+GAMMA.DIST(5,0.5,3,TRUE)	0.9321108451381711	LibreOffice
+GAMMA.DIST(100,50,1.5,FALSE)	0.0028732056968726323	LibreOffice
+GAMMA.INV(0.068094,9,2)	10.000011191437181	LibreOffice
+GAMMA.INV(0.5,0.5,1)	0.22746821155978625	LibreOffice
+GAMMA.INV(0.999,3,2)	22.457744484825213	LibreOffice
+GAMMA.INV(0,2,2)	0	LibreOffice
+GAMMA.INV(1,2,2)	{"error": "#NUM!"}	LibreOffice
+GAMMA.INV(0.5,0,2)	{"error": "#NUM!"}	LibreOffice
+GAMMAINV(0.00001,0.2,1)	6.525480843457234e-26	LibreOffice
+GAUSS(2)	0.4772498680518208	LibreOffice
+GAUSS(0)	0	LibreOffice
+GAUSS(-1.5)	-0.4331927987311419	LibreOffice
+GAUSS(0.1)	0.03982783727702899	LibreOffice
+GAUSS(-10)	-0.5	LibreOffice
+HYPGEOM.DIST(1,4,8,20,TRUE)	0.46542827657378744	LibreOffice
+HYPGEOM.DIST(1,4,8,20,FALSE)	0.3632610939112487	LibreOffice
+HYPGEOMDIST(1,4,8,20)	0.3632610939112487	LibreOffice
+HYPGEOM.DIST(4,4,8,20,TRUE)	1	LibreOffice
+HYPGEOM.DIST(5,4,8,20,FALSE)	{"error": "#NUM!"}	LibreOffice
+HYPGEOM.DIST(1,25,8,20,FALSE)	{"error": "#NUM!"}	LibreOffice
+HYPGEOM.DIST(30,100,400,1000,TRUE)	0.019323401336193056	LibreOffice
+HYPGEOMDIST(2,10,5,50)	0.20983971757065456	LibreOffice
+HYPGEOM.DIST(3,4,8,20,TRUE)	0.9855521155830753	LibreOffice
+HYPGEOM.DIST(60,100,400,1000,TRUE)	0.9999935400739388	LibreOffice
+LOGNORM.DIST(4,3.5,1.2,TRUE)	0.039083555706800464	LibreOffice
+LOGNORM.DIST(4,3.5,1.2,FALSE)	0.017617596681819225	LibreOffice
+LOGNORMDIST(4,3.5,1.2)	0.039083555706800464	LibreOffice
+LOGNORM.DIST(4,3.5,0,TRUE)	{"error": "#NUM!"}	LibreOffice
+LOGNORM.DIST(1,0,1,FALSE)	0.3989422804014327	LibreOffice
+LOGNORM.INV(0.039084,3.5,1.2)	4.000025218680638	LibreOffice
+LOGINV(0.5,0,1)	1	LibreOffice
+LOGNORM.INV(0.9,1,0.5)	5.159170355622593	LibreOffice
+LOGNORM.INV(0,1,1)	{"error": "#NUM!"}	LibreOffice
+LOGNORM.INV(1,1,1)	{"error": "#NUM!"}	LibreOffice
+LOGNORM.INV(0.5,1,-1)	{"error": "#NUM!"}	LibreOffice
+NEGBINOM.DIST(10,5,0.25,TRUE)	0.3135140584781766	LibreOffice
+NEGBINOM.DIST(10,5,0.25,FALSE)	0.05504866037517786	LibreOffice
+NEGBINOMDIST(10,5,0.25)	0.05504866037517786	LibreOffice
+NEGBINOM.DIST(0,1,0.5,FALSE)	0.5	LibreOffice
+NEGBINOM.DIST(-1,5,0.25,TRUE)	{"error": "#NUM!"}	LibreOffice
+NEGBINOM.DIST(10,0,0.25,TRUE)	{"error": "#NUM!"}	LibreOffice
+NEGBINOM.DIST(3,2,1.5,TRUE)	{"error": "#NUM!"}	LibreOffice
+NORM.DIST(42,40,1.5,TRUE)	0.9087887802741321	LibreOffice
+NORM.DIST(42,40,1.5,FALSE)	0.10934004978399575	LibreOffice
+NORMDIST(-3,0,1,TRUE)	0.001349898031630093	LibreOffice
+NORM.DIST(1,0,0,TRUE)	{"error": "#NUM!"}	LibreOffice
+NORM.DIST(-20,0,1,TRUE)	2.7536241186061926e-89	LibreOffice
+NORMDIST(0.5,1,2,FALSE)	0.19333405840142462	LibreOffice
+NORM.INV(0.908789,40,1.5)	42.00000200956616	LibreOffice
+NORMINV(0.5,3,2)	3	LibreOffice
+NORM.INV(0.0000000001,0,1)	-6.361340902404056	LibreOffice
+NORM.INV(0.5,0,0)	{"error": "#NUM!"}	LibreOffice
+NORM.INV(0.975,0,1)	1.9599639845400536	LibreOffice
+NORMSDIST(1.333333)	0.9087887256040952	LibreOffice
+NORMSDIST(0)	0.5	LibreOffice
+NORMSDIST(-2.5)	0.006209665325776133	LibreOffice
+NORMSDIST(8)	0.9999999999999993	LibreOffice
+NORMSINV(0.908789)	1.3333346730441071	LibreOffice
+NORMSINV(0.5)	0	LibreOffice
+NORMSINV(0.001)	-3.090232306167813	LibreOffice
+NORMSINV(0.999999)	4.753424308817089	LibreOffice
+PHI(0.75)	0.30113743215480443	LibreOffice
+PHI(0)	0.3989422804014327	LibreOffice
+PHI(-2)	0.05399096651318806	LibreOffice
+PHI(10)	7.69459862670642e-23	LibreOffice
+POISSON.DIST(2,5,TRUE)	0.12465201948308113	LibreOffice
+POISSON.DIST(2,5,FALSE)	0.08422433748856833	LibreOffice
+POISSON(0,1,FALSE)	0.36787944117144233	LibreOffice
+POISSON.DIST(2.9,5,FALSE)	0.08422433748856833	LibreOffice
+POISSON.DIST(-1,5,TRUE)	{"error": "#NUM!"}	LibreOffice
+POISSON.DIST(2,-1,TRUE)	{"error": "#NUM!"}	LibreOffice
+POISSON.DIST(800,750,TRUE)	0.966366482249102	LibreOffice
+T.DIST(60,1,TRUE)	0.9946953263673768	LibreOffice
+T.DIST(8,3,FALSE)	0.0007369065209469267	LibreOffice
+T.DIST(-1,5,TRUE)	0.1816087338245613	LibreOffice
+T.DIST(0.5,10,TRUE)	0.6860531971285138	LibreOffice
+T.DIST(1,0,TRUE)	{"error": "#NUM!"}	LibreOffice
+T.DIST(2,3.7,TRUE)	0.9303370157205784	LibreOffice
+T.DIST(0.01,4,TRUE)	0.5037499218770447	LibreOffice
+T.DIST.RT(1.959999998,60)	0.027322464987960527	LibreOffice
+T.DIST.RT(-1,5)	0.8183912661754387	LibreOffice
+T.DIST.RT(0,4)	0.5	LibreOffice
+T.DIST.RT(3,0.5)	{"error": "#NUM!"}	LibreOffice
+T.DIST.RT(0.1,30)	0.4605048058951352	LibreOffice
+TDIST(1.959999998,60,2)	0.054644929975921054	LibreOffice
+TDIST(1.959999998,60,1)	0.027322464987960527	LibreOffice
+TDIST(1,5,3)	{"error": "#NUM!"}	LibreOffice
+TDIST(-1,5,1)	{"error": "#NUM!"}	LibreOffice
+TDIST(2.5,10,1)	0.015723422118304412	LibreOffice
+T.INV(0.75,2)	0.8164965809277263	LibreOffice
+T.INV(0.25,2)	-0.8164965809277263	LibreOffice
+T.INV(0.5,5)	0	LibreOffice
+T.INV(0.001,10)	-4.143700494046598	LibreOffice
+T.INV(0,5)	{"error": "#NUM!"}	LibreOffice
+T.INV(1,5)	{"error": "#NUM!"}	LibreOffice
+T.INV(0.9,0)	{"error": "#NUM!"}	LibreOffice
+T.INV(0.55,7)	0.13029279659177753	LibreOffice
+TINV(0.546449,60)	0.6065330758257538	LibreOffice
+TINV(0.05,10)	2.2281388519862757	LibreOffice
+TINV(1,5)	0	LibreOffice
+TINV(0,5)	{"error": "#NUM!"}	LibreOffice
+TINV(0.001,3)	12.923978636687485	LibreOffice
+TINV(0.5,0)	{"error": "#NUM!"}	LibreOffice
+WEIBULL.DIST(105,20,100,TRUE)	0.9295813900692769	LibreOffice
+WEIBULL.DIST(105,20,100,FALSE)	0.0355888640245043	LibreOffice
+WEIBULL(0,1,2,FALSE)	0.5	LibreOffice
+WEIBULL.DIST(-1,2,3,TRUE)	{"error": "#NUM!"}	LibreOffice
+WEIBULL.DIST(1,0,3,TRUE)	{"error": "#NUM!"}	LibreOffice
+WEIBULL.DIST(2,0.5,3,TRUE)	0.5580226227593261	LibreOffice
+FISHER(0.75)	0.9729550745276566	LibreOffice
+FISHER(0)	0	LibreOffice
+FISHER(-0.5)	-0.5493061443340548	LibreOffice
+FISHER(1)	{"error": "#NUM!"}	LibreOffice
+FISHER(-1)	{"error": "#NUM!"}	LibreOffice
+FISHER(0.999)	3.8002011672501994	LibreOffice
+FISHERINV(0.972955)	0.7499999673941483	LibreOffice
+FISHERINV(0)	0	LibreOffice
+FISHERINV(-2)	-0.9640275800758169	LibreOffice
+FISHERINV(20)	1	LibreOffice
+CONFIDENCE.NORM(0.05,2.5,50)	0.6929519121748386	LibreOffice
+CONFIDENCE(0.05,2.5,50)	0.6929519121748386	LibreOffice
+CONFIDENCE.NORM(0,2.5,50)	{"error": "#NUM!"}	LibreOffice
+CONFIDENCE.NORM(0.05,0,50)	{"error": "#NUM!"}	LibreOffice
+CONFIDENCE.NORM(0.05,2.5,0.5)	{"error": "#NUM!"}	LibreOffice
+CONFIDENCE.NORM(0.1,1,10.9)	0.5201483878755572	LibreOffice
+CONFIDENCE.T(0.05,1,50)	0.2841968554957297	LibreOffice
+CONFIDENCE.T(0.05,1,1)	{"error": "#DIV/0!"}	LibreOffice
+CONFIDENCE.T(0.1,2,5)	1.9067817327363432	LibreOffice
+CONFIDENCE.T(1,1,10)	{"error": "#NUM!"}	LibreOffice
+CONFIDENCE.T(0.05,1,0)	{"error": "#NUM!"}	LibreOffice
+STANDARDIZE(42,40,1.5)	1.3333333333333333	LibreOffice
+STANDARDIZE(10,10,1)	0	LibreOffice
+STANDARDIZE(-5,0,2)	-2.5	LibreOffice
+STANDARDIZE(1,0,-1)	{"error": "#NUM!"}	LibreOffice
+BETADIST(-0.5,2,3)	{"error": "#NUM!"}	Excel docs
+BETADIST(0.5,2,3,1,1)	{"error": "#NUM!"}	LibreOffice
+BETA.INV(0,2,3)	{"error": "#NUM!"}	Excel docs
+EXPON.DIST(-1,2,TRUE)	{"error": "#NUM!"}	Excel docs
+HYPGEOM.DIST(0,15,8,20,FALSE)	{"error": "#NUM!"}	Excel docs
+LOGNORM.DIST(0,3.5,1.2,TRUE)	{"error": "#NUM!"}	Excel docs
+LOGNORMDIST(-1,0,1)	{"error": "#NUM!"}	Excel docs
+NEGBINOMDIST(0,1,0.5)	0.5	Excel docs
+NORM.INV(0,0,1)	{"error": "#NUM!"}	Excel docs
+NORM.INV(1,0,1)	{"error": "#NUM!"}	Excel docs
+NORMSINV(0)	{"error": "#NUM!"}	Excel docs
+NORMSINV(1)	{"error": "#NUM!"}	Excel docs
+POISSON.DIST(2,0,FALSE)	0	Excel docs
+GAUSS(5)	0.49999971334842813	Excel docs
+STANDARDIZE(1,0,0)	{"error": "#NUM!"}	Excel docs
+BETA(2,3)	0.08333333333333333	Gnumeric source plugins/fn-math/functions.c
+BETA(-0.5,0.5)	0	Gnumeric source plugins/fn-math/functions.c
+BETA(0.5,0.5)	3.141592653589793	Gnumeric source plugins/fn-math/functions.c
+BETA(-1,2)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+BETA(2.5,-1.5)	3.141592653589793	Gnumeric source plugins/fn-math/functions.c
+BETA(10,20)	4.992508740634678e-09	Gnumeric source plugins/fn-math/functions.c
+BETA(0,1)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+BETA(100.5,80.25)	4.5439583945171934e-55	Gnumeric source plugins/fn-math/functions.c
+BETA(0.5,-1.5)	0	Gnumeric source plugins/fn-math/functions.c
+BETALN(2,3)	-2.4849066497880004	Gnumeric source plugins/fn-math/functions.c
+BETALN(-0.5,0.5)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+BETALN(100,200)	-192.13419227497894	Gnumeric source plugins/fn-math/functions.c
+BETALN(0.5,0.5)	1.1447298858494002	Gnumeric source plugins/fn-math/functions.c
+BETALN(-1.5,0.7)	-0.6262931118368469	Gnumeric source plugins/fn-math/functions.c
+BETALN(-1,2)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(1.46)	-0.0015805619870834522	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(15000)	9.615772146380644	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(1)	-0.5772156649015329	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(0)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(-2)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(-0.5)	0.03648997397857652	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(0.25)	-4.2274535333762655	Gnumeric source plugins/fn-math/functions.c
+DIGAMMA(10)	2.251752589066721	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(2.5,1.8)	0.39168670791853133	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(2.5,1.8,FALSE)	0.6083132920814687	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(2.5,1.8,TRUE,FALSE)	0.5206849603490287	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(2.5,1.8,FALSE,FALSE)	0.8086554278301084	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(2.5,1.8,TRUE,TRUE,FALSE)	0	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(1,0)	0	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(0,2)	1	Gnumeric source plugins/fn-math/functions.c
+IGAMMA(3,10)	0.9972306042844884	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(1,5)	120	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(6,0.5)	2.3990439817920364	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(2.5,3)	39.375	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(3,-2)	0.5	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(-3,2)	6	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(0,3)	0	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(0,-2)	0.5	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(-3,5)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(0.5,-1)	-2	Gnumeric source plugins/fn-math/functions.c
+POCHHAMMER(-1.5,-0.5)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c

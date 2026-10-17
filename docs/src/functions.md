@@ -141,6 +141,16 @@ Angles are in radians.
 | `MULTINOMIAL(number, …)` | number | (Σ n)! / Π n! |
 | `RAWSUBTRACT(number, …)` | number | the first argument minus the rest |
 | `INVSUMINV(number, …)` | number | 1 / Σ(1/xᵢ) |
+| `GAMMA(number)` | number | the gamma function Γ(x) |
+| `GAMMALN(number)` | number | ln Γ(x), for x > 0 (also `GAMMALN.PRECISE`) |
+| `BETA(number, number)` | number | the Euler beta function B(a, b) |
+| `BETALN(number, number)` | number | ln |B(a, b)| |
+| `DIGAMMA(number)` | number | the digamma function ψ(x) |
+| `IGAMMA(number, number, [boolean], [boolean], [boolean])` | number | the incomplete gamma function of a and x: lower (default) or upper, regularized (default) or not; the imaginary part (real = FALSE) is 0 |
+| `POCHHAMMER(number, number)` | number | the rising factorial Γ(x + n) / Γ(x) |
+| `ERF(number, [number])` | number | the error function erf(x), or erf(upper) − erf(lower) |
+| `ERF.PRECISE(number)` | number | the error function erf(x) |
+| `ERFC(number)` | number | the complementary error function 1 − erf(x) (also `ERFC.PRECISE`) |
 
 ## Rounding
 
@@ -272,3 +282,52 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `@ITEMCOUNT(category)` | number | the number of items in the category |
 | `PREV(value, category, [number], [value])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
 | `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
+
+## Statistical
+
+| Function | Returns | Description |
+|---|---|---|
+| `BETA.DIST(number, number, number, boolean, [number], [number])` | number | the beta distribution of x on [A, B] (default [0, 1]): density, or cumulative |
+| `BETADIST(number, number, number, [number], [number])` | number | the cumulative beta distribution of x on [A, B] (default [0, 1]) |
+| `BETA.INV(number, number, number, [number], [number])` | number | the beta quantile on [A, B] (default [0, 1]) (also `BETAINV`) |
+| `BINOM.DIST(number, number, number, boolean)` | number | the binomial probability of k successes in n trials: P(K = k), or P(K ≤ k) (also `BINOMDIST`) |
+| `BINOM.INV(number, number, number)` | number | the smallest k with binomial P(K ≤ k) ≥ alpha, for n trials of probability p (also `CRITBINOM`) |
+| `BINOM.DIST.RANGE(number, number, number, [number])` | number | the binomial P(k1 ≤ K ≤ k2) for n trials of probability p (k2 defaults to k1) (also `B`) |
+| `CHISQ.DIST(number, number, boolean)` | number | the chi-square distribution: density, or left tail (also `CHISQDIST`) |
+| `CHISQ.DIST.RT(number, number)` | number | the chi-square right tail (also `CHIDIST`) |
+| `CHISQ.INV(number, number)` | number | the chi-square left-tail quantile (also `CHISQINV`) |
+| `CHISQ.INV.RT(number, number)` | number | the chi-square right-tail quantile (also `CHIINV`) |
+| `EXPON.DIST(number, number, boolean)` | number | the exponential distribution of rate λ: density, or cumulative (also `EXPONDIST`) |
+| `F.DIST(number, number, number, boolean)` | number | the F distribution: density, or left tail |
+| `F.DIST.RT(number, number, number)` | number | the F right tail (also `FDIST`) |
+| `F.INV(number, number, number)` | number | the F left-tail quantile |
+| `F.INV.RT(number, number, number)` | number | the F right-tail quantile (also `FINV`) |
+| `GAMMA.DIST(number, number, number, boolean)` | number | the gamma distribution of shape α and scale β: density, or cumulative (also `GAMMADIST`) |
+| `GAMMA.INV(number, number, number)` | number | the gamma quantile (also `GAMMAINV`) |
+| `GAUSS(number)` | number | Φ(z) − 0.5: the standard normal probability between 0 and z |
+| `HYPGEOM.DIST(number, number, number, number, boolean)` | number | the hypergeometric probability of k successes in a sample of n from N holding K: P(X = k), or P(X ≤ k) |
+| `HYPGEOMDIST(number, number, number, number)` | number | the hypergeometric probability P(X = k) |
+| `LOGNORM.DIST(number, number, number, boolean)` | number | the log-normal distribution: density, or cumulative |
+| `LOGNORMDIST(number, number, number)` | number | the cumulative log-normal distribution |
+| `LOGNORM.INV(number, number, number)` | number | the log-normal quantile (also `LOGINV`) |
+| `NEGBINOM.DIST(number, number, number, boolean)` | number | the negative binomial probability of f failures before the s-th success: P(F = f), or P(F ≤ f) |
+| `NEGBINOMDIST(number, number, number)` | number | the negative binomial probability P(F = f) |
+| `NORM.DIST(number, number, number, boolean)` | number | the normal distribution: density, or cumulative (also `NORMDIST`) |
+| `NORM.INV(number, number, number)` | number | the normal quantile (also `NORMINV`) |
+| `NORM.S.DIST(number, boolean)` | number | the standard normal distribution: density, or cumulative |
+| `NORMSDIST(number)` | number | the cumulative standard normal distribution Φ(z) |
+| `NORM.S.INV(number)` | number | the standard normal quantile (also `NORMSINV`) |
+| `PHI(number)` | number | the standard normal density |
+| `POISSON.DIST(number, number, boolean)` | number | the Poisson probability of k events at mean λ: P(X = k), or P(X ≤ k) (also `POISSON`) |
+| `T.DIST(number, number, boolean)` | number | Student's t distribution: density, or left tail |
+| `T.DIST.RT(number, number)` | number | Student's t right tail |
+| `T.DIST.2T(number, number)` | number | Student's t two-tailed probability |
+| `TDIST(number, number, number)` | number | Student's t right tail (tails = 1) or two-tailed probability (tails = 2), for x ≥ 0 |
+| `T.INV(number, number)` | number | Student's t left-tail quantile |
+| `T.INV.2T(number, number)` | number | Student's t two-tailed quantile (also `TINV`) |
+| `WEIBULL.DIST(number, number, number, boolean)` | number | the Weibull distribution of shape α and scale β: density, or cumulative (also `WEIBULL`) |
+| `FISHER(number)` | number | the Fisher transformation atanh(x) |
+| `FISHERINV(number)` | number | the inverse Fisher transformation tanh(y) |
+| `CONFIDENCE.NORM(number, number, number)` | number | the half-width of a normal confidence interval at significance alpha, for sd and sample size n (also `CONFIDENCE`) |
+| `CONFIDENCE.T(number, number, number)` | number | the half-width of a Student's t confidence interval at significance alpha, for sd and sample size n |
+| `STANDARDIZE(number, number, number)` | number | the z-score (x − mean) / sd |
