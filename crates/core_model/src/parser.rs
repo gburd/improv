@@ -379,9 +379,11 @@ struct Parser<'a> {
     depth: usize,
 }
 
-/// Maximum recursive-descent nesting depth for a single formula. Generous for
-/// any real formula; small enough to never approach the stack limit.
-const MAX_PARSE_DEPTH: usize = 200;
+/// Maximum recursive-descent nesting depth for a single formula (Excel allows
+/// 64 nested levels). Each level costs one frame per grammar level, about
+/// 10 KiB in a debug build, so 100 levels fit a 2 MiB test-thread stack with
+/// room to spare; lower it again if the grammar grows many more levels.
+const MAX_PARSE_DEPTH: usize = 100;
 
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<&Tok> {
@@ -510,23 +512,29 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// NotExpr = "NOT" NotExpr | Comparison
+    /// NotExpr = { "NOT" } Comparison
     ///
     /// NOT binds looser than a comparison (as in SQL and spreadsheets), so
-    /// `NOT Price > 15` is `NOT (Price > 15)`.
+    /// `NOT Price > 15` is `NOT (Price > 15)`. A chain of NOTs is read in a
+    /// loop (no parser stack), but each NOT still counts toward
+    /// `MAX_PARSE_DEPTH`: the compiler and printers walk the tree recursively.
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
-        if !self.peek_kw("not") {
-            return self.parse_comparison();
+        let mut nots = 0usize;
+        while self.peek_kw("not") {
+            if self.depth + nots >= MAX_PARSE_DEPTH {
+                return Err(self.err("expression nested too deeply"));
+            }
+            self.bump();
+            nots += 1;
         }
-        self.depth += 1;
-        if self.depth > MAX_PARSE_DEPTH {
-            self.depth -= 1;
-            return Err(self.err("expression nested too deeply"));
+        self.depth += nots;
+        let e = self.parse_comparison();
+        self.depth -= nots;
+        let mut e = e?;
+        for _ in 0..nots {
+            e = Expr::UnaryOp(UnaryOp::Not, Box::new(e));
         }
-        self.bump();
-        let inner = self.parse_not();
-        self.depth -= 1;
-        Ok(Expr::UnaryOp(UnaryOp::Not, Box::new(inner?)))
+        Ok(e)
     }
 
     /// Comparison = Additive [ cmp-op Additive ]  (non-associative)
@@ -1149,11 +1157,11 @@ mod tests {
             parse_expr(&m, "NOT NOT Price > 15").unwrap(),
             parse_expr(&m, "NOT (NOT (Price > 15))").unwrap()
         );
+        // NOT chains count toward the depth limit (the compiler recurses).
         let deep = format!("{}Price > 1", "NOT ".repeat(10_000));
-        assert!(
-            parse_expr(&m, &deep).is_err(),
-            "deep NOT chains are bounded"
-        );
+        assert!(parse_expr(&m, &deep).is_err());
+        let ok = format!("{}Price > 1", "NOT ".repeat(50));
+        assert!(parse_expr(&m, &ok).is_ok());
     }
 
     #[test]
