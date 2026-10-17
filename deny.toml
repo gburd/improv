@@ -15,6 +15,12 @@ ignore = [
     "RUSTSEC-2026-0192", # ttf-parser unmaintained (egui font rasterizer)
     "RUSTSEC-2026-0194", # quick-xml quadratic tag scan (egui svg/icon path)
     "RUSTSEC-2026-0195", # quick-xml NsReader alloc DoS (egui svg/icon path)
+    # Unmaintained (folded into zbus 6.0): zbus 4's D-Bus types, pulled in by
+    # egui 0.29's Linux accessibility bridge (accesskit_unix -> zbus 4). No
+    # zbus 4 release replaces them; revisit with the egui upgrade.
+    "RUSTSEC-2026-0370", # zvariant unmaintained
+    "RUSTSEC-2026-0371", # zbus_names unmaintained
+    "RUSTSEC-2026-0372", # zvariant_derive unmaintained
 ]
 
 [licenses]

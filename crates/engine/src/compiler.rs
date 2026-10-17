@@ -1205,7 +1205,7 @@ fn split_join(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use improv_core_model::{CategoryId, DimensionSpec, MeasureKind, Name, Value};
+    use improv_core_model::{CategoryId, DimensionSpec, ItemId, MeasureKind, Name, Value};
 
     const TIME: CategoryId = CategoryId(1);
     const PRODUCT: CategoryId = CategoryId(2);
@@ -1476,6 +1476,253 @@ mod tests {
 
     fn bin(op: BinaryOp, l: Expr, r: Expr) -> Expr {
         Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    /// A model over Time×Product with items, for the positional forms.
+    fn model_with_items() -> improv_core_model::Model {
+        let mut m = improv_core_model::Model::new();
+        m.add_category(TIME, "Time");
+        m.add_category(PRODUCT, "Product");
+        m.add_category(REGION, "Region");
+        m.add_item(ItemId(10), TIME, "2025");
+        m.add_item(ItemId(11), TIME, "2026");
+        m.add_item(ItemId(20), PRODUCT, "A");
+        for (id, meas) in fixture() {
+            m.measures.insert(id, meas);
+        }
+        m
+    }
+
+    fn parse(m: &improv_core_model::Model, text: &str) -> Expr {
+        improv_core_model::parse_expr(m, text).unwrap().expr
+    }
+
+    /// The dimensional functions' and general aggregations' compile rules.
+    #[test]
+    fn dimensional_and_aggregate_rules() {
+        let m = model_with_items();
+        let ctx = CompileContext::for_model(&m);
+        let ty = |t: &str| infer(&ctx, MeasureId(200), &parse(&m, t));
+        assert_eq!(ty("POSITION(Time)").unwrap().ty.dim, Dim::of(vec![TIME]));
+        assert_eq!(ty("@ID(Time)").unwrap().ty.value_type, ValueType::Text);
+        assert_eq!(ty("@ITEMCOUNT(Time)").unwrap().ty.dim, Dim::scalar());
+        // PREV: the value must range over the category; n whole; default typed.
+        assert!(matches!(
+            ty("PREV(Price, Time)"),
+            Err(CompileError::DimensionMismatch(_))
+        ));
+        assert!(matches!(
+            ty("PREV(Quantity, Time, 1.5)"),
+            Err(CompileError::Unsupported(_))
+        ));
+        assert!(matches!(
+            ty("PREV(Quantity, Time, Price)"),
+            Err(CompileError::Unsupported(_))
+        ));
+        assert!(ty("PREV(Quantity, Time, -1)").is_ok());
+        assert!(matches!(
+            ty("PREV(Quantity, Time, 1, \"x\")"),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        assert!(ty("PREV(Quantity, Time, 1, NA())").is_ok());
+        assert!(matches!(
+            ty("PREV(Price + Quantity * 0, Time, 1, Headcount)"),
+            Err(CompileError::DimensionMismatch(_))
+        ));
+        // A category used as a value.
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &Expr::Category(TIME)),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        // Without the model's categories, the positional forms refuse.
+        let bare = CompileContext::new(&m.measures);
+        assert!(matches!(
+            infer(&bare, MeasureId(200), &parse(&m, "POSITION(Time)")),
+            Err(CompileError::Unsupported(_))
+        ));
+        // Aggregations: WHERE must be boolean and within the measure's
+        // categories; a window takes one category; parameters stay within the
+        // kept categories; reduced arguments share their categories.
+        assert!(matches!(
+            ty("SUM(Quantity OVER Time WHERE Quantity)"),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        assert!(matches!(
+            ty("SUM(Quantity OVER Time WHERE Headcount > 1)"),
+            Err(CompileError::DimensionMismatch(_))
+        ));
+        let w = Expr::Call(
+            FuncId(1),
+            vec![
+                Expr::Ref(
+                    QTY,
+                    DimensionSpec {
+                        over: vec![TIME, PRODUCT],
+                        ..Default::default()
+                    },
+                ),
+                Expr::Call(
+                    functions::WINDOW,
+                    vec![Expr::Literal(improv_core_model::Value::Number(0.0)); 2],
+                ),
+            ],
+        );
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &w),
+            Err(CompileError::Unsupported(_))
+        ));
+        let bad_bound = Expr::Call(
+            FuncId(1),
+            vec![
+                Expr::Ref(
+                    QTY,
+                    DimensionSpec {
+                        over: vec![TIME],
+                        ..Default::default()
+                    },
+                ),
+                Expr::Call(functions::WINDOW, vec![lit(0.5), lit(0.0)]),
+            ],
+        );
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &bad_bound),
+            Err(CompileError::Unsupported(_))
+        ));
+        assert!(matches!(
+            ty("TEXTJOIN(@ITEM(Time), TRUE, Quantity OVER Time)"),
+            Err(CompileError::DimensionMismatch(_))
+        ));
+        // TEXTJOIN's text parameter must be text.
+        assert!(matches!(
+            ty("TEXTJOIN(1, TRUE, Quantity OVER Time)"),
+            Err(CompileError::TypeMismatch(_))
+        ));
+        // An aggregation with too many arguments (built by hand: the parser
+        // refuses it already), and a reduced argument that is not a reference.
+        let extra = Expr::Call(
+            FuncId(906),
+            vec![
+                Expr::Ref(
+                    QTY,
+                    DimensionSpec {
+                        over: vec![TIME],
+                        ..Default::default()
+                    },
+                ),
+                lit(1.0),
+            ],
+        );
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &extra),
+            Err(CompileError::Unsupported(_))
+        ));
+        let not_ref = Expr::Call(FuncId(906), vec![lit(1.0)]);
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &not_ref),
+            Err(CompileError::Unsupported(_))
+        ));
+        // Reduced arguments with different categories (two-measure case).
+        let two = Expr::Call(
+            FuncId(906),
+            vec![Expr::Ref(
+                QTY,
+                DimensionSpec {
+                    over: vec![TIME],
+                    ..Default::default()
+                },
+            )],
+        );
+        assert!(infer(&ctx, MeasureId(200), &two).is_ok());
+        // The window and WHERE lower into the plan.
+        let t = ty("SUM(Quantity OVER Time[FIRST..LAST] WHERE Quantity > 0)").unwrap();
+        assert_eq!(t.ty.dim, Dim::of(vec![TIME, PRODUCT]));
+        let plan = build_plan(&ctx, &t).unwrap();
+        assert!(matches!(
+            plan.kind,
+            PlanNodeKind::Aggregate {
+                window: Some(_),
+                pred: Some(_),
+                ..
+            }
+        ));
+        let t = ty("Quantity - PREV(Quantity, Time, 1, 0)").unwrap();
+        assert!(build_plan(&ctx, &t).is_ok());
+    }
+
+    /// Recurrence shapes: valid ones compile to a scan; the rest explain why
+    /// not.
+    #[test]
+    fn recurrence_rules() {
+        let mut m = model_with_items();
+        let bal = MeasureId(300);
+        m.add_measure(num_measure(bal, "Bal", vec![TIME, PRODUCT]));
+        m.add_measure(num_measure(MeasureId(301), "Flag", vec![TIME, PRODUCT]));
+        m.measures.get_mut(&MeasureId(301)).unwrap().value_type = ValueType::Boolean;
+        let compile = |m: &improv_core_model::Model, t: &str| {
+            let e = parse(m, t);
+            compile_formula(&CompileContext::for_model(m), bal, &Formula::new(e))
+        };
+        let ok = compile(&m, "PREV(Bal, Time, 1, Price) + Quantity").unwrap();
+        assert!(matches!(ok.kind, PlanNodeKind::Recurrence { .. }));
+        assert!(compile(&m, "PREV(Bal, Time) + PREV(Bal, Time, 2, 0) + Quantity").is_ok());
+        for (text, why) in [
+            ("Bal + 1", "only PREV"),
+            ("PREV(Bal, Time, 0) + Quantity", "whole number of items"),
+            (
+                "PREV(Bal, Time, 1, Bal) + Quantity",
+                "default must not refer",
+            ),
+            (
+                "PREV(Bal, Time) + PREV(Bal, Product) + Quantity",
+                "same category",
+            ),
+            (
+                "PREV(Bal, Time) + SUM(Quantity OVER Time)",
+                "must be scalar",
+            ),
+            (
+                "PREV(Bal, Time, 1, SUM(Price OVER Product)) + Quantity",
+                "default must be scalar",
+            ),
+            ("PREV(Bal, Time) + Price", "together range over"),
+            ("PREV(Bal, Time) + Headcount", "dimension mismatch"),
+        ] {
+            let e = compile(&m, text).unwrap_err().to_string();
+            assert!(e.contains(why), "{text}: {e}");
+        }
+        let e = compile(&m, "IF(Flag, PREV(Bal, Time), 1 > 0)").unwrap_err();
+        assert!(matches!(e, CompileError::TypeMismatch(_)), "{e:?}");
+        // PREV along a category the measure lacks.
+        let mut r = m.clone();
+        r.measures.get_mut(&bal).unwrap().categories = vec![TIME];
+        r.measures.get_mut(&QTY).unwrap();
+        let e = compile_formula(
+            &CompileContext::for_model(&r),
+            bal,
+            &Formula::new(parse(&r, "PREV(Bal, Product) + 1")),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(e.contains("own categories"), "{e}");
+        // derived_shape: a recurrence takes its inputs' categories and the
+        // type that compiles; a plain formula the engine's.
+        let f = Formula::new(parse(&m, "PREV(Bal, Time, 1, 0) + Quantity"));
+        let mut fresh = m.clone();
+        fresh.measures.remove(&bal);
+        let pm = fresh.with_provisional(bal, "Bal");
+        let f2 = Formula::new(parse(&pm, "PREV(Bal, Time, 1, 0) + Quantity"));
+        assert_eq!(
+            derived_shape(&fresh, bal, "Bal", &f2).unwrap(),
+            (ValueType::Number, vec![TIME, PRODUCT])
+        );
+        let g = Formula::new(parse(&m, "@ITEM(Time)"));
+        assert_eq!(
+            derived_shape(&m, MeasureId(400), "G", &g).unwrap(),
+            (ValueType::Text, vec![TIME])
+        );
+        let _ = f;
+        let bad = Formula::new(parse(&pm, "PREV(Bal, Time, 1, \"x\") & Bal"));
+        assert!(derived_shape(&fresh, bal, "Bal", &bad).is_err());
     }
 
     /// Date arithmetic types: date ± number is a date, date − date a number,

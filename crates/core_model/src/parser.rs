@@ -1260,6 +1260,145 @@ mod tests {
         Expr::Ref(id, DimensionSpec::default())
     }
 
+    /// Every form of the OVER clause, category arguments, `@` and dotted
+    /// names, and the errors each can raise.
+    #[test]
+    fn over_clauses_category_args_and_their_errors() {
+        let m = fixture();
+        let p = |s: &str| parse_expr(&m, s).map(|f| f.expr);
+        let call = |f: u32, a: Vec<Expr>| Expr::Call(FuncId(f), a);
+        let over = |id, cats: Vec<CategoryId>| {
+            Expr::Ref(
+                id,
+                DimensionSpec {
+                    over: cats,
+                    ..Default::default()
+                },
+            )
+        };
+        // Several categories; a comma then a non-category is the next argument.
+        assert_eq!(
+            p("SUM(Quantity OVER Time, Product)"),
+            Ok(call(1, vec![over(QUANTITY, vec![TIME, PRODUCT])]))
+        );
+        assert_eq!(
+            p("TEXTJOIN(\"-\", TRUE, Quantity OVER Time)"),
+            Ok(call(
+                909,
+                vec![
+                    Expr::Literal(Value::Text("-".into())),
+                    Expr::Literal(Value::Boolean(true)),
+                    over(QUANTITY, vec![TIME])
+                ]
+            ))
+        );
+        // ALL, ALL EXCEPT (resolved from the measure's categories).
+        assert_eq!(
+            p("SUM(Quantity OVER ALL)"),
+            Ok(call(1, vec![over(QUANTITY, vec![TIME, PRODUCT])]))
+        );
+        assert_eq!(
+            p("SUM(Quantity OVER ALL EXCEPT Product)"),
+            Ok(call(1, vec![over(QUANTITY, vec![TIME])]))
+        );
+        assert_eq!(
+            p("SUM(Quantity OVER ALL EXCEPT Product, Time)"),
+            Ok(call(1, vec![over(QUANTITY, vec![])]))
+        );
+        // WHERE and windows become trailing markers.
+        let w = p("SUM(Quantity OVER Time WHERE Quantity > 1)").unwrap();
+        assert!(
+            matches!(&w, Expr::Call(_, a) if matches!(&a[1], Expr::Call(id, _) if *id == functions::WHERE))
+        );
+        for (src, from, to) in [
+            (
+                "SUM(Quantity OVER Time[FIRST..THIS])",
+                Value::Text("FIRST".into()),
+                Value::Number(0.0),
+            ),
+            (
+                "SUM(Quantity OVER Time[THIS-2..THIS+1])",
+                Value::Number(-2.0),
+                Value::Number(1.0),
+            ),
+            (
+                "SUM(Quantity OVER Time[THIS..LAST])",
+                Value::Number(0.0),
+                Value::Text("LAST".into()),
+            ),
+        ] {
+            let e = p(src).unwrap();
+            let Expr::Call(_, a) = e else { panic!() };
+            assert_eq!(
+                a[1],
+                Expr::Call(
+                    functions::WINDOW,
+                    vec![Expr::Literal(from), Expr::Literal(to)]
+                ),
+                "{src}"
+            );
+        }
+        // OVER after the second reduced argument applies to both (CORREL-like
+        // shapes are exercised by the engine; TEXTJOIN reduces arg 2 only).
+        // Category arguments, `@` names, dotted names.
+        assert_eq!(
+            p("POSITION(Time)"),
+            Ok(call(900, vec![Expr::Category(TIME)]))
+        );
+        assert_eq!(
+            p("@ITEM(Product)"),
+            Ok(call(901, vec![Expr::Category(PRODUCT)]))
+        );
+        assert_eq!(
+            p("@itemcount(Time)"),
+            Ok(call(903, vec![Expr::Category(TIME)]))
+        );
+        assert_eq!(
+            p("PREV(Quantity, Time, 2, 0)"),
+            Ok(call(
+                904,
+                vec![
+                    refr(QUANTITY),
+                    Expr::Category(TIME),
+                    Expr::Literal(Value::Number(2.0)),
+                    Expr::Literal(Value::Number(0.0))
+                ]
+            ))
+        );
+        assert_eq!(p("TRUE()"), Ok(call(39, vec![])));
+        assert_eq!(p("ISO.CEILING(Price)"), Ok(call(210, vec![refr(PRICE)])));
+        // Errors.
+        for (src, want) in [
+            ("SUM(Quantity OVER Time OVER Product)", "expected ')'"),
+            (
+                "SUM(Quantity OVER Time, Quantity OVER Product)",
+                "only one OVER",
+            ),
+            ("SUM(Quantity OVER Time[FIRST.THIS])", "'..'"),
+            ("SUM(Quantity OVER Time[FIRST..THIS)", "']'"),
+            ("SUM(Quantity OVER Time[NOW..THIS])", "FIRST, LAST or THIS"),
+            ("SUM(Quantity OVER Time[1..THIS])", "FIRST, LAST or THIS"),
+            ("SUM(Quantity OVER Time[THIS+x..THIS])", "whole number"),
+            ("SUM(Quantity OVER Time[THIS-1.5..THIS])", "whole number"),
+            ("ABS(Price OVER Time)", "does not aggregate"),
+            ("SUM(Price * 2 OVER Time)", "measure reference"),
+            ("POSITION(Price)", "unknown category"),
+            ("SUM(Quantity OVER Nope)", "unknown category"),
+            ("SUM(Quantity OVER ALL EXCEPT Nope)", "unknown category"),
+            ("TEXTJOIN(\"-\", Quantity OVER Time)", "takes"),
+        ] {
+            let e = p(src).unwrap_err();
+            assert!(e.message.contains(want), "{src}: {}", e.message);
+        }
+        // `@` alone, or before a non-letter, is not a name.
+        assert!(p("@ + 1").is_err());
+        assert!(p("@1").is_err());
+        // A dotted measure-like name that is not a function stays an error.
+        assert!(p("FLOOR.NOPE(Price)").is_err());
+        // `ALL(` is a function-looking word, not OVER ALL.
+        assert!(p("SUM(Quantity OVER ALL(Time))").is_err());
+    }
+
     #[test]
     fn parses_assignment_and_multiplication() {
         let m = fixture();

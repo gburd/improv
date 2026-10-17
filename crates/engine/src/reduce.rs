@@ -196,6 +196,22 @@ mod tests {
         );
         assert_eq!(r.len(), 3);
         assert!(!r.is_empty());
+        // TEXTJOIN: an error value or separator, and an over-long result.
+        let te = rows(vec![CellValue::Text("a".into()), CellValue::Err(err::NUM)]);
+        assert_eq!(
+            reduce(FuncId(909), &te, &[CellValue::Text(",".into())]),
+            CellValue::Err(err::NUM)
+        );
+        assert_eq!(reduce(FuncId(909), &t, &[]), CellValue::Text("a2".into()));
+        let long = rows(vec![CellValue::Text("x".repeat(20_000)); 2]);
+        assert_eq!(
+            reduce(FuncId(909), &long, &[CellValue::Text(String::new())]),
+            CellValue::Err(err::VALUE)
+        );
+        assert_eq!(reduce(FuncId(908), &e, &[]), CellValue::Text(String::new()));
+        let er = rows(vec![CellValue::Err(err::NA)]);
+        assert_eq!(reduce(FuncId(908), &er, &[]), CellValue::Err(err::NA));
+        assert_eq!(e.first_error(), Some(CellValue::Err(err::NA)));
         let empty = rows(vec![]);
         assert_eq!(reduce(FuncId(906), &empty, &[]), CellValue::Err(err::NA));
         assert_eq!(reduce(FuncId(907), &empty, &[]), CellValue::Err(err::NA));

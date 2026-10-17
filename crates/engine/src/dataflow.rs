@@ -543,16 +543,18 @@ fn windows(
 ) -> Vec<CellValue> {
     use crate::typed::Bound;
     let positions: Vec<i64> = rs.pos.iter().map(|p| i64::from(p[0])).collect();
-    let (lo_all, hi_all) = (i64::MIN, i64::MAX);
+    // FIRST and LAST are the group's first and last items with a cell.
+    let first = positions.iter().copied().min().unwrap_or(0);
+    let last = positions.iter().copied().max().unwrap_or(0);
     (0..rs.len())
         .map(|i| {
             let me = positions[i];
-            let at = |b: Bound, end: i64| match b {
-                Bound::First | Bound::Last => end,
+            let at = |b: Bound| match b {
+                Bound::First => first,
+                Bound::Last => last,
                 Bound::Offset(o) => me + o,
             };
-            let lo = at(w.0, if w.0 == Bound::Last { hi_all } else { lo_all });
-            let hi = at(w.1, if w.1 == Bound::First { lo_all } else { hi_all });
+            let (lo, hi) = (at(w.0), at(w.1));
             let pick: Vec<usize> = (0..rs.len())
                 .filter(|j| (lo..=hi).contains(&positions[*j]))
                 .collect();
@@ -1630,6 +1632,97 @@ mod tests {
         bad.measures.get_mut(&MeasureId(300)).unwrap().kind = MeasureKind::Derived(f.formula);
         let e = evaluate(&bad, &[MeasureId(300)]).unwrap_err().to_string();
         assert!(e.contains("only PREV"), "{e}");
+    }
+
+    /// A recurrence across a gap (no cell for an item) restarts from the
+    /// default; an error in the body flows on as that error; a recurrence
+    /// with no default has no cells.
+    #[test]
+    fn recurrence_gaps_errors_and_no_default() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        m.add_item(ItemId(12), time, "2027");
+        let q = |t: u32, p: u32| Coordinate::from_pairs([(time, ItemId(t)), (product, ItemId(p))]);
+        // WidgetA: 2025 and 2027 only (2026 missing: a gap).
+        m.inputs.remove(&(MeasureId(101), q(11, 20)));
+        m.set_input(MeasureId(101), q(12, 20), Value::Number(5.0));
+        for (id, name, text) in [
+            (300, "Bal", "Bal = PREV(Bal, Time, 1, 1000) + Quantity"),
+            (
+                301,
+                "Inv",
+                "Inv = PREV(Inv, Time, 1, 0) + 1 / (Quantity - 50)",
+            ),
+            (302, "Bare", "Bare = PREV(Bare, Time) + Quantity"),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: vec![time, product],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+            let f = improv_core_model::parse_formula(&m, text).unwrap();
+            m.measures.get_mut(&MeasureId(id)).unwrap().kind = MeasureKind::Derived(f.formula);
+        }
+        let out = evaluate(&m, &[MeasureId(300), MeasureId(301), MeasureId(302)]).unwrap();
+        let at =
+            |id: u32, t: u32, p: u32| out[&MeasureId(id)].get(&key(&[(1, t), (2, p)])).cloned();
+        assert_eq!(at(300, 10, 20), Some(CellValue::num(1100.0)));
+        assert_eq!(at(300, 11, 20), None, "no 2026 cell");
+        assert_eq!(
+            at(300, 12, 20),
+            Some(CellValue::num(1005.0)),
+            "restarts from the default"
+        );
+        // WidgetB 2025 Quantity is 50: 1 / 0 is #DIV/0!, carried forward.
+        assert_eq!(at(301, 10, 21), Some(CellValue::Err(err::DIV0)));
+        assert_eq!(at(301, 11, 21), Some(CellValue::Err(err::DIV0)));
+        assert!(
+            out.get(&MeasureId(302)).is_none_or(|c| c.is_empty()),
+            "no default: no chain"
+        );
+    }
+
+    /// Windows anchored at LAST and ending at FIRST, an empty WHERE group,
+    /// and TEXTJOIN of booleans.
+    #[test]
+    fn window_bounds_and_edges() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        let tp = vec![time, product];
+        define(
+            &mut m,
+            200,
+            tp.clone(),
+            "A = SUM(Quantity OVER Time[LAST..LAST])",
+        );
+        define(
+            &mut m,
+            201,
+            tp.clone(),
+            "B = SUM(Quantity OVER Time[FIRST..FIRST])",
+        );
+        define(&mut m, 202, tp, "C = MAX(Quantity OVER Time[THIS+1..LAST])");
+        define(&mut m, 204, vec![time, product], "Big = Quantity > 90");
+        define(
+            &mut m,
+            203,
+            vec![product],
+            "D = TEXTJOIN(\",\", FALSE, Big OVER Time)",
+        );
+        let out = evaluate(&m, &(200..=204).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let at =
+            |id: u32, t: u32, p: u32| out[&MeasureId(id)].get(&key(&[(1, t), (2, p)])).cloned();
+        assert_eq!(at(200, 10, 20), Some(CellValue::num(120.0)));
+        assert_eq!(at(201, 11, 20), Some(CellValue::num(100.0)));
+        assert_eq!(at(202, 10, 20), Some(CellValue::num(120.0)));
+        assert_eq!(at(202, 11, 20), Some(CellValue::Err(err::NA)));
+        assert_eq!(
+            out[&MeasureId(203)].get(&key(&[(2, 20)])),
+            Some(&CellValue::Text("TRUE,TRUE".into()))
+        );
     }
 
     /// A parameter that is a measure (one value per group) joins per row.
