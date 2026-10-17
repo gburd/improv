@@ -61,6 +61,18 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `NA()` | number | the #N/A error |
 | `ERROR(text)` | number | the error a code names ("#DIV/0!") |
 | `ERROR.TYPE(value)` | number | 1 #NULL!, 2 #DIV/0!, 3 #VALUE!, 4 #REF!, 5 #NAME?, 6 #NUM!, 7 #N/A; #N/A for a non-error |
+| `ISBLANK(value)` | boolean | whether the value is blank: always FALSE for a value, since a missing cell has none (ISBLANK("") is FALSE) (also `ISEMPTY`) |
+| `ISNUMBER(value)` | boolean | whether the value is a number; a date is one, as in Excel |
+| `ISTEXT(value)` | boolean | whether the value is text |
+| `ISNONTEXT(value)` | boolean | whether the value is not text (TRUE for an error) |
+| `ISLOGICAL(value)` | boolean | whether the value is a boolean |
+| `ISDATE(value)` | boolean | whether the value is a date |
+| `ISNUMBERORDATE(value)` | boolean | whether the value is a number or a date |
+| `ISEVEN(number)` | boolean | whether the integer part is even (also `ISEVEN_ADD`) |
+| `ISODD(number)` | boolean | whether the integer part is odd (also `ISODD_ADD`) |
+| `N(value)` | number | the value as a number: a date's serial number, TRUE 1, FALSE and text 0 |
+| `T(value)` | text | the value if it is text, else "" |
+| `TYPE(value)` | number | 1 number (or date), 2 text, 4 boolean, 16 error |
 
 ## Math and trigonometry
 
@@ -186,6 +198,67 @@ Lengths and positions count characters, not bytes.
 | `TEXTAFTER(text, text, [number], [number], [number], [value])` | text | text after the instance-th delimiter |
 | `TEXTBETWEEN(text, text, text)` | text | text between the first start delimiter and the next end delimiter |
 | `COUNTMATCHES(text, text)` | number | how many times search occurs in text |
+| `TEXT(value, text)` | text | format with an Excel number-format code: 0 # ? . , % E+ E- "text" \c _c *c, General, ; sections (positive;negative;zero;text with @), colors; dates y m d h s AM/PM A/P. Unsupported (#VALUE!): conditions, locales, [h] elapsed time, fractional seconds, fractions, eras |
+| `FIXED(number, [number], [boolean])` | text | rounded to decimals places (default 2) as text, with thousands commas unless no_commas |
+| `DOLLAR(number, [number])` | text | as en-US currency text: $1,234.57, negatives in parentheses, decimals default 2 |
+| `NUMBERVALUE(text, [text], [text])` | number | text as a number with explicit decimal (default .) and group (default ,) separators |
+| `VALUETOTEXT(value, [number])` | text | a value as text; format 1 quotes text |
+| `REGEX(text, text, [text], [value])` | text | the first match (#N/A if none), or with a replacement the text with the first match replaced; the fourth argument is "g" (replace all) or the occurrence to replace. Patterns use the Rust regex syntax, not ICU's |
+| `REGEXTEST(text, text, [number])` | boolean | whether the pattern matches; case_sensitivity 1 ignores case. Rust regex syntax |
+| `REGEXEXTRACT(text, text, [number], [number])` | text | the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #VALUE!. Rust regex syntax (also `REGEX.EXTRACT`) |
+| `REGEXREPLACE(text, text, text, [number], [number])` | text | replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax |
+
+## Date and time
+
+Dates are date-time values (UTC, millisecond precision). A number given where a date is wanted is a spreadsheet serial date (1 = 1900-01-01).
+
+| Function | Returns | Description |
+|---|---|---|
+| `DATE(number, number, number)` | date | a date; out-of-range months and days roll over, years 0–1899 add 1900 |
+| `DATEVALUE(text)` | date | parse a date: 2025-01-31, 2025-01-31T09:30:00Z (the time is dropped) or 1/31/2025 |
+| `TIME(number, number, number)` | date | a time of day on serial day 0 (1899-12-30), wrapping at 24 hours |
+| `TIMEVALUE(text)` | number | parse a time (09:30, 9:30 PM, 2025-01-31T09:30:00Z) as a fraction of a day |
+| `YEAR(date)` | number | the year |
+| `MONTH(date)` | number | the month, 1–12 |
+| `DAY(date)` | number | the day of the month |
+| `HOUR(date)` | number | the hour, 0–23 |
+| `MINUTE(date)` | number | the minute |
+| `SECOND(date)` | number | the second, rounded |
+| `WEEKDAY(date, [number])` | number | day of the week: type 1 Sunday=1 (default), 2 Monday=1, 3 Monday=0, 11–17 day 1 is Monday…Sunday |
+| `WEEKNUM(date, [number])` | number | week of the year (the week of January 1 is 1), weeks starting on type's day as in WEEKDAY (1, 2, 11–17); type 21 is the ISO week (also `WEEKNUM_EXCEL2003`) |
+| `ISOWEEKNUM(date)` | number | the ISO 8601 week number |
+| `ISOYEAR(date)` | number | the ISO 8601 week-numbering year |
+| `DAYOFYEAR(date)` | number | the day of the year, 1–366 |
+| `DAYNAME(date)` | text | the English weekday name of a date, or of a day number 1–7 (1 is Sunday) |
+| `MONTHNAME(number)` | text | the English name of month 1–12 |
+| `DAYS(date, date)` | number | days from start to end (end − start, times included) |
+| `DAYS360(date, date, [boolean])` | number | days between on a 360-day year, US (NASD) method or European when TRUE |
+| `DATEDIF(date, date, text)` | number | complete "Y" years, "M" months or "D" days between; "YM", "YD", "MD" ignore the larger units |
+| `EDATE(date, number)` | date | the same day n months later (clamped to the month's end) |
+| `EOMONTH(date, number)` | date | the last day of the month n months later |
+| `YEARFRAC(date, date, [number])` | number | the fraction of a year between: basis 0 US 30/360 (default), 1 actual/actual, 2 actual/360, 3 actual/365, 4 European 30/360 |
+| `NETWORKDAYS(date, date)` | number | working days (Monday–Friday) from start to end inclusive; no holidays argument yet (it needs an aggregation) (also `NETWORKDAYS_EXCEL2003`) |
+| `NETWORKDAYS.INTL(date, date, [value])` | number | working days with a weekend of 1–7 (two days), 11–17 (one day) or a "0000011" Monday-first mask; no holidays argument yet |
+| `WORKDAY(date, number)` | date | the date n working days (Monday–Friday) after start; no holidays argument yet |
+| `WORKDAY.INTL(date, number, [value])` | date | WORKDAY with a weekend as in NETWORKDAYS.INTL; no holidays argument yet |
+| `NOW()` | date | the current date and time (UTC); re-evaluated when the model is recalculated |
+| `TODAY()` | date | the current date (UTC midnight); re-evaluated when the model is recalculated |
+| `DAYSINMONTH(date)` | number | the number of days in the date's month |
+| `DAYSINYEAR(date)` | number | the number of days in the date's year |
+| `WEEKSINYEAR(date)` | number | the number of ISO weeks (52 or 53) in the date's year |
+| `ISLEAPYEAR(date)` | boolean | whether the date's year is a leap year |
+| `MONTHS(date, date, number)` | number | months between: type 0 complete months, 1 calendar months |
+| `WEEKS(date, date, number)` | number | weeks between: type 0 complete weeks, 1 calendar (Monday) weeks |
+| `YEARS(date, date, number)` | number | years between: type 0 complete years, 1 calendar years |
+| `UNIX2DATE(number)` | date | the date of a Unix time in seconds |
+| `DATE2UNIX(date)` | number | a date as Unix time in seconds |
+| `DUR2DAYS(number)` | number | a duration (a number of days) in days |
+| `DUR2HOURS(number)` | number | a duration in days as hours |
+| `DUR2MINUTES(number)` | number | a duration in days as minutes |
+| `DUR2SECONDS(number)` | number | a duration in days as seconds |
+| `DUR2MILLISECONDS(number)` | number | a duration in days as milliseconds |
+| `DUR2WEEKS(number)` | number | a duration in days as weeks |
+| `STRIPDURATION(number)` | number | the value (durations are already a number of days) |
 
 ## Dimensional
 

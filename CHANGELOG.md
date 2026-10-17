@@ -39,6 +39,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   - 26 text functions (`LEFT`, `MID`, `FIND`, `SEARCH` with wildcards,
     `SUBSTITUTE`, `TEXTBEFORE`, `CONCAT`, `PROPER`, `VALUE`, …), counting
     characters, not bytes.
+- **The date family, 66 functions** (phase P2):
+  - information: `ISBLANK`, `ISNUMBER`, `ISTEXT`, `ISNONTEXT`, `ISLOGICAL`,
+    `ISDATE`, `ISNUMBERORDATE`, `ISEVEN`, `ISODD`, `N`, `T`, `TYPE`;
+  - text formatting: `TEXT` with Excel format codes, `FIXED`, `DOLLAR`,
+    `NUMBERVALUE`, `VALUETOTEXT`; regular expressions `REGEX`, `REGEXTEST`,
+    `REGEXEXTRACT` (first match only) and `REGEXREPLACE`, in the Rust
+    `regex` syntax;
+  - date and time: `DATE`, `TIME`, `DATEVALUE`, `TIMEVALUE`, the date and
+    time parts, `WEEKDAY`, `WEEKNUM`, `ISOWEEKNUM`, `DAYS360`, `DATEDIF`,
+    `EDATE`, `EOMONTH`, `YEARFRAC`, `NETWORKDAYS`/`WORKDAY` and their
+    `.INTL` forms (no holidays argument yet), `NOW`, `TODAY`, LibreOffice's
+    `DAYSINMONTH`…`YEARS`, Gnumeric's `UNIX2DATE`/`DATE2UNIX`, and Numbers'
+    `DUR2*` over durations as days.
 - **More aggregations:** `PRODUCT`, `SUMSQ`, and over booleans `AND`, `OR`
   and `XOR`; `AVERAGE` (with `AVG` as an alias). `SUM`, `MIN`, `MAX` and the
   rest also take a list of arguments (`SUM(a, b, c)`).

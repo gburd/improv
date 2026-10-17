@@ -1,9 +1,80 @@
-//! The date functions (see the functions plan).
+//! The date family (see the functions plan): the information functions that
+//! ask about a value's kind, text formatting and regular expressions, and
+//! date and time.
 
-#[allow(unused_imports)]
-use super::{agg, alias, f, over, s, so, sv, Arg, Category, FnDef, Kind, Over, Ret};
-#[allow(unused_imports)]
-use crate::value::ValueType;
+use super::{alias, s, so, Arg, Category as C, FnDef};
+use crate::value::ValueType as V;
+use Arg::{Any as A, Boolean as B, DateLike as D, Number as N, Text as T};
 
 #[rustfmt::skip]
-pub(super) static DATE: &[FnDef] = &[];
+pub(super) static DATE: &[FnDef] = &[
+    // --- information (56–79) ---
+    alias(s(56, "ISBLANK", C::Information, &[A], V::Boolean, "whether the value is blank: always FALSE for a value, since a missing cell has none (ISBLANK(\"\") is FALSE)"), &["ISEMPTY"]),
+    s(57, "ISNUMBER", C::Information, &[A], V::Boolean, "whether the value is a number; a date is one, as in Excel"),
+    s(58, "ISTEXT", C::Information, &[A], V::Boolean, "whether the value is text"),
+    s(59, "ISNONTEXT", C::Information, &[A], V::Boolean, "whether the value is not text (TRUE for an error)"),
+    s(60, "ISLOGICAL", C::Information, &[A], V::Boolean, "whether the value is a boolean"),
+    s(61, "ISDATE", C::Information, &[A], V::Boolean, "whether the value is a date"),
+    s(62, "ISNUMBERORDATE", C::Information, &[A], V::Boolean, "whether the value is a number or a date"),
+    alias(s(63, "ISEVEN", C::Information, &[N], V::Boolean, "whether the integer part is even"), &["ISEVEN_ADD"]),
+    alias(s(64, "ISODD", C::Information, &[N], V::Boolean, "whether the integer part is odd"), &["ISODD_ADD"]),
+    s(65, "N", C::Information, &[A], V::Number, "the value as a number: a date's serial number, TRUE 1, FALSE and text 0"),
+    s(66, "T", C::Information, &[A], V::Text, "the value if it is text, else \"\""),
+    s(67, "TYPE", C::Information, &[A], V::Number, "1 number (or date), 2 text, 4 boolean, 16 error"),
+    // --- text formatting and regular expressions (330–399) ---
+    s(330, "TEXT", C::Text, &[A, T], V::Text, "format with an Excel number-format code: 0 # ? . , % E+ E- \"text\" \\c _c *c, General, ; sections (positive;negative;zero;text with @), colors; dates y m d h s AM/PM A/P. Unsupported (#VALUE!): conditions, locales, [h] elapsed time, fractional seconds, fractions, eras"),
+    so(331, "FIXED", C::Text, &[N, N, B], 1, V::Text, "rounded to decimals places (default 2) as text, with thousands commas unless no_commas"),
+    so(332, "DOLLAR", C::Text, &[N, N], 1, V::Text, "as en-US currency text: $1,234.57, negatives in parentheses, decimals default 2"),
+    so(333, "NUMBERVALUE", C::Text, &[T, T, T], 1, V::Number, "text as a number with explicit decimal (default .) and group (default ,) separators"),
+    so(334, "VALUETOTEXT", C::Text, &[A, N], 1, V::Text, "a value as text; format 1 quotes text"),
+    so(335, "REGEX", C::Text, &[T, T, T, A], 2, V::Text, "the first match (#N/A if none), or with a replacement the text with the first match replaced; the fourth argument is \"g\" (replace all) or the occurrence to replace. Patterns use the Rust regex syntax, not ICU's"),
+    so(336, "REGEXTEST", C::Text, &[T, T, N], 2, V::Boolean, "whether the pattern matches; case_sensitivity 1 ignores case. Rust regex syntax"),
+    alias(so(337, "REGEXEXTRACT", C::Text, &[T, T, N, N], 2, V::Text, "the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #VALUE!. Rust regex syntax"), &["REGEX.EXTRACT"]),
+    so(338, "REGEXREPLACE", C::Text, &[T, T, T, N, N], 3, V::Text, "replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax"),
+    // --- date and time (400–499) ---
+    s(400, "DATE", C::DateTime, &[N, N, N], V::DateTime, "a date; out-of-range months and days roll over, years 0–1899 add 1900"),
+    s(401, "DATEVALUE", C::DateTime, &[T], V::DateTime, "parse a date: 2025-01-31, 2025-01-31T09:30:00Z (the time is dropped) or 1/31/2025"),
+    s(402, "TIME", C::DateTime, &[N, N, N], V::DateTime, "a time of day on serial day 0 (1899-12-30), wrapping at 24 hours"),
+    s(403, "TIMEVALUE", C::DateTime, &[T], V::Number, "parse a time (09:30, 9:30 PM, 2025-01-31T09:30:00Z) as a fraction of a day"),
+    s(404, "YEAR", C::DateTime, &[D], V::Number, "the year"),
+    s(405, "MONTH", C::DateTime, &[D], V::Number, "the month, 1–12"),
+    s(406, "DAY", C::DateTime, &[D], V::Number, "the day of the month"),
+    s(407, "HOUR", C::DateTime, &[D], V::Number, "the hour, 0–23"),
+    s(408, "MINUTE", C::DateTime, &[D], V::Number, "the minute"),
+    s(409, "SECOND", C::DateTime, &[D], V::Number, "the second, rounded"),
+    so(410, "WEEKDAY", C::DateTime, &[D, N], 1, V::Number, "day of the week: type 1 Sunday=1 (default), 2 Monday=1, 3 Monday=0, 11–17 day 1 is Monday…Sunday"),
+    alias(so(411, "WEEKNUM", C::DateTime, &[D, N], 1, V::Number, "week of the year (the week of January 1 is 1), weeks starting on type's day as in WEEKDAY (1, 2, 11–17); type 21 is the ISO week"), &["WEEKNUM_EXCEL2003"]),
+    s(412, "ISOWEEKNUM", C::DateTime, &[D], V::Number, "the ISO 8601 week number"),
+    s(413, "ISOYEAR", C::DateTime, &[D], V::Number, "the ISO 8601 week-numbering year"),
+    s(414, "DAYOFYEAR", C::DateTime, &[D], V::Number, "the day of the year, 1–366"),
+    s(415, "DAYNAME", C::DateTime, &[D], V::Text, "the English weekday name of a date, or of a day number 1–7 (1 is Sunday)"),
+    s(416, "MONTHNAME", C::DateTime, &[N], V::Text, "the English name of month 1–12"),
+    s(417, "DAYS", C::DateTime, &[D, D], V::Number, "days from start to end (end − start, times included)"),
+    so(418, "DAYS360", C::DateTime, &[D, D, B], 2, V::Number, "days between on a 360-day year, US (NASD) method or European when TRUE"),
+    s(419, "DATEDIF", C::DateTime, &[D, D, T], V::Number, "complete \"Y\" years, \"M\" months or \"D\" days between; \"YM\", \"YD\", \"MD\" ignore the larger units"),
+    s(420, "EDATE", C::DateTime, &[D, N], V::DateTime, "the same day n months later (clamped to the month's end)"),
+    s(421, "EOMONTH", C::DateTime, &[D, N], V::DateTime, "the last day of the month n months later"),
+    so(422, "YEARFRAC", C::DateTime, &[D, D, N], 2, V::Number, "the fraction of a year between: basis 0 US 30/360 (default), 1 actual/actual, 2 actual/360, 3 actual/365, 4 European 30/360"),
+    alias(s(423, "NETWORKDAYS", C::DateTime, &[D, D], V::Number, "working days (Monday–Friday) from start to end inclusive; no holidays argument yet (it needs an aggregation)"), &["NETWORKDAYS_EXCEL2003"]),
+    so(424, "NETWORKDAYS.INTL", C::DateTime, &[D, D, A], 2, V::Number, "working days with a weekend of 1–7 (two days), 11–17 (one day) or a \"0000011\" Monday-first mask; no holidays argument yet"),
+    s(425, "WORKDAY", C::DateTime, &[D, N], V::DateTime, "the date n working days (Monday–Friday) after start; no holidays argument yet"),
+    so(426, "WORKDAY.INTL", C::DateTime, &[D, N, A], 2, V::DateTime, "WORKDAY with a weekend as in NETWORKDAYS.INTL; no holidays argument yet"),
+    s(427, "NOW", C::DateTime, &[], V::DateTime, "the current date and time (UTC); re-evaluated when the model is recalculated"),
+    s(428, "TODAY", C::DateTime, &[], V::DateTime, "the current date (UTC midnight); re-evaluated when the model is recalculated"),
+    s(429, "DAYSINMONTH", C::DateTime, &[D], V::Number, "the number of days in the date's month"),
+    s(430, "DAYSINYEAR", C::DateTime, &[D], V::Number, "the number of days in the date's year"),
+    s(431, "WEEKSINYEAR", C::DateTime, &[D], V::Number, "the number of ISO weeks (52 or 53) in the date's year"),
+    s(432, "ISLEAPYEAR", C::DateTime, &[D], V::Boolean, "whether the date's year is a leap year"),
+    s(433, "MONTHS", C::DateTime, &[D, D, N], V::Number, "months between: type 0 complete months, 1 calendar months"),
+    s(434, "WEEKS", C::DateTime, &[D, D, N], V::Number, "weeks between: type 0 complete weeks, 1 calendar (Monday) weeks"),
+    s(435, "YEARS", C::DateTime, &[D, D, N], V::Number, "years between: type 0 complete years, 1 calendar years"),
+    s(436, "UNIX2DATE", C::DateTime, &[N], V::DateTime, "the date of a Unix time in seconds"),
+    s(437, "DATE2UNIX", C::DateTime, &[D], V::Number, "a date as Unix time in seconds"),
+    s(438, "DUR2DAYS", C::DateTime, &[N], V::Number, "a duration (a number of days) in days"),
+    s(439, "DUR2HOURS", C::DateTime, &[N], V::Number, "a duration in days as hours"),
+    s(440, "DUR2MINUTES", C::DateTime, &[N], V::Number, "a duration in days as minutes"),
+    s(441, "DUR2SECONDS", C::DateTime, &[N], V::Number, "a duration in days as seconds"),
+    s(442, "DUR2MILLISECONDS", C::DateTime, &[N], V::Number, "a duration in days as milliseconds"),
+    s(443, "DUR2WEEKS", C::DateTime, &[N], V::Number, "a duration in days as weeks"),
+    s(444, "STRIPDURATION", C::DateTime, &[N], V::Number, "the value (durations are already a number of days)"),
+];
