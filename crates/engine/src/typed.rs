@@ -83,6 +83,8 @@ pub enum TypedExprKind {
     /// A per-item value of a category (`POSITION`, `@ITEM`): one cell per
     /// item.
     Items(CategoryId, Vec<(improv_core_model::ItemId, Value)>),
+    /// A fold (`SCAN`/`REDUCE`), already lowered: the whole formula.
+    Plan(Box<crate::plan::PlanNode>),
     /// The value `offset` items along `cat` (`PREV` is −1), or `default`.
     Shift {
         input: Box<TypedExpr>,

@@ -20,5 +20,10 @@ pub(super) static DIMENSIONAL: &[FnDef] = &[
     over(f(906, "FIRST", Kind::Aggregate, Category::Aggregation, &[A], 1, false, Ret::Unify, "the value at the first item (in category order) that has one"), Over::At(&[0])),
     over(f(907, "LAST", Kind::Aggregate, Category::Aggregation, &[A], 1, false, Ret::Unify, "the value at the last item that has one"), Over::At(&[0])),
     over(f(908, "S", Kind::Aggregate, Category::Aggregation, &[A], 1, false, Ret::Fixed(V::Text), "the first value, as text (Quantrix)"), Over::At(&[0])),
+    f(911, "SCAN", Kind::Lazy, Category::Logical, &[A, A, A], 3, false, Ret::Unify, "SCAN(init, x OVER T, LAMBDA(acc, v, body)): the running fold along T, one value per item"),
+    f(912, "REDUCE", Kind::Lazy, Category::Logical, &[A, A, A], 3, false, Ret::Unify, "REDUCE(init, x OVER T, LAMBDA(acc, v, body)): the fold's last value"),
+    f(913, "LET", Kind::Lazy, Category::Logical, &[A, A, A], 3, true, Ret::Unify, "LET(name, value, …, body): the body with each name bound to its value"),
+    f(914, "LAMBDA", Kind::Lazy, Category::Logical, &[A, A], 2, true, Ret::Unify, "LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN"),
+    f(915, "MAP", Kind::Lazy, Category::Logical, &[A, A], 2, true, Ret::Unify, "MAP(x, …, LAMBDA(p, …, body)): the body applied element by element"),
     over(f(909, "TEXTJOIN", Kind::Aggregate, Category::Aggregation, &[T, B, A], 3, false, Ret::Fixed(V::Text), "the values in item order joined by the separator (skipping empty text when skip_empty is TRUE)"), Over::At(&[2])),
 ];

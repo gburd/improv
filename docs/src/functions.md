@@ -50,6 +50,11 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `BETWEEN(number, number, number, [boolean])` | boolean | whether low ≤ x ≤ high (strict when inclusive is FALSE) |
 | `TRUE()` | boolean | TRUE |
 | `FALSE()` | boolean | FALSE |
+| `SCAN(value, value, value)` | the branches' type | SCAN(init, x OVER T, LAMBDA(acc, v, body)): the running fold along T, one value per item |
+| `REDUCE(value, value, value)` | the branches' type | REDUCE(init, x OVER T, LAMBDA(acc, v, body)): the fold's last value |
+| `LET(value, value, value, …)` | the branches' type | LET(name, value, …, body): the body with each name bound to its value |
+| `LAMBDA(value, value, …)` | the branches' type | LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN |
+| `MAP(value, value, …)` | the branches' type | MAP(x, …, LAMBDA(p, …, body)): the body applied element by element |
 
 ## Information and errors
 

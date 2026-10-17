@@ -2382,6 +2382,11 @@ fn child_dsl(model: &Model, e: &Expr, min_prec: u8) -> Option<String> {
 fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
     match e {
         Expr::Literal(v) => literal_dsl(v),
+        // A fold's LAMBDA parameters (see `call_dsl`).
+        Expr::Ref(id, _) if improv_core_model::functions::lambda_slot_of(*id).is_some() => {
+            let (k, i) = improv_core_model::functions::lambda_slot_of(*id)?;
+            Some(format!("{}{k}", if i == 0 { "acc" } else { "val" }))
+        }
         Expr::Ref(id, spec) => {
             // `over`/`except` have no bare-ref spelling: `OVER` exists only
             // inside an aggregation (handled below) and `except` not at all.
@@ -2441,6 +2446,23 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
 
 fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
     let name = func_name(func)?;
+    // SCAN/REDUCE(init, x OVER T, body): the body's placeholders print as
+    // the LAMBDA's parameters.
+    if name == "SCAN" || name == "REDUCE" {
+        let [init, Expr::Ref(x, spec), body] = args else {
+            return None;
+        };
+        let [cat] = spec.over.as_slice() else {
+            return None;
+        };
+        return Some(format!(
+            "{name}({}, {} OVER {}, LAMBDA(acc0, val0, {}))",
+            expr_dsl(model, init)?,
+            ref_dsl(model, *x, &spec.by)?,
+            ident(category_name(model, *cat)?)?,
+            expr_dsl(model, body)?
+        ));
+    }
     // Aggregation: `FUNC(MeasureRef OVER Category)` is the ONLY spelling the v1
     // grammar has for an aggregating func id, and `parse_aggregation` demands
     // it (a ref arg, exactly one OVER category, no `except`). Anything else
@@ -6441,6 +6463,7 @@ mod tests {
             "SUM(Quantity OVER Time WHERE Quantity > 90)",
             "TEXTJOIN(\"-\", TRUE, Quantity OVER Time)",
             "FIRST(Quantity OVER Time)",
+            "SCAN(0, Quantity OVER Time, LAMBDA(acc0, val0, acc0 + val0 * 2))",
         ] {
             let mut app = build_app(model.clone());
             app.commit_formula(MeasureId(102), text)

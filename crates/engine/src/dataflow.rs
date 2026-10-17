@@ -1761,6 +1761,69 @@ mod tests {
         );
     }
 
+    /// LET and LAMBDA expand at parse time; SCAN and REDUCE are folds
+    /// along a category (recurrences under the hood).
+    #[test]
+    fn let_lambda_map_scan_reduce() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        let tp = vec![time, product];
+        define(
+            &mut m,
+            200,
+            tp.clone(),
+            "A = LET(q, Quantity, p, Price, q * p + q)",
+        );
+        define(
+            &mut m,
+            201,
+            tp.clone(),
+            "B = MAP(Quantity, LAMBDA(v, v * 2))",
+        );
+        define(
+            &mut m,
+            202,
+            tp.clone(),
+            "C = LAMBDA(a, b, a - b)(Quantity, Price)",
+        );
+        define(
+            &mut m,
+            203,
+            tp.clone(),
+            "D = SCAN(0, Quantity OVER Time, LAMBDA(acc, v, acc + v))",
+        );
+        define(
+            &mut m,
+            204,
+            vec![product],
+            "E = REDUCE(1, Quantity OVER Time, LAMBDA(acc, v, acc * v))",
+        );
+        let out = evaluate(&m, &(200..=204).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let at = |id: u32, k: &[(u32, u32)]| out[&MeasureId(id)].get(&key(k)).cloned();
+        let n = CellValue::num;
+        assert_eq!(at(200, &[(1, 10), (2, 20)]), Some(n(1100.0)));
+        assert_eq!(at(201, &[(1, 10), (2, 21)]), Some(n(100.0)));
+        assert_eq!(at(202, &[(1, 11), (2, 20)]), Some(n(110.0)));
+        assert_eq!(at(203, &[(1, 10), (2, 20)]), Some(n(100.0)));
+        assert_eq!(at(203, &[(1, 11), (2, 20)]), Some(n(220.0)), "running sum");
+        assert_eq!(at(204, &[(2, 21)]), Some(n(4000.0)), "50 * 80");
+        // Parse errors: LET without a body, an uncalled LAMBDA, a fold
+        // without OVER, a LAMBDA with the wrong arity.
+        for text in [
+            "X = LET(q, Quantity)",
+            "X = LAMBDA(v, v + 1)",
+            "X = SCAN(0, Quantity, LAMBDA(a, v, a + v))",
+            "X = SCAN(0, Quantity OVER Time, LAMBDA(v, v))",
+            "X = MAP(Quantity, LAMBDA(a, b, a + b))",
+            "X = SCAN(0, Quantity OVER Time, 1)",
+        ] {
+            assert!(
+                improv_core_model::parse_formula(&m, text).is_err(),
+                "{text}"
+            );
+        }
+    }
+
     /// Array results land along the INTO category: SORT and UNIQUE of each
     /// product's quantities over Time, into a Rank category.
     #[test]

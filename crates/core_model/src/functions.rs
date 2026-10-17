@@ -469,6 +469,22 @@ pub const WINDOW: FuncId = FuncId(991);
 /// trailing argument `Call(INTO, [Category(K)])` (`SORT(x OVER T INTO K)`).
 pub const INTO: FuncId = FuncId(992);
 
+/// The placeholder measure id for parameter `i` (0 the accumulator, 1 the
+/// value) of the `k`-th `REDUCE`/`SCAN` lambda in a formula. Placeholders
+/// sit at the top of the id space, above any real measure.
+pub fn lambda_slot(k: u32, i: u32) -> crate::MeasureId {
+    crate::MeasureId(LAMBDA_SLOTS - 2 * k - i)
+}
+
+/// The highest placeholder id; ids above `LAMBDA_SLOTS - 2048` are reserved.
+pub const LAMBDA_SLOTS: u32 = u32::MAX - 4096;
+
+/// The `(k, i)` of a placeholder id (see [`lambda_slot`]).
+pub fn lambda_slot_of(id: crate::MeasureId) -> Option<(u32, u32)> {
+    let d = LAMBDA_SLOTS.checked_sub(id.0)?;
+    (d < 2048).then_some((d / 2, d % 2))
+}
+
 mod array;
 mod date;
 mod dimensional;

@@ -149,6 +149,135 @@ pub fn derived_shape(
     )))
 }
 
+/// `SCAN(init, x OVER T, body)` / `REDUCE`: the fold is a recurrence along
+/// T (the accumulator is the previous item's value, `init` before the
+/// first; the value is `x` at this item), and REDUCE keeps its last value.
+/// Only as the whole formula: define the fold as its own measure.
+fn compile_fold(ctx: &CompileContext, last: bool, args: &[Expr]) -> Result<PlanNode> {
+    let (init, x, body) = match args {
+        [i, Expr::Ref(x, spec), b] if spec.over.len() == 1 => (i, (*x, spec.over[0]), b),
+        _ => {
+            return Err(CompileError::Unsupported(
+                "a fold needs (init, x OVER Category, LAMBDA(acc, v, body))".into(),
+            ))
+        }
+    };
+    let (xid, cat) = x;
+    let m = ctx
+        .measures
+        .get(&xid)
+        .ok_or(CompileError::UnknownMeasure(xid))?;
+    if !m.categories.contains(&cat) {
+        return Err(CompileError::DimensionMismatch(format!(
+            "{} does not range over {}",
+            m.name.0,
+            ctx.category_name(cat)
+        )));
+    }
+    // The placeholders of this lambda (one fold per formula, so k = 0).
+    let (acc, val) = (functions::lambda_slot(0, 0), functions::lambda_slot(0, 1));
+    fn subst(e: &Expr, from: MeasureId, to: MeasureId) -> Expr {
+        match e {
+            Expr::Ref(r, s) if *r == from => Expr::Ref(to, s.clone()),
+            Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(subst(a, from, to))),
+            Expr::BinaryOp(o, a, b) => Expr::BinaryOp(
+                *o,
+                Box::new(subst(a, from, to)),
+                Box::new(subst(b, from, to)),
+            ),
+            Expr::Call(f, a) => Expr::Call(*f, a.iter().map(|x| subst(x, from, to)).collect()),
+            other => other.clone(),
+        }
+    }
+    let body = subst(body, val, xid);
+    crate::scalar::check(&body).map_err(|e| {
+        CompileError::Unsupported(format!("a fold's LAMBDA body must be scalar: {e}"))
+    })?;
+    crate::scalar::check(init).map_err(|e| {
+        CompileError::Unsupported(format!("a fold's initial value must be scalar: {e}"))
+    })?;
+    // Type: the accumulator has the initial value's type.
+    let init_t = infer(ctx, xid, init)?;
+    let mut measures = ctx.measures.clone();
+    measures.insert(
+        acc,
+        Measure {
+            id: acc,
+            value_type: init_t.ty.value_type,
+            ..m.clone()
+        },
+    );
+    let tctx = CompileContext {
+        measures: &measures,
+        categories: ctx.categories,
+        items: ctx.items,
+    };
+    let typed = infer(&tctx, xid, &body)?;
+    if typed.ty.value_type != init_t.ty.value_type && !is_error_only(&init_t) {
+        return Err(CompileError::TypeMismatch(format!(
+            "a fold's accumulator starts as {:?} but the LAMBDA yields {:?}",
+            init_t.ty.value_type, typed.ty.value_type
+        )));
+    }
+    let mut ids: Vec<MeasureId> = body.referenced_measures();
+    ids.extend(init.referenced_measures());
+    ids.retain(|i| *i != acc);
+    ids.sort();
+    ids.dedup();
+    let own = Dim::of(m.categories.clone());
+    let mut refs = Vec::new();
+    for id in ids {
+        let r = infer_ref(ctx, id, &DimensionSpec::default())?;
+        if !r.ty.dim.is_subset_of(&own) {
+            return Err(CompileError::DimensionMismatch(format!(
+                "a fold over {} may only read measures within its categories",
+                m.name.0
+            )));
+        }
+        refs.push((id, build_plan(ctx, &r)?));
+    }
+    let ty = TypeInfo {
+        value_type: typed.ty.value_type,
+        dim: own.clone(),
+    };
+    let scan = PlanNode {
+        kind: PlanNodeKind::Recurrence {
+            body,
+            refs,
+            slots: vec![(acc, 1, Some(init.clone()))],
+            cat,
+            order: ctx.items_of(cat),
+        },
+        ty: ty.clone(),
+    };
+    if !last {
+        return Ok(scan);
+    }
+    let kept: Vec<CategoryId> = own
+        .categories
+        .iter()
+        .copied()
+        .filter(|c| *c != cat)
+        .collect();
+    Ok(PlanNode {
+        kind: PlanNodeKind::Aggregate {
+            inputs: vec![scan],
+            params: vec![],
+            pred: None,
+            group_by: kept.clone(),
+            func: FuncId(907), // LAST
+            order: vec![(cat, ctx.items_of(cat))],
+            window: None,
+            per_item: false,
+            into: None,
+        },
+        ty: TypeInfo {
+            value_type: ty.value_type,
+            dim: Dim::of(kept),
+        },
+    })
+}
+
 /// The first placeholder id for a recurrence's own earlier values.
 const SLOT_BASE: u32 = u32::MAX - 1024;
 
@@ -424,6 +553,14 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                     args.len()
                 )));
             }
+            if def.id.0 == dim::SCAN || def.id.0 == dim::REDUCE {
+                let plan = compile_fold(ctx, def.id.0 == dim::REDUCE, args)?;
+                let ty = plan.ty.clone();
+                return Ok(TypedExpr {
+                    kind: TypedExprKind::Plan(Box::new(plan)),
+                    ty,
+                });
+            }
             if let Some(t) = infer_dimensional(ctx, target, def, args)? {
                 return Ok(t);
             }
@@ -458,6 +595,8 @@ mod dim {
     pub const ITEMCOUNT: u32 = 903;
     pub const PREV: u32 = 904;
     pub const NEXT: u32 = 905;
+    pub const SCAN: u32 = 911;
+    pub const REDUCE: u32 = 912;
 }
 
 /// `POSITION`, `@ITEM`, `@ID`, `@ITEMCOUNT`, `PREV` and `NEXT`, which read
@@ -1207,6 +1346,7 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
             }
         }
         TypedExprKind::Items(c, vals) => PlanNodeKind::Items(*c, vals.clone()),
+        TypedExprKind::Plan(p) => return Ok((**p).clone()),
         TypedExprKind::Shift {
             input,
             cat,
@@ -1770,6 +1910,58 @@ mod tests {
         let _ = f;
         let bad = Formula::new(parse(&pm, "PREV(Bal, Time, 1, \"x\") & Bal"));
         assert!(derived_shape(&fresh, bal, "Bal", &bad).is_err());
+    }
+
+    /// A fold's compile rules.
+    #[test]
+    fn fold_rules() {
+        let m = model_with_items();
+        let ctx = CompileContext::for_model(&m);
+        let ty = |t: &str| infer(&ctx, MeasureId(200), &parse(&m, t));
+        assert_eq!(
+            ty("SCAN(0, Quantity OVER Time, LAMBDA(a, v, a + v))")
+                .unwrap()
+                .ty
+                .dim,
+            Dim::of(vec![TIME, PRODUCT])
+        );
+        assert_eq!(
+            ty("REDUCE(0, Quantity OVER Time, LAMBDA(a, v, a + v))")
+                .unwrap()
+                .ty
+                .dim,
+            Dim::of(vec![PRODUCT])
+        );
+        for (text, why) in [
+            (
+                "SCAN(0, Price OVER Time, LAMBDA(a, v, a + v))",
+                "does not range over",
+            ),
+            (
+                "SCAN(\"x\", Quantity OVER Time, LAMBDA(a, v, v))",
+                "starts as",
+            ),
+            (
+                "SCAN(0, Quantity OVER Time, LAMBDA(a, v, a + SUM(Price OVER Product)))",
+                "must be scalar",
+            ),
+            (
+                "SCAN(SUM(Price OVER Product), Quantity OVER Time, LAMBDA(a, v, a))",
+                "initial value must be scalar",
+            ),
+            (
+                "SCAN(0, Quantity OVER Time, LAMBDA(a, v, a + Headcount))",
+                "dimension mismatch",
+            ),
+        ] {
+            let e = ty(text).unwrap_err().to_string();
+            assert!(e.contains(why), "{text}: {e}");
+        }
+        let bad = Expr::Call(FuncId(911), vec![lit(0.0)]);
+        assert!(matches!(
+            infer(&ctx, MeasureId(200), &bad),
+            Err(CompileError::Unsupported(_))
+        ));
     }
 
     /// Date arithmetic types: date ± number is a date, date − date a number,

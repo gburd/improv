@@ -12,6 +12,13 @@ forms and recurrences, and locale-aware entry.
 
 ### Added
 
+- **`LET`, `LAMBDA`, `MAP`, `SCAN` and `REDUCE`.** LET names values for its
+  body; a LAMBDA is called on the spot or passed to MAP (cell by cell),
+  SCAN (a running fold along a category, `SCAN(0, x OVER Time,
+  LAMBDA(acc, v, acc + v))`) or REDUCE (its last value). Folds compile to
+  recurrences and update incrementally; a LAMBDA cannot recurse, so every
+  formula still terminates.
+
 - **List results (array functions)** land along a category named with
   `INTO`: `Top = SORT(Sales OVER Product, -1 INTO Rank)` puts the largest
   value at Rank's first item. First: `SORT` and `UNIQUE`.

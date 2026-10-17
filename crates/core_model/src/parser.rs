@@ -414,6 +414,12 @@ struct Parser<'a> {
     /// Bounded so adversarial input (e.g. thousands of nested `(`) errors
     /// cleanly instead of overflowing the stack.
     depth: usize,
+    /// Names bound by `LET` and `LAMBDA`, innermost last; they shadow
+    /// measure names and are replaced by what they are bound to.
+    scope: Vec<(String, Expr)>,
+    /// How many `REDUCE`/`SCAN` lambdas this formula has (each gets its own
+    /// placeholder ids).
+    lambdas: u32,
 }
 
 /// Maximum recursive-descent nesting depth for a single formula (Excel allows
@@ -755,6 +761,22 @@ impl<'a> Parser<'a> {
         // `TRUE()` / `FALSE()` are the functions; bare `TRUE` the literal.
         let is_call =
             matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(");
+        // A name bound by LET or LAMBDA.
+        if !is_call {
+            if let Some(e) = self.local(&word) {
+                self.bump();
+                return Ok(e);
+            }
+        }
+        if is_call {
+            match word.to_ascii_uppercase().as_str() {
+                "LET" => return self.parse_let(),
+                "LAMBDA" => return self.parse_lambda_call(),
+                "MAP" => return self.parse_map(),
+                "REDUCE" | "SCAN" => return self.parse_fold(&word),
+                _ => {}
+            }
+        }
         if is_call && (word.eq_ignore_ascii_case("true") || word.eq_ignore_ascii_case("false")) {
             return self.parse_call(&word);
         }
@@ -1004,6 +1026,213 @@ impl<'a> Parser<'a> {
         Ok(Expr::Call(def.id, args))
     }
 
+    /// What a `LET`/`LAMBDA` name is bound to, innermost binding first.
+    fn local(&self, name: &str) -> Option<Expr> {
+        self.scope
+            .iter()
+            .rev()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, e)| e.clone())
+    }
+
+    /// A bare name for LET/LAMBDA.
+    fn binding_name(&mut self) -> Result<String, ParseError> {
+        match self.peek() {
+            Some(Tok::Ident(w)) => {
+                let w = w.clone();
+                self.bump();
+                Ok(w)
+            }
+            _ => Err(self.err("expected a name to bind")),
+        }
+    }
+
+    fn expect(&mut self, op: &str, what: &str) -> Result<(), ParseError> {
+        if self.eat_op(op) {
+            Ok(())
+        } else {
+            Err(self.err(format!("expected {what}")))
+        }
+    }
+
+    /// `LET(name, value, [name, value, …], body)`: the body with each name
+    /// replaced by its value (a later value may use an earlier name). LET
+    /// is expanded here; the stored formula is the expanded expression.
+    fn parse_let(&mut self) -> Result<Expr, ParseError> {
+        self.bump(); // LET
+        self.expect("(", "'(' after LET")?;
+        let base = self.scope.len();
+        loop {
+            // `name ,` starts another binding; anything else is the body.
+            let is_binding = matches!(self.peek(), Some(Tok::Ident(_)))
+                && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == ",")
+                && self.scope.len() - base < 126;
+            if !is_binding && self.scope.len() > base {
+                break;
+            }
+            let name = self.binding_name()?;
+            self.expect(",", "',' after a LET name")?;
+            let value = self.parse_expr()?;
+            self.scope.push((name, value));
+            self.expect(",", "',' then the LET body")?;
+        }
+        let body = self.parse_expr();
+        self.scope.truncate(base);
+        let body = body?;
+        self.expect(")", "')' to close LET")?;
+        Ok(body)
+    }
+
+    /// `LAMBDA(p1, …, body)` as written: its parameter names and the
+    /// tokens of its body (parsed when the arguments are known).
+    fn parse_lambda_params(&mut self) -> Result<(Vec<String>, usize, usize), ParseError> {
+        self.bump(); // LAMBDA
+        self.expect("(", "'(' after LAMBDA")?;
+        let mut params = Vec::new();
+        // Parameters are the names followed by ','; the last part is the body.
+        while matches!(self.peek(), Some(Tok::Ident(_)))
+            && matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == ",")
+        {
+            params.push(self.binding_name()?);
+            self.bump(); // ,
+        }
+        let start = self.pos;
+        // Skip the body to its closing ')' (balanced).
+        let mut level = 0usize;
+        while let Some(t) = self.peek() {
+            match t {
+                Tok::Op(o) if o == "(" => level += 1,
+                Tok::Op(o) if o == ")" && level == 0 => break,
+                Tok::Op(o) if o == ")" => level -= 1,
+                _ => {}
+            }
+            self.bump();
+        }
+        let end = self.pos;
+        self.expect(")", "')' to close LAMBDA")?;
+        if params.is_empty() {
+            return Err(self.err("LAMBDA needs at least one parameter"));
+        }
+        Ok((params, start, end))
+    }
+
+    /// Parse the body tokens `start..end` with `params` bound to `args`.
+    fn lambda_body(
+        &mut self,
+        params: &[String],
+        args: Vec<Expr>,
+        start: usize,
+        end: usize,
+    ) -> Result<Expr, ParseError> {
+        if params.len() != args.len() {
+            return Err(self.err(format!(
+                "this LAMBDA takes {} argument(s), got {}",
+                params.len(),
+                args.len()
+            )));
+        }
+        let saved = self.pos;
+        let base = self.scope.len();
+        self.scope.extend(params.iter().cloned().zip(args));
+        self.pos = start;
+        let body = self.parse_expr();
+        let stopped = self.pos;
+        self.scope.truncate(base);
+        self.pos = saved;
+        let body = body?;
+        if stopped != end {
+            return Err(ParseError::new(
+                "unexpected trailing input in the LAMBDA body",
+                self.toks.get(stopped).map(|s| s.pos),
+            ));
+        }
+        Ok(body)
+    }
+
+    /// `LAMBDA(p, …, body)(a, …)`: called on the spot.
+    fn parse_lambda_call(&mut self) -> Result<Expr, ParseError> {
+        let (params, start, end) = self.parse_lambda_params()?;
+        if !self.eat_op("(") {
+            return Err(self.err(
+                "a LAMBDA must be called on the spot (LAMBDA(x, x + 1)(Price)) or passed \
+                 to MAP, REDUCE or SCAN",
+            ));
+        }
+        let mut args = Vec::new();
+        loop {
+            args.push(self.parse_expr()?);
+            if !self.eat_op(",") {
+                break;
+            }
+        }
+        self.expect(")", "')' to close the LAMBDA call")?;
+        self.lambda_body(&params, args, start, end)
+    }
+
+    /// `MAP(a, [b, …], LAMBDA(p, [q, …], body))`: the body with each
+    /// parameter replaced by its argument, element by element.
+    fn parse_map(&mut self) -> Result<Expr, ParseError> {
+        self.bump(); // MAP
+        self.expect("(", "'(' after MAP")?;
+        let mut args = Vec::new();
+        while !self.peek_kw("lambda") {
+            args.push(self.parse_expr()?);
+            self.expect(",", "',' then a LAMBDA in MAP")?;
+        }
+        let (params, start, end) = self.parse_lambda_params()?;
+        self.expect(")", "')' to close MAP")?;
+        self.lambda_body(&params, args, start, end)
+    }
+
+    /// `REDUCE(init, x OVER T, LAMBDA(acc, v, body))` and `SCAN(…)`: a fold
+    /// along T in item order. Stored as `Call(id, [init, x OVER T, body])`
+    /// with `acc` and `v` as placeholder references (see
+    /// `functions::lambda_slot`).
+    fn parse_fold(&mut self, name: &str) -> Result<Expr, ParseError> {
+        let def = functions::callable(name).expect("REDUCE/SCAN are registered");
+        self.bump(); // name
+        self.expect("(", "'(' after the function name")?;
+        let init = self.parse_expr()?;
+        self.expect(",", "',' after the initial value")?;
+        let x = self.parse_measure_ref()?;
+        if !self.peek_kw("over") {
+            return Err(self.err(format!(
+                "{} folds a measure: write x OVER Category",
+                def.name
+            )));
+        }
+        self.bump();
+        let cat = self.parse_category_name()?;
+        let x = match x {
+            Expr::Ref(id, mut spec) => {
+                spec.over = vec![cat];
+                Expr::Ref(id, spec)
+            }
+            _ => return Err(self.err(format!("{} folds a measure reference", def.name))),
+        };
+        self.expect(",", "',' then a LAMBDA(accumulator, value, body)")?;
+        if !self.peek_kw("lambda") {
+            return Err(self.err(format!(
+                "{} needs LAMBDA(accumulator, value, body)",
+                def.name
+            )));
+        }
+        let (params, start, end) = self.parse_lambda_params()?;
+        self.expect(")", "')' to close the fold")?;
+        if params.len() != 2 {
+            return Err(self.err(format!(
+                "{}'s LAMBDA takes (accumulator, value), got {} parameter(s)",
+                def.name,
+                params.len()
+            )));
+        }
+        let k = self.lambdas;
+        self.lambdas += 1;
+        let slot = |i| Expr::Ref(functions::lambda_slot(k, i), DimensionSpec::default());
+        let body = self.lambda_body(&params, vec![slot(0), slot(1)], start, end)?;
+        Ok(Expr::Call(def.id, vec![init, x, body]))
+    }
+
     /// MeasureRef = Name [ "[" DimList "]" ]
     fn parse_measure_ref(&mut self) -> Result<Expr, ParseError> {
         let (name, pos) = self.parse_name("a measure name")?;
@@ -1042,6 +1271,8 @@ pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseErro
         pos: 0,
         model,
         depth: 0,
+        scope: Vec::new(),
+        lambdas: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
@@ -1117,6 +1348,8 @@ pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseEr
         pos: 0,
         model,
         depth: 0,
+        scope: Vec::new(),
+        lambdas: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
@@ -1226,6 +1459,8 @@ pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
         pos: 0,
         model,
         depth: 0,
+        scope: Vec::new(),
+        lambdas: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
@@ -1429,6 +1664,82 @@ mod tests {
         assert!(p("FLOOR.NOPE(Price)").is_err());
         // `ALL(` is a function-looking word, not OVER ALL.
         assert!(p("SUM(Quantity OVER ALL(Time))").is_err());
+    }
+
+    /// LET and LAMBDA expand in place; their errors name the problem.
+    #[test]
+    fn let_and_lambda() {
+        let m = fixture();
+        let p = |s: &str| parse_expr(&m, s).map(|f| f.expr);
+        assert_eq!(p("LET(x, Price, x + x)"), p("Price + Price"));
+        assert_eq!(p("LET(x, Price, y, x * 2, y - x)"), p("Price * 2 - Price"));
+        // A local shadows a measure; it ends with its LET.
+        assert_eq!(p("LET(Price, 3, Price) + Price"), p("3 + Price"));
+        assert_eq!(
+            p("LAMBDA(a, a * a)(Price + 1)"),
+            p("(Price + 1) * (Price + 1)")
+        );
+        assert_eq!(
+            p("MAP(Price, Cost, LAMBDA(a, b, a - b))"),
+            p("Price - Cost")
+        );
+        let fold = p("REDUCE(0, Quantity OVER Time, LAMBDA(acc, v, acc + v))").unwrap();
+        let Expr::Call(_, args) = fold else { panic!() };
+        assert_eq!(
+            args[2],
+            Expr::BinaryOp(
+                BinaryOp::Add,
+                Box::new(Expr::Ref(
+                    functions::lambda_slot(0, 0),
+                    DimensionSpec::default()
+                )),
+                Box::new(Expr::Ref(
+                    functions::lambda_slot(0, 1),
+                    DimensionSpec::default()
+                )),
+            )
+        );
+        assert_eq!(
+            functions::lambda_slot_of(functions::lambda_slot(3, 1)),
+            Some((3, 1))
+        );
+        assert_eq!(functions::lambda_slot_of(MeasureId(5)), None);
+        for (src, want) in [
+            ("LET(x, Price)", "expected"),
+            ("LET(1, Price, 2)", "a name to bind"),
+            ("LET(x Price, x)", "',' after a LET name"),
+            ("LET(x, Price, x", "')' to close LET"),
+            ("LAMBDA(x, x)", "called on the spot"),
+            ("LAMBDA(x)(1)", "at least one parameter"),
+            ("LAMBDA(x, x + 1)(1, 2)", "takes 1 argument"),
+            ("LAMBDA(x, x +)(1)", ""),
+            ("LAMBDA(x, x", "')' to close LAMBDA"),
+            ("MAP(Price LAMBDA(v, v))", "',' then a LAMBDA"),
+            ("MAP(Price, LAMBDA(v, v)", "')' to close MAP"),
+            ("SCAN(0, Quantity, LAMBDA(a, v, a))", "OVER"),
+            ("SCAN(0, Quantity OVER Time, 1)", "needs LAMBDA"),
+            (
+                "SCAN(0, Quantity OVER Time LAMBDA(a, v, a))",
+                "',' then a LAMBDA",
+            ),
+            (
+                "SCAN(0, Quantity OVER Time, LAMBDA(v, v))",
+                "takes (accumulator, value)",
+            ),
+            (
+                "SCAN(0 Quantity OVER Time, LAMBDA(a, v, a))",
+                "',' after the initial",
+            ),
+            (
+                "SCAN(0, Quantity OVER Time, LAMBDA(a, v, a)",
+                "')' to close the fold",
+            ),
+            ("SCAN 1", "unknown measure"),
+            ("LET 1", "unknown measure"),
+        ] {
+            let e = p(src).unwrap_err();
+            assert!(e.message.contains(want), "{src}: {}", e.message);
+        }
     }
 
     #[test]

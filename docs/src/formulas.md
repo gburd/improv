@@ -256,6 +256,34 @@ ToGo     = SUM(Budget OVER Time[THIS..LAST])
   aggregation over the items from `from` to `to`, where each bound is
   `FIRST`, `LAST`, `THIS`, `THIS-n` or `THIS+n`. An empty window is `#N/A`.
 
+### LET and LAMBDA
+
+```text
+Margin = LET(rev, Price * Quantity, cost, Unit * Quantity, (rev - cost) / rev)
+Double = MAP(Quantity, LAMBDA(q, q * 2))
+Square = LAMBDA(x, x * x)(Price - 1)
+Running = SCAN(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
+Final   = REDUCE(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
+```
+
+- `LET(name, value, …, body)` names values for the body (a later value may
+  use an earlier name). A name shadows a measure with the same name.
+- `LAMBDA(p, …, body)` is a function of its parameters. Call it on the
+  spot (`LAMBDA(x, x * x)(Price)`) or pass it to `MAP`, `REDUCE` or
+  `SCAN`.
+- `MAP(x, …, LAMBDA(p, …, body))` applies the body cell by cell.
+- `SCAN(init, x OVER T, LAMBDA(acc, v, body))` folds along `T` in item
+  order: each item's result is the body with `acc` the previous item's
+  result (`init` before the first) and `v` the item's value. `REDUCE`
+  keeps only the last. Both are recurrences underneath, so they update
+  incrementally.
+
+LET, LAMBDA and MAP expand when the formula is read: the stored formula
+(and what the formula bar shows) is the expanded expression. A LAMBDA
+cannot call itself, so every formula still terminates. Named LAMBDAs
+(Excel's Name Manager) are not supported; `MAKEARRAY`, `BYROW` and `BYCOL`
+are not either.
+
 ### List results: INTO
 
 A function that returns a list says where the list lands: `INTO` a
