@@ -1,0 +1,333 @@
+formula	expected	source
+@A	{"T": 8, "m": {"X": [[3, 1, 4, 1, 5, 9, 2, 6]], "Y": [[2, 7, 1, 8, 2, 8, 1.5, 8]], "C": [["apple", "Banana", "cherry", "apple", "date", "banana", "fig", "Apple"]], "P": [[0.1, 0.2, 0.1, 0.05, 0.15, 0.1, 0.2, 0.1]], "B": [[true, false, true, true, false, true, false, false]]}}
+A	COUNT(X OVER T)	[8.0]	LibreOffice
+A	COUNTA(C OVER T)	[8.0]	LibreOffice
+A	COUNTBLANK(X OVER T)	[0.0]	LibreOffice
+A	AVERAGEA(B OVER T)	[0.5]	LibreOffice
+A	AVERAGEA(C OVER T)	[0.0]	LibreOffice
+A	AVEDEV(X OVER T)	[2.125]	LibreOffice
+A	MAXA(B OVER T)	[1.0]	LibreOffice
+A	MINA(B OVER T)	[0.0]	LibreOffice
+A	MAXA(X OVER T)	[9.0]	LibreOffice
+A	MINA(X OVER T)	[1.0]	LibreOffice
+A	MEDIAN(X OVER T)	[3.5]	LibreOffice
+A	MEDIAN(Y OVER T)	[4.5]	LibreOffice
+A	MODE(X OVER T)	[1.0]	LibreOffice
+A	MODE(Y OVER T)	[8.0]	LibreOffice
+A	MODE.SNGL(Y OVER T)	[8.0]	LibreOffice
+A	GEOMEAN(X OVER T)	[2.995345169980803]	LibreOffice
+A	HARMEAN(X OVER T)	[2.246489859594384]	LibreOffice
+A	TRIMMEAN(X OVER T, 0.3)	[3.5]	LibreOffice
+A	TRIMMEAN(X OVER T, 0.25)	[3.5]	LibreOffice
+A	TRIMMEAN(X OVER T, 0)	[3.875]	LibreOffice
+A	TRIMMEAN(X OVER T, 1)	[{"error": "#NUM!"}]	LibreOffice
+A	DEVSQ(X OVER T)	[52.875]	LibreOffice
+A	STDEV(X OVER T)	[2.748376143938713]	LibreOffice
+A	STDEV.S(X OVER T)	[2.748376143938713]	LibreOffice
+A	STDEVP(X OVER T)	[2.5708704751503917]	LibreOffice
+A	STDEV.P(X OVER T)	[2.5708704751503917]	LibreOffice
+A	STDEVA(B OVER T)	[0.5345224838248488]	LibreOffice
+A	STDEVPA(B OVER T)	[0.5]	LibreOffice
+A	VAR(X OVER T)	[7.553571428571429]	LibreOffice
+A	VAR.S(X OVER T)	[7.553571428571429]	LibreOffice
+A	VARP(X OVER T)	[6.609375]	LibreOffice
+A	VAR.P(X OVER T)	[6.609375]	LibreOffice
+A	VARA(B OVER T)	[0.2857142857142857]	LibreOffice
+A	VARPA(B OVER T)	[0.25]	LibreOffice
+A	VARA(C OVER T)	[0.0]	LibreOffice
+A	KURT(X OVER T)	[0.27660580453699524]	LibreOffice
+A	KURT(Y OVER T)	[-2.6525562188105867]	LibreOffice
+A	SKEW(X OVER T)	[0.8335031385336662]	LibreOffice
+A	SKEWP(X OVER T)	[0.6682892518272332]	LibreOffice
+A	SKEW(Y OVER T)	[0.0003091100061813478]	LibreOffice
+A	LARGE(X OVER T, 1)	[9.0]	LibreOffice
+A	LARGE(X OVER T, 3)	[5.0]	LibreOffice
+A	LARGE(X OVER T, 8)	[1.0]	LibreOffice
+A	SMALL(X OVER T, 2)	[1.0]	LibreOffice
+A	SMALL(X OVER T, 3)	[2.0]	LibreOffice
+A	SMALL(X OVER T, 2.5)	[1.0]	LibreOffice
+A	PERCENTILE(X OVER T, 0.3)	[2.1]	LibreOffice
+A	PERCENTILE(X OVER T, 0)	[1.0]	LibreOffice
+A	PERCENTILE(X OVER T, 1)	[9.0]	LibreOffice
+A	PERCENTILE(X OVER T, 1.1)	[{"error": "#NUM!"}]	LibreOffice
+A	PERCENTILE.INC(Y OVER T, 0.9)	[8.0]	LibreOffice
+A	PERCENTILE.EXC(X OVER T, 0.3)	[1.6999999999999997]	LibreOffice
+A	QUARTILE(X OVER T, 1)	[1.75]	LibreOffice
+A	QUARTILE(X OVER T, 3)	[5.25]	LibreOffice
+A	QUARTILE(X OVER T, 4)	[9.0]	LibreOffice
+A	QUARTILE(X OVER T, 5)	[{"error": "#NUM!"}]	LibreOffice
+A	QUARTILE.INC(Y OVER T, 2)	[4.5]	LibreOffice
+A	QUARTILE.EXC(X OVER T, 1)	[1.25]	LibreOffice
+A	QUARTILE.EXC(X OVER T, 3)	[5.75]	LibreOffice
+A	QUARTILE.EXC(X OVER T, 0)	[{"error": "#NUM!"}]	LibreOffice
+A	PROB(X, P OVER T, 2, 5)	[0.55]	LibreOffice
+A	PROB(X, P OVER T, 1)	[0.25]	LibreOffice
+A	PROB(X, P OVER T, 7)	[0.0]	LibreOffice
+A	PROB(X, P OVER T, 5, 2)	[0.55]	LibreOffice
+A	SUBTOTAL(1, X OVER T)	[3.875]	LibreOffice
+A	SUBTOTAL(2, X OVER T)	[8.0]	LibreOffice
+A	SUBTOTAL(3, X OVER T)	[8.0]	LibreOffice
+A	SUBTOTAL(4, X OVER T)	[9.0]	LibreOffice
+A	SUBTOTAL(5, X OVER T)	[1.0]	LibreOffice
+A	SUBTOTAL(6, X OVER T)	[6480.0]	LibreOffice
+A	SUBTOTAL(7, X OVER T)	[2.748376143938713]	LibreOffice
+A	SUBTOTAL(8, X OVER T)	[2.5708704751503917]	LibreOffice
+A	SUBTOTAL(9, X OVER T)	[31.0]	LibreOffice
+A	SUBTOTAL(10, X OVER T)	[7.553571428571429]	LibreOffice
+A	SUBTOTAL(11, X OVER T)	[6.609375]	LibreOffice
+A	SUBTOTAL(109, X OVER T)	[31.0]	LibreOffice
+A	AGGREGATE(1, 0, X OVER T)	[3.875]	LibreOffice
+A	AGGREGATE(12, 0, X OVER T)	[3.5]	LibreOffice
+A	AGGREGATE(13, 0, Y OVER T)	[8.0]	LibreOffice
+A	AGGREGATE(14, 0, X OVER T, 2)	[6.0]	LibreOffice
+A	AGGREGATE(15, 0, X OVER T, 2)	[1.0]	LibreOffice
+A	AGGREGATE(16, 0, X OVER T, 0.3)	[2.1]	LibreOffice
+A	AGGREGATE(17, 0, X OVER T, 1)	[1.75]	LibreOffice
+A	AGGREGATE(18, 0, X OVER T, 0.3)	[1.6999999999999997]	LibreOffice
+A	AGGREGATE(19, 0, X OVER T, 3)	[5.75]	LibreOffice
+A	AGGREGATE(7, 6, X OVER T)	[2.748376143938713]	LibreOffice
+A	SUMPRODUCT(X, Y OVER T)	[158.0]	LibreOffice
+A	SUMPRODUCT(X, Y, P OVER T)	[16.900000000000002]	LibreOffice
+A	SUMPRODUCT(X OVER T)	[31.0]	LibreOffice
+A	SUMX2MY2(X, Y OVER T)	[-79.25]	LibreOffice
+A	SUMX2PY2(X, Y OVER T)	[425.25]	LibreOffice
+A	SUMXMY2(X, Y OVER T)	[109.25]	LibreOffice
+A	SERIESSUM(0.5, 1, 2, X OVER T)	[1.77239990234375]	LibreOffice
+A	SERIESSUM(2, 0, 1, X OVER T)	[1293.0]	LibreOffice
+A	CORREL(X, Y OVER T)	[0.1995303064414043]	LibreOffice
+A	PEARSON(X, Y OVER T)	[0.1995303064414043]	LibreOffice
+A	RSQ(Y, X OVER T)	[0.039812343188600705]	LibreOffice
+A	COVAR(X, Y OVER T)	[1.5859375]	LibreOffice
+A	COVARIANCE.P(X, Y OVER T)	[1.5859375]	LibreOffice
+A	COVARIANCE.S(X, Y OVER T)	[1.8125]	LibreOffice
+A	SLOPE(Y, X OVER T)	[0.23995271867612294]	LibreOffice
+A	INTERCEPT(Y, X OVER T)	[3.7576832151300237]	LibreOffice
+A	STEYX(Y, X OVER T)	[3.4981983429997383]	LibreOffice
+A	FORECAST(5, Y, X OVER T)	[4.957446808510638]	LibreOffice
+A	FORECAST.LINEAR(-2, Y, X OVER T)	[3.2777777777777777]	LibreOffice
+A	CHITEST(X, Y OVER T)	[0.0004914813716246667]	LibreOffice
+A	CHISQ.TEST(Y, X OVER T)	[1.0806741167711049e-16]	LibreOffice
+A	FTEST(X, Y OVER T)	[0.6385452059637854]	LibreOffice
+A	F.TEST(Y, X OVER T)	[0.6385452059637854]	LibreOffice
+A	TTEST(X, Y OVER T, 1, 1)	[0.2848732066934384]	LibreOffice
+A	TTEST(X, Y OVER T, 2, 1)	[0.5697464133868768]	LibreOffice
+A	TTEST(X, Y OVER T, 2, 2)	[0.6013011431180217]	LibreOffice
+A	TTEST(X, Y OVER T, 1, 3)	[0.3007882804365922]	LibreOffice
+A	T.TEST(X, Y OVER T, 2, 3)	[0.6015765608731845]	LibreOffice
+A	TTEST(X, Y OVER T, 3, 1)	[{"error": "#NUM!"}]	LibreOffice
+A	TTEST(X, Y OVER T, 2, 4)	[{"error": "#NUM!"}]	LibreOffice
+A	ZTEST(X OVER T, 3)	[{"approx": 0.1839308851534886, "tol": 1e-09}]	LibreOffice
+A	ZTEST(X OVER T, 5)	[{"approx": 0.8765205306237982, "tol": 1e-09}]	LibreOffice
+A	Z.TEST(X OVER T, 3, 2)	[{"approx": 0.10796246947007015, "tol": 1e-09}]	LibreOffice
+A	ZTEST(X OVER T, 3, 0)	[{"error": "#NUM!"}]	LibreOffice
+A	COUNTIF(X OVER T, ">2")	[5.0]	LibreOffice
+A	COUNTIF(X OVER T, 1)	[2.0]	LibreOffice
+A	COUNTIF(X OVER T, "<>1")	[6.0]	LibreOffice
+A	COUNTIF(X OVER T, "=4")	[1.0]	LibreOffice
+A	COUNTIF(X OVER T, "<=3")	[4.0]	LibreOffice
+A	COUNTIF(C OVER T, "apple")	[3.0]	LibreOffice
+A	COUNTIF(C OVER T, "a*")	[3.0]	LibreOffice
+A	COUNTIF(C OVER T, "?anana")	[2.0]	LibreOffice
+A	COUNTIF(C OVER T, "<>apple")	[5.0]	LibreOffice
+A	COUNTIF(C OVER T, "<c")	[5.0]	LibreOffice
+A	COUNTIF(C OVER T, "*an*")	[2.0]	LibreOffice
+A	COUNTIF(B OVER T, TRUE)	[4.0]	LibreOffice
+A	COUNTIF(C OVER T, "zz")	[0.0]	LibreOffice
+A	SUMIF(X OVER T, ">=3")	[27.0]	LibreOffice
+A	SUMIF(C OVER T, "a*", X)	[10.0]	LibreOffice
+A	SUMIF(C OVER T, "apple", Y)	[18.0]	LibreOffice
+A	SUMIF(X OVER T, "<0")	[0.0]	LibreOffice
+A	AVERAGEIF(X OVER T, "<5")	[2.2]	LibreOffice
+A	AVERAGEIF(C OVER T, "*a*", Y)	[5.833333333333333]	LibreOffice
+A	AVERAGEIF(X OVER T, ">100")	[{"error": "#DIV/0!"}]	LibreOffice
+A	SUMIFS(X, C OVER T, "a*", Y, ">1")	[10.0]	LibreOffice
+A	SUMIFS(Y, X OVER T, ">2")	[21.0]	LibreOffice
+A	COUNTIFS(C OVER T, "b*", X, ">3")	[1.0]	LibreOffice
+A	COUNTIFS(X OVER T, ">1")	[6.0]	LibreOffice
+A	COUNTIFS(C OVER T, "*e*", Y, "<8", X, "<>4")	[2.0]	LibreOffice
+A	AVERAGEIFS(Y, X OVER T, ">2")	[4.2]	LibreOffice
+A	AVERAGEIFS(Y, C OVER T, "apple", X, 3)	[2.0]	LibreOffice
+A	AVERAGEIFS(Y, X OVER T, ">20")	[{"error": "#DIV/0!"}]	LibreOffice
+A	MAXIFS(X, C OVER T, "a*")	[6.0]	LibreOffice
+A	MINIFS(X, C OVER T, "a*")	[1.0]	LibreOffice
+A	MAXIFS(X, C OVER T, "zzz")	[0.0]	LibreOffice
+A	MINIFS(Y, X OVER T, ">1", C, "<>apple")	[1.0]	LibreOffice
+A	COUNT(B OVER T)	[0]	Excel docs
+A	LARGE(X OVER T, 9)	[{"error": "#NUM!"}]	Excel docs
+A	LARGE(X OVER T, 0)	[{"error": "#NUM!"}]	Excel docs
+A	PERCENTILE.EXC(X OVER T, 0.1)	[{"error": "#NUM!"}]	Excel docs
+A	PERCENTILE.EXC(X OVER T, 0.95)	[{"error": "#NUM!"}]	Excel docs
+A	SUBTOTAL(12, X OVER T)	[{"error": "#VALUE!"}]	Excel docs
+A	PERCENTRANK(X OVER T, 10)	[[{"error": "#N/A"}, {"error": "#N/A"}, {"error": "#N/A"}, {"error": "#N/A"}, {"error": "#N/A"}, {"error": "#N/A"}, {"error": "#N/A"}, {"error": "#N/A"}]]	Excel docs
+A	AGGREGATE(14, 0, X OVER T)	[{"error": "#VALUE!"}]	Excel docs
+A	SUMA(X OVER T)	[31.0]	Gnumeric definition (plugins/fn-stat)
+A	SUMA(B OVER T)	[4.0]	Gnumeric definition (plugins/fn-stat)
+A	KURTP(X OVER T)	[-0.5349496168871455]	Gnumeric definition (plugins/fn-stat)
+A	PERCENTOF(X, Y OVER T)	[0.8266666666666667]	Excel docs
+A	POLYNOMIAL(0.5, X OVER T)	[5.296875]	Numbers (plan §5.4)
+A	POLYNOMIAL(-2, X OVER T)	[-839.0]	Numbers (plan §5.4)
+A	AUTOCORREL(X OVER T)	[-0.17523640661938533]	GSL definition
+A	AUTOCORREL(Y OVER T)	[-0.8615140988966081]	GSL definition
+A	EXPA(Y, X OVER T)	[5.311412730044617]	Quantrix (plan §5.12, assumed)
+A	EXPB(Y, X OVER T)	[0.027146107759102776]	Quantrix (plan §5.12, assumed)
+A	EXPA(Y, X OVER T, TRUE)	[2.810295038013288]	Quantrix (plan §5.12, assumed)
+A	EXPB(Y, X OVER T, TRUE)	[0.05515091789602711]	Quantrix (plan §5.12, assumed)
+A	EXPFORECAST(4.5, Y, X OVER T)	[6.0015353948937875]	Quantrix (plan §5.12, assumed)
+A	EXPFORECAST(4.5, Y, X OVER T, TRUE)	[3.601925645929932]	Quantrix (plan §5.12, assumed)
+A	EXPA(Y, X OVER T, TRUE)	[2.810295038013288]	LibreOffice
+A	EXPFORECAST(4.5, Y, X OVER T, TRUE)	[3.6019256459299314]	LibreOffice
+A	RANK(X OVER T)	[[5.0, 7.0, 4.0, 7.0, 3.0, 1.0, 6.0, 2.0]]	LibreOffice
+A	RANK(X OVER T, 1)	[[4.0, 1.0, 5.0, 1.0, 6.0, 8.0, 3.0, 7.0]]	LibreOffice
+A	RANK.EQ(Y OVER T)	[[5.0, 4.0, 8.0, 1.0, 5.0, 1.0, 7.0, 1.0]]	LibreOffice
+A	RANK(X OVER T, 0)	[[5.0, 7.0, 4.0, 7.0, 3.0, 1.0, 6.0, 2.0]]	LibreOffice
+A	RANK.AVG(X OVER T)	[[5.0, 7.5, 4.0, 7.5, 3.0, 1.0, 6.0, 2.0]]	LibreOffice
+A	RANK.AVG(Y OVER T, 1)	[[3.5, 5.0, 1.0, 7.0, 3.5, 7.0, 2.0, 7.0]]	LibreOffice
+A	TREND(Y, X OVER T)	[[4.4775413711583925, 3.9976359338061465, 4.717494089834515, 3.9976359338061465, 4.957446808510639, 5.91725768321513, 4.23758865248227, 5.197399527186761]]	LibreOffice
+A	TREND(Y, X OVER T, FALSE)	[[2.739884393063584, 0.9132947976878613, 3.653179190751445, 0.9132947976878613, 4.566473988439307, 8.219653179190752, 1.8265895953757225, 5.479768786127168]]	LibreOffice
+A	GROWTH(Y, X OVER T)	[[3.3159435952643044, 2.9696389847327254, 3.503957854415537, 2.9696389847327254, 3.7026325366495607, 4.616550285047476, 3.1380177455954055, 3.9125720887823623]]	LibreOffice
+A	GROWTH(Y, X OVER T, FALSE)	[[2.056325198115715, 1.2716392740621485, 2.6149038821675714, 1.2716392740621485, 3.325214474461865, 8.695116238310133, 1.617066443337308, 4.228473320405635]]	LibreOffice
+A	PERCENTRANK(X OVER T)	[[0.428, 0.0, 0.571, 0.0, 0.714, 1.0, 0.285, 0.857]]	Excel docs
+A	PERCENTRANK.INC(Y OVER T)	[[0.285, 0.571, 0.0, 0.714, 0.285, 0.714, 0.142, 0.714]]	Excel docs
+A	PERCENTRANK(X OVER T, 2.5)	[[0.357, 0.357, 0.357, 0.357, 0.357, 0.357, 0.357, 0.357]]	LibreOffice
+A	PERCENTRANK(X OVER T, 2.5, 2)	[[0.35, 0.35, 0.35, 0.35, 0.35, 0.35, 0.35, 0.35]]	Excel docs
+A	PERCENTRANK(X OVER T, 7.3, 5)	[[0.91904, 0.91904, 0.91904, 0.91904, 0.91904, 0.91904, 0.91904, 0.91904]]	Excel docs
+A	PERCENTRANK.EXC(X OVER T)	[[0.444, 0.111, 0.555, 0.111, 0.666, 0.888, 0.333, 0.777]]	Excel docs
+A	PERCENTRANK.EXC(X OVER T, 4.5, 4)	[[0.6111, 0.6111, 0.6111, 0.6111, 0.6111, 0.6111, 0.6111, 0.6111]]	LibreOffice
+@S	{"T": 3, "m": {"X": [[7, null, null]], "Y": [[2, null, null]]}}
+S	COUNT(X OVER T)	[1.0]	LibreOffice
+S	COUNTA(X OVER T)	[1.0]	LibreOffice
+S	COUNTBLANK(X OVER T)	[2.0]	LibreOffice
+S	AVERAGEA(X OVER T)	[7.0]	LibreOffice
+S	AVEDEV(X OVER T)	[0.0]	LibreOffice
+S	MEDIAN(X OVER T)	[7.0]	LibreOffice
+S	GEOMEAN(X OVER T)	[6.999999999999999]	LibreOffice
+S	HARMEAN(X OVER T)	[7.0]	LibreOffice
+S	TRIMMEAN(X OVER T, 0.5)	[7.0]	LibreOffice
+S	DEVSQ(X OVER T)	[0.0]	LibreOffice
+S	STDEV(X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	STDEVP(X OVER T)	[0.0]	LibreOffice
+S	VAR(X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	VARP(X OVER T)	[0.0]	LibreOffice
+S	VARPA(X OVER T)	[0.0]	LibreOffice
+S	KURT(X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	SKEW(X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	SKEWP(X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	LARGE(X OVER T, 1)	[7.0]	LibreOffice
+S	PERCENTILE(X OVER T, 0.4)	[7.0]	LibreOffice
+S	PERCENTILE.EXC(X OVER T, 0.5)	[7.0]	LibreOffice
+S	QUARTILE(X OVER T, 3)	[7.0]	LibreOffice
+S	SUBTOTAL(7, X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	SUBTOTAL(8, X OVER T)	[0.0]	LibreOffice
+S	CORREL(X, Y OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	COVAR(X, Y OVER T)	[0.0]	LibreOffice
+S	SLOPE(Y, X OVER T)	[{"error": "#DIV/0!"}]	LibreOffice
+S	SUMPRODUCT(X, Y OVER T)	[14.0]	LibreOffice
+S	SERIESSUM(3, 2, 1, X OVER T)	[63.0]	LibreOffice
+S	ZTEST(X OVER T, 3, 2)	[{"error": "#DIV/0!"}]	LibreOffice
+S	ZTEST(X OVER T, 3)	[{"error": "#DIV/0!"}]	LibreOffice
+S	COUNTIF(X OVER T, 7)	[1.0]	LibreOffice
+S	SUMIF(X OVER T, ">5")	[7.0]	LibreOffice
+S	MODE(X OVER T)	[{"error": "#N/A"}]	Excel docs
+S	SMALL(X OVER T, 2)	[{"error": "#NUM!"}]	Excel docs
+S	COVARIANCE.S(X, Y OVER T)	[{"error": "#DIV/0!"}]	Excel docs
+S	STEYX(Y, X OVER T)	[{"error": "#DIV/0!"}]	Excel docs
+S	KURTP(X OVER T)	[{"error": "#DIV/0!"}]	Gnumeric definition (plugins/fn-stat)
+S	AUTOCORREL(X OVER T)	[{"error": "#DIV/0!"}]	GSL definition
+S	RANK(X OVER T)	[[1.0, null, null]]	LibreOffice
+S	RANK.AVG(X OVER T)	[[1.0, null, null]]	LibreOffice
+S	PERCENTRANK(X OVER T)	[[1.0, null, null]]	LibreOffice
+S	PERCENTRANK.EXC(X OVER T)	[[1.0, null, null]]	LibreOffice
+@G	{"T": 6, "G": 2, "m": {"X": [[10, 20, 20, 40, 50, 60], [5, 3, 8, null, 3, 1]], "Y": [[1.5, 2.5, 2, 4.5, 5, 6.5], [2, 4, 1, null, 6, 5]], "C": [["a", "b", "a", "c", "b", "a"], ["b", "b", "a", null, "c", "c"]]}}
+G	COUNT(X OVER T)	[6.0, 5.0]	LibreOffice
+G	COUNTBLANK(X OVER T)	[0.0, 1.0]	LibreOffice
+G	AVERAGEA(X OVER T)	[33.333333333333336, 4.0]	LibreOffice
+G	MEDIAN(X OVER T)	[30.0, 3.0]	LibreOffice
+G	MODE(X OVER T)	[20.0, 3.0]	LibreOffice
+G	STDEV(X OVER T)	[19.6638416050035, 2.6457513110645907]	LibreOffice
+G	VARP(Y OVER T)	[3.2222222222222228, 3.44]	LibreOffice
+G	KURT(X OVER T)	[-1.8281807372175978, 0.6734693877550999]	LibreOffice
+G	SKEW(Y OVER T)	[0.36716261914812237, -0.23551393640880616]	LibreOffice
+G	LARGE(X OVER T, 2)	[50.0, 5.0]	LibreOffice
+G	SMALL(X OVER T, 2)	[20.0, 3.0]	LibreOffice
+G	PERCENTILE(X OVER T, 0.35)	[20.0, 3.0]	LibreOffice
+G	QUARTILE.EXC(Y OVER T, 1)	[1.875, 1.5]	LibreOffice
+G	TRIMMEAN(X OVER T, 0.4)	[32.5, 3.6666666666666665]	LibreOffice
+G	SUBTOTAL(9, X OVER T)	[200.0, 20.0]	LibreOffice
+G	AGGREGATE(16, 6, Y OVER T, 0.8)	[5.0, 5.2]	LibreOffice
+G	CORREL(X, Y OVER T)	[0.9913793103448277, -0.8657856071845809]	LibreOffice
+G	SLOPE(Y, X OVER T)	[0.09913793103448278, -0.6785714285714286]	LibreOffice
+G	INTERCEPT(Y, X OVER T)	[0.3620689655172402, 6.314285714285715]	LibreOffice
+G	FORECAST(30, Y, X OVER T)	[3.3362068965517238, -14.042857142857143]	LibreOffice
+G	STEYX(Y, X OVER T)	[0.28805231804488773, 1.1982129550769705]	LibreOffice
+G	SUMXMY2(X, Y OVER T)	[6850.0, 84.0]	LibreOffice
+G	TTEST(X, Y OVER T, 2, 1)	[0.009338607966033117, 0.854079703378172]	LibreOffice
+G	TTEST(X, Y OVER T, 2, 2)	[0.004266178414384768, 0.7969095913687111]	LibreOffice
+G	TTEST(X, Y OVER T, 1, 3)	[0.00691996655241966, 0.3986425752395676]	LibreOffice
+G	FTEST(X, Y OVER T)	[0.00010485826715709861, 0.6484135735260387]	LibreOffice
+G	ZTEST(Y OVER T, 3)	[{"approx": 0.20314084705215157, "tol": 1e-09}, {"approx": 0.258817059291615, "tol": 1e-09}]	LibreOffice
+G	COUNTIF(C OVER T, "a")	[3.0, 1.0]	LibreOffice
+G	SUMIF(C OVER T, "b", X)	[70.0, 8.0]	LibreOffice
+G	AVERAGEIF(C OVER T, "<>a", Y)	[4.0, 4.25]	LibreOffice
+G	SUMIFS(Y, C OVER T, "a", X, ">3")	[10.0, 1.0]	LibreOffice
+G	COUNTIFS(C OVER T, "?", Y, ">=2")	[5.0, 4.0]	LibreOffice
+G	MAXIFS(Y, C OVER T, "b")	[5.0, 4.0]	LibreOffice
+G	MINIFS(Y, C OVER T, "c")	[4.5, 5.0]	LibreOffice
+G	AUTOCORREL(X OVER T)	[0.4942528735632184, -0.2142857142857143]	GSL definition
+G	PERCENTRANK(Y OVER T)	[[0.0, 0.4, 0.2, 0.6, 0.8, 1.0], [0.25, 0.5, 0.0, null, 1.0, 0.75]]	LibreOffice
+G	EXPB(Y, X OVER T)	[0.02729212002482033, -0.22462015640575417]	Quantrix (plan §5.12, assumed)
+G	RANK(X OVER T)	[[6.0, 4.0, 4.0, 3.0, 2.0, 1.0], [2.0, 3.0, 1.0, null, 3.0, 5.0]]	LibreOffice
+G	RANK.AVG(X OVER T, 1)	[[1.0, 2.5, 2.5, 4.0, 5.0, 6.0], [4.0, 2.5, 5.0, null, 2.5, 1.0]]	LibreOffice
+G	TREND(Y, X OVER T)	[[1.353448275862068, 2.344827586206896, 2.344827586206896, 4.327586206896552, 5.318965517241379, 6.310344827586206], [2.9214285714285717, 4.2785714285714285, 0.8857142857142857, null, 4.2785714285714285, 5.635714285714286]]	LibreOffice
+G	GROWTH(Y, X OVER T)	[[1.6367323838757075, 2.184877229905683, 2.184877229905683, 3.893370780723253, 5.197268197406381, 6.937843384840414], [2.3046788570972496, 3.8857430510558024, 1.0527249732971753, null, 3.8857430510558024, 6.551454668979649]]	least squares of ln y (LibreOffice's GROWTH rejects blanks)
+@N	{"T": 7, "m": {"X": [[2.5, 4, 0, -1, null, -1, 4]], "Y": [[1, 2, 3, 4, null, 6, 7]]}}
+N	COUNT(X OVER T)	[6.0]	LibreOffice
+N	COUNTBLANK(X OVER T)	[1.0]	LibreOffice
+N	MEDIAN(X OVER T)	[1.25]	LibreOffice
+N	AVEDEV(X OVER T)	[2.0833333333333335]	LibreOffice
+N	HARMEAN(X OVER T)	[{"error": "#NUM!"}]	LibreOffice
+N	DEVSQ(X OVER T)	[28.208333333333332]	LibreOffice
+N	STDEVA(X OVER T)	[2.375219288121976]	LibreOffice
+N	KURT(X OVER T)	[-2.6718143516993265]	LibreOffice
+N	SKEW(X OVER T)	[0.10478702854461774]	LibreOffice
+N	SKEWP(X OVER T)	[0.07652562569043304]	LibreOffice
+N	MAXA(X OVER T)	[4.0]	LibreOffice
+N	MINA(X OVER T)	[-1.0]	LibreOffice
+N	PERCENTILE.EXC(X OVER T, 0.5)	[1.25]	LibreOffice
+N	QUARTILE(X OVER T, 1)	[-0.75]	LibreOffice
+N	SUBTOTAL(6, X OVER T)	[0.0]	LibreOffice
+N	SUBTOTAL(106, X OVER T)	[0.0]	LibreOffice
+N	AGGREGATE(6, 0, X OVER T)	[0.0]	LibreOffice
+N	SUMPRODUCT(X, Y OVER T)	[28.5]	LibreOffice
+N	SUMX2MY2(X, Y OVER T)	[-74.75]	LibreOffice
+N	CORREL(X, Y OVER T)	[-0.14841876301386409]	LibreOffice
+N	RSQ(Y, X OVER T)	[0.02202812921456555]	LibreOffice
+N	SERIESSUM(-1.5, 0, 2, X OVER T)	[461.4296875]	LibreOffice
+N	COUNTIF(X OVER T, "<0")	[2.0]	LibreOffice
+N	COUNTIF(X OVER T, ">=-1")	[6.0]	LibreOffice
+N	COUNTIF(X OVER T, 0)	[1.0]	LibreOffice
+N	SUMIF(X OVER T, "<>4")	[0.5]	LibreOffice
+N	AVERAGEIF(X OVER T, "<=0", Y)	[4.333333333333333]	LibreOffice
+N	GEOMEAN(X OVER T)	[{"error": "#NUM!"}]	Excel docs
+N	MODE(X OVER T)	[4]	Excel docs
+N	KURTP(X OVER T)	[-1.7731934920111978]	Gnumeric definition (plugins/fn-stat)
+N	AUTOCORREL(X OVER T)	[0.07656326932545554]	GSL definition
+N	PERCENTRANK(X OVER T)	[[0.6, 0.8, 0.4, 0.0, null, 0.0, 0.8]]	LibreOffice
+N	PERCENTRANK.EXC(X OVER T)	[[0.571, 0.714, 0.428, 0.142, null, 0.142, 0.714]]	Excel docs
+N	POLYNOMIAL(3, X OVER T)	[2660.5]	Numbers (plan §5.4)
+N	RANK(X OVER T)	[[3.0, 1.0, 4.0, 5.0, null, 5.0, 1.0]]	LibreOffice
+N	RANK.AVG(X OVER T)	[[3.0, 1.5, 4.0, 5.5, null, 5.5, 1.5]]	LibreOffice
+N	RANK.AVG(X OVER T, 1)	[[4.0, 5.5, 3.0, 1.5, null, 1.5, 5.5]]	LibreOffice
+N	TREND(Y, X OVER T)	[[3.6765140324963075, 3.4593796159527326, 4.038404726735599, 4.183161004431315, null, 4.183161004431315, 3.4593796159527326]]	LibreOffice
+@E	{"T": 5, "m": {"X": [[4, {"error": "#N/A"}, 2, 8, {"error": "#DIV/0!"}]]}}
+E	COUNT(X OVER T)	[3.0]	LibreOffice
+E	COUNTA(X OVER T)	[5.0]	LibreOffice
+E	STDEV(X OVER T)	[{"error": "#N/A"}]	LibreOffice
+E	MAXA(X OVER T)	[{"error": "#N/A"}]	LibreOffice
+E	SUBTOTAL(9, X OVER T)	[{"error": "#N/A"}]	LibreOffice
+E	AGGREGATE(9, 6, X OVER T)	[14.0]	LibreOffice
+E	AGGREGATE(14, 6, X OVER T, 2)	[4.0]	LibreOffice
+E	AGGREGATE(1, 7, X OVER T)	[4.666666666666667]	LibreOffice
+E	AGGREGATE(2, 2, X OVER T)	[3.0]	LibreOffice
+E	AGGREGATE(3, 3, X OVER T)	[3.0]	LibreOffice
+E	COUNTIF(X OVER T, ">1")	[3.0]	LibreOffice
+E	SUMIF(X OVER T, ">3")	[12.0]	LibreOffice

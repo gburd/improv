@@ -8,6 +8,26 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **72 statistical reductions** (phase P4), each `F(x OVER T, …)`:
+  - descriptive: `COUNT`, `COUNTA`, `COUNTBLANK`, `SUMA`, `AVERAGEA`,
+    `MAXA`, `MINA`, `AVEDEV`, `MEDIAN`, `MODE` (`MODE.SNGL`), `GEOMEAN`,
+    `HARMEAN`, `TRIMMEAN`, `DEVSQ`, `STDEV`/`STDEVP`/`STDEVA`/`STDEVPA`,
+    `VAR`/`VARP`/`VARA`/`VARPA` (and the `.S`/`.P` spellings), `KURT`,
+    `KURTP`, `SKEW`, `SKEWP`, `LARGE`, `SMALL`, `PERCENTILE`(`.INC`/`.EXC`),
+    `QUARTILE`(`.INC`/`.EXC`), `PROB`, `SUBTOTAL` and `AGGREGATE`;
+  - conditional, with Excel's criteria (`">5"`, `"<>x"`, wildcards
+    `*`/`?`/`~`): `COUNTIF`, `COUNTIFS`, `SUMIF`, `SUMIFS`, `AVERAGEIF`,
+    `AVERAGEIFS`, `MAXIFS`, `MINIFS`;
+  - sums of products: `SUMPRODUCT`, `SUMX2MY2`, `SUMX2PY2`, `SUMXMY2`,
+    `SERIESSUM`, `POLYNOMIAL`, `PERCENTOF`;
+  - per item (the result keeps the category): `RANK` (`RANK.EQ`),
+    `RANK.AVG`, `PERCENTRANK` (`.INC`/`.EXC`), `TREND`, `GROWTH`;
+  - regression and tests: `CORREL` (`PEARSON`), `RSQ`, `COVAR`
+    (`COVARIANCE.P`), `COVARIANCE.S`, `SLOPE`, `INTERCEPT`, `STEYX`,
+    `FORECAST` (`FORECAST.LINEAR`), Quantrix's `EXPA`, `EXPB` and
+    `EXPFORECAST`, `CHITEST`, `FTEST`, `TTEST`, `ZTEST` (and their dotted
+    spellings), and `AUTOCORREL` (GSL's lag-1 autocorrelation).
+  `FREQUENCY`, `LINEST` and `LOGEST` return arrays and wait for P6.
 - **Positions, neighbours, running totals and recurrences** (the plan's
   phase P3). `POSITION(T)`, `@ITEM(T)`, `@ID(T)`, `@ITEMCOUNT(T)`;
   `PREV(x, T, [n], [default])` and `NEXT`; windows `SUM(x OVER

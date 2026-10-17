@@ -151,6 +151,14 @@ Angles are in radians.
 | `ERF(number, [number])` | number | the error function erf(x), or erf(upper) − erf(lower) |
 | `ERF.PRECISE(number)` | number | the error function erf(x) |
 | `ERFC(number)` | number | the complementary error function 1 − erf(x) (also `ERFC.PRECISE`) |
+| `SUMA(Measure OVER Category)` | number | the sum, counting TRUE as 1 and text as 0 |
+| `SUMPRODUCT(Measure OVER Category)` | number | Σ xᵢ·yᵢ·… over the rows where every measure has a cell |
+| `SUMX2MY2(number OVER category, number OVER category)` | number | Σ(x² − y²) |
+| `SUMX2PY2(number OVER category, number OVER category)` | number | Σ(x² + y²) |
+| `SUMXMY2(number OVER category, number OVER category)` | number | Σ(x − y)² |
+| `SERIESSUM(number, number, number, number OVER category)` | number | Σ cᵢ·x^(n + i·m), the coefficients c in item order (i from 0) |
+| `POLYNOMIAL(number, number OVER category)` | number | Σ cᵢ·xⁱ, the coefficients c in item order (the constant c₀ first) |
+| `PERCENTOF(number OVER category, number OVER category)` | number | Σ subset / Σ all |
 
 ## Rounding
 
@@ -331,6 +339,70 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CONFIDENCE.NORM(number, number, number)` | number | the half-width of a normal confidence interval at significance alpha, for sd and sample size n (also `CONFIDENCE`) |
 | `CONFIDENCE.T(number, number, number)` | number | the half-width of a Student's t confidence interval at significance alpha, for sd and sample size n |
 | `STANDARDIZE(number, number, number)` | number | the z-score (x − mean) / sd |
+| `AVERAGEA(Measure OVER Category)` | number | the mean, counting TRUE as 1 and text and FALSE as 0 |
+| `AVERAGEIF(value OVER category, value, [number OVER category])` | number | the mean of avg_x (else x) where x meets the criterion |
+| `AVERAGEIFS(number OVER category, value OVER category, value, …)` | number | the mean of x where every criteria measure meets its criterion |
+| `AVEDEV(Measure OVER Category)` | number | the mean absolute deviation from the mean |
+| `COUNT(Measure OVER Category)` | number | the number of numbers (and dates) |
+| `COUNTA(Measure OVER Category)` | number | the number of cells (errors included) |
+| `COUNTBLANK(Measure OVER Category)` | number | the number of items with no cell (or empty text) |
+| `COUNTIF(value OVER category, value)` | number | the number of cells meeting the criterion (">5", "<>x", "a*", 3) |
+| `COUNTIFS(value OVER category, value, …)` | number | the number of rows where every criteria measure meets its criterion |
+| `SUMIF(value OVER category, value, [number OVER category])` | number | the sum of sum_x (else x) where x meets the criterion |
+| `SUMIFS(number OVER category, value OVER category, value, …)` | number | the sum of x where every criteria measure meets its criterion |
+| `MAXA(Measure OVER Category)` | number | the largest value, counting TRUE as 1 and text and FALSE as 0 |
+| `MAXIFS(number OVER category, value OVER category, value, …)` | number | the largest x where every criteria measure meets its criterion (0 if none) |
+| `MINA(Measure OVER Category)` | number | the smallest value, counting TRUE as 1 and text and FALSE as 0 |
+| `MINIFS(number OVER category, value OVER category, value, …)` | number | the smallest x where every criteria measure meets its criterion (0 if none) |
+| `MEDIAN(Measure OVER Category)` | number | the median |
+| `MODE(Measure OVER Category)` | number | the most frequent value (the first in item order on a tie; #N/A if none repeats) (also `MODE.SNGL`) |
+| `GEOMEAN(Measure OVER Category)` | number | the geometric mean (#NUM! for a value ≤ 0) |
+| `HARMEAN(Measure OVER Category)` | number | the harmonic mean (#NUM! for a value ≤ 0) |
+| `TRIMMEAN(number OVER category, number)` | number | the mean without the fraction of values at the tails (rounded down to an even count) |
+| `DEVSQ(Measure OVER Category)` | number | Σ(x − mean)² |
+| `STDEV(Measure OVER Category)` | number | the sample standard deviation (also `STDEV.S`) |
+| `STDEVP(Measure OVER Category)` | number | the population standard deviation (also `STDEV.P`) |
+| `STDEVA(Measure OVER Category)` | number | the sample standard deviation, counting TRUE as 1 and text and FALSE as 0 |
+| `STDEVPA(Measure OVER Category)` | number | the population standard deviation, counting TRUE as 1 and text and FALSE as 0 |
+| `VAR(Measure OVER Category)` | number | the sample variance (also `VAR.S`) |
+| `VARP(Measure OVER Category)` | number | the population variance (also `VAR.P`) |
+| `VARA(Measure OVER Category)` | number | the sample variance, counting TRUE as 1 and text and FALSE as 0 |
+| `VARPA(Measure OVER Category)` | number | the population variance, counting TRUE as 1 and text and FALSE as 0 |
+| `KURT(Measure OVER Category)` | number | the sample excess kurtosis |
+| `KURTP(Measure OVER Category)` | number | the population excess kurtosis |
+| `SKEW(Measure OVER Category)` | number | the sample skewness |
+| `SKEWP(Measure OVER Category)` | number | the population skewness (also `SKEW.P`) |
+| `LARGE(number OVER category, number)` | number | the k-th largest value |
+| `SMALL(number OVER category, number)` | number | the k-th smallest value |
+| `PERCENTILE(number OVER category, number)` | number | the p-th percentile, interpolated, 0 ≤ p ≤ 1 (also `PERCENTILE.INC`) |
+| `PERCENTILE.EXC(number OVER category, number)` | number | the p-th percentile, exclusive of 0 and 1 |
+| `QUARTILE(number OVER category, number)` | number | the q-th quartile (0 min … 4 max) (also `QUARTILE.INC`) |
+| `QUARTILE.EXC(number OVER category, number)` | number | the q-th quartile (1 … 3), exclusive |
+| `PROB(number OVER category, number OVER category, number, [number])` | number | Σ p over the values x in [low, high] (x = low without high); #NUM! unless every 0 < p ≤ 1 and Σ p = 1 |
+| `SUBTOTAL(number, number OVER category)` | number | the reduction a code picks: 1 AVERAGE, 2 COUNT, 3 COUNTA, 4 MAX, 5 MIN, 6 PRODUCT, 7 STDEV, 8 STDEVP, 9 SUM, 10 VAR, 11 VARP (101–111 the same) |
+| `AGGREGATE(number, number, number OVER category, [number])` | number | SUBTOTAL's codes and 12 MEDIAN, 13 MODE, 14 LARGE, 15 SMALL, 16 PERCENTILE, 17 QUARTILE, 18 PERCENTILE.EXC, 19 QUARTILE.EXC; options 2, 3, 6, 7 skip errors |
+| `RANK(number OVER category, [number])` | number | each item's rank among the values (order 0, the default, ranks the largest 1) (also `RANK.EQ`) |
+| `RANK.AVG(number OVER category, [number])` | number | each item's rank, ties sharing their mean rank |
+| `PERCENTRANK(number OVER category, [number], [number])` | number | each item's (or v's) rank as a fraction 0 … 1, to digits (3) significant digits (also `PERCENTRANK.INC`) |
+| `PERCENTRANK.EXC(number OVER category, [number], [number])` | number | each item's (or v's) rank as a fraction, exclusive of 0 and 1 |
+| `TREND(number OVER category, number OVER category, [boolean])` | number | each item's value on the least-squares line of y on x, at its own x (through 0 if const is FALSE) |
+| `GROWTH(number OVER category, number OVER category, [boolean])` | number | each item's value on the least-squares curve y = b·mˣ (fitting ln y; b = 1 if const is FALSE) |
+| `CORREL(number OVER category, number OVER category)` | number | the Pearson correlation of x and y (also `PEARSON`) |
+| `RSQ(number OVER category, number OVER category)` | number | the square of the Pearson correlation |
+| `COVAR(number OVER category, number OVER category)` | number | the population covariance (also `COVARIANCE.P`) |
+| `COVARIANCE.S(number OVER category, number OVER category)` | number | the sample covariance |
+| `SLOPE(number OVER category, number OVER category)` | number | the least-squares slope of y on x |
+| `INTERCEPT(number OVER category, number OVER category)` | number | the least-squares intercept of y on x |
+| `STEYX(number OVER category, number OVER category)` | number | the standard error of the predicted y |
+| `FORECAST(number, number OVER category, number OVER category)` | number | the least-squares line of y on x at x0 (also `FORECAST.LINEAR`) |
+| `EXPA(number OVER category, number OVER category, [boolean])` | number | A of the fit y = A·e^(Bx): least squares of ln y weighted by y (simple = TRUE: unweighted, as LOGEST) |
+| `EXPB(number OVER category, number OVER category, [boolean])` | number | B of the fit y = A·e^(Bx) |
+| `EXPFORECAST(number, number OVER category, number OVER category, [boolean])` | number | the fit y = A·e^(Bx) at x0 |
+| `CHITEST(number OVER category, number OVER category)` | number | the χ² test p-value of actual against expected (also `CHISQ.TEST`) |
+| `FTEST(number OVER category, number OVER category)` | number | the two-tailed F-test p-value that a and b have the same variance (also `F.TEST`) |
+| `TTEST(number OVER category, number OVER category, number, number)` | number | the t-test p-value (tails 1 or 2; type 1 paired, 2 equal variance, 3 unequal) (also `T.TEST`) |
+| `ZTEST(number OVER category, number, [number])` | number | the one-tailed z-test p-value of the mean against μ0 (σ defaults to the sample's) (also `Z.TEST`) |
+| `AUTOCORREL(Measure OVER Category)` | number | the lag-1 autocorrelation in item order (GSL) (also `GSL_STATS_LAG1_AUTOCORRELATION`) |
 
 ## Financial
 

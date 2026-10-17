@@ -16,6 +16,8 @@ fn golden_files() -> Vec<(String, String)> {
         .expect("tests/data")
         .map(|e| e.expect("dir entry").path())
         .filter(|p| p.to_string_lossy().ends_with("_goldens.tsv"))
+        // Reductions read datasets, not literals (tests/reductions_*.rs).
+        .filter(|p| !p.to_string_lossy().ends_with("_reduce_goldens.tsv"))
         .map(|p| {
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
             (name, std::fs::read_to_string(&p).expect("golden file"))

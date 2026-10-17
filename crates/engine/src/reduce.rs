@@ -16,6 +16,7 @@ use crate::CellValue;
 use improv_core_model::FuncId;
 
 mod financial;
+mod statistical;
 
 /// One group's rows, in item order.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +65,7 @@ pub fn reduce(func: FuncId, rows: &Rows, params: &[CellValue]) -> CellValue {
     match func.0 {
         1..=9 => core(func.0, rows),
         906..=909 => ordered(func.0, rows, params),
+        1000..=1149 => statistical::reduce(func.0, rows, params),
         1150..=1199 => financial::reduce(func.0, rows, params),
         _ => CellValue::Err(err::NAME),
     }
@@ -76,8 +78,10 @@ pub fn per_item(func: FuncId, rows: &Rows, params: &[CellValue]) -> Vec<CellValu
         return vec![bad.clone(); rows.len()];
     }
     // Each family adds its per-item reductions here by id (RANK, TREND, …).
-    let _ = func;
-    vec![CellValue::Err(err::NAME); rows.len()]
+    match func.0 {
+        1000..=1149 => statistical::per_item(func.0, rows, params),
+        _ => vec![CellValue::Err(err::NAME); rows.len()],
+    }
 }
 
 /// SUM … XOR through their scalar twins (an error in the group is the

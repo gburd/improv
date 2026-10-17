@@ -470,6 +470,7 @@ mod dimensional;
 mod financial;
 mod financial_reduce;
 mod statistical;
+mod statistical_reduce;
 
 /// Every family table, in documentation order.
 static FAMILIES: &[&[FnDef]] = &[
@@ -477,6 +478,7 @@ static FAMILIES: &[&[FnDef]] = &[
     date::DATE,
     dimensional::DIMENSIONAL,
     statistical::STATISTICAL,
+    statistical_reduce::STATISTICAL_REDUCE,
     financial::FINANCIAL,
     financial_reduce::FINANCIAL_REDUCE,
 ];

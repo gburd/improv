@@ -407,7 +407,7 @@ fn gamma_p(a: f64, x: f64) -> f64 {
 }
 
 /// The regularized upper incomplete gamma Q(a, x), a > 0.
-fn gamma_q(a: f64, x: f64) -> f64 {
+pub(crate) fn gamma_q(a: f64, x: f64) -> f64 {
     incomplete_gamma(a, x, false)
 }
 
@@ -504,7 +504,7 @@ fn beta_inv(p: f64, a: f64, b: f64) -> f64 {
     }
 }
 
-fn norm_cdf(z: f64) -> f64 {
+pub(crate) fn norm_cdf(z: f64) -> f64 {
     0.5 * libm::erfc(-z / SQRT_2)
 }
 
@@ -536,7 +536,7 @@ fn f_cdf(x: f64, d1: f64, d2: f64) -> f64 {
     beta_reg(d1 / 2.0, d2 / 2.0, d1 * x / (d1 * x + d2))
 }
 
-fn f_sf(x: f64, d1: f64, d2: f64) -> f64 {
+pub(crate) fn f_sf(x: f64, d1: f64, d2: f64) -> f64 {
     beta_reg(d2 / 2.0, d1 / 2.0, d2 / (d2 + d1 * x))
 }
 
@@ -574,7 +574,7 @@ fn t_central(t: f64, df: f64) -> f64 {
 }
 
 /// Student's t right tail P(T > t).
-fn t_sf(t: f64, df: f64) -> f64 {
+pub(crate) fn t_sf(t: f64, df: f64) -> f64 {
     let z = t * t;
     if z < df {
         let c = t_central(t.abs(), df);

@@ -177,8 +177,9 @@ Total = SUM(Revenue OVER Time)
 
 The form is `AGG(Measure OVER Categories, …)`. The aggregations include
 `SUM`, `AVERAGE` (or `AVG`), `MIN`, `MAX`, `PRODUCT`, `SUMSQ`, over booleans
-`AND`, `OR` and `XOR`, and the ordered `FIRST`, `LAST`, `S` and `TEXTJOIN`;
-see the [Function Reference](./functions.md).
+`AND`, `OR` and `XOR`, the ordered `FIRST`, `LAST`, `S` and `TEXTJOIN`, and
+the statistics (`COUNT`, `MEDIAN`, `STDEV`, `PERCENTILE`, `COUNTIF`,
+`CORREL`, `SLOPE`, `TTEST`, …); see the [Function Reference](./functions.md).
 
 ```text
 Total    = SUM(Revenue OVER Time, Region)        -- several categories
@@ -186,6 +187,12 @@ Others   = SUM(Revenue OVER ALL EXCEPT Product)  -- all but Product
 Big      = SUM(Revenue OVER Time WHERE Revenue > 1000)
 Names    = TEXTJOIN(", ", TRUE, Label OVER Product)
 Opening  = FIRST(Balance OVER Time)
+Spread   = STDEV(Revenue OVER Time)
+Top3     = LARGE(Revenue OVER Time, 3)
+Fit      = CORREL(Price, Quantity OVER Time)
+Big      = COUNTIF(Revenue OVER Time, ">1000")
+Sold     = SUMIFS(Revenue, Region OVER Time, "N*", Quantity, ">=10")
+Rank     = RANK(Revenue OVER Product)                -- per item: keeps Product
 ```
 
 - The reduced arguments must be measure references (with an optional `[…]`
@@ -209,6 +216,18 @@ Opening  = FIRST(Balance OVER Time)
   cell is skipped, not a zero flow, so the flows after it move up a period;
   enter 0 for a period without a flow.
 - Without `OVER`, nothing is reduced (each cell is its own group).
+- The `…IF` and `…IFS` functions take Excel's criteria: a number or boolean
+  means equality, and text may start with `=`, `<>`, `<`, `<=`, `>` or
+  `>=`. Text is compared without regard to case, and `=`/`<>` text takes
+  the wildcards `*` (any run), `?` (any one character) and `~` (the next
+  character literally). In `SUMIFS(x, c1 OVER T, k1, c2, k2)` the summed
+  measure and every criteria measure are reduced together.
+- Per-item reductions (`RANK`, `RANK.AVG`, `PERCENTRANK`, `TREND`, `GROWTH`)
+  give one result per item of their single `OVER` category, and the result
+  keeps it.
+- An error among the rows is the result, except that `COUNT` skips errors,
+  `COUNTA` counts them, the `…IF` functions skip rows whose criteria cell is
+  an error, and `AGGREGATE`'s options 2, 3, 6 and 7 ignore them.
 
 `SUM` etc. are functions only when `(` follows; otherwise the word is an
 ordinary measure name.

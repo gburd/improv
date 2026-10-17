@@ -39,7 +39,7 @@ pub(crate) fn num(x: f64) -> CellValue {
 
 mod date;
 mod financial;
-mod statistical;
+pub(crate) mod statistical;
 
 /// The ids that see error arguments instead of propagating them (`ISERROR`
 /// and the other information functions that ask about a value's kind).
