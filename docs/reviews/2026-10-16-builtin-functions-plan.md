@@ -23,7 +23,9 @@ model, and it proposes a phased plan to add the union to Improv's formula
 language. The user approves the plan (and answers §9) before anything is built.
 
 Source letters used throughout: **E** Excel, **L** LibreOffice, **G** Gnumeric,
-**N** Numbers, **Q** Quantrix. They are written in alphabetical order (`EGLNQ`).
+**N** Numbers, **O** GNU Oleo, **Q** Quantrix. They are written in alphabetical
+order (`EGLNOQ`). Oleo was surveyed later (§5.29); existing rows do not carry
+its letter, and its coverage of them is listed in §5.29.
 
 ## 1. Summary
 
@@ -34,17 +36,25 @@ Source letters used throughout: **E** Excel, **L** LibreOffice, **G** Gnumeric,
 | Gnumeric 1.12.62 | **656** | source tag `GNUMERIC_1_12_62`: `plugins/fn-*/plugin.xml.in` (652) plus `src/func-builtin.c` (`sum`, `product`, `if`, `gnumeric_version`) |
 | Apple Numbers | **355** | support.apple.com "Formulas and Functions Help" table of contents, 11 categories |
 | Quantrix Modeler | **233** (lower bound) | Quantrix 5.1 web help (Wayback Machine, 2015) function pages, plus the structural functions and the 2021–2023 release notes |
+| GNU Oleo 1.99.16 | **139** | release tarball (ChangeLog to 2001-03-09, the last release): the `struct function` tables in `src/byte-compile.c`, `date.c`, `busi.c`, `string.c`, `cells.c`, `gsl.c`, `mysql.c`, checked against `doc/functions.texi`; added later, §5.29 |
 
-- **Union by name:** 873 distinct names.
-- **Union after folding aliases:** 787 distinct functions. 86 names are
-  aliases: legacy and compatibility spellings (`STDEV`/`STDEV.S`), LibreOffice's
+- **Union by name:** 873 distinct names across the first five products. Oleo
+  adds 89 names not among them (962 in all).
+- **Union after folding aliases:** 801 distinct functions: 787 from the five
+  products plus 14 new in Oleo. 161 names are aliases. 86 are legacy and
+  compatibility spellings (`STDEV`/`STDEV.S`), LibreOffice's
   `_ADD`/`_EXCEL2003` duplicates, the DBCS byte variants (`LENB`) and
-  cross-product synonyms (`ISEMPTY`/`ISBLANK`).
-- **In scope for Improv:** **672** functions, or 663 if the LAMBDA family is
+  cross-product synonyms (`ISEMPTY`/`ISBLANK`). The other 75 are Oleo
+  spellings of functions already planned (`strupr`, `ymd`, `kint`, …).
+- **GNU Oleo:** **125 of its 139 functions were already covered**, 43 under
+  the same name and 82 under another name (§5.29). Two are new and in scope
+  (`FMRR`, `AUTOCORREL`); twelve are new and out of scope.
+- **In scope for Improv:** **674** functions, or 665 if the LAMBDA family is
   declined.
-- **Out of scope:** 115, each with a one-line reason (§5.24).
+- **Out of scope:** 127, each with a one-line reason (§5.28).
 - **Check:** the classified lists in §5 contain each product function exactly
-  once. Recomputed totals: E 521, L 531, G 656, N 355, Q 233.
+  once. Recomputed totals: E 521, L 531, G 656, N 355, Q 233. For Oleo,
+  43 + 82 + 2 + 12 = 139 (§5.29).
 
 The brief expected roughly Excel 500, LibreOffice 500, Gnumeric 500+, Numbers
 250+ and Quantrix 150. The measured figures are a little higher for every
@@ -55,7 +65,7 @@ Phase sizes (functions newly available per phase; details in §8):
 
 | P1 | P2 | P3 | P4 | P5 | P6 | P7 |
 |---|---|---|---|---|---|---|
-| 121 | 66 | 9 | 124 | 55 | 44 | 253 |
+| 121 | 66 | 9 | 125 | 56 | 44 | 253 |
 
 P6 includes 9 LAMBDA-family functions, which depend on question 5. P3's value
 comes mostly from language forms rather than named functions: previous/next,
@@ -234,7 +244,8 @@ Mapping kinds: **S** element-wise scalar · **R** reduction over a category
 | Out: cell / sheet / workbook references | 0 (out: 38) | 20 | 21 | 23 | 15 | 3 | — |
 | Out: grid reshaping | 0 (out: 16) | 15 | 13 | 5 | 13 | 0 | — |
 | Out: random numbers | 0 (out: 37) | 3 | 5 | 33 | 3 | 3 | — |
-| **Total** | **672** | **521** | **531** | **656** | **355** | **233** | |
+| GNU Oleo additions (§5.29) | 2 (out: 12) | 0 | 0 | 0 | 0 | 0 | P (`FMRR`, `AUTOCORREL`); Oleo's 139 are mapped in §5.29, not split by category |
+| **Total** | **674** | **521** | **531** | **656** | **355** | **233** | |
 
 ## 5. Per-category function lists
 
@@ -1062,6 +1073,119 @@ Random numbers. <!-- sec:out-rand -->
 | `RAND`, `RANDBETWEEN`, `RANDARRAY`, `RAND.NV`, `RANDBETWEEN.NV`, `RANDMT` | EGLNQ | non-deterministic; the engine must be reproducible (formula steering §2.5) |
 | `RANDBERNOULLI`, `RANDBETA`, `RANDBINOM`, `RANDCAUCHY`, `RANDCHISQ`, `RANDDISCRETE`, `RANDEXP`, `RANDEXPPOW`, `RANDFDIST`, `RANDGAMMA`, `RANDGEOM`, `RANDGUMBEL`, `RANDHYPERG`, `RANDLANDAU`, `RANDLAPLACE`, `RANDLEVY`, `RANDLOG`, `RANDLOGISTIC`, `RANDLOGNORM`, `RANDNEGBINOM`, `RANDNORM`, `RANDNORMTAIL`, `RANDPARETO`, `RANDPOISSON`, `RANDRAYLEIGH`, `RANDRAYLEIGHTAIL`, `RANDSNORM`, `RANDSTDIST`, `RANDTDIST`, `RANDUNIFORM`, `RANDWEIBULL` | G | same; a later *seeded* Monte-Carlo design (`RAND(seed)` hashed with the coordinate) could bring them back deterministically |
 
+GNU Oleo, new names (§5.29). <!-- sec:out-oleo -->
+
+| Name | Src | Reason |
+|---|---|---|
+| `curcell`, `varval` | O | describe the cell under the cursor or a corner cell of a named range; there is no cursor, cell or range in the model |
+| `file` | O | reads bytes from a file inside a formula; I/O breaks determinism (import the data as an input measure) |
+| `button` | O | creates a Motif push button bound to a command; UI widgets belong to views |
+| `mysql_query` | O | a live database query inside a formula, like `WEBSERVICE`; Improv's `SQL("…")` source form covers it |
+| `mysql_read`, `mysql_write` | O | stubs that do nothing in 1.99.16 (`src/mysql.c`) |
+| `local_isdst`, `gmt_isdst`, `ymd_dst` | O | read or set the host time zone's daylight-saving flag; `DateTime` values carry no local zone and must not depend on the host |
+| `gsl_poly_solve_quadratic1`, `gsl_poly_solve_quadratic2` | O | the smaller/larger real root of ax² + bx + c, undocumented, and the result is uninitialized when there is no real root; write `(-b ± SQRT(b^2 - 4*a*c)) / (2*a)`, or add a general root finder if one is asked for |
+
+### 5.29 GNU Oleo additions <!-- sec:oleo -->
+
+Source: GNU Oleo **1.99.16**, the last release (ChangeLog ends 2001-03-09),
+from `https://ftp.gnu.org/gnu/oleo/oleo-1.99.16.tar.gz`. The functions are the
+`struct function` tables `the_funs` (`src/byte-compile.c`), `date_funs`
+(`src/date.c`), `busi_funs` (`src/busi.c`), `string_funs` (`src/string.c`),
+`cells_funs` (`src/cells.c`), `gsl_functions` (`src/gsl.c`) and
+`mysql_functions` (`src/mysql.c`). Operators, the `?` form, the duplicate
+jump-table entries of `if`/`and`/`or` and the commented-out
+`gsl_poly_solve_quadratic` are not counted. That leaves **139** functions; 118
+without the optional GSL (18) and MySQL (3) modules. `doc/functions.texi`
+documents all but seven: `iferr`, `varval`, `button`, `mysql_read`,
+`mysql_write` and the two `gsl_poly_solve_quadratic*`. The help text in
+`src/forminfo.c` also lists a `cnt`, which no table defines, so it is not
+counted. The GSL semantics were checked against the GSL manual
+(`gnu.org/software/gsl/doc/html/statistics.html`). Oleo times are Unix seconds
+and its months are 0-based. On import, times become `DateTime` values and
+durations become days (§5.19).
+
+Two Oleo functions are new and in scope:
+
+| Name | Signature | Meaning | Src | Kind | Phase |
+|---|---|---|---|---|---|
+| `FMRR` | FMRR(cf OVER T, safe_rate, reinvest_rate, reinvest_min) | financial management rate of return: negative flows pulled back at `safe_rate`, positive flows of at least `reinvest_min` pushed forward at `reinvest_rate` (smaller ones at `safe_rate`), then the rate linking the first and last flows; closed form, no iteration | O | P | P5 |
+| `AUTOCORREL` | AUTOCORREL(x OVER T) | lag-1 autocorrelation in item order (GSL `gsl_stats_lag1_autocorrelation`; the Improv name is proposed, Oleo's spelling is its alias) | O | P | P4 |
+
+Twelve are new and out of scope; they are listed in §5.28.
+
+**Oleo coverage.** The other 125 were already in the plan. The import rewrites
+an Oleo formula to the plan's form.
+
+- **Same name, 43:** `abs`, `acos`, `and`, `asin`, `atan`, `atan2`, `ceil`,
+  `cell`, `concat`, `cos`, `count`, `ddb`, `exp`, `find`, `floor`, `fv`,
+  `hlookup`, `hypot`, `if`, `index`, `irr`, `len`, `log10`, `max`, `min`,
+  `mid`, `not`, `now`, `npv`, `or`, `pi`, `pmt`, `pv`, `row`, `rows`, `sin`,
+  `sln`, `sqrt`, `sum`, `syd`, `tan`, `trim`, `vlookup` (`cell`, `row`,
+  `rows`, `hlookup` and `vlookup` are out of scope in §5.28). Some arguments
+  still need rewriting: `atan2(y, x)` = `ATAN2(x, y)`; `find(text, s, pos)` =
+  `FIND(s, text, pos)`; `pmt(p, r, n)` = `-PMT(r, n, p)`; `pv(pmt, r, n)` =
+  `-PV(r, n, pmt)`; `fv(pmt, r, n)` = `-FV(r, n, pmt)`; `npv(cf, r)` = `NPV(r,
+  cf OVER T) * (1 + r)`, because Oleo does not discount the first flow;
+  `trim(t)` = `TRIM(CLEAN(t))`, because Oleo also drops non-printing
+  characters. Oleo's `hlookup`/`vlookup` match the first key *greater* than
+  the value.
+- **Different name, or the same name with another meaning, 82.** Seven reuse
+  a plan name for a different function: `log`, `int`, `fixed`, `rtd`, `var`,
+  `iserr`, `rate` (Appendix A). Improv's DateTime has no local time zone, so
+  `local_*` and `gmt_*` both map to the plain date parts.
+  - *math & logic:* `log` = `LN`; `int` = `TRUNC` (Oleo truncates toward zero;
+    plan `INT` floors); `fixed` = `ROUND(x, places)` (plan `FIXED` returns
+    text); `rtd` = `DEGREES` (plan `RTD` is real-time data); `dtr` =
+    `RADIANS`; `negate` = unary `-x` (Improv `NEG`); `oneof` = `CHOOSE`;
+    `iserr` = `ISERROR` (any error, #N/A included); `isnum` = `ISNUMBER` (Oleo
+    also accepts numeric text); `iferr` = `IFERROR`.
+  - *statistics:* `var` = `VARP` (population; plan `VAR` is sample); `std` =
+    `STDEV`; `avg` = `AVERAGE` (Improv `AVG`); `prod` = `PRODUCT`.
+  - *financial:* `rate` = `RRI(term, pres, fut)` (plan `RATE` is the annuity
+    rate); `term` = `NPER(r, -pmt, 0, fut)`; `cterm` = `PDURATION(r, pres,
+    fut)`; `anrate` = `RATE(term, pmt, -p)`; `anterm` = `NPER(r, -pmt, p)`;
+    `compbal` = `FV(r, term, 0, -p)`; `balance` = `p + CUMPRINC(r, term, p, 1,
+    n, 0)`; `paidint` = `-CUMIPMT(r, term, p, 1, n, 0)`; `kint` = `-IPMT(r, n,
+    term, p)`; `kprin` = `-PPMT(r, n, term, p)`.
+  - *text:* `strupr` = `UPPER`; `strlwr` = `LOWER`; `strcap` = `PROPER`;
+    `repeat` = `REPT`; `substr` = `MID(t, p1, p2 - p1 + 1)` (Oleo allows
+    negative from-the-end indices); `edit` = `REPLACE(t, p1, p2 - p1 + 1,
+    ins)`.
+  - *search:* `member` = `XMATCH(val, keys OVER T)`; `members` =
+    `XMATCH("*"&s&"*", keys OVER T, 2)`; `memberp` = `XMATCH(s&"*", keys OVER
+    T, 2)`; `smember` = `XMATCH(TRUE, ISNUMBER(FIND(keys, s)) OVER T)`;
+    `pmember` = `XMATCH(TRUE, LEFT(s, LEN(keys)) = keys OVER T)`.
+  - *date & time:* `ymd` = `DATE(y, m + 1, d)` (Oleo months are 0-based; Oleo
+    returns Unix seconds, `DATE2UNIX`); `hms_to_time` = `(h + m/60 + s/3600) /
+    24` days (`TIME` wraps at 24 h); `dhms_to_time` = `d + (h + m/60 + s/3600)
+    / 24`; `time_to_d` = `INT(t)`; `time_to_h` = `HOUR(t)`; `time_to_m` =
+    `MINUTE(t)`; `time_to_s` = `SECOND(t)`; `local_year` = `YEAR`;
+    `local_month` = `MONTH(d) - 1`; `local_date` = `DAY`; `local_hour` =
+    `HOUR`; `local_min` = `MINUTE`; `local_sec` = `SECOND`; `local_yday` =
+    `DAYOFYEAR(d) - 1`; `local_wday` = `WEEKDAY(d) - 1`; `gmt_year` = `YEAR`;
+    `gmt_month` = `MONTH(d) - 1`; `gmt_date` = `DAY`; `gmt_hour` = `HOUR`;
+    `gmt_min` = `MINUTE`; `gmt_sec` = `SECOND`; `gmt_yday` = `DAYOFYEAR(d) -
+    1`; `gmt_wday` = `WEEKDAY(d) - 1`; `ctime` = `TEXT(d, "ddd mmm d hh:mm:ss
+    yyyy")`; `strftime` = `TEXT(d, format)` (strftime codes translated);
+    `get_date` = `DATEVALUE`; `posix_date` = `DATEVALUE`.
+  - *GSL statistics:* `gsl_stats_mean` = `AVERAGE`; `gsl_stats_variance` =
+    `VAR`; `gsl_stats_sd` = `STDEV`; `gsl_stats_absdev` = `AVEDEV`;
+    `gsl_stats_median_from_sorted_data` = `MEDIAN`;
+    `gsl_stats_quantile_from_sorted_data` = `PERCENTILE(x OVER T, f)`;
+    `gsl_stats_skew` = `AVERAGE(((x - AVERAGE(x OVER T)) / STDEV(x OVER T))^3
+    OVER T)`; `gsl_stats_kurtosis` = `AVERAGE(((x - AVERAGE(x OVER T)) /
+    STDEV(x OVER T))^4 OVER T) - 3`; `gsl_stats_variance_m` = `SUMXMY2(x, m
+    OVER T) / (COUNT(x OVER T) - 1)`; `gsl_stats_sd_m` = `SQRT` of the
+    previous; `gsl_stats_variance_with_fixed_mean` = `SUMXMY2(x, m OVER T) /
+    COUNT(x OVER T)`; `gsl_stats_sd_with_fixed_mean` = `SQRT` of the previous;
+    `gsl_stats_absdev_m` = `AVERAGE(ABS(x - m) OVER T)`; `gsl_stats_skew_m_sd`
+    = `AVERAGE(((x - m) / sd)^3 OVER T)`; `gsl_stats_kurtosis_m_sd` =
+    `AVERAGE(((x - m) / sd)^4 OVER T) - 3`.
+  - *cells, out of scope like their targets:* `col` = `COLUMN` (out, §5.28);
+    `cols` = `COLUMNS` (out); `my` = `CELL(key)` of the formula's own cell
+    (out); `rnd` = `RANDBETWEEN(0, x - 1)` (out); `vlookup_str` = `VLOOKUP`
+    (out).
+
 ## 6. Language features needed beyond functions
 
 ### 6.1 Conditionals: IF, IFS, SWITCH, CHOOSE
@@ -1492,8 +1616,8 @@ L two to four weeks.
 | **P1** | 121 | M–L | **Foundation.** The registry (§7.1) replaces the five id tables; n-ary `FuncCall`; `CellValue`-typed function arguments; typed errors (§6.6). Language: `^` (right-associative, §6.2), `&`, `%`, IF/IFS/SWITCH/CHOOSE (lazy), error functions; locale-aware entry with `en` and `de` (§6.13). Functions: core math and trig, rounding (with optional digits, decimal-correct), core text. Generated `functions.md`. LibreOffice golden harness. |
 | **P2** | 66 | M | **Dates, info, formatting.** DATE…WORKDAY.INTL on `DateTime` (§6.9 as-of for NOW/TODAY); IS* functions, N, T, TYPE; TEXT/FIXED/DOLLAR format codes; REGEX family. |
 | **P3** | 9 | L | **Dimensional core.** Multi-category `OVER`, `EXCEPT`, `WHERE`; `PREV`/`NEXT`/`POSITION`/`FIRST`/`LAST`; windows `OVER T[a..b]` (running and trailing totals); self-recurrence via `PREV` (ordered scan); Quantrix `@ITEM`/`@ID`/`@ITEMCOUNT`/`SUMMARY`/`TIMELINEDATE`; `TEXTJOIN`; trigger-mode planning learns positional kinds. Few names, but the most Improv-specific value: it closes the "no previous-period" gap. |
-| **P4** | 124 | L | **Statistics.** Generalised reduce (item-ordered, multi-measure, per-item results); descriptive and conditional aggregates; distributions (via `statrs`); tests; core regression; special functions; ERF/ERFC; SUMPRODUCT family. |
-| **P5** | 55 | M | **Financial.** TVM, depreciation, NPV/IRR/XIRR on ordered categories, bonds and day-count bases. Iterative solvers are deterministic (fixed start, cap, bisection fallback). |
+| **P4** | 125 | L | **Statistics.** Generalised reduce (item-ordered, multi-measure, per-item results); descriptive and conditional aggregates; distributions (via `statrs`); tests; core regression; special functions; ERF/ERFC; SUMPRODUCT family. |
+| **P5** | 56 | M | **Financial.** TVM, depreciation, NPV/IRR/XIRR on ordered categories, bonds and day-count bases. Iterative solvers are deterministic (fixed start, cap, bisection fallback). |
 | **P6** | 44 | L | **Lookup, database, arrays.** XLOOKUP/XMATCH/MATCH/LOOKUP/INDEX; Quantrix SELECT family; D… functions as aliases of `WHERE` reductions; FILTER/SORT/SORTBY/UNIQUE/SEQUENCE/TAKE/DROP onto positional categories (§6.11); LET; LAMBDA family (9), non-recursive (§6.12). |
 | **P7** | 253 | L (spread) | **The long tail, on demand.** Engineering (bases, bits, complex, Bessel, CONVERT); matrices; number theory and float; R-style kernels; option pricing; Erlang; Gnumeric/LibreOffice extra distributions, ETS forecasting, time-series analysis; calendars; text tail; `@DESCRIPTOR`/`@LEVEL` (needs item descriptors and groups in the model first). Each family is independent and can ship separately. |
 
@@ -1546,6 +1670,7 @@ priority, swap them. P4 depends on P3's generalised reduce only for windows.
 | `FIRST`, `LAST` | Quantrix list functions vs proposed positional forms | one function: `FIRST(x OVER T, [skip_empty])` |
 | `ATAN2` | spreadsheet `(x, y)` vs Rust/C `atan2(y, x)` | spreadsheet order, tested against LibreOffice |
 | `CHAR`, `CODE` | spreadsheets use the system code page | Unicode (= `UNICHAR`/`UNICODE`) |
+| `LOG`, `INT`, `FIXED`, `RTD`, `VAR`, `ISERR`, `RATE` | GNU Oleo reuses these names for natural log, truncation, numeric rounding, radians→degrees, population variance, any-error and `(fut/pres)^(1/n) − 1` | the import rewrites them to `LN`, `TRUNC`, `ROUND`, `DEGREES`, `VARP`, `ISERROR`, `RRI` (§5.29) |
 
 ## Appendix B — reproducing the inventory
 
@@ -1565,6 +1690,8 @@ directory is not committed. To rebuild:
    `www.quantrix.com/help_resources/5.1/webhelp/*_functions.htm`, plus
    `structural_functions.htm`, `lookup_and_reference.htm` and
    `probability_distribution.htm`.
+6. **GNU Oleo:** unpack `oleo-1.99.16.tar.gz` from ftp.gnu.org and collect
+   the `"name"` field of every `struct function` table named in §5.29.
 
 The union is keyed by upper-cased name. The source letters in §5 were filled
 from that union mechanically, not typed by hand.
