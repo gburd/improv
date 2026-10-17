@@ -502,7 +502,8 @@ operators — see [Architecture](./architecture.md).
 The engine evaluates input-measure references, literals (standalone or as
 operands), unary negation and `NOT`, the arithmetic, logical and comparison
 operators, dimension-aligning joins, aggregations (several measures,
-parameters, `WHERE`, windows, per-item results such as `RANK`), the 331
+parameters, `WHERE`, windows, per-item results such as `RANK`, lookups,
+list results with `INTO`), `LET` and `LAMBDA`, the 418
 built-in functions of the [Function Reference](./functions.md) (math,
 rounding, text, dates, statistics and distributions, financial), the lazy
 `IF` family, positions and neighbours (`POSITION`, `PREV`, `NEXT`),
@@ -518,7 +519,9 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
-- array results so far are `SORT` and `UNIQUE` (no `FREQUENCY`, `LINEST`,
-  `LOGEST`, `SELECTLIST`, …) and there is no `LAMBDA`: those are phase P6
-  of the functions plan;
+- list results fill one `INTO` category (no 2-D spill); `SORTBY` takes one
+  key, `LINEST`/`LOGEST` one x, `TEXTSPLIT` no row delimiter;
+  `SELECTLIST`, `SELECTS`, `SEQUENCE`, `MAKEARRAY`, `BYROW`, `BYCOL` and
+  named LAMBDAs are not supported (`SEQUENCE` is `POSITION(T) * step +
+  start`);
 - `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

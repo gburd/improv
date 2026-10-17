@@ -1,7 +1,7 @@
 //! The statistical reductions (P4): descriptive and conditional statistics,
 //! ranks, regression and the classical tests, all `F(x OVER T, …)`.
 //!
-//! The array results (`FREQUENCY`, `LINEST`, `LOGEST`) wait for P6.
+//! The array results (`FREQUENCY`, `LINEST`, `LOGEST`) are in `array`.
 
 use super::{alias, f, over, FnDef, Kind, Over, Ret};
 use crate::value::ValueType;

@@ -6,9 +6,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Phases P1–P5 of the built-in functions plan: about 520 spreadsheet
-functions with Excel's names, typed errors, the `IF` family, positional
-forms and recurrences, and locale-aware entry.
+Phases P1–P6 of the built-in functions plan: 418 functions (plus
+aliases) with Excel's names, typed errors, the `IF` family,
+positional forms and recurrences, lookups, list results, `LET` and
+`LAMBDA`, and locale-aware entry.
 
 ### Added
 
@@ -21,7 +22,12 @@ forms and recurrences, and locale-aware entry.
 
 - **List results (array functions)** land along a category named with
   `INTO`: `Top = SORT(Sales OVER Product, -1 INTO Rank)` puts the largest
-  value at Rank's first item. First: `SORT` and `UNIQUE`.
+  value at Rank's first item: `SORT`, `UNIQUE`, `FILTER`, `SORTBY`,
+  `TAKE`, `DROP`, `MODE.MULT`, `LINEST` and `LOGEST` (one x; with stats,
+  Excel's 5×2 block row by row), `TEXTSPLIT` (each cell its own list, no
+  OVER needed) and `FREQUENCY` (bins as separate numbers,
+  `FREQUENCY(x OVER T, 10, 20 INTO Bin)`). Excel's empty-array `#CALC!`
+  is `#N/A`.
 - **Lookups** (phase P6), reductions whose key is a parameter (a key over
   another category gives one lookup per key cell): `XLOOKUP`, `XMATCH`,
   `MATCH`, `LOOKUP`, `INDEX` (`VALUEAT`), Quantrix's `SELECT`,
@@ -52,7 +58,6 @@ forms and recurrences, and locale-aware entry.
     `FORECAST` (`FORECAST.LINEAR`), Quantrix's `EXPA`, `EXPB` and
     `EXPFORECAST`, `CHITEST`, `FTEST`, `TTEST`, `ZTEST` (and their dotted
     spellings), and `AUTOCORREL` (GSL's lag-1 autocorrelation).
-  `FREQUENCY`, `LINEST` and `LOGEST` return arrays and wait for P6.
 - **Positions, neighbours, running totals and recurrences** (the plan's
   phase P3). `POSITION(T)`, `@ITEM(T)`, `@ID(T)`, `@ITEMCOUNT(T)`;
   `PREV(x, T, [n], [default])` and `NEXT`; windows `SUM(x OVER
