@@ -12,6 +12,7 @@
 
 use crate::plan::{PlanNode, PlanNodeKind};
 use crate::typed::{Dim, ResolvedDimSpec, TypeInfo, TypedExpr, TypedExprKind};
+use improv_core_model::functions::{self, Arg, Kind, Ret};
 use improv_core_model::{
     BinaryOp, DimensionSpec, Expr, Formula, FuncId, Measure, MeasureId, UnaryOp, ValueType,
 };
@@ -55,42 +56,30 @@ pub fn compile_formula(
     build_plan(ctx, &typed)
 }
 
-/// Aggregation func-id convention (v1 built-ins). An aggregation `Call` takes a
-/// single arg (a measure ref) whose `ResolvedDimSpec.over` names the categories
-/// to collapse; the result dim is the arg's dim with `over` removed. Non-listed
-/// func ids are `UnknownFunction`.
-const SUM: FuncId = FuncId(1);
-const AVG: FuncId = FuncId(2);
-const MIN: FuncId = FuncId(3);
-const MAX: FuncId = FuncId(4);
-
+/// Whether `f` is an aggregation (`SUM(x OVER T)`), per the registry.
 pub(crate) fn is_aggregation(f: FuncId) -> bool {
-    matches!(f, SUM | AVG | MIN | MAX)
+    functions::is_aggregation(f)
 }
 
-/// Scalar (non-aggregating) built-in func-id registry. These ids start at 10 so
-/// they never collide with the aggregation ids (1-4). Each takes `arity`
-/// Number args and returns Number over the union of the args' dims. Evaluation
-/// lives in `dataflow::apply_scalar`; the two tables must agree on ids/arity.
-///
-/// | id | name  | arity | meaning                          |
-/// |----|-------|-------|----------------------------------|
-/// | 10 | ABS   | 1     | absolute value                   |
-/// | 11 | ROUND | 1     | round half away from zero (f64::round) |
-/// | 12 | FLOOR | 1     | floor                            |
-/// | 13 | CEIL  | 1     | ceil                             |
-/// | 14 | SQRT  | 1     | sqrt (NaN for negative input)    |
-/// | 15 | NEG   | 1     | negate                           |
-/// | 20 | MIN2  | 2     | min of two args                  |
-/// | 21 | MAX2  | 2     | max of two args                  |
-///
-/// Returns the arity for a known scalar func id, or `None` if unknown.
+/// The number of arguments a scalar (non-aggregating, non-lazy) built-in
+/// takes when that number is fixed; `None` for an unknown id. Kept for
+/// callers that only need "is this an element-wise built-in".
 pub fn scalar_arity(f: FuncId) -> Option<usize> {
-    match f.0 {
-        10..=15 => Some(1),
-        20 | 21 => Some(2),
-        _ => None,
-    }
+    functions::by_id(f)
+        .filter(|d| d.kind == Kind::Scalar)
+        .map(|d| d.params.len())
+}
+
+/// The lazy functions' ids (see `functions::FUNCTIONS`).
+pub(crate) mod lazy {
+    pub const IF: u32 = 30;
+    pub const IFS: u32 = 31;
+    pub const SWITCH: u32 = 32;
+    pub const CHOOSE: u32 = 33;
+    pub const IFERROR: u32 = 34;
+    pub const IFNA: u32 = 35;
+    pub const CLEARERROR: u32 = 36;
+    pub const CLEARZERO: u32 = 37;
 }
 
 /// Pass 1: type + dimension inference.
@@ -171,45 +160,32 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             })
         }
         Expr::Call(func, args) if !is_aggregation(*func) => {
-            // Scalar built-in: N Number args on broadcastable dims, result
-            // Number over the union dim.
-            let arity = scalar_arity(*func).ok_or(CompileError::UnknownFunction(*func))?;
-            if args.len() != arity {
+            let def = functions::by_id(*func).ok_or(CompileError::UnknownFunction(*func))?;
+            if !def.accepts(args.len()) {
                 return Err(CompileError::Unsupported(format!(
-                    "scalar {func:?} expects {arity} arg(s), got {}",
+                    "{} expects {}, got {} argument(s)",
+                    def.name,
+                    def.signature(),
                     args.len()
                 )));
+            }
+            if def.kind == Kind::Lazy {
+                return infer_lazy(ctx, target, def, args);
             }
             let typed_args: Vec<TypedExpr> = args
                 .iter()
                 .map(|a| infer(ctx, target, a))
                 .collect::<Result<_>>()?;
-            for a in &typed_args {
-                if a.ty.value_type != ValueType::Number {
-                    return Err(CompileError::TypeMismatch(format!(
-                        "scalar {func:?} expects Number args, got {:?}",
-                        a.ty.value_type
-                    )));
-                }
+            for (i, a) in typed_args.iter().enumerate() {
+                check_arg(def, i, a)?;
             }
-            // Union dim; require pairwise broadcastability (one a subset of the
-            // other) so the dataflow join is well defined.
-            let mut dim = Dim::scalar();
-            for a in &typed_args {
-                if !(dim.is_subset_of(&a.ty.dim) || a.ty.dim.is_subset_of(&dim)) {
-                    return Err(CompileError::DimensionMismatch(format!(
-                        "scalar {func:?} args not broadcastable: {:?} vs {:?}",
-                        dim.categories, a.ty.dim.categories
-                    )));
-                }
-                dim = dim.union(&a.ty.dim);
-            }
+            let dim = union_dim(def.name, typed_args.iter().map(|a| &a.ty.dim))?;
+            let Ret::Fixed(value_type) = def.ret else {
+                unreachable!("only lazy functions unify their return type")
+            };
             Ok(TypedExpr {
                 kind: TypedExprKind::Call(*func, typed_args),
-                ty: TypeInfo {
-                    value_type: ValueType::Number,
-                    dim,
-                },
+                ty: TypeInfo { value_type, dim },
             })
         }
         Expr::Call(func, args) => {
@@ -225,12 +201,11 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                     )))
                 }
             };
-            if arg.ty.value_type != ValueType::Number {
-                return Err(CompileError::TypeMismatch(format!(
-                    "aggregation {func:?} expects Number, got {:?}",
-                    arg.ty.value_type
-                )));
-            }
+            let def = functions::by_id(*func).ok_or(CompileError::UnknownFunction(*func))?;
+            check_arg(def, 0, &arg)?;
+            let Ret::Fixed(value_type) = def.ret else {
+                unreachable!("aggregations have a fixed result type")
+            };
             let over = aggregation_over(&arg);
             let reduced: Vec<_> = arg
                 .ty
@@ -243,12 +218,216 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             Ok(TypedExpr {
                 kind: TypedExprKind::Call(*func, vec![arg]),
                 ty: TypeInfo {
-                    value_type: ValueType::Number,
+                    value_type,
                     dim: Dim::of(reduced),
                 },
             })
         }
     }
+}
+
+/// Argument `i` of `def` must have the parameter's type (`Any` takes all).
+fn check_arg(def: &functions::FnDef, i: usize, a: &TypedExpr) -> Result<()> {
+    let want = match def.param(i) {
+        Arg::Any => return Ok(()),
+        Arg::Number => ValueType::Number,
+        Arg::Text => ValueType::Text,
+        Arg::Boolean => ValueType::Boolean,
+    };
+    // An error-only argument (`NA()`) fits any parameter.
+    if a.ty.value_type == want || is_error_only(a) {
+        return Ok(());
+    }
+    Err(CompileError::TypeMismatch(format!(
+        "{} argument {} must be {want:?}, got {:?} ({})",
+        def.name,
+        i + 1,
+        a.ty.value_type,
+        def.signature()
+    )))
+}
+
+/// The union of broadcastable dims: each must be a subset of the union so far
+/// or contain it, so the dataflow join is well defined.
+fn union_dim<'a>(what: &str, dims: impl IntoIterator<Item = &'a Dim>) -> Result<Dim> {
+    let mut dim = Dim::scalar();
+    for d in dims {
+        if !(dim.is_subset_of(d) || d.is_subset_of(&dim)) {
+            return Err(CompileError::DimensionMismatch(format!(
+                "{what} arguments not broadcastable: {:?} vs {:?}",
+                dim.categories, d.categories
+            )));
+        }
+        dim = dim.union(d);
+    }
+    Ok(dim)
+}
+
+/// An expression that can only ever be an error (`NA()`, `ERROR("#NUM!")`):
+/// its declared type unifies with anything.
+fn is_error_only(e: &TypedExpr) -> bool {
+    match &e.kind {
+        TypedExprKind::Call(f, _) => matches!(f.0, 53 | 54),
+        TypedExprKind::Literal(v) => v.is_error(),
+        _ => false,
+    }
+}
+
+fn call(id: u32, args: Vec<Expr>) -> Expr {
+    Expr::Call(FuncId(id), args)
+}
+
+fn na() -> Expr {
+    call(53, vec![])
+}
+
+fn value_error() -> Expr {
+    call(
+        54,
+        vec![Expr::Literal(improv_core_model::Value::Text(
+            "#VALUE!".into(),
+        ))],
+    )
+}
+
+/// Type a lazy function. `IF` is the primitive; the others are rewritten into
+/// nested `IF`s first:
+///
+/// * `IFS(t1, v1, t2, v2, …)` → `IF(t1, v1, IF(t2, v2, … NA()))`
+/// * `SWITCH(e, m1, r1, …, [d])` → `IF(e == m1, r1, … d or NA())`
+/// * `CHOOSE(i, v1, …)` → `IF(INT(i) == 1, v1, … #VALUE!)`
+/// * `IFERROR(v, a)` → `IF(ISERROR(v), a, v)`, `IFNA` with `ISNA`
+/// * `CLEARERROR(v, [a])` → `IF(ISERROR(v), a, v)`, or no cell without `a`
+/// * `CLEARZERO(v, [a])` → `IF(v == 0, a, v)`, or no cell without `a`
+fn infer_lazy(
+    ctx: &CompileContext,
+    target: MeasureId,
+    def: &functions::FnDef,
+    args: &[Expr],
+) -> Result<TypedExpr> {
+    if def.id.0 == lazy::IF {
+        return infer_if(ctx, target, args);
+    }
+    infer(ctx, target, &desugar_lazy(def.id, args)?)
+}
+
+/// The nested-`IF` form of a lazy call other than `IF` itself (see
+/// [`infer_lazy`]). Shared with the scalar evaluator so both agree.
+pub(crate) fn desugar_lazy(id: FuncId, args: &[Expr]) -> Result<Expr> {
+    let if_ = |c: Expr, a: Expr, b: Option<Expr>| {
+        let mut v = vec![c, a];
+        v.extend(b);
+        call(lazy::IF, v)
+    };
+    let not = |e: Expr| Expr::UnaryOp(UnaryOp::Not, Box::new(e));
+    Ok(match id.0 {
+        lazy::IFS => {
+            if !args.len().is_multiple_of(2) {
+                return Err(CompileError::Unsupported(
+                    "IFS takes test/value pairs".into(),
+                ));
+            }
+            args.chunks(2)
+                .rev()
+                .fold(na(), |acc, p| if_(p[0].clone(), p[1].clone(), Some(acc)))
+        }
+        lazy::SWITCH => {
+            let (e, rest) = args.split_first().expect("SWITCH has an expression");
+            let (pairs, default) = if rest.len() % 2 == 1 {
+                (&rest[..rest.len() - 1], rest.last().cloned())
+            } else {
+                (rest, None)
+            };
+            pairs
+                .chunks(2)
+                .rev()
+                .fold(default.unwrap_or_else(na), |acc, p| {
+                    let test =
+                        Expr::BinaryOp(BinaryOp::Eq, Box::new(e.clone()), Box::new(p[0].clone()));
+                    if_(test, p[1].clone(), Some(acc))
+                })
+        }
+        lazy::CHOOSE => {
+            let (i, vals) = args.split_first().expect("CHOOSE has an index");
+            let idx = call(204, vec![i.clone()]); // INT
+            vals.iter()
+                .enumerate()
+                .rev()
+                .fold(value_error(), |acc, (k, v)| {
+                    let n = Expr::Literal(improv_core_model::Value::Number(k as f64 + 1.0));
+                    let test = Expr::BinaryOp(BinaryOp::Eq, Box::new(idx.clone()), Box::new(n));
+                    if_(test, v.clone(), Some(acc))
+                })
+        }
+        lazy::IFERROR | lazy::IFNA => {
+            let test = call(
+                if id.0 == lazy::IFERROR { 50 } else { 52 },
+                vec![args[0].clone()],
+            );
+            if_(test, args[1].clone(), Some(args[0].clone()))
+        }
+        lazy::CLEARERROR => {
+            let test = call(50, vec![args[0].clone()]);
+            match args.get(1) {
+                Some(alt) => if_(test, alt.clone(), Some(args[0].clone())),
+                None => if_(not(test), args[0].clone(), None),
+            }
+        }
+        lazy::CLEARZERO => {
+            let zero = Expr::Literal(improv_core_model::Value::Number(0.0));
+            let test = Expr::BinaryOp(BinaryOp::Eq, Box::new(args[0].clone()), Box::new(zero));
+            match args.get(1) {
+                Some(alt) => if_(test, alt.clone(), Some(args[0].clone())),
+                None => if_(not(test), args[0].clone(), None),
+            }
+        }
+        _ => return Err(CompileError::UnknownFunction(id)),
+    })
+}
+
+/// `IF(test, then, [else])`: the test must be Boolean; the branches unify
+/// (an error-only branch takes the other's type). A cell exists where the
+/// test does and the selected branch does; where the test is an error, the
+/// result is that error. The result ranges over the union of the three
+/// dims, and the test, joined with at least one branch, must span it (that
+/// branch supplies the coordinates of the categories the test lacks).
+fn infer_if(ctx: &CompileContext, target: MeasureId, args: &[Expr]) -> Result<TypedExpr> {
+    let typed: Vec<TypedExpr> = args
+        .iter()
+        .map(|a| infer(ctx, target, a))
+        .collect::<Result<_>>()?;
+    let (test, branches) = typed.split_first().expect("IF has a test");
+    if test.ty.value_type != ValueType::Boolean && !is_error_only(test) {
+        return Err(CompileError::TypeMismatch(format!(
+            "IF test must be Boolean, got {:?}",
+            test.ty.value_type
+        )));
+    }
+    let value_type = match branches {
+        [a] => a.ty.value_type,
+        [a, b] if is_error_only(a) => b.ty.value_type,
+        [a, b] if is_error_only(b) || a.ty.value_type == b.ty.value_type => a.ty.value_type,
+        [a, b] => {
+            return Err(CompileError::TypeMismatch(format!(
+                "IF branches must have the same type, got {:?} and {:?}",
+                a.ty.value_type, b.ty.value_type
+            )))
+        }
+        _ => unreachable!("arity checked by the registry"),
+    };
+    let dim = union_dim("IF", typed.iter().map(|a| &a.ty.dim))?;
+    let spans = |b: &TypedExpr| test.ty.dim.union(&b.ty.dim) == dim;
+    if test.ty.dim != dim && !branches.iter().any(spans) {
+        return Err(CompileError::DimensionMismatch(format!(
+            "IF ranges over {:?}, but neither the test with the then-branch nor with the \
+             else-branch covers it",
+            dim.categories
+        )));
+    }
+    Ok(TypedExpr {
+        kind: TypedExprKind::Call(FuncId(lazy::IF), typed),
+        ty: TypeInfo { value_type, dim },
+    })
 }
 
 /// A measure reference's type: the measure's categories, kept by `by`,
@@ -372,6 +551,31 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                         .collect();
                 let (lp_aligned, rp_aligned) = split_join(lp, rp, join_keys, &ty);
                 PlanNodeKind::MapBinary(*op, Box::new(lp_aligned), Box::new(rp_aligned))
+            }
+        }
+        TypedExprKind::Call(func, args) if func.0 == lazy::IF => {
+            let mut plans = args
+                .iter()
+                .map(|a| build_plan(ctx, a))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter();
+            let test = plans.next().expect("IF has a test");
+            let then = plans.next().expect("IF has a then-branch");
+            let otherwise = plans.next();
+            // The branch that, with the test, spans the result: its coordinates
+            // fill in the categories the test lacks. None when the test spans.
+            let spanning = if test.ty.dim == ty.dim {
+                None
+            } else if test.ty.dim.union(&then.ty.dim) == ty.dim {
+                Some(0)
+            } else {
+                Some(1)
+            };
+            PlanNodeKind::If {
+                test: Box::new(test),
+                then: Box::new(then),
+                otherwise: otherwise.map(Box::new),
+                spanning,
             }
         }
         TypedExprKind::Call(func, args) if !is_aggregation(*func) => {
@@ -673,11 +877,11 @@ mod tests {
             Err(CompileError::TypeMismatch(_))
         ));
 
-        // Unknown scalar id (not 10-15/20-21 and not an aggregation).
-        let unknown = Expr::Call(FuncId(50), vec![refr(PRICE)]);
+        // Unknown function id (in no registry entry).
+        let unknown = Expr::Call(FuncId(999), vec![refr(PRICE)]);
         assert_eq!(
             infer(&ctx, MeasureId(200), &unknown),
-            Err(CompileError::UnknownFunction(FuncId(50)))
+            Err(CompileError::UnknownFunction(FuncId(999)))
         );
     }
 
@@ -728,7 +932,10 @@ mod tests {
         ));
         // Aggregations take exactly one Number arg.
         assert!(msg(&Expr::Call(FuncId(1), vec![refr(PRICE), refr(PRICE)])).contains("exactly 1"));
-        assert!(msg(&Expr::Call(FuncId(1), vec![refr(flag)])).contains("expects Number"));
+        assert!(msg(&Expr::Call(FuncId(1), vec![refr(flag)])).contains("must be Number"));
+        // AND(flag OVER …) takes booleans; SUM(flag, …) does not.
+        assert!(msg(&Expr::Call(FuncId(22), vec![refr(flag)]))
+            .contains("SUM argument 1 must be Number"));
     }
 
     #[test]

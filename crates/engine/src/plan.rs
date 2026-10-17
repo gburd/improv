@@ -36,6 +36,17 @@ pub enum PlanNodeKind {
         func: FuncId,
         args: Vec<PlanNode>,
     },
+    /// `IF(test, then, [otherwise])`, evaluated lazily: a cell where the test
+    /// is true and `then` has one, where it is false and `otherwise` has one,
+    /// and the test's error where it is an error. `spanning` names the branch
+    /// (0 then, 1 otherwise) whose coordinates extend the test to the
+    /// result's categories; `None` when the test already spans them.
+    If {
+        test: Box<PlanNode>,
+        then: Box<PlanNode>,
+        otherwise: Option<Box<PlanNode>>,
+        spanning: Option<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]

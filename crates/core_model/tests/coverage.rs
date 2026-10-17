@@ -170,13 +170,14 @@ fn unknown_scenario_overlay_is_the_base_model() {
 fn every_scalar_function_and_operator_parses() {
     for (name, id, arity) in [
         ("abs", 10, 1),
-        ("ROUND", 11, 1),
-        ("Floor", 12, 1),
+        ("ROUND", 11, 2),
+        ("Floor", 12, 2),
         ("ceil", 13, 1),
         ("SQRT", 14, 1),
         ("neg", 15, 1),
-        ("min2", 20, 2),
-        ("MAX2", 21, 2),
+        ("min2", 20, 1),
+        ("MAX2", 21, 1),
+        ("Floor.Math", 206, 3),
     ] {
         assert_eq!(scalar_func(name), Some((FuncId(id), arity)), "{name}");
     }
@@ -236,9 +237,12 @@ fn parse_errors_name_the_problem() {
         ("X = Price Quantity", "unexpected trailing input"),
         ("X = (Price", "')'"),
         ("X = ABS(Price", "')' to close function call"),
-        ("X = MIN2(Price)", "takes 2 argument(s), got 1"),
-        ("X = ABS()", "takes 1 argument(s), got 0"),
-        ("X = SUM(Price Time)", "expected 'OVER'"),
+        (
+            "X = MID(Price)",
+            "MID takes MID(text, number, number), got 1 argument(s)",
+        ),
+        ("X = ABS()", "ABS takes ABS(number), got 0 argument(s)"),
+        ("X = SUM(Price Time)", "expected ')' to close function call"),
         ("X = SUM(Price OVER Time", "')' to close aggregation"),
         ("X = Price[Time", "']'"),
         ("X = + 1", "expected"),

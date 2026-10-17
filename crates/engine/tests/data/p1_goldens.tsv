@@ -1,0 +1,635 @@
+formula	expected	source
+ABS(-2.5)	2.5	LibreOffice
+ABS(0)	0	LibreOffice
+ABS(3)	3	LibreOffice
+ABS(-0.000001)	1e-06	LibreOffice
+ROUND(2.5)	3	LibreOffice
+ROUND(-2.5)	-3	LibreOffice
+ROUND(2.675,2)	2.68	LibreOffice
+ROUND(-1.005,2)	-1.01	LibreOffice
+ROUND(0.5)	1	LibreOffice
+ROUND(1.45,1)	1.5	LibreOffice
+ROUND(1234.5678,-2)	1200	LibreOffice
+ROUND(21.5,-1)	20	LibreOffice
+ROUND(3.14159,3)	3.142	LibreOffice
+FLOOR(2.5)	2	LibreOffice
+FLOOR(-2.5)	-3	LibreOffice
+FLOOR(2.5,2)	2	LibreOffice
+FLOOR(-2.5,2)	-4	LibreOffice
+FLOOR(-2.5,-2)	-2	LibreOffice
+FLOOR(2.5,-2)	{"error": "#NUM!"}	LibreOffice
+FLOOR(1.58,0.1)	1.5	LibreOffice
+FLOOR(0,5)	0	LibreOffice
+FLOOR(0.234,0.01)	0.23	LibreOffice
+CEIL(2.1)	3	LibreOffice
+CEIL(-2.1)	-2	LibreOffice
+CEIL(5)	5	LibreOffice
+CEIL(0)	0	LibreOffice
+CEIL(-2.5)	-2	LibreOffice
+SQRT(16)	4	LibreOffice
+SQRT(2)	1.4142135623730951	LibreOffice
+SQRT(0)	0	LibreOffice
+SQRT(-1)	{"error": "#NUM!"}	LibreOffice
+SQRT(0.25)	0.5	LibreOffice
+NEG(2.5)	-2.5	LibreOffice
+NEG(-3)	3	LibreOffice
+NEG(0)	0	LibreOffice
+MIN(3,1,2)	1	LibreOffice
+MIN(-2.5,0)	-2.5	LibreOffice
+MIN(5)	5	LibreOffice
+MAX(3,1,2)	3	LibreOffice
+MAX(-2.5,-3)	-2.5	LibreOffice
+MAX(5)	5	LibreOffice
+MIN2(4,7)	4	LibreOffice
+MAX2(4,7)	7	LibreOffice
+SUM(1,2,3)	6	LibreOffice
+SUM(-2.5,2.5)	0	LibreOffice
+SUM(5)	5	LibreOffice
+SUM(1.5,2.25,-0.75)	3	LibreOffice
+AVERAGE(1,2,3,4)	2.5	LibreOffice
+AVERAGE(5)	5	LibreOffice
+AVERAGE(-1,1)	0	LibreOffice
+AVERAGE(1,2)	1.5	LibreOffice
+PRODUCT(2,3,4)	24	LibreOffice
+PRODUCT(-2,3)	-6	LibreOffice
+PRODUCT(0,5)	0	LibreOffice
+PRODUCT(1.5)	1.5	LibreOffice
+SUMSQ(3,4)	25	LibreOffice
+SUMSQ(-2)	4	LibreOffice
+SUMSQ(1,2,3)	14	LibreOffice
+SUMSQ(0.5)	0.25	LibreOffice
+AND(TRUE,FALSE)	false	LibreOffice
+AND(TRUE,TRUE)	true	LibreOffice
+AND(TRUE)	true	LibreOffice
+AND(FALSE,FALSE,TRUE)	false	LibreOffice
+OR(TRUE,FALSE)	true	LibreOffice
+OR(FALSE,FALSE)	false	LibreOffice
+OR(FALSE)	false	LibreOffice
+OR(FALSE,FALSE,TRUE)	true	LibreOffice
+XOR(TRUE,FALSE)	true	LibreOffice
+XOR(TRUE,TRUE)	false	LibreOffice
+XOR(TRUE,TRUE,TRUE)	true	LibreOffice
+XOR(FALSE)	false	LibreOffice
+IF(TRUE,1,2)	1	LibreOffice
+IF(FALSE,1,2)	2	LibreOffice
+IFS(TRUE,1,TRUE,2)	1	LibreOffice
+IFS(FALSE,1,TRUE,2)	2	LibreOffice
+IFS(FALSE,1)	{"error": "#N/A"}	LibreOffice
+SWITCH(2,1,"a",2,"b")	"b"	LibreOffice
+SWITCH(3,1,"a",2,"b","z")	"z"	LibreOffice
+SWITCH(3,1,"a",2,"b")	{"error": "#N/A"}	LibreOffice
+CHOOSE(2,"a","b","c")	"b"	LibreOffice
+CHOOSE(4,"a","b","c")	{"error": "#VALUE!"}	LibreOffice
+CHOOSE(0,"a")	{"error": "#VALUE!"}	LibreOffice
+CHOOSE(2.9,"a","b","c")	"b"	LibreOffice
+IFERROR(SQRT(-1),0)	0	LibreOffice
+IFERROR(5,0)	5	LibreOffice
+IFERROR(NA(),"x")	"x"	LibreOffice
+IFNA(NA(),0)	0	LibreOffice
+IFNA(5,0)	5	LibreOffice
+IFNA(SQRT(-1),0)	{"error": "#NUM!"}	LibreOffice
+TRUE()	true	LibreOffice
+FALSE()	false	LibreOffice
+ISERROR(NA())	true	LibreOffice
+ISERROR(1)	false	LibreOffice
+ISERROR(SQRT(-1))	true	LibreOffice
+ISERROR(MOD(1,0))	true	LibreOffice
+ISERROR("x")	false	LibreOffice
+ISERR(NA())	false	LibreOffice
+ISERR(SQRT(-1))	true	LibreOffice
+ISERR(1)	false	LibreOffice
+ISERR(MOD(1,0))	true	LibreOffice
+ISNA(NA())	true	LibreOffice
+ISNA(SQRT(-1))	false	LibreOffice
+ISNA("x")	false	LibreOffice
+ISNA(1)	false	LibreOffice
+NA()	{"error": "#N/A"}	LibreOffice
+ERROR.TYPE(NA())	7	LibreOffice
+ERROR.TYPE(1)	{"error": "#N/A"}	LibreOffice
+ERROR.TYPE(MOD(1,0))	2	LibreOffice
+SIGN(-2.5)	-1	LibreOffice
+SIGN(0)	0	LibreOffice
+SIGN(3)	1	LibreOffice
+SQRTPI(1)	1.7724538509055159	LibreOffice
+SQRTPI(2)	2.5066282746310002	LibreOffice
+SQRTPI(0)	0	LibreOffice
+SQRTPI(-1)	{"error": "#NUM!"}	LibreOffice
+EXP(0)	1	LibreOffice
+EXP(1)	2.718281828459045	LibreOffice
+EXP(-1)	0.36787944117144233	LibreOffice
+EXP(2.5)	12.182493960703473	LibreOffice
+EXP(710)	{"error": "#NUM!"}	LibreOffice
+LN(1)	0	LibreOffice
+LN(0)	{"error": "#NUM!"}	LibreOffice
+LN(-1)	{"error": "#NUM!"}	LibreOffice
+LN(10)	2.302585092994046	LibreOffice
+LN(0.5)	-0.6931471805599453	LibreOffice
+LOG(100)	2	LibreOffice
+LOG(8,2)	3	LibreOffice
+LOG(10)	1	LibreOffice
+LOG(0)	{"error": "#NUM!"}	LibreOffice
+LOG(10,0)	{"error": "#NUM!"}	LibreOffice
+LOG(-1,10)	{"error": "#NUM!"}	LibreOffice
+LOG(86,2.7182818)	4.454347342888286	LibreOffice
+LOG10(1000)	3	LibreOffice
+LOG10(0.01)	-2	LibreOffice
+LOG10(0)	{"error": "#NUM!"}	LibreOffice
+LOG10(-5)	{"error": "#NUM!"}	LibreOffice
+LOG10(2)	0.3010299956639812	LibreOffice
+POWER(2,3)	8	LibreOffice
+POWER(0,0)	1	LibreOffice
+POWER(-2,3)	-8	LibreOffice
+POWER(2,-1)	0.5	LibreOffice
+POWER(4,0.5)	2	LibreOffice
+POWER(-1,0.5)	{"error": "#NUM!"}	LibreOffice
+POWER(98.6,3.2)	2401077.2220695773	LibreOffice
+MOD(-7,3)	2	LibreOffice
+MOD(5,-3)	-1	LibreOffice
+MOD(7,3)	1	LibreOffice
+MOD(5,0)	{"error": "#DIV/0!"}	LibreOffice
+MOD(5.5,2)	1.5	LibreOffice
+MOD(-5.5,2)	0.5	LibreOffice
+MOD(0,3)	0	LibreOffice
+QUOTIENT(7,2)	3	LibreOffice
+QUOTIENT(-7,2)	-3	LibreOffice
+QUOTIENT(4.5,3.1)	1	LibreOffice
+QUOTIENT(-10,-3)	3	LibreOffice
+PI()	3.141592653589793	LibreOffice
+DEGREES(3.141592653589793)	180	LibreOffice
+DEGREES(1)	57.29577951308232	LibreOffice
+DEGREES(-0.5)	-28.64788975654116	LibreOffice
+DEGREES(0)	0	LibreOffice
+RADIANS(180)	3.141592653589793	LibreOffice
+RADIANS(-90)	-1.5707963267948966	LibreOffice
+RADIANS(0)	0	LibreOffice
+RADIANS(1)	0.017453292519943295	LibreOffice
+SIN(0)	0	LibreOffice
+SIN(1)	0.8414709848078965	LibreOffice
+SIN(-1)	-0.8414709848078965	LibreOffice
+SIN(1.5707963267948966)	1	LibreOffice
+SIN(3.141592653589793)	1.2246467991473532e-16	LibreOffice
+COS(0)	1	LibreOffice
+COS(1)	0.5403023058681398	LibreOffice
+COS(-1)	0.5403023058681398	LibreOffice
+COS(3.141592653589793)	-1	LibreOffice
+TAN(0)	0	LibreOffice
+TAN(1)	1.5574077246549023	LibreOffice
+TAN(-1)	-1.5574077246549023	LibreOffice
+TAN(0.7853981633974483)	0.9999999999999999	LibreOffice
+ASIN(0.5)	0.5235987755982989	LibreOffice
+ASIN(1)	1.5707963267948966	LibreOffice
+ASIN(-1)	-1.5707963267948966	LibreOffice
+ASIN(0)	0	LibreOffice
+ASIN(2)	{"error": "#NUM!"}	LibreOffice
+ACOS(0.5)	1.0471975511965979	LibreOffice
+ACOS(-1)	3.141592653589793	LibreOffice
+ACOS(1)	0	LibreOffice
+ACOS(1.5)	{"error": "#NUM!"}	LibreOffice
+ATAN(1)	0.7853981633974483	LibreOffice
+ATAN(-1)	-0.7853981633974483	LibreOffice
+ATAN(0)	0	LibreOffice
+ATAN(1000)	1.5697963271282298	LibreOffice
+ATAN2(1,2)	1.1071487177940904	LibreOffice
+ATAN2(1,1)	0.7853981633974483	LibreOffice
+ATAN2(-1,0)	3.141592653589793	LibreOffice
+ATAN2(0,-1)	-1.5707963267948966	LibreOffice
+ATAN2(-1,-1)	-2.356194490192345	LibreOffice
+SINH(0)	0	LibreOffice
+SINH(1)	1.1752011936438014	LibreOffice
+SINH(-1)	-1.1752011936438014	LibreOffice
+SINH(1000)	{"error": "#NUM!"}	LibreOffice
+COSH(0)	1	LibreOffice
+COSH(1)	1.5430806348152437	LibreOffice
+COSH(-1)	1.5430806348152437	LibreOffice
+COSH(1000)	{"error": "#NUM!"}	LibreOffice
+TANH(0)	0	LibreOffice
+TANH(0.5)	0.46211715726000974	LibreOffice
+TANH(-2)	-0.9640275800758169	LibreOffice
+TANH(1000)	1	LibreOffice
+ASINH(0)	0	LibreOffice
+ASINH(1)	0.8813735870195429	LibreOffice
+ASINH(-2.5)	-1.6472311463710958	LibreOffice
+ASINH(10)	2.99822295029797	LibreOffice
+ACOSH(1)	0	LibreOffice
+ACOSH(2)	1.3169578969248166	LibreOffice
+ACOSH(10)	2.993222846126381	LibreOffice
+ACOSH(0.5)	{"error": "#NUM!"}	LibreOffice
+ATANH(0)	0	LibreOffice
+ATANH(0.5)	0.5493061443340548	LibreOffice
+ATANH(-0.76159416)	-1.0000000096297197	LibreOffice
+ATANH(1)	{"error": "#NUM!"}	LibreOffice
+ATANH(-1)	{"error": "#NUM!"}	LibreOffice
+SEC(0)	1	LibreOffice
+SEC(1)	1.8508157176809255	LibreOffice
+SEC(-1)	1.8508157176809255	LibreOffice
+SEC(45)	1.9035944074044246	LibreOffice
+CSC(1)	1.1883951057781212	LibreOffice
+CSC(-1)	-1.1883951057781212	LibreOffice
+CSC(15)	1.5377805615408537	LibreOffice
+COT(1)	0.6420926159343306	LibreOffice
+COT(-1)	-0.6420926159343306	LibreOffice
+COT(30)	-0.15611995216165922	LibreOffice
+SECH(0)	1	LibreOffice
+SECH(1)	0.6480542736638855	LibreOffice
+SECH(-1)	0.6480542736638855	LibreOffice
+SECH(2)	0.2658022288340797	LibreOffice
+CSCH(1.5)	0.46964244059522464	LibreOffice
+CSCH(-1)	-0.8509181282393216	LibreOffice
+CSCH(0.5)	1.9190347513349437	LibreOffice
+COTH(2)	1.0373147207275482	LibreOffice
+COTH(-1)	-1.3130352854993315	LibreOffice
+COTH(0.5)	2.163953413738653	LibreOffice
+ACOT(2)	0.46364760900080615	LibreOffice
+ACOT(0)	1.5707963267948966	LibreOffice
+ACOT(-1)	2.356194490192345	LibreOffice
+ACOT(1)	0.7853981633974483	LibreOffice
+ACOTH(6)	0.16823611831060645	LibreOffice
+ACOTH(-2)	-0.5493061443340549	LibreOffice
+ACOTH(1)	{"error": "#NUM!"}	LibreOffice
+ACOTH(1.5)	0.8047189562170501	LibreOffice
+FACT(5)	120	LibreOffice
+FACT(0)	1	LibreOffice
+FACT(1.9)	1	LibreOffice
+FACT(-1)	{"error": "#NUM!"}	LibreOffice
+FACT(20)	2.43290200817664e+18	LibreOffice
+FACT(170)	7.257415615308004e+306	LibreOffice
+FACTDOUBLE(6)	48	LibreOffice
+FACTDOUBLE(7)	105	LibreOffice
+FACTDOUBLE(0)	1	LibreOffice
+FACTDOUBLE(-1)	{"error": "#NUM!"}	LibreOffice
+FACTDOUBLE(-2)	{"error": "#NUM!"}	LibreOffice
+COMBIN(8,2)	28	LibreOffice
+COMBIN(5,0)	1	LibreOffice
+COMBIN(0,0)	1	LibreOffice
+COMBIN(10.7,2.2)	45	LibreOffice
+COMBIN(2,3)	{"error": "#NUM!"}	LibreOffice
+COMBIN(-1,2)	{"error": "#NUM!"}	LibreOffice
+COMBINA(4,3)	20	LibreOffice
+COMBINA(10,3)	220	LibreOffice
+COMBINA(3,0)	1	LibreOffice
+COMBINA(-1,2)	{"error": "#NUM!"}	LibreOffice
+PERMUT(100,3)	970200	LibreOffice
+PERMUT(3,2)	6	LibreOffice
+PERMUT(5,0)	1	LibreOffice
+PERMUT(2,3)	{"error": "#NUM!"}	LibreOffice
+PERMUT(-1,1)	{"error": "#NUM!"}	LibreOffice
+PERMUTATIONA(3,2)	9	LibreOffice
+PERMUTATIONA(2,2)	4	LibreOffice
+PERMUTATIONA(5,0)	1	LibreOffice
+PERMUTATIONA(-1,2)	{"error": "#NUM!"}	LibreOffice
+GCD(5,2)	1	LibreOffice
+GCD(24,36)	12	LibreOffice
+GCD(5,0)	5	LibreOffice
+GCD(0,0)	0	LibreOffice
+GCD(12.9,8)	4	LibreOffice
+GCD(-1,2)	{"error": "#NUM!"}	LibreOffice
+LCM(5,2)	10	LibreOffice
+LCM(24,36)	72	LibreOffice
+LCM(4,6,8)	24	LibreOffice
+LCM(3,0)	0	LibreOffice
+LCM(-1,2)	{"error": "#NUM!"}	LibreOffice
+MULTINOMIAL(2,3,4)	1260	LibreOffice
+MULTINOMIAL(1)	1	LibreOffice
+MULTINOMIAL(0,0)	1	LibreOffice
+MULTINOMIAL(-1,2)	{"error": "#NUM!"}	LibreOffice
+RAWSUBTRACT(10,3,2)	5	LibreOffice
+RAWSUBTRACT(0.3,0.1)	0.19999999999999998	LibreOffice
+RAWSUBTRACT(1,-2)	3	LibreOffice
+RAWSUBTRACT(0.1,0.1,0.1)	-0.1	LibreOffice
+ROUNDUP(3.2)	4	LibreOffice
+ROUNDUP(-3.2)	-4	LibreOffice
+ROUNDUP(3.14159,3)	3.142	LibreOffice
+ROUNDUP(31415.92654,-2)	31500	LibreOffice
+ROUNDUP(0)	0	LibreOffice
+ROUNDUP(76.9)	77	LibreOffice
+ROUNDDOWN(3.2)	3	LibreOffice
+ROUNDDOWN(-3.14159,1)	-3.1	LibreOffice
+ROUNDDOWN(31415.92654,-2)	31400	LibreOffice
+ROUNDDOWN(76.9)	76	LibreOffice
+ROUNDDOWN(-3.7)	-3	LibreOffice
+ROUNDSIG(123.456,2)	120	LibreOffice
+ROUNDSIG(0.0012345,3)	0.00123	LibreOffice
+ROUNDSIG(-987.6,1)	-1000	LibreOffice
+ROUNDSIG(0,3)	0	LibreOffice
+ROUNDSIG(2.5,1)	3	LibreOffice
+ROUNDSIG(5,0)	{"error": "#NUM!"}	LibreOffice
+TRUNC(8.9)	8	LibreOffice
+TRUNC(-8.9)	-8	LibreOffice
+TRUNC(0.45)	0	LibreOffice
+TRUNC(3.14159,2)	3.14	LibreOffice
+TRUNC(1234.5,-2)	1200	LibreOffice
+INT(8.9)	8	LibreOffice
+INT(-8.9)	-9	LibreOffice
+INT(0)	0	LibreOffice
+INT(-0.5)	-1	LibreOffice
+INT(5)	5	LibreOffice
+CEILING(2.5,1)	3	LibreOffice
+CEILING(-2.5,2)	-2	LibreOffice
+CEILING(-2.5,-2)	-4	LibreOffice
+CEILING(1.5,0.1)	1.5	LibreOffice
+CEILING(0.234,0.01)	0.24	LibreOffice
+CEILING(2.5,-2)	{"error": "#NUM!"}	LibreOffice
+CEILING(2.5,0)	0	LibreOffice
+CEILING(2.5)	3	LibreOffice
+FLOOR.MATH(24.3,5)	20	LibreOffice
+FLOOR.MATH(6.7)	6	LibreOffice
+FLOOR.MATH(-8.1,2)	-10	LibreOffice
+FLOOR.MATH(-5.5,2,-1)	-4	LibreOffice
+FLOOR.MATH(-2.5)	-3	LibreOffice
+FLOOR.MATH(2.5,0)	0	LibreOffice
+FLOOR.MATH(-2.5,-2)	-4	LibreOffice
+CEILING.MATH(24.3,5)	25	LibreOffice
+CEILING.MATH(6.7)	7	LibreOffice
+CEILING.MATH(-8.1,2)	-8	LibreOffice
+CEILING.MATH(-5.5,2,-1)	-6	LibreOffice
+CEILING.MATH(-2.5)	-2	LibreOffice
+CEILING.MATH(2.5,0)	0	LibreOffice
+FLOOR.PRECISE(-3.2,-1)	-4	LibreOffice
+FLOOR.PRECISE(3.2,1)	3	LibreOffice
+FLOOR.PRECISE(-3.2,1)	-4	LibreOffice
+FLOOR.PRECISE(3.2,-1)	3	LibreOffice
+FLOOR.PRECISE(3.2)	3	LibreOffice
+FLOOR.PRECISE(3.2,0)	0	LibreOffice
+CEILING.PRECISE(4.3)	5	LibreOffice
+CEILING.PRECISE(-4.3)	-4	LibreOffice
+CEILING.PRECISE(4.3,2)	6	LibreOffice
+CEILING.PRECISE(4.3,-2)	6	LibreOffice
+CEILING.PRECISE(-4.3,2)	-4	LibreOffice
+CEILING.PRECISE(-4.3,-2)	-4	LibreOffice
+CEILING.PRECISE(4.3,0)	0	LibreOffice
+ISO.CEILING(4.3)	5	LibreOffice
+ISO.CEILING(-4.3)	-4	LibreOffice
+ISO.CEILING(4.3,2)	6	LibreOffice
+ISO.CEILING(4.3,-2)	6	LibreOffice
+ISO.CEILING(-4.3,2)	-4	LibreOffice
+ISO.CEILING(-4.3,-2)	-4	LibreOffice
+MROUND(10,3)	9	LibreOffice
+MROUND(-10,-3)	-9	LibreOffice
+MROUND(1.3,0.2)	1.4000000000000001	LibreOffice
+MROUND(7.5,5)	10	LibreOffice
+MROUND(-7.5,-5)	-10	LibreOffice
+MROUND(2.5,1)	3	LibreOffice
+MROUND(5,0)	0	LibreOffice
+EVEN(1.5)	2	LibreOffice
+EVEN(3)	4	LibreOffice
+EVEN(2)	2	LibreOffice
+EVEN(-1)	-2	LibreOffice
+EVEN(0)	0	LibreOffice
+EVEN(-2.5)	-4	LibreOffice
+ODD(1.5)	3	LibreOffice
+ODD(3)	3	LibreOffice
+ODD(2)	3	LibreOffice
+ODD(-1)	-1	LibreOffice
+ODD(-2)	-3	LibreOffice
+ODD(0)	1	LibreOffice
+CHAR(65)	"A"	LibreOffice
+CHAR(33)	"!"	LibreOffice
+CHAR(32)	" "	LibreOffice
+CHAR(65.9)	"A"	LibreOffice
+CHAR(256)	{"error": "#VALUE!"}	LibreOffice
+UNICHAR(66)	"B"	LibreOffice
+UNICHAR(233)	"é"	LibreOffice
+UNICHAR(8364)	"€"	LibreOffice
+UNICHAR(128512)	"😀"	LibreOffice
+CODE("A")	65	LibreOffice
+CODE("Alphabet")	65	LibreOffice
+CODE("!")	33	LibreOffice
+CODE("a")	97	LibreOffice
+UNICODE("B")	66	LibreOffice
+UNICODE("é")	233	LibreOffice
+UNICODE("€uro")	8364	LibreOffice
+UNICODE("😀")	128512	LibreOffice
+UNICODE("")	{"error": "#VALUE!"}	LibreOffice
+CLEAN("abc")	"abc"	LibreOffice
+CLEAN(CHAR(9))	""	LibreOffice
+CLEAN(CONCATENATE("a",CHAR(10),"b"))	"ab"	LibreOffice
+CLEAN(CONCATENATE(CHAR(7),"text",CHAR(7)))	"text"	LibreOffice
+CLEAN("é😀")	"é😀"	LibreOffice
+CONCAT("a","b","c")	"abc"	LibreOffice
+CONCAT("x",1)	"x1"	LibreOffice
+CONCAT("é","😀")	"é😀"	LibreOffice
+CONCAT(1.5,2)	"1.52"	LibreOffice
+CONCAT("")	""	LibreOffice
+CONCATENATE("a","b","c")	"abc"	LibreOffice
+CONCATENATE("x",1)	"x1"	LibreOffice
+CONCATENATE("é","😀")	"é😀"	LibreOffice
+CONCATENATE(1.5,2)	"1.52"	LibreOffice
+CONCATENATE("")	""	LibreOffice
+EXACT("word","word")	true	LibreOffice
+EXACT("Word","word")	false	LibreOffice
+EXACT("é","É")	false	LibreOffice
+EXACT("","")	true	LibreOffice
+EXACT("w ord","word")	false	LibreOffice
+FIND("M","Miriam McGovern")	1	LibreOffice
+FIND("m","Miriam McGovern")	6	LibreOffice
+FIND("M","Miriam McGovern",3)	8	LibreOffice
+FIND("z","abc")	{"error": "#VALUE!"}	LibreOffice
+FIND("b","abc",0)	{"error": "#VALUE!"}	LibreOffice
+FIND("b","abc",5)	{"error": "#VALUE!"}	LibreOffice
+FIND("é","café")	4	LibreOffice
+SEARCH("e","Statements",6)	7	LibreOffice
+SEARCH("M","miriam")	1	LibreOffice
+SEARCH("z","abc")	{"error": "#VALUE!"}	LibreOffice
+SEARCH("É","café")	4	LibreOffice
+SEARCH("b","abc",0)	{"error": "#VALUE!"}	LibreOffice
+SEARCH("b?d","abcd")	2	LibreOffice
+SEARCH("~?","a?b")	2	LibreOffice
+LEFT("Sale Price",4)	"Sale"	LibreOffice
+LEFT("Sweden")	"S"	LibreOffice
+LEFT("abc",10)	"abc"	LibreOffice
+LEFT("abc",0)	""	LibreOffice
+LEFT("abc",-1)	{"error": "#VALUE!"}	LibreOffice
+LEFT("éa",1)	"é"	LibreOffice
+RIGHT("Sale Price",5)	"Price"	LibreOffice
+RIGHT("Stock Number")	"r"	LibreOffice
+RIGHT("abc",10)	"abc"	LibreOffice
+RIGHT("abc",0)	""	LibreOffice
+RIGHT("abc",-1)	{"error": "#VALUE!"}	LibreOffice
+RIGHT("café",1)	"é"	LibreOffice
+MID("Fluid Flow",1,5)	"Fluid"	LibreOffice
+MID("Fluid Flow",7,20)	"Flow"	LibreOffice
+MID("Fluid Flow",20,5)	""	LibreOffice
+MID("abc",0,1)	{"error": "#VALUE!"}	LibreOffice
+MID("abc",1,-1)	{"error": "#VALUE!"}	LibreOffice
+MID("café",4,1)	"é"	LibreOffice
+LEN("Phoenix, AZ")	11	LibreOffice
+LEN("")	0	LibreOffice
+LEN("  One   ")	8	LibreOffice
+LEN("café")	4	LibreOffice
+LEN("😀")	1	LibreOffice
+LOWER("E. E. Cummings")	"e. e. cummings"	LibreOffice
+LOWER("Apt. 2B")	"apt. 2b"	LibreOffice
+LOWER("ÉCOLE")	"école"	LibreOffice
+LOWER("")	""	LibreOffice
+UPPER("total")	"TOTAL"	LibreOffice
+UPPER("Yield")	"YIELD"	LibreOffice
+UPPER("café")	"CAFÉ"	LibreOffice
+UPPER("")	""	LibreOffice
+PROPER("this is a TITLE")	"This Is A Title"	LibreOffice
+PROPER("2-way street")	"2-Way Street"	LibreOffice
+PROPER("76BudGet")	"76Budget"	LibreOffice
+PROPER("élan vital")	"Élan Vital"	LibreOffice
+PROPER("don't")	"Don'T"	LibreOffice
+REPLACE("abcdefghijk",6,5,"*")	"abcde*k"	LibreOffice
+REPLACE("2009",3,2,"10")	"2010"	LibreOffice
+REPLACE("123456",1,3,"@")	"@456"	LibreOffice
+REPLACE("abc",5,1,"x")	"abcx"	LibreOffice
+REPLACE("café",4,1,"e")	"cafe"	LibreOffice
+REPLACE("abc",0,1,"x")	{"error": "#VALUE!"}	LibreOffice
+REPT("*-",3)	"*-*-*-"	LibreOffice
+REPT("é",2)	"éé"	LibreOffice
+REPT("a",0)	""	LibreOffice
+REPT("ab",2.9)	"abab"	LibreOffice
+REPT("a",-1)	{"error": "#VALUE!"}	LibreOffice
+SUBSTITUTE("Sales Data","Sales","Cost")	"Cost Data"	LibreOffice
+SUBSTITUTE("Quarter 1, 2008","1","2",1)	"Quarter 2, 2008"	LibreOffice
+SUBSTITUTE("Quarter 1, 2011","1","2",3)	"Quarter 1, 2012"	LibreOffice
+SUBSTITUTE("aaa","a","b")	"bbb"	LibreOffice
+SUBSTITUTE("abc","","x")	"abc"	LibreOffice
+SUBSTITUTE("café","é","e")	"cafe"	LibreOffice
+SUBSTITUTE("abc","b","x",0)	{"error": "#VALUE!"}	LibreOffice
+TRIM(" First Quarter Earnings ")	"First Quarter Earnings"	LibreOffice
+TRIM("  a  b  ")	"a b"	LibreOffice
+TRIM("")	""	LibreOffice
+TRIM("é  😀")	"é 😀"	LibreOffice
+VALUE("123")	123	LibreOffice
+VALUE("-2.5")	-2.5	LibreOffice
+VALUE("  42  ")	42	LibreOffice
+VALUE("50%")	0.5	LibreOffice
+VALUE("1e3")	1000	LibreOffice
+VALUE("abc")	{"error": "#VALUE!"}	LibreOffice
+VALUE("")	{"error": "#VALUE!"}	LibreOffice
+COT(0)	{"error": "#DIV/0!"}	Excel docs
+ATAN2(0,0)	{"error": "#DIV/0!"}	Excel docs
+MROUND(5,-2)	{"error": "#NUM!"}	Excel docs
+MROUND(-5,2)	{"error": "#NUM!"}	Excel docs
+SEC(134217728)	{"error": "#NUM!"}	Excel docs
+CSC(134217728)	{"error": "#NUM!"}	Excel docs
+UNICHAR(0)	{"error": "#VALUE!"}	Excel docs
+CHAR(0)	{"error": "#VALUE!"}	Excel docs
+FIND("","abc")	1	Excel docs
+FIND("","abc",2)	2	Excel docs
+ERROR.TYPE(SQRT(-1))	6	Excel docs
+ERROR.TYPE(LN(0))	6	Excel docs
+ERROR.TYPE(VALUE("abc"))	3	Excel docs
+TEXTBEFORE("abc","b",0)	{"error": "#VALUE!"}	Excel docs
+TEXTBEFORE("abc","b",4)	{"error": "#VALUE!"}	Excel docs
+TEXTAFTER("abc","b",0)	{"error": "#VALUE!"}	Excel docs
+TEXTBEFORE("Red riding hood's, red hood","")	""	Excel docs
+TEXTBEFORE("Red riding hood's, red hood","",-1)	"Red riding hood's, red hood"	Excel docs
+TEXTAFTER("Red riding hood's, red hood","")	"Red riding hood's, red hood"	Excel docs
+TEXTAFTER("Red riding hood's, red hood","",-1)	""	Excel docs
+TEXTAFTER("Socrates"," ",1,0,1)	""	Excel docs
+TEXTAFTER("Marcus Aurelius"," ",1,0,1)	"Aurelius"	Excel docs
+TEXTBEFORE("Little Red Riding Hood's red hood","Red")	"Little "	LibreOffice
+TEXTBEFORE("Little red Riding Hood's red hood","Red")	{"error": "#N/A"}	LibreOffice
+TEXTBEFORE("Little red Riding Hood's red hood","red",2)	"Little red Riding Hood's "	LibreOffice
+TEXTBEFORE("Little red Riding Hood's red hood","red",-2)	"Little "	LibreOffice
+TEXTBEFORE("Little Red Riding Hood's red hood","RED",1,1)	"Little "	LibreOffice
+TEXTBEFORE("Red riding hood's, red hood","hood")	"Red riding "	LibreOffice
+TEXTBEFORE("abc","z")	{"error": "#N/A"}	LibreOffice
+TEXTBEFORE("abc","z",1,0,0,"none")	"none"	LibreOffice
+TEXTBEFORE("a-b","-",2)	{"error": "#N/A"}	LibreOffice
+TEXTBEFORE("Marcus Aurelius"," ",1,0,1)	"Marcus"	LibreOffice
+TEXTBEFORE("Socrates"," ",1,0,1)	"Socrates"	LibreOffice
+TEXTBEFORE("Socrates"," ",1,0,0)	{"error": "#N/A"}	LibreOffice
+TEXTBEFORE("naïve","ï")	"na"	LibreOffice
+TEXTAFTER("Little Red Riding Hood's red hood","Red")	" Riding Hood's red hood"	LibreOffice
+TEXTAFTER("Little Red Riding Hood's red hood","basket")	{"error": "#N/A"}	LibreOffice
+TEXTAFTER("Little red Riding Hood's red hood","red",2)	" hood"	LibreOffice
+TEXTAFTER("Little red Riding Hood's red hood","red",-2)	" Riding Hood's red hood"	LibreOffice
+TEXTAFTER("Little red Riding Hood's red hood","Red",1,0)	{"error": "#N/A"}	LibreOffice
+TEXTAFTER("Little Red Riding Hood's red hood","red",3)	{"error": "#N/A"}	LibreOffice
+TEXTAFTER("Little Red Riding Hood's red hood","RED",1,1)	" Riding Hood's red hood"	LibreOffice
+TEXTAFTER("Red riding hood's, red hood","hood")	"'s, red hood"	LibreOffice
+TEXTAFTER("abc","z",1,0,0,"none")	"none"	LibreOffice
+TEXTAFTER("café","f")	"é"	LibreOffice
+EXPM1(0)	0	Gnumeric source plugins/fn-math/functions.c
+EXPM1(0.01)	0.010050167084168058	Gnumeric source plugins/fn-math/functions.c
+EXPM1(1)	1.718281828459045	Gnumeric source plugins/fn-math/functions.c
+EXPM1(-1)	-0.6321205588285577	Gnumeric source plugins/fn-math/functions.c
+EXPM1(0.000001)	1.0000005000001665e-06	Gnumeric source plugins/fn-math/functions.c
+EXPM1(710)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+LN1P(0)	0	Gnumeric source plugins/fn-math/functions.c
+LN1P(0.01)	0.009950330853168083	Gnumeric source plugins/fn-math/functions.c
+LN1P(1)	0.6931471805599453	Gnumeric source plugins/fn-math/functions.c
+LN1P(-0.5)	-0.6931471805599453	Gnumeric source plugins/fn-math/functions.c
+LN1P(-1)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+LN1P(-2)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+LOG2(1024)	10	Gnumeric source plugins/fn-math/functions.c
+LOG2(1)	0	Gnumeric source plugins/fn-math/functions.c
+LOG2(0.5)	-1	Gnumeric source plugins/fn-math/functions.c
+LOG2(3)	1.584962500721156	Gnumeric source plugins/fn-math/functions.c
+LOG2(0)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+LOG2(-4)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+SINPI(0.5)	1	Gnumeric source plugins/fn-math/functions.c
+SINPI(1)	0	Gnumeric source plugins/fn-math/functions.c
+SINPI(0.25)	0.7071067811865476	Gnumeric source plugins/fn-math/functions.c
+SINPI(-0.5)	-1	Gnumeric source plugins/fn-math/functions.c
+SINPI(0.1)	0.3090169943749474	Gnumeric source plugins/fn-math/functions.c
+SINPI(2.5)	1	Gnumeric source plugins/fn-math/functions.c
+SINPI(-1)	0	Gnumeric source plugins/fn-math/functions.c
+SINPI(0)	0	Gnumeric source plugins/fn-math/functions.c
+COSPI(0.5)	0	Gnumeric source plugins/fn-math/functions.c
+COSPI(1)	-1	Gnumeric source plugins/fn-math/functions.c
+COSPI(0)	1	Gnumeric source plugins/fn-math/functions.c
+COSPI(0.25)	0.7071067811865476	Gnumeric source plugins/fn-math/functions.c
+COSPI(-2)	1	Gnumeric source plugins/fn-math/functions.c
+COSPI(1.5)	0	Gnumeric source plugins/fn-math/functions.c
+COSPI(0.1)	0.9510565162951535	Gnumeric source plugins/fn-math/functions.c
+TANPI(1)	0	Gnumeric source plugins/fn-math/functions.c
+TANPI(0.25)	1	Gnumeric source plugins/fn-math/functions.c
+TANPI(-0.25)	-1	Gnumeric source plugins/fn-math/functions.c
+TANPI(0.75)	-1	Gnumeric source plugins/fn-math/functions.c
+TANPI(0.5)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+TANPI(0.1)	0.3249196962329063	Gnumeric source plugins/fn-math/functions.c
+COTPI(0.5)	0	Gnumeric source plugins/fn-math/functions.c
+COTPI(0.25)	1	Gnumeric source plugins/fn-math/functions.c
+COTPI(-0.25)	-1	Gnumeric source plugins/fn-math/functions.c
+COTPI(0.1)	3.0776835371752536	Gnumeric source plugins/fn-math/functions.c
+COTPI(0)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+COTPI(1)	{"error": "#NUM!"}	Gnumeric source plugins/fn-math/functions.c
+HYPOT(3,4)	5	Gnumeric source plugins/fn-math/functions.c
+HYPOT(-3,4)	5	Gnumeric source plugins/fn-math/functions.c
+HYPOT(1,1)	1.4142135623730951	Gnumeric source plugins/fn-math/functions.c
+HYPOT(1,2,2)	3	Gnumeric source plugins/fn-math/functions.c
+HYPOT(2,3,6)	7	Gnumeric source plugins/fn-math/functions.c
+HYPOT(0,0)	0	Gnumeric source plugins/fn-math/functions.c
+HYPOT(-5)	5	Gnumeric source plugins/fn-math/functions.c
+HYPOT(0,5,0)	5	Gnumeric source plugins/fn-math/functions.c
+INVSUMINV(2000,2000)	1000	Gnumeric source plugins/fn-eng/functions.c
+INVSUMINV(1,2,3)	0.5454545454545455	Gnumeric source plugins/fn-eng/functions.c
+INVSUMINV(4)	4	Gnumeric source plugins/fn-eng/functions.c
+INVSUMINV(0,5)	0	Gnumeric source plugins/fn-eng/functions.c
+INVSUMINV(-1,2)	{"error": "#VALUE!"}	Gnumeric source plugins/fn-eng/functions.c
+INVSUMINV(10,10,5)	2.5	Gnumeric source plugins/fn-eng/functions.c
+ERROR("#N/A")	{"error": "#N/A"}	Gnumeric source plugins/fn-info/functions.c
+ERROR("#DIV/0!")	{"error": "#DIV/0!"}	Gnumeric source plugins/fn-info/functions.c
+ERROR("#VALUE!")	{"error": "#VALUE!"}	Gnumeric source plugins/fn-info/functions.c
+BETWEEN(5,1,10)	true	Quantrix docs
+BETWEEN(1,1,10)	true	Quantrix docs
+BETWEEN(10,1,10)	true	Quantrix docs
+BETWEEN(1,1,10,FALSE)	false	Quantrix docs
+BETWEEN(5,1,10,FALSE)	true	Quantrix docs
+BETWEEN(11,1,10)	false	Quantrix docs
+BETWEEN(-2.5,-3,0)	true	Quantrix docs
+BETWEEN(0,1,10,TRUE)	false	Quantrix docs
+CLEARERROR(NA(),0)	0	Quantrix docs
+CLEARERROR(SQRT(-1),-1)	-1	Quantrix docs
+CLEARERROR(5,0)	5	Quantrix docs
+CLEARZERO(0,1)	1	Quantrix docs
+CLEARZERO(5,1)	5	Quantrix docs
+CLEARZERO(-2.5,1)	-2.5	Quantrix docs
+TEXTBETWEEN("Apple,Banana,Strawberry",",",",")	"Banana"	Numbers docs
+TEXTBETWEEN("Extract the text between the first occurrence of the and the last occurrence of text","text","the")	" between "	Numbers docs
+TEXTBETWEEN("a[b]c","[","]")	"b"	Numbers docs
+TEXTBETWEEN("xAyBz","a","b")	"y"	Numbers docs
+TEXTBETWEEN("<é😀>","<",">")	"é😀"	Numbers docs
+TEXTBETWEEN("[]","[","]")	""	Numbers docs
+COUNTMATCHES("Please, could you, if you don’t mind, count the number of commas?",",")	3	Numbers docs
+COUNTMATCHES("asasa","asa")	2	Numbers docs
+COUNTMATCHES("aaa","aa")	2	Numbers docs
+COUNTMATCHES("banana","an")	2	Numbers docs
+COUNTMATCHES("BANANA","a")	3	Numbers docs
+COUNTMATCHES("abc","z")	0	Numbers docs
+COUNTMATCHES("café café","é")	2	Numbers docs

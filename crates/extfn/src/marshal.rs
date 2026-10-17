@@ -95,6 +95,11 @@ fn err_kind_str(k: &ValueErrorKind) -> &'static str {
         ValueErrorKind::DivisionByZero => "division_by_zero",
         ValueErrorKind::MissingInput => "missing_input",
         ValueErrorKind::Custom(_) => "custom",
+        ValueErrorKind::Null => "null",
+        ValueErrorKind::Ref => "ref",
+        ValueErrorKind::Name => "name",
+        ValueErrorKind::Num => "num",
+        ValueErrorKind::Na => "na",
     }
 }
 

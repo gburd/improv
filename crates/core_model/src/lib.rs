@@ -11,6 +11,7 @@
 
 pub mod extfn_def;
 pub mod formula;
+pub mod functions;
 pub mod ids;
 pub mod parser;
 pub mod schedule;

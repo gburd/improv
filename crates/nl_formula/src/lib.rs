@@ -441,7 +441,13 @@ fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
                 FUNC_AVERAGE => "average",
                 FUNC_MIN => "min",
                 FUNC_MAX => "max",
-                FuncId(n) => return format!("function {n} of {}", join_args(ctx, args)),
+                other => {
+                    let name = improv_core_model::functions::by_id(other)
+                        .map_or_else(|| format!("function {}", other.0), |d| d.name.to_string());
+                    let rendered: Vec<String> =
+                        args.iter().map(|a| describe_expr(ctx, a)).collect();
+                    return format!("{name}({})", rendered.join(", "));
+                }
             };
             format!("the {name} of {}", join_args(ctx, args))
         }

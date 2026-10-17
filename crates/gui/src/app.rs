@@ -2442,32 +2442,14 @@ fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
     Some(format!("{name}({})", rendered?.join(", ")))
 }
 
-/// Whether `func` is one of the v1 aggregating built-ins (SUM/AVG/MIN/MAX),
-/// whose only DSL spelling is the `OVER` form. Ids come from `parser`'s public
-/// constants, the same table `engine::compiler::is_aggregation` mirrors.
+/// Whether `func` aggregates (`SUM(x OVER T)`), per the function registry.
 fn is_aggregation(func: FuncId) -> bool {
-    matches!(
-        func,
-        parser::FUNC_SUM | parser::FUNC_AVG | parser::FUNC_MIN | parser::FUNC_MAX
-    )
+    improv_core_model::functions::is_aggregation(func)
 }
 
-/// The DSL name of a built-in function id. Scalar names are resolved *through*
-/// `parser::scalar_func` so the id table stays single-sourced there.
+/// The DSL name of a built-in function id, from the function registry.
 fn func_name(func: FuncId) -> Option<&'static str> {
-    const SCALARS: &[&str] = &[
-        "ABS", "ROUND", "FLOOR", "CEIL", "SQRT", "NEG", "MIN2", "MAX2",
-    ];
-    match func {
-        parser::FUNC_SUM => Some("SUM"),
-        parser::FUNC_AVG => Some("AVG"),
-        parser::FUNC_MIN => Some("MIN"),
-        parser::FUNC_MAX => Some("MAX"),
-        _ => SCALARS
-            .iter()
-            .copied()
-            .find(|n| parser::scalar_func(n).map(|(id, _)| id) == Some(func)),
-    }
+    improv_core_model::functions::by_id(func).map(|d| d.name)
 }
 
 fn ref_dsl(model: &Model, id: MeasureId, by: &[CategoryId]) -> Option<String> {

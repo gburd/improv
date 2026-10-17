@@ -118,6 +118,6 @@ both `by` and `for each`, describe → parse is a stable round trip for the
 supported constructs. Comparison and logical operators have best-effort English
 renderings (`is greater than`, `and`, `or`, ...) so `describe` never fails, but
 they are outside the parseable surface. The same holds for two more
-renderings: unary minus describes as `negative X`, and a scalar function
-call (`ABS`, `ROUND`, `MIN2`, …) as `function N of …`; neither parses back,
+renderings: unary minus describes as `negative X`, and a non-aggregating
+function call as itself (`ROUND(Price, 2)`, `IF(…)`); neither parses back,
 so write those in the formula DSL.

@@ -18,6 +18,7 @@ differential-dataflow.workspace = true
 timely.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 proptest = "1"
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are

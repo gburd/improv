@@ -88,6 +88,7 @@
 //!   `parse_definition`) are supported.
 
 use crate::formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
+use crate::functions;
 use crate::ids::{CategoryId, MeasureId, Name};
 use crate::value::Value;
 use crate::Model;
@@ -97,27 +98,11 @@ pub const FUNC_AVG: FuncId = FuncId(2);
 pub const FUNC_MIN: FuncId = FuncId(3);
 pub const FUNC_MAX: FuncId = FuncId(4);
 
-/// Named scalar built-in functions callable as `NAME(args...)` in a formula.
-///
-/// These ids and arities MUST match the engine's scalar registry
-/// (`improv_engine::compiler::scalar_arity`). This is the deterministic,
-/// in-process function surface; the Phase 6 external-language `CALL(...)` form
-/// plugs additional runtimes into the same `Expr::Call` seam.
-///
-/// Returns `(FuncId, arity)` for a recognized name (case-insensitive).
+/// The built-in a name calls as `NAME(args...)` (aggregations excluded):
+/// its id and parameter count, from [`crate::functions::FUNCTIONS`]
+/// (case-insensitive, aliases included).
 pub fn scalar_func(name: &str) -> Option<(FuncId, usize)> {
-    let (id, arity) = match name.to_ascii_uppercase().as_str() {
-        "ABS" => (10, 1),
-        "ROUND" => (11, 1),
-        "FLOOR" => (12, 1),
-        "CEIL" => (13, 1),
-        "SQRT" => (14, 1),
-        "NEG" => (15, 1),
-        "MIN2" => (20, 2),
-        "MAX2" => (21, 2),
-        _ => return None,
-    };
-    Some((FuncId(id), arity))
+    functions::callable(name).map(|d| (d.id, d.params.len()))
 }
 
 /// A formula parse failure. `position` is a byte offset into the source token
@@ -660,10 +645,41 @@ impl<'a> Parser<'a> {
     /// Identifier-headed primary: TRUE/FALSE, aggregation, or a measure ref.
     fn parse_ident_primary(&mut self) -> Result<Expr, ParseError> {
         // Peek the identifier text without holding the borrow.
-        let word = match self.peek() {
+        let mut word = match self.peek() {
             Some(Tok::Ident(w)) => w.clone(),
             _ => return Err(self.err("expected identifier")),
         };
+        // A dotted function name (`FLOOR.MATH(`, `ERROR.TYPE(`): join the parts
+        // when the result names a function and `(` follows.
+        let mut parts = 1;
+        loop {
+            let at = |k: usize| self.toks.get(self.pos + k).map(|s| &s.tok);
+            match (at(parts), at(parts + 1)) {
+                (Some(Tok::Op(dot)), Some(Tok::Ident(next))) if dot == "." => {
+                    let joined = format!("{word}.{next}");
+                    let is_fn = functions::callable(&joined).is_some()
+                        || functions::by_name(&joined).next().is_some();
+                    if is_fn && matches!(at(parts + 2), Some(Tok::Op(o)) if o == "(" || o == ".") {
+                        word = joined;
+                        parts += 2;
+                        continue;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        if parts > 1 {
+            // Collapse the dotted name into the function-name token.
+            self.pos += parts - 1;
+            return self.parse_call(&word);
+        }
+        // `TRUE()` / `FALSE()` are the functions; bare `TRUE` the literal.
+        let is_call =
+            matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(");
+        if is_call && (word.eq_ignore_ascii_case("true") || word.eq_ignore_ascii_case("false")) {
+            return self.parse_call(&word);
+        }
 
         if word.eq_ignore_ascii_case("true") {
             self.bump();
@@ -673,31 +689,21 @@ impl<'a> Parser<'a> {
             self.bump();
             return Ok(Expr::Literal(Value::Boolean(false)));
         }
-        if let Some(func) = agg_func(&word) {
-            // Aggregation only when directly followed by "(" — otherwise treat
-            // "SUM" etc. as an ordinary (if unusual) measure name.
-            if matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(") {
-                return self.parse_aggregation(func);
-            }
-        }
-        if let Some((func, arity)) = scalar_func(&word) {
-            // Named scalar call `NAME(args...)` only when directly followed by
-            // "("; otherwise the word is an ordinary measure name.
-            if matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(") {
-                return self.parse_scalar_call(&word, func, arity);
-            }
+        // A function name only calls when directly followed by "(";
+        // otherwise the word is an ordinary measure name.
+        if is_call
+            && (functions::aggregation(&word).is_some() || functions::callable(&word).is_some())
+        {
+            return self.parse_call(&word);
         }
         self.parse_measure_ref()
     }
 
-    /// A named scalar function call: `NAME(expr, expr, ...)`. Arity is checked
+    /// `NAME(args…)`: an aggregation `NAME(MeasureRef OVER Category)` when
+    /// the name has one and `OVER` follows the first argument, otherwise a
+    /// call of the non-aggregating function the name means. Arity is checked
     /// against the registry so a bad call is a clear parse error.
-    fn parse_scalar_call(
-        &mut self,
-        name: &str,
-        func: FuncId,
-        arity: usize,
-    ) -> Result<Expr, ParseError> {
+    fn parse_call(&mut self, name: &str) -> Result<Expr, ParseError> {
         self.bump(); // function name
         if !self.eat_op("(") {
             return Err(self.err("expected '(' after function name"));
@@ -706,6 +712,9 @@ impl<'a> Parser<'a> {
         if !matches!(self.toks.get(self.pos).map(|s| &s.tok), Some(Tok::Op(o)) if o == ")") {
             loop {
                 args.push(self.parse_expr()?);
+                if args.len() == 1 && self.peek_kw("over") {
+                    return self.finish_aggregation(name, args.pop().expect("one arg"));
+                }
                 if self.eat_op(",") {
                     continue;
                 }
@@ -715,40 +724,39 @@ impl<'a> Parser<'a> {
         if !self.eat_op(")") {
             return Err(self.err("expected ')' to close function call"));
         }
-        if args.len() != arity {
+        let def = functions::callable(name).ok_or_else(|| {
+            self.err(format!(
+                "{name} aggregates: write {name}(Measure OVER Category)"
+            ))
+        })?;
+        if !def.accepts(args.len()) {
             return Err(self.err(format!(
-                "{name} takes {arity} argument(s), got {}",
+                "{} takes {}, got {} argument(s)",
+                def.name,
+                def.signature(),
                 args.len()
             )));
         }
-        Ok(Expr::Call(func, args))
+        Ok(Expr::Call(def.id, args))
     }
 
-    /// Aggregation = AggFunc "(" MeasureRef "OVER" Identifier ")"
-    fn parse_aggregation(&mut self, func: FuncId) -> Result<Expr, ParseError> {
-        self.bump(); // AggFunc
-        if !self.eat_op("(") {
-            return Err(self.err("expected '(' after aggregation function"));
-        }
-        // Inner measure ref (no dim-list bracket expected here, but allow it).
-        let arg = self.parse_measure_ref()?;
-        if !self.peek_kw("over") {
-            return Err(self.err("expected 'OVER' in aggregation"));
-        }
+    /// The rest of `AGG(MeasureRef OVER Category)` after the argument.
+    fn finish_aggregation(&mut self, name: &str, arg: Expr) -> Result<Expr, ParseError> {
+        let def = functions::aggregation(name)
+            .ok_or_else(|| self.err(format!("{name} does not aggregate OVER a category")))?;
         self.bump(); // OVER
         let cat = self.parse_category_name()?;
         if !self.eat_op(")") {
             return Err(self.err("expected ')' to close aggregation"));
         }
         // Attach the collapsed category to the arg ref's DimensionSpec.over.
-        let arg = match arg {
+        match arg {
             Expr::Ref(id, mut spec) => {
                 spec.over.push(cat);
-                Expr::Ref(id, spec)
+                Ok(Expr::Call(def.id, vec![Expr::Ref(id, spec)]))
             }
-            _ => return Err(self.err("aggregation argument must be a measure reference")),
-        };
-        Ok(Expr::Call(func, vec![arg]))
+            _ => Err(self.err("aggregation argument must be a measure reference")),
+        }
     }
 
     /// MeasureRef = Name [ "[" DimList "]" ]
@@ -771,20 +779,6 @@ impl<'a> Parser<'a> {
     fn parse_category_name(&mut self) -> Result<CategoryId, ParseError> {
         let (name, pos) = self.parse_name("a category name")?;
         self.category_id(&name, pos)
-    }
-}
-
-fn agg_func(word: &str) -> Option<FuncId> {
-    if word.eq_ignore_ascii_case("sum") {
-        Some(FUNC_SUM)
-    } else if word.eq_ignore_ascii_case("avg") {
-        Some(FUNC_AVG)
-    } else if word.eq_ignore_ascii_case("min") {
-        Some(FUNC_MIN)
-    } else if word.eq_ignore_ascii_case("max") {
-        Some(FUNC_MAX)
-    } else {
-        None
     }
 }
 
@@ -1279,7 +1273,41 @@ mod tests {
     fn scalar_call_wrong_arity_errors() {
         let m = fixture();
         assert!(parse_expr(&m, "ABS(Price, Cost)").is_err()); // ABS is arity 1
-        assert!(parse_expr(&m, "MIN2(Price)").is_err()); // MIN2 is arity 2
+        assert!(parse_expr(&m, "MID(Price)").is_err()); // MID takes 3
+        assert!(parse_expr(&m, "ROUND()").is_err()); // ROUND needs at least 1
+        let e = parse_expr(&m, "ROUND(Price, 1, 2)").unwrap_err();
+        assert!(
+            e.message.contains("ROUND(number, [number])"),
+            "{}",
+            e.message
+        );
+        // MIN2 is MIN's old name: variadic now, so one argument is fine.
+        assert_eq!(
+            parse_expr(&m, "MIN2(Price)").unwrap().expr,
+            Expr::Call(FuncId(20), vec![refr(PRICE)])
+        );
+        // A scalar-only name with OVER, and an aggregation name without it.
+        assert!(parse_expr(&m, "ABS(Price OVER Time)").is_err());
+        assert_eq!(
+            parse_expr(&m, "SUM(Price, Cost)").unwrap().expr,
+            Expr::Call(FuncId(22), vec![refr(PRICE), refr(COST)])
+        );
+        // Optional arguments, aliases, zero-arg calls.
+        assert_eq!(
+            parse_expr(&m, "round(Price, 2)").unwrap().expr,
+            Expr::Call(
+                FuncId(11),
+                vec![refr(PRICE), Expr::Literal(Value::Number(2.0))]
+            )
+        );
+        assert_eq!(
+            parse_expr(&m, "PI()").unwrap().expr,
+            Expr::Call(FuncId(112), vec![])
+        );
+        assert_eq!(
+            parse_expr(&m, "AVG(Price OVER Time)").unwrap().expr,
+            parse_expr(&m, "AVERAGE(Price OVER Time)").unwrap().expr
+        );
     }
 
     #[test]

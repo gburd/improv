@@ -27,6 +27,10 @@ type Res<T> = Result<T, Box<dyn Error>>;
 /// `improv.max_cells`: the most bound input cells one model may hold.
 static MAX_CELLS: GucSetting<i32> = GucSetting::<i32>::new(5_000_000);
 
+/// `improv.raise_errors`: whether a `LANGUAGE improv` function whose result
+/// is an error value (`#DIV/0!`, …) raises it instead of returning NULL.
+pub(crate) static RAISE_ERRORS: GucSetting<bool> = GucSetting::<bool>::new(false);
+
 #[allow(non_snake_case)]
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
@@ -37,6 +41,14 @@ pub extern "C-unwind" fn _PG_init() {
         &MAX_CELLS,
         0,
         i32::MAX,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
+    GucRegistry::define_bool_guc(
+        c"improv.raise_errors",
+        c"Raise a LANGUAGE improv error value instead of returning NULL.",
+        c"When on, a LANGUAGE improv function whose result is an error value (#DIV/0!, #NUM!, #N/A, ...) raises an ERROR naming it; when off it returns NULL.",
+        &RAISE_ERRORS,
         GucContext::Userset,
         GucFlags::default(),
     );

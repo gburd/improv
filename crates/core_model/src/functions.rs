@@ -1,0 +1,567 @@
+//! The built-in function registry: ONE table for every function the formula
+//! language knows, read by the parser (names, aliases, arity), the compiler
+//! (argument and result types, kind), the GUI and CNL (spellings), and the
+//! generated function reference (`docs/src/functions.md`).
+//!
+//! Evaluation lives in the engine (`improv_engine::builtins`); a test there
+//! walks [`FUNCTIONS`] and fails if any evaluable id has no implementation.
+//!
+//! A [`FuncId`] is persisted in every stored formula, so ids are stable
+//! forever: never renumber or reuse one. Aliases resolve to their canonical
+//! id at parse time, so stored formulas never hold an alias.
+
+use crate::formula::FuncId;
+use crate::value::ValueType;
+
+/// How a function is compiled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Element-wise over its arguments' aligned cells (`ABS`, `LEFT`, n-ary
+    /// `SUM(a, b)`).
+    Scalar,
+    /// Collapses one category: `SUM(x OVER Time)`.
+    Aggregate,
+    /// Evaluates only the arguments it needs (`IF`, `IFERROR`, …); the compiler
+    /// lowers it specially.
+    Lazy,
+}
+
+/// An argument's type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arg {
+    Number,
+    Text,
+    Boolean,
+    /// Any value type (`CONCAT`, `ISERROR`).
+    Any,
+}
+
+/// What a function returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ret {
+    Fixed(ValueType),
+    /// The unified type of the value arguments (`IF`'s branches); the compiler
+    /// computes it per [`Kind::Lazy`] function.
+    Unify,
+}
+
+/// A function's documentation category (groups the reference page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Category {
+    Aggregation,
+    Logical,
+    Information,
+    Math,
+    Rounding,
+    Text,
+}
+
+/// One built-in function.
+#[derive(Debug, Clone, Copy)]
+pub struct FnDef {
+    pub id: FuncId,
+    /// Canonical (Excel) spelling.
+    pub name: &'static str,
+    /// Other spellings that mean exactly this function.
+    pub aliases: &'static [&'static str],
+    pub kind: Kind,
+    pub category: Category,
+    /// Leading required arguments, then `optional` optional ones; with
+    /// `variadic`, the last parameter repeats (at least once).
+    pub params: &'static [Arg],
+    pub required: usize,
+    pub variadic: bool,
+    pub ret: Ret,
+    /// One-line description for the reference page.
+    pub doc: &'static str,
+}
+
+impl FnDef {
+    /// Whether `n` arguments is a valid call.
+    pub fn accepts(&self, n: usize) -> bool {
+        n >= self.required && (self.variadic || n <= self.params.len())
+    }
+
+    /// The expected type of argument `i` (variadic tails repeat the last).
+    pub fn param(&self, i: usize) -> Arg {
+        self.params
+            .get(i)
+            .or(self.params.last())
+            .copied()
+            .unwrap_or(Arg::Any)
+    }
+
+    /// `ABS(x)`-style signature for docs and error messages.
+    pub fn signature(&self) -> String {
+        let names: Vec<String> = self
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let t = match a {
+                    Arg::Number => "number",
+                    Arg::Text => "text",
+                    Arg::Boolean => "boolean",
+                    Arg::Any => "value",
+                };
+                if i >= self.required {
+                    format!("[{t}]")
+                } else {
+                    t.to_string()
+                }
+            })
+            .collect();
+        let mut s = names.join(", ");
+        if self.variadic {
+            s.push_str(", …");
+        }
+        format!("{}({s})", self.name)
+    }
+}
+
+use Arg::{Any as A, Boolean as B, Number as N, Text as T};
+use Category as C;
+use ValueType as V;
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "a table row: one argument per FnDef field"
+)]
+// Evaluated at compile time (they build the static table), so no test
+// can execute them: excluded from the runtime coverage report.
+#[cfg_attr(coverage_nightly, coverage(off))]
+const fn f(
+    id: u32,
+    name: &'static str,
+    kind: Kind,
+    category: Category,
+    params: &'static [Arg],
+    required: usize,
+    variadic: bool,
+    ret: Ret,
+    doc: &'static str,
+) -> FnDef {
+    FnDef {
+        id: FuncId(id),
+        name,
+        aliases: &[],
+        kind,
+        category,
+        params,
+        required,
+        variadic,
+        ret,
+        doc,
+    }
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+const fn alias(mut d: FnDef, aliases: &'static [&'static str]) -> FnDef {
+    d.aliases = aliases;
+    d
+}
+
+/// A scalar of `params` (all required) returning `ret`.
+#[cfg_attr(coverage_nightly, coverage(off))]
+const fn s(
+    id: u32,
+    name: &'static str,
+    cat: Category,
+    params: &'static [Arg],
+    ret: ValueType,
+    doc: &'static str,
+) -> FnDef {
+    f(
+        id,
+        name,
+        Kind::Scalar,
+        cat,
+        params,
+        params.len(),
+        false,
+        Ret::Fixed(ret),
+        doc,
+    )
+}
+
+/// A scalar with `required` of `params` mandatory.
+#[cfg_attr(coverage_nightly, coverage(off))]
+const fn so(
+    id: u32,
+    name: &'static str,
+    cat: Category,
+    params: &'static [Arg],
+    required: usize,
+    ret: ValueType,
+    doc: &'static str,
+) -> FnDef {
+    f(
+        id,
+        name,
+        Kind::Scalar,
+        cat,
+        params,
+        required,
+        false,
+        Ret::Fixed(ret),
+        doc,
+    )
+}
+
+/// A variadic scalar: one or more `arg`s.
+#[cfg_attr(coverage_nightly, coverage(off))]
+const fn sv(
+    id: u32,
+    name: &'static str,
+    cat: Category,
+    arg: &'static [Arg],
+    ret: ValueType,
+    doc: &'static str,
+) -> FnDef {
+    f(
+        id,
+        name,
+        Kind::Scalar,
+        cat,
+        arg,
+        1,
+        true,
+        Ret::Fixed(ret),
+        doc,
+    )
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+const fn agg(
+    id: u32,
+    name: &'static str,
+    arg: &'static [Arg],
+    ret: ValueType,
+    doc: &'static str,
+) -> FnDef {
+    f(
+        id,
+        name,
+        Kind::Aggregate,
+        C::Aggregation,
+        arg,
+        1,
+        false,
+        Ret::Fixed(ret),
+        doc,
+    )
+}
+
+/// Every built-in function. Order is documentation order within a category.
+#[rustfmt::skip]
+pub static FUNCTIONS: &[FnDef] = &[
+    // --- aggregations: F(x OVER Cat) ---
+    agg(1, "SUM", &[N], V::Number, "the sum over a category"),
+    alias(agg(2, "AVERAGE", &[N], V::Number, "the mean over a category"), &["AVG"]),
+    agg(3, "MIN", &[N], V::Number, "the smallest value over a category"),
+    agg(4, "MAX", &[N], V::Number, "the largest value over a category"),
+    agg(5, "PRODUCT", &[N], V::Number, "the product over a category"),
+    agg(6, "SUMSQ", &[N], V::Number, "the sum of squares over a category"),
+    agg(7, "AND", &[B], V::Boolean, "whether every value over a category is true"),
+    agg(8, "OR", &[B], V::Boolean, "whether any value over a category is true"),
+    agg(9, "XOR", &[B], V::Boolean, "whether an odd number of values over a category are true"),
+    // --- scalar twins of the aggregations: F(a, b, …) ---
+    sv(22, "SUM", C::Math, &[N], V::Number, "the sum of the arguments"),
+    sv(23, "AVERAGE", C::Math, &[N], V::Number, "the mean of the arguments"),
+    alias(sv(20, "MIN", C::Math, &[N], V::Number, "the smallest argument"), &["MIN2"]),
+    alias(sv(21, "MAX", C::Math, &[N], V::Number, "the largest argument"), &["MAX2"]),
+    sv(24, "PRODUCT", C::Math, &[N], V::Number, "the product of the arguments"),
+    sv(25, "SUMSQ", C::Math, &[N], V::Number, "the sum of the squares of the arguments"),
+    sv(26, "AND", C::Logical, &[B], V::Boolean, "whether every argument is true"),
+    sv(27, "OR", C::Logical, &[B], V::Boolean, "whether any argument is true"),
+    sv(28, "XOR", C::Logical, &[B], V::Boolean, "whether an odd number of arguments are true"),
+    // --- logical ---
+    f(30, "IF", Kind::Lazy, C::Logical, &[B, A, A], 2, false, Ret::Unify, "then where the test is true, else (or no cell) where it is false"),
+    f(31, "IFS", Kind::Lazy, C::Logical, &[B, A], 2, true, Ret::Unify, "the value paired with the first true test"),
+    f(32, "SWITCH", Kind::Lazy, C::Logical, &[A, A, A], 3, true, Ret::Unify, "the result paired with the first value equal to the expression, else the default"),
+    f(33, "CHOOSE", Kind::Lazy, C::Logical, &[N, A], 2, true, Ret::Unify, "the index-th value (1-based)"),
+    f(34, "IFERROR", Kind::Lazy, C::Logical, &[A, A], 2, false, Ret::Unify, "the value, or the alternative where it is an error"),
+    f(35, "IFNA", Kind::Lazy, C::Logical, &[A, A], 2, false, Ret::Unify, "the value, or the alternative where it is #N/A"),
+    f(36, "CLEARERROR", Kind::Lazy, C::Logical, &[A, A], 1, false, Ret::Unify, "the value, or the alternative (or no cell) where it is an error"),
+    f(37, "CLEARZERO", Kind::Lazy, C::Logical, &[N, N], 1, false, Ret::Fixed(V::Number), "the value, or the alternative (or no cell) where it is zero"),
+    so(38, "BETWEEN", C::Logical, &[N, N, N, B], 3, V::Boolean, "whether low ≤ x ≤ high (strict when inclusive is FALSE)"),
+    s(39, "TRUE", C::Logical, &[], V::Boolean, "TRUE"),
+    s(40, "FALSE", C::Logical, &[], V::Boolean, "FALSE"),
+    // --- information / errors ---
+    s(50, "ISERROR", C::Information, &[A], V::Boolean, "whether the value is any error"),
+    s(51, "ISERR", C::Information, &[A], V::Boolean, "whether the value is an error other than #N/A"),
+    s(52, "ISNA", C::Information, &[A], V::Boolean, "whether the value is #N/A"),
+    s(53, "NA", C::Information, &[], V::Number, "the #N/A error"),
+    s(54, "ERROR", C::Information, &[T], V::Number, "the error a code names (\"#DIV/0!\")"),
+    s(55, "ERROR.TYPE", C::Information, &[A], V::Number, "1 #NULL!, 2 #DIV/0!, 3 #VALUE!, 4 #REF!, 5 #NAME?, 6 #NUM!, 7 #N/A; #N/A for a non-error"),
+    // --- math ---
+    s(10, "ABS", C::Math, &[N], V::Number, "absolute value"),
+    s(15, "NEG", C::Math, &[N], V::Number, "negation"),
+    s(100, "SIGN", C::Math, &[N], V::Number, "−1, 0 or 1"),
+    s(14, "SQRT", C::Math, &[N], V::Number, "square root (#NUM! below zero)"),
+    s(101, "SQRTPI", C::Math, &[N], V::Number, "√(x·π)"),
+    s(102, "EXP", C::Math, &[N], V::Number, "e to the power x"),
+    s(103, "EXPM1", C::Math, &[N], V::Number, "eˣ − 1, accurate near 0"),
+    s(104, "LN", C::Math, &[N], V::Number, "natural logarithm"),
+    s(105, "LN1P", C::Math, &[N], V::Number, "ln(1 + x), accurate near 0"),
+    so(106, "LOG", C::Math, &[N, N], 1, V::Number, "logarithm to a base (default 10)"),
+    s(107, "LOG10", C::Math, &[N], V::Number, "base-10 logarithm"),
+    s(108, "LOG2", C::Math, &[N], V::Number, "base-2 logarithm"),
+    s(109, "POWER", C::Math, &[N, N], V::Number, "base to the power exponent (same as ^)"),
+    s(110, "MOD", C::Math, &[N, N], V::Number, "remainder, with the divisor's sign"),
+    s(111, "QUOTIENT", C::Math, &[N, N], V::Number, "integer part of a quotient"),
+    s(112, "PI", C::Math, &[], V::Number, "π"),
+    s(113, "DEGREES", C::Math, &[N], V::Number, "radians to degrees"),
+    s(114, "RADIANS", C::Math, &[N], V::Number, "degrees to radians"),
+    s(115, "SIN", C::Math, &[N], V::Number, "sine (radians)"),
+    s(116, "COS", C::Math, &[N], V::Number, "cosine"),
+    s(117, "TAN", C::Math, &[N], V::Number, "tangent"),
+    s(118, "ASIN", C::Math, &[N], V::Number, "arcsine"),
+    s(119, "ACOS", C::Math, &[N], V::Number, "arccosine"),
+    s(120, "ATAN", C::Math, &[N], V::Number, "arctangent"),
+    s(121, "ATAN2", C::Math, &[N, N], V::Number, "angle of the point (x, y)"),
+    s(122, "SINH", C::Math, &[N], V::Number, "hyperbolic sine"),
+    s(123, "COSH", C::Math, &[N], V::Number, "hyperbolic cosine"),
+    s(124, "TANH", C::Math, &[N], V::Number, "hyperbolic tangent"),
+    s(125, "ASINH", C::Math, &[N], V::Number, "inverse hyperbolic sine"),
+    s(126, "ACOSH", C::Math, &[N], V::Number, "inverse hyperbolic cosine"),
+    s(127, "ATANH", C::Math, &[N], V::Number, "inverse hyperbolic tangent"),
+    s(128, "SEC", C::Math, &[N], V::Number, "secant"),
+    s(129, "CSC", C::Math, &[N], V::Number, "cosecant"),
+    s(130, "COT", C::Math, &[N], V::Number, "cotangent"),
+    s(131, "SECH", C::Math, &[N], V::Number, "hyperbolic secant"),
+    s(132, "CSCH", C::Math, &[N], V::Number, "hyperbolic cosecant"),
+    s(133, "COTH", C::Math, &[N], V::Number, "hyperbolic cotangent"),
+    s(134, "ACOT", C::Math, &[N], V::Number, "inverse cotangent"),
+    s(135, "ACOTH", C::Math, &[N], V::Number, "inverse hyperbolic cotangent"),
+    s(136, "SINPI", C::Math, &[N], V::Number, "sin(πx), exact at integers"),
+    s(137, "COSPI", C::Math, &[N], V::Number, "cos(πx), exact at integers"),
+    s(138, "TANPI", C::Math, &[N], V::Number, "tan(πx), exact at integers"),
+    s(139, "COTPI", C::Math, &[N], V::Number, "cot(πx), exact at integers"),
+    sv(140, "HYPOT", C::Math, &[N], V::Number, "√(Σ xᵢ²) without overflow"),
+    s(141, "FACT", C::Math, &[N], V::Number, "factorial"),
+    s(142, "FACTDOUBLE", C::Math, &[N], V::Number, "double factorial n!!"),
+    s(143, "COMBIN", C::Math, &[N, N], V::Number, "combinations of n things k at a time"),
+    s(144, "COMBINA", C::Math, &[N, N], V::Number, "combinations with repetition"),
+    s(145, "PERMUT", C::Math, &[N, N], V::Number, "permutations of n things k at a time"),
+    s(146, "PERMUTATIONA", C::Math, &[N, N], V::Number, "permutations with repetition"),
+    sv(147, "GCD", C::Math, &[N], V::Number, "greatest common divisor"),
+    sv(148, "LCM", C::Math, &[N], V::Number, "least common multiple"),
+    sv(149, "MULTINOMIAL", C::Math, &[N], V::Number, "(Σ n)! / Π n!"),
+    sv(150, "RAWSUBTRACT", C::Math, &[N], V::Number, "the first argument minus the rest"),
+    sv(151, "INVSUMINV", C::Math, &[N], V::Number, "1 / Σ(1/xᵢ)"),
+    // --- rounding ---
+    so(11, "ROUND", C::Rounding, &[N, N], 1, V::Number, "to digits decimal places, halves away from zero"),
+    so(200, "ROUNDUP", C::Rounding, &[N, N], 1, V::Number, "away from zero to digits places"),
+    so(201, "ROUNDDOWN", C::Rounding, &[N, N], 1, V::Number, "toward zero to digits places"),
+    s(202, "ROUNDSIG", C::Rounding, &[N, N], V::Number, "to digits significant digits"),
+    so(203, "TRUNC", C::Rounding, &[N, N], 1, V::Number, "truncate to digits places"),
+    s(204, "INT", C::Rounding, &[N], V::Number, "down to an integer"),
+    so(12, "FLOOR", C::Rounding, &[N, N], 1, V::Number, "down to a multiple of significance (default 1)"),
+    s(13, "CEIL", C::Rounding, &[N], V::Number, "up to an integer"),
+    so(205, "CEILING", C::Rounding, &[N, N], 1, V::Number, "up to a multiple of significance (default 1)"),
+    so(206, "FLOOR.MATH", C::Rounding, &[N, N, N], 1, V::Number, "down to a multiple; mode ≠ 0 rounds negatives toward zero"),
+    so(207, "CEILING.MATH", C::Rounding, &[N, N, N], 1, V::Number, "up to a multiple; mode ≠ 0 rounds negatives away from zero"),
+    so(208, "FLOOR.PRECISE", C::Rounding, &[N, N], 1, V::Number, "down to a multiple, ignoring the multiple's sign"),
+    so(209, "CEILING.PRECISE", C::Rounding, &[N, N], 1, V::Number, "up to a multiple, ignoring the multiple's sign"),
+    so(210, "ISO.CEILING", C::Rounding, &[N, N], 1, V::Number, "same as CEILING.PRECISE"),
+    s(211, "MROUND", C::Rounding, &[N, N], V::Number, "to the nearest multiple"),
+    s(212, "EVEN", C::Rounding, &[N], V::Number, "away from zero to an even integer"),
+    s(213, "ODD", C::Rounding, &[N], V::Number, "away from zero to an odd integer"),
+    // --- text ---
+    s(300, "CHAR", C::Text, &[N], V::Text, "the character with code n (1–255)"),
+    s(301, "UNICHAR", C::Text, &[N], V::Text, "the Unicode character n"),
+    s(302, "CODE", C::Text, &[T], V::Number, "the code of the first character"),
+    s(303, "UNICODE", C::Text, &[T], V::Number, "the code point of the first character"),
+    s(304, "CLEAN", C::Text, &[T], V::Text, "remove non-printing characters"),
+    sv(305, "CONCAT", C::Text, &[A], V::Text, "join values as text (same as &)"),
+    sv(306, "CONCATENATE", C::Text, &[A], V::Text, "join values as text"),
+    s(307, "EXACT", C::Text, &[T, T], V::Boolean, "case-sensitive equality"),
+    so(308, "FIND", C::Text, &[T, T, N], 2, V::Number, "1-based position of find in text, case-sensitive"),
+    so(309, "SEARCH", C::Text, &[T, T, N], 2, V::Number, "1-based position, case-insensitive, with * and ? wildcards"),
+    so(310, "LEFT", C::Text, &[T, N], 1, V::Text, "the first n characters (default 1)"),
+    so(311, "RIGHT", C::Text, &[T, N], 1, V::Text, "the last n characters (default 1)"),
+    s(312, "MID", C::Text, &[T, N, N], V::Text, "n characters from a 1-based start"),
+    s(313, "LEN", C::Text, &[T], V::Number, "the number of characters"),
+    s(314, "LOWER", C::Text, &[T], V::Text, "lowercase"),
+    s(315, "UPPER", C::Text, &[T], V::Text, "uppercase"),
+    s(316, "PROPER", C::Text, &[T], V::Text, "capitalize each word"),
+    s(317, "REPLACE", C::Text, &[T, N, N, T], V::Text, "replace n characters from a 1-based start"),
+    s(318, "REPT", C::Text, &[T, N], V::Text, "repeat text n times"),
+    so(319, "SUBSTITUTE", C::Text, &[T, T, T, N], 3, V::Text, "replace every (or the instance-th) occurrence of old"),
+    s(320, "TRIM", C::Text, &[T], V::Text, "remove leading, trailing and repeated spaces"),
+    s(321, "VALUE", C::Text, &[T], V::Number, "text as a number"),
+    so(322, "TEXTBEFORE", C::Text, &[T, T, N, N, N, A], 2, V::Text, "text before the instance-th delimiter"),
+    so(323, "TEXTAFTER", C::Text, &[T, T, N, N, N, A], 2, V::Text, "text after the instance-th delimiter"),
+    s(324, "TEXTBETWEEN", C::Text, &[T, T, T], V::Text, "text between the first start delimiter and the next end delimiter"),
+    s(325, "COUNTMATCHES", C::Text, &[T, T], V::Number, "how many times search occurs in text"),
+];
+
+/// The function with id `id`.
+pub fn by_id(id: FuncId) -> Option<&'static FnDef> {
+    FUNCTIONS.iter().find(|d| d.id == id)
+}
+
+/// The functions a name (canonical or alias, case-insensitive) can mean: an
+/// aggregation and its scalar twin share a name (`SUM(x OVER T)` vs
+/// `SUM(a, b)`), so a name maps to at most one of each [`Kind`].
+pub fn by_name(name: &str) -> impl Iterator<Item = &'static FnDef> + '_ {
+    FUNCTIONS.iter().filter(move |d| {
+        d.name.eq_ignore_ascii_case(name) || d.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+    })
+}
+
+/// The aggregation a name means, if any.
+pub fn aggregation(name: &str) -> Option<&'static FnDef> {
+    by_name(name).find(|d| d.kind == Kind::Aggregate)
+}
+
+/// The non-aggregating function a name means, if any.
+pub fn callable(name: &str) -> Option<&'static FnDef> {
+    by_name(name).find(|d| d.kind != Kind::Aggregate)
+}
+
+/// Whether `id` is an aggregation.
+pub fn is_aggregation(id: FuncId) -> bool {
+    by_id(id).is_some_and(|d| d.kind == Kind::Aggregate)
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn ids_are_unique() {
+        let mut seen = HashSet::new();
+        for d in FUNCTIONS {
+            assert!(seen.insert(d.id), "{} reuses id {:?}", d.name, d.id);
+        }
+    }
+
+    /// Each spelling names at most one aggregation and one other function.
+    #[test]
+    fn names_are_unambiguous() {
+        let mut seen: HashMap<(String, bool), &str> = HashMap::new();
+        for d in FUNCTIONS {
+            for n in std::iter::once(&d.name).chain(d.aliases) {
+                let k = (n.to_ascii_uppercase(), d.kind == Kind::Aggregate);
+                if let Some(prev) = seen.insert(k, d.name) {
+                    panic!("{n} names both {prev} and {}", d.name);
+                }
+            }
+        }
+    }
+
+    /// Persisted ids keep their meaning (stored formulas depend on these).
+    #[test]
+    fn frozen_ids() {
+        for (id, name) in [
+            (1, "SUM"),
+            (2, "AVERAGE"),
+            (3, "MIN"),
+            (4, "MAX"),
+            (10, "ABS"),
+            (11, "ROUND"),
+            (12, "FLOOR"),
+            (13, "CEIL"),
+            (14, "SQRT"),
+            (15, "NEG"),
+            (20, "MIN"),
+            (21, "MAX"),
+        ] {
+            assert_eq!(by_id(FuncId(id)).map(|d| d.name), Some(name), "{id}");
+        }
+    }
+
+    #[test]
+    fn lookups() {
+        assert_eq!(aggregation("avg").map(|d| d.id), Some(FuncId(2)));
+        assert_eq!(callable("sum").map(|d| d.id), Some(FuncId(22)));
+        assert_eq!(callable("min2").map(|d| d.id), Some(FuncId(20)));
+        assert_eq!(callable("Floor.Math").map(|d| d.id), Some(FuncId(206)));
+        assert!(callable("nope").is_none());
+        assert!(is_aggregation(FuncId(7)) && !is_aggregation(FuncId(26)));
+        let round = by_id(FuncId(11)).unwrap();
+        assert!(round.accepts(1) && round.accepts(2) && !round.accepts(3) && !round.accepts(0));
+        let sum = callable("SUM").unwrap();
+        assert!(sum.accepts(5) && !sum.accepts(0));
+        assert_eq!(sum.param(4), Arg::Number);
+        assert_eq!(round.signature(), "ROUND(number, [number])");
+        assert_eq!(sum.signature(), "SUM(number, …)");
+        assert_eq!(by_id(FuncId(39)).unwrap().param(0), Arg::Any);
+    }
+}
+
+/// The function reference page (`docs/src/functions.md`), generated from
+/// [`FUNCTIONS`] so the docs cannot drift from the code. A test compares it
+/// with the committed file; `UPDATE_DOCS=1 cargo test -p improv_core_model`
+/// rewrites it.
+pub fn reference_markdown() -> String {
+    let mut out = String::from(
+        "# Function Reference\n\n\
+         <!-- Generated from crates/core_model/src/functions.rs by\n     \
+         `UPDATE_DOCS=1 cargo test -p improv_core_model`. Do not edit. -->\n\n\
+         Every built-in function, by category. Names are case-insensitive;\n\
+         `[x]` is optional and `…` repeats the last argument. Positions are\n\
+         1-based. An error argument (`#DIV/0!`, `#N/A`, …) makes the result\n\
+         that error, except in the functions that test for errors. See\n\
+         [The Formula Language](./formulas.md) for operators, types and\n\
+         dimensions.\n",
+    );
+    let cats = [
+        (Category::Aggregation, "Aggregations", "Written `F(Measure OVER Category)`: collapse one category. Each also has a scalar form over its arguments, listed under its category."),
+        (Category::Logical, "Logical", "`IF` and the functions built on it evaluate only the branch they choose, so an error or missing cell in the other branch does not matter."),
+        (Category::Information, "Information and errors", ""),
+        (Category::Math, "Math and trigonometry", "Angles are in radians."),
+        (Category::Rounding, "Rounding", "Rounding is decimal: `ROUND(2.675, 2)` is 2.68."),
+        (Category::Text, "Text", "Lengths and positions count characters, not bytes."),
+    ];
+    for (cat, title, intro) in cats {
+        out.push_str(&format!("\n## {title}\n\n"));
+        if !intro.is_empty() {
+            out.push_str(intro);
+            out.push_str("\n\n");
+        }
+        out.push_str("| Function | Returns | Description |\n|---|---|---|\n");
+        for d in FUNCTIONS.iter().filter(|d| d.category == cat) {
+            let sig = if d.kind == Kind::Aggregate {
+                format!("{}(Measure OVER Category)", d.name)
+            } else {
+                d.signature()
+            };
+            let ret = match d.ret {
+                Ret::Fixed(ValueType::Number) => "number",
+                Ret::Fixed(ValueType::Boolean) => "boolean",
+                Ret::Fixed(ValueType::Text) => "text",
+                Ret::Fixed(_) => "value",
+                Ret::Unify => "the branches' type",
+            };
+            let mut doc = d.doc.to_string();
+            if !d.aliases.is_empty() {
+                doc.push_str(&format!(" (also `{}`)", d.aliases.join("`, `")));
+            }
+            out.push_str(&format!("| `{sig}` | {ret} | {doc} |\n"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod docs_test {
+    #[test]
+    fn reference_page_is_current() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/src/functions.md");
+        let want = super::reference_markdown();
+        if std::env::var_os("UPDATE_DOCS").is_some() {
+            std::fs::write(path, &want).unwrap();
+        }
+        let have = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(
+            have == want,
+            "docs/src/functions.md is stale: run UPDATE_DOCS=1 cargo test -p improv_core_model"
+        );
+    }
+}

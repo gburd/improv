@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 237212c06e4fe27489627df74576f53eadae71c140f1bc193a97c10c842f9956 # shrinks to expr = Call(FuncId(30), [BinaryOp(Gt, Ref(MeasureId(2), DimensionSpec { by: [], over: [], except: [] }), Call(FuncId(143), [Literal(Number(0.0)), Ref(MeasureId(2), DimensionSpec { by: [], over: [], except: [] })])), Ref(MeasureId(1), DimensionSpec { by: [], over: [], except: [] }), Ref(MeasureId(1), DimensionSpec { by: [], over: [], except: [] })]), a = None, b = Some(1)

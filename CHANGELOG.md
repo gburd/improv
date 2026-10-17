@@ -6,6 +6,50 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **118 built-in functions**, with Excel's names (the plan's phase P1):
+  - the logical family `IF`, `IFS`, `SWITCH`, `CHOOSE`, `IFERROR`, `IFNA`,
+    `CLEARERROR`, `CLEARZERO` and `BETWEEN`, all lazy: an error or a missing
+    cell in a branch `IF` does not choose never shows;
+  - the error functions `ISERROR`, `ISERR`, `ISNA`, `NA`, `ERROR` and
+    `ERROR.TYPE`;
+  - 60 math and trigonometry functions (`POWER`, `MOD`, `LN`, `LOG`,
+    `SIN`…`ACOTH`, `FACT`, `COMBIN`, `GCD`, `HYPOT`, …);
+  - 17 rounding functions (`ROUND(x, digits)`, `ROUNDUP`, `TRUNC`,
+    `CEILING`, `FLOOR.MATH`, `MROUND`, `EVEN`, …), decimal-correct
+    (`ROUND(2.675, 2)` is 2.68);
+  - 26 text functions (`LEFT`, `MID`, `FIND`, `SEARCH` with wildcards,
+    `SUBSTITUTE`, `TEXTBEFORE`, `CONCAT`, `PROPER`, `VALUE`, …), counting
+    characters, not bytes.
+- **More aggregations:** `PRODUCT`, `SUMSQ`, and over booleans `AND`, `OR`
+  and `XOR`; `AVERAGE` (with `AVG` as an alias). `SUM`, `MIN`, `MAX` and the
+  rest also take a list of arguments (`SUM(a, b, c)`).
+- **Optional and repeating arguments** (`ROUND(x)` or `ROUND(x, 2)`), and a
+  parse error that shows the signature.
+- **One function registry** (`improv_core_model::functions`) drives the
+  parser, the type checker, the engine, the GUI's formula text, the CNL and
+  a generated **Function Reference** page in the guide.
+- 634 golden values, checked through both the scalar evaluator and the
+  dataflow engine: from LibreOffice 25.8 headless
+  (`scripts/goldens/p1.py`), or from the Excel, Gnumeric, Numbers and
+  Quantrix documentation where LibreOffice lacks a function or disagrees
+  with Excel.
+- `improv.raise_errors` (pg_improv): raise a `LANGUAGE improv` error value
+  instead of returning NULL.
+
+### Changed
+
+- **Errors are typed values**, shown as the spreadsheets show them:
+  `#DIV/0!`, `#NUM!`, `#VALUE!`, `#N/A` (plus `#NULL!`, `#NAME?`, `#REF!`
+  from `ERROR`). Division by zero is `#DIV/0!` and a domain error or
+  overflow `#NUM!`, where they used to be `NaN`; an error operand
+  propagates. `LANGUAGE improv` returns NULL for an error value (it used to
+  return `NaN`), or raises it under `improv.raise_errors`.
+- `MIN2`/`MAX2` are now aliases of `MIN`/`MAX`, which take any number of
+  arguments.
+- Comparisons order text, dates and booleans, not only numbers.
+
 ### Security
 
 - **duckdb 1.10506.1** (was 1.10505.0) moves its build-time `zip`

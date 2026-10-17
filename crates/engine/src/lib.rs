@@ -21,6 +21,7 @@
 // coverage builds would otherwise warn that the feature is unused.
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
+pub mod builtins;
 pub mod compiler;
 pub mod dataflow;
 pub mod external;
@@ -83,7 +84,7 @@ impl CellValue {
             Value::Text(t) => Some(CellValue::Text(t.clone())),
             Value::Enum(e) => Some(CellValue::num(*e as f64)),
             Value::DateTime(dt) => Some(CellValue::Date(dt.timestamp_millis())),
-            Value::Error(_) => Some(CellValue::Err(0)),
+            Value::Error(e) => Some(CellValue::Err(e.kind.error_type().unwrap_or(0))),
         }
     }
 }
@@ -101,7 +102,9 @@ impl std::fmt::Display for CellValue {
                     None => write!(f, "date({ms})"),
                 }
             }
-            CellValue::Err(_) => write!(f, "#ERR"),
+            CellValue::Err(c) => f.write_str(
+                improv_core_model::ValueErrorKind::from_error_type(*c).map_or("#ERR", |k| k.code()),
+            ),
         }
     }
 }
@@ -317,7 +320,13 @@ mod tests {
             ["1.5", "false", "hi", "1970-01-01T00:00:00+00:00"]
         );
         assert_eq!(shown[4], format!("date({})", i64::MAX));
-        assert_eq!(shown[5], "#ERR");
+        assert_eq!(shown[5], "#NULL!");
+        assert_eq!(CellValue::Err(0).to_string(), "#ERR");
+        assert_eq!(CellValue::Err(2).to_string(), "#DIV/0!");
+        assert_eq!(
+            cv(Value::Error(ValueError::new(ValueErrorKind::Na))),
+            CellValue::Err(7)
+        );
     }
 
     #[test]

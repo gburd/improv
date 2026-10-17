@@ -73,7 +73,26 @@ Type rules, checked when the formula compiles:
 | unary `-` | number | number |
 | `NOT` | boolean | boolean |
 
-Division by zero gives `NaN`, not an error.
+### Errors
+
+An error is a value, shown as the spreadsheets show it:
+
+| Error | Produced by |
+|-------|-------------|
+| `#DIV/0!` | division by zero (`x / 0`, including `0 / 0`) |
+| `#NUM!` | a numeric domain error (`SQRT(-1)`, `LN(0)`) or a result too large for a number |
+| `#VALUE!` | a value of the wrong kind (`VALUE("abc")`, `CHOOSE` out of range) |
+| `#N/A` | no value available (`NA()`, `IFS` with no true test) |
+| `#NAME?`, `#REF!`, `#NULL!` | `ERROR("#NAME?")` etc.; Improv itself does not produce them |
+
+An operator or function given an error returns that error (the left operand,
+or the first argument, first). An aggregation over a category containing an
+error returns the error (the smallest `ERROR.TYPE` code if there are
+several). `ISERROR`, `ISERR`, `ISNA` and `ERROR.TYPE` inspect errors, and
+`IFERROR`, `IFNA` and `CLEARERROR` replace them.
+
+A missing cell is not an error: where an input has no cell, the result has
+no cell either (an aggregation skips it).
 
 ### Literals
 
@@ -126,6 +145,10 @@ Total = SUM(Revenue OVER Time)
 
 The form is `SUM|AVG|MIN|MAX ( MeasureRef OVER Category )`:
 
+The aggregations are `SUM`, `AVERAGE` (or `AVG`), `MIN`, `MAX`, `PRODUCT`,
+`SUMSQ`, and over booleans `AND`, `OR` and `XOR`; see the
+[Function Reference](./functions.md).
+
 - the argument must be a measure reference (with an optional `[…]` list), not
   an expression: `SUM(Price * 2 OVER Product)` is an error;
 - exactly one category follows `OVER`: `SUM(Q OVER Time, Product)` is an
@@ -134,22 +157,42 @@ The form is `SUM|AVG|MIN|MAX ( MeasureRef OVER Category )`:
 `SUM` etc. are functions only when `(` follows; otherwise the word is an
 ordinary measure name.
 
-### Scalar functions
+### Functions
 
-| Function | Arguments | Result |
-|----------|-----------|--------|
-| `ABS(x)` | 1 | absolute value |
-| `ROUND(x)` | 1 | `f64::round`: nearest integer, halves away from zero |
-| `FLOOR(x)` | 1 | floor |
-| `CEIL(x)` | 1 | ceiling |
-| `SQRT(x)` | 1 | square root (`NaN` for a negative number) |
-| `NEG(x)` | 1 | negation |
-| `MIN2(x, y)` | 2 | the smaller |
-| `MAX2(x, y)` | 2 | the larger |
+Improv has the spreadsheet functions people expect, with Excel's names:
+`ROUND(Price, 2)`, `MOD(Units, 12)`, `LEFT(Code, 3)`, `SUM(a, b, c)`.
+[The Function Reference](./functions.md) lists every one, generated from the
+code. The argument count and types are checked when the formula is parsed
+and compiled: `ROUND(Price, 1, 2)` is a parse error that shows the
+signature, and `LEN(Price)` (a number where text is wanted) a type error.
 
-Arguments are any numeric expressions. The argument count is checked when
-parsing: `ROUND(Price, 2)` is an error. Two-argument functions broadcast like
-a binary operator.
+Arguments are expressions and broadcast like a binary operator's operands:
+`ROUND(Revenue / Units, 2)` ranges over the union of the arguments'
+categories. A literal argument costs nothing extra.
+
+### IF and friends
+
+```text
+Bonus = IF(Sales > Target, Sales * 0.1, 0)
+Label = IF(Price > 15, "dear", "cheap")
+Safe  = IFERROR(Revenue / Units, 0)
+```
+
+`IF(test, then, [else])` needs a boolean test and two branches of the same
+type. It is **lazy**: where the test is true only `then` matters, so a
+missing cell or an error in `else` never shows (and the other way round).
+Without `else`, a false test gives no cell. Where the test is an error, the
+result is that error.
+
+The result ranges over the categories of the test and both branches. If the
+test has fewer categories than the result (`IF(Price > 15, Revenue, 0)`,
+with `Price` over Product and `Revenue` over Time×Product), the cells are
+those of the test joined with a branch that has the rest (here
+`Revenue`): Improv never invents coordinates. A formula where neither branch
+fills in the test's missing categories is a dimension error.
+
+`IFS`, `SWITCH`, `CHOOSE`, `IFERROR`, `IFNA`, `CLEARERROR` and `CLEARZERO`
+are built on `IF` and behave the same way.
 
 ### Source forms: CALL and SQL
 
@@ -175,8 +218,7 @@ Neither may appear inside a larger expression.
 
 | Written | Result |
 |---------|--------|
-| `Price ^ 2` | error: `'^' (power) is not supported` |
-| `POWER(Price, 2)`, `IF(…)` | error: `unknown measure: POWER` / `IF` (no such functions) |
+| `Price ^ 2` | error: `'^' (power) is not supported`; write `POWER(Price, 2)` |
 | `M.Price` | error: `unknown qualifier: M` |
 | `Quantity EXCEPT Time` | error: no `EXCEPT` syntax |
 
@@ -229,22 +271,27 @@ Aggregation is expressed as a `Call` whose single argument is a measure
 reference. The reference's `over` list names the categories to collapse; the
 result is defined over the remaining categories.
 
-The v1 built-in aggregation functions and their function ids are fixed:
+Every function has a fixed `FuncId`, stored in saved formulas and never
+reused (`crates/core_model/src/functions.rs`). The aggregations:
 
 | Function | `FuncId` |
 |----------|----------|
-| `SUM`    | `1`      |
-| `AVG`    | `2`      |
-| `MIN`    | `3`      |
-| `MAX`    | `4`      |
+| `SUM` | `1` |
+| `AVERAGE` (`AVG`) | `2` |
+| `MIN` | `3` |
+| `MAX` | `4` |
+| `PRODUCT` | `5` |
+| `SUMSQ` | `6` |
+| `AND`, `OR`, `XOR` | `7`, `8`, `9` |
 
 For example, `SUM(Revenue OVER Time)` takes `Revenue[Time, Product]` and
 collapses `Time`, producing a per-product total `Revenue[Product]`. In the
 compiler this becomes an `Aggregate` plan node grouped by the surviving
 categories (`Product`), with `func = FuncId(1)`.
 
-`AVG` divides the sum by the count of contributing cells; `MIN` and `MAX` take
-the extremum. An aggregation argument must be numeric.
+`AVERAGE` divides the sum by the count of contributing cells; `MIN` and `MAX`
+take the extremum. An aggregation's argument must be numeric, except `AND`,
+`OR` and `XOR`, which take booleans.
 
 ## Type and dimension checking
 
@@ -266,9 +313,10 @@ operators — see [Architecture](./architecture.md).
 
 The engine evaluates input-measure references, literals (standalone or as
 operands), unary negation and `NOT`, the arithmetic, logical and comparison
-operators, dimension-aligning joins, `SUM`/`AVG`/`MIN`/`MAX` aggregation, the
-named scalar functions, non-numeric (Text, Boolean, DateTime, Error) values,
-and derived measures that reference other derived measures.
+operators, dimension-aligning joins, aggregations, the built-in functions
+(including the lazy `IF` family), typed error values, non-numeric (Text,
+Boolean, DateTime) values, and derived measures that reference other derived
+measures.
 
 External functions use the `CALL(...)` definition form and are evaluated
 host-side by `improv_extfn`. Python, R, Julia and Pure run in a sandboxed
@@ -276,8 +324,8 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 
 **Gaps:**
 
-- no power operator (`^`) or `POWER` function;
-- no `IF` or other conditional;
+- no power operator (`^`; use `POWER`), text concatenation operator (`&`;
+  use `CONCAT`) or `%`;
 - no `EXCEPT` syntax (the AST field exists; the parser never sets it);
 - one `OVER` category per aggregation;
 - no reference to the previous period (or any relative item).

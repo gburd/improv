@@ -8,8 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use improv_core_model::functions::Kind;
 use improv_core_model::{CategoryId, Coordinate, Expr, ItemId, MeasureId, MeasureKind, Model};
-use improv_engine::compiler::scalar_arity;
 
 use crate::{quote_ident, Error, Result, ResultRows};
 
@@ -206,8 +206,10 @@ fn expr_elementwise(model: &Model, cats: &[CategoryId], e: &Expr) -> bool {
         Expr::BinaryOp(_, a, b) => {
             expr_elementwise(model, cats, a) && expr_elementwise(model, cats, b)
         }
+        // Scalar and lazy (IF-family) calls read only their own coordinate.
         Expr::Call(f, args) => {
-            scalar_arity(*f).is_some() && args.iter().all(|a| expr_elementwise(model, cats, a))
+            improv_core_model::functions::by_id(*f).is_some_and(|d| d.kind != Kind::Aggregate)
+                && args.iter().all(|a| expr_elementwise(model, cats, a))
         }
     }
 }

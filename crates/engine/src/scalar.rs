@@ -13,9 +13,10 @@
 //! * aggregations and dimension projections (`SUM(x OVER T)`, `x BY T`) need a
 //!   model with categories and are rejected with [`ScalarError::NeedsDimensions`].
 
-use crate::compiler::{is_aggregation, scalar_arity};
-use crate::dataflow::{apply_binary, apply_scalar, apply_unary};
+use crate::compiler::{desugar_lazy, is_aggregation, lazy};
+use crate::dataflow::{apply_binary, apply_unary};
 use crate::CellValue;
+use improv_core_model::functions::{self, Kind};
 use improv_core_model::{Expr, FuncId, MeasureId};
 use std::collections::HashMap;
 
@@ -31,11 +32,11 @@ pub enum ScalarError {
     /// A function id that is neither a scalar built-in nor an aggregation.
     #[error("unknown function {0:?}")]
     UnknownFunction(FuncId),
-    /// A scalar built-in called with the wrong number of arguments.
-    #[error("function {func:?} takes {want} argument(s), got {got}")]
+    /// A built-in called with the wrong number of arguments.
+    #[error("{want} takes other arguments than the {got} given")]
     Arity {
         func: FuncId,
-        want: usize,
+        want: String,
         got: usize,
     },
 }
@@ -73,11 +74,11 @@ pub fn check(expr: &Expr) -> Result<(), ScalarError> {
                     "an aggregation (SUM/AVG/MIN/MAX)".into(),
                 ));
             }
-            let want = scalar_arity(*func).ok_or(ScalarError::UnknownFunction(*func))?;
-            if args.len() != want {
+            let def = functions::by_id(*func).ok_or(ScalarError::UnknownFunction(*func))?;
+            if !def.accepts(args.len()) {
                 return Err(ScalarError::Arity {
                     func: *func,
-                    want,
+                    want: def.signature(),
                     got: args.len(),
                 });
             }
@@ -95,12 +96,24 @@ fn eval_checked(expr: &Expr, env: &HashMap<MeasureId, CellValue>) -> Option<Cell
             let (a, b) = (eval_checked(a, env)?, eval_checked(b, env)?);
             Some(apply_binary(*op, &a, &b))
         }
+        Expr::Call(func, args) if func.0 == lazy::IF => {
+            // Lazy: only the selected branch is evaluated (an error in the
+            // other never surfaces); no else-branch means no value.
+            match eval_checked(&args[0], env)? {
+                CellValue::Bool(true) => eval_checked(&args[1], env),
+                CellValue::Bool(false) => eval_checked(args.get(2)?, env),
+                other => Some(other),
+            }
+        }
+        Expr::Call(func, args) if functions::by_id(*func).is_some_and(|d| d.kind == Kind::Lazy) => {
+            eval_checked(&desugar_lazy(*func, args).ok()?, env)
+        }
         Expr::Call(func, args) => {
-            let nums = args
+            let vals = args
                 .iter()
-                .map(|a| Some(eval_checked(a, env)?.as_num().unwrap_or(f64::NAN)))
-                .collect::<Option<Vec<f64>>>()?;
-            Some(CellValue::num(apply_scalar(*func, &nums)))
+                .map(|a| eval_checked(a, env))
+                .collect::<Option<Vec<CellValue>>>()?;
+            Some(crate::builtins::eval(*func, &vals))
         }
     }
 }
@@ -155,12 +168,116 @@ mod tests {
         assert_eq!(num(&neg, 2.0, 0.0), -2.0);
     }
 
+    fn value(e: &Expr, a: f64, b: f64) -> CellValue {
+        eval(e, &env(a, b)).unwrap().unwrap()
+    }
+
     #[test]
-    fn division_by_zero_is_nan() {
-        // Mirrors the dataflow: x / 0 is NaN (including 0 / 0), never ±inf.
-        assert!(num(&bin(BinaryOp::Div, r(A), r(B)), 1.0, 0.0).is_nan());
-        assert!(num(&bin(BinaryOp::Div, r(A), r(B)), 0.0, 0.0).is_nan());
-        assert!(num(&bin(BinaryOp::Div, n(-1.0), n(0.0)), 0.0, 0.0).is_nan());
+    fn division_by_zero_is_an_error() {
+        // Mirrors the dataflow: x / 0 is #DIV/0! (including 0 / 0).
+        let div0 = CellValue::Err(crate::builtins::err::DIV0);
+        assert_eq!(value(&bin(BinaryOp::Div, r(A), r(B)), 1.0, 0.0), div0);
+        assert_eq!(value(&bin(BinaryOp::Div, r(A), r(B)), 0.0, 0.0), div0);
+        assert_eq!(value(&bin(BinaryOp::Div, n(-1.0), n(0.0)), 0.0, 0.0), div0);
+    }
+
+    /// IF evaluates only the branch it selects; the IF family desugars to it.
+    #[test]
+    fn if_is_lazy() {
+        let div = bin(BinaryOp::Div, r(A), r(B)); // #DIV/0! when B is 0
+        let pos = bin(BinaryOp::Gt, r(B), n(0.0));
+        let iff = |args| call(30, args);
+        assert_eq!(
+            value(&iff(vec![pos.clone(), div.clone(), n(-1.0)]), 6.0, 2.0),
+            CellValue::num(3.0)
+        );
+        assert_eq!(
+            value(&iff(vec![pos.clone(), div.clone(), n(-1.0)]), 6.0, 0.0),
+            CellValue::num(-1.0)
+        );
+        assert_eq!(
+            eval(&iff(vec![pos.clone(), div.clone()]), &env(6.0, 0.0)),
+            Ok(None)
+        );
+        // An error test is the result; a missing selected branch is no cell.
+        let bad = bin(BinaryOp::Gt, div.clone(), n(0.0));
+        assert_eq!(
+            value(&iff(vec![bad, n(1.0), n(2.0)]), 1.0, 0.0),
+            CellValue::Err(crate::builtins::err::DIV0)
+        );
+        let only_a = HashMap::from([(A, CellValue::num(1.0))]);
+        assert_eq!(
+            eval(
+                &iff(vec![bin(BinaryOp::Gt, r(A), n(0.0)), r(B), n(0.0)]),
+                &only_a
+            ),
+            Ok(None)
+        );
+        // IFERROR and friends.
+        assert_eq!(
+            value(&call(34, vec![div.clone(), n(9.0)]), 1.0, 0.0),
+            CellValue::num(9.0)
+        );
+        assert_eq!(
+            value(&call(34, vec![div.clone(), n(9.0)]), 4.0, 2.0),
+            CellValue::num(2.0)
+        );
+        assert_eq!(eval(&call(36, vec![div.clone()]), &env(1.0, 0.0)), Ok(None));
+        assert_eq!(
+            value(&call(37, vec![r(A), n(5.0)]), 0.0, 0.0),
+            CellValue::num(5.0)
+        );
+        assert_eq!(
+            value(&call(33, vec![r(A), t("x"), t("y")]), 2.9, 0.0),
+            CellValue::Text("y".into())
+        );
+        assert_eq!(
+            value(&call(33, vec![r(A), t("x")]), 2.0, 0.0),
+            CellValue::Err(crate::builtins::err::VALUE)
+        );
+        assert_eq!(
+            value(
+                &call(
+                    31,
+                    vec![
+                        bin(BinaryOp::Gt, r(A), n(5.0)),
+                        t("big"),
+                        bin(BinaryOp::Gt, r(A), n(1.0)),
+                        t("mid")
+                    ]
+                ),
+                2.0,
+                0.0
+            ),
+            CellValue::Text("mid".into())
+        );
+        assert_eq!(
+            value(
+                &call(31, vec![bin(BinaryOp::Gt, r(A), n(5.0)), t("big")]),
+                2.0,
+                0.0
+            ),
+            CellValue::Err(crate::builtins::err::NA)
+        );
+        assert_eq!(
+            value(
+                &call(
+                    32,
+                    vec![r(A), n(1.0), t("one"), n(2.0), t("two"), t("many")]
+                ),
+                2.0,
+                0.0
+            ),
+            CellValue::Text("two".into())
+        );
+        assert_eq!(
+            value(&call(32, vec![r(A), n(1.0), t("one"), t("many")]), 7.0, 0.0),
+            CellValue::Text("many".into())
+        );
+        assert_eq!(
+            value(&call(35, vec![call(53, vec![]), n(0.0)]), 0.0, 0.0),
+            CellValue::num(0.0)
+        );
     }
 
     #[test]
@@ -198,7 +315,10 @@ mod tests {
         ] {
             assert_eq!(num(&call(id, vec![r(A)]), x, 0.0), want, "func {id}");
         }
-        assert!(num(&call(14, vec![r(A)]), -1.0, 0.0).is_nan());
+        assert_eq!(
+            value(&call(14, vec![r(A)]), -1.0, 0.0),
+            CellValue::Err(crate::builtins::err::NUM)
+        );
         assert_eq!(num(&call(20, vec![r(A), r(B)]), 1.0, 2.0), 1.0);
         assert_eq!(num(&call(21, vec![r(A), r(B)]), 1.0, 2.0), 2.0);
     }
@@ -257,12 +377,8 @@ mod tests {
             Err(ScalarError::UnknownFunction(FuncId(99)))
         );
         assert!(matches!(
-            eval(&call(20, vec![r(A)]), &none),
-            Err(ScalarError::Arity {
-                want: 2,
-                got: 1,
-                ..
-            })
+            eval(&call(312, vec![r(A)]), &none),
+            Err(ScalarError::Arity { got: 1, .. })
         ));
     }
 
@@ -306,10 +422,44 @@ mod tests {
                 Just(BinaryOp::Mul),
                 Just(BinaryOp::Div),
             ];
+            // Every one-number and two-number scalar in the registry.
+            let one: Vec<u32> = improv_core_model::functions::FUNCTIONS
+                .iter()
+                .filter(|d| {
+                    d.kind == Kind::Scalar
+                        && d.required == 1
+                        && d.param(0) == functions::Arg::Number
+                        && matches!(
+                            d.ret,
+                            functions::Ret::Fixed(improv_core_model::ValueType::Number)
+                        )
+                })
+                .map(|d| d.id.0)
+                .collect();
+            let two: Vec<u32> = improv_core_model::functions::FUNCTIONS
+                .iter()
+                .filter(|d| {
+                    d.kind == Kind::Scalar
+                        && d.accepts(2)
+                        && d.param(0) == functions::Arg::Number
+                        && d.param(1) == functions::Arg::Number
+                        && matches!(
+                            d.ret,
+                            functions::Ret::Fixed(improv_core_model::ValueType::Number)
+                        )
+                })
+                .map(|d| d.id.0)
+                .collect();
+            let cmp = (inner.clone(), inner.clone()).prop_map(|(a, b)| bin(BinaryOp::Gt, a, b));
             prop_oneof![
                 (op, inner.clone(), inner.clone()).prop_map(|(op, a, b)| bin(op, a, b)),
-                (10u32..=15, inner.clone()).prop_map(|(f, a)| call(f, vec![a])),
-                (20u32..=21, inner.clone(), inner).prop_map(|(f, a, b)| call(f, vec![a, b])),
+                (prop::sample::select(one), inner.clone()).prop_map(|(f, a)| call(f, vec![a])),
+                (prop::sample::select(two), inner.clone(), inner.clone())
+                    .prop_map(|(f, a, b)| call(f, vec![a, b])),
+                (cmp.clone(), inner.clone(), inner.clone())
+                    .prop_map(|(c, a, b)| call(30, vec![c, a, b])),
+                (cmp, inner.clone()).prop_map(|(c, a)| call(30, vec![c, a])),
+                (inner.clone(), inner).prop_map(|(a, b)| call(34, vec![a, b])),
             ]
         })
     }
@@ -330,7 +480,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(ProptestConfig::with_cases(256))]
         /// The scalar evaluator and the dataflow engine agree, bit for bit,
         /// on every formula over two scalar inputs (including missing ones).
         #[test]

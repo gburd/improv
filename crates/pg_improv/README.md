@@ -181,8 +181,8 @@ SELECT product, margin(price, cost) FROM sales;
   (unquoted names are folded to lower case: `(Sales float8)` is `sales`). Each `Name = expr` line defines a measure the
   following lines can use. The result is the last line: a bare expression,
   or the last definition. A line is the formula DSL or controlled English,
-  as in the GUI's formula bar. Built-ins: `ABS ROUND FLOOR CEIL SQRT NEG`,
-  `MIN2 MAX2`.
+  as in the GUI's formula bar. Every non-aggregating built-in works (`IF`,
+  `IFERROR`, `ROUND(x, 2)`, `LEFT`, …; see the guide's Function Reference).
 - **Types.** `float8 float4 numeric int2 int4 int8` are Numbers (f64, so
   `numeric` and `int8` are exact to 2⁵³), `bool` is Boolean, `text varchar`
   are Text, and `date timestamp timestamptz` are DateTimes (millisecond
@@ -191,10 +191,10 @@ SELECT product, margin(price, cost) FROM sales;
 - **NULL.** A NULL argument is a missing input: the result is NULL when it
   depends on that argument (`margin(NULL, 1)`), and computed when it does not.
   There is no short-circuit (`TRUE OR NULL` is NULL), as in the engine.
-- **Division by zero and domain errors are `NaN`** (`1 / 0`, `0 / 0`,
-  `SQRT(-1)`), the engine's convention, never ±Infinity. `NaN` is a valid
-  `float8`/`numeric` result; an integer return type raises `integer out of
-  range`. An Improv error value raises an ERROR.
+- **Errors are NULL.** A result that is an error value (`#DIV/0!` from
+  `1 / 0`, `#NUM!` from `SQRT(-1)`, `#N/A`, …) returns NULL; with
+  `SET improv.raise_errors = on` it raises an ERROR naming it (`the formula
+  evaluated to #DIV/0!`). `IFERROR(a / b, 0)` replaces it in the body.
 - **No dimensions.** `SUM(x OVER Time)` and other aggregations or category
   references are rejected: a scalar function has no categories. Use a model.
 - **Checking.** The validator rejects unnamed or unsupported arguments at

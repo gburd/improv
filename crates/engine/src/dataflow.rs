@@ -14,7 +14,8 @@
 //! (Text/Boolean stored as such) and Date values are carried in `CellValue`;
 //! comparison/logical results live in the numeric lane as 1.0/0.0.
 
-use crate::compiler::{compile_formula, scalar_arity, CompileContext};
+use crate::builtins::{self, err};
+use crate::compiler::{compile_formula, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
@@ -28,12 +29,6 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use timely::dataflow::operators::ToStream;
 use timely::dataflow::Scope;
-
-/// SUM/AVG/MIN/MAX func ids (must match the compiler's convention).
-const SUM: FuncId = FuncId(1);
-const AVG: FuncId = FuncId(2);
-const MIN: FuncId = FuncId(3);
-const MAX: FuncId = FuncId(4);
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -128,19 +123,13 @@ where
             // Re-key to the group-by coordinate, then reduce.
             let keyed = c.map(move |(k, v)| (project(&k, &gb), v));
             Ok(keyed.reduce(move |_key, input, output| {
-                let vals: Vec<f64> = input
+                let vals: Vec<&CellValue> = input
                     .iter()
-                    .flat_map(|(v, mult)| {
-                        let n = (*mult).max(0) as usize;
-                        let x = v.as_num().unwrap_or(f64::NAN);
-                        std::iter::repeat_n(x, n)
-                    })
+                    .flat_map(|(v, mult)| std::iter::repeat_n(*v, (*mult).max(0) as usize))
                     .collect();
-                if vals.is_empty() {
-                    return;
+                if !vals.is_empty() {
+                    output.push((aggregate(func, &vals), 1isize));
                 }
-                let agg = aggregate(func, &vals);
-                output.push((CellValue::num(agg), 1isize));
             }))
         }
 
@@ -158,49 +147,100 @@ where
         }
         PlanNodeKind::FuncCall { func, args } => {
             let func = *func;
-            let arity = scalar_arity(func)
-                .ok_or_else(|| EngineError::Unsupported(format!("unknown scalar func {func:?}")))?;
-            if args.len() != arity {
-                return Err(EngineError::Unsupported(format!(
-                    "scalar {func:?} arity {arity}, got {} args",
-                    args.len()
-                )));
+            // Literal arguments fold into the map; the others are aligned by
+            // successive broadcast joins into one row of values per coordinate.
+            let template: Vec<Option<CellValue>> = args.iter().map(literal_value).collect();
+            let colls: Vec<(usize, &PlanNode)> = args
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| template[*i].is_none())
+                .collect();
+            let fill = move |vals: &[CellValue]| {
+                let mut it = vals.iter();
+                let full: Vec<CellValue> = template
+                    .iter()
+                    .map(|t| match t {
+                        Some(v) => v.clone(),
+                        None => it.next().expect("one value per collection arg").clone(),
+                    })
+                    .collect();
+                builtins::eval(func, &full)
+            };
+            let Some(((_, first), rest)) = colls.split_first() else {
+                // No collection argument: a constant at the empty coordinate.
+                return Ok(constant(scope, fill(&[])));
+            };
+            let mut acc = build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+            let mut dim = first.ty.dim.clone();
+            for (_, a) in rest {
+                let c = build_coll(a, scope, inputs, derived)?;
+                let keys: Vec<CategoryId> = dim
+                    .categories
+                    .iter()
+                    .copied()
+                    .filter(|c| a.ty.dim.categories.contains(c))
+                    .collect();
+                acc = align_with(&acc, &c, keys).map(|(k, (mut vs, v))| {
+                    vs.push(v);
+                    (k, vs)
+                });
+                dim = dim.union(&a.ty.dim);
             }
-            match args.as_slice() {
-                [a] => {
-                    let c = build_coll(a, scope, inputs, derived)?;
-                    Ok(c.map(move |(k, v)| {
-                        (
-                            k,
-                            CellValue::num(apply_scalar(func, &[v.as_num().unwrap_or(f64::NAN)])),
-                        )
-                    }))
+            Ok(acc.map(move |(k, vs)| (k, fill(&vs))))
+        }
+
+        PlanNodeKind::If {
+            test,
+            then,
+            otherwise,
+            spanning,
+        } => {
+            let t = build_coll(test, scope, inputs, derived)?;
+            let a = build_coll(then, scope, inputs, derived)?;
+            let b = otherwise
+                .as_ref()
+                .map(|o| build_coll(o, scope, inputs, derived))
+                .transpose()?;
+            // The test over the result's categories: joined with the spanning
+            // branch when the test lacks some of them.
+            let dom = match spanning {
+                None => t,
+                Some(i) => {
+                    let (node, coll) = if *i == 0 {
+                        (then.as_ref(), &a)
+                    } else {
+                        let node = otherwise.as_deref().expect("spanning else exists");
+                        (node, b.as_ref().expect("spanning else exists"))
+                    };
+                    align(&t, coll, shared_cats(test, node)).map(|(k, (tv, _))| (k, tv))
                 }
-                [a, b] => {
-                    // Align by shared categories (broadcast the smaller dim
-                    // over the larger), then apply the function.
-                    let l = build_coll(a, scope, inputs, derived)?;
-                    let r = build_coll(b, scope, inputs, derived)?;
-                    Ok(
-                        align(&l, &r, shared_cats(a, b)).map(move |(merged, (lv, rv))| {
-                            let out = apply_scalar(
-                                func,
-                                &[
-                                    lv.as_num().unwrap_or(f64::NAN),
-                                    rv.as_num().unwrap_or(f64::NAN),
-                                ],
-                            );
-                            (merged, CellValue::num(out))
-                        }),
-                    )
-                }
-                _ => Err(EngineError::Unsupported(format!(
-                    "scalar func arity {} unsupported",
-                    args.len()
-                ))),
+            };
+            let pick = |want: bool, dom: &Coll<G>, branch: &Coll<G>, node: &PlanNode| {
+                let keys = node.ty.dim.categories.clone();
+                let sel = dom.filter(move |(_, v)| *v == CellValue::Bool(want));
+                // The branch's categories are a subset of the domain's, so the
+                // joined coordinate is the domain's.
+                align(&sel, branch, keys).map(|(k, (_, v))| (k, v))
+            };
+            let mut out = pick(true, &dom, &a, then);
+            if let (Some(b), Some(node)) = (&b, otherwise) {
+                out = out.concat(&pick(false, &dom, b, node));
             }
+            Ok(out.concat(&dom.filter(|(_, v)| matches!(v, CellValue::Err(_)))))
         }
     }
+}
+
+/// A constant at the empty coordinate (broadcasts into any join).
+fn constant<G: Scope>(scope: &mut G, v: CellValue) -> Coll<G>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
+{
+    let empty: CoordKey = Vec::new();
+    let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
+    vec![((empty, v), t, 1isize)]
+        .to_stream(scope)
+        .as_collection()
 }
 
 /// Broadcast-join two collections on `keys`, the categories both range over.
@@ -215,6 +255,20 @@ fn align<G: Scope>(
 ) -> Collection<G, (CoordKey, (CellValue, CellValue)), isize>
 where
     G::Timestamp: differential_dataflow::lattice::Lattice,
+{
+    align_with(l, r, keys)
+}
+
+/// [`align`] for any left value type (n-ary calls carry a `Vec` of values).
+#[allow(clippy::type_complexity)]
+fn align_with<G: Scope, V>(
+    l: &Collection<G, (CoordKey, V), isize>,
+    r: &Coll<G>,
+    keys: Vec<CategoryId>,
+) -> Collection<G, (CoordKey, (V, CellValue)), isize>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice,
+    V: differential_dataflow::ExchangeData + std::hash::Hash,
 {
     let keys2 = keys.clone();
     let l = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
@@ -243,36 +297,61 @@ fn literal_value(node: &PlanNode) -> Option<CellValue> {
 }
 
 pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellValue {
-    // Equality/inequality work on any value type (Text, Bool, Num, Err);
-    // everything else operates on the numeric lane.
+    // An error operand propagates (the left one first).
+    if let CellValue::Err(_) = a {
+        return a.clone();
+    }
+    if let CellValue::Err(_) = b {
+        return b.clone();
+    }
     match op {
         BinaryOp::Eq => return CellValue::Bool(a == b),
         BinaryOp::Ne => return CellValue::Bool(a != b),
+        BinaryOp::And => return CellValue::Bool(truthy(a) && truthy(b)),
+        BinaryOp::Or => return CellValue::Bool(truthy(a) || truthy(b)),
         _ => {}
     }
-    let (x, y) = (
-        a.as_num().unwrap_or(f64::NAN),
-        b.as_num().unwrap_or(f64::NAN),
-    );
+    // Ordering compares like values: numbers, text (by code point), dates,
+    // booleans (FALSE < TRUE).
+    let ord = match (a, b) {
+        (CellValue::Text(x), CellValue::Text(y)) => Some(x.cmp(y)),
+        (CellValue::Date(x), CellValue::Date(y)) => Some(x.cmp(y)),
+        (CellValue::Bool(x), CellValue::Bool(y)) => Some(x.cmp(y)),
+        _ => None,
+    };
+    let (Some(x), Some(y)) = (a.as_num(), b.as_num()) else {
+        return match (op, ord) {
+            (BinaryOp::Lt, Some(o)) => CellValue::Bool(o.is_lt()),
+            (BinaryOp::Le, Some(o)) => CellValue::Bool(o.is_le()),
+            (BinaryOp::Gt, Some(o)) => CellValue::Bool(o.is_gt()),
+            (BinaryOp::Ge, Some(o)) => CellValue::Bool(o.is_ge()),
+            _ => CellValue::Err(err::VALUE),
+        };
+    };
     match op {
-        BinaryOp::Add => CellValue::num(x + y),
-        BinaryOp::Sub => CellValue::num(x - y),
-        BinaryOp::Mul => CellValue::num(x * y),
-        BinaryOp::Div => CellValue::num(if y == 0.0 { f64::NAN } else { x / y }),
-        BinaryOp::And => CellValue::Bool(truthy(a) && truthy(b)),
-        BinaryOp::Or => CellValue::Bool(truthy(a) || truthy(b)),
+        BinaryOp::Add => builtins::num(x + y),
+        BinaryOp::Sub => builtins::num(x - y),
+        BinaryOp::Mul => builtins::num(x * y),
+        BinaryOp::Div if y == 0.0 => CellValue::Err(err::DIV0),
+        BinaryOp::Div => builtins::num(x / y),
         BinaryOp::Lt => CellValue::Bool(x < y),
         BinaryOp::Le => CellValue::Bool(x <= y),
         BinaryOp::Gt => CellValue::Bool(x > y),
         BinaryOp::Ge => CellValue::Bool(x >= y),
-        BinaryOp::Eq | BinaryOp::Ne => unreachable!("handled above"),
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::And | BinaryOp::Or => {
+            unreachable!("handled above")
+        }
     }
 }
 
 pub(crate) fn apply_unary(op: UnaryOp, v: &CellValue) -> CellValue {
-    match op {
-        UnaryOp::Neg => CellValue::num(-v.as_num().unwrap_or(f64::NAN)),
-        UnaryOp::Not => CellValue::Bool(!truthy(v)),
+    match (op, v) {
+        (_, CellValue::Err(_)) => v.clone(),
+        (UnaryOp::Neg, _) => match v.as_num() {
+            Some(x) => builtins::num(-x),
+            None => CellValue::Err(err::VALUE),
+        },
+        (UnaryOp::Not, _) => CellValue::Bool(!truthy(v)),
     }
 }
 
@@ -288,38 +367,28 @@ fn truthy(v: &CellValue) -> bool {
     }
 }
 
-/// Evaluate a scalar built-in on its decoded f64 args. Ids match the compiler's
-/// `scalar_arity` registry. Domain errors (SQRT of a negative) yield NaN,
-/// consistent with the Div-by-zero -> NaN convention. Deterministic: pure f64
-/// arithmetic, no ordering dependence.
-pub(crate) fn apply_scalar(func: FuncId, args: &[f64]) -> f64 {
-    match (func.0, args) {
-        (10, [a]) => a.abs(),
-        (11, [a]) => a.round(),
-        (12, [a]) => a.floor(),
-        (13, [a]) => a.ceil(),
-        (14, [a]) => {
-            if *a < 0.0 {
-                f64::NAN
-            } else {
-                a.sqrt()
-            }
-        }
-        (15, [a]) => -a,
-        (20, [a, b]) => a.min(*b),
-        (21, [a, b]) => a.max(*b),
-        _ => f64::NAN,
+/// Reduce one group's values (sorted, as `reduce` hands them over) with
+/// aggregation `func`. An error among them is the result; with several, the
+/// first in value order (the smallest `ERROR.TYPE` code), so the result
+/// never depends on arrival order.
+fn aggregate(func: FuncId, vals: &[&CellValue]) -> CellValue {
+    if let Some(bad) = vals.iter().find(|v| matches!(v, CellValue::Err(_))) {
+        return (*bad).clone();
     }
-}
-
-fn aggregate(func: FuncId, vals: &[f64]) -> f64 {
-    match func {
-        SUM => vals.iter().sum(),
-        AVG => vals.iter().sum::<f64>() / vals.len() as f64,
-        MIN => vals.iter().cloned().fold(f64::INFINITY, f64::min),
-        MAX => vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
-        _ => f64::NAN,
-    }
+    let scalar_twin = match func.0 {
+        1 => 22,
+        2 => 23,
+        3 => 20,
+        4 => 21,
+        5 => 24,
+        6 => 25,
+        7 => 26,
+        8 => 27,
+        9 => 28,
+        _ => return CellValue::Err(err::NAME),
+    };
+    let owned: Vec<CellValue> = vals.iter().map(|v| (*v).clone()).collect();
+    builtins::eval(FuncId(scalar_twin), &owned)
 }
 
 /// Project a coordinate key down to a subset of category ids.
@@ -468,8 +537,14 @@ pub fn evaluate(
         Arc::new(Mutex::new(HashMap::new()));
     let results2 = results.clone();
 
-    // Which input measures do we need sessions for? All that appear in inputs.
-    let input_ids: Vec<MeasureId> = input_cells.keys().copied().collect();
+    // A session per input measure, with or without cells: an empty measure
+    // is an empty collection (a lazy IF may never need it), not a missing one.
+    let input_ids: Vec<MeasureId> = model
+        .measures
+        .values()
+        .filter(|m| matches!(m.kind, MeasureKind::Input))
+        .map(|m| m.id)
+        .collect();
     let plans_arc = plans.clone();
 
     timely::execute::execute_directly(move |worker| {
@@ -956,6 +1031,137 @@ mod tests {
         m
     }
 
+    /// Add derived `name = text` over `cats` to `m` as measure `id`.
+    fn define(m: &mut Model, id: u32, cats: Vec<CategoryId>, text: &str) {
+        let f = improv_core_model::parse_formula(m, text).expect("parses");
+        let vt = crate::compiler::infer(
+            &CompileContext::new(&m.measures),
+            MeasureId(id),
+            &f.formula.expr,
+        )
+        .expect("compiles")
+        .ty
+        .value_type;
+        m.add_measure(Measure {
+            id: MeasureId(id),
+            name: f.target,
+            value_type: vt,
+            categories: cats,
+            kind: MeasureKind::Derived(f.formula),
+            description: None,
+        });
+    }
+
+    /// IF over dimensions: the test over Product, the branches over
+    /// Time×Product. The then-branch's coordinates extend the test, an
+    /// unselected branch's missing cell or error never matters, and
+    /// IFERROR/CLEARZERO follow.
+    #[test]
+    fn if_family_over_dimensions() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        // Quantity for 2026/WidgetB is missing: no Revenue cell there.
+        m.inputs.remove(&(
+            MeasureId(101),
+            Coordinate::from_pairs([(time, ItemId(11)), (product, ItemId(21))]),
+        ));
+        define(
+            &mut m,
+            200,
+            vec![time, product],
+            "Pick = IF(Price > 15, Revenue, 0)",
+        );
+        define(
+            &mut m,
+            201,
+            vec![time, product],
+            "Ratio = Revenue / (Price - 10)",
+        );
+        define(
+            &mut m,
+            202,
+            vec![time, product],
+            "Safe = IFERROR(Ratio, -1)",
+        );
+        define(
+            &mut m,
+            203,
+            vec![time, product],
+            "Lazy = IF(Price > 15, Ratio, 0)",
+        );
+        define(
+            &mut m,
+            204,
+            vec![product],
+            "Label = IF(Price > 15, \"dear\", \"cheap\")",
+        );
+        define(&mut m, 205, vec![time, product], "Kept = CLEARERROR(Ratio)");
+        let out = evaluate(&m, &(200..=205).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let at =
+            |id: u32, t: u32, p: u32| out[&MeasureId(id)].get(&key(&[(1, t), (2, p)])).cloned();
+        let n = CellValue::num;
+        // WidgetA (price 10): else-branch 0 wherever Revenue exists.
+        assert_eq!(at(200, 10, 20), Some(n(0.0)));
+        assert_eq!(at(200, 11, 20), Some(n(0.0)));
+        // WidgetB (price 20): Revenue, and no cell where Revenue is missing.
+        assert_eq!(at(200, 10, 21), Some(n(1000.0)));
+        assert_eq!(at(200, 11, 21), None);
+        assert_eq!(out[&MeasureId(200)].len(), 3);
+        // Ratio divides by zero for WidgetA; IFERROR replaces it.
+        assert_eq!(at(201, 10, 20), Some(CellValue::Err(err::DIV0)));
+        assert_eq!(at(202, 10, 20), Some(n(-1.0)));
+        assert_eq!(at(202, 10, 21), Some(n(100.0)));
+        // The error branch is never selected for WidgetA, so it never shows.
+        assert_eq!(at(203, 10, 20), Some(n(0.0)));
+        assert_eq!(at(203, 10, 21), Some(n(100.0)));
+        // A text IF over Product only.
+        let label = &out[&MeasureId(204)];
+        assert_eq!(
+            label.get(&key(&[(2, 20)])),
+            Some(&CellValue::Text("cheap".into()))
+        );
+        assert_eq!(
+            label.get(&key(&[(2, 21)])),
+            Some(&CellValue::Text("dear".into()))
+        );
+        // CLEARERROR without an alternative drops the error cells.
+        assert_eq!(at(205, 10, 20), None);
+        assert_eq!(at(205, 10, 21), Some(n(100.0)));
+    }
+
+    /// n-ary scalar calls align every collection argument and fold literals;
+    /// an aggregation of booleans and a product reduce typed values.
+    #[test]
+    fn n_ary_calls_and_typed_aggregations() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        define(
+            &mut m,
+            200,
+            vec![time, product],
+            "S = SUM(Price, Quantity, 1, Price)",
+        );
+        define(
+            &mut m,
+            201,
+            vec![product],
+            "P = PRODUCT(Quantity OVER Time)",
+        );
+        define(&mut m, 202, vec![product], "Big = Price > 15");
+        define(&mut m, 203, vec![], "AnyBig = OR(Big OVER Product)");
+        define(&mut m, 204, vec![], "AllBig = AND(Big OVER Product)");
+        define(&mut m, 205, vec![product], "R = ROUND(Price / 3, 2)");
+        define(&mut m, 206, vec![], "Pi = PI()");
+        let out = evaluate(&m, &(200..=206).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let n = CellValue::num;
+        assert_eq!(out[&MeasureId(200)][&key(&[(1, 10), (2, 20)])], n(121.0));
+        assert_eq!(out[&MeasureId(201)][&key(&[(2, 21)])], n(4000.0));
+        assert_eq!(out[&MeasureId(203)][&Vec::new()], CellValue::Bool(true));
+        assert_eq!(out[&MeasureId(204)][&Vec::new()], CellValue::Bool(false));
+        assert_eq!(out[&MeasureId(205)][&key(&[(2, 20)])], n(3.33));
+        assert_eq!(out[&MeasureId(206)][&Vec::new()], n(std::f64::consts::PI));
+    }
+
     fn key(pairs: &[(u32, u32)]) -> CoordKey {
         let mut k: Vec<(u32, u32)> = pairs.to_vec();
         k.sort();
@@ -1268,38 +1474,42 @@ mod tests {
         );
     }
 
-    /// Run `build_coll` for a hand-built plan in a throwaway scope.
-    fn build_err(plan: PlanNode) -> String {
-        timely::execute::execute_directly(move |worker| {
-            worker.dataflow::<u64, _, _>(|scope| {
-                match build_coll(&plan, scope, &HashMap::new(), &HashMap::new()) {
-                    Ok(_) => panic!("expected a build error"),
-                    Err(e) => e.to_string(),
-                }
-            })
-        })
-    }
-
+    /// A plan the compiler would never emit (an unknown function) still
+    /// builds; its cells are `#NAME?`, and a ref to an absent measure is an
+    /// error.
     #[test]
-    fn malformed_func_call_plans_are_build_errors() {
+    fn hand_built_plans() {
         use crate::typed::{Dim, TypeInfo};
         let ty = TypeInfo {
             value_type: ValueType::Number,
             dim: Dim::scalar(),
         };
-        let lit = PlanNode {
-            kind: PlanNodeKind::Literal(Value::Number(1.0)),
-            ty: ty.clone(),
-        };
-        let call = |func, args| PlanNode {
+        let unknown = PlanNode {
             kind: PlanNodeKind::FuncCall {
-                func: FuncId(func),
-                args,
+                func: FuncId(999),
+                args: vec![],
             },
             ty: ty.clone(),
         };
-        assert!(build_err(call(99, vec![])).contains("unknown scalar func"));
-        assert!(build_err(call(10, vec![lit.clone(), lit])).contains("arity 1, got 2"));
+        let missing = PlanNode {
+            kind: PlanNodeKind::InputMeasure(MeasureId(77)),
+            ty,
+        };
+        let (ok, err) = timely::execute::execute_directly(move |worker| {
+            worker.dataflow::<u64, _, _>(|scope| {
+                let ok = build_coll(&unknown, scope, &HashMap::new(), &HashMap::new()).is_ok();
+                let err = build_coll(&missing, scope, &HashMap::new(), &HashMap::new())
+                    .err()
+                    .map(|e| e.to_string());
+                (ok, err)
+            })
+        });
+        assert!(ok);
+        assert!(err.unwrap().contains("no collection for measure"));
+        assert_eq!(
+            crate::builtins::eval(FuncId(999), &[]),
+            CellValue::Err(err::NAME)
+        );
     }
 
     #[test]
@@ -1308,10 +1518,40 @@ mod tests {
         let b = CellValue::Bool;
         assert_eq!(apply_binary(BinaryOp::Add, &n(2.0), &n(3.0)), n(5.0));
         assert_eq!(apply_binary(BinaryOp::Div, &n(1.0), &n(4.0)), n(0.25));
-        assert!(apply_binary(BinaryOp::Div, &n(1.0), &n(0.0))
-            .as_num()
-            .unwrap()
-            .is_nan());
+        let div0 = CellValue::Err(err::DIV0);
+        assert_eq!(apply_binary(BinaryOp::Div, &n(1.0), &n(0.0)), div0);
+        assert_eq!(apply_binary(BinaryOp::Div, &n(0.0), &n(0.0)), div0);
+        // Errors propagate, the left one first; a non-number is #VALUE!.
+        let na = CellValue::Err(err::NA);
+        assert_eq!(apply_binary(BinaryOp::Add, &na, &div0), na);
+        assert_eq!(apply_binary(BinaryOp::Mul, &n(1.0), &div0), div0);
+        assert_eq!(apply_binary(BinaryOp::Eq, &n(1.0), &na), na);
+        assert_eq!(apply_binary(BinaryOp::And, &b(true), &na), na);
+        let txt = |s: &str| CellValue::Text(s.into());
+        assert_eq!(
+            apply_binary(BinaryOp::Add, &txt("a"), &n(1.0)),
+            CellValue::Err(err::VALUE)
+        );
+        assert_eq!(apply_binary(BinaryOp::Lt, &txt("a"), &txt("b")), b(true));
+        assert_eq!(apply_binary(BinaryOp::Ge, &txt("a"), &txt("b")), b(false));
+        assert_eq!(apply_binary(BinaryOp::Le, &b(false), &b(true)), b(true));
+        assert_eq!(
+            apply_binary(BinaryOp::Gt, &CellValue::Date(2), &CellValue::Date(1)),
+            b(true)
+        );
+        assert_eq!(
+            apply_binary(BinaryOp::Lt, &txt("a"), &n(1.0)),
+            CellValue::Err(err::VALUE)
+        );
+        assert_eq!(
+            apply_binary(BinaryOp::Mul, &n(1e308), &n(10.0)),
+            CellValue::Err(err::NUM)
+        );
+        assert_eq!(apply_unary(UnaryOp::Neg, &na), na);
+        assert_eq!(
+            apply_unary(UnaryOp::Neg, &txt("a")),
+            CellValue::Err(err::VALUE)
+        );
         for (x, y) in [(true, true), (true, false), (false, true), (false, false)] {
             assert_eq!(apply_binary(BinaryOp::And, &b(x), &b(y)), b(x && y));
             assert_eq!(apply_binary(BinaryOp::Or, &b(x), &b(y)), b(x || y));
@@ -1335,27 +1575,36 @@ mod tests {
     }
 
     #[test]
-    fn scalar_funcs_and_aggregates() {
-        for (id, x, want) in [
-            (10, -2.5, 2.5),
-            (11, 2.5, 3.0),
-            (12, 2.5, 2.0),
-            (13, 2.1, 3.0),
-            (14, 9.0, 3.0),
-            (15, 4.0, -4.0),
-        ] {
-            assert_eq!(apply_scalar(FuncId(id), &[x]), want, "func {id}");
-        }
-        assert!(apply_scalar(FuncId(14), &[-1.0]).is_nan());
-        assert_eq!(apply_scalar(FuncId(20), &[1.0, 2.0]), 1.0);
-        assert_eq!(apply_scalar(FuncId(21), &[1.0, 2.0]), 2.0);
-        assert!(apply_scalar(FuncId(99), &[1.0]).is_nan());
-        let v = [4.0, 1.0, 7.0];
+    fn aggregates() {
+        let v = [
+            CellValue::num(4.0),
+            CellValue::num(1.0),
+            CellValue::num(7.0),
+        ];
+        let refs: Vec<&CellValue> = v.iter().collect();
         assert_eq!(
-            [SUM, AVG, MIN, MAX].map(|f| aggregate(f, &v)),
-            [12.0, 4.0, 1.0, 7.0]
+            [1, 2, 3, 4, 5, 6].map(|f| aggregate(FuncId(f), &refs)),
+            [12.0, 4.0, 1.0, 7.0, 28.0, 66.0].map(CellValue::num)
         );
-        assert!(aggregate(FuncId(99), &v).is_nan());
+        let bools = [
+            CellValue::Bool(true),
+            CellValue::Bool(false),
+            CellValue::Bool(true),
+        ];
+        let refs: Vec<&CellValue> = bools.iter().collect();
+        assert_eq!(
+            [7, 8, 9].map(|f| aggregate(FuncId(f), &refs)),
+            [false, true, false].map(CellValue::Bool)
+        );
+        // An error in the group is the result (the smallest code first).
+        let errs = [
+            CellValue::num(1.0),
+            CellValue::Err(err::NA),
+            CellValue::Err(err::DIV0),
+        ];
+        let refs: Vec<&CellValue> = errs.iter().collect();
+        assert_eq!(aggregate(FuncId(1), &refs), CellValue::Err(err::NA));
+        assert_eq!(aggregate(FuncId(99), &refs[..1]), CellValue::Err(err::NAME));
     }
 
     #[test]

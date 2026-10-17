@@ -7,6 +7,7 @@
 - [Getting Started](./getting-started.md)
 - [Running Improv](./running.md)
 - [The Formula Language](./formulas.md)
+  - [Function Reference](./functions.md)
 - [The Desktop GUI](./gui-tour.md)
 - [Improv in Postgres (pg_improv)](./postgres.md)
   - [A Family's Finances](./postgres-finance.md)

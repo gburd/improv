@@ -115,8 +115,9 @@ SELECT rep, bonus(sales, target) FROM quota;
 The SQL arguments are the inputs, by name; `Name = expr` lines define
 intermediate measures; the last line is the result. Lines may be the DSL or
 controlled English (`price times qty`). The semantics are the engine's: a
-NULL argument gives NULL wherever the result depends on it, and division by
-zero gives `NaN`. Aggregations need categories, so `SUM(x OVER Time)` is
+NULL argument gives NULL wherever the result depends on it, and an error
+value (`#DIV/0!` from a division by zero, …) is NULL, or an ERROR with
+`improv.raise_errors = on`. Aggregations need categories, so `SUM(x OVER Time)` is
 rejected; put it in a model. A call costs about 0.14 µs for a one-line
 body and 0.24 µs for `bonus` above. See
 `crates/pg_improv/README.md` for the types and rules.

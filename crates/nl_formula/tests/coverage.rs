@@ -195,8 +195,16 @@ fn describe_renders_every_shape() {
     }
     assert_eq!(d(Expr::Literal(Value::Number(f64::INFINITY))), "inf");
     assert_eq!(
-        d(Expr::Call(FuncId(42), vec![r(PRICE), r(QTY)])),
-        "function 42 of Price and Quantity"
+        d(Expr::Call(FuncId(999), vec![r(PRICE), r(QTY)])),
+        "function 999(Price, Quantity)"
+    );
+    // A registry function renders by name.
+    assert_eq!(
+        d(Expr::Call(
+            FuncId(11),
+            vec![r(PRICE), Expr::Literal(Value::Number(2.0))]
+        )),
+        "ROUND(Price, 2)"
     );
     // Unknown ids fall back to numeric names.
     let ghost = DimensionSpec {

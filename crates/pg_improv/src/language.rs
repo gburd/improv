@@ -11,7 +11,8 @@
 //! controlled English (as in the GUI). Evaluation is
 //! [`improv_engine::scalar::eval`], the engine's own per-cell operators: a
 //! NULL argument is a missing input (NULL out where the result depends on
-//! it) and division by zero is NaN.
+//! it), and an error value (`#DIV/0!` for division by zero, `#NUM!`, …) is
+//! NULL, or raised when `improv.raise_errors` is on.
 //!
 //! A trusted language: bodies compute and nothing else, so any role may
 //! create one. Compiled bodies are cached per backend, keyed by function OID
@@ -299,7 +300,7 @@ fn to_datum(v: &CellValue, ret: Oid) -> Result<pg_sys::Datum, String> {
         (r >= lo && r < hi).then_some(r).ok_or_else(out_of_range)
     };
     let d = match (ret, v) {
-        (_, CellValue::Err(_)) => return Err("the formula evaluated to an error value".into()),
+        (_, CellValue::Err(_)) => return Err(format!("the formula evaluated to {v}")),
         (pg_sys::FLOAT8OID, CellValue::Num(_)) => v.as_num().into_datum(),
         (pg_sys::FLOAT4OID, CellValue::Num(_)) => v.as_num().map(|f| f as f32).into_datum(),
         (pg_sys::NUMERICOID, CellValue::Num(_)) => {
@@ -412,9 +413,11 @@ unsafe fn run(
             env.insert(*id, v);
         }
     }
-    eval(&f.result, &env)?
-        .map(|v| to_datum(&v, f.ret))
-        .transpose()
+    match eval(&f.result, &env)? {
+        // An error value is NULL unless improv.raise_errors asks to raise it.
+        Some(CellValue::Err(_)) if !crate::RAISE_ERRORS.get() => Ok(None),
+        v => v.map(|v| to_datum(&v, f.ret)).transpose(),
+    }
 }
 
 fn raise(code: PgSqlErrorCode, msg: String) -> ! {
@@ -639,24 +642,31 @@ mod tests {
     }
 
     #[pg_test]
-    fn division_by_zero_is_nan() {
+    fn error_values_are_null_or_raised() {
         create("ratio(a float8, b float8) RETURNS float8", "a / b");
-        assert_eq!(
-            one::<bool>("SELECT ratio(1, 0) = 'NaN'::float8"),
-            Some(true)
-        );
-        assert_eq!(
-            one::<bool>("SELECT ratio(0, 0) = 'NaN'::float8"),
-            Some(true)
-        );
-        create("nratio(a float8, b float8) RETURNS numeric", "a / b");
-        assert_eq!(
-            one::<String>("SELECT nratio(1, 0)::text"),
-            Some("NaN".into())
-        );
-        // NaN has no integer form.
+        assert_eq!(one::<bool>("SELECT ratio(1, 0) IS NULL"), Some(true));
+        assert_eq!(one::<bool>("SELECT ratio(0, 0) IS NULL"), Some(true));
         create("iratio(a float8, b float8) RETURNS int4", "a / b");
-        assert_eq!(error_of("SELECT iratio(1, 0)"), "integer out of range");
+        assert_eq!(one::<bool>("SELECT iratio(1, 0) IS NULL"), Some(true));
+        // IFERROR replaces it; functions and IF work in a body.
+        create(
+            "safe(a float8, b float8) RETURNS float8",
+            "IFERROR(a / b, -1)",
+        );
+        assert_eq!(one::<f64>("SELECT safe(1, 0)"), Some(-1.0));
+        create(
+            "grade(s float8) RETURNS text",
+            r#"IF(s >= 90, "A", IF(s >= 80, "B", "C"))"#,
+        );
+        assert_eq!(one::<String>("SELECT grade(85)"), Some("B".into()));
+        create("r2(x float8) RETURNS float8", "ROUND(x, 2)");
+        assert_eq!(one::<f64>("SELECT r2(2.675)"), Some(2.68));
+        Spi::run("SET improv.raise_errors = on").unwrap();
+        assert_eq!(
+            error_of("SELECT ratio(1, 0)"),
+            "the formula evaluated to #DIV/0!"
+        );
+        Spi::run("RESET improv.raise_errors").unwrap();
     }
 
     #[pg_test]

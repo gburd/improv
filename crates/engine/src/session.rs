@@ -546,6 +546,36 @@ mod tests {
         );
     }
 
+    /// IF switches branches incrementally: raising Price past the test's
+    /// threshold retracts the else-cells and asserts the then-cells.
+    #[test]
+    fn if_switches_branch_incrementally() {
+        let mut model = revenue_model();
+        let f =
+            improv_core_model::parse_formula(&model, "Pick = IF(Price > 15, Revenue, -1)").unwrap();
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: f.target,
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Derived(f.formula),
+            description: None,
+        });
+        let (mut engine, snap) = Engine::new(&model, &[MeasureId(103)]).expect("engine");
+        let pick = |s: &Snapshot, t, p| s[&MeasureId(103)].get(&key(&[(1, t), (2, p)])).cloned();
+        assert_eq!(pick(&snap, 10, 20), Some(CellValue::num(-1.0)));
+        let snap = engine
+            .set(MeasureId(100), key(&[(2, 20)]), 16.0)
+            .expect("edit");
+        assert_eq!(pick(&snap, 10, 20), Some(CellValue::num(1600.0)));
+        assert_eq!(pick(&snap, 10, 21), Some(CellValue::num(1000.0)));
+        assert_eq!(snap[&MeasureId(103)].len(), 2, "no stale else-cell");
+        let snap = engine
+            .set(MeasureId(100), key(&[(2, 20)]), 1.0)
+            .expect("edit");
+        assert_eq!(pick(&snap, 10, 20), Some(CellValue::num(-1.0)));
+    }
+
     #[test]
     fn edit_price_broadcasts() {
         let model = revenue_model();
