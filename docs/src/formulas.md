@@ -203,6 +203,11 @@ Opening  = FIRST(Balance OVER Time)
 - Other arguments are parameters with one value per group: a literal, or a
   measure over the categories the result keeps (`TEXTJOIN(Sep, TRUE, x OVER
   T)` with `Sep` per Product).
+- The cash-flow functions (`NPV`, `IRR`, `MIRR`, `XNPV`, `XIRR`, `FMRR`,
+  `FVSCHEDULE`) read the flows in item order: the first item with a cell is
+  period 0 (`NPV` discounts it one period, as Excel does). An item with no
+  cell is skipped, not a zero flow, so the flows after it move up a period;
+  enter 0 for a period without a flow.
 - Without `OVER`, nothing is reduced (each cell is its own group).
 
 `SUM` etc. are functions only when `(` follows; otherwise the word is an

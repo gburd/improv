@@ -387,3 +387,10 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `YIELD(date, date, number, number, number, number, [number])` | number | yield of a periodic-coupon security (iterative): YIELD(settle, maturity, rate, price, redemption, freq, [basis]) |
 | `YIELDDISC(date, date, number, number, [number])` | number | annual yield of a discounted security: YIELDDISC(settle, maturity, price, redemption, [basis]) |
 | `YIELDMAT(date, date, date, number, number, [number])` | number | annual yield of a security paying interest at maturity: YIELDMAT(settle, maturity, issue, rate, price, [basis]) |
+| `NPV(number, number OVER category)` | number | net present value of the flows in item order, the first discounted one period (a missing item is skipped, not zero): NPV(rate, cf OVER T) |
+| `XNPV(number, number OVER category, date OVER category)` | number | net present value of flows at dates, discounted from the first date (365-day years): XNPV(rate, cf, dates OVER T) |
+| `IRR(number OVER category, [number])` | number | internal rate of return of the flows in item order (iterative): IRR(cf OVER T, [guess = 0.1]) |
+| `XIRR(number OVER category, date OVER category, [number])` | number | internal rate of return of flows at dates (iterative): XIRR(cf, dates OVER T, [guess = 0.1]) |
+| `MIRR(number OVER category, number, number)` | number | modified internal rate of return, outflows financed and inflows reinvested: MIRR(cf OVER T, finance_rate, reinvest_rate) |
+| `FMRR(number OVER category, number, number, number)` | number | financial management rate of return (GNU Oleo): outflows pulled back at the safe rate, inflows of at least reinvest_min pushed forward at the reinvestment rate: FMRR(cf OVER T, safe_rate, reinvest_rate, reinvest_min) |
+| `FVSCHEDULE(number, number OVER category)` | number | principal compounded over the rates in item order: FVSCHEDULE(principal, rate OVER T) |

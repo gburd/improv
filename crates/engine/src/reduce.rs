@@ -15,6 +15,8 @@ use crate::builtins::{self, err, text_of};
 use crate::CellValue;
 use improv_core_model::FuncId;
 
+mod financial;
+
 /// One group's rows, in item order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Rows {
@@ -62,6 +64,7 @@ pub fn reduce(func: FuncId, rows: &Rows, params: &[CellValue]) -> CellValue {
     match func.0 {
         1..=9 => core(func.0, rows),
         906..=909 => ordered(func.0, rows, params),
+        1150..=1199 => financial::reduce(func.0, rows, params),
         _ => CellValue::Err(err::NAME),
     }
 }

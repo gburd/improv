@@ -468,6 +468,7 @@ pub const WINDOW: FuncId = FuncId(991);
 mod date;
 mod dimensional;
 mod financial;
+mod financial_reduce;
 mod statistical;
 
 /// Every family table, in documentation order.
@@ -477,6 +478,7 @@ static FAMILIES: &[&[FnDef]] = &[
     dimensional::DIMENSIONAL,
     statistical::STATISTICAL,
     financial::FINANCIAL,
+    financial_reduce::FINANCIAL_REDUCE,
 ];
 
 /// Every built-in function.

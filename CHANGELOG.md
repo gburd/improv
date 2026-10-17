@@ -97,6 +97,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   calc_method), Improv follows Excel. 457 golden values from LibreOffice
   25.8 and Gnumeric 1.12 (`scripts/goldens/financial.py`; Gnumeric for
   `ODDFPRICE`/`ODDFYIELD`, which LibreOffice cannot compute).
+- **Cash-flow reductions** over an ordered category, in item order:
+  `NPV(rate, cf OVER Time)`, `XNPV(rate, cf, dates OVER Time)`,
+  `IRR(cf OVER Time, [guess])`, `XIRR(cf, dates OVER Time, [guess])`
+  (Newton's method, then bisection; #NUM! without a sign change or a root),
+  `MIRR(cf OVER Time, finance_rate, reinvest_rate)`,
+  `FVSCHEDULE(principal, rate OVER Time)`, and GNU Oleo's financial
+  management rate of return `FMRR(cf OVER Time, safe_rate, reinvest_rate,
+  reinvest_min)`. A period with no cell is skipped, not zero (Excel's rule
+  for blanks in a range); an error flow is the result. 65 golden values
+  from LibreOffice 25.8 over a column of flows, and from a transliteration
+  of Oleo's `do_fmrr` (`scripts/goldens/financial_reduce.py`).
 - `improv.raise_errors` (pg_improv): raise a `LANGUAGE improv` error value
   instead of returning NULL.
 

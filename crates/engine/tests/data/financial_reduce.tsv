@@ -1,0 +1,65 @@
+case	group	formula	flows	dates	expected	source
+0	0	NPV(0.1, CF OVER Time)	[-10000, 3000, 4200, 6800]	[]	1188.4434123352212	LibreOffice
+1	0	NPV(0.1, CF OVER Time)	[10000, -2000, -2000, -2000, -2000, -2000, -2000]	[]	1172.253273705046	LibreOffice
+2	0	NPV(0.1, CF OVER Time)	[-500]	[]	-454.5454545454545	LibreOffice
+3	0	NPV(0.1, CF OVER Time)	[-1000, null, 400, 700]	[]	-52.592036063110584	LibreOffice
+4	0	NPV(0.1, CF OVER Time)	[-1000, {"error": "#DIV/0!"}, 500]	[]	{"error": "#DIV/0!"}	LibreOffice
+5	0	NPV(0.1, CF OVER Time)	[-1000, 300, 400, 500]	[]	-19.124376750222126	LibreOffice
+5	1	NPV(0.1, CF OVER Time)	[-200, 50, 60, 70, 80]	[]	2.067668005786949	LibreOffice
+6	0	NPV(-0.5, CF OVER Time)	[-1000, 800, -500, 900, -200, 600]	[]	43600	LibreOffice
+7	0	NPV(-1, CF OVER Time)	[-10000, 3000, 4200, 6800]	[]	{"error": "#NUM!"}	LibreOffice
+8	0	XNPV(0.09, CF, Day OVER Time)	[-10000, 2750, 4250, 3250, 2750]	[39448, 39508, 39751, 39859, 39904]	2086.647602031535	LibreOffice
+9	0	XNPV(0.09, CF, Serial OVER Time)	[-10000, 2750, 4250, 3250]	[39448, 39508, 39751, 39859.7]	-382.6600714089991	LibreOffice
+10	0	XNPV(0.09, CF, Day OVER Time)	[10000, -2000, -2000, -2000]	[45658, 45689, 45717, 45748]	4084.3022387993087	LibreOffice
+10	1	XNPV(0.09, CF, Day OVER Time)	[-10000, 2750, 4250]	[39448, 39508, 39751]	-3332.1036919027515	LibreOffice
+11	0	XNPV(0.09, CF, Day OVER Time)	[-500]	[45658]	{"error": "#NUM!"}	LibreOffice
+12	0	XNPV(0.09, CF, Day OVER Time)	[-10000, 2750, 4250, 3250, 2750]	[39448, 39508, 39751, 39400, 39904]	{"error": "#NUM!"}	Excel docs
+13	0	XNPV(-1, CF, Day OVER Time)	[-10000, 2750, 4250, 3250, 2750]	[39448, 39508, 39751, 39859, 39904]	{"error": "#NUM!"}	LibreOffice
+14	0	XNPV(0.09, CF, Day OVER Time)	[-1000, {"error": "#DIV/0!"}, 500]	[39448, 39508, 39751]	{"error": "#DIV/0!"}	Improv rule
+15	0	IRR(CF OVER Time)	[-70000, 12000, 15000, 18000, 21000, 26000]	[]	{"approx": 0.08663094803653158, "tol": 1e-09}	LibreOffice
+16	0	IRR(CF OVER Time)	[-70000, 12000, 15000, 18000, 21000]	[]	{"approx": -0.02124484827341103, "tol": 1e-09}	LibreOffice
+17	0	IRR(CF OVER Time, -0.1)	[-70000, 12000, 15000]	[]	{"approx": -0.44350694133474067, "tol": 1e-09}	LibreOffice
+18	0	IRR(CF OVER Time)	[10000, -2000, -2000, -2000, -2000, -2000, -2000]	[]	{"approx": 0.054717925023536514, "tol": 1e-09}	LibreOffice
+19	0	IRR(CF OVER Time)	[-1000, 800, -500, 900, -200, 600]	[]	{"approx": 0.19244227088867702, "tol": 1e-09}	LibreOffice
+20	0	IRR(CF OVER Time)	[100, 200, 300]	[]	{"error": "#NUM!"}	LibreOffice
+21	0	IRR(CF OVER Time)	[-500]	[]	{"error": "#NUM!"}	LibreOffice
+22	0	IRR(CF OVER Time)	[-1000, null, 400, 700]	[]	{"approx": 0.06023252670426272, "tol": 1e-09}	LibreOffice
+23	0	IRR(CF OVER Time)	[-1000, {"error": "#DIV/0!"}, 500]	[]	{"error": "#DIV/0!"}	LibreOffice
+24	0	IRR(CF OVER Time)	[-1000, 300, 400, 500]	[]	{"approx": 0.08896339469334469, "tol": 1e-09}	LibreOffice
+24	1	IRR(CF OVER Time)	[-200, 50, 60, 70, 80]	[]	{"approx": 0.10484529479160472, "tol": 1e-09}	LibreOffice
+25	0	XIRR(CF, Day OVER Time)	[-10000, 2750, 4250, 3250, 2750]	[39448, 39508, 39751, 39859, 39904]	{"approx": 0.3733625335188315, "tol": 1e-09}	LibreOffice
+26	0	XIRR(CF, Day OVER Time, 0.5)	[-10000, 2750, 4250, 3250, 2750]	[39448, 39508, 39751, 39859, 39904]	{"approx": 0.3733625335188316, "tol": 1e-09}	LibreOffice
+27	0	XIRR(CF, Serial OVER Time)	[10000, -2000, -2000, -2000]	[45658, 45689, 45717, 45748.25]	{"approx": -0.9496704206540972, "tol": 1e-09}	LibreOffice
+28	0	XIRR(CF, Day OVER Time)	[100, 200, 300]	[39448, 39508, 39751]	{"error": "#NUM!"}	LibreOffice
+29	0	XIRR(CF, Day OVER Time)	[-500]	[45658]	{"error": "#NUM!"}	LibreOffice
+30	0	XIRR(CF, Day OVER Time)	[-10000, 2750, 4250, 3250, 2750]	[39448, 39508, 39751, 39400, 39904]	{"error": "#NUM!"}	Excel docs
+31	0	XIRR(CF, Day OVER Time)	[-10000, 2750, 4250]	[39448, 39508, 39751]	{"approx": -0.44867992942007334, "tol": 1e-09}	LibreOffice
+31	1	XIRR(CF, Day OVER Time)	[-1000, 800, -500, 900, -200, 600]	[45658, 45688, 45718, 45748, 45778, 45808]	{"approx": 7.511143556317544, "tol": 1e-09}	LibreOffice
+32	0	MIRR(CF OVER Time, 0.1, 0.12)	[-120000, 39000, 30000, 21000, 37000, 46000]	[]	0.1260941303659051	LibreOffice
+33	0	MIRR(CF OVER Time, 0.1, 0.12)	[-120000, 39000, 30000, 21000]	[]	-0.048044655249980806	LibreOffice
+34	0	MIRR(CF OVER Time, 0.1, 0.14)	[-120000, 39000, 30000, 21000, 37000, 46000]	[]	0.13475911082831504	LibreOffice
+35	0	MIRR(CF OVER Time, 0.05, 0.08)	[-1000, 800, -500, 900, -200, 600]	[]	0.11094565738220186	LibreOffice
+36	0	MIRR(CF OVER Time, 0.1, 0.1)	[100, 200, 300]	[]	{"error": "#DIV/0!"}	Excel docs
+37	0	MIRR(CF OVER Time, 0.1, 0.12)	[-1000, null, 400, 700]	[]	0.07144761887830975	LibreOffice
+38	0	MIRR(CF OVER Time, 0.1, 0.12)	[-1000, {"error": "#DIV/0!"}, 500]	[]	{"error": "#DIV/0!"}	Improv rule
+39	0	MIRR(CF OVER Time, 0.1, 0.12)	[-1000, 300, 400, 500]	[]	0.09815669244631531	LibreOffice
+39	1	MIRR(CF OVER Time, 0.1, 0.12)	[-200, 50, 60, 70, 80]	[]	0.11027073239486018	LibreOffice
+40	0	FVSCHEDULE(1, CF OVER Time)	[0.09, 0.11, 0.1]	[]	1.3308900000000004	LibreOffice
+41	0	FVSCHEDULE(1000, CF OVER Time)	[0.05, -0.02, 0.03, 0]	[]	1059.8700000000001	LibreOffice
+42	0	FVSCHEDULE(250, CF OVER Time)	[0.07]	[]	267.5	LibreOffice
+43	0	FVSCHEDULE(100, CF OVER Time)	[0.05, null, 0.05]	[]	110.25	LibreOffice
+44	0	FVSCHEDULE(100, CF OVER Time)	[0.05, {"error": "#N/A"}, 0.05]	[]	{"error": "#N/A"}	Improv rule
+45	0	FVSCHEDULE(-100, CF OVER Time)	[0.1, 0.2]	[]	-132	LibreOffice
+45	1	FVSCHEDULE(-100, CF OVER Time)	[-0.5, 0.25, 1]	[]	-125	LibreOffice
+46	0	FMRR(CF OVER Time, 0.05, 0.1, 100)	[-1000, 300, -200, 500, 600]	[]	{"approx": 0.06692157870337101, "tol": 1e-09}	GNU Oleo busi.c
+47	0	FMRR(CF OVER Time, 0.05, 0.12, 400)	[-1000, 300, 200, 500, 600]	[]	{"approx": 0.1592587921202233, "tol": 1e-09}	GNU Oleo busi.c
+48	0	FMRR(CF OVER Time, 0.06, 0.1, 0)	[-1000, -500, 200, -100, 900]	[]	{"approx": -0.08582855382426413, "tol": 1e-09}	GNU Oleo busi.c
+49	0	FMRR(CF OVER Time, 0.04, 0.1, 50)	[-1000, 100, -150, 800]	[]	{"approx": -0.08448134212212888, "tol": 1e-09}	GNU Oleo busi.c
+50	0	FMRR(CF OVER Time, 0.04, 0.1, 50)	[-1000, 100, -103, 800]	[]	{"approx": -0.07128013643685815, "tol": 1e-09}	GNU Oleo busi.c
+51	0	FMRR(CF OVER Time, 0, 0.1, 50)	[-1000, 100, 200, -350, 900]	[]	{"approx": -0.037804541804238534, "tol": 1e-09}	GNU Oleo busi.c
+52	0	FMRR(CF OVER Time, 0.05, 0.1, 100)	[-8000, 2000, -500, 3000, 4000]	[]	{"approx": 0.03914668054968029, "tol": 1e-09}	GNU Oleo busi.c
+52	1	FMRR(CF OVER Time, 0.05, 0.1, 100)	[-200, 50, 60, 70, 80]	[]	{"approx": 0.0969870804416404, "tol": 1e-09}	GNU Oleo busi.c
+53	0	FMRR(CF OVER Time, 0.05, 0.1, 100)	[-1000, null, 400, 700]	[]	{"approx": 0.06770782520313112, "tol": 1e-09}	GNU Oleo busi.c (no cell skipped)
+54	0	FMRR(CF OVER Time, 0.05, 0.1, 100)	[-500]	[]	{"error": "#NUM!"}	Improv (Oleo: 0)
+55	0	FMRR(CF OVER Time, 0.05, 0.1, 100)	[100, 200, 300]	[]	{"error": "#NUM!"}	Improv (Oleo: NaN)
+56	0	FMRR(CF OVER Time, 0.05, 0.1, 100)	[-1000, {"error": "#DIV/0!"}, 500]	[]	{"error": "#DIV/0!"}	GNU Oleo busi.c
