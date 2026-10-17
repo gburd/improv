@@ -331,3 +331,59 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CONFIDENCE.NORM(number, number, number)` | number | the half-width of a normal confidence interval at significance alpha, for sd and sample size n (also `CONFIDENCE`) |
 | `CONFIDENCE.T(number, number, number)` | number | the half-width of a Student's t confidence interval at significance alpha, for sd and sample size n |
 | `STANDARDIZE(number, number, number)` | number | the z-score (x − mean) / sd |
+
+## Financial
+
+Rates are per period; cash flows are in item order along their `OVER` category.
+
+| Function | Returns | Description |
+|---|---|---|
+| `FV(number, number, number, [number], [number])` | number | future value: FV(rate, nper, pmt, [pv], [type]) |
+| `PV(number, number, number, [number], [number])` | number | present value: PV(rate, nper, pmt, [fv], [type]) |
+| `PMT(number, number, number, [number], [number])` | number | payment per period: PMT(rate, nper, pv, [fv], [type]) |
+| `IPMT(number, number, number, number, [number], [number])` | number | interest part of payment per: IPMT(rate, per, nper, pv, [fv], [type]) |
+| `PPMT(number, number, number, number, [number], [number])` | number | principal part of payment per: PPMT(rate, per, nper, pv, [fv], [type]) |
+| `NPER(number, number, number, [number], [number])` | number | number of periods: NPER(rate, pmt, pv, [fv], [type]) |
+| `RATE(number, number, number, [number], [number], [number])` | number | rate per period (iterative): RATE(nper, pmt, pv, [fv], [type], [guess]) |
+| `CUMIPMT(number, number, number, number, number, number)` | number | interest paid from period start to end: CUMIPMT(rate, nper, pv, start, end, type) (also `CUMIPMT_ADD`) |
+| `CUMPRINC(number, number, number, number, number, number)` | number | principal paid from period start to end: CUMPRINC(rate, nper, pv, start, end, type) (also `CUMPRINC_ADD`) |
+| `ISPMT(number, number, number, number)` | number | interest of period per with straight-line principal: ISPMT(rate, per, nper, pv) |
+| `EFFECT(number, number)` | number | effective annual rate of a nominal rate compounded npery times (also `EFFECT_ADD`) |
+| `NOMINAL(number, number)` | number | nominal annual rate of an effective rate compounded npery times (also `NOMINAL_ADD`) |
+| `PDURATION(number, number, number)` | number | periods for pv to grow to fv at rate: PDURATION(rate, pv, fv) (also `G_DURATION`) |
+| `RRI(number, number, number)` | number | equivalent growth rate per period: RRI(nper, pv, fv) |
+| `DOLLARDE(number, number)` | number | a fractional dollar price (1.02 with fraction 16 is 1 and 2/16) as a decimal |
+| `DOLLARFR(number, number)` | number | a decimal dollar price as a fraction (in the integer part's units) |
+| `SLN(number, number, number)` | number | straight-line depreciation per period: SLN(cost, salvage, life) |
+| `SYD(number, number, number, number)` | number | sum-of-years'-digits depreciation: SYD(cost, salvage, life, per) |
+| `DB(number, number, number, number, [number])` | number | fixed declining balance: DB(cost, salvage, life, period, [month=12]) |
+| `DDB(number, number, number, number, [number])` | number | double declining balance: DDB(cost, salvage, life, period, [factor=2]) |
+| `VDB(number, number, number, number, number, [number], [boolean])` | number | declining balance between two periods: VDB(cost, salvage, life, start, end, [factor=2], [no_switch]) |
+| `AMORDEGRC(number, date, date, number, number, number, [number])` | number | French degressive depreciation: AMORDEGRC(cost, purchased, first, salvage, period, rate, [basis]) |
+| `AMORLINC(number, date, date, number, number, number, [number])` | number | French linear depreciation: AMORLINC(cost, purchased, first, salvage, period, rate, [basis]) |
+| `ACCRINT(date, date, date, number, number, number, [number], [boolean])` | number | accrued interest of a periodic-coupon security: ACCRINT(issue, first, settle, rate, par, freq, [basis], [calc_method]) |
+| `ACCRINTM(date, date, number, [number], [number])` | number | accrued interest paid at maturity: ACCRINTM(issue, settle, rate, [par=1000], [basis]) |
+| `COUPDAYBS(date, date, number, [number])` | number | days from the coupon period's start to settlement |
+| `COUPDAYS(date, date, number, [number])` | number | days in the coupon period holding settlement |
+| `COUPDAYSNC(date, date, number, [number])` | number | days from settlement to the next coupon |
+| `COUPNCD(date, date, number, [number])` | date | the next coupon date after settlement |
+| `COUPNUM(date, date, number, [number])` | number | coupons payable between settlement and maturity |
+| `COUPPCD(date, date, number, [number])` | date | the coupon date on or before settlement |
+| `DISC(date, date, number, number, [number])` | number | discount rate: DISC(settle, maturity, price, redemption, [basis]) |
+| `DURATION(date, date, number, number, number, [number])` | number | Macaulay duration: DURATION(settle, maturity, coupon, yld, freq, [basis]) (also `BONDDURATION`) |
+| `MDURATION(date, date, number, number, number, [number])` | number | modified duration: MDURATION(settle, maturity, coupon, yld, freq, [basis]) (also `BONDMDURATION`) |
+| `INTRATE(date, date, number, number, [number])` | number | interest rate of a fully invested security: INTRATE(settle, maturity, investment, redemption, [basis]) |
+| `ODDFPRICE(date, date, date, date, number, number, number, number, [number])` | number | price with an odd first period: ODDFPRICE(settle, maturity, issue, first, rate, yld, redemption, freq, [basis]) |
+| `ODDFYIELD(date, date, date, date, number, number, number, number, [number])` | number | yield with an odd first period: ODDFYIELD(settle, maturity, issue, first, rate, price, redemption, freq, [basis]) |
+| `ODDLPRICE(date, date, date, number, number, number, number, [number])` | number | price with an odd last period: ODDLPRICE(settle, maturity, last, rate, yld, redemption, freq, [basis]) |
+| `ODDLYIELD(date, date, date, number, number, number, number, [number])` | number | yield with an odd last period: ODDLYIELD(settle, maturity, last, rate, price, redemption, freq, [basis]) |
+| `PRICE(date, date, number, number, number, number, [number])` | number | price per 100 face value: PRICE(settle, maturity, rate, yld, redemption, freq, [basis]) |
+| `PRICEDISC(date, date, number, number, [number])` | number | price of a discounted security: PRICEDISC(settle, maturity, discount, redemption, [basis]) |
+| `PRICEMAT(date, date, date, number, number, [number])` | number | price of a security paying interest at maturity: PRICEMAT(settle, maturity, issue, rate, yld, [basis]) |
+| `RECEIVED(date, date, number, number, [number])` | number | amount at maturity of a fully invested security: RECEIVED(settle, maturity, investment, discount, [basis]) |
+| `TBILLEQ(date, date, number)` | number | bond-equivalent yield of a Treasury bill: TBILLEQ(settle, maturity, discount) |
+| `TBILLPRICE(date, date, number)` | number | price per 100 face of a Treasury bill: TBILLPRICE(settle, maturity, discount) |
+| `TBILLYIELD(date, date, number)` | number | yield of a Treasury bill: TBILLYIELD(settle, maturity, price) |
+| `YIELD(date, date, number, number, number, number, [number])` | number | yield of a periodic-coupon security (iterative): YIELD(settle, maturity, rate, price, redemption, freq, [basis]) |
+| `YIELDDISC(date, date, number, number, [number])` | number | annual yield of a discounted security: YIELDDISC(settle, maturity, price, redemption, [basis]) |
+| `YIELDMAT(date, date, date, number, number, [number])` | number | annual yield of a security paying interest at maturity: YIELDMAT(settle, maturity, issue, rate, price, [basis]) |

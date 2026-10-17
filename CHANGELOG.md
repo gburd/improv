@@ -77,6 +77,26 @@ this project follows [Semantic Versioning](https://semver.org/).
   (`scripts/goldens/p1.py`), or from the Excel, Gnumeric, Numbers and
   Quantrix documentation where LibreOffice lacks a function or disagrees
   with Excel.
+- **49 financial functions** (the plan's phase P5 scalars), with Excel's
+  sign convention (cash paid out is negative):
+  - time value of money: `FV`, `PV`, `PMT`, `IPMT`, `PPMT`, `NPER`, `RATE`
+    (Newton's method, then bisection; #NUM! without a root), `CUMIPMT`,
+    `CUMPRINC`, `ISPMT`, `EFFECT`, `NOMINAL`, `PDURATION`, `RRI`, `DOLLARDE`
+    and `DOLLARFR`;
+  - depreciation: `SLN`, `SYD`, `DB`, `DDB`, `VDB`, and the French
+    `AMORDEGRC` and `AMORLINC`;
+  - bonds and securities, on the five day-count bases: `ACCRINT`,
+    `ACCRINTM`, the `COUP*` family (`COUPNCD`/`COUPPCD` return dates),
+    `DISC`, `DURATION`, `MDURATION`, `INTRATE`, `ODDFPRICE`, `ODDFYIELD`,
+    `ODDLPRICE`, `ODDLYIELD`, `PRICE`, `PRICEDISC`, `PRICEMAT`, `RECEIVED`,
+    `TBILLEQ`, `TBILLPRICE`, `TBILLYIELD`, `YIELD`, `YIELDDISC` and
+    `YIELDMAT`.
+  Day counting follows LibreOffice; where LibreOffice departs from Excel's
+  documented results (`DURATION` on actual/actual, `PRICE`/`YIELD` with one
+  coupon left, `EFFECT(0, n)`, `DOLLARDE`/`DOLLARFR` below 1, `ACCRINT`'s
+  calc_method), Improv follows Excel. 457 golden values from LibreOffice
+  25.8 and Gnumeric 1.12 (`scripts/goldens/financial.py`; Gnumeric for
+  `ODDFPRICE`/`ODDFYIELD`, which LibreOffice cannot compute).
 - `improv.raise_errors` (pg_improv): raise a `LANGUAGE improv` error value
   instead of returning NULL.
 

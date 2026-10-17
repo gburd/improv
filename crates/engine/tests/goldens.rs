@@ -40,10 +40,14 @@ fn golden_rows() -> Vec<(String, String, String, String)> {
     rows
 }
 
-/// The expected column: a JSON number, string, bool, `{"error": "#NUM!"}`
-/// or `{"date": "2025-01-31T00:00:00Z"}`.
+/// The expected column: a JSON number, string, bool, `{"error": "#NUM!"}`,
+/// `{"date": "2025-01-31T00:00:00Z"}`, or `{"approx": x, "tol": t}` for an
+/// iterative solver's result (RATE, YIELD) within `t` relative.
 fn expected(j: &serde_json::Value) -> CellValue {
     match j {
+        serde_json::Value::Object(o) if o.contains_key("approx") => {
+            CellValue::num(o["approx"].as_f64().unwrap())
+        }
         serde_json::Value::Number(n) => CellValue::num(n.as_f64().unwrap()),
         serde_json::Value::String(s) => CellValue::Text(s.clone()),
         serde_json::Value::Bool(b) => CellValue::Bool(*b),
@@ -63,11 +67,25 @@ fn expected(j: &serde_json::Value) -> CellValue {
     }
 }
 
-/// Equal, or numbers within 1e-12 relative (transcendental functions may
-/// differ from LibreOffice's in the last bits).
-fn close(got: &CellValue, want: &CellValue) -> bool {
+/// How far a number may be from the golden: 1e-12 relative (transcendental
+/// functions may differ from LibreOffice's in the last bits), or an
+/// `approx` row's `tol` relative to `max(|x|, 1)` (a solver's root near 0 is
+/// only known to the solver's absolute tolerance).
+fn tolerance(j: &serde_json::Value, want: &CellValue) -> f64 {
+    match (
+        j.get("tol").and_then(serde_json::Value::as_f64),
+        want.as_num(),
+    ) {
+        (Some(t), Some(x)) => t * x.abs().max(1.0),
+        (_, Some(x)) => 1e-12 * x.abs().max(1e-300),
+        _ => 0.0,
+    }
+}
+
+/// Equal, or numbers within `tol`.
+fn close(got: &CellValue, want: &CellValue, tol: f64) -> bool {
     match (got.as_num(), want.as_num()) {
-        (Some(a), Some(b)) => a == b || (a - b).abs() <= 1e-12 * b.abs().max(1e-300),
+        (Some(a), Some(b)) => a == b || (a - b).abs() <= tol,
         _ => got == want,
     }
 }
@@ -78,9 +96,10 @@ fn builtins_match_the_goldens() {
     let mut failures = Vec::new();
     let mut checked = 0;
     for (at, formula, want, source) in golden_rows() {
-        let want = expected(
-            &serde_json::from_str(&want).unwrap_or_else(|e| panic!("{at}: bad JSON {want:?}: {e}")),
-        );
+        let json: serde_json::Value =
+            serde_json::from_str(&want).unwrap_or_else(|e| panic!("{at}: bad JSON {want:?}: {e}"));
+        let want = expected(&json);
+        let tol = tolerance(&json, &want);
         let expr = match improv_core_model::parse_expr(&model, &formula) {
             Ok(f) => f.expr,
             Err(e) => {
@@ -90,7 +109,7 @@ fn builtins_match_the_goldens() {
         };
         let got = scalar::eval(&expr, &HashMap::new());
         match got {
-            Ok(Some(v)) if close(&v, &want) => {}
+            Ok(Some(v)) if close(&v, &want, tol) => {}
             other => {
                 failures.push(format!(
                     "{at}: {formula} = {other:?}, want {want} ({source})"
