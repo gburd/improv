@@ -22,6 +22,13 @@ forms and recurrences, and locale-aware entry.
 - **List results (array functions)** land along a category named with
   `INTO`: `Top = SORT(Sales OVER Product, -1 INTO Rank)` puts the largest
   value at Rank's first item. First: `SORT` and `UNIQUE`.
+- **Lookups** (phase P6), reductions whose key is a parameter (a key over
+  another category gives one lookup per key cell): `XLOOKUP`, `XMATCH`,
+  `MATCH`, `LOOKUP`, `INDEX` (`VALUEAT`), Quantrix's `SELECT`,
+  `SELECTBETWEEN`, `SELECTGREATERTHAN`, `SELECTLESSTHAN`; the database
+  functions as aggregations with `WHERE` (`DSUM`, `DAVERAGE`, `DCOUNT`,
+  `DCOUNTA`, `DMAX`, `DMIN`, `DPRODUCT`, `DSTDEV`, `DSTDEVP`, `DVAR`,
+  `DVARP`, and `DGET`); `ARRAYTOTEXT`.
 - **Lookups' shape:** an aggregation's parameter may range over categories
   the reduced measure lacks; the result gains them and each cell reads the
   whole table (`TEXTJOIN(Sep, TRUE, x OVER Product)` with `Sep` per Time).

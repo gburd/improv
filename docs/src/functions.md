@@ -16,11 +16,11 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 
 | Function | Returns | Description |
 |---|---|---|
-| `SUM(Measure OVER Category)` | number | the sum over a category |
-| `AVERAGE(Measure OVER Category)` | number | the mean over a category (also `AVG`) |
-| `MIN(Measure OVER Category)` | number | the smallest value over a category |
-| `MAX(Measure OVER Category)` | number | the largest value over a category |
-| `PRODUCT(Measure OVER Category)` | number | the product over a category |
+| `SUM(Measure OVER Category)` | number | the sum over a category (also `DSUM`) |
+| `AVERAGE(Measure OVER Category)` | number | the mean over a category (also `AVG`, `DAVERAGE`) |
+| `MIN(Measure OVER Category)` | number | the smallest value over a category (also `DMIN`) |
+| `MAX(Measure OVER Category)` | number | the largest value over a category (also `DMAX`) |
+| `PRODUCT(Measure OVER Category)` | number | the product over a category (also `DPRODUCT`) |
 | `SUMSQ(Measure OVER Category)` | number | the sum of squares over a category |
 | `AND(Measure OVER Category)` | boolean | whether every value over a category is true |
 | `OR(Measure OVER Category)` | boolean | whether any value over a category is true |
@@ -230,6 +230,7 @@ Lengths and positions count characters, not bytes.
 | `REGEXTEST(text, text, [number])` | boolean | whether the pattern matches; case_sensitivity 1 ignores case. Rust regex syntax |
 | `REGEXEXTRACT(text, text, [number], [number])` | text | the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #VALUE!. Rust regex syntax (also `REGEX.EXTRACT`) |
 | `REGEXREPLACE(text, text, text, [number], [number])` | text | replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax |
+| `ARRAYTOTEXT(value OVER category, [number])` | text | the values as text in item order: format 0 "1, 2, a", format 1 {1,2,"a"} |
 
 ## Date and time
 
@@ -297,6 +298,15 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
 | `SORT(value OVER category, [number])` | the branches' type | the values in ascending order (descending when order is -1) |
 | `UNIQUE(value OVER category, [boolean])` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
+| `XLOOKUP(value, value OVER category, value OVER category, [value], [number], [number])` | the branches' type | values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
+| `XMATCH(value, value OVER category, [number], [number])` | number | the 1-based item position along the category where keys matches key (XLOOKUP's modes); #N/A when none does |
+| `MATCH(value, value OVER category, [number])` | number | the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
+| `LOOKUP(value, value OVER category, value OVER category)` | the branches' type | values at the largest key ≤ key (keys ascending); #N/A when none |
+| `INDEX(value OVER category, number)` | the branches' type | the value at the n-th item (1-based position); #REF! out of range, #N/A where that item has no cell (also `VALUEAT`) |
+| `SELECT(value OVER category, value OVER category, value)` | the branches' type | values at the first item (in item order) whose key equals lookup; #N/A when none |
+| `SELECTBETWEEN(value OVER category, value OVER category, value, value, [boolean])` | the branches' type | values at the first item whose key is between low and high (strictly when inclusive is FALSE); #N/A when none |
+| `SELECTGREATERTHAN(value OVER category, value OVER category, value, [boolean])` | the branches' type | values at the first item whose key is > lookup (≥ when inclusive is TRUE); #N/A when none |
+| `SELECTLESSTHAN(value OVER category, value OVER category, value, [boolean])` | the branches' type | values at the first item whose key is < lookup (≤ when inclusive is TRUE); #N/A when none |
 
 ## Statistical
 
@@ -350,8 +360,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `AVERAGEIF(value OVER category, value, [number OVER category])` | number | the mean of avg_x (else x) where x meets the criterion |
 | `AVERAGEIFS(number OVER category, value OVER category, value, …)` | number | the mean of x where every criteria measure meets its criterion |
 | `AVEDEV(Measure OVER Category)` | number | the mean absolute deviation from the mean |
-| `COUNT(Measure OVER Category)` | number | the number of numbers (and dates) |
-| `COUNTA(Measure OVER Category)` | number | the number of cells (errors included) |
+| `COUNT(Measure OVER Category)` | number | the number of numbers (and dates) (also `DCOUNT`) |
+| `COUNTA(Measure OVER Category)` | number | the number of cells (errors included) (also `DCOUNTA`) |
 | `COUNTBLANK(Measure OVER Category)` | number | the number of items with no cell (or empty text) |
 | `COUNTIF(value OVER category, value)` | number | the number of cells meeting the criterion (">5", "<>x", "a*", 3) |
 | `COUNTIFS(value OVER category, value, …)` | number | the number of rows where every criteria measure meets its criterion |
@@ -367,12 +377,12 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `HARMEAN(Measure OVER Category)` | number | the harmonic mean (#NUM! for a value ≤ 0) |
 | `TRIMMEAN(number OVER category, number)` | number | the mean without the fraction of values at the tails (rounded down to an even count) |
 | `DEVSQ(Measure OVER Category)` | number | Σ(x − mean)² |
-| `STDEV(Measure OVER Category)` | number | the sample standard deviation (also `STDEV.S`) |
-| `STDEVP(Measure OVER Category)` | number | the population standard deviation (also `STDEV.P`) |
+| `STDEV(Measure OVER Category)` | number | the sample standard deviation (also `STDEV.S`, `DSTDEV`) |
+| `STDEVP(Measure OVER Category)` | number | the population standard deviation (also `STDEV.P`, `DSTDEVP`) |
 | `STDEVA(Measure OVER Category)` | number | the sample standard deviation, counting TRUE as 1 and text and FALSE as 0 |
 | `STDEVPA(Measure OVER Category)` | number | the population standard deviation, counting TRUE as 1 and text and FALSE as 0 |
-| `VAR(Measure OVER Category)` | number | the sample variance (also `VAR.S`) |
-| `VARP(Measure OVER Category)` | number | the population variance (also `VAR.P`) |
+| `VAR(Measure OVER Category)` | number | the sample variance (also `VAR.S`, `DVAR`) |
+| `VARP(Measure OVER Category)` | number | the population variance (also `VAR.P`, `DVARP`) |
 | `VARA(Measure OVER Category)` | number | the sample variance, counting TRUE as 1 and text and FALSE as 0 |
 | `VARPA(Measure OVER Category)` | number | the population variance, counting TRUE as 1 and text and FALSE as 0 |
 | `KURT(Measure OVER Category)` | number | the sample excess kurtosis |
@@ -410,6 +420,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `TTEST(number OVER category, number OVER category, number, number)` | number | the t-test p-value (tails 1 or 2; type 1 paired, 2 equal variance, 3 unequal) (also `T.TEST`) |
 | `ZTEST(number OVER category, number, [number])` | number | the one-tailed z-test p-value of the mean against μ0 (σ defaults to the sample's) (also `Z.TEST`) |
 | `AUTOCORREL(Measure OVER Category)` | number | the lag-1 autocorrelation in item order (GSL) (also `GSL_STATS_LAG1_AUTOCORRELATION`) |
+| `DGET(Measure OVER Category)` | the branches' type | the single value (with WHERE, the single match); #NUM! when more than one (a WHERE that keeps none leaves no cell) |
 
 ## Financial
 

@@ -1,0 +1,107 @@
+formula	expected	source
+@A	{"T": 6, "G": 2, "m": {"K": [[1, 3, 3, 5, 8, 13], [2, 4, 6, 8, 10, 12]], "D": [[13, 8, 5, 3, 3, 1], [12, 10, 8, 6, 4, 2]], "V": [[10, 20, 30, 40, 50, 60], [5, 15, 25, 35, 45, 55]], "W": [[100, {"error": "#N/A"}, 300, 400, 500, 600], [1, 2, 3, 4, 5, 6]]}}
+A	MATCH(3, K OVER T)	[3.0, 1.0]	LibreOffice
+A	MATCH(3, K OVER T, 0)	[2.0, {"error": "#N/A"}]	LibreOffice
+A	MATCH(4.5, K OVER T, 1)	[3.0, 2.0]	LibreOffice
+A	MATCH(0, K OVER T)	[{"error": "#N/A"}, {"error": "#N/A"}]	LibreOffice
+A	MATCH(99, K OVER T)	[6.0, 6.0]	LibreOffice
+A	MATCH(4, D OVER T, -1)	[3.0, 5.0]	LibreOffice
+A	MATCH(3, D OVER T, -1)	[5.0, 5.0]	LibreOffice
+A	MATCH(99, D OVER T, -1)	[{"error": "#N/A"}, {"error": "#N/A"}]	LibreOffice
+A	MATCH(3, K OVER T, 0.5)	[2.0, {"error": "#N/A"}]	LibreOffice
+A	LOOKUP(4, K OVER T, V)	[30.0, 15.0]	LibreOffice
+A	LOOKUP(3, K OVER T, V)	[30.0, 5.0]	LibreOffice
+A	LOOKUP(0, K OVER T, V)	[{"error": "#N/A"}, {"error": "#N/A"}]	LibreOffice
+A	LOOKUP(99, K OVER T, W)	[600.0, 6.0]	LibreOffice
+A	XLOOKUP(3, K OVER T, V)	[20.0, {"error": "#N/A"}]	LibreOffice
+A	XLOOKUP(3, K OVER T, V, -1)	[20.0, -1.0]	LibreOffice
+A	XLOOKUP(3, K OVER T, V, -1, 0, -1)	[30.0, -1.0]	LibreOffice
+A	XLOOKUP(7, K OVER T, V, 0, 1)	[50.0, 35.0]	LibreOffice
+A	XLOOKUP(7, K OVER T, V, 0, -1)	[40.0, 25.0]	LibreOffice
+A	XLOOKUP(99, K OVER T, V, 0, 1)	[0.0, 0.0]	LibreOffice
+A	XLOOKUP(3, K OVER T, W)	[{"error": "#N/A"}, {"error": "#N/A"}]	LibreOffice
+A	XLOOKUP(3, K OVER T, W, 0, 0, -1)	[300.0, 0.0]	LibreOffice
+A	XLOOKUP(8, K OVER T, V, 0, 0, 2)	[50.0, 35.0]	LibreOffice
+A	XLOOKUP(8, K OVER T, V, 0, 0, 5)	[{"error": "#VALUE!"}, {"error": "#VALUE!"}]	LibreOffice
+A	XMATCH(8, K OVER T)	[5.0, 4.0]	LibreOffice
+A	XMATCH(9, K OVER T, 1)	[6.0, 5.0]	LibreOffice
+A	XMATCH(9, K OVER T, -1)	[5.0, 4.0]	LibreOffice
+A	XMATCH(3, K OVER T, 0, -1)	[3.0, {"error": "#N/A"}]	LibreOffice
+A	XMATCH(1, K OVER T, -1)	[1.0, {"error": "#N/A"}]	LibreOffice
+A	XMATCH(14, K OVER T, 1)	[{"error": "#N/A"}, {"error": "#N/A"}]	LibreOffice
+A	INDEX(V OVER T, 2)	[20.0, 15.0]	LibreOffice
+A	INDEX(V OVER T, 6)	[60.0, 55.0]	LibreOffice
+A	INDEX(W OVER T, 2)	[{"error": "#N/A"}, 2.0]	LibreOffice
+A	INDEX(V OVER T, 7)	[{"error": "#REF!"}, {"error": "#REF!"}]	LibreOffice
+A	INDEX(V OVER T, 2.9)	[20.0, 15.0]	LibreOffice
+A	INDEX(V OVER T, 0)	[{"error": "#VALUE!"}, {"error": "#VALUE!"}]	Improv rule
+A	SELECT(V, K OVER T, 3)	[20, {"error": "#N/A"}]	Quantrix (plan §5.26)
+A	SELECT(V, K OVER T, 4)	[{"error": "#N/A"}, 15]	Quantrix (plan §5.26)
+A	SELECTBETWEEN(V, K OVER T, 4, 9)	[40, 15]	Quantrix (plan §5.26)
+A	SELECTBETWEEN(V, K OVER T, 5, 8, FALSE)	[{"error": "#N/A"}, 25]	Quantrix (plan §5.26)
+A	SELECTBETWEEN(V, K OVER T, 5, 8, TRUE)	[40, 25]	Quantrix (plan §5.26)
+A	SELECTGREATERTHAN(V, K OVER T, 5)	[50, 25]	Quantrix (plan §5.26)
+A	SELECTGREATERTHAN(V, K OVER T, 5, TRUE)	[40, 25]	Quantrix (plan §5.26)
+A	SELECTGREATERTHAN(V, K OVER T, 13)	[{"error": "#N/A"}, {"error": "#N/A"}]	Quantrix (plan §5.26)
+A	SELECTLESSTHAN(V, K OVER T, 3)	[10, 5]	Quantrix (plan §5.26)
+A	SELECTLESSTHAN(V, K OVER T, 1)	[{"error": "#N/A"}, {"error": "#N/A"}]	Quantrix (plan §5.26)
+A	SELECTLESSTHAN(V, K OVER T, 2, TRUE)	[10, 5]	Quantrix (plan §5.26)
+A	SELECT(W, K OVER T, 3)	[{"error": "#N/A"}, {"error": "#N/A"}]	Quantrix (plan §5.26)
+A	ARRAYTOTEXT(V OVER T)	["10, 20, 30, 40, 50, 60", "5, 15, 25, 35, 45, 55"]	Excel docs
+A	ARRAYTOTEXT(W OVER T, 1)	["{100,#N/A,300,400,500,600}", "{1,2,3,4,5,6}"]	Excel docs
+A	DSUM(V OVER T WHERE K > 2)	[200.0, 175.0]	LibreOffice
+A	DAVERAGE(V OVER T WHERE K > 2)	[40.0, 35.0]	LibreOffice
+A	DCOUNT(V OVER T WHERE K > 2)	[5.0, 5.0]	LibreOffice
+A	DCOUNTA(V OVER T WHERE K > 2)	[5.0, 5.0]	LibreOffice
+A	DMAX(V OVER T WHERE K > 2)	[60.0, 55.0]	LibreOffice
+A	DMIN(V OVER T WHERE K > 2)	[20.0, 15.0]	LibreOffice
+A	DPRODUCT(V OVER T WHERE K > 2)	[72000000.0, 32484375.0]	LibreOffice
+A	DSTDEV(V OVER T WHERE K > 2)	[15.811388300841896, 15.811388300841896]	LibreOffice
+A	DSTDEVP(V OVER T WHERE K > 2)	[14.142135623730951, 14.142135623730951]	LibreOffice
+A	DVAR(V OVER T WHERE K > 2)	[250.0, 250.0]	LibreOffice
+A	DVARP(V OVER T WHERE K > 2)	[200.0, 200.0]	LibreOffice
+A	DSUM(V OVER T WHERE K >= 3 AND V < 50)	[90.0, 120.0]	LibreOffice
+A	DSUM(W OVER T WHERE K > 2)	[{"error": "#N/A"}, 20.0]	LibreOffice
+A	DGET(V OVER T WHERE K == 5)	[40, null]	Improv rule
+A	DGET(V OVER T WHERE K > 2)	[{"error": "#NUM!"}, {"error": "#NUM!"}]	Excel docs
+A	DSUM(V OVER T WHERE K > 100)	[null, null]	Improv rule
+A	DGET(V OVER T WHERE K > 100)	[null, null]	Improv rule
+@X	{"T": 6, "m": {"A": [["apple", "Banana", "cherry", "banana", "date", "fig"]], "B": [["red", "yellow", "dark red", "green", "brown", null]], "N": [[1.5, 2, 2, 7, 4, 9]]}}
+X	XLOOKUP("banana", A OVER T, B)	["yellow"]	LibreOffice
+X	XLOOKUP("banana", A OVER T, B, "?", 0, -1)	["green"]	LibreOffice
+X	XLOOKUP("b*", A OVER T, B, "none")	["none"]	LibreOffice
+X	XLOOKUP("b*", A OVER T, B, "none", 2)	["yellow"]	LibreOffice
+X	XLOOKUP("c?erry", A OVER T, B, "none", 2)	["dark red"]	LibreOffice
+X	XLOOKUP("kiwi", A OVER T, B, "none")	["none"]	LibreOffice
+X	XMATCH("CHERRY", A OVER T)	[3.0]	LibreOffice
+X	XMATCH("blueberry", A OVER T, 1)	[3.0]	LibreOffice
+X	XMATCH("blueberry", A OVER T, -1)	[2.0]	LibreOffice
+X	XMATCH("*e", A OVER T, 2, -1)	[5.0]	LibreOffice
+X	MATCH("d*", A OVER T, 0)	[5.0]	LibreOffice
+X	MATCH("Date", A OVER T, 0)	[5.0]	LibreOffice
+X	MATCH("zz", A OVER T, 0)	[{"error": "#N/A"}]	LibreOffice
+X	XLOOKUP(2, N OVER T, B)	["yellow"]	LibreOffice
+X	XLOOKUP(2, N OVER T, B, "-", 0, -1)	["dark red"]	LibreOffice
+X	XLOOKUP(3, N OVER T, B, "-", 1)	["brown"]	LibreOffice
+X	XMATCH(7, N OVER T)	[4.0]	LibreOffice
+X	DGET(B OVER T WHERE A == "date")	["brown"]	LibreOffice
+X	SELECT(B, A OVER T, "BANANA")	["yellow"]	Quantrix (plan §5.26)
+X	SELECT(B, A OVER T, "b*")	[{"error": "#N/A"}]	Quantrix (plan §5.26)
+X	SELECTGREATERTHAN(B, A OVER T, "c")	["dark red"]	Quantrix (plan §5.26)
+X	ARRAYTOTEXT(B OVER T)	["red, yellow, dark red, green, brown"]	Excel docs
+X	ARRAYTOTEXT(A OVER T, 1)	["{\"apple\",\"Banana\",\"cherry\",\"banana\",\"date\",\"fig\"}"]	Excel docs
+X	ARRAYTOTEXT(N OVER T, 1)	["{1.5,2,2,7,4,9}"]	Excel docs
+X	INDEX(B OVER T, 6)	[{"error": "#N/A"}]	Improv rule
+X	XLOOKUP("fig", A OVER T, B, "none")	["none"]	Improv rule
+@B	{"T": 4, "E": 6, "m": {"K": [[0, 50, 75, 90]], "V": [[1, 1.5, 2, 3]], "A": [["C", "B", "A", "S"]], "B": [["fair", "good", "great", "star"]]}, "e": {"Q": [10, 50, 80, 95, -5, null], "P": ["a", "S", "x", "b", "B", null], "I": [1, 4, 2, 5, 3, null]}}
+B	LOOKUP(Q, K OVER T, V)	[[1.0, 1.5, 2.0, 3.0, {"error": "#N/A"}, null]]	LibreOffice
+B	XLOOKUP(Q, K OVER T, V, 0, -1)	[[1.0, 1.5, 2.0, 3.0, 0.0, null]]	LibreOffice
+B	MATCH(Q, K OVER T)	[[1.0, 2.0, 3.0, 4.0, {"error": "#N/A"}, null]]	LibreOffice
+B	XMATCH(Q, K OVER T, 1)	[[2.0, 2.0, 4.0, {"error": "#N/A"}, 1.0, null]]	LibreOffice
+B	XLOOKUP(P, A OVER T, B, "none")	[["great", "star", "none", "good", "good", null]]	LibreOffice
+B	XMATCH(P, A OVER T)	[[3.0, 4.0, {"error": "#N/A"}, 2.0, 2.0, null]]	LibreOffice
+B	INDEX(V OVER T, I)	[[1.0, 3.0, 1.5, {"error": "#REF!"}, 2.0, null]]	LibreOffice
+B	INDEX(B OVER T, I)	[["fair", "star", "good", {"error": "#REF!"}, "great", null]]	LibreOffice
+B	SELECT(B, A OVER T, P)	[["great", "star", {"error": "#N/A"}, "good", "good", null]]	Quantrix (plan §5.26)
+B	SELECTGREATERTHAN(V, K OVER T, Q)	[[1.5, 2, 3, {"error": "#N/A"}, 1, null]]	Quantrix (plan §5.26)
+B	SELECTLESSTHAN(B, K OVER T, Q, TRUE)	[["fair", "fair", "fair", "fair", {"error": "#N/A"}, null]]	Quantrix (plan §5.26)

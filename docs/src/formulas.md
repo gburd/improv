@@ -299,6 +299,30 @@ k-th value lands at Rank's k-th item. Results beyond Rank's last item are
 dropped; if there are fewer, the later items have no cell. `INTO` must name
 a category the measure does not range over.
 
+### Lookups
+
+A lookup is a reduction whose key is a parameter: it searches a table along
+a category and returns the value at the matching item.
+
+```text
+Rate  = XLOOKUP(Grade, GradeKey OVER Band, GradeRate, 0)
+Slot  = MATCH(Score, Threshold OVER Band)      -- 1-based position along Band
+Third = INDEX(Sales OVER Month, 3)
+Name  = SELECT(Label, Code OVER Item, Wanted)  -- Quantrix argument order
+```
+
+The key may range over categories the table lacks: with `Grade` per
+Employee and the table per Band, `Rate` is per Employee, each cell looking
+its own grade up in the whole table. Positions (`MATCH`, `XMATCH`,
+`INDEX`) are item positions along the category, so an item with no cell
+still counts. A table row needs every reduced measure: an item with a key
+but no value is not found. The approximate modes do not assume sorted keys;
+they pick the nearest key (for `MATCH`/`LOOKUP` type 1, the largest ≤ the
+key, the last on a tie). `XLOOKUP`'s binary search modes (±2) are the linear
+search. Database functions are the aggregations under their spreadsheet
+names, with the criteria as `WHERE`: `DSUM(Sales OVER Region WHERE Year ==
+2025)`; `DGET` wants exactly one match.
+
 ### Recurrences
 
 A measure may read its own earlier values through `PREV`:
@@ -494,7 +518,9 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
-- no array results yet (`FREQUENCY`, `LINEST`, `LOGEST`, `SORT`,
-  `UNIQUE`, …), lookups (`XLOOKUP`, `INDEX`/`MATCH`) or `LAMBDA`: those
-  are phase P6 of the functions plan;
+- array results so far are `SORT` and `UNIQUE` (no `FREQUENCY`, `LINEST`,
+  `LOGEST`, `SELECTLIST`, …) and there is no `LAMBDA`: those are phase P6
+  of the functions plan;
+- a lookup's result type is the keys' type (`XLOOKUP`, `LOOKUP`): keys and
+  values of different types are refused downstream;
 - `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

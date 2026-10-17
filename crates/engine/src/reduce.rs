@@ -9,7 +9,7 @@
 //!
 //! Families add their reductions in `reduce/<family>.rs`, dispatched by id
 //! range like `builtins`: P4 statistics own 1000–1099 and 1100–1149, P5
-//! financial 1150–1199.
+//! financial 1150–1199, P6 lookups 1200–1249.
 
 use crate::builtins::{self, err, text_of};
 use crate::CellValue;
@@ -17,6 +17,7 @@ use improv_core_model::FuncId;
 
 mod array;
 mod financial;
+mod lookup;
 mod statistical;
 
 /// One group's rows, in item order.
@@ -60,6 +61,11 @@ impl Rows {
 
 /// Reduce one group: aggregation `func` over `rows` with `params`.
 pub fn reduce(func: FuncId, rows: &Rows, params: &[CellValue]) -> CellValue {
+    if (1200..=1249).contains(&func.0) {
+        // A lookup checks its own parameters: XLOOKUP's if_not_found may be
+        // an error (it is read only when nothing matches).
+        return lookup::reduce(func.0, rows, params);
+    }
     if let Some(bad) = params.iter().find(|v| matches!(v, CellValue::Err(_))) {
         return bad.clone();
     }

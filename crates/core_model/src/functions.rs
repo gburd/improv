@@ -315,11 +315,11 @@ pub(crate) const fn agg(
 #[rustfmt::skip]
 pub static CORE: &[FnDef] = &[
     // --- aggregations: F(x OVER Cat) ---
-    agg(1, "SUM", &[N], V::Number, "the sum over a category"),
-    alias(agg(2, "AVERAGE", &[N], V::Number, "the mean over a category"), &["AVG"]),
-    agg(3, "MIN", &[N], V::Number, "the smallest value over a category"),
-    agg(4, "MAX", &[N], V::Number, "the largest value over a category"),
-    agg(5, "PRODUCT", &[N], V::Number, "the product over a category"),
+    alias(agg(1, "SUM", &[N], V::Number, "the sum over a category"), &["DSUM"]),
+    alias(agg(2, "AVERAGE", &[N], V::Number, "the mean over a category"), &["AVG", "DAVERAGE"]),
+    alias(agg(3, "MIN", &[N], V::Number, "the smallest value over a category"), &["DMIN"]),
+    alias(agg(4, "MAX", &[N], V::Number, "the largest value over a category"), &["DMAX"]),
+    alias(agg(5, "PRODUCT", &[N], V::Number, "the product over a category"), &["DPRODUCT"]),
     agg(6, "SUMSQ", &[N], V::Number, "the sum of squares over a category"),
     agg(7, "AND", &[B], V::Boolean, "whether every value over a category is true"),
     agg(8, "OR", &[B], V::Boolean, "whether any value over a category is true"),
@@ -490,6 +490,7 @@ mod date;
 mod dimensional;
 mod financial;
 mod financial_reduce;
+mod lookup;
 mod statistical;
 mod statistical_reduce;
 
@@ -503,6 +504,7 @@ static FAMILIES: &[&[FnDef]] = &[
     statistical_reduce::STATISTICAL_REDUCE,
     financial::FINANCIAL,
     financial_reduce::FINANCIAL_REDUCE,
+    lookup::LOOKUP,
 ];
 
 /// Every built-in function.

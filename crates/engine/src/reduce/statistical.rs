@@ -46,7 +46,7 @@ fn no_error(rows: &Rows) -> Result<(), u8> {
 }
 
 /// A cell as a number under the range rule (numbers, and dates as serials).
-fn number(v: &CellValue) -> Option<f64> {
+pub(super) fn number(v: &CellValue) -> Option<f64> {
     match v {
         CellValue::Num(bits) => Some(f64::from_bits(*bits)),
         CellValue::Date(ms) => Some(serial(*ms)),
@@ -892,16 +892,7 @@ impl Criterion {
             _ if rest.eq_ignore_ascii_case("FALSE") => Rhs::Bool(false),
             _ => {
                 let folded: Vec<char> = rest.chars().map(fold_char).collect();
-                let mut pat = Vec::new();
-                let mut it = folded.iter();
-                while let Some(&c) = it.next() {
-                    pat.push(match c {
-                        '~' => Pat::Lit(it.next().copied().unwrap_or('~')),
-                        '*' => Pat::Many,
-                        '?' => Pat::One,
-                        c => Pat::Lit(c),
-                    });
-                }
+                let pat = pattern(&folded);
                 Rhs::Text(folded, pat)
             }
         };
@@ -924,6 +915,30 @@ impl Criterion {
         };
         ord.map_or(self.op == Op::Ne, |o| self.op.holds(o))
     }
+}
+
+/// A case-folded wildcard pattern: `*` any run, `?` any one character, `~`
+/// the next character literally.
+fn pattern(folded: &[char]) -> Vec<Pat> {
+    let mut pat = Vec::new();
+    let mut it = folded.iter();
+    while let Some(&c) = it.next() {
+        pat.push(match c {
+            '~' => Pat::Lit(it.next().copied().unwrap_or('~')),
+            '*' => Pat::Many,
+            '?' => Pat::One,
+            c => Pat::Lit(c),
+        });
+    }
+    pat
+}
+
+/// Whether `text` matches the wildcard `pattern`, ignoring case (`MATCH`'s
+/// and `XLOOKUP`'s wildcard mode).
+pub(crate) fn like(pattern_text: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern_text.chars().map(fold_char).collect();
+    let t: Vec<char> = text.chars().map(fold_char).collect();
+    glob(&pattern(&p), &t)
 }
 
 /// Whether the whole of `t` matches `pat` (backtracking to the last `*`).
