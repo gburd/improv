@@ -12,6 +12,13 @@ forms and recurrences, and locale-aware entry.
 
 ### Added
 
+- **List results (array functions)** land along a category named with
+  `INTO`: `Top = SORT(Sales OVER Product, -1 INTO Rank)` puts the largest
+  value at Rank's first item. First: `SORT` and `UNIQUE`.
+- **Lookups' shape:** an aggregation's parameter may range over categories
+  the reduced measure lacks; the result gains them and each cell reads the
+  whole table (`TEXTJOIN(Sep, TRUE, x OVER Product)` with `Sep` per Time).
+
 - **72 statistical reductions** (phase P4), each `F(x OVER T, …)`:
   - descriptive: `COUNT`, `COUNTA`, `COUNTBLANK`, `SUMA`, `AVERAGEA`,
     `MAXA`, `MINA`, `AVEDEV`, `MEDIAN`, `MODE` (`MODE.SNGL`), `GEOMEAN`,

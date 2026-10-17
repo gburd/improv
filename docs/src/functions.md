@@ -290,6 +290,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `@ITEMCOUNT(category)` | number | the number of items in the category |
 | `PREV(value, category, [number], [value])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
 | `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
+| `SORT(value OVER category, [number])` | the branches' type | the values in ascending order (descending when order is -1) |
+| `UNIQUE(value OVER category, [boolean])` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
 
 ## Statistical
 

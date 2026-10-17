@@ -15,6 +15,7 @@ use crate::builtins::{self, err, text_of};
 use crate::CellValue;
 use improv_core_model::FuncId;
 
+mod array;
 mod financial;
 mod statistical;
 
@@ -81,6 +82,18 @@ pub fn per_item(func: FuncId, rows: &Rows, params: &[CellValue]) -> Vec<CellValu
     match func.0 {
         1000..=1149 => statistical::per_item(func.0, rows, params),
         _ => vec![CellValue::Err(err::NAME); rows.len()],
+    }
+}
+
+/// A list of results (an [`improv_core_model::functions::Kind::Array`]
+/// function such as `SORT`), laid along the `INTO` category's items in order.
+pub fn array(func: FuncId, rows: &Rows, params: &[CellValue]) -> Vec<CellValue> {
+    if let Some(bad) = params.iter().find(|v| matches!(v, CellValue::Err(_))) {
+        return vec![bad.clone()];
+    }
+    match func.0 {
+        1250..=1299 => array::array(func.0, rows, params),
+        _ => vec![CellValue::Err(err::NAME)],
     }
 }
 

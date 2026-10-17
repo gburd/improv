@@ -27,6 +27,9 @@ pub enum Kind {
     /// Like [`Kind::Aggregate`] but one result per item of the (single)
     /// `OVER` category, which the result keeps: `RANK(x OVER T)`.
     PerItem,
+    /// A list of results laid along the `INTO` category's items (the k-th
+    /// result at its k-th item): `SORT(x OVER T INTO Rank)`.
+    Array,
     /// Evaluates only the arguments it needs (`IF`, `IFERROR`, …); the compiler
     /// lowers it specially.
     Lazy,
@@ -146,9 +149,7 @@ impl FnDef {
                     Arg::Any => "value",
                     Arg::Category => "category",
                 };
-                let t = if matches!(self.kind, Kind::Aggregate | Kind::PerItem)
-                    && self.over.contains(i)
-                {
+                let t = if self.kind.reduces() && self.over.contains(i) {
                     format!("{t} OVER category")
                 } else {
                     t.to_string()
@@ -464,7 +465,11 @@ pub const WHERE: FuncId = FuncId(990);
 /// number (an offset from this item; `0` is THIS) or the text `FIRST` /
 /// `LAST`.
 pub const WINDOW: FuncId = FuncId(991);
+/// The reserved id of an `INTO Category` clause: an array function's
+/// trailing argument `Call(INTO, [Category(K)])` (`SORT(x OVER T INTO K)`).
+pub const INTO: FuncId = FuncId(992);
 
+mod array;
 mod date;
 mod dimensional;
 mod financial;
@@ -477,6 +482,7 @@ static FAMILIES: &[&[FnDef]] = &[
     CORE,
     date::DATE,
     dimensional::DIMENSIONAL,
+    array::ARRAY,
     statistical::STATISTICAL,
     statistical_reduce::STATISTICAL_REDUCE,
     financial::FINANCIAL,
@@ -505,7 +511,7 @@ pub fn by_name(name: &str) -> impl Iterator<Item = &'static FnDef> + '_ {
 impl Kind {
     /// Whether this kind reduces over `OVER` categories.
     pub fn reduces(self) -> bool {
-        matches!(self, Kind::Aggregate | Kind::PerItem)
+        matches!(self, Kind::Aggregate | Kind::PerItem | Kind::Array)
     }
 }
 

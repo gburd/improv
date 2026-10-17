@@ -256,6 +256,21 @@ ToGo     = SUM(Budget OVER Time[THIS..LAST])
   aggregation over the items from `from` to `to`, where each bound is
   `FIRST`, `LAST`, `THIS`, `THIS-n` or `THIS+n`. An empty window is `#N/A`.
 
+### List results: INTO
+
+A function that returns a list says where the list lands: `INTO` a
+category, whose items take the results in order.
+
+```text
+Top = SORT(Sales OVER Product, -1 INTO Rank)   -- largest first
+Ids = UNIQUE(Customer OVER Order INTO Slot)
+```
+
+The result keeps the measure's other categories and gains `Rank`: the
+k-th value lands at Rank's k-th item. Results beyond Rank's last item are
+dropped; if there are fewer, the later items have no cell. `INTO` must name
+a category the measure does not range over.
+
 ### Recurrences
 
 A measure may read its own earlier values through `PREV`:

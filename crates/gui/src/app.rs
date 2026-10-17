@@ -2462,9 +2462,11 @@ fn aggregation_dsl(model: &Model, func: FuncId, name: &str, args: &[Expr]) -> Op
     let def = improv_core_model::functions::by_id(func)?;
     let mut pred = None;
     let mut window = None;
+    let mut into = None;
     let mut rest = Vec::new();
     for a in args {
         match a {
+            Expr::Call(id, k) if *id == improv_core_model::functions::INTO => into = k.first(),
             Expr::Call(id, p) if *id == improv_core_model::functions::WHERE => pred = p.first(),
             Expr::Call(id, b) if *id == improv_core_model::functions::WINDOW => window = Some(b),
             other => rest.push(other),
@@ -2508,6 +2510,11 @@ fn aggregation_dsl(model: &Model, func: FuncId, name: &str, args: &[Expr]) -> Op
         parts.push(part);
     }
     over?;
+    if let Some(k) = into {
+        let last = parts.last_mut()?;
+        last.push_str(" INTO ");
+        last.push_str(&expr_dsl(model, k)?);
+    }
     Some(format!("{name}({})", parts.join(", ")))
 }
 
@@ -6441,6 +6448,17 @@ mod tests {
             let shown = app.formula_source(MeasureId(102)).expect(text);
             assert_eq!(shown, text, "displayed as typed");
         }
+    }
+
+    /// An array formula's INTO clause prints and re-parses.
+    #[test]
+    fn into_clause_round_trips() {
+        let mut model = revenue_model();
+        model.add_category(CategoryId(3), "Region");
+        model.add_item(ItemId(30), CategoryId(3), "North");
+        let text = "SORT(Quantity OVER Time, -1 INTO Region)";
+        let f = parser::parse_expr(&model, text).unwrap();
+        assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));
     }
 
     /// In a German locale the formula bar shows and accepts German names,

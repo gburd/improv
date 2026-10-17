@@ -122,6 +122,7 @@ where
             order,
             window,
             per_item,
+            into,
         } => build_aggregate(
             scope,
             inputs,
@@ -135,6 +136,7 @@ where
                 order,
                 window: *window,
                 per_item: *per_item,
+                into: into.as_ref(),
             },
         ),
 
@@ -373,6 +375,7 @@ struct AggSpec<'p> {
     order: &'p [(CategoryId, Vec<improv_core_model::ItemId>)],
     window: Option<crate::typed::Window>,
     per_item: bool,
+    into: Option<&'p (CategoryId, Vec<improv_core_model::ItemId>)>,
 }
 
 /// A reduction's rows: the reduced measures aligned on their coordinate
@@ -419,20 +422,35 @@ where
             }
         });
     }
-    // Parameters: literals fold; the rest join per row on their categories
-    // (a subset of the group's).
+    // Parameters: literals fold; the rest join per row on the categories they
+    // share with the rows so far. Categories only a parameter has join in
+    // (broadcast): each of its cells sees every row (a lookup).
+    // ponytail: a lookup costs |table| × |parameter cells| rows; index the
+    // table by key if lookups over large tables ever matter.
     let mut consts: Vec<Option<CellValue>> = Vec::new();
+    let mut row_dim: Vec<CategoryId> = full.clone();
     for p in a.params {
         match literal_value(p) {
             Some(v) => consts.push(Some(v)),
             None => {
                 consts.push(None);
                 let pc = build_coll(p, scope, inputs, derived)?;
-                rows =
-                    align_with(&rows, &pc, p.ty.dim.categories.clone()).map(|(k, (mut vs, v))| {
-                        vs.push(v);
-                        (k, vs)
-                    });
+                let shared: Vec<CategoryId> =
+                    p.ty.dim
+                        .categories
+                        .iter()
+                        .copied()
+                        .filter(|c| row_dim.contains(c))
+                        .collect();
+                for c in &p.ty.dim.categories {
+                    if !row_dim.contains(c) {
+                        row_dim.push(*c);
+                    }
+                }
+                rows = align_with(&rows, &pc, shared).map(|(k, (mut vs, v))| {
+                    vs.push(v);
+                    (k, vs)
+                });
             }
         }
     }
@@ -502,6 +520,24 @@ where
         (rs, params, items)
     };
     let cat0 = a.order.first().map(|(c, _)| c.0);
+    if let Some((k, items)) = a.into {
+        // A list of results, the k-th at the landing category's k-th item.
+        let (k, items) = (k.0, items.clone());
+        let lists = keyed.reduce(
+            move |_k, input, output: &mut Vec<((u32, CellValue), isize)>| {
+                let (rs, params, _) = to_rows(input);
+                for (item, v) in items.iter().zip(reduce::array(func, &rs, &params)) {
+                    output.push(((item.0, v), 1isize));
+                }
+            },
+        );
+        return Ok(lists.map(move |(gk, (item, v))| {
+            let mut key = gk;
+            key.push((k, item));
+            key.sort_unstable();
+            (key, v)
+        }));
+    }
     if a.window.is_none() && !a.per_item {
         return Ok(keyed.reduce(move |_k, input, output| {
             let (rs, params, _) = to_rows(input);
@@ -1723,6 +1759,94 @@ mod tests {
             out[&MeasureId(203)].get(&key(&[(2, 20)])),
             Some(&CellValue::Text("TRUE,TRUE".into()))
         );
+    }
+
+    /// Array results land along the INTO category: SORT and UNIQUE of each
+    /// product's quantities over Time, into a Rank category.
+    #[test]
+    fn array_results_land_on_the_into_category() {
+        let (time, product, rank) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        let mut m = revenue_model();
+        m.add_category(rank, "Rank");
+        for i in 0..3 {
+            m.add_item(ItemId(30 + i), rank, format!("#{}", i + 1));
+        }
+        define(
+            &mut m,
+            200,
+            vec![product, rank],
+            "Hi = SORT(Quantity OVER Time, -1 INTO Rank)",
+        );
+        define(
+            &mut m,
+            201,
+            vec![rank],
+            "U = UNIQUE(Price OVER Product INTO Rank)",
+        );
+        let out = evaluate(&m, &[MeasureId(200), MeasureId(201)]).unwrap();
+        let hi = &out[&MeasureId(200)];
+        assert_eq!(
+            hi.get(&key(&[(2, 20), (3, 30)])),
+            Some(&CellValue::num(120.0))
+        );
+        assert_eq!(
+            hi.get(&key(&[(2, 20), (3, 31)])),
+            Some(&CellValue::num(100.0))
+        );
+        assert_eq!(
+            hi.get(&key(&[(2, 20), (3, 32)])),
+            None,
+            "two values, three items"
+        );
+        assert_eq!(out[&MeasureId(201)].len(), 2);
+        // INTO is required for a list result and refused for one value; it
+        // must not be one of the measure's own categories.
+        for (text, why) in [
+            ("X = SORT(Quantity OVER Time)", "INTO"),
+            ("X = SUM(Quantity OVER Time INTO Rank)", "INTO is for list"),
+            (
+                "X = SORT(Quantity OVER Time INTO Product)",
+                "does not range over",
+            ),
+        ] {
+            let f = improv_core_model::parse_formula(&m, text).unwrap();
+            let e = crate::compiler::infer(
+                &CompileContext::for_model(&m),
+                MeasureId(300),
+                &f.formula.expr,
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains(why), "{text}: {e}");
+        }
+        let _ = time;
+    }
+
+    /// A parameter over a category the measure lacks broadcasts: each of its
+    /// cells sees the whole table (the shape lookups need).
+    #[test]
+    fn parameters_beyond_the_table_broadcast() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        // Sep[Time] per year; J joins each product's quantities with it.
+        define(&mut m, 199, vec![time], "Sep = @ITEM(Time)");
+        define(
+            &mut m,
+            200,
+            vec![time],
+            "J = TEXTJOIN(Sep, TRUE, Price OVER Product)",
+        );
+        let out = evaluate(&m, &[MeasureId(200)]).unwrap();
+        let j = &out[&MeasureId(200)];
+        assert_eq!(
+            j.get(&key(&[(1, 10)])),
+            Some(&CellValue::Text("10202520".into()))
+        );
+        assert_eq!(
+            j.get(&key(&[(1, 11)])),
+            Some(&CellValue::Text("10202620".into()))
+        );
+        let _ = product;
     }
 
     /// A parameter that is a measure (one value per group) joins per row.

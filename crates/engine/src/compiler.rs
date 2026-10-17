@@ -601,9 +601,14 @@ fn infer_aggregate(
     let def = functions::by_id(func).ok_or(CompileError::UnknownFunction(func))?;
     let mut pred = None;
     let mut window = None;
+    let mut into = None;
     let mut rest: Vec<&Expr> = Vec::new();
     for a in args {
         match a {
+            Expr::Call(id, k) if *id == functions::INTO => match k.first() {
+                Some(Expr::Category(c)) => into = Some(*c),
+                _ => return Err(CompileError::Unsupported("malformed INTO".into())),
+            },
             Expr::Call(id, p) if *id == functions::WHERE => {
                 let t = infer(ctx, target, &p[0])?;
                 if t.ty.value_type != ValueType::Boolean {
@@ -668,7 +673,32 @@ fn infer_aggregate(
     }
     // No OVER category (`the sum of Quantity` in the CNL) collapses
     // nothing: each group is one cell.
+    match (def.kind == Kind::Array, into) {
+        (true, None) => {
+            return Err(CompileError::Unsupported(format!(
+                "{} returns a list: say where it lands, {}(… INTO Category)",
+                def.name, def.name
+            )))
+        }
+        (false, Some(_)) => {
+            return Err(CompileError::Unsupported(format!(
+                "{} returns one value; INTO is for list results",
+                def.name
+            )))
+        }
+        _ => {}
+    }
+    if let Some(k) = into {
+        if full.categories.contains(&k) {
+            return Err(CompileError::DimensionMismatch(format!(
+                "{}: INTO {} must be a category the measure does not range over",
+                def.name,
+                ctx.category_name(k)
+            )));
+        }
+    }
     let mut kept: Vec<CategoryId> = first.ty.dim.categories.clone();
+    kept.extend(into);
     if window.is_some() || def.kind == Kind::PerItem {
         if over.len() != 1 {
             return Err(CompileError::Unsupported(format!(
@@ -687,13 +717,19 @@ fn infer_aggregate(
             )));
         }
     }
+    // A parameter may range over categories the measure lacks (a lookup:
+    // `XLOOKUP(Grade, Key OVER Band, Rate)` with Grade per Employee); the
+    // result gains them, and each group reads the whole table. It must not
+    // range over a reduced category.
+    let mut dim = dim;
     for p in &params {
-        if !p.ty.dim.is_subset_of(&dim) {
+        if p.ty.dim.categories.iter().any(|c| over.contains(c)) {
             return Err(CompileError::DimensionMismatch(format!(
                 "{}: a parameter must not range over the reduced categories",
                 def.name
             )));
         }
+        dim = dim.union(&p.ty.dim);
     }
     let value_type = match def.ret {
         Ret::Fixed(v) => v,
@@ -707,6 +743,7 @@ fn infer_aggregate(
             over,
             pred,
             window,
+            into,
         },
         ty: TypeInfo { value_type, dim },
     })
@@ -1125,9 +1162,18 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
             over,
             pred,
             window,
+            into,
         } => {
             let per_item = functions::by_id(*func).is_some_and(|d| d.kind == Kind::PerItem);
-            let group_by = if window.is_some() || per_item {
+            let group_by = if into.is_some() {
+                // The landing category is added back per result.
+                ty.dim
+                    .categories
+                    .iter()
+                    .copied()
+                    .filter(|c| Some(*c) != *into)
+                    .collect()
+            } else if window.is_some() || per_item {
                 // The reduced category is kept in the result but grouped
                 // across.
                 ty.dim
@@ -1157,6 +1203,7 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                 order: over.iter().map(|c| (*c, ctx.items_of(*c))).collect(),
                 window: *window,
                 per_item,
+                into: into.map(|k| (k, ctx.items_of(k))),
             }
         }
         TypedExprKind::Items(c, vals) => PlanNodeKind::Items(*c, vals.clone()),

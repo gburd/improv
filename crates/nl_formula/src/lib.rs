@@ -442,7 +442,8 @@ fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
             // WHERE or window, or any other function, is described as itself.
             let markers = args.iter().any(|a| {
                 matches!(a, Expr::Call(id, _) if *id == improv_core_model::functions::WHERE
-                    || *id == improv_core_model::functions::WINDOW)
+                    || *id == improv_core_model::functions::WINDOW
+                    || *id == improv_core_model::functions::INTO)
             });
             let name = match *func {
                 _ if markers || args.len() != 1 => {

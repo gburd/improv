@@ -401,6 +401,8 @@ struct OverClause {
     except: Vec<CategoryId>,
     /// `OVER T[from..to]`: bound literals (see `functions::WINDOW`).
     window: Option<(Expr, Expr)>,
+    /// `INTO K`: where an array function's results land.
+    into: Option<CategoryId>,
     pred: Option<Expr>,
 }
 
@@ -789,6 +791,7 @@ impl<'a> Parser<'a> {
         let callable = functions::callable(name);
         let mut args = Vec::new();
         let mut over: Option<OverClause> = None;
+        let mut into: Option<CategoryId> = None;
         if !matches!(self.toks.get(self.pos).map(|s| &s.tok), Some(Tok::Op(o)) if o == ")") {
             loop {
                 let i = args.len();
@@ -806,6 +809,13 @@ impl<'a> Parser<'a> {
                     }
                     over = Some(self.parse_over_clause()?);
                 }
+                if self.peek_kw("into") {
+                    self.bump();
+                    if into.is_some() {
+                        return Err(self.err("only one INTO clause per call"));
+                    }
+                    into = Some(self.parse_category_name()?);
+                }
                 if self.eat_op(",") {
                     continue;
                 }
@@ -815,7 +825,9 @@ impl<'a> Parser<'a> {
         if !self.eat_op(")") {
             return Err(self.err("expected ')' to close function call"));
         }
-        if let Some(clause) = over {
+        if over.is_some() || into.is_some() {
+            let mut clause = over.unwrap_or_default();
+            clause.into = into;
             return self.finish_aggregation(name, args, clause);
         }
         let def = callable.ok_or_else(|| {
@@ -985,6 +997,9 @@ impl<'a> Parser<'a> {
         }
         if let Some((from, to)) = clause.window {
             args.push(Expr::Call(functions::WINDOW, vec![from, to]));
+        }
+        if let Some(k) = clause.into {
+            args.push(Expr::Call(functions::INTO, vec![Expr::Category(k)]));
         }
         Ok(Expr::Call(def.id, args))
     }

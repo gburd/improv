@@ -77,6 +77,8 @@ pub enum TypedExprKind {
         over: Vec<CategoryId>,
         pred: Option<Box<TypedExpr>>,
         window: Option<Window>,
+        /// An array function's landing category.
+        into: Option<CategoryId>,
     },
     /// A per-item value of a category (`POSITION`, `@ITEM`): one cell per
     /// item.
