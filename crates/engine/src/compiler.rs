@@ -14,7 +14,8 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::typed::{Dim, ResolvedDimSpec, TypeInfo, TypedExpr, TypedExprKind};
 use improv_core_model::functions::{self, Arg, Kind, Ret};
 use improv_core_model::{
-    BinaryOp, DimensionSpec, Expr, Formula, FuncId, Measure, MeasureId, UnaryOp, ValueType,
+    BinaryOp, Category, CategoryId, DimensionSpec, Expr, Formula, FuncId, Item, ItemId, Measure,
+    MeasureId, UnaryOp, ValueType,
 };
 use std::collections::HashMap;
 
@@ -34,15 +35,49 @@ pub enum CompileError {
 
 pub type Result<T> = std::result::Result<T, CompileError>;
 
-/// Read-only context for compilation: the model's measures (and, later, a
-/// function registry).
+/// Read-only context for compilation: the model's measures, and its
+/// categories (their items' order and names) when the caller has a model.
 pub struct CompileContext<'m> {
     pub measures: &'m HashMap<MeasureId, Measure>,
+    /// `None` without a model: positional forms (`PREV`, `POSITION`,
+    /// ordered reductions) then order items by id.
+    pub categories: Option<&'m HashMap<CategoryId, Category>>,
+    /// Item names, for `@ITEM`.
+    pub items: Option<&'m HashMap<ItemId, Item>>,
 }
 
 impl<'m> CompileContext<'m> {
+    /// A context with measures only (scalar formulas, type checks).
     pub fn new(measures: &'m HashMap<MeasureId, Measure>) -> Self {
-        CompileContext { measures }
+        CompileContext {
+            measures,
+            categories: None,
+            items: None,
+        }
+    }
+
+    /// A context over a whole model.
+    pub fn for_model(model: &'m improv_core_model::Model) -> Self {
+        CompileContext {
+            measures: &model.measures,
+            categories: Some(&model.categories),
+            items: Some(&model.items),
+        }
+    }
+
+    /// Category `c`'s items in order (empty when unknown).
+    pub fn items_of(&self, c: CategoryId) -> Vec<ItemId> {
+        self.categories
+            .and_then(|cs| cs.get(&c))
+            .map(|c| c.items.clone())
+            .unwrap_or_default()
+    }
+
+    /// The name of category `c`, for messages.
+    pub fn category_name(&self, c: CategoryId) -> String {
+        self.categories
+            .and_then(|cs| cs.get(&c))
+            .map_or_else(|| format!("{c:?}"), |c| c.name.0.clone())
     }
 }
 
@@ -233,6 +268,18 @@ fn check_arg(def: &functions::FnDef, i: usize, a: &TypedExpr) -> Result<()> {
         Arg::Number => ValueType::Number,
         Arg::Text => ValueType::Text,
         Arg::Boolean => ValueType::Boolean,
+        Arg::Date => ValueType::DateTime,
+        // A date, or a number read as a spreadsheet serial date.
+        Arg::DateLike if a.ty.value_type == ValueType::Number => return Ok(()),
+        Arg::DateLike => ValueType::DateTime,
+        Arg::Category => {
+            return Err(CompileError::TypeMismatch(format!(
+                "{} argument {} must be a category name ({})",
+                def.name,
+                i + 1,
+                def.signature()
+            )))
+        }
     };
     // An error-only argument (`NA()`) fits any parameter.
     if a.ty.value_type == want || is_error_only(a) {
@@ -478,6 +525,13 @@ fn aggregation_over(arg: &TypedExpr) -> Vec<improv_core_model::CategoryId> {
 fn binop_result_type(op: BinaryOp, l: &TypedExpr, r: &TypedExpr) -> Result<ValueType> {
     use BinaryOp::*;
     let (lt, rt) = (l.ty.value_type, r.ty.value_type);
+    use ValueType::{DateTime as D, Number as N};
+    match (op, lt, rt) {
+        // Date arithmetic, in days: date ± days is a date, date − date days.
+        (Add, D, N) | (Add, N, D) | (Sub, D, N) => return Ok(D),
+        (Sub, D, D) => return Ok(N),
+        _ => {}
+    }
     match op {
         Add | Sub | Mul | Div | Pow => {
             require(
@@ -902,6 +956,41 @@ mod tests {
 
     fn bin(op: BinaryOp, l: Expr, r: Expr) -> Expr {
         Expr::BinaryOp(op, Box::new(l), Box::new(r))
+    }
+
+    /// Date arithmetic types: date ± number is a date, date − date a number,
+    /// anything else with a date an error.
+    #[test]
+    fn date_arithmetic_types() {
+        let mut measures = fixture();
+        let when = MeasureId(110);
+        measures.insert(
+            when,
+            Measure {
+                value_type: ValueType::DateTime,
+                ..num_measure(when, "When", vec![PRODUCT])
+            },
+        );
+        let ctx = CompileContext::new(&measures);
+        let ty = |e: &Expr| infer(&ctx, MeasureId(200), e).map(|t| t.ty.value_type);
+        assert_eq!(
+            ty(&bin(BinaryOp::Add, refr(when), lit(1.0))),
+            Ok(ValueType::DateTime)
+        );
+        assert_eq!(
+            ty(&bin(BinaryOp::Add, lit(1.0), refr(when))),
+            Ok(ValueType::DateTime)
+        );
+        assert_eq!(
+            ty(&bin(BinaryOp::Sub, refr(when), lit(1.0))),
+            Ok(ValueType::DateTime)
+        );
+        assert_eq!(
+            ty(&bin(BinaryOp::Sub, refr(when), refr(when))),
+            Ok(ValueType::Number)
+        );
+        assert!(ty(&bin(BinaryOp::Mul, refr(when), lit(2.0))).is_err());
+        assert!(ty(&bin(BinaryOp::Sub, lit(1.0), refr(when))).is_err());
     }
 
     /// IF's type and dimension rules, and the lazy desugarings' arity rules.

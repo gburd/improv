@@ -325,6 +325,22 @@ pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellVa
         (CellValue::Bool(x), CellValue::Bool(y)) => Some(x.cmp(y)),
         _ => None,
     };
+    // Dates: ± days, and the difference of two dates in days.
+    const DAY_MS: f64 = 86_400_000.0;
+    match (op, a, b) {
+        (BinaryOp::Add | BinaryOp::Sub, CellValue::Date(d), CellValue::Num(_)) => {
+            let days = b.as_num().unwrap_or(f64::NAN);
+            let days = if op == BinaryOp::Sub { -days } else { days };
+            return builtins::date_plus_days(*d, days);
+        }
+        (BinaryOp::Add, CellValue::Num(_), CellValue::Date(d)) => {
+            return builtins::date_plus_days(*d, a.as_num().unwrap_or(f64::NAN));
+        }
+        (BinaryOp::Sub, CellValue::Date(x), CellValue::Date(y)) => {
+            return CellValue::num((x - y) as f64 / DAY_MS);
+        }
+        _ => {}
+    }
     let (Some(x), Some(y)) = (a.as_num(), b.as_num()) else {
         return match (op, ord) {
             (BinaryOp::Lt, Some(o)) => CellValue::Bool(o.is_lt()),
@@ -475,7 +491,7 @@ pub(crate) fn compile_plans(
     model: &Model,
     targets: &[MeasureId],
 ) -> Result<Vec<(MeasureId, PlanNode)>, EngineError> {
-    let ctx = CompileContext::new(&model.measures);
+    let ctx = CompileContext::for_model(model);
     derived_build_order(model, targets)?
         .into_iter()
         .map(|(m, f)| Ok((m, compile_formula(&ctx, m, f)?)))
@@ -1592,6 +1608,19 @@ mod tests {
         );
         assert_eq!(apply_unary(UnaryOp::Neg, &na), na);
         assert_eq!(apply_binary(BinaryOp::Pow, &n(2.0), &n(10.0)), n(1024.0));
+        let day = 86_400_000;
+        let dt = CellValue::Date;
+        assert_eq!(apply_binary(BinaryOp::Add, &dt(0), &n(2.0)), dt(2 * day));
+        assert_eq!(apply_binary(BinaryOp::Add, &n(1.0), &dt(0)), dt(day));
+        assert_eq!(
+            apply_binary(BinaryOp::Sub, &dt(3 * day), &n(1.0)),
+            dt(2 * day)
+        );
+        assert_eq!(apply_binary(BinaryOp::Sub, &dt(3 * day), &dt(day)), n(2.0));
+        assert_eq!(
+            apply_binary(BinaryOp::Mul, &dt(day), &n(2.0)),
+            CellValue::Err(err::VALUE)
+        );
         assert_eq!(apply_binary(BinaryOp::Pow, &n(0.0), &n(0.0)), n(1.0));
         assert_eq!(apply_binary(BinaryOp::Pow, &n(0.0), &n(-1.0)), div0);
         assert_eq!(

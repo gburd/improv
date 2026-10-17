@@ -4,7 +4,7 @@
 //! generated function reference (`docs/src/functions.md`).
 //!
 //! Evaluation lives in the engine (`improv_engine::builtins`); a test there
-//! walks [`FUNCTIONS`] and fails if any evaluable id has no implementation.
+//! walks [`all`] and fails if any evaluable id has no implementation.
 //!
 //! A [`FuncId`] is persisted in every stored formula, so ids are stable
 //! forever: never renumber or reuse one. Aliases resolve to their canonical
@@ -19,8 +19,14 @@ pub enum Kind {
     /// Element-wise over its arguments' aligned cells (`ABS`, `LEFT`, n-ary
     /// `SUM(a, b)`).
     Scalar,
-    /// Collapses one category: `SUM(x OVER Time)`.
+    /// Collapses the `OVER` categories: `SUM(x OVER Time)`. The arguments at
+    /// [`FnDef::over`] positions are measures reduced together (joined on
+    /// their full coordinate); the others are parameters, one value per
+    /// group (`LARGE(x OVER T, 2)`, `NPV(rate, cf OVER T)`).
     Aggregate,
+    /// Like [`Kind::Aggregate`] but one result per item of the (single)
+    /// `OVER` category, which the result keeps: `RANK(x OVER T)`.
+    PerItem,
     /// Evaluates only the arguments it needs (`IF`, `IFERROR`, …); the compiler
     /// lowers it specially.
     Lazy,
@@ -32,8 +38,15 @@ pub enum Arg {
     Number,
     Text,
     Boolean,
+    /// A date and time.
+    Date,
+    /// A number or a date (`YEAR`, `EDATE`, the bond functions): dates as
+    /// themselves, numbers as spreadsheet serial dates.
+    DateLike,
     /// Any value type (`CONCAT`, `ISERROR`).
     Any,
+    /// A category name, not a value (`POSITION(Time)`).
+    Category,
 }
 
 /// What a function returns.
@@ -54,6 +67,30 @@ pub enum Category {
     Math,
     Rounding,
     Text,
+    DateTime,
+    Statistical,
+    Financial,
+    Dimensional,
+}
+
+/// Which arguments of an aggregation are reduced over the `OVER` categories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Over {
+    /// These positions (`CORREL(x, y OVER T)` is `[0, 1]`).
+    At(&'static [usize]),
+    /// From `start`, every `step`-th argument (`COUNTIFS(c1 OVER T, k1, c2,
+    /// k2, …)` is `Every(0, 2)`).
+    Every(usize, usize),
+}
+
+impl Over {
+    /// Whether argument `i` is reduced.
+    pub fn contains(&self, i: usize) -> bool {
+        match self {
+            Over::At(v) => v.contains(&i),
+            Over::Every(start, step) => i >= *start && (i - start).is_multiple_of(*step),
+        }
+    }
 }
 
 /// One built-in function.
@@ -74,6 +111,8 @@ pub struct FnDef {
     pub ret: Ret,
     /// One-line description for the reference page.
     pub doc: &'static str,
+    /// For [`Kind::Aggregate`] / [`Kind::PerItem`]: the reduced arguments.
+    pub over: Over,
 }
 
 impl FnDef {
@@ -102,12 +141,22 @@ impl FnDef {
                     Arg::Number => "number",
                     Arg::Text => "text",
                     Arg::Boolean => "boolean",
+                    Arg::Date => "date",
+                    Arg::DateLike => "date",
                     Arg::Any => "value",
+                    Arg::Category => "category",
+                };
+                let t = if matches!(self.kind, Kind::Aggregate | Kind::PerItem)
+                    && self.over.contains(i)
+                {
+                    format!("{t} OVER category")
+                } else {
+                    t.to_string()
                 };
                 if i >= self.required {
                     format!("[{t}]")
                 } else {
-                    t.to_string()
+                    t
                 }
             })
             .collect();
@@ -130,7 +179,7 @@ use ValueType as V;
 // Evaluated at compile time (they build the static table), so no test
 // can execute them: excluded from the runtime coverage report.
 #[cfg_attr(coverage_nightly, coverage(off))]
-const fn f(
+pub(crate) const fn f(
     id: u32,
     name: &'static str,
     kind: Kind,
@@ -152,18 +201,26 @@ const fn f(
         variadic,
         ret,
         doc,
+        over: Over::At(&[0]),
     }
 }
 
+/// `d` with its reduced arguments.
 #[cfg_attr(coverage_nightly, coverage(off))]
-const fn alias(mut d: FnDef, aliases: &'static [&'static str]) -> FnDef {
+pub const fn over(mut d: FnDef, over: Over) -> FnDef {
+    d.over = over;
+    d
+}
+
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) const fn alias(mut d: FnDef, aliases: &'static [&'static str]) -> FnDef {
     d.aliases = aliases;
     d
 }
 
 /// A scalar of `params` (all required) returning `ret`.
 #[cfg_attr(coverage_nightly, coverage(off))]
-const fn s(
+pub(crate) const fn s(
     id: u32,
     name: &'static str,
     cat: Category,
@@ -186,7 +243,7 @@ const fn s(
 
 /// A scalar with `required` of `params` mandatory.
 #[cfg_attr(coverage_nightly, coverage(off))]
-const fn so(
+pub(crate) const fn so(
     id: u32,
     name: &'static str,
     cat: Category,
@@ -210,7 +267,7 @@ const fn so(
 
 /// A variadic scalar: one or more `arg`s.
 #[cfg_attr(coverage_nightly, coverage(off))]
-const fn sv(
+pub(crate) const fn sv(
     id: u32,
     name: &'static str,
     cat: Category,
@@ -232,7 +289,7 @@ const fn sv(
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
-const fn agg(
+pub(crate) const fn agg(
     id: u32,
     name: &'static str,
     arg: &'static [Arg],
@@ -252,9 +309,10 @@ const fn agg(
     )
 }
 
-/// Every built-in function. Order is documentation order within a category.
+/// The P1 core: aggregations, logical, information, math, rounding, text.
+/// Order is documentation order within a category.
 #[rustfmt::skip]
-pub static FUNCTIONS: &[FnDef] = &[
+pub static CORE: &[FnDef] = &[
     // --- aggregations: F(x OVER Cat) ---
     agg(1, "SUM", &[N], V::Number, "the sum over a category"),
     alias(agg(2, "AVERAGE", &[N], V::Number, "the mean over a category"), &["AVG"]),
@@ -397,33 +455,59 @@ pub static FUNCTIONS: &[FnDef] = &[
     s(325, "COUNTMATCHES", C::Text, &[T, T], V::Number, "how many times search occurs in text"),
 ];
 
+mod date;
+mod dimensional;
+mod financial;
+mod statistical;
+
+/// Every family table, in documentation order.
+static FAMILIES: &[&[FnDef]] = &[
+    CORE,
+    date::DATE,
+    dimensional::DIMENSIONAL,
+    statistical::STATISTICAL,
+    financial::FINANCIAL,
+];
+
+/// Every built-in function.
+pub fn all() -> impl Iterator<Item = &'static FnDef> {
+    FAMILIES.iter().flat_map(|f| f.iter())
+}
+
 /// The function with id `id`.
 pub fn by_id(id: FuncId) -> Option<&'static FnDef> {
-    FUNCTIONS.iter().find(|d| d.id == id)
+    all().find(|d| d.id == id)
 }
 
 /// The functions a name (canonical or alias, case-insensitive) can mean: an
 /// aggregation and its scalar twin share a name (`SUM(x OVER T)` vs
 /// `SUM(a, b)`), so a name maps to at most one of each [`Kind`].
 pub fn by_name(name: &str) -> impl Iterator<Item = &'static FnDef> + '_ {
-    FUNCTIONS.iter().filter(move |d| {
+    all().filter(move |d| {
         d.name.eq_ignore_ascii_case(name) || d.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
     })
 }
 
-/// The aggregation a name means, if any.
+impl Kind {
+    /// Whether this kind reduces over `OVER` categories.
+    pub fn reduces(self) -> bool {
+        matches!(self, Kind::Aggregate | Kind::PerItem)
+    }
+}
+
+/// The aggregation (or per-item reduction) a name means, if any.
 pub fn aggregation(name: &str) -> Option<&'static FnDef> {
-    by_name(name).find(|d| d.kind == Kind::Aggregate)
+    by_name(name).find(|d| d.kind.reduces())
 }
 
 /// The non-aggregating function a name means, if any.
 pub fn callable(name: &str) -> Option<&'static FnDef> {
-    by_name(name).find(|d| d.kind != Kind::Aggregate)
+    by_name(name).find(|d| !d.kind.reduces())
 }
 
-/// Whether `id` is an aggregation.
+/// Whether `id` reduces over `OVER` categories.
 pub fn is_aggregation(id: FuncId) -> bool {
-    by_id(id).is_some_and(|d| d.kind == Kind::Aggregate)
+    by_id(id).is_some_and(|d| d.kind.reduces())
 }
 
 #[cfg(test)]
@@ -435,7 +519,7 @@ mod tests {
     #[test]
     fn ids_are_unique() {
         let mut seen = HashSet::new();
-        for d in FUNCTIONS {
+        for d in all() {
             assert!(seen.insert(d.id), "{} reuses id {:?}", d.name, d.id);
         }
     }
@@ -444,9 +528,9 @@ mod tests {
     #[test]
     fn names_are_unambiguous() {
         let mut seen: HashMap<(String, bool), &str> = HashMap::new();
-        for d in FUNCTIONS {
+        for d in all() {
             for n in std::iter::once(&d.name).chain(d.aliases) {
-                let k = (n.to_ascii_uppercase(), d.kind == Kind::Aggregate);
+                let k = (n.to_ascii_uppercase(), d.kind.reduces());
                 if let Some(prev) = seen.insert(k, d.name) {
                     panic!("{n} names both {prev} and {}", d.name);
                 }
@@ -495,7 +579,7 @@ mod tests {
 }
 
 /// The function reference page (`docs/src/functions.md`), generated from
-/// [`FUNCTIONS`] so the docs cannot drift from the code. A test compares it
+/// [`all`] so the docs cannot drift from the code. A test compares it
 /// with the committed file; `UPDATE_DOCS=1 cargo test -p improv_core_model`
 /// rewrites it.
 pub fn reference_markdown() -> String {
@@ -517,16 +601,23 @@ pub fn reference_markdown() -> String {
         (Category::Math, "Math and trigonometry", "Angles are in radians."),
         (Category::Rounding, "Rounding", "Rounding is decimal: `ROUND(2.675, 2)` is 2.68."),
         (Category::Text, "Text", "Lengths and positions count characters, not bytes."),
+        (Category::DateTime, "Date and time", "Dates are date-time values (UTC, millisecond precision). A number given where a date is wanted is a spreadsheet serial date (1 = 1900-01-01)."),
+        (Category::Dimensional, "Dimensional", "Functions of a cell's position in a category, and the ordered (previous/next, running) forms."),
+        (Category::Statistical, "Statistical", ""),
+        (Category::Financial, "Financial", "Rates are per period; cash flows are in item order along their `OVER` category."),
     ];
     for (cat, title, intro) in cats {
+        if all().all(|d| d.category != cat) {
+            continue;
+        }
         out.push_str(&format!("\n## {title}\n\n"));
         if !intro.is_empty() {
             out.push_str(intro);
             out.push_str("\n\n");
         }
         out.push_str("| Function | Returns | Description |\n|---|---|---|\n");
-        for d in FUNCTIONS.iter().filter(|d| d.category == cat) {
-            let sig = if d.kind == Kind::Aggregate {
+        for d in all().filter(|d| d.category == cat) {
+            let sig = if d.kind.reduces() && d.params.len() == 1 {
                 format!("{}(Measure OVER Category)", d.name)
             } else {
                 d.signature()
@@ -535,6 +626,7 @@ pub fn reference_markdown() -> String {
                 Ret::Fixed(ValueType::Number) => "number",
                 Ret::Fixed(ValueType::Boolean) => "boolean",
                 Ret::Fixed(ValueType::Text) => "text",
+                Ret::Fixed(ValueType::DateTime) => "date",
                 Ret::Fixed(_) => "value",
                 Ret::Unify => "the branches' type",
             };

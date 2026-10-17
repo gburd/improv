@@ -1,5 +1,5 @@
 //! Evaluation of the scalar built-in functions in
-//! [`improv_core_model::functions::FUNCTIONS`]: one value per argument in,
+//! [`improv_core_model::functions::all`]: one value per argument in,
 //! one value out. The dataflow maps this over aligned cells and the scalar
 //! evaluator calls it directly, so both give bit-identical results.
 //!
@@ -24,7 +24,7 @@ pub mod err {
     pub const NA: u8 = 7;
 }
 
-fn e(code: u8) -> CellValue {
+pub(crate) fn e(code: u8) -> CellValue {
     CellValue::Err(code)
 }
 
@@ -37,9 +37,14 @@ pub(crate) fn num(x: f64) -> CellValue {
     }
 }
 
-/// The ids that see error arguments instead of propagating them.
+mod date;
+mod financial;
+mod statistical;
+
+/// The ids that see error arguments instead of propagating them (`ISERROR`
+/// and the other information functions that ask about a value's kind).
 fn inspects_errors(id: u32) -> bool {
-    matches!(id, 50 | 51 | 52 | 55)
+    matches!(id, 50 | 51 | 52 | 55) || date::inspects_errors(id)
 }
 
 /// Evaluate built-in `func` on `args` (already checked against the registry's
@@ -56,9 +61,9 @@ pub fn eval(func: FuncId, args: &[CellValue]) -> CellValue {
     }
 }
 
-type R = Result<CellValue, u8>;
+pub(crate) type R = Result<CellValue, u8>;
 
-fn n(args: &[CellValue], i: usize) -> Result<f64, u8> {
+pub(crate) fn n(args: &[CellValue], i: usize) -> Result<f64, u8> {
     match args.get(i) {
         Some(CellValue::Num(b)) => Ok(f64::from_bits(*b)),
         Some(CellValue::Bool(b)) => Ok(if *b { 1.0 } else { 0.0 }),
@@ -68,7 +73,7 @@ fn n(args: &[CellValue], i: usize) -> Result<f64, u8> {
 }
 
 /// Optional numeric argument `i`, or `default`.
-fn n_or(args: &[CellValue], i: usize, default: f64) -> Result<f64, u8> {
+pub(crate) fn n_or(args: &[CellValue], i: usize, default: f64) -> Result<f64, u8> {
     if args.len() > i {
         n(args, i)
     } else {
@@ -76,14 +81,51 @@ fn n_or(args: &[CellValue], i: usize, default: f64) -> Result<f64, u8> {
     }
 }
 
-fn t(args: &[CellValue], i: usize) -> Result<String, u8> {
+// Used by the date and financial families as they land.
+#[allow(dead_code)]
+/// Milliseconds per day.
+pub(crate) const DAY_MS: i64 = 86_400_000;
+// Used by the date and financial families as they land.
+#[allow(dead_code)]
+/// 1899-12-30T00:00Z in epoch milliseconds: spreadsheet serial date 0, so
+/// serial 1 is 1899-12-31 and serial 60 the (fictitious) 1900-02-29 is
+/// skipped as in LibreOffice (serial 61 = 1900-03-01 in both systems).
+pub(crate) const SERIAL_EPOCH_MS: i64 = -2_209_161_600_000;
+
+// Used by the date and financial families as they land.
+#[allow(dead_code)]
+/// A date argument as epoch milliseconds: a date as itself, a number as a
+/// spreadsheet serial date (fractional days are the time of day).
+pub(crate) fn d(args: &[CellValue], i: usize) -> Result<i64, u8> {
+    match args.get(i) {
+        Some(CellValue::Date(ms)) => Ok(*ms),
+        Some(CellValue::Num(b)) => {
+            let serial = f64::from_bits(*b);
+            let ms = serial * DAY_MS as f64;
+            if !ms.is_finite() || ms.abs() > 1e16 {
+                return Err(err::NUM);
+            }
+            Ok(SERIAL_EPOCH_MS + ms.round() as i64)
+        }
+        _ => Err(err::VALUE),
+    }
+}
+
+// Used by the date and financial families as they land.
+#[allow(dead_code)]
+/// Epoch milliseconds as a spreadsheet serial date.
+pub(crate) fn serial(ms: i64) -> f64 {
+    (ms - SERIAL_EPOCH_MS) as f64 / DAY_MS as f64
+}
+
+pub(crate) fn t(args: &[CellValue], i: usize) -> Result<String, u8> {
     match args.get(i) {
         Some(v) => text_of(v),
         None => Err(err::VALUE),
     }
 }
 
-fn b(args: &[CellValue], i: usize) -> Result<bool, u8> {
+pub(crate) fn b(args: &[CellValue], i: usize) -> Result<bool, u8> {
     match args.get(i) {
         Some(CellValue::Bool(b)) => Ok(*b),
         Some(CellValue::Num(x)) => Ok(f64::from_bits(*x) != 0.0),
@@ -103,15 +145,15 @@ pub(crate) fn text_of(v: &CellValue) -> Result<String, u8> {
     })
 }
 
-fn ok_num(x: f64) -> R {
+pub(crate) fn ok_num(x: f64) -> R {
     Ok(num(x))
 }
 
-fn ok_text(s: String) -> R {
+pub(crate) fn ok_text(s: String) -> R {
     Ok(CellValue::Text(s))
 }
 
-fn domain(ok: bool) -> Result<(), u8> {
+pub(crate) fn domain(ok: bool) -> Result<(), u8> {
     if ok {
         Ok(())
     } else {
@@ -120,20 +162,30 @@ fn domain(ok: bool) -> Result<(), u8> {
 }
 
 /// A non-negative integer argument (truncated), or `#NUM!`.
-fn count(x: f64) -> Result<u64, u8> {
+pub(crate) fn count(x: f64) -> Result<u64, u8> {
     domain((0.0..1e15).contains(&x))?;
     Ok(x.trunc() as u64)
 }
 
-fn nums(args: &[CellValue]) -> Result<Vec<f64>, u8> {
+pub(crate) fn nums(args: &[CellValue]) -> Result<Vec<f64>, u8> {
     (0..args.len()).map(|i| n(args, i)).collect()
 }
 
-fn bools(args: &[CellValue]) -> Result<Vec<bool>, u8> {
+pub(crate) fn bools(args: &[CellValue]) -> Result<Vec<bool>, u8> {
     (0..args.len()).map(|i| b(args, i)).collect()
 }
 
+/// The id ranges each family module owns (the registry's id plan).
 fn eval_ok(id: u32, a: &[CellValue]) -> R {
+    match id {
+        56..=79 | 330..=399 | 400..=499 => date::eval(id, a),
+        160..=199 | 500..=699 => statistical::eval(id, a),
+        700..=899 => financial::eval(id, a),
+        _ => eval_core(id, a),
+    }
+}
+
+fn eval_core(id: u32, a: &[CellValue]) -> R {
     use std::f64::consts::PI;
     Ok(match id {
         // --- aggregation twins ---
@@ -628,6 +680,18 @@ fn eval_ok(id: u32, a: &[CellValue]) -> R {
     })
 }
 
+/// `d` (epoch milliseconds) plus `days` (fractional days allowed), or
+/// `#NUM!` when the result leaves the representable range.
+pub(crate) fn date_plus_days(d: i64, days: f64) -> CellValue {
+    let ms = days * 86_400_000.0;
+    if !ms.is_finite() || ms.abs() > 1e17 {
+        return e(err::NUM);
+    }
+    d.checked_add(ms.round() as i64)
+        .filter(|v| chrono::DateTime::<chrono::Utc>::from_timestamp_millis(*v).is_some())
+        .map_or(e(err::NUM), CellValue::Date)
+}
+
 /// `x ^ y` with the spreadsheet edge cases: `0^0` is 1, `0^-1` is `#DIV/0!`,
 /// a negative base with a fractional exponent is `#NUM!`.
 pub(crate) fn power(x: f64, y: f64) -> R {
@@ -648,7 +712,7 @@ fn trig_arg(x: f64) -> Result<f64, u8> {
 
 /// One character, case-folded (lowercased; a multi-char mapping keeps the
 /// first, which leaves character positions intact).
-fn fold_char(c: char) -> char {
+pub(crate) fn fold_char(c: char) -> char {
     c.to_lowercase().next().unwrap_or(c)
 }
 
@@ -804,7 +868,7 @@ fn proper(s: &str) -> String {
     out
 }
 
-fn find_chars(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
+pub(crate) fn find_chars(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
     if needle.is_empty() {
         return Some(from);
     }
@@ -813,7 +877,7 @@ fn find_chars(hay: &[char], needle: &[char], from: usize) -> Option<usize> {
 
 /// `SEARCH`: case-insensitive, `?` any one character, `*` any run, `~`
 /// escapes the next character.
-fn search_chars(hay: &[char], pattern: &str, from: usize) -> Option<usize> {
+pub(crate) fn search_chars(hay: &[char], pattern: &str, from: usize) -> Option<usize> {
     let lower: Vec<char> = hay.iter().flat_map(|c| c.to_lowercase()).collect();
     if lower.len() != hay.len() {
         // A case mapping that changes length: fall back to exact positions.
@@ -969,13 +1033,13 @@ fn text_before_after(before: bool, a: &[CellValue]) -> R {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use improv_core_model::functions::{Kind, FUNCTIONS};
+    use improv_core_model::functions::{all, Kind};
 
     /// Every evaluable registry entry has an implementation (unknown ids fall
     /// through to `#NAME?`).
     #[test]
     fn every_scalar_function_is_implemented() {
-        for d in FUNCTIONS.iter().filter(|d| d.kind == Kind::Scalar) {
+        for d in all().filter(|d| d.kind == Kind::Scalar) {
             let args: Vec<CellValue> = (0..d.required.max(1).min(d.params.len().max(1)))
                 .take(d.required)
                 .map(|i| match d.param(i) {
@@ -1186,6 +1250,37 @@ mod tests {
         assert_eq!(power(0.0, -1.0), Err(err::DIV0));
         assert_eq!(power(-8.0, 1.0 / 3.0), Err(err::NUM));
         assert_eq!(power(-2.0, 3.0), Ok(n(-8.0)));
+    }
+
+    /// Serial dates: 1 is 1899-12-31, 61 is 1900-03-01 (the fictitious
+    /// 1900-02-29 is skipped, as in LibreOffice), and a date adds days.
+    #[test]
+    fn serial_dates_and_date_arithmetic() {
+        let ms = |y, m, dd| {
+            chrono::NaiveDate::from_ymd_opt(y, m, dd)
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc()
+                .timestamp_millis()
+        };
+        assert_eq!(d(&[CellValue::num(1.0)], 0), Ok(ms(1899, 12, 31)));
+        assert_eq!(d(&[CellValue::num(61.0)], 0), Ok(ms(1900, 3, 1)));
+        assert_eq!(d(&[CellValue::num(45658.0)], 0), Ok(ms(2025, 1, 1)));
+        assert_eq!(
+            d(&[CellValue::num(0.5)], 0),
+            Ok(ms(1899, 12, 30) + DAY_MS / 2)
+        );
+        assert_eq!(d(&[CellValue::Date(7)], 0), Ok(7));
+        assert_eq!(d(&[CellValue::Text("x".into())], 0), Err(err::VALUE));
+        assert_eq!(d(&[CellValue::num(1e300)], 0), Err(err::NUM));
+        assert_eq!(serial(ms(2025, 1, 1)), 45658.0);
+        assert_eq!(
+            date_plus_days(ms(2025, 1, 31), 1.0),
+            CellValue::Date(ms(2025, 2, 1))
+        );
+        assert_eq!(date_plus_days(0, 1e30), CellValue::Err(err::NUM));
+        assert_eq!(date_plus_days(i64::MAX - 1, 1.0), CellValue::Err(err::NUM));
     }
 
     #[test]

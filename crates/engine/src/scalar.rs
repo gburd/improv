@@ -424,8 +424,7 @@ mod tests {
                 Just(BinaryOp::Pow),
             ];
             // Every one-number and two-number scalar in the registry.
-            let one: Vec<u32> = improv_core_model::functions::FUNCTIONS
-                .iter()
+            let one: Vec<u32> = improv_core_model::functions::all()
                 .filter(|d| {
                     d.kind == Kind::Scalar
                         && d.required == 1
@@ -437,8 +436,7 @@ mod tests {
                 })
                 .map(|d| d.id.0)
                 .collect();
-            let two: Vec<u32> = improv_core_model::functions::FUNCTIONS
-                .iter()
+            let two: Vec<u32> = improv_core_model::functions::all()
                 .filter(|d| {
                     d.kind == Kind::Scalar
                         && d.accepts(2)
