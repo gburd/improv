@@ -1,0 +1,70 @@
+formula	expected	source
+@A	{"T": 8, "K": 6, "m": {"X": [[3, 1, 4, 1, 5, 9, 2, 6]], "Y": [[2, 7, 1, 8, 2, 8, 1.5, 8]], "W": [[3, 1, 3, 1, 2, 2, 5, 7]], "U": [[2, 2, 2, 2, 2, 2, 2, 2]], "B": [[true, false, true, true, false, true, false, false]], "C": [["pear", "Apple", "fig", "apple", "kiwi", "Fig", "date", "plum"]]}}
+A	FILTER(X, B OVER T INTO K)	[[3.0, 4.0, 1.0, 9.0, null, null]]	LibreOffice
+A	FILTER(C, B OVER T INTO K)	[["pear", "fig", "apple", "Fig", null, null]]	LibreOffice
+A	FILTER(X, B OVER T, -1 INTO K)	[[3.0, 4.0, 1.0, 9.0, null, null]]	LibreOffice
+A	SORTBY(C, X OVER T INTO K)	[["Apple", "apple", "date", "pear", "fig", "kiwi"]]	LibreOffice
+A	SORTBY(X, C OVER T, -1 INTO K)	[[6.0, 3.0, 5.0, 4.0, 9.0, 2.0]]	LibreOffice
+A	SORTBY(C, Y OVER T, 1 INTO K)	[["fig", "date", "pear", "kiwi", "Apple", "apple"]]	LibreOffice
+A	SORTBY(X, Y OVER T, 2 INTO K)	[[{"error": "#VALUE!"}, null, null, null, null, null]]	LibreOffice
+A	TAKE(X OVER T, 3 INTO K)	[[3.0, 1.0, 4.0, null, null, null]]	LibreOffice
+A	TAKE(X OVER T, -2 INTO K)	[[2.0, 6.0, null, null, null, null]]	LibreOffice
+A	TAKE(C OVER T, 2.7 INTO K)	[["pear", "Apple", null, null, null, null]]	LibreOffice
+A	TAKE(X OVER T, 20 INTO K)	[[3.0, 1.0, 4.0, 1.0, 5.0, 9.0]]	LibreOffice
+A	TAKE(X OVER T, 0 INTO K)	[[{"error": "#N/A"}, null, null, null, null, null]]	LibreOffice
+A	DROP(X OVER T, 3 INTO K)	[[1.0, 5.0, 9.0, 2.0, 6.0, null]]	LibreOffice
+A	DROP(C OVER T, -5 INTO K)	[["pear", "Apple", "fig", null, null, null]]	LibreOffice
+A	DROP(X OVER T, 0 INTO K)	[[3.0, 1.0, 4.0, 1.0, 5.0, 9.0]]	LibreOffice
+A	DROP(X OVER T, -7 INTO K)	[[3.0, null, null, null, null, null]]	LibreOffice
+A	MODE.MULT(X OVER T INTO K)	[[1.0, null, null, null, null, null]]	LibreOffice
+A	MODE.MULT(Y OVER T INTO K)	[[8.0, null, null, null, null, null]]	LibreOffice
+A	MODE.MULT(W OVER T INTO K)	[[3.0, 1.0, 2.0, null, null, null]]	LibreOffice
+A	LINEST(Y, X OVER T INTO K)	[[0.23995271867612294, 3.7576832151300237, null, null, null, null]]	LibreOffice
+A	LINEST(Y, X OVER T, TRUE, TRUE INTO K)	[[0.23995271867612294, 3.7576832151300237, 0.48108214594629817, 2.2371612980699194, 0.0398123431886007, 3.4981983429997383]]	LibreOffice
+A	LINEST(Y, X OVER T, FALSE INTO K)	[[0.9132947976878613, 0.0, null, null, null, null]]	LibreOffice
+A	LINEST(U, X OVER T, TRUE, TRUE INTO K)	[[0.0, 2.0, 0.0, 0.0, 1.0, 0.0]]	LibreOffice
+A	LOGEST(Y, X OVER T INTO K)	[[1.0567000775947297, 2.810295038013288, null, null, null, null]]	LibreOffice
+A	LOGEST(Y, X OVER T, TRUE, TRUE INTO K)	[[1.0567000775947297, 2.810295038013288, 0.12904721058835023, 0.6001042183435394, 0.029541593834117887, 0.9383693451373629]]	LibreOffice
+A	LOGEST(Y, X OVER T, FALSE, TRUE INTO K)	[[1.2716392740621485, 1.0, 0.08073674886412614, {"error": "#N/A"}, 0.5586131094886525, 1.0619261333853558]]	LibreOffice
+A	FREQUENCY(X OVER T, 2, 5 INTO K)	[[3.0, 3.0, 2.0, null, null, null]]	LibreOffice
+A	FREQUENCY(X OVER T, 5, 2 INTO K)	[[3.0, 3.0, 2.0, null, null, null]]	LibreOffice
+A	FREQUENCY(X OVER T, 1, 1, 4 INTO K)	[[0.0, 2.0, 3.0, 3.0, null, null]]	LibreOffice
+A	FREQUENCY(Y OVER T, 100 INTO K)	[[8.0, 0.0, null, null, null, null]]	LibreOffice
+A	FREQUENCY(X OVER T, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5 INTO K)	[[0.0, 2.0, 1.0, 1.0, 1.0, 1.0]]	LibreOffice
+A	DROP(X OVER T, 8 INTO K)	[[{"error": "#N/A"}, null, null, null, null, null]]	Excel docs
+A	DROP(X OVER T, -9 INTO K)	[[{"error": "#N/A"}, null, null, null, null, null]]	Excel docs
+A	LINEST(Y, U OVER T INTO K)	[[0, 4.6875, null, null, null, null]]	Excel docs
+@L	{"T": 5, "K": 12, "m": {"X": [[1, 2, 3, 4, 6]], "Y": [[1, 3, 2, 5, 7.5]]}}
+L	MODE.MULT(X OVER T INTO K)	[[{"error": "#N/A"}, null, null, null, null, null, null, null, null, null, null, null]]	Excel docs
+L	LINEST(Y, X OVER T, TRUE, TRUE INTO K)	[[1.2702702702702702, -0.3648648648648649, 0.25640089136500377, 0.9315506994385995, 0.891085114965712, 0.9863939238321439, 24.544444444444437, 3.0, 23.881081081081078, 2.9189189189189193, null, null]]	LibreOffice
+L	LINEST(Y, X OVER T, FALSE, TRUE INTO K)	[[1.1818181818181819, 0.0, 0.10780492023301293, {"error": "#N/A"}, 0.9677881173944166, 0.8758113121817134, 120.17777777777779, 4.0, 92.1818181818182, 3.0681818181818183, null, null]]	LibreOffice
+L	LOGEST(Y, X OVER T, TRUE, TRUE INTO K)	[[1.4473741545462089, 0.9048527303793785, 0.10037139503284172, 0.36466738765493095, 0.818956367154604, 0.3861364664524884, 13.570591038470145, 3.0, 2.023393725376343, 0.44730411217324106, null, null]]	LibreOffice
+L	LOGEST(Y, X OVER T, FALSE, TRUE INTO K)	[[1.4127139831078865, 1.0, 0.04167480703535454, {"error": "#N/A"}, 0.9450061794539034, 0.3385677328610132, 68.73544482415326, 4.0, 7.879014111962772, 0.45851243893858556, null, null]]	LibreOffice
+L	LINEST(Y, X OVER T, TRUE, FALSE INTO K)	[[1.2702702702702702, -0.3648648648648649, null, null, null, null, null, null, null, null, null, null]]	LibreOffice
+@G	{"T": 5, "G": 2, "K": 4, "m": {"X": [[5, 3, 8, 3, 1], [2, 2, 7, 7, 4]], "Y": [[1.5, 2.5, 2, 4.5, 5], [2, 4, 1, 3, 6]], "B": [[true, true, false, true, false], [false, false, false, false, false]]}}
+G	FILTER(X, B OVER T INTO K)	[[5.0, 3.0, 3.0, null], [{"error": "#N/A"}, null, null, null]]	LibreOffice
+G	FILTER(Y, B OVER T, 0 INTO K)	[[1.5, 2.5, 4.5, null], [0.0, null, null, null]]	LibreOffice
+G	SORTBY(X, Y OVER T, -1 INTO K)	[[1.0, 3.0, 3.0, 8.0], [4.0, 2.0, 7.0, 2.0]]	LibreOffice
+G	SORTBY(Y, X OVER T INTO K)	[[5.0, 2.5, 4.5, 1.5], [2.0, 4.0, 6.0, 1.0]]	LibreOffice
+G	TAKE(X OVER T, -3 INTO K)	[[8.0, 3.0, 1.0, null], [7.0, 7.0, 4.0, null]]	LibreOffice
+G	DROP(X OVER T, 1 INTO K)	[[3.0, 8.0, 3.0, 1.0], [2.0, 7.0, 7.0, 4.0]]	LibreOffice
+G	MODE.MULT(X OVER T INTO K)	[[3.0, null, null, null], [2.0, 7.0, null, null]]	LibreOffice
+G	LINEST(Y, X OVER T, TRUE, TRUE INTO K)	[[-0.44642857142857145, 4.885714285714286, 0.2214573713989642, 1.029240853587671], [-0.253968253968254, 4.317460317460318, 0.4174532761391402, 2.0620670700360235]]	LibreOffice
+G	LOGEST(Y, X OVER T INTO K)	[[0.8646940165695852, 4.988832711019754, null, null], [0.8930311724481583, 4.444873195049913, null, null]]	LibreOffice
+G	FREQUENCY(X OVER T, 3, 6 INTO K)	[[3.0, 1.0, 1.0, null], [2.0, 1.0, 2.0, null]]	LibreOffice
+@E	{"T": 5, "K": 5, "m": {"X": [[4, {"error": "#N/A"}, 2, 8, {"error": "#DIV/0!"}]], "Y": [[1, 2, 3, 4, 5]], "B": [[true, true, false, true, false]], "Q": [[true, {"error": "#N/A"}, true, false, true]]}}
+E	SORTBY(X, Y OVER T, -1 INTO K)	[[{"error": "#DIV/0!"}, 8, 2, {"error": "#N/A"}, 4]]	Excel docs
+E	FILTER(X, B OVER T INTO K)	[[4.0, {"error": "#N/A"}, 8.0, null, null]]	LibreOffice
+E	FILTER(Y, Q OVER T INTO K)	[[{"error": "#N/A"}, null, null, null, null]]	LibreOffice
+E	TAKE(X OVER T, 2 INTO K)	[[4.0, {"error": "#N/A"}, null, null, null]]	LibreOffice
+E	DROP(X OVER T, 2 INTO K)	[[2.0, 8.0, {"error": "#DIV/0!"}, null, null]]	LibreOffice
+E	MODE.MULT(X OVER T INTO K)	[[{"error": "#N/A"}, null, null, null, null]]	LibreOffice
+E	LINEST(Y, X OVER T INTO K)	[[{"error": "#N/A"}, {"error": "#N/A"}, null, null, null]]	LibreOffice
+E	FREQUENCY(X OVER T, 3 INTO K)	[[{"error": "#N/A"}, null, null, null, null]]	LibreOffice
+@S	{"T": 7, "K": 3, "m": {"C": [["a,b,,c", "one", ",x,", "aXbxc", "p, q, r", "", ",,"]]}}
+S	TEXTSPLIT(C, "," INTO K)	[["a", "b", ""], ["one", null, null], ["", "x", ""], ["aXbxc", null, null], ["p", " q", " r"], [{"error": "#VALUE!"}, null, null], ["", "", ""]]	Excel docs
+S	TEXTSPLIT(C, ",", "", TRUE INTO K)	[["a", "b", "c"], ["one", null, null], ["x", null, null], ["aXbxc", null, null], ["p", " q", " r"], [{"error": "#VALUE!"}, null, null], [{"error": "#N/A"}, null, null]]	LibreOffice
+S	TEXTSPLIT(C, "x" INTO K)	[["a,b,,c", null, null], ["one", null, null], [",", ",", null], ["aXb", "c", null], ["p, q, r", null, null], [{"error": "#VALUE!"}, null, null], [",,", null, null]]	LibreOffice
+S	TEXTSPLIT(C, ", " INTO K)	[["a,b,,c", null, null], ["one", null, null], [",x,", null, null], ["aXbxc", null, null], ["p", "q", "r"], [{"error": "#VALUE!"}, null, null], [",,", null, null]]	LibreOffice
+S	TEXTSPLIT(C, "" INTO K)	[["a,b,,c", null, null], ["one", null, null], [",x,", null, null], ["aXbxc", null, null], ["p, q, r", null, null], [{"error": "#VALUE!"}, null, null], [",,", null, null]]	LibreOffice
+S	TEXTSPLIT(C, "b", "", FALSE INTO K)	[["a,", ",,c", null], ["one", null, null], [",x,", null, null], ["aX", "xc", null], ["p, q, r", null, null], [{"error": "#VALUE!"}, null, null], [",,", null, null]]	LibreOffice

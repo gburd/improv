@@ -230,6 +230,7 @@ Lengths and positions count characters, not bytes.
 | `REGEXTEST(text, text, [number])` | boolean | whether the pattern matches; case_sensitivity 1 ignores case. Rust regex syntax |
 | `REGEXEXTRACT(text, text, [number], [number])` | text | the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #VALUE!. Rust regex syntax (also `REGEX.EXTRACT`) |
 | `REGEXREPLACE(text, text, text, [number], [number])` | text | replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax |
+| `TEXTSPLIT(text OVER category, text, [text], [boolean])` | text | the parts of the text between col_delimiters (case-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE! |
 | `ARRAYTOTEXT(value OVER category, [number])` | text | the values as text in item order: format 0 "1, 2, a", format 1 {1,2,"a"} |
 
 ## Date and time
@@ -298,6 +299,10 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
 | `SORT(value OVER category, [number])` | the branches' type | the values in ascending order (descending when order is -1) |
 | `UNIQUE(value OVER category, [boolean])` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
+| `FILTER(value OVER category, boolean OVER category, [value])` | the branches' type | the values of x whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!) |
+| `SORTBY(value OVER category, value OVER category, [number])` | the branches' type | the values of x sorted by the values of by (stable; descending when order is -1); one sort key |
+| `TAKE(value OVER category, number)` | the branches' type | the first n values in item order (the last -n when n is negative) |
+| `DROP(value OVER category, number)` | the branches' type | the values TAKE leaves out: all but the first n (the last -n when n is negative), in item order |
 | `XLOOKUP(value, value OVER category, value OVER category, [value], [number], [number])` | the values' type | values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
 | `XMATCH(value, value OVER category, [number], [number])` | number | the 1-based item position along the category where keys matches key (XLOOKUP's modes); #N/A when none does |
 | `MATCH(value, value OVER category, [number])` | number | the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
@@ -312,6 +317,10 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 
 | Function | Returns | Description |
 |---|---|---|
+| `MODE.MULT(Measure OVER Category)` | number | every most frequent value, in order of first occurrence (#N/A if none repeats) |
+| `LINEST(number OVER category, number OVER category, [boolean], [boolean])` | number | the least-squares line y = m·x + b of one x: m, b (const = FALSE: b = 0); with stats, Excel's 5×2 block row by row: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid |
+| `LOGEST(number OVER category, number OVER category, [boolean], [boolean])` | number | the curve y = b·m^x fitted to ln y: m, b (const = FALSE: b = 1); with stats the 10 values of LINEST's block, those after b for ln y |
+| `FREQUENCY(number OVER category, number, …)` | number | counts of x in the bins given as numbers b1, b2, …: ≤ b1, (b1, b2], …, > bn (n + 1 counts; Excel takes the bins as a range) |
 | `BETA.DIST(number, number, number, boolean, [number], [number])` | number | the beta distribution of x on [A, B] (default [0, 1]): density, or cumulative |
 | `BETADIST(number, number, number, [number], [number])` | number | the cumulative beta distribution of x on [A, B] (default [0, 1]) |
 | `BETA.INV(number, number, number, [number], [number])` | number | the beta quantile on [A, B] (default [0, 1]) (also `BETAINV`) |
