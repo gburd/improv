@@ -47,10 +47,10 @@ const fn r(
 #[rustfmt::skip]
 pub(super) static LOOKUP: &[FnDef] = &[
     // --- lookups (§5.22) ---
-    r(1200, "XLOOKUP", Dm, &[A, A, A, A, N, N], 3, Ret::Unify, &[1, 2], "values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does"),
+    r(1200, "XLOOKUP", Dm, &[A, A, A, A, N, N], 3, Ret::Arg(2), &[1, 2], "values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does"),
     r(1201, "XMATCH", Dm, &[A, A, N, N], 2, NUM, &[1], "the 1-based item position along the category where keys matches key (XLOOKUP's modes); #N/A when none does"),
     r(1202, "MATCH", Dm, &[A, A, N], 2, NUM, &[1], "the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none"),
-    r(1203, "LOOKUP", Dm, &[A, A, A], 3, Ret::Unify, &[1, 2], "values at the largest key ≤ key (keys ascending); #N/A when none"),
+    r(1203, "LOOKUP", Dm, &[A, A, A], 3, Ret::Arg(2), &[1, 2], "values at the largest key ≤ key (keys ascending); #N/A when none"),
     alias(r(1204, "INDEX", Dm, &[A, N], 2, Ret::Unify, &[0], "the value at the n-th item (1-based position); #REF! out of range, #N/A where that item has no cell"), &["VALUEAT"]),
     // --- Quantrix selection (§5.26). Deferred: SELECTLIST (SELECT with a
     // lookup measure over its own category gives one result per lookup) and

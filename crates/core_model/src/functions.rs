@@ -59,6 +59,8 @@ pub enum Ret {
     /// The unified type of the value arguments (`IF`'s branches); the compiler
     /// computes it per [`Kind::Lazy`] function.
     Unify,
+    /// The type of argument `i` (`XLOOKUP`'s values, not its keys).
+    Arg(usize),
 }
 
 /// A function's documentation category (groups the reference page).
@@ -667,6 +669,7 @@ pub fn reference_markdown() -> String {
                 Ret::Fixed(ValueType::DateTime) => "date",
                 Ret::Fixed(_) => "value",
                 Ret::Unify => "the branches' type",
+                Ret::Arg(_) => "the values' type",
             };
             let mut doc = d.doc.to_string();
             if !d.aliases.is_empty() {

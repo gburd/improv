@@ -521,6 +521,4 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - array results so far are `SORT` and `UNIQUE` (no `FREQUENCY`, `LINEST`,
   `LOGEST`, `SELECTLIST`, …) and there is no `LAMBDA`: those are phase P6
   of the functions plan;
-- a lookup's result type is the keys' type (`XLOOKUP`, `LOOKUP`): keys and
-  values of different types are refused downstream;
 - `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

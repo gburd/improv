@@ -873,6 +873,21 @@ fn infer_aggregate(
     let value_type = match def.ret {
         Ret::Fixed(v) => v,
         Ret::Unify => first.ty.value_type,
+        // Argument i's type: a reduced input or a parameter, by position.
+        Ret::Arg(i) => {
+            let (mut ins, mut ps) = (inputs.iter(), params.iter());
+            (0..rest.len())
+                .map(|j| {
+                    if def.over.contains(j) {
+                        ins.next()
+                    } else {
+                        ps.next()
+                    }
+                })
+                .nth(i)
+                .flatten()
+                .map_or(first.ty.value_type, |t| t.ty.value_type)
+        }
     };
     Ok(TypedExpr {
         kind: TypedExprKind::Aggregate {

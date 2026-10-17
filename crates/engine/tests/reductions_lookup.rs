@@ -322,7 +322,7 @@ fn rate_per_employee_from_a_band_table() {
 /// a compiler change (a `Ret` that names the argument); this test pins the
 /// current behavior so the fix shows up here.
 #[test]
-fn lookup_result_takes_the_keys_type() {
+fn lookup_result_takes_the_values_type() {
     let data: J =
         serde_json::from_str(r#"{"T": 2, "m": {"K": [["a", "b"]], "V": [[1, 2]]}}"#).unwrap();
     let m = model(&data);
@@ -330,9 +330,5 @@ fn lookup_result_takes_the_keys_type() {
         .unwrap()
         .formula;
     let (vt, _) = derived_shape(&m, MeasureId(99), "R", &f).unwrap();
-    assert_eq!(
-        vt,
-        ValueType::Text,
-        "fixed? then XLOOKUP/LOOKUP may use the values' type"
-    );
+    assert_eq!(vt, ValueType::Number, "XLOOKUP is typed by its values");
 }

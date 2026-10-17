@@ -298,10 +298,10 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
 | `SORT(value OVER category, [number])` | the branches' type | the values in ascending order (descending when order is -1) |
 | `UNIQUE(value OVER category, [boolean])` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
-| `XLOOKUP(value, value OVER category, value OVER category, [value], [number], [number])` | the branches' type | values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
+| `XLOOKUP(value, value OVER category, value OVER category, [value], [number], [number])` | the values' type | values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
 | `XMATCH(value, value OVER category, [number], [number])` | number | the 1-based item position along the category where keys matches key (XLOOKUP's modes); #N/A when none does |
 | `MATCH(value, value OVER category, [number])` | number | the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
-| `LOOKUP(value, value OVER category, value OVER category)` | the branches' type | values at the largest key ≤ key (keys ascending); #N/A when none |
+| `LOOKUP(value, value OVER category, value OVER category)` | the values' type | values at the largest key ≤ key (keys ascending); #N/A when none |
 | `INDEX(value OVER category, number)` | the branches' type | the value at the n-th item (1-based position); #REF! out of range, #N/A where that item has no cell (also `VALUEAT`) |
 | `SELECT(value OVER category, value OVER category, value)` | the branches' type | values at the first item (in item order) whose key equals lookup; #N/A when none |
 | `SELECTBETWEEN(value OVER category, value OVER category, value, value, [boolean])` | the branches' type | values at the first item whose key is between low and high (strictly when inclusive is FALSE); #N/A when none |
