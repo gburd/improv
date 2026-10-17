@@ -791,37 +791,6 @@ mod tests {
         (got - want).abs() <= 1e-12 * want.abs().max(1e-300)
     }
 
-    /// NORM.S.DIST and T.DIST.2T do not parse yet (`NORM.S` is no function
-    /// for the dotted-name joiner; `.2T` lexes as a number), so their
-    /// LibreOffice goldens (scripts/goldens/statistical.py) are checked here.
-    #[test]
-    fn unparsed_names_match_libreoffice() {
-        let bool_call = |z: f64, c: bool| {
-            eval(527, &[CellValue::num(z), CellValue::Bool(c)]).unwrap_or_else(CellValue::Err)
-        };
-        for (z, c, want) in [
-            (1.333333, true, 0.908_788_725_604_095_2),
-            (1.333333, false, 0.164_010_147_569_367_22),
-            (0.0, true, 0.5),
-            (-5.0, true, 2.866_515_718_791_936_5e-7),
-            (-5.0, false, 1.486_719_514_734_297_9e-6),
-        ] {
-            assert!(close(num_of(bool_call(z, c)), want), "NORM.S.DIST({z},{c})");
-        }
-        for (t, df, want) in [
-            (1.959999998, 60.0, 0.054_644_929_975_921_054),
-            (0.0, 5.0, 1.0),
-            (3.0, 2.0, 0.095_465_966_266_709_13),
-        ] {
-            assert!(
-                close(num_of(call(534, &[t, df])), want),
-                "T.DIST.2T({t},{df})"
-            );
-        }
-        assert_eq!(call(534, &[-1.0, 5.0]), CellValue::Err(err::NUM));
-        assert_eq!(call(534, &[1.0, 0.0]), CellValue::Err(err::NUM));
-    }
-
     /// Each parameter's own domain check (the goldens hit the first failing
     /// one of each function; these hit the others).
     #[test]

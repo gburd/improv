@@ -318,13 +318,40 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 || (c == '@' && text[i + 1..].starts_with(char::is_alphabetic)) =>
             {
                 i += c.len_utf8();
-                while i < bytes.len() {
-                    let b = text[i..].chars().next().expect("i < len");
-                    if b.is_alphanumeric() || b == '_' {
-                        i += b.len_utf8();
-                    } else {
-                        break;
+                let word_end = |mut i: usize| {
+                    while i < bytes.len() {
+                        let b = text[i..].chars().next().expect("i < len");
+                        if b.is_alphanumeric() || b == '_' {
+                            i += b.len_utf8();
+                        } else {
+                            break;
+                        }
                     }
+                    i
+                };
+                i = word_end(i);
+                // A dotted function name (`FLOOR.MATH(`, `NORM.S.DIST(`,
+                // `T.DIST.2T(`): the longest run of `.part`s that names a
+                // function and is followed by `(` is one identifier.
+                let mut j = i;
+                let mut best = None;
+                // No function name has more than three dots (`T.DIST.2T`),
+                // so a long `a.a.a…` costs O(n), not O(n²).
+                let mut parts = 0;
+                while parts < 3
+                    && text[j..].starts_with('.')
+                    && text[j + 1..].starts_with(|c: char| c.is_alphanumeric() || c == '_')
+                {
+                    parts += 1;
+                    j = word_end(j + 1);
+                    let rest = text[j..].trim_start();
+                    if rest.starts_with('(') && functions::by_name(&text[start..j]).next().is_some()
+                    {
+                        best = Some(j);
+                    }
+                }
+                if let Some(end) = best {
+                    i = end;
                 }
                 out.push(Spanned {
                     tok: Tok::Ident(text[start..i].to_string()),
@@ -719,35 +746,10 @@ impl<'a> Parser<'a> {
     /// Identifier-headed primary: TRUE/FALSE, aggregation, or a measure ref.
     fn parse_ident_primary(&mut self) -> Result<Expr, ParseError> {
         // Peek the identifier text without holding the borrow.
-        let mut word = match self.peek() {
+        let word = match self.peek() {
             Some(Tok::Ident(w)) => w.clone(),
             _ => return Err(self.err("expected identifier")),
         };
-        // A dotted function name (`FLOOR.MATH(`, `ERROR.TYPE(`): join the parts
-        // when the result names a function and `(` follows.
-        let mut parts = 1;
-        loop {
-            let at = |k: usize| self.toks.get(self.pos + k).map(|s| &s.tok);
-            match (at(parts), at(parts + 1)) {
-                (Some(Tok::Op(dot)), Some(Tok::Ident(next))) if dot == "." => {
-                    let joined = format!("{word}.{next}");
-                    let is_fn = functions::callable(&joined).is_some()
-                        || functions::by_name(&joined).next().is_some();
-                    if is_fn && matches!(at(parts + 2), Some(Tok::Op(o)) if o == "(" || o == ".") {
-                        word = joined;
-                        parts += 2;
-                        continue;
-                    }
-                    break;
-                }
-                _ => break,
-            }
-        }
-        if parts > 1 {
-            // Collapse the dotted name into the function-name token.
-            self.pos += parts - 1;
-            return self.parse_call(&word);
-        }
         // `TRUE()` / `FALSE()` are the functions; bare `TRUE` the literal.
         let is_call =
             matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(");
@@ -1367,6 +1369,21 @@ mod tests {
         );
         assert_eq!(p("TRUE()"), Ok(call(39, vec![])));
         assert_eq!(p("ISO.CEILING(Price)"), Ok(call(210, vec![refr(PRICE)])));
+        // Dotted names whose prefixes are not functions, and digit parts.
+        let joined = |src: &str| tokenize(src).unwrap().first().map(|t| t.tok.clone());
+        assert_eq!(
+            joined("NORM.S.DIST(1)"),
+            Some(Tok::Ident("NORM.S.DIST".into()))
+        );
+        assert_eq!(
+            joined("T.DIST.2T(1, 2)"),
+            Some(Tok::Ident("T.DIST.2T".into()))
+        );
+        assert_eq!(
+            joined("FLOOR.MATH (1)"),
+            Some(Tok::Ident("FLOOR.MATH".into()))
+        );
+        assert_eq!(joined("Sheet.Price"), Some(Tok::Ident("Sheet".into())));
         // Errors.
         for (src, want) in [
             ("SUM(Quantity OVER Time OVER Product)", "expected ')'"),

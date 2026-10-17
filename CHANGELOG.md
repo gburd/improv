@@ -62,8 +62,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   binomial, normal, Poisson, Student's t and Weibull distributions and
   quantiles, plus `GAUSS`, `PHI`, `FISHER`, `FISHERINV`, `CONFIDENCE.NORM`,
   `CONFIDENCE.T` and `STANDARDIZE`. 326 more golden values
-  (`scripts/goldens/statistical.py`). `NORM.S.DIST` and `T.DIST.2T` do not
-  parse yet (use `NORMSDIST` for the cumulative form).
+  (`scripts/goldens/statistical.py`). Dotted names whose prefixes are not
+  functions themselves (`NORM.S.DIST`, `T.DIST.2T`) parse.
 - **More aggregations:** `PRODUCT`, `SUMSQ`, and over booleans `AND`, `OR`
   and `XOR`; `AVERAGE` (with `AVG` as an alias). `SUM`, `MIN`, `MAX` and the
   rest also take a list of arguments (`SUM(a, b, c)`).

@@ -3,7 +3,9 @@
 scalars: special functions and distributions).
 
     nix-shell -p python3Packages.mpmath --run \\
-        'python3 scripts/goldens/statistical.py' > crates/engine/tests/data/statistical_goldens.tsv
+        'python3 scripts/goldens/statistical.py > crates/engine/tests/data/statistical_goldens.tsv'
+
+(redirect inside --run: a dev shell may print a banner on stdout.)
 
 LibreOffice rows run through p1.py's runner (the same flat-ODS sheet and the
 same exact-double reconstruction), with Excel's function names mapped to
@@ -195,11 +197,8 @@ p1.LO_NAMES.update({
 })
 
 
-# Names Improv's parser cannot read yet: `NORM.S` is not a function, so the
-# dotted-name joiner stops there, and `.2T` lexes as a number. Rows of the
-# names with an alias use the alias; the rest are not written to the TSV
-# (printed to stderr; the engine's unit tests check them through eval).
-UNPARSED = {"NORM.S.INV": "NORMSINV", "T.INV.2T": "TINV", "NORM.S.DIST": None, "T.DIST.2T": None}
+# Every name parses (dotted names such as NORM.S.DIST and T.DIST.2T too).
+UNPARSED: dict = {}
 
 
 def map_error(f, shown):
