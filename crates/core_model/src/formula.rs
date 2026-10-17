@@ -44,6 +44,10 @@ pub enum BinaryOp {
     Le,
     Gt,
     Ge,
+    /// `^`: power (right-associative; binds tighter than unary minus).
+    Pow,
+    /// `&`: join two values as text.
+    Concat,
 }
 
 /// A formula expression. Broadcasting over shared dimensions is implicit at the

@@ -2346,13 +2346,16 @@ fn prec(e: &Expr) -> u8 {
             | BinaryOp::Le
             | BinaryOp::Gt
             | BinaryOp::Ge => 4,
-            BinaryOp::Add | BinaryOp::Sub => 5,
-            BinaryOp::Mul | BinaryOp::Div => 6,
+            BinaryOp::Concat => 5,
+            BinaryOp::Add | BinaryOp::Sub => 6,
+            BinaryOp::Mul | BinaryOp::Div => 7,
+            BinaryOp::Pow => 9,
         },
-        // NOT sits between AND and the comparisons; unary minus takes a Primary.
+        // NOT sits between AND and the comparisons; unary minus between
+        // `* /` and `^` (so `-2^2` is `-(2^2)`).
         Expr::UnaryOp(UnaryOp::Not, _) => 3,
-        Expr::UnaryOp(UnaryOp::Neg, _) => 7,
-        _ => 8,
+        Expr::UnaryOp(UnaryOp::Neg, _) => 8,
+        _ => 10,
     }
 }
 
@@ -2401,12 +2404,20 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
                 BinaryOp::Le => "<=",
                 BinaryOp::Gt => ">",
                 BinaryOp::Ge => ">=",
+                BinaryOp::Pow => "^",
+                BinaryOp::Concat => "&",
             };
             // Left-associative levels keep a same-level LEFT child bare and
             // parenthesize a same-level RIGHT child; comparisons are
             // non-associative, so a same-level child needs parens on either
             // side (`a < b < c` does not parse).
-            let (lmin, rmin) = if p == 4 { (5, 5) } else { (p, p + 1) };
+            // `^` is right-associative: its base must bind tighter than `^`
+            // (a Postfix), its exponent may be any Unary.
+            let (lmin, rmin) = match op {
+                BinaryOp::Pow => (p + 1, 8),
+                _ if p == 4 => (5, 5),
+                _ => (p, p + 1),
+            };
             Some(format!(
                 "{} {sym} {}",
                 child_dsl(model, l, lmin)?,
@@ -4823,6 +4834,39 @@ mod tests {
                         UnaryOp::Not,
                         Box::new(bin(BinaryOp::Eq, qty(), Expr::Literal(Value::Number(0.0)))),
                     ),
+                )),
+            ),
+            (
+                // `-(2^2)` prints as `-Price ^ 2`; `(-Price)^2` keeps its parens.
+                "power and negation",
+                Formula::new(bin(
+                    BinaryOp::Add,
+                    Expr::UnaryOp(UnaryOp::Neg, Box::new(bin(BinaryOp::Pow, price(), qty()))),
+                    bin(
+                        BinaryOp::Pow,
+                        Expr::UnaryOp(UnaryOp::Neg, Box::new(price())),
+                        bin(BinaryOp::Pow, qty(), price()),
+                    ),
+                )),
+            ),
+            (
+                "left-nested power",
+                Formula::new(bin(
+                    BinaryOp::Pow,
+                    bin(BinaryOp::Pow, price(), qty()),
+                    price(),
+                )),
+            ),
+            (
+                "concatenation is text",
+                Formula::new(bin(
+                    BinaryOp::Eq,
+                    bin(
+                        BinaryOp::Concat,
+                        bin(BinaryOp::Add, price(), qty()),
+                        price(),
+                    ),
+                    Expr::Literal(Value::Text("x".into())),
                 )),
             ),
             (

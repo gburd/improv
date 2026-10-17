@@ -432,6 +432,8 @@ fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
                 BinaryOp::Le => "is at most",
                 BinaryOp::Gt => "is greater than",
                 BinaryOp::Ge => "is at least",
+                BinaryOp::Pow => "to the power of",
+                BinaryOp::Concat => "joined with",
             };
             format!("{} {word} {}", describe_expr(ctx, l), describe_expr(ctx, r))
         }

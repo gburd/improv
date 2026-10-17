@@ -48,9 +48,12 @@ From lowest to highest precedence:
 | 2 | `AND` | left-associative |
 | 3 | `NOT` | prefix; applies to a whole comparison |
 | 4 | `==` `<>` `!=` `<` `<=` `>` `>=` | at most one per level: `a < b < c` is an error |
-| 5 | `+` `-` | left-associative |
-| 6 | `*` `/` | left-associative |
-| 7 | unary `-` | prefix; applies to the next primary |
+| 5 | `&` | text join, left-associative |
+| 6 | `+` `-` | left-associative |
+| 7 | `*` `/` | left-associative |
+| 8 | unary `-` | prefix |
+| 9 | `^` | power, **right**-associative |
+| 10 | `%` | postfix: `x%` is `x / 100` |
 
 Parentheses group as usual. Keywords (`AND`, `OR`, `NOT`, `OVER`, `TRUE`,
 `FALSE`, function names) are case-insensitive.
@@ -60,14 +63,24 @@ Parentheses group as usual. Keywords (`AND`, `OR`, `NOT`, `OVER`, `TRUE`,
 formula, and `X = Price = 10` is an error.
 
 `NOT` binds looser than a comparison, as in SQL: `NOT Price > 15` means
-`NOT (Price > 15)`, and `NOT a AND b` means `(NOT a) AND b`. Unary `-` binds
-tighter than any binary operator.
+`NOT (Price > 15)`, and `NOT a AND b` means `(NOT a) AND b`.
+
+`^` follows the mathematical convention: it is right-associative and binds
+tighter than unary minus, so `2^3^2` is 2⁹ = 512 and `-2^2` is −(2²) = −4.
+The spreadsheets read both the other way (64 and 4): write `(2^3)^2` and
+`(-2)^2` for their reading. The exponent may be negative (`2^-1` is 0.5).
+`0^0` is 1, `0^-1` is `#DIV/0!` and a negative base with a fractional
+exponent is `#NUM!`; `POWER(x, y)` is the same as `x ^ y`.
+
+`&` joins two values as text (`"Q" & 3` is `Q3`; numbers print as they
+display, booleans as `TRUE`/`FALSE`). `50%` is 0.5.
 
 Type rules, checked when the formula compiles:
 
 | Operators | Operands | Result |
 |-----------|----------|--------|
-| `+ - * /` | numbers | number |
+| `+ - * / ^` | numbers | number |
+| `&` | any two values | text |
 | `AND OR` | booleans | boolean |
 | comparisons | two values of the same type | boolean |
 | unary `-` | number | number |
@@ -218,7 +231,6 @@ Neither may appear inside a larger expression.
 
 | Written | Result |
 |---------|--------|
-| `Price ^ 2` | error: `'^' (power) is not supported`; write `POWER(Price, 2)` |
 | `M.Price` | error: `unknown qualifier: M` |
 | `Quantity EXCEPT Time` | error: no `EXCEPT` syntax |
 
@@ -324,8 +336,6 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 
 **Gaps:**
 
-- no power operator (`^`; use `POWER`), text concatenation operator (`&`;
-  use `CONCAT`) or `%`;
 - no `EXCEPT` syntax (the AST field exists; the parser never sets it);
 - one `OVER` category per aggregation;
 - no reference to the previous period (or any relative item).

@@ -80,9 +80,11 @@ function calls, and aggregations.
 
 ### 3.4 Operators
 
-- Arithmetic: `+` `-` `*` `/` `^`
-- Logical: `AND` `OR` `NOT`
-- Comparison: `=` `<>` `<` `<=` `>` `>=`
+- Arithmetic: `+` `-` `*` `/` `^` (right-associative, tighter than unary
+  minus: `-2^2` = −4, decided 2026-10-16), postfix `%`
+- Text: `&`
+- Logical: `AND` `OR` `NOT` (NOT binds looser than comparisons)
+- Comparison: `==` `<>` `!=` `<` `<=` `>` `>=` (`=` is only the assignment)
 
 ---
 
@@ -90,9 +92,17 @@ function calls, and aggregations.
 
 ```ebnf
 Formula      = Identifier "=" Expression ;
-Expression   = Term { ("+" | "-") Term } ;
-Term         = Factor { ("*" | "/") Factor } ;
-Factor       = Primary [ "^" Factor ] ;
+Expression   = OrExpr ;
+OrExpr       = AndExpr { "OR" AndExpr } ;
+AndExpr      = NotExpr { "AND" NotExpr } ;
+NotExpr      = "NOT" NotExpr | Comparison ;
+Comparison   = Concat [ CmpOp Concat ] ;
+Concat       = Additive { "&" Additive } ;
+Additive     = Term { ("+" | "-") Term } ;
+Term         = Unary { ("*" | "/") Unary } ;
+Unary        = "-" Unary | Power ;
+Power        = Postfix [ "^" Unary ] ;
+Postfix      = Primary { "%" } ;
 Primary      = Literal
              | MeasureRef
              | FunctionCall
@@ -106,7 +116,8 @@ FunctionCall = Identifier "(" [ ArgList ] ")" ;
 ArgList      = Expression { "," Expression } ;
 
 Aggregation  = AggFunc "(" MeasureRef "OVER" Identifier ")" ;
-AggFunc      = "SUM" | "AVG" | "MIN" | "MAX" ;
+AggFunc      = (* any aggregation in core_model::functions: SUM, AVERAGE/AVG,
+                MIN, MAX, PRODUCT, SUMSQ, AND, OR, XOR *) ;
 ```
 
 > The `CALL(...)` (external function, Phase 6) and `SQL("...")` (live query,

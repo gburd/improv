@@ -421,6 +421,7 @@ mod tests {
                 Just(BinaryOp::Sub),
                 Just(BinaryOp::Mul),
                 Just(BinaryOp::Div),
+                Just(BinaryOp::Pow),
             ];
             // Every one-number and two-number scalar in the registry.
             let one: Vec<u32> = improv_core_model::functions::FUNCTIONS

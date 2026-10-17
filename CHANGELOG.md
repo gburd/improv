@@ -38,6 +38,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 - `improv.raise_errors` (pg_improv): raise a `LANGUAGE improv` error value
   instead of returning NULL.
 
+- **Operators `^`, `&` and `%`.** `^` is power with the mathematical
+  convention: right-associative and tighter than unary minus (`2^3^2` is
+  512, `-2^2` is −4; the spreadsheets give 64 and 4). `&` joins two values
+  as text, below `+`/`-` and above the comparisons. `%` divides by 100.
+
 ### Changed
 
 - **Errors are typed values**, shown as the spreadsheets show them:

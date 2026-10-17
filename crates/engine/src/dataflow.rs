@@ -309,6 +309,12 @@ pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellVa
         BinaryOp::Ne => return CellValue::Bool(a != b),
         BinaryOp::And => return CellValue::Bool(truthy(a) && truthy(b)),
         BinaryOp::Or => return CellValue::Bool(truthy(a) || truthy(b)),
+        BinaryOp::Concat => {
+            return match (builtins::text_of(a), builtins::text_of(b)) {
+                (Ok(x), Ok(y)) => CellValue::Text(x + &y),
+                (Err(c), _) | (_, Err(c)) => CellValue::Err(c),
+            }
+        }
         _ => {}
     }
     // Ordering compares like values: numbers, text (by code point), dates,
@@ -334,11 +340,12 @@ pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellVa
         BinaryOp::Mul => builtins::num(x * y),
         BinaryOp::Div if y == 0.0 => CellValue::Err(err::DIV0),
         BinaryOp::Div => builtins::num(x / y),
+        BinaryOp::Pow => builtins::power(x, y).unwrap_or_else(CellValue::Err),
         BinaryOp::Lt => CellValue::Bool(x < y),
         BinaryOp::Le => CellValue::Bool(x <= y),
         BinaryOp::Gt => CellValue::Bool(x > y),
         BinaryOp::Ge => CellValue::Bool(x >= y),
-        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::And | BinaryOp::Or => {
+        BinaryOp::Eq | BinaryOp::Ne | BinaryOp::And | BinaryOp::Or | BinaryOp::Concat => {
             unreachable!("handled above")
         }
     }
@@ -1548,6 +1555,22 @@ mod tests {
             CellValue::Err(err::NUM)
         );
         assert_eq!(apply_unary(UnaryOp::Neg, &na), na);
+        assert_eq!(apply_binary(BinaryOp::Pow, &n(2.0), &n(10.0)), n(1024.0));
+        assert_eq!(apply_binary(BinaryOp::Pow, &n(0.0), &n(0.0)), n(1.0));
+        assert_eq!(apply_binary(BinaryOp::Pow, &n(0.0), &n(-1.0)), div0);
+        assert_eq!(
+            apply_binary(BinaryOp::Pow, &n(-8.0), &n(0.5)),
+            CellValue::Err(err::NUM)
+        );
+        assert_eq!(
+            apply_binary(BinaryOp::Concat, &txt("a"), &n(1.5)),
+            txt("a1.5")
+        );
+        assert_eq!(
+            apply_binary(BinaryOp::Concat, &b(true), &txt("!")),
+            txt("TRUE!")
+        );
+        assert_eq!(apply_binary(BinaryOp::Concat, &txt("a"), &na), na);
         assert_eq!(
             apply_unary(UnaryOp::Neg, &txt("a")),
             CellValue::Err(err::VALUE)

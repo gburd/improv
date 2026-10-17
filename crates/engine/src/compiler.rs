@@ -479,7 +479,7 @@ fn binop_result_type(op: BinaryOp, l: &TypedExpr, r: &TypedExpr) -> Result<Value
     use BinaryOp::*;
     let (lt, rt) = (l.ty.value_type, r.ty.value_type);
     match op {
-        Add | Sub | Mul | Div => {
+        Add | Sub | Mul | Div | Pow => {
             require(
                 lt == ValueType::Number && rt == ValueType::Number,
                 op,
@@ -487,6 +487,8 @@ fn binop_result_type(op: BinaryOp, l: &TypedExpr, r: &TypedExpr) -> Result<Value
             )?;
             Ok(ValueType::Number)
         }
+        // `&` joins any two values as text.
+        Concat => Ok(ValueType::Text),
         And | Or => {
             require(
                 lt == ValueType::Boolean && rt == ValueType::Boolean,

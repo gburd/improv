@@ -14,15 +14,17 @@
 //! OrExpr       = AndExpr { "OR" AndExpr } ;
 //! AndExpr      = NotExpr { "AND" NotExpr } ;
 //! NotExpr      = "NOT" NotExpr | Comparison ;               (* NOT a > b == NOT (a > b) *)
-//! Comparison   = Additive [ ("==" | "<>" | "!=" | "<" | "<=" | ">" | ">=") Additive ] ;
+//! Comparison   = Concat [ ("==" | "<>" | "!=" | "<" | "<=" | ">" | ">=") Concat ] ;
+//! Concat       = Additive { "&" Additive } ;                (* text join *)
 //! Additive     = Term { ("+" | "-") Term } ;
-//! Term         = Factor { ("*" | "/") Factor } ;
-//! Factor       = Primary ;                               (* '^' power reserved, not in v1 AST *)
+//! Term         = Unary { ("*" | "/") Unary } ;
+//! Unary        = "-" Unary | Power ;
+//! Power        = Postfix [ "^" Unary ] ;     (* right-assoc; -2^2 = -(2^2) = -4 *)
+//! Postfix      = Primary { "%" } ;                          (* x% = x / 100 *)
 //! Primary      = Literal
-//!              | Aggregation
+//!              | Call
 //!              | MeasureRef
-//!              | "(" Expression ")"
-//!              | "-" Primary ;
+//!              | "(" Expression ")" ;
 //! MeasureRef   = Name [ "[" DimList "]" ] ;                (* DimList -> DimensionSpec.by *)
 //! DimList      = Name { "," Name } ;
 //! Aggregation  = AggFunc "(" MeasureRef "OVER" Name ")" ;
@@ -329,7 +331,7 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                         two.unwrap().to_string()
                     }
                     _ => {
-                        let single = "+-*/^=<>()[],.".find(c);
+                        let single = "+-*/^=<>()[],.&%".find(c);
                         if single.is_none() {
                             return Err(ParseError::new(
                                 format!("unexpected character: {c:?}"),
@@ -524,7 +526,7 @@ impl<'a> Parser<'a> {
 
     /// Comparison = Additive [ cmp-op Additive ]  (non-associative)
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let lhs = self.parse_additive()?;
+        let lhs = self.parse_concat()?;
         let op = match self.peek() {
             Some(Tok::Op(o)) => match o.as_str() {
                 "==" => Some(BinaryOp::Eq),
@@ -540,11 +542,21 @@ impl<'a> Parser<'a> {
         match op {
             Some(op) => {
                 self.bump();
-                let rhs = self.parse_additive()?;
+                let rhs = self.parse_concat()?;
                 Ok(Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs)))
             }
             None => Ok(lhs),
         }
+    }
+
+    /// Concat = Additive { "&" Additive }
+    fn parse_concat(&mut self) -> Result<Expr, ParseError> {
+        let mut lhs = self.parse_additive()?;
+        while self.eat_op("&") {
+            let rhs = self.parse_additive()?;
+            lhs = Expr::BinaryOp(BinaryOp::Concat, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
     }
 
     /// Additive = Term { ("+"|"-") Term }
@@ -563,9 +575,9 @@ impl<'a> Parser<'a> {
         Ok(lhs)
     }
 
-    /// Term = Factor { ("*"|"/") Factor }
+    /// Term = Unary { ("*"|"/") Unary }
     fn parse_term(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_factor()?;
+        let mut lhs = self.parse_unary()?;
         loop {
             let op = match self.peek() {
                 Some(Tok::Op(o)) if o == "*" => BinaryOp::Mul,
@@ -573,26 +585,72 @@ impl<'a> Parser<'a> {
                 _ => break,
             };
             self.bump();
-            let rhs = self.parse_factor()?;
+            let rhs = self.parse_unary()?;
             lhs = Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs));
         }
         Ok(lhs)
     }
 
-    /// Factor = Primary [ "^" Factor ]   (right-associative power)
-    ///
-    /// The AST has no `Pow` `BinaryOp` variant, so `^` is rejected with a clear
-    /// error rather than mislowered. Grammar slot kept for forward-compat.
-    fn parse_factor(&mut self) -> Result<Expr, ParseError> {
-        let base = self.parse_primary()?;
-        if matches!(self.peek(), Some(Tok::Op(o)) if o == "^") {
-            return Err(self.err("'^' (power) is not supported by the v1 AST"));
+    /// Unary = "-" Unary | Power. A chain of minuses is read in a loop (each
+    /// counts toward `MAX_PARSE_DEPTH`, as the compiler recurses over it).
+    /// Unary minus binds looser than `^`: `-2^2` is `-(2^2)`.
+    fn parse_unary(&mut self) -> Result<Expr, ParseError> {
+        let mut negs = 0usize;
+        while matches!(self.peek(), Some(Tok::Op(o)) if o == "-") {
+            if self.depth + negs >= MAX_PARSE_DEPTH {
+                return Err(self.err("expression nested too deeply"));
+            }
+            self.bump();
+            negs += 1;
         }
-        Ok(base)
+        self.depth += negs;
+        let e = self.parse_power();
+        self.depth -= negs;
+        let mut e = e?;
+        for _ in 0..negs {
+            e = Expr::UnaryOp(UnaryOp::Neg, Box::new(e));
+        }
+        Ok(e)
     }
 
-    /// Primary = Literal | Aggregation | MeasureRef | "(" Expression ")"
-    ///         | "-" Primary
+    /// Power = Postfix [ "^" Unary ]: right-associative (`2^3^2` is `2^9`),
+    /// and the exponent may be negative (`2^-1`).
+    fn parse_power(&mut self) -> Result<Expr, ParseError> {
+        let base = self.parse_postfix()?;
+        if !self.eat_op("^") {
+            return Ok(base);
+        }
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            self.depth -= 1;
+            return Err(self.err("expression nested too deeply"));
+        }
+        let exp = self.parse_unary();
+        self.depth -= 1;
+        Ok(Expr::BinaryOp(
+            BinaryOp::Pow,
+            Box::new(base),
+            Box::new(exp?),
+        ))
+    }
+
+    /// Postfix = Primary { "%" }: `x%` is `x / 100` (`50%` folds to `0.5`).
+    fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
+        let mut e = self.parse_primary()?;
+        while self.eat_op("%") {
+            e = match e {
+                Expr::Literal(Value::Number(n)) => Expr::Literal(Value::Number(n / 100.0)),
+                other => Expr::BinaryOp(
+                    BinaryOp::Div,
+                    Box::new(other),
+                    Box::new(Expr::Literal(Value::Number(100.0))),
+                ),
+            };
+        }
+        Ok(e)
+    }
+
+    /// Primary = Literal | Call | MeasureRef | "(" Expression ")"
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         self.depth += 1;
         if self.depth > MAX_PARSE_DEPTH {
@@ -607,11 +665,6 @@ impl<'a> Parser<'a> {
     fn parse_primary_inner(&mut self) -> Result<Expr, ParseError> {
         match self.peek() {
             None => Err(self.err("unexpected end of input")),
-            Some(Tok::Op(o)) if o == "-" => {
-                self.bump();
-                let inner = self.parse_primary()?;
-                Ok(Expr::UnaryOp(UnaryOp::Neg, Box::new(inner)))
-            }
             Some(Tok::Op(o)) if o == "(" => {
                 self.bump();
                 let e = self.parse_expr()?;
@@ -1133,6 +1186,37 @@ mod tests {
         );
     }
 
+    /// The mathematical convention for `^`: right-associative and tighter
+    /// than unary minus. `%` binds tightest; `&` sits between `+ -` and the
+    /// comparisons.
+    #[test]
+    fn power_concat_and_percent_precedence() {
+        let m = fixture();
+        let p = |s: &str| parse_expr(&m, s).unwrap().expr;
+        let num = |n: f64| Expr::Literal(Value::Number(n));
+        let pow = |a, b| Expr::BinaryOp(BinaryOp::Pow, Box::new(a), Box::new(b));
+        let neg = |a| Expr::UnaryOp(UnaryOp::Neg, Box::new(a));
+        assert_eq!(p("-2^2"), neg(pow(num(2.0), num(2.0))));
+        assert_eq!(p("2^3^2"), pow(num(2.0), pow(num(3.0), num(2.0))));
+        assert_eq!(p("2^-1"), pow(num(2.0), neg(num(1.0))));
+        assert_eq!(p("(-2)^2"), pow(neg(num(2.0)), num(2.0)));
+        assert_eq!(p("2*3^2"), parse_expr(&m, "2*(3^2)").unwrap().expr);
+        assert_eq!(p("50%"), num(0.5));
+        assert_eq!(p("Price%"), parse_expr(&m, "Price / 100").unwrap().expr);
+        assert_eq!(p("2^50%"), pow(num(2.0), num(0.5)));
+        assert_eq!(
+            p("Price + 1 & \"x\""),
+            parse_expr(&m, "(Price + 1) & \"x\"").unwrap().expr
+        );
+        assert_eq!(
+            p("\"a\" & \"b\" == \"ab\""),
+            parse_expr(&m, "(\"a\" & \"b\") == \"ab\"").unwrap().expr
+        );
+        assert_eq!(p("--Price"), neg(neg(refr(PRICE))));
+        assert!(parse_expr(&m, &format!("{}1", "-".repeat(10_000))).is_err());
+        assert!(parse_expr(&m, "2^").is_err());
+    }
+
     /// NOT binds looser than a comparison and tighter than AND, as in SQL:
     /// `NOT Price > 15` is `NOT (Price > 15)`, and `NOT a AND b` is
     /// `(NOT a) AND b`.
@@ -1239,8 +1323,9 @@ mod tests {
         assert!(parse_expr(&m, "").is_err());
         // Unterminated string.
         assert!(parse_expr(&m, "\"oops").is_err());
-        // Power is rejected (no AST variant).
-        assert!(parse_expr(&m, "Price ^ Quantity").is_err());
+        // A dangling operator.
+        assert!(parse_expr(&m, "Price ^").is_err());
+        assert!(parse_expr(&m, "Price &").is_err());
     }
 
     #[test]
