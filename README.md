@@ -2,8 +2,11 @@
 
 A **multidimensional spreadsheet** in Rust, in the line of Lotus Improv and
 Quantrix. You model in named **categories**, **items** and **measures**
-instead of cell addresses, write formulas over dimensions, and every derived
-value recomputes **incrementally** through a differential-dataflow graph. The
+instead of cell addresses, write formulas over dimensions (with the
+spreadsheet functions people know, Excel's names: `IF`, `ROUND`, `NPV`,
+`STDEV`, `TEXT` and some 330 more, plus running totals and `PREV`), and
+every derived value recomputes **incrementally** through a
+differential-dataflow graph. The
 same model opens in a NeXTSTEP-style desktop GUI, a terminal UI, a CLI, a
 streaming pipe, an HTTP server, and **inside Postgres**.
 
@@ -14,6 +17,7 @@ streaming pipe, an HTTP server, and **inside Postgres**.
 (also on [Codeberg Pages](https://gregburd.codeberg.page/improv/)) ·
 [API reference (rustdoc)](https://gburd.github.io/improv/api/) ·
 [Ways to use Improv](https://gburd.github.io/improv/ways.html) ·
+[Function reference](https://gburd.github.io/improv/functions.html) ·
 [Improv in Postgres](https://gburd.github.io/improv/postgres.html)
 
 ![The Improv workspace: worksheets, formulas and the model browser](docs/src/img/gui-workspace.png)

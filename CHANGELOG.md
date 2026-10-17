@@ -6,6 +6,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Phases P1–P5 of the built-in functions plan: about 520 spreadsheet
+functions with Excel's names, typed errors, the `IF` family, positional
+forms and recurrences, and locale-aware entry.
+
 ### Added
 
 - **72 statistical reductions** (phase P4), each `F(x OVER T, …)`:
@@ -153,17 +157,6 @@ this project follows [Semantic Versioning](https://semver.org/).
 - `MIN2`/`MAX2` are now aliases of `MIN`/`MAX`, which take any number of
   arguments.
 - Comparisons order text, dates and booleans, not only numbers.
-
-### Security
-
-- **duckdb 1.10506.1** (was 1.10505.0) moves its build-time `zip`
-  dependency from 6.0.0 to 9.0.4, fixing RUSTSEC-2026-0367, -0368 and -0369
-  (SUID bits, symlink targets and permissions applied during ZIP
-  extraction). It only ever unpacked DuckDB's own archive at build time,
-  but it no longer needs a waiver.
-
-### Changed
-
 - **`NOT` binds looser than a comparison**, as in SQL: `NOT Price > 15` is
   `NOT (Price > 15)`. It used to parse as `(NOT Price) > 15`, a type error.
   Only a formula comparing a `NOT` of a boolean measure with `<`, `<=`, `>`
@@ -184,6 +177,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   checker saw: `X = Quantity[Product]` still produced every Time×Product cell.
   Inside an aggregation (`SUM(Quantity[Product] OVER Time)`) it works as
   before.
+
+### Security
+
+- **duckdb 1.10506.1** (was 1.10505.0) moves its build-time `zip`
+  dependency from 6.0.0 to 9.0.4, fixing RUSTSEC-2026-0367, -0368 and -0369
+  (SUID bits, symlink targets and permissions applied during ZIP
+  extraction). It only ever unpacked DuckDB's own archive at build time,
+  but it no longer needs a waiver.
 
 ## [0.9.0] - 2026-10-16
 

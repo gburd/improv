@@ -434,10 +434,13 @@ operators — see [Architecture](./architecture.md).
 
 The engine evaluates input-measure references, literals (standalone or as
 operands), unary negation and `NOT`, the arithmetic, logical and comparison
-operators, dimension-aligning joins, aggregations, the built-in functions
-(including the lazy `IF` family), typed error values, non-numeric (Text,
-Boolean, DateTime) values, and derived measures that reference other derived
-measures.
+operators, dimension-aligning joins, aggregations (several measures,
+parameters, `WHERE`, windows, per-item results such as `RANK`), the 331
+built-in functions of the [Function Reference](./functions.md) (math,
+rounding, text, dates, statistics and distributions, financial), the lazy
+`IF` family, positions and neighbours (`POSITION`, `PREV`, `NEXT`),
+recurrences, typed error values, non-numeric (Text, Boolean, DateTime)
+values, and derived measures that reference other derived measures.
 
 External functions use the `CALL(...)` definition form and are evaluated
 host-side by `improv_extfn`. Python, R, Julia and Pure run in a sandboxed
@@ -446,5 +449,9 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 **Gaps:**
 
 - no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
-  aggregation) (the AST field exists; the parser never sets it);
-- a window or per-item reduction takes one `OVER` category.
+  aggregation);
+- a window or per-item reduction takes one `OVER` category;
+- no array results yet (`FREQUENCY`, `LINEST`, `LOGEST`, `SORT`,
+  `UNIQUE`, …), lookups (`XLOOKUP`, `INDEX`/`MATCH`) or `LAMBDA`: those
+  are phase P6 of the functions plan;
+- `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

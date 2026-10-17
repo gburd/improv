@@ -1,7 +1,22 @@
 # Built-in functions: a five-product inventory and a plan for Improv
 
 Date: 2026-10-16 · Status: **approved 2026-10-16, with the §9 decisions
-below. Nothing is built yet.**
+below. P1–P5 built (2026-10-17); P6 and P7 open.**
+
+## Status (2026-10-17)
+
+| Phase | Shipped | Deferred |
+|---|---|---|
+| P1 | registry, typed errors, `IF` family, `^` `&` `%`, 118 functions, German entry | — |
+| P2 | 66 date, information, `TEXT`/`FIXED`/`DOLLAR`, regex functions | holiday lists (`NETWORKDAYS`/`WORKDAY`), `REGEXEXTRACT` modes 1–2, some `TEXT` codes |
+| P3 | `POSITION`, `@ITEM`, `@ID`, `@ITEMCOUNT`, `PREV`/`NEXT`, windows, recurrences, multi-category `OVER`, `ALL EXCEPT`, `WHERE`, `FIRST`/`LAST`/`S`/`TEXTJOIN` | `SUMMARY`, `TIMELINEDATE` (no summary items or timelines in the model) |
+| P4 | 54 special functions and distributions, 72 reductions (descriptive, conditional, per-item ranks and fits, regression, tests, `AUTOCORREL`) | `FREQUENCY`, `LINEST`, `LOGEST` (array results, P6) |
+| P5 | 49 TVM, depreciation and bond functions; `NPV`, `XNPV`, `IRR`, `XIRR`, `MIRR`, `FMRR`, `FVSCHEDULE` | — |
+
+331 functions and about 106 aliases, all in `docs/src/functions.md`
+(generated). 1,831 literal goldens and 653 reduction cells, mostly from
+LibreOffice 25.8 headless; the rest from the Excel, Gnumeric, Numbers,
+Quantrix and Oleo sources.
 
 ## Decisions (2026-10-16)
 
