@@ -166,19 +166,23 @@ impl FnDef {
     /// (`number`). Optional ones are `[bracketed]`, a variadic tail is `…`,
     /// a reduced one is `x OVER T`, and a list result ends in `INTO K`.
     pub fn param_names(&self) -> Vec<String> {
+        self.named_params().unwrap_or_else(|| self.type_names())
+    }
+
+    /// The names from the table or the description, if either has them.
+    fn named_params(&self) -> Option<Vec<String>> {
         // An aggregation and its scalar twin share a name: the entry
         // with an OVER is the aggregation's.
         let mut rows = params::PARAM_NAMES.iter().filter(|(n, _)| *n == self.name);
-        if let Some((_, p)) = rows
-            .clone()
+        rows.clone()
             .find(|(_, p)| p.contains(" OVER ") == self.kind.reduces())
             .or_else(|| rows.next())
-        {
-            return split_params(p);
-        }
-        if let Some(names) = spelled_params(self.name, self.doc) {
-            return names;
-        }
+            .map(|(_, p)| split_params(p))
+            .or_else(|| spelled_params(self.name, self.doc))
+    }
+
+    /// The fallback: each parameter's type, as [`Self::signature`] lists them.
+    fn type_names(&self) -> Vec<String> {
         let mut sig = self.signature();
         sig.truncate(sig.len() - 1);
         let inner = &sig[self.name.len() + 1..];
@@ -677,14 +681,13 @@ fn spelled_params(name: &str, doc: &str) -> Option<Vec<String>> {
         .map(|p| p.trim().to_string())
         .collect();
     let word = |p: &str| {
+        // The name before any OVER / INTO categories.
+        let p = p.split(" OVER ").next().unwrap_or(p);
+        let p = p.split(" INTO ").next().unwrap_or(p);
         let p = p.trim_start_matches('[').trim_end_matches(']');
-        let p = p
-            .strip_suffix(" OVER T")
-            .or_else(|| p.strip_suffix(" OVER Category"))
-            .unwrap_or(p);
         !p.is_empty()
             && p.chars()
-                .all(|c| c.is_alphanumeric() || "_ …=.,-".contains(c))
+                .all(|c| c.is_alphanumeric() || "_ …=.-".contains(c))
             && !p.starts_with(|c: char| c.is_ascii_digit() || c == '-')
     };
     (!inner.is_empty() && parts.iter().all(|p| word(p))).then_some(parts)
@@ -883,7 +886,21 @@ mod tests {
         // Hints: spelled in the description, from the table, or the types.
         let hint = |n: &str| by_name(n).next().unwrap().hint();
         assert_eq!(hint("PMT"), "PMT(rate, nper, pv, [fv], [type])");
-        assert_eq!(hint("IF"), "IF(test, then, [else])");
+        assert_eq!(
+            hint("IF"),
+            "IF(logical_test, value_if_true, [value_if_false])"
+        );
+        assert_eq!(callable("SUM").unwrap().hint(), "SUM(number1, …)");
+        assert_eq!(aggregation("SUM").unwrap().hint(), "SUM(values OVER T)");
+        assert_eq!(
+            hint("MINVERSE"),
+            "MINVERSE(A OVER R, C INTO R2, C2)",
+            "categories stay with their argument"
+        );
+        assert_eq!(
+            spelled_params("X", "X(a, b OVER T, [c] INTO K)").map(|v| v.len()),
+            Some(3)
+        );
         assert_eq!(hint("PI"), "PI()");
         assert_eq!(closest("PMTT", 3)[0], "PMT");
         assert_eq!(closest("xlookp", 1), ["XLOOKUP"]);
@@ -898,20 +915,60 @@ mod tests {
         assert!(spelled_params("X", "X(a, (b)").is_none(), "unclosed");
     }
 
-    /// Dump every hint (run with `--ignored --nocapture` to review them).
+    /// Dump every hint (run with `--ignored --nocapture` to review them):
+    /// `T` where the names fall back to the types, else `N`.
     #[test]
     #[ignore]
     fn dump_hints() {
         for d in super::all() {
-            let generic = d.param_names().iter().all(|p| {
-                let p = p.trim_start_matches('[').trim_end_matches(']');
-                let p = p.trim_end_matches(" OVER category");
-                matches!(
-                    p,
-                    "number" | "text" | "boolean" | "date" | "value" | "category" | "…"
-                )
-            });
+            let generic = !d.params.is_empty() && d.named_params().is_none();
             println!("{} {}", if generic { "T" } else { "N" }, d.hint());
+        }
+    }
+
+    /// Every function with parameters names them (in the table or its
+    /// description), one name per parameter: optional ones bracketed, a
+    /// variadic tail marked by one `…` item (`value1, …`, `x1, … OVER T`).
+    #[test]
+    fn every_function_names_its_parameters() {
+        for d in super::all() {
+            let names = d.param_names();
+            assert!(
+                d.params.is_empty() || d.named_params().is_some(),
+                "{} falls back to its types: add it to functions/params.rs",
+                d.hint()
+            );
+            let tail = names.iter().filter(|p| p.starts_with('…')).count();
+            assert_eq!(
+                tail,
+                usize::from(d.variadic),
+                "{}: one … iff variadic",
+                d.hint()
+            );
+            // SWITCH's [default] follows its repeated value/result pairs.
+            let extra = usize::from(d.name == "SWITCH");
+            assert_eq!(
+                names.len() - tail,
+                d.params.len() + extra,
+                "{}: one name per parameter",
+                d.hint()
+            );
+            for (i, p) in names.iter().filter(|p| !p.starts_with('…')).enumerate() {
+                assert_eq!(p.starts_with('['), i >= d.required, "{}: {p}", d.hint());
+            }
+            if d.kind.reduces() {
+                assert!(
+                    names.iter().any(|p| p.contains(" OVER ")),
+                    "{}: which argument is reduced",
+                    d.hint()
+                );
+            }
+            assert_eq!(
+                names.last().is_some_and(|p| p.contains(" INTO ")),
+                d.kind == Kind::Array,
+                "{}: a list result ends in INTO",
+                d.hint()
+            );
         }
     }
 
