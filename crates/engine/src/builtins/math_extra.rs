@@ -496,6 +496,8 @@ mod tests {
         assert_eq!(ilog(f64::INFINITY, 10.0), Err(err::NUM));
         // HDATE_JULIAN: arguments out of range.
         assert_eq!(calendar::jdn(1e8, 1.0, 1.0), Err(err::NUM));
+        assert_eq!(calendar::jdn(2000.0, -1e8, 1.0), Err(err::NUM));
+        assert_eq!(calendar::jdn(2000.0, 1.0, 1e8), Err(err::NUM));
         assert_eq!(hebrew::hdate_of_jdn(0), Err(err::NUM));
         // FLT.NEXTAFTER: NaN, downward, other text.
         assert!(next_after(f64::NAN, 1.0).is_nan());
