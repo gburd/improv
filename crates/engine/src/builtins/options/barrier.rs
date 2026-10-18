@@ -479,7 +479,7 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
             };
             if k < 0.0 {
                 prob_in_money(s, m, b1, b2)
-            } else if (b1 > b2 && b1 > 0.0 && b2 > 0.0)
+            } else if (b1 > b2 && b2 > 0.0)
                 || (k >= b2 && b2 > 0.0 && pc == Call)
                 || (k <= b1 && pc == Put)
             {
@@ -499,6 +499,118 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// OPT_BARRIER, OPT_TOUCH and OPT_PROB_* through `eval`, against
+    /// LibreOffice 25.2's pricing add-in (GETOPTBARRIER, …).
+    fn call(id: u32, nums: &[f64], flags: &[&str]) -> R {
+        let mut a: Vec<CellValue> = nums.iter().map(|x| CellValue::num(*x)).collect();
+        a.extend(flags.iter().map(|f| CellValue::Text((*f).into())));
+        eval(id, &a)
+    }
+
+    #[test]
+    fn eval_matches_libreoffice() {
+        let near = |got: R, want: f64| {
+            let g = got.unwrap().as_num().unwrap();
+            assert!(
+                (g - want).abs() <= 1e-12 * want.abs().max(1.0),
+                "{g} vs {want}"
+            );
+        };
+        let mkt = [30.0, 0.2, 0.06, 0.02];
+        let bar = |t: f64, k: f64, b1: f64, b2: f64, rebate: f64, flags: &[&str]| {
+            let mut v = mkt.to_vec();
+            v.extend([t, k, b1, b2, rebate]);
+            call(1800, &v, flags)
+        };
+        // At expiry: a put struck below the spot pays nothing; a call's
+        // delta is 1. A zero strike, a rebate on a knock-in.
+        near(bar(0.0, 25.0, 20.0, 0.0, 0.0, &["p", "o", "c"]), 0.0);
+        near(
+            bar(0.0, 25.0, 20.0, 0.0, 0.0, &["c", "o", "c", "delta"]),
+            1.0,
+        );
+        near(
+            bar(1.0, 0.0, 20.0, 0.0, 0.0, &["c", "o", "c"]),
+            28.746_249_329_397_372,
+        );
+        near(
+            bar(1.0, 25.0, 20.0, 0.0, 1.5, &["c", "i", "c"]),
+            1.364_748_307_397_057_2,
+        );
+        // Knocked out already: the spot above the upper barrier, or outside
+        // a double barrier.
+        near(bar(1.0, 25.0, 0.0, 28.0, 0.0, &["c", "o", "c"]), 0.0);
+        near(bar(1.0, 25.0, 35.0, 40.0, 0.0, &["c", "o", "c"]), 0.0);
+        near(bar(1.0, 25.0, 0.0, 20.0, 0.0, &["p", "o", "c"]), 0.0);
+        near(
+            bar(1.0, 25.0, 0.0, 20.0, 0.0, &["c", "i", "c"]),
+            6.213_586_521_226_453,
+        );
+        near(
+            bar(1.0, 25.0, 20.0, 40.0, 0.0, &["p", "o", "c", "gamma"]),
+            0.005_967_159_136_384_383,
+        );
+        // Err:502 there: a negative strike or time.
+        assert_eq!(
+            bar(1.0, -1.0, 20.0, 0.0, 0.0, &["c", "o", "c"]),
+            Err(err::NUM)
+        );
+        assert_eq!(
+            bar(-1.0, 25.0, 20.0, 0.0, 0.0, &["c", "o", "c"]),
+            Err(err::NUM)
+        );
+        let touch = [30.0, 0.2, 0.06, 0.02, -1.0, 25.0, 0.0];
+        assert_eq!(call(1801, &touch, &["d", "i", "c"]), Err(err::NUM));
+        let touch = [30.0, 0.2, 0.06, 0.02, 0.5, 25.0, 0.0];
+        near(
+            call(1801, &touch, &["d", "i", "c"]),
+            0.174_543_429_435_836_23,
+        );
+        assert_eq!(
+            call(1802, &[30.0, 0.2, 0.1, -1.0, 20.0, 0.0], &[]),
+            Err(err::NUM)
+        );
+        let pim = |t: f64, b1: f64, b2: f64, k: f64, pc: &str| {
+            call(1803, &[30.0, 0.2, 0.1, t, b1, b2, k], &[pc])
+        };
+        assert_eq!(
+            call(1803, &[30.0, 0.2, 0.1, -1.0, 25.0, 35.0], &[]),
+            Err(err::NUM)
+        );
+        // In the money and between the barriers: none when the strike is
+        // past the barrier on the paying side, or the barriers cross.
+        near(pim(1.0, 0.0, 35.0, 40.0, "c"), 0.0);
+        near(pim(1.0, 25.0, 0.0, 20.0, "p"), 0.0);
+        near(pim(1.0, 35.0, 25.0, 28.0, "c"), 0.0);
+        near(pim(1.0, 25.0, 35.0, 28.0, "p"), 0.133_320_380_934_200_95);
+        near(pim(1.0, 0.0, 0.0, 28.0, "p"), 0.228_146_633_586_407_58);
+        near(pim(1.0, 25.0, 35.0, 40.0, "p"), 0.549_763_140_586_935_7);
+        near(pim(1.0, 25.0, 35.0, 20.0, "c"), 0.549_763_140_586_935_7);
+        near(pim(1.0, 25.0, 0.0, 20.0, "c"), 0.905_173_747_347_793_4);
+        near(pim(1.0, 0.0, 35.0, 40.0, "p"), 0.644_589_393_239_142_3);
+        near(pim(1.0, 35.0, 25.0, 28.0, "p"), 0.0);
+        let hit = [-30.0, 0.2, 0.1, 1.0, 20.0, 0.0];
+        assert_eq!(call(1802, &hit, &[]), Err(err::NUM));
+        // A zero strike and no barriers: the forward; end-monitored
+        // barriers (truncated payoffs); a spot between or outside a
+        // double barrier, and crossed barriers.
+        near(
+            bar(1.0, 0.0, 0.0, 0.0, 0.0, &["c", "o", "c"]),
+            29.405_960_199_202_656,
+        );
+        near(
+            bar(1.0, 25.0, 0.0, 0.0, 0.0, &["c", "o", "e"]),
+            6.213_586_521_226_453,
+        );
+        near(bar(1.0, 25.0, 0.0, 20.0, 0.0, &["c", "o", "e"]), 0.0);
+        near(
+            bar(1.0, 25.0, 28.0, 40.0, 0.0, &["c", "o", "c"]),
+            1.314_607_241_506_555_3,
+        );
+        near(bar(1.0, 25.0, 20.0, 28.0, 0.0, &["c", "o", "c"]), 0.0);
+        near(bar(1.0, 25.0, 40.0, 20.0, 0.0, &["c", "o", "c"]), 0.0);
+    }
 
     const M: Mkt = Mkt {
         vol: 0.2,
