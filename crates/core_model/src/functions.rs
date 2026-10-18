@@ -160,17 +160,21 @@ impl FnDef {
         }
     }
 
-    /// The parameters' names, for signature help and ghost text: those the
-    /// description spells (`PMT(rate, nper, pv, [fv], [type])`, or the
-    /// `PARAM_NAMES` table), else each parameter's type (`number`).
-    /// Optional ones are `[bracketed]`; a variadic tail ends in `…`.
+    /// The parameters' names, for signature help and ghost text: from the
+    /// table in `functions/params.rs`, else those the description spells
+    /// (`PMT(rate, nper, pv, [fv], [type])`), else each parameter's type
+    /// (`number`). Optional ones are `[bracketed]`, a variadic tail is `…`,
+    /// a reduced one is `x OVER T`, and a list result ends in `INTO K`.
     pub fn param_names(&self) -> Vec<String> {
-        if let Some(names) = PARAM_NAMES
-            .iter()
-            .find(|(n, _)| *n == self.name)
-            .map(|(_, p)| *p)
+        // An aggregation and its scalar twin share a name: the entry
+        // with an OVER is the aggregation's.
+        let mut rows = params::PARAM_NAMES.iter().filter(|(n, _)| *n == self.name);
+        if let Some((_, p)) = rows
+            .clone()
+            .find(|(_, p)| p.contains(" OVER ") == self.kind.reduces())
+            .or_else(|| rows.next())
         {
-            return names.split(", ").map(str::to_string).collect();
+            return split_params(p);
         }
         if let Some(names) = spelled_params(self.name, self.doc) {
             return names;
@@ -583,6 +587,7 @@ mod financial_reduce;
 mod lookup;
 mod math_extra;
 mod options;
+mod params;
 mod statistical;
 mod statistical_reduce;
 
@@ -630,6 +635,25 @@ impl Kind {
     }
 }
 
+/// `x, y OVER R, C, [z] INTO K` as its arguments: the categories listed
+/// after an OVER or INTO (capitalized) stay with their argument.
+fn split_params(list: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for p in list.split(", ") {
+        match out.last_mut() {
+            Some(last)
+                if (last.contains(" OVER ") || last.contains(" INTO "))
+                    && p.starts_with(|c: char| c.is_ascii_uppercase()) =>
+            {
+                last.push_str(", ");
+                last.push_str(p);
+            }
+            _ => out.push(p.to_string()),
+        }
+    }
+    out
+}
+
 /// The parameter list a description spells as `NAME(a, b, [c])`, if it
 /// does (and the names look like names, not an example call).
 fn spelled_params(name: &str, doc: &str) -> Option<Vec<String>> {
@@ -648,7 +672,10 @@ fn spelled_params(name: &str, doc: &str) -> Option<Vec<String>> {
         }
     }
     let inner = &doc[at..end?];
-    let parts: Vec<String> = inner.split(", ").map(|p| p.trim().to_string()).collect();
+    let parts: Vec<String> = split_params(inner)
+        .iter()
+        .map(|p| p.trim().to_string())
+        .collect();
     let word = |p: &str| {
         let p = p.trim_start_matches('[').trim_end_matches(']');
         let p = p
@@ -657,66 +684,11 @@ fn spelled_params(name: &str, doc: &str) -> Option<Vec<String>> {
             .unwrap_or(p);
         !p.is_empty()
             && p.chars()
-                .all(|c| c.is_alphanumeric() || "_ …=.-".contains(c))
+                .all(|c| c.is_alphanumeric() || "_ …=.,-".contains(c))
             && !p.starts_with(|c: char| c.is_ascii_digit() || c == '-')
     };
     (!inner.is_empty() && parts.iter().all(|p| word(p))).then_some(parts)
 }
-
-/// Parameter names for functions whose description does not spell them,
-/// as `NAME(…)` would list them. Everything else falls back to types.
-static PARAM_NAMES: &[(&str, &str)] = &[
-    ("ABS", "number"),
-    ("ROUND", "number, digits"),
-    ("ROUNDUP", "number, digits"),
-    ("ROUNDDOWN", "number, digits"),
-    ("MOD", "number, divisor"),
-    ("POWER", "number, power"),
-    ("SQRT", "number"),
-    ("LOG", "number, [base]"),
-    ("IF", "test, then, [else]"),
-    ("IFERROR", "value, value_if_error"),
-    ("IFNA", "value, value_if_na"),
-    ("IFS", "test1, value1, …"),
-    ("SWITCH", "expression, value1, result1, …, [default]"),
-    ("CHOOSE", "index, value1, …"),
-    ("LEFT", "text, [count]"),
-    ("RIGHT", "text, [count]"),
-    ("MID", "text, start, count"),
-    ("LEN", "text"),
-    ("FIND", "find_text, within_text, [start]"),
-    ("SEARCH", "find_text, within_text, [start]"),
-    ("SUBSTITUTE", "text, old_text, new_text, [instance]"),
-    ("REPLACE", "old_text, start, count, new_text"),
-    ("CONCAT", "text1, …"),
-    ("TEXTJOIN", "delimiter, ignore_empty, values OVER T"),
-    ("DATE", "year, month, day"),
-    ("TIME", "hour, minute, second"),
-    ("EDATE", "start_date, months"),
-    ("EOMONTH", "start_date, months"),
-    ("DATEDIF", "start_date, end_date, unit"),
-    ("NETWORKDAYS", "start_date, end_date"),
-    ("WORKDAY", "start_date, days"),
-    ("WEEKDAY", "date, [return_type]"),
-    ("SUM", "values OVER T"),
-    ("AVERAGE", "values OVER T"),
-    ("MIN", "values OVER T"),
-    ("MAX", "values OVER T"),
-    ("COUNT", "values OVER T"),
-    ("SUMIF", "values OVER T, criterion"),
-    ("COUNTIF", "values OVER T, criterion"),
-    (
-        "XLOOKUP",
-        "key, keys OVER T, values, [if_not_found], [match_mode], [search_mode]",
-    ),
-    ("XMATCH", "key, keys OVER T, [match_mode], [search_mode]"),
-    ("MATCH", "key, keys OVER T, [match_type]"),
-    ("INDEX", "values OVER T, position"),
-    ("SORT", "values OVER T, [order] INTO K"),
-    ("FILTER", "values, include OVER T, [if_empty] INTO K"),
-    ("NPV", "rate, cash_flows OVER T"),
-    ("IRR", "cash_flows OVER T, [guess]"),
-];
 
 /// Functions matching `query`, best first: an exact name or alias, then a
 /// prefix, then a word of the name or description. Case-insensitive; an
