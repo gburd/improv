@@ -1137,23 +1137,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "core_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "bytes",
- "chrono",
- "edn",
- "enumset",
- "indexmap",
- "lazy_static",
- "ordered-float",
- "serde",
- "serde_derive",
- "uuid",
-]
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1350,18 +1333,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "db_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "core_traits",
- "edn",
- "rusqlite",
- "sql_traits",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1482,24 +1453,6 @@ checksum = "775cfde491852059e386c4e1deb4aef381c617dc364184c6f6afee99b87c402b"
 dependencies = [
  "bytemuck",
  "emath",
-]
-
-[[package]]
-name = "edn"
-version = "0.1.0"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "bytes",
- "chrono",
- "hex",
- "itertools 0.15.0",
- "num",
- "ordered-float",
- "peg",
- "pretty",
- "serde",
- "serde_derive",
- "uuid",
 ]
 
 [[package]]
@@ -2716,7 +2669,7 @@ dependencies = [
  "chrono",
  "improv_core_model",
  "improv_engine",
- "mentat",
+ "mentatdb",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -3169,63 +3122,52 @@ dependencies = [
 ]
 
 [[package]]
-name = "mentat"
-version = "1.11.1"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "chrono",
- "core_traits",
- "db_traits",
- "edn",
- "lazy_static",
- "log",
- "mentat_core",
- "mentat_db",
- "mentat_query_algebrizer",
- "mentat_query_projector",
- "mentat_query_pull",
- "mentat_query_sql",
- "mentat_sql",
- "mentat_transaction",
- "public_traits",
- "query_algebrizer_traits",
- "query_projector_traits",
- "query_pull_traits",
- "rusqlite",
- "rustc_version",
- "serde_json",
- "sql_traits",
- "time",
- "uuid",
-]
-
-[[package]]
 name = "mentat_core"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf7cf1e1bf8efa2b0cb3751425a555639dc0500efa4449cd8ee73657f32155da"
 dependencies = [
  "chrono",
- "core_traits",
- "edn",
  "enumset",
  "indexmap",
+ "mentat_core_traits",
+ "mentat_edn",
  "ordered-float",
  "uuid",
 ]
 
 [[package]]
-name = "mentat_db"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+name = "mentat_core_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de9e1478a64dd2fdc7b36aee0b9ca324ec5808e7b6244a3f4f2283275347e93c"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
+ "bytes",
+ "chrono",
+ "enumset",
+ "indexmap",
+ "lazy_static",
+ "mentat_edn",
+ "ordered-float",
+ "serde",
+ "serde_derive",
+ "uuid",
+]
+
+[[package]]
+name = "mentat_db"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7097ffc69c7d44e06a55017e1d484a60ec72cd4ce939c99007e2d440eb4a8ce"
+dependencies = [
  "indexmap",
  "itertools 0.15.0",
  "lazy_static",
  "log",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "mentat_edn",
  "mentat_sql",
  "ordered-float",
  "petgraph",
@@ -3235,95 +3177,233 @@ dependencies = [
 ]
 
 [[package]]
-name = "mentat_query_algebrizer"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+name = "mentat_db_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42652963be968e7cc1e16c42628890b84bbb8768c27c9b5c10f5b5cacfe91a5b"
 dependencies = [
- "core_traits",
- "edn",
+ "mentat_core_traits",
+ "mentat_edn",
+ "mentat_sql_traits",
+ "rusqlite",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "mentat_edn"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d20b804703652d3d7911c34d5a37c231f56ab08695da6d240e865ad00fc22f8"
+dependencies = [
+ "bytes",
+ "chrono",
+ "hex",
+ "itertools 0.15.0",
+ "num",
+ "ordered-float",
+ "peg",
+ "pretty",
+ "serde",
+ "serde_derive",
+ "uuid",
+]
+
+[[package]]
+name = "mentat_public_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b866a410e469f6e3888af23de04fe4cdfeb05b19e74fb8bcf616608d98eb62f"
+dependencies = [
+ "http",
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_query_algebrizer_traits",
+ "mentat_query_projector_traits",
+ "mentat_query_pull_traits",
+ "mentat_sql_traits",
+ "rusqlite",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "mentat_query_algebrizer"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ccd7025d08f10ad8effe7f66f6f5bf2e6dd12aa6214b36c8e426987521ab326f"
+dependencies = [
  "mentat_core",
- "query_algebrizer_traits",
+ "mentat_core_traits",
+ "mentat_edn",
+ "mentat_query_algebrizer_traits",
+]
+
+[[package]]
+name = "mentat_query_algebrizer_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d38dbd1064abbd876eb24f73d54620d3ddcb6139f3a67a1672b372cb296ae3"
+dependencies = [
+ "mentat_core_traits",
+ "mentat_edn",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "mentat_query_projector"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0202fdb47e9d558d9b9aec88609a3d27d0173bd2a482375a18c032cd59b23a16"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "indexmap",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
  "mentat_query_algebrizer",
+ "mentat_query_projector_traits",
  "mentat_query_pull",
+ "mentat_query_pull_traits",
  "mentat_query_sql",
  "mentat_sql",
- "query_projector_traits",
- "query_pull_traits",
  "rusqlite",
+]
+
+[[package]]
+name = "mentat_query_projector_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7b9ca9ee06cd5e37e3f60d07222dd56b2d63014b4103a4c919fdc275c01b76f"
+dependencies = [
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_query_algebrizer",
+ "mentat_query_pull_traits",
+ "mentat_query_sql",
+ "mentat_sql_traits",
+ "rusqlite",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "mentat_query_pull"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5ec8cec0451b3362e4605cb783e12fa855eee2f396a42a430f87d5bc14c8dd5"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_query_pull_traits",
  "mentat_sql",
- "query_pull_traits",
  "rusqlite",
+]
+
+[[package]]
+name = "mentat_query_pull_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d3bba2af2a1c39db705c46f89cc3a5b201fcaf6095a560f6638892e40ca0571"
+dependencies = [
+ "mentat_core_traits",
+ "mentat_db_traits",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "mentat_query_sql"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e971623d33d4b3ca3c6bf91846350d9a57c3ab61645d5cd83d5daf2ab5d46d5"
 dependencies = [
- "core_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_edn",
  "mentat_query_algebrizer",
  "mentat_sql",
+ "mentat_sql_traits",
  "rusqlite",
- "sql_traits",
 ]
 
 [[package]]
 name = "mentat_sql"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a190007e3518470f4c783a78c3c0fbab80d7aec80e613911c7f03b431ed8a44d"
 dependencies = [
- "core_traits",
  "mentat_core",
+ "mentat_core_traits",
+ "mentat_sql_traits",
  "ordered-float",
  "rusqlite",
- "sql_traits",
+]
+
+[[package]]
+name = "mentat_sql_traits"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20d62a2deae24c0e63f2acd614fdc76ebefd353a396d42eb67786f565a720321"
+dependencies = [
+ "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "mentat_transaction"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f044d6794a60c78dff4540c7c29f27f9909a9fb5d0cd53f533eb9abdc97c9e24"
 dependencies = [
- "core_traits",
- "db_traits",
- "edn",
  "mentat_core",
+ "mentat_core_traits",
  "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_public_traits",
  "mentat_query_algebrizer",
  "mentat_query_projector",
  "mentat_query_pull",
  "mentat_query_sql",
  "mentat_sql",
- "public_traits",
  "rusqlite",
  "serde_json",
+]
+
+[[package]]
+name = "mentatdb"
+version = "1.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee79cf9f4f913451a62247e2fd291590b1d9bd805622ceb890160bc1aa31c1db"
+dependencies = [
+ "chrono",
+ "lazy_static",
+ "log",
+ "mentat_core",
+ "mentat_core_traits",
+ "mentat_db",
+ "mentat_db_traits",
+ "mentat_edn",
+ "mentat_public_traits",
+ "mentat_query_algebrizer",
+ "mentat_query_algebrizer_traits",
+ "mentat_query_projector",
+ "mentat_query_projector_traits",
+ "mentat_query_pull",
+ "mentat_query_pull_traits",
+ "mentat_query_sql",
+ "mentat_sql",
+ "mentat_sql_traits",
+ "mentat_transaction",
+ "rusqlite",
+ "rustc_version",
+ "serde_json",
+ "time",
+ "uuid",
 ]
 
 [[package]]
@@ -4299,65 +4379,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "public_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "core_traits",
- "db_traits",
- "edn",
- "http",
- "query_algebrizer_traits",
- "query_projector_traits",
- "query_pull_traits",
- "rusqlite",
- "sql_traits",
- "thiserror 2.0.20",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
-
-[[package]]
-name = "query_algebrizer_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "core_traits",
- "edn",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "query_projector_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "core_traits",
- "db_traits",
- "edn",
- "mentat_query_algebrizer",
- "mentat_query_sql",
- "query_pull_traits",
- "rusqlite",
- "sql_traits",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "query_pull_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "core_traits",
- "db_traits",
- "thiserror 2.0.20",
-]
 
 [[package]]
 name = "quick-error"
@@ -5076,14 +5101,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
  "bitflags 2.13.1",
-]
-
-[[package]]
-name = "sql_traits"
-version = "0.0.2"
-source = "git+https://codeberg.org/gregburd/mentat.git?rev=6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9#6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9"
-dependencies = [
- "thiserror 2.0.20",
 ]
 
 [[package]]

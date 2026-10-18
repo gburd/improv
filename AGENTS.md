@@ -48,7 +48,7 @@ The full "tidy" gate — all must be error- AND warning-free:
 
 1. `cargo fmt -p improv_<crate> ... -- --check` for every crate under
    `crates/` except `pg_improv` (rustfmt, config in `rustfmt.toml`). Scope to
-   our crates, not `--all`, which would also lint the Mentat git dependency.
+   our crates, not `--all`, which would also lint the Mentat dependency.
 2. `cargo clippy -p improv_<crate> ... --all-targets --all-features -- -D
    warnings` (config in `clippy.toml`), same scoping.
 3. `cargo test --workspace` (all suites green; `IMPROV_TEST_PG` set runs the
@@ -113,20 +113,17 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
 
 ## CI / storage-backend pin
 
-- **Mentat is a pinned git dependency**, declared once in
+- **Mentat comes from crates.io**, pinned exactly, declared once in
   `[workspace.dependencies]`:
-  `mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "<sha>" }`.
-  It is deliberately NOT a path dependency: `path = "../mentat"` meant a fresh
-  clone could not even parse its manifest, so nobody outside a machine with a
-  sibling checkout could build Improv, and CI hid this by cloning Mentat first.
-  The `rev` is pinned for reproducibility (cargo forbids `branch` + `rev`
-  together); the revision tracks Mentat's **`master`** (a released tag's
-  commit, currently v1.11.1). When Improv needs newer Mentat behavior: land it
-  on Mentat `master` (pushed to Codeberg, so the rev is fetchable), then bump
-  the `rev`, commit the resulting `Cargo.lock`, and record an A/B storage
-  benchmark (`docs/reviews/bench/bench-mentat.sh`). A local checkout is still handy for
-  *developing* Mentat — use `[patch]` or `cargo add --path` temporarily, but
-  never commit that.
+  `mentat = { package = "mentatdb", version = "=<x.y.z>" }` (Mentat 1.12+
+  publishes the embedded engine as `mentatdb`; the library is still
+  `mentat`, so `use mentat::…` is unchanged). Currently 1.16.0. Never a path
+  dependency: `path = "../mentat"` made a fresh clone unbuildable. When
+  Improv needs newer Mentat behavior: release it from Mentat `master` to
+  crates.io, bump the version, commit the resulting `Cargo.lock`, and record
+  an A/B storage benchmark (`docs/reviews/bench/bench-mentat.sh`). A local
+  checkout is still handy for *developing* Mentat — use `[patch]` or `cargo
+  add --path` temporarily, but never commit that.
 - **GitHub** (`.github/workflows/`): `ci.yml` (fmt, clippy `-D warnings` on our
   crates only, typos, cargo-deny, matrix build+test on Linux/macOS/Windows ×
   default/all-features via nextest, MSRV, rustdoc+mdBook build, the
@@ -142,6 +139,6 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   automatic token; no secret); its `/api/` redirects to the GitHub Pages
   rustdoc. `ci.yml` mirrors the gate but needs a self-hosted runner with the
   `docker` label (Codeberg's hosted runners stop jobs after 2–10 minutes).
-- Clippy in CI lints only Improv crates (`-p improv_*`); the Mentat git
+- Clippy in CI lints only Improv crates (`-p improv_*`); the Mentat
   dependency emits its own upstream warnings that must not fail our gate.
 - Action versions are pinned by commit SHA; keep them current but pinned.

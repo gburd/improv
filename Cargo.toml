@@ -41,17 +41,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # 0.13.0 is the pre-breakage pair the spike validates.
 differential-dataflow = "=0.13.0"
 timely = "=0.13.0"
-# Storage substrate: the embedded SQLite Mentat fork.
-#
-# A GIT dependency, not a path dependency: `path = "../mentat"` meant a fresh
-# clone of this repo could not even parse its own manifest ("failed to read
-# ../mentat/Cargo.toml"), so nobody outside this machine could build Improv. CI
-# hid the breakage by cloning Mentat next to the checkout first.
-#
-# `rev` is pinned so builds are reproducible (Cargo forbids `branch` + `rev`).
-# Mentat v1.11.1 (master @ 6fc2bc7f). Tracks Mentat master at a release tag;
-# bump procedure + benchmark: AGENTS.md "CI / storage-backend pin".
-mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "6fc2bc7fb3b0c3e3c8e6d09b6f063401aa5041a9" }
+# Storage substrate: the embedded SQLite Mentat fork, from crates.io (Mentat
+# 1.12+ publishes it as `mentatdb`; the library is still `mentat`). Bump
+# procedure + benchmark: AGENTS.md "CI / storage-backend pin".
+mentat = { package = "mentatdb", version = "=1.16.0" }
 # TUI (Phase 2).
 ratatui = "0.29"
 crossterm = "0.28"

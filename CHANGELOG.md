@@ -185,6 +185,13 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Changed
 
+- **Mentat 1.16.0, from crates.io.** The storage engine is now the
+  published `mentatdb` crate (`mentat = { package = "mentatdb", version =
+  "=1.16.0" }`), no longer a git dependency on Codeberg; cargo-deny drops
+  its git source and the per-crate license clarifications. No code
+  changes; storage speed is unchanged (A/B benchmark:
+  `docs/reviews/2026-10-18-mentat-1.16-upgrade.md`).
+
 - **Errors are typed values**, shown as the spreadsheets show them:
   `#DIV/0!`, `#NUM!`, `#VALUE!`, `#N/A` (plus `#NULL!`, `#NAME?`, `#REF!`
   from `ERROR`). Division by zero is `#DIV/0!` and a domain error or

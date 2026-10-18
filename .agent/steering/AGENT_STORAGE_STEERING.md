@@ -22,19 +22,16 @@ Improv persists models to the **embedded SQLite Mentat fork** — a Datomic-styl
 datom store — **not** to EDN files, JSON files, or an external database. This is
 a hard requirement from the source design.
 
-- Dependency: a **pinned git dependency** in `[workspace.dependencies]` —
-  `mentat = { git = "https://codeberg.org/gregburd/mentat.git", rev = "<sha>" }`.
-  Not a path dependency: `path = "../mentat"` made a fresh clone unbuildable
-  (cargo could not even read the manifest), which CI masked by cloning Mentat
-  beside the checkout. Cargo forbids `branch` together with `rev`, so the
-  revision is pinned and the branch it tracks (Mentat **`master`**, at a
-  release tag) is recorded in a comment beside it. The former `improv-base`
-  branch was never pushed, which left the old pin unfetchable from a clean
-  machine; never pin a commit that is not on a pushed branch.
-- When Improv needs newer Mentat behavior: land it on Mentat `master`, bump the
-  `rev`, commit the updated `Cargo.lock`, and run the A/B benchmark
+- Dependency: `mentatdb` from crates.io, pinned exactly in
+  `[workspace.dependencies]` — `mentat = { package = "mentatdb", version =
+  "=1.16.0" }` (the library is still `mentat`). Not a path dependency:
+  `path = "../mentat"` made a fresh clone unbuildable. (Until 1.12 it was a
+  git dependency pinned by `rev`; the registry needs no `allow-git` and its
+  crates carry their own license fields.)
+- When Improv needs newer Mentat behavior: release it to crates.io from Mentat
+  `master`, bump the version, commit the updated `Cargo.lock`, and run the A/B benchmark
   (`docs/reviews/bench/bench-mentat.sh`; last run:
-  `docs/reviews/2026-10-10-mentat-1.11-upgrade.md`). To develop Mentat locally,
+  `docs/reviews/2026-10-18-mentat-1.16-upgrade.md`). To develop Mentat locally,
   use a temporary `[patch]` / `cargo add --path` — never commit it.
 - Mentat is backed by SQLite, giving durable, transactional, cross-platform
   persistence for free.

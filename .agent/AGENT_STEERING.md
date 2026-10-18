@@ -196,7 +196,7 @@ GUI later.
   `timely` (TimelyDataflow crates). This is a hard requirement in the design
   (52 references; "uses differential dataflow at its core" is in the v1
   definition of done). Pinned in the workspace `Cargo.toml`.
-- **Storage: the embedded SQLite Mentat fork** at `../mentat` (Datomic-style
+- **Storage: the embedded SQLite Mentat fork** (`mentatdb` on crates.io; Datomic-style
   datom store). NOT Postgres. Model persists as categories/items/measures/cells
   as datoms (see IMPROV.txt "Mentat schema (steering version)").
 - Formula language: dimension-aware DSL + (later) controlled-English
