@@ -162,6 +162,7 @@ mod tests {
         assert_eq!(word_start("FLOOR.MA", 8), 0);
         assert_eq!(word_start("1 + ", 4), 4);
         assert_eq!(word_start("é", 2), 0);
+        assert_eq!(word_start("1 + net_rev", 11), 4);
     }
 
     #[test]
@@ -174,6 +175,9 @@ mod tests {
         assert_eq!(source_name("Unit Price"), "'Unit Price'");
         assert_eq!(source_name("it's"), "'it''s'");
         assert_eq!(source_name("Over"), "'Over'");
+        assert_eq!(source_name("_tmp"), "_tmp");
+        assert_eq!(source_name("2024"), "'2024'");
+        assert_eq!(source_name(""), "''");
     }
 
     #[test]
@@ -195,10 +199,14 @@ mod tests {
         let mut e = LineEdit::from("sumx");
         let msg = tab(&m, &mut e, &mut cy).unwrap();
         assert_eq!(e.text, "SUMX");
-        assert!(
-            msg.contains("SUMX2MY2(") && msg.contains("SUMX2PY2("),
-            "{msg}"
-        );
+        assert!(msg.contains("SUMX2MY2("), "{msg}");
+        assert!(msg.contains("SUMX2PY2("), "{msg}");
+        // Already at the common prefix: the text stays, the list shows.
+        let mut cy2 = None;
+        let (t, msg) = tab_in(&m, "SUMX", &mut cy2);
+        assert_eq!(t, "SUMX");
+        assert!(msg.unwrap().starts_with("Tab cycles: SUMXMY2("));
+        assert!(cy2.is_some());
         // Further Tabs cycle through them (shortest first), wrapping.
         let mut seen = Vec::new();
         for _ in 0..4 {

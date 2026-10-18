@@ -1448,6 +1448,10 @@ pub(crate) mod tests {
         let err = app.apply_edit(0, 0, 42.0);
         assert!(err.is_err(), "derived edit must be rejected");
         assert_eq!(app.model, before, "model unchanged on rejected edit");
+        // No edit open: not editing a formula, and edit keys do nothing.
+        assert!(!app.editing_formula());
+        app.edit_key(KeyCode::Char('x'));
+        assert!(app.edit.is_none());
 
         // begin_edit opens the formula instead, seeded with its text.
         app.begin_edit();
@@ -1462,7 +1466,8 @@ pub(crate) mod tests {
         app.begin_edit();
         // The seeded controlled English commits back unchanged.
         app.commit_edit();
-        assert!(app.edit.is_none() && app.status.is_none());
+        assert!(app.edit.is_none());
+        assert!(app.status.is_none());
         assert_eq!(app.grid.display_at(0, 0), "1000");
         app.begin_edit();
         app.edit = Some("Price * Quantity * 2".into());
@@ -1504,12 +1509,14 @@ pub(crate) mod tests {
         app.edit = Some("Revenue + 1".into());
         app.commit_edit();
         assert!(app.editing_formula(), "{:?}", app.status);
-        assert!(app.status.is_some() && app.diagnostic.is_none());
+        assert!(app.status.is_some());
+        assert!(app.diagnostic.is_none());
         assert_eq!(app.model, before);
         // A value edit is not a formula edit.
         view(&mut app, MeasureId(101));
         app.begin_edit();
-        assert!(app.edit.is_some() && !app.editing_formula());
+        assert!(app.edit.is_some());
+        assert!(!app.editing_formula());
     }
 
     #[test]
@@ -1589,6 +1596,43 @@ pub(crate) mod tests {
         app.page(1);
         assert_eq!(app.grid.pages[0].item_name, "North");
         assert_eq!(app.grid.value_at(0, 0), Some(100.0));
+
+        // Changing measure (here back to the only one) starts on the first
+        // page again; a pivot moves Time to the page, also from its first item.
+        app.page(1);
+        app.next_measure();
+        assert_eq!(app.grid.pages[0].item_name, "North");
+        assert_eq!(app.page_idx, vec![0]);
+        app.pivot();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("pivot: rows=Product cols=Region")
+        );
+        assert_eq!(app.grid.pages[0].cat_name, "Time");
+        assert_eq!(app.page_idx, vec![0]);
+    }
+
+    /// With no formulas there is no engine; value edits still land. A
+    /// formula that cannot build fails `App::new` with the engine's error.
+    #[test]
+    fn engine_only_for_formulas_that_build() {
+        let mut m = revenue_model();
+        m.measures.remove(&MeasureId(102));
+        let mut app = App::new(m).unwrap();
+        assert!(app.engine.is_none());
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 7.0).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(7.0));
+
+        let mut m = revenue_model();
+        m.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(Formula::new(
+            Expr::Ref(MeasureId(102), DimensionSpec::default()),
+        ));
+        let want = Engine::new(&m, &[MeasureId(102)])
+            .err()
+            .unwrap()
+            .to_string();
+        assert_eq!(App::new(m).err(), Some(want));
     }
 
     #[test]
@@ -1733,6 +1777,12 @@ pub(crate) mod tests {
         // No full coordinate exists (Empty has no item): editing is refused.
         app.begin_edit();
         assert_eq!(app.status.as_deref(), Some(NO_CELL));
+        // A buffer committed there anyway stays open, with the reason.
+        app.edit = Some("5".into());
+        app.status = None;
+        app.commit_edit();
+        assert_eq!(app.edit.as_deref(), Some("5"));
+        assert_eq!(app.status.as_deref(), Some(NO_CELL));
     }
 
     #[test]
@@ -1832,6 +1882,10 @@ pub(crate) mod tests {
         assert_eq!(app.filters.len(), 1, "one item still hidden");
         app.toggle_filter_item(time, ItemId(11));
         assert!(app.filters.is_empty(), "all shown again => unfiltered");
+        // An item from another category does not count as re-showing one.
+        app.toggle_filter_item(time, ItemId(10));
+        app.toggle_filter_item(time, ItemId(20));
+        assert_eq!(app.filters.len(), 1, "2025 is still hidden");
     }
 
     #[test]
@@ -1876,7 +1930,8 @@ pub(crate) mod tests {
         app.step(1, 0, true);
         app.step(0, 1, true);
         assert_eq!(app.anchor, Some((0, 0)));
-        assert!(app.is_selected(1, 0) && app.is_selected(0, 1));
+        assert!(app.is_selected(1, 0));
+        assert!(app.is_selected(0, 1));
         assert_eq!(app.selection_sum(), Some(350.0));
         app.step(-1, 0, false);
         assert_eq!((app.anchor, app.selection_sum()), (None, Some(50.0)));
@@ -1930,6 +1985,10 @@ pub(crate) mod tests {
         assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
         // A click above the grid (in the status area) is ignored.
         app.click_at(2, 0);
+        assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
+        // Inside the window but below or right of the 2x2 grid: ignored.
+        app.click_at(2, 5 + 5);
+        app.click_at(2 + 13 * 5, 5);
         assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
     }
 
@@ -2209,6 +2268,22 @@ pub(crate) mod tests {
         assert!(app.engine.is_some());
         view(&mut app, MeasureId(102));
         assert_eq!(app.grid.display_at(0, 0), "1000");
+        // The viewed measure stays, re-paged from its first item.
+        let mut app = App::new(model_with_empty_page()).unwrap();
+        view(&mut app, MeasureId(300));
+        app.page(1);
+        assert_eq!(app.grid.pages[0].item_name, "South");
+        app.begin_import_csv();
+        app.command.as_mut().unwrap().1 =
+            format!("{} 201 Other v region:4:Region", csv_path.display());
+        app.commit_command();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("imported 2 cell(s) into measure 'Other'")
+        );
+        assert_eq!(app.grid.measure, MeasureId(300));
+        assert_eq!(app.grid.pages[0].item_name, "North");
+        assert_eq!(app.page_idx, vec![0]);
     }
 
     #[test]
@@ -2223,6 +2298,13 @@ pub(crate) mod tests {
             .as_deref()
             .unwrap_or("")
             .starts_with("import-csv:"));
+        // A well-formed line naming a missing file: the I/O error, no measure.
+        let missing = tmp_path(".missing.csv");
+        app.begin_import_csv();
+        app.command.as_mut().unwrap().1 = format!("{} 100 Revenue v t:9:P", missing.display());
+        app.commit_command();
+        assert!(app.status.as_deref().unwrap().starts_with("import-csv: "));
+        assert!(app.model.measure_by_name("Revenue").is_none());
     }
 
     #[test]

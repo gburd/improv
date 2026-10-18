@@ -238,6 +238,9 @@ mod tests {
             )
         );
         assert_eq!(spanned("abs(1, 2)").1, Some("usage: ABS(number)".into()));
+        // Not a built-in (an inline LAMBDA): the parser's position, no usage.
+        let d = diag("LAMBDA(x, x + 1)(1, 2)");
+        assert_eq!((d.span, d.hint), (Some(21..22), None));
     }
 
     #[test]
@@ -261,11 +264,18 @@ mod tests {
         assert_eq!(token_span("'it''s' + 1", 0), Some(0..7));
         assert_eq!(token_span("1 + 22.5", 4), Some(4..8));
         assert_eq!(token_span("Price $ 2", 6), Some(6..7));
+        assert_eq!(token_span("_net_rev + 1", 0), Some(0..8));
+        assert_eq!(token_span("@x + 1", 0), Some(0..2));
         assert_eq!(token_span("Price +", 99), Some(6..7));
         assert_eq!(token_span("", 0), None);
         assert_eq!(token_span("é", 1), None, "not a char boundary");
         assert_eq!(call_name("ABSX(1) + abs(2)", "ABS", 16), Some(10..13));
         assert_eq!(call_name("İ abs(1)", "ABS", 9), None);
+        // Only a whole word followed by `(`: the later `xabs(` is skipped.
+        assert_eq!(call_name("abs(1) + xabs(2)", "ABS", 16), Some(0..3));
+        assert_eq!(call_name("my_abs(1)", "ABS", 9), None);
+        assert_eq!(call_name("x.abs(1)", "ABS", 8), None);
+        assert_eq!(call_name("abs + 1", "ABS", 7), None);
         assert_eq!(distance("kitten", "sitting"), 3);
         assert_eq!(distance("", "abc"), 3);
         // No position: just the message.

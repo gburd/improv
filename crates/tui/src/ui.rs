@@ -449,10 +449,13 @@ mod tests {
     }
 
     fn row_of(lines: &[String], needle: &str) -> usize {
-        lines
-            .iter()
-            .position(|l| l.contains(needle))
-            .unwrap_or_else(|| panic!("{needle:?} not on screen:\n{}", lines.join("\n")))
+        let row = lines.iter().position(|l| l.contains(needle));
+        assert!(
+            row.is_some(),
+            "{needle:?} not on screen:\n{}",
+            lines.join("\n")
+        );
+        row.unwrap()
     }
 
     /// Screen position of the first occurrence of `needle`.

@@ -331,6 +331,11 @@ mod tests {
         assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
         run_events(&mut app, "", vec![key(KeyCode::Up), key(KeyCode::Left)]).unwrap();
         assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
+        // An unbound key does nothing.
+        let before = (app.selected, app.cursor_row, app.cursor_col);
+        run_events(&mut app, "", vec![key(KeyCode::Char('z'))]).unwrap();
+        assert_eq!((app.selected, app.cursor_row, app.cursor_col), before);
+        assert!(!app.should_quit);
         // Tab and m both cycle the measure; q quits before later events run.
         let before = app.selected;
         let ev = vec![
@@ -448,6 +453,19 @@ mod tests {
         )
         .unwrap();
         assert!(app.command.is_none());
+        // A click while the prompt is open is ignored (it would hit row 0,
+        // column 1: the prompt line pushes the grid down one row).
+        view(&mut app, MeasureId(101));
+        run_events(&mut app, "", vec![]).unwrap();
+        let g = app.grid_geom.unwrap();
+        let (x, y) = (g.x0 + g.col_w + g.spacing + 1, g.y0 + 1);
+        let ev = vec![
+            key(KeyCode::Char('I')),
+            click(MouseEventKind::Down(MouseButton::Left), x, y),
+            key(KeyCode::Esc),
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
     }
 
     #[test]
@@ -469,7 +487,8 @@ mod tests {
         assert_eq!(app.edit.as_deref(), Some("Price * Quantity + SUMXMY2("));
         assert!(app.status.as_deref().unwrap().starts_with("Tab cycles:"));
         run_events(&mut app, "", vec![key(KeyCode::Backspace)]).unwrap();
-        assert!(app.tab_cycle.is_none() && app.status.is_none());
+        assert!(app.tab_cycle.is_none());
+        assert!(app.status.is_none());
         run_events(&mut app, "", vec![key(KeyCode::Esc)]).unwrap();
         // In a value edit Tab does nothing.
         view(&mut app, MeasureId(101));
@@ -501,7 +520,8 @@ mod tests {
         assert_eq!(h.current().unwrap().name, "PMT");
         // Enter with no edit in progress just closes; Esc closes too.
         run_events(&mut app, "", vec![key(KeyCode::Enter)]).unwrap();
-        assert!(app.help.is_none() && app.edit.is_none());
+        assert!(app.help.is_none());
+        assert!(app.edit.is_none());
         run_events(&mut app, "", vec![key(KeyCode::F(1)), key(KeyCode::Esc)]).unwrap();
         assert!(app.help.is_none());
         // F1 mid-edit: Enter inserts the selected function's `NAME(`.
@@ -509,6 +529,10 @@ mod tests {
         ev.extend(chars("pmt"));
         ev.push(key(KeyCode::Enter));
         run_events(&mut app, "", ev).unwrap();
+        assert!(app.help.is_none());
+        assert_eq!(app.edit.as_deref(), Some("100PMT("));
+        // Help keys with the overlay closed do nothing.
+        help_key(&mut app, KeyCode::Enter);
         assert!(app.help.is_none());
         assert_eq!(app.edit.as_deref(), Some("100PMT("));
     }
@@ -572,7 +596,7 @@ mod tests {
         b.model
             .add_view(b.build_view(improv_core_model::ViewId(77), "mine"));
         let e = save(&b, p).unwrap_err();
-        assert!(e.contains("conflict") || e.contains("changed"), "{e}");
+        assert!(e.contains("conflict"), "{e}");
         run_events(&mut b, p, chars("R")).unwrap();
         assert_eq!(b.status.as_deref(), Some("reverted to the saved model"));
         assert_eq!(b.model.views.len(), 1, "picked up the other session's view");
