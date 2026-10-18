@@ -207,6 +207,11 @@ fn expr_elementwise(model: &Model, cats: &[CategoryId], e: &Expr) -> bool {
         }
         // Scalar and lazy (IF-family) calls read only their own coordinate;
         // the dimensional ones (PREV, POSITION) read other items.
+        // A named LAMBDA reads only its arguments: element-wise iff its
+        // expansion is.
+        Expr::Call(f, _) if improv_core_model::functions::named_lambda_of(*f).is_some() => model
+            .expand_lambdas(e)
+            .is_ok_and(|x| expr_elementwise(model, cats, &x)),
         Expr::Call(f, args) => {
             improv_core_model::functions::by_id(*f).is_some_and(|d| {
                 !d.kind.reduces()

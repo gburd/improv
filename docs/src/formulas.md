@@ -300,6 +300,21 @@ LET, LAMBDA, MAP, MAKEARRAY, SEQUENCE and BYROW expand when the formula is
 read: the stored formula (and what the formula bar shows) is the expanded
 expression. A LAMBDA cannot call itself, so every formula still terminates.
 
+**Named LAMBDAs** (Excel's Name Manager functions) are defined once and
+called by name:
+
+```text
+improv define model.db 1 "Margin = LAMBDA(price, cost, (price - cost) / price)"
+improv define model.db 120 "Pct = Margin(Price, Cost) * 100"
+```
+
+A call is stored as a call, not its expansion, so redefining `Margin`
+changes every formula that uses it. A named LAMBDA reads only its
+parameters (pass measures as arguments), may call LAMBDAs defined before
+it, and never itself. They persist with the model (Mentat and Postgres
+stores); `improv.define` inside pg_improv does not take them (write a
+`LANGUAGE improv` function there).
+
 ### List results: INTO
 
 A function that returns a list says where the list lands: `INTO` a
@@ -552,5 +567,5 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - a window or per-item reduction takes one `OVER` category;
 - `TEXTSPLIT` takes no row delimiter; `LINEST` with several x's refuses
   collinear x's (#NUM!) rather than dropping them as Excel does;
-- named LAMBDAs are not supported yet;
+- named LAMBDAs are defined with `improv define` (no GUI editor yet);
 - `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

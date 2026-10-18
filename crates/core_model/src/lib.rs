@@ -23,7 +23,7 @@ pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
 pub use locale::Locale;
 pub use parser::{
-    parse_definition, parse_expr, parse_formula, Definition, FormulaText, ParseError,
+    parse_definition, parse_expr, parse_formula, Definition, FormulaText, LambdaText, ParseError,
 };
 pub use value::{Value, ValueError, ValueErrorKind, ValueType};
 
@@ -162,6 +162,23 @@ pub struct Model {
     /// scenario stays fully deterministic (the engine sees ordinary inputs).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub scenarios: HashMap<ScenarioId, Scenario>,
+    /// Named LAMBDAs (Excel's Name Manager functions): `Margin = LAMBDA(p,
+    /// c, (p - c) / p)`, called as `Margin(Price, Cost)` in any formula. A
+    /// call is stored by the lambda's id ([`functions::named_lambda`]) and
+    /// expanded when compiled, so editing the lambda changes every use.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub lambdas: BTreeMap<u32, NamedLambda>,
+}
+
+/// A named LAMBDA: its parameters and its body, in which parameter `i` is
+/// the reference [`functions::lambda_param`]`(i)`. A body reads only its
+/// parameters (no measures), so a call depends on just its arguments; it
+/// may call lambdas defined before it, never itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NamedLambda {
+    pub name: Name,
+    pub params: Vec<String>,
+    pub body: Expr,
 }
 
 /// A what-if scenario: a named overlay of input-cell overrides on the base
@@ -431,6 +448,24 @@ pub enum RefreshPolicy {
 
 /// serde adapter: (de)serialize the tuple-keyed `inputs` map as a `Vec` of
 /// `(key, value)` pairs so it survives JSON (and any string-keyed format).
+/// `body` with parameter reference `i` replaced by `args[i]`.
+fn substitute_params(body: &Expr, args: &[Expr]) -> Expr {
+    match body {
+        Expr::Ref(id, _) => match functions::lambda_param_of(*id) {
+            Some(i) if i < args.len() => args[i].clone(),
+            _ => body.clone(),
+        },
+        Expr::Call(f, a) => Expr::Call(*f, a.iter().map(|x| substitute_params(x, args)).collect()),
+        Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(substitute_params(a, args))),
+        Expr::BinaryOp(o, a, b) => Expr::BinaryOp(
+            *o,
+            Box::new(substitute_params(a, args)),
+            Box::new(substitute_params(b, args)),
+        ),
+        other => other.clone(),
+    }
+}
+
 mod inputs_as_seq {
     use super::{Coordinate, MeasureId, Value};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -471,6 +506,63 @@ impl Model {
             description: None,
         });
         std::borrow::Cow::Owned(m)
+    }
+
+    /// The named LAMBDA called `name` (case-insensitive), with its id.
+    pub fn lambda_by_name(&self, name: &str) -> Option<(u32, &NamedLambda)> {
+        self.lambdas
+            .iter()
+            .find(|(_, l)| l.name.0.eq_ignore_ascii_case(name))
+            .map(|(id, l)| (*id, l))
+    }
+
+    /// `e` with every named-LAMBDA call replaced by the lambda's body, its
+    /// parameters bound to the call's arguments (nested calls too). Errors
+    /// name an unknown lambda or a wrong argument count.
+    pub fn expand_lambdas(&self, e: &Expr) -> Result<Expr, String> {
+        self.expand_at(e, 0)
+    }
+
+    fn expand_at(&self, e: &Expr, depth: usize) -> Result<Expr, String> {
+        // Lambdas only call earlier ones, so depth is bounded by their
+        // number; the guard catches a hand-edited cycle.
+        if depth > self.lambdas.len() + 1 {
+            return Err("named LAMBDAs call each other in a cycle".into());
+        }
+        Ok(match e {
+            Expr::Call(f, args) => {
+                let args = args
+                    .iter()
+                    .map(|a| self.expand_at(a, depth))
+                    .collect::<Result<Vec<_>, _>>()?;
+                match functions::named_lambda_of(*f) {
+                    None => Expr::Call(*f, args),
+                    Some(id) => {
+                        let l = self
+                            .lambdas
+                            .get(&id)
+                            .ok_or_else(|| format!("named LAMBDA {id} does not exist"))?;
+                        if l.params.len() != args.len() {
+                            return Err(format!(
+                                "{} takes {} argument(s), got {}",
+                                l.name.0,
+                                l.params.len(),
+                                args.len()
+                            ));
+                        }
+                        let body = substitute_params(&l.body, &args);
+                        self.expand_at(&body, depth + 1)?
+                    }
+                }
+            }
+            Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(self.expand_at(a, depth)?)),
+            Expr::BinaryOp(o, a, b) => Expr::BinaryOp(
+                *o,
+                Box::new(self.expand_at(a, depth)?),
+                Box::new(self.expand_at(b, depth)?),
+            ),
+            other => other.clone(),
+        })
     }
 
     // --- builders (return the new id for convenience) ---

@@ -345,6 +345,29 @@ fn eval_reports_an_engine_compile_error() {
     );
 }
 
+/// `define` makes a named LAMBDA; formulas call it by name and it persists.
+#[test]
+fn define_a_named_lambda() {
+    let (_dir, db) = model("lambda");
+    let out = ok(&["define", &db, "5", "Margin = LAMBDA(p, q, p - q / 2)"]);
+    stdout_has(&out, "defined LAMBDA 5 'Margin'(p, q)");
+    // Redefining keeps the id.
+    let out = ok(&["define", &db, "6", "Margin = LAMBDA(p, q, p - q)"]);
+    stdout_has(&out, "defined LAMBDA 5");
+    ok(&["define", &db, "120", "Net = Margin(Price, 1)"]);
+    let out = ok(&["eval", &db, "120"]);
+    stdout_has(&out, "9");
+    fails_with(
+        &["define", &db, "7", "Quantity = LAMBDA(x, x)"],
+        "is a measure",
+    );
+    fails_with(&["define", &db, "5", "Other = LAMBDA(x, x)"], "is taken");
+    fails_with(
+        &["define", &db, "8", "Bad = LAMBDA(x, x + Price)"],
+        "only its parameters",
+    );
+}
+
 #[test]
 fn define_formula_and_its_errors() {
     let (_dir, db) = model("define");

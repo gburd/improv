@@ -98,12 +98,18 @@ categories are inferred from the measures it references.
 .TP
 .B define \fI<db> <id> \(dq<Target = ...>\(dq\fR
 Create a measure from a definition string whose left side is the target name.
-Two forms: an ordinary formula (
-.BR \(dqRevenue = Price * Quantity\(dq )
-or an external call (
+Three forms: an ordinary formula (
+.BR \(dqRevenue = Price * Quantity\(dq ),
+an external call (
 .BR \(dqH = CALL(hypot, Price, Quantity)\(dq ),
 which registers an external-function measure populated by
-.BR refresh-ext .
+.BR refresh-ext ,
+or a named LAMBDA (
+.BR \(dqMargin = LAMBDA(p, c, p - c)\(dq ),
+which formulas then call as
+.BR Margin(Price, Cost) ;
+.I id
+names the lambda, and redefining a name keeps its first id.
 A
 .B CALL(...)
 measure also takes

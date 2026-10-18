@@ -2445,6 +2445,14 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
 }
 
 fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
+    // A named LAMBDA prints as its name; parameters of a named LAMBDA's own
+    // body print as the names it declared (see `lambda_dsl`).
+    if let Some(l) =
+        improv_core_model::functions::named_lambda_of(func).and_then(|id| model.lambdas.get(&id))
+    {
+        let parts: Option<Vec<String>> = args.iter().map(|a| expr_dsl(model, a)).collect();
+        return Some(format!("{}({})", ident(&l.name.0)?, parts?.join(", ")));
+    }
     let name = func_name(func)?;
     // SCAN/REDUCE(init, x OVER T, body): the body's placeholders print as
     // the LAMBDA's parameters.
@@ -6483,6 +6491,27 @@ mod tests {
             let shown = app.formula_source(MeasureId(102)).expect(text);
             assert_eq!(shown, text, "displayed as typed");
         }
+    }
+
+    /// A named LAMBDA call prints by name and re-parses.
+    #[test]
+    fn named_lambda_calls_print_by_name() {
+        let mut model = revenue_model();
+        let improv_core_model::Definition::Lambda(l) =
+            improv_core_model::parse_definition(&model, "Margin = LAMBDA(p, c, p - c)").unwrap()
+        else {
+            panic!("a lambda")
+        };
+        model.lambdas.insert(1, l.lambda);
+        let text = "Margin(Price, Quantity * 2)";
+        let f = parser::parse_expr(&model, text).unwrap();
+        assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));
+        model.lambdas.clear();
+        assert_eq!(
+            formula_dsl(&model, &f),
+            None,
+            "a dangling call does not print"
+        );
     }
 
     /// An array formula's INTO clause prints and re-parses.

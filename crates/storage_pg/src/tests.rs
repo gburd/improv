@@ -127,6 +127,17 @@ fn sample() -> Model {
             placements: vec![],
         });
     }
+    m.lambdas.insert(
+        3,
+        improv_core_model::NamedLambda {
+            name: "Ident".into(),
+            params: vec!["x".into()],
+            body: improv_core_model::Expr::Ref(
+                improv_core_model::functions::lambda_param(0),
+                Default::default(),
+            ),
+        },
+    );
     m.external_fns.insert(
         "double".into(),
         ExternalFn {

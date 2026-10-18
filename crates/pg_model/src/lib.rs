@@ -217,6 +217,10 @@ pub struct Catalog {
 fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
     match parser::parse_definition(model, text).map_err(|e| Error::Definition(e.to_string()))? {
         Definition::Formula(ft) => Ok((ft.target.0, ft.formula)),
+        Definition::Lambda(_) => Err(Error::Definition(
+            "named LAMBDAs are not supported inside Postgres; write a LANGUAGE improv function"
+                .into(),
+        )),
         _ => Err(Error::Definition(
             "SQL(...) and CALL(...) definitions are not supported inside Postgres".into(),
         )),

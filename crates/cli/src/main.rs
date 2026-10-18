@@ -417,6 +417,25 @@ fn cmd_define(rest: &[String]) -> Result<(), String> {
                     .to_string(),
             );
         }
+        Definition::Lambda(lt) => {
+            // The id names the lambda for good (calls store it); redefining
+            // a name keeps its id.
+            let id = model
+                .lambda_by_name(&lt.name.0)
+                .map_or(id.0, |(old, _)| old);
+            if model.measure_by_name(&lt.name.0).is_some() {
+                return Err(format!(
+                    "'{}' is a measure; name the LAMBDA differently",
+                    lt.name.0
+                ));
+            }
+            if model.lambdas.get(&id).is_some_and(|l| l.name != lt.name) {
+                return Err(format!("LAMBDA id {id} is taken"));
+            }
+            let params = lt.lambda.params.join(", ");
+            model.lambdas.insert(id, lt.lambda);
+            println!("defined LAMBDA {id} '{}'({params})", lt.name.0);
+        }
     }
     store.save_model(&model).map_err(|e| e.to_string())?;
     Ok(())

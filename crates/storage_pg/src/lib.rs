@@ -17,7 +17,7 @@
 //! - `cell.coord`: `{"<category id>": <item id>, …}`;
 //! - cell values: plain JSON scalars (number, bool, string; datetimes as
 //!   RFC 3339 strings);
-//! - `meta.blob`: `{external_fns, external_calls, scenarios, sql_sources}`.
+//! - `meta.blob`: `{external_fns, external_calls, scenarios, sql_sources, lambdas}`.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
@@ -332,6 +332,8 @@ struct Meta {
     scenarios: HashMap<ScenarioId, Scenario>,
     #[serde(default)]
     sql_sources: HashMap<MeasureId, SqlSource>,
+    #[serde(default)]
+    lambdas: std::collections::BTreeMap<u32, improv_core_model::NamedLambda>,
 }
 
 /// One `improv.binding` row, resolved against the model.
@@ -823,6 +825,7 @@ impl PgModelStore {
             model.external_calls = meta.external_calls;
             model.scenarios = meta.scenarios;
             model.sql_sources = meta.sql_sources;
+            model.lambdas = meta.lambdas;
         }
 
         // Cells: only the closure's, filtered in the database.
@@ -1112,6 +1115,7 @@ impl PgModelStore {
             "external_calls": model.external_calls,
             "scenarios": model.scenarios,
             "sql_sources": model.sql_sources,
+            "lambdas": model.lambdas,
         })
         .to_string();
         tx.execute(

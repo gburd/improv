@@ -445,6 +445,13 @@ fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
                     || *id == improv_core_model::functions::WINDOW
                     || *id == improv_core_model::functions::INTO)
             });
+            // A named LAMBDA is called by its name.
+            if let Some(l) = improv_core_model::functions::named_lambda_of(*func)
+                .and_then(|id| ctx.model.lambdas.get(&id))
+            {
+                let rendered: Vec<String> = args.iter().map(|a| describe_expr(ctx, a)).collect();
+                return format!("{}({})", l.name.0, rendered.join(", "));
+            }
             let name = match *func {
                 _ if markers || args.len() != 1 => {
                     let rendered: Vec<String> =

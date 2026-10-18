@@ -371,15 +371,18 @@ impl ModelStore {
         if !model.external_fns.is_empty()
             || !model.external_calls.is_empty()
             || !model.scenarios.is_empty()
+            || !model.lambdas.is_empty()
         {
             let fns_json = serde_json::to_string(&model.external_fns)?;
             let calls_json = serde_json::to_string(&model.external_calls)?;
             let scen_json = serde_json::to_string(&model.scenarios)?;
+            let lambdas_json = serde_json::to_string(&model.lambdas)?;
             let edn = format!(
-                "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {} :meta/scenarios {}}}]",
+                "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {} :meta/scenarios {} :meta/lambdas {}}}]",
                 convert::edn_str_pub(&fns_json),
                 convert::edn_str_pub(&calls_json),
                 convert::edn_str_pub(&scen_json),
+                convert::edn_str_pub(&lambdas_json),
             );
             ip.transact(edn)?;
         }
@@ -739,6 +742,11 @@ impl ModelStore {
         {
             model.scenarios = serde_json::from_str(&json)?;
         }
+        if let Some(json) =
+            self.scalar_string("[:find ?j . :where [?e :meta/singleton 1] [?e :meta/lambdas ?j]]")?
+        {
+            model.lambdas = serde_json::from_str(&json)?;
+        }
         Ok(())
     }
 
@@ -880,6 +888,22 @@ mod tests {
             placements: vec![],
         });
 
+        // A named LAMBDA rides in the same blob.
+        m.lambdas.insert(
+            3,
+            improv_core_model::NamedLambda {
+                name: "Half".into(),
+                params: vec!["x".into()],
+                body: Expr::BinaryOp(
+                    BinaryOp::Div,
+                    Box::new(Expr::Ref(
+                        improv_core_model::functions::lambda_param(0),
+                        Default::default(),
+                    )),
+                    Box::new(Expr::Literal(Value::Number(2.0))),
+                ),
+            },
+        );
         // Meta blob: an external function def, an external-call measure that
         // uses it, and a what-if scenario -- so `save_model`'s :meta/* step
         // (the last, easiest-to-miss step of the multi-step save) is non-empty
@@ -955,6 +979,7 @@ mod tests {
         // the old multi-transact-call bug this fix closes (see the atomicity
         // test below).
         assert_eq!(loaded.external_fns.len(), 1);
+        assert_eq!(loaded.lambdas, original.lambdas);
         assert_eq!(
             loaded.external_fns["double"],
             original.external_fns["double"]

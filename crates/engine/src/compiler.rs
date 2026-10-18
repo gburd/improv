@@ -44,6 +44,8 @@ pub struct CompileContext<'m> {
     pub categories: Option<&'m HashMap<CategoryId, Category>>,
     /// Item names, for `@ITEM`.
     pub items: Option<&'m HashMap<ItemId, Item>>,
+    /// The model's named LAMBDAs, expanded where called.
+    pub lambdas: Option<&'m improv_core_model::Model>,
 }
 
 impl<'m> CompileContext<'m> {
@@ -53,6 +55,7 @@ impl<'m> CompileContext<'m> {
             measures,
             categories: None,
             items: None,
+            lambdas: None,
         }
     }
 
@@ -62,6 +65,7 @@ impl<'m> CompileContext<'m> {
             measures: &model.measures,
             categories: Some(&model.categories),
             items: Some(&model.items),
+            lambdas: (!model.lambdas.is_empty()).then_some(model),
         }
     }
 
@@ -211,6 +215,7 @@ fn compile_fold(ctx: &CompileContext, last: bool, args: &[Expr]) -> Result<PlanN
         measures: &measures,
         categories: ctx.categories,
         items: ctx.items,
+        lambdas: ctx.lambdas,
     };
     let typed = infer(&tctx, xid, &body)?;
     if typed.ty.value_type != init_t.ty.value_type && !is_error_only(&init_t) {
@@ -388,6 +393,7 @@ fn compile_recurrence(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> R
         measures: &measures,
         categories: ctx.categories,
         items: ctx.items,
+        lambdas: ctx.lambdas,
     };
     let typed = infer(&typed_ctx, target, &body)?;
     if typed.ty.value_type != m.value_type {
@@ -468,6 +474,16 @@ pub(crate) mod lazy {
     reason = "`target` is threaded for future error context and recursive calls"
 )]
 pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<TypedExpr> {
+    // A named LAMBDA call types as its expansion.
+    if let Expr::Call(f, _) = expr {
+        if functions::named_lambda_of(*f).is_some() {
+            let model = ctx.lambdas.ok_or(CompileError::UnknownFunction(*f))?;
+            let e = model
+                .expand_lambdas(expr)
+                .map_err(CompileError::Unsupported)?;
+            return infer(ctx, target, &e);
+        }
+    }
     match expr {
         Expr::Literal(v) => {
             let value_type = v.type_of().ok_or_else(|| {

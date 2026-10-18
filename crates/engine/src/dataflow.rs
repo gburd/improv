@@ -1835,6 +1835,84 @@ mod tests {
         }
     }
 
+    /// Named LAMBDAs: defined once, called by name, expanded when compiled
+    /// (so redefining one changes every use); their errors.
+    #[test]
+    fn named_lambdas() {
+        use improv_core_model::{parse_definition, Definition};
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let mut m = revenue_model();
+        let def = |m: &Model, t: &str| match parse_definition(m, t).unwrap() {
+            Definition::Lambda(l) => l.lambda,
+            other => panic!("{other:?}"),
+        };
+        let l = def(&m, "Margin = LAMBDA(p, q, (p - q) / p)");
+        m.lambdas.insert(7, l);
+        let l = def(&m, "Twice = LAMBDA(x, Margin(x, 1) * 2)");
+        m.lambdas.insert(8, l);
+        define(
+            &mut m,
+            200,
+            vec![time, product],
+            "A = Margin(Quantity, Price)",
+        );
+        define(&mut m, 201, vec![time, product], "B = Twice(Quantity)");
+        let at = |m: &Model, id: u32| {
+            let out = evaluate(m, &[MeasureId(id)]).unwrap();
+            out[&MeasureId(id)].get(&key(&[(1, 10), (2, 20)])).cloned()
+        };
+        // Quantity 100, Price 10.
+        assert_eq!(at(&m, 200), Some(CellValue::num(0.9)));
+        assert_eq!(at(&m, 201), Some(CellValue::num(1.98)));
+        // Redefine Margin: both uses follow.
+        let l = def(&m, "Margin = LAMBDA(p, q, p - q)");
+        m.lambdas.insert(7, l);
+        assert_eq!(at(&m, 200), Some(CellValue::num(90.0)));
+        assert_eq!(at(&m, 201), Some(CellValue::num(198.0)));
+        // A missing lambda is an error, not a crash.
+        let mut gone = m.clone();
+        gone.lambdas.remove(&7);
+        assert!(evaluate(&gone, &[MeasureId(200)]).is_err());
+        for (text, why) in [
+            ("X = LAMBDA(p, p + Price)", "reads only its parameters"),
+            ("SUM = LAMBDA(p, p)", "built-in function"),
+            ("X = LAMBDA(p, p)(1)", "not called here"),
+            ("Margin = LAMBDA(p, Margin(p, 1))", "unknown"),
+            (
+                "X = LAMBDA(a, SCAN(0, a OVER Time, LAMBDA(s, v, s + v)))",
+                "",
+            ),
+        ] {
+            let e = parse_definition(&m, text).unwrap_err();
+            assert!(e.message.contains(why), "{text}: {}", e.message);
+        }
+        for text in ["Y = Margin(Quantity)", "Y = Margin(Quantity, Price, 1)"] {
+            let e = improv_core_model::parse_formula(&m, text).unwrap_err();
+            assert!(e.message.contains("takes 2"), "{text}: {}", e.message);
+        }
+        // Expansion: a cycle (only by hand-editing) and arity errors.
+        let mut cyc = m.clone();
+        let body = Expr::Call(improv_core_model::functions::named_lambda(9), vec![]);
+        cyc.lambdas.insert(
+            9,
+            improv_core_model::NamedLambda {
+                name: "Loop".into(),
+                params: vec![],
+                body: body.clone(),
+            },
+        );
+        assert!(cyc.expand_lambdas(&body).unwrap_err().contains("cycle"));
+        let bad = Expr::Call(improv_core_model::functions::named_lambda(7), vec![]);
+        assert!(m.expand_lambdas(&bad).unwrap_err().contains("takes 2"));
+        assert!(m
+            .expand_lambdas(&Expr::Call(
+                improv_core_model::functions::named_lambda(99),
+                vec![]
+            ))
+            .unwrap_err()
+            .contains("does not exist"));
+    }
+
     /// `INTO R, C` lays a list over two categories, row-major: SORT's
     /// four values over a 2 × 2 grid, and LINEST's statistics as Excel's
     /// 5 × 2 block.

@@ -108,4 +108,8 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :meta/scenarios
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+ ;; Named LAMBDAs (JSON). Installed over older stores on open.
+ {:db/ident :meta/lambdas
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 ]"#;

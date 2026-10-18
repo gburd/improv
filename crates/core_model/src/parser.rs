@@ -162,6 +162,16 @@ pub enum Definition {
         func: String,
         args: Vec<Name>,
     },
+    /// `Name = LAMBDA(p, …, body)` — a named LAMBDA (Excel's Name Manager),
+    /// callable as `Name(args)` in formulas once added to the model.
+    Lambda(LambdaText),
+}
+
+/// A parsed named-LAMBDA definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaText {
+    pub name: Name,
+    pub lambda: crate::NamedLambda,
 }
 
 // ---------------------------------------------------------------------------
@@ -768,6 +778,12 @@ impl<'a> Parser<'a> {
                 return Ok(e);
             }
         }
+        if is_call && functions::callable(&word).is_none() {
+            if let Some((id, l)) = self.model.lambda_by_name(&word) {
+                let n = l.params.len();
+                return self.parse_named_lambda_call(id, n, &word);
+            }
+        }
         if is_call {
             match word.to_ascii_uppercase().as_str() {
                 "LET" => return self.parse_let(),
@@ -1188,6 +1204,32 @@ impl<'a> Parser<'a> {
         Ok(body)
     }
 
+    /// `Name(a, …)` of a named LAMBDA with `n` parameters: stored as a call
+    /// of [`functions::named_lambda`], expanded when compiled.
+    fn parse_named_lambda_call(
+        &mut self,
+        id: u32,
+        n: usize,
+        name: &str,
+    ) -> Result<Expr, ParseError> {
+        self.bump(); // name
+        self.expect("(", "'('")?;
+        let mut args = Vec::new();
+        if !self.eat_op(")") {
+            loop {
+                args.push(self.parse_expr()?);
+                if !self.eat_op(",") {
+                    break;
+                }
+            }
+            self.expect(")", "')' to close the call")?;
+        }
+        if args.len() != n {
+            return Err(self.err(format!("{name} takes {n} argument(s), got {}", args.len())));
+        }
+        Ok(Expr::Call(functions::named_lambda(id), args))
+    }
+
     /// `LAMBDA(p, …, body)(a, …)`: called on the spot.
     fn parse_lambda_call(&mut self) -> Result<Expr, ParseError> {
         let (params, start, end) = self.parse_lambda_params()?;
@@ -1488,6 +1530,9 @@ pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseEr
         if is_open && head.eq_ignore_ascii_case("call") {
             return parse_call_form(&toks, rhs, target);
         }
+        if is_open && head.eq_ignore_ascii_case("lambda") {
+            return parse_lambda_form(model, &toks, rhs, target);
+        }
     }
     // Fall through to an ordinary formula expression.
     let mut p = Parser {
@@ -1505,6 +1550,72 @@ pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseEr
     Ok(Definition::Formula(FormulaText {
         target,
         formula: Formula::new(expr),
+    }))
+}
+
+/// `Name = LAMBDA(p, …, body)`: a named LAMBDA. The body may read only its
+/// parameters (and literals, functions and earlier named LAMBDAs), so a
+/// call depends on nothing but its arguments.
+fn parse_lambda_form(
+    model: &Model,
+    toks: &[Spanned],
+    rhs: usize,
+    target: Name,
+) -> Result<Definition, ParseError> {
+    if functions::callable(&target.0).is_some() {
+        return Err(ParseError::new(
+            format!(
+                "{} is a built-in function; name the LAMBDA differently",
+                target.0
+            ),
+            None,
+        ));
+    }
+    // The lambda being (re)defined is not visible in its own body.
+    let mut m = model.clone();
+    let own = m.lambda_by_name(&target.0).map(|(id, _)| id);
+    if let Some(id) = own {
+        m.lambdas.remove(&id);
+    }
+    let mut p = Parser {
+        toks: &toks[rhs..],
+        pos: 0,
+        model: &m,
+        depth: 0,
+        scope: Vec::new(),
+        lambdas: 0,
+    };
+    let (params, start, end) = p.parse_lambda_params()?;
+    if p.peek().is_some() {
+        return Err(p.err("unexpected input after the LAMBDA (a named LAMBDA is not called here)"));
+    }
+    let args = (0..params.len())
+        .map(|i| Expr::Ref(functions::lambda_param(i), DimensionSpec::default()))
+        .collect();
+    let body = p.lambda_body(&params, args, start, end)?;
+    let refs = body.referenced_measures();
+    if refs
+        .iter()
+        .any(|r| functions::lambda_param_of(*r).is_none())
+    {
+        return Err(ParseError::new(
+            "a named LAMBDA reads only its parameters: pass measures as arguments",
+            None,
+        ));
+    }
+    if refs.iter().any(|r| functions::lambda_slot_of(*r).is_some()) {
+        return Err(ParseError::new(
+            "a named LAMBDA cannot hold SCAN or REDUCE",
+            None,
+        ));
+    }
+    Ok(Definition::Lambda(LambdaText {
+        name: target.clone(),
+        lambda: crate::NamedLambda {
+            name: target,
+            params,
+            body,
+        },
     }))
 }
 

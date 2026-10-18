@@ -495,6 +495,34 @@ pub const WINDOW: FuncId = FuncId(991);
 /// trailing argument `Call(INTO, [Category(K)])` (`SORT(x OVER T INTO K)`).
 pub const INTO: FuncId = FuncId(992);
 
+/// The first function id of a named LAMBDA call: lambda `id` is called as
+/// `FuncId(NAMED_LAMBDA_BASE + id)`. Above every built-in.
+pub const NAMED_LAMBDA_BASE: u32 = 1_000_000;
+
+/// The function id a call of named LAMBDA `id` is stored as.
+pub fn named_lambda(id: u32) -> FuncId {
+    FuncId(NAMED_LAMBDA_BASE.saturating_add(id))
+}
+
+/// The named LAMBDA a function id calls, if it is one.
+pub fn named_lambda_of(f: FuncId) -> Option<u32> {
+    f.0.checked_sub(NAMED_LAMBDA_BASE)
+}
+
+/// The reference standing for parameter `i` in a named LAMBDA's body.
+pub fn lambda_param(i: usize) -> crate::MeasureId {
+    crate::MeasureId(LAMBDA_PARAMS - i as u32)
+}
+
+/// The highest parameter placeholder id (below the fold placeholders).
+const LAMBDA_PARAMS: u32 = LAMBDA_SLOTS - 2048;
+
+/// The parameter index of a placeholder id (see [`lambda_param`]).
+pub fn lambda_param_of(id: crate::MeasureId) -> Option<usize> {
+    let d = LAMBDA_PARAMS.checked_sub(id.0)?;
+    (d < 256).then_some(d as usize)
+}
+
 /// `POSITION(T)`: an item's 1-based position along its category.
 pub const POSITION: FuncId = FuncId(900);
 

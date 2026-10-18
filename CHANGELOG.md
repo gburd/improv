@@ -23,6 +23,13 @@ positional forms and recurrences, lookups, list results, `LET` and
   [step])`; `BYROW`/`BYCOL(x OVER C, LAMBDA(row, SUM(row)))`. An
   expression that reads no measure (positions, literals) now broadcasts
   with anything, so `POSITION(R) * 10 + POSITION(C)` spans R × C.
+- **Named LAMBDAs.** `improv define model.db 1 "Margin = LAMBDA(p, c, p -
+  c)"`, then `Margin(Price, Cost)` in any formula. Calls are stored as
+  calls and expanded when compiled, so redefining a LAMBDA changes every
+  use; a body reads only its parameters and earlier LAMBDAs (never
+  itself). Saved in the Mentat (`:meta/lambdas`, installed over older
+  stores on open) and Postgres (`improv.meta`) stores; the GUI and CNL
+  print calls by name.
 
 - **`LET`, `LAMBDA`, `MAP`, `SCAN` and `REDUCE`.** LET names values for its
   body; a LAMBDA is called on the spot or passed to MAP (cell by cell),
