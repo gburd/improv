@@ -987,8 +987,11 @@ impl App {
         let measure_name = spec.measure_name.clone();
         match import_csv(&mut self.model, &spec) {
             Ok(n) => {
-                self.rebuild_after_structural_change();
-                format!("imported {n} cell(s) into measure '{measure_name}'")
+                let msg = format!("imported {n} cell(s) into measure '{measure_name}'");
+                match self.rebuild_after_structural_change() {
+                    Ok(()) => msg,
+                    Err(e) => format!("{msg}; formulas not recomputed: {e}"),
+                }
             }
             Err(e) => format!("import-csv: {e}"),
         }
@@ -1013,8 +1016,10 @@ impl App {
     /// structural change (a new measure/category/item), keeping the viewed
     /// measure selected when it still exists. Mirrors the fresh-build logic in
     /// `App::new`, since the live `Engine`'s tracked structure is fixed at
-    /// construction and a new measure needs a new engine.
-    fn rebuild_after_structural_change(&mut self) {
+    /// construction and a new measure needs a new engine. If the formulas no
+    /// longer build (an import changed a measure they use), the rest is still
+    /// rebuilt, with no engine, and the error is returned for the status.
+    fn rebuild_after_structural_change(&mut self) -> Result<(), String> {
         let viewed = self.measures.get(self.selected).copied();
         self.measures = measure_order(&self.model);
         let derived: Vec<MeasureId> = self
@@ -1029,12 +1034,16 @@ impl App {
                     .unwrap_or(false)
             })
             .collect();
+        let mut built = Ok(());
         let (engine, snapshot) = if derived.is_empty() {
             (None, Snapshot::default())
         } else {
             match Engine::new(&self.model, &derived) {
                 Ok((e, s)) => (Some(e), s),
-                Err(_) => (None, Snapshot::default()), // reported via caller's status already
+                Err(e) => {
+                    built = Err(e.to_string());
+                    (None, Snapshot::default())
+                }
             }
         };
         self.engine = engine;
@@ -1047,6 +1056,7 @@ impl App {
         self.filters.clear();
         self.reselect();
         self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
+        built
     }
 
     // -- views & filters (pure; terminal-free -> unit-testable) ------------
@@ -2168,6 +2178,40 @@ pub(crate) mod tests {
         assert_eq!(app.model.inputs.len(), 3);
         // The new measure is now selectable/viewable through the App.
         assert!(app.measures.contains(&MeasureId(100)));
+    }
+
+    /// An import that changes a measure a formula uses reports that the
+    /// formulas no longer build, instead of a bare success (the derived
+    /// measures would silently go blank). One that does not keeps them live.
+    #[test]
+    fn import_reports_formulas_it_breaks() {
+        let csv_path = tmp_path(".csv");
+        let _guard = TmpFile(csv_path.clone());
+        std::fs::write(&csv_path, "region,v\nNorth,1\nSouth,2\n").unwrap();
+        let import = |spec: &str| {
+            let mut app = App::new(revenue_model()).unwrap();
+            app.begin_import_csv();
+            app.command.as_mut().unwrap().1 = format!("{} {spec}", csv_path.display());
+            app.commit_command();
+            app
+        };
+        // Price becomes Price[Region]: Revenue = Price * Quantity breaks.
+        let app = import("100 Price v region:7:Region");
+        let s = app.status.clone().unwrap();
+        assert!(
+            s.starts_with("imported 2 cell(s) into measure 'Price'; formulas not recomputed: "),
+            "{s}"
+        );
+        assert!(app.engine.is_none());
+        // A new measure leaves Revenue computing.
+        let mut app = import("200 Sales v region:7:Region");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("imported 2 cell(s) into measure 'Sales'")
+        );
+        assert!(app.engine.is_some());
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.grid.display_at(0, 0), "1000");
     }
 
     #[test]

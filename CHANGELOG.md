@@ -355,6 +355,10 @@ positional forms and recurrences, lookups, list results, `LET` and
   unregularized lower value after the asymptotic series was the regularized
   one (`IMIGAMMA("1+i","40",TRUE,FALSE)` gave 1, not 0.498−0.155i), and
   Γ(0, z) is now E₁(z) rather than `#NUM!`.
+- **TUI import-csv that breaks a formula says so.** Importing into a
+  measure a formula uses (giving `Price` a new dimension, say) left every
+  derived measure blank with only "imported N cell(s)" in the status. The
+  status now adds "formulas not recomputed: …" with the engine's error.
 - **Binomial, beta, F and t with very large parameters.** The regularized
   incomplete beta behind `BINOM.DIST`, `BETA.DIST`, `F.DIST`, `T.DIST`,
   `NEGBINOM.DIST` and the `R.*` kernels lost accuracy once both shapes
