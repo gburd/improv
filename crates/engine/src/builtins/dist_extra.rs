@@ -775,9 +775,11 @@ fn sn_cdf(h: f64, alpha: f64) -> f64 {
     let g = -h;
     if h < 0.0 && alpha > 0.0 && alpha * g >= 1.0 {
         // With x = t/g, t = t0 + s: the integrand falls like e^(−t0 s), so
-        // pieces 1/t0 wide reach e^(−40) at s = √(t0² + 80) − t0.
+        // pieces 1/t0 wide reach e^(−40) at s = √(t0² + 80) − t0, written
+        // 80 / (√(t0² + 80) + t0) so a huge t0 neither cancels nor overflows
+        // (end · t0 < 40: at most 40 pieces).
         let t0 = alpha * g;
-        let end = (t0 * t0 + 80.0).sqrt() - t0;
+        let end = 80.0 / (t0.hypot(80f64.sqrt()) + t0);
         let pieces = (end * t0).ceil();
         let w = end / pieces;
         let f = |s: f64| (-t0 * s - 0.5 * s * s).exp() / (g * g + (t0 + s) * (t0 + s));
@@ -2125,5 +2127,24 @@ mod tests {
             (cauchy(3.0, &[0.0, 1.0], up_log) - (1.0 - (1.0f64 / 3.0).atan() / PI).ln()).abs()
                 < 1e-15
         );
+    }
+
+    /// The skew-normal CDF far in the left tail (shape · |z| beyond 1e154)
+    /// computed an infinite piece count and never returned (R.PSNORM,
+    /// R.QSNORM, and R.PST past 1e4 degrees of freedom).
+    #[test]
+    fn skew_normal_far_tail_finishes() {
+        let t0 = std::time::Instant::now();
+        let (t, f) = (CellValue::Bool(true), CellValue::Bool(false));
+        let mut a = nums(&[2.0, -1.208, -1.7e-106, 4.1e-289]);
+        a.extend([t.clone(), f]);
+        let _ = call(1646, &a);
+        assert_eq!(val(1646, &[-1e200, 1e200, 0.0, 1.0]), 0.0);
+        assert_eq!(sn_cdf(-1e200, 1e200), 0.0);
+        let _ = call(1647, &nums(&[5.5e-186, 4.0e242, -0.5, 4.0e242]));
+        let mut a = nums(&[-1.0, 1.07e212, 4.9e307]);
+        a.extend([t.clone(), t]);
+        let _ = call(1649, &a);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
     }
 }
