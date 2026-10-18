@@ -623,6 +623,111 @@ mod tests {
         assert!(!inspects_errors(63));
     }
 
+    /// Date functions on inputs the goldens leave to the integration
+    /// binary, against LibreOffice 25.2.
+    #[test]
+    fn dates_match_libreoffice() {
+        let near = |got: CellValue, want: f64| {
+            let g = match got {
+                CellValue::Date(ms) => ms as f64 / DAY_MS as f64,
+                v => v.as_num().unwrap(),
+            };
+            assert!((g - want).abs() < 1e-12, "{g} vs {want}");
+        };
+        let t = |v: CellValue| match v {
+            CellValue::Date(ms) => (ms - SERIAL_EPOCH_MS) as f64 / DAY_MS as f64,
+            v => panic!("{v:?}"),
+        };
+        // TIME: minutes or seconds past a day wrap (LibreOffice 0.8889 and
+        // 0.3472); a negative time, or an argument over 32767, is #NUM! as
+        // Excel documents (LibreOffice and Gnumeric accept those).
+        let time = |h, m, sec| ev(402, &[num(h), num(m), num(sec)]);
+        assert!((t(time(0.0, 20000.0, 0.0)) - 0.888_888_888_888_889).abs() < 1e-12);
+        assert!((t(time(0.0, 0.0, 30000.0)) - 0.347_222_222_222_222).abs() < 1e-12);
+        assert_eq!(time(-1.0, 0.0, 0.0), CellValue::Err(err::NUM));
+        assert_eq!(time(32768.0, 0.0, 0.0), CellValue::Err(err::NUM));
+        assert_eq!(time(0.0, 32768.0, 0.0), CellValue::Err(err::NUM));
+        assert_eq!(time(0.0, 0.0, 32768.0), CellValue::Err(err::NUM));
+        // DAYSINYEAR (ORG.OPENOFFICE.DAYSINYEAR).
+        near(ev(430, &[ymd(2023, 6, 1)]), 365.0);
+        near(ev(430, &[ymd(2024, 6, 1)]), 366.0);
+        // DAYS360, US and European, from a February end and around 30/31.
+        let d360 = |a, b, eu: bool| ev(418, &[a, b, CellValue::Bool(eu)]);
+        near(d360(ymd(2023, 2, 28), ymd(2023, 3, 31), false), 30.0);
+        near(d360(ymd(2024, 2, 28), ymd(2024, 3, 31), false), 33.0);
+        near(d360(ymd(2024, 2, 29), ymd(2024, 3, 31), false), 30.0);
+        near(d360(ymd(2024, 1, 30), ymd(2024, 3, 31), false), 60.0);
+        near(d360(ymd(2024, 1, 15), ymd(2024, 3, 31), false), 76.0);
+        near(d360(ymd(2024, 2, 15), ymd(2024, 3, 31), false), 46.0);
+        near(d360(ymd(2024, 1, 15), ymd(2024, 3, 31), true), 75.0);
+        near(d360(ymd(2024, 1, 31), ymd(2024, 3, 30), true), 60.0);
+        // YEARFRAC: reversed dates, basis 0 month ends and February ends,
+        // basis 1 across two years, and within a year and a bit.
+        let yf = |a, b, basis: f64| ev(422, &[a, b, num(basis)]);
+        near(
+            yf(ymd(2024, 3, 1), ymd(2023, 1, 1), 0.0),
+            1.166_666_666_666_666_7,
+        );
+        near(yf(ymd(2023, 1, 31), ymd(2023, 3, 15), 0.0), 0.125);
+        near(yf(ymd(2023, 1, 30), ymd(2023, 3, 31), 0.0), 1.0 / 6.0);
+        near(
+            yf(ymd(2023, 2, 28), ymd(2023, 3, 15), 0.0),
+            0.041_666_666_666_666_664,
+        );
+        near(yf(ymd(2024, 2, 29), ymd(2025, 2, 28), 0.0), 1.0);
+        near(
+            yf(ymd(2024, 2, 29), ymd(2024, 3, 31), 0.0),
+            0.086_111_111_111_111_11,
+        );
+        near(
+            yf(ymd(2022, 6, 1), ymd(2024, 6, 1), 1.0),
+            2.000_912_408_759_124_4,
+        );
+        near(
+            yf(ymd(2023, 3, 1), ymd(2024, 2, 1), 1.0),
+            0.923_287_671_232_876_7,
+        );
+        near(
+            yf(ymd(2023, 3, 1), ymd(2024, 2, 29), 1.0),
+            0.997_267_759_562_841_5,
+        );
+        near(
+            yf(ymd(2024, 1, 15), ymd(2025, 1, 10), 1.0),
+            0.986_338_797_814_207_6,
+        );
+        near(
+            yf(ymd(2024, 3, 15), ymd(2025, 1, 10), 1.0),
+            0.824_657_534_246_575_4,
+        );
+        near(
+            yf(ymd(2023, 3, 15), ymd(2024, 3, 10), 1.0),
+            0.986_338_797_814_207_6,
+        );
+        // MONTHS, WEEKS, YEARS by calendar periods (ORG.OPENOFFICE.*).
+        let per = |id, a, b| ev(id, &[a, b, num(1.0)]);
+        near(per(433, ymd(2024, 1, 31), ymd(2024, 3, 1)), 2.0);
+        near(per(434, ymd(2024, 1, 6), ymd(2024, 1, 8)), 1.0);
+        near(per(435, ymd(2023, 12, 31), ymd(2024, 1, 1)), 1.0);
+        // ...and by whole periods (0 for both).
+        near(ev(434, &[ymd(2024, 1, 6), ymd(2024, 1, 8), num(0.0)]), 0.0);
+        near(
+            ev(435, &[ymd(2023, 12, 31), ymd(2024, 1, 1), num(0.0)]),
+            0.0,
+        );
+        // YEARFRAC basis 1 just over a year: the average of two years.
+        near(
+            yf(ymd(2023, 3, 15), ymd(2024, 3, 20), 1.0),
+            1.015_047_879_616_963,
+        );
+        // DATEVALUE: a two-digit field with three digits is no US date.
+        assert_eq!(ev(401, &[s("1/312/2025")]), CellValue::Err(err::VALUE));
+        assert_eq!(ev(401, &[s("123/1/2025")]), CellValue::Err(err::VALUE));
+        near(
+            ev(401, &[s("1/31/2025")]),
+            45688.0 + SERIAL_EPOCH_MS as f64 / DAY_MS as f64,
+        );
+    }
+
     #[test]
     fn calendar_edges() {
         // DATE rolls over and adds 1900 to small years; out of range is #NUM!.
