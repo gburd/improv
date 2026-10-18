@@ -198,6 +198,7 @@ pub fn union_keys(a: &[(u32, u32)], b: &[(u32, u32)]) -> (r: Vec<(u32, u32)>)
 } // verus!
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

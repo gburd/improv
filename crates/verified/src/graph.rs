@@ -458,6 +458,7 @@ pub fn build_order(g: &Vec<Vec<usize>>, roots: &[usize]) -> (r: Result<Vec<usize
 } // verus!
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

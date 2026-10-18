@@ -11,6 +11,8 @@
 //! `f64`), so every kernel takes and returns integers; the engine does the
 //! float range checks and truncation before calling in.
 
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod bits;
 pub mod gcd;
 pub mod graph;

@@ -182,6 +182,7 @@ pub fn lcm_below(a: u64, b: u64, cap: u64) -> (r: Option<u64>)
 } // verus!
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

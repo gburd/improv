@@ -435,6 +435,7 @@ pub fn decode(ds: &[u8], r: u32) -> (res: Option<i64>)
 } // verus!
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

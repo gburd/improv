@@ -111,6 +111,7 @@ pub fn shr(x: u64, n: u32) -> (r: u64)
 } // verus!
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
