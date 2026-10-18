@@ -697,6 +697,89 @@ mod tests {
         text(&[CellValue::num(x), CellValue::Text(f.into())])
     }
 
+    /// TEXT, REGEX, NUMBERVALUE and VALUETOTEXT on the inputs the goldens
+    /// leave to the integration binary. LibreOffice 25.2 and Gnumeric 1.12
+    /// agree with these unless noted.
+    #[test]
+    fn text_edges_against_the_references() {
+        let (x, s) = (CellValue::num, |v: &str| CellValue::Text(v.into()));
+        let ok = |v: &str| Ok(v.to_string());
+        // Colours (named and [colorN]) print nothing; `$` and `yyy` (four
+        // digits, as Gnumeric; LibreOffice "23y"); `0,,` scales twice;
+        // a trailing comma after the point scales too (LibreOffice and
+        // Gnumeric 0.0); `#,###` groups.
+        assert_eq!(fmt(5.0, "[Blue]0"), ok("5"));
+        assert_eq!(fmt(5.0, "[color10]0"), ok("5"));
+        assert_eq!(fmt(1234.5, "$0"), ok("$1235"));
+        assert_eq!(fmt(45000.75, "yyy"), ok("2023"));
+        assert_eq!(fmt(1_500_000.0, "0,,"), ok("2"));
+        assert_eq!(fmt(1.5, "0.0,"), ok("0.0"));
+        assert_eq!(fmt(1234.0, "#,###"), ok("1,234"));
+        // A comma before any digit is a literal-free no-op here
+        // (LibreOffice and Gnumeric print ",1234.5"), and one inside the
+        // integer digits groups.
+        assert_eq!(fmt(1234.5, ",0.0"), ok("1234.5"));
+        assert_eq!(fmt(1234.5, "0,000.0"), ok("1,234.5"));
+        // A comma among the fraction digits is dropped (LibreOffice and
+        // Gnumeric 1.25).
+        assert_eq!(fmt(1.25, "0.0,0"), ok("1.25"));
+        // A comma between a literal and the digits scales nothing and
+        // prints nothing (LibreOffice keeps it: "x,1235").
+        assert_eq!(fmt(1234.5, "\"x\",0"), ok("x1235"));
+        // Minutes after an hour and before a second; a lone m is the month.
+        assert_eq!(fmt(45000.75, "yy-m-d h:mm"), ok("23-3-15 18:00"));
+        assert_eq!(fmt(45000.75, "m"), ok("3"));
+        assert_eq!(fmt(45000.75, "h m"), ok("18 0"));
+        assert_eq!(fmt(45000.75, "m s"), ok("0 0"));
+        assert_eq!(fmt(0.25, "h:mm a/p"), ok("6:00 a"));
+        // General in either case (the G and the g arms), AM/PM upper and
+        // lower case.
+        assert_eq!(fmt(0.5, "General"), ok("0.5"));
+        assert_eq!(fmt(0.5, "general"), ok("0.5"));
+        assert_eq!(fmt(0.25, "h AM/PM"), ok("6 AM"));
+        // (Lower-case am/pm prints lower case, as Excel; LibreOffice "PM".)
+        assert_eq!(fmt(0.75, "h am/pm"), ok("6 pm"));
+        // A capital G that is not General.
+        assert_eq!(fmt(0.5, "Gx"), Err(err::VALUE));
+        // Lower-case exponents (LibreOffice 1.2e+03, 0.0e0, 1.0e-3;
+        // Gnumeric rejects them).
+        assert_eq!(fmt(1234.0, "0.0e+00"), ok("1.2e+03"));
+        assert_eq!(fmt(0.0, "0.0e-0"), ok("0.0e0"));
+        assert_eq!(fmt(0.001, "0.0e+0"), ok("1.0e-3"));
+        // Not formats here: a condition, an A without /P or M, a G that is
+        // not General, an exponent without a sign (Excel #VALUE!; the
+        // others print something).
+        for f in ["[>3]0", "h:mm A", "g", "0.0E0"] {
+            assert_eq!(fmt(5.0, f), Err(err::VALUE), "{f}");
+        }
+        // Text that parses as an infinite number is text.
+        assert_eq!(text(&[s("1e999"), s("0")]), ok("1e999"));
+        assert_eq!(text(&[s("abc"), s("0;0;0;[@]")]), Err(err::VALUE));
+        // REGEX: a $ without a digit is literal; "G" is global as "g"
+        // (LibreOffice Err:502 for both); occurrence 0 replaces nothing.
+        let rx = |rep: &str, flag: CellValue| regex_lo(&[s("a1b2"), s("[0-9]"), s(rep), flag]);
+        assert_eq!(rx("x$", x(1.0)), Ok(s("ax$b2")));
+        assert_eq!(rx("#", s("G")), Ok(s("a#b#")));
+        assert_eq!(rx("#", x(0.0)), Ok(s("a1b2")));
+        // NUMBERVALUE: a lone separator is 0 (Excel; LibreOffice #VALUE!),
+        // grouping in the integer part.
+        assert_eq!(number_value(&[s(".")]), Ok(x(0.0)));
+        assert_eq!(number_value(&[s(",")]), Ok(x(0.0)));
+        assert_eq!(number_value(&[s("1,234.5")]), Ok(x(1234.5)));
+        // VALUETOTEXT strict quotes text; REGEXREPLACE's negative
+        // occurrence counts from the end (Excel docs: "aab").
+        assert_eq!(value_to_text(&[s("a"), x(1.0)]), Ok(s("\"a\"")));
+        assert_eq!(value_to_text(&[s("a"), x(0.0)]), Ok(s("a")));
+        // FIXED of a negative (LibreOffice -1,234.6), and REGEXREPLACE's
+        // positive occurrence (Excel docs: "aba").
+        assert_eq!(fixed(-1234.567, 1.0, true), ok("-1,234.6"));
+        assert_eq!(eval(338, &[s("aaa"), s("a"), s("b"), x(2.0)]), Ok(s("aba")));
+        assert_eq!(
+            eval(338, &[s("aaa"), s("a"), s("b"), x(-1.0)]),
+            Ok(s("aab"))
+        );
+    }
+
     #[test]
     fn text_formats() {
         assert_eq!(fmt(1234.5, "#,##0.00").as_deref(), Ok("1,234.50"));
