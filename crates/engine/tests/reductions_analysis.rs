@@ -111,10 +111,57 @@ fn model(data: &J) -> (Model, HashMap<String, (CategoryId, usize)>) {
 /// from different algorithms (Jacobi SVD here, quad-precision QR in
 /// Gnumeric), which agree to about ten ulps.
 fn close(got: &CellValue, want: &CellValue) -> bool {
-    match (got.as_num(), want.as_num()) {
-        (Some(a), Some(b)) => a == b || (a - b).abs() <= 1e-12 * b.abs().max(1.0),
+    let near = |a: f64, b: f64| a == b || (a - b).abs() <= 1e-12 * b.abs().max(1.0);
+    match (got.as_num(), want.as_num(), got, want) {
+        (Some(a), Some(b), ..) => near(a, b),
+        // Complex text (FOURIER): each part within the tolerance, since
+        // sin/cos differ by an ulp between platforms' libms.
+        (_, _, CellValue::Text(g), CellValue::Text(w)) => match (complex(g), complex(w)) {
+            (Some((gr, gi)), Some((wr, wi))) => near(gr, wr) && near(gi, wi),
+            _ => g == w,
+        },
         _ => got == want,
     }
+}
+
+/// `"a+bi"` / `"a-bi"` / `"a"` / `"bi"` as (re, im).
+fn complex(s: &str) -> Option<(f64, f64)> {
+    let Some(body) = s.strip_suffix(['i', 'j']) else {
+        return s.parse().ok().map(|r| (r, 0.0));
+    };
+    // The sign that starts the imaginary part: the last + or - not at the
+    // start and not after an exponent's e.
+    let b = body.as_bytes();
+    let at = (1..b.len())
+        .rev()
+        .find(|&k| matches!(b[k], b'+' | b'-') && !matches!(b[k - 1], b'e' | b'E'));
+    let (re, im) = match at {
+        Some(k) => (body[..k].parse().ok()?, &body[k..]),
+        None => (0.0, body),
+    };
+    let im = match im {
+        "" | "+" => 1.0,
+        "-" => -1.0,
+        x => x.parse().ok()?,
+    };
+    Some((re, im))
+}
+
+#[test]
+fn complex_text_parses() {
+    assert_eq!(complex("-0.625+1.8i"), Some((-0.625, 1.8)));
+    assert_eq!(complex("1e-3-2e-3i"), Some((1e-3, -2e-3)));
+    assert_eq!(complex("-i"), Some((0.0, -1.0)));
+    assert_eq!(complex("2"), Some((2.0, 0.0)));
+    assert_eq!(complex("x"), None);
+    assert!(close(
+        &CellValue::Text("-0.625+1.8106601717798214i".into()),
+        &CellValue::Text("-0.6250000000000001+1.8106601717798214i".into())
+    ));
+    assert!(!close(
+        &CellValue::Text("1+i".into()),
+        &CellValue::Text("1+2i".into())
+    ));
 }
 
 /// The result cells' keys in golden order: the cells of `list` (row-major)
