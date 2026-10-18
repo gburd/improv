@@ -512,3 +512,7 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `OPT_FORWARD_START(text, number, number, number, number, number, number, number)` | number | forward start option: OPT_FORWARD_START(call_put, spot, alpha, time_start, time, rate, volatility, cost_of_carry) |
 | `OPT_TIME_SWITCH(text, number, number, number, number, number, number, number, number, number)` | number | discrete time switch option: OPT_TIME_SWITCH(call_put, spot, strike, a, time, m, dt, rate, cost_of_carry, volatility) |
 | `OPT_SIMPLE_CHOOSER(number, number, number, number, number, number, number)` | number | simple chooser option: OPT_SIMPLE_CHOOSER(spot, strike, time1, time2, rate, cost_of_carry, volatility) |
+| `OPT_BAW_AMER(text, number, number, number, number, number, number)` | number | Barone-Adesi-Whaley American approximation: OPT_BAW_AMER(call_put, spot, strike, time, rate, volatility, cost_of_carry) |
+| `OPT_BJER_STENS(text, number, number, number, number, number, number)` | number | Bjerksund-Stensland American approximation: OPT_BJER_STENS(call_put, spot, strike, time, rate, volatility, cost_of_carry) |
+| `OPT_RGW(number, number, number, number, number, number, number)` | number | Roll-Geske-Whaley American call with one known dividend: OPT_RGW(spot, strike, time_payout, time_exp, rate, d, volatility) |
+| `OPT_BINOMIAL(text, text, number, number, number, number, number, number, [number])` | number | Cox-Ross-Rubinstein binomial tree: OPT_BINOMIAL(amer_euro, call_put, steps, spot, strike, time, rate, volatility, [cost_of_carry]) |

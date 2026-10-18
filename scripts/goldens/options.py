@@ -22,10 +22,63 @@ import tempfile
 from xml.sax.saxutils import escape
 
 GN = []  # (formula, tolerance)
+FIX = {}  # formula -> (value, why): Gnumeric is wrong, an independent value instead
 
 
 def gn(f, tol=1e-9):
     GN.append((f, tol))
+
+
+def fix(f, value, tol):
+    GN.append((f, tol))
+    FIX[f] = value
+
+
+# Gnumeric's cum_biv_norm_dist1 computes `delta = (1 - Sgn(a)*Sgn(b)) / 4` in
+# integer arithmetic, so when a*b*rho > 0 and a, b differ in sign it is ½ too
+# high. Rows that reach that branch are checked against mpmath instead (exact
+# bivariate normal by quadrature, same formulas as Gnumeric otherwise).
+def mp_bvn(a, b, rho):
+    import mpmath as m
+    m.mp.dps = 30
+    f = lambda x: m.npdf(x) * m.ncdf((b - rho * x) / m.sqrt(1 - rho * rho))  # noqa: E731
+    return float(m.quad(f, [-m.inf, min(a, 0), a]) if a > 0 else m.quad(f, [-m.inf, a]))
+
+
+def mp_n(x):
+    import mpmath as m
+    return float(m.ncdf(x))
+
+
+def mp_bs_call(s, x, t, r, v, b):
+    import math
+    d1 = (math.log(s / x) + (b + v * v / 2) * t) / (v * math.sqrt(t))
+    return s * math.exp((b - r) * t) * mp_n(d1) - x * math.exp(-r * t) * mp_n(d1 - v * math.sqrt(t))
+
+
+def mp_rgw(s, x, t1, t2, r, d, v):
+    """Roll-Geske-Whaley as Gnumeric computes it (bisection to 1e-5)."""
+    import math
+    sx = s - d * math.exp(-r * t1)
+    gap = lambda i: mp_bs_call(i, x, t2 - t1, r, v, 0) - i - d + x  # noqa: E731
+    hi = s
+    while gap(hi) > 0 and hi < 1e8:
+        hi *= 2
+    lo, i = 0.0, hi / 2
+    g = gap(i)
+    while abs(g) > 1e-5 and hi - lo > 1e-5:
+        hi, lo = (i, lo) if g < 0 else (hi, i)
+        i = (hi + lo) / 2
+        g = gap(i)
+    sq = math.sqrt
+    a1 = (math.log(sx / x) + (r + v * v / 2) * t2) / (v * sq(t2))
+    a2 = a1 - v * sq(t2)
+    b1 = (math.log(sx / i) + (r + v * v / 2) * t1) / (v * sq(t1))
+    b2 = b1 - v * sq(t1)
+    rho = -sq(t1 / t2)
+    return (sx * mp_n(b1) + sx * mp_bvn(a1, -b1, rho)
+            - x * math.exp(-r * t2) * mp_bvn(a2, -b2, rho)
+            - (x - d) * math.exp(-r * t1) * mp_n(b2))
 
 
 def many(*fs, tol=1e-9):
@@ -82,6 +135,31 @@ many("OPT_SIMPLE_CHOOSER(50,50,0.25,0.5,0.08,0.08,0.25)",
      "OPT_SIMPLE_CHOOSER(50,50,0,0.5,0.08,0.08,0.25)",
      "OPT_SIMPLE_CHOOSER(50,50,0.25,0.5,0.08,0.08,0)")
 
+# --- American (Gnumeric's solvers stop at 1e-6 relative / 1e-5 absolute) --------
+# BAW: Gnumeric stops the critical-price search at 1e-6 relative in the
+# exercise condition, Improv at 1e-12 in the price, ~1e-5 apart.
+many('OPT_BAW_AMER("c",100,100,0.5,0.1,0.25,0)', 'OPT_BAW_AMER("p",100,100,0.5,0.1,0.25,0)',
+     'OPT_BAW_AMER("c",100,90,0.25,0.08,0.35,-0.04)', 'OPT_BAW_AMER("p",90,100,0.25,0.08,0.35,0.08)',
+     'OPT_BAW_AMER("p",60,100,0.25,0.08,0.2,0.08)', 'OPT_BAW_AMER("c",100,100,0.5,0.1,0.25,0.1)',
+     'OPT_BAW_AMER("b",100,100,0.5,0.1,0.25,0)', tol=1e-5)
+many('OPT_BJER_STENS("c",42,40,0.75,0.04,0.35,-0.04)', 'OPT_BJER_STENS("p",42,40,0.75,0.04,0.35,-0.04)',
+     'OPT_BJER_STENS("p",40,40,0.5,0.06,0.3,0.06)', 'OPT_BJER_STENS("c",100,100,0.5,0.1,0.25,0.1)',
+     'OPT_BJER_STENS("c",200,100,0.5,0.1,0.25,0)', 'OPT_BJER_STENS("h",42,40,0.75,0.04,0.35,-0.04)')
+# RGW: Haug's example (his book: 4.3860) reaches the bvn bug (Gnumeric 2.2267).
+fix("OPT_RGW(80,82,0.25,0.3333,0.06,4,0.3)", mp_rgw(80, 82, 0.25, 0.3333, 0.06, 4, 0.3), 1e-7)
+fix("OPT_RGW(100,90,0.5,1,0.05,5,0.25)", mp_rgw(100, 90, 0.5, 1, 0.05, 5, 0.25), 1e-7)
+fix("OPT_RGW(82.5,82,0.25,0.3333,0.06,4,0.3)", mp_rgw(82.5, 82, 0.25, 0.3333, 0.06, 4, 0.3), 1e-7)
+many("OPT_RGW(80,82,0.25,0.3333,0.06,0.1,0.3)",
+     "OPT_RGW(0,82,0.25,0.3333,0.06,4,0.3)", tol=1e-7)
+many('OPT_BINOMIAL("a","p",100,100,95,0.5,0.08,0.3,0.08)',
+     'OPT_BINOMIAL("e","p",100,100,95,0.5,0.08,0.3,0.08)',
+     'OPT_BINOMIAL("A","c",250,100,95,0.5,0.08,0.3,0.04)',
+     'OPT_BINOMIAL("e","c",500,100,95,0.5,0.08,0.3)',
+     'OPT_BINOMIAL("a","c",0,100,95,0.5,0.08,0.3,0.08)',
+     'OPT_BINOMIAL("a","c",-1,100,95,0.5,0.08,0.3,0.08)',
+     'OPT_BINOMIAL("x","c",10,100,95,0.5,0.08,0.3,0.08)',
+     'OPT_BINOMIAL("a","x",10,100,95,0.5,0.08,0.3,0.08)', tol=1e-11)
+
 
 def err(name):
     return {"error": name}
@@ -113,7 +191,7 @@ def gnumeric(formulas):
 def cell(v, tol):
     if isinstance(v, dict):
         return json.dumps(v)
-    if tol == 1e-9:
+    if tol <= 1e-9:
         return repr(v)
     return json.dumps({"approx": v, "tol": tol})
 
@@ -135,7 +213,11 @@ def main():
     print("formula\texpected\tsource")
     for (f, tol), v in zip(GN, got):
         assert "\t" not in f and "^" not in f, f
-        print(f"{f}\t{cell(v, tol)}\tGnumeric 1.12.57")
+        if f in FIX:
+            print(f"Gnumeric bug: {f} Gnumeric={v!r} mpmath={FIX[f]!r}", file=sys.stderr)
+            print(f"{f}\t{cell(FIX[f], tol)}\tmpmath (Gnumeric 1.12.57 bivariate normal bug)")
+        else:
+            print(f"{f}\t{cell(v, tol)}\tGnumeric 1.12.57")
 
 
 if __name__ == "__main__":
