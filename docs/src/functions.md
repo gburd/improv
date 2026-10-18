@@ -502,12 +502,12 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `SNORM.DIST.RANGE(x1, x2)` | number | Φ(x2) − Φ(x1): the standard normal probability between x1 and x2 |
 | `OWENT(h, a)` | number | Owen's T function T(h, a) |
 | `CUM_BIV_NORM_DIST(a, b, rho)` | number | the standard bivariate normal P(X ≤ a, Y ≤ b) with correlation ρ, |ρ| < 1 |
-| `R.DBETA(x, shape1, shape2, [give_log])` | number | the density at x of the beta distribution of shapes a and b, or its logarithm (give_log) |
-| `R.PBETA(x, shape1, shape2, [lower_tail], [log_p])` | number | P(X ≤ x) for the beta distribution of shapes a and b, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QBETA(p, shape1, shape2, [lower_tail], [log_p])` | number | the quantile of the beta distribution of shapes a and b: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DBINOM(x, size, prob, [give_log])` | number | the probability mass at x of the binomial distribution of n trials of success probability psuc, or its logarithm (give_log) |
-| `R.PBINOM(x, size, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the binomial distribution of n trials of success probability psuc, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QBINOM(p, size, prob, [lower_tail], [log_p])` | number | the quantile of the binomial distribution of n trials of success probability psuc: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DBETA(x, shape1, shape2, [give_log])` | number | the density at x of the beta distribution of shapes shape1 and shape2, or its logarithm (give_log) |
+| `R.PBETA(x, shape1, shape2, [lower_tail], [log_p])` | number | P(X ≤ x) for the beta distribution of shapes shape1 and shape2, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QBETA(p, shape1, shape2, [lower_tail], [log_p])` | number | the quantile of the beta distribution of shapes shape1 and shape2: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DBINOM(x, size, prob, [give_log])` | number | the probability mass at x of the binomial distribution of size trials of success probability prob, or its logarithm (give_log) |
+| `R.PBINOM(x, size, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the binomial distribution of size trials of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QBINOM(p, size, prob, [lower_tail], [log_p])` | number | the quantile of the binomial distribution of size trials of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DCAUCHY(x, location, scale, [give_log])` | number | the density at x of the Cauchy distribution of location and scale, or its logarithm (give_log) |
 | `R.PCAUCHY(x, location, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the Cauchy distribution of location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QCAUCHY(p, location, scale, [lower_tail], [log_p])` | number | the quantile of the Cauchy distribution of location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
@@ -517,27 +517,27 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `R.DEXP(x, scale, [give_log])` | number | the density at x of the exponential distribution of the given scale (mean), or its logarithm (give_log) |
 | `R.PEXP(x, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the exponential distribution of the given scale (mean), or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QEXP(p, scale, [lower_tail], [log_p])` | number | the quantile of the exponential distribution of the given scale (mean): the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DF(x, df1, df2, [give_log])` | number | the density at x of the F distribution of n1 and n2 degrees of freedom, or its logarithm (give_log) |
-| `R.PF(x, df1, df2, [lower_tail], [log_p])` | number | P(X ≤ x) for the F distribution of n1 and n2 degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QF(p, df1, df2, [lower_tail], [log_p])` | number | the quantile of the F distribution of n1 and n2 degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DF(x, df1, df2, [give_log])` | number | the density at x of the F distribution of df1 and df2 degrees of freedom, or its logarithm (give_log) |
+| `R.PF(x, df1, df2, [lower_tail], [log_p])` | number | P(X ≤ x) for the F distribution of df1 and df2 degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QF(p, df1, df2, [lower_tail], [log_p])` | number | the quantile of the F distribution of df1 and df2 degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DGAMMA(x, shape, scale, [give_log])` | number | the density at x of the gamma distribution of shape and scale, or its logarithm (give_log) |
 | `R.PGAMMA(x, shape, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the gamma distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QGAMMA(p, shape, scale, [lower_tail], [log_p])` | number | the quantile of the gamma distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DGEOM(x, prob, [give_log])` | number | the probability mass at x of the geometric distribution (failures before the first success) of success probability psuc, or its logarithm (give_log) |
-| `R.PGEOM(x, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the geometric distribution (failures before the first success) of success probability psuc, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QGEOM(p, prob, [lower_tail], [log_p])` | number | the quantile of the geometric distribution (failures before the first success) of success probability psuc: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DGEOM(x, prob, [give_log])` | number | the probability mass at x of the geometric distribution (failures before the first success) of success probability prob, or its logarithm (give_log) |
+| `R.PGEOM(x, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the geometric distribution (failures before the first success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QGEOM(p, prob, [lower_tail], [log_p])` | number | the quantile of the geometric distribution (failures before the first success) of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DGUMBEL(x, mu, beta, [give_log])` | number | the density at x of the Gumbel distribution of location μ and scale β, or its logarithm (give_log) |
 | `R.PGUMBEL(x, mu, beta, [lower_tail], [log_p])` | number | P(X ≤ x) for the Gumbel distribution of location μ and scale β, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QGUMBEL(p, mu, beta, [lower_tail], [log_p])` | number | the quantile of the Gumbel distribution of location μ and scale β: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DHYPER(x, m, n, k, [give_log])` | number | the probability mass at x of the hypergeometric distribution of the red balls among n drawn from r red and b black, or its logarithm (give_log) |
-| `R.PHYPER(x, m, n, k, [lower_tail], [log_p])` | number | P(X ≤ x) for the hypergeometric distribution of the red balls among n drawn from r red and b black, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QHYPER(p, m, n, k, [lower_tail], [log_p])` | number | the quantile of the hypergeometric distribution of the red balls among n drawn from r red and b black: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DHYPER(x, m, n, k, [give_log])` | number | the probability mass at x of the hypergeometric distribution of the white balls among k drawn from m white and n black, or its logarithm (give_log) |
+| `R.PHYPER(x, m, n, k, [lower_tail], [log_p])` | number | P(X ≤ x) for the hypergeometric distribution of the white balls among k drawn from m white and n black, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QHYPER(p, m, n, k, [lower_tail], [log_p])` | number | the quantile of the hypergeometric distribution of the white balls among k drawn from m white and n black: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DLNORM(x, meanlog, sdlog, [give_log])` | number | the density at x of the log-normal distribution of log-mean and log-sd, or its logarithm (give_log) |
 | `R.PLNORM(x, meanlog, sdlog, [lower_tail], [log_p])` | number | P(X ≤ x) for the log-normal distribution of log-mean and log-sd, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QLNORM(p, meanlog, sdlog, [lower_tail], [log_p])` | number | the quantile of the log-normal distribution of log-mean and log-sd: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DNBINOM(x, size, prob, [give_log])` | number | the probability mass at x of the negative binomial distribution (failures before the n-th success) of success probability psuc, or its logarithm (give_log) |
-| `R.PNBINOM(x, size, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the negative binomial distribution (failures before the n-th success) of success probability psuc, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QNBINOM(p, size, prob, [lower_tail], [log_p])` | number | the quantile of the negative binomial distribution (failures before the n-th success) of success probability psuc: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DNBINOM(x, size, prob, [give_log])` | number | the probability mass at x of the negative binomial distribution (failures before the size-th success) of success probability prob, or its logarithm (give_log) |
+| `R.PNBINOM(x, size, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the negative binomial distribution (failures before the size-th success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QNBINOM(p, size, prob, [lower_tail], [log_p])` | number | the quantile of the negative binomial distribution (failures before the size-th success) of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DNORM(x, mean, sd, [give_log])` | number | the density at x of the normal distribution of mean μ and standard deviation σ, or its logarithm (give_log) |
 | `R.PNORM(x, mean, sd, [lower_tail], [log_p])` | number | P(X ≤ x) for the normal distribution of mean μ and standard deviation σ, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QNORM(p, mean, sd, [lower_tail], [log_p])` | number | the quantile of the normal distribution of mean μ and standard deviation σ: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
@@ -550,12 +550,12 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `R.DSNORM(x, shape, location, scale, [give_log])` | number | the density at x of the skew-normal distribution of shape, location and scale, or its logarithm (give_log) |
 | `R.PSNORM(x, shape, location, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the skew-normal distribution of shape, location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QSNORM(p, shape, location, scale, [lower_tail], [log_p])` | number | the quantile of the skew-normal distribution of shape, location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DST(x, df, shape, [give_log])` | number | the density at x of the skew-t distribution of n degrees of freedom and the given shape, or its logarithm (give_log) |
-| `R.PST(x, df, shape, [lower_tail], [log_p])` | number | P(X ≤ x) for the skew-t distribution of n degrees of freedom and the given shape, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QST(p, df, shape, [lower_tail], [log_p])` | number | the quantile of the skew-t distribution of n degrees of freedom and the given shape: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DT(x, df, [give_log])` | number | the density at x of the Student t distribution of n degrees of freedom, or its logarithm (give_log) |
-| `R.PT(x, df, [lower_tail], [log_p])` | number | P(X ≤ x) for the Student t distribution of n degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QT(p, df, [lower_tail], [log_p])` | number | the quantile of the Student t distribution of n degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DST(x, df, shape, [give_log])` | number | the density at x of the skew-t distribution of df degrees of freedom and the given shape, or its logarithm (give_log) |
+| `R.PST(x, df, shape, [lower_tail], [log_p])` | number | P(X ≤ x) for the skew-t distribution of df degrees of freedom and the given shape, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QST(p, df, shape, [lower_tail], [log_p])` | number | the quantile of the skew-t distribution of df degrees of freedom and the given shape: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DT(x, df, [give_log])` | number | the density at x of the Student t distribution of df degrees of freedom, or its logarithm (give_log) |
+| `R.PT(x, df, [lower_tail], [log_p])` | number | P(X ≤ x) for the Student t distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QT(p, df, [lower_tail], [log_p])` | number | the quantile of the Student t distribution of df degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DWEIBULL(x, shape, scale, [give_log])` | number | the density at x of the Weibull distribution of shape and scale, or its logarithm (give_log) |
 | `R.PWEIBULL(x, shape, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the Weibull distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QWEIBULL(p, shape, scale, [lower_tail], [log_p])` | number | the quantile of the Weibull distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
