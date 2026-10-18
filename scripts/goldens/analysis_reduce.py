@@ -72,13 +72,13 @@ DATA = {
         "A": [["R", "C"], [[1, 2, 2, 4, 3, 6]]],
     }},
     # Series: two groups (the second's x out of order), ties in Z.
-    "S": {"cats": {"T": 8, "G": 2}, "m": {
+    "S": {"cats": {"T": 8, "G": 2, "K": 9}, "m": {
         "X": [["T"], [[1, 2, 3, 4, 5, 6, 7, 8], [3, 1, 4, 1.5, 5, 9, 2, 6]]],
         "Y": [["T"], [[2, 4, 3, 8, 7, 10, 9, 14], [5, 3, 8, 2, 4, 1, 6, 7]]],
         "Z": [["T"], [[7, 7, 8, 9, 9, 9, 10, 12], [1, 1, 1, 2, 2, 3, 3, 3]]],
     }},
     # A repeated x; six values (HPFILTER's minimum).
-    "D": {"cats": {"T": 6}, "m": {
+    "D": {"cats": {"T": 6, "K": 8}, "m": {
         "X": [["T"], [[1, 2, 2, 3, 4, 5]]],
         "Y": [["T"], [[1, 5, 2, 8, 3, 9]]],
         "Z": [["T"], [[7, 7, 8, 8, 9, 10]]],
@@ -100,7 +100,13 @@ DATA = {
         "E": [["T"], [[1.6487, 2.7183, 4.4817, 7.3891, 12.1825, 20.0855, 33.1155, 54.5982],
                       [0.5, 0.9, 1.0, 1.1, 1.15, 1.2, 1.22, 1.23]]],
     }},
-    "U": {"cats": {"T": 1}, "m": {"Z": [["T"], [[4]]]}},
+    # Survey items (CRONBACH), two groups of 6 respondents.
+    "Q": {"cats": {"T": 6, "G": 2}, "m": {
+        "A": [["T"], [[3, 4, 2, 5, 4, 3], [1, 5, 2, 4, 3, 3]]],
+        "B": [["T"], [[4, 4, 3, 5, 3, 3], [2, 4, 2, 5, 3, 4]]],
+        "C": [["T"], [[3, 5, 2, 4, 4, 2], [5, 1, 4, 2, 3, 3]]],
+    }},
+    "U": {"cats": {"T": 1, "K": 2}, "m": {"Z": [["T"], [[4]]]}},
     "P": {"cats": {"T": 2}, "m": {"Z": [["T"], [[3, 8]]]}},
 }
 
@@ -197,6 +203,20 @@ for opts in ("", ", TRUE, TRUE", ", FALSE, TRUE", ", FALSE", ", TRUE, FALSE"):
     case("L", f"LOGREG(Y, X OVER T{opts} INTO K)", GN)
 case("L", "LOGREG(X, Y OVER T, TRUE, TRUE INTO K)", GN)
 case("L", "LOGREG(Y, N OVER T INTO K)", GN)
+
+
+# --- signal processing and CRONBACH (Gnumeric) ---------------------------------
+for ds in ("S", "D", "U"):
+    m = "Z" if ds == "U" else "Y"
+    case(ds, f"FOURIER({m} OVER T INTO K)", GN, text=True)
+    case(ds, f"FOURIER({m} OVER T, TRUE INTO K)", GN, text=True)
+    for flt in ("", ", 1", ", 2", ", 3"):
+        case(ds, f"PERIODOGRAM({m} OVER T{flt} INTO K)", GN)
+case("S", "FOURIER(X OVER T INTO K)", GN, text=True)
+case("S", "PERIODOGRAM(Y OVER T, 4 INTO K)", GN)
+case("Q", "CRONBACH(A, B OVER T)", GN)
+case("Q", "CRONBACH(A, B, C OVER T)", GN)
+case("Q", "CRONBACH(C, A OVER T)", GN)
 
 
 # --- layout -------------------------------------------------------------------

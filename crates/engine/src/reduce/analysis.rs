@@ -13,6 +13,7 @@ mod logfit;
 mod matrix;
 mod normality;
 mod series;
+mod signal;
 
 type List = Result<Vec<CellValue>, u8>;
 
@@ -24,6 +25,7 @@ pub(super) fn reduce(id: u32, rows: &Rows, params: &[CellValue]) -> CellValue {
     let x = match id {
         1850 | 1851 => matrix::det(rows, id == 1851),
         1856 => ssmedian(rows, params),
+        1871 => cronbach(rows),
         1857 => series::interpolation(rows, params),
         1859..=1866 => {
             use normality::Test::{Ad, Cvm, Lks, Sf};
@@ -48,6 +50,34 @@ pub(super) fn per_item(id: u32, rows: &Rows, params: &[CellValue]) -> Vec<CellVa
         Ok(v) => v.into_iter().map(num).collect(),
         Err(c) => vec![CellValue::Err(c); rows.len()],
     }
+}
+
+/// CRONBACH(x1, x2, … OVER T): Cronbach's α of the items x1, x2, … (each
+/// a measure, one row per respondent), as Gnumeric: k / (k − 1) · (1 −
+/// Σ var / (Σ var + 2 Σ cov)), population variances and covariances. A
+/// value that is not a number is #VALUE!.
+fn cronbach(rows: &Rows) -> Result<f64, u8> {
+    let k = rows.vals.iter().map(Vec::len).max().unwrap_or(0);
+    let cols: Vec<Vec<f64>> = (0..k)
+        .map(|i| series::column(rows, i))
+        .collect::<Result<_, u8>>()?;
+    let n = rows.len() as f64;
+    let means: Vec<f64> = cols.iter().map(|c| c.iter().sum::<f64>() / n).collect();
+    let cov = |i: usize, j: usize| {
+        let s: f64 = cols[i]
+            .iter()
+            .zip(&cols[j])
+            .map(|(x, y)| (x - means[i]) * (y - means[j]))
+            .sum();
+        s / n
+    };
+    let var: f64 = (0..k).map(|i| cov(i, i)).sum();
+    let covs: f64 = (0..k)
+        .flat_map(|i| (i + 1..k).map(move |j| (i, j)))
+        .map(|(i, j)| cov(i, j))
+        .sum();
+    let k = k as f64;
+    Ok(k * (1.0 - var / (var + 2.0 * covs)) / (k - 1.0))
 }
 
 /// SSMEDIAN(x OVER T, [interval = 1]): Gnumeric's median of grouped data.
@@ -94,6 +124,8 @@ pub(super) fn array(id: u32, rows: &Rows, params: &[CellValue]) -> Vec<CellValue
         1855 => matrix::eigen(rows),
         1867 => logfit::logreg(rows, params),
         1868 => logfit::logfit(rows),
+        1869 => signal::fourier(rows, params),
+        1870 => signal::periodogram(rows, params),
         _ => Err(err::NAME),
     };
     out.unwrap_or_else(|c| vec![CellValue::Err(c)])

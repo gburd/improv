@@ -35,4 +35,7 @@ pub(super) static ANALYSIS: &[FnDef] = &[
     over(f(1866, "SFTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Shapiro–Francia statistic W', Gnumeric's SFTEST second value"), Over::At(&[0])),
     over(f(1867, "LOGREG", Ar, St, &[N, N, B, B], 2, false, NUM, "LOGREG(y, x OVER T, [affine], [stats] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row"), Over::At(&[0, 1])),
     over(f(1868, "LOGFIT", Ar, St, &[N, N], 2, false, NUM, "LOGFIT(y, x OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough"), Over::At(&[0, 1])),
+    over(f(1869, "FOURIER", Ar, M, &[N, B], 1, false, Ret::Fixed(ValueType::Text), "FOURIER(y OVER T, [inverse] INTO K): Gnumeric's discrete Fourier transform (scaled by 1/n, zero-padded to a power of two), each value as complex text \"a+bi\""), Over::At(&[0])),
+    over(f(1870, "PERIODOGRAM", Ar, St, &[N, N], 1, false, NUM, "PERIODOGRAM(y OVER T, [filter] INTO K): the magnitudes of the first half of the Fourier transform (Gnumeric), after a window: 0 none, 1 Bartlett, 2 Hann, 3 Welch"), Over::At(&[0])),
+    over(f(1871, "CRONBACH", Ag, St, &[N, N], 2, true, NUM, "CRONBACH(x1, x2, … OVER T): Cronbach's α of the items x1, x2, … (one row per respondent; population variances, as Gnumeric)"), Over::Every(0, 1)),
 ];

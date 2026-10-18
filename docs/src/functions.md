@@ -193,6 +193,7 @@ Angles are in radians.
 | `MPSEUDOINVERSE(number OVER category, [number])` | number | MPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2): the Moore–Penrose pseudo-inverse (C × R, row by row); singular values up to threshold (default 256 ε) times the largest count as zero |
 | `CHOLESKY(Measure OVER Category)` | number | CHOLESKY(A OVER R, C INTO R2, C2): the lower-triangular L with L·Lᵀ = A for a symmetric positive-definite A (asymmetric pairs averaged), row by row; #NUM! where A is not positive definite |
 | `EIGEN(Measure OVER Category)` | number | EIGEN(A OVER R, C INTO R2, C2): for a symmetric A (asymmetric pairs averaged), its eigenvalues largest magnitude first, then the matrix of their unit eigenvectors as columns: (n + 1) × n values, row by row |
+| `FOURIER(number OVER category, [boolean])` | text | FOURIER(y OVER T, [inverse] INTO K): Gnumeric's discrete Fourier transform (scaled by 1/n, zero-padded to a power of two), each value as complex text "a+bi" |
 
 ## Rounding
 
@@ -499,6 +500,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `SFTEST.STAT(Measure OVER Category)` | number | the Shapiro–Francia statistic W', Gnumeric's SFTEST second value |
 | `LOGREG(number OVER category, number OVER category, [boolean], [boolean])` | number | LOGREG(y, x OVER T, [affine], [stats] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row |
 | `LOGFIT(number OVER category, number OVER category)` | number | LOGFIT(y, x OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough |
+| `PERIODOGRAM(number OVER category, [number])` | number | PERIODOGRAM(y OVER T, [filter] INTO K): the magnitudes of the first half of the Fourier transform (Gnumeric), after a window: 0 none, 1 Bartlett, 2 Hann, 3 Welch |
+| `CRONBACH(number OVER category, number OVER category, …)` | number | CRONBACH(x1, x2, … OVER T): Cronbach's α of the items x1, x2, … (one row per respondent; population variances, as Gnumeric) |
 
 ## Financial
 
