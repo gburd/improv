@@ -456,7 +456,8 @@ fn beta_reg_large(a: f64, b: f64, x: f64) -> f64 {
             front * beta_cf(a, b, x)
         }
     };
-    if x < (a + 1.0) / (a + b + 2.0) {
+    // The mean test halved, so a + b past f64::MAX does not overflow.
+    if x < (a / 2.0 + 0.5) / (a / 2.0 + b / 2.0 + 1.0) {
         tail(a, b, x, y).min(1.0)
     } else {
         (1.0 - tail(b, a, y, x)).max(0.0)
@@ -471,6 +472,15 @@ fn ln_beta_front(a: f64, b: f64, x: f64, y: f64) -> f64 {
     // below a's ulp, and bd0(0, ·) is a NaN. The √ term is taken in logs:
     // 2π·k·(n − k) overflows past 1e154.
     let (k, nk, n) = (a - 1.0, b - 1.0, a + b - 2.0);
+    if n.is_infinite() {
+        // a + b overflows: the same with n halved (bd0 is homogeneous,
+        // bd0(k, n x) = 2 bd0(k/2, (n/2) x), and stirlerr(n) is 0).
+        let (h, ln2) = (a / 2.0 + b / 2.0 - 1.0, std::f64::consts::LN_2);
+        let ln_mass =
+            -stirlerr(k) - stirlerr(nk) - 2.0 * (bd0(k / 2.0, h * x) + bd0(nk / 2.0, h * y))
+                + 0.5 * (h.ln() + ln2 - std::f64::consts::TAU.ln() - k.ln() - nk.ln());
+        return x.ln() + y.ln() + ln2 + (h + 0.5).ln() + ln_mass - a.ln();
+    }
     let ln_mass = stirlerr(n) - stirlerr(k) - stirlerr(nk) - bd0(k, n * x) - bd0(nk, n * y)
         + 0.5 * (n.ln() - std::f64::consts::TAU.ln() - k.ln() - nk.ln());
     x.ln() + y.ln() + (a + b - 1.0).ln() + ln_mass - a.ln()
@@ -512,10 +522,13 @@ fn stirlerr(n: f64) -> f64 {
 
 /// c·ln(c/a) + a − c without cancellation when c ≈ a (Loader).
 pub(crate) fn bd0(c: f64, a: f64) -> f64 {
-    if (c - a).abs() < 0.1 * (c + a) {
-        let v = (c - a) / (c + a);
+    // Halved before adding: c + a overflows past f64::MAX / 2 (and 2c·v was
+    // ∞ · 0 there).
+    let (hc, ha) = (c / 2.0, a / 2.0);
+    if (hc - ha).abs() < 0.1 * (hc + ha) {
+        let v = (hc - ha) / (hc + ha);
         let mut s = (c - a) * v;
-        let mut ej = 2.0 * c * v;
+        let mut ej = c * (2.0 * v);
         let v2 = v * v;
         for j in 1..1000 {
             ej *= v2;
@@ -1475,5 +1488,15 @@ mod tests {
         assert!(t0.elapsed() < std::time::Duration::from_millis(100));
         let q = call(502, &[0.5, 1e15, b]).as_num().unwrap();
         assert!((q / 7.458e-140 - 1.0).abs() < 1e-3, "{q}");
+        // Shapes whose sum overflows (Gnumeric's R.PBETA(0.5, 1E15,
+        // 1.797E308) is 1; it was 0, and BETA.INV took 0.8 s on NaNs).
+        let t0 = std::time::Instant::now();
+        assert_eq!(beta_reg(1e15, f64::MAX, 0.5), 1.0);
+        assert_eq!(beta_reg(f64::MAX, 1e15, 0.5), 0.0);
+        assert_eq!(beta_reg(f64::MAX, f64::MAX, 0.25), 0.0);
+        assert_eq!(beta_reg(f64::MAX, f64::MAX, 0.75), 1.0);
+        let q = call(502, &[0.5, 1e15, 1e308]).as_num().unwrap();
+        assert!((q / 1e-293 - 1.0).abs() < 1e-5, "{q}");
+        assert!(t0.elapsed() < std::time::Duration::from_millis(500));
     }
 }
