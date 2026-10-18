@@ -135,12 +135,13 @@ fn sorted(mut xs: Vec<f64>) -> Vec<f64> {
     xs
 }
 
-/// The value at 0-based fractional rank `h` ∈ [0, n − 1] of sorted `xs`.
+/// The value at 0-based fractional rank `h` ∈ [0, n − 1] of sorted `xs`
+/// (a fractional part means `h` < n − 1, so `xs[i + 1]` exists).
 fn interp(xs: &[f64], h: f64) -> f64 {
     let lo = snap(h).floor();
     let i = lo as usize;
     let d = h - lo;
-    if d <= 0.0 || i + 1 >= xs.len() {
+    if d <= 0.0 {
         xs[i]
     } else {
         xs[i] + d * (xs[i + 1] - xs[i])
@@ -157,7 +158,8 @@ fn pct_inc(xs: Vec<f64>, p: f64) -> Num {
 
 fn pct_exc(xs: Vec<f64>, p: f64) -> Num {
     let n1 = (xs.len() + 1) as f64;
-    if xs.is_empty() || p * n1 < 1.0 || p * n1 > n1 - 1.0 {
+    // Empty when there are no values (1 ..= 0), and NaN is outside.
+    if !(1.0..=n1 - 1.0).contains(&(p * n1)) {
         return Err(err::NUM);
     }
     Ok(interp(&sorted(xs), p * n1 - 1.0))
@@ -1500,6 +1502,40 @@ mod tests {
         );
         let bad = rows(&[vec![nv(1.0), e(err::NA)]]);
         assert_eq!(per_item(1050, &bad, &[]), vec![e(err::NA); 2]);
+    }
+
+    /// Edge cases checked against LibreOffice 25.2 and Gnumeric 1.12.
+    #[test]
+    fn edges_against_the_references() {
+        let none = rows(&[vec![tx("a"), tx("b")]]);
+        // GEOMEAN and TRIMMEAN of no numbers (Gnumeric: GEOMEAN #NUM!;
+        // TRIMMEAN #VALUE! there, #NUM! here as for MEDIAN of nothing).
+        assert_eq!(go(1018, &none, &[]), e(err::NUM));
+        assert_eq!(go(1020, &none, &[nv(0.5)]), e(err::NUM));
+        // PERCENTILE.EXC: outside 1/(n+1) … n/(n+1), or no values, #NUM!.
+        let three = r1(&[1.0, 2.0, 3.0]);
+        assert_eq!(go(1037, &three, &[nv(0.25)]), nv(1.0));
+        assert_eq!(go(1037, &three, &[nv(0.75)]), nv(3.0));
+        assert_eq!(go(1037, &three, &[nv(0.2)]), e(err::NUM));
+        assert_eq!(go(1037, &three, &[nv(0.8)]), e(err::NUM));
+        assert_eq!(go(1037, &none, &[nv(0.5)]), e(err::NUM));
+        assert_eq!(pct_exc(vec![1.0], f64::NAN), Err(err::NUM));
+        // SERIESSUM: a text coefficient is skipped, keeping its power
+        // (LibreOffice 18; Gnumeric #VALUE!); x = 0 with a positive power
+        // is 0, and a negative x with whole powers is fine.
+        let c = rows(&[vec![nv(1.0), tx("x"), nv(2.0)]]);
+        assert_eq!(go(1047, &c, &[nv(2.0), nv(1.0), nv(1.0)]), nv(18.0));
+        let ones = r1(&[1.0, 2.0]);
+        assert_eq!(go(1047, &ones, &[nv(0.0), nv(1.0), nv(1.0)]), nv(0.0));
+        let ones = r1(&[1.0, 1.0]);
+        assert_eq!(go(1047, &ones, &[nv(-2.0), nv(1.0), nv(1.0)]), nv(2.0));
+        // CORREL of a constant y; STEYX of a constant x (LibreOffice
+        // #DIV/0!; Gnumeric's STEYX gives 0.707 for y = 1, 2 at x = 3, 3).
+        assert_eq!(go(1060, &r2(&[1.0, 2.0], &[1.0, 1.0]), &[]), e(err::DIV0));
+        let flat_x = r2(&[1.0, 2.0, 3.0], &[2.0, 2.0, 2.0]);
+        assert_eq!(go(1066, &flat_x, &[]), e(err::DIV0));
+        // FTEST with the second sample constant (Gnumeric #DIV/0!).
+        assert_eq!(go(1081, &r2(&[1.0, 2.0], &[3.0, 3.0]), &[]), e(err::DIV0));
     }
 
     /// An item whose own value is text: #VALUE! for that item alone, as
