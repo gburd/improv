@@ -1089,7 +1089,9 @@ pub fn reference_markdown() -> String {
                 Ret::Unify => "the branches' type",
                 Ret::Arg(_) => "the values' type",
             };
-            let mut doc = d.doc.to_string();
+            // `[x]` in prose reads as a Markdown link: escape the brackets
+            // (inside the code spans they are literal already).
+            let mut doc = d.doc.replace('[', "\\[").replace(']', "\\]");
             if !d.aliases.is_empty() {
                 doc.push_str(&format!(" (also `{}`)", d.aliases.join("`, `")));
             }

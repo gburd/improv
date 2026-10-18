@@ -549,7 +549,7 @@ fills `over`. Nothing fills `except`.
 
 Only an aggregation collapses categories. So a bare reference whose `by`
 leaves a category out is a compile error: `X = Quantity[Product]`, with
-`Quantity` over `[Time, Product]`, says "Quantity[…] leaves out category
+`Quantity` over `[Time, Product]`, says "Quantity\[…\] leaves out category
 Time, which only an aggregation can collapse". Inside an aggregation, the
 result keeps the categories that `by` keeps and `over` does not name.
 
