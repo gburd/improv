@@ -739,16 +739,25 @@ fn binom_inv(n: f64, p: f64, alpha: f64) -> f64 {
     if alpha == 1.0 {
         return if p == 0.0 { 0.0 } else { n };
     }
-    let (mut lo, mut hi) = (0.0, n);
-    while lo < hi {
-        let mid = ((lo + hi) / 2.0).floor();
-        if binom_range(n, p, 0.0, mid) >= alpha {
-            hi = mid;
+    let ok = |k: f64| binom_range(n, p, 0.0, k) >= alpha;
+    if ok(0.0) {
+        return 0.0;
+    }
+    // Invariant: !ok(a), and ok(b) or b = n. Stops when no float lies
+    // strictly between them: past 2⁵³ `mid + 1` is `mid`, so stepping past
+    // the midpoint never ended.
+    let (mut a, mut b) = (0.0, n);
+    loop {
+        let mid = (a + (b - a) / 2.0).floor();
+        if mid <= a || mid >= b {
+            return b;
+        }
+        if ok(mid) {
+            b = mid;
         } else {
-            lo = mid + 1.0;
+            a = mid;
         }
     }
-    lo
 }
 
 /// C(n, k) as a product while it is small, else through ln Γ.
@@ -1353,5 +1362,22 @@ mod tests {
             let x = gamma_inv(a, p, 1.0 - p);
             assert!((gamma_p(a, x) - p).abs() < 1e-14, "{p} {a}");
         }
+    }
+
+    /// BINOM.INV past 2⁵³ trials returns (Gnumeric's CRITBINOM(1E16, 0.5,
+    /// 0.5) is 5e15); its bisection stepped to mid + 1 = mid forever.
+    #[test]
+    fn binom_inv_with_huge_n() {
+        let t0 = std::time::Instant::now();
+        assert_eq!(call(504, &[1e16, 0.5, 0.5]), CellValue::num(5e15));
+        assert_eq!(
+            call(504, &[f64::MAX, f64::MIN_POSITIVE, 1e-300]),
+            CellValue::num(0.0)
+        );
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        // Small n is unchanged (Excel's documented BINOM.INV(6, 0.5, 0.75)).
+        assert_eq!(call(504, &[6.0, 0.5, 0.75]), CellValue::num(4.0));
+        assert_eq!(call(504, &[6.0, 0.5, 0.0]), CellValue::num(0.0));
+        assert_eq!(call(504, &[6.0, 0.5, 1.0]), CellValue::num(6.0));
     }
 }

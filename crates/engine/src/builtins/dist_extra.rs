@@ -1033,6 +1033,10 @@ fn disc_q(t: Tail, lo: f64, hi: f64, cdf: impl Fn(f64, bool) -> f64) -> f64 {
     }
     while b - a > 1.0 {
         let m = ((a + b) / 2.0).floor();
+        if m <= a || m >= b {
+            // a and b are adjacent floats (past 2⁵³): nothing between.
+            break;
+        }
         if ok(m) {
             b = m;
         } else {
@@ -2145,6 +2149,35 @@ mod tests {
         let mut a = nums(&[-1.0, 1.07e212, 4.9e307]);
         a.extend([t.clone(), t]);
         let _ = call(1649, &a);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// The discrete quantiles past 2⁵³ return: with a and b adjacent floats
+    /// 2 apart, the midpoint is one of them and the bisection never ended
+    /// (Gnumeric's R.QBINOM(0.5, 9.007199254740994E15, 0.5) is
+    /// 4503599627370498).
+    #[test]
+    fn discrete_quantile_past_2_pow_53() {
+        let t0 = std::time::Instant::now();
+        let v = val(1605, &[0.5, 9_007_199_254_740_994.0, 0.5]);
+        assert!((v / 4_503_599_627_370_498.0 - 1.0).abs() < 1e-14, "{v}");
+        let cdf = |k: f64, lower: bool| {
+            let p = if k >= 9_007_199_254_740_994.0 {
+                1.0
+            } else {
+                0.0
+            };
+            if lower {
+                p
+            } else {
+                1.0 - p
+            }
+        };
+        let t = tail(0.5, true, false);
+        assert_eq!(
+            disc_q(t, 9_007_199_254_740_992.0, 9_007_199_254_740_996.0, cdf),
+            9_007_199_254_740_994.0
+        );
         assert!(t0.elapsed() < std::time::Duration::from_secs(1));
     }
 }
