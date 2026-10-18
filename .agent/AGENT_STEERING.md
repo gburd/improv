@@ -59,8 +59,13 @@ Built-in functions (`docs/reviews/2026-10-16-builtin-functions-plan.md`):
 P1–P6 DONE, 418 functions from one registry (`core_model::functions`) that
 drives parser, typing, engine, GUI printer, CNL and `docs/src/functions.md`;
 typed errors, `^ & %`, German entry, dates, positions/recurrences, lookups,
-list results via `INTO`, `LET`/`LAMBDA`/`MAP`/`SCAN`/`REDUCE` (non-recursive:
-the language stays total). **NEXT:** P7 (engineering and the long tail).
+list results via `INTO` (also `INTO R, C`), `LET`/`LAMBDA`/`MAP`/`SCAN`/
+`REDUCE`/`MAKEARRAY`/`BYROW`/`BYCOL`, named LAMBDAs (`Model::lambdas`,
+expanded at compile time; non-recursive: the language stays total),
+multi-x `LINEST`, multi-key `SORTBY`. **IN PROGRESS:** P7 (engineering,
+math extras, distributions, options, analysis) on per-family modules
+(`095d21e`); pg_improv `commit` sync mode. Mentat is `mentatdb` 1.16.0 from
+crates.io (`6eb9023`).
 
 ## Released: v0.7.0 (2026-09-24)
 
