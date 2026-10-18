@@ -912,13 +912,9 @@ fn tukey_p(q: f64, k: f64, df: f64, r: f64) -> f64 {
     let h = df / 2.0;
     let ln_c = std::f64::consts::LN_2 + h * h.ln() - st::ln_gamma(h);
     let ln_f = |s: f64| ln_c + (df - 1.0) * s.ln() - h * s * s;
-    let f = |s: f64| {
-        if s <= 0.0 {
-            0.0
-        } else {
-            ln_f(s).exp() * range_cdf(q * s, k).powf(r)
-        }
-    };
+    // (Gauss–Legendre nodes are interior to each piece, and every piece
+    // lies in [0, ∞): s > 0 here.)
+    let f = |s: f64| ln_f(s).exp() * range_cdf(q * s, k).powf(r);
     // Outward from the density's mode in pieces no wider than its spread.
     // To the right W(qs) rises and f falls, so the terms rise and then fall
     // away; to the left both fall, and the pieces halve toward 0, where W
@@ -1750,6 +1746,109 @@ mod tests {
             };
             assert!(same, "{formula} = {got:?}, want {want:?}");
         }
+    }
+
+    /// The branches of the quantile search, the skew-t recurrence, Tukey's
+    /// range integral and a few domain checks the table misses.
+    #[test]
+    fn search_and_integral_edges() {
+        let near = |got: f64, want: f64| {
+            assert!((got - want).abs() <= 1e-12 * want.abs(), "{got} vs {want}")
+        };
+        // root and disc_q are generic: one closure type is one
+        // instantiation, so each is driven through a single closure whose
+        // behaviour a Cell switches. root: a bracket grown downward to a
+        // target, upward, and neither way (no crossing: NaN).
+        let mode = std::cell::Cell::new(0u8);
+        let g = |z: f64| match mode.get() {
+            0 => z,
+            1 => 1.0,
+            _ => 0.0,
+        };
+        assert_eq!(root(g, -5.0), -5.0);
+        assert_eq!(root(g, 5.0), 5.0);
+        mode.set(1);
+        assert!(root(g, 0.5).is_nan());
+        mode.set(2);
+        assert!(root(g, 0.5).is_nan());
+        // disc_q: below the support's bottom, a bounded search, an
+        // unbounded one that finds its step, and one that never does.
+        let step = std::cell::Cell::new(7.0);
+        let cdf = |k: f64, lower: bool| {
+            let below = if k >= step.get() { 1.0 } else { 0.0 };
+            if lower {
+                below
+            } else {
+                1.0 - below
+            }
+        };
+        let t = tail(0.5, true, false);
+        // At the ends of the probability range: the support's ends.
+        assert_eq!(disc_q(tail(0.0, true, false), 0.0, 10.0, cdf), 0.0);
+        assert_eq!(disc_q(t, 0.0, 10.0, cdf), 7.0);
+        assert_eq!(disc_q(t, 0.0, INF, cdf), 7.0);
+        step.set(-1.0);
+        assert_eq!(disc_q(t, 0.0, INF, cdf), 0.0);
+        step.set(INF);
+        assert!(disc_q(t, 0.0, INF, cdf).is_nan());
+        // R.QSNORM in the far lower tail goes through the tail integral and
+        // root's downward bracket: mpmath (60 digits, on the same tail
+        // integral) -16.51323725063124 (Gnumeric -4.0028, a failed search);
+        // and high in the upper tail with a large shape (mpmath
+        // 5.3267238864, Gnumeric -7.4e184).
+        assert!((val(1647, &[1e-300, 2.0, 0.0, 1.0]) + 16.513_237_250_631_24).abs() < 1e-12);
+        assert!((val(1647, &[0.999_999_9, 50.0, 0.0, 1.0]) - 5.326_723_886_384_496).abs() < 1e-8);
+        // R.PST for an even and an odd whole n (Gnumeric).
+        near(val(1649, &[1.0, 2.0, 2.0]), 0.593_768_262_346_985_1);
+        near(val(1649, &[1.0, 1.0, 2.0]), 0.532_047_108_424_487_4);
+        // R.PTUKEY near 0 and near 1, with 2 and with 1.5 degrees of
+        // freedom, with 100 groups; W(q) reaching 1 (Gnumeric).
+        near(val(1657, &[0.0001, 3.0, 10.0]), 2.756_644_472_514_328e-9);
+        near(val(1657, &[100.0, 3.0, 10.0]), 0.999_999_999_999_978_4);
+        near(val(1657, &[3.0, 3.0, 2.0]), 0.711_650_017_234_975);
+        near(val(1657, &[3.0, 100.0, 10.0]), 0.009_458_845_407_880_362);
+        assert_eq!(range_cdf(80.0, 3.0), 1.0);
+        assert!((tukey_p(3.0, 3.0, 1.5, 1.0) - 0.664_624_268_956_452_8).abs() < 1e-12);
+        // Domain checks: a zero Cauchy scale outside the quantile, a gamma
+        // scale of 0 or negative shape, a fractional hypergeometric size,
+        // SNORM.DIST.RANGE with the ends reversed (Gnumeric).
+        assert_eq!(
+            call(1607, &nums(&[1.0, 0.0, 0.0])),
+            Ok(CellValue::Err(err::NUM))
+        );
+        assert_eq!(
+            call(1618, &nums(&[1.0, 2.0, 0.0])),
+            Ok(CellValue::Err(err::NUM))
+        );
+        assert_eq!(
+            call(1619, &nums(&[1.0, -1.0, 2.0])),
+            Ok(CellValue::Err(err::NUM))
+        );
+        assert_eq!(
+            call(1627, &nums(&[2.0, 5.5, 4.0, 3.0])),
+            Ok(CellValue::Err(err::NUM))
+        );
+        assert_eq!(
+            call(1627, &nums(&[2.0, 5.0, 4.5, 3.0])),
+            Ok(CellValue::Err(err::NUM))
+        );
+        near(val(1560, &[2.0, 1.0]), -0.135_905_121_983_277_84);
+        // R.PTUKEY of a q so small the integrand is 0 everywhere: the right
+        // side runs until the density underflows, and with 1 degree of
+        // freedom (mode 0) the left side never starts (Gnumeric 0).
+        assert_eq!(tukey_p(1e-300, 3.0, 10.0, 1.0), 0.0);
+        assert_eq!(tukey_p(1e-300, 3.0, 1.0, 1.0), 0.0);
+        assert!(range_cdf(f64::NAN, 3.0).is_nan());
+        assert!(geom(1.0, &[f64::NAN], Op::D(false)).is_nan());
+        assert!(geom(1.0, &[1.5], Op::D(false)).is_nan());
+        // The bivariate normal on h·k > 0, h·k = 0 with h + k ≥ 0 and < 0,
+        // h·k < 0, and both negative (mpmath).
+        near(val(1562, &[1.0, -1.0, 0.5]), 0.154_872_951_858_602_78);
+        near(val(1562, &[0.0, 1.0, 0.5]), 0.468_742_952_645_168_1);
+        near(val(1562, &[0.0, -1.0, 0.5]), 0.127_398_206_576_625_12);
+        near(val(1562, &[1.0, 1.0, 0.3]), 0.728_147_340_652_689_8);
+        near(val(1562, &[0.0, 0.5, 0.3]), 0.388_355_154_325_802_7);
+        near(val(1562, &[-0.5, 0.0, 0.3]), 0.196_892_693_051_789_58);
     }
 
     #[test]
