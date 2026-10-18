@@ -89,6 +89,13 @@ lo('ARABIC(" X ")', excel=10.0)
 
 
 # --- special functions -------------------------------------------------------
+gn("num", "LAMBERTW(1)", "LAMBERTW(0)", "LAMBERTW(-0.2)", "LAMBERTW(-0.35)", "LAMBERTW(10)",
+   "LAMBERTW(POWER(10,100))", "LAMBERTW(-0.2,-1)", "LAMBERTW(-0.01,-1)", "LAMBERTW(-0.5)",
+   "LAMBERTW(1,-1)", "LAMBERTW(0,-1)", "LAMBERTW(1,1)")
+gn("num", "REDUCEPI(10,1)", "REDUCEPI(10,1,TRUE)", "REDUCEPI(10,-1)", "REDUCEPI(10,-1,TRUE)",
+   "REDUCEPI(-10,2)", "REDUCEPI(-10,2,TRUE)", "REDUCEPI(POWER(10,22),0)",
+   "REDUCEPI(POWER(10,22),7,TRUE)", "REDUCEPI(1,0)", "REDUCEPI(123456789,3)",
+   "REDUCEPI(POWER(2,1000),5)", "REDUCEPI(10,8)", "REDUCEPI(10,-2)")
 gn("num", "AGM(1,2)", "AGM(24,6)", "AGM(0,5)", "AGM(3,3)", "AGM(POWER(10,-300),1)", "AGM(-1,2)")
 gn("num", "GD(0)", "GD(1)", "GD(-2.5)", "GD(20)", "GD(POWER(10,-10))")
 gn("num", "ILOG(1000)", "ILOG(999)", "ILOG(POWER(10,22),10)", "ILOG(0.001,10)", "ILOG(1024,2)",
@@ -192,6 +199,14 @@ gn("num", "HDATE_DAY(2024,1,1)", "HDATE_DAY(2024,3,24)", "HDATE_DAY(2023,9,16)",
 # after 1 Tishri (still before mid-November by 9999), so its Hebrew year is
 # the Gregorian year + 3761.
 HAND += [("HDATE_YEAR(9999,12,31)", 13760.0, "exact"), ("HDATE_YEAR(4400,12,31)", 8161.0, "exact")]
+
+
+# --- telephone traffic (Erlang B) --------------------------------------------
+gn("num", "PROBBLOCK(10,12)", "PROBBLOCK(10,12.7)", "PROBBLOCK(150,140)", "PROBBLOCK(50,200)",
+   "PROBBLOCK(500,200)", "PROBBLOCK(0,5)", "PROBBLOCK(-1,5)", "PROBBLOCK(5,0.5)",
+   "OFFTRAF(8,12)", "OFFTRAF(100,140)", "OFFTRAF(10,12)", "OFFTRAF(-1,12)",
+   "DIMCIRC(10,0.01)", "DIMCIRC(100,0.02)", "DIMCIRC(0,0.5)", "DIMCIRC(10,0)", "DIMCIRC(10,1.5)",
+   "OFFCAP(12,0.1)", "OFFCAP(150,0.01)", "OFFCAP(1,0.5)", "OFFCAP(12,1)", "OFFCAP(0.5,0.1)")
 
 
 # --- runners -----------------------------------------------------------------

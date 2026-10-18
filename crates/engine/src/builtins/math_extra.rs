@@ -4,9 +4,10 @@
 mod calendar;
 mod hebrew;
 mod number;
+mod special;
 mod width;
 
-use super::{d, domain, err, n, ok_num, ok_text, t, DAY_MS, R};
+use super::{b, d, domain, err, n, ok_num, ok_text, t, DAY_MS, R};
 use crate::CellValue;
 
 /// Evaluate function `id` (already type- and arity-checked).
@@ -14,9 +15,22 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
     let int = |i: usize| n(a, i).map(f64::floor);
     match id {
         // --- special functions ---
+        1450 => ok_num(special::lambert_w(
+            n(a, 0)?,
+            if a.len() > 1 { n(a, 1)? } else { 0.0 },
+        )?),
         1451 => ok_num(agm(n(a, 0)?, n(a, 1)?)),
         1452 => ok_num(2.0 * (n(a, 0)? / 2.0).tanh().atan()),
         1453 => ok_num(ilog(n(a, 0)?, if a.len() > 1 { n(a, 1)? } else { 10.0 })?),
+        1454 => {
+            let e = n(a, 1)?.trunc();
+            if !(-1.0..=7.0).contains(&e) {
+                return Err(err::VALUE);
+            }
+            let (xr, j) = special::reduce_pi(n(a, 0)?, e as i32)?;
+            let q = a.len() > 2 && b(a, 2)?;
+            ok_num(if q { j as f64 } else { xr })
+        }
         1455 => ok_num(fib(int(0)?)?),
         // --- number theory ---
         1460..=1470 => number::eval(id, int(0)?),
@@ -56,6 +70,11 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
                 hebrew::text_heb(h)
             })
         }
+        // --- telephone traffic ---
+        1520 => ok_num(special::probblock(n(a, 0)?, n(a, 1)?)?),
+        1521 => ok_num(special::offtraf(n(a, 0)?, n(a, 1)?)?),
+        1522 => ok_num(special::dimcirc(n(a, 0)?, n(a, 1)?)?),
+        1523 => ok_num(special::offcap(n(a, 0)?, n(a, 1)?)?),
         // --- text ---
         1480 => ok_text(asc(&t(a, 0)?)),
         1481 => ok_text(jis(&t(a, 0)?)),

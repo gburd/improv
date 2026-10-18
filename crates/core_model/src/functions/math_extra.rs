@@ -2,14 +2,16 @@
 
 use super::{alias, s, so, Arg, Category as C, FnDef};
 use crate::value::ValueType as V;
-use Arg::{Any as A, DateLike as D, Number as N, Text as T};
+use Arg::{Any as A, Boolean as B, DateLike as D, Number as N, Text as T};
 
 #[rustfmt::skip]
 pub(super) static MATH_EXTRA: &[FnDef] = &[
     // --- special functions (1450–1459) ---
+    so(1450, "LAMBERTW", C::Math, &[N, N], 1, V::Number, "the Lambert W function: the w with w·eʷ = x, on branch k 0 (the default, x ≥ −1/e) or −1 (−1/e ≤ x < 0)"),
     s(1451, "AGM", C::Math, &[N, N], V::Number, "the arithmetic-geometric mean of a, b ≥ 0"),
     s(1452, "GD", C::Math, &[N], V::Number, "the Gudermannian function: 2·atan(tanh(x/2))"),
     so(1453, "ILOG", C::Math, &[N, N], 1, V::Number, "the integer logarithm: the largest k with baseᵏ ≤ x, for x > 0 and an integer base ≥ 2 (default 10)"),
+    so(1454, "REDUCEPI", C::Math, &[N, N, B], 2, V::Number, "x reduced modulo π/2ᵉ as if π were exact: the xr with x = xr + j·π/2ᵉ and |xr| ≤ π/2ᵉ⁺¹ (e −1 to 7, truncated), or with q TRUE the e+1 low bits of j"),
     s(1455, "FIB", C::Math, &[N], V::Number, "the n-th Fibonacci number, n ≥ 1 (truncated); #NUM! past n = 1476, where it overflows"),
     // --- number theory (1460–1474); n is truncated, and at most 2⁵² as in Gnumeric ---
     s(1460, "ISPRIME", C::Math, &[N], V::Boolean, "whether n is prime (FALSE below 2)"),
@@ -43,6 +45,11 @@ pub(super) static MATH_EXTRA: &[FnDef] = &[
     s(1501, "HDATE_YEAR", C::DateTime, &[N, N, N], V::Number, "the Hebrew year of Gregorian year, month, day"),
     s(1502, "DATE2HDATE", C::DateTime, &[D], V::Text, "the Hebrew date of a date, as \"20 Tebet 5784\""),
     s(1503, "DATE2HDATE_HEB", C::DateTime, &[D], V::Text, "the Hebrew date of a date in Hebrew"),
+    // --- telephone traffic, Erlang B (1520–1529) ---
+    s(1520, "PROBBLOCK", C::Statistical, &[N, N], V::Number, "the Erlang-B probability that a call is blocked when traffic erlangs load circuits (1 to 10⁶; truncated below 100)"),
+    s(1521, "OFFTRAF", C::Statistical, &[N, N], V::Number, "the offered traffic that carries traffic erlangs on circuits (#VALUE! if circuits cannot carry it)"),
+    s(1522, "DIMCIRC", C::Statistical, &[N, N], V::Number, "the fewest circuits (up to 10⁶) that carry traffic erlangs with blocking at most gos, 0 < gos ≤ 1"),
+    s(1523, "OFFCAP", C::Statistical, &[N, N], V::Number, "the traffic circuits carry with blocking gos, 0 < gos < 1"),
     // --- text (1480–1489) ---
     s(1480, "ASC", C::Text, &[T], V::Text, "full-width ASCII and katakana as half-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark)"),
     alias(s(1481, "JIS", C::Text, &[T], V::Text, "half-width ASCII and katakana as full-width, as LibreOffice's JIS (a letter and its sound mark join)"), &["DBCS"]),

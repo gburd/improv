@@ -166,9 +166,11 @@ Angles are in radians.
 | `SERIESSUM(number, number, number, number OVER category)` | number | Σ cᵢ·x^(n + i·m), the coefficients c in item order (i from 0) |
 | `POLYNOMIAL(number, number OVER category)` | number | Σ cᵢ·xⁱ, the coefficients c in item order (the constant c₀ first) |
 | `PERCENTOF(number OVER category, number OVER category)` | number | Σ subset / Σ all |
+| `LAMBERTW(number, [number])` | number | the Lambert W function: the w with w·eʷ = x, on branch k 0 (the default, x ≥ −1/e) or −1 (−1/e ≤ x < 0) |
 | `AGM(number, number)` | number | the arithmetic-geometric mean of a, b ≥ 0 |
 | `GD(number)` | number | the Gudermannian function: 2·atan(tanh(x/2)) |
 | `ILOG(number, [number])` | number | the integer logarithm: the largest k with baseᵏ ≤ x, for x > 0 and an integer base ≥ 2 (default 10) |
+| `REDUCEPI(number, number, [boolean])` | number | x reduced modulo π/2ᵉ as if π were exact: the xr with x = xr + j·π/2ᵉ and |xr| ≤ π/2ᵉ⁺¹ (e −1 to 7, truncated), or with q TRUE the e+1 low bits of j |
 | `FIB(number)` | number | the n-th Fibonacci number, n ≥ 1 (truncated); #NUM! past n = 1476, where it overflows |
 | `ISPRIME(number)` | boolean | whether n is prime (FALSE below 2) |
 | `ITHPRIME(number)` | number | the i-th prime, i from 1 to 10⁷ (Gnumeric: 10⁸) |
@@ -474,6 +476,10 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `ZTEST(number OVER category, number, [number])` | number | the one-tailed z-test p-value of the mean against μ0 (σ defaults to the sample's) (also `Z.TEST`) |
 | `AUTOCORREL(Measure OVER Category)` | number | the lag-1 autocorrelation in item order (GSL) (also `GSL_STATS_LAG1_AUTOCORRELATION`) |
 | `DGET(Measure OVER Category)` | the branches' type | the single value (with WHERE, the single match); #NUM! when more than one (a WHERE that keeps none leaves no cell) |
+| `PROBBLOCK(number, number)` | number | the Erlang-B probability that a call is blocked when traffic erlangs load circuits (1 to 10⁶; truncated below 100) |
+| `OFFTRAF(number, number)` | number | the offered traffic that carries traffic erlangs on circuits (#VALUE! if circuits cannot carry it) |
+| `DIMCIRC(number, number)` | number | the fewest circuits (up to 10⁶) that carry traffic erlangs with blocking at most gos, 0 < gos ≤ 1 |
+| `OFFCAP(number, number)` | number | the traffic circuits carry with blocking gos, 0 < gos < 1 |
 
 ## Financial
 
