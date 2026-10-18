@@ -574,6 +574,19 @@ mod tests {
         // Paying in advance.
         let p = pmt(0.01, 48.0, 8000.0, 0.0, true);
         close(f(706, &[48.0, p, 8000.0, 0.0, 1.0]), 0.01);
+        // Newton from -95% for 2^0.1 - 1 steps below -100%: bisection takes
+        // over and finds the root (LibreOffice and Gnumeric give up there:
+        // Err:523 and #NUM!).
+        let r = rate(10.0, 0.0, -100.0, 200.0, false, -0.95).unwrap();
+        assert!((r - 2f64.powf(0.1) + 1.0).abs() < 1e-12, "{r}");
+        // A step to a non-finite rate (a zero derivative): bisection.
+        let flat = solve(&|x: f64| x - 0.5, &|_| 0.0, 0.1, -1.0).unwrap();
+        assert!((flat - 0.5).abs() < 1e-12, "{flat}");
+        // Two sign changes on the grid (roots 0 and 1 of x(1 - x)): the
+        // bracket nearest the guess wins.
+        let two = |x: f64| -(x * (x - 1.0));
+        assert!(bisect(&two, 0.9, -1.0).is_some_and(|r| (r - 1.0).abs() < 1e-12));
+        assert!(bisect(&two, -0.2, -1.0).is_some_and(|r| r.abs() < 1e-12));
         // The derivative at x = 0 (Newton starting there).
         close(f(706, &[10.0, -100.0, 1000.0, 0.0, 1.0, 0.0]), 0.0);
     }
