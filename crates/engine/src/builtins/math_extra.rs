@@ -494,6 +494,30 @@ mod tests {
         assert_eq!(ilog(3.4e38, 3.0), Ok(80.0));
         assert_eq!(ilog(f64::MAX, 255.0), Ok(128.0));
         assert_eq!(ilog(f64::INFINITY, 10.0), Err(err::NUM));
+        // ln x / ln 10 rounds up to an integer just above a power below 1
+        // (Gnumeric -6 and -21), or is -2.9999… for 0.001 itself (-3).
+        assert_eq!(ilog(9.999_999_999_999_999e-6, 10.0), Ok(-6.0));
+        assert_eq!(ilog(9.999_999_999_999_998e-21, 10.0), Ok(-21.0));
+        // Powers of two from the exponent; others by integer powers
+        // (Gnumeric 10, 4, 3; a negative x #NUM!). Below 1 with a base
+        // 2^k, k > 1, the exact answer: 8⁻¹ ≤ 0.5 < 8⁰ is -1 (Gnumeric
+        // says 0 there, as it says -1 for ILOG(0.2, 4); see the "exact"
+        // goldens).
+        assert_eq!(ilog(1024.0, 2.0), Ok(10.0));
+        assert_eq!(ilog(1000.0, 4.0), Ok(4.0));
+        assert_eq!(ilog(1000.0, 10.0), Ok(3.0));
+        assert_eq!(ilog(0.5, 8.0), Ok(-1.0));
+        assert_eq!(ilog(-1.0, 10.0), Err(err::NUM));
+        assert_eq!(ilog(8.0, 1.5), Err(err::NUM));
+        assert_eq!(ilog(8.0, f64::INFINITY), Err(err::NUM));
+        // AGM: equal arguments, or a zero one (Gnumeric 2 and 0).
+        assert_eq!(agm(2.0, 2.0), 2.0);
+        assert_eq!(agm(0.0, 1.0), 0.0);
+        assert_eq!(agm(1.0, 0.0), 0.0);
+        assert!(agm(-1.0, 1.0).is_nan() && agm(1.0, -1.0).is_nan());
+        assert!(next_after(1.0, f64::NAN).is_nan());
+        assert_eq!(next_after(1.0, 1.0), 1.0);
+        assert_eq!(next_after(1.0, 2.0), 1.0 + f64::EPSILON);
         // HDATE_JULIAN: arguments out of range.
         assert_eq!(calendar::jdn(1e8, 1.0, 1.0), Err(err::NUM));
         assert_eq!(calendar::jdn(2000.0, -1e8, 1.0), Err(err::NUM));
@@ -519,11 +543,38 @@ mod tests {
         );
         assert_eq!(roman(3999.0, 0.0), Ok("MMMCMXCIX".into()));
         assert_eq!(roman(3999.0, 4.0), Ok("MMMIM".into()));
+        // The forms, against LibreOffice 25.2.
+        for (x, form, want) in [
+            (499.0, 0.0, "CDXCIX"),
+            (499.0, 1.0, "LDVLIV"),
+            (499.0, 2.0, "XDIX"),
+            (499.0, 3.0, "VDIV"),
+            (499.0, 4.0, "ID"),
+            (999.0, 1.0, "LMVLIV"),
+            (490.0, 4.0, "XD"),
+            (45.0, 1.0, "VL"),
+            (8.0, 0.0, "VIII"),
+            (1950.0, 4.0, "MLM"),
+        ] {
+            assert_eq!(roman(x, form), Ok(want.into()), "{x} {form}");
+        }
+        assert_eq!(roman(4000.0, 0.0), Err(err::VALUE));
+        assert_eq!(roman(1.0, 5.0), Err(err::VALUE));
         // ARABIC: an invalid second numeral, a lone minus.
         assert_eq!(arabic("XZ"), Err(err::VALUE));
         assert_eq!(arabic("-"), Ok(CellValue::num(0.0)));
         assert_eq!(arabic("VX"), Err(err::VALUE));
         assert_eq!(arabic("IXIX"), Err(err::VALUE));
+        // LibreOffice 25.2: 1999, 4 (IIII), 99 (IC), 40 (XXXX); VV, IIX
+        // and CMM are invalid. Excel's leading minus and spaces.
+        assert_eq!(arabic("MCMXCIX"), Ok(CellValue::num(1999.0)));
+        assert_eq!(arabic("IIII"), Ok(CellValue::num(4.0)));
+        assert_eq!(arabic("IC"), Ok(CellValue::num(99.0)));
+        assert_eq!(arabic("XXXX"), Ok(CellValue::num(40.0)));
+        assert_eq!(arabic("VV"), Err(err::VALUE));
+        assert_eq!(arabic("IIX"), Err(err::VALUE));
+        assert_eq!(arabic("CMM"), Err(err::VALUE));
+        assert_eq!(arabic(" -MMXIV "), Ok(CellValue::num(-2014.0)));
         // BAHTTEXT: too large; a negative that rounds to zero keeps its sign.
         assert_eq!(baht_text(1e17), Err(err::NUM));
         assert_eq!(baht_text(-0.001), Ok("ลบศูนย์บาทถ้วน".into()));

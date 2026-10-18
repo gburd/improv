@@ -347,6 +347,12 @@ mod tests {
         assert_eq!(factor(561), vec![(3, 1), (11, 1), (17, 1)]);
         assert_eq!(factor(1 << 52), vec![(2, 52)]);
         assert_eq!(factor(1), vec![]);
+        // Brent's batch overshoots to g = n and the one-at-a-time replay
+        // takes several steps (1009·1049); every step of c = 1 cycles
+        // without splitting, so c = 2 does it (1009·1709). Gnumeric 1.12
+        // PFACTOR: 1009 for both.
+        assert_eq!(factor(1009 * 1049), vec![(1009, 1), (1049, 1)]);
+        assert_eq!(factor(1009 * 1709), vec![(1009, 1), (1709, 1)]);
         for n in 2..3000u64 {
             let back: u64 = factor(n).iter().map(|&(p, e)| p.pow(e)).product();
             assert_eq!(back, n);

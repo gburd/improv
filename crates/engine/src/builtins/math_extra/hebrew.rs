@@ -196,6 +196,19 @@ mod tests {
         assert_eq!(numeral(1000), "א׳");
     }
 
+    /// The two rarer postponements, against Gnumeric 1.12's HDATE: 5745
+    /// (GaTaRaD: a Tuesday molad at 9h 204p or later in a common year, so
+    /// Rosh Hashana is Thursday 27 September 1984), and 5766 (BeTUTaKPaT:
+    /// a Monday molad at 15h 589p after a leap year, so Tuesday 4 October
+    /// 2005).
+    #[test]
+    fn postponements_match_gnumeric() {
+        assert_eq!(hdate(1984.0, 9.0, 26.0), Ok((29, 11, 5744)));
+        assert_eq!(hdate(1984.0, 9.0, 27.0), Ok((1, 0, 5745)));
+        assert_eq!(hdate(2005.0, 10.0, 3.0), Ok((29, 11, 5765)));
+        assert_eq!(hdate(2005.0, 10.0, 4.0), Ok((1, 0, 5766)));
+    }
+
     #[test]
     fn round_trip_of_a_year() {
         // Day numbers advance by one across 4 years, months 0–13 in range.
