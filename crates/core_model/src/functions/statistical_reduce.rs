@@ -50,7 +50,7 @@ pub(super) static STATISTICAL_REDUCE: &[FnDef] = &[
     over(r(1049, "PERCENTOF", M, &[N, N], 2, "Σ subset / Σ all"), Over::At(&[0, 1])),
     // --- means, counts and conditional reductions ---
     r(1001, "AVERAGEA", St, &[A], 1, "the mean, counting TRUE as 1 and text and FALSE as 0"),
-    over(r(1002, "AVERAGEIF", St, &[A, A, N], 2, "the mean of avg_x (else x) where x meets the criterion"), Over::At(&[0, 2])),
+    over(r(1002, "AVERAGEIF", St, &[A, A, N], 2, "the mean of average_range (else range) where range meets the criteria"), Over::At(&[0, 2])),
     over(f(1003, "AVERAGEIFS", Ag, St, &[N, A, A], 3, true, NUM, "the mean of x where every criteria measure meets its criterion"), Over::At(&IFS)),
     r(1004, "AVEDEV", St, &[N], 1, "the mean absolute deviation from the mean"),
     alias(r(1005, "COUNT", St, &[A], 1, "the number of numbers (and dates)"), &["DCOUNT"]),
@@ -58,7 +58,7 @@ pub(super) static STATISTICAL_REDUCE: &[FnDef] = &[
     r(1007, "COUNTBLANK", St, &[A], 1, "the number of items with no cell (or empty text)"),
     r(1008, "COUNTIF", St, &[A, A], 2, "the number of cells meeting the criterion (\">5\", \"<>x\", \"a*\", 3)"),
     over(f(1009, "COUNTIFS", Ag, St, &[A, A], 2, true, NUM, "the number of rows where every criteria measure meets its criterion"), Over::Every(0, 2)),
-    over(r(1010, "SUMIF", St, &[A, A, N], 2, "the sum of sum_x (else x) where x meets the criterion"), Over::At(&[0, 2])),
+    over(r(1010, "SUMIF", St, &[A, A, N], 2, "the sum of sum_range (else range) where range meets the criteria"), Over::At(&[0, 2])),
     over(f(1011, "SUMIFS", Ag, St, &[N, A, A], 3, true, NUM, "the sum of x where every criteria measure meets its criterion"), Over::At(&IFS)),
     r(1012, "MAXA", St, &[A], 1, "the largest value, counting TRUE as 1 and text and FALSE as 0"),
     over(f(1013, "MAXIFS", Ag, St, &[N, A, A], 3, true, NUM, "the largest x where every criteria measure meets its criterion (0 if none)"), Over::At(&IFS)),
@@ -96,8 +96,8 @@ pub(super) static STATISTICAL_REDUCE: &[FnDef] = &[
     // --- per item: the result keeps the OVER category ---
     alias(f(1050, "RANK", P, St, &[N, N], 1, false, NUM, "each item's rank among the values (order 0, the default, ranks the largest 1)"), &["RANK.EQ"]),
     f(1051, "RANK.AVG", P, St, &[N, N], 1, false, NUM, "each item's rank, ties sharing their mean rank"),
-    alias(f(1052, "PERCENTRANK", P, St, &[N, N, N], 1, false, NUM, "each item's (or v's) rank as a fraction 0 … 1, to digits (3) significant digits"), &["PERCENTRANK.INC"]),
-    f(1053, "PERCENTRANK.EXC", P, St, &[N, N, N], 1, false, NUM, "each item's (or v's) rank as a fraction, exclusive of 0 and 1"),
+    alias(f(1052, "PERCENTRANK", P, St, &[N, N, N], 1, false, NUM, "each item's (or x's) rank as a fraction 0 … 1, to significance (3) significant digits"), &["PERCENTRANK.INC"]),
+    f(1053, "PERCENTRANK.EXC", P, St, &[N, N, N], 1, false, NUM, "each item's (or x's) rank as a fraction, exclusive of 0 and 1"),
     over(f(1054, "TREND", P, St, &[N, N, B], 2, false, NUM, "each item's value on the least-squares line of y on x, at its own x (through 0 if const is FALSE)"), Over::At(&[0, 1])),
     over(f(1055, "GROWTH", P, St, &[N, N, B], 2, false, NUM, "each item's value on the least-squares curve y = b·mˣ (fitting ln y; b = 1 if const is FALSE)"), Over::At(&[0, 1])),
     // --- regression ---

@@ -30,7 +30,7 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `FIRST(values OVER T)` | the branches' type | the value at the first item (in category order) that has one |
 | `LAST(values OVER T)` | the branches' type | the value at the last item that has one |
 | `S(values OVER T)` | text | the first value, as text (Quantrix) |
-| `TEXTJOIN(delimiter, ignore_empty, values OVER T)` | text | the values in item order joined by the separator (skipping empty text when skip_empty is TRUE) |
+| `TEXTJOIN(delimiter, ignore_empty, values OVER T)` | text | the values in item order joined by the delimiter (skipping empty text when ignore_empty is TRUE) |
 
 ## Logical
 
@@ -44,7 +44,7 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `IF(logical_test, value_if_true, [value_if_false])` | the branches' type | then where the test is true, else (or no cell) where it is false |
 | `IFS(logical_test1, value_if_true1, …)` | the branches' type | the value paired with the first true test |
 | `SWITCH(expression, value1, result1, …, [default])` | the branches' type | the result paired with the first value equal to the expression, else the default |
-| `CHOOSE(index_num, value1, …)` | the branches' type | the index-th value (1-based) |
+| `CHOOSE(index_num, value1, …)` | the branches' type | the index_num-th value (1-based) |
 | `IFERROR(value, value_if_error)` | the branches' type | the value, or the alternative where it is an error |
 | `IFNA(value, value_if_na)` | the branches' type | the value, or the alternative where it is #N/A |
 | `CLEARERROR(value, [alternative])` | the branches' type | the value, or the alternative (or no cell) where it is an error |
@@ -107,7 +107,7 @@ Angles are in radians.
 | `LOG(number, [base=10])` | number | logarithm to a base (default 10) |
 | `LOG10(number)` | number | base-10 logarithm |
 | `LOG2(x)` | number | base-2 logarithm |
-| `POWER(number, power)` | number | base to the power exponent (same as ^) |
+| `POWER(number, power)` | number | number raised to power (same as ^) |
 | `MOD(number, divisor)` | number | remainder, with the divisor's sign |
 | `QUOTIENT(numerator, denominator)` | number | integer part of a quotient |
 | `PI()` | number | π |
@@ -141,9 +141,9 @@ Angles are in radians.
 | `HYPOT(number1, …)` | number | √(Σ xᵢ²) without overflow |
 | `FACT(number)` | number | factorial |
 | `FACTDOUBLE(number)` | number | double factorial n!! |
-| `COMBIN(number, number_chosen)` | number | combinations of n things k at a time |
+| `COMBIN(number, number_chosen)` | number | combinations of number items taken number_chosen at a time |
 | `COMBINA(number, number_chosen)` | number | combinations with repetition |
-| `PERMUT(number, number_chosen)` | number | permutations of n things k at a time |
+| `PERMUT(number, number_chosen)` | number | permutations of number items taken number_chosen at a time |
 | `PERMUTATIONA(number, number_chosen)` | number | permutations with repetition |
 | `GCD(number1, …)` | number | greatest common divisor |
 | `LCM(number1, …)` | number | least common multiple |
@@ -203,11 +203,11 @@ Rounding is decimal: `ROUND(2.675, 2)` is 2.68.
 
 | Function | Returns | Description |
 |---|---|---|
-| `ROUND(number, [num_digits=0])` | number | to digits decimal places, halves away from zero |
-| `ROUNDUP(number, [num_digits=0])` | number | away from zero to digits places |
-| `ROUNDDOWN(number, [num_digits=0])` | number | toward zero to digits places |
+| `ROUND(number, [num_digits=0])` | number | to num_digits decimal places, halves away from zero |
+| `ROUNDUP(number, [num_digits=0])` | number | away from zero to num_digits places |
+| `ROUNDDOWN(number, [num_digits=0])` | number | toward zero to num_digits places |
 | `ROUNDSIG(value, digits)` | number | to digits significant digits |
-| `TRUNC(number, [num_digits=0])` | number | truncate to digits places |
+| `TRUNC(number, [num_digits=0])` | number | truncate to num_digits places |
 | `INT(number)` | number | down to an integer |
 | `FLOOR(number, [significance=1])` | number | down to a multiple of significance (default 1) |
 | `CEIL(x)` | number | up to an integer |
@@ -235,22 +235,22 @@ Lengths and positions count characters, not bytes.
 | `CONCAT(text1, …)` | text | join values as text (same as &) |
 | `CONCATENATE(text1, …)` | text | join values as text |
 | `EXACT(text1, text2)` | boolean | case-sensitive equality |
-| `FIND(find_text, within_text, [start_num=1])` | number | 1-based position of find in text, case-sensitive |
+| `FIND(find_text, within_text, [start_num=1])` | number | 1-based position of find_text in within_text, case-sensitive |
 | `SEARCH(find_text, within_text, [start_num=1])` | number | 1-based position, case-insensitive, with * and ? wildcards |
-| `LEFT(text, [num_chars=1])` | text | the first n characters (default 1) |
-| `RIGHT(text, [num_chars=1])` | text | the last n characters (default 1) |
-| `MID(text, start_num, num_chars)` | text | n characters from a 1-based start |
+| `LEFT(text, [num_chars=1])` | text | the first num_chars characters (default 1) |
+| `RIGHT(text, [num_chars=1])` | text | the last num_chars characters (default 1) |
+| `MID(text, start_num, num_chars)` | text | num_chars characters from a 1-based start_num |
 | `LEN(text)` | number | the number of characters |
 | `LOWER(text)` | text | lowercase |
 | `UPPER(text)` | text | uppercase |
 | `PROPER(text)` | text | capitalize each word |
-| `REPLACE(old_text, start_num, num_chars, new_text)` | text | replace n characters from a 1-based start |
-| `REPT(text, number_times)` | text | repeat text n times |
-| `SUBSTITUTE(text, old_text, new_text, [instance_num])` | text | replace every (or the instance-th) occurrence of old |
+| `REPLACE(old_text, start_num, num_chars, new_text)` | text | replace num_chars characters from a 1-based start_num |
+| `REPT(text, number_times)` | text | repeat text number_times times |
+| `SUBSTITUTE(text, old_text, new_text, [instance_num])` | text | replace every (or the instance_num-th) occurrence of old_text |
 | `TRIM(text)` | text | remove leading, trailing and repeated spaces |
 | `VALUE(text)` | number | text as a number |
-| `TEXTBEFORE(text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found])` | text | text before the instance-th delimiter |
-| `TEXTAFTER(text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found])` | text | text after the instance-th delimiter |
+| `TEXTBEFORE(text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found])` | text | text before the instance_num-th delimiter |
+| `TEXTAFTER(text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found])` | text | text after the instance_num-th delimiter |
 | `TEXTBETWEEN(text, start_delimiter, end_delimiter)` | text | text between the first start delimiter and the next end delimiter |
 | `COUNTMATCHES(text, search)` | number | how many times search occurs in text |
 | `TEXT(value, format_text)` | text | format with an Excel number-format code: 0 # ? . , % E+ E- "text" \c _c *c, General, ; sections (positive;negative;zero;text with @), colors; dates y m d h s AM/PM A/P. Unsupported (#VALUE!): conditions, locales, [h] elapsed time, fractional seconds, fractions, eras |
@@ -262,7 +262,7 @@ Lengths and positions count characters, not bytes.
 | `REGEXTEST(text, pattern, [case_sensitivity=0])` | boolean | whether the pattern matches; case_sensitivity 1 ignores case. Rust regex syntax |
 | `REGEXEXTRACT(text, pattern, [return_mode=0], [case_sensitivity=0])` | text | the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #VALUE!. Rust regex syntax (also `REGEX.EXTRACT`) |
 | `REGEXREPLACE(text, pattern, replacement, [occurrence=0], [case_sensitivity=0])` | text | replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax |
-| `TEXTSPLIT(text OVER T, col_delimiter, [row_delimiter], [ignore_empty=FALSE] INTO K)` | text | the parts of the text between col_delimiters (case-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE! |
+| `TEXTSPLIT(text OVER T, col_delimiter, [row_delimiter], [ignore_empty=FALSE] INTO K)` | text | the parts of the text between col_delimiter matches (case-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE! |
 | `ARRAYTOTEXT(array OVER T, [format=0])` | text | the values as text in item order: format 0 "1, 2, a", format 1 {1,2,"a"} |
 | `ASC(text)` | text | full-width ASCII and katakana as half-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark) |
 | `JIS(text)` | text | half-width ASCII and katakana as full-width, as LibreOffice's JIS (a letter and its sound mark join) (also `DBCS`) |
@@ -351,18 +351,18 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `PREV(x, category, [n=1], [default])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
 | `NEXT(x, category, [n=1], [default])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
 | `SEQUENCE(T, [start = 1], [step = 1])` | the branches' type | SEQUENCE(T, [start = 1], [step = 1]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start |
-| `SORT(array OVER T, [sort_order=1] INTO K)` | the branches' type | the values in ascending order (descending when order is -1) |
+| `SORT(array OVER T, [sort_order=1] INTO K)` | the branches' type | the values in ascending order (descending when sort_order is -1) |
 | `UNIQUE(array OVER T, [exactly_once=FALSE] INTO K)` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
-| `FILTER(array, include OVER T, [if_empty] INTO K)` | the branches' type | the values of x whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!) |
+| `FILTER(array, include OVER T, [if_empty] INTO K)` | the branches' type | the values of array whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!) |
 | `SORTBY(array, by_array1 OVER T, [sort_order1], … INTO K)` | the branches' type | SORTBY(x, by1 OVER T, [order1], [by2, order2], …): the values of x sorted by by1, ties by by2, … (stable; a key descends when its order is -1) |
-| `TAKE(array OVER T, rows INTO K)` | the branches' type | the first n values in item order (the last -n when n is negative) |
-| `DROP(array OVER T, rows INTO K)` | the branches' type | the values TAKE leaves out: all but the first n (the last -n when n is negative), in item order |
+| `TAKE(array OVER T, rows INTO K)` | the branches' type | the first rows values in item order (the last -rows when rows is negative) |
+| `DROP(array OVER T, rows INTO K)` | the branches' type | the values TAKE leaves out: all but the first rows (the last -rows when rows is negative), in item order |
 | `SELECTS(values, tests OVER T, condition INTO K)` | the branches' type | Quantrix: the values whose test meets the condition (a criterion like ">5" or "a*", as in SUMIF), in item order |
-| `XLOOKUP(lookup_value, lookup_array OVER T, return_array, [if_not_found], [match_mode=0], [search_mode=1])` | the values' type | values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
-| `XMATCH(lookup_value, lookup_array OVER T, [match_mode=0], [search_mode=1])` | number | the 1-based item position along the category where keys matches key (XLOOKUP's modes); #N/A when none does |
-| `MATCH(lookup_value, lookup_array OVER T, [match_type=1])` | number | the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
-| `LOOKUP(lookup_value, lookup_vector OVER T, result_vector)` | the values' type | values at the largest key ≤ key (keys ascending); #N/A when none |
-| `INDEX(array OVER T, row_num)` | the branches' type | the value at the n-th item (1-based position); #REF! out of range, #N/A where that item has no cell (also `VALUEAT`) |
+| `XLOOKUP(lookup_value, lookup_array OVER T, return_array, [if_not_found], [match_mode=0], [search_mode=1])` | the values' type | return_array at the item where lookup_array matches lookup_value (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
+| `XMATCH(lookup_value, lookup_array OVER T, [match_mode=0], [search_mode=1])` | number | the 1-based item position along the category where lookup_array matches lookup_value (XLOOKUP's modes); #N/A when none does |
+| `MATCH(lookup_value, lookup_array OVER T, [match_type=1])` | number | the 1-based item position of lookup_value: match_type 1 (default) the largest ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
+| `LOOKUP(lookup_value, lookup_vector OVER T, result_vector)` | the values' type | result_vector at the largest lookup_vector ≤ lookup_value (ascending); #N/A when none |
+| `INDEX(array OVER T, row_num)` | the branches' type | the value at the row_num-th item (1-based); #REF! out of range, #N/A where that item has no cell (also `VALUEAT`) |
 | `SELECT(values, keys OVER T, lookup)` | the branches' type | values at the first item (in item order) whose key equals lookup; #N/A when none (SELECTLIST: a lookup over its own category gives one result per lookup) (also `SELECTLIST`) |
 | `SELECTBETWEEN(values, keys OVER T, low, high, [inclusive])` | the branches' type | values at the first item whose key is between low and high (strictly when inclusive is FALSE); #N/A when none |
 | `SELECTGREATERTHAN(values, keys OVER T, lookup, [inclusive])` | the branches' type | values at the first item whose key is > lookup (≥ when inclusive is TRUE); #N/A when none |
@@ -421,7 +421,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CONFIDENCE.T(alpha, standard_dev, size)` | number | the half-width of a Student's t confidence interval at significance alpha, for sd and sample size n |
 | `STANDARDIZE(x, mean, standard_dev)` | number | the z-score (x − mean) / sd |
 | `AVERAGEA(values OVER T)` | number | the mean, counting TRUE as 1 and text and FALSE as 0 |
-| `AVERAGEIF(range OVER T, criteria, [average_range])` | number | the mean of avg_x (else x) where x meets the criterion |
+| `AVERAGEIF(range OVER T, criteria, [average_range])` | number | the mean of average_range (else range) where range meets the criteria |
 | `AVERAGEIFS(average_range, criteria_range1 OVER T, criteria1, …)` | number | the mean of x where every criteria measure meets its criterion |
 | `AVEDEV(values OVER T)` | number | the mean absolute deviation from the mean |
 | `COUNT(values OVER T)` | number | the number of numbers (and dates) (also `DCOUNT`) |
@@ -429,7 +429,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `COUNTBLANK(range OVER T)` | number | the number of items with no cell (or empty text) |
 | `COUNTIF(range OVER T, criteria)` | number | the number of cells meeting the criterion (">5", "<>x", "a*", 3) |
 | `COUNTIFS(criteria_range1 OVER T, criteria1, …)` | number | the number of rows where every criteria measure meets its criterion |
-| `SUMIF(range OVER T, criteria, [sum_range])` | number | the sum of sum_x (else x) where x meets the criterion |
+| `SUMIF(range OVER T, criteria, [sum_range])` | number | the sum of sum_range (else range) where range meets the criteria |
 | `SUMIFS(sum_range, criteria_range1 OVER T, criteria1, …)` | number | the sum of x where every criteria measure meets its criterion |
 | `MAXA(values OVER T)` | number | the largest value, counting TRUE as 1 and text and FALSE as 0 |
 | `MAXIFS(max_range, criteria_range1 OVER T, criteria1, …)` | number | the largest x where every criteria measure meets its criterion (0 if none) |
@@ -464,8 +464,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `AGGREGATE(function_num, options, array OVER T, [k])` | number | SUBTOTAL's codes and 12 MEDIAN, 13 MODE, 14 LARGE, 15 SMALL, 16 PERCENTILE, 17 QUARTILE, 18 PERCENTILE.EXC, 19 QUARTILE.EXC; options 2, 3, 6, 7 skip errors |
 | `RANK(ref OVER T, [order=0])` | number | each item's rank among the values (order 0, the default, ranks the largest 1) (also `RANK.EQ`) |
 | `RANK.AVG(ref OVER T, [order=0])` | number | each item's rank, ties sharing their mean rank |
-| `PERCENTRANK(array OVER T, [x], [significance=3])` | number | each item's (or v's) rank as a fraction 0 … 1, to digits (3) significant digits (also `PERCENTRANK.INC`) |
-| `PERCENTRANK.EXC(array OVER T, [x], [significance=3])` | number | each item's (or v's) rank as a fraction, exclusive of 0 and 1 |
+| `PERCENTRANK(array OVER T, [x], [significance=3])` | number | each item's (or x's) rank as a fraction 0 … 1, to significance (3) significant digits (also `PERCENTRANK.INC`) |
+| `PERCENTRANK.EXC(array OVER T, [x], [significance=3])` | number | each item's (or x's) rank as a fraction, exclusive of 0 and 1 |
 | `TREND(known_ys, known_xs OVER T, [const=TRUE])` | number | each item's value on the least-squares line of y on x, at its own x (through 0 if const is FALSE) |
 | `GROWTH(known_ys, known_xs OVER T, [const=TRUE])` | number | each item's value on the least-squares curve y = b·mˣ (fitting ln y; b = 1 if const is FALSE) |
 | `CORREL(array1, array2 OVER T)` | number | the Pearson correlation of x and y (also `PEARSON`) |
@@ -704,11 +704,11 @@ Complex numbers are text, `"3+4i"` (suffix `i` or `j`); base conversions use 10-
 | `BITAND(number1, number2)` | number | bitwise and |
 | `BITOR(number1, number2)` | number | bitwise or |
 | `BITXOR(number1, number2)` | number | bitwise exclusive or |
-| `BITLSHIFT(number, shift_amount)` | number | shifted left by `shift` bits (right if negative), |shift| ≤ 53 |
-| `BITRSHIFT(number, shift_amount)` | number | shifted right by `shift` bits (left if negative), |shift| ≤ 53 |
+| `BITLSHIFT(number, shift_amount)` | number | shifted left by `shift_amount` bits (right if negative), at most 53 either way |
+| `BITRSHIFT(number, shift_amount)` | number | shifted right by `shift_amount` bits (left if negative), at most 53 either way |
 | `CONVERT(number, from_unit, to_unit)` | number | a measurement converted between units of Excel's table (SI and binary prefixes allowed); #N/A for unknown or mismatched units |
-| `DELTA(number1, [number2=0])` | number | 1 if the numbers are equal (b defaults to 0), else 0 |
-| `GESTEP(number, [step=0])` | number | 1 if x ≥ step (default 0), else 0 |
+| `DELTA(number1, [number2=0])` | number | 1 if the numbers are equal (number2 defaults to 0), else 0 |
+| `GESTEP(number, [step=0])` | number | 1 if number ≥ step (default 0), else 0 |
 | `COMPLEX(real_num, i_num, [suffix="i"])` | text | the complex number re + im·i as text, with suffix "i" (default) or "j" |
 | `IMREAL(inumber)` | number | a complex number's real part |
 | `IMAGINARY(inumber)` | number | a complex number's imaginary part |
