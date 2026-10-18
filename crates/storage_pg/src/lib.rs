@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS improv.model (
     id        bigserial PRIMARY KEY,
     name      text NOT NULL UNIQUE,
     sync_mode text NOT NULL DEFAULT 'logical'
-              CHECK (sync_mode IN ('logical', 'trigger', 'manual')),
+              CHECK (sync_mode IN ('logical', 'trigger', 'commit', 'manual')),
     slot_name text,
     created   timestamptz NOT NULL DEFAULT now()
 );
