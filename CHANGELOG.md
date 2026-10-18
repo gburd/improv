@@ -310,6 +310,14 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Changed
 
+- **Every release publishes pg_improv to PGXN, or fails.** The PGXN step is
+  its own workflow (`pgxn.yml`): called by each tagged release, or run by
+  hand for a tag that missed PGXN. It checks the tag, Cargo and control
+  versions agree, uploads `ci/pgxn-dist.sh`'s zip (a re-run of an uploaded
+  version is a warning, not an error), and waits until api.pgxn.org lists
+  the version. Missing PGXN secrets now fail the release instead of
+  skipping it, which is how 0.8.0–0.9.0 never reached PGXN.
+
 - **Every function names its parameters** in signature help and the
   Function Reference, instead of their types: Excel's argument names where
   Excel has the function, else LibreOffice's, Gnumeric's or R's

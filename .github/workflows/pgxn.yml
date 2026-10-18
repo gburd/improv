@@ -1,0 +1,114 @@
+name: PGXN
+
+# Publish pg_improv to PGXN (https://pgxn.org/dist/pg_improv/): build the
+# source distribution (ci/pgxn-dist.sh), upload it to PGXN Manager, then wait
+# until api.pgxn.org lists the version.
+#
+# - Called by release.yml for every v* tag, so every release reaches PGXN.
+# - Run by hand (Actions > PGXN > Run workflow, or
+#   `gh workflow run pgxn.yml -R gburd/improv -f tag=v0.9.0`) to publish a tag
+#   that was released before its upload worked.
+#
+# Needs the PGXN_USERNAME / PGXN_PASSWORD repository secrets (the PGXN
+# Manager account gregburd; PGXN has no API tokens). Without them the job
+# FAILS: a release that silently skipped PGXN is how 0.8.0-0.9.0 never got
+# there. Runs on the GitHub mirror only; Codeberg never uploads, so each
+# version is uploaded once (PGXN refuses a second upload of a version).
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: The release tag to publish (vX.Y.Z)
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to publish (vX.Y.Z)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  pgxn:
+    name: Publish to PGXN
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    container:
+      image: pgxn/pgxn-tools
+    steps:
+      - name: Require the PGXN secrets
+        env:
+          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
+          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
+        run: |
+          if [ -z "$PGXN_USERNAME" ] || [ -z "$PGXN_PASSWORD" ]; then
+            echo "::error::PGXN_USERNAME/PGXN_PASSWORD are not set on this repository, so this release cannot reach PGXN. Set them (gh secret set PGXN_PASSWORD -R gburd/improv) and re-run this job."
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Check the versions agree with the tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          ver="${TAG#v}"
+          cargo=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/pg_improv/Cargo.toml | head -1)
+          ctl=$(sed -n "s/^default_version *= *'\(.*\)'/\1/p" crates/pg_improv/pg_improv.control)
+          echo "tag $ver, Cargo.toml $cargo, pg_improv.control ${ctl:-@CARGO_VERSION@}"
+          [ "$cargo" = "$ver" ] || { echo "::error::tag $TAG but crates/pg_improv/Cargo.toml is $cargo"; exit 1; }
+          case "$ctl" in ""|"@CARGO_VERSION@"|"$ver") ;; *) echo "::error::pg_improv.control default_version $ctl"; exit 1 ;; esac
+          echo "VER=$ver" >> "$GITHUB_ENV"
+      - name: Build the distribution (Rust, cargo-pgrx, PG 17)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          pg-start 17
+          apt-get install -y -qq --no-install-recommends libclang-dev clang curl zip python3
+          curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.97.1
+          . "$HOME/.cargo/env"
+          pgrx=$(sed -n 's/^pgrx = "=\{0,1\}\([0-9.]*\)"/\1/p' crates/pg_improv/Cargo.toml | head -1)
+          cargo install cargo-pgrx --version "$pgrx" --locked
+          cargo pgrx init --pg17 "$(command -v pg_config)"
+          ci/pgxn-dist.sh pg17
+          test "$(python3 -c 'import json; print(json.load(open("META.json"))["version"])')" = "$VER"
+          ls -l "pg_improv-$VER.zip"
+      - name: Upload to PGXN
+        env:
+          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
+          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
+        run: |
+          # 2xx/3xx: accepted. 409: refused: already on PGXN (fine, a re-run)
+          # or META.json invalid (the response says which).
+          code=$(curl -sS -o /tmp/pgxn_resp.txt -w '%{http_code}' \
+            --user "$PGXN_USERNAME:$PGXN_PASSWORD" \
+            -H 'X-Requested-With: XMLHttpRequest' \
+            -F "archive=@pg_improv-$VER.zip;type=application/zip" \
+            https://manager.pgxn.org/upload)
+          echo "PGXN upload HTTP $code"; cat /tmp/pgxn_resp.txt || true; echo
+          case "$code" in
+            2*|3*) echo "PGXN upload accepted." ;;
+            409) if grep -q 'already exists' /tmp/pgxn_resp.txt; then
+                   echo "::warning::pg_improv $VER is already on PGXN."
+                 else
+                   echo "::error::PGXN refused the upload"; exit 1
+                 fi ;;
+            *) echo "::error::PGXN upload failed (HTTP $code)"; exit 1 ;;
+          esac
+      - name: Wait until PGXN lists the version
+        run: |
+          # PGXN indexes an upload within minutes; give it 20.
+          for _ in $(seq 1 40); do
+            if curl -sf https://api.pgxn.org/dist/pg_improv.json |
+               python3 -c 'import json,sys; v=sys.argv[1]; d=json.load(sys.stdin); sys.exit(0 if any(r["version"]==v for rs in d["releases"].values() for r in rs) else 1)' "$VER"; then
+              echo "pg_improv $VER is on PGXN: https://pgxn.org/dist/pg_improv/$VER/"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "::error::pg_improv $VER was uploaded but api.pgxn.org does not list it after 20 minutes"
+          exit 1

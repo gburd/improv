@@ -108,6 +108,25 @@ The guide and API docs publish from `main`: GitHub Pages through
 `.forgejo/workflows/pages.yml`, which pushes the built site to the `pages`
 branch (it needs a `PAGES_PUSH_TOKEN` secret).
 
+## Releasing
+
+1. Bump the version (`Cargo.toml`'s workspace version and
+   `crates/pg_improv/Cargo.toml`), add the update script
+   `crates/pg_improv/sql/pg_improv--<old>--<new>.sql`, and move the
+   CHANGELOG's `[Unreleased]` section under the new version.
+2. Push to `main`, wait for CI, then push a signed annotated tag `vX.Y.Z`.
+3. On the GitHub mirror, `release.yml` builds and qualifies the binaries
+   and pg_improv packages, makes the GitHub Release, publishes to
+   [PGXN](https://pgxn.org/dist/pg_improv/) (`pgxn.yml`), and drafts the
+   postgresql.org news for an X.Y.0 release (`ci/announce.sh`).
+4. Check the run succeeded and that https://api.pgxn.org/dist/pg_improv.json
+   lists the version (`pgxn.yml` waits for it and fails if it does not).
+
+PGXN needs the `PGXN_USERNAME`/`PGXN_PASSWORD` secrets on `gburd/improv`
+(PGXN Manager account `gregburd`; PGXN has no API tokens). A tag released
+before they were set is published by hand:
+`gh workflow run pgxn.yml -R gburd/improv -f tag=vX.Y.Z`.
+
 ## License
 
 By contributing you agree your work is dual-licensed under Apache-2.0 OR MIT

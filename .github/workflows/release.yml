@@ -164,52 +164,17 @@ jobs:
           files: dist/*
           fail_on_unmatched_files: true
 
-  # PGXN: the source distribution (ci/pgxn-dist.sh), uploaded with the
-  # official pgxn-tools. Skipped (not failed) until PGXN_USERNAME and
-  # PGXN_PASSWORD are set as repository secrets.
+  # PGXN: every release is published (pgxn.yml builds ci/pgxn-dist.sh's
+  # zip, uploads it, and waits until api.pgxn.org lists the version). It
+  # fails, rather than skipping, when the PGXN secrets are missing.
   pgxn:
-    name: Publish to PGXN
+    name: PGXN
     if: startsWith(github.ref, 'refs/tags/')
     needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    container:
-      image: pgxn/pgxn-tools
-    steps:
-      - name: Skip if PGXN secrets are not configured
-        id: check
-        env:
-          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
-          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
-        run: |
-          if [ -z "$PGXN_USERNAME" ] || [ -z "$PGXN_PASSWORD" ]; then
-            echo "::notice::PGXN_USERNAME/PGXN_PASSWORD not set; skipping the PGXN release."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        if: steps.check.outputs.skip != 'true'
-        with:
-          persist-credentials: false
-      - name: Build the dist (Rust, cargo-pgrx, PG 17)
-        if: steps.check.outputs.skip != 'true'
-        env:
-          REF_NAME: ${{ github.ref_name }}
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-          pg-start 17
-          apt-get install -y -qq --no-install-recommends libclang-dev clang curl zip python3
-          curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.97.1
-          . "$HOME/.cargo/env"
-          cargo install cargo-pgrx --version 0.17.0 --locked
-          cargo pgrx init --pg17 "$(command -v pg_config)"
-          ci/pgxn-dist.sh pg17
-          test "$(python3 -c 'import json; print(json.load(open("META.json"))["version"])')" = "${REF_NAME#v}"
-      - name: Release on PGXN
-        if: steps.check.outputs.skip != 'true'
-        env:
-          PGXN_USERNAME: ${{ secrets.PGXN_USERNAME }}
-          PGXN_PASSWORD: ${{ secrets.PGXN_PASSWORD }}
-        run: pgxn-release pg_improv-*.zip
+    uses: ./.github/workflows/pgxn.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
 
   # postgresql.org news (which feeds pgsql-announce): feature and major
   # releases only. ci/announce.sh skips a patch release unless its CHANGELOG

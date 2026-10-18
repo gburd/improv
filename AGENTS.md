@@ -135,7 +135,13 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   deployed to GitHub Pages, https://gburd.github.io/improv/); `release.yml`
   (on a `v*` tag: qualify on four targets, all four binaries per target,
   pg_improv packages per PG major, the GitHub Release from the CHANGELOG
-  section, PGXN upload, and `ci/announce.sh` for X.Y.0 releases).
+  section, the PGXN upload via `pgxn.yml`, and `ci/announce.sh` for X.Y.0
+  releases); `pgxn.yml` (called by every release, or run by hand with
+  `gh workflow run pgxn.yml -R gburd/improv -f tag=vX.Y.Z` for a tag that
+  missed PGXN: builds `ci/pgxn-dist.sh`'s zip, uploads it, and waits until
+  https://api.pgxn.org/dist/pg_improv.json lists the version; it FAILS when
+  the `PGXN_USERNAME`/`PGXN_PASSWORD` secrets (PGXN Manager account
+  `gregburd`) are missing, so a release cannot skip PGXN silently).
 - **Codeberg/Forgejo** (`.forgejo/workflows/`): `pages.yml` builds the guide on
   Codeberg's hosted `codeberg-small` runner and publishes it to
   https://gregburd.codeberg.page/improv/ with `actions/git-pages` (the
