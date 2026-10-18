@@ -204,8 +204,9 @@ fn diagnostic_lines(e: &LineEdit, d: &Diagnostic, prompt: &str) -> Vec<Line<'sta
     let red = Style::default().fg(Color::Red);
     let mut lines = Vec::new();
     if let Some(s) = &d.span {
-        let pad = prompt.len() + e.text[..s.start].chars().count();
-        let n = e.text[s.clone()].chars().count().max(1);
+        // Display columns, so wide characters keep the marker aligned.
+        let pad = prompt.len() + Span::raw(&e.text[..s.start]).width();
+        let n = Span::raw(&e.text[s.clone()]).width().max(1);
         let marker = format!("^{}", "~".repeat(n - 1));
         lines.push(Line::from(vec![
             Span::raw(" ".repeat(pad)),
@@ -614,6 +615,26 @@ mod tests {
             row_of(&lines, "hint: did you mean Quantity?"),
             y as usize + 3
         );
+        // Wide characters before and in the span keep it aligned.
+        app.edit = Some("\u{5e02}\u{5834} + Quantty".into());
+        app.commit_edit();
+        let lines = text(&draw(&mut app, 100, 30));
+        let y = row_of(&lines, "formula> ");
+        let col = |l: &str, pat: &str| l[..l.find(pat).unwrap()].chars().count();
+        let marker = col(&lines[y + 1], "^");
+        assert_eq!(marker, col(&lines[y], "formula> ") + "formula> ".len());
+        assert!(
+            lines[y + 1].contains("^~~~ "),
+            "two wide chars, four columns"
+        );
+        app.edit = Some("\"\u{5e02}\" & Quantty".into());
+        app.commit_edit();
+        let lines = text(&draw(&mut app, 100, 30));
+        let y = row_of(&lines, "formula> ");
+        // `"市" & ` is 7 columns wide: the 2-wide 市 counts twice.
+        assert_eq!(col(&lines[y + 1], "^~~~~~~"), marker + 7);
+        app.edit = Some("Price * Quantty".into());
+        app.commit_edit();
         // An error without a position has no marker.
         app.diagnostic.as_mut().unwrap().span = None;
         let lines = text(&draw(&mut app, 100, 30));
