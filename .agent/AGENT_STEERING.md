@@ -49,6 +49,19 @@ so the live worker applies boolean/text/date models cell by cell; `what_if`
 takes and returns typed `jsonb` values. **NEXT for pg_improv:** engine output
 deltas to drop the per-measure diff scan at 1M cells.
 
+**DuckDB extension `improv`: DONE (pending cross-platform qualification
+and the first registry PR)** — `crates/duckdb_improv` (duckdb-rs C-API
+shell, its own workspace, mentat's layout: extension-ci-tools submodule +
+root `Makefile` for the registry) over `crates/duckdb_model` (pure core,
+reuses `pg_model`). SQL: `improv_calc`/`improv_calc_text`,
+`improv_functions([query :=])`, `improv(source, model)`. **Stable C API**
+(v1.5.6 floor), unlike mentat: the registry builds on DuckDB
+v2.0.0-alpha46057 since community-extensions #3079, and one binary is tested
+in v1.5.6 and v2.0 (`ci/duckdb_improv.sh`, `.github/workflows/duckdb.yml`).
+Reasoning: `crates/duckdb_improv/README.md` "Pins". Guide
+`docs/src/duckdb.md`. **NEXT:** green `duckdb.yml` on GitHub, then the manual
+registry PR with that SHA as `repo.ref`.
+
 GUI: E2 DONE (horizontal NeXT scroller inline with the row tiles, arrows
 grouped left; wide grids scroll sideways); typed edits reach the live engine;
 File ▸ Revert to Saved / TUI `R` after a save conflict. CI's pg_improv,
@@ -249,6 +262,8 @@ GUI later.
 - `crates/nl_formula` — CNL <-> formula. [Phase 4]
 - `crates/gui` — egui/eframe desktop app (`improv-gui`). [Phase 5]
 - `crates/extfn` — external-language function runtime (Python). [Phase 6]
+- `crates/duckdb_model` — DuckDB-free core of the DuckDB extension.
+- `crates/duckdb_improv` — the DuckDB extension `improv` (own workspace).
 
 ## Phases (build in order)
 
