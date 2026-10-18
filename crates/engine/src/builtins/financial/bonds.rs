@@ -326,6 +326,309 @@ pub(super) fn amortize(degressive: bool, a: &[CellValue]) -> R {
     ok_num(nrate)
 }
 
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    /// A date cell for (y, m, d).
+    fn dt(y: i64, m: u32, d: u32) -> CellValue {
+        CellValue::Date(dc::days(y, m, d) * DAY_MS)
+    }
+
+    /// Dates then numbers, as the spreadsheet signature lays them out.
+    fn call(id: u32, dates: &[(i64, u32, u32)], nums: &[f64]) -> R {
+        let mut a: Vec<CellValue> = dates.iter().map(|&(y, m, d)| dt(y, m, d)).collect();
+        a.extend(nums.iter().map(|v| CellValue::num(*v)));
+        eval(id, &a)
+    }
+
+    fn near(got: R, want: f64) {
+        let g = got.unwrap().as_num().unwrap();
+        assert!(
+            (g - want).abs() <= 1e-9 * want.abs().max(1.0),
+            "{g} vs {want}"
+        );
+    }
+
+    const NUM: R = Err(err::NUM);
+
+    /// Every security function's value and #NUM! guards in this module's
+    /// own test binary: LibreOffice 25.2 (Err:502 is #NUM!), Gnumeric 1.12
+    /// for ODDF* and the short YIELD.
+    #[test]
+    fn securities_match_the_references() {
+        let (feb15, may15) = ((2008, 2, 15), (2008, 5, 15));
+        // ACCRINT from the first coupon (Gnumeric 15.5556; 0.2778 when the
+        // first coupon is before settlement: from it).
+        let acc = |settle: (i64, u32, u32), nums: &[f64], from_issue: bool| {
+            let mut a: Vec<CellValue> = [(2008, 3, 5), settle, (2008, 5, 1)]
+                .iter()
+                .map(|&(y, m, d)| dt(y, m, d))
+                .collect();
+            a.extend(nums.iter().map(|v| CellValue::num(*v)));
+            a.push(CellValue::Bool(from_issue));
+            eval(740, &a)
+        };
+        near(
+            acc((2008, 8, 31), &[0.1, 1000.0, 2.0, 0.0], false),
+            15.555_555_555_555_555,
+        );
+        near(
+            acc((2008, 4, 30), &[0.1, 1000.0, 2.0, 0.0], false),
+            0.277_777_777_777_777_8,
+        );
+        assert_eq!(acc((2008, 8, 31), &[0.0, 1000.0, 2.0, 0.0], true), NUM);
+        assert_eq!(acc((2008, 8, 31), &[0.1, 0.0, 2.0, 0.0], true), NUM);
+        assert_eq!(
+            call(
+                740,
+                &[(2008, 6, 5), (2008, 3, 1), (2008, 5, 1)],
+                &[0.1, 1000.0, 2.0, 0.0]
+            ),
+            NUM
+        );
+        // ACCRINTM, DISC.
+        let am = [(2008, 4, 1), (2008, 6, 15)];
+        assert_eq!(call(741, &am, &[0.0, 1000.0, 3.0]), NUM);
+        assert_eq!(call(741, &am, &[0.1, 0.0, 3.0]), NUM);
+        assert_eq!(
+            call(741, &[(2008, 6, 15), (2008, 4, 1)], &[0.1, 1000.0, 3.0]),
+            NUM
+        );
+        assert_eq!(call(748, &[feb15, may15], &[0.0, 100.0, 0.0]), NUM);
+        assert_eq!(call(748, &[feb15, may15], &[97.975, 0.0, 0.0]), NUM);
+        assert_eq!(call(748, &[may15, feb15], &[97.975, 100.0, 0.0]), NUM);
+        // DURATION and MDURATION.
+        let dur = [(2008, 1, 1), (2016, 1, 1)];
+        near(
+            call(749, &dur, &[0.08, 0.09, 2.0, 0.0]),
+            5.993_774_955_545_185,
+        );
+        near(
+            call(750, &dur, &[0.08, 0.09, 2.0, 0.0]),
+            5.735_669_813_918_838,
+        );
+        assert_eq!(call(749, &dur, &[-0.08, 0.09, 2.0, 0.0]), NUM);
+        assert_eq!(call(749, &dur, &[0.08, -0.09, 2.0, 0.0]), NUM);
+        assert_eq!(
+            call(749, &[(2016, 1, 1), (2008, 1, 1)], &[0.08, 0.09, 2.0, 0.0]),
+            NUM
+        );
+        // ODDFPRICE and ODDFYIELD (Gnumeric).
+        let odd = [(2008, 11, 11), (2021, 3, 1), (2008, 10, 15), (2009, 3, 1)];
+        near(
+            call(752, &odd, &[0.0785, 0.0625, 100.0, 2.0, 0.0]),
+            113.599_205_828_238_3,
+        );
+        near(
+            call(753, &odd, &[0.0575, 84.5, 100.0, 2.0, 0.0]),
+            0.077_245_541_597_817_49,
+        );
+        for nums in [
+            [-0.0785, 0.0625, 100.0],
+            [0.0785, 0.0625, 0.0],
+            [0.0785, -0.0625, 100.0],
+        ] {
+            assert_eq!(
+                call(752, &odd, &[nums[0], nums[1], nums[2], 2.0, 0.0]),
+                NUM,
+                "{nums:?}"
+            );
+        }
+        assert_eq!(call(753, &odd, &[0.0575, 0.0, 100.0, 2.0, 0.0]), NUM);
+        let mut early = odd;
+        early[0] = (2008, 10, 1);
+        assert_eq!(call(752, &early, &[0.0785, 0.0625, 100.0, 2.0, 0.0]), NUM);
+        early[0] = (2009, 4, 1);
+        assert_eq!(call(752, &early, &[0.0785, 0.0625, 100.0, 2.0, 0.0]), NUM);
+        let mut short = odd;
+        short[1] = (2009, 2, 1);
+        assert_eq!(call(752, &short, &[0.0785, 0.0625, 100.0, 2.0, 0.0]), NUM);
+        // ODDLPRICE and ODDLYIELD.
+        let oddl = [(2008, 2, 7), (2008, 6, 15), (2007, 10, 15)];
+        near(
+            call(754, &oddl, &[0.0375, 0.0405, 100.0, 2.0, 0.0]),
+            99.878_286_014_721_34,
+        );
+        let oddly = [(2008, 4, 20), (2008, 6, 15), (2007, 12, 24)];
+        near(
+            call(755, &oddly, &[0.0375, 99.875, 100.0, 2.0, 0.0]),
+            0.045_192_235_629_168_98,
+        );
+        for nums in [
+            [-0.0375, 0.0405, 100.0],
+            [0.0375, 0.0405, 0.0],
+            [0.0375, -0.0405, 100.0],
+        ] {
+            assert_eq!(
+                call(754, &oddl, &[nums[0], nums[1], nums[2], 2.0, 0.0]),
+                NUM,
+                "{nums:?}"
+            );
+        }
+        assert_eq!(call(755, &oddly, &[0.0375, 0.0, 100.0, 2.0, 0.0]), NUM);
+        let before = [(2007, 10, 1), (2008, 6, 15), (2007, 10, 15)];
+        assert_eq!(call(754, &before, &[0.0375, 0.0405, 100.0, 2.0, 0.0]), NUM);
+        let after = [(2008, 7, 7), (2008, 6, 15), (2007, 10, 15)];
+        assert_eq!(call(754, &after, &[0.0375, 0.0405, 100.0, 2.0, 0.0]), NUM);
+        // PRICE and YIELD (the short YIELD, one period left: Gnumeric).
+        let pr = [feb15, (2017, 11, 15)];
+        near(
+            call(756, &pr, &[0.0575, 0.065, 100.0, 2.0, 0.0]),
+            94.634_361_621_322_13,
+        );
+        let yl = [feb15, (2016, 11, 15)];
+        let y = call(763, &yl, &[0.0575, 95.04287, 100.0, 2.0, 0.0])
+            .unwrap()
+            .as_num()
+            .unwrap();
+        assert!((y - 0.065_000_006_880_755_19).abs() < 1e-9, "{y}");
+        near(
+            call(
+                763,
+                &[feb15, (2008, 6, 15)],
+                &[0.0575, 99.5, 100.0, 2.0, 0.0],
+            ),
+            0.072_169_224_388_220_65,
+        );
+        for nums in [
+            [-0.0575, 0.065, 100.0],
+            [0.0575, 0.065, 0.0],
+            [0.0575, -0.065, 100.0],
+        ] {
+            assert_eq!(
+                call(756, &pr, &[nums[0], nums[1], nums[2], 2.0, 0.0]),
+                NUM,
+                "{nums:?}"
+            );
+        }
+        assert_eq!(
+            call(
+                756,
+                &[(2017, 11, 15), feb15],
+                &[0.0575, 0.065, 100.0, 2.0, 0.0]
+            ),
+            NUM
+        );
+        assert_eq!(call(763, &yl, &[0.0575, 0.0, 100.0, 2.0, 0.0]), NUM);
+        // PRICEMAT and YIELDMAT.
+        let pm = [feb15, (2008, 4, 13), (2007, 11, 11)];
+        near(call(758, &pm, &[0.061, 0.061, 0.0]), 99.984_498_875_556_97);
+        assert_eq!(call(758, &pm, &[-0.061, 0.061, 0.0]), NUM);
+        assert_eq!(call(758, &pm, &[0.061, -0.061, 0.0]), NUM);
+        assert_eq!(
+            call(
+                758,
+                &[(2008, 4, 13), feb15, (2007, 11, 11)],
+                &[0.061, 0.061, 0.0]
+            ),
+            NUM
+        );
+        let ym = [(2008, 3, 15), (2008, 11, 3), (2007, 11, 8)];
+        near(
+            call(765, &ym, &[0.0625, 100.0123, 0.0]),
+            0.060_954_333_691_538_576,
+        );
+        assert_eq!(call(765, &ym, &[0.0625, 0.0, 0.0]), NUM);
+        assert_eq!(call(765, &ym, &[-0.0625, 100.0123, 0.0]), NUM);
+        assert_eq!(
+            call(
+                765,
+                &[(2008, 11, 3), (2008, 3, 15), (2007, 11, 8)],
+                &[0.0625, 100.0123, 0.0]
+            ),
+            NUM
+        );
+        assert_eq!(
+            call(
+                765,
+                &[(2008, 3, 15), (2008, 11, 3), (2008, 4, 8)],
+                &[0.0625, 100.0123, 0.0]
+            ),
+            NUM
+        );
+        // TBILLEQ, TBILLPRICE, TBILLYIELD: zero or negative rates, a
+        // maturity before settlement, or over a year out.
+        let tb = [(2008, 3, 31), (2008, 6, 1)];
+        let (back, far) = ([(2008, 6, 1), (2008, 3, 31)], [(2008, 3, 31), (2009, 6, 1)]);
+        near(call(760, &tb, &[0.0914]), 0.094_151_493_565_943_02);
+        near(call(761, &tb, &[0.09]), 98.45);
+        near(call(762, &tb, &[98.45]), 0.091_416_962_925_342_33);
+        for (id, v) in [(760, 0.0914), (761, 0.09), (762, 98.45)] {
+            assert_eq!(
+                call(id, &tb, &[if id == 761 { -v } else { 0.0 }]),
+                NUM,
+                "{id}"
+            );
+            assert_eq!(call(id, &back, &[v]), NUM, "{id} back");
+        }
+        assert_eq!(call(760, &far, &[0.0914]), NUM);
+        assert_eq!(call(762, &far, &[98.45]), NUM);
+        // ACCRINT's from-issue default (LibreOffice 16.6667).
+        let a = [(2008, 3, 1), (2008, 8, 31), (2008, 5, 1)];
+        near(
+            call(740, &a, &[0.1, 1000.0, 2.0, 0.0]),
+            16.666_666_666_666_664,
+        );
+    }
+
+    /// AMORDEGRC and AMORLINC against LibreOffice 25.2 (cost 2400 bought
+    /// 2008-08-19, first period ending 2008-12-31, salvage 300).
+    #[test]
+    fn amortization_matches_libreoffice() {
+        // [cost, salvage, period, rate, basis]
+        let am = |degressive: bool, v: [f64; 5], bought: (i64, u32, u32)| {
+            let a = [
+                CellValue::num(v[0]),
+                dt(bought.0, bought.1, bought.2),
+                dt(2008, 12, 31),
+                CellValue::num(v[1]),
+                CellValue::num(v[2]),
+                CellValue::num(v[3]),
+                CellValue::num(v[4]),
+            ];
+            amortize(degressive, &a).map(|v| v.as_num().unwrap())
+        };
+        let aug19 = (2008, 8, 19);
+        // Degressive: the coefficient for a life under 3 (0.4), 3-5 (0.25),
+        // 5-6 (0.18) and over 6 (0.15) years; periods 0, 1, 3; the last
+        // two periods split what is left, then 0.
+        for (per, rate, basis, want) in [
+            (0.0, 0.15, 1.0, 330.0),
+            (1.0, 0.15, 1.0, 776.0),
+            (3.0, 0.15, 1.0, 303.0),
+            (1.0, 0.4, 3.0, 819.0),
+            (2.0, 0.25, 2.0, 484.0),
+            (4.0, 0.18, 1.0, 197.0),
+            (5.0, 0.18, 1.0, 175.0),
+            (6.0, 0.15, 0.0, 0.0),
+        ] {
+            let got = am(true, [2400.0, 300.0, per, rate, basis], aug19);
+            assert_eq!(got, Ok(want), "{per} {rate} {basis}");
+        }
+        // Linear: the partial first period, a full one, the remainder, 0.
+        let lin = |per: f64| am(false, [2400.0, 300.0, per, 0.15, 1.0], aug19).unwrap();
+        assert!((lin(0.0) - 131.803_278_688_524_6).abs() < 1e-9);
+        assert_eq!(lin(1.0), 360.0);
+        assert!((lin(6.0) - 168.196_721_311_475_4).abs() < 1e-9);
+        assert_eq!(lin(7.0), 0.0);
+        // Err:502: bought after the first period, rate 0, salvage above
+        // cost or negative, cost 0, a negative period.
+        let late = am(true, [2400.0, 300.0, 1.0, 0.15, 1.0], (2009, 1, 1));
+        assert_eq!(late, Err(err::NUM));
+        for v in [
+            [2400.0, 300.0, 1.0, 0.0, 1.0],
+            [2400.0, 3000.0, 1.0, 0.15, 1.0],
+            [0.0, 0.0, 1.0, 0.15, 1.0],
+            [2400.0, -1.0, 1.0, 0.15, 1.0],
+            [2400.0, 300.0, -1.0, 0.15, 1.0],
+        ] {
+            assert_eq!(am(true, v, aug19), Err(err::NUM), "{v:?}");
+        }
+    }
+}
+
 /// Gnumeric's ODDFPRICE and the day counting it relies on (goffice
 /// `go_date_days_between_basis`, `go_coup_cd`, `go_coupdays`; Gnumeric
 /// `coupnum`, `date_ratio`), with end-of-month coupon rules on.
@@ -341,8 +644,8 @@ mod gnm {
     fn between(a: i64, b: i64, basis: u32) -> f64 {
         let (sign, from, to) = if a > b { (-1, b, a) } else { (1, a, b) };
         let ((y1, m1, mut d1), (y2, m2, mut d2)) = (ymd(from), ymd(to));
+        // (Equal dates count 0 in both 30/360 rules without a special case.)
         let n = match basis {
-            0 | 4 if from == to => 0,
             0 => {
                 if d1 == 31 {
                     d1 = 30;
@@ -506,6 +809,31 @@ mod gnm {
             assert_eq!(between(d(2008, 2, 29), d(2009, 2, 28), 0), 360.0);
             assert_eq!(between(d(2008, 1, 31), d(2008, 3, 31), 4), 60.0);
             assert_eq!(between(d(2008, 1, 31), d(2008, 1, 31), 0), 0.0);
+            assert_eq!(between(d(2008, 2, 29), d(2008, 2, 29), 0), 0.0);
+            assert_eq!(between(d(2008, 1, 31), d(2008, 1, 31), 4), 0.0);
+            // MSRB 30/360: a 30th then a 31st, mid-February to a 31st, a
+            // February end into March and into a later February's middle.
+            assert_eq!(between(d(2008, 1, 30), d(2008, 3, 31), 0), 60.0);
+            assert_eq!(between(d(2008, 2, 15), d(2008, 3, 31), 0), 46.0);
+            assert_eq!(between(d(2008, 2, 29), d(2008, 3, 31), 0), 31.0);
+            assert_eq!(between(d(2008, 2, 29), d(2009, 2, 15), 0), 345.0);
+            // ...and through ODDFPRICE, against Gnumeric 1.12, with
+            // settlement on the February end and mid-February.
+            let p = |settle| {
+                oddfprice(
+                    settle,
+                    d(2012, 3, 31),
+                    d(2008, 1, 31),
+                    d(2008, 3, 31),
+                    0.0785,
+                    0.0625,
+                    100.0,
+                    2,
+                    0,
+                )
+            };
+            assert!((p(d(2008, 2, 29)) - 105.697_235_097_438_22).abs() < 1e-9);
+            assert!((p(d(2008, 2, 15)) - 105.730_200_666_807_06).abs() < 1e-9);
             assert_eq!(
                 coup_cd(d(2008, 11, 11), d(2021, 3, 1), 2, false),
                 d(2008, 9, 1)
