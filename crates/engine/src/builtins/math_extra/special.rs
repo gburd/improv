@@ -83,10 +83,11 @@ const INV_2PI: [u64; 22] = [
 ];
 
 /// The 64 bits of 1/(2π) at fraction positions p, p+1, …, p+63 (positions
-/// below 1 are the zero integer part).
+/// below 1 are the zero integer part). `reduce_pi` reads at most position
+/// 1227 (s ≤ 971 + 7 + 1, plus 185 + 63), inside the table's 1408.
 fn bits64(p: i64) -> u64 {
     let bit = |i: i64| -> u64 {
-        if i < 1 || i > 64 * INV_2PI.len() as i64 {
+        if i < 1 {
             return 0;
         }
         let i = (i - 1) as usize;
@@ -184,9 +185,13 @@ fn erlang(a: f64, c: f64) -> Result<(f64, f64), u8> {
         }
         return Ok((g, 1.0 - g));
     }
+    // Gnumeric stops at n = 1, but the terms (ratio n/a < 1 and falling)
+    // drop below ε·sum long before: from c ≥ 100 and a > c/0.9 (or a tail
+    // that underflows), t(c−1)/t(1) ≤ (c−1)!/a^(c−2) < 1e-44. The loop
+    // ends by n ≤ 0 regardless (a zero or negative term).
     let series = || {
         let (mut sum, mut term, mut n) = (0.0, 1.0, c);
-        while n > 1.0 {
+        loop {
             term *= n / a;
             if term < f64::EPSILON * sum {
                 break;
@@ -199,8 +204,9 @@ fn erlang(a: f64, c: f64) -> Result<(f64, f64), u8> {
     if c / a < 0.9 {
         return Ok(series());
     }
+    // Finite: c + 1 ∈ [101, 10⁶ + 1] and a > 0 are inside gamma_q's domain.
     let q = gamma_q(c + 1.0, a);
-    if q.is_nan() || q <= 1e-300 {
+    if q <= 1e-300 {
         // Both tails underflow (c just below a huge a): the series is short there.
         return Ok(series());
     }
@@ -328,6 +334,11 @@ mod tests {
         assert_eq!(lambert_w(-0.367_879_441_171_442_33, -1.0), Ok(-1.0));
         assert_eq!(lambert_w(0.0, 0.0), Ok(0.0));
         assert_eq!(lambert_w(f64::INFINITY, 0.0), Err(err::NUM));
+        // Gnumeric #NUM!: a branch other than 0 or -1, x below -1/e, W₋₁
+        // of a positive x.
+        assert_eq!(lambert_w(1.0, 2.0), Err(err::NUM));
+        assert_eq!(lambert_w(-0.5, 0.0), Err(err::NUM));
+        assert_eq!(lambert_w(1.0, -1.0), Err(err::NUM));
     }
 
     #[test]
@@ -392,6 +403,30 @@ mod tests {
         assert_eq!(erlang(0.0, 5.0), Ok((0.0, 1.0)));
         assert_eq!(dimcirc(1e9, 0.01), Err(err::NUM));
         assert_eq!(offcap(0.5, 0.1), Err(err::VALUE));
+        // Against Gnumeric 1.12: negative traffic, too few circuits, a
+        // carried load above the circuits, blocking outside (0, 1].
+        assert_eq!(probblock(-1.0, 5.0), Err(err::VALUE));
+        assert_eq!(probblock(5.0, 0.5), Err(err::VALUE));
+        let near = |got: Result<f64, u8>, want: f64| {
+            let g = got.unwrap();
+            assert!((g - want).abs() <= 1e-12 * want, "{g} vs {want}");
+        };
+        near(probblock(1000.0, 100.0), 0.900_110_837_840_662_4);
+        near(probblock(150.0, 100.5), 0.342_201_062_936_081_66);
+        near(offtraf(8.0, 12.0), 8.598_753_503_809_851);
+        for (t, c) in [(-1.0, 4.0), (2.0, 0.5), (5.0, 4.0)] {
+            assert_eq!(offtraf(t, c), Err(err::VALUE), "OFFTRAF({t}, {c})");
+        }
+        assert_eq!(dimcirc(10.0, 0.01), Ok(18.0));
+        assert_eq!(dimcirc(50.0, 0.05), Ok(56.0));
+        assert_eq!(dimcirc(10.0, 1.0), Ok(1.0));
+        assert_eq!(dimcirc(10.0, 0.0), Err(err::VALUE));
+        assert_eq!(dimcirc(10.0, 1.5), Err(err::VALUE));
+        // Negative traffic: #VALUE!, as PROBBLOCK and OFFTRAF have it
+        // (Gnumeric 1.12 answers 1 for DIMCIRC alone).
+        assert_eq!(dimcirc(-1.0, 0.1), Err(err::VALUE));
+        assert_eq!(offcap(5.0, 0.0), Err(err::VALUE));
+        assert_eq!(offcap(5.0, 1.0), Err(err::VALUE));
         assert!(bd0(100.0, 50.0) > 0.0);
     }
 }
