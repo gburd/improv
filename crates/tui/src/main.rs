@@ -12,6 +12,7 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
+mod fnhelp;
 mod ui;
 
 use app::App;
@@ -127,7 +128,11 @@ fn event_loop<B: Backend>(
 /// Dispatch one terminal event by mode (edit / command prompt / normal).
 fn handle_event(app: &mut App, ev: Event, path: &str) {
     match ev {
+        Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
+            help_key(app, k.code)
+        }
         Event::Key(k) if k.kind != KeyEventKind::Release => match (k.code, &mut app.edit) {
+            (KeyCode::F(1), _) => app.help = Some(fnhelp::FnHelp::new()),
             (KeyCode::Enter, Some(_)) => app.commit_edit(),
             (KeyCode::Esc, Some(_)) => app.cancel_edit(),
             (code, Some(buf)) => line_key(buf, code),
@@ -140,7 +145,7 @@ fn handle_event(app: &mut App, ev: Event, path: &str) {
         },
         // Mouse: left-click selects the cell under the pointer (hit-tested
         // against the last-rendered grid geometry stored on `app`).
-        Event::Mouse(m) if app.edit.is_none() && app.command.is_none() => {
+        Event::Mouse(m) if app.edit.is_none() && app.command.is_none() && app.help.is_none() => {
             if let MouseEventKind::Down(MouseButton::Left) = m.kind {
                 app.click_at(m.column, m.row);
             }
@@ -156,6 +161,29 @@ fn line_key(buf: &mut String, code: KeyCode) {
             buf.pop();
         }
         KeyCode::Char(c) => buf.push(c),
+        _ => {}
+    }
+}
+
+/// Keys while the function help overlay is open: type to search, move the
+/// selection, Enter inserts `NAME(` into an edit in progress, Esc closes.
+fn help_key(app: &mut App, code: KeyCode) {
+    let Some(h) = &mut app.help else { return };
+    match code {
+        KeyCode::Esc => app.help = None,
+        KeyCode::Enter => {
+            if let (Some(d), Some(buf)) = (h.current(), &mut app.edit) {
+                buf.push_str(d.name);
+                buf.push('(');
+            }
+            app.help = None;
+        }
+        KeyCode::Up => h.step(-1),
+        KeyCode::Down => h.step(1),
+        KeyCode::PageUp => h.page_by(-1),
+        KeyCode::PageDown => h.page_by(1),
+        KeyCode::Backspace => h.pop(),
+        KeyCode::Char(c) => h.push(c),
         _ => {}
     }
 }
@@ -186,6 +214,7 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         KeyCode::Char('E') => app.begin_export_csv(),
         // 'R' reverts to the saved model (e.g. after another writer saved).
         KeyCode::Char('R') => revert(app, path),
+        KeyCode::Char('?') => app.help = Some(fnhelp::FnHelp::new()),
         KeyCode::Esc => app.status = None,
         _ => {}
     }
@@ -265,7 +294,7 @@ mod tests {
         ev.extend(chars("x"));
         ev.extend([key(KeyCode::Backspace), key(KeyCode::Backspace)]);
         ev.extend(chars("7"));
-        ev.extend([key(KeyCode::F(1)), key(KeyCode::Enter)]);
+        ev.extend([key(KeyCode::F(5)), key(KeyCode::Enter)]);
         run_events(&mut app, "", ev).unwrap();
         let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
         assert_eq!(
@@ -415,6 +444,39 @@ mod tests {
         )
         .unwrap();
         assert!(app.command.is_none());
+    }
+
+    #[test]
+    fn help_overlay_keys() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let mut ev = vec![key(KeyCode::Char('?'))];
+        ev.extend(chars("pmtx"));
+        ev.extend([
+            key(KeyCode::Backspace),
+            key(KeyCode::Down),
+            key(KeyCode::Up),
+            key(KeyCode::PageDown),
+            key(KeyCode::PageUp),
+            key(KeyCode::Right),                                    // ignored
+            click(MouseEventKind::Down(MouseButton::Left), 40, 20), // ignored
+        ]);
+        run_events(&mut app, "", ev).unwrap();
+        let h = app.help.as_ref().expect("? opens the overlay");
+        assert_eq!(h.query, "pmt");
+        assert_eq!(h.current().unwrap().name, "PMT");
+        // Enter with no edit in progress just closes; Esc closes too.
+        run_events(&mut app, "", vec![key(KeyCode::Enter)]).unwrap();
+        assert!(app.help.is_none() && app.edit.is_none());
+        run_events(&mut app, "", vec![key(KeyCode::F(1)), key(KeyCode::Esc)]).unwrap();
+        assert!(app.help.is_none());
+        // F1 mid-edit: Enter inserts the selected function's `NAME(`.
+        let mut ev = vec![key(KeyCode::Char('e')), key(KeyCode::F(1))];
+        ev.extend(chars("pmt"));
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert!(app.help.is_none());
+        assert_eq!(app.edit.as_deref(), Some("100PMT("));
     }
 
     #[test]

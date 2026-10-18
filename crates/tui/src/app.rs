@@ -499,6 +499,8 @@ pub struct App {
     /// command and its in-progress typed line. Mirrors `edit`'s shape but for
     /// a whole command line rather than a single cell value.
     pub command: Option<(CommandKind, String)>,
+    /// When `Some`, the function help overlay (`?` / F1) is open.
+    pub help: Option<crate::fnhelp::FnHelp>,
 }
 
 impl App {
@@ -558,6 +560,7 @@ impl App {
             grid_geom: None,
             anchor: None,
             command: None,
+            help: None,
         })
     }
 

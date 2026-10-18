@@ -85,6 +85,7 @@ improv-tui sample.db
 | `S` / `v` | save the layout as a view / cycle views |
 | `I` / `E` | import / export CSV |
 | `R` | revert to the saved model |
+| `?` / F1 | search the functions; Enter inserts `NAME(` into the edit |
 | `q` | quit and save |
 
 ## The CLI (`improv`)

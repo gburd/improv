@@ -2,11 +2,14 @@
 //! sized to its content, over the pivot grid as a table.
 
 use crate::app::{App, CommandKind, Grid, GridGeom};
+use crate::fnhelp::FnHelp;
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::Line,
-    widgets::{Block, Borders, Cell, Row, Table},
+    text::{Line, Span},
+    widgets::{
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
+    },
     Frame,
 };
 
@@ -24,6 +27,7 @@ const HELP: &[&str] = &[
     "I: import-csv",
     "E: export-csv",
     "R: revert",
+    "?/F1: functions",
     "q: quit",
 ];
 
@@ -246,6 +250,74 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     let table = grid_table(app, &app.grid, &geom);
     f.render_widget(table, area);
+
+    if let Some(h) = &mut app.help {
+        render_help(f, h, f.area());
+    }
+}
+
+/// The function help overlay over `area` (inset by a margin): the search
+/// line, the result list scrolled to the selection, and the selected
+/// function's details.
+fn render_help(f: &mut Frame, h: &mut FnHelp, area: Rect) {
+    let area = area.inner(ratatui::layout::Margin::new(2, 1));
+    f.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Functions  (type to search, Enter inserts, Esc closes) ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(6),
+        ])
+        .split(inner);
+
+    let found = format!("  ({} found)", h.results.len());
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(format!("search> {}", h.query)),
+            Span::styled(found, Style::default().add_modifier(Modifier::DIM)),
+        ])),
+        chunks[0],
+    );
+
+    h.page = chunks[1].height as usize;
+    let items: Vec<ListItem> = h.results.iter().map(|d| ListItem::new(d.hint())).collect();
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+        .highlight_style(
+            Style::default()
+                .bg(Color::Blue)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        );
+    let mut state = ListState::default()
+        .with_selected(h.current().map(|_| h.selected))
+        .with_offset(h.top);
+    f.render_stateful_widget(list, chunks[1], &mut state);
+    h.top = state.offset();
+    // The list's top and bottom borders take two of its rows.
+    h.page = h.page.saturating_sub(2);
+
+    let detail = match h.current() {
+        Some(d) => {
+            let mut lines = vec![
+                Line::styled(d.hint(), Style::default().add_modifier(Modifier::BOLD)),
+                Line::from(format!("category: {:?}", d.category)),
+            ];
+            if !d.aliases.is_empty() {
+                lines.push(Line::from(format!("aliases: {}", d.aliases.join(", "))));
+            }
+            lines.push(Line::from(d.doc));
+            lines
+        }
+        None => vec![Line::from("no function matches")],
+    };
+    f.render_widget(Paragraph::new(detail).wrap(Wrap { trim: true }), chunks[2]);
 }
 
 #[cfg(test)]
@@ -361,6 +433,54 @@ mod tests {
             "anchor cell in range style"
         );
         assert_eq!(buf[(data_x, y + 1)].bg, Color::Blue, "cursor cell");
+    }
+
+    #[test]
+    fn help_overlay_lists_searches_and_details() {
+        let mut app = App::new(revenue_model()).unwrap();
+        app.help = Some(FnHelp::new());
+        let lines = text(&draw(&mut app, 100, 30));
+        row_of(&lines, "search> ");
+        row_of(&lines, "ABS(");
+        for c in "pmt".chars() {
+            app.help.as_mut().unwrap().push(c);
+        }
+        let buf = draw(&mut app, 100, 30);
+        let lines = text(&buf);
+        // The selected row is the list's first, in the selection style.
+        let (x, y) = find(&lines, "PMT(rate, nper, pv, [fv], [type])");
+        assert_eq!(buf[(x, y)].bg, Color::Blue);
+        row_of(&lines, "category: Financial");
+        row_of(&lines, "payment per period");
+        // Aliases show for a function that has them.
+        let h = app.help.as_mut().unwrap();
+        h.query.clear();
+        for c in "avg".chars() {
+            h.push(c);
+        }
+        let lines = text(&draw(&mut app, 100, 30));
+        row_of(&lines, "aliases: AVG");
+        // Paging scrolls the list so the selection stays visible.
+        let mut app = App::new(revenue_model()).unwrap();
+        app.help = Some(FnHelp::new());
+        draw(&mut app, 100, 30);
+        let h = app.help.as_mut().unwrap();
+        assert!(h.page > 5, "page size comes from the render: {}", h.page);
+        h.page_by(1);
+        h.page_by(1);
+        let name = h.current().unwrap().hint();
+        let lines = text(&draw(&mut app, 100, 30));
+        row_of(&lines, &name);
+        assert!(app.help.as_ref().unwrap().top > 0, "scrolled");
+        // No match, and tiny terminals, still render.
+        let h = app.help.as_mut().unwrap();
+        for c in "zzzzq".chars() {
+            h.push(c);
+        }
+        row_of(&text(&draw(&mut app, 100, 30)), "no function matches");
+        for (w, h) in [(3, 3), (0, 0), (20, 6)] {
+            draw(&mut app, w, h);
+        }
     }
 
     #[test]
