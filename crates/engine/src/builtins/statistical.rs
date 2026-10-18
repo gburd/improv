@@ -705,7 +705,17 @@ pub(crate) fn f_cdf(x: f64, d1: f64, d2: f64) -> f64 {
     beta_reg(d1 / 2.0, d2 / 2.0, d1 * x / (d1 * x + d2))
 }
 
+/// P(F > x). Its beta argument d2 / (d2 + d1·x) rounds near 1 for a small
+/// x, so while the lower tail is the smaller one this is 1 − the lower
+/// tail (R.PF(1.05e-9, 1, 1, FALSE) lost six digits that way).
 pub(crate) fn f_sf(x: f64, d1: f64, d2: f64) -> f64 {
+    let z = d1 * x / (d1 * x + d2);
+    if z < 0.5 {
+        let below = f_cdf(x, d1, d2);
+        if below <= 0.5 {
+            return 1.0 - below;
+        }
+    }
     beta_reg(d2 / 2.0, d1 / 2.0, d2 / (d2 + d1 * x))
 }
 
@@ -1607,5 +1617,19 @@ mod tests {
                 1.203_716_050_355_937_7e-19
             ) < 1e-11
         );
+    }
+
+    /// F's upper tail at a small x: Gnumeric's R.PF(1.0508750487710756E-9,
+    /// 1, 1, FALSE) is 0.9999793625676281 (= 1 − (2/π) atan √x); it was
+    /// 0.9999793625686595, and the two tails missed 1 by 1e-12.
+    #[test]
+    fn f_upper_tail_at_a_small_x() {
+        let x = 1.050_875_048_771_075_6e-9;
+        assert!((f_sf(x, 1.0, 1.0) - 0.999_979_362_567_628_1).abs() < 2e-16);
+        assert!((f_sf(x, 1.0, 1.0) + f_cdf(x, 1.0, 1.0) - 1.0).abs() < 2e-16);
+        // A small upper tail keeps its digits (P(F(2, 2) > 1e6) = 1/(1 + 1e6)).
+        assert!((f_sf(1e6, 2.0, 2.0) * (1.0 + 1e6) - 1.0).abs() < 1e-12);
+        // Past the median, the beta side as before.
+        assert!((f_sf(3.0, 2.0, 2.0) - 0.25).abs() < 1e-15);
     }
 }
