@@ -154,12 +154,8 @@ fn take(rows: &Rows, params: &[CellValue], drop: bool) -> List {
     let len = vals.len();
     let k = n(params, 0)?.trunc();
     let m = k.abs().min(len as f64) as usize;
-    let (from, to) = match (k >= 0.0, drop) {
-        (true, false) => (0, m),
-        (false, false) => (len - m, len),
-        (true, true) => (m, len),
-        (false, true) => (0, len - m),
-    };
+    // Proven in bounds; TAKE and DROP of one count partition the list.
+    let (from, to) = improv_verified::take::range(len, m, k < 0.0, drop);
     if from == to {
         return Err(err::NA);
     }

@@ -208,6 +208,7 @@ What is proven:
 | `radix::to_digits` | `BASE`, and the above | The digits (radix 2–36) are each below the radix, have no leading zero, and are worth exactly the input. |
 | `bits::and` / `or` / `xor` / `shl` / `shr` | `BITAND`, `BITOR`, `BITXOR`, `BITLSHIFT`, `BITRSHIFT` | For operands below 2⁴⁸: every result stays below 2⁴⁸; `and` is at most either operand, `or` at least; `shl` is exactly `x · 2ⁿ` (below 2¹⁰¹, no overflow) and `shr` exactly `⌊x / 2ⁿ⌋` for shifts up to 53. |
 | `graph::build_order` | the derived-measure build order (`derived_build_order`) | The depth-first post-order from the targets holds exactly the measures reachable from them, each once and after every measure it depends on; it fails exactly when a dependency cycle is reachable. So building a model's dataflow always terminates, and a cyclic model is always rejected. |
+| `take::range` | `TAKE`, `DROP` | The kept index range is in bounds (`from ≤ to ≤ len`) and holds `m` values for `TAKE`, `len − m` for `DROP`; `TAKE` and `DROP` of one count partition the list. |
 | `keys::project` | every join key and group-by (`project_key`) | Exactly the pairs whose category is kept, in their order; a sorted key projects to a sorted key. |
 | `keys::union_keys` | every dimensional join | A merge of two sorted keys: sorted with no category twice, contains every pair of both when they agree on shared categories, and nothing else. |
 

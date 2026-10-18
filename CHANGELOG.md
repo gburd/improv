@@ -21,7 +21,8 @@ positional forms and recurrences, lookups, list results, `LET` and
   `BASE`: decoding an encoding gives back the value, every digit is in
   range), the 48-bit `BIT*` operations, the derived-measure build order
   (each measure after its dependencies; an error exactly when there is
-  a dependency cycle), and the coordinate-key
+  a dependency cycle), `TAKE` / `DROP`'s index range, and the
+  coordinate-key
   projection and union behind every dimensional join (a sorted merge,
   which makes a 1M-cell `Price × Qty` evaluate about 18% faster).
   `scripts/verify.sh` and a CI job check the proofs. See *Architecture & Design → Formal verification*.
