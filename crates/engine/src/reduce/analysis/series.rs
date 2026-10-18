@@ -69,12 +69,6 @@ pub(super) fn hpfilter(rows: &Rows, a: &[CellValue]) -> Result<Vec<f64>, u8> {
     Ok(data)
 }
 
-/// Strictly increasing (Gnumeric's `go_range_increasing`, which needs at
-/// least one value).
-fn increasing(xs: &[f64]) -> bool {
-    !xs.is_empty() && xs.windows(2).all(|w| w[0] < w[1])
-}
-
 /// A natural cubic spline (goffice's `go_cspline_init`): on [xᵢ, xᵢ₊₁],
 /// y = yᵢ + dx·(cᵢ + dx·(bᵢ + dx·aᵢ)).
 struct Spline<'a> {
@@ -88,7 +82,9 @@ struct Spline<'a> {
 impl<'a> Spline<'a> {
     fn new(x: &'a [f64], y: &'a [f64]) -> Option<Spline<'a>> {
         let n = x.len();
-        if n < 3 || !increasing(x) {
+        // Strictly increasing, as Gnumeric's `go_range_increasing` (sorted
+        // and without duplicates already, so only a NaN x fails it).
+        if n < 3 || !x.windows(2).all(|w| w[0] < w[1]) {
             return None;
         }
         let (nm1, nm2) = (n - 1, n - 2);
@@ -362,6 +358,42 @@ mod tests {
         assert_eq!(at(&r, &[5.0, 3.0, 6.0]), Ok(0.0));
         // Linear averaging that stays left of the second knot.
         assert_eq!(at(&r, &[0.0, 1.0, 1.0]), Ok(5.0));
+    }
+
+    /// INTERPOLATION's averaging methods against Gnumeric 1.12, on knots
+    /// (1, 10), (2, 20), (4, 0), (7, 5) over [t0, t1].
+    #[test]
+    fn averages_match_gnumeric() {
+        let r = rows(&[1.0, 2.0, 4.0, 7.0], &[10.0, 20.0, 0.0, 5.0]);
+        let near = |got: Result<f64, u8>, want: f64| {
+            let g = got.unwrap();
+            assert!((g - want).abs() <= 1e-14 * want.abs(), "{g} vs {want}");
+        };
+        // Linear (method 1): across knots, ending on one, past the last
+        // (extrapolated), entirely past it, entirely before the second.
+        near(at(&r, &[1.5, 1.0, 5.0]), 8.452_380_952_380_953);
+        near(at(&r, &[1.5, 1.0, 4.0]), 11.5);
+        near(at(&r, &[1.5, 1.0, 9.0]), 6.611_111_111_111_112);
+        near(at(&r, &[3.0, 1.0, 5.0]), 2.916_666_666_666_666_5);
+        near(at(&r, &[8.0, 1.0, 9.0]), 7.500_000_000_000_002);
+        near(at(&r, &[0.5, 1.0, 1.5]), 10.0);
+        near(at(&r, &[1.0, 1.0, 2.0]), 15.0);
+        assert_eq!(at(&r, &[3.0, 1.0, 1.0]), Err(err::VALUE));
+        assert_eq!(at(&rows(&[1.0], &[5.0]), &[1.5, 1.0, 5.0]), Err(err::VALUE));
+        // Staircase (method 3): across knots, ending exactly on the last.
+        near(at(&r, &[1.5, 3.0, 5.0]), 12.857_142_857_142_858);
+        near(at(&r, &[1.5, 3.0, 9.0]), 7.333_333_333_333_333);
+        near(at(&r, &[1.5, 3.0, 7.0]), 8.181_818_181_818_182);
+        near(at(&r, &[1.0, 3.0, 2.0]), 10.0);
+        // Spline (method 5), and linear at one target past a knot.
+        near(at(&r, &[1.5, 5.0, 5.0]), 8.599_861_819_727_892);
+        near(at(&r, &[3.0, 0.0]), 10.0);
+        // Two knots at one x (Gnumeric #VALUE!).
+        let dup = rows(&[1.0, 2.0, 2.0], &[1.0, 2.0, 3.0]);
+        assert_eq!(at(&dup, &[1.5, 0.0]), Err(err::VALUE));
+        // A NaN x is not increasing: no spline (Gnumeric #VALUE!).
+        let nan = rows(&[1.0, 2.0, f64::NAN], &[1.0, 2.0, 3.0]);
+        assert_eq!(at(&nan, &[1.5, 4.0]), Err(err::VALUE));
     }
 
     #[test]
