@@ -160,6 +160,35 @@ impl FnDef {
         }
     }
 
+    /// The parameters' names, for signature help and ghost text: those the
+    /// description spells (`PMT(rate, nper, pv, [fv], [type])`, or the
+    /// [`PARAM_NAMES`] table), else each parameter's type (`number`).
+    /// Optional ones are `[bracketed]`; a variadic tail ends in `…`.
+    pub fn param_names(&self) -> Vec<String> {
+        if let Some(names) = PARAM_NAMES
+            .iter()
+            .find(|(n, _)| *n == self.name)
+            .map(|(_, p)| *p)
+        {
+            return names.split(", ").map(str::to_string).collect();
+        }
+        if let Some(names) = spelled_params(self.name, self.doc) {
+            return names;
+        }
+        let mut sig = self.signature();
+        sig.truncate(sig.len() - 1);
+        let inner = &sig[self.name.len() + 1..];
+        if inner.is_empty() {
+            return Vec::new();
+        }
+        inner.split(", ").map(str::to_string).collect()
+    }
+
+    /// `PMT(rate, nper, pv, [fv], [type])`: the name and [`Self::param_names`].
+    pub fn hint(&self) -> String {
+        format!("{}({})", self.name, self.param_names().join(", "))
+    }
+
     /// `ABS(x)`-style signature for docs and error messages.
     pub fn signature(&self) -> String {
         let names: Vec<String> = self
@@ -601,6 +630,187 @@ impl Kind {
     }
 }
 
+/// The parameter list a description spells as `NAME(a, b, [c])`, if it
+/// does (and the names look like names, not an example call).
+fn spelled_params(name: &str, doc: &str) -> Option<Vec<String>> {
+    let at = doc.find(&format!("{name}("))? + name.len() + 1;
+    let mut depth = 0usize;
+    let mut end = None;
+    for (i, c) in doc[at..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' if depth == 0 => {
+                end = Some(at + i);
+                break;
+            }
+            ')' => depth -= 1,
+            _ => {}
+        }
+    }
+    let inner = &doc[at..end?];
+    let parts: Vec<String> = inner.split(", ").map(|p| p.trim().to_string()).collect();
+    let word = |p: &str| {
+        let p = p.trim_start_matches('[').trim_end_matches(']');
+        let p = p
+            .strip_suffix(" OVER T")
+            .or_else(|| p.strip_suffix(" OVER Category"))
+            .unwrap_or(p);
+        !p.is_empty()
+            && p.chars()
+                .all(|c| c.is_alphanumeric() || "_ …=.-".contains(c))
+            && !p.starts_with(|c: char| c.is_ascii_digit() || c == '-')
+    };
+    (!inner.is_empty() && parts.iter().all(|p| word(p))).then_some(parts)
+}
+
+/// Parameter names for functions whose description does not spell them,
+/// as `NAME(…)` would list them. Everything else falls back to types.
+static PARAM_NAMES: &[(&str, &str)] = &[
+    ("ABS", "number"),
+    ("ROUND", "number, digits"),
+    ("ROUNDUP", "number, digits"),
+    ("ROUNDDOWN", "number, digits"),
+    ("MOD", "number, divisor"),
+    ("POWER", "number, power"),
+    ("SQRT", "number"),
+    ("LOG", "number, [base]"),
+    ("IF", "test, then, [else]"),
+    ("IFERROR", "value, value_if_error"),
+    ("IFNA", "value, value_if_na"),
+    ("IFS", "test1, value1, …"),
+    ("SWITCH", "expression, value1, result1, …, [default]"),
+    ("CHOOSE", "index, value1, …"),
+    ("LEFT", "text, [count]"),
+    ("RIGHT", "text, [count]"),
+    ("MID", "text, start, count"),
+    ("LEN", "text"),
+    ("FIND", "find_text, within_text, [start]"),
+    ("SEARCH", "find_text, within_text, [start]"),
+    ("SUBSTITUTE", "text, old_text, new_text, [instance]"),
+    ("REPLACE", "old_text, start, count, new_text"),
+    ("CONCAT", "text1, …"),
+    ("TEXTJOIN", "delimiter, ignore_empty, values OVER T"),
+    ("DATE", "year, month, day"),
+    ("TIME", "hour, minute, second"),
+    ("EDATE", "start_date, months"),
+    ("EOMONTH", "start_date, months"),
+    ("DATEDIF", "start_date, end_date, unit"),
+    ("NETWORKDAYS", "start_date, end_date"),
+    ("WORKDAY", "start_date, days"),
+    ("WEEKDAY", "date, [return_type]"),
+    ("SUM", "values OVER T"),
+    ("AVERAGE", "values OVER T"),
+    ("MIN", "values OVER T"),
+    ("MAX", "values OVER T"),
+    ("COUNT", "values OVER T"),
+    ("SUMIF", "values OVER T, criterion"),
+    ("COUNTIF", "values OVER T, criterion"),
+    (
+        "XLOOKUP",
+        "key, keys OVER T, values, [if_not_found], [match_mode], [search_mode]",
+    ),
+    ("XMATCH", "key, keys OVER T, [match_mode], [search_mode]"),
+    ("MATCH", "key, keys OVER T, [match_type]"),
+    ("INDEX", "values OVER T, position"),
+    ("SORT", "values OVER T, [order] INTO K"),
+    ("FILTER", "values, include OVER T, [if_empty] INTO K"),
+    ("NPV", "rate, cash_flows OVER T"),
+    ("IRR", "cash_flows OVER T, [guess]"),
+];
+
+/// Functions matching `query`, best first: an exact name or alias, then a
+/// prefix, then a word of the name or description. Case-insensitive; an
+/// empty query lists everything by name. The help browser's search and
+/// the formula editor's completion both use this.
+pub fn search(query: &str) -> Vec<&'static FnDef> {
+    let q = query.trim().to_ascii_uppercase();
+    let mut hits: Vec<(u8, &'static FnDef)> = all()
+        .filter_map(|d| {
+            let names = std::iter::once(d.name).chain(d.aliases.iter().copied());
+            let rank = if q.is_empty() {
+                Some(3)
+            } else if names.clone().any(|n| n == q) {
+                Some(0)
+            } else if names.clone().any(|n| n.starts_with(&q)) {
+                Some(1)
+            } else if names.clone().any(|n| n.contains(&q)) {
+                Some(2)
+            } else if d.doc.to_ascii_uppercase().contains(&q) {
+                Some(4)
+            } else {
+                None
+            };
+            rank.map(|r| (r, d))
+        })
+        .collect();
+    hits.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then(a.1.name.cmp(b.1.name))
+            .then(a.1.id.cmp(&b.1.id))
+    });
+    // One row per name: an aggregation and its scalar twin share a name.
+    let mut seen = std::collections::HashSet::new();
+    hits.into_iter()
+        .map(|(_, d)| d)
+        .filter(|d| seen.insert(d.name))
+        .collect()
+}
+
+/// Function names (canonical and aliases) starting with `prefix`
+/// (case-insensitive), canonical first, for completion.
+pub fn complete(prefix: &str) -> Vec<(&'static str, &'static FnDef)> {
+    let p = prefix.to_ascii_uppercase();
+    if p.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<(&'static str, &'static FnDef)> = Vec::new();
+    for d in all() {
+        for n in std::iter::once(d.name).chain(d.aliases.iter().copied()) {
+            if n.starts_with(&p) && !out.iter().any(|(m, _)| *m == n) {
+                out.push((n, d));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(b.0)));
+    out
+}
+
+/// Where the caret sits in a call: the innermost unclosed `NAME(` before
+/// byte offset `caret` in `text`, and the 0-based argument it is in.
+/// Strings and nested parentheses are skipped. Signature help uses it.
+pub fn call_at(text: &str, caret: usize) -> Option<(&'static FnDef, usize)> {
+    let before = text.get(..caret)?;
+    // (name end, argument index) per open parenthesis.
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut in_str = false;
+    for (i, c) in before.char_indices() {
+        match c {
+            '"' => in_str = !in_str,
+            _ if in_str => {}
+            '(' => stack.push((i, 0)),
+            ')' => {
+                stack.pop();
+            }
+            ',' | ';' => {
+                if let Some(top) = stack.last_mut() {
+                    top.1 += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    let (open, arg) = *stack.last()?;
+    let head = before[..open].trim_end();
+    let start = head
+        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '@'))
+        .map_or(0, |i| {
+            i + head[i..].chars().next().map_or(1, char::len_utf8)
+        });
+    let name = &head[start..];
+    let def = by_name(name).next()?;
+    Some((def, arg))
+}
+
 /// The aggregation (or per-item reduction) a name means, if any.
 pub fn aggregation(name: &str) -> Option<&'static FnDef> {
     by_name(name).find(|d| d.kind.reduces())
@@ -619,6 +829,83 @@ pub fn is_aggregation(id: FuncId) -> bool {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    /// Search ranks exact names, then prefixes, then substrings, then the
+    /// descriptions; completion lists prefixes, shortest first; call_at
+    /// finds the innermost open call and the argument the caret is in.
+    #[test]
+    fn search_complete_and_call_at() {
+        let names = |q: &str| search(q).iter().map(|d| d.name).take(3).collect::<Vec<_>>();
+        assert_eq!(names("pmt")[0], "PMT");
+        assert_eq!(names("ROUNDU"), ["ROUNDUP"]);
+        assert!(
+            search("payment").iter().any(|d| d.name == "PMT"),
+            "found by description"
+        );
+        assert_eq!(
+            search("").len(),
+            search("")
+                .iter()
+                .map(|d| d.name)
+                .collect::<HashSet<_>>()
+                .len()
+        );
+        assert!(search("zzzz-not-a-function").is_empty());
+        assert!(search("DSUM").iter().any(|d| d.name == "SUM"), "by alias");
+        let c: Vec<&str> = complete("roun").iter().map(|(n, _)| *n).collect();
+        assert_eq!(c[0], "ROUND");
+        assert!(c.contains(&"ROUNDUP"));
+        assert!(complete("").is_empty());
+        assert!(complete("DSU")
+            .iter()
+            .any(|(n, d)| *n == "DSUM" && d.name == "SUM"));
+        let at = |t: &str| call_at(t, t.len()).map(|(d, i)| (d.name, i));
+        assert_eq!(at("PMT("), Some(("PMT", 0)));
+        assert_eq!(at("PMT(0.05, 12, "), Some(("PMT", 2)));
+        assert_eq!(at("ROUND(PMT(0.05, 12, 100), "), Some(("ROUND", 1)));
+        assert_eq!(
+            at("ROUND(LEFT(\"a,b\", "),
+            Some(("LEFT", 1)),
+            "commas in strings skipped"
+        );
+        assert_eq!(
+            at("NORM.S.DIST(1; "),
+            Some(("NORM.S.DIST", 1)),
+            "dotted name, ; separator"
+        );
+        assert_eq!(at("PMT(1)"), None, "closed");
+        assert_eq!(at("(1 + "), None, "not a call");
+        assert_eq!(at("Nope("), None);
+        assert!(call_at("PMT(", 99).is_none());
+        // Hints: spelled in the description, from the table, or the types.
+        let hint = |n: &str| by_name(n).next().unwrap().hint();
+        assert_eq!(hint("PMT"), "PMT(rate, nper, pv, [fv], [type])");
+        assert_eq!(hint("IF"), "IF(test, then, [else])");
+        assert_eq!(hint("PI"), "PI()");
+        assert!(
+            spelled_params("X", "X(1, 2)").is_none(),
+            "an example call is not names"
+        );
+        assert!(spelled_params("X", "no call here").is_none());
+        assert!(spelled_params("X", "X(a, (b)").is_none(), "unclosed");
+    }
+
+    /// Dump every hint (run with `--ignored --nocapture` to review them).
+    #[test]
+    #[ignore]
+    fn dump_hints() {
+        for d in super::all() {
+            let generic = d.param_names().iter().all(|p| {
+                let p = p.trim_start_matches('[').trim_end_matches(']');
+                let p = p.trim_end_matches(" OVER category");
+                matches!(
+                    p,
+                    "number" | "text" | "boolean" | "date" | "value" | "category" | "…"
+                )
+            });
+            println!("{} {}", if generic { "T" } else { "N" }, d.hint());
+        }
+    }
+
     use super::*;
     use std::collections::{HashMap, HashSet};
 
