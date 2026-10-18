@@ -427,16 +427,17 @@ fn igamma(a: Cx, z: Cx, lower: bool, reg: bool) -> Cx {
 }
 
 /// The regularized P(a, x) or Q(a, x) for real a, x ≥ 0 (Γ(0, x) is the
-/// limit: P = 1).
+/// limit: P = 1), through the statistics kernels: they turn a shape past
+/// 1e12 into NaN (#NUM!), where statrs's continued fraction runs √a terms
+/// and its i32 term counter overflows (a panic, or in release a hang).
 fn real_igamma(a: f64, x: f64, lower: bool) -> f64 {
+    use super::super::statistical::{gamma_p, gamma_q};
     if a == 0.0 {
-        return f64::from(u8::from(lower));
-    }
-    let q = super::super::statistical::gamma_q(a, x);
-    if lower {
-        statrs::function::gamma::checked_gamma_lr(a, x).unwrap_or(1.0 - q)
+        f64::from(u8::from(lower))
+    } else if lower {
+        gamma_p(a, x)
     } else {
-        q
+        gamma_q(a, x)
     }
 }
 
@@ -909,6 +910,18 @@ mod tests {
         assert_eq!(real_igamma(2.0, 0.0, true), 0.0);
         assert_eq!(real_igamma(2.0, 0.0, false), 1.0);
         assert_eq!(real_igamma(0.0, 1.0, true), 1.0);
+        // A real shape past 1e12 is NaN (#NUM!), lower and upper alike:
+        // IMIGAMMA("1e16", "1e16") overflowed statrs's term counter.
+        let t0 = std::time::Instant::now();
+        assert!(real_igamma(1e16, 1e16, true).is_nan());
+        assert!(real_igamma(1e300, 1e300, false).is_nan());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!((real_igamma(2.0, 3.0, true) - 0.800_851_726_528_544).abs() < 1e-15);
+        let big = [
+            CellValue::Text("1e16".into()),
+            CellValue::Text("1e16".into()),
+        ];
+        assert_eq!(eval(1374, &big), Err(err::NUM));
         let up = igamma(cx(1.0, 1.0), cx(40.0, 0.0), false, true);
         assert!(up.abs() < 1e-15 && up.abs() > 0.0);
         let un = igamma(cx(1.0, 1.0), cx(2.0, 0.0), true, false);
