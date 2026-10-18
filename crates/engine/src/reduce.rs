@@ -15,6 +15,7 @@ use crate::builtins::{self, err, text_of};
 use crate::CellValue;
 use improv_core_model::FuncId;
 
+mod analysis;
 mod array;
 mod financial;
 mod lookup;
@@ -74,6 +75,7 @@ pub fn reduce(func: FuncId, rows: &Rows, params: &[CellValue]) -> CellValue {
         906..=909 => ordered(func.0, rows, params),
         1000..=1149 => statistical::reduce(func.0, rows, params),
         1150..=1199 => financial::reduce(func.0, rows, params),
+        1850..=1999 => analysis::reduce(func.0, rows, params),
         _ => CellValue::Err(err::NAME),
     }
 }
@@ -87,6 +89,7 @@ pub fn per_item(func: FuncId, rows: &Rows, params: &[CellValue]) -> Vec<CellValu
     // Each family adds its per-item reductions here by id (RANK, TREND, …).
     match func.0 {
         1000..=1149 => statistical::per_item(func.0, rows, params),
+        1850..=1999 => analysis::per_item(func.0, rows, params),
         _ => vec![CellValue::Err(err::NAME); rows.len()],
     }
 }
@@ -99,6 +102,7 @@ pub fn array(func: FuncId, rows: &Rows, params: &[CellValue]) -> Vec<CellValue> 
     }
     match func.0 {
         1250..=1299 => array::array(func.0, rows, params),
+        1850..=1999 => analysis::array(func.0, rows, params),
         _ => vec![CellValue::Err(err::NAME)],
     }
 }

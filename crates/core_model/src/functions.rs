@@ -487,12 +487,17 @@ pub fn lambda_slot_of(id: crate::MeasureId) -> Option<(u32, u32)> {
     (d < 2048).then_some((d / 2, d % 2))
 }
 
+mod analysis;
 mod array;
 mod date;
 mod dimensional;
+mod dist_extra;
+mod engineering;
 mod financial;
 mod financial_reduce;
 mod lookup;
+mod math_extra;
+mod options;
 mod statistical;
 mod statistical_reduce;
 
@@ -507,6 +512,11 @@ static FAMILIES: &[&[FnDef]] = &[
     financial::FINANCIAL,
     financial_reduce::FINANCIAL_REDUCE,
     lookup::LOOKUP,
+    engineering::ENGINEERING,
+    math_extra::MATH_EXTRA,
+    dist_extra::DIST_EXTRA,
+    options::OPTIONS,
+    analysis::ANALYSIS,
 ];
 
 /// Every built-in function.

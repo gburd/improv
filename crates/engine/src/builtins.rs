@@ -38,7 +38,11 @@ pub(crate) fn num(x: f64) -> CellValue {
 }
 
 mod date;
+mod dist_extra;
+mod engineering;
 mod financial;
+mod math_extra;
+mod options;
 pub(crate) mod statistical;
 
 /// The ids that see error arguments instead of propagating them (`ISERROR`
@@ -181,6 +185,10 @@ fn eval_ok(id: u32, a: &[CellValue]) -> R {
         56..=79 | 330..=399 | 400..=499 => date::eval(id, a),
         160..=199 | 500..=699 => statistical::eval(id, a),
         700..=899 => financial::eval(id, a),
+        1300..=1449 => engineering::eval(id, a),
+        1450..=1549 => math_extra::eval(id, a),
+        1550..=1749 => dist_extra::eval(id, a),
+        1750..=1849 => options::eval(id, a),
         _ => eval_core(id, a),
     }
 }
