@@ -49,6 +49,33 @@ def gn(f, kind="text", tol=None):
     GN.append((f, kind, tol))
 
 
+# IMIGAMMA where Gnumeric 1.12 is wrong, so the golden is mpmath's
+# gammainc (30 digits): (a, z, lower, regularized, why).
+CANCELS = "mpmath (Gnumeric 1.12 has the same cancellation: 1 - P)"
+MPMATH_WINS = {
+    # The upper regularized value for large |z| off the real axis, as 1 − P
+    # from the lower series: Q(0.5, 30+i) comes out 1.2e-5 for 5.0e-15.
+    # Improv uses Legendre's continued fraction there.
+    'IMIGAMMA("0.5","30+i",FALSE)': (0.5, 30 + 1j, False, True, CANCELS),
+    'IMIGAMMA("0.5","20+i",FALSE)': (0.5, 20 + 1j, False, True, CANCELS),
+    # After the asymptotic upper series, the unregularized lower value is
+    # 1 − Γ(a)·Q, not Γ(a)·(1 − Q): γ(1+i, 40) comes out 1+2.3e-18i.
+    'IMIGAMMA("1+i","40",TRUE,FALSE)': (1 + 1j, 40, True, False,
+                                        "mpmath (Gnumeric 1.12 gives 1, the regularized value)"),
+    # Γ(0, z) = E₁(z); Gnumeric's lower series has no Γ(0) to subtract from.
+    'IMIGAMMA("0","1+i",FALSE,FALSE)': (0, 1 + 1j, False, False,
+                                        "mpmath (Gnumeric 1.12 gives #NUM!)"),
+}
+
+
+def mpmath_value(a, z, lower, reg, _why):
+    import mpmath as mp
+    mp.mp.dps = 30
+    a, z = mp.mpc(a), mp.mpc(z)
+    v = mp.gammainc(a, 0, z) if lower else mp.gammainc(a, z)
+    return complex(v / mp.gamma(a) if reg else v)
+
+
 # --- bases ----------------------------------------------------------------
 many('BIN2DEC("1100100")', 'BIN2DEC("1111111111")', 'BIN2DEC(101)', 'BIN2DEC("")',
      'BIN2DEC("11111111111")', 'BIN2DEC("2")',
@@ -165,7 +192,9 @@ for f in ['IMTANH("1+i")', 'IMTANH("0")', 'IMTANH("2-3j")', 'IMTANH("0.5")', 'IM
           'IMGAMMA("3-4j")',
           'IMIGAMMA("1+i","2")', 'IMIGAMMA("2","3")', 'IMIGAMMA("2","3",FALSE)',
           'IMIGAMMA("2","3",TRUE,FALSE)', 'IMIGAMMA("1+i","2",FALSE,FALSE)', 'IMIGAMMA("-1","2")',
-          'IMIGAMMA("0.5","-1")', 'IMIGAMMA("1+i","40",FALSE)', 'IMIGAMMA("0","2",TRUE,FALSE)']:
+          'IMIGAMMA("0.5","-1")', 'IMIGAMMA("1+i","40",FALSE)', 'IMIGAMMA("0","2",TRUE,FALSE)',
+          'IMIGAMMA("2+i","10",FALSE)', 'IMIGAMMA("i","5+5i",FALSE)',
+          'IMIGAMMA("-2.5","3+4i",FALSE,FALSE)'] + list(MPMATH_WINS):
     gn(f, "complex", 1e-13)
 
 # --- Bessel (LibreOffice's J and Y iterate where Improv calls musl's jn/yn) ----
@@ -303,6 +332,12 @@ def main():
             rows.append((f, v, "LibreOffice"))
     shown = gnumeric_values()
     for f, kind, tol in GN:
+        if f in MPMATH_WINS:
+            v = mpmath_value(*MPMATH_WINS[f])
+            print(f"Gnumeric loses this: {f} = {shown[f]}, mpmath {v!r}", file=sys.stderr)
+            for part, x in (("IMREAL", v.real), ("IMAGINARY", v.imag)):
+                rows.append((f"{part}({f})", {"approx": x, "tol": tol}, MPMATH_WINS[f][4]))
+            continue
         if kind == "complex" and not shown[f].startswith("#"):
             re_, im_ = complex_parts(shown[f])
             for part, x in (("IMREAL", re_), ("IMAGINARY", im_)):

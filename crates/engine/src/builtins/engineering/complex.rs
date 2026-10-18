@@ -402,6 +402,8 @@ fn igamma(a: Cx, z: Cx, lower: bool, reg: bool) -> Cx {
         (res, have_lower, have_reg) = (cx(p, 0.0), lower, true);
     } else if let Some(r) = igamma_upper_asymp(a, z) {
         (res, have_lower, have_reg) = (fixup_upper_real(r, a, z), false, true);
+    } else if let Some(r) = igamma_upper_cf(a, z) {
+        (res, have_lower, have_reg) = (r, false, false);
     } else if let Some(r) = igamma_lower_cf(a, z) {
         (res, have_lower, have_reg) = (r, true, false);
     } else {
@@ -412,7 +414,7 @@ fn igamma(a: Cx, z: Cx, lower: bool, reg: bool) -> Cx {
         let g = gamma(a);
         ga = Some(g);
         res = if have_reg { res.mul(g) } else { res.div(g) };
-        have_reg = true;
+        have_reg = reg;
     }
     if lower != have_lower {
         res = if have_reg {
@@ -464,6 +466,52 @@ fn fixup_upper_real(res: Cx, a: Cx, z: Cx) -> Cx {
         return ONE.sub(cx(m * c, m * s));
     }
     res
+}
+
+/// Γ(a, z) for Re z > 0 once |z| passes [`upper_cf_edge`]: Legendre's
+/// continued fraction z^a e^−z / (z+1−a − 1(1−a)/(z+3−a − 2(2−a)/(z+5−a − …)))
+/// by modified Lentz. There the lower series' 1 − P cancels (Gnumeric's
+/// route: Q(½, 30 + i) came out 1.2e-5 for 5.0e-15), and this fraction
+/// converges in tens to hundreds of terms. Inside the edge the fraction is
+/// the worse of the two, so None hands back to the lower series.
+// ponytail: against mpmath both routes stay within ~2e-13 of each other
+// at the edge for |a| ≤ 30; past that a thin band (|z| ≈ |a|, z near the
+// imaginary axis) loses up to ~1e-12 on the fraction's side. A three-way
+// switch or a double-double Lentz would close it.
+fn igamma_upper_cf(a: Cx, z: Cx) -> Option<Cx> {
+    if z.re <= 0.0 || z.abs() <= upper_cf_edge(a) {
+        return None;
+    }
+    let mut b = z.add(ONE).sub(a);
+    let mut c = cx(1e300, 0.0);
+    let mut d = b.recip();
+    let mut h = d;
+    for i in 1..10_000 {
+        let i = f64::from(i);
+        let an = cx(i - a.re, -a.im).scale(-i);
+        b.re += 2.0;
+        d = an.mul(d).add(b).recip();
+        c = b.add(an.div(c));
+        let step = d.mul(c);
+        h = h.mul(step);
+        if step.sub(ONE).abs() < f64::EPSILON {
+            return Some(a.mul(z.ln()).sub(z).exp().mul(h));
+        }
+    }
+    None
+}
+
+/// The |z| past which [`igamma_upper_cf`] beats 1 − P: Re a + |Im a|/2,
+/// shrunk for Re a < 0 (where the lower series cancels sooner) by
+/// |Im a|/|Re a|, and never under ¼.
+fn upper_cf_edge(a: Cx) -> f64 {
+    let half_im = a.im.abs() / 2.0;
+    let edge = if a.re >= 0.0 {
+        a.re + half_im
+    } else {
+        half_im * (a.im.abs() / -a.re).min(1.0)
+    };
+    edge.max(0.25)
 }
 
 /// (sin πx, cos πx), exact at multiples of ½ (Gnumeric's sinpi / cospi).
@@ -875,7 +923,8 @@ mod tests {
     /// The arc and incomplete-gamma kernels off the real axis, against
     /// mpmath 1.3 (30 digits): asin/acos in each of GSL's regions (b ≤
     /// 0.6417 or not, x ≤ 1 or not, a ≤ 1.5 or not), and Γ(a, z) by each
-    /// route (real, asymptotic upper, continued-fraction lower), each
+    /// route (real, asymptotic upper, continued-fraction lower; the upper
+    /// fraction has its own test below), each
     /// normalization converted both ways.
     #[test]
     fn kernels_match_mpmath() {
@@ -1037,11 +1086,20 @@ mod tests {
             (int_a.re / -9_218_138_712.786_015 - 1.0).abs() < 1e-14,
             "{int_a:?}"
         );
-        // Γ(0, z) unnormalized, and a fraction that never settles: NaN
-        // (Gnumeric #NUM!).
-        let nan = igamma(cx(0.0, 0.0), cx(1.0, 1.0), false, false);
+        // Neither the asymptotic series (|a| near |z|) nor the upper
+        // fraction (Re z < 0) applies and the lower fraction never settles:
+        // NaN, shown as #NUM!.
+        let nan = igamma(cx(-200.0, 1.0), cx(-150.0, 1.0), false, true);
         assert!(nan.re.is_nan() && nan.im.is_nan());
         assert!(igamma_lower_cf(cx(1.0, 0.0), cx(-500.0, 1.0)).is_none());
+        // a = 0 zeroes the lower fraction's first denominator. Left of the
+        // axis nothing else applies, so Γ(0, −1) is #NUM! as in Gnumeric,
+        // though it is E₁(−1) = −1.895 − πi; the upper fraction only
+        // covers Re z > 0.
+        assert!(igamma_lower_cf(cx(0.0, 0.0), cx(-1.0, 0.0)).is_none());
+        assert!(igamma(cx(0.0, 0.0), cx(-1.0, 0.0), false, false)
+            .re
+            .is_nan());
         // sqrt with a positive and a negative real part; sinπ/cosπ at
         // halves and elsewhere.
         assert_eq!(cx(3.0, 4.0).sqrt(), cx(2.0, 1.0));
@@ -1054,6 +1112,136 @@ mod tests {
 
     /// COMPLEX's text form (Excel and LibreOffice), and exponents in parsed
     /// numbers.
+    /// Legendre's continued fraction for Γ(a, z), Re z > 0 past
+    /// [`upper_cf_edge`], against mpmath 1.3's gammainc (30 digits). The
+    /// old 1 − P route gave Q(½, 30 + i) as 1.2e-5 + 3.4e-5i (as Gnumeric
+    /// 1.12 does) and γ(1 + i, 40) as the regularized 1.
+    #[test]
+    fn upper_fraction_matches_mpmath() {
+        let near = |got: Cx, want: (f64, f64)| {
+            let err = got.sub(cx(want.0, want.1)).abs();
+            assert!(
+                err <= 1e-13 * cx(want.0, want.1).abs(),
+                "{got:?} vs {want:?}"
+            );
+        };
+        for (a, z, lower, reg, want) in [
+            // The reported cancellations, regularized upper.
+            (
+                (0.5, 0.0),
+                (30.0, 1.0),
+                false,
+                true,
+                (4.994_315_590_065_452e-15, -8.061_578_686_975_159e-15),
+            ),
+            (
+                (0.5, 0.0),
+                (20.0, 1.0),
+                false,
+                true,
+                (1.320_028_044_795_353_4e-10, -2.167_919_261_241_570_4e-10),
+            ),
+            // Its complement, regularized lower.
+            (
+                (0.5, 0.0),
+                (30.0, 1.0),
+                true,
+                true,
+                (0.999_999_999_999_995, 8.061_578_686_975_159e-15),
+            ),
+            // Unregularized upper and lower, a off the real axis.
+            (
+                (2.0, 1.0),
+                (10.0, 0.0),
+                true,
+                false,
+                (0.653_332_790_054_432_5, 0.342_730_490_552_389_63),
+            ),
+            (
+                (0.0, 1.0),
+                (5.0, 5.0),
+                false,
+                true,
+                (-1.687_983_304_016_848_3e-4, -7.933_469_441_132_255e-4),
+            ),
+            // Re a < 0, where the edge shrinks with |Im a| / |Re a|.
+            (
+                (-2.5, 0.0),
+                (3.0, 4.0),
+                false,
+                false,
+                (9.637_012_829_857_608e-5, -7.072_565_277_530_909e-5),
+            ),
+            (
+                (-20.0, 5.0),
+                (3.0, 1.0),
+                false,
+                true,
+                (-48_661_677_983.185_36, -34_550_116_066.223),
+            ),
+            // Γ(0, z) = E₁(z), which the lower series cannot give (no Γ(0)).
+            (
+                (0.0, 0.0),
+                (1.0, 1.0),
+                false,
+                false,
+                (2.816_244_519_814_183_4e-4, -0.179_324_535_039_358_94),
+            ),
+            // z = a − 1 zeroes the fraction's first denominator; Lentz's
+            // seed 1/0 is infinite, so this falls back to the lower series.
+            (
+                (1.5, 10.0),
+                (0.5, 10.0),
+                false,
+                true,
+                (0.561_591_846_888_306, -0.057_111_340_012_525_824),
+            ),
+        ] {
+            near(igamma(cx(a.0, a.1), cx(z.0, z.1), lower, reg), want);
+        }
+        // After the asymptotic upper series, the unregularized lower value
+        // is Γ(a)·(1 − Q), not 1 − Γ(a)·Q.
+        near(
+            igamma(cx(1.0, 1.0), cx(40.0, 0.0), true, false),
+            (0.498_015_668_118_356_07, -0.154_949_828_301_810_67),
+        );
+        // The edge: Re a + |Im a|/2 for Re a ≥ 0, shrunk for Re a < 0,
+        // never under ¼; the fraction declines at or inside it and for
+        // Re z ≤ 0.
+        assert_eq!(upper_cf_edge(cx(2.0, -6.0)), 5.0);
+        assert_eq!(upper_cf_edge(cx(-4.0, 2.0)), 0.5);
+        assert_eq!(upper_cf_edge(cx(-1.0, 4.0)), 2.0);
+        assert_eq!(upper_cf_edge(cx(0.1, 0.0)), 0.25);
+        assert!(igamma_upper_cf(cx(2.0, -6.0), cx(3.0, -4.0)).is_none());
+        assert!(igamma_upper_cf(cx(2.0, 0.0), cx(-30.0, 1.0)).is_none());
+        // A fraction that has not settled by 10 000 terms (a ≈ z ≈ 1e11
+        // needs about 41 000) gives up.
+        assert!(igamma_upper_cf(cx(1e11, 1e-3), cx(1e11 + 1.0, 0.0)).is_none());
+        // Just outside the edge both routes agree: Q from the fraction and
+        // 1 − P from the lower series, a out to |a| = 30 all round the
+        // plane and z all round the right half-plane.
+        for am in [0.3, 1.0, 5.0, 30.0] {
+            for k in 0..12 {
+                let t = PI * (f64::from(k) / 6.0 - 1.0) + 0.1;
+                let a = cx(am * t.cos(), am * t.sin());
+                for j in [-1.4, -0.7, 0.0, 0.7, 1.4] {
+                    let r = upper_cf_edge(a) * (1.0 + 1e-15);
+                    let z = cx(r * f64::cos(j), r * f64::sin(j));
+                    if igamma_upper_asymp(a, z).is_some() {
+                        continue;
+                    }
+                    let g = gamma(a);
+                    let q = igamma_upper_cf(a, z).unwrap().div(g);
+                    let one_minus_p = ONE.sub(igamma_lower_cf(a, z).unwrap().div(g));
+                    assert!(
+                        q.sub(one_minus_p).abs() <= 2e-13 * q.abs(),
+                        "a={a:?} z={z:?}: {q:?} vs {one_minus_p:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn shows_and_parses_like_excel() {
         let t = |re, im| show(cx(re, im), None);

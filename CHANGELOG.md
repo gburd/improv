@@ -347,6 +347,14 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **`IMIGAMMA` off the real axis.** The upper regularized value for large
+  |z| was computed as 1 − P and cancelled: `IMIGAMMA("0.5","30+i",FALSE)`
+  gave 1.2e-5+3.4e-5i (it is 5.0e-15−8.1e-15i), the same as Gnumeric 1.12.
+  For Re z > 0 past |z| ≈ Re a + |Im a|/2 it now uses Legendre's continued
+  fraction, so all four forms match mpmath to about 2e-13. The
+  unregularized lower value after the asymptotic series was the regularized
+  one (`IMIGAMMA("1+i","40",TRUE,FALSE)` gave 1, not 0.498−0.155i), and
+  Γ(0, z) is now E₁(z) rather than `#NUM!`.
 - **Binomial, beta, F and t with very large parameters.** The regularized
   incomplete beta behind `BINOM.DIST`, `BETA.DIST`, `F.DIST`, `T.DIST`,
   `NEGBINOM.DIST` and the `R.*` kernels lost accuracy once both shapes

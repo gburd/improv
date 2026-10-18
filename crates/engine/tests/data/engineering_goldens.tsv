@@ -524,6 +524,20 @@ IMAGINARY(IMIGAMMA("0.5","-1"))	{"approx": 1.6504257587975428, "tol": 1e-13}	Gnu
 IMREAL(IMIGAMMA("1+i","40",FALSE))	{"approx": -5.230149528251621e-18, "tol": 1e-13}	Gnumeric 1.12
 IMAGINARY(IMIGAMMA("1+i","40",FALSE))	{"approx": -6.24144095760944e-18, "tol": 1e-13}	Gnumeric 1.12
 IMIGAMMA("0","2",TRUE,FALSE)	{"error": "#NUM!"}	Gnumeric 1.12
+IMREAL(IMIGAMMA("2+i","10",FALSE))	{"approx": -0.00022935637022269972, "tol": 1e-13}	Gnumeric 1.12
+IMAGINARY(IMIGAMMA("2+i","10",FALSE))	{"approx": 0.000634081895893023, "tol": 1e-13}	Gnumeric 1.12
+IMREAL(IMIGAMMA("i","5+5i",FALSE))	{"approx": -0.00016879833040217562, "tol": 1e-13}	Gnumeric 1.12
+IMAGINARY(IMIGAMMA("i","5+5i",FALSE))	{"approx": -0.0007933469441129229, "tol": 1e-13}	Gnumeric 1.12
+IMREAL(IMIGAMMA("-2.5","3+4i",FALSE,FALSE))	{"approx": 9.637012829821767e-05, "tol": 1e-13}	Gnumeric 1.12
+IMAGINARY(IMIGAMMA("-2.5","3+4i",FALSE,FALSE))	{"approx": -7.072565277516096e-05, "tol": 1e-13}	Gnumeric 1.12
+IMREAL(IMIGAMMA("0.5","30+i",FALSE))	{"approx": 4.994315590065452e-15, "tol": 1e-13}	mpmath (Gnumeric 1.12 has the same cancellation: 1 - P)
+IMAGINARY(IMIGAMMA("0.5","30+i",FALSE))	{"approx": -8.061578686975159e-15, "tol": 1e-13}	mpmath (Gnumeric 1.12 has the same cancellation: 1 - P)
+IMREAL(IMIGAMMA("0.5","20+i",FALSE))	{"approx": 1.3200280447953534e-10, "tol": 1e-13}	mpmath (Gnumeric 1.12 has the same cancellation: 1 - P)
+IMAGINARY(IMIGAMMA("0.5","20+i",FALSE))	{"approx": -2.1679192612415704e-10, "tol": 1e-13}	mpmath (Gnumeric 1.12 has the same cancellation: 1 - P)
+IMREAL(IMIGAMMA("1+i","40",TRUE,FALSE))	{"approx": 0.49801566811835607, "tol": 1e-13}	mpmath (Gnumeric 1.12 gives 1, the regularized value)
+IMAGINARY(IMIGAMMA("1+i","40",TRUE,FALSE))	{"approx": -0.15494982830181067, "tol": 1e-13}	mpmath (Gnumeric 1.12 gives 1, the regularized value)
+IMREAL(IMIGAMMA("0","1+i",FALSE,FALSE))	{"approx": 0.00028162445198141834, "tol": 1e-13}	mpmath (Gnumeric 1.12 gives #NUM!)
+IMAGINARY(IMIGAMMA("0","1+i",FALSE,FALSE))	{"approx": -0.17932453503935894, "tol": 1e-13}	mpmath (Gnumeric 1.12 gives #NUM!)
 CONVERT(1,"ly","m")	{"approx": 9460730472580800.0, "tol": 1e-06}	Gnumeric 1.12
 CONVERT(1,"ly","km")	{"approx": 9460730472580.8, "tol": 1e-06}	Gnumeric 1.12
 CONVERT(1,"pc","ly")	{"approx": 3.2615637967310738, "tol": 1e-06}	Gnumeric 1.12
