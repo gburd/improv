@@ -17,6 +17,7 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 
 ::pgrx::pg_module_magic!();
 
+mod commit;
 mod language;
 mod trigger;
 mod worker;
@@ -53,6 +54,7 @@ pub extern "C-unwind" fn _PG_init() {
         GucFlags::default(),
     );
     worker::init();
+    commit::init();
 }
 
 extension_sql!(
@@ -63,7 +65,7 @@ CREATE TABLE improv.model (
     id        bigserial PRIMARY KEY,
     name      text NOT NULL UNIQUE,
     sync_mode text NOT NULL DEFAULT 'logical'
-              CHECK (sync_mode IN ('logical', 'trigger', 'manual')),
+              CHECK (sync_mode IN ('logical', 'trigger', 'commit', 'manual')),
     slot_name text,
     created   timestamptz NOT NULL DEFAULT now()
 );
@@ -501,6 +503,9 @@ fn bind_measure(
     )?
     .unwrap_or_default();
     check_syncable(rel.name(), relkind(rel.oid())?, &mode)?;
+    if mode == "commit" {
+        commit::guard(rel.oid(), rel.name())?;
+    }
     let (typname, shown) = column_type(&rel, value_col)?;
     let vt = pm::value_type_name(pm::bound_value_type(&typname, &shown, agg)?);
     let taken = Spi::get_one_with_args::<bool>(

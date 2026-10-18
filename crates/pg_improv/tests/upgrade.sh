@@ -7,7 +7,8 @@
 # model with data, then install this tree over it (both versions' SQL side
 # by side; one .so, the new one), restart, ALTER EXTENSION ... UPDATE, and
 # check the version, the results, that the worker still follows writes, that
-# a define() still works, and that pg_dump now keeps the model.
+# a define() still works, that pg_dump now keeps the model, and that the
+# model then moves to commit sync (0.10.0) and recomputes at COMMIT.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
@@ -89,7 +90,12 @@ for from in "$@"; do
 	grep -q "COPY improv.measure" "$W/dump.sql" || fail "pg_dump omits the model"
 	eq "$(q "SELECT array_to_string(proconfig, ',') FROM pg_proc WHERE oid = 'improv.mint_items(bigint,bigint[],text[])'::regprocedure")" \
 		"search_path=pg_catalog, pg_temp" "mint_items search_path after the update"
-	echo "ok: $from -> $to: results kept, worker follows writes, define works, pg_dump keeps the model"
+	q "SELECT improv.set_sync_mode('plan','commit')"
+	eq "$(q "SELECT sync_mode FROM improv.status('plan')")" commit "commit mode after the update"
+	q "BEGIN; UPDATE sales SET qty = 400 WHERE quarter='Q1' AND product='Widget'; UPDATE sales SET price = 12 WHERE quarter='Q1' AND product='Widget'; COMMIT;"
+	eq "$(q "$REV")" 4800 "commit mode recomputes at COMMIT after the update"
+	eq "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" 9600 "commit mode: the dependents too"
+	echo "ok: $from -> $to: results kept, worker follows writes, define works, pg_dump keeps the model, commit mode works"
 	"$PG_BIN/pg_ctl" -D "$W/data" stop -m immediate >/dev/null  # discarded next
 	find "$W/data" -delete
 done

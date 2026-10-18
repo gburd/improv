@@ -163,7 +163,7 @@ pub(crate) fn exists(table: &str) -> Res<bool> {
 
 /// Recompute `plan.targets` and write their changed result rows (only rows
 /// in `plan.scope`, when given). Returns the rows changed.
-fn recompute(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
+pub(crate) fn recompute(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
     if plan.targets.is_empty() {
         return Ok(0);
     }
@@ -215,12 +215,19 @@ pub(crate) fn remove_triggers(name: &str) -> Res<()> {
 
 /// Set how `model`'s results follow its bound data: `trigger` installs
 /// statement-level sync triggers on every bound relation (re-run after
-/// binding a new relation) and recomputes once so the results start
-/// consistent; `logical` and `manual` remove them.
+/// binding a new relation); `commit` recomputes once per writing
+/// transaction, before it commits (needs the library preloaded). Both
+/// recompute once so the results start consistent. `logical` and `manual`
+/// remove the triggers.
 #[pg_extern(security_invoker)]
 fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
-    if !matches!(mode, "logical" | "trigger" | "manual") {
-        return Err(format!("sync mode must be logical, trigger or manual, not {mode:?}").into());
+    if !matches!(mode, "logical" | "trigger" | "commit" | "manual") {
+        return Err(
+            format!("sync mode must be logical, trigger, commit or manual, not {mode:?}").into(),
+        );
+    }
+    if mode == "commit" {
+        super::commit::check_preloaded()?;
     }
     let (mid, name) = lock_model(model)?;
     pm::validate_name("model", &name)?;
@@ -235,6 +242,9 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
     })?;
     for (rel, oid) in &bound {
         crate::check_syncable(rel, crate::relkind(*oid)?, mode)?;
+        if mode == "commit" {
+            super::commit::guard(*oid, rel)?;
+        }
     }
     remove_triggers(&name)?;
     Spi::run_with_args(
@@ -266,15 +276,9 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
                 ))?;
             }
         }
-        let mut l = load(mid, name, true)?;
-        let targets = all_derived(&l.model);
-        recompute(
-            &mut l,
-            &pm::Plan {
-                targets,
-                scope: None,
-            },
-        )?;
+    }
+    if matches!(mode, "trigger" | "commit") {
+        recompute_all(mid, &name)?;
     }
     bump_version(mid)
 }
@@ -640,7 +644,10 @@ mod tests {
             "manual: no sync"
         );
         let e = crate::trigger::set_sync_mode("plan", "eager").unwrap_err();
-        assert!(e.to_string().contains("logical, trigger or manual"), "{e}");
+        assert!(
+            e.to_string().contains("logical, trigger, commit or manual"),
+            "{e}"
+        );
         // drop_model removes the triggers with the model.
         Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
         Spi::run("SELECT improv.drop_model('plan')").unwrap();
@@ -758,6 +765,136 @@ mod tests {
         assert_eq!(count("improv_plan.overhead"), 0);
         assert_eq!(count("improv_plan.margin"), 0);
         assert_eq!(count("improv_plan.revenue"), 6);
+    }
+
+    /// Commit mode: run the pre-commit recompute as COMMIT would and return
+    /// the model recomputes it ran (a pg_test never commits; tests/txn.sh
+    /// commits for real).
+    fn commit() -> u64 {
+        let before = crate::commit::recomputes();
+        crate::commit::pre_commit();
+        crate::commit::recomputes() - before
+    }
+
+    #[pg_test]
+    fn commit_mode_recomputes_once_per_transaction() {
+        setup("commit");
+        commit(); // setup's own writes
+        assert_eq!(
+            text("SELECT sync_mode FROM improv.status('plan')"),
+            "commit"
+        );
+        assert_eq!(
+            count("pg_trigger WHERE tgname LIKE 'improv_plan_sync_%'"),
+            0
+        );
+        // Entering commit mode recomputes, so results start consistent.
+        assert_eq!(rows("total", "true"), "Gadget=6000 Widget=10000");
+        assert_eq!(
+            cell("margin", "\"time\" = 'Q1' AND product = 'Gadget'"),
+            Some(15.0)
+        );
+        // Statements do not recompute; the commit does, once.
+        Spi::run("UPDATE sales SET price = 11 WHERE product = 'Widget'").unwrap();
+        Spi::run("INSERT INTO sales VALUES ('Q5', 'Widget', 10, 1)").unwrap();
+        Spi::run("DELETE FROM sales WHERE product = 'Gadget' AND quarter = 'Q4'").unwrap();
+        Spi::run("UPDATE costs SET cost = 1 WHERE product = 'Widget'").unwrap();
+        assert_eq!(
+            rows("total", "true"),
+            "Gadget=6000 Widget=10000",
+            "read before the commit: the old results"
+        );
+        assert_eq!(commit(), 1);
+        assert_eq!(rows("total", "true"), "Gadget=3600 Widget=11010");
+        assert_eq!(
+            cell("margin", "\"time\" = 'Q1' AND product = 'Widget'"),
+            Some(10.0)
+        );
+        assert_eq!(rows("overhead", "true"), "Gadget=10 Widget=2");
+        assert_eq!(commit(), 0, "nothing written since");
+        // Neither a write to an unbound table nor one that changes no row.
+        Spi::run("CREATE TABLE other (x int); INSERT INTO other VALUES (1)").unwrap();
+        Spi::run("DELETE FROM sales WHERE product = 'Nothing'").unwrap();
+        assert_eq!(commit(), 0);
+        // A writable CTE counts, whatever its outer query returns.
+        Spi::run("WITH u AS (UPDATE costs SET cost = 2 RETURNING 1) SELECT 1 WHERE false").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(rows("overhead", "true"), "Gadget=4 Widget=4");
+        // Out of commit mode, writes are not followed.
+        Spi::run("SELECT improv.set_sync_mode('plan', 'manual')").unwrap();
+        Spi::run("UPDATE sales SET price = 1").unwrap();
+        assert_eq!(commit(), 0);
+    }
+
+    #[pg_test]
+    fn commit_mode_forgets_rolled_back_writes_and_follows_truncate() {
+        setup("commit");
+        commit();
+        // ROLLBACK: the results never moved, and the next commit has
+        // nothing to do.
+        Spi::run("UPDATE costs SET cost = 9").unwrap();
+        assert_eq!(rows("overhead", "true"), "Gadget=10 Widget=8");
+        // SAFETY: the callback as Postgres calls it at ROLLBACK.
+        unsafe {
+            crate::commit::xact_callback(pg_sys::XactEvent::XACT_EVENT_ABORT, std::ptr::null_mut())
+        };
+        assert_eq!(commit(), 0);
+        // (The data did not roll back: a pg_test is one transaction.)
+        Spi::run("UPDATE costs SET cost = CASE product WHEN 'Widget' THEN 4 ELSE 5 END").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(rows("overhead", "true"), "Gadget=10 Widget=8");
+        // A rolled-back savepoint's write does not count; a released one's does.
+        Spi::run(
+            "DO $$ BEGIN
+               BEGIN UPDATE costs SET cost = 7; RAISE EXCEPTION 'undo';
+               EXCEPTION WHEN raise_exception THEN NULL; END;
+             END $$",
+        )
+        .unwrap();
+        assert_eq!(commit(), 0, "rolled-back savepoint");
+        Spi::run(
+            "DO $$ BEGIN
+               BEGIN UPDATE costs SET cost = 7 WHERE product = 'Widget';
+               EXCEPTION WHEN others THEN NULL; END;
+             END $$",
+        )
+        .unwrap();
+        assert_eq!(commit(), 1, "released savepoint");
+        assert_eq!(rows("overhead", "true"), "Gadget=10 Widget=14");
+        // TRUNCATE has no executor write; the utility hook notes it.
+        Spi::run("CREATE TABLE t2 (x int); TRUNCATE t2").unwrap();
+        assert_eq!(commit(), 0, "an unbound table");
+        Spi::run("TRUNCATE costs").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(count("improv_plan.overhead"), 0);
+        assert_eq!(count("improv_plan.margin"), 0);
+        assert_eq!(count("improv_plan.revenue"), 8);
+    }
+
+    #[pg_test]
+    fn commit_mode_follows_partitions() {
+        Spi::run(
+            "CREATE TABLE pt (k text, v float8) PARTITION BY LIST (k);
+             CREATE TABLE pt_a PARTITION OF pt FOR VALUES IN ('a');
+             CREATE TABLE pt_b PARTITION OF pt FOR VALUES IN ('b');
+             INSERT INTO pt VALUES ('a', 1), ('b', 2);
+             SELECT improv.create_model('pm');
+             SELECT improv.set_sync_mode('pm', 'commit');
+             SELECT improv.bind_category('pm', 'K', 'pt', 'k');
+             SELECT improv.bind_measure('pm', 'V', 'pt', 'v');
+             SELECT improv.define('pm', 'W = V * 10');",
+        )
+        .unwrap();
+        commit();
+        let w = |k: &str| {
+            Spi::get_one_with_args::<f64>("SELECT value FROM improv_pm.w WHERE k = $1", &[k.into()])
+                .unwrap()
+        };
+        assert_eq!(w("a"), Some(10.0));
+        // A write to a partition of the bound table.
+        Spi::run("UPDATE pt_b SET v = 5").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(w("b"), Some(50.0));
     }
 
     #[pg_test]

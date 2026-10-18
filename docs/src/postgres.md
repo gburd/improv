@@ -42,26 +42,36 @@ The GUI shows the model as worksheet windows. Editing a formula there
 redefines it in Postgres; editing an input cell updates the bound row of
 `sales`; everyone's SQL view of `improv_plan.revenue` follows.
 
-## Three ways to keep results current
+## Ways to keep results current
 
-**Transactions.** In `trigger` mode, and with `improv.recalc()`, the results
-change inside the writer's transaction: it reads its own new results, other
+**Transactions.** In `trigger` and `commit` modes, and with
+`improv.recalc()`, the results change inside the writer's transaction: other
 sessions see them only once it commits, and `ROLLBACK`, an error or
-`ROLLBACK TO SAVEPOINT` undo them with the change. In `logical` mode the
+`ROLLBACK TO SAVEPOINT` undo them with the change. `trigger` recomputes
+after every write statement, so the writer reads its own new results.
+`commit` recomputes once, just before `COMMIT`, so a read earlier in the
+transaction sees the old results (call `improv.recalc('plan')` there to
+read your writes). In `logical` mode the
 results follow the commit in the worker's own transaction, and an aborted
 write never reaches them at all, because logical decoding carries committed
 transactions only. A batch's results and the slot's position commit
 together, so a crash neither loses nor doubles a change.
 
-| | `logical` (default) | `trigger` | `improv.recalc()` |
-| --- | --- | --- | --- |
-| Results update | after the commit, by a background worker | inside the writer's statement | when you call it |
-| Consistency | eventual (lags the commit by one poll plus the change's own work) | transactional, read-your-writes | transactional, in your snapshot |
-| Writer pays | nothing (the worker applies only the changed cells) | the recompute, on every write statement | the recompute, when you choose |
-| Needs | `wal_level = logical`, preload, a PK or `REPLICA IDENTITY FULL` (set for you) | nothing | nothing |
+| | `logical` (default) | `trigger` | `commit` | `improv.recalc()` |
+| --- | --- | --- | --- | --- |
+| Results update | after the commit, by a background worker | inside the writer's statement | inside the writer's transaction, just before `COMMIT` | when you call it |
+| Consistency | eventual (lags the commit by one poll plus the change's own work) | transactional, read-your-writes | transactional; reads before `COMMIT` see the old results | transactional, in your snapshot |
+| Writer pays | nothing (the worker applies only the changed cells) | the recompute, on every write statement | one recompute per transaction, of the written tables' dependents | the recompute, when you choose |
+| On your tables | a publication (and `REPLICA IDENTITY FULL` if no PK) | four statement triggers each | nothing | nothing |
+| Needs | `wal_level = logical`, preload, a PK or `REPLICA IDENTITY FULL` (set for you) | nothing | preload | nothing |
 
-Switch with `SELECT improv.set_sync_mode('plan', 'trigger')` (or `'logical'`,
-`'manual'`). `improv.recalc('plan')` works in every mode, and
+Switch with `SELECT improv.set_sync_mode('plan', 'commit')` (or `'logical'`,
+`'trigger'`, `'manual'`). Entering `trigger` or `commit` mode recomputes
+once. `commit` mode needs `pg_improv` in `shared_preload_libraries` (or
+`session_preload_libraries`), because the hooks that notice a write must be
+in every backend; `set_sync_mode` refuses it otherwise. A recompute that
+fails at `COMMIT` rolls the transaction back with an error naming the
+model. `improv.recalc('plan')` works in every mode, and
 `improv.recalc('plan', ARRAY['Price'])` recomputes only what depends on Price.
 `improv.what_if('plan', '[{"measure":"Price","coord":{"Time":"Q1","Product":"Widget"},"value":12}]')`
 returns the derived cells that would change, writing nothing. Its `value`
@@ -96,8 +106,11 @@ only tables bind; a view binds in `manual` mode (refresh with
 **Choosing:** use `logical` for busy tables (writers stay fast; measured
 at 100k cells: 8 ms per UPDATE and its results visible ~50 ms later, vs
 ~1.1 s with a trigger). Use `trigger` when a
-writer must read derived results in its own transaction. Use `recalc` after
-bulk loads or inside migrations.
+writer must read derived results in its own transaction. Use `commit` when
+results must commit with the write but a transaction makes many writes (100
+one-row updates in one transaction at 10k cells: 82 ms, against 6.6 s in
+trigger mode), or when you can't put triggers on the tables. Use `recalc`
+after bulk loads or inside migrations.
 
 ## Functions written in Improv's language
 

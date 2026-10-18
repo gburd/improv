@@ -60,7 +60,7 @@ read them like any table, can index/GRANT/RLS them, and they replicate.
 - Value types: `numeric/int/float → Number`, `bool → Boolean`,
   `text → Text`, `date/timestamptz → DateTime`.
 
-## 4. The engine in Postgres — three ways derived results update
+## 4. The engine in Postgres — the ways derived results update
 
 All three share one pure core (`improv_engine::evaluate` / `session::Engine`)
 and one writer (`apply_deltas`: upsert changed cells, delete vanished ones).
@@ -113,6 +113,47 @@ result rows changed. Use it after a bulk load in `manual` mode, inside a
 migration, or to force consistency in `logical` mode before reading.
 `improv.what_if(model, edits jsonb) → SETOF (measure, coord, value)` computes
 without writing anything.
+
+### 4.4 At commit (`sync_mode='commit'`)
+Like 4.2, the results commit or roll back with the writer's transaction,
+but nothing is installed on the user's tables and the recompute runs
+**once per transaction, at `XACT_EVENT_PRE_COMMIT`** (and
+`PRE_PREPARE`), not once per statement (`src/commit.rs`).
+- Tracking: `ExecutorFinish_hook` notes the result relations
+  (`plannedstmt->resultRelations` into `rtable`) of a write that processed
+  rows (a writable CTE always counts); `ProcessUtility_hook` notes
+  `TRUNCATE` (CASCADE: every relation) and `COPY FROM`. The set lives in a
+  backend-local map, relation → the subtransaction that first wrote it;
+  subtransaction abort drops that subtransaction's entries, commit
+  reassigns them to the parent; transaction end clears it.
+- Filter: a per-backend cache of the commit-mode models' bound relations
+  (with partition ancestors and descendants), dropped by a relcache
+  invalidation of `improv.model` / `improv.binding` (statement triggers
+  there call `CacheInvalidateRelcacheByRelid`) or of a bound relation (a
+  partition attached). A transaction that wrote no commit-bound relation
+  costs one hash lookup per written relation at commit. Under
+  REPEATABLE READ the reload is not cached (its snapshot may predate a
+  committed switch).
+- Pre-commit: `CommandCounterIncrement` + push a transaction snapshot; for
+  each hit model in id order: `lock_model`, `load`, recompute
+  `pm::dependents(changed measures)` in full (`scope: None`), write the
+  diff. A model's results may feed another commit-mode model, so it loops
+  on what the recompute wrote (at most 16 rounds). An error is re-raised
+  naming the model and that the transaction is rolled back.
+- Mode switch: `set_sync_mode` needs the library preloaded (hooks in every
+  backend; `_PG_init` under `shared_preload_libraries` or
+  `session_preload_libraries`), requires TRIGGER on each bound relation and
+  takes its SHARE ROW EXCLUSIVE lock, as trigger mode's `CREATE TRIGGER`
+  does, then recomputes once.
+- ✚ transactional, with one recompute however many statements; no DDL on
+  user tables.
+- ✖ no read-your-writes before COMMIT (`improv.recalc` in the transaction
+  gives it); the recompute is full over the written measures' dependents
+  (upgrade path: a per-transaction row capture → `pm::Scope`); the result
+  rows stay locked from pre-commit to commit, so concurrent writers to the
+  same model serialize there; needs the preload.
+- Measured (10k cells, release): 100 one-row updates in one transaction
+  82 ms (trigger mode 6574 ms); one single-row UPDATE 77 ms in both.
 
 Trade-off table goes in the user docs verbatim.
 

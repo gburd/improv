@@ -6,10 +6,11 @@ define derived measures in Improv's formula language, and read the results
 from ordinary tables (`improv_<model>.<measure>`).
 
 Status: **layers L0–L5 done** (see `docs/reviews/2026-10-14-pg-improv-design.md`
-§6). All three ways of keeping results current work: `logical` (the default,
+§6). Every way of keeping results current works: `logical` (the default,
 a background worker tailing a logical replication slot), `trigger` (inside
-the writer's transaction), and an explicit `improv.recalc` you call in your
-own transaction. The desktop apps open a Postgres-hosted model directly:
+the writer's statement), `commit` (once per writing transaction, just
+before it commits), and an explicit `improv.recalc` you call in your own
+transaction. The desktop apps open a Postgres-hosted model directly:
 `improv-gui "postgres://user@host/db?model=plan"`.
 
 ## Install
@@ -61,7 +62,8 @@ max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retai
 
 Without the preload, `CREATE EXTENSION` still works and `trigger` / `manual`
 models (and `recalc`) behave the same; `logical` models then update only
-through `recalc`. (Before 0.9.0, `CREATE EXTENSION` without the preload
+through `recalc`, and `set_sync_mode(…, 'commit')` is refused (`commit`
+mode also works with `session_preload_libraries = 'pg_improv'`). (Before 0.9.0, `CREATE EXTENSION` without the preload
 crashed the session; `tests/txn.sh` now checks it.) `CREATE EXTENSION` needs
 a superuser. Everything it creates is in the `improv` schema: every function
 is `improv.<name>()`, and the only object outside it is the procedural
@@ -121,7 +123,7 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `define(model, definition text) → bigint` | Adds a derived measure from `Target = expr` and creates its result table. `SQL(...)` and `CALL(...)` are rejected. |
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
-| `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once. `logical`/`manual`: removes them. Re-run it after binding a new relation. |
+| `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once (re-run it after binding a new relation). `commit`: recomputes once, then once per writing transaction before it commits; needs the preload. `logical`/`manual`: removes the triggers. |
 | `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value jsonb)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. |
 | `enable_logical(model)` | Creates (or resets) the publication `improv_<model>` over the bound relations and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
 | `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error)` | How the model is kept current, and how far the logical worker is behind. |
@@ -212,19 +214,20 @@ The evaluator is `improv_engine::scalar`, which calls the dataflow engine's
 own per-cell operators, so a body gives the value a model would give at one
 cell.
 
-## Keeping results current: trigger vs logical vs recalc
+## Keeping results current: trigger vs commit vs logical vs recalc
 
 **Is a result in the same transaction as the write that caused it?** In
-`trigger` mode and with `improv.recalc()`, yes. In `logical` mode (the
-default), no: it follows shortly after the commit, in a transaction of its
-own. In every mode a write that does not commit never changes a result:
+`trigger` and `commit` modes and with `improv.recalc()`, yes. In `logical`
+mode (the default), no: it follows shortly after the commit, in a
+transaction of its own. In every mode a write that does not commit never
+changes a result:
 
-| A write that… | `trigger` | `logical` |
-| --- | --- | --- |
-| commits | results commit with it, atomically, visible to others at the same moment | results follow one poll later (~50–100 ms), all of one batch at once |
-| is rolled back (`ROLLBACK`, an error, a lost connection) | its result changes roll back with it | never seen: logical decoding sends committed transactions only |
-| is undone by `ROLLBACK TO SAVEPOINT` | that part's result changes are undone; the rest commit | the undone part is never decoded; the committed rest is applied |
-| is read back in the same transaction | **sees** its own new results | sees the old ones (call `improv.recalc()` to see new ones) |
+| A write that… | `trigger` | `commit` | `logical` |
+| --- | --- | --- | --- |
+| commits | results commit with it, atomically, visible to others at the same moment | the same; recomputed once, just before COMMIT (or PREPARE TRANSACTION) | results follow one poll later (~50–100 ms), all of one batch at once |
+| is rolled back (`ROLLBACK`, an error, a lost connection) | its result changes roll back with it | nothing was recomputed | never seen: logical decoding sends committed transactions only |
+| is undone by `ROLLBACK TO SAVEPOINT` | that part's result changes are undone; the rest commit | the undone part is forgotten; the rest recomputes at COMMIT | the undone part is never decoded; the committed rest is applied |
+| is read back in the same transaction | **sees** its own new results | sees the old ones (call `improv.recalc()` to see new ones) | sees the old ones (call `improv.recalc()` to see new ones) |
 
 In logical mode the worker applies a batch of committed transactions and
 moves its replication slot forward **in one transaction**: all of a batch's
@@ -233,14 +236,15 @@ or a killed worker re-applies the batch, and the writes are idempotent, so
 nothing is lost or counted twice. `tests/txn.sh` checks every row of the
 table above, and `tests/logical.sh` checks crash recovery.
 
-| | `trigger` (L1) | `logical` (L2, default) | `recalc` (explicit) |
-| --- | --- | --- | --- |
-| When results update | In the writer's statement, before it returns | After the commit, by a background worker (eventual) | When you call it, in your transaction |
-| Consistency | Transactional: commit both or neither; read-your-writes | Lags the commit | Transactional, in your snapshot |
-| Writer cost | Added latency and result-row locks on every write statement (batched per statement) | None | None until you call it |
-| Requirements | None | `wal_level=logical`, `REPLICA IDENTITY` (FULL or a PK) on bound tables | None |
-| Failure mode | A failing recompute fails the writer's statement | A stuck worker retains WAL (bounded by `max_slot_wal_keep_size`) | Errors are yours to handle |
-| Best for | Small, read-your-writes models | Busy tables, replicas | Bulk loads, migrations, `manual` mode |
+| | `trigger` (L1) | `commit` | `logical` (L2, default) | `recalc` (explicit) |
+| --- | --- | --- | --- | --- |
+| When results update | In the writer's statement, before it returns | In the writer's transaction, just before COMMIT | After the commit, by a background worker (eventual) | When you call it, in your transaction |
+| Consistency | Transactional: commit both or neither; read-your-writes | Transactional: commit both or neither; reads before COMMIT see the old results | Lags the commit | Transactional, in your snapshot |
+| Writer cost | Added latency and result-row locks on every write statement (batched per statement) | One full recompute of the written tables' dependents per transaction, and the result-row locks from then to the commit | None | None until you call it |
+| On the bound tables | Four statement triggers each | Nothing | A publication; `REPLICA IDENTITY FULL` if no PK | Nothing |
+| Requirements | None | The library preloaded (`shared_preload_libraries` or `session_preload_libraries`) | `wal_level=logical`, `REPLICA IDENTITY` (FULL or a PK) on bound tables | None |
+| Failure mode | A failing recompute fails the writer's statement | A failing recompute aborts the COMMIT, naming the model | A stuck worker retains WAL (bounded by `max_slot_wal_keep_size`) | Errors are yours to handle |
+| Best for | Small, read-your-writes models | Transactional results from many-statement transactions; tables you can't add triggers to | Busy tables, replicas | Bulk loads, migrations, `manual` mode |
 
 ### Trigger mode
 
@@ -273,6 +277,47 @@ release build, 10 000 input cells, medians): a 1000-row UPDATE takes 4.3 ms in
 manual mode, 32 ms in trigger mode when the chain is element-wise, and 45 ms
 when it contains a `SUM`. A full `recalc` takes 34 ms. Loading the whole model
 dominates the cost, so trigger mode costs about one recalc per statement.
+
+### Commit mode
+
+`set_sync_mode(model, 'commit')` installs nothing on the bound tables and
+recomputes once, so the results start consistent. From then on, hooks in
+every backend (`ExecutorFinish_hook` for INSERT, UPDATE, DELETE, MERGE and
+writable CTEs; `ProcessUtility_hook` for TRUNCATE and `COPY FROM`) note
+which relations each transaction wrote. Just before it commits (or
+prepares), every commit-mode model bound to one of them, or to a partition
+or parent of one, is locked, loaded and its written measures' dependents
+recomputed in full, in the writer's transaction and as the writing role.
+Work rolled back to a savepoint is forgotten, and a statement that changed
+no row does not count. A transaction that wrote no commit-bound table pays
+one set lookup: each backend caches the commit-bound relations, and
+triggers on `improv.model` and `improv.binding` invalidate every backend's
+copy when a model changes mode or binds a table.
+
+The hooks have to be in every backend that writes, so the library must be
+preloaded (`shared_preload_libraries`, or `session_preload_libraries` for
+new sessions), and `set_sync_mode` refuses `commit` in a backend that
+loaded it on demand. As with trigger mode, the role that enables commit
+mode (or binds a table to a commit-mode model) needs the TRIGGER privilege
+on each bound table, since the model then runs in other roles' commits, and
+every role that writes a bound table must be able to write the result
+tables. A recompute that fails (a writer without that privilege, or a model
+over `improv.max_cells`) aborts the COMMIT, and the error names the model.
+
+```sql
+SELECT improv.set_sync_mode('plan', 'commit');
+BEGIN;
+UPDATE sales SET price = 11 WHERE product = 'Widget';
+UPDATE sales SET qty = qty + 1 WHERE product = 'Gadget';
+SELECT value FROM improv_plan.revenue WHERE product = 'Widget';  -- still the old results
+COMMIT;                                                           -- one recompute, here
+```
+
+From `docs/reviews/bench/bench-pg-commit.sh` (c7i.8xlarge, release build,
+10 000 input cells, medians of 9, wall time of the whole round trip): one
+transaction of 100 single-row updates takes **82 ms** in commit mode and
+6574 ms in trigger mode (a recompute per statement); a single one-row
+UPDATE takes 77 ms in both.
 
 ### Logical mode (default)
 

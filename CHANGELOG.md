@@ -13,6 +13,21 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **pg_improv `commit` sync mode** (pg_improv 0.10.0;
+  `improv.set_sync_mode(model, 'commit')`). Results commit or roll back
+  with the writer's transaction, as in `trigger` mode, but nothing is
+  installed on your tables, and the model recomputes once per transaction,
+  just before COMMIT (or PREPARE), not once per statement: 100 one-row
+  updates in one transaction on a 10k-cell model commit in 82 ms against
+  6.6 s in trigger mode. A read before COMMIT sees the old results
+  (`improv.recalc(model)` in the transaction reads your writes), and a
+  recompute that fails aborts the COMMIT with an error naming the model.
+  Needs `pg_improv` in `shared_preload_libraries` (or
+  `session_preload_libraries`); `set_sync_mode` refuses it otherwise. As
+  with trigger mode, the role that enables it needs the TRIGGER privilege
+  on the bound tables, and every writer must be able to write the result
+  tables. `ALTER EXTENSION pg_improv UPDATE` from 0.9.0 adds it.
+
 - **Distributions** (phase P7, 72): Gnumeric's `BERNOULLI`, `CAUCHY`,
   `EXPPOWDIST`, `GEOMDIST`, `LANDAU`, `LAPLACE`, `LOGISTIC`, `PARETO`,
   `RAYLEIGH`, `RAYLEIGHTAIL`, `SNORM.DIST.RANGE`, `OWENT`,
