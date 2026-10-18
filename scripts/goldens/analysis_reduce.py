@@ -89,6 +89,17 @@ DATA = {
                       [1, 1, 2, 1, 3, 8, 1, 2, 15, 1, 2, 40]]],
         "C": [["T"], [[3] * 12, [7] * 12]],
     }},
+    # Logarithmic data: rising (sign +1) and falling (sign -1), and a
+    # straight line (no logarithmic bend).
+    "L": {"cats": {"T": 8, "G": 2, "K": 12}, "m": {
+        "X": [["T"], [[1, 2, 3, 4, 5, 6, 7, 8], [1, 2, 3, 4, 5, 6, 7, 8]]],
+        "Y": [["T"], [[-0.0294, 3.1864, 4.7689, 5.7183, 6.5222, 7.1442, 7.5954, 8.0847],
+                      [5.4444, 5.1289, 4.9118, 4.5435, 4.2289, 3.8026, 3.1772, 2.4263]]],
+        "W": [["T"], [[1, 2, 3, 4, 5, 6, 7, 8], [2, 4, 6, 8, 10, 12, 14, 16]]],
+        "N": [["T"], [[1, 2, 3, 4, 5, 6, 7, 0], [1, 2, 3, 4, 5, 6, 7, -1]]],
+        "E": [["T"], [[1.6487, 2.7183, 4.4817, 7.3891, 12.1825, 20.0855, 33.1155, 54.5982],
+                      [0.5, 0.9, 1.0, 1.1, 1.15, 1.2, 1.22, 1.23]]],
+    }},
     "U": {"cats": {"T": 1}, "m": {"Z": [["T"], [[4]]]}},
     "P": {"cats": {"T": 2}, "m": {"Z": [["T"], [[3, 8]]]}},
 }
@@ -174,6 +185,18 @@ for t in ("ADTEST", "CVMTEST", "LKSTEST", "SFTEST"):
     for ds in ("S", "D"):
         case(ds, f"{t}(Y OVER T)", GN, sheet=f"INDEX({t}(Y),1)")
         case(ds, f"{t}.STAT(Y OVER T)", GN, sheet=f"INDEX({t}(Y),2)")
+
+
+# --- group 5: logarithmic fits (Gnumeric) ---------------------------------------
+case("L", "LOGFIT(Y, X OVER T INTO K)", GN)
+case("L", "LOGFIT(W, X OVER T INTO K)", GN)
+case("L", "LOGFIT(X, Y OVER T INTO K)", GN)
+case("L", "LOGFIT(E, X OVER T INTO K)", GN)
+case("L", "LOGFIT(X, E OVER T INTO K)", GN)
+for opts in ("", ", TRUE, TRUE", ", FALSE, TRUE", ", FALSE", ", TRUE, FALSE"):
+    case("L", f"LOGREG(Y, X OVER T{opts} INTO K)", GN)
+case("L", "LOGREG(X, Y OVER T, TRUE, TRUE INTO K)", GN)
+case("L", "LOGREG(Y, N OVER T INTO K)", GN)
 
 
 # --- layout -------------------------------------------------------------------

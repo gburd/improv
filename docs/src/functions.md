@@ -497,6 +497,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CVMTEST.STAT(Measure OVER Category)` | number | the Cramér–von Mises statistic W², Gnumeric's CVMTEST second value |
 | `LKSTEST.STAT(Measure OVER Category)` | number | the Lilliefors statistic D, Gnumeric's LKSTEST second value |
 | `SFTEST.STAT(Measure OVER Category)` | number | the Shapiro–Francia statistic W', Gnumeric's SFTEST second value |
+| `LOGREG(number OVER category, number OVER category, [boolean], [boolean])` | number | LOGREG(y, x OVER T, [affine], [stats] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row |
+| `LOGFIT(number OVER category, number OVER category)` | number | LOGFIT(y, x OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough |
 
 ## Financial
 

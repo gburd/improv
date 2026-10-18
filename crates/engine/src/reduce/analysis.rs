@@ -9,6 +9,7 @@ use super::Rows;
 use crate::builtins::{err, n_or, num};
 use crate::CellValue;
 
+mod logfit;
 mod matrix;
 mod normality;
 mod series;
@@ -91,6 +92,8 @@ pub(super) fn array(id: u32, rows: &Rows, params: &[CellValue]) -> Vec<CellValue
         1853 => matrix::pseudo_inverse(rows, params),
         1854 => matrix::cholesky(rows),
         1855 => matrix::eigen(rows),
+        1867 => logfit::logreg(rows, params),
+        1868 => logfit::logfit(rows),
         _ => Err(err::NAME),
     };
     out.unwrap_or_else(|c| vec![CellValue::Err(c)])

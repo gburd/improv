@@ -8,7 +8,7 @@
 use super::{f, over, Arg, Category, FnDef, Kind, Over, Ret};
 use crate::value::ValueType;
 
-use Arg::Number as N;
+use Arg::{Boolean as B, Number as N};
 use Category::{Math as M, Statistical as St};
 use Kind::{Aggregate as Ag, Array as Ar, PerItem as P};
 
@@ -33,4 +33,6 @@ pub(super) static ANALYSIS: &[FnDef] = &[
     over(f(1864, "CVMTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Cramér–von Mises statistic W², Gnumeric's CVMTEST second value"), Over::At(&[0])),
     over(f(1865, "LKSTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Lilliefors statistic D, Gnumeric's LKSTEST second value"), Over::At(&[0])),
     over(f(1866, "SFTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Shapiro–Francia statistic W', Gnumeric's SFTEST second value"), Over::At(&[0])),
+    over(f(1867, "LOGREG", Ar, St, &[N, N, B, B], 2, false, NUM, "LOGREG(y, x OVER T, [affine], [stats] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row"), Over::At(&[0, 1])),
+    over(f(1868, "LOGFIT", Ar, St, &[N, N], 2, false, NUM, "LOGFIT(y, x OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough"), Over::At(&[0, 1])),
 ];
