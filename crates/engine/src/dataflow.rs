@@ -1158,8 +1158,8 @@ mod tests {
 
     /// Both operands carry an extra dim the other lacks:
     /// `A[T,P] * B[P,R]` lands on `[T,P,R]` in the dataflow builder, whichever
-    /// side is on the left and whether or not a `Join` feeds the map. (The
-    /// compiler rejects such formulas: one dim must be a subset of the other.)
+    /// side is on the left and whether or not a `Join` feeds the map; the
+    /// compiler accepts it (they share P), and refuses disjoint operands.
     #[test]
     fn broadcast_disjoint_extra_dims() {
         let a = vec![
@@ -1224,7 +1224,24 @@ mod tests {
         ] {
             assert_eq!(run_plan(plan.clone(), input.clone()), want, "{plan:?}");
         }
+        // The compiler accepts the shared-category join too (a matrix
+        // product's first step) and agrees with the hand-built plans.
         let m = bcast_model(&[1, 2], &a, &[2, 3], &b, BinaryOp::Mul, true);
+        let got: BTreeMap<CoordKey, f64> = evaluate(&m, &[MeasureId(102)]).unwrap()
+            [&MeasureId(102)]
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_num().unwrap()))
+            .collect();
+        assert_eq!(got, want);
+        // Disjoint categories are still refused.
+        let m = bcast_model(
+            &[1],
+            &[(vec![10], 1.0)],
+            &[3],
+            &[(vec![30], 2.0)],
+            BinaryOp::Mul,
+            true,
+        );
         assert!(matches!(
             evaluate(&m, &[MeasureId(102)]),
             Err(EngineError::Compile(
@@ -1316,8 +1333,9 @@ mod tests {
             };
             let (a, b) = (cells(&ac, &a_vals), cells(&bc, &b_vals));
             let m = bcast_model(&ac, &a, &bc, &b, op, a_left);
+            // Refused only when neither is a subset and they share nothing.
             let subset = |x: u8, y: u8| x & y == x;
-            if !subset(a_mask, b_mask) && !subset(b_mask, a_mask) {
+            if !subset(a_mask, b_mask) && !subset(b_mask, a_mask) && a_mask & b_mask == 0 {
                 proptest::prop_assert!(evaluate(&m, &[MeasureId(102)]).is_err());
                 return Ok(());
             }
@@ -1833,6 +1851,63 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    /// Operands sharing a category join over it: the matrix product is
+    /// `AB = A * B` then `SUM(AB OVER K)`.
+    #[test]
+    fn matrix_product_by_join() {
+        let (r, k, c) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        let mut m = Model::default();
+        for (cat, name, base) in [(r, "R", 10), (k, "K", 20), (c, "C", 30)] {
+            m.add_category(cat, name);
+            for i in 0..2 {
+                m.add_item(ItemId(base + i), cat, format!("{name}{i}"));
+            }
+        }
+        let input = |m: &mut Model, id: u32, name: &str, cats: Vec<CategoryId>| {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        };
+        input(&mut m, 100, "A", vec![r, k]);
+        input(&mut m, 101, "B", vec![k, c]);
+        // A = [[1, 2], [3, 4]], B = [[5, 6], [7, 8]].
+        let at = |a: (CategoryId, u32), b: (CategoryId, u32)| {
+            Coordinate::from_pairs([(a.0, ItemId(a.1)), (b.0, ItemId(b.1))])
+        };
+        for (i, j, v) in [(0, 0, 1.0), (0, 1, 2.0), (1, 0, 3.0), (1, 1, 4.0)] {
+            m.set_input(
+                MeasureId(100),
+                at((r, 10 + i), (k, 20 + j)),
+                Value::Number(v),
+            );
+        }
+        for (i, j, v) in [(0, 0, 5.0), (0, 1, 6.0), (1, 0, 7.0), (1, 1, 8.0)] {
+            m.set_input(
+                MeasureId(101),
+                at((k, 20 + i), (c, 30 + j)),
+                Value::Number(v),
+            );
+        }
+        define(&mut m, 200, vec![r, k, c], "AB = A * B");
+        define(&mut m, 201, vec![r, c], "P = SUM(AB OVER K)");
+        let out = evaluate(&m, &[MeasureId(201)]).unwrap();
+        let p = |i: u32, j: u32| {
+            out[&MeasureId(201)]
+                .get(&key(&[(1, 10 + i), (3, 30 + j)]))
+                .cloned()
+        };
+        // [[19, 22], [43, 50]].
+        assert_eq!(p(0, 0), Some(CellValue::num(19.0)));
+        assert_eq!(p(0, 1), Some(CellValue::num(22.0)));
+        assert_eq!(p(1, 0), Some(CellValue::num(43.0)));
+        assert_eq!(p(1, 1), Some(CellValue::num(50.0)));
     }
 
     /// Named LAMBDAs: defined once, called by name, expanded when compiled

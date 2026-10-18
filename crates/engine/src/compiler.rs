@@ -543,15 +543,26 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             let rt = infer(ctx, target, r)?;
             let value_type = binop_result_type(*op, &lt, &rt)?;
 
-            // Broadcastable: one dim must be a subset of the other, or one
-            // side reads no measure (positions and literals are not data, so
-            // `POSITION(R) * 10 + POSITION(C)` spans R × C; two measures over
-            // unrelated categories are refused as a likely mistake).
+            // Broadcastable: one dim is a subset of the other; or they share
+            // a category, a join over it (`A[R, K] * B[K, C]` spans R × K × C,
+            // so `SUM(AB OVER K)` is the matrix product); or one side reads
+            // no measure (positions and literals are not data, so
+            // `POSITION(R) * 10 + POSITION(C)` spans R × C). Two measures
+            // with no category in common are refused as a likely mistake.
+            let shares = lt
+                .ty
+                .dim
+                .categories
+                .iter()
+                .any(|c| rt.ty.dim.categories.contains(c));
             let dim = if lt.ty.dim.is_subset_of(&rt.ty.dim) {
                 rt.ty.dim.clone()
             } else if rt.ty.dim.is_subset_of(&lt.ty.dim) {
                 lt.ty.dim.clone()
-            } else if l.referenced_measures().is_empty() || r.referenced_measures().is_empty() {
+            } else if shares
+                || l.referenced_measures().is_empty()
+                || r.referenced_measures().is_empty()
+            {
                 lt.ty.dim.union(&rt.ty.dim)
             } else {
                 return Err(CompileError::DimensionMismatch(format!(

@@ -23,6 +23,10 @@ positional forms and recurrences, lookups, list results, `LET` and
   `.STAT.MULT`, `.SEASONALITY`, a port of LibreOffice's Holt–Winters, and
   `.CONFINT`/`.PI.MULT` for seasonality 0. 289 goldens (Gnumeric 1.12,
   LibreOffice), most to 1e-12.
+- **Operands that share a category join over it**: `A[R, K] * B[K, C]`
+  spans R × K × C, so a matrix product is `AB = A * B` then `SUM(AB OVER
+  K)` (in place of `MMULT`). Measures with no category in common are still
+  refused.
 
 - **Math extras** (phase P7, 46): `LAMBERTW`, `AGM`, `GD`, `ILOG`,
   `REDUCEPI`, `FIB`; number theory (`ISPRIME`, `ITHPRIME`, `PFACTOR`,
