@@ -438,6 +438,12 @@ pub(crate) fn beta_reg(a: f64, b: f64, x: f64) -> f64 {
     if a > 1000.0 && b > 1000.0 && x > 0.0 && x < 1.0 {
         return beta_reg_large(a, b, x);
     }
+    if x < 1.0 && x > 1.0 - 1e-14 {
+        // statrs takes an x within 1e-15 of 1 as 1 (its front factor is
+        // then 0): I_x(1, ½) at 1 − 2⁻⁵³ came out 1, not 1 − 1.05e-8. By
+        // symmetry, on 1 − x (exact this close to 1) instead.
+        return 1.0 - sb::checked_beta_reg(b, a, 1.0 - x).unwrap_or(f64::NAN);
+    }
     sb::checked_beta_reg(a, b, x).unwrap_or(f64::NAN)
 }
 
@@ -1631,5 +1637,18 @@ mod tests {
         assert!((f_sf(1e6, 2.0, 2.0) * (1.0 + 1e6) - 1.0).abs() < 1e-12);
         // Past the median, the beta side as before.
         assert!((f_sf(3.0, 2.0, 2.0) - 0.25).abs() < 1e-15);
+    }
+
+    /// I_x(a, b) within 1e-15 of x = 1: statrs takes it as 1, so
+    /// R.PBETA(0.9999999999999999, 1, 0.5) was 1, not Gnumeric's
+    /// 0.9999999894632879 (1 − √(1 − x)).
+    #[test]
+    fn beta_reg_just_below_1() {
+        let x = 1.0 - f64::EPSILON / 2.0;
+        assert!((beta_reg(1.0, 0.5, x) - 0.999_999_989_463_287_9).abs() < 2e-16);
+        assert!((beta_reg(0.5, 1.0, 1.0 - x) - 1.053_671_212_772_350_8e-8).abs() < 1e-22);
+        assert_eq!(beta_reg(2.0, 3.0, 1.0), 1.0);
+        // I_x(2, 3) = 1 − 4(1−x)³ + 3(1−x)⁴ near 1: 1 to the last bit.
+        assert_eq!(beta_reg(2.0, 3.0, 1.0 - 1e-15), 1.0);
     }
 }
