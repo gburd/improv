@@ -1,6 +1,7 @@
 //! Evaluation of the P7 math extras (ids 1450–1549): special functions,
 //! number theory, floating point, calendars, telephone traffic and text.
 
+mod number;
 mod width;
 
 use super::{domain, err, n, ok_num, ok_text, t, R};
@@ -8,7 +9,29 @@ use crate::CellValue;
 
 /// Evaluate function `id` (already type- and arity-checked).
 pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
+    let int = |i: usize| n(a, i).map(f64::floor);
     match id {
+        // --- special functions ---
+        1451 => ok_num(agm(n(a, 0)?, n(a, 1)?)),
+        1452 => ok_num(2.0 * (n(a, 0)? / 2.0).tanh().atan()),
+        1453 => ok_num(ilog(n(a, 0)?, if a.len() > 1 { n(a, 1)? } else { 10.0 })?),
+        1455 => ok_num(fib(int(0)?)?),
+        // --- number theory ---
+        1460..=1470 => number::eval(id, int(0)?),
+        // --- floating point ---
+        1475 => ok_num(f64::MAX),
+        1476 => ok_num(f64::MIN_POSITIVE),
+        1477 => ok_num(2.0),
+        1478 => {
+            let x = n(a, 0)?;
+            let y = match &a[1] {
+                CellValue::Text(s) if s == "+" => f64::INFINITY,
+                CellValue::Text(s) if s == "-" => f64::NEG_INFINITY,
+                CellValue::Text(_) => return Err(err::VALUE),
+                _ => n(a, 1)?,
+            };
+            ok_num(next_after(x, y))
+        }
         // --- text ---
         1480 => ok_text(asc(&t(a, 0)?)),
         1481 => ok_text(jis(&t(a, 0)?)),
@@ -25,6 +48,92 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
 /// digits, so `0.29*100` (28.999…) floors to 29.
 fn approx_floor(x: f64) -> f64 {
     format!("{x:.14e}").parse::<f64>().unwrap_or(x).floor()
+}
+
+// --- special functions ------------------------------------------------------------
+
+/// Gnumeric's `gnm_agm`: at most 20 steps (quadratic convergence), with
+/// a power-of-two rescale when a·b under- or overflows.
+fn agm(mut a: f64, mut b: f64) -> f64 {
+    if a < 0.0 || b < 0.0 || (a * b).is_nan() {
+        return f64::NAN;
+    }
+    if a == b || a == 0.0 || b == 0.0 {
+        return a.min(b);
+    }
+    let mut scale = 1.0;
+    let ab = a * b;
+    if ab == 0.0 || ab.is_infinite() {
+        let (ea, eb) = (libm::frexp(a).1, libm::frexp(b).1);
+        scale = libm::ldexp(1.0, -(ea + eb) / 2);
+        a *= scale;
+        b *= scale;
+    }
+    for _ in 1..20 {
+        (a, b) = ((a + b) / 2.0, (a * b).sqrt());
+        if (a - b).abs() < a * f64::EPSILON {
+            break;
+        }
+    }
+    a / scale
+}
+
+/// The largest k with baseᵏ ≤ x. Exact for a power-of-two base (from the
+/// exponent) and for 1 ≤ x < 2¹²⁷ (integer powers); elsewhere from ln x/ln b
+/// corrected by one step either way.
+fn ilog(x: f64, base: f64) -> Result<f64, u8> {
+    // Gnumeric accepts only integer bases ≥ 2 (others are "not implemented").
+    domain(x > 0.0 && x.is_finite() && base >= 2.0 && base.fract() == 0.0 && base.is_finite())?;
+    let (m, e) = libm::frexp(base);
+    if m == 0.5 {
+        // base = 2^(e−1): floor(floor(log₂ x)/(e−1)).
+        let l2 = libm::ilogb(x);
+        return Ok(f64::from(l2.div_euclid(e - 1)));
+    }
+    if (1.0..1.7e38).contains(&x) {
+        let (xi, bi) = (x as u128, base as u128);
+        let (mut k, mut p) = (0.0, bi);
+        while p <= xi {
+            k += 1.0;
+            match p.checked_mul(bi) {
+                Some(q) => p = q,
+                None => break,
+            }
+        }
+        return Ok(k);
+    }
+    // ponytail: f64 check, wrong only within an ulp of an inexact power.
+    let k = (x.ln() / base.ln()).floor();
+    Ok(if base.powf(k + 1.0) <= x {
+        k + 1.0
+    } else if base.powf(k) > x {
+        k - 1.0
+    } else {
+        k
+    })
+}
+
+/// F(n) for n ≥ 1 by addition: exact to F(78), then within about n ulps.
+fn fib(n: f64) -> Result<f64, u8> {
+    domain((1.0..=1476.0).contains(&n))?;
+    let (mut a, mut b) = (0.0f64, 1.0f64);
+    for _ in 1..n as u32 {
+        (a, b) = (b, a + b);
+    }
+    Ok(b)
+}
+
+/// C's `nextafter`.
+fn next_after(x: f64, y: f64) -> f64 {
+    if x.is_nan() || y.is_nan() {
+        f64::NAN
+    } else if y > x {
+        x.next_up()
+    } else if y < x {
+        x.next_down()
+    } else {
+        y
+    }
 }
 
 // --- width folding (ASC, JIS) ------------------------------------------------
@@ -324,6 +433,33 @@ mod tests {
     #[test]
     fn unknown_id_is_name() {
         assert_eq!(eval(1549, &[]), Err(err::NAME));
+    }
+
+    #[test]
+    fn special_branches_the_goldens_miss() {
+        // AGM: NaN, a rescale on underflow and on overflow.
+        assert!(agm(f64::NAN, 1.0).is_nan());
+        let tiny = agm(1e-200, 4e-200);
+        assert!((tiny / agm(1.0, 4.0) - 1e-200).abs() < 1e-212, "{tiny}");
+        let huge = agm(1e200, 4e200);
+        assert!((huge / agm(1.0, 4.0) / 1e200 - 1.0).abs() < 1e-14, "{huge}");
+        // ILOG: x ≥ 2¹²⁷ and x < 1 take the f64 path.
+        assert_eq!(ilog(1e300, 10.0), Ok(300.0));
+        assert_eq!(ilog(0.001, 10.0), Ok(-3.0));
+        assert_eq!(ilog(0.0011, 10.0), Ok(-3.0));
+        assert_eq!(ilog(1e-300, 3.0), Ok(-629.0));
+        assert_eq!(ilog(3.4e38, 3.0), Ok(80.0));
+        assert_eq!(ilog(f64::MAX, 255.0), Ok(128.0));
+        assert_eq!(ilog(f64::INFINITY, 10.0), Err(err::NUM));
+        // FLT.NEXTAFTER: NaN, downward, other text.
+        assert!(next_after(f64::NAN, 1.0).is_nan());
+        assert_eq!(next_after(1.0, 0.0), 1.0 - f64::EPSILON / 2.0);
+        let x = CellValue::num(1.0);
+        assert_eq!(eval(1478, &[x.clone(), s("up")]), Err(err::VALUE));
+        assert_eq!(
+            text(1478, &[x, s("-")]),
+            CellValue::num(1.0 - f64::EPSILON / 2.0)
+        );
     }
 
     #[test]

@@ -166,6 +166,25 @@ Angles are in radians.
 | `SERIESSUM(number, number, number, number OVER category)` | number | Σ cᵢ·x^(n + i·m), the coefficients c in item order (i from 0) |
 | `POLYNOMIAL(number, number OVER category)` | number | Σ cᵢ·xⁱ, the coefficients c in item order (the constant c₀ first) |
 | `PERCENTOF(number OVER category, number OVER category)` | number | Σ subset / Σ all |
+| `AGM(number, number)` | number | the arithmetic-geometric mean of a, b ≥ 0 |
+| `GD(number)` | number | the Gudermannian function: 2·atan(tanh(x/2)) |
+| `ILOG(number, [number])` | number | the integer logarithm: the largest k with baseᵏ ≤ x, for x > 0 and an integer base ≥ 2 (default 10) |
+| `FIB(number)` | number | the n-th Fibonacci number, n ≥ 1 (truncated); #NUM! past n = 1476, where it overflows |
+| `ISPRIME(number)` | boolean | whether n is prime (FALSE below 2) |
+| `ITHPRIME(number)` | number | the i-th prime, i from 1 to 10⁷ (Gnumeric: 10⁸) |
+| `PFACTOR(number)` | number | the smallest prime factor of n ≥ 2 (#VALUE! below 2) |
+| `NT_D(number)` | number | the number of divisors of n ≥ 1 |
+| `NT_SIGMA(number)` | number | the sum of the divisors of n ≥ 1 |
+| `NT_PHI(number)` | number | Euler's totient: how many of 1…n are coprime to n ≥ 1 |
+| `NT_MU(number)` | number | the Möbius function of n ≥ 1: 0 if a square divides n, else (−1)^(number of prime factors) |
+| `NT_OMEGA(number)` | number | the number of distinct prime factors of n ≥ 1 |
+| `NT_PI(number)` | number | how many primes are ≤ n (0 below 2; n up to 179 424 673, the 10⁷-th prime) |
+| `NT_RADICAL(number)` | number | the product of the distinct prime factors of n ≥ 1 |
+| `PARTITIONS(number)` | number | the number of ways to write n ≥ 0 as a sum of positive integers (n up to 4000) |
+| `FLT.MAX()` | number | the largest finite double, 1.7976931348623157e308 |
+| `FLT.MIN()` | number | the smallest positive normal double, 2.2250738585072014e-308 |
+| `FLT.RADIX()` | number | the floating-point base, 2 |
+| `FLT.NEXTAFTER(number, value)` | number | the next double after x toward y ("+" or "-" for the infinities); y itself if y = x |
 
 ## Rounding
 

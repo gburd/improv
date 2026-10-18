@@ -52,3 +52,125 @@ ARABIC("MMMM")	{"error": "#VALUE!"}	LibreOffice
 ARABIC("VX")	{"error": "#VALUE!"}	LibreOffice
 ARABIC("-MMXI")	-2011	Excel docs
 ARABIC(" X ")	10	Excel docs
+AGM(1,2)	1.4567910310469068	Gnumeric 1.12
+AGM(24,6)	13.458171481725616	Gnumeric 1.12
+AGM(0,5)	0	Gnumeric 1.12
+AGM(3,3)	3	Gnumeric 1.12
+AGM(POWER(10,-300),1)	0.002269406194157821	Gnumeric 1.12
+AGM(-1,2)	{"error": "#NUM!"}	Gnumeric 1.12
+GD(0)	0	Gnumeric 1.12
+GD(1)	0.8657694832396586	Gnumeric 1.12
+GD(-2.5)	-1.4069935689361537	Gnumeric 1.12
+GD(20)	1.5707963226725894	Gnumeric 1.12
+GD(POWER(10,-10))	1e-10	Gnumeric 1.12
+ILOG(1000)	3	Gnumeric 1.12
+ILOG(999)	2	Gnumeric 1.12
+ILOG(POWER(10,22),10)	22	Gnumeric 1.12
+ILOG(0.001,10)	-3	Gnumeric 1.12
+ILOG(1024,2)	10	Gnumeric 1.12
+ILOG(1023,2)	9	Gnumeric 1.12
+ILOG(80,3)	3	Gnumeric 1.12
+ILOG(81,3)	4	Gnumeric 1.12
+ILOG(POWER(10,300),7)	354	Gnumeric 1.12
+ILOG(0.3,2)	-2	Gnumeric 1.12
+ILOG(0,10)	{"error": "#NUM!"}	Gnumeric 1.12
+ILOG(10,1)	{"error": "#NUM!"}	Gnumeric 1.12
+ILOG(10,0)	{"error": "#NUM!"}	Gnumeric 1.12
+ILOG(10,1.5)	{"error": "#NUM!"}	Gnumeric 1.12
+FIB(1)	1	Gnumeric 1.12
+FIB(2)	1	Gnumeric 1.12
+FIB(12)	144	Gnumeric 1.12
+FIB(46)	1836311903	Gnumeric 1.12
+FIB(78)	8944394323791488	Gnumeric 1.12
+FIB(2.9)	1	Gnumeric 1.12
+FIB(0)	{"error": "#NUM!"}	Gnumeric 1.12
+FIB(-3)	{"error": "#NUM!"}	Gnumeric 1.12
+FIB(1477)	{"error": "#NUM!"}	Gnumeric 1.12
+ISPRIME(2)	true	Gnumeric 1.12
+ISPRIME(1)	false	Gnumeric 1.12
+ISPRIME(0)	false	Gnumeric 1.12
+ISPRIME(-7)	false	Gnumeric 1.12
+ISPRIME(97)	true	Gnumeric 1.12
+ISPRIME(91)	false	Gnumeric 1.12
+ISPRIME(1000000007)	true	Gnumeric 1.12
+ISPRIME(561)	false	Gnumeric 1.12
+ISPRIME(7.9)	true	Gnumeric 1.12
+ISPRIME(4503599627370449)	true	Gnumeric 1.12
+ITHPRIME(1)	2	Gnumeric 1.12
+ITHPRIME(2)	3	Gnumeric 1.12
+ITHPRIME(10)	29	Gnumeric 1.12
+ITHPRIME(1000)	7919	Gnumeric 1.12
+ITHPRIME(10000000)	179424673	Gnumeric 1.12
+ITHPRIME(0)	{"error": "#NUM!"}	Gnumeric 1.12
+ITHPRIME(2.5)	3	Gnumeric 1.12
+PFACTOR(2)	2	Gnumeric 1.12
+PFACTOR(91)	7	Gnumeric 1.12
+PFACTOR(97)	97	Gnumeric 1.12
+PFACTOR(1)	{"error": "#VALUE!"}	Gnumeric 1.12
+PFACTOR(1000000007)	1000000007	Gnumeric 1.12
+PFACTOR(4503599627370449)	4503599627370449	Gnumeric 1.12
+PFACTOR(4503599627370495)	3	Gnumeric 1.12
+NT_D(1)	1	Gnumeric 1.12
+NT_D(12)	6	Gnumeric 1.12
+NT_D(720720)	240	Gnumeric 1.12
+NT_D(0)	{"error": "#NUM!"}	Gnumeric 1.12
+NT_D(4503599627370495)	128	Gnumeric 1.12
+NT_SIGMA(1)	1	Gnumeric 1.12
+NT_SIGMA(12)	28	Gnumeric 1.12
+NT_SIGMA(97)	98	Gnumeric 1.12
+NT_SIGMA(0)	{"error": "#NUM!"}	Gnumeric 1.12
+NT_SIGMA(1000000)	2480437	Gnumeric 1.12
+NT_PHI(1)	1	Gnumeric 1.12
+NT_PHI(9)	6	Gnumeric 1.12
+NT_PHI(97)	96	Gnumeric 1.12
+NT_PHI(1000000)	400000	Gnumeric 1.12
+NT_PHI(0)	{"error": "#NUM!"}	Gnumeric 1.12
+NT_MU(1)	1	Gnumeric 1.12
+NT_MU(6)	1	Gnumeric 1.12
+NT_MU(30)	-1	Gnumeric 1.12
+NT_MU(12)	0	Gnumeric 1.12
+NT_MU(97)	-1	Gnumeric 1.12
+NT_MU(0)	{"error": "#NUM!"}	Gnumeric 1.12
+NT_OMEGA(1)	0	Gnumeric 1.12
+NT_OMEGA(12)	2	Gnumeric 1.12
+NT_OMEGA(30030)	6	Gnumeric 1.12
+NT_OMEGA(1024)	1	Gnumeric 1.12
+NT_OMEGA(0)	{"error": "#NUM!"}	Gnumeric 1.12
+NT_PI(-5)	0	Gnumeric 1.12
+NT_PI(1)	0	Gnumeric 1.12
+NT_PI(2)	1	Gnumeric 1.12
+NT_PI(100)	25	Gnumeric 1.12
+NT_PI(1000000)	78498	Gnumeric 1.12
+NT_PI(179424673)	10000000	Gnumeric 1.12
+NT_RADICAL(1)	1	Gnumeric 1.12
+NT_RADICAL(12)	6	Gnumeric 1.12
+NT_RADICAL(1024)	2	Gnumeric 1.12
+NT_RADICAL(30030)	30030	Gnumeric 1.12
+NT_RADICAL(0)	{"error": "#NUM!"}	Gnumeric 1.12
+NT_RADICAL(4503599627370495)	4503599627370495	Gnumeric 1.12
+FLT.MAX()	1.7976931348623157e+308	Gnumeric 1.12
+FLT.MIN()	2.2250738585072014e-308	Gnumeric 1.12
+FLT.RADIX()	2	Gnumeric 1.12
+FLT.NEXTAFTER(1,2)	1.0000000000000002	Gnumeric 1.12
+FLT.NEXTAFTER(1,0)	0.9999999999999999	Gnumeric 1.12
+FLT.NEXTAFTER(0,"+")	5e-324	Gnumeric 1.12
+FLT.NEXTAFTER(-1,"-")	-1.0000000000000002	Gnumeric 1.12
+FLT.NEXTAFTER(3,3)	3	Gnumeric 1.12
+FLT.NEXTAFTER(1,"x")	{"error": "#VALUE!"}	Gnumeric 1.12
+ILOG(0.2,4)	-2	exact
+ILOG(0.0625,4)	-2	exact
+FIB(47)	2971215073	exact
+FIB(79)	1.447233402467622e+16	exact
+FIB(100)	3.542248481792619e+20	exact
+FIB(1476)	1.3069892237633993e+308	exact
+PARTITIONS(0)	1	exact
+PARTITIONS(5)	7	exact
+PARTITIONS(100)	190569292	exact
+PARTITIONS(1000)	2.4061467864032624e+31	exact
+PARTITIONS(4000)	1.0241500647765513e+66	exact
+PARTITIONS(10.5)	42	exact
+PARTITIONS(-1)	{"error": "#NUM!"}	Gnumeric source
+PARTITIONS(4001)	{"error": "#NUM!"}	Improv limit
+ITHPRIME(10000001)	{"error": "#NUM!"}	Improv limit
+NT_PI(179424674)	{"error": "#NUM!"}	Improv limit
+ISPRIME(4503599627370497)	{"error": "#NUM!"}	Improv limit

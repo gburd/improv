@@ -87,6 +87,72 @@ lo('ARABIC("-MMXI")', excel=-2011.0)
 lo('ARABIC(" X ")', excel=10.0)
 
 
+# --- special functions -------------------------------------------------------
+gn("num", "AGM(1,2)", "AGM(24,6)", "AGM(0,5)", "AGM(3,3)", "AGM(POWER(10,-300),1)", "AGM(-1,2)")
+gn("num", "GD(0)", "GD(1)", "GD(-2.5)", "GD(20)", "GD(POWER(10,-10))")
+gn("num", "ILOG(1000)", "ILOG(999)", "ILOG(POWER(10,22),10)", "ILOG(0.001,10)", "ILOG(1024,2)",
+   "ILOG(1023,2)", "ILOG(80,3)", "ILOG(81,3)", "ILOG(POWER(10,300),7)", "ILOG(0.3,2)", "ILOG(0,10)",
+   "ILOG(10,1)", "ILOG(10,0)", "ILOG(10,1.5)")
+# Gnumeric truncates toward zero for x < 1 and a base 2^k, k > 1: it says
+# ILOG(0.2,4) = -1, but 4^-1 = 0.25 > 0.2.
+HAND += [("ILOG(0.2,4)", -2.0, "exact"), ("ILOG(0.0625,4)", -2.0, "exact")]
+gn("num", "FIB(1)", "FIB(2)", "FIB(12)", "FIB(46)", "FIB(78)", "FIB(2.9)", "FIB(0)", "FIB(-3)",
+   "FIB(1477)")
+# Gnumeric's Binet form is inexact past FIB(46) (FIB(47) = 2971215073.000005)
+# and overflows its pow() at 1475; the exact values, rounded to a double:
+def fib(n):
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+
+def partitions(n):
+    p = [1] + [0] * n
+    for m in range(1, n + 1):
+        k = 1
+        while k * (3 * k - 1) // 2 <= m:
+            sg = 1 if k % 2 else -1
+            p[m] += sg * p[m - k * (3 * k - 1) // 2]
+            if k * (3 * k + 1) // 2 <= m:
+                p[m] += sg * p[m - k * (3 * k + 1) // 2]
+            k += 1
+    return p[n]
+
+
+HAND += [(f"FIB({n})", float(fib(n)), "exact") for n in (47, 79, 100, 1476)]
+
+# --- number theory -----------------------------------------------------------
+gn("bool", "ISPRIME(2)", "ISPRIME(1)", "ISPRIME(0)", "ISPRIME(-7)", "ISPRIME(97)", "ISPRIME(91)",
+   "ISPRIME(1000000007)", "ISPRIME(561)", "ISPRIME(7.9)", "ISPRIME(4503599627370449)")
+gn("num", "ITHPRIME(1)", "ITHPRIME(2)", "ITHPRIME(10)", "ITHPRIME(1000)", "ITHPRIME(10000000)",
+   "ITHPRIME(0)", "ITHPRIME(2.5)",
+   "PFACTOR(2)", "PFACTOR(91)", "PFACTOR(97)", "PFACTOR(1)", "PFACTOR(1000000007)",
+   "PFACTOR(4503599627370449)", "PFACTOR(4503599627370495)",
+   "NT_D(1)", "NT_D(12)", "NT_D(720720)", "NT_D(0)", "NT_D(4503599627370495)",
+   "NT_SIGMA(1)", "NT_SIGMA(12)", "NT_SIGMA(97)", "NT_SIGMA(0)", "NT_SIGMA(1000000)",
+   "NT_PHI(1)", "NT_PHI(9)", "NT_PHI(97)", "NT_PHI(1000000)", "NT_PHI(0)",
+   "NT_MU(1)", "NT_MU(6)", "NT_MU(30)", "NT_MU(12)", "NT_MU(97)", "NT_MU(0)",
+   "NT_OMEGA(1)", "NT_OMEGA(12)", "NT_OMEGA(30030)", "NT_OMEGA(1024)", "NT_OMEGA(0)",
+   "NT_PI(-5)", "NT_PI(1)", "NT_PI(2)", "NT_PI(100)", "NT_PI(1000000)", "NT_PI(179424673)",
+   "NT_RADICAL(1)", "NT_RADICAL(12)", "NT_RADICAL(1024)", "NT_RADICAL(30030)", "NT_RADICAL(0)",
+   "NT_RADICAL(4503599627370495)")
+# Gnumeric 1.12.57 has no PARTITIONS (later releases do): exact values.
+HAND += [(f"PARTITIONS({n})", float(partitions(int(n))), "exact")
+         for n in (0, 5, 100, 1000, 4000, 10.5)]
+HAND += [("PARTITIONS(-1)", NUM, "Gnumeric source"),
+         ("PARTITIONS(4001)", NUM, "Improv limit")]
+# Improv's limits, below Gnumeric's 10⁸-entry prime table (each answers in
+# about 2 ms at most; Gnumeric's #LIMIT! is #NUM! here).
+HAND += [("ITHPRIME(10000001)", NUM, "Improv limit"), ("NT_PI(179424674)", NUM, "Improv limit"),
+         ("ISPRIME(4503599627370497)", NUM, "Improv limit")]
+
+# --- floating point ----------------------------------------------------------
+gn("num", "FLT.MAX()", "FLT.MIN()", "FLT.RADIX()", "FLT.NEXTAFTER(1,2)", "FLT.NEXTAFTER(1,0)",
+   'FLT.NEXTAFTER(0,"+")', 'FLT.NEXTAFTER(-1,"-")', "FLT.NEXTAFTER(3,3)",
+   'FLT.NEXTAFTER(1,"x")')
+
+
 # --- runners -----------------------------------------------------------------
 def gnumeric(formulas):
     exe = os.environ.get("GNUMERIC_SSCONVERT") or shutil.which("ssconvert")
