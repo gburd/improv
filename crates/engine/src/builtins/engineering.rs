@@ -58,7 +58,11 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
         1390 => convert::eval(a),
         1380..=1383 => {
             let (v, order) = (x(0)?, x(1)?.trunc());
-            domain((0.0..2_147_483_648.0).contains(&order))?;
+            // Every method here walks the orders one at a time (musl's
+            // recurrences, I's leading term, K's upward recurrence), so the
+            // order is capped: 1e7 takes about 0.02 s, 2³¹ took 4 to 14 s.
+            // LibreOffice caps BESSELJ's work at 9e6 steps the same way.
+            domain((0.0..=BESSEL_MAX_ORDER).contains(&order))?;
             let k = order as i32;
             match id {
                 1380 => ok_num(bessel_i(v, k)),
@@ -190,6 +194,11 @@ fn shift(x: f64, by: f64) -> R {
 // recurrence.
 // ponytail: K's fits are good to about 1e-8 relative, as in Excel and
 // LibreOffice; port a Temme / continued-fraction K if more is ever wanted.
+
+/// The largest Bessel order BESSELI … BESSELY take (#NUM! past it).
+// ponytail: past it J and Y could use the asymptotic (Debye) forms and I
+// and K ratios of their uniform expansions; nobody asks for those orders.
+const BESSEL_MAX_ORDER: f64 = 1e7;
 
 /// Iₙ(x) = Σₖ (x/2)^(n+2k) / (k! (n+k)!), to 1e-15 relative or 2000 terms.
 fn bessel_i(x: f64, n: i32) -> f64 {
@@ -329,6 +338,34 @@ mod tests {
         assert_eq!(call(1383, &[num(-1.0), num(1.0)]), e(err::NUM));
         assert_eq!(call(1380, &[num(0.0), num(2.0)]), num(0.0));
         assert_eq!(call(1380, &[num(1e4), num(1.0)]), e(err::NUM), "overflow");
+        // Orders past 1e7 are #NUM!: each function walked every order up to
+        // n, and BESSELJ(1E9, 2E9) took 12 s. At the cap: Gnumeric's
+        // BESSELY(1E9, 1E7)-sized calls finish in milliseconds.
+        let t0 = std::time::Instant::now();
+        for id in 1380..=1383 {
+            assert_eq!(
+                call(id, &[num(1e3), num(2_147_483_647.0)]),
+                e(err::NUM),
+                "{id}"
+            );
+            assert_eq!(
+                call(id, &[num(1e9), num(1.000_000_1e7)]),
+                e(err::NUM),
+                "{id}"
+            );
+            let _ = call(id, &[num(1e9), num(1e7)]);
+        }
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        // Gnumeric -7.131290907019298E-05 and -0.00024268737815770185.
+        let near = |v: CellValue, want: f64| {
+            let got = v.as_num().unwrap();
+            assert!((got - want).abs() <= 1e-12 * want.abs(), "{got} vs {want}");
+        };
+        near(call(1381, &[num(1e7), num(1e6)]), -7.131_290_907_019_298e-5);
+        near(
+            call(1383, &[num(1e7), num(1e6)]),
+            -2.426_873_781_577_018_5e-4,
+        );
         // A NaN x runs the series to its 2000-term cap: #NUM!.
         assert_eq!(call(1380, &[num(f64::NAN), num(0.0)]), e(err::NUM));
         // I₂₀(5) (mpmath 5.024239357971806e-11; LibreOffice and Gnumeric).
