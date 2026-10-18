@@ -447,7 +447,9 @@ print with 15 significant digits, and a real result is still text
 
 **Option pricing.** The `OPT_*` functions follow Gnumeric: the first
 argument is `"c"` or `"p"` (`"a"`/`"e"` first for `OPT_BINOMIAL`,
-`"cc"`/`"cp"`/`"pc"`/`"pp"` for `OPT_ON_OPTIONS`). Times are in years;
+`"cc"`/`"cp"`/`"pc"`/`"pp"` for `OPT_ON_OPTIONS`); `OPT_BINOMIAL` takes
+at most 10,000 steps (Gnumeric 100,000: the tree is quadratic, and that
+took seconds). Times are in years;
 rates, volatilities and cost of carry are annual fractions (cost of carry
 is r for a stock, r − q with a dividend yield, 0 for a future, r − rf for
 a currency). `OPT_BARRIER`, `OPT_TOUCH`, `OPT_PROB_HIT` and

@@ -355,6 +355,28 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **Calls that never returned now finish in milliseconds.** Property tests
+  over every built-in function (hegel, each call under a time budget)
+  found loops whose trip count came from an argument: `FACT`, `COMBIN`,
+  `PERMUT`, `MULTINOMIAL` of counts near 1e15 (now `#NUM!` once they
+  overflow); `VDB` past 1e5 periods, `CUMIPMT`/`CUMPRINC` past 1e7,
+  `AMORDEGRC` once its write-down rounds to 0 (0) or after 1e6 periods
+  (`#NUM!`); the Bessel functions past order 1e7 and `OPT_BINOMIAL` past
+  1e4 steps (`#NUM!`; Gnumeric allows 1e5, which took 11 s);
+  `BINOM.INV` and the `R.Q*` discrete quantiles past 2⁵³ trials; the
+  quantile bisections (now 65 steps in the floats' order, where
+  `BETA.INV` with huge shapes took 16 s); `R.QHYPER` of huge
+  populations; `FMRR` with a safe rate at or below −100% (`#NUM!`);
+  and the skew-normal and skew-t far tails.
+- **Precision.** `FLOOR`/`CEILING` and their variants snap the quotient to
+  15 digits as LibreOffice does (`CEILING(1.17e-10, 117)` is 117, it was
+  0); `PV`/`FV` at small rates; `R.PBETA`'s upper tail at a small x; the
+  incomplete beta with one shape below the other's ulp or with shapes
+  whose sum overflows; beta quantiles under ε above the median (they were
+  0); the hypergeometric mass of populations past 1e6.
+- **Panics.** `HDATE` past Gregorian year 29000 and `IMIGAMMA` of a real
+  shape past 1e12 (`#NUM!`); `UNIQUE(…, TRUE)` of only repeated values is
+  `#N/A`, not an empty list.
 - **`IMIGAMMA` off the real axis.** The upper regularized value for large
   |z| was computed as 1 − P and cancelled: `IMIGAMMA("0.5","30+i",FALSE)`
   gave 1.2e-5+3.4e-5i (it is 5.0e-15−8.1e-15i), the same as Gnumeric 1.12.
