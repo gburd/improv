@@ -52,13 +52,13 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `BETWEEN(x, low, high, [inclusive])` | boolean | whether low ≤ x ≤ high (strict when inclusive is FALSE) |
 | `TRUE()` | boolean | TRUE |
 | `FALSE()` | boolean | FALSE |
-| `SCAN(initial_value, array OVER T, lambda)` | the branches' type | SCAN(init, x OVER T, LAMBDA(acc, v, body)): the running fold along T, one value per item |
-| `REDUCE(initial_value, array OVER T, lambda)` | the branches' type | REDUCE(init, x OVER T, LAMBDA(acc, v, body)): the fold's last value |
+| `SCAN(initial_value, array OVER T, lambda)` | the branches' type | SCAN(initial_value, array OVER T, LAMBDA(acc, v, body)): the running fold along T, one value per item |
+| `REDUCE(initial_value, array OVER T, lambda)` | the branches' type | REDUCE(initial_value, array OVER T, LAMBDA(acc, v, body)): the fold's last value |
 | `LET(name, value, …, body)` | the branches' type | LET(name, value, …, body): the body with each name bound to its value |
 | `LAMBDA(p, …, body)` | the branches' type | LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN |
-| `MAKEARRAY(rows, cols, lambda)` | the branches' type | MAKEARRAY(R, C, LAMBDA(r, c, body)): the body over R × C, with r and c the item positions |
-| `BYROW(array OVER C, lambda)` | the branches' type | BYROW(x OVER C, LAMBDA(row, body)): the body per item of x's other categories, row being the values along C (the body reduces it: SUM(row), …) (also `BYCOL`) |
-| `MAP(array1, …, lambda)` | the branches' type | MAP(x, …, LAMBDA(p, …, body)): the body applied element by element |
+| `MAKEARRAY(rows, cols, lambda)` | the branches' type | MAKEARRAY(rows, cols, LAMBDA(r, c, body)): the body over the categories rows × cols, with r and c the item positions |
+| `BYROW(array OVER C, lambda)` | the branches' type | BYROW(array OVER C, LAMBDA(row, body)): the body per item of array's other categories, row being the values along C (the body reduces it: SUM(row), …) (also `BYCOL`) |
+| `MAP(array1, …, lambda)` | the branches' type | MAP(array1, …, LAMBDA(p, …, body)): the body applied element by element |
 
 ## Information and errors
 
@@ -350,11 +350,11 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `@ITEMCOUNT(category)` | number | the number of items in the category |
 | `PREV(x, category, [n=1], [default])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
 | `NEXT(x, category, [n=1], [default])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
-| `SEQUENCE(T, [start = 1], [step = 1])` | the branches' type | SEQUENCE(T, [start = 1], [step = 1]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start |
+| `SEQUENCE(T, [start=1], [step=1])` | the branches' type | SEQUENCE(T, [start=1], [step=1]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start |
 | `SORT(array OVER T, [sort_order=1] INTO K)` | the branches' type | the values in ascending order (descending when sort_order is -1) |
 | `UNIQUE(array OVER T, [exactly_once=FALSE] INTO K)` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
 | `FILTER(array, include OVER T, [if_empty] INTO K)` | the branches' type | the values of array whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!) |
-| `SORTBY(array, by_array1 OVER T, [sort_order1], … INTO K)` | the branches' type | SORTBY(x, by1 OVER T, [order1], [by2, order2], …): the values of x sorted by by1, ties by by2, … (stable; a key descends when its order is -1) |
+| `SORTBY(array, by_array1 OVER T, [sort_order1], … INTO K)` | the branches' type | SORTBY(array, by_array1 OVER T, [sort_order1], [by_array2, sort_order2], …): the values of array sorted by by_array1, ties by by_array2, … (stable; a key descends when its order is -1) |
 | `TAKE(array OVER T, rows INTO K)` | the branches' type | the first rows values in item order (the last -rows when rows is negative) |
 | `DROP(array OVER T, rows INTO K)` | the branches' type | the values TAKE leaves out: all but the first rows (the last -rows when rows is negative), in item order |
 | `SELECTS(values, tests OVER T, condition INTO K)` | the branches' type | Quantrix: the values whose test meets the condition (a criterion like ">5" or "a*", as in SUMIF), in item order |
@@ -373,8 +373,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | Function | Returns | Description |
 |---|---|---|
 | `MODE.MULT(values OVER T INTO K)` | number | every most frequent value, in order of first occurrence (#N/A if none repeats) |
-| `LINEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LINEST(y, x1, [x2, …] OVER T, [const], [stats]): the least-squares fit y = m1·x1 + … + b: mk, …, m1, b (const = FALSE: b = 0); with stats, Excel's 5×(k+1) block row by row (one x: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block |
-| `LOGEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LOGEST(y, x1, [x2, …] OVER T, [const], [stats]): y = b·m1^x1·…, fitted to ln y: mk, …, m1, b (const = FALSE: b = 1); with stats LINEST's block, for ln y |
+| `LINEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LINEST(known_ys, known_xs1, [known_xs2, …] OVER T, [const], [stats]): the least-squares fit y = m1·x1 + … + b: mk, …, m1, b (const = FALSE: b = 0); with stats, Excel's 5×(k+1) block row by row (one x: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block |
+| `LOGEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LOGEST(known_ys, known_xs1, [known_xs2, …] OVER T, [const], [stats]): y = b·m1^x1·…, fitted to ln y: mk, …, m1, b (const = FALSE: b = 1); with stats LINEST's block, for ln y |
 | `FREQUENCY(data_array OVER T, bin1, … INTO K)` | number | counts of x in the bins given as numbers b1, b2, …: ≤ b1, (b1, b2], …, > bn (n + 1 counts; Excel takes the bins as a range) |
 | `BETA.DIST(x, alpha, beta, cumulative, [a=0], [b=1])` | number | the beta distribution of x on [A, B] (default [0, 1]): density, or cumulative |
 | `BETADIST(x, alpha, beta, [a=0], [b=1])` | number | the cumulative beta distribution of x on [A, B] (default [0, 1]) |
@@ -572,8 +572,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CVMTEST.STAT(values OVER T)` | number | the Cramér–von Mises statistic W², Gnumeric's CVMTEST second value |
 | `LKSTEST.STAT(values OVER T)` | number | the Lilliefors statistic D, Gnumeric's LKSTEST second value |
 | `SFTEST.STAT(values OVER T)` | number | the Shapiro–Francia statistic W', Gnumeric's SFTEST second value |
-| `LOGREG(y, x OVER T, [affine], [stats] INTO K)` | number | LOGREG(y, x OVER T, [affine], [stats] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row |
-| `LOGFIT(y, x OVER T INTO K)` | number | LOGFIT(y, x OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough |
+| `LOGREG(known_ys, known_xs OVER T, [affine], [stats] INTO K)` | number | LOGREG(known_ys, known_xs OVER T, [affine], [stats] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row |
+| `LOGFIT(known_ys, known_xs OVER T INTO K)` | number | LOGFIT(known_ys, known_xs OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough |
 | `PERIODOGRAM(y OVER T, [filter] INTO K)` | number | PERIODOGRAM(y OVER T, [filter] INTO K): the magnitudes of the first half of the Fourier transform (Gnumeric), after a window: 0 none, 1 Bartlett, 2 Hann, 3 Welch |
 | `CRONBACH(x1, x2, … OVER T)` | number | CRONBACH(x1, x2, … OVER T): Cronbach's α of the items x1, x2, … (one row per respondent; population variances, as Gnumeric) |
 | `FORECAST.ETS(target, values, timeline OVER T, [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS(target, values, timeline OVER T, [seasonality], [data_completion], [aggregation]): the additive Holt–Winters (triple exponential smoothing) forecast at target, LibreOffice's algorithm; seasonality 1 detects the season, 0 none; a target before the timeline's end is #NUM! (also `FORECAST.ETS.ADD`) |
@@ -598,8 +598,8 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `PPMT(rate, per, nper, pv, [fv], [type])` | number | principal part of payment per: PPMT(rate, per, nper, pv, [fv], [type]) |
 | `NPER(rate, pmt, pv, [fv], [type])` | number | number of periods: NPER(rate, pmt, pv, [fv], [type]) |
 | `RATE(nper, pmt, pv, [fv], [type], [guess])` | number | rate per period (iterative): RATE(nper, pmt, pv, [fv], [type], [guess]) |
-| `CUMIPMT(rate, nper, pv, start, end, type)` | number | interest paid from period start to end: CUMIPMT(rate, nper, pv, start, end, type) (also `CUMIPMT_ADD`) |
-| `CUMPRINC(rate, nper, pv, start, end, type)` | number | principal paid from period start to end: CUMPRINC(rate, nper, pv, start, end, type) (also `CUMPRINC_ADD`) |
+| `CUMIPMT(rate, nper, pv, start_period, end_period, type)` | number | interest paid from period start to end: CUMIPMT(rate, nper, pv, start_period, end_period, type) (also `CUMIPMT_ADD`) |
+| `CUMPRINC(rate, nper, pv, start_period, end_period, type)` | number | principal paid from period start to end: CUMPRINC(rate, nper, pv, start_period, end_period, type) (also `CUMPRINC_ADD`) |
 | `ISPMT(rate, per, nper, pv)` | number | interest of period per with straight-line principal: ISPMT(rate, per, nper, pv) |
 | `EFFECT(nominal_rate, npery)` | number | effective annual rate of a nominal rate compounded npery times (also `EFFECT_ADD`) |
 | `NOMINAL(effect_rate, npery)` | number | nominal annual rate of an effective rate compounded npery times (also `NOMINAL_ADD`) |
@@ -611,42 +611,42 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `SYD(cost, salvage, life, per)` | number | sum-of-years'-digits depreciation: SYD(cost, salvage, life, per) |
 | `DB(cost, salvage, life, period, [month=12])` | number | fixed declining balance: DB(cost, salvage, life, period, [month=12]) |
 | `DDB(cost, salvage, life, period, [factor=2])` | number | double declining balance: DDB(cost, salvage, life, period, [factor=2]) |
-| `VDB(cost, salvage, life, start, end, [factor=2], [no_switch])` | number | declining balance between two periods: VDB(cost, salvage, life, start, end, [factor=2], [no_switch]) |
-| `AMORDEGRC(cost, purchased, first, salvage, period, rate, [basis])` | number | French degressive depreciation: AMORDEGRC(cost, purchased, first, salvage, period, rate, [basis]) |
-| `AMORLINC(cost, purchased, first, salvage, period, rate, [basis])` | number | French linear depreciation: AMORLINC(cost, purchased, first, salvage, period, rate, [basis]) |
-| `ACCRINT(issue, first, settle, rate, par, freq, [basis], [calc_method])` | number | accrued interest of a periodic-coupon security: ACCRINT(issue, first, settle, rate, par, freq, [basis], [calc_method]) |
-| `ACCRINTM(issue, settle, rate, [par=1000], [basis])` | number | accrued interest paid at maturity: ACCRINTM(issue, settle, rate, [par=1000], [basis]) |
+| `VDB(cost, salvage, life, start_period, end_period, [factor=2], [no_switch])` | number | declining balance between two periods: VDB(cost, salvage, life, start_period, end_period, [factor=2], [no_switch]) |
+| `AMORDEGRC(cost, date_purchased, first_period, salvage, period, rate, [basis])` | number | French degressive depreciation: AMORDEGRC(cost, date_purchased, first_period, salvage, period, rate, [basis]) |
+| `AMORLINC(cost, date_purchased, first_period, salvage, period, rate, [basis])` | number | French linear depreciation: AMORLINC(cost, date_purchased, first_period, salvage, period, rate, [basis]) |
+| `ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])` | number | accrued interest of a periodic-coupon security: ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method]) |
+| `ACCRINTM(issue, settlement, rate, [par=1000], [basis])` | number | accrued interest paid at maturity: ACCRINTM(issue, settlement, rate, [par=1000], [basis]) |
 | `COUPDAYBS(settlement, maturity, frequency, [basis])` | number | days from the coupon period's start to settlement |
 | `COUPDAYS(settlement, maturity, frequency, [basis])` | number | days in the coupon period holding settlement |
 | `COUPDAYSNC(settlement, maturity, frequency, [basis])` | number | days from settlement to the next coupon |
 | `COUPNCD(settlement, maturity, frequency, [basis])` | date | the next coupon date after settlement |
 | `COUPNUM(settlement, maturity, frequency, [basis])` | number | coupons payable between settlement and maturity |
 | `COUPPCD(settlement, maturity, frequency, [basis])` | date | the coupon date on or before settlement |
-| `DISC(settle, maturity, price, redemption, [basis])` | number | discount rate: DISC(settle, maturity, price, redemption, [basis]) |
-| `DURATION(settle, maturity, coupon, yld, freq, [basis])` | number | Macaulay duration: DURATION(settle, maturity, coupon, yld, freq, [basis]) (also `BONDDURATION`) |
-| `MDURATION(settle, maturity, coupon, yld, freq, [basis])` | number | modified duration: MDURATION(settle, maturity, coupon, yld, freq, [basis]) (also `BONDMDURATION`) |
-| `INTRATE(settle, maturity, investment, redemption, [basis])` | number | interest rate of a fully invested security: INTRATE(settle, maturity, investment, redemption, [basis]) |
-| `ODDFPRICE(settle, maturity, issue, first, rate, yld, redemption, freq, [basis])` | number | price with an odd first period: ODDFPRICE(settle, maturity, issue, first, rate, yld, redemption, freq, [basis]) |
-| `ODDFYIELD(settle, maturity, issue, first, rate, price, redemption, freq, [basis])` | number | yield with an odd first period: ODDFYIELD(settle, maturity, issue, first, rate, price, redemption, freq, [basis]) |
-| `ODDLPRICE(settle, maturity, last, rate, yld, redemption, freq, [basis])` | number | price with an odd last period: ODDLPRICE(settle, maturity, last, rate, yld, redemption, freq, [basis]) |
-| `ODDLYIELD(settle, maturity, last, rate, price, redemption, freq, [basis])` | number | yield with an odd last period: ODDLYIELD(settle, maturity, last, rate, price, redemption, freq, [basis]) |
-| `PRICE(settle, maturity, rate, yld, redemption, freq, [basis])` | number | price per 100 face value: PRICE(settle, maturity, rate, yld, redemption, freq, [basis]) |
-| `PRICEDISC(settle, maturity, discount, redemption, [basis])` | number | price of a discounted security: PRICEDISC(settle, maturity, discount, redemption, [basis]) |
-| `PRICEMAT(settle, maturity, issue, rate, yld, [basis])` | number | price of a security paying interest at maturity: PRICEMAT(settle, maturity, issue, rate, yld, [basis]) |
-| `RECEIVED(settle, maturity, investment, discount, [basis])` | number | amount at maturity of a fully invested security: RECEIVED(settle, maturity, investment, discount, [basis]) |
-| `TBILLEQ(settle, maturity, discount)` | number | bond-equivalent yield of a Treasury bill: TBILLEQ(settle, maturity, discount) |
-| `TBILLPRICE(settle, maturity, discount)` | number | price per 100 face of a Treasury bill: TBILLPRICE(settle, maturity, discount) |
-| `TBILLYIELD(settle, maturity, price)` | number | yield of a Treasury bill: TBILLYIELD(settle, maturity, price) |
-| `YIELD(settle, maturity, rate, price, redemption, freq, [basis])` | number | yield of a periodic-coupon security (iterative): YIELD(settle, maturity, rate, price, redemption, freq, [basis]) |
-| `YIELDDISC(settle, maturity, price, redemption, [basis])` | number | annual yield of a discounted security: YIELDDISC(settle, maturity, price, redemption, [basis]) |
-| `YIELDMAT(settle, maturity, issue, rate, price, [basis])` | number | annual yield of a security paying interest at maturity: YIELDMAT(settle, maturity, issue, rate, price, [basis]) |
-| `NPV(rate, cf OVER T)` | number | net present value of the flows in item order, the first discounted one period (a missing item is skipped, not zero): NPV(rate, cf OVER T) |
-| `XNPV(rate, cf, dates OVER T)` | number | net present value of flows at dates, discounted from the first date (365-day years): XNPV(rate, cf, dates OVER T) |
-| `IRR(cf OVER T, [guess = 0.1])` | number | internal rate of return of the flows in item order (iterative): IRR(cf OVER T, [guess = 0.1]) |
-| `XIRR(cf, dates OVER T, [guess = 0.1])` | number | internal rate of return of flows at dates (iterative): XIRR(cf, dates OVER T, [guess = 0.1]) |
-| `MIRR(cf OVER T, finance_rate, reinvest_rate)` | number | modified internal rate of return, outflows financed and inflows reinvested: MIRR(cf OVER T, finance_rate, reinvest_rate) |
-| `FMRR(cf OVER T, safe_rate, reinvest_rate, reinvest_min)` | number | financial management rate of return (GNU Oleo): outflows pulled back at the safe rate, inflows of at least reinvest_min pushed forward at the reinvestment rate: FMRR(cf OVER T, safe_rate, reinvest_rate, reinvest_min) |
-| `FVSCHEDULE(principal, rate OVER T)` | number | principal compounded over the rates in item order: FVSCHEDULE(principal, rate OVER T) |
+| `DISC(settlement, maturity, pr, redemption, [basis])` | number | discount rate: DISC(settlement, maturity, pr, redemption, [basis]) |
+| `DURATION(settlement, maturity, coupon, yld, frequency, [basis])` | number | Macaulay duration: DURATION(settlement, maturity, coupon, yld, frequency, [basis]) (also `BONDDURATION`) |
+| `MDURATION(settlement, maturity, coupon, yld, frequency, [basis])` | number | modified duration: MDURATION(settlement, maturity, coupon, yld, frequency, [basis]) (also `BONDMDURATION`) |
+| `INTRATE(settlement, maturity, investment, redemption, [basis])` | number | interest rate of a fully invested security: INTRATE(settlement, maturity, investment, redemption, [basis]) |
+| `ODDFPRICE(settlement, maturity, issue, first_coupon, rate, yld, redemption, frequency, [basis])` | number | price with an odd first period: ODDFPRICE(settlement, maturity, issue, first_coupon, rate, yld, redemption, frequency, [basis]) |
+| `ODDFYIELD(settlement, maturity, issue, first_coupon, rate, pr, redemption, frequency, [basis])` | number | yield with an odd first period: ODDFYIELD(settlement, maturity, issue, first_coupon, rate, pr, redemption, frequency, [basis]) |
+| `ODDLPRICE(settlement, maturity, last_interest, rate, yld, redemption, frequency, [basis])` | number | price with an odd last period: ODDLPRICE(settlement, maturity, last_interest, rate, yld, redemption, frequency, [basis]) |
+| `ODDLYIELD(settlement, maturity, last_interest, rate, pr, redemption, frequency, [basis])` | number | yield with an odd last period: ODDLYIELD(settlement, maturity, last_interest, rate, pr, redemption, frequency, [basis]) |
+| `PRICE(settlement, maturity, rate, yld, redemption, frequency, [basis])` | number | price per 100 face value: PRICE(settlement, maturity, rate, yld, redemption, frequency, [basis]) |
+| `PRICEDISC(settlement, maturity, discount, redemption, [basis])` | number | price of a discounted security: PRICEDISC(settlement, maturity, discount, redemption, [basis]) |
+| `PRICEMAT(settlement, maturity, issue, rate, yld, [basis])` | number | price of a security paying interest at maturity: PRICEMAT(settlement, maturity, issue, rate, yld, [basis]) |
+| `RECEIVED(settlement, maturity, investment, discount, [basis])` | number | amount at maturity of a fully invested security: RECEIVED(settlement, maturity, investment, discount, [basis]) |
+| `TBILLEQ(settlement, maturity, discount)` | number | bond-equivalent yield of a Treasury bill: TBILLEQ(settlement, maturity, discount) |
+| `TBILLPRICE(settlement, maturity, discount)` | number | price per 100 face of a Treasury bill: TBILLPRICE(settlement, maturity, discount) |
+| `TBILLYIELD(settlement, maturity, pr)` | number | yield of a Treasury bill: TBILLYIELD(settlement, maturity, pr) |
+| `YIELD(settlement, maturity, rate, pr, redemption, frequency, [basis])` | number | yield of a periodic-coupon security (iterative): YIELD(settlement, maturity, rate, pr, redemption, frequency, [basis]) |
+| `YIELDDISC(settlement, maturity, pr, redemption, [basis])` | number | annual yield of a discounted security: YIELDDISC(settlement, maturity, pr, redemption, [basis]) |
+| `YIELDMAT(settlement, maturity, issue, rate, pr, [basis])` | number | annual yield of a security paying interest at maturity: YIELDMAT(settlement, maturity, issue, rate, pr, [basis]) |
+| `NPV(rate, values OVER T)` | number | net present value of the flows in item order, the first discounted one period (a missing item is skipped, not zero): NPV(rate, values OVER T) |
+| `XNPV(rate, values, dates OVER T)` | number | net present value of flows at dates, discounted from the first date (365-day years): XNPV(rate, values, dates OVER T) |
+| `IRR(values OVER T, [guess=0.1])` | number | internal rate of return of the flows in item order (iterative): IRR(values OVER T, [guess=0.1]) |
+| `XIRR(values, dates OVER T, [guess=0.1])` | number | internal rate of return of flows at dates (iterative): XIRR(values, dates OVER T, [guess=0.1]) |
+| `MIRR(values OVER T, finance_rate, reinvest_rate)` | number | modified internal rate of return, outflows financed and inflows reinvested: MIRR(values OVER T, finance_rate, reinvest_rate) |
+| `FMRR(values OVER T, safe_rate, reinvest_rate, reinvest_min)` | number | financial management rate of return (GNU Oleo): outflows pulled back at the safe rate, inflows of at least reinvest_min pushed forward at the reinvestment rate: FMRR(values OVER T, safe_rate, reinvest_rate, reinvest_min) |
+| `FVSCHEDULE(principal, schedule OVER T)` | number | principal compounded over the rates in item order: FVSCHEDULE(principal, schedule OVER T) |
 | `OPT_BS(call_put, spot, strike, time, rate, volatility, [cost_of_carry])` | number | Black-Scholes price of a European option: OPT_BS(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
 | `OPT_BS_DELTA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])` | number | Black-Scholes delta: OPT_BS_DELTA(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
 | `OPT_BS_GAMMA(spot, strike, time, rate, volatility, [cost_of_carry])` | number | Black-Scholes gamma (calls and puts alike): OPT_BS_GAMMA(spot, strike, time, rate, volatility, [cost_of_carry]) |
