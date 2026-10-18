@@ -315,7 +315,9 @@ mod tests {
         };
         let exact = linest(&r(&[0.0; 5]), &[], false, 2).unwrap();
         let close = |v: &CellValue, x: f64| (v.as_num().unwrap() - x).abs() < 1e-9;
-        assert!(close(&exact[0], 3.0) && close(&exact[1], 2.0) && close(&exact[2], 1.0));
+        for (v, x) in exact.iter().zip([3.0, 2.0, 1.0]) {
+            assert!(close(v, x), "{exact:?}");
+        }
         let s = linest(&r(&[0.1, -0.2, 0.05, 0.0, 0.1]), &[T, T], false, 2).unwrap();
         assert_eq!(s.len(), 15);
         // LibreOffice 25.8 LINEST(y; x1:x2; 1; 1), row by row.
@@ -392,6 +394,70 @@ mod tests {
         );
         assert_eq!(len(&[T, T], 3), 20);
         assert_eq!(len(&[], 3), 4);
+        assert_eq!(len(&[T, F], 3), 4);
+    }
+
+    /// One x with residuals: LibreOffice 25.2 LINEST({1;2;4}; {1;2;3}; 1; 1).
+    #[test]
+    fn one_x_stats() {
+        let r = linest(&yx(&[1.0, 2.0, 4.0], &[1.0, 2.0, 3.0]), &[T, T], false, 1).unwrap();
+        let want = [
+            1.5,
+            -0.666_666_666_666_666_5,
+            0.288_675_134_594_812_87,
+            0.623_609_564_462_323_6,
+            0.964_285_714_285_714_2,
+            0.408_248_290_463_863,
+            27.0,
+            1.0,
+            4.5,
+            0.166_666_666_666_666_69,
+        ];
+        for (i, (g, w)) in r.iter().zip(want).enumerate() {
+            let g = g.as_num().unwrap();
+            assert!((g - w).abs() <= 1e-12 * w.abs(), "{i}: {g} vs {w}");
+        }
+        // Without const: m = 17/14, b 0 and se_b #N/A (LibreOffice).
+        let nc = linest(&yx(&[1.0, 2.0, 4.0], &[1.0, 2.0, 3.0]), &[F, T], false, 1).unwrap();
+        assert!((nc[0].as_num().unwrap() - 17.0 / 14.0).abs() < 1e-15);
+        assert_eq!((nc[1].clone(), nc[3].clone()), (n(0.0), NA));
+    }
+
+    /// Two x's with stats against LibreOffice 25.2 LINEST(y; x1:x2; 1; 1):
+    /// a 3-point exact fit (df 0: se 0, F #N/A), and a constant y (ss_tot
+    /// 0: r² 1, F #N/A).
+    #[test]
+    fn several_xs_without_residual() {
+        let xs = [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+        let fit = |ys: &[f64]| {
+            let r = rows(
+                ys.iter()
+                    .zip(xs)
+                    .map(|(y, (a, b))| vec![n(*y), n(a), n(b)])
+                    .collect(),
+            );
+            linest(&r, &[T, T], false, 2).unwrap()
+        };
+        let close = |v: &CellValue, x: f64| (v.as_num().unwrap() - x).abs() < 1e-12;
+        let three = fit(&[1.0, 2.0, 4.0]);
+        for (i, x) in [
+            (0, 3.0),
+            (1, 1.0),
+            (2, 1.0),
+            (3, 0.0),
+            (6, 1.0),
+            (7, 0.0),
+            (10, 0.0),
+        ] {
+            assert!(close(&three[i], x), "{i}: {three:?}");
+        }
+        assert_eq!(three[9], NA);
+        assert!(close(&three[12], 4.666_666_666_666_667));
+        let flat = fit(&[2.0, 2.0, 2.0, 2.0]);
+        for (i, x) in [(6, 1.0), (7, 0.0), (10, 1.0)] {
+            assert!(close(&flat[i], x), "{i}: {flat:?}");
+        }
+        assert_eq!(flat[9], NA);
     }
 
     #[test]
