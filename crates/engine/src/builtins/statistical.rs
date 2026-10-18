@@ -446,10 +446,20 @@ pub(crate) fn beta_reg(a: f64, b: f64, x: f64) -> f64 {
 /// times x^a y^b / (a B(a, b)) computed without cancellation.
 fn beta_reg_large(a: f64, b: f64, x: f64) -> f64 {
     let y = 1.0 - x;
+    // Far from the mean the front underflows to 0 and the tail is 0: the
+    // continued fraction (up to a million terms) is not needed.
+    let tail = |a: f64, b: f64, x: f64, y: f64| {
+        let front = ln_beta_front(a, b, x, y).exp();
+        if front == 0.0 {
+            0.0
+        } else {
+            front * beta_cf(a, b, x)
+        }
+    };
     if x < (a + 1.0) / (a + b + 2.0) {
-        (ln_beta_front(a, b, x, y).exp() * beta_cf(a, b, x)).min(1.0)
+        tail(a, b, x, y).min(1.0)
     } else {
-        (1.0 - ln_beta_front(b, a, y, x).exp() * beta_cf(b, a, y)).max(0.0)
+        (1.0 - tail(b, a, y, x)).max(0.0)
     }
 }
 
@@ -457,9 +467,12 @@ fn beta_reg_large(a: f64, b: f64, x: f64) -> f64 {
 /// mass of a − 1 in a + b − 2 trials, over a; the mass by Loader's form
 /// (Stirling corrections and bd0, as R's `dbinom_raw`).
 fn ln_beta_front(a: f64, b: f64, x: f64, y: f64) -> f64 {
-    let (k, n) = (a - 1.0, a + b - 2.0);
-    let ln_mass = stirlerr(n) - stirlerr(k) - stirlerr(n - k) - bd0(k, n * x) - bd0(n - k, n * y)
-        + 0.5 * (n / (std::f64::consts::TAU * k * (n - k))).ln();
+    // n − k is b − 1 as given: (a + b − 2) − (a − 1) rounds to 0 when b is
+    // below a's ulp, and bd0(0, ·) is a NaN. The √ term is taken in logs:
+    // 2π·k·(n − k) overflows past 1e154.
+    let (k, nk, n) = (a - 1.0, b - 1.0, a + b - 2.0);
+    let ln_mass = stirlerr(n) - stirlerr(k) - stirlerr(nk) - bd0(k, n * x) - bd0(nk, n * y)
+        + 0.5 * (n.ln() - std::f64::consts::TAU.ln() - k.ln() - nk.ln());
     x.ln() + y.ln() + (a + b - 1.0).ln() + ln_mass - a.ln()
 }
 
@@ -1445,5 +1458,22 @@ mod tests {
             CellValue::num(1.0)
         );
         assert_eq!(call(502, &[0.5, 2.0, 2.0]), CellValue::num(0.5));
+    }
+
+    /// I_x(a, b) with one shape below the other's ulp: the front took
+    /// b − 1 as (a + b − 2) − (a − 1) = 0, its log was NaN, and the
+    /// continued fraction ran a million terms on it. R.PBETA(0.5, 1e15,
+    /// 1.34e154) was 0, not 1, and BETA.INV(0.5, 1e15, 1.34e154) bisected
+    /// on those for 0.8 s, to 1.
+    #[test]
+    fn beta_far_from_the_mean_of_huge_shapes() {
+        let t0 = std::time::Instant::now();
+        let b = 1.340_780_792_994_259_7e154;
+        assert_eq!(beta_reg(1e15, b, 0.5), 1.0);
+        assert_eq!(beta_reg(b, 1e15, 0.5), 0.0);
+        assert_eq!(beta_reg(1e15, b, 1e-100), 1.0);
+        assert!(t0.elapsed() < std::time::Duration::from_millis(100));
+        let q = call(502, &[0.5, 1e15, b]).as_num().unwrap();
+        assert!((q / 7.458e-140 - 1.0).abs() < 1e-3, "{q}");
     }
 }
