@@ -31,6 +31,7 @@ err = p1.err
 NUM, VALUE, NA, DIV0 = err("#NUM!"), err("#VALUE!"), err("#N/A"), err("#DIV/0!")
 
 LO = []  # (formula, Excel's value where LibreOffice differs)
+TOL = {}  # formula -> relative tolerance (an `approx` row)
 GN = []  # (formula, "text" | "num", tolerance or None): Gnumeric's value
 
 
@@ -166,6 +167,18 @@ for f in ['IMTANH("1+i")', 'IMTANH("0")', 'IMTANH("2-3j")', 'IMTANH("0.5")', 'IM
           'IMIGAMMA("0.5","-1")', 'IMIGAMMA("1+i","40",FALSE)', 'IMIGAMMA("0","2",TRUE,FALSE)']:
     gn(f, "complex", 1e-13)
 
+# --- Bessel (LibreOffice's J and Y iterate where Improv calls musl's jn/yn) ----
+for f in ["BESSELJ(1.9,2)", "BESSELJ(1.9,2.9)", "BESSELJ(-1.9,1)", "BESSELJ(0,0)", "BESSELJ(0,3)",
+          "BESSELJ(10,5)", "BESSELJ(100,1)", "BESSELJ(1,-1)", "BESSELJ(30,40)",
+          "BESSELI(1.5,1)", "BESSELI(-1.5,1)", "BESSELI(0,0)", "BESSELI(10,3)", "BESSELI(0.01,2)",
+          "BESSELI(1,-1)", "BESSELI(50,0)",
+          "BESSELK(1.5,1)", "BESSELK(0.5,0)", "BESSELK(3,0)", "BESSELK(5,4)", "BESSELK(0.1,3)",
+          "BESSELK(0,1)", "BESSELK(1,-1)", "BESSELK(2,2)",
+          "BESSELY(2.5,1)", "BESSELY(0.5,0)", "BESSELY(10,3)", "BESSELY(1,5)", "BESSELY(-1,1)",
+          "BESSELY(1,-1)", "BESSELY(100,2)"]:
+    lo(f)
+    TOL[f] = 1e-9
+
 # --- runners ----------------------------------------------------------------
 def map_error(f, shown):
     if shown in p1.LO_ERRORS:
@@ -239,6 +252,8 @@ def main():
         if excel is not None:
             print(f"LibreOffice differs: {f} LO={p1.fmt(v)} Excel={p1.fmt(excel)}", file=sys.stderr)
             rows.append((f, excel, "Excel docs"))
+        elif f in TOL and not isinstance(v, dict):
+            rows.append((f, {"approx": v, "tol": TOL[f]}, "LibreOffice"))
         else:
             rows.append((f, v, "LibreOffice"))
     shown = gnumeric_values()

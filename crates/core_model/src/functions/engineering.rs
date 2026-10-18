@@ -82,5 +82,10 @@ pub(super) static ENGINEERING: &[FnDef] = &[
     s(1371, "IMARCCOTH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic cotangent"),
     s(1372, "IMFACT", C::Engineering, &[A], V::Text, "the complex factorial z! = Γ(z + 1)"),
     s(1373, "IMGAMMA", C::Engineering, &[A], V::Text, "the complex gamma function Γ(z)"),
+    // --- Bessel functions of integer order n (truncated, ≥ 0) ---
+    s(1380, "BESSELI", C::Engineering, &[N, N], V::Number, "the modified Bessel function Iₙ(x)"),
+    s(1381, "BESSELJ", C::Engineering, &[N, N], V::Number, "the Bessel function Jₙ(x)"),
+    s(1382, "BESSELK", C::Engineering, &[N, N], V::Number, "the modified Bessel function Kₙ(x), x > 0"),
+    s(1383, "BESSELY", C::Engineering, &[N, N], V::Number, "the Bessel function Yₙ(x), x > 0"),
     so(1374, "IMIGAMMA", C::Engineering, &[A, A, B, B], 2, V::Text, "the complex incomplete gamma function of a and z: lower (default) or upper, regularized (default) or not"),
 ];

@@ -53,6 +53,23 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
         1320 => ok_num(f64::from(u8::from(x(0)? == n_or(a, 1, 0.0)?))),
         1321 => ok_num(f64::from(u8::from(x(0)? >= n_or(a, 1, 0.0)?))),
         1330..=1374 => complex::eval(id, a),
+        1380..=1383 => {
+            let (v, order) = (x(0)?, x(1)?.trunc());
+            domain((0.0..2_147_483_648.0).contains(&order))?;
+            let k = order as i32;
+            match id {
+                1380 => ok_num(bessel_i(v, k)),
+                1381 => ok_num(libm::jn(k, v)),
+                1382 => {
+                    domain(v > 0.0)?;
+                    ok_num(bessel_k(v, k))
+                }
+                _ => {
+                    domain(v > 0.0)?;
+                    ok_num(libm::yn(k, v))
+                }
+            }
+        }
         _ => Err(err::NAME),
     }
 }
@@ -171,6 +188,97 @@ fn shift(x: f64, by: f64) -> R {
     }
 }
 
+// --- Bessel ----------------------------------------------------------------
+// J and Y are musl's `jn` / `yn`. I and K are LibreOffice's scaddins
+// (bessel.cxx), which is Excel's algorithm: I sums its power series, K uses
+// Abramowitz & Stegun's polynomial fits for K₀ and K₁ and the upward
+// recurrence.
+// ponytail: K's fits are good to about 1e-8 relative, as in Excel and
+// LibreOffice; port a Temme / continued-fraction K if more is ever wanted.
+
+/// Iₙ(x) = Σₖ (x/2)^(n+2k) / (k! (n+k)!), to 1e-15 relative or 2000 terms.
+fn bessel_i(x: f64, n: i32) -> f64 {
+    let half = x / 2.0;
+    let mut term = 1.0;
+    for k in 1..=n {
+        term = term / f64::from(k) * half;
+    }
+    let mut sum = term;
+    if term != 0.0 {
+        let mut k = 1;
+        loop {
+            term = term * half / f64::from(k) * half / f64::from(k + n);
+            sum += term;
+            k += 1;
+            if term.abs() <= sum.abs() * 1e-15 || k >= 2000 {
+                break;
+            }
+        }
+    }
+    sum
+}
+
+fn bessel_k0(x: f64) -> f64 {
+    if x <= 2.0 {
+        let h = x * 0.5;
+        let y = h * h;
+        -h.ln() * bessel_i(x, 0)
+            + (-0.577_215_66
+                + y * (0.422_784_20
+                    + y * (0.230_697_56
+                        + y * (0.348_859_0e-1
+                            + y * (0.262_698e-2 + y * (0.107_50e-3 + y * 0.74e-5))))))
+    } else {
+        let y = 2.0 / x;
+        (-x).exp() / x.sqrt()
+            * (1.253_314_14
+                + y * (-0.783_235_8e-1
+                    + y * (0.218_956_8e-1
+                        + y * (-0.106_244_6e-1
+                            + y * (0.587_872e-2 + y * (-0.251_540e-2 + y * 0.532_08e-3))))))
+    }
+}
+
+fn bessel_k1(x: f64) -> f64 {
+    if x <= 2.0 {
+        let h = x * 0.5;
+        let y = h * h;
+        h.ln() * bessel_i(x, 1)
+            + (1.0
+                + y * (0.154_431_44
+                    + y * (-0.672_785_79
+                        + y * (-0.181_568_97
+                            + y * (-0.191_940_2e-1 + y * (-0.110_404e-2 + y * -0.468_6e-4))))))
+                / x
+    } else {
+        let y = 2.0 / x;
+        (-x).exp() / x.sqrt()
+            * (1.253_314_14
+                + y * (0.234_986_19
+                    + y * (-0.365_562_0e-1
+                        + y * (0.150_426_8e-1
+                            + y * (-0.780_353e-2 + y * (0.325_614e-2 + y * -0.682_45e-3))))))
+    }
+}
+
+/// Kₙ(x), x > 0: K₀, K₁ and Kₙ₊₁ = Kₙ₋₁ + (2n/x) Kₙ.
+fn bessel_k(x: f64, n: i32) -> f64 {
+    match n {
+        0 => bessel_k0(x),
+        1 => bessel_k1(x),
+        _ => {
+            let tox = 2.0 / x;
+            let (mut km, mut k) = (bessel_k0(x), bessel_k1(x));
+            for j in 1..n {
+                let kp = km + f64::from(j) * tox * k;
+                km = k;
+                k = kp;
+            }
+            k
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -208,6 +316,16 @@ mod tests {
         assert_eq!(call(1313, &[txt("1"), num(37.0)]), e(err::NUM));
         assert_eq!(call(1313, &[txt(&"1".repeat(256)), num(2.0)]), e(err::NUM));
         assert_eq!(call(1314, &[num(1.0)]), txt("000000000000f03f"));
+    }
+
+    #[test]
+    fn bessel_edges() {
+        let e = CellValue::Err;
+        assert_eq!(call(1381, &[num(1.0), num(-1.0)]), e(err::NUM));
+        assert_eq!(call(1382, &[num(0.0), num(1.0)]), e(err::NUM));
+        assert_eq!(call(1383, &[num(-1.0), num(1.0)]), e(err::NUM));
+        assert_eq!(call(1380, &[num(0.0), num(2.0)]), num(0.0));
+        assert_eq!(call(1380, &[num(1e4), num(1.0)]), e(err::NUM), "overflow");
     }
 
     #[test]

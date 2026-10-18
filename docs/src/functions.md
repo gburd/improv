@@ -602,4 +602,8 @@ Complex numbers are text, `"3+4i"` (suffix `i` or `j`); base conversions use 10-
 | `IMARCCOTH(value)` | text | the complex inverse hyperbolic cotangent |
 | `IMFACT(value)` | text | the complex factorial z! = Γ(z + 1) |
 | `IMGAMMA(value)` | text | the complex gamma function Γ(z) |
+| `BESSELI(number, number)` | number | the modified Bessel function Iₙ(x) |
+| `BESSELJ(number, number)` | number | the Bessel function Jₙ(x) |
+| `BESSELK(number, number)` | number | the modified Bessel function Kₙ(x), x > 0 |
+| `BESSELY(number, number)` | number | the Bessel function Yₙ(x), x > 0 |
 | `IMIGAMMA(value, value, [boolean], [boolean])` | text | the complex incomplete gamma function of a and z: lower (default) or upper, regularized (default) or not |
