@@ -752,6 +752,9 @@ mod tests {
         assert!((bvn(0.4, -0.3, -1.0) - (nc(0.4) - nc(0.3))).abs() < 1e-15);
         assert_eq!(bvn(1.0, -1.0, -1.0), 0.0);
         assert!(bvn(0.0, 0.0, 1.5).is_nan());
+        // Far tail (hk < −160): P(X ≤ 15, Y ≤ −15) is Φ(−15) to full precision.
+        let tail = bvn(15.0, -15.0, 0.95);
+        assert!((tail - nc(-15.0)).abs() <= 1e-12 * nc(-15.0), "{tail}");
     }
 
     #[test]
