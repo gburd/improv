@@ -402,7 +402,7 @@ struct OverClause {
     /// `OVER T[from..to]`: bound literals (see `functions::WINDOW`).
     window: Option<(Expr, Expr)>,
     /// `INTO K`: where an array function's results land.
-    into: Option<CategoryId>,
+    into: Vec<CategoryId>,
     pred: Option<Expr>,
 }
 
@@ -773,6 +773,9 @@ impl<'a> Parser<'a> {
                 "LET" => return self.parse_let(),
                 "LAMBDA" => return self.parse_lambda_call(),
                 "MAP" => return self.parse_map(),
+                "SEQUENCE" => return self.parse_sequence(),
+                "MAKEARRAY" => return self.parse_makearray(),
+                "BYROW" | "BYCOL" => return self.parse_byrow(&word),
                 "REDUCE" | "SCAN" => return self.parse_fold(&word),
                 _ => {}
             }
@@ -813,7 +816,7 @@ impl<'a> Parser<'a> {
         let callable = functions::callable(name);
         let mut args = Vec::new();
         let mut over: Option<OverClause> = None;
-        let mut into: Option<CategoryId> = None;
+        let mut into: Vec<CategoryId> = Vec::new();
         if !matches!(self.toks.get(self.pos).map(|s| &s.tok), Some(Tok::Op(o)) if o == ")") {
             loop {
                 let i = args.len();
@@ -833,10 +836,15 @@ impl<'a> Parser<'a> {
                 }
                 if self.peek_kw("into") {
                     self.bump();
-                    if into.is_some() {
+                    if !into.is_empty() {
                         return Err(self.err("only one INTO clause per call"));
                     }
-                    into = Some(self.parse_category_name()?);
+                    // `INTO R, C`: a list laid over several categories.
+                    into.push(self.parse_category_name()?);
+                    while self.comma_then_category() {
+                        self.bump(); // ,
+                        into.push(self.parse_category_name()?);
+                    }
                 }
                 if self.eat_op(",") {
                     continue;
@@ -847,7 +855,18 @@ impl<'a> Parser<'a> {
         if !self.eat_op(")") {
             return Err(self.err("expected ')' to close function call"));
         }
-        if over.is_some() || into.is_some() {
+        // A BYROW parameter (`SUM(row)`) carries its row's category: the
+        // call reduces over it.
+        if over.is_none() && functions::aggregation(name).is_some() {
+            over = args.iter().find_map(|a| match a {
+                Expr::Ref(_, s) if !s.over.is_empty() => Some(OverClause {
+                    cats: s.over.clone(),
+                    ..OverClause::default()
+                }),
+                _ => None,
+            });
+        }
+        if over.is_some() || !into.is_empty() {
             let mut clause = over.unwrap_or_default();
             clause.into = into;
             return self.finish_aggregation(name, args, clause);
@@ -983,8 +1002,25 @@ impl<'a> Parser<'a> {
         if clause.window.is_some() && def.kind == functions::Kind::PerItem {
             return Err(self.err(format!("{} cannot take a window", def.name)));
         }
+        // Over::Leading: every leading measure reference is reduced.
+        let leading = match def.over {
+            functions::Over::Leading(min) => {
+                let n = args
+                    .iter()
+                    .take_while(|a| matches!(a, Expr::Ref(..)))
+                    .count();
+                if n < min {
+                    return Err(self.err(format!(
+                        "{} needs at least {min} measure(s) before its options",
+                        def.name
+                    )));
+                }
+                Some(n)
+            }
+            _ => None,
+        };
         for (i, a) in args.iter_mut().enumerate() {
-            if !def.over.contains(i) {
+            if !leading.map_or_else(|| def.over.contains(i), |n| i < n) {
                 continue;
             }
             let Expr::Ref(id, spec) = a else {
@@ -1020,8 +1056,11 @@ impl<'a> Parser<'a> {
         if let Some((from, to)) = clause.window {
             args.push(Expr::Call(functions::WINDOW, vec![from, to]));
         }
-        if let Some(k) = clause.into {
-            args.push(Expr::Call(functions::INTO, vec![Expr::Category(k)]));
+        if !clause.into.is_empty() {
+            args.push(Expr::Call(
+                functions::INTO,
+                clause.into.into_iter().map(Expr::Category).collect(),
+            ));
         }
         Ok(Expr::Call(def.id, args))
     }
@@ -1182,6 +1221,114 @@ impl<'a> Parser<'a> {
         let (params, start, end) = self.parse_lambda_params()?;
         self.expect(")", "')' to close MAP")?;
         self.lambda_body(&params, args, start, end)
+    }
+
+    /// `POSITION(cat)`, the item's 1-based position along `cat`.
+    fn position(cat: CategoryId) -> Expr {
+        Expr::Call(functions::POSITION, vec![Expr::Category(cat)])
+    }
+
+    /// `SEQUENCE(T, [start = 1], [step = 1])`: `start`, `start + step`, …
+    /// along T's items, i.e. `(POSITION(T) - 1) * step + start`. Excel's
+    /// `SEQUENCE(rows, cols, …)` sizes a spill; here the category is the size.
+    fn parse_sequence(&mut self) -> Result<Expr, ParseError> {
+        self.bump(); // SEQUENCE
+        self.expect("(", "'(' after SEQUENCE")?;
+        let cat = self.parse_category_name()?;
+        let mut rest = Vec::new();
+        while self.eat_op(",") {
+            rest.push(self.parse_expr()?);
+        }
+        self.expect(")", "')' to close SEQUENCE")?;
+        if rest.len() > 2 {
+            return Err(self.err("SEQUENCE takes (Category, [start], [step])"));
+        }
+        let mut it = rest.into_iter();
+        let one = || Expr::Literal(Value::Number(1.0));
+        let (start, step) = (it.next().unwrap_or_else(one), it.next().unwrap_or_else(one));
+        let index = Expr::BinaryOp(
+            BinaryOp::Sub,
+            Box::new(Self::position(cat)),
+            Box::new(one()),
+        );
+        Ok(Expr::BinaryOp(
+            BinaryOp::Add,
+            Box::new(Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(index),
+                Box::new(step),
+            )),
+            Box::new(start),
+        ))
+    }
+
+    /// `MAKEARRAY(R, C, LAMBDA(r, c, body))`: the body over R × C with `r`
+    /// and `c` the item positions along R and C.
+    fn parse_makearray(&mut self) -> Result<Expr, ParseError> {
+        self.bump(); // MAKEARRAY
+        self.expect("(", "'(' after MAKEARRAY")?;
+        let r = self.parse_category_name()?;
+        self.expect(",", "',' after the row category")?;
+        let c = self.parse_category_name()?;
+        self.expect(",", "',' then LAMBDA(r, c, body)")?;
+        if !self.peek_kw("lambda") {
+            return Err(self.err("MAKEARRAY needs LAMBDA(r, c, body)"));
+        }
+        let (params, start, end) = self.parse_lambda_params()?;
+        self.expect(")", "')' to close MAKEARRAY")?;
+        self.lambda_body(
+            &params,
+            vec![Self::position(r), Self::position(c)],
+            start,
+            end,
+        )
+    }
+
+    /// `BYROW(x OVER C, LAMBDA(row, body))` (and `BYCOL`): the body once
+    /// per item of x's other categories, with `row` the values along C,
+    /// which the body must reduce (`SUM(row)`, `MAX(row) - MIN(row)`, …).
+    /// In a dimensional model a row and a column differ only in which
+    /// category is named, so BYCOL is the same form.
+    fn parse_byrow(&mut self, name: &str) -> Result<Expr, ParseError> {
+        let name = name.to_ascii_uppercase();
+        self.bump(); // BYROW / BYCOL
+        self.expect("(", "'(' after the function name")?;
+        let x = self.parse_measure_ref()?;
+        if !self.peek_kw("over") {
+            return Err(self.err(format!("{name} needs x OVER Category (the row's category)")));
+        }
+        self.bump();
+        let cat = self.parse_category_name()?;
+        let row = match x {
+            Expr::Ref(id, mut spec) => {
+                spec.over = vec![cat];
+                Expr::Ref(id, spec)
+            }
+            _ => return Err(self.err(format!("{name} takes a measure reference"))),
+        };
+        self.expect(",", "',' then LAMBDA(row, body)")?;
+        if !self.peek_kw("lambda") {
+            return Err(self.err(format!("{name} needs LAMBDA(row, body)")));
+        }
+        let (params, start, end) = self.parse_lambda_params()?;
+        self.expect(")", "')' to close the call")?;
+        let body = self.lambda_body(&params, vec![row], start, end)?;
+        fn bare(e: &Expr) -> bool {
+            match e {
+                Expr::Ref(_, s) => !s.over.is_empty(),
+                Expr::Call(f, _) if functions::by_id(*f).is_some_and(|d| d.kind.reduces()) => false,
+                Expr::Call(_, a) => a.iter().any(bare),
+                Expr::UnaryOp(_, a) => bare(a),
+                Expr::BinaryOp(_, a, b) => bare(a) || bare(b),
+                _ => false,
+            }
+        }
+        if bare(&body) {
+            return Err(self.err(format!(
+                "{name}'s LAMBDA must reduce its row to one value (SUM(row), MAX(row), …)"
+            )));
+        }
+        Ok(body)
     }
 
     /// `REDUCE(init, x OVER T, LAMBDA(acc, v, body))` and `SCAN(…)`: a fold

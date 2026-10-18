@@ -40,9 +40,10 @@ pub enum PlanNodeKind {
         order: Vec<(CategoryId, Vec<ItemId>)>,
         window: Option<crate::typed::Window>,
         per_item: bool,
-        /// An array function's landing category and its items: result k
-        /// lands at item k (results past the last item are dropped).
-        into: Option<(CategoryId, Vec<ItemId>)>,
+        /// An array function's landing categories and their items: results
+        /// fill them row-major (the last category varies fastest); results
+        /// past the last cell are dropped. Empty: not a list.
+        into: Vec<(CategoryId, Vec<ItemId>)>,
     },
     /// A static per-item collection of a category: one cell per item.
     Items(CategoryId, Vec<(ItemId, Value)>),

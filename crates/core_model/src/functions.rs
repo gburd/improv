@@ -86,6 +86,14 @@ pub enum Over {
     /// From `start`, every `step`-th argument (`COUNTIFS(c1 OVER T, k1, c2,
     /// k2, …)` is `Every(0, 2)`).
     Every(usize, usize),
+    /// These positions, then from `start` every `step`-th (`SORTBY(x, by1
+    /// OVER T, o1, by2, o2, …)` is `AtEvery(&[0, 1], 3, 2)`).
+    AtEvery(&'static [usize], usize, usize),
+    /// The leading arguments that are measure references, at least `min`
+    /// (`LINEST(y, x1, x2 OVER T, const, stats)`); the parser decides and
+    /// records it on the references' `over`, so later readers ask
+    /// [`FnDef::reduced`] with the argument.
+    Leading(usize),
 }
 
 impl Over {
@@ -94,6 +102,10 @@ impl Over {
         match self {
             Over::At(v) => v.contains(&i),
             Over::Every(start, step) => i >= *start && (i - start).is_multiple_of(*step),
+            Over::AtEvery(v, start, step) => {
+                v.contains(&i) || (i >= *start && (i - start).is_multiple_of(*step))
+            }
+            Over::Leading(min) => i < *min,
         }
     }
 }
@@ -133,6 +145,18 @@ impl FnDef {
             .or(self.params.last())
             .copied()
             .unwrap_or(Arg::Any)
+    }
+
+    /// Whether argument `i` (as parsed, `arg`) is reduced over the OVER
+    /// categories. For [`Over::Leading`] the parser marked the reduced
+    /// references with their `over`.
+    pub fn reduced(&self, i: usize, arg: &crate::formula::Expr) -> bool {
+        match self.over {
+            Over::Leading(_) => {
+                matches!(arg, crate::formula::Expr::Ref(_, s) if !s.over.is_empty())
+            }
+            o => o.contains(i),
+        }
     }
 
     /// `ABS(x)`-style signature for docs and error messages.
@@ -470,6 +494,9 @@ pub const WINDOW: FuncId = FuncId(991);
 /// The reserved id of an `INTO Category` clause: an array function's
 /// trailing argument `Call(INTO, [Category(K)])` (`SORT(x OVER T INTO K)`).
 pub const INTO: FuncId = FuncId(992);
+
+/// `POSITION(T)`: an item's 1-based position along its category.
+pub const POSITION: FuncId = FuncId(900);
 
 /// The placeholder measure id for parameter `i` (0 the accumulator, 1 the
 /// value) of the `k`-th `REDUCE`/`SCAN` lambda in a formula. Placeholders

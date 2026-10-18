@@ -12,7 +12,7 @@ below. P1–P6 built (2026-10-17); P7 open.**
 | P3 | `POSITION`, `@ITEM`, `@ID`, `@ITEMCOUNT`, `PREV`/`NEXT`, windows, recurrences, multi-category `OVER`, `ALL EXCEPT`, `WHERE`, `FIRST`/`LAST`/`S`/`TEXTJOIN` | `SUMMARY`, `TIMELINEDATE` (no summary items or timelines in the model) |
 | P4 | 54 special functions and distributions, 72 reductions (descriptive, conditional, per-item ranks and fits, regression, tests, `AUTOCORREL`) | — (array results came with P6) |
 | P5 | 49 TVM, depreciation and bond functions; `NPV`, `XNPV`, `IRR`, `XIRR`, `MIRR`, `FMRR`, `FVSCHEDULE` | — |
-| P6 | lookups (`XLOOKUP`, `XMATCH`, `MATCH`, `LOOKUP`, `INDEX`, `SELECT` family), `DGET` and the D-functions as aliases, `ARRAYTOTEXT`; list results with `INTO` (`SORT`, `UNIQUE`, `FILTER`, `SORTBY`, `TAKE`, `DROP`, `MODE.MULT`, `LINEST`, `LOGEST`, `TEXTSPLIT`, `FREQUENCY`); `LET`, `LAMBDA`, `MAP`, `SCAN`, `REDUCE` | `SELECTLIST`, `SELECTS`, `SEQUENCE`/`ARRAY` (use `POSITION`), `MAKEARRAY`, `BYROW`, `BYCOL`, named LAMBDAs, 2-D spills, multi-key `SORTBY`, multi-x `LINEST` |
+| P6 | lookups (`XLOOKUP`, `XMATCH`, `MATCH`, `LOOKUP`, `INDEX`, `SELECT` family), `DGET` and the D-functions as aliases, `ARRAYTOTEXT`; list results with `INTO` (`SORT`, `UNIQUE`, `FILTER`, `SORTBY`, `TAKE`, `DROP`, `MODE.MULT`, `LINEST`, `LOGEST`, `TEXTSPLIT`, `FREQUENCY`); `LET`, `LAMBDA`, `MAP`, `SCAN`, `REDUCE` | named LAMBDAs; `ARRAY`. (Later in P6: `SELECTLIST`, `SELECTS`, `SEQUENCE`, `MAKEARRAY`, `BYROW`, `BYCOL`, 2-D `INTO R, C`, multi-key `SORTBY`, multi-x `LINEST`/`LOGEST`.) |
 
 418 functions (plus aliases), all in `docs/src/functions.md`
 (generated). 1,831 literal goldens and about 1,350 reduction cells, mostly from

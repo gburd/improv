@@ -52,10 +52,10 @@ pub(super) static LOOKUP: &[FnDef] = &[
     r(1202, "MATCH", Dm, &[A, A, N], 2, NUM, &[1], "the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none"),
     r(1203, "LOOKUP", Dm, &[A, A, A], 3, Ret::Arg(2), &[1, 2], "values at the largest key ≤ key (keys ascending); #N/A when none"),
     alias(r(1204, "INDEX", Dm, &[A, N], 2, Ret::Unify, &[0], "the value at the n-th item (1-based position); #REF! out of range, #N/A where that item has no cell"), &["VALUEAT"]),
-    // --- Quantrix selection (§5.26). Deferred: SELECTLIST (SELECT with a
-    // lookup measure over its own category gives one result per lookup) and
-    // SELECTS (its condition's form is not settled) ---
-    r(1210, "SELECT", Dm, &[A, A, A], 3, Ret::Unify, &[0, 1], "values at the first item (in item order) whose key equals lookup; #N/A when none"),
+    // --- Quantrix selection (§5.26). SELECTLIST is SELECT with a lookup
+    // measure over its own category (one result per lookup); SELECTS is a
+    // list function (array.rs) ---
+    alias(r(1210, "SELECT", Dm, &[A, A, A], 3, Ret::Unify, &[0, 1], "values at the first item (in item order) whose key equals lookup; #N/A when none (SELECTLIST: a lookup over its own category gives one result per lookup)"), &["SELECTLIST"]),
     r(1211, "SELECTBETWEEN", Dm, &[A, A, A, A, B], 4, Ret::Unify, &[0, 1], "values at the first item whose key is between low and high (strictly when inclusive is FALSE); #N/A when none"),
     r(1212, "SELECTGREATERTHAN", Dm, &[A, A, A, B], 3, Ret::Unify, &[0, 1], "values at the first item whose key is > lookup (≥ when inclusive is TRUE); #N/A when none"),
     r(1213, "SELECTLESSTHAN", Dm, &[A, A, A, B], 3, Ret::Unify, &[0, 1], "values at the first item whose key is < lookup (≤ when inclusive is TRUE); #N/A when none"),

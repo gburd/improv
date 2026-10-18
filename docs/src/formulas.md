@@ -278,11 +278,27 @@ Final   = REDUCE(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
   keeps only the last. Both are recurrences underneath, so they update
   incrementally.
 
-LET, LAMBDA and MAP expand when the formula is read: the stored formula
-(and what the formula bar shows) is the expanded expression. A LAMBDA
-cannot call itself, so every formula still terminates. Named LAMBDAs
-(Excel's Name Manager) are not supported; `MAKEARRAY`, `BYROW` and `BYCOL`
-are not either.
+More forms of the same kind:
+
+```text
+Grid  = MAKEARRAY(Row, Col, LAMBDA(r, c, r * 10 + c))   -- over Row × Col
+Steps = SEQUENCE(Month, 100, 5)                          -- 100, 105, 110, …
+Range = BYROW(Sales OVER Product, LAMBDA(row, MAX(row) - MIN(row)))
+Total = BYCOL(Sales OVER Month, LAMBDA(col, SUM(col)))
+```
+
+- `MAKEARRAY(R, C, LAMBDA(r, c, body))` evaluates the body over R × C with
+  `r` and `c` the item positions.
+- `SEQUENCE(T, [start = 1], [step = 1])` is `(POSITION(T) - 1) * step +
+  start`: a category, not a count, sets its length.
+- `BYROW(x OVER C, LAMBDA(row, body))` runs the body once per item of x's
+  other categories, `row` being x's values along C; the body must reduce
+  it (`SUM(row)`, `MAX(row) - MIN(row)`). `BYCOL` is the same form: in a
+  dimensional model a row and a column differ only in the category named.
+
+LET, LAMBDA, MAP, MAKEARRAY, SEQUENCE and BYROW expand when the formula is
+read: the stored formula (and what the formula bar shows) is the expanded
+expression. A LAMBDA cannot call itself, so every formula still terminates.
 
 ### List results: INTO
 
@@ -299,6 +315,20 @@ k-th value lands at Rank's k-th item. Results beyond Rank's last item are
 dropped; if there are fewer, the later items have no cell. `INTO` must name
 a category the measure does not range over.
 
+`INTO R, C` lays the list over two (or more) categories row by row, the
+last varying fastest, as Excel spills a block:
+
+```text
+Fit  = LINEST(Sales, Price, Promo OVER Week, TRUE, TRUE INTO StatRow, StatCol)
+Grid = SORT(Sales OVER Week INTO Row, Col)
+```
+
+`LINEST` and `LOGEST` take any number of x's (every measure before the
+options is reduced): the coefficients come last x first, then b, and with
+`stats` Excel's 5 × (k + 1) block. `SORTBY(x, by1 OVER T, order1, by2,
+order2, …)` sorts by several keys. `SELECTS(values, tests OVER T,
+condition)` keeps the values whose test meets a SUMIF-style criterion.
+
 ### Lookups
 
 A lookup is a reduction whose key is a parameter: it searches a table along
@@ -309,6 +339,7 @@ Rate  = XLOOKUP(Grade, GradeKey OVER Band, GradeRate, 0)
 Slot  = MATCH(Score, Threshold OVER Band)      -- 1-based position along Band
 Third = INDEX(Sales OVER Month, 3)
 Name  = SELECT(Label, Code OVER Item, Wanted)  -- Quantrix argument order
+Names = SELECTLIST(Label, Code OVER Item, Wanted)  -- Wanted over its own category
 ```
 
 The key may range over categories the table lacks: with `Grade` per
@@ -519,9 +550,7 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
-- list results fill one `INTO` category (no 2-D spill); `SORTBY` takes one
-  key, `LINEST`/`LOGEST` one x, `TEXTSPLIT` no row delimiter;
-  `SELECTLIST`, `SELECTS`, `SEQUENCE`, `MAKEARRAY`, `BYROW`, `BYCOL` and
-  named LAMBDAs are not supported (`SEQUENCE` is `POSITION(T) * step +
-  start`);
+- `TEXTSPLIT` takes no row delimiter; `LINEST` with several x's refuses
+  collinear x's (#NUM!) rather than dropping them as Excel does;
+- named LAMBDAs are not supported yet;
 - `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

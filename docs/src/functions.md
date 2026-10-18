@@ -54,6 +54,8 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `REDUCE(value, value, value)` | the branches' type | REDUCE(init, x OVER T, LAMBDA(acc, v, body)): the fold's last value |
 | `LET(value, value, value, …)` | the branches' type | LET(name, value, …, body): the body with each name bound to its value |
 | `LAMBDA(value, value, …)` | the branches' type | LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN |
+| `MAKEARRAY(value, value, value)` | the branches' type | MAKEARRAY(R, C, LAMBDA(r, c, body)): the body over R × C, with r and c the item positions |
+| `BYROW(value, value)` | the branches' type | BYROW(x OVER C, LAMBDA(row, body)): the body per item of x's other categories, row being the values along C (the body reduces it: SUM(row), …) (also `BYCOL`) |
 | `MAP(value, value, …)` | the branches' type | MAP(x, …, LAMBDA(p, …, body)): the body applied element by element |
 
 ## Information and errors
@@ -297,18 +299,20 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `@ITEMCOUNT(category)` | number | the number of items in the category |
 | `PREV(value, category, [number], [value])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
 | `NEXT(value, category, [number], [value])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
+| `SEQUENCE(value, [value], [value])` | the branches' type | SEQUENCE(T, [start = 1], [step = 1]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start |
 | `SORT(value OVER category, [number])` | the branches' type | the values in ascending order (descending when order is -1) |
 | `UNIQUE(value OVER category, [boolean])` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
 | `FILTER(value OVER category, boolean OVER category, [value])` | the branches' type | the values of x whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!) |
-| `SORTBY(value OVER category, value OVER category, [number])` | the branches' type | the values of x sorted by the values of by (stable; descending when order is -1); one sort key |
+| `SORTBY(value OVER category, value OVER category, [value], …)` | the branches' type | SORTBY(x, by1 OVER T, [order1], [by2, order2], …): the values of x sorted by by1, ties by by2, … (stable; a key descends when its order is -1) |
 | `TAKE(value OVER category, number)` | the branches' type | the first n values in item order (the last -n when n is negative) |
 | `DROP(value OVER category, number)` | the branches' type | the values TAKE leaves out: all but the first n (the last -n when n is negative), in item order |
+| `SELECTS(value OVER category, value OVER category, value)` | the branches' type | Quantrix: the values whose test meets the condition (a criterion like ">5" or "a*", as in SUMIF), in item order |
 | `XLOOKUP(value, value OVER category, value OVER category, [value], [number], [number])` | the values' type | values at the item where keys matches key (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
 | `XMATCH(value, value OVER category, [number], [number])` | number | the 1-based item position along the category where keys matches key (XLOOKUP's modes); #N/A when none does |
 | `MATCH(value, value OVER category, [number])` | number | the 1-based item position of key: type 1 (default) the largest key ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
 | `LOOKUP(value, value OVER category, value OVER category)` | the values' type | values at the largest key ≤ key (keys ascending); #N/A when none |
 | `INDEX(value OVER category, number)` | the branches' type | the value at the n-th item (1-based position); #REF! out of range, #N/A where that item has no cell (also `VALUEAT`) |
-| `SELECT(value OVER category, value OVER category, value)` | the branches' type | values at the first item (in item order) whose key equals lookup; #N/A when none |
+| `SELECT(value OVER category, value OVER category, value)` | the branches' type | values at the first item (in item order) whose key equals lookup; #N/A when none (SELECTLIST: a lookup over its own category gives one result per lookup) (also `SELECTLIST`) |
 | `SELECTBETWEEN(value OVER category, value OVER category, value, value, [boolean])` | the branches' type | values at the first item whose key is between low and high (strictly when inclusive is FALSE); #N/A when none |
 | `SELECTGREATERTHAN(value OVER category, value OVER category, value, [boolean])` | the branches' type | values at the first item whose key is > lookup (≥ when inclusive is TRUE); #N/A when none |
 | `SELECTLESSTHAN(value OVER category, value OVER category, value, [boolean])` | the branches' type | values at the first item whose key is < lookup (≤ when inclusive is TRUE); #N/A when none |
@@ -318,8 +322,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | Function | Returns | Description |
 |---|---|---|
 | `MODE.MULT(Measure OVER Category)` | number | every most frequent value, in order of first occurrence (#N/A if none repeats) |
-| `LINEST(number OVER category, number OVER category, [boolean], [boolean])` | number | the least-squares line y = m·x + b of one x: m, b (const = FALSE: b = 0); with stats, Excel's 5×2 block row by row: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid |
-| `LOGEST(number OVER category, number OVER category, [boolean], [boolean])` | number | the curve y = b·m^x fitted to ln y: m, b (const = FALSE: b = 1); with stats the 10 values of LINEST's block, those after b for ln y |
+| `LINEST(number OVER category, number OVER category, [boolean], [boolean], …)` | number | LINEST(y, x1, [x2, …] OVER T, [const], [stats]): the least-squares fit y = m1·x1 + … + b: mk, …, m1, b (const = FALSE: b = 0); with stats, Excel's 5×(k+1) block row by row (one x: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block |
+| `LOGEST(number OVER category, number OVER category, [boolean], [boolean], …)` | number | LOGEST(y, x1, [x2, …] OVER T, [const], [stats]): y = b·m1^x1·…, fitted to ln y: mk, …, m1, b (const = FALSE: b = 1); with stats LINEST's block, for ln y |
 | `FREQUENCY(number OVER category, number, …)` | number | counts of x in the bins given as numbers b1, b2, …: ≤ b1, (b1, b2], …, > bn (n + 1 counts; Excel takes the bins as a range) |
 | `BETA.DIST(number, number, number, boolean, [number], [number])` | number | the beta distribution of x on [A, B] (default [0, 1]): density, or cumulative |
 | `BETADIST(number, number, number, [number], [number])` | number | the cumulative beta distribution of x on [A, B] (default [0, 1]) |

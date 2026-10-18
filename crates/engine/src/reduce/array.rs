@@ -26,15 +26,21 @@ pub(super) fn array(id: u32, rows: &Rows, params: &[CellValue]) -> Vec<CellValue
         1252 => filter(rows, params),
         1253 => sortby(rows, params),
         1254 | 1255 => take(rows, params, id == 1255),
+        1261 => selects(rows, params),
         _ => match rows.first_error() {
             // LINEST's block has its shape whatever the values (as in
             // LibreOffice): every entry is the error.
-            Some(bad) if matches!(id, 1257 | 1258) => return vec![bad; fit::len(params)],
+            Some(bad) if matches!(id, 1257 | 1258) => return vec![bad; fit::len(params, xs(rows))],
             Some(bad) => return vec![bad],
             None => of_values(id, rows, params),
         },
     };
     out.unwrap_or_else(|c| vec![CellValue::Err(c)])
+}
+
+/// How many x columns a LINEST/LOGEST row carries (after y).
+fn xs(rows: &Rows) -> usize {
+    rows.vals.iter().map(Vec::len).max().unwrap_or(2).max(2) - 1
 }
 
 /// The functions of error-free rows.
@@ -65,7 +71,7 @@ fn of_values(id: u32, rows: &Rows, params: &[CellValue]) -> List {
             out
         }
         1256 => mode_mult(&vals)?,
-        1257 | 1258 => fit::linest(rows, params, id == 1258)?,
+        1257 | 1258 => fit::linest(rows, params, id == 1258, xs(rows))?,
         1259 => textsplit(&vals, params)?,
         1260 => frequency(&vals, params)?,
         _ => return Err(err::NAME),
@@ -92,29 +98,53 @@ fn filter(rows: &Rows, params: &[CellValue]) -> List {
     Ok(out)
 }
 
-/// SORTBY(x, by OVER T, [order = 1]): x in the (stable) order of by,
-/// descending for -1. One key: Excel's further by/order pairs are not
-/// supported yet.
+/// SORTBY(x, by1 OVER T, [order1 = 1], [by2, order2], …): x in the
+/// (stable) order of by1, ties broken by by2, …; a key descends when its
+/// order is -1. Reduced columns are x, by1, by2, …; `params` the orders.
 fn sortby(rows: &Rows, params: &[CellValue]) -> List {
-    let o = if params.is_empty() {
-        1.0
-    } else {
-        n(params, 0)?
-    };
-    if o != 1.0 && o != -1.0 {
-        return Err(err::VALUE);
-    }
-    let desc = o < 0.0;
-    let mut rs: Vec<&Vec<CellValue>> = rows.vals.iter().filter(|r| r.len() > 1).collect();
+    let keys = rows.vals.iter().map(Vec::len).max().unwrap_or(2).max(2) - 1;
+    let desc = (0..keys)
+        .map(|k| match params.get(k) {
+            None => Ok(false),
+            Some(_) => match n(params, k)? {
+                1.0 => Ok(false),
+                -1.0 => Ok(true),
+                _ => Err(err::VALUE),
+            },
+        })
+        .collect::<Result<Vec<bool>, u8>>()?;
+    let mut rs: Vec<&Vec<CellValue>> = rows.vals.iter().filter(|r| r.len() > keys).collect();
     rs.sort_by(|a, b| {
-        let o = order(&a[1], &b[1]);
-        if desc {
-            o.reverse()
-        } else {
-            o
-        }
+        (0..keys)
+            .map(|k| {
+                let o = order(&a[k + 1], &b[k + 1]);
+                if desc[k] {
+                    o.reverse()
+                } else {
+                    o
+                }
+            })
+            .find(|o| o.is_ne())
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(rs.into_iter().map(|r| r[0].clone()).collect())
+}
+
+/// SELECTS(values, tests OVER T, condition): Quantrix's selection, the
+/// values whose test meets the condition (a SUMIF-style criterion such as
+/// `">5"` or `"a*"`), in item order; #N/A when none does.
+fn selects(rows: &Rows, params: &[CellValue]) -> List {
+    let c = super::statistical::Criterion::new(params.first().ok_or(err::VALUE)?);
+    let out: Vec<CellValue> = rows
+        .vals
+        .iter()
+        .filter(|r| r.get(1).is_some_and(|t| c.matches(t)))
+        .filter_map(|r| r.first().cloned())
+        .collect();
+    if out.is_empty() {
+        return Err(err::NA);
+    }
+    Ok(out)
 }
 
 /// TAKE(x OVER T, n): the first n values (the last -n when n < 0), in item
@@ -320,6 +350,29 @@ mod tests {
             [text("a"), text("c"), text("b")]
         );
         assert_eq!(array(1253, &r, &[n(0.0)]), [CellValue::Err(err::VALUE)]);
+        // Two keys: by1 ties broken by by2 (descending).
+        let r2 = rows(vec![
+            vec![text("a"), n(1.0), n(1.0)],
+            vec![text("b"), n(0.0), n(5.0)],
+            vec![text("c"), n(1.0), n(3.0)],
+            vec![text("d"), n(0.0), n(2.0)],
+        ]);
+        assert_eq!(
+            array(1253, &r2, &[n(1.0), n(-1.0)]),
+            [text("b"), text("d"), text("c"), text("a")]
+        );
+        assert_eq!(
+            array(1253, &r2, &[n(1.0), n(2.0)]),
+            [CellValue::Err(err::VALUE)]
+        );
+        assert_eq!(
+            array(1253, &r2, &[]),
+            [text("d"), text("b"), text("a"), text("c")]
+        );
+        // SELECTS: the values whose test meets the condition.
+        assert_eq!(array(1261, &r2, &[text(">0")]), [text("a"), text("c")]);
+        assert_eq!(array(1261, &r2, &[n(9.0)]), [NA]);
+        assert_eq!(array(1261, &r2, &[]), [CellValue::Err(err::VALUE)]);
         // An error key sorts last (after booleans).
         let e = rows(vec![
             vec![n(1.0), CellValue::Err(err::NA)],

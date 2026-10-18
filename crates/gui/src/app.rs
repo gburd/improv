@@ -2488,7 +2488,7 @@ fn aggregation_dsl(model: &Model, func: FuncId, name: &str, args: &[Expr]) -> Op
     let mut rest = Vec::new();
     for a in args {
         match a {
-            Expr::Call(id, k) if *id == improv_core_model::functions::INTO => into = k.first(),
+            Expr::Call(id, k) if *id == improv_core_model::functions::INTO => into = Some(k),
             Expr::Call(id, p) if *id == improv_core_model::functions::WHERE => pred = p.first(),
             Expr::Call(id, b) if *id == improv_core_model::functions::WINDOW => window = Some(b),
             other => rest.push(other),
@@ -2496,20 +2496,31 @@ fn aggregation_dsl(model: &Model, func: FuncId, name: &str, args: &[Expr]) -> Op
     }
     let mut over: Option<&Vec<CategoryId>> = None;
     let mut parts = Vec::new();
+    // OVER follows the first reduced argument, except for Over::Leading,
+    // where it must follow the last leading measure (the parser reduces the
+    // references before it).
+    let over_at = match def.over {
+        improv_core_model::functions::Over::Leading(_) => {
+            (0..rest.len()).rev().find(|i| def.reduced(*i, rest[*i]))
+        }
+        _ => (0..rest.len()).find(|i| def.reduced(*i, rest[*i])),
+    };
     for (i, a) in rest.iter().enumerate() {
-        if !def.over.contains(i) {
+        if !def.reduced(i, a) {
             parts.push(expr_dsl(model, a)?);
             continue;
         }
         let Expr::Ref(id, spec) = a else {
             return None;
         };
-        if !spec.except.is_empty() || spec.over.is_empty() || over.is_some_and(|o| *o != spec.over)
-        {
+        if !spec.except.is_empty() || spec.over.is_empty() {
             return None;
         }
         let mut part = ref_dsl(model, *id, &spec.by)?;
-        if over.is_none() {
+        if over.is_some_and(|o| *o != spec.over) {
+            return None;
+        }
+        if Some(i) == over_at {
             let cats: Option<Vec<String>> = spec
                 .over
                 .iter()
@@ -2527,15 +2538,16 @@ fn aggregation_dsl(model: &Model, func: FuncId, name: &str, args: &[Expr]) -> Op
                 part.push_str(" WHERE ");
                 part.push_str(&expr_dsl(model, p)?);
             }
-            over = Some(&spec.over);
         }
+        over = Some(&spec.over);
         parts.push(part);
     }
     over?;
-    if let Some(k) = into {
+    if let Some(ks) = into {
+        let names: Option<Vec<String>> = ks.iter().map(|k| expr_dsl(model, k)).collect();
         let last = parts.last_mut()?;
         last.push_str(" INTO ");
-        last.push_str(&expr_dsl(model, k)?);
+        last.push_str(&names?.join(", "));
     }
     Some(format!("{name}({})", parts.join(", ")))
 }
@@ -6479,9 +6491,22 @@ mod tests {
         let mut model = revenue_model();
         model.add_category(CategoryId(3), "Region");
         model.add_item(ItemId(30), CategoryId(3), "North");
-        let text = "SORT(Quantity OVER Time, -1 INTO Region)";
-        let f = parser::parse_expr(&model, text).unwrap();
-        assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));
+        model.add_category(CategoryId(4), "Slot");
+        for text in [
+            "SORT(Quantity OVER Time, -1 INTO Region)",
+            "SORT(Quantity OVER Time INTO Region, Slot)",
+            "BYROW(Quantity OVER Product, LAMBDA(r, SUM(r)))",
+            "LINEST(Quantity, Price, Price OVER Time, FALSE, TRUE INTO Region, Slot)",
+        ] {
+            let f = parser::parse_expr(&model, text).unwrap();
+            let shown = formula_dsl(&model, &f);
+            if text.starts_with("BYROW") {
+                // Expanded when read: shown as the reduction it is.
+                assert_eq!(shown.as_deref(), Some("SUM(Quantity OVER Product)"));
+            } else {
+                assert_eq!(shown.as_deref(), Some(text));
+            }
+        }
     }
 
     /// In a German locale the formula bar shows and accepts German names,

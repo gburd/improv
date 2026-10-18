@@ -13,6 +13,17 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **More list and LAMBDA forms.** `INTO R, C` lays a list over several
+  categories row by row (Excel's 2-D spill); `LINEST`/`LOGEST` take any
+  number of x's (`LINEST(y, x1, x2 OVER T, TRUE, TRUE INTO Row, Col)`
+  gives Excel's 5 × (k + 1) block, checked against LibreOffice);
+  `SORTBY` takes several by/order pairs; `SELECTS(values, tests OVER T,
+  condition)`; `SELECTLIST` (`SELECT` with a lookup over its own
+  category); `MAKEARRAY(R, C, LAMBDA(r, c, body))`; `SEQUENCE(T, [start],
+  [step])`; `BYROW`/`BYCOL(x OVER C, LAMBDA(row, SUM(row)))`. An
+  expression that reads no measure (positions, literals) now broadcasts
+  with anything, so `POSITION(R) * 10 + POSITION(C)` spans R × C.
+
 - **`LET`, `LAMBDA`, `MAP`, `SCAN` and `REDUCE`.** LET names values for its
   body; a LAMBDA is called on the spot or passed to MAP (cell by cell),
   SCAN (a running fold along a category, `SCAN(0, x OVER Time,

@@ -136,7 +136,7 @@ where
                 order,
                 window: *window,
                 per_item: *per_item,
-                into: into.as_ref(),
+                into,
             },
         ),
 
@@ -375,7 +375,7 @@ struct AggSpec<'p> {
     order: &'p [(CategoryId, Vec<improv_core_model::ItemId>)],
     window: Option<crate::typed::Window>,
     per_item: bool,
-    into: Option<&'p (CategoryId, Vec<improv_core_model::ItemId>)>,
+    into: &'p [(CategoryId, Vec<improv_core_model::ItemId>)],
 }
 
 /// A reduction's rows: the reduced measures aligned on their coordinate
@@ -520,20 +520,31 @@ where
         (rs, params, items)
     };
     let cat0 = a.order.first().map(|(c, _)| c.0);
-    if let Some((k, items)) = a.into {
-        // A list of results, the k-th at the landing category's k-th item.
-        let (k, items) = (k.0, items.clone());
+    if !a.into.is_empty() {
+        // A list of results laid over the landing categories row-major: the
+        // k-th result at the k-th cell of their product (last fastest).
+        let cells: Vec<CoordKey> = a.into.iter().fold(vec![Vec::new()], |acc, (c, items)| {
+            acc.iter()
+                .flat_map(|pre| {
+                    items.iter().map(move |i| {
+                        let mut k = pre.clone();
+                        k.push((c.0, i.0));
+                        k
+                    })
+                })
+                .collect()
+        });
         let lists = keyed.reduce(
-            move |_k, input, output: &mut Vec<((u32, CellValue), isize)>| {
+            move |_k, input, output: &mut Vec<((CoordKey, CellValue), isize)>| {
                 let (rs, params, _) = to_rows(input);
-                for (item, v) in items.iter().zip(reduce::array(func, &rs, &params)) {
-                    output.push(((item.0, v), 1isize));
+                for (cell, v) in cells.iter().zip(reduce::array(func, &rs, &params)) {
+                    output.push(((cell.clone(), v), 1isize));
                 }
             },
         );
-        return Ok(lists.map(move |(gk, (item, v))| {
+        return Ok(lists.map(move |(gk, (cell, v))| {
             let mut key = gk;
-            key.push((k, item));
+            key.extend(cell);
             key.sort_unstable();
             (key, v)
         }));
@@ -1816,6 +1827,210 @@ mod tests {
             "X = SCAN(0, Quantity OVER Time, LAMBDA(v, v))",
             "X = MAP(Quantity, LAMBDA(a, b, a + b))",
             "X = SCAN(0, Quantity OVER Time, 1)",
+        ] {
+            assert!(
+                improv_core_model::parse_formula(&m, text).is_err(),
+                "{text}"
+            );
+        }
+    }
+
+    /// `INTO R, C` lays a list over two categories, row-major: SORT's
+    /// four values over a 2 × 2 grid, and LINEST's statistics as Excel's
+    /// 5 × 2 block.
+    #[test]
+    fn into_two_categories() {
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let (row, col) = (CategoryId(3), CategoryId(4));
+        let mut m = revenue_model();
+        m.add_category(row, "Row");
+        m.add_category(col, "Col");
+        for i in 0..5 {
+            m.add_item(ItemId(30 + i), row, format!("r{i}"));
+        }
+        for i in 0..2 {
+            m.add_item(ItemId(40 + i), col, format!("c{i}"));
+        }
+        define(
+            &mut m,
+            200,
+            vec![row, col],
+            "S = SORT(Quantity OVER Time, Product INTO Row, Col)",
+        );
+        define(
+            &mut m,
+            201,
+            vec![time, product],
+            "X = POSITION(Time) + Quantity * 0",
+        );
+        define(
+            &mut m,
+            202,
+            vec![product, row, col],
+            "L = LINEST(Quantity, X OVER Time, TRUE, TRUE INTO Row, Col)",
+        );
+        let out = evaluate(&m, &[MeasureId(200), MeasureId(202)]).unwrap();
+        let at = |id: u32, k: &[(u32, u32)]| out[&MeasureId(id)].get(&key(k)).cloned();
+        let n = CellValue::num;
+        // 50, 80, 100, 120 row-major over r0..r1 × c0..c1.
+        assert_eq!(at(200, &[(3, 30), (4, 40)]), Some(n(50.0)));
+        assert_eq!(at(200, &[(3, 30), (4, 41)]), Some(n(80.0)));
+        assert_eq!(at(200, &[(3, 31), (4, 40)]), Some(n(100.0)));
+        assert_eq!(at(200, &[(3, 32), (4, 40)]), None, "four values only");
+        // Widget A: y = 100, 120 over x = 1, 2: slope 20, intercept 80; r² 1.
+        assert_eq!(at(202, &[(2, 20), (3, 30), (4, 40)]), Some(n(20.0)));
+        assert_eq!(at(202, &[(2, 20), (3, 30), (4, 41)]), Some(n(80.0)));
+        assert_eq!(at(202, &[(2, 20), (3, 32), (4, 40)]), Some(n(1.0)));
+        assert_eq!(out[&MeasureId(202)].len(), 20, "two 5 × 2 blocks");
+        // Two x's (Over::Leading): Quantity on X and X² over Time per
+        // product, 3 coefficients into one row; the options after the x's.
+        let mut m3 = m.clone();
+        define(&mut m3, 203, vec![time, product], "X2 = X * X");
+        define(
+            &mut m3,
+            204,
+            vec![product, col],
+            "Two = LINEST(Quantity, X, X2 OVER Time, FALSE INTO Col)",
+        );
+        let f = improv_core_model::parse_formula(
+            &m3,
+            "Q = LINEST(Quantity, X, X2 OVER Time, FALSE INTO Col)",
+        )
+        .unwrap();
+        let Expr::Call(_, a) = &f.formula.expr else {
+            panic!()
+        };
+        let def = improv_core_model::functions::by_id(FuncId(1257)).unwrap();
+        assert_eq!(
+            (0..a.len()).filter(|i| def.reduced(*i, &a[*i])).count(),
+            3,
+            "y, x1, x2 reduced; FALSE a parameter"
+        );
+        assert!(
+            improv_core_model::parse_formula(&m3, "Q = LINEST(Quantity OVER Time INTO Col)")
+                .is_err()
+        );
+        // The GUI printer and the parser agree on the form.
+        let f = improv_core_model::parse_formula(&m, "Z = SORT(Quantity OVER Time INTO Row, Col)")
+            .unwrap();
+        let Expr::Call(_, args) = &f.formula.expr else {
+            panic!()
+        };
+        assert_eq!(
+            args.last(),
+            Some(&Expr::Call(
+                improv_core_model::functions::INTO,
+                vec![Expr::Category(row), Expr::Category(col)]
+            ))
+        );
+        for (text, why) in [
+            (
+                "X = SORT(Quantity OVER Time INTO Row, Product)",
+                "does not range over",
+            ),
+            (
+                "X = SORT(Quantity OVER Time INTO Row, Col, Row)",
+                "malformed INTO",
+            ),
+        ] {
+            let e = improv_core_model::parse_formula(&m, text)
+                .map_err(|e| e.message)
+                .and_then(|f| {
+                    crate::compiler::infer(
+                        &CompileContext::for_model(&m),
+                        MeasureId(209),
+                        &f.formula.expr,
+                    )
+                    .map(|_| ())
+                    .map_err(|e| e.to_string())
+                })
+                .unwrap_err();
+            assert!(e.contains(why), "{text}: {e}");
+        }
+    }
+
+    /// SEQUENCE and MAKEARRAY are positions; SELECTLIST is SELECT with a
+    /// lookup over its own category; SORTBY takes several keys.
+    #[test]
+    fn sequence_makearray_selectlist_sortby() {
+        let (time, product, rank) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        let mut m = revenue_model();
+        m.add_category(rank, "Rank");
+        for i in 0..2 {
+            m.add_item(ItemId(30 + i), rank, format!("#{}", i + 1));
+        }
+        define(&mut m, 200, vec![time], "S = SEQUENCE(Time, 10, 5)");
+        define(
+            &mut m,
+            201,
+            vec![time, product],
+            "G = MAKEARRAY(Time, Product, LAMBDA(r, c, r * 10 + c))",
+        );
+        // Price spread over Time × Product (the shape of Quantity); each Rank
+        // item looks up the product whose price is 10 * its position.
+        define(
+            &mut m,
+            205,
+            vec![time, product],
+            "P2 = Price + Quantity * 0",
+        );
+        define(&mut m, 202, vec![rank], "Want = POSITION(Rank) * 10");
+        define(
+            &mut m,
+            203,
+            vec![time, rank],
+            "L = SELECTLIST(Quantity, P2 OVER Product, Want)",
+        );
+        // Products by price descending: B then A (the second key never ties).
+        define(
+            &mut m,
+            204,
+            vec![time, rank],
+            "O = SORTBY(Quantity, P2 OVER Product, -1, Quantity, 1 INTO Rank)",
+        );
+        let ids: Vec<MeasureId> = (200..=205).map(MeasureId).collect();
+        let out = evaluate(&m, &ids).unwrap();
+        let at = |id: u32, k: &[(u32, u32)]| out[&MeasureId(id)].get(&key(k)).cloned();
+        let n = CellValue::num;
+        assert_eq!(at(200, &[(1, 10)]), Some(n(10.0)));
+        assert_eq!(at(200, &[(1, 11)]), Some(n(15.0)));
+        assert_eq!(at(201, &[(1, 11), (2, 20)]), Some(n(21.0)));
+        assert_eq!(
+            at(203, &[(1, 10), (3, 30)]),
+            Some(n(100.0)),
+            "Price 10 is A"
+        );
+        assert_eq!(at(203, &[(1, 11), (3, 31)]), Some(n(80.0)), "Price 20 is B");
+        assert_eq!(at(204, &[(1, 10), (3, 30)]), Some(n(50.0)));
+        assert_eq!(at(204, &[(1, 10), (3, 31)]), Some(n(100.0)));
+        // BYROW/BYCOL: one value per item of the other categories.
+        define(
+            &mut m,
+            206,
+            vec![time],
+            "R = BYROW(Quantity OVER Product, LAMBDA(row, MAX(row) - MIN(row)))",
+        );
+        define(
+            &mut m,
+            207,
+            vec![product],
+            "C = BYCOL(Quantity OVER Time, LAMBDA(col, SUM(col)))",
+        );
+        let out = evaluate(&m, &[MeasureId(206), MeasureId(207)]).unwrap();
+        assert_eq!(out[&MeasureId(206)].get(&key(&[(1, 10)])), Some(&n(50.0)));
+        assert_eq!(out[&MeasureId(207)].get(&key(&[(2, 21)])), Some(&n(130.0)));
+        for text in [
+            "X = BYROW(Quantity OVER Product, LAMBDA(row, row * 2))",
+            "X = BYROW(Quantity, LAMBDA(row, SUM(row)))",
+            "X = BYROW(Quantity OVER Product, 1)",
+            "X = BYROW(Quantity OVER Product LAMBDA(r, SUM(r)))",
+            "X = BYROW(Quantity OVER Product, LAMBDA(r, SUM(r))",
+            "X = SEQUENCE(Time, 1, 2, 3)",
+            "X = SEQUENCE(Quantity)",
+            "X = MAKEARRAY(Time, Product, 1)",
+            "X = MAKEARRAY(Time Product, LAMBDA(r, c, r))",
+            "X = MAKEARRAY(Time, Product LAMBDA(r, c, r))",
+            "X = MAKEARRAY(Time, Product, LAMBDA(r, r))",
         ] {
             assert!(
                 improv_core_model::parse_formula(&m, text).is_err(),

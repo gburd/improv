@@ -269,7 +269,7 @@ fn compile_fold(ctx: &CompileContext, last: bool, args: &[Expr]) -> Result<PlanN
             order: vec![(cat, ctx.items_of(cat))],
             window: None,
             per_item: false,
-            into: None,
+            into: Vec::new(),
         },
         ty: TypeInfo {
             value_type: ty.value_type,
@@ -527,11 +527,16 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             let rt = infer(ctx, target, r)?;
             let value_type = binop_result_type(*op, &lt, &rt)?;
 
-            // Broadcastable: one dim must be a subset of the other.
+            // Broadcastable: one dim must be a subset of the other, or one
+            // side reads no measure (positions and literals are not data, so
+            // `POSITION(R) * 10 + POSITION(C)` spans R × C; two measures over
+            // unrelated categories are refused as a likely mistake).
             let dim = if lt.ty.dim.is_subset_of(&rt.ty.dim) {
                 rt.ty.dim.clone()
             } else if rt.ty.dim.is_subset_of(&lt.ty.dim) {
                 lt.ty.dim.clone()
+            } else if l.referenced_measures().is_empty() || r.referenced_measures().is_empty() {
+                lt.ty.dim.union(&rt.ty.dim)
             } else {
                 return Err(CompileError::DimensionMismatch(format!(
                     "neither operand dim is a subset of the other: {:?} vs {:?}",
@@ -740,14 +745,21 @@ fn infer_aggregate(
     let def = functions::by_id(func).ok_or(CompileError::UnknownFunction(func))?;
     let mut pred = None;
     let mut window = None;
-    let mut into = None;
+    let mut into: Vec<CategoryId> = Vec::new();
     let mut rest: Vec<&Expr> = Vec::new();
     for a in args {
         match a {
-            Expr::Call(id, k) if *id == functions::INTO => match k.first() {
-                Some(Expr::Category(c)) => into = Some(*c),
-                _ => return Err(CompileError::Unsupported("malformed INTO".into())),
-            },
+            Expr::Call(id, k) if *id == functions::INTO => {
+                for c in k {
+                    match c {
+                        Expr::Category(c) if !into.contains(c) => into.push(*c),
+                        _ => return Err(CompileError::Unsupported("malformed INTO".into())),
+                    }
+                }
+                if into.is_empty() {
+                    return Err(CompileError::Unsupported("malformed INTO".into()));
+                }
+            }
             Expr::Call(id, p) if *id == functions::WHERE => {
                 let t = infer(ctx, target, &p[0])?;
                 if t.ty.value_type != ValueType::Boolean {
@@ -774,8 +786,27 @@ fn infer_aggregate(
     }
     let mut inputs = Vec::new();
     let mut params = Vec::new();
+    // Over::Leading: the registry lists (y, x, options…); every further
+    // reduced argument checks as x, and the options follow from position
+    // `min`.
+    let leading = match def.over {
+        functions::Over::Leading(min) => Some((
+            min,
+            rest.iter()
+                .enumerate()
+                .filter(|(i, a)| def.reduced(*i, a))
+                .count(),
+        )),
+        _ => None,
+    };
+    let slot = |i: usize| match leading {
+        Some((min, n)) if i >= n => i - n + min,
+        Some((min, _)) if i >= min => min - 1,
+        _ => i,
+    };
     for (i, a) in rest.iter().enumerate() {
-        if def.over.contains(i) {
+        let si = slot(i);
+        if def.reduced(i, a) {
             let t = match a {
                 // The aggregation collapses what the `[…]` list leaves out.
                 Expr::Ref(mid, spec) => infer_ref(ctx, *mid, spec)?,
@@ -787,11 +818,11 @@ fn infer_aggregate(
                     )))
                 }
             };
-            check_arg(def, i, &t)?;
+            check_arg(def, si, &t)?;
             inputs.push(t);
         } else {
             let t = infer(ctx, target, a)?;
-            check_arg(def, i, &t)?;
+            check_arg(def, si, &t)?;
             params.push(t);
         }
     }
@@ -812,7 +843,7 @@ fn infer_aggregate(
     }
     // No OVER category (`the sum of Quantity` in the CNL) collapses
     // nothing: each group is one cell.
-    match (def.kind == Kind::Array, into) {
+    match (def.kind == Kind::Array, into.first()) {
         (true, None) => {
             return Err(CompileError::Unsupported(format!(
                 "{} returns a list: say where it lands, {}(… INTO Category)",
@@ -827,7 +858,7 @@ fn infer_aggregate(
         }
         _ => {}
     }
-    if let Some(k) = into {
+    for &k in &into {
         if full.categories.contains(&k) {
             return Err(CompileError::DimensionMismatch(format!(
                 "{}: INTO {} must be a category the measure does not range over",
@@ -837,7 +868,7 @@ fn infer_aggregate(
         }
     }
     let mut kept: Vec<CategoryId> = first.ty.dim.categories.clone();
-    kept.extend(into);
+    kept.extend(into.iter().copied());
     if window.is_some() || def.kind == Kind::PerItem {
         if over.len() != 1 {
             return Err(CompileError::Unsupported(format!(
@@ -878,7 +909,7 @@ fn infer_aggregate(
             let (mut ins, mut ps) = (inputs.iter(), params.iter());
             (0..rest.len())
                 .map(|j| {
-                    if def.over.contains(j) {
+                    if def.reduced(j, rest[j]) {
                         ins.next()
                     } else {
                         ps.next()
@@ -1319,13 +1350,13 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
             into,
         } => {
             let per_item = functions::by_id(*func).is_some_and(|d| d.kind == Kind::PerItem);
-            let group_by = if into.is_some() {
-                // The landing category is added back per result.
+            let group_by = if !into.is_empty() {
+                // The landing categories are added back per result.
                 ty.dim
                     .categories
                     .iter()
                     .copied()
-                    .filter(|c| Some(*c) != *into)
+                    .filter(|c| !into.contains(c))
                     .collect()
             } else if window.is_some() || per_item {
                 // The reduced category is kept in the result but grouped
@@ -1357,7 +1388,7 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                 order: over.iter().map(|c| (*c, ctx.items_of(*c))).collect(),
                 window: *window,
                 per_item,
-                into: into.map(|k| (k, ctx.items_of(k))),
+                into: into.iter().map(|k| (*k, ctx.items_of(*k))).collect(),
             }
         }
         TypedExprKind::Items(c, vals) => PlanNodeKind::Items(*c, vals.clone()),
