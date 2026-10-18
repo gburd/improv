@@ -179,6 +179,7 @@ fn help_key(app: &mut App, code: KeyCode) {
             if let (Some(d), Some(buf)) = (h.current(), &mut app.edit) {
                 buf.insert(&format!("{}(", d.name));
                 app.tab_cycle = None;
+                app.diagnostic = None; // its span is into the old text
             }
             app.help = None;
         }
@@ -511,6 +512,27 @@ mod tests {
         run_events(&mut app, "", ev).unwrap();
         assert!(app.help.is_none());
         assert_eq!(app.edit.as_deref(), Some("100PMT("));
+    }
+
+    /// Inserting from the help overlay changes the text, so the error
+    /// located in the old text goes: its byte span would now point into
+    /// shifted text, mid-'€' here, and drawing the marker would panic.
+    #[test]
+    fn help_insert_drops_the_stale_diagnostic() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(102));
+        let mut ev = vec![key(KeyCode::Char('e'))];
+        ev.extend((0..30).map(|_| key(KeyCode::Backspace)));
+        ev.extend(chars("\"€\"+Quantty"));
+        ev.extend([key(KeyCode::Enter), key(KeyCode::Home)]);
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.diagnostic.as_ref().unwrap().span, Some(6..13));
+        let mut ev = vec![key(KeyCode::F(1))];
+        ev.extend(chars("pmt"));
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.edit.as_deref(), Some("PMT(\"€\"+Quantty"));
+        assert!(app.diagnostic.is_none());
     }
 
     #[test]
