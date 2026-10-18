@@ -55,12 +55,11 @@ fn fv(rate: f64, nper: f64, pmt: f64, pv: f64, adv: bool) -> f64 {
     let fv = if rate == 0.0 {
         pv + pmt * nper
     } else {
-        let term = (1.0 + rate).powf(nper);
-        if adv {
-            pv * term + pmt * (1.0 + rate) * (term - 1.0) / rate
-        } else {
-            pv * term + pmt * (term - 1.0) / rate
-        }
+        // (1+r)ⁿ − 1 through expm1 and log1p, as in PMT: no cancellation at
+        // a tiny rate.
+        let grow = (nper * rate.ln_1p()).exp_m1();
+        let due = if adv { 1.0 + rate } else { 1.0 };
+        pv * (grow + 1.0) + pmt * due * grow / rate
     };
     -fv
 }
@@ -68,10 +67,12 @@ fn fv(rate: f64, nper: f64, pmt: f64, pv: f64, adv: bool) -> f64 {
 fn pv(rate: f64, nper: f64, pmt: f64, fv: f64, adv: bool) -> f64 {
     let pv = if rate == 0.0 {
         fv + pmt * nper
-    } else if adv {
-        fv * (1.0 + rate).powf(-nper) + pmt * (1.0 - (1.0 + rate).powf(-nper + 1.0)) / rate + pmt
     } else {
-        fv * (1.0 + rate).powf(-nper) + pmt * (1.0 - (1.0 + rate).powf(-nper)) / rate
+        // (1+r)⁻ⁿ, and 1 − (1+r)⁻ⁿ through expm1 and log1p (each without
+        // cancellation, at a tiny rate and at a large one).
+        let k = -nper * rate.ln_1p();
+        let due = if adv { 1.0 + rate } else { 1.0 };
+        fv * k.exp() - pmt * due * k.exp_m1() / rate
     };
     -pv
 }
@@ -673,5 +674,27 @@ mod tests {
         let v = f(724, &[1000.0, 0.0, 9.47e153, 0.0, 5.0]).as_num().unwrap();
         assert!((v / 5.279_831_045_406_55e-151 - 1.0).abs() < 1e-12, "{v}");
         assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// PV and FV at a tiny rate keep their digits (Gnumeric, and mpmath
+    /// 9.9999999945000000022 and 10.0000000045000000012); (1+r)ⁿ − 1 lost
+    /// seven of them, so PV of PMT's payment missed the present value.
+    #[test]
+    fn pv_and_fv_at_a_tiny_rate() {
+        let near = |v: CellValue, want: f64| {
+            let got = v.as_num().unwrap();
+            assert!((got - want).abs() <= 1e-15 * want.abs(), "{got} vs {want}");
+        };
+        near(f(701, &[1e-10, 10.0, -1.0]), 9.999_999_994_5);
+        near(f(700, &[1e-10, 10.0, -1.0]), 10.000_000_004_5);
+        near(f(701, &[1e-10, 10.0, -1.0, 0.0, 1.0]), 9.999_999_995_5);
+        near(f(700, &[1e-10, 10.0, -1.0, 0.0, 1.0]), 10.000_000_005_5);
+        let p = pmt(6.1e-8, 1.0, 0.0, 1.0, false);
+        assert!(pv(6.1e-8, 1.0, p, 1.0, false).abs() < 1e-15);
+        // A large rate: (1+r)⁻ⁿ = 1.5⁻⁴⁹ is 2.4e-9, and 1 − (1 − it) lost
+        // half its digits.
+        let p = pmt(0.5, 49.0, 0.0, 1.0, true);
+        let back = pv(0.5, 49.0, p, 1.0, true);
+        assert!(back.abs() < 1e-23, "{back}");
     }
 }
