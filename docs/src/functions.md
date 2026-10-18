@@ -234,6 +234,13 @@ Lengths and positions count characters, not bytes.
 | `REGEXREPLACE(text, text, text, [number], [number])` | text | replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax |
 | `TEXTSPLIT(text OVER category, text, [text], [boolean])` | text | the parts of the text between col_delimiters (case-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE! |
 | `ARRAYTOTEXT(value OVER category, [number])` | text | the values as text in item order: format 0 "1, 2, a", format 1 {1,2,"a"} |
+| `ASC(text)` | text | full-width ASCII and katakana as half-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark) |
+| `JIS(text)` | text | half-width ASCII and katakana as full-width, as LibreOffice's JIS (a letter and its sound mark join) (also `DBCS`) |
+| `BAHTTEXT(number)` | text | a number as Thai baht and satang in words, rounded to the satang |
+| `ROT13(text)` | text | ASCII letters rotated 13 places; anything else unchanged |
+| `ENCODEURL(text)` | text | UTF-8 percent-encoding of every byte but A–Z a–z 0–9 - _ . ~ (#VALUE! for empty text) |
+| `ROMAN(number, [value])` | text | 0–3999 in Roman numerals; form 0 classic (or TRUE) to 4 most concise (or FALSE) |
+| `ARABIC(text)` | number | Roman numerals (0–3999) as a number; case and surrounding spaces ignored, a leading - negates, "" is 0 |
 
 ## Date and time
 

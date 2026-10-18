@@ -1,0 +1,54 @@
+formula	expected	source
+ASC("ＡＢＣ　１２３ガパヴカ")	"ABC　123ｶﾞﾊﾟｳﾞｶ"	LibreOffice
+ASC("ｶﾀｶﾅ abc")	"ｶﾀｶﾅ abc"	LibreOffice
+ASC("「テスト」、。")	"｢ﾃｽﾄ｣､｡"	LibreOffice
+ASC("")	""	LibreOffice
+JIS("ABC 123 ｶﾞﾊﾟｳﾞｶ~")	"ＡＢＣ １２３ ガパウ゛カ～"	LibreOffice
+JIS("ﾃｽﾄ!")	"テスト！"	LibreOffice
+JIS("全角")	"全角"	LibreOffice
+JIS("a\b")	"ａ￥ｂ"	LibreOffice
+DBCS("abc 1")	"ａｂｃ １"	LibreOffice
+BAHTTEXT(1234.5)	"หนึ่งพันสองร้อยสามสิบสี่บาทห้าสิบสตางค์"	LibreOffice
+BAHTTEXT(21)	"ยี่สิบเอ็ดบาทถ้วน"	LibreOffice
+BAHTTEXT(1000001)	"หนึ่งล้านหนึ่งบาทถ้วน"	LibreOffice
+BAHTTEXT(-0.25)	"ลบยี่สิบห้าสตางค์"	LibreOffice
+BAHTTEXT(0)	"ศูนย์บาทถ้วน"	LibreOffice
+BAHTTEXT(100000000)	"หนึ่งร้อยล้านบาทถ้วน"	LibreOffice
+BAHTTEXT(0.011)	"หนึ่งสตางค์"	LibreOffice
+BAHTTEXT(111.11)	"หนึ่งร้อยสิบเอ็ดบาทสิบเอ็ดสตางค์"	LibreOffice
+ROT13("Hello, World!")	"Uryyb, Jbeyq!"	LibreOffice
+ROT13("")	""	LibreOffice
+ROT13("Zebra-123")	"Mroen-123"	LibreOffice
+ROT13("Ärger")	"Äetre"	LibreOffice
+ROT13("NOPQRSTUVWXYZ")	"ABCDEFGHIJKLM"	LibreOffice
+ENCODEURL("a b&c/é")	"a%20b%26c%2F%C3%A9"	LibreOffice
+ENCODEURL("")	{"error": "#VALUE!"}	LibreOffice
+ENCODEURL("x=1;y=2?")	"x%3D1%3By%3D2%3F"	LibreOffice
+ENCODEURL("€100")	"%E2%82%AC100"	LibreOffice
+ENCODEURL("http://contoso.sharepoint.com/teams/Finance/Documents/April Reports/Profit and Loss Statement.xlsx")	"http%3A%2F%2Fcontoso.sharepoint.com%2Fteams%2FFinance%2FDocuments%2FApril%20Reports%2FProfit%20and%20Loss%20Statement.xlsx"	Excel docs
+ENCODEURL("a.b~c")	"a.b~c"	RFC 3986
+ROMAN(499)	"CDXCIX"	LibreOffice
+ROMAN(499,0)	"CDXCIX"	LibreOffice
+ROMAN(499,1)	"LDVLIV"	LibreOffice
+ROMAN(499,2)	"XDIX"	LibreOffice
+ROMAN(499,3)	"VDIV"	LibreOffice
+ROMAN(499,4)	"ID"	LibreOffice
+ROMAN(1999,4)	"MIM"	LibreOffice
+ROMAN(3999)	"MMMCMXCIX"	LibreOffice
+ROMAN(0)	""	LibreOffice
+ROMAN(4000)	{"error": "#VALUE!"}	LibreOffice
+ROMAN(-1)	{"error": "#VALUE!"}	LibreOffice
+ROMAN(10,5)	{"error": "#VALUE!"}	LibreOffice
+ROMAN(12.9)	"XII"	LibreOffice
+ROMAN(499,TRUE)	"CDXCIX"	Excel docs
+ROMAN(499,FALSE)	"ID"	Excel docs
+ARABIC("mcmxii")	1912	LibreOffice
+ARABIC("MMMCMXCIX")	3999	LibreOffice
+ARABIC("IIII")	4	LibreOffice
+ARABIC("")	0	LibreOffice
+ARABIC("IM")	999	LibreOffice
+ARABIC("ABC")	{"error": "#VALUE!"}	LibreOffice
+ARABIC("MMMM")	{"error": "#VALUE!"}	LibreOffice
+ARABIC("VX")	{"error": "#VALUE!"}	LibreOffice
+ARABIC("-MMXI")	-2011	Excel docs
+ARABIC(" X ")	10	Excel docs
