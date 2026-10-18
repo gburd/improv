@@ -320,11 +320,25 @@ pub(super) fn amortize(degressive: bool, a: &[CellValue]) -> R {
                 0.0
             });
         }
+        if nrate == 0.0 {
+            // The write-down rounds to 0 and cost stops moving: every later
+            // period is 0 too (the loop ran on to `per`, forever past 2⁵³).
+            return ok_num(0.0);
+        }
         cost -= nrate;
         i += 1.0;
+        if i >= AMOR_MAX_STEPS {
+            // ponytail: a tiny rate on a huge cost takes ln(rate·cost)/rate
+            // periods to round to 0; past 1e6 of them, #NUM! rather than
+            // seconds of work.
+            return Err(err::NUM);
+        }
     }
     ok_num(nrate)
 }
+
+/// How many periods AMORDEGRC walks before giving up (#NUM!).
+const AMOR_MAX_STEPS: f64 = 1e6;
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
@@ -575,6 +589,35 @@ mod tests {
 
     /// AMORDEGRC and AMORLINC against LibreOffice 25.2 (cost 2400 bought
     /// 2008-08-19, first period ending 2008-12-31, salvage 300).
+    /// AMORDEGRC once its write-down rounds to 0 is 0 at once; it walked
+    /// on to the period asked for, which past 2⁵³ never ended
+    /// (AMORDEGRC(1000, …, 1e300, 1e-9) and AMORDEGRC(1000, …, 1e9, 1e-9)
+    /// took 6 s). A tiny rate on a huge cost still rounding after 1e6
+    /// periods is #NUM!.
+    #[test]
+    fn amordegrc_stops_once_it_rounds_to_0() {
+        // [cost, salvage, period, rate], bought 2008-08-19, first 2008-12-31.
+        let am = |v: [f64; 4]| {
+            let a = [
+                CellValue::num(v[0]),
+                dt(2008, 8, 19),
+                dt(2008, 12, 31),
+                CellValue::num(v[1]),
+                CellValue::num(v[2]),
+                CellValue::num(v[3]),
+            ];
+            amortize(true, &a)
+        };
+        let t0 = std::time::Instant::now();
+        assert_eq!(am([1000.0, 0.0, 1e300, 1e-9]), Ok(CellValue::num(0.0)));
+        assert_eq!(am([1000.0, 0.0, 1e9, 1e-9]), Ok(CellValue::num(0.0)));
+        assert_eq!(am([1000.0, 0.0, 1e300, 0.15]), Ok(CellValue::num(0.0)));
+        assert_eq!(am([1e300, 0.0, 1e300, 1e-9]), NUM);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        // A small rate on a modest cost: unchanged (LibreOffice 6).
+        assert_eq!(am([2400.0, 300.0, 3.0, 0.001]), Ok(CellValue::num(6.0)));
+    }
+
     #[test]
     fn amortization_matches_libreoffice() {
         // [cost, salvage, period, rate, basis]
