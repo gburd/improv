@@ -26,7 +26,9 @@ use differential_dataflow::Collection;
 use improv_core_model::{
     BinaryOp, CategoryId, Formula, FuncId, MeasureId, MeasureKind, Model, UnaryOp,
 };
-use std::collections::{BTreeMap, HashMap};
+#[cfg(test)]
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use timely::dataflow::operators::ToStream;
 use timely::dataflow::Scope;
@@ -467,7 +469,7 @@ where
         })
         .collect();
     let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
-    let gb = a.group_by.to_vec();
+    let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
     // (group key, ((positions, item of the first reduced category), values))
     let keyed = rows.map(move |(k, vs)| {
         let pos: Vec<u32> = order
@@ -657,6 +659,7 @@ where
     G::Timestamp: differential_dataflow::lattice::Lattice,
     V: differential_dataflow::ExchangeData + std::hash::Hash,
 {
+    let keys: Vec<u32> = keys.iter().map(|c| c.0).collect();
     let keys2 = keys.clone();
     let l = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
     let r = r.map(move |(k, v)| (project(&k, &keys2), (k, v)));
@@ -777,23 +780,17 @@ fn truthy(v: &CellValue) -> bool {
     }
 }
 
-/// Project a coordinate key down to a subset of category ids.
-fn project(k: &CoordKey, keep: &[CategoryId]) -> CoordKey {
-    let keep: Vec<u32> = keep.iter().map(|c| c.0).collect();
-    k.iter()
-        .filter(|(cat, _)| keep.contains(cat))
-        .copied()
-        .collect()
+/// Project a coordinate key down to a subset of category ids (proven in
+/// [`improv_verified::keys::project`]).
+fn project(k: &CoordKey, keep: &[u32]) -> CoordKey {
+    improv_verified::keys::project(k, keep)
 }
 
-/// Merge two coordinate keys (right's extra dims added to left). Assumes shared
-/// dims agree (they were the join key).
+/// Merge two sorted coordinate keys (right's extra dims added to left; shared
+/// dims agree, they were the join key). A proven merge:
+/// [`improv_verified::keys::union_keys`].
 fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
-    let mut m: BTreeMap<u32, u32> = a.iter().copied().collect();
-    for (c, i) in b {
-        m.entry(*c).or_insert(*i);
-    }
-    m.into_iter().collect()
+    improv_verified::keys::union_keys(a, b)
 }
 
 /// Compute the derived measures transitively needed by `targets`, in

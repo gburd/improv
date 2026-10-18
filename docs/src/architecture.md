@@ -204,6 +204,8 @@ What is proven:
 |--------|---------|--------|
 | `gcd::gcd` | `GCD`, `LCM`, the number-theory functions | The result is Euclid's gcd: it divides both arguments, every common divisor divides it, and `gcd(a, 0) = a`. |
 | `gcd::lcm_below` | `LCM` | The result is a positive common multiple, `a / gcd(a, b) · b`; it is `None` exactly when that reaches the cap (2⁵³), so the overflow check neither misses nor over-rejects. |
+| `keys::project` | every join key and group-by (`project_key`) | Exactly the pairs whose category is kept, in their order; a sorted key projects to a sorted key. |
+| `keys::union_keys` | every dimensional join | A merge of two sorted keys: sorted with no category twice, contains every pair of both when they agree on shared categories, and nothing else. |
 
 What is tested instead: everything with floating point. Verus does not reason
 about `f64` arithmetic, so the kernels take and return integers and the engine

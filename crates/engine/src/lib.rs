@@ -135,11 +135,10 @@ pub fn decode_coord(k: &CoordKey) -> Coordinate {
 }
 
 /// Project a coord key down to a subset of category ids (join key / broadcast).
+/// Exactly the pairs whose category is kept, in order (proven in
+/// [`improv_verified::keys::project`]).
 pub fn project_key(k: &CoordKey, keep: &[u32]) -> CoordKey {
-    k.iter()
-        .filter(|(cat, _)| keep.contains(cat))
-        .copied()
-        .collect()
+    improv_verified::keys::project(k, keep)
 }
 
 #[cfg(test)]

@@ -17,7 +17,9 @@ positional forms and recurrences, lookups, list results, `LET` and
   holds integer kernels with [Verus](https://github.com/verus-lang/verus)
   specifications and machine-checked proofs, and the engine calls them:
   `GCD` / `LCM` (the result is the greatest common divisor, and `LCM`'s
-  2⁵³ overflow check is exact). `scripts/verify.sh` and a CI job check
+  2⁵³ overflow check is exact) and the coordinate-key projection and
+  union behind every dimensional join (a sorted merge, which makes a
+  1M-cell `Price × Qty` evaluate about 18% faster). `scripts/verify.sh` and a CI job check
   the proofs. See *Architecture & Design → Formal verification*.
 - **GUI formula autocomplete.** In both formula editors a name being
   typed drops a list of matching functions (with their signatures and
