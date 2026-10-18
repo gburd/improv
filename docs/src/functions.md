@@ -497,12 +497,24 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `RAYLEIGH(number, number)` | number | the Rayleigh density of scale σ at x |
 | `RAYLEIGHTAIL(number, number, number)` | number | the Rayleigh tail density (lower limit a, scale σ) at x |
 | `SNORM.DIST.RANGE(number, number)` | number | Φ(x2) − Φ(x1): the standard normal probability between x1 and x2 |
+| `R.DBETA(number, number, number, [boolean])` | number | the density at x of the beta distribution of shapes a and b, or its logarithm (give_log) |
+| `R.PBETA(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the beta distribution of shapes a and b, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QBETA(number, number, number, [boolean], [boolean])` | number | the quantile of the beta distribution of shapes a and b: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DCAUCHY(number, number, number, [boolean])` | number | the density at x of the Cauchy distribution of location and scale, or its logarithm (give_log) |
 | `R.PCAUCHY(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Cauchy distribution of location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QCAUCHY(number, number, number, [boolean], [boolean])` | number | the quantile of the Cauchy distribution of location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DCHISQ(number, number, [boolean])` | number | the density at x of the chi-square distribution of df degrees of freedom, or its logarithm (give_log) |
+| `R.PCHISQ(number, number, [boolean], [boolean])` | number | P(X ≤ x) for the chi-square distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QCHISQ(number, number, [boolean], [boolean])` | number | the quantile of the chi-square distribution of df degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DEXP(number, number, [boolean])` | number | the density at x of the exponential distribution of the given scale (mean), or its logarithm (give_log) |
 | `R.PEXP(number, number, [boolean], [boolean])` | number | P(X ≤ x) for the exponential distribution of the given scale (mean), or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QEXP(number, number, [boolean], [boolean])` | number | the quantile of the exponential distribution of the given scale (mean): the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DF(number, number, number, [boolean])` | number | the density at x of the F distribution of n1 and n2 degrees of freedom, or its logarithm (give_log) |
+| `R.PF(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the F distribution of n1 and n2 degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QF(number, number, number, [boolean], [boolean])` | number | the quantile of the F distribution of n1 and n2 degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DGAMMA(number, number, number, [boolean])` | number | the density at x of the gamma distribution of shape and scale, or its logarithm (give_log) |
+| `R.PGAMMA(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the gamma distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QGAMMA(number, number, number, [boolean], [boolean])` | number | the quantile of the gamma distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DGUMBEL(number, number, number, [boolean])` | number | the density at x of the Gumbel distribution of location μ and scale β, or its logarithm (give_log) |
 | `R.PGUMBEL(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Gumbel distribution of location μ and scale β, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QGUMBEL(number, number, number, [boolean], [boolean])` | number | the quantile of the Gumbel distribution of location μ and scale β: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
@@ -515,6 +527,9 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `R.DRAYLEIGH(number, number, [boolean])` | number | the density at x of the Rayleigh distribution of the given scale, or its logarithm (give_log) |
 | `R.PRAYLEIGH(number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Rayleigh distribution of the given scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QRAYLEIGH(number, number, [boolean], [boolean])` | number | the quantile of the Rayleigh distribution of the given scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DT(number, number, [boolean])` | number | the density at x of the Student t distribution of n degrees of freedom, or its logarithm (give_log) |
+| `R.PT(number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Student t distribution of n degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QT(number, number, [boolean], [boolean])` | number | the quantile of the Student t distribution of n degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `R.DWEIBULL(number, number, number, [boolean])` | number | the density at x of the Weibull distribution of shape and scale, or its logarithm (give_log) |
 | `R.PWEIBULL(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Weibull distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QWEIBULL(number, number, number, [boolean], [boolean])` | number | the quantile of the Weibull distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |

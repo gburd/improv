@@ -15,7 +15,9 @@ Formulas write numbers in decimal (Improv's parser has no E notation).
 A row is `formula` (exact to 1e-12 relative, the runner's default) or
 `(formula, tol)`: within `tol` of the Gnumeric value, relative to
 max(|x|, 1), where the value comes from an iteration or a quadrature whose
-stopping rule differs from Improv's.
+stopping rule differs from Improv's. The quantiles that invert an
+incomplete gamma or beta get 1e-13: both products bisect to the last bit,
+but the incomplete functions they invert differ by a few ulps.
 """
 
 import json
@@ -87,6 +89,36 @@ ROWS = [
     "R.QCAUCHY(0.3,0.5,2)", "R.QCAUCHY(0.3,0.5,2,FALSE)", "R.QCAUCHY(0.9,0,1)",
     "R.QCAUCHY(-0.1,0,1,TRUE,TRUE)", "R.QCAUCHY(-3,0,1,FALSE,TRUE)", "R.QCAUCHY(0.3,1,0)",
     "R.QCAUCHY(0.3,1,-1)", "R.QCAUCHY(0.5,1,2)",
+    # --- R-style kernels: gamma, chi-square, beta, F, t ---
+    "R.DGAMMA(2,3,0.5)", "R.DGAMMA(2,3,0.5,TRUE)", "R.DGAMMA(0,1,2)", "R.DGAMMA(0,0.5,1)",
+    "R.DGAMMA(0,2,1)", "R.DGAMMA(-1,2,1)", "R.DGAMMA(1,0,1)", "R.DGAMMA(1,2,0)",
+    "R.PGAMMA(2,3,0.5)", "R.PGAMMA(2,3,0.5,FALSE)", "R.PGAMMA(0.001,3,1,TRUE,TRUE)",
+    "R.PGAMMA(30,3,1,FALSE,TRUE)", "R.PGAMMA(-1,2,1)", "R.PGAMMA(1,0,1)", "R.PGAMMA(1,2,-1)",
+    ("R.QGAMMA(0.3,3,0.5)", 1e-13), ("R.QGAMMA(0.95,3,0.5)", 1e-13),
+    ("R.QGAMMA(0.3,3,0.5,FALSE)", 1e-13), ("R.QGAMMA(-5,0.5,1,TRUE,TRUE)", 1e-12),
+    "R.QGAMMA(0,3,1)", "R.QGAMMA(1,3,1)", "R.QGAMMA(0.5,0,1)",
+    "R.DCHISQ(3,4)", "R.DCHISQ(3,4,TRUE)", "R.DCHISQ(0,2)", "R.DCHISQ(0,1)", "R.DCHISQ(1,0)",
+    "R.PCHISQ(3,4)", "R.PCHISQ(3,4,FALSE)", "R.PCHISQ(3,4,FALSE,TRUE)", "R.PCHISQ(1,0)",
+    "R.PCHISQ(-1,3)",
+    ("R.QCHISQ(0.3,4)", 1e-13), ("R.QCHISQ(0.3,4,FALSE)", 1e-13),
+    ("R.QCHISQ(-0.01,4,TRUE,TRUE)", 1e-13), "R.QCHISQ(0.5,0)", "R.QCHISQ(1.5,4)",
+    "R.DBETA(0.5,2,3)", "R.DBETA(0.5,2,3,TRUE)", "R.DBETA(0,1,3)", "R.DBETA(1,2,0.5)",
+    "R.DBETA(1.2,2,3)", "R.DBETA(0.5,-1,3)",
+    "R.PBETA(0.3,2,3)", "R.PBETA(0.3,2,3,FALSE)", "R.PBETA(0.999,2,3,TRUE,TRUE)",
+    "R.PBETA(0.3,2,3,FALSE,TRUE)", "R.PBETA(1.5,2,3)",
+    ("R.QBETA(0.3,2,3)", 1e-13), ("R.QBETA(0.95,2,3)", 1e-13), ("R.QBETA(0.3,2,3,FALSE)", 1e-13),
+    ("R.QBETA(-1,2,3,TRUE,TRUE)", 1e-13), ("R.QBETA(0.3,0.5,0.5)", 1e-13), "R.QBETA(1,2,3)",
+    "R.QBETA(1.5,2,3)",
+    "R.DF(1.5,3,7)", "R.DF(1.5,3,7,TRUE)", "R.DF(0,2,3)", "R.DF(0,1,3)", "R.DF(1,0,3)",
+    "R.PF(1.5,3,7)", "R.PF(1.5,3,7,FALSE)", "R.PF(1.5,3,7,FALSE,TRUE)", "R.PF(0,3,7)",
+    "R.PF(1,0.5,3)",
+    ("R.QF(0.5,3,7)", 1e-13), ("R.QF(0.95,3,7)", 1e-13), ("R.QF(0.3,3,7,FALSE)", 1e-13),
+    ("R.QF(-2,3,7,FALSE,TRUE)", 1e-13), "R.QF(0.5,0,3)",
+    "R.DT(1,3)", "R.DT(1,3,TRUE)", "R.DT(1,0.5)", "R.DT(1,0)",
+    "R.PT(1,3)", "R.PT(-2,3)", "R.PT(1,3,FALSE)", "R.PT(1,0.5,FALSE,TRUE)", "R.PT(-1,3,TRUE,TRUE)",
+    ("R.QT(0.3,3)", 1e-13), ("R.QT(0.975,3)", 1e-13), ("R.QT(0.3,0.5)", 1e-13),
+    ("R.QT(0.1,3,FALSE)", 1e-13), ("R.QT(-0.05,3,TRUE,TRUE)", 1e-13), "R.QT(0.5,3)",
+    "R.QT(0.3,0)",
 ]
 
 
@@ -116,6 +148,9 @@ def checks():
         "R.PGUMBEL(40,0,1,FALSE,TRUE)": mp.log(-mp.expm1(-mp.exp(-40))),
         "R.QCAUCHY(-0.1,0,1,TRUE,TRUE)": mp.tan(mp.pi * (mp.exp(-0.1) - 0.5)),
         "R.PRAYLEIGH(0.001,1,TRUE,TRUE)": mp.log(-mp.expm1(-mp.mpf(0.001) ** 2 / 2)),
+        "R.PGAMMA(30,3,1,FALSE,TRUE)": mp.log(mp.gammainc(3, 30, regularized=True)),
+        "R.PBETA(0.999,2,3,TRUE,TRUE)": mp.log(mp.betainc(2, 3, 0, 0.999, regularized=True)),
+        "R.PT(-1,3,TRUE,TRUE)": mp.log(mp.betainc(1.5, 0.5, 0, mp.mpf(3) / 4, regularized=True) / 2),
     }
 
 

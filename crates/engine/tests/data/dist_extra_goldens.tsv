@@ -167,3 +167,89 @@ R.QCAUCHY(-3,0,1,FALSE,TRUE)	6.341202844421068	Gnumeric 1.12.57
 R.QCAUCHY(0.3,1,0)	1.0	Gnumeric 1.12.57
 R.QCAUCHY(0.3,1,-1)	{"error": "#NUM!"}	Gnumeric 1.12.57
 R.QCAUCHY(0.5,1,2)	1.0	Gnumeric 1.12.57
+R.DGAMMA(2,3,0.5)	0.29305022221974686	Gnumeric 1.12.57
+R.DGAMMA(2,3,0.5,TRUE)	-1.2274112777602184	Gnumeric 1.12.57
+R.DGAMMA(0,1,2)	0.5	Gnumeric 1.12.57
+R.DGAMMA(0,0.5,1)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DGAMMA(0,2,1)	0.0	Gnumeric 1.12.57
+R.DGAMMA(-1,2,1)	0.0	Gnumeric 1.12.57
+R.DGAMMA(1,0,1)	0.0	Gnumeric 1.12.57
+R.DGAMMA(1,2,0)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.PGAMMA(2,3,0.5)	0.7618966944464557	Gnumeric 1.12.57
+R.PGAMMA(2,3,0.5,FALSE)	0.2381033055535443	Gnumeric 1.12.57
+R.PGAMMA(0.001,3,1,TRUE,TRUE)	-22.515775287423423	Gnumeric 1.12.57
+R.PGAMMA(30,3,1,FALSE,TRUE)	-23.824132729894238	Gnumeric 1.12.57
+R.PGAMMA(-1,2,1)	0.0	Gnumeric 1.12.57
+R.PGAMMA(1,0,1)	1.0	Gnumeric 1.12.57
+R.PGAMMA(1,2,-1)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.QGAMMA(0.3,3,0.5)	{"approx": 0.9568878970635313, "tol": 1e-13}	Gnumeric 1.12.57
+R.QGAMMA(0.95,3,0.5)	{"approx": 3.147896810935994, "tol": 1e-13}	Gnumeric 1.12.57
+R.QGAMMA(0.3,3,0.5,FALSE)	{"approx": 1.8077838329329952, "tol": 1e-13}	Gnumeric 1.12.57
+R.QGAMMA(-5,0.5,1,TRUE,TRUE)	{"approx": 3.5657869095475946e-05, "tol": 1e-12}	Gnumeric 1.12.57
+R.QGAMMA(0,3,1)	0.0	Gnumeric 1.12.57
+R.QGAMMA(1,3,1)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.QGAMMA(0.5,0,1)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DCHISQ(3,4)	0.16734762011132237	Gnumeric 1.12.57
+R.DCHISQ(3,4,TRUE)	-1.7876820724517808	Gnumeric 1.12.57
+R.DCHISQ(0,2)	0.5	Gnumeric 1.12.57
+R.DCHISQ(0,1)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DCHISQ(1,0)	0.0	Gnumeric 1.12.57
+R.PCHISQ(3,4)	0.44217459962892547	Gnumeric 1.12.57
+R.PCHISQ(3,4,FALSE)	0.5578254003710745	Gnumeric 1.12.57
+R.PCHISQ(3,4,FALSE,TRUE)	-0.5837092681258449	Gnumeric 1.12.57
+R.PCHISQ(1,0)	1.0	Gnumeric 1.12.57
+R.PCHISQ(-1,3)	0.0	Gnumeric 1.12.57
+R.QCHISQ(0.3,4)	{"approx": 2.194698421406983, "tol": 1e-13}	Gnumeric 1.12.57
+R.QCHISQ(0.3,4,FALSE)	{"approx": 4.878432966560409, "tol": 1e-13}	Gnumeric 1.12.57
+R.QCHISQ(-0.01,4,TRUE,TRUE)	{"approx": 13.288200294008767, "tol": 1e-13}	Gnumeric 1.12.57
+R.QCHISQ(0.5,0)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.QCHISQ(1.5,4)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DBETA(0.5,2,3)	1.5000000000000004	Gnumeric 1.12.57
+R.DBETA(0.5,2,3,TRUE)	0.4054651081081646	Gnumeric 1.12.57
+R.DBETA(0,1,3)	3.0	Gnumeric 1.12.57
+R.DBETA(1,2,0.5)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DBETA(1.2,2,3)	0.0	Gnumeric 1.12.57
+R.DBETA(0.5,-1,3)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.PBETA(0.3,2,3)	0.34830000000000005	Gnumeric 1.12.57
+R.PBETA(0.3,2,3,FALSE)	0.6517	Gnumeric 1.12.57
+R.PBETA(0.999,2,3,TRUE,TRUE)	-3.9970000079880494e-09	Gnumeric 1.12.57
+R.PBETA(0.3,2,3,FALSE,TRUE)	-0.4281709456438024	Gnumeric 1.12.57
+R.PBETA(1.5,2,3)	1.0	Gnumeric 1.12.57
+R.QBETA(0.3,2,3)	{"approx": 0.2723839420751053, "tol": 1e-13}	Gnumeric 1.12.57
+R.QBETA(0.95,2,3)	{"approx": 0.7513953742698184, "tol": 1e-13}	Gnumeric 1.12.57
+R.QBETA(0.3,2,3,FALSE)	{"approx": 0.5084047548725844, "tol": 1e-13}	Gnumeric 1.12.57
+R.QBETA(-1,2,3,TRUE,TRUE)	{"approx": 0.31107362148453865, "tol": 1e-13}	Gnumeric 1.12.57
+R.QBETA(0.3,0.5,0.5)	{"approx": 0.20610737385376351, "tol": 1e-13}	Gnumeric 1.12.57
+R.QBETA(1,2,3)	1.0	Gnumeric 1.12.57
+R.QBETA(1.5,2,3)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DF(1.5,3,7)	0.2339761241306172	Gnumeric 1.12.57
+R.DF(1.5,3,7,TRUE)	-1.4525362024600619	Gnumeric 1.12.57
+R.DF(0,2,3)	1.0	Gnumeric 1.12.57
+R.DF(0,1,3)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DF(1,0,3)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.PF(1.5,3,7)	0.7041910807035625	Gnumeric 1.12.57
+R.PF(1.5,3,7,FALSE)	0.29580891929643743	Gnumeric 1.12.57
+R.PF(1.5,3,7,FALSE,TRUE)	-1.2180415760280616	Gnumeric 1.12.57
+R.PF(0,3,7)	0.0	Gnumeric 1.12.57
+R.PF(1,0.5,3)	0.6931449079784123	Gnumeric 1.12.57
+R.QF(0.5,3,7)	{"approx": 0.8709442531872846, "tol": 1e-13}	Gnumeric 1.12.57
+R.QF(0.95,3,7)	{"approx": 4.346831399907817, "tol": 1e-13}	Gnumeric 1.12.57
+R.QF(0.3,3,7,FALSE)	{"approx": 1.482241674646388, "tol": 1e-13}	Gnumeric 1.12.57
+R.QF(-2,3,7,FALSE,TRUE)	{"approx": 2.589482184643898, "tol": 1e-13}	Gnumeric 1.12.57
+R.QF(0.5,0,3)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.DT(1,3)	0.20674833578317206	Gnumeric 1.12.57
+R.DT(1,3,TRUE)	-1.5762529945270716	Gnumeric 1.12.57
+R.DT(1,0.5)	0.11830465704039266	Gnumeric 1.12.57
+R.DT(1,0)	{"error": "#NUM!"}	Gnumeric 1.12.57
+R.PT(1,3)	0.8044988905221147	Gnumeric 1.12.57
+R.PT(-2,3)	0.0696629842794216	Gnumeric 1.12.57
+R.PT(1,3,FALSE)	0.19550110947788535	Gnumeric 1.12.57
+R.PT(1,0.5,FALSE,TRUE)	-1.2002410730998223	Gnumeric 1.12.57
+R.PT(-1,3,TRUE,TRUE)	-1.6321892244941223	Gnumeric 1.12.57
+R.QT(0.3,3)	{"approx": -0.5843897274398187, "tol": 1e-13}	Gnumeric 1.12.57
+R.QT(0.975,3)	{"approx": 3.182446305283709, "tol": 1e-13}	Gnumeric 1.12.57
+R.QT(0.3,0.5)	{"approx": -1.0095258786071923, "tol": 1e-13}	Gnumeric 1.12.57
+R.QT(0.1,3,FALSE)	{"approx": 1.6377443536962106, "tol": 1e-13}	Gnumeric 1.12.57
+R.QT(-0.05,3,TRUE,TRUE)	{"approx": 2.3808705928936815, "tol": 1e-13}	Gnumeric 1.12.57
+R.QT(0.5,3)	0.0	Gnumeric 1.12.57
+R.QT(0.3,0)	{"error": "#NUM!"}	Gnumeric 1.12.57

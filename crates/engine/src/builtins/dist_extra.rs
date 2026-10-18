@@ -174,14 +174,53 @@ fn ln_1m_exp(x: f64) -> f64 {
     }
 }
 
-/// A CDF result from its two tails, as R's flags ask for it.
+/// A CDF result from its two tails, as R's flags ask for it (the
+/// logarithm of a tail over ½ through the other, so it keeps its digits).
 fn tails(lower: bool, log: bool, below: f64, above: f64) -> f64 {
-    let v = if lower { below } else { above };
-    if log {
-        v.ln()
+    let (v, other) = if lower {
+        (below, above)
     } else {
+        (above, below)
+    };
+    if !log {
         v
+    } else if v > 0.5 {
+        (-other).ln_1p()
+    } else {
+        v.ln()
     }
+}
+
+/// A density from its logarithm, as `give_log` asks.
+fn dens(log: bool, ln: f64) -> f64 {
+    if log {
+        ln
+    } else {
+        ln.exp()
+    }
+}
+
+/// A quantile at the ends of the probability range (`bottom` and `top` of
+/// the support), or NaN for a probability out of range; None inside.
+fn q_ends(t: Tail, bottom: f64, top: f64) -> Option<f64> {
+    if !t.valid() {
+        Some(NAN)
+    } else if t.at_bottom() {
+        Some(bottom)
+    } else if t.at_top() {
+        Some(top)
+    } else {
+        None
+    }
+}
+
+/// A quantile's lower- and upper-tail probabilities, for the inversions
+/// that solve the smaller tail.
+// ponytail: a log_p so negative that its tail underflows (below about −745)
+// is NaN here; a log-space inversion would extend the range.
+fn split(t: Tail) -> Option<(f64, f64)> {
+    let (below, above) = (t.prob(true), t.prob(false));
+    (below > 0.0 && above > 0.0).then_some((below, above))
 }
 
 /// A CDF result from the logarithm `ln` of one tail (the lower if
@@ -202,12 +241,17 @@ type Kernel = fn(f64, &[f64], Op) -> f64;
 /// The R-style families by index: the number of parameters and the kernel.
 fn r_family(family: u32) -> Option<(usize, Kernel)> {
     Some(match family {
+        0 => (2, beta),
         2 => (2, cauchy),
+        3 => (1, chisq),
         4 => (1, exp),
+        5 => (2, f),
+        6 => (2, gamma),
         8 => (2, gumbel),
         10 => (2, lnorm),
         12 => (2, norm),
         14 => (1, rayleigh),
+        17 => (1, t),
         18 => (2, weibull),
         _ => return None,
     })
@@ -491,6 +535,156 @@ fn cauchy(x: f64, a: &[f64], op: Op) -> f64 {
     }
 }
 
+/// The gamma distribution of shape k ≥ 0 and scale s > 0 (k = 0 is a point
+/// mass at 0, as R has it).
+fn gamma(x: f64, a: &[f64], op: Op) -> f64 {
+    let (k, s) = (a[0], a[1]);
+    if k < 0.0 || s <= 0.0 {
+        return NAN;
+    }
+    match op {
+        Op::D(log) if x < 0.0 => d0(log),
+        Op::D(log) if k == 0.0 => {
+            if x == 0.0 {
+                INF
+            } else {
+                d0(log)
+            }
+        }
+        Op::D(log) if x == 0.0 => {
+            if k < 1.0 {
+                INF
+            } else if k > 1.0 {
+                d0(log)
+            } else {
+                dens(log, -s.ln())
+            }
+        }
+        Op::D(log) => {
+            let r = x / s;
+            dens(log, (k - 1.0) * r.ln() - r - s.ln() - st::ln_gamma(k))
+        }
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } if k == 0.0 => tails(lower, log, 1.0, 0.0),
+        Op::P { lower, log } => tails(lower, log, st::gamma_p(k, x / s), st::gamma_q(k, x / s)),
+        Op::Q(_) if k == 0.0 => NAN,
+        Op::Q(t) => q_ends(t, 0.0, INF).unwrap_or_else(|| {
+            split(t).map_or(NAN, |(below, above)| s * st::gamma_inv(k, below, above))
+        }),
+    }
+}
+
+/// Chi-square of df ≥ 0 degrees of freedom: gamma(df/2, 2).
+fn chisq(x: f64, a: &[f64], op: Op) -> f64 {
+    gamma(x, &[a[0] / 2.0, 2.0], op)
+}
+
+/// The beta distribution of shapes p, q > 0. (R also allows a shape of 0, a
+/// point mass; Gnumeric extrapolates its CDF there. Both are `#NUM!` here.)
+fn beta(x: f64, a: &[f64], op: Op) -> f64 {
+    let (p, q) = (a[0], a[1]);
+    if !(p > 0.0 && q > 0.0) {
+        return NAN;
+    }
+    match op {
+        Op::D(log) if !(0.0..=1.0).contains(&x) => d0(log),
+        Op::D(log) if x == 0.0 || x == 1.0 => {
+            // At an end the density is 0, infinite, or (a shape of 1)
+            // 1/B(1, other) = other.
+            let (own, other) = if x == 0.0 { (p, q) } else { (q, p) };
+            if own > 1.0 {
+                d0(log)
+            } else if own < 1.0 {
+                INF
+            } else {
+                dens(log, other.ln())
+            }
+        }
+        Op::D(log) => dens(
+            log,
+            (p - 1.0) * x.ln() + (q - 1.0) * (-x).ln_1p() - st::ln_beta(p, q),
+        ),
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } if x >= 1.0 => tails(lower, log, 1.0, 0.0),
+        Op::P { lower, log } => tails(
+            lower,
+            log,
+            st::beta_reg(p, q, x),
+            st::beta_reg(q, p, 1.0 - x),
+        ),
+        Op::Q(t) => q_ends(t, 0.0, 1.0).unwrap_or_else(|| {
+            split(t).map_or(NAN, |(below, above)| {
+                if below <= 0.5 {
+                    st::solve(|x| st::beta_reg(p, q, x), below, 0.0, 1.0)
+                } else {
+                    // 1 − I_x(p, q) = I_{1−x}(q, p): solve for y = 1 − x.
+                    1.0 - st::solve(|y| st::beta_reg(q, p, y), above, 0.0, 1.0)
+                }
+            })
+        }),
+    }
+}
+
+/// The F distribution of m, n > 0 degrees of freedom.
+fn f(x: f64, a: &[f64], op: Op) -> f64 {
+    let (m, n) = (a[0], a[1]);
+    if !(m > 0.0 && n > 0.0) {
+        return NAN;
+    }
+    match op {
+        Op::D(log) if x < 0.0 => d0(log),
+        // At 0 the density is 0, 1 or infinite as m is over, at or under 2.
+        Op::D(log) if x == 0.0 => {
+            if m > 2.0 {
+                d0(log)
+            } else if m == 2.0 {
+                dens(log, 0.0)
+            } else {
+                INF
+            }
+        }
+        Op::D(log) => {
+            let (h1, h2) = (m / 2.0, n / 2.0);
+            dens(
+                log,
+                h1 * (m / n).ln() + (h1 - 1.0) * x.ln()
+                    - (h1 + h2) * (m * x / n).ln_1p()
+                    - st::ln_beta(h1, h2),
+            )
+        }
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } => tails(lower, log, st::f_cdf(x, m, n), st::f_sf(x, m, n)),
+        Op::Q(t) => q_ends(t, 0.0, INF).unwrap_or_else(|| {
+            split(t).map_or(NAN, |(below, above)| st::f_inv(m, n, below, above))
+        }),
+    }
+}
+
+/// Student's t of n > 0 degrees of freedom.
+fn t(x: f64, a: &[f64], op: Op) -> f64 {
+    let n = a[0];
+    if n.is_nan() || n <= 0.0 {
+        return NAN;
+    }
+    match op {
+        Op::D(log) => dens(
+            log,
+            -(n + 1.0) / 2.0 * (x * x / n).ln_1p() - 0.5 * n.ln() - st::ln_beta(0.5, n / 2.0),
+        ),
+        Op::P { lower, log } => tails(lower, log, st::t_sf(-x, n), st::t_sf(x, n)),
+        Op::Q(t) => q_ends(t, NEG_INF, INF).unwrap_or_else(|| {
+            split(t).map_or(NAN, |(below, above)| {
+                // Solve the smaller tail; + 0 turns the median's −0 into 0.
+                if below <= 0.5 {
+                    -st::t_upper_inv(below, n) + 0.0
+                } else {
+                    st::t_upper_inv(above, n)
+                }
+            })
+        }),
+    }
+}
+
 /// cot(πp) for p ∈ [0, ½], exactly 0 at ½ (tan(π(½ − p)) where ½ − p is
 /// exact).
 fn cot_pi(p: f64) -> f64 {
@@ -643,7 +837,7 @@ mod tests {
     #[test]
     fn unknown_ids_are_name_errors() {
         assert_eq!(call(1749, &nums(&[1.0])), Err(err::NAME));
-        assert_eq!(call(1600, &nums(&[0.5, 2.0, 3.0])), Err(err::NAME));
+        assert_eq!(r_style(1657, &nums(&[0.5, 2.0, 3.0])), Err(err::NAME));
     }
 
     #[test]
@@ -700,6 +894,35 @@ mod tests {
         assert!(n(0.5, &[0.0, -1.0], Op::Q(tail(0.5, true, false))).is_nan());
         assert_eq!(n(INF, &[0.0, 1.0], Op::D(true)), NEG_INF);
         assert!(n(0.0, &[0.0, -1.0], Op::D(false)).is_nan());
+    }
+
+    #[test]
+    fn incomplete_function_edges() {
+        let up = Op::P {
+            lower: false,
+            log: false,
+        };
+        let q = |p: f64| Op::Q(tail(p, true, false));
+        // A shape of 0 is a point mass at 0.
+        assert_eq!(gamma(0.0, &[0.0, 1.0], Op::D(false)), INF);
+        assert_eq!(gamma(0.0, &[1.0, 2.0], Op::D(true)), -(2f64.ln()));
+        assert_eq!(gamma(1.0, &[0.0, 1.0], up), 0.0);
+        assert!(gamma(1.0, &[0.0, 1.0], q(0.5)).is_nan());
+        // A tail that underflows cannot be inverted.
+        assert!(gamma(1.0, &[2.0, 1.0], Op::Q(tail(-800.0, true, true))).is_nan());
+        assert!(beta(0.5, &[2.0, 3.0], Op::D(false)).is_finite());
+        assert_eq!(beta(0.0, &[0.5, 3.0], Op::D(false)), INF);
+        assert_eq!(beta(1.0, &[2.0, 3.0], Op::D(true)), NEG_INF);
+        assert_eq!(beta(-1.0, &[2.0, 3.0], up), 1.0);
+        assert!((beta(0.3, &[2.0, 3.0], q(0.2)) - 0.0).abs() > 0.0);
+        assert!(beta(0.0, &[2.0, 3.0], Op::Q(tail(-800.0, true, true))).is_nan());
+        assert_eq!(f(-1.0, &[3.0, 7.0], Op::D(false)), 0.0);
+        assert_eq!(f(0.0, &[3.0, 7.0], Op::D(true)), NEG_INF);
+        assert!(f(1.0, &[0.0, 7.0], Op::D(false)).is_nan());
+        assert!(f(1.0, &[3.0, 7.0], Op::Q(tail(-800.0, true, true))).is_nan());
+        assert!(t(1.0, &[0.0], Op::D(false)).is_nan());
+        assert!(t(1.0, &[3.0], Op::Q(tail(-800.0, true, true))).is_nan());
+        assert_eq!(t(0.0, &[3.0], q(0.5)).to_bits(), 0f64.to_bits());
     }
 
     #[test]
