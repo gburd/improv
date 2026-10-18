@@ -68,6 +68,10 @@ fn of_values(id: u32, rows: &Rows, params: &[CellValue]) -> List {
                     out.push(v.clone());
                 }
             }
+            if out.is_empty() {
+                // Every value repeats (exactly_once): the empty list.
+                return Err(err::NA);
+            }
             out
         }
         1256 => mode_mult(&vals)?,
@@ -468,5 +472,15 @@ mod tests {
         assert_eq!(order(&CellValue::Date(5), &n(5.0)), Equal);
         assert_eq!(order(&text("B"), &text("a")), Greater);
         assert_eq!(order(&n(f64::NAN), &n(1.0)), Equal);
+    }
+
+    /// UNIQUE with exactly_once where every value repeats is the empty
+    /// list, #N/A (LibreOffice's UNIQUE(…; FALSE; TRUE) too); it was an
+    /// empty list, which lays nothing along INTO.
+    #[test]
+    fn unique_exactly_once_of_only_repeats() {
+        let v = col(&[CellValue::Bool(false), CellValue::Bool(false)]);
+        assert_eq!(array(1251, &v, &[CellValue::Bool(true)]), [NA]);
+        assert_eq!(array(1251, &v, &[]), [CellValue::Bool(false)]);
     }
 }
