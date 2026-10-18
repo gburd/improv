@@ -405,6 +405,12 @@ Arguments are expressions and broadcast like a binary operator's operands:
 `ROUND(Revenue / Units, 2)` ranges over the union of the arguments'
 categories. A literal argument costs nothing extra.
 
+**Complex numbers** are text in Excel's form, `"3+4i"`, `"-j"`,
+`"2.5e-3-i"`: suffix `i` or `j`, no spaces, the same suffix in every
+argument of one call. A plain number is a real complex number. Results
+print with 15 significant digits, and a real result is still text
+(`IMSUM("1+i", "1-i")` is `"2"`).
+
 **Option pricing.** The `OPT_*` functions follow Gnumeric: the first
 argument is `"c"` or `"p"` (`"a"`/`"e"` first for `OPT_BINOMIAL`,
 `"cc"`/`"cp"`/`"pc"`/`"pp"` for `OPT_ON_OPTIONS`). Times are in years;

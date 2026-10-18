@@ -13,6 +13,15 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Engineering functions** (phase P7, 72, a new *Engineering* category):
+  base conversion (`BIN2DEC` … `OCT2HEX`, `BASE`/`NUMTOBASE`,
+  `DECIMAL`/`BASETONUM`, `HEXREP`); 48-bit `BITAND`/`BITOR`/`BITXOR`/
+  `BITLSHIFT`/`BITRSHIFT`, `DELTA`, `GESTEP`; 45 complex-number functions
+  over `"a+bi"` text, with Gnumeric's inverse trigonometric and hyperbolic
+  ones, `IMFACT`, `IMGAMMA`, `IMIGAMMA`; `BESSELI`/`J`/`K`/`Y`; `CONVERT`
+  with Excel's unit table and SI/binary prefixes. 530 goldens (LibreOffice,
+  Gnumeric, Excel's docs).
+
 - **Option pricing** (phase P7, 32 functions): Gnumeric's `OPT_BS` and its
   Greeks (`_DELTA`, `_GAMMA`, `_RHO`, `_THETA`, `_VEGA`, `_CARRYCOST`),
   Garman–Kohlhagen, French, Merton jump diffusion, Miltersen–Schwartz,
