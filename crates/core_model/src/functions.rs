@@ -1047,7 +1047,9 @@ pub fn reference_markdown() -> String {
          <!-- Generated from crates/core_model/src/functions.rs by\n     \
          `UPDATE_DOCS=1 cargo test -p improv_core_model`. Do not edit. -->\n\n\
          Every built-in function, by category. Names are case-insensitive;\n\
-         `[x]` is optional and `…` repeats the last argument. Positions are\n\
+         `[x]` is optional (`[x=1]`: 1 if omitted), `…` repeats the\n\
+         arguments before it, `x OVER T` is reduced over a category and\n\
+         `INTO K` lays a list result along one. Positions are\n\
          1-based. An error argument (`#DIV/0!`, `#N/A`, …) makes the result\n\
          that error, except in the functions that test for errors. See\n\
          [The Formula Language](./formulas.md) for operators, types and\n\
@@ -1077,11 +1079,7 @@ pub fn reference_markdown() -> String {
         }
         out.push_str("| Function | Returns | Description |\n|---|---|---|\n");
         for d in all().filter(|d| d.category == cat) {
-            let sig = if d.kind.reduces() && d.params.len() == 1 {
-                format!("{}(Measure OVER Category)", d.name)
-            } else {
-                d.signature()
-            };
+            let sig = d.hint();
             let ret = match d.ret {
                 Ret::Fixed(ValueType::Number) => "number",
                 Ret::Fixed(ValueType::Boolean) => "boolean",
