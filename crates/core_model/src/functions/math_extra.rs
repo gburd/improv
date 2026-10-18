@@ -2,7 +2,7 @@
 
 use super::{alias, s, so, Arg, Category as C, FnDef};
 use crate::value::ValueType as V;
-use Arg::{Any as A, Number as N, Text as T};
+use Arg::{Any as A, DateLike as D, Number as N, Text as T};
 
 #[rustfmt::skip]
 pub(super) static MATH_EXTRA: &[FnDef] = &[
@@ -28,6 +28,14 @@ pub(super) static MATH_EXTRA: &[FnDef] = &[
     s(1476, "FLT.MIN", C::Math, &[], V::Number, "the smallest positive normal double, 2.2250738585072014e-308"),
     s(1477, "FLT.RADIX", C::Math, &[], V::Number, "the floating-point base, 2"),
     s(1478, "FLT.NEXTAFTER", C::Math, &[N, A], V::Number, "the next double after x toward y (\"+\" or \"-\" for the infinities); y itself if y = x"),
+    // --- calendars (1490–1509) ---
+    s(1490, "EASTERSUNDAY", C::DateTime, &[N], V::DateTime, "Easter Sunday (Gregorian) of a year 1583–9956; 0–29 mean 2000–2029, 30–99 mean 1930–1999"),
+    s(1491, "ASCENSIONTHURSDAY", C::DateTime, &[N], V::DateTime, "Ascension Thursday, 39 days after Easter Sunday"),
+    s(1492, "ASHWEDNESDAY", C::DateTime, &[N], V::DateTime, "Ash Wednesday, 46 days before Easter Sunday"),
+    s(1493, "GOODFRIDAY", C::DateTime, &[N], V::DateTime, "Good Friday, 2 days before Easter Sunday"),
+    s(1494, "PENTECOSTSUNDAY", C::DateTime, &[N], V::DateTime, "Pentecost Sunday, 49 days after Easter Sunday"),
+    s(1495, "DATE2JULIAN", C::DateTime, &[D], V::Number, "the Julian day number of a date"),
+    s(1496, "HDATE_JULIAN", C::DateTime, &[N, N, N], V::Number, "the Julian day number of Gregorian year, month, day (out-of-range days and months roll over)"),
     // --- text (1480–1489) ---
     s(1480, "ASC", C::Text, &[T], V::Text, "full-width ASCII and katakana as half-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark)"),
     alias(s(1481, "JIS", C::Text, &[T], V::Text, "half-width ASCII and katakana as full-width, as LibreOffice's JIS (a letter and its sound mark join)"), &["DBCS"]),

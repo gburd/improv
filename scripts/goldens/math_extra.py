@@ -42,6 +42,7 @@ p1.VALUE_502 |= {"ROMAN", "ARABIC", "ASC", "JIS", "BAHTTEXT", "ROT13", "ENCODEUR
 LO = []    # (formula, LibreOffice formula or None, override or None, override source)
 GN = []    # (formula, result kind: num | bool | text | date)
 HAND = []  # (formula, value, source)
+DATE_RESULT = {"EASTERSUNDAY"}
 
 
 def lo(f, lo_f=None, excel=None, src="Excel docs"):
@@ -153,6 +154,21 @@ gn("num", "FLT.MAX()", "FLT.MIN()", "FLT.RADIX()", "FLT.NEXTAFTER(1,2)", "FLT.NE
    'FLT.NEXTAFTER(1,"x")')
 
 
+# --- calendars ---------------------------------------------------------------
+# LibreOffice types the result as a date, which p1's reader rejects: N() it.
+for y in (2024, 2025, 24, 95, 1583, 9956, 2038.7, 1582, 9957, -1):
+    lo(f"EASTERSUNDAY({y})", lo_f=f"N(EASTERSUNDAY({y}))")
+gn("date", "ASCENSIONTHURSDAY(2024)", "ASCENSIONTHURSDAY(2025)", "ASCENSIONTHURSDAY(1999)",
+   "ASHWEDNESDAY(2024)", "ASHWEDNESDAY(2025)", "ASHWEDNESDAY(1900)",
+   "GOODFRIDAY(2024)", "GOODFRIDAY(2025)", "GOODFRIDAY(2000)",
+   "PENTECOSTSUNDAY(2024)", "PENTECOSTSUNDAY(2025)", "PENTECOSTSUNDAY(10)")
+gn("num", "ASHWEDNESDAY(9957)", "GOODFRIDAY(-1)",
+   "DATE2JULIAN(DATE(2001,3,30))", "DATE2JULIAN(DATE(1970,1,1))", "DATE2JULIAN(DATE(2000,1,1))",
+   "DATE2JULIAN(DATE(1900,3,1))", "DATE2JULIAN(DATE(2024,12,31))",
+   "HDATE_JULIAN(2001,3,30)", "HDATE_JULIAN(2024,2,30)", "HDATE_JULIAN(2024,13,1)",
+   "HDATE_JULIAN(2024,0,15)", "HDATE_JULIAN(1582,10,15)", "HDATE_JULIAN(2024.9,1.5,1.9)")
+
+
 # --- runners -----------------------------------------------------------------
 def gnumeric(formulas):
     exe = os.environ.get("GNUMERIC_SSCONVERT") or shutil.which("ssconvert")
@@ -191,7 +207,10 @@ def gn_value(v, kind):
     if kind == "bool":
         return {"TRUE": True, "FALSE": False}[v]
     if kind == "date":
-        return as_date(float(v))
+        # Gnumeric's 1900 system counts the fictitious 1900-02-29 (serial 60),
+        # so its serials below 60 are one day later than LibreOffice's.
+        s = float(v)
+        return as_date(s + 1 if s < 60 else s)
     return float(v)
 
 
@@ -203,6 +222,8 @@ def main():
     for (f, _, excel, src), v in zip(LO, vals[1:]):
         if isinstance(v, tuple):
             v = p1.map_error(f, v[1])
+        elif p1.outer(f) in DATE_RESULT:
+            v = as_date(v)
         if excel is not None:
             print(f"LibreOffice differs: {f} LO={fmt(v)} {src}={fmt(excel)}", file=sys.stderr)
             rows.append((f, excel, src))

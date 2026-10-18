@@ -1,10 +1,11 @@
 //! Evaluation of the P7 math extras (ids 1450–1549): special functions,
 //! number theory, floating point, calendars, telephone traffic and text.
 
+mod calendar;
 mod number;
 mod width;
 
-use super::{domain, err, n, ok_num, ok_text, t, R};
+use super::{d, domain, err, n, ok_num, ok_text, t, DAY_MS, R};
 use crate::CellValue;
 
 /// Evaluate function `id` (already type- and arity-checked).
@@ -32,6 +33,10 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
             };
             ok_num(next_after(x, y))
         }
+        // --- calendars ---
+        1490..=1494 => calendar::easter(n(a, 0)?, [0, 39, -46, -2, 49][(id - 1490) as usize]),
+        1495 => ok_num((d(a, 0)?.div_euclid(DAY_MS) + calendar::UNIX_JDN) as f64),
+        1496 => ok_num(calendar::jdn(n(a, 0)?, n(a, 1)?, n(a, 2)?)? as f64),
         // --- text ---
         1480 => ok_text(asc(&t(a, 0)?)),
         1481 => ok_text(jis(&t(a, 0)?)),
@@ -451,6 +456,8 @@ mod tests {
         assert_eq!(ilog(3.4e38, 3.0), Ok(80.0));
         assert_eq!(ilog(f64::MAX, 255.0), Ok(128.0));
         assert_eq!(ilog(f64::INFINITY, 10.0), Err(err::NUM));
+        // HDATE_JULIAN: arguments out of range.
+        assert_eq!(calendar::jdn(1e8, 1.0, 1.0), Err(err::NUM));
         // FLT.NEXTAFTER: NaN, downward, other text.
         assert!(next_after(f64::NAN, 1.0).is_nan());
         assert_eq!(next_after(1.0, 0.0), 1.0 - f64::EPSILON / 2.0);

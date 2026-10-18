@@ -312,6 +312,13 @@ Dates are date-time values (UTC, millisecond precision). A number given where a 
 | `DUR2MILLISECONDS(number)` | number | a duration in days as milliseconds |
 | `DUR2WEEKS(number)` | number | a duration in days as weeks |
 | `STRIPDURATION(number)` | number | the value (durations are already a number of days) |
+| `EASTERSUNDAY(number)` | date | Easter Sunday (Gregorian) of a year 1583–9956; 0–29 mean 2000–2029, 30–99 mean 1930–1999 |
+| `ASCENSIONTHURSDAY(number)` | date | Ascension Thursday, 39 days after Easter Sunday |
+| `ASHWEDNESDAY(number)` | date | Ash Wednesday, 46 days before Easter Sunday |
+| `GOODFRIDAY(number)` | date | Good Friday, 2 days before Easter Sunday |
+| `PENTECOSTSUNDAY(number)` | date | Pentecost Sunday, 49 days after Easter Sunday |
+| `DATE2JULIAN(date)` | number | the Julian day number of a date |
+| `HDATE_JULIAN(number, number, number)` | number | the Julian day number of Gregorian year, month, day (out-of-range days and months roll over) |
 
 ## Dimensional
 
