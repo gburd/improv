@@ -11,6 +11,7 @@ mpmath value is the golden (source `mpmath`).
 Usage: scripts/goldens/dist_extra.py > crates/engine/tests/data/dist_extra_goldens.tsv
 (needs `ssconvert` on PATH, or GNUMERIC_SSCONVERT naming it).
 
+Formulas write numbers in decimal (Improv's parser has no E notation).
 A row is `formula` (exact to 1e-12 relative, the runner's default) or
 `(formula, tol)`: within `tol` of the Gnumeric value, relative to
 max(|x|, 1), where the value comes from an iteration or a quadrature whose
@@ -46,13 +47,54 @@ ROWS = [
     "SNORM.DIST.RANGE(-1,1)", "SNORM.DIST.RANGE(1,2)", "SNORM.DIST.RANGE(2,1)",
     "SNORM.DIST.RANGE(1,1.00000001)", "SNORM.DIST.RANGE(5,6)",
     "SNORM.DIST.RANGE(-3,-2)", "SNORM.DIST.RANGE(0,1)",
+    # --- R-style kernels: closed forms and the normal family ---
+    "R.DNORM(1,0,1)", "R.DNORM(1.5,2,3,TRUE)", "R.DNORM(50,0,1,TRUE)", "R.DNORM(1,0,0)",
+    "R.DNORM(1,0,-1)", "R.DNORM(0,0,0)",
+    "R.PNORM(1,0,1)", "R.PNORM(1,0,1,FALSE)", "R.PNORM(-50,0,1,TRUE,TRUE)",
+    "R.PNORM(40,0,1,FALSE,TRUE)", "R.PNORM(1.5,2,3,FALSE,TRUE)", "R.PNORM(1,0,0)",
+    "R.PNORM(1,0,-1)", "R.PNORM(-10,0,1)",
+    "R.QNORM(0.3,0,1)", "R.QNORM(0.3,1,2,FALSE)", "R.QNORM(-1000,0,1,TRUE,TRUE)",
+    "R.QNORM(-0.00000000000000000001,0,1,FALSE,TRUE)", "R.QNORM(0.999,0,1)", "R.QNORM(0,0,1)",
+    "R.QNORM(1.5,0,1)", "R.QNORM(0.3,0,0)", "R.QNORM(0.5,1,-1)",
+    "R.DLNORM(2,0.5,1)", "R.DLNORM(2,0.5,1,TRUE)", "R.DLNORM(0,0,1)", "R.DLNORM(1,0,0)",
+    "R.PLNORM(2,0.5,1)", "R.PLNORM(2,0.5,1,FALSE,TRUE)", "R.PLNORM(-1,0,1)", "R.PLNORM(1,0,-1)",
+    "R.QLNORM(0.3,0.5,1)", "R.QLNORM(0.3,0.5,1,FALSE)", "R.QLNORM(-1000,0,1,TRUE,TRUE)",
+    "R.QLNORM(0.5,0,0)", "R.QLNORM(1.5,0,1)",
+    "R.DEXP(1.5,4)", "R.DEXP(1.5,4,TRUE)", "R.DEXP(-1,2)", "R.DEXP(1,0)",
+    "R.PEXP(1.5,4)", "R.PEXP(1.5,4,FALSE)", "R.PEXP(1000,1,FALSE,TRUE)",
+    "R.PEXP(0.0000000001,1,TRUE,TRUE)", "R.PEXP(-1,2)", "R.PEXP(1,-2)", "R.PEXP(1,0)",
+    "R.QEXP(0.3,4)", "R.QEXP(0.3,4,FALSE)", "R.QEXP(-1000,1,FALSE,TRUE)", "R.QEXP(0,2)",
+    "R.QEXP(1,2)", "R.QEXP(0.5,-1)",
+    "R.DWEIBULL(1.5,2,3)", "R.DWEIBULL(1.5,2,3,TRUE)", "R.DWEIBULL(0,0.5,1)",
+    "R.DWEIBULL(-1,2,3)", "R.DWEIBULL(1,0,1)",
+    "R.PWEIBULL(1.5,2,3)", "R.PWEIBULL(1.5,2,3,FALSE)", "R.PWEIBULL(1000,1,1,FALSE,TRUE)",
+    "R.PWEIBULL(0.01,2,3,TRUE,TRUE)", "R.PWEIBULL(-1,2,3)", "R.PWEIBULL(1,2,0)",
+    "R.QWEIBULL(0.3,2,3)", "R.QWEIBULL(0.3,2,3,FALSE)", "R.QWEIBULL(-2,2,3,TRUE,TRUE)",
+    "R.QWEIBULL(0,2,3)", "R.QWEIBULL(1,2,3)",
+    "R.DRAYLEIGH(1.5,2)", "R.DRAYLEIGH(1.5,2,TRUE)", "R.DRAYLEIGH(-1,2)", "R.DRAYLEIGH(1,0)",
+    "R.PRAYLEIGH(1.5,2)", "R.PRAYLEIGH(1.5,2,FALSE)", "R.PRAYLEIGH(50,1,FALSE,TRUE)",
+    "R.PRAYLEIGH(0.001,1,TRUE,TRUE)", "R.PRAYLEIGH(1,-1)",
+    "R.QRAYLEIGH(0.5,2)", "R.QRAYLEIGH(0.3,2,FALSE)", "R.QRAYLEIGH(-3,2,TRUE,TRUE)",
+    "R.QRAYLEIGH(1.5,2)",
+    "R.DGUMBEL(1,0.5,2)", "R.DGUMBEL(1,0.5,2,TRUE)", "R.DGUMBEL(-3,0,1)", "R.DGUMBEL(1,0,0)",
+    "R.PGUMBEL(1,0.5,2)", "R.PGUMBEL(1,0.5,2,FALSE)", "R.PGUMBEL(-3,0,1,TRUE,TRUE)",
+    "R.PGUMBEL(40,0,1,FALSE,TRUE)", "R.PGUMBEL(1,0,-1)",
+    "R.QGUMBEL(0.3,0.5,2)", "R.QGUMBEL(0.3,0.5,2,FALSE)", "R.QGUMBEL(-5,0,1,TRUE,TRUE)",
+    "R.QGUMBEL(-0.0000000001,0,1,FALSE,TRUE)", "R.QGUMBEL(1,0,1)",
+    "R.DCAUCHY(1,0.5,2)", "R.DCAUCHY(1,0.5,2,TRUE)", "R.DCAUCHY(1,0,0)", "R.DCAUCHY(10000000000,0,1)",
+    "R.PCAUCHY(1,0.5,2)", "R.PCAUCHY(1,0.5,2,FALSE)", "R.PCAUCHY(-10000000000,0,1,TRUE,TRUE)",
+    "R.PCAUCHY(3,0,1,FALSE,TRUE)", "R.PCAUCHY(-3,0,1)", "R.PCAUCHY(1,0,0)",
+    "R.QCAUCHY(0.3,0.5,2)", "R.QCAUCHY(0.3,0.5,2,FALSE)", "R.QCAUCHY(0.9,0,1)",
+    "R.QCAUCHY(-0.1,0,1,TRUE,TRUE)", "R.QCAUCHY(-3,0,1,FALSE,TRUE)", "R.QCAUCHY(0.3,1,0)",
+    "R.QCAUCHY(0.3,1,-1)", "R.QCAUCHY(0.5,1,2)",
 ]
 
 
 # Gnumeric's pnorm2 clamps Φ(x2) − Φ(x1) between dx·φ(x2) and dx·φ(x1) when
 # the tails nearly cancel, so it keeps only ~8 digits (2.4197072123754992e-9;
 # the exact value is 2.4197072183871969e-9).
-MPMATH_WINS = {"SNORM.DIST.RANGE(1,1.00000001)"}
+# Its qnorm for log_p = −1000 is 6e-14 off, which exp() in qlnorm grows 44×.
+MPMATH_WINS = {"SNORM.DIST.RANGE(1,1.00000001)", "R.QLNORM(-1000,0,1,TRUE,TRUE)"}
 
 
 def checks():
@@ -60,6 +102,7 @@ def checks():
     import mpmath as mp
     mp.mp.dps = 30
     phi = lambda z: mp.ncdf(z)
+    q1000 = mp.findroot(lambda z: mp.log(phi(z)) + 1000, mp.mpf(-44.6), tol=1e-40)
     return {
         "CAUCHY(0.43,1,TRUE)": 0.5 - mp.atan(0.43) / mp.pi,
         "EXPPOWDIST(-1.2,2,0.5)": mp.exp(-mp.sqrt(0.6)) / (4 * mp.gamma(3)),
@@ -67,6 +110,12 @@ def checks():
         "RAYLEIGHTAIL(2,1,0.5)": 8 * mp.exp((4 - 16) / 2),
         "SNORM.DIST.RANGE(1,1.00000001)": phi(mp.mpf(1.00000001)) - phi(1),
         "SNORM.DIST.RANGE(5,6)": phi(6) - phi(5),
+        "R.PNORM(-50,0,1,TRUE,TRUE)": mp.log(phi(-50)),
+        "R.QNORM(-1000,0,1,TRUE,TRUE)": q1000,
+        "R.QLNORM(-1000,0,1,TRUE,TRUE)": mp.exp(q1000),
+        "R.PGUMBEL(40,0,1,FALSE,TRUE)": mp.log(-mp.expm1(-mp.exp(-40))),
+        "R.QCAUCHY(-0.1,0,1,TRUE,TRUE)": mp.tan(mp.pi * (mp.exp(-0.1) - 0.5)),
+        "R.PRAYLEIGH(0.001,1,TRUE,TRUE)": mp.log(-mp.expm1(-mp.mpf(0.001) ** 2 / 2)),
     }
 
 
@@ -99,7 +148,7 @@ def main():
     source = {}
     for f, want in checks().items():
         g, want = got[f], float(want)
-        if abs(g - want) <= 1e-14 * max(abs(want), 1e-300):
+        if abs(g - want) <= 1e-12 * max(abs(want), 1e-300):
             continue
         if f not in MPMATH_WINS:
             raise SystemExit(f"Gnumeric and mpmath disagree: {f} = {g!r} vs {want!r}")

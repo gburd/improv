@@ -5,10 +5,23 @@
 //! domain rules (a NaN from its kernel is `#NUM!` here). The kernels are
 //! written from the textbook formulas, reusing `statistical`'s Γ, B, the
 //! incomplete functions and Φ.
+//!
+//! The R-style functions take R's flags: `give_log` (a density's logarithm),
+//! `lower_tail` (P(X ≤ x), or P(X > x) when FALSE) and `log_p` (the
+//! probability as a logarithm, in or out). Each family is one kernel
+//! answering an [`Op`]; the id is `1600 + 3 × family + {0: D, 1: P, 2: Q}`.
 
+use super::statistical as st;
 use super::{b, domain, err, n, ok_num, R};
 use crate::CellValue;
 use std::f64::consts::{FRAC_1_SQRT_2, PI};
+
+const INF: f64 = f64::INFINITY;
+const NEG_INF: f64 = f64::NEG_INFINITY;
+const NAN: f64 = f64::NAN;
+
+/// ln √(2π).
+const LN_SQRT_2PI: f64 = 0.918_938_533_204_672_7;
 
 /// Evaluate function `id` (already type- and arity-checked).
 pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
@@ -78,7 +91,413 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
             ok_num(u / s * ((w + u) * (w - u) / 2.0).exp())
         }
         1560 => ok_num(norm_range(x(0)?, x(1)?)),
+        1600..=1656 => r_style(id, a),
         _ => Err(err::NAME),
+    }
+}
+
+// --- R-style kernels --------------------------------------------------------
+
+/// What an R-style call asks of its family's kernel.
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    /// The density (or mass) at x; its logarithm if `true` (`give_log`).
+    D(bool),
+    /// P(X ≤ x) if `lower`, else P(X > x); its logarithm if `log`.
+    P { lower: bool, log: bool },
+    /// The quantile of a probability.
+    Q(Tail),
+}
+
+/// A quantile's probability argument as R passes it: of the lower tail or
+/// the upper, maybe as a logarithm.
+#[derive(Clone, Copy, Debug)]
+struct Tail {
+    p: f64,
+    lower: bool,
+    log: bool,
+}
+
+impl Tail {
+    /// In range: a probability, or a logarithm of one (≤ 0).
+    fn valid(self) -> bool {
+        if self.log {
+            self.p <= 0.0
+        } else {
+            (0.0..=1.0).contains(&self.p)
+        }
+    }
+
+    /// The lower-tail probability is exactly 0 (the quantile is the bottom
+    /// of the support).
+    fn at_bottom(self) -> bool {
+        let none = if self.log { NEG_INF } else { 0.0 };
+        let all = if self.log { 0.0 } else { 1.0 };
+        self.p == if self.lower { none } else { all }
+    }
+
+    /// The lower-tail probability is exactly 1 (the top of the support).
+    fn at_top(self) -> bool {
+        let none = if self.log { NEG_INF } else { 0.0 };
+        let all = if self.log { 0.0 } else { 1.0 };
+        self.p == if self.lower { all } else { none }
+    }
+
+    /// The probability of the lower tail (`of_lower`) or of the upper.
+    fn prob(self, of_lower: bool) -> f64 {
+        match (self.log, self.lower == of_lower) {
+            (false, true) => self.p,
+            (false, false) => 1.0 - self.p,
+            (true, true) => self.p.exp(),
+            (true, false) => -self.p.exp_m1(),
+        }
+    }
+
+    /// The logarithm of the lower tail's probability (`of_lower`) or of the
+    /// upper's.
+    fn ln(self, of_lower: bool) -> f64 {
+        match (self.log, self.lower == of_lower) {
+            (false, true) => self.p.ln(),
+            (false, false) => (-self.p).ln_1p(),
+            (true, true) => self.p,
+            (true, false) => ln_1m_exp(self.p),
+        }
+    }
+}
+
+/// ln(1 − e^x) for x ≤ 0, precise at both ends (Gnumeric's `swap_log_tail`).
+fn ln_1m_exp(x: f64) -> f64 {
+    if x > -std::f64::consts::LN_2 {
+        (-x.exp_m1()).ln()
+    } else {
+        (-x.exp()).ln_1p()
+    }
+}
+
+/// A CDF result from its two tails, as R's flags ask for it.
+fn tails(lower: bool, log: bool, below: f64, above: f64) -> f64 {
+    let v = if lower { below } else { above };
+    if log {
+        v.ln()
+    } else {
+        v
+    }
+}
+
+/// A CDF result from the logarithm `ln` of one tail (the lower if
+/// `of_lower`), as R's flags ask for it.
+fn from_ln(ln: f64, of_lower: bool, lower: bool, log: bool) -> f64 {
+    match (lower == of_lower, log) {
+        (true, true) => ln,
+        (true, false) => ln.exp(),
+        (false, true) => ln_1m_exp(ln),
+        (false, false) => -ln.exp_m1(),
+    }
+}
+
+/// A family's kernel: the observation (or probability) x, the parameters,
+/// and what to compute. NaN is a domain error.
+type Kernel = fn(f64, &[f64], Op) -> f64;
+
+/// The R-style families by index: the number of parameters and the kernel.
+fn r_family(family: u32) -> Option<(usize, Kernel)> {
+    Some(match family {
+        2 => (2, cauchy),
+        4 => (1, exp),
+        8 => (2, gumbel),
+        10 => (2, lnorm),
+        12 => (2, norm),
+        14 => (1, rayleigh),
+        18 => (2, weibull),
+        _ => return None,
+    })
+}
+
+/// An `R.D*`, `R.P*` or `R.Q*` call: x (or p), the family's parameters,
+/// then its optional flags.
+fn r_style(id: u32, a: &[CellValue]) -> R {
+    let (family, kind) = ((id - 1600) / 3, (id - 1600) % 3);
+    let Some((k, kernel)) = r_family(family) else {
+        return Err(err::NAME);
+    };
+    let v = n(a, 0)?;
+    let mut p = [0.0; 3];
+    for (i, slot) in p.iter_mut().enumerate().take(k) {
+        *slot = n(a, i + 1)?;
+    }
+    let flag = |i: usize, default: bool| if a.len() > i { b(a, i) } else { Ok(default) };
+    let op = match kind {
+        0 => Op::D(flag(k + 1, false)?),
+        1 => Op::P {
+            lower: flag(k + 1, true)?,
+            log: flag(k + 2, false)?,
+        },
+        _ => Op::Q(Tail {
+            p: v,
+            lower: flag(k + 1, true)?,
+            log: flag(k + 2, false)?,
+        }),
+    };
+    ok_num(kernel(v, &p[..k], op))
+}
+
+/// The density's zero, as `give_log` asks.
+fn d0(log: bool) -> f64 {
+    if log {
+        NEG_INF
+    } else {
+        0.0
+    }
+}
+
+fn norm(x: f64, a: &[f64], op: Op) -> f64 {
+    let (mu, sd) = (a[0], a[1]);
+    match op {
+        Op::D(log) => {
+            if sd < 0.0 {
+                return NAN;
+            }
+            let z = (x - mu).abs() / sd;
+            if z.is_infinite() {
+                d0(log)
+            } else if log {
+                -(LN_SQRT_2PI + 0.5 * z * z + sd.ln())
+            } else {
+                st::norm_pdf(z) / sd
+            }
+        }
+        Op::P { lower, log } => {
+            if sd < 0.0 {
+                return NAN;
+            }
+            // σ = 0 is a point mass at μ.
+            let z = if sd == 0.0 {
+                if x < mu {
+                    NEG_INF
+                } else {
+                    INF
+                }
+            } else {
+                (x - mu) / sd
+            };
+            norm_p(if lower { z } else { -z }, log)
+        }
+        Op::Q(t) => {
+            if !t.valid() {
+                NAN
+            } else if t.at_bottom() {
+                NEG_INF
+            } else if t.at_top() {
+                INF
+            } else if sd < 0.0 {
+                NAN
+            } else if sd == 0.0 {
+                mu
+            } else {
+                mu + sd * norm_q(t)
+            }
+        }
+    }
+}
+
+/// Φ(z), or ln Φ(z) where Φ itself underflows (z < −37.5) by the
+/// continued fraction of Mills' ratio.
+fn norm_p(z: f64, log: bool) -> f64 {
+    if !log {
+        st::norm_cdf(z)
+    } else if z > 0.0 {
+        (-st::norm_cdf(-z)).ln_1p()
+    } else if z > -37.5 {
+        st::norm_cdf(z).ln()
+    } else {
+        // Φ(z) = φ(z) / (t + 1/(t + 2/(t + 3/(t + …)))), t = −z; 40 terms
+        // are exact to the last bit for t ≥ 37.5.
+        let t = -z;
+        let mut f = t;
+        for k in (1..=40).rev() {
+            f = t + f64::from(k) / f;
+        }
+        -0.5 * z * z - LN_SQRT_2PI - f.ln()
+    }
+}
+
+/// The standard normal quantile of a probability strictly inside (0, 1):
+/// Φ⁻¹ of the smaller tail, or, where that tail underflows (a log_p below
+/// about −690), the root of ln Φ.
+fn norm_q(t: Tail) -> f64 {
+    let (below, above) = (t.prob(true), t.prob(false));
+    if (1e-300..=0.5).contains(&below) {
+        st::norm_inv(below)
+    } else if (1e-300..=0.5).contains(&above) {
+        -st::norm_inv(above)
+    } else {
+        let tiny_below = below < above;
+        let ln = t.ln(tiny_below);
+        let y = st::solve(|y| -norm_p(-y, true), -ln, 0.0, 1.0);
+        if tiny_below {
+            -y
+        } else {
+            y
+        }
+    }
+}
+
+fn lnorm(x: f64, a: &[f64], op: Op) -> f64 {
+    let (mu, sd) = (a[0], a[1]);
+    match op {
+        Op::Q(_) => norm(x, a, op).exp(),
+        _ if sd <= 0.0 => NAN,
+        // P(X ≤ x) = 0 for x ≤ 0. (Gnumeric's plnorm returns 0 for the
+        // upper tail too; R and Improv give 1.)
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::D(log) if x <= 0.0 => d0(log),
+        Op::D(log) => {
+            let z = (x.ln() - mu) / sd;
+            if log {
+                -(LN_SQRT_2PI + 0.5 * z * z + sd.ln() + x.ln())
+            } else {
+                st::norm_pdf(z) / (sd * x)
+            }
+        }
+        Op::P { .. } => norm(x.ln(), a, op),
+    }
+}
+
+fn exp(x: f64, a: &[f64], op: Op) -> f64 {
+    let s = a[0];
+    match op {
+        Op::D(_) if s <= 0.0 => NAN,
+        Op::D(log) if x < 0.0 => d0(log),
+        Op::D(true) => -x / s - s.ln(),
+        Op::D(false) => (-x / s).exp() / s,
+        // A scale of 0 is a point mass at 0.
+        _ if s < 0.0 => NAN,
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } => from_ln(-(x / s), false, lower, log),
+        Op::Q(t) if !t.valid() => NAN,
+        Op::Q(t) if t.at_bottom() => 0.0,
+        Op::Q(t) => -s * t.ln(false),
+    }
+}
+
+fn weibull(x: f64, a: &[f64], op: Op) -> f64 {
+    let (k, s) = (a[0], a[1]);
+    if k <= 0.0 || s <= 0.0 {
+        return NAN;
+    }
+    match op {
+        Op::D(log) if x < 0.0 => d0(log),
+        Op::D(_) if x == 0.0 && k < 1.0 => INF,
+        Op::D(log) => {
+            let t1 = (x / s).powf(k - 1.0);
+            let t2 = t1 * (x / s);
+            if log {
+                -t2 + (k * t1 / s).ln()
+            } else {
+                k * t1 * (-t2).exp() / s
+            }
+        }
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } => from_ln(-(x / s).powf(k), false, lower, log),
+        Op::Q(t) if !t.valid() => NAN,
+        Op::Q(t) if t.at_bottom() => 0.0,
+        Op::Q(t) => s * (-t.ln(false)).powf(1.0 / k),
+    }
+}
+
+fn rayleigh(x: f64, a: &[f64], op: Op) -> f64 {
+    let s = a[0];
+    if s <= 0.0 {
+        return NAN;
+    }
+    let u = x / s;
+    match op {
+        Op::D(log) if x <= 0.0 => d0(log),
+        Op::D(true) => u.ln() - s.ln() - 0.5 * u * u,
+        Op::D(false) => rayleigh_pdf(x, s),
+        Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } => from_ln(-0.5 * u * u, false, lower, log),
+        Op::Q(t) if !t.valid() => NAN,
+        Op::Q(t) if t.at_bottom() => 0.0,
+        Op::Q(t) => s * (-2.0 * t.ln(false)).sqrt(),
+    }
+}
+
+fn gumbel(x: f64, a: &[f64], op: Op) -> f64 {
+    let (mu, beta) = (a[0], a[1]);
+    if beta <= 0.0 {
+        return NAN;
+    }
+    let z = (x - mu) / beta;
+    match op {
+        Op::D(log) => {
+            let lp = -(z + (-z).exp());
+            if log {
+                lp - beta.ln()
+            } else {
+                lp.exp() / beta
+            }
+        }
+        Op::P { lower, log } => from_ln(-(-z).exp(), true, lower, log),
+        Op::Q(t) if !t.valid() => NAN,
+        Op::Q(t) => mu - beta * (-t.ln(true)).ln(),
+    }
+}
+
+fn cauchy(x: f64, a: &[f64], op: Op) -> f64 {
+    let (loc, s) = (a[0], a[1]);
+    match op {
+        _ if s < 0.0 => NAN,
+        // A scale of 0 is allowed only by the quantile (it is the location).
+        Op::D(_) | Op::P { .. } if s == 0.0 => NAN,
+        Op::D(log) => {
+            let y = (x - loc) / s;
+            let d = PI * s * (1.0 + y * y);
+            if log {
+                -d.ln()
+            } else {
+                1.0 / d
+            }
+        }
+        Op::P { lower, log } => {
+            let z = (x - loc) / s;
+            let z = if lower { z } else { -z };
+            if z.abs() > 1.0 {
+                let y = (1.0 / z).atan() / PI;
+                match (z > 0.0, log) {
+                    (true, true) => (-y).ln_1p(),
+                    (true, false) => 1.0 - y,
+                    (false, true) => (-y).ln(),
+                    (false, false) => -y,
+                }
+            } else {
+                let v = 0.5 + z.atan() / PI;
+                if log {
+                    v.ln()
+                } else {
+                    v
+                }
+            }
+        }
+        Op::Q(t) if !t.valid() => NAN,
+        Op::Q(t) => {
+            let below = t.prob(true);
+            if below <= 0.5 {
+                loc - s * cot_pi(below)
+            } else {
+                loc + s * cot_pi(t.prob(false))
+            }
+        }
+    }
+}
+
+/// cot(πp) for p ∈ [0, ½], exactly 0 at ½ (tan(π(½ − p)) where ½ − p is
+/// exact).
+fn cot_pi(p: f64) -> f64 {
+    if p > 0.25 {
+        (PI * (0.5 - p)).tan()
+    } else {
+        1.0 / (PI * p).tan()
     }
 }
 
@@ -224,5 +643,92 @@ mod tests {
     #[test]
     fn unknown_ids_are_name_errors() {
         assert_eq!(call(1749, &nums(&[1.0])), Err(err::NAME));
+        assert_eq!(call(1600, &nums(&[0.5, 2.0, 3.0])), Err(err::NAME));
+    }
+
+    #[test]
+    fn flags_must_be_booleans() {
+        let mut a = nums(&[1.0, 0.0, 1.0]);
+        a.push(CellValue::Text("x".into()));
+        assert_eq!(call(1636, &a), Err(err::VALUE));
+        assert_eq!(call(1637, &a), Err(err::VALUE));
+        a.insert(3, CellValue::Bool(true));
+        assert_eq!(call(1638, &a), Err(err::VALUE));
+    }
+
+    fn tail(p: f64, lower: bool, log: bool) -> Tail {
+        Tail { p, lower, log }
+    }
+
+    #[test]
+    fn tails_convert_both_ways() {
+        let t = tail(0.25f64.ln(), false, true);
+        assert!(t.valid() && !tail(0.1, true, true).valid());
+        assert!(!tail(-0.1, true, false).valid());
+        assert!((t.prob(true) - 0.75).abs() < 1e-15);
+        assert!((t.prob(false) - 0.25).abs() < 1e-15);
+        assert!((t.ln(true) - 0.75f64.ln()).abs() < 1e-15);
+        assert!(tail(NEG_INF, false, true).at_top());
+        assert!(tail(0.0, false, true).at_bottom());
+        assert!((ln_1m_exp(-10.0) - (-(-10f64).exp()).ln_1p()).abs() < 1e-18);
+        assert!((ln_1m_exp(-0.1) - (-(-0.1f64).exp_m1()).ln()).abs() < 1e-15);
+        for (ln, of_lower, lower, log) in [
+            (-0.5, true, true, true),
+            (-0.5, true, false, false),
+            (-0.5, false, true, true),
+        ] {
+            let p = (-0.5f64).exp();
+            let want = if lower == of_lower { p } else { 1.0 - p };
+            let got = from_ln(ln, of_lower, lower, log);
+            let got = if log { got.exp() } else { got };
+            assert!((got - want).abs() < 1e-15, "{of_lower} {lower} {log}");
+        }
+    }
+
+    #[test]
+    fn normal_quantiles_reach_the_far_tails() {
+        // The upper tail's p, and a lower tail that underflows (ln Φ root).
+        let q = |p: f64, lower: bool, log: bool| norm_q(tail(p, lower, log));
+        assert!((q(0.3, false, false) - 0.524_400_512_708_041).abs() < 1e-14);
+        let z = q(-1000.0, false, true);
+        assert!((z - 44.615_747_731_969_4).abs() < 1e-12, "{z}");
+        assert!((norm_p(-z, true) + 1000.0).abs() < 1e-9);
+        assert!((norm_p(1.0, true) - 0.841_344_746_068_542_9f64.ln()).abs() < 1e-15);
+        let n = |x: f64, a: &[f64], op: Op| norm(x, a, op);
+        assert_eq!(n(0.5, &[0.0, 1.0], Op::Q(tail(0.0, true, false))), NEG_INF);
+        assert_eq!(n(1.0, &[1.0, 1.0], Op::Q(tail(1.0, true, false))), INF);
+        assert!(n(0.5, &[0.0, -1.0], Op::Q(tail(0.5, true, false))).is_nan());
+        assert_eq!(n(INF, &[0.0, 1.0], Op::D(true)), NEG_INF);
+        assert!(n(0.0, &[0.0, -1.0], Op::D(false)).is_nan());
+    }
+
+    #[test]
+    fn closed_form_edges() {
+        let lower = Op::P {
+            lower: true,
+            log: false,
+        };
+        assert!(lnorm(1.0, &[0.0, -1.0], lower).is_nan());
+        assert_eq!(lnorm(0.0, &[0.0, 1.0], Op::D(true)), NEG_INF);
+        assert_eq!(exp(-1.0, &[1.0], Op::D(true)), NEG_INF);
+        assert!((exp(1.0, &[2.0], Op::D(true)) - (-0.5 - 2f64.ln())).abs() < 1e-15);
+        assert!(exp(0.5, &[-1.0], Op::Q(tail(1.5, true, false))).is_nan());
+        assert_eq!(weibull(0.0, &[0.5, 1.0], Op::D(false)), INF);
+        assert!(weibull(0.5, &[2.0, 1.0], Op::Q(tail(2.0, true, false))).is_nan());
+        assert_eq!(rayleigh(0.0, &[1.0], Op::Q(tail(0.0, true, false))), 0.0);
+        assert_eq!(rayleigh(-1.0, &[1.0], lower), 0.0);
+        assert!(gumbel(1.0, &[0.0, 1.0], Op::Q(tail(0.5, true, true))).is_nan());
+        assert!(cauchy(1.0, &[0.0, -1.0], lower).is_nan());
+        assert!(cauchy(1.0, &[0.0, 1.0], Op::Q(tail(2.0, true, false))).is_nan());
+        assert_eq!(cot_pi(0.5), 0.0);
+        let up_log = Op::P {
+            lower: true,
+            log: true,
+        };
+        assert!((cauchy(0.5, &[0.0, 1.0], up_log) - (0.5 + 0.5f64.atan() / PI).ln()).abs() < 1e-15);
+        assert!(
+            (cauchy(3.0, &[0.0, 1.0], up_log) - (1.0 - (1.0f64 / 3.0).atan() / PI).ln()).abs()
+                < 1e-15
+        );
     }
 }

@@ -497,6 +497,27 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `RAYLEIGH(number, number)` | number | the Rayleigh density of scale σ at x |
 | `RAYLEIGHTAIL(number, number, number)` | number | the Rayleigh tail density (lower limit a, scale σ) at x |
 | `SNORM.DIST.RANGE(number, number)` | number | Φ(x2) − Φ(x1): the standard normal probability between x1 and x2 |
+| `R.DCAUCHY(number, number, number, [boolean])` | number | the density at x of the Cauchy distribution of location and scale, or its logarithm (give_log) |
+| `R.PCAUCHY(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Cauchy distribution of location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QCAUCHY(number, number, number, [boolean], [boolean])` | number | the quantile of the Cauchy distribution of location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DEXP(number, number, [boolean])` | number | the density at x of the exponential distribution of the given scale (mean), or its logarithm (give_log) |
+| `R.PEXP(number, number, [boolean], [boolean])` | number | P(X ≤ x) for the exponential distribution of the given scale (mean), or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QEXP(number, number, [boolean], [boolean])` | number | the quantile of the exponential distribution of the given scale (mean): the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DGUMBEL(number, number, number, [boolean])` | number | the density at x of the Gumbel distribution of location μ and scale β, or its logarithm (give_log) |
+| `R.PGUMBEL(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Gumbel distribution of location μ and scale β, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QGUMBEL(number, number, number, [boolean], [boolean])` | number | the quantile of the Gumbel distribution of location μ and scale β: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DLNORM(number, number, number, [boolean])` | number | the density at x of the log-normal distribution of log-mean and log-sd, or its logarithm (give_log) |
+| `R.PLNORM(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the log-normal distribution of log-mean and log-sd, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QLNORM(number, number, number, [boolean], [boolean])` | number | the quantile of the log-normal distribution of log-mean and log-sd: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DNORM(number, number, number, [boolean])` | number | the density at x of the normal distribution of mean μ and standard deviation σ, or its logarithm (give_log) |
+| `R.PNORM(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the normal distribution of mean μ and standard deviation σ, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QNORM(number, number, number, [boolean], [boolean])` | number | the quantile of the normal distribution of mean μ and standard deviation σ: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DRAYLEIGH(number, number, [boolean])` | number | the density at x of the Rayleigh distribution of the given scale, or its logarithm (give_log) |
+| `R.PRAYLEIGH(number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Rayleigh distribution of the given scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QRAYLEIGH(number, number, [boolean], [boolean])` | number | the quantile of the Rayleigh distribution of the given scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DWEIBULL(number, number, number, [boolean])` | number | the density at x of the Weibull distribution of shape and scale, or its logarithm (give_log) |
+| `R.PWEIBULL(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the Weibull distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QWEIBULL(number, number, number, [boolean], [boolean])` | number | the quantile of the Weibull distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `SSMEDIAN(number OVER category, [number])` | number | the median of grouped data (Gnumeric): each value the midpoint of an interval of width interval (default 1), interpolated within the median's interval |
 | `INTERPOLATION(number OVER category, number OVER category, number, [number], [number])` | number | INTERPOLATION(xs, ys OVER T, target, [method], [next]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over [target, next] |
 | `HPFILTER(number OVER category, [number])` | number | each item's trend under the Hodrick–Prescott filter with smoothing λ (default 1600); the cycle is y − trend; needs 6 values |
