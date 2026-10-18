@@ -766,5 +766,74 @@ mod tests {
     fn time_switch_caps_the_period_count() {
         let args = [100.0, 110.0, 5.0, 1.0, 0.0, 1e-8, 0.06, 0.06, 0.26];
         assert_eq!(f(1782, "c", &args), CellValue::Err(err::NUM));
+        // Gnumeric 1.12.57: a daily switch, and dt = 0 (no periods).
+        let daily = [100.0, 110.0, 5.0, 1.0, 0.0, 1.0 / 365.0, 0.06, 0.06, 0.26];
+        let v = time_switch(Call, &daily).unwrap();
+        assert!((v - 1.369_938_988_883_669_3).abs() < 1e-12, "{v}");
+        let none = [100.0, 110.0, 5.0, 1.0, 0.0, 0.0, 0.06, 0.06, 0.26];
+        assert_eq!(time_switch(Call, &none), Ok(0.0));
+    }
+
+    /// OPT_BAW_AMER against Gnumeric 1.12.57 (to the goldens' 1e-5).
+    #[test]
+    fn barone_adesi_whaley() {
+        let near =
+            |got: f64, want: f64| assert!((got - want).abs() <= 1e-5 * want, "{got} vs {want}");
+        near(
+            baw(Call, 100.0, 100.0, 0.5, 0.1, 0.25, 0.0),
+            6.801_341_373_853_177,
+        );
+        near(
+            baw(Put, 100.0, 100.0, 0.5, 0.1, 0.25, 0.0),
+            6.801_351_269_438_172,
+        );
+        // b ≥ r: never exercised early, the European value.
+        near(
+            baw(Call, 100.0, 100.0, 0.5, 0.1, 0.25, 0.1),
+            9.582_235_060_503_145,
+        );
+        // Deep in the money: exercise now.
+        assert_eq!(baw(Put, 60.0, 100.0, 0.25, 0.08, 0.2, 0.08), 40.0);
+        assert!(baw(Put, 100.0, 100.0, 0.5, 0.1, f64::NAN, 0.0).is_nan());
+    }
+
+    /// OPT_RGW against mpmath (a 30-digit model of the same formulas) and
+    /// Gnumeric 1.12.57 where its bivariate normal is right.
+    #[test]
+    fn roll_geske_whaley() {
+        let near =
+            |got: f64, want: f64| assert!((got - want).abs() <= 1e-9 * want, "{got} vs {want}");
+        let rgw = |s: f64, d: f64, v: f64| rgw(s, 82.0, 0.25, 0.3333, 0.06, d, v);
+        near(rgw(80.0, 4.0, 0.3), 4.385_192_645_994_259);
+        // A small dividend: never worth exercising, the European value
+        // (with Gnumeric's b = 0 legs, as every RGW leg here).
+        near(rgw(80.0, 0.1, 0.3), 4.508_323_359_855_709);
+        // A dividend above the strike: no ex-dividend price balances it,
+        // so bisection runs to the bottom (mpmath and Gnumeric 19.2208...).
+        near(rgw(100.0, 90.0, 0.3), 19.220_820_952_548_86);
+        // The critical price past 1e8: the European fallback (Gnumeric
+        // 196040042.50233114 too).
+        near(rgw(2e8, 4.0, 0.3), 196_040_042.502_331_14);
+        // A spot far below the critical price: the bracket doubles up to
+        // it, and the call is worth nothing (mpmath 2.8e-51; Gnumeric's
+        // bivariate normal gives -37.16).
+        let low = rgw(10.0, 4.0, 0.3);
+        assert!((0.0..1e-50).contains(&low), "{low}");
+        // ...and never reaches it below 1e8: the European fallback
+        // (Gnumeric 5.150496198668107e-115, mpmath 5.1504961987e-115).
+        let far = super::rgw(1e7, 4e8, 0.25, 0.3333, 0.06, 3e6, 0.3);
+        assert!(
+            (far / 5.150_496_198_668_107e-115 - 1.0).abs() < 1e-9,
+            "{far}"
+        );
+        assert!(rgw(f64::NAN, 4.0, 0.3).is_nan());
+        assert!(rgw(0.0, 4.0, 0.3).is_nan());
+        for (a, b, rho) in [
+            (f64::NAN, 0.0, 0.5),
+            (0.0, f64::NAN, 0.5),
+            (0.0, 0.0, f64::NAN),
+        ] {
+            assert!(bvn(a, b, rho).is_nan(), "bvn({a}, {b}, {rho})");
+        }
     }
 }
