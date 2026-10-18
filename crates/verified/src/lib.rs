@@ -13,5 +13,6 @@
 
 pub mod bits;
 pub mod gcd;
+pub mod graph;
 pub mod keys;
 pub mod radix;

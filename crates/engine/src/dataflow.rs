@@ -800,55 +800,46 @@ pub(crate) fn derived_build_order<'m>(
     model: &'m Model,
     targets: &[MeasureId],
 ) -> Result<Vec<(MeasureId, &'m Formula)>, EngineError> {
-    let mut order: Vec<(MeasureId, &'m Formula)> = Vec::new();
-    let mut visited: std::collections::HashSet<MeasureId> = std::collections::HashSet::new();
-    let mut on_stack: std::collections::HashSet<MeasureId> = std::collections::HashSet::new();
-
-    fn visit<'m>(
-        model: &'m Model,
-        m: MeasureId,
-        order: &mut Vec<(MeasureId, &'m Formula)>,
-        visited: &mut std::collections::HashSet<MeasureId>,
-        on_stack: &mut std::collections::HashSet<MeasureId>,
-    ) -> Result<(), EngineError> {
-        if visited.contains(&m) {
-            return Ok(());
-        }
-        let measure = match model.measures.get(&m) {
-            Some(x) => x,
-            None => return Ok(()), // unknown ref: the compiler will report it
-        };
-        // Only derived measures participate in the build order.
-        let formula = match &measure.kind {
-            MeasureKind::Derived(f) => f,
-            MeasureKind::Input => {
-                visited.insert(m);
-                return Ok(());
-            }
-        };
-        if !on_stack.insert(m) {
-            return Err(EngineError::Unsupported(format!(
-                "cyclic measure dependency at {m:?}"
-            )));
-        }
-        // A measure's references to itself are a recurrence (`Bal =
-        // PREV(Bal, Time, 1, Open) + Flow`), checked by the compiler, not a
-        // cycle; any other way back to it still is one.
-        for dep in formula.referenced_measures() {
-            if dep != m {
-                visit(model, dep, order, visited, on_stack)?;
-            }
-        }
-        on_stack.remove(&m);
-        visited.insert(m);
-        order.push((m, formula));
-        Ok(())
+    // Derived measures are the graph's nodes. A measure's references to itself
+    // are a recurrence (`Bal = PREV(Bal, Time, 1, Open) + Flow`), checked by
+    // the compiler, not a cycle; refs to inputs or unknown measures (which the
+    // compiler reports) are no edges.
+    let derived: Vec<(MeasureId, &'m Formula)> = model
+        .measures
+        .iter()
+        .filter_map(|(id, m)| match &m.kind {
+            MeasureKind::Derived(f) => Some((*id, f)),
+            MeasureKind::Input => None,
+        })
+        .collect();
+    let index: HashMap<MeasureId, usize> = derived
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _))| (*id, i))
+        .collect();
+    let graph: Vec<Vec<usize>> = derived
+        .iter()
+        .map(|(id, f)| {
+            f.referenced_measures()
+                .iter()
+                .filter(|d| *d != id)
+                .filter_map(|d| index.get(d).copied())
+                .collect()
+        })
+        .collect();
+    let roots: Vec<usize> = targets
+        .iter()
+        .filter_map(|t| index.get(t).copied())
+        .collect();
+    // Proven: the reachable nodes, each once, after their dependencies; an
+    // error exactly when a cycle is reachable.
+    match improv_verified::graph::build_order(&graph, &roots) {
+        Ok(order) => Ok(order.into_iter().map(|i| derived[i]).collect()),
+        Err(i) => Err(EngineError::Unsupported(format!(
+            "cyclic measure dependency at {:?}",
+            derived[i].0
+        ))),
     }
-
-    for t in targets {
-        visit(model, *t, &mut order, &mut visited, &mut on_stack)?;
-    }
-    Ok(order)
 }
 
 /// Compile every derived measure `targets` transitively needs, in build order.
