@@ -2,6 +2,7 @@
 //! number theory, floating point, calendars, telephone traffic and text.
 
 mod calendar;
+mod hebrew;
 mod number;
 mod width;
 
@@ -37,6 +38,24 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
         1490..=1494 => calendar::easter(n(a, 0)?, [0, 39, -46, -2, 49][(id - 1490) as usize]),
         1495 => ok_num((d(a, 0)?.div_euclid(DAY_MS) + calendar::UNIX_JDN) as f64),
         1496 => ok_num(calendar::jdn(n(a, 0)?, n(a, 1)?, n(a, 2)?)? as f64),
+        1497..=1501 => {
+            let h = hebrew::hdate(n(a, 0)?, n(a, 1)?, n(a, 2)?)?;
+            Ok(match id {
+                1497 => CellValue::Text(hebrew::text(h)),
+                1498 => CellValue::Text(hebrew::text_heb(h)),
+                1499 => CellValue::num(h.0 as f64),
+                1500 => CellValue::num(h.1 as f64),
+                _ => CellValue::num(h.2 as f64),
+            })
+        }
+        1502 | 1503 => {
+            let h = hebrew::hdate_of_jdn(d(a, 0)?.div_euclid(DAY_MS) + calendar::UNIX_JDN)?;
+            ok_text(if id == 1502 {
+                hebrew::text(h)
+            } else {
+                hebrew::text_heb(h)
+            })
+        }
         // --- text ---
         1480 => ok_text(asc(&t(a, 0)?)),
         1481 => ok_text(jis(&t(a, 0)?)),
@@ -458,6 +477,7 @@ mod tests {
         assert_eq!(ilog(f64::INFINITY, 10.0), Err(err::NUM));
         // HDATE_JULIAN: arguments out of range.
         assert_eq!(calendar::jdn(1e8, 1.0, 1.0), Err(err::NUM));
+        assert_eq!(hebrew::hdate_of_jdn(0), Err(err::NUM));
         // FLT.NEXTAFTER: NaN, downward, other text.
         assert!(next_after(f64::NAN, 1.0).is_nan());
         assert_eq!(next_after(1.0, 0.0), 1.0 - f64::EPSILON / 2.0);

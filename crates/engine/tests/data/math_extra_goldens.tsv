@@ -192,6 +192,50 @@ HDATE_JULIAN(2024,13,1)	2460677	Gnumeric 1.12
 HDATE_JULIAN(2024,0,15)	2460294	Gnumeric 1.12
 HDATE_JULIAN(1582,10,15)	2299161	Gnumeric 1.12
 HDATE_JULIAN(2024.9,1.5,1.9)	2460311	Gnumeric 1.12
+HDATE(2024,1,1)	"20 Tebet 5784"	Gnumeric 1.12
+HDATE(2024,3,24)	"14 Adar II 5784"	Gnumeric 1.12
+HDATE(2024,10,3)	"1 Tishri 5785"	Gnumeric 1.12
+HDATE(2023,9,16)	"1 Tishri 5784"	Gnumeric 1.12
+HDATE(2000,2,29)	"23 Adar I 5760"	Gnumeric 1.12
+HDATE(1,1,1)	"18 Tebet 3761"	Gnumeric 1.12
+HDATE(2024,2,30)	"21 Adar I 5784"	Gnumeric 1.12
+HDATE(2024,13,1)	{"error": "#VALUE!"}	Gnumeric 1.12
+HDATE(2024,0,1)	{"error": "#VALUE!"}	Gnumeric 1.12
+HDATE(0,1,1)	{"error": "#VALUE!"}	Gnumeric 1.12
+HDATE(2024,1,32)	{"error": "#VALUE!"}	Gnumeric 1.12
+HDATE_HEB(2024,1,1)	"כ׳ בְּטֵבֵת התשפ״ד"	Gnumeric 1.12
+HDATE_HEB(2024,10,17)	"ט״ו בְּתִּשְׁרֵי התשפ״ה"	Gnumeric 1.12
+HDATE_HEB(2024,3,24)	"י״ד בְּאַדׇר ב׳ התשפ״ד"	Gnumeric 1.12
+HDATE_HEB(2025,3,1)	"א׳ בְּאַדׇר התשפ״ה"	Gnumeric 1.12
+HDATE_HEB(2240,9,1)	"י״ד בְּאֱלוּל ו׳"	Gnumeric 1.12
+HDATE_HEB(2024,13,1)	{"error": "#VALUE!"}	Gnumeric 1.12
+DATE2HDATE(DATE(2024,1,1))	"20 Tebet 5784"	Gnumeric 1.12
+DATE2HDATE(DATE(2024,4,23))	"15 Nisan 5784"	Gnumeric 1.12
+DATE2HDATE(DATE(1948,5,14))	"5 Iyar 5708"	Gnumeric 1.12
+DATE2HDATE(45000)	"22 Adar 5783"	Gnumeric 1.12
+DATE2HDATE(DATE(2024,9,3))	"30 Ab 5784"	Gnumeric 1.12
+DATE2HDATE_HEB(DATE(2024,3,24))	"י״ד בְּאַדׇר ב׳ התשפ״ד"	Gnumeric 1.12
+DATE2HDATE_HEB(DATE(2024,6,12))	"ו׳ בְּסִיוׇן התשפ״ד"	Gnumeric 1.12
+DATE2HDATE_HEB(DATE(2023,12,8))	"כ״ה בְּכִּסְלֵו התשפ״ד"	Gnumeric 1.12
+DATE2HDATE_HEB(DATE(2025,4,13))	"ט״ו בְּנִיסׇן התשפ״ה"	Gnumeric 1.12
+HDATE_DAY(2024,1,1)	20	Gnumeric 1.12
+HDATE_DAY(2024,3,24)	14	Gnumeric 1.12
+HDATE_DAY(2023,9,16)	1	Gnumeric 1.12
+HDATE_DAY(2024,2,30)	21	Gnumeric 1.12
+HDATE_DAY(2024,13,1)	{"error": "#VALUE!"}	Gnumeric 1.12
+HDATE_MONTH(2024,1,1)	3	Gnumeric 1.12
+HDATE_MONTH(2024,3,15)	13	Gnumeric 1.12
+HDATE_MONTH(2024,3,1)	12	Gnumeric 1.12
+HDATE_MONTH(2025,3,1)	5	Gnumeric 1.12
+HDATE_MONTH(2024,9,1)	10	Gnumeric 1.12
+HDATE_MONTH(2024,10,3)	0	Gnumeric 1.12
+HDATE_MONTH(2024,0,1)	{"error": "#VALUE!"}	Gnumeric 1.12
+HDATE_YEAR(2024,1,1)	5784	Gnumeric 1.12
+HDATE_YEAR(2024,10,3)	5785	Gnumeric 1.12
+HDATE_YEAR(2024,10,2)	5784	Gnumeric 1.12
+HDATE_YEAR(1,1,1)	3761	Gnumeric 1.12
+HDATE_YEAR(4000,12,31)	7761	Gnumeric 1.12
+HDATE_YEAR(-5,1,1)	{"error": "#VALUE!"}	Gnumeric 1.12
 ILOG(0.2,4)	-2	exact
 ILOG(0.0625,4)	-2	exact
 FIB(47)	2971215073	exact
@@ -209,3 +253,5 @@ PARTITIONS(4001)	{"error": "#NUM!"}	Improv limit
 ITHPRIME(10000001)	{"error": "#NUM!"}	Improv limit
 NT_PI(179424674)	{"error": "#NUM!"}	Improv limit
 ISPRIME(4503599627370497)	{"error": "#NUM!"}	Improv limit
+HDATE_YEAR(9999,12,31)	13760	exact
+HDATE_YEAR(4400,12,31)	8161	exact

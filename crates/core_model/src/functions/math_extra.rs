@@ -36,6 +36,13 @@ pub(super) static MATH_EXTRA: &[FnDef] = &[
     s(1494, "PENTECOSTSUNDAY", C::DateTime, &[N], V::DateTime, "Pentecost Sunday, 49 days after Easter Sunday"),
     s(1495, "DATE2JULIAN", C::DateTime, &[D], V::Number, "the Julian day number of a date"),
     s(1496, "HDATE_JULIAN", C::DateTime, &[N, N, N], V::Number, "the Julian day number of Gregorian year, month, day (out-of-range days and months roll over)"),
+    s(1497, "HDATE", C::DateTime, &[N, N, N], V::Text, "the Hebrew date of Gregorian year, month, day, as \"20 Tebet 5784\" (#VALUE! for a month outside 1–12 or a day outside 1–31)"),
+    s(1498, "HDATE_HEB", C::DateTime, &[N, N, N], V::Text, "the Hebrew date of Gregorian year, month, day in Hebrew, as \"כ׳ בְּטֵבֵת התשפ״ד\""),
+    s(1499, "HDATE_DAY", C::DateTime, &[N, N, N], V::Number, "the day of the Hebrew month of Gregorian year, month, day"),
+    s(1500, "HDATE_MONTH", C::DateTime, &[N, N, N], V::Number, "the Hebrew month of Gregorian year, month, day: 0 Tishri … 11 Elul, 12 Adar I, 13 Adar II"),
+    s(1501, "HDATE_YEAR", C::DateTime, &[N, N, N], V::Number, "the Hebrew year of Gregorian year, month, day"),
+    s(1502, "DATE2HDATE", C::DateTime, &[D], V::Text, "the Hebrew date of a date, as \"20 Tebet 5784\""),
+    s(1503, "DATE2HDATE_HEB", C::DateTime, &[D], V::Text, "the Hebrew date of a date in Hebrew"),
     // --- text (1480–1489) ---
     s(1480, "ASC", C::Text, &[T], V::Text, "full-width ASCII and katakana as half-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark)"),
     alias(s(1481, "JIS", C::Text, &[T], V::Text, "half-width ASCII and katakana as full-width, as LibreOffice's JIS (a letter and its sound mark join)"), &["DBCS"]),

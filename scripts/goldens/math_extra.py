@@ -168,6 +168,31 @@ gn("num", "ASHWEDNESDAY(9957)", "GOODFRIDAY(-1)",
    "HDATE_JULIAN(2001,3,30)", "HDATE_JULIAN(2024,2,30)", "HDATE_JULIAN(2024,13,1)",
    "HDATE_JULIAN(2024,0,15)", "HDATE_JULIAN(1582,10,15)", "HDATE_JULIAN(2024.9,1.5,1.9)")
 
+# Hebrew calendar. HDATE_MONTH counts from 0 (Tishri); 12 and 13 are Adar I
+# and II. The 1900-system serial dates DATE2HDATE reads agree with Gnumeric's
+# from 1900-03-01 on.
+gn("text", "HDATE(2024,1,1)", "HDATE(2024,3,24)", "HDATE(2024,10,3)", "HDATE(2023,9,16)",
+   "HDATE(2000,2,29)", "HDATE(1,1,1)", "HDATE(2024,2,30)", "HDATE(2024,13,1)", "HDATE(2024,0,1)",
+   "HDATE(0,1,1)", "HDATE(2024,1,32)",
+   "HDATE_HEB(2024,1,1)", "HDATE_HEB(2024,10,17)", "HDATE_HEB(2024,3,24)", "HDATE_HEB(2025,3,1)",
+   "HDATE_HEB(2240,9,1)", "HDATE_HEB(2024,13,1)",
+   "DATE2HDATE(DATE(2024,1,1))", "DATE2HDATE(DATE(2024,4,23))", "DATE2HDATE(DATE(1948,5,14))",
+   "DATE2HDATE(45000)", "DATE2HDATE(DATE(2024,9,3))",
+   "DATE2HDATE_HEB(DATE(2024,3,24))", "DATE2HDATE_HEB(DATE(2024,6,12))",
+   "DATE2HDATE_HEB(DATE(2023,12,8))", "DATE2HDATE_HEB(DATE(2025,4,13))")
+gn("num", "HDATE_DAY(2024,1,1)", "HDATE_DAY(2024,3,24)", "HDATE_DAY(2023,9,16)",
+   "HDATE_DAY(2024,2,30)", "HDATE_DAY(2024,13,1)",
+   "HDATE_MONTH(2024,1,1)", "HDATE_MONTH(2024,3,15)", "HDATE_MONTH(2024,3,1)",
+   "HDATE_MONTH(2025,3,1)", "HDATE_MONTH(2024,9,1)", "HDATE_MONTH(2024,10,3)",
+   "HDATE_MONTH(2024,0,1)",
+   "HDATE_YEAR(2024,1,1)", "HDATE_YEAR(2024,10,3)", "HDATE_YEAR(2024,10,2)",
+   "HDATE_YEAR(1,1,1)", "HDATE_YEAR(4000,12,31)", "HDATE_YEAR(-5,1,1)")
+# Gnumeric's molad arithmetic is C int and overflows past about Gregorian
+# 4360 (HDATE(4400,1,1) = "24 Ab 8613"); Improv's is 64-bit. 31 December is
+# after 1 Tishri (still before mid-November by 9999), so its Hebrew year is
+# the Gregorian year + 3761.
+HAND += [("HDATE_YEAR(9999,12,31)", 13760.0, "exact"), ("HDATE_YEAR(4400,12,31)", 8161.0, "exact")]
+
 
 # --- runners -----------------------------------------------------------------
 def gnumeric(formulas):

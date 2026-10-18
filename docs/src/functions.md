@@ -319,6 +319,13 @@ Dates are date-time values (UTC, millisecond precision). A number given where a 
 | `PENTECOSTSUNDAY(number)` | date | Pentecost Sunday, 49 days after Easter Sunday |
 | `DATE2JULIAN(date)` | number | the Julian day number of a date |
 | `HDATE_JULIAN(number, number, number)` | number | the Julian day number of Gregorian year, month, day (out-of-range days and months roll over) |
+| `HDATE(number, number, number)` | text | the Hebrew date of Gregorian year, month, day, as "20 Tebet 5784" (#VALUE! for a month outside 1–12 or a day outside 1–31) |
+| `HDATE_HEB(number, number, number)` | text | the Hebrew date of Gregorian year, month, day in Hebrew, as "כ׳ בְּטֵבֵת התשפ״ד" |
+| `HDATE_DAY(number, number, number)` | number | the day of the Hebrew month of Gregorian year, month, day |
+| `HDATE_MONTH(number, number, number)` | number | the Hebrew month of Gregorian year, month, day: 0 Tishri … 11 Elul, 12 Adar I, 13 Adar II |
+| `HDATE_YEAR(number, number, number)` | number | the Hebrew year of Gregorian year, month, day |
+| `DATE2HDATE(date)` | text | the Hebrew date of a date, as "20 Tebet 5784" |
+| `DATE2HDATE_HEB(date)` | text | the Hebrew date of a date in Hebrew |
 
 ## Dimensional
 
