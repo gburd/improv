@@ -41,7 +41,7 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
     // The flags lead; every later argument is a number (converted first, so
     // a non-number is #VALUE! before a bad flag is #NUM!, as in Gnumeric).
     let lead = match id {
-        1752 | 1755 | 1783 | 1772 | 1784 => 0,
+        1752 | 1755 | 1783 | 1772 | 1784 | 1791 | 1792 => 0,
         1773 => 2,
         _ => 1,
     };
@@ -83,6 +83,34 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
         1785 => on_options(&t(a, 0)?, &xs)?,
         1786 => extendible_writer(p()?, &xs),
         1790 => two_asset(p()?, &xs),
+        1791 => {
+            let (s1, s2, q1, q2, tm, r, b1, b2) = (x(0), x(1), x(2), x(3), x(4), x(5), x(6), x(7));
+            let v = exchange_vol(x(8), x(9), x(10));
+            let d1 = d1(q1 * s1, q2 * s2, tm, v, b1 - b2);
+            q1 * s1 * ((b1 - r) * tm).exp() * nc(d1)
+                - q2 * s2 * ((b2 - r) * tm).exp() * nc(d1 - v * tm.sqrt())
+        }
+        1792 => {
+            let v = exchange_vol(x(8), x(9), x(10));
+            bjer_stens(
+                Call,
+                x(2) * x(0),
+                x(3) * x(1),
+                x(4),
+                x(5) - x(7),
+                v,
+                x(6) - x(7),
+            )
+        }
+        1793 => {
+            // Kirk: the spread f1 − f2 − k as an option on f1 / (f2 + k).
+            let (f1, f2, k, tm, r, v1, v2, rho) = (x(0), x(1), x(2), x(3), x(4), x(5), x(6), x(7));
+            let w = v2 * f2 / (f2 + k);
+            let v = (v1 * v1 + w * w - 2.0 * rho * v1 * w).sqrt();
+            bs(p()?, f1 / (f2 + k), 1.0, tm, r, v, 0.0) * (f2 + k)
+        }
+        1795 => fixed_lookback(side(a, 0).map_err(|_| err::VALUE)?, &xs),
+        1796 => float_lookback(p()?, &xs),
         _ => return Err(err::NAME),
     };
     ok_num(v)
@@ -621,6 +649,52 @@ fn two_asset(side: Side, x: &[f64]) -> f64 {
     let y2 = ((s2 / x2).ln() + (b2 - v2 * v2 / 2.0) * t) / (v2 * st);
     z * (s2 * ((b2 - r) * t).exp() * bvn(z * (y2 + v2 * st), z * (y1 + rho * v2 * st), rho)
         - x2 * (-r * t).exp() * bvn(z * y2, z * y1, rho))
+}
+
+/// The volatility of the ratio of two correlated assets.
+fn exchange_vol(v1: f64, v2: f64, rho: f64) -> f64 {
+    (v1 * v1 + v2 * v2 - 2.0 * rho * v1 * v2).sqrt()
+}
+
+/// Goldman–Sosin–Gatto floating-strike lookback: the strike is the minimum
+/// (call) or maximum (put) price seen.
+fn float_lookback(side: Side, x: &[f64]) -> f64 {
+    let [s, s_min, s_max, t, r, b, v] = take(x);
+    let z = side.z();
+    let m = if side == Call { s_min } else { s_max };
+    let a1 = d1(s, m, t, v, b);
+    let a2 = a1 - v * t.sqrt();
+    let k = -2.0 * b / (v * v);
+    z * (s * ((b - r) * t).exp() * nc(z * a1) - m * (-r * t).exp() * nc(z * a2))
+        + (-r * t).exp() * (v * v) / (2.0 * b)
+            * s
+            * z
+            * ((s / m).powf(k) * nc(z * (-a1 + 2.0 * b / v * t.sqrt()))
+                - (b * t).exp() * nc(-z * a1))
+}
+
+/// Conze–Viswanathan fixed-strike lookback: pays the maximum (call) or
+/// minimum (put) price seen against strike `x`.
+fn fixed_lookback(side: Side, x: &[f64]) -> f64 {
+    let [s, s_min, s_max, k, t, r, b, v] = take(x);
+    let z = side.z();
+    let m = if side == Call { s_max } else { s_min };
+    // Struck out of the money of the extreme so far: the extreme is k;
+    // otherwise the extreme is m and m − k is already locked in.
+    let (strike, locked) = if z * (k - m) > 0.0 {
+        (k, 0.0)
+    } else {
+        (m, z * (m - k))
+    };
+    let d = d1(s, strike, t, v, b);
+    let disc = (-r * t).exp();
+    let p = -2.0 * b / (v * v);
+    disc * locked
+        + z * (s * ((b - r) * t).exp() * nc(z * d) - strike * disc * nc(z * (d - v * t.sqrt())))
+        + s * disc * (v * v) / (2.0 * b)
+            * z
+            * (-(s / strike).powf(p) * nc(z * (d - 2.0 * b / v * t.sqrt()))
+                + (b * t).exp() * nc(z * d))
 }
 
 #[cfg(test)]

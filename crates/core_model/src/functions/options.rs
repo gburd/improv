@@ -37,4 +37,9 @@ pub(super) static OPTIONS: &[FnDef] = &[
     s(1785, "OPT_ON_OPTIONS", C, &[T, N, N, N, N, N, N, N, N], V::Number, "option on an option (\"cc\", \"cp\", \"pc\", \"pp\"): OPT_ON_OPTIONS(type, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)"),
     s(1786, "OPT_EXTENDIBLE_WRITER", C, &[T, N, N, N, N, N, N, N, N], V::Number, "writer-extendible option: OPT_EXTENDIBLE_WRITER(call_put, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)"),
     s(1790, "OPT_2_ASSET_CORRELATION", C, &[T, N, N, N, N, N, N, N, N, N, N, N], V::Number, "two-asset correlation option: OPT_2_ASSET_CORRELATION(call_put, spot1, spot2, strike1, strike2, time, cost_of_carry1, cost_of_carry2, rate, volatility1, volatility2, rho)"),
+    s(1791, "OPT_EURO_EXCHANGE", C, &[N, N, N, N, N, N, N, N, N, N, N], V::Number, "European option to exchange asset 2 for asset 1: OPT_EURO_EXCHANGE(spot1, spot2, qty1, qty2, time, rate, cost_of_carry1, cost_of_carry2, volatility1, volatility2, rho)"),
+    s(1792, "OPT_AMER_EXCHANGE", C, &[N, N, N, N, N, N, N, N, N, N, N], V::Number, "American option to exchange asset 2 for asset 1: OPT_AMER_EXCHANGE(spot1, spot2, qty1, qty2, time, rate, cost_of_carry1, cost_of_carry2, volatility1, volatility2, rho)"),
+    s(1793, "OPT_SPREAD_APPROX", C, &[T, N, N, N, N, N, N, N, N], V::Number, "Kirk's futures spread option approximation: OPT_SPREAD_APPROX(call_put, fut_price1, fut_price2, strike, time, rate, volatility1, volatility2, rho)"),
+    s(1795, "OPT_FIXED_STRK_LKBK", C, &[T, N, N, N, N, N, N, N, N], V::Number, "fixed-strike lookback: OPT_FIXED_STRK_LKBK(call_put, spot, spot_min, spot_max, strike, time, rate, cost_of_carry, volatility)"),
+    s(1796, "OPT_FLOAT_STRK_LKBK", C, &[T, N, N, N, N, N, N, N], V::Number, "floating-strike lookback: OPT_FLOAT_STRK_LKBK(call_put, spot, spot_min, spot_max, time, rate, cost_of_carry, volatility)"),
 ];
