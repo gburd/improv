@@ -39,6 +39,7 @@ jobs:
           -p improv_storage_sql
           -p improv_storage_csv
           -p improv_engine
+          -p improv_verified
           -p improv_extfn
           -p improv_pg_model
           -p improv_nl_formula
@@ -56,6 +57,7 @@ jobs:
           -p improv_storage_sql
           -p improv_storage_csv
           -p improv_engine
+          -p improv_verified
           -p improv_extfn
           -p improv_pg_model
           -p improv_nl_formula
@@ -70,6 +72,29 @@ jobs:
       - name: Test
         working-directory: improv
         run: cargo test --workspace --all-features
+
+  # Mirrors the GitHub verify job: the Verus proofs of crates/verified.
+  verify:
+    name: Verus proofs
+    runs-on: docker
+    container:
+      image: rust:1.97-bookworm
+    env:
+      VERUS_RELEASE: 0.2026.10.04.426d8b0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: improv
+      - name: Install Verus
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends unzip
+          rustup toolchain install 1.98.1 --profile minimal
+          zip="verus-${VERUS_RELEASE}-x86-linux.zip"
+          curl -fsSL -o "$zip" "https://github.com/verus-lang/verus/releases/download/release/${VERUS_RELEASE}/${zip}"
+          unzip -q "$zip"
+      - name: Verify
+        working-directory: improv
+        run: VERUS_DIR="$PWD/../verus-x86-linux" scripts/verify.sh
 
   # Review plan D5; mirrors the GitHub gui-shot job.
   gui-shot:

@@ -199,9 +199,9 @@ fn visit(
             inv(g@, roots, st@, order@, stk),
             st@[v as int] == 1,
             unseen(st@) < fuel,
-            forall|k: int| 0 <= k < i ==> st@[g@[v as int]@[k] as int] == 2,
-            forall|u: int| 0 <= u < st.len() && st@[u] == 0 ==> st0[u] == 0,
-            forall|u: int| 0 <= u < st.len() && st0[u] == 2 ==> st@[u] == 2,
+            forall|k: int| 0 <= k < i ==> st@[#[trigger] g@[v as int]@[k] as int] == 2,
+            forall|u: int| 0 <= u < st.len() && #[trigger] st@[u] == 0 ==> st0[u] == 0,
+            forall|u: int| 0 <= u < st.len() && #[trigger] st0[u] == 2 ==> st@[u] == 2,
         decreases n - i,
     {
         let w = g[v][i];
@@ -223,13 +223,13 @@ fn visit(
             proof {
                 lemma_unseen(st1, st@, 0);
                 assert(stk.contains(v));
-                assert forall|k: int| 0 <= k < i implies st@[g@[v as int]@[k] as int] == 2 by {
+                assert forall|k: int| 0 <= k < i implies st@[#[trigger] g@[v as int]@[k] as int] == 2 by {
                     assert(st1[g@[v as int]@[k] as int] == 2);
                 }
-                assert forall|u: int| 0 <= u < st.len() && st@[u] == 0 implies st0[u] == 0 by {
+                assert forall|u: int| 0 <= u < st.len() && #[trigger] st@[u] == 0 implies st0[u] == 0 by {
                     assert(st1[u] == 0);
                 }
-                assert forall|u: int| 0 <= u < st.len() && st0[u] == 2 implies st@[u] == 2 by {
+                assert forall|u: int| 0 <= u < st.len() && #[trigger] st0[u] == 2 implies st@[u] == 2 by {
                     assert(st1[u] == 2);
                 }
             }
@@ -395,7 +395,7 @@ pub fn build_order(g: &Vec<Vec<usize>>, roots: &[usize]) -> (r: Result<Vec<usize
         r is Err <==> has_reachable_cycle(g@, roots@),
         r matches Ok(order) ==> {
             &&& topological(g@, order@)
-            &&& forall|v: usize| v < g.len() ==> (order@.contains(v) <==> reachable(g@, roots@, v))
+            &&& forall|v: usize| v < g.len() ==> (#[trigger] order@.contains(v) <==> reachable(g@, roots@, v))
             &&& forall|k: int| 0 <= k < order.len() ==> #[trigger] order@[k] < g.len()
         },
 {
@@ -420,7 +420,7 @@ pub fn build_order(g: &Vec<Vec<usize>>, roots: &[usize]) -> (r: Result<Vec<usize
             0 <= t <= roots.len(),
             empty == Seq::<usize>::empty(),
             inv(g@, roots@, st@, order@, empty),
-            forall|k: int| 0 <= k < t ==> st@[roots@[k] as int] == 2,
+            forall|k: int| 0 <= k < t ==> st@[#[trigger] roots@[k] as int] == 2,
         decreases roots.len() - t,
     {
         let v = roots[t];
@@ -445,7 +445,7 @@ pub fn build_order(g: &Vec<Vec<usize>>, roots: &[usize]) -> (r: Result<Vec<usize
             lemma_closed_path(g@, order@, p, p.len() - 1);
         }
         lemma_no_cycle(g@, roots@, order@);
-        assert forall|v: usize| v < g.len() implies (order@.contains(v) <==> reachable(g@, roots@, v)) by {
+        assert forall|v: usize| v < g.len() implies (#[trigger] order@.contains(v) <==> reachable(g@, roots@, v)) by {
             if order@.contains(v) {
                 let k = choose|k: int| 0 <= k < order.len() && order@[k] == v;
                 assert(reachable(g@, roots@, order@[k]));
