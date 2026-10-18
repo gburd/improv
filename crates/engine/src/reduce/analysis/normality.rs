@@ -135,16 +135,15 @@ pub(super) fn normality(rows: &Rows, test: Test) -> Result<(f64, f64), u8> {
             if p > 0.1 {
                 s *= size.sqrt() - 0.01 + 0.85 / size.sqrt();
                 let poly = |c: [f64; 5]| c[0] + s * (c[1] + s * (c[2] + s * (c[3] + s * c[4])));
+                // p > 0.1 bounds the rescaled s below 0.84 for every size
+                // from 5 to 100, so nortest's bands above 0.9 (Gnumeric's
+                // 0.9 < s ≤ 1.31 polynomial, and 0 beyond) never apply.
                 p = if s <= 0.302 {
                     1.0
                 } else if s <= 0.5 {
                     poly([2.76773, -19.828315, 80.709644, -138.55152, 81.218052])
-                } else if s <= 0.9 {
-                    poly([-4.901232, 40.662806, -97.490286, 94.029866, -32.355711])
-                } else if s <= 1.31 {
-                    poly([6.198765, -19.558097, 23.186922, -12.234627, 2.423045])
                 } else {
-                    0.0
+                    poly([-4.901232, 40.662806, -97.490286, 94.029866, -32.355711])
                 };
             }
             (p, d)
@@ -226,5 +225,48 @@ mod tests {
         out[39] = 1e6;
         out[38] = 1.0;
         assert_eq!(normality(&rows(&out), Test::Cvm).unwrap().0, 0.0);
+    }
+
+    /// The bound behind Lilliefors' two-band rescale: wherever the first
+    /// approximation's p exceeds 0.1, the rescaled statistic stays ≤ 0.9.
+    #[test]
+    fn lilliefors_rescale_stays_below_the_upper_bands() {
+        for size in 5..=100 {
+            let size = f64::from(size);
+            let p = |s: f64| {
+                (-7.01256 * s * s * (size + 2.78019) + 2.99587 * s * (size + 2.78019).sqrt()
+                    - 0.122119
+                    + 0.974598 / size.sqrt()
+                    + 1.67997 / size)
+                    .exp()
+            };
+            // Bisect for the largest s with p(s) > 0.1 (p falls past its peak).
+            let (mut lo, mut hi) = (0.05, 1.0);
+            for _ in 0..60 {
+                let mid = (lo + hi) / 2.0;
+                if p(mid) > 0.1 {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let scaled = hi * (size.sqrt() - 0.01 + 0.85 / size.sqrt());
+            assert!(scaled < 0.85, "size {size}: {scaled}");
+        }
+    }
+
+    /// LKSTEST p and statistic against Gnumeric 1.12 for 150 values
+    /// (rescaled to size 100), in the 0.5 < s ≤ 0.9 band.
+    #[test]
+    fn lilliefors_matches_gnumeric() {
+        let xs: Vec<f64> = (1..=150)
+            .map(|i| {
+                let u = (f64::from(i) - 0.5) / 150.0;
+                qnorm(u) + 0.06 * (3.0 * u).exp()
+            })
+            .collect();
+        let (p, d) = normality(&rows(&xs), Test::Lks).unwrap();
+        assert!((p - 0.855236065705248).abs() < 1e-12, "{p}");
+        assert!((d - 0.03825606949390914).abs() < 1e-14, "{d}");
     }
 }
