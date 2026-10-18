@@ -53,6 +53,14 @@ fn from_jdn(jd: i64) -> (i64, i64, i64) {
     let mut y = 100 * (n - 49) + i + j / 11 + 16;
     let mut d = jd - 1_715_119;
     let mut s = days_from_start(y);
+    // The Gregorian estimate runs ahead of the Hebrew year past Gregorian
+    // year 29000 or so (the calendars drift a day in 220 years): step back
+    // too, where Gnumeric only steps forward (and indexes its month table
+    // out of bounds). At most a few steps either way below year 1e6.
+    while d < s {
+        y -= 1;
+        s = days_from_start(y);
+    }
     let mut next = days_from_start(y + 1);
     while d >= next {
         s = next;
@@ -219,6 +227,27 @@ mod tests {
             assert!(cur.0 == prev.0 + 1 || cur.0 == 1, "{prev:?} -> {cur:?}");
             assert!((0..14).contains(&cur.1));
             prev = cur;
+        }
+    }
+
+    /// Past Gregorian year 29000 the year estimate is ahead of the Hebrew
+    /// year; HDATE(29404, 1, 1) indexed the month table at -1 and panicked.
+    /// (Gnumeric gives "18 Iyar 34978" there: its 32-bit part counts
+    /// overflow, so it is no reference this far out. The calendar's own
+    /// arithmetic puts 1 January 29404 on day 354 of 33163.)
+    #[test]
+    fn far_future_years() {
+        assert_eq!(text(hdate(29404.0, 1.0, 1.0).unwrap()), "30 Ab 33163");
+        for y in [9999.0, 29000.0, 29404.0, 1e5, 1e6] {
+            let start = jdn(y, 1.0, 1.0).unwrap();
+            let mut prev = from_jdn(start - 1);
+            for jd in start..start + 800 {
+                let cur = from_jdn(jd);
+                assert!((0..14).contains(&cur.1), "{y}: {cur:?}");
+                assert!((1..=30).contains(&cur.0), "{y}: {cur:?}");
+                assert!(cur.0 == prev.0 + 1 || cur.0 == 1, "{prev:?} -> {cur:?}");
+                prev = cur;
+            }
         }
     }
 }
