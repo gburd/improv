@@ -27,6 +27,7 @@ timely.workspace = true
 [dev-dependencies]
 serde_json.workspace = true
 proptest = "1"
+hegeltest.workspace = true
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.

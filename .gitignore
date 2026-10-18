@@ -44,5 +44,8 @@ lcov.info
 /crates/pg_improv/sql/pg_improv--[0-9]*[0-9].sql
 !/crates/pg_improv/sql/pg_improv--*--*.sql
 
+# hegel property-test server cache and failure database
+.hegel/
+
 # Python bytecode (scripts/goldens)
 __pycache__/

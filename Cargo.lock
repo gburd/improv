@@ -2262,6 +2262,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hegeltest"
+version = "0.50.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f7c373a89d726d42180154319cdf2aaa447180fe02e0588025a40f1165e8147"
+dependencies = [
+ "hegeltest-macros",
+ "parking_lot",
+]
+
+[[package]]
+name = "hegeltest-macros"
+version = "0.50.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d15af95c8c9c3f95806df1827ff30aea97696dc6d5316f19510c6e6f0b6800c"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2573,6 +2594,7 @@ version = "0.9.0"
 dependencies = [
  "chrono",
  "differential-dataflow",
+ "hegeltest",
  "improv_core_model",
  "improv_extfn",
  "improv_verified",
