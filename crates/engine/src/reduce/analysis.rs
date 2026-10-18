@@ -222,4 +222,45 @@ mod tests {
             CellValue::Err(err::VALUE)
         );
     }
+
+    fn col(xs: &[f64]) -> Rows {
+        Rows {
+            pos: (0..xs.len() as u32).map(|i| vec![i]).collect(),
+            vals: xs.iter().map(|x| vec![CellValue::num(*x)]).collect(),
+            capacity: xs.len(),
+        }
+    }
+
+    /// SSMEDIAN against Gnumeric 1.12 (`ssconvert --recalc`).
+    #[test]
+    fn ssmedian_matches_gnumeric() {
+        let n = |x: f64| [CellValue::num(x)];
+        let odd = col(&[1.0, 2.0, 2.0, 3.0, 4.0]);
+        assert_eq!(ssmedian(&odd, &[]), Ok(2.25));
+        assert_eq!(ssmedian(&odd, &n(0.5)), Ok(2.125));
+        assert_eq!(ssmedian(&col(&[5.0]), &[]), Ok(5.0));
+        assert_eq!(ssmedian(&col(&[1.0, 3.0]), &[]), Ok(2.0));
+        // An even count: equal middle values are grouped, unequal averaged.
+        assert_eq!(ssmedian(&col(&[1.0, 2.0, 2.0, 5.0]), &[]), Ok(2.0));
+        assert_eq!(ssmedian(&col(&[1.0, 2.0, 3.0, 5.0]), &[]), Ok(2.5));
+        assert_eq!(ssmedian(&odd, &n(0.0)), Err(err::NUM));
+        assert_eq!(ssmedian(&odd, &n(-1.0)), Err(err::NUM));
+        assert_eq!(ssmedian(&col(&[]), &[]), Err(err::NUM));
+    }
+
+    #[test]
+    fn kahan_cancels_to_zero() {
+        // A held-back term that cancels the running total is exactly 0.
+        let mut k = Kahan::new(0.1);
+        k.add(0.2);
+        k.add(-0.30000000000000004);
+        assert_eq!(k.get(), 0.0);
+        // A negative term over a zero total is no cancellation.
+        let mut k = Kahan::new(0.0);
+        k.add(-1.0);
+        assert_eq!(k.get(), -1.0);
+        let mut k = Kahan::new(2.0);
+        k.add(0.0);
+        assert_eq!(k.get(), 2.0);
+    }
 }
