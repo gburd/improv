@@ -872,6 +872,210 @@ mod tests {
         assert!(close(fx, ONE.sub(cx(0.0, 0.5))));
     }
 
+    /// The arc and incomplete-gamma kernels off the real axis, against
+    /// mpmath 1.3 (30 digits): asin/acos in each of GSL's regions (b ≤
+    /// 0.6417 or not, x ≤ 1 or not, a ≤ 1.5 or not), and Γ(a, z) by each
+    /// route (real, asymptotic upper, continued-fraction lower), each
+    /// normalization converted both ways.
+    #[test]
+    fn kernels_match_mpmath() {
+        let near = |got: Cx, want: (f64, f64)| {
+            let err = (got.re - want.0).abs().max((got.im - want.1).abs());
+            assert!(
+                err <= 1e-13 * want.0.abs().max(want.1.abs()).max(1e-300),
+                "{got:?} vs {want:?}"
+            );
+        };
+        for (x, y, asin, acos) in [
+            (
+                0.5,
+                0.2,
+                (0.509_085_659_365_267_1, 0.227_088_265_409_072_9),
+                (1.061_710_667_429_629_5, -0.227_088_265_409_072_9),
+            ),
+            (
+                0.9,
+                0.3,
+                (0.933_412_402_833_298_3, 0.484_894_845_670_678_36),
+                (0.637_383_923_961_598_3, -0.484_894_845_670_678_36),
+            ),
+            (
+                1.5,
+                0.3,
+                (1.314_834_518_658_652_5, 1.006_300_297_140_896_3),
+                (0.255_961_808_136_244, -1.006_300_297_140_896_3),
+            ),
+            (
+                2.5,
+                0.1,
+                (1.527_188_309_471_959_8, 1.567_836_912_152_937_2),
+                (0.043_608_017_322_936_88, -1.567_836_912_152_937_2),
+            ),
+            (
+                0.95,
+                0.01,
+                (1.251_694_985_925_331_2, 0.031_870_833_234_680_23),
+                (0.319_101_340_869_565_4, -0.031_870_833_234_680_23),
+            ),
+            (
+                1.2,
+                0.05,
+                (1.496_031_521_378_164, 0.627_407_406_636_572_9),
+                (0.074_764_805_416_732_44, -0.627_407_406_636_572_9),
+            ),
+        ] {
+            near(arcsin(cx(x, y)), asin);
+            near(arccos(cx(x, y)), acos);
+        }
+        // Γ(a, z): (a, z, lower, regularized) -> mpmath gammainc.
+        for (a, z, lower, reg, want) in [
+            (
+                (2.5, 0.0),
+                (-3.0, 0.0),
+                false,
+                true,
+                (1.0, -47.507_308_716_401_2),
+            ),
+            (
+                (0.5, 0.0),
+                (-1.0, 0.0),
+                false,
+                true,
+                (1.0, -1.650_425_758_797_542_8),
+            ),
+            (
+                (-1.5, 0.0),
+                (2.0, 1.0),
+                true,
+                true,
+                (1.001_535_470_625_329_2, 0.003_766_161_394_272_8),
+            ),
+            (
+                (1.0, 1.0),
+                (2.0, 0.0),
+                true,
+                false,
+                (0.433_383_623_945_397_3, -0.267_790_122_351_236_6),
+            ),
+            (
+                (2.0, 0.0),
+                (1.0, 1.0),
+                false,
+                false,
+                (0.707_092_096_345_938_1, -0.420_353_640_959_811_5),
+            ),
+            (
+                (0.5, 0.5),
+                (1.0, 0.5),
+                true,
+                true,
+                (0.812_423_223_757_745_9, -0.077_981_000_515_356_88),
+            ),
+            (
+                (3.0, 0.0),
+                (30.0, 0.0),
+                false,
+                false,
+                (9.002_033_296_024_248e-11, 0.0),
+            ),
+            (
+                (2.0, 0.0),
+                (1.0, 0.0),
+                false,
+                false,
+                (0.735_758_882_342_884_7, 0.0),
+            ),
+            ((0.0, 0.0), (1.0, 1.0), true, true, (1.0, 0.0)),
+            ((-2.0, 0.0), (1.0, 0.0), true, true, (1.0, 0.0)),
+        ] {
+            let got = igamma(cx(a.0, a.1), cx(z.0, z.1), lower, reg);
+            // The asymptotic series is good to ~1e-14 relative of its 1.
+            let err = (got.re - want.0).abs().max((got.im - want.1).abs());
+            assert!(
+                err <= 1e-12 * want.0.abs().max(want.1.abs()),
+                "Γ({a:?}, {z:?}) = {got:?} vs {want:?}"
+            );
+        }
+        // Large |z|: the asymptotic upper series (with the real-axis fixup
+        // for a negative z and fractional a), and the lower continued
+        // fraction's rescaling when its terms grow past 2⁶⁴.
+        let rel = |got: Cx, want: (f64, f64)| {
+            let err = (got.re - want.0).abs().max((got.im - want.1).abs());
+            assert!(
+                err <= 1e-12 * want.0.abs().max(want.1.abs()),
+                "{got:?} vs {want:?}"
+            );
+        };
+        rel(
+            igamma(cx(2.5, 0.0), cx(-40.0, 0.0), false, true),
+            (1.0, -4.313_680_801_634_244e19),
+        );
+        rel(
+            igamma(cx(1.0, 1.0), cx(-40.0, 0.0), false, true),
+            (-1.325_379_762_704_083_2e16, -1.429_786_396_467_333_4e16),
+        );
+        rel(
+            igamma(cx(0.5, 0.0), cx(40.0, 1.0), false, true),
+            (1.984_052_943_342_761_7e-19, -3.174_526_896_360_229_3e-19),
+        );
+        rel(
+            igamma(cx(0.5, 0.0), cx(-40.0, 1.0), false, true),
+            (-1.774_691_567_129_037e16, -1.171_945_157_672_269_6e16),
+        );
+        rel(
+            igamma(cx(50.0, 0.0), cx(-60.0, 1.0), true, false),
+            (-2.128_541_460_358_092_3e112, -8.220_649_392_093_982e112),
+        );
+        rel(
+            igamma(cx(-3.5, 0.0), cx(1.0, 1.0), true, false),
+            (0.284_861_210_976_558_87, -0.016_590_073_882_387_157),
+        );
+        // An integer a needs no fixup (Gnumeric -9218138712.786015; the
+        // asymptotic series' tiny imaginary part is rounding).
+        let int_a = igamma(cx(2.0, 0.0), cx(-20.0, 0.0), false, true);
+        assert!(
+            (int_a.re / -9_218_138_712.786_015 - 1.0).abs() < 1e-14,
+            "{int_a:?}"
+        );
+        // Γ(0, z) unnormalized, and a fraction that never settles: NaN
+        // (Gnumeric #NUM!).
+        let nan = igamma(cx(0.0, 0.0), cx(1.0, 1.0), false, false);
+        assert!(nan.re.is_nan() && nan.im.is_nan());
+        assert!(igamma_lower_cf(cx(1.0, 0.0), cx(-500.0, 1.0)).is_none());
+        // sqrt with a positive and a negative real part; sinπ/cosπ at
+        // halves and elsewhere.
+        assert_eq!(cx(3.0, 4.0).sqrt(), cx(2.0, 1.0));
+        assert_eq!(cx(-3.0, 4.0).sqrt(), cx(1.0, 2.0));
+        assert_eq!(sin_cos_pi(0.5), (1.0, 0.0));
+        assert_eq!(sin_cos_pi(1.0), (0.0, -1.0));
+        let (s4, c4) = sin_cos_pi(0.25);
+        assert!((s4 - FRAC_PI_2.sin() / 2f64.sqrt()).abs() < 1e-15 && (c4 - s4).abs() < 1e-15);
+    }
+
+    /// COMPLEX's text form (Excel and LibreOffice), and exponents in parsed
+    /// numbers.
+    #[test]
+    fn shows_and_parses_like_excel() {
+        let t = |re, im| show(cx(re, im), None);
+        let ok = |v: &str| Ok(CellValue::Text(v.into()));
+        assert_eq!(t(1.0, 1.0), ok("1+i"));
+        assert_eq!(t(0.0, 1.0), ok("i"));
+        assert_eq!(t(0.0, -1.0), ok("-i"));
+        assert_eq!(t(1.0, -1.0), ok("1-i"));
+        assert_eq!(t(2.0, -3.0), ok("2-3i"));
+        assert_eq!(t(0.0, 2.5), ok("2.5i"));
+        assert_eq!(t(1.0, 2.5), ok("1+2.5i"));
+        assert_eq!(t(-0.0, 0.0), ok("0"));
+        assert_eq!(t(f64::INFINITY, 0.0), Err(err::NUM));
+        assert_eq!(t(0.0, f64::NAN), Err(err::NUM));
+        let p = |s: &str| parse(s).map(|(z, u)| (z.re, z.im, u));
+        assert_eq!(p("1E5"), Some((1e5, 0.0, None)));
+        assert_eq!(p("1.e3"), Some((1e3, 0.0, None)));
+        assert_eq!(p("2e+3i"), Some((0.0, 2e3, Some('i'))));
+        assert_eq!(p("1e+"), None);
+        assert_eq!(p("1e-x"), None);
+    }
+
     #[test]
     fn suffixes_must_agree() {
         let t = |s: &str| CellValue::Text(s.into());
