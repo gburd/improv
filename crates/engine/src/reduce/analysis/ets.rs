@@ -269,8 +269,9 @@ impl Model {
             self.base[0] = y[0];
             return Ok(());
         }
-        // Two periods at least (so p < n below).
-        if n < 2 * p {
+        // Two periods at least (so p < n below); p / 2 rather than 2p, which
+        // overflows for a seasonality near 1e19.
+        if p > n / 2 {
             return Err(err::VALUE);
         }
         let mut s = Kahan::new(0.0);
@@ -776,6 +777,11 @@ mod tests {
             Err(err::NUM)
         );
         assert_eq!(ets(Kind::Season, &r, &num(&[1.0, 0.0])), Err(err::NUM));
+        // A seasonality past the data is #VALUE! (LibreOffice too); near
+        // 1e19 the check `n < 2p` overflowed and panicked.
+        for season in [1e19, 5e9, 100.0] {
+            assert_eq!(ets(Kind::Add, &r, &num(&[14.0, season])), Err(err::VALUE));
+        }
         // FORECAST.ETS.PI.MULT with no seasonality (LibreOffice).
         let y16 = [
             12.0, 15.0, 9.0, 20.0, 14.0, 17.0, 11.0, 23.0, 16.0, 19.0, 12.0, 25.0, 18.0, 22.0,
