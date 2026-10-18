@@ -471,6 +471,62 @@ mod tests {
             capacity: 2,
         };
         assert_eq!(read(&col).map(|m| (m.r, m.c)), Ok((2, 1)));
+        // A cell missing inside a full-capacity grid.
+        let mut r = mat(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        r.pos.remove(1);
+        r.vals.remove(1);
+        assert_eq!(read(&r), Err(err::VALUE));
+    }
+
+    /// EIGEN against Gnumeric 1.12 (`ssconvert --recalc`).
+    #[test]
+    fn eigen_matches_gnumeric() {
+        // 1×1: nothing to rotate.
+        close(eigen(&mat(1, 1, &[-2.5])), &[-2.5, 1.0]);
+        close(
+            eigen(&mat(2, 2, &[2.0, 1.0, 1.0, 2.0])),
+            &[
+                3.0,
+                1.0,
+                0.7071067811865475,
+                0.7071067811865475,
+                0.7071067811865475,
+                -0.7071067811865475,
+            ],
+        );
+        // Scales 40 decades apart: the small eigenvalues settle, then move
+        // again as the big rotation feeds them.
+        let got = eigen(&mat(3, 3, &[1e20, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 2.0])).unwrap();
+        let want = [
+            1e20,
+            2.618033988749895,
+            0.3819660112501052,
+            1.0,
+            -5.2573111211913356e-21,
+            -8.506508083520398e-21,
+            1e-20,
+            0.5257311121191336,
+            0.8506508083520399,
+            9.999999999999997e-41,
+            0.8506508083520399,
+            -0.5257311121191336,
+        ];
+        for (g, w) in got.iter().zip(want) {
+            let g = g.as_num().unwrap();
+            assert!((g - w).abs() <= 1e-12 * w.abs(), "{got:?}");
+        }
+        // Entries that overflow in the rotation (Gnumeric #NUM!): a 2×2
+        // finishes in one rotation, every cell #NUM!; this 4×4's NaNs never
+        // settle, so the step limit ends it.
+        let big = eigen(&mat(2, 2, &[1e308; 4])).unwrap();
+        assert!(
+            big.iter().all(|v| *v == CellValue::Err(err::NUM)),
+            "{big:?}"
+        );
+        let m = [
+            1e308, -1.0, 1.0, 0.0, 2.0, 0.0, -1.0, 2.0, 2.0, 1.0, 1e308, 2.0, 1.0, 0.0, -1.0, 1e308,
+        ];
+        assert_eq!(eigen(&mat(4, 4, &m)), Err(err::NUM));
     }
 
     #[test]
@@ -494,6 +550,8 @@ mod tests {
         assert_eq!(det(&mat(2, 2, &[1.0, 2.0, 2.0, 4.0]), true), Err(err::NUM));
         assert_eq!(inverse(&mat(2, 2, &[1.0, 2.0, 2.0, 4.0])), Err(err::NUM));
         assert_eq!(det(&mat(1, 1, &[-3.0]), true), Ok(3f64.ln()));
+        // The pivot already on the diagonal: no swap (LibreOffice 5).
+        assert_eq!(det(&mat(2, 2, &[2.0, 1.0, 1.0, 3.0]), false), Ok(5.0));
         // The pseudo-inverse of zero is zero; of a rank-1 matrix A, Aᵀ/‖A‖².
         close(pseudo_inverse(&mat(1, 2, &[0.0, 0.0]), &[]), &[0.0, 0.0]);
         let r1 = [1.0, 2.0, 2.0, 4.0, 3.0, 6.0];
