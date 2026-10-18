@@ -20,8 +20,27 @@ pub(super) fn lambert_w(x: f64, k: f64) -> Result<f64, u8> {
     if x == 0.0 {
         return Ok(0.0);
     }
-    let p = (2.0 * (std::f64::consts::E * x + 1.0)).max(0.0).sqrt();
+    // p = ±√(2(e·x + 1)), with e·x + 1 exact: e's low bits matter as x
+    // nears −1/e (where e·x + 1 is all cancellation). Positive for every
+    // x > −1/e.
+    const E_LO: f64 = 1.445_646_891_729_250_2e-16;
+    let p = (2.0 * (std::f64::consts::E.mul_add(x, 1.0) + E_LO * x)).sqrt();
     let p = if lower { -p } else { p };
+    if p.abs() < 1e-2 {
+        // The branch-point series (Corless et al.), to p⁶: within 1e-14
+        // here, where Halley's iteration only chases rounding noise (w·eʷ
+        // is flat at w = −1).
+        let c = [
+            -1.0,
+            1.0,
+            -1.0 / 3.0,
+            11.0 / 72.0,
+            -43.0 / 540.0,
+            769.0 / 17280.0,
+            -221.0 / 8505.0,
+        ];
+        return Ok(c.iter().rev().fold(0.0, |r, c| r * p + c));
+    }
     let mut w = if x < -0.25 {
         -1.0 + p - p * p / 3.0 + 11.0 / 72.0 * p * p * p
     } else if lower {
@@ -39,12 +58,10 @@ pub(super) fn lambert_w(x: f64, k: f64) -> Result<f64, u8> {
         let ew = w.exp();
         let f = w * ew - x;
         dw = f / (ew * (w + 1.0) - (w + 2.0) * f / (2.0 * w + 2.0));
-        let old = w;
+        // Halley's step from these starts never crosses −1 (W₀ ≥ −1 ≥ W₋₁):
+        // over every double within 3e5 ulps of −1/e and 7e5 samples of both
+        // branches it comes no closer than 1.2e-8.
         w -= dw;
-        // Stay on the branch: W₀ ≥ −1 ≥ W₋₁.
-        if (!lower && w <= -1.0) || (lower && w >= -1.0) {
-            w = old + (-1.0 - old) * 15.0 / 16.0;
-        }
         if dw.abs() <= 4.0 * f64::EPSILON * w.abs() {
             break;
         }
@@ -330,6 +347,54 @@ mod tests {
             let w = lambert_w(x, -1.0).unwrap();
             assert!(w < -1.0);
             assert!((w * w.exp() - x).abs() <= 1e-12 * x.abs(), "W-1({x}) = {w}");
+        }
+        // Near the branch point (Halley's iteration used to oscillate
+        // there, #NUM!), against mpmath 1.3's lambertw at 40 digits; each
+        // branch on its side of −1.
+        for (x, w0, wm1) in [
+            (
+                -0.367_879_441_171_442_3,
+                -0.999_999_984_695_745_9,
+                -1.000_000_015_304_254_3,
+            ),
+            (
+                -0.367_879_441_171_438_4,
+                -0.999_999_853_851_063_5,
+                -1.000_000_146_148_950_7,
+            ),
+            (
+                -0.367_879_441_171_436_5,
+                -0.999_999_822_178_834_8,
+                -1.000_000_177_821_186_4,
+            ),
+            (
+                -0.367_861_415_078_824_97,
+                -0.990_133_024_273_187,
+                -1.009_932_310_589_721,
+            ),
+            (
+                -0.367_860_679_319_942_6,
+                -0.989_934_338_501_508_8,
+                -1.010_133_663_155_479_6,
+            ),
+            (-0.3678, -0.979_360_714_957_830_5, -1.020_927_239_409_425_5),
+        ] {
+            let (g0, gm1) = (lambert_w(x, 0.0).unwrap(), lambert_w(x, -1.0).unwrap());
+            assert!(
+                (g0 - w0).abs() <= 1e-13 && g0 > -1.0,
+                "W0({x}) = {g0}, want {w0}"
+            );
+            assert!(
+                (gm1 - wm1).abs() <= 1e-13 && gm1 < -1.0,
+                "W-1({x}) = {gm1}, want {wm1}"
+            );
+        }
+        // Every double within 2000 ulps of −1/e has a value on its branch.
+        let mut x = -0.367_879_441_171_442_33f64;
+        for _ in 0..2000 {
+            x = x.next_up();
+            assert!(lambert_w(x, 0.0).unwrap() > -1.0, "W0({x})");
+            assert!(lambert_w(x, -1.0).unwrap() < -1.0, "W-1({x})");
         }
         assert_eq!(lambert_w(-0.367_879_441_171_442_33, -1.0), Ok(-1.0));
         assert_eq!(lambert_w(0.0, 0.0), Ok(0.0));

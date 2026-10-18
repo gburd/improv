@@ -334,6 +334,10 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **`LAMBERTW` near −1/e.** For x within about 700 doubles of −1/e it
+  returned `#NUM!`: Halley's iteration bounced between two values
+  without converging. It now uses the branch-point series there, which
+  matches mpmath to 1e-14 on both branches.
 - **`RANK`, `PERCENTRANK` and `TREND` over an item that is text.** That
   item is now `#VALUE!`, as in Excel, LibreOffice and Gnumeric, and the
   other items keep their results. `PERCENTRANK(x OVER T)` used to panic
