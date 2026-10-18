@@ -265,6 +265,13 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Changed
 
+- **Dimension errors say what and why**, by name: `A ranges over [Month]
+  and B over [Region]: they share no category, so no cell has both …
+  Reduce one first, e.g. SUM(B OVER Region), or give them a category in
+  common`, instead of `[CategoryId(1)] vs [CategoryId(2)]`. The same for
+  function arguments, IF, `[…]` that leaves a category out, and measures
+  reduced together.
+
 - **Mentat 1.16.0, from crates.io.** The storage engine is now the
   published `mentatdb` crate (`mentat = { package = "mentatdb", version =
   "=1.16.0" }`), no longer a git dependency on Codeberg; cargo-deny drops

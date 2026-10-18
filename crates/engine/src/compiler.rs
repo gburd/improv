@@ -508,9 +508,10 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                 .iter()
                 .find(|c| !typed.ty.dim.categories.contains(c))
             {
+                let c = ctx.category_name(*c);
                 return Err(CompileError::DimensionMismatch(format!(
-                    "{0}[…] leaves out category {c:?}, which only an aggregation \
-                     can collapse: write SUM({0} OVER <category>) (or AVG/MIN/MAX)",
+                    "{0}[…] leaves out category {c}, which only an aggregation \
+                     can collapse: write SUM({0} OVER {c}) (or AVERAGE/MIN/MAX)",
                     m.name.0
                 )));
             }
@@ -566,8 +567,19 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                 lt.ty.dim.union(&rt.ty.dim)
             } else {
                 return Err(CompileError::DimensionMismatch(format!(
-                    "neither operand dim is a subset of the other: {:?} vs {:?}",
-                    lt.ty.dim.categories, rt.ty.dim.categories
+                    "{} ranges over {} and {} over {}: they share no category, so no \
+                     cell has both (neither operand dim is a subset of the other). Reduce \
+                     one first, e.g. SUM({} OVER {}), or give them a category in common",
+                    operand_name(ctx, l),
+                    dims_text(ctx, &lt.ty.dim),
+                    operand_name(ctx, r),
+                    dims_text(ctx, &rt.ty.dim),
+                    operand_name(ctx, r),
+                    rt.ty
+                        .dim
+                        .categories
+                        .first()
+                        .map_or_else(String::new, |c| ctx.category_name(*c)),
                 )));
             };
             Ok(TypedExpr {
@@ -606,7 +618,7 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
             for (i, a) in typed_args.iter().enumerate() {
                 check_arg(def, i, a)?;
             }
-            let dim = union_dim(def.name, typed_args.iter().map(|a| &a.ty.dim))?;
+            let dim = union_dim(ctx, def.name, typed_args.iter().map(|a| &a.ty.dim))?;
             let Ret::Fixed(value_type) = def.ret else {
                 unreachable!("only lazy functions unify their return type")
             };
@@ -863,8 +875,13 @@ fn infer_aggregate(
     for t in &inputs[1..] {
         if first_full_dim(ctx, t) != full || aggregation_over(ctx, t) != over {
             return Err(CompileError::DimensionMismatch(format!(
-                "{}: the measures reduced together must range over the same categories",
-                def.name
+                "{}: the measures reduced together must range over the same categories, \
+                 but one ranges over {} and another over {} (reduced over {} and {})",
+                def.name,
+                dims_text(ctx, &full),
+                dims_text(ctx, &first_full_dim(ctx, t)),
+                dims_text(ctx, &Dim::of(over.clone())),
+                dims_text(ctx, &Dim::of(aggregation_over(ctx, t))),
             )));
         }
     }
@@ -1011,15 +1028,42 @@ fn check_arg(def: &functions::FnDef, i: usize, a: &TypedExpr) -> Result<()> {
     )))
 }
 
+/// `[Time, Product]` (or `no category`) for an error message.
+fn dims_text(ctx: &CompileContext, d: &Dim) -> String {
+    if d.categories.is_empty() {
+        return "no category".into();
+    }
+    let names: Vec<String> = d.categories.iter().map(|c| ctx.category_name(*c)).collect();
+    format!("[{}]", names.join(", "))
+}
+
+/// An operand as the user wrote it, for an error message: a measure's
+/// name, else "this expression".
+fn operand_name(ctx: &CompileContext, e: &Expr) -> String {
+    match e {
+        Expr::Ref(id, _) => ctx
+            .measures
+            .get(id)
+            .map_or_else(|| "this expression".into(), |m| m.name.0.clone()),
+        _ => "this expression".into(),
+    }
+}
+
 /// The union of broadcastable dims: each must be a subset of the union so far
 /// or contain it, so the dataflow join is well defined.
-fn union_dim<'a>(what: &str, dims: impl IntoIterator<Item = &'a Dim>) -> Result<Dim> {
+fn union_dim<'a>(
+    ctx: &CompileContext,
+    what: &str,
+    dims: impl IntoIterator<Item = &'a Dim>,
+) -> Result<Dim> {
     let mut dim = Dim::scalar();
     for d in dims {
         if !(dim.is_subset_of(d) || d.is_subset_of(&dim)) {
             return Err(CompileError::DimensionMismatch(format!(
-                "{what} arguments not broadcastable: {:?} vs {:?}",
-                dim.categories, d.categories
+                "{what} arguments not broadcastable: one ranges over {}, another over {}; \
+                 an argument's categories must contain or be contained in the others'",
+                dims_text(ctx, &dim),
+                dims_text(ctx, d)
             )));
         }
         dim = dim.union(d);
@@ -1179,13 +1223,13 @@ fn infer_if(ctx: &CompileContext, target: MeasureId, args: &[Expr]) -> Result<Ty
         }
         _ => unreachable!("arity checked by the registry"),
     };
-    let dim = union_dim("IF", typed.iter().map(|a| &a.ty.dim))?;
+    let dim = union_dim(ctx, "IF", typed.iter().map(|a| &a.ty.dim))?;
     let spans = |b: &TypedExpr| test.ty.dim.union(&b.ty.dim) == dim;
     if test.ty.dim != dim && !branches.iter().any(spans) {
         return Err(CompileError::DimensionMismatch(format!(
-            "IF ranges over {:?}, but neither the test with the then-branch nor with the \
+            "IF ranges over {}, but neither the test with the then-branch nor with the \
              else-branch covers it",
-            dim.categories
+            dims_text(ctx, &dim)
         )));
     }
     Ok(TypedExpr {
@@ -1983,6 +2027,28 @@ mod tests {
         let _ = f;
         let bad = Formula::new(parse(&pm, "PREV(Bal, Time, 1, \"x\") & Bal"));
         assert!(derived_shape(&fresh, bal, "Bal", &bad).is_err());
+    }
+
+    /// Dimension errors name the measures and categories and say why, never
+    /// raw ids.
+    #[test]
+    fn dimension_errors_are_readable() {
+        let m = model_with_items();
+        let ctx = CompileContext::for_model(&m);
+        for (text, want) in [
+            ("Headcount + Price", "share no category"),
+            (
+                "ROUND(Headcount, Price)",
+                "not broadcastable: one ranges over",
+            ),
+            ("CORREL(Price, Headcount OVER Time)", "but one ranges over"),
+        ] {
+            let e = infer(&ctx, MeasureId(200), &parse(&m, text))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains(want), "{text}: {e}");
+            assert!(!e.contains("CategoryId("), "{text}: {e}");
+        }
     }
 
     /// A fold's compile rules.
