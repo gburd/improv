@@ -96,19 +96,13 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(format!("{} = {f}", g.measure_name)));
     }
     if let Some(e) = &app.edit {
+        let formula = app.editing_formula();
+        let prompt = if formula { "formula> " } else { "edit> " };
         let d = app.diagnostic.as_ref();
-        lines.push(edit_line(e, app.editing_formula(), d));
+        lines.push(edit_line(e, prompt, formula, d));
         if let Some(d) = d {
-            lines.extend(diagnostic_lines(
-                e,
-                d,
-                if app.editing_formula() {
-                    "formula> "
-                } else {
-                    "edit> "
-                },
-            ));
-        } else if app.editing_formula() {
+            lines.extend(diagnostic_lines(e, d, prompt));
+        } else if formula {
             lines.extend(signature_line(e));
         }
     } else if let Some((kind, buf)) = &app.command {
@@ -160,17 +154,21 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// The edit prompt (`edit> `, or `formula> ` for a formula) and the text,
+/// The `prompt` (`edit> `, or `formula> ` for a formula) and the text,
 /// the cell under the caret reversed and a diagnostic's span red and
 /// underlined. In a formula with the caret at the end inside a call, the
 /// parameters still to type follow, dimmed.
-fn edit_line(e: &LineEdit, formula: bool, d: Option<&Diagnostic>) -> Line<'static> {
-    let prompt = if formula { "formula" } else { "edit" };
+fn edit_line(
+    e: &LineEdit,
+    prompt: &'static str,
+    formula: bool,
+    d: Option<&Diagnostic>,
+) -> Line<'static> {
     let bad = d.and_then(|d| d.span.clone()).unwrap_or_default();
     let err = Style::default()
         .fg(Color::Red)
         .add_modifier(Modifier::UNDERLINED);
-    let mut spans = vec![Span::raw(format!("{prompt}> "))];
+    let mut spans = vec![Span::raw(prompt)];
     // One span per char: few enough to not matter on an edit line.
     let chars = e.text.char_indices().map(|(i, c)| (i, c.to_string()));
     for (i, c) in chars.chain(std::iter::once((e.text.len(), " ".to_string()))) {

@@ -388,9 +388,6 @@ pub fn parse_import_line(line: &str) -> Result<ImportSpec, String> {
             category_name: parts[2].to_string(),
         });
     }
-    if dimensions.is_empty() {
-        return Err("at least one dimension mapping is required".to_string());
-    }
 
     Ok(ImportSpec {
         path: PathBuf::from(path),

@@ -87,7 +87,6 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
     }));
 
     let result = Terminal::new(CrosstermBackend::new(io::stdout()))
-        .map_err(|e| e.to_string())
         .and_then(|mut term| {
             event_loop(
                 &mut term,
@@ -95,7 +94,8 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
                 path,
                 std::iter::repeat_with(event::read),
             )
-        });
+        })
+        .map_err(|e| e.to_string());
 
     // Always restore on the normal path too.
     let _ = restore();
@@ -117,13 +117,12 @@ fn event_loop<B: Backend>(
     app: &mut App,
     path: &str,
     events: impl IntoIterator<Item = io::Result<Event>>,
-) -> Result<(), String> {
+) -> io::Result<()> {
     let mut events = events.into_iter();
     while !app.should_quit {
-        term.draw(|f| ui::render(f, app))
-            .map_err(|e| e.to_string())?;
+        term.draw(|f| ui::render(f, app))?;
         let Some(ev) = events.next() else { break };
-        handle_event(app, ev.map_err(|e| e.to_string())?, path);
+        handle_event(app, ev?, path);
     }
     Ok(())
 }
@@ -286,7 +285,7 @@ mod tests {
         load(p).err().expect("load should fail")
     }
     /// Run `events` against `app` on a 100x30 test terminal.
-    fn run_events(app: &mut App, path: &str, events: Vec<io::Result<Event>>) -> Result<(), String> {
+    fn run_events(app: &mut App, path: &str, events: Vec<io::Result<Event>>) -> io::Result<()> {
         let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
         event_loop(&mut term, app, path, events)
     }
@@ -539,7 +538,7 @@ mod tests {
     fn event_errors_stop_the_loop() {
         let mut app = App::new(revenue_model()).unwrap();
         let err = run_events(&mut app, "", vec![Err(io::Error::other("boom"))]);
-        assert_eq!(err, Err("boom".into()));
+        assert_eq!(err.unwrap_err().to_string(), "boom");
     }
 
     #[test]
