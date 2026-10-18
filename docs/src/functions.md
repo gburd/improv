@@ -187,6 +187,10 @@ Angles are in radians.
 | `FLT.MIN()` | number | the smallest positive normal double, 2.2250738585072014e-308 |
 | `FLT.RADIX()` | number | the floating-point base, 2 |
 | `FLT.NEXTAFTER(number, value)` | number | the next double after x toward y ("+" or "-" for the infinities); y itself if y = x |
+| `MDETERM(Measure OVER Category)` | number | MDETERM(A OVER R, C): the determinant of the square matrix A (rows along R, columns along C); 0 if singular |
+| `LOGMDETERM(Measure OVER Category)` | number | LOGMDETERM(A OVER R, C): ln |det A| (no overflow for large matrices); #NUM! if singular |
+| `MINVERSE(Measure OVER Category)` | number | MINVERSE(A OVER R, C INTO R2, C2): the inverse of the square matrix A, row by row; #NUM! if singular |
+| `MPSEUDOINVERSE(number OVER category, [number])` | number | MPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2): the Moore–Penrose pseudo-inverse (C × R, row by row); singular values up to threshold (default 256 ε) times the largest count as zero |
 
 ## Rounding
 
