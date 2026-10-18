@@ -2589,6 +2589,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_duckdb_model"
+version = "0.9.0"
+dependencies = [
+ "improv_core_model",
+ "improv_engine",
+ "improv_pg_model",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "improv_engine"
 version = "0.9.0"
 dependencies = [

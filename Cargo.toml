@@ -17,6 +17,7 @@ members = [
     "crates/gui",
     "crates/extfn",
     "crates/pg_model",
+    "crates/duckdb_model",
 ]
 # pg_improv is its own workspace (pgrx needs pg_config + libclang); see its Cargo.toml.
 exclude = ["crates/pg_improv"]

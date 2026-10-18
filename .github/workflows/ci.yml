@@ -43,6 +43,7 @@ jobs:
           -p improv_verified
           -p improv_extfn
           -p improv_pg_model
+          -p improv_duckdb_model
           -p improv_nl_formula
           -p improv_cli
           -p improv_tui
@@ -78,6 +79,7 @@ jobs:
           -p improv_verified
           -p improv_extfn
           -p improv_pg_model
+          -p improv_duckdb_model
           -p improv_nl_formula
           -p improv_cli
           -p improv_tui
