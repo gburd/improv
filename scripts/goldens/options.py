@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Regenerate crates/engine/tests/data/options_goldens.tsv (P7 option pricing).
 
+LibreOffice's pricing add-in functions (OPT_BARRIER, OPT_TOUCH, OPT_PROB_HIT,
+OPT_PROB_INMONEY) run through p1.py's runner (`soffice --headless`, exact
+doubles rebuilt from helper cells).
+
     python3 scripts/goldens/options.py > crates/engine/tests/data/options_goldens.tsv
 
 Gnumeric's `fn-derivatives` functions (OPT_* except the four LibreOffice
@@ -21,6 +25,7 @@ import sys
 import tempfile
 from xml.sax.saxutils import escape
 
+LO = []  # LibreOffice's pricing add-in (OPT_BARRIER, OPT_TOUCH, OPT_PROB_*)
 GN = []  # (formula, tolerance)
 FIX = {}  # formula -> (value, why): Gnumeric is wrong, an independent value instead
 
@@ -272,6 +277,35 @@ many('OPT_FIXED_STRK_LKBK("c",100,100,100,105,0.5,0.1,0.1,0.3)',
      'OPT_FIXED_STRK_LKBK("c",100,100,100,105,0.5,0.1,0,0.3)',
      'OPT_FIXED_STRK_LKBK("e",100,100,100,105,0.5,0.1,0.1,0.3)')
 
+# --- LibreOffice's barrier pricing (through p1.py's exact-double runner) -------------
+BAR = "30,0.2,0.06,0.02,1,25"
+LO += [f'OPT_BARRIER({BAR},20,0,0,"c","o","c")', f'OPT_BARRIER({BAR},20,0,0,"p","o","c")',
+       f'OPT_BARRIER({BAR},20,0,0,"c","i","c")', f'OPT_BARRIER({BAR},0,35,1.5,"c","o","c")',
+       f'OPT_BARRIER({BAR},0,35,0,"p","i","e")', f'OPT_BARRIER({BAR},20,40,0,"c","o","c")',
+       f'OPT_BARRIER({BAR},20,40,2,"p","i","c","delta")',
+       f'OPT_BARRIER({BAR},20,0,0,"c","o","c","gamma")',
+       f'OPT_BARRIER({BAR},20,0,0,"c","o","c","t")', f'OPT_BARRIER({BAR},20,0,0,"c","o","c","e")',
+       f'OPT_BARRIER({BAR},20,40,0,"c","o","c","volga")',
+       f'OPT_BARRIER({BAR},20,40,0,"p","o","c","vanna")',
+       f'OPT_BARRIER({BAR},20,0,0,"p","o","c","rho")', f'OPT_BARRIER({BAR},20,0,0,"p","o","c","f")',
+       'OPT_BARRIER(30,0.2,0.06,0.02,0,25,20,0,0,"c","o","c")',
+       'OPT_BARRIER(30,0,0.06,0.02,1,25,20,0,0,"c","o","c")',
+       f'OPT_BARRIER({BAR},20,0,0,"x","o","c")', f'OPT_BARRIER({BAR},20,0,0,"c","o","c","zeta")']
+TCH = "30,0.2,0.06,0.02,0.5"
+LO += [f'OPT_TOUCH({TCH},25,0,"d","i","c")', f'OPT_TOUCH({TCH},25,0,"f","o","c")',
+       f'OPT_TOUCH({TCH},25,35,"d","o","c")', f'OPT_TOUCH({TCH},0,35,"f","i","e")',
+       f'OPT_TOUCH({TCH},25,35,"d","o","c","vega")', f'OPT_TOUCH({TCH},25,0,"d","i","c","rhof")',
+       f'OPT_TOUCH({TCH},25,35,"f","o","c","theta")',
+       'OPT_TOUCH(30,0.2,0.06,0.02,0,25,35,"d","o","c")', f'OPT_TOUCH({TCH},25,0,"x","i","c")']
+LO += ["OPT_PROB_HIT(30,0.2,0.3,1,0,40)", "OPT_PROB_HIT(30,0.2,0.1,1,20,0)",
+       "OPT_PROB_HIT(30,0.2,0,1,25,35)", "OPT_PROB_HIT(30,0.2,0.1,0,20,0)",
+       "OPT_PROB_HIT(-30,0.2,0.1,1,20,0)"]
+LO += ["OPT_PROB_INMONEY(30,0.2,0.1,1,25,35)", "OPT_PROB_INMONEY(30,0.2,0.1,1,0,35,28)",
+       'OPT_PROB_INMONEY(30,0.2,0.1,1,25,0,32,"p")', 'OPT_PROB_INMONEY(30,0.2,0.1,1,25,35,40,"c")',
+       'OPT_PROB_INMONEY(30,0.2,0.1,1,25,35,20,"p")', "OPT_PROB_INMONEY(30,0.2,0.1,1,35,25)",
+       "OPT_PROB_INMONEY(30,0.2,0.1,1,0,0,28)", 'OPT_PROB_INMONEY(30,0.2,0.1,1,25,35,28,"x")',
+       "OPT_PROB_INMONEY(30,0,0.1,1,25,35)"]
+
 
 def err(name):
     return {"error": name}
@@ -322,7 +356,26 @@ def main():
         with open(RECORD, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(dict(zip(fs, got)), indent=1) + "\n")
         return
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from p1 import UNMAPPED, fmt, map_error, run_lo, to_lo  # noqa: E402
+    # ODF names an add-in function by its programmatic name.
+    addin = {"OPT_BARRIER": "GETOPTBARRIER", "OPT_TOUCH": "GETOPTTOUCH",
+             "OPT_PROB_HIT": "GETOPTPROBHIT", "OPT_PROB_INMONEY": "GETOPTPROBINMONEY"}
+    lo_f = [to_lo(f).replace(f.split("(")[0] + "(", "COM.SUN.STAR.SHEET.ADDIN.PRICINGFUNCTIONS."
+                             + addin[f.split("(")[0]] + "(", 1) for f in LO]
+    lo_vals = run_lo(["PI()"] + lo_f)
+    if lo_vals[0] != 3.141592653589793:
+        raise SystemExit(f"precision check failed: PI() read back as {lo_vals[0]!r}")
+    lo_rows = []
+    for f, v in zip(LO, lo_vals[1:]):
+        # The add-in's IllegalArgumentException is Err:502 (#NUM!).
+        lo_rows.append((f, map_error(f, v[1]) if isinstance(v, tuple) else v))
+    if UNMAPPED:
+        raise SystemExit("unmapped LibreOffice errors:\n  " + "\n  ".join(UNMAPPED))
     print("formula\texpected\tsource")
+    for f, v in lo_rows:
+        assert "\t" not in f and "^" not in f, f
+        print(f"{f}\t{fmt(v)}\tLibreOffice")
     for (f, tol), v in zip(GN, got):
         assert "\t" not in f and "^" not in f, f
         if f in FIX:

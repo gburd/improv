@@ -1,4 +1,45 @@
 formula	expected	source
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"c","o","c")	6.212499773019043	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"p","o","c")	0.19394309678244676	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"c","i","c")	0.001086748207410615	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,0,35,1.5,"c","o","c")	2.0472101169463235	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,0,35,0,"p","i","e")	0	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,40,0,"c","o","c")	3.674716899911466	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,40,2,"p","i","c","delta")	-0.13515532454931628	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"c","o","c","gamma")	0.030854291414931043	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"c","o","c","t")	-1.2269713254669887	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"c","o","c","e")	5.5609677807655284	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,40,0,"c","o","c","volga")	79.59701279509213	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,40,0,"p","o","c","vanna")	0.3070077412251173	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"p","o","c","rho")	-1.6960459740958034	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"p","o","c","f")	1.5021028773133573	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,0,25,20,0,0,"c","o","c")	5	LibreOffice
+OPT_BARRIER(30,0,0.06,0.02,1,25,20,0,0,"c","o","c")	{"error": "#NUM!"}	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"x","o","c")	{"error": "#NUM!"}	LibreOffice
+OPT_BARRIER(30,0.2,0.06,0.02,1,25,20,0,0,"c","o","c","zeta")	{"error": "#NUM!"}	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,0,"d","i","c")	0.17454342943583623	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,0,"f","o","c")	25.303570572121206	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,35,"d","o","c")	0.5080199979632325	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,0,35,"f","i","e")	5.64343251070429	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,35,"d","o","c","vega")	-4.3412895062112415	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,0,"d","i","c","rhof")	0.8221309214914203	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,35,"f","o","c","theta")	27.495663105803626	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0,25,35,"d","o","c")	1	LibreOffice
+OPT_TOUCH(30,0.2,0.06,0.02,0.5,25,0,"x","i","c")	{"error": "#NUM!"}	LibreOffice
+OPT_PROB_HIT(30,0.2,0.3,1,0,40)	0.6119082890707047	LibreOffice
+OPT_PROB_HIT(30,0.2,0.1,1,20,0)	0.0178441126897787	LibreOffice
+OPT_PROB_HIT(30,0.2,0,1,25,35)	0.7786460642589021	LibreOffice
+OPT_PROB_HIT(30,0.2,0.1,0,20,0)	0	LibreOffice
+OPT_PROB_HIT(-30,0.2,0.1,1,20,0)	{"error": "#NUM!"}	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,25,35)	0.5497631405869357	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,0,35,28)	0.41644275965273475	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,25,0,32,"p")	0.3743632516993856	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,25,35,40,"c")	0	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,25,35,20,"p")	0	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,35,25)	0	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,0,0,28)	0.7718533664135925	LibreOffice
+OPT_PROB_INMONEY(30,0.2,0.1,1,25,35,28,"x")	{"error": "#NUM!"}	LibreOffice
+OPT_PROB_INMONEY(30,0,0.1,1,25,35)	{"error": "#NUM!"}	LibreOffice
 OPT_BS("c",100,95,0.5,0.1,0.25)	9.182559927154124	Gnumeric 1.12.57
 OPT_BS("p",100,95,0.5,0.1,0.25)	4.426412804650546	Gnumeric 1.12.57
 OPT_BS("c",75,70,0.25,0.06,0.3,0.06)	7.980199845518797	Gnumeric 1.12.57

@@ -1,9 +1,11 @@
 //! Evaluation of the P7 option pricing functions (ids 1750–1849): Gnumeric's
 //! `fn-derivatives` set (Haug's closed forms, approximations and a binomial
-//! tree).
+//! tree) here, LibreOffice's barrier pricing in [`barrier`].
 //!
 //! Cost of carry `b` follows Haug: `r` for a stock, `r − q` with a dividend
 //! yield, `0` for a future, `r − rf` for a currency.
+
+mod barrier;
 
 use super::statistical::{norm_cdf as nc, norm_pdf as np};
 use super::{err, n, ok_num, t, R};
@@ -11,7 +13,7 @@ use crate::CellValue;
 use Side::{Call, Put};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Side {
+pub(super) enum Side {
     Call,
     Put,
 }
@@ -19,7 +21,7 @@ enum Side {
 impl Side {
     /// +1 for a call, −1 for a put: a put's formula is a call's with the
     /// signs of the payoff and of the normal arguments flipped.
-    fn z(self) -> f64 {
+    pub(super) fn z(self) -> f64 {
         match self {
             Call => 1.0,
             Put => -1.0,
@@ -38,6 +40,9 @@ fn side(a: &[CellValue], i: usize) -> Result<Side, u8> {
 
 /// Evaluate function `id` (already type- and arity-checked).
 pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
+    if id >= 1800 {
+        return barrier::eval(id, a);
+    }
     // The flags lead; every later argument is a number (converted first, so
     // a non-number is #VALUE! before a bad flag is #NUM!, as in Gnumeric).
     let lead = match id {
@@ -715,7 +720,11 @@ mod tests {
         let args = [100.0, 100.0, 0.5, 0.1, 0.25];
         assert_eq!(f(1750, "", &args), CellValue::Err(err::NUM));
         assert_eq!(f(1750, "P", &args), f(1750, "put", &args));
-        assert_eq!(eval(1849, &[]), Err(err::NAME));
+        assert_eq!(eval(1799, &[]), Err(err::NAME));
+        assert_eq!(
+            eval(1849, &[CellValue::num(1.0), CellValue::num(1.0)]),
+            Err(err::NAME)
+        );
     }
 
     #[test]

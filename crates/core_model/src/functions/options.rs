@@ -42,4 +42,9 @@ pub(super) static OPTIONS: &[FnDef] = &[
     s(1793, "OPT_SPREAD_APPROX", C, &[T, N, N, N, N, N, N, N, N], V::Number, "Kirk's futures spread option approximation: OPT_SPREAD_APPROX(call_put, fut_price1, fut_price2, strike, time, rate, volatility1, volatility2, rho)"),
     s(1795, "OPT_FIXED_STRK_LKBK", C, &[T, N, N, N, N, N, N, N, N], V::Number, "fixed-strike lookback: OPT_FIXED_STRK_LKBK(call_put, spot, spot_min, spot_max, strike, time, rate, cost_of_carry, volatility)"),
     s(1796, "OPT_FLOAT_STRK_LKBK", C, &[T, N, N, N, N, N, N, N], V::Number, "floating-strike lookback: OPT_FLOAT_STRK_LKBK(call_put, spot, spot_min, spot_max, time, rate, cost_of_carry, volatility)"),
+    // --- LibreOffice's barrier pricing ---
+    so(1800, "OPT_BARRIER", C, &[N, N, N, N, N, N, N, N, N, T, T, T, T], 12, V::Number, "barrier option: OPT_BARRIER(spot, vol, r, rf, T, strike, lower, upper, rebate, put_call, in_out, continuous_or_end, [greek])"),
+    so(1801, "OPT_TOUCH", C, &[N, N, N, N, N, N, N, T, T, T, T], 10, V::Number, "one/no-touch option: OPT_TOUCH(spot, vol, r, rf, T, lower, upper, foreign_domestic, in_out, continuous_or_end, [greek])"),
+    s(1802, "OPT_PROB_HIT", C, &[N, N, N, N, N, N], V::Number, "probability of touching a barrier: OPT_PROB_HIT(spot, vol, mu, T, lower, upper)"),
+    so(1803, "OPT_PROB_INMONEY", C, &[N, N, N, N, N, N, N, T], 6, V::Number, "probability of ending between the barriers (and in the money): OPT_PROB_INMONEY(spot, vol, mu, T, lower, upper, [strike], [put_call])"),
 ];
