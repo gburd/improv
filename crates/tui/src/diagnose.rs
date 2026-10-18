@@ -24,10 +24,14 @@ pub fn diagnose(model: &Model, text: &str, err: &ParseError) -> Diagnostic {
         .iter()
         .find_map(|p| msg.strip_prefix(p))
     {
-        let call = span
-            .as_ref()
-            .is_some_and(|s| text[s.end..].trim_start().starts_with('('));
-        hint = did_you_mean(model, name, call, msg.starts_with("unknown category"));
+        // Called like a function, a name may be one; in a category's place
+        // it cannot be. (The parser reports an unquoted `NAME(` itself.)
+        let category = msg.starts_with("unknown category");
+        let call = !category
+            && span
+                .as_ref()
+                .is_some_and(|s| text[s.end..].trim_start().starts_with('('));
+        hint = did_you_mean(model, name, call, category);
     } else if let Some((name, _)) = msg
         .split_once(" takes ")
         .filter(|_| msg.contains("argument"))
@@ -209,6 +213,16 @@ mod tests {
         assert_eq!(
             spanned("SUM(Price OVER Tyme)"),
             ("Tyme", Some("did you mean Time?".into()))
+        );
+        // A category typo before `(` is still a category, not a function.
+        assert_eq!(
+            spanned("SUM(Price OVER Tyme(1))"),
+            ("Tyme", Some("did you mean Time?".into()))
+        );
+        // A quoted name called like a function may be one.
+        assert_eq!(
+            spanned("'Pmtt'(1)"),
+            ("'Pmtt'", Some("did you mean PMT?".into()))
         );
         // Nothing close: no hint.
         assert_eq!(spanned("Price * Zebra"), ("Zebra", None));
