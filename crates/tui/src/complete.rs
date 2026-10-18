@@ -20,7 +20,7 @@ pub fn word_start(text: &str, caret: usize) -> usize {
 }
 
 /// `name` as formula source: bare if it can be, else `'quoted'`.
-fn source_name(name: &str) -> String {
+pub fn source_name(name: &str) -> String {
     let mut chars = name.chars();
     let bare = chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')

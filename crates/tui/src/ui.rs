@@ -2,6 +2,7 @@
 //! sized to its content, over the pivot grid as a table.
 
 use crate::app::{App, CommandKind, Grid, GridGeom};
+use crate::diagnose::Diagnostic;
 use crate::edit::LineEdit;
 use crate::fnhelp::FnHelp;
 use ratatui::{
@@ -95,8 +96,19 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         lines.push(Line::from(format!("{} = {f}", g.measure_name)));
     }
     if let Some(e) = &app.edit {
-        lines.push(edit_line(e, app.editing_formula()));
-        if app.editing_formula() {
+        let d = app.diagnostic.as_ref();
+        lines.push(edit_line(e, app.editing_formula(), d));
+        if let Some(d) = d {
+            lines.extend(diagnostic_lines(
+                e,
+                d,
+                if app.editing_formula() {
+                    "formula> "
+                } else {
+                    "edit> "
+                },
+            ));
+        } else if app.editing_formula() {
             lines.extend(signature_line(e));
         }
     } else if let Some((kind, buf)) = &app.command {
@@ -149,18 +161,31 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
 }
 
 /// The edit prompt (`edit> `, or `formula> ` for a formula) and the text,
-/// the cell under the caret reversed. In a formula with the caret at the
-/// end inside a call, the parameters still to type follow, dimmed.
-fn edit_line(e: &LineEdit, formula: bool) -> Line<'static> {
-    let (before, after) = e.text.split_at(e.caret);
-    let mut rest = after.chars();
-    let at = rest.next().map_or(" ".to_string(), String::from);
+/// the cell under the caret reversed and a diagnostic's span red and
+/// underlined. In a formula with the caret at the end inside a call, the
+/// parameters still to type follow, dimmed.
+fn edit_line(e: &LineEdit, formula: bool, d: Option<&Diagnostic>) -> Line<'static> {
     let prompt = if formula { "formula" } else { "edit" };
-    let mut spans = vec![
-        Span::raw(format!("{prompt}> {before}")),
-        Span::styled(at, Style::default().add_modifier(Modifier::REVERSED)),
-        Span::raw(rest.as_str().to_string()),
-    ];
+    let bad = d.and_then(|d| d.span.clone()).unwrap_or_default();
+    let err = Style::default()
+        .fg(Color::Red)
+        .add_modifier(Modifier::UNDERLINED);
+    let mut spans = vec![Span::raw(format!("{prompt}> "))];
+    // One span per char: few enough to not matter on an edit line.
+    let chars = e.text.char_indices().map(|(i, c)| (i, c.to_string()));
+    for (i, c) in chars.chain(std::iter::once((e.text.len(), " ".to_string()))) {
+        let mut style = if bad.contains(&i) {
+            err
+        } else {
+            Style::default()
+        };
+        if i == e.caret {
+            style = style.add_modifier(Modifier::REVERSED);
+        } else if i == e.text.len() {
+            continue;
+        }
+        spans.push(Span::styled(c, style));
+    }
     if let Some(g) = formula
         .then(|| crate::complete::ghost(e, e.caret))
         .flatten()
@@ -171,6 +196,27 @@ fn edit_line(e: &LineEdit, formula: bool) -> Line<'static> {
         ));
     }
     Line::from(spans)
+}
+
+/// Under the edit line: a `^~~~` marker under the diagnostic's span (lined
+/// up past `prompt`), then the message and its hint.
+fn diagnostic_lines(e: &LineEdit, d: &Diagnostic, prompt: &str) -> Vec<Line<'static>> {
+    let red = Style::default().fg(Color::Red);
+    let mut lines = Vec::new();
+    if let Some(s) = &d.span {
+        let pad = prompt.len() + e.text[..s.start].chars().count();
+        let n = e.text[s.clone()].chars().count().max(1);
+        let marker = format!("^{}", "~".repeat(n - 1));
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(pad)),
+            Span::styled(marker, red.add_modifier(Modifier::BOLD)),
+        ]));
+    }
+    lines.push(Line::styled(format!("error: {}", d.message), red));
+    if let Some(h) = &d.hint {
+        lines.push(Line::from(format!("hint: {h}")));
+    }
+    lines
 }
 
 /// The signature of the call the caret is in, the current argument marked
@@ -537,6 +583,46 @@ mod tests {
         app.edit = Some("PMT(".into());
         let lines = text(&draw(&mut app, 120, 30));
         assert!(!lines.iter().any(|l| l.contains("rate")));
+    }
+
+    #[test]
+    fn formula_errors_are_located_and_hinted() {
+        let mut app = App::new(revenue_model()).unwrap();
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
+        app.begin_edit();
+        app.edit = Some("Price * Quantty".into());
+        app.commit_edit();
+        let buf = draw(&mut app, 100, 30);
+        let lines = text(&buf);
+        let (x, y) = find(&lines, "formula> Price * Quantty");
+        let bad = x + "formula> Price * ".len() as u16;
+        assert_eq!(buf[(bad, y)].fg, Color::Red);
+        assert!(buf[(bad, y)].modifier.contains(Modifier::UNDERLINED));
+        assert_ne!(buf[(bad - 2, y)].fg, Color::Red, "only the bad token");
+        // The marker sits right under the span, then the message and hint.
+        let (mx, my) = find(&lines, "^~~~~~~");
+        assert_eq!((mx, my), (bad, y + 1));
+        assert!(
+            !lines[my as usize].contains("^~~~~~~~"),
+            "as long as the token"
+        );
+        assert_eq!(
+            row_of(&lines, "error: unknown measure: Quantty"),
+            y as usize + 2
+        );
+        assert_eq!(
+            row_of(&lines, "hint: did you mean Quantity?"),
+            y as usize + 3
+        );
+        // An error without a position has no marker.
+        app.diagnostic.as_mut().unwrap().span = None;
+        let lines = text(&draw(&mut app, 100, 30));
+        assert!(!lines.iter().any(|l| l.contains('^')));
+        row_of(&lines, "error: unknown measure");
+        // Typing clears it.
+        app.edit_key(crossterm::event::KeyCode::Char('x'));
+        let lines = text(&draw(&mut app, 100, 30));
+        assert!(!lines.iter().any(|l| l.contains("error:")));
     }
 
     #[test]

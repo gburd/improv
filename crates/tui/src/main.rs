@@ -13,6 +13,7 @@
 
 mod app;
 mod complete;
+mod diagnose;
 mod edit;
 mod fnhelp;
 mod ui;

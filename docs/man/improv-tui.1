@@ -29,8 +29,13 @@ Select a range; its sum shows in the status line.
 Edit the selected input cell, or the formula of a derived measure (it
 accepts the symbolic form, \fBPrice * Quantity\fR, or the controlled English
 the status line shows). Enter commits, Esc cancels; on an error the edit
-stays open with the message under it. Left/Right, Home/End, Backspace and
-Delete edit at the caret.
+stays open with the message under it. A formula that does not parse has
+the offending token underlined in red, a
+.B ^~~~
+marker under it, the message, and a hint for the common mistakes: the
+closest names to a misspelled one, a function's parameters when it got the
+wrong number of arguments, the parenthesis left open. Left/Right, Home/End,
+Backspace and Delete edit at the caret.
 .TP
 .B Tab \fR(in a formula)
 Complete the name before the caret: a function (as

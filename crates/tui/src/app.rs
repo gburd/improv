@@ -518,6 +518,9 @@ pub struct App {
     pub help: Option<crate::fnhelp::FnHelp>,
     /// The candidates a repeated Tab cycles through; reset by any other key.
     pub tab_cycle: Option<complete::Cycle>,
+    /// Where the last formula commit failed to parse, while its text is
+    /// unchanged: the edit line underlines the span and shows the message.
+    pub diagnostic: Option<crate::diagnose::Diagnostic>,
 }
 
 impl App {
@@ -579,6 +582,7 @@ impl App {
             command: None,
             help: None,
             tab_cycle: None,
+            diagnostic: None,
         })
     }
 
@@ -794,13 +798,18 @@ impl App {
         let Some(e) = &mut self.edit else { return };
         if code == KeyCode::Tab {
             if formula {
+                let before = e.text.clone();
                 self.status = complete::tab(&self.model, e, &mut self.tab_cycle);
+                if e.text != before {
+                    self.diagnostic = None;
+                }
             }
             return;
         }
         self.tab_cycle = None;
         if e.key(code) {
             self.status = None;
+            self.diagnostic = None;
         }
     }
 
@@ -808,6 +817,7 @@ impl App {
     pub fn cancel_edit(&mut self) {
         self.edit = None;
         self.tab_cycle = None;
+        self.diagnostic = None;
         self.status = None;
     }
 
@@ -820,12 +830,20 @@ impl App {
             return;
         };
         if !self.viewed_is_input() {
-            match self.set_formula(&buf) {
-                Ok(()) => {
-                    self.edit = None;
+            self.diagnostic = None;
+            match parse_formula_text(&self.model, &buf) {
+                Err(e) => {
                     self.status = None;
+                    self.diagnostic = Some(crate::diagnose::diagnose(&self.model, &buf, &e));
                 }
-                Err(e) => self.status = Some(e),
+                Ok(f) => match self.set_formula(f) {
+                    Ok(()) => {
+                        self.edit = None;
+                        self.tab_cycle = None;
+                        self.status = None;
+                    }
+                    Err(e) => self.status = Some(e),
+                },
             }
             return;
         }
@@ -896,12 +914,11 @@ impl App {
         Ok(())
     }
 
-    /// Replace the viewed derived measure's formula with `text`. Validated on
-    /// a candidate model (parse, then a real engine build, which catches
-    /// cycles and type errors) and only then published; on failure nothing
-    /// changes and the error is returned.
-    pub fn set_formula(&mut self, text: &str) -> Result<(), String> {
-        let formula = parse_formula_text(&self.model, text).map_err(|e| e.to_string())?;
+    /// Replace the viewed derived measure's formula. Validated on a candidate
+    /// model (a real engine build, which catches cycles and type errors) and
+    /// only then published; on failure nothing changes and the error is
+    /// returned.
+    pub fn set_formula(&mut self, formula: Formula) -> Result<(), String> {
         let mut candidate = self.model.clone();
         let m = candidate
             .measures
@@ -1449,18 +1466,38 @@ pub(crate) mod tests {
             app.formula_text().as_deref(),
             Some("Price times Quantity times 2")
         );
-        // A parse error keeps the edit open and changes nothing.
+        // A parse error keeps the edit open, located, and changes nothing.
         let before = app.model.clone();
         app.begin_edit();
         app.edit = Some("Price * Quantty".into());
         app.commit_edit();
         assert!(app.editing_formula());
-        assert!(app.status.as_deref().unwrap().contains("unknown measure"));
+        let d = app.diagnostic.clone().unwrap();
+        assert_eq!(
+            (d.span, d.message.as_str()),
+            (Some(8..15), "unknown measure: Quantty")
+        );
         assert_eq!(app.model, before);
-        // So does a formula that parses but cannot build (a cycle).
+        // Tab that changes nothing keeps it; an edit clears it.
+        app.edit_key(KeyCode::Tab);
+        assert!(app.diagnostic.is_some());
+        app.edit_key(KeyCode::Left);
+        assert!(app.diagnostic.is_some(), "moving the caret keeps it");
+        app.edit_key(KeyCode::Char('i'));
+        assert!(app.diagnostic.is_none());
+        app.edit = Some("Price * Quantty".into());
+        app.commit_edit();
+        app.edit.as_mut().unwrap().caret = 12;
+        app.edit_key(KeyCode::Tab);
+        assert_eq!(app.edit.as_deref(), Some("Price * Quantitytty"));
+        assert!(app.diagnostic.is_none(), "a completion edits the text");
+        app.cancel_edit();
+        // A formula that parses but cannot build (a cycle) reports, unlocated.
+        app.begin_edit();
         app.edit = Some("Revenue + 1".into());
         app.commit_edit();
         assert!(app.editing_formula(), "{:?}", app.status);
+        assert!(app.status.is_some() && app.diagnostic.is_none());
         assert_eq!(app.model, before);
         // A value edit is not a formula edit.
         view(&mut app, MeasureId(101));
