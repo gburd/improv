@@ -966,7 +966,10 @@ fn range_cdf(w: f64, k: f64) -> f64 {
     let mut total = first;
     let mut v = half;
     while v < half + 40.0 {
-        let piece = 2.0 * k * gauss_legendre(&f, v, v + width);
+        // k · (2 ∫), not 2k · ∫: 2k overflows past f64::MAX / 2, and ∞ · 0
+        // was a NaN piece that never ended the walk (R.PTUKEY(1, 9e307, 2)
+        // took 50 s).
+        let piece = k * (2.0 * gauss_legendre(&f, v, v + width));
         total += piece;
         if total >= 1.0 {
             return 1.0;
@@ -2262,5 +2265,21 @@ mod tests {
         let mut a = nums(&[0.3, 1e9, 1e9, 1e9]);
         a.push(CellValue::Bool(false));
         assert_eq!(call(1629, &a), Ok(CellValue::num(500_005_863.0)));
+    }
+
+    /// R.PTUKEY with nmeans near f64::MAX: the range CDF's 2k · piece was
+    /// ∞ · 0 = NaN, so the piece never fell below the total's ε and the
+    /// walk ran its 40 / width ≈ 9500 pieces (50 s; Gnumeric hangs).
+    /// Gnumeric gives R.PTUKEY(1, 1e20, 2) as 0 (here 7e-122).
+    #[test]
+    fn tukey_with_huge_nmeans() {
+        let t0 = std::time::Instant::now();
+        let k = 8.988_465_674_311_58e307;
+        let v = val(1657, &[1.0, k, 2.0]);
+        assert!(v < 1e-100, "{v}");
+        let v = val(1657, &[100.0, k, 2.0]);
+        assert!((0.0..=1.0).contains(&v), "{v}");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+        assert!(val(1657, &[1.0, 1e20, 2.0]) < 1e-100);
     }
 }
