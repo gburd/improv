@@ -13,6 +13,13 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **GUI formula autocomplete.** In both formula editors a name being
+  typed drops a list of matching functions (with their signatures and
+  descriptions), measures and categories; Up/Down select, Tab or Enter
+  accepts (a function as `NAME(`, caret after the `(`), Esc closes, and
+  with the list closed Enter commits. The rest of the selected name, or
+  inside a call the parameters still to give, trail the caret in gray,
+  and a tooltip shows the signature with the current argument in bold.
 - **GUI function help.** Help ▸ Functions… (or F1, also while editing a
   formula) opens a window searching the built-in functions by name,
   alias and description, the matches grouped by category with their

@@ -42,6 +42,15 @@ Up and Down move the selection; Enter, a double-click or
 puts
 .I NAME(
 into the formula last edited, at its caret. F1 again closes it.
+.PP
+In a formula edit, a name being typed drops a list of matching functions,
+measures and categories: Up and Down select, Tab or Enter accepts
+(a function as
+.IR NAME( ),
+Esc closes the list; with the list closed Enter commits. The rest of the
+selected name, or inside a call the parameters still to give, trail the
+caret in gray, and a tooltip shows the signature with the current
+argument in bold.
 .SH ENVIRONMENT
 .TP
 .B IMPROV_LOCALE

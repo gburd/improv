@@ -2256,14 +2256,277 @@ fn formula_fault(model: &Model, text: &str, err: &str) -> Option<diagnostics::Di
     (!err.starts_with("save failed")).then(|| diagnostics::compile_error(model, text, err))
 }
 
+/// A formula editor with autocomplete ([`crate::completion`]): while a
+/// name is typed (at or after byte `from`), a list of what may complete it
+/// drops under the edit (Up/Down select, Tab or Enter accept, Esc closes;
+/// a click accepts too), the rest of the selected name and its
+/// parameters trail the caret in light gray, and a tooltip shows the
+/// signature of the function being completed or called, the current
+/// argument in bold. With the list closed every key reaches the edit, so
+/// Enter still commits.
+fn assisted_formula_edit(
+    ui: &mut egui::Ui,
+    model: &Model,
+    text: &mut String,
+    id: egui::Id,
+    hint: &str,
+    span: Option<std::ops::Range<usize>>,
+    from: usize,
+) -> egui::Response {
+    use crate::completion::{self, Popup};
+    use egui::{Key, Modifiers};
+    let ctx = ui.ctx().clone();
+    let (pid, rid) = (id.with("completion"), id.with("completion_rect"));
+    let mut popup: Popup = ctx.data_mut(|d| d.get_temp(pid)).unwrap_or_default();
+    let offer = |text: &str, caret: usize| {
+        if caret >= from {
+            completion::offer(model, text, caret)
+        } else {
+            Vec::new()
+        }
+    };
+    let word = |text: &str, caret: usize| {
+        completion::prefix(text, caret).map_or(String::new(), |(_, w)| w.to_string())
+    };
+    // Keys first, on what the user saw last frame, before the edit can.
+    let mut refocus = false;
+    let mut accepted = false;
+    if ctx.memory(|m| m.has_focus(id) || m.had_focus_last_frame(id)) {
+        let caret = caret_byte(&ctx, id, text);
+        let cands = offer(text, caret);
+        if popup.sync(text, &word(text, caret), cands.len()) {
+            let n = cands.len();
+            let (up, down, tab, enter, esc) = ui.input_mut(|i| {
+                let mut k = |key| i.consume_key(Modifiers::NONE, key);
+                (
+                    k(Key::ArrowUp),
+                    k(Key::ArrowDown),
+                    k(Key::Tab),
+                    k(Key::Enter),
+                    k(Key::Escape),
+                )
+            });
+            // A press on the list picks that row (it took the focus away).
+            let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+            let clicked = ui
+                .input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()))
+                .zip(ctx.data(|d| d.get_temp::<egui::Rect>(rid)))
+                .filter(|(p, r)| r.contains(*p))
+                .map(|(p, r)| (((p.y - r.top() - 2.0) / row_h).max(0.0) as usize).min(n - 1));
+            if let Some(i) = clicked {
+                popup.sel = i;
+            }
+            popup.step(isize::from(down) - isize::from(up), n);
+            if tab || enter || clicked.is_some() {
+                let (t, at) = completion::accept(text, caret, &cands[popup.sel]);
+                *text = t;
+                set_caret(&ctx, id, text, at);
+                accepted = true;
+            } else if esc {
+                popup.dismiss(text);
+            }
+            refocus = tab || esc || clicked.is_some();
+        }
+    }
+    // While the list is up the edit keeps Tab and Esc (egui reads the
+    // filter at the start of the next frame, so set it every frame).
+    let caret = caret_byte(&ctx, id, text);
+    let listing = popup
+        .clone()
+        .sync(text, &word(text, caret), offer(text, caret).len());
+    let out = formula_text_edit(ui, text, id, hint, span, listing);
+    let mut resp = out.response;
+    if refocus {
+        resp.request_focus();
+    }
+    if accepted {
+        resp.mark_changed();
+    }
+    ctx.data_mut(|d| d.remove::<egui::Rect>(rid));
+    if resp.has_focus() {
+        let caret = caret_byte(&ctx, id, text);
+        let cands = offer(text, caret);
+        let shown = popup.sync(text, &word(text, caret), cands.len());
+        let sel = shown.then(|| &cands[popup.sel]);
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        if let Some(g) = completion::ghost(text, caret, sel) {
+            // After the last glyph; the ghost is never part of the galley.
+            let at = out.galley_pos + egui::vec2(out.galley.rect.right(), 0.0);
+            ui.painter().with_clip_rect(out.text_clip_rect).text(
+                at,
+                egui::Align2::LEFT_TOP,
+                g,
+                font,
+                crate::theme::LIGHT_GRAY,
+            );
+        }
+        let below = shown && completion_list(ui, &resp, &cands, popup.sel, rid);
+        if shown {
+            ui.memory_mut(|m| {
+                m.set_focus_lock_filter(
+                    id,
+                    egui::EventFilter {
+                        tab: true,
+                        horizontal_arrows: true,
+                        vertical_arrows: true,
+                        escape: true,
+                    },
+                )
+            });
+        }
+        let signature = match sel.map(|c| (c.kind, c.name.clone())) {
+            Some((completion::Kind::Function(d), name)) => Some((name, d, None)),
+            _ => (caret >= from)
+                .then(|| improv_core_model::functions::call_at(text, caret))
+                .flatten()
+                .map(|(d, a)| (d.name.to_string(), d, Some(a))),
+        };
+        if let Some((name, d, arg)) = signature {
+            // Over the edit while the list is under it.
+            signature_tooltip(ui, &resp, &name, d, arg, below || !shown);
+        }
+    }
+    ctx.data_mut(|d| d.insert_temp(pid, popup));
+    resp
+}
+
+/// The completion list under (or, without room, over) the edit `resp`,
+/// `sel` highlighted; its rect is kept under `rid` so a press on it can
+/// pick a row. Returns whether it went below.
+fn completion_list(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    cands: &[crate::completion::Candidate],
+    sel: usize,
+    rid: egui::Id,
+) -> bool {
+    use crate::theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE};
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+    // Wide enough for the longest hint and its description, on screen.
+    let text_w =
+        |s: &str| ui.fonts(|f| f.layout_no_wrap(s.to_owned(), font.clone(), BLACK).size().x);
+    let widest = cands
+        .iter()
+        .map(|c| text_w(&c.hint()) + 12.0 + text_w(c.doc()))
+        .fold(0.0, f32::max);
+    let screen = ui.ctx().screen_rect();
+    let size = egui::vec2(
+        (widest + 12.0)
+            .max(resp.rect.width())
+            .min(screen.right() - resp.rect.left() - 2.0),
+        cands.len() as f32 * row_h + 4.0,
+    );
+    let below = resp.rect.bottom() + 1.0 + size.y <= screen.bottom();
+    let at = if below {
+        resp.rect.left_bottom() + egui::vec2(0.0, 1.0)
+    } else {
+        resp.rect.left_top() - egui::vec2(0.0, size.y + 1.0)
+    };
+    let rect = egui::Rect::from_min_size(at, size);
+    let painter = ui.ctx().layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        rid.with("list"),
+    ));
+    let p = painter.with_clip_rect(rect);
+    p.rect_filled(rect, 0.0, WHITE);
+    p.rect_stroke(rect.shrink(0.5), 0.0, egui::Stroke::new(1.0_f32, BLACK));
+    for (i, c) in cands.iter().enumerate() {
+        let row = egui::Rect::from_min_size(
+            rect.min + egui::vec2(2.0, 2.0 + i as f32 * row_h),
+            egui::vec2(size.x - 4.0, row_h),
+        );
+        if i == sel {
+            p.rect_filled(row, 0.0, LIGHT_GRAY);
+        }
+        let hint = p.text(
+            row.left_center() + egui::vec2(4.0, 0.0),
+            egui::Align2::LEFT_CENTER,
+            c.hint(),
+            font.clone(),
+            BLACK,
+        );
+        p.text(
+            egui::pos2(hint.right() + 12.0, row.center().y),
+            egui::Align2::LEFT_CENTER,
+            c.doc(),
+            font.clone(),
+            DARK_GRAY,
+        );
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(rid, rect));
+    below
+}
+
+/// The signature tooltip over (`above`) or under the edit `resp`: `name`'s
+/// parameters with argument `arg` bold and underlined, then `d`'s
+/// description and category.
+fn signature_tooltip(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    name: &str,
+    d: &improv_core_model::functions::FnDef,
+    arg: Option<usize>,
+    above: bool,
+) {
+    use crate::theme::{BLACK, BOLD, DARK_GRAY, WHITE};
+    use egui::text::{LayoutJob, TextFormat};
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let bold = egui::FontId::new(font.size, egui::FontFamily::Name(BOLD.into()));
+    let (before, current, after) = crate::completion::hint_parts(name, d, arg);
+    let mut job = LayoutJob::default();
+    job.append(&before, 0.0, TextFormat::simple(font.clone(), BLACK));
+    job.append(
+        &current,
+        0.0,
+        TextFormat {
+            font_id: bold,
+            color: BLACK,
+            underline: egui::Stroke::new(1.0_f32, BLACK),
+            ..Default::default()
+        },
+    );
+    job.append(&after, 0.0, TextFormat::simple(font, BLACK));
+    let (pivot, at) = if above {
+        (
+            egui::Align2::LEFT_BOTTOM,
+            resp.rect.left_top() - egui::vec2(0.0, 2.0),
+        )
+    } else {
+        (
+            egui::Align2::LEFT_TOP,
+            resp.rect.left_bottom() + egui::vec2(0.0, 2.0),
+        )
+    };
+    egui::Area::new(resp.id.with("signature"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .pivot(pivot)
+        .fixed_pos(at)
+        .show(ui.ctx(), |ui| {
+            // A NeXT help balloon: white, ruled in black.
+            egui::Frame::popup(ui.style()).fill(WHITE).show(ui, |ui| {
+                ui.set_max_width(460.0);
+                ui.label(job);
+                ui.label(crate::completion::short_doc(d));
+                ui.label(
+                    egui::RichText::new(crate::function_help::category_title(d.category))
+                        .color(DARK_GRAY),
+                );
+            });
+        });
+}
+
 /// A formula editor: a single-line edit of `text` with id `id`, highlighted,
-/// the error `span` underlined, filling the row.
+/// the error `span` underlined, filling the row. `keep_tab`: Tab stays in
+/// the edit rather than moving the focus.
 fn formula_text_edit(
     ui: &mut egui::Ui,
     text: &mut String,
     id: egui::Id,
     hint: &str,
     span: Option<std::ops::Range<usize>>,
+    keep_tab: bool,
 ) -> egui::text_edit::TextEditOutput {
     let font = egui::TextStyle::Body.resolve(ui.style());
     let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
@@ -2273,6 +2536,7 @@ fn formula_text_edit(
     };
     egui::TextEdit::singleline(text)
         .id(id)
+        .lock_focus(keep_tab)
         .hint_text(hint)
         .desired_width(f32::INFINITY)
         .layouter(&mut layouter)
@@ -3627,14 +3891,15 @@ impl ImprovApp {
             Some(d) => d.span.clone(),
             None => standing,
         };
-        let resp = formula_text_edit(
+        let resp = assisted_formula_edit(
             ui,
+            &self.model,
             &mut self.formula_buf,
             egui::Id::new("formula_edit"),
             "e.g. Price * Quantity",
             span,
-        )
-        .response;
+            0,
+        );
         if resp.has_focus() {
             self.formula_target = FormulaEditor::Row;
         }
@@ -3682,8 +3947,20 @@ impl ImprovApp {
             .horizontal(|ui| {
                 // Past the checkbox and number, under the rows' text.
                 ui.add_space(44.0);
-                formula_text_edit(ui, &mut self.new_formula_line, id, "Name = formula", span)
-                    .response
+                // Names are completed in the formula, after the `=`.
+                let from = self
+                    .new_formula_line
+                    .find('=')
+                    .map_or(usize::MAX, |i| i + 1);
+                assisted_formula_edit(
+                    ui,
+                    &self.model,
+                    &mut self.new_formula_line,
+                    id,
+                    "Name = formula",
+                    span,
+                    from,
+                )
             })
             .inner;
         if resp.has_focus() && editing {
@@ -11534,6 +11811,179 @@ mod tests {
         // Help ▸ Functions… closes it again.
         app.run_command(&ctx, Command::FunctionHelp);
         assert!(!app.fn_help.open);
+    }
+
+    /// One frame on `ctx` with the formula editor `id` focused, delivering
+    /// `events`; the output.
+    fn edit_frame(
+        ctx: &egui::Context,
+        app: &mut ImprovApp,
+        id: &str,
+        t: &mut f64,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        *t += 0.05;
+        // Only when it is not focused: a fresh request resets the edit's
+        // key filter, as a click would, and Tab would move the focus.
+        let id = egui::Id::new(id);
+        if !ctx.memory(|m| m.has_focus(id)) {
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        full_frame_with(ctx, app, egui::vec2(1200.0, 800.0), *t, events, |_| ())
+    }
+
+    /// Typing `PM` in a formula editor offers PMT with its signature, the
+    /// rest trails the caret as ghost text, and Tab makes it `PMT(` with
+    /// the caret after the `(`; inside the call the tooltip marks the
+    /// argument. Up/Down move the selection, Esc closes the list, and with
+    /// it closed Enter commits.
+    #[test]
+    fn typing_pm_then_tab_completes_pmt() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let mut t = 0.0;
+        for id in ["formula_new", "formula_edit"] {
+            select(&mut app, MeasureId(102));
+            let _ = edit_frame(&ctx, &mut app, id, &mut t, Vec::new());
+            let prefix = if id == "formula_new" { "X = " } else { "" };
+            let text = format!("{prefix}PM");
+            let buf = |app: &ImprovApp| {
+                if id == "formula_new" {
+                    app.new_formula_line.clone()
+                } else {
+                    app.formula_buf.clone()
+                }
+            };
+            if id == "formula_edit" {
+                app.formula_buf.clear();
+            }
+            let _ = edit_frame(
+                &ctx,
+                &mut app,
+                id,
+                &mut t,
+                vec![egui::Event::Text(text.clone())],
+            );
+            let out = edit_frame(&ctx, &mut app, id, &mut t, Vec::new());
+            let texts = texts_of(&out);
+            assert_eq!(buf(&app), text);
+            for want in [
+                "PMT(rate, nper, pv, [fv], [type])",
+                "T(rate, nper, pv, [fv], [type])",
+            ] {
+                assert!(
+                    texts.iter().any(|s| s == want),
+                    "{id}: no {want:?} in {texts:?}"
+                );
+            }
+            let _ = edit_frame(&ctx, &mut app, id, &mut t, vec![key_event(egui::Key::Tab)]);
+            assert_eq!(buf(&app), format!("{prefix}PMT("), "{id}");
+            let eid = egui::Id::new(id);
+            assert_eq!(caret_byte(&ctx, eid, &buf(&app)), prefix.len() + 4);
+            assert!(ctx.memory(|m| m.has_focus(eid)), "{id}: Tab kept the focus");
+            // In the call: the ghost of what is left and the signature.
+            let typed = egui::Event::Text("0.05, ".into());
+            let _ = edit_frame(&ctx, &mut app, id, &mut t, vec![typed]);
+            let out = edit_frame(&ctx, &mut app, id, &mut t, Vec::new());
+            let texts = texts_of(&out);
+            assert!(
+                texts.iter().any(|s| s == "nper, pv, [fv], [type])"),
+                "{texts:?}"
+            );
+            assert!(texts
+                .iter()
+                .any(|s| s == "PMT(rate, nper, pv, [fv], [type])"));
+        }
+
+        // Up/Down select, Esc closes and Enter then commits.
+        select(&mut app, MeasureId(102));
+        app.formula_buf.clear();
+        let id = "formula_edit";
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![egui::Event::Text("Qua".into())],
+        );
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::Enter)],
+        );
+        assert_eq!(
+            app.formula_buf, "Quantity",
+            "Enter accepts while the list is up"
+        );
+        assert_eq!(app.status, "", "and does not commit");
+        let typed = egui::Event::Text(" * S".into());
+        let _ = edit_frame(&ctx, &mut app, id, &mut t, vec![typed]);
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::ArrowDown)],
+        );
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::ArrowUp)],
+        );
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::ArrowDown)],
+        );
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::Escape)],
+        );
+        assert_eq!(app.formula_buf, "Quantity * S", "Esc only closed the list");
+        let second = crate::completion::offer(&app.model, "Quantity * S", 12)[1]
+            .insert
+            .clone();
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::Backspace)],
+        );
+        let typed = egui::Event::Text("S".into());
+        let _ = edit_frame(&ctx, &mut app, id, &mut t, vec![typed]);
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::ArrowDown)],
+        );
+        let _ = edit_frame(&ctx, &mut app, id, &mut t, vec![key_event(egui::Key::Tab)]);
+        assert_eq!(
+            app.formula_buf,
+            format!("Quantity * {second}"),
+            "Down chose the second"
+        );
+        app.formula_buf = "Quantity * 2".into();
+        let _ = edit_frame(
+            &ctx,
+            &mut app,
+            id,
+            &mut t,
+            vec![key_event(egui::Key::Enter)],
+        );
+        assert_eq!(app.status, "formula updated");
     }
 
     /// A bad `Name = formula` line keeps its text, and its error is located

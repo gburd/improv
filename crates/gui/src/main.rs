@@ -11,6 +11,7 @@
 
 mod app;
 mod chart;
+mod completion;
 mod csv_wizard;
 mod diagnostics;
 mod formula_highlight;

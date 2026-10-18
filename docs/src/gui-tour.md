@@ -114,6 +114,28 @@ into the formula you were editing (the selected row's, else the
 
 ![The Functions window](./img/gui-function-help.png)
 
+## Autocomplete
+
+Both formula editors complete as you type. Start a name (`PM`, `Qua`, or a
+quoted `'Unit`) and a list drops under the edit: matching functions with
+their signatures and a dimmed one-line description, then the model's
+measures and categories, at most eight. Up and Down move the selection;
+Tab or Enter accepts it, Esc closes the list. With the list closed, Enter
+commits the formula as before. Accepting a function writes `NAME(` with
+the caret after the `(`; a measure or category named with spaces is
+quoted for you (`'Unit Cost'`).
+
+While the caret is at the end of the text, the rest of the selected name
+and its parameters trail it in light gray (`PM` shows `T(rate, nper, pv,
+[fv], [type])`). Inside a call the parameters still to give trail it: after
+`PMT(0.05, ` they read `nper, pv, [fv], [type])`. A tooltip over the edit
+shows the signature with the argument the caret is in **bold and
+underlined**, the description and the category.
+
+![Completing PM](./img/gui-autocomplete.png)
+
+![Inside PMT: the current argument marked](./img/gui-signature.png)
+
 ## Formula errors
 
 When a formula fails, the place it fails is underlined in the editor, and
