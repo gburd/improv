@@ -55,6 +55,13 @@ File ▸ Revert to Saved / TUI `R` after a save conflict. CI's pg_improv,
 coverage and gui-shot jobs pass in `rust:1.97-trixie` (run with podman on
 kiwi). Then: P5 per-frame caches if profiling warrants; cut v0.8.0.
 
+Built-in functions (`docs/reviews/2026-10-16-builtin-functions-plan.md`):
+P1–P6 DONE, 418 functions from one registry (`core_model::functions`) that
+drives parser, typing, engine, GUI printer, CNL and `docs/src/functions.md`;
+typed errors, `^ & %`, German entry, dates, positions/recurrences, lookups,
+list results via `INTO`, `LET`/`LAMBDA`/`MAP`/`SCAN`/`REDUCE` (non-recursive:
+the language stays total). **NEXT:** P7 (engineering and the long tail).
+
 ## Released: v0.7.0 (2026-09-24)
 
 The reference-backed GUI reconstruction (all five plan steps) plus the
