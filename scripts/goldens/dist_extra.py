@@ -4,9 +4,10 @@
 Gnumeric 1.12.57's `ssconvert --recalc` is the reference for all of these
 (Gnumeric-only functions). It prints 17 significant digits, so the doubles
 round-trip exactly. A few rows are cross-checked against python3-mpmath
-(`checks`); the script fails if Gnumeric and mpmath disagree, except on the
-rows in `MPMATH_WINS`, where Gnumeric is known to lose digits and the
-mpmath value is the golden (source `mpmath`).
+(`checks`, to 1e-12 relative unless `CHECK_TOL` says otherwise); the script
+fails if Gnumeric and mpmath disagree. On the rows in `MPMATH_WINS`
+Gnumeric is known to lose digits, so the mpmath value is the golden (source
+`mpmath`) and Gnumeric need only agree to the tolerance given there.
 
 Usage: scripts/goldens/dist_extra.py > crates/engine/tests/data/dist_extra_goldens.tsv
 (needs `ssconvert` on PATH, or GNUMERIC_SSCONVERT naming it).
@@ -26,6 +27,30 @@ import subprocess
 import sys
 import tempfile
 from xml.sax.saxutils import escape
+
+# Where Gnumeric loses digits (formula -> how far it is allowed to be off,
+# relative to max(|x|, 1e-300); a negative bound is absolute):
+MPMATH_WINS = {
+    # pnorm2 clamps Φ(x2) − Φ(x1) between dx·φ(x2) and dx·φ(x1) when the
+    # tails nearly cancel, keeping ~8 digits.
+    "SNORM.DIST.RANGE(1,1.00000001)": 1e-8,
+    # Its qnorm at log_p = −1000 is 6e-14 off, which exp() grows 44×.
+    "R.QLNORM(-1000,0,1,TRUE,TRUE)": 1e-11,
+}
+# CUM_BIV_NORM_DIST: Gnumeric uses Drezner's 5-point Gauss rule (1978),
+# good to ~3e-7 absolute; Improv's Owen's-T form is exact, so its goldens are
+# mpmath's.
+BIVARIATE = [(0.5, 0.3, 0.4), (-0.5, -0.3, -0.4), (-0.5, 0.3, 0.4), (0.5, -0.3, 0.4),
+             (0.5, 0.3, -0.4), (0, 0, 0.5), (1, -1, 0), (-1, 0.5, -0.3), (0, 0.7, 0.3),
+             (-3, -2, 0.5), (2, 1, -0.9)]
+MPMATH_WINS.update({f"CUM_BIV_NORM_DIST({h},{k},{r})": -1e-6 for h, k, r in BIVARIATE})
+# A Gnumeric bug: where a·b·ρ > 0 with a, b of opposite signs its recursion
+# computes δ = (1 − sgn a · sgn b)/4 in integer arithmetic (0, not ½), so
+# the value is exactly ½ too high (0.582 > Φ(−1)).
+MPMATH_WINS["CUM_BIV_NORM_DIST(-1,0.5,-0.3)"] = None
+# LANDAU is Kölbig and Schorr's approximation (as Gnumeric has it), about
+# 9 digits off the true density.
+CHECK_TOL = {f"LANDAU({x})": 1e-8 for x in (0.34, -3, -1, 2, 7, 20)}
 
 ROWS = [
     # --- Gnumeric's extra distributions ---
@@ -153,14 +178,16 @@ ROWS = [
     "R.QPOIS(0.3,2.5)", "R.QPOIS(0.3,2.5,FALSE)", "R.QPOIS(-0.01,2.5,FALSE,TRUE)",
     "R.QPOIS(0,2.5)", "R.QPOIS(0.5,0)", "R.QPOIS(1,3)", "R.QPOIS(0.3,-1)",
     "R.QPOIS(0.5,0.6931471805599453)",
+    # --- the special cases: Landau, Owen's T, bivariate normal ---
+    "LANDAU(0.34)", "LANDAU(-6)", "LANDAU(-3)", "LANDAU(-1)", "LANDAU(2)", "LANDAU(7)",
+    "LANDAU(20)", "LANDAU(100)", "LANDAU(400)",
+    "OWENT(0.5,0.7)", "OWENT(0.5,-0.7)", "OWENT(-0.5,2)", "OWENT(0,0.5)", "OWENT(1,1)",
+    "OWENT(1,0)", "OWENT(3,0.2)", "OWENT(0.01,0.5)", "OWENT(5,0.95)", "OWENT(2,0.999999)",
+    "OWENT(0.3,5)", "OWENT(2,5)", "OWENT(8,0.5)",
+] + [f"CUM_BIV_NORM_DIST({h},{k},{r})" for h, k, r in BIVARIATE] + [
+    "CUM_BIV_NORM_DIST(0.5,0.3,1)", "CUM_BIV_NORM_DIST(0.5,0.3,-1.2)",
 ]
 
-
-# Gnumeric's pnorm2 clamps Φ(x2) − Φ(x1) between dx·φ(x2) and dx·φ(x1) when
-# the tails nearly cancel, so it keeps only ~8 digits (2.4197072123754992e-9;
-# the exact value is 2.4197072183871969e-9).
-# Its qnorm for log_p = −1000 is 6e-14 off, which exp() in qlnorm grows 44×.
-MPMATH_WINS = {"SNORM.DIST.RANGE(1,1.00000001)", "R.QLNORM(-1000,0,1,TRUE,TRUE)"}
 
 
 def checks():
@@ -168,6 +195,23 @@ def checks():
     import mpmath as mp
     mp.mp.dps = 30
     phi = lambda z: mp.ncdf(z)
+
+    def owen(h, a):
+        h, a = mp.mpf(h), mp.mpf(a)
+        return mp.quad(lambda x: mp.exp(-h * h * (1 + x * x) / 2) / (1 + x * x), [0, a]) / (2 * mp.pi)
+
+    def bivariate(h, k, r):
+        s = mp.sqrt(1 - mp.mpf(r) ** 2)
+        return mp.quad(lambda x: mp.npdf(x) * phi((k - r * x) / s), [-mp.inf, h])
+
+    def landau(x):
+        f = lambda t: mp.exp(-t * mp.log(t) - x * t) * mp.sin(mp.pi * t)
+        return mp.quad(f, [0, 1, 5, 20, mp.inf]) / mp.pi
+
+    extra = {f"CUM_BIV_NORM_DIST({h},{k},{r})": bivariate(h, k, r) for h, k, r in BIVARIATE}
+    extra.update({f"LANDAU({x})": landau(x) for x in (0.34, -3, -1, 2, 7, 20)})
+    extra.update({f"OWENT({h},{a})": owen(h, a) for h, a in
+                  ((0.5, 0.7), (-0.5, 2), (3, 0.2), (5, 0.95), (2, 0.999999), (0.3, 5), (8, 0.5))})
     q1000 = mp.findroot(lambda z: mp.log(phi(z)) + 1000, mp.mpf(-44.6), tol=1e-40)
     return {
         "CAUCHY(0.43,1,TRUE)": 0.5 - mp.atan(0.43) / mp.pi,
@@ -188,6 +232,7 @@ def checks():
         "R.PHYPER(2,30,20,10,FALSE,TRUE)": mp.log(1 - sum(
             mp.binomial(30, k) * mp.binomial(20, 10 - k) for k in range(3)) / mp.binomial(50, 10)),
         "R.PT(-1,3,TRUE,TRUE)": mp.log(mp.betainc(1.5, 0.5, 0, mp.mpf(3) / 4, regularized=True) / 2),
+        **extra,
     }
 
 
@@ -220,12 +265,13 @@ def main():
     source = {}
     for f, want in checks().items():
         g, want = got[f], float(want)
-        if abs(g - want) <= 1e-12 * max(abs(want), 1e-300):
-            continue
-        if f not in MPMATH_WINS:
+        tol = MPMATH_WINS.get(f, CHECK_TOL.get(f, 1e-12))
+        if tol is None:
+            print(f"Gnumeric bug: {f} = {g!r}, mpmath {want!r}", file=sys.stderr)
+        elif abs(g - want) > (-tol if tol < 0 else tol * max(abs(want), 1e-300)):
             raise SystemExit(f"Gnumeric and mpmath disagree: {f} = {g!r} vs {want!r}")
-        print(f"Gnumeric loses digits: {f} = {g!r}, mpmath {want!r}", file=sys.stderr)
-        got[f], source[f] = want, "mpmath"
+        if f in MPMATH_WINS:
+            got[f], source[f] = want, "mpmath"
     print("formula\texpected\tsource")
     for f, tol in rows:
         assert "\t" not in f and "^" not in f, f

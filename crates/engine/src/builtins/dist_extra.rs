@@ -90,7 +90,14 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
             let (u, w) = (v / s, lo / s);
             ok_num(u / s * ((w + u) * (w - u) / 2.0).exp())
         }
+        1554 => ok_num(landau(x(0)?)),
         1560 => ok_num(norm_range(x(0)?, x(1)?)),
+        1561 => ok_num(owen_t(x(0)?, x(1)?)),
+        1562 => {
+            let (h, k, rho) = (x(0)?, x(1)?, x(2)?);
+            domain(rho.abs() < 1.0)?;
+            ok_num(biv_norm(h, k, rho))
+        }
         1600..=1656 => r_style(id, a),
         _ => Err(err::NAME),
     }
@@ -988,12 +995,216 @@ fn norm_range(x1: f64, x2: f64) -> f64 {
     }
     // The tails nearly cancel, so the interval is narrow (the density falls
     // by at most e^(-1/32) across it): Gauss–Legendre integrates it exactly.
-    let (c, h) = ((x1 + x2) / 2.0, (x2 - x1) / 2.0);
-    let phi = |z: f64| (-z * z / 2.0).exp() / (2.0 * PI).sqrt();
-    h * GL16
+    gauss_legendre(&st::norm_pdf, x1, x2)
+}
+
+/// The Landau density, by Kölbig and Schorr's rational approximations
+/// (CERNLIB's DENLAN, "A program package for the Landau distribution",
+/// Comp. Phys. Comm. 31 (1984) 97), as Gnumeric has it: about 9 digits.
+fn landau(v: f64) -> f64 {
+    // A ratio of quartics in t, p and q low order first.
+    let ratio = |p: [f64; 5], q: [f64; 5], t: f64| {
+        let poly = |c: [f64; 5]| c[0] + (c[1] + (c[2] + (c[3] + c[4] * t) * t) * t) * t;
+        poly(p) / poly(q)
+    };
+    if v < -5.5 {
+        let u = (v + 1.0).exp();
+        let a = [0.416_666_666_7e-1, -0.199_652_777_8e-1, 0.270_953_896_6e-1];
+        0.398_942_280_3 * ((-1.0 / u).exp() / u.sqrt()) * (1.0 + (a[0] + (a[1] + a[2] * u) * u) * u)
+    } else if v < -1.0 {
+        let u = (-v - 1.0).exp();
+        (-u).exp()
+            * u.sqrt()
+            * ratio(
+                [
+                    0.425_989_487_5,
+                    -0.124_976_255,
+                    0.398_424_37e-1,
+                    -0.629_828_763_5e-2,
+                    0.151_116_225_3e-2,
+                ],
+                [
+                    1.0,
+                    -0.338_826_062_9,
+                    0.959_439_332_3e-1,
+                    -0.160_804_228_3e-1,
+                    0.377_894_206_3e-2,
+                ],
+                v,
+            )
+    } else if v < 1.0 {
+        ratio(
+            [
+                0.178_854_160_9,
+                0.117_395_740_3,
+                0.148_885_051_8e-1,
+                -0.139_498_941_1e-2,
+                0.128_361_721_1e-3,
+            ],
+            [
+                1.0,
+                0.742_879_508_2,
+                0.315_393_296_1,
+                0.669_421_954_8e-1,
+                0.879_060_971_4e-2,
+            ],
+            v,
+        )
+    } else if v < 5.0 {
+        ratio(
+            [
+                0.178_854_450_3,
+                0.935_916_166_2e-1,
+                0.632_538_765_4e-2,
+                0.661_166_731_9e-4,
+                -0.203_104_910_1e-5,
+            ],
+            [
+                1.0,
+                0.609_780_992_1,
+                0.256_061_666_5,
+                0.474_672_238_4e-1,
+                0.695_730_167_5e-2,
+            ],
+            v,
+        )
+    } else if v < 300.0 {
+        let u = 1.0 / v;
+        let (p, q) = if v < 12.0 {
+            (
+                [
+                    0.987_405_440_7,
+                    0.118_672_327_3e3,
+                    0.849_279_436e3,
+                    -0.743_779_244_4e3,
+                    0.427_026_218_6e3,
+                ],
+                [
+                    1.0,
+                    0.106_861_596_1e3,
+                    0.337_649_621_4e3,
+                    0.201_671_238_9e4,
+                    0.159_706_351_1e4,
+                ],
+            )
+        } else if v < 50.0 {
+            (
+                [
+                    0.100_367_507_4e1,
+                    0.167_570_243_4e3,
+                    0.478_971_128_9e4,
+                    0.212_178_676_7e5,
+                    -0.223_249_491e5,
+                ],
+                [
+                    1.0,
+                    0.156_942_453_7e3,
+                    0.374_531_048_8e4,
+                    0.983_469_887_6e4,
+                    0.669_242_835_7e5,
+                ],
+            )
+        } else {
+            (
+                [
+                    0.100_082_761_9e1,
+                    0.664_914_313_6e3,
+                    0.629_729_266_5e5,
+                    0.475_554_699_8e6,
+                    -0.574_360_910_9e7,
+                ],
+                [
+                    1.0,
+                    0.651_410_109_8e3,
+                    0.569_747_333_3e5,
+                    0.165_917_472_5e6,
+                    -0.281_575_993_9e7,
+                ],
+            )
+        };
+        u * u * ratio(p, q, u)
+    } else {
+        let u = 1.0 / (v - v * v.ln() / (v + 1.0));
+        u * u * (1.0 + (-0.184_556_867e1 + -0.428_464_074_3e1 * u) * u)
+    }
+}
+
+/// Owen's T function T(h, a) = (1/2π) ∫₀ᵃ exp(−h²(1 + x²)/2) / (1 + x²) dx:
+/// even in h, odd in a; for |a| > 1 through Owen's identity
+/// T(h, a) = ½Q(h)(1 − Q(ah)) + ½Q(ah)(1 − Q(h)) − T(ah, 1/a) (Q the normal
+/// right tail), so the integral only ever runs over a ≤ 1.
+fn owen_t(h: f64, a: f64) -> f64 {
+    if h.is_nan() || a.is_nan() {
+        return NAN;
+    }
+    let (h, aa) = (h.abs(), a.abs());
+    let v = if aa == 0.0 {
+        0.0
+    } else if h == 0.0 {
+        aa.atan() / (2.0 * PI)
+    } else if aa <= 1.0 {
+        owen_t_quad(h, aa)
+    } else {
+        let (q1, q2) = (st::norm_cdf(-h), st::norm_cdf(-aa * h));
+        0.5 * q1 * (1.0 - q2) + 0.5 * q2 * (1.0 - q1) - owen_t_quad(aa * h, 1.0 / aa)
+    };
+    if a < 0.0 {
+        -v
+    } else {
+        v
+    }
+}
+
+/// T(h, a) for h > 0, 0 ≤ a ≤ 1: e^(−h²/2)/(2π) ∫₀ᵃ e^(−h²x²/2)/(1 + x²) dx
+/// by Gauss–Legendre on pieces no wider than ½ or 1/h (each piece is then
+/// smooth on its scale, so 16 points reach the last bit). Past x = 40/h the
+/// integrand is below e^(−800).
+fn owen_t_quad(h: f64, a: f64) -> f64 {
+    let top = a.min(40.0 / h);
+    if top <= 0.0 || h.is_infinite() {
+        return 0.0;
+    }
+    let pieces = (top * h.max(2.0)).ceil();
+    let w = top / pieces;
+    let f = |x: f64| (-0.5 * h * h * x * x).exp() / (1.0 + x * x);
+    let mut sum = 0.0;
+    let mut i = 0.0;
+    while i < pieces {
+        sum += gauss_legendre(&f, i * w, (i + 1.0) * w);
+        i += 1.0;
+    }
+    (-0.5 * h * h).exp() / (2.0 * PI) * sum
+}
+
+/// ∫ f over [lo, hi] by 16-point Gauss–Legendre.
+fn gauss_legendre(f: &impl Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
+    let (c, r) = ((lo + hi) / 2.0, (hi - lo) / 2.0);
+    r * GL16
         .iter()
-        .map(|&(t, w)| w * (phi(c - h * t) + phi(c + h * t)))
+        .map(|&(t, w)| w * (f(c - r * t) + f(c + r * t)))
         .sum::<f64>()
+}
+
+/// The standard bivariate normal P(X ≤ h, Y ≤ k) of correlation |ρ| < 1, by
+/// Owen's formula ½Φ(h) + ½Φ(k) − T(h, a_h) − T(k, a_k) − β, a_h =
+/// (k − ρh)/(h√(1 − ρ²)) and a_k likewise, β = ½ when h and k fall on
+/// opposite sides of 0 (Gnumeric uses Drezner's 5-point rule, good to about
+/// 1e-8).
+fn biv_norm(h: f64, k: f64, rho: f64) -> f64 {
+    if h == 0.0 && k == 0.0 {
+        return 0.25 + rho.asin() / (2.0 * PI);
+    }
+    let s = (1.0 - rho * rho).sqrt();
+    let beta = if h * k > 0.0 || (h * k == 0.0 && h + k >= 0.0) {
+        0.0
+    } else {
+        0.5
+    };
+    let v = 0.5 * (st::norm_cdf(h) + st::norm_cdf(k))
+        - owen_t(h, (k - rho * h) / (h * s))
+        - owen_t(k, (h - rho * k) / (k * s))
+        - beta;
+    v.clamp(0.0, 1.0)
 }
 
 /// The 16-point Gauss–Legendre nodes t > 0 and weights on [−1, 1] (each node
@@ -1136,6 +1347,21 @@ mod tests {
         assert!(t(1.0, &[0.0], Op::D(false)).is_nan());
         assert!(t(1.0, &[3.0], Op::Q(tail(-800.0, true, true))).is_nan());
         assert_eq!(t(0.0, &[3.0], q(0.5)).to_bits(), 0f64.to_bits());
+    }
+
+    #[test]
+    fn owen_t_and_bivariate_edges() {
+        assert!(owen_t(f64::NAN, 0.5).is_nan());
+        assert_eq!(owen_t(INF, 0.5), 0.0);
+        assert_eq!(owen_t_quad(1.0, 0.0), 0.0);
+        // T(h, 1) = ½Φ(h)(1 − Φ(h)).
+        let p = st::norm_cdf(1.3);
+        assert!((owen_t(1.3, 1.0) - 0.5 * p * (1.0 - p)).abs() < 1e-16);
+        // Independence: the product of the margins.
+        let want = st::norm_cdf(0.4) * st::norm_cdf(-0.7);
+        assert!((biv_norm(0.4, -0.7, 0.0) - want).abs() < 1e-16);
+        assert!((biv_norm(0.0, -0.7, 0.2) - biv_norm(-0.7, 0.0, 0.2)).abs() < 1e-16);
+        assert_eq!(call(1562, &nums(&[0.1, 0.2, 1.0])), Err(err::NUM));
     }
 
     #[test]

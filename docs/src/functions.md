@@ -491,12 +491,15 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CAUCHY(number, number, boolean)` | number | the Cauchy distribution of scale a at x: density, or (as Gnumeric) the right tail P(X > x) |
 | `EXPPOWDIST(number, number, number)` | number | the exponential-power density of scale a and exponent b at x |
 | `GEOMDIST(number, number, boolean)` | number | the geometric probability of k failures before the first success: P(K = k), or P(K ≤ k) |
+| `LANDAU(number)` | number | the Landau density at x (Kölbig and Schorr's approximation, about 9 digits) |
 | `LAPLACE(number, number)` | number | the Laplace density of width a at x |
 | `LOGISTIC(number, number)` | number | the logistic density of scale a at x |
 | `PARETO(number, number, number)` | number | the Pareto density of exponent a and scale b at x |
 | `RAYLEIGH(number, number)` | number | the Rayleigh density of scale σ at x |
 | `RAYLEIGHTAIL(number, number, number)` | number | the Rayleigh tail density (lower limit a, scale σ) at x |
 | `SNORM.DIST.RANGE(number, number)` | number | Φ(x2) − Φ(x1): the standard normal probability between x1 and x2 |
+| `OWENT(number, number)` | number | Owen's T function T(h, a) |
+| `CUM_BIV_NORM_DIST(number, number, number)` | number | the standard bivariate normal P(X ≤ a, Y ≤ b) with correlation ρ, |ρ| < 1 |
 | `R.DBETA(number, number, number, [boolean])` | number | the density at x of the beta distribution of shapes a and b, or its logarithm (give_log) |
 | `R.PBETA(number, number, number, [boolean], [boolean])` | number | P(X ≤ x) for the beta distribution of shapes a and b, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
 | `R.QBETA(number, number, number, [boolean], [boolean])` | number | the quantile of the beta distribution of shapes a and b: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
