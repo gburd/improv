@@ -338,6 +338,11 @@ Fit  = LINEST(Sales, Price, Promo OVER Week, TRUE, TRUE INTO StatRow, StatCol)
 Grid = SORT(Sales OVER Week INTO Row, Col)
 ```
 
+**Matrices** are a measure over two categories: `MDETERM(A OVER R, C)`.
+Matrix results (`MINVERSE`, `MPSEUDOINVERSE`, `CHOLESKY`, `EIGEN`) come
+row by row, so `INTO R2, C2` lays them out as a block:
+`Inv = MINVERSE(A OVER R, C INTO R2, C2)`.
+
 `LINEST` and `LOGEST` take any number of x's (every measure before the
 options is reduced): the coefficients come last x first, then b, and with
 `stats` Excel's 5 × (k + 1) block. `SORTBY(x, by1 OVER T, order1, by2,
@@ -596,4 +601,7 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - `TEXTSPLIT` takes no row delimiter; `LINEST` with several x's refuses
   collinear x's (#NUM!) rather than dropping them as Excel does;
 - named LAMBDAs are defined with `improv define` (no GUI editor yet);
+- no `MMULT` or `LINSOLVE`: they need measures over partly shared
+  categories in one reduction; `FORECAST.ETS.CONFINT` is #N/A for seasonal
+  models (LibreOffice's interval is a random simulation);
 - `NETWORKDAYS` and `WORKDAY` take no holiday list yet.

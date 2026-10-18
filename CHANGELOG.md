@@ -13,6 +13,17 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Analysis reductions** (phase P7, 30): matrices as a measure over two
+  categories (`MDETERM(A OVER R, C)`, `LOGMDETERM`, `MINVERSE`,
+  `MPSEUDOINVERSE`, `CHOLESKY`, `EIGEN`, `LEVERAGE`; results row by row,
+  `INTO R2, C2` for a block); time series (`HPFILTER`, `INTERPOLATION`,
+  `FOURIER`, `PERIODOGRAM`); `SSMEDIAN`, `CRONBACH`, `LOGREG`, `LOGFIT`;
+  the normality tests `ADTEST`, `CVMTEST`, `LKSTEST`, `SFTEST` and their
+  `.STAT` statistics; `FORECAST.ETS` (`.ADD`), `.MULT`, `.STAT`,
+  `.STAT.MULT`, `.SEASONALITY`, a port of LibreOffice's Holt–Winters, and
+  `.CONFINT`/`.PI.MULT` for seasonality 0. 289 goldens (Gnumeric 1.12,
+  LibreOffice), most to 1e-12.
+
 - **Math extras** (phase P7, 46): `LAMBERTW`, `AGM`, `GD`, `ILOG`,
   `REDUCEPI`, `FIB`; number theory (`ISPRIME`, `ITHPRIME`, `PFACTOR`,
   `NT_D`, `NT_SIGMA`, `NT_PHI`, `NT_MU`, `NT_OMEGA`, `NT_PI`, `NT_RADICAL`,
