@@ -432,6 +432,21 @@ pub fn decode(ds: &[u8], r: u32) -> (res: Option<i64>)
     Some(v)
 }
 
+/// The round trip, as one statement: for every `v` in range, [`encode`]
+/// succeeds and [`decode`] of its digits gives `v` back.
+pub fn round_trip(v: i64, r: u32) -> (ok: bool)
+    requires
+        tc_radix(r),
+        -(pw(r as nat, 10) as int / 2) <= v < pw(r as nat, 10) as int / 2,
+    ensures
+        ok,
+{
+    match encode(v, r) {
+        Some(ds) => decode(&ds, r) == Some(v),
+        None => false,
+    }
+}
+
 } // verus!
 
 #[cfg(test)]
@@ -454,6 +469,7 @@ mod tests {
             for v in [-half, -1, 0, 1, half - 1] {
                 let ds = encode(v, r).unwrap();
                 assert_eq!(decode(&ds, r), Some(v), "{v} in radix {r}");
+                assert!(round_trip(v, r));
             }
             assert_eq!(encode(half, r), None);
             assert_eq!(encode(-half - 1, r), None);
