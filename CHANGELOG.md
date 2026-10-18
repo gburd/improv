@@ -277,6 +277,12 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Changed
 
+- **Every function names its parameters** in signature help and the
+  Function Reference, instead of their types: Excel's argument names where
+  Excel has the function, else LibreOffice's, Gnumeric's or R's
+  (`ROUND(number, [num_digits=0])`, `SUMIF(range OVER T, criteria,
+  [sum_range])`, `SORT(array OVER T, [sort_order=1] INTO K)`).
+
 - **Dimension errors say what and why**, by name: `A ranges over [Month]
   and B over [Region]: they share no category, so no cell has both …
   Reduce one first, e.g. SUM(B OVER Region), or give them a category in
