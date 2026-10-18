@@ -6,6 +6,7 @@ use super::{domain, err, n, n_or, ok_num, ok_text, t, R};
 use crate::CellValue;
 
 mod complex;
+mod convert;
 
 /// 2⁴⁸: the bit functions' exclusive bound.
 const BIT_LIMIT: f64 = 281_474_976_710_656.0;
@@ -53,6 +54,7 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
         1320 => ok_num(f64::from(u8::from(x(0)? == n_or(a, 1, 0.0)?))),
         1321 => ok_num(f64::from(u8::from(x(0)? >= n_or(a, 1, 0.0)?))),
         1330..=1374 => complex::eval(id, a),
+        1390 => convert::eval(a),
         1380..=1383 => {
             let (v, order) = (x(0)?, x(1)?.trunc());
             domain((0.0..2_147_483_648.0).contains(&order))?;

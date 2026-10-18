@@ -18,6 +18,7 @@ engineering_gnumeric.json are used (refresh with `--record`).
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -179,12 +180,56 @@ for f in ["BESSELJ(1.9,2)", "BESSELJ(1.9,2.9)", "BESSELJ(-1.9,1)", "BESSELJ(0,0)
     lo(f)
     TOL[f] = 1e-9
 
+# --- CONVERT ----------------------------------------------------------------
+# Products disagree on some sizes in the 6th or 7th digit (LibreOffice's pound
+# is 453.5923097 g, its slug, IT calorie and BTU are older approximations; Improv
+# uses the exact definitions: 453.59237 g, lbf·s²/ft, 4.1868 J, 1055.05585262 J),
+# so these rows hold to 1e-5 relative.
+for f in ['CONVERT(1,"lbm","kg")', 'CONVERT(68,"F","C")', 'CONVERT(2.5,"ft","sec")',
+          'CONVERT(1,"g","m")', 'CONVERT(1,"xyz","m")', 'CONVERT(1,"kmi","m")',
+          'CONVERT(1,"mibit","bit")', 'CONVERT(10,"ozm","g")', 'CONVERT(1,"stone","lbm")',
+          'CONVERT(1,"LTON","ton")', 'CONVERT(1,"sg","kg")', 'CONVERT(1,"u","g")',
+          'CONVERT(5.8,"m","in")', 'CONVERT(1,"mi","km")', 'CONVERT(1,"Nmi","ft")',
+          'CONVERT(72,"Pica","in")',
+          'CONVERT(1,"pica","Pica")', 'CONVERT(1,"survey_mi","mi")', 'CONVERT(1,"dam","m")',
+          'CONVERT(1,"yr","day")', 'CONVERT(90,"mn","hr")', 'CONVERT(1,"ms","s")',
+          'CONVERT(1,"atm","Pa")', 'CONVERT(1,"atm","mmHg")', 'CONVERT(1,"psi","kPa")',
+          'CONVERT(1,"lbf","N")', 'CONVERT(1,"N","dyn")', 'CONVERT(1,"pond","N")',
+          'CONVERT(7.9,"cal","J")', 'CONVERT(1,"BTU","J")', 'CONVERT(1,"kWh","J")',
+          'CONVERT(1,"eV","J")', 'CONVERT(1,"HPh","J")', 'CONVERT(1,"flb","J")', 'CONVERT(1,"c","cal")',
+          'CONVERT(1,"HP","W")', 'CONVERT(1,"PS","W")', 'CONVERT(1,"T","ga")', 'CONVERT(1,"mT","ga")',
+          'CONVERT(100,"C","F")', 'CONVERT(0,"K","C")', 'CONVERT(32,"F","K")', 'CONVERT(100,"C","Reau")',
+          'CONVERT(491.67,"Rank","C")', 'CONVERT(1,"mK","K")', 'CONVERT(-500,"C","K")',
+          'CONVERT(1,"gal","l")', 'CONVERT(1,"uk_gal","l")', 'CONVERT(1,"cup","tsp")',
+          'CONVERT(1,"m3","l")', 'CONVERT(1,"ft3","in3")', 'CONVERT(1,"m^3","ft3")',
+          'CONVERT(1,"barrel","gal")', 'CONVERT(1,"ml","tspm")',
+          'CONVERT(1,"cm3","ml")',
+          'CONVERT(1,"m2","ft2")', 'CONVERT(1,"mm2","m2")', 'CONVERT(1,"ha","ar")',
+          'CONVERT(1,"uk_acre","m2")', 'CONVERT(1,"us_acre","m2")', 'CONVERT(1,"Morgen","ha")',
+          'CONVERT(1,"m^2","ft2")',
+          'CONVERT(1,"byte","bit")', 'CONVERT(1,"Gibyte","bit")', 'CONVERT(1,"kibyte","kbyte")',
+          'CONVERT(3,"Yibyte","bit")', 'CONVERT(1,"cbyte","bit")',
+          'CONVERT(1,"kn","m/s")', 'CONVERT(100,"km/h","mph")',
+          'CONVERT(1,"m/s","m/hr")']:
+    lo(f)
+    TOL[f] = 1e-5
+lo('CONVERT(1,"Torr","Pa")')
+TOL['CONVERT(1,"Torr","Pa")'] = 1e-5
+# LibreOffice's light-year (9.4605e15 m), parsec, measurement ton (0.00025 GRT)
+# and admiralty knot (0.9999999 kn) are wrong; Gnumeric's match the definitions.
+for f in ['CONVERT(1,"ly","m")', 'CONVERT(1,"ly","km")', 'CONVERT(1,"pc","ly")',
+          'CONVERT(1,"MTON","GRT")', 'CONVERT(1,"admkn","kn")']:
+    gn(f, "num", 1e-6)
+# Excel documents "p" for the pascal and "Picapt" for the pica point; LibreOffice lacks both.
+lo('CONVERT(1,"p","Pa")', excel=1)
+lo('CONVERT(1,"Picapt","in")', excel={"approx": 1 / 72, "tol": 1e-12})
+
 # --- runners ----------------------------------------------------------------
 def map_error(f, shown):
     if shown in p1.LO_ERRORS:
         return err(shown)
     if shown == "Err:502":
-        return NUM
+        return NA if f.startswith("CONVERT(") else NUM
     if shown == "Err:504":
         return VALUE
     raise SystemExit(f"unmapped LibreOffice error {shown} for {f}")
@@ -268,7 +313,8 @@ def main():
             v = {"approx": v, "tol": tol}
         rows.append((f, v, "Gnumeric 1.12"))
     for f, _, _ in rows:
-        assert "\t" not in f and "^" not in f, f
+        # No ^ operator (a unit string such as "m^3" is fine).
+        assert "\t" not in f and "^" not in re.sub(r'"[^"]*"', "", f), f
     print("formula\texpected\tsource")
     for f, v, s in rows:
         print(f"{f}\t{p1.fmt(v)}\t{s}")

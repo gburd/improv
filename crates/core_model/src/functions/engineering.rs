@@ -34,6 +34,8 @@ pub(super) static ENGINEERING: &[FnDef] = &[
     s(1317, "BITXOR", C::Engineering, &[N, N], V::Number, "bitwise exclusive or"),
     s(1318, "BITLSHIFT", C::Engineering, &[N, N], V::Number, "shifted left by `shift` bits (right if negative), |shift| ≤ 53"),
     s(1319, "BITRSHIFT", C::Engineering, &[N, N], V::Number, "shifted right by `shift` bits (left if negative), |shift| ≤ 53"),
+    // --- units ---
+    s(1390, "CONVERT", C::Engineering, &[N, T, T], V::Number, "a measurement converted between units of Excel's table (SI and binary prefixes allowed); #N/A for unknown or mismatched units"),
     // --- tests ---
     so(1320, "DELTA", C::Engineering, &[N, N], 1, V::Number, "1 if the numbers are equal (b defaults to 0), else 0"),
     so(1321, "GESTEP", C::Engineering, &[N, N], 1, V::Number, "1 if x ≥ step (default 0), else 0"),

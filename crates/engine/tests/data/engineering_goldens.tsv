@@ -270,6 +270,79 @@ BESSELY(1,5)	{"approx": -260.4058666258123, "tol": 1e-09}	LibreOffice
 BESSELY(-1,1)	{"error": "#NUM!"}	LibreOffice
 BESSELY(1,-1)	{"error": "#NUM!"}	LibreOffice
 BESSELY(100,2)	{"approx": 0.07683686712502787, "tol": 1e-09}	LibreOffice
+CONVERT(1,"lbm","kg")	{"approx": 0.45359230974881065, "tol": 1e-05}	LibreOffice
+CONVERT(68,"F","C")	{"approx": 20.0, "tol": 1e-05}	LibreOffice
+CONVERT(2.5,"ft","sec")	{"error": "#N/A"}	LibreOffice
+CONVERT(1,"g","m")	{"error": "#N/A"}	LibreOffice
+CONVERT(1,"xyz","m")	{"error": "#N/A"}	LibreOffice
+CONVERT(1,"kmi","m")	{"error": "#N/A"}	LibreOffice
+CONVERT(1,"mibit","bit")	{"error": "#N/A"}	LibreOffice
+CONVERT(10,"ozm","g")	{"approx": 283.49515207973195, "tol": 1e-05}	LibreOffice
+CONVERT(1,"stone","lbm")	{"approx": 14.000005808559816, "tol": 1e-05}	LibreOffice
+CONVERT(1,"LTON","ton")	{"approx": 1.1199996840862367, "tol": 1e-05}	LibreOffice
+CONVERT(1,"sg","kg")	{"approx": 14.593842418928725, "tol": 1e-05}	LibreOffice
+CONVERT(1,"u","g")	{"approx": 1.6605401039531317e-24, "tol": 1e-05}	LibreOffice
+CONVERT(5.8,"m","in")	{"approx": 228.3464566929134, "tol": 1e-05}	LibreOffice
+CONVERT(1,"mi","km")	{"approx": 1.609344, "tol": 1e-05}	LibreOffice
+CONVERT(1,"Nmi","ft")	{"approx": 6076.115485564304, "tol": 1e-05}	LibreOffice
+CONVERT(72,"Pica","in")	{"approx": 1.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"pica","Pica")	{"approx": 11.999999999997199, "tol": 1e-05}	LibreOffice
+CONVERT(1,"survey_mi","mi")	{"approx": 1.000002000004, "tol": 1e-05}	LibreOffice
+CONVERT(1,"dam","m")	{"approx": 10.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"yr","day")	{"approx": 365.25, "tol": 1e-05}	LibreOffice
+CONVERT(90,"mn","hr")	{"approx": 1.5, "tol": 1e-05}	LibreOffice
+CONVERT(1,"ms","s")	{"approx": 0.001, "tol": 1e-05}	LibreOffice
+CONVERT(1,"atm","Pa")	{"approx": 101324.99658300001, "tol": 1e-05}	LibreOffice
+CONVERT(1,"atm","mmHg")	{"approx": 760.0000000000003, "tol": 1e-05}	LibreOffice
+CONVERT(1,"psi","kPa")	{"approx": 6.894759086775369, "tol": 1e-05}	LibreOffice
+CONVERT(1,"lbf","N")	{"approx": 4.448222000000003, "tol": 1e-05}	LibreOffice
+CONVERT(1,"N","dyn")	{"approx": 100000.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"pond","N")	{"approx": 0.009806652048217348, "tol": 1e-05}	LibreOffice
+CONVERT(7.9,"cal","J")	{"approx": 33.075679284500424, "tol": 1e-05}	LibreOffice
+CONVERT(1,"BTU","J")	{"approx": 1055.0581378674885, "tol": 1e-05}	LibreOffice
+CONVERT(1,"kWh","J")	{"approx": 3600000.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"eV","J")	{"approx": 1.6021900014692083e-19, "tol": 1e-05}	LibreOffice
+CONVERT(1,"HPh","J")	{"approx": 2684519.717051622, "tol": 1e-05}	LibreOffice
+CONVERT(1,"flb","J")	{"approx": 0.04214000032364231, "tol": 1e-05}	LibreOffice
+CONVERT(1,"c","cal")	{"approx": 0.9993303152875601, "tol": 1e-05}	LibreOffice
+CONVERT(1,"HP","W")	{"approx": 745.6999214032282, "tol": 1e-05}	LibreOffice
+CONVERT(1,"PS","W")	{"approx": 735.4985429773864, "tol": 1e-05}	LibreOffice
+CONVERT(1,"T","ga")	{"approx": 10000.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"mT","ga")	{"approx": 10.0, "tol": 1e-05}	LibreOffice
+CONVERT(100,"C","F")	{"approx": 212.0, "tol": 1e-05}	LibreOffice
+CONVERT(0,"K","C")	{"approx": -273.15, "tol": 1e-05}	LibreOffice
+CONVERT(32,"F","K")	{"approx": 273.15, "tol": 1e-05}	LibreOffice
+CONVERT(100,"C","Reau")	{"approx": 80.0, "tol": 1e-05}	LibreOffice
+CONVERT(491.67,"Rank","C")	{"approx": 0.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"mK","K")	{"approx": 0.001, "tol": 1e-05}	LibreOffice
+CONVERT(-500,"C","K")	{"approx": -226.85000000000002, "tol": 1e-05}	LibreOffice
+CONVERT(1,"gal","l")	{"approx": 3.7854117839999994, "tol": 1e-05}	LibreOffice
+CONVERT(1,"uk_gal","l")	{"approx": 4.54609, "tol": 1e-05}	LibreOffice
+CONVERT(1,"cup","tsp")	{"approx": 48.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"m3","l")	{"approx": 1000.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"ft3","in3")	{"approx": 1728.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"m^3","ft3")	{"approx": 35.31466672148859, "tol": 1e-05}	LibreOffice
+CONVERT(1,"barrel","gal")	{"approx": 42.00000000000001, "tol": 1e-05}	LibreOffice
+CONVERT(1,"ml","tspm")	{"approx": 0.2, "tol": 1e-05}	LibreOffice
+CONVERT(1,"cm3","ml")	{"approx": 1.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"m2","ft2")	{"approx": 10.763910416709722, "tol": 1e-05}	LibreOffice
+CONVERT(1,"mm2","m2")	{"approx": 1e-06, "tol": 1e-05}	LibreOffice
+CONVERT(1,"ha","ar")	{"approx": 100.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"uk_acre","m2")	{"approx": 4046.8564224, "tol": 1e-05}	LibreOffice
+CONVERT(1,"us_acre","m2")	{"approx": 4046.872609874252, "tol": 1e-05}	LibreOffice
+CONVERT(1,"Morgen","ha")	{"approx": 0.25, "tol": 1e-05}	LibreOffice
+CONVERT(1,"m^2","ft2")	{"approx": 10.763910416709722, "tol": 1e-05}	LibreOffice
+CONVERT(1,"byte","bit")	{"approx": 8.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"Gibyte","bit")	{"approx": 8589934592.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"kibyte","kbyte")	{"approx": 1.024, "tol": 1e-05}	LibreOffice
+CONVERT(3,"Yibyte","bit")	{"approx": 2.90142196707511e+25, "tol": 1e-05}	LibreOffice
+CONVERT(1,"cbyte","bit")	{"approx": 0.08, "tol": 1e-05}	LibreOffice
+CONVERT(1,"kn","m/s")	{"approx": 0.5144444444444444, "tol": 1e-05}	LibreOffice
+CONVERT(100,"km/h","mph")	{"approx": 62.13711922373341, "tol": 1e-05}	LibreOffice
+CONVERT(1,"m/s","m/hr")	{"approx": 3600.0, "tol": 1e-05}	LibreOffice
+CONVERT(1,"Torr","Pa")	{"approx": 133.32199207587408, "tol": 1e-05}	LibreOffice
+CONVERT(1,"p","Pa")	1	Excel docs
+CONVERT(1,"Picapt","in")	{"approx": 0.013888888888888888, "tol": 1e-12}	Excel docs
 HEXREP(1)	"000000000000f03f"	Gnumeric 1.12
 HEXREP(-2.5)	"00000000000004c0"	Gnumeric 1.12
 HEXREP(0)	"0000000000000000"	Gnumeric 1.12
@@ -451,3 +524,8 @@ IMAGINARY(IMIGAMMA("0.5","-1"))	{"approx": 1.6504257587975428, "tol": 1e-13}	Gnu
 IMREAL(IMIGAMMA("1+i","40",FALSE))	{"approx": -5.230149528251621e-18, "tol": 1e-13}	Gnumeric 1.12
 IMAGINARY(IMIGAMMA("1+i","40",FALSE))	{"approx": -6.24144095760944e-18, "tol": 1e-13}	Gnumeric 1.12
 IMIGAMMA("0","2",TRUE,FALSE)	{"error": "#NUM!"}	Gnumeric 1.12
+CONVERT(1,"ly","m")	{"approx": 9460730472580800.0, "tol": 1e-06}	Gnumeric 1.12
+CONVERT(1,"ly","km")	{"approx": 9460730472580.8, "tol": 1e-06}	Gnumeric 1.12
+CONVERT(1,"pc","ly")	{"approx": 3.2615637967310738, "tol": 1e-06}	Gnumeric 1.12
+CONVERT(1,"MTON","GRT")	{"approx": 0.4, "tol": 1e-06}	Gnumeric 1.12
+CONVERT(1,"admkn","kn")	{"approx": 1.0006393088552916, "tol": 1e-06}	Gnumeric 1.12

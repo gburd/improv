@@ -556,6 +556,7 @@ Complex numbers are text, `"3+4i"` (suffix `i` or `j`); base conversions use 10-
 | `BITXOR(number, number)` | number | bitwise exclusive or |
 | `BITLSHIFT(number, number)` | number | shifted left by `shift` bits (right if negative), |shift| ≤ 53 |
 | `BITRSHIFT(number, number)` | number | shifted right by `shift` bits (left if negative), |shift| ≤ 53 |
+| `CONVERT(number, text, text)` | number | a measurement converted between units of Excel's table (SI and binary prefixes allowed); #N/A for unknown or mismatched units |
 | `DELTA(number, [number])` | number | 1 if the numbers are equal (b defaults to 0), else 0 |
 | `GESTEP(number, [number])` | number | 1 if x ≥ step (default 0), else 0 |
 | `COMPLEX(number, number, [text])` | text | the complex number re + im·i as text, with suffix "i" (default) or "j" |
