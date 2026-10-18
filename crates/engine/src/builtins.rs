@@ -1183,6 +1183,7 @@ mod tests {
         assert_eq!(call(205, &[n(3.0), n(0.0)]), n(0.0));
         assert_eq!(call(205, &[n(3.0), n(-1.0)]), e(err::NUM));
         assert_eq!(call(206, &[n(-5.5), n(2.0), n(1.0)]), n(-4.0));
+        assert_eq!(call(206, &[n(-5.5), n(2.0)]), n(-6.0));
         assert_eq!(call(206, &[n(5.0), n(0.0)]), n(0.0));
         assert_eq!(call(207, &[n(-5.5), n(2.0), n(1.0)]), n(-6.0));
         assert_eq!(call(207, &[n(5.0), n(0.0)]), n(0.0));
