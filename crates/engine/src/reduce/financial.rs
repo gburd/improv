@@ -308,6 +308,28 @@ mod tests {
         let root = bisect(|r| if r < 0.0 { f64::NAN } else { r - 0.5 }).unwrap();
         assert!((root - 0.5).abs() < 1e-15);
         assert_eq!(bisect(|_| 1.0), None);
+        // A sign change with no zero between (a jump at 1/3): bisection
+        // narrows to adjacent doubles and stops there.
+        let jump = bisect(|r| if r < 1.0 / 3.0 { -1.0 } else { 1.0 }).unwrap();
+        assert!((jump - 1.0 / 3.0).abs() <= f64::EPSILON);
+        // IRR: no sign change in the flows is #NUM! before any search
+        // (LibreOffice Err:523).
+        assert_eq!(
+            reduce(1152, &flows(&[1.0, 2.0, 3.0]), &[]),
+            CellValue::Err(err::NUM)
+        );
+        // An IRR whose Newton steps from a -100% guess land at a pole
+        // finds the root by bisection over the grid's defined rates
+        // (LibreOffice 1/3 and 2/7).
+        approx(reduce(1152, &flows(&[-3.0, 4.0]), &[n(-1.0)]), 1.0 / 3.0);
+        approx(reduce(1152, &flows(&[-7.0, 9.0]), &[n(-1.0)]), 2.0 / 7.0);
+        // -1 + 2·b⁻⁵² − b⁻⁵³ (b = 1 + r): at the grid's first rate both
+        // powers overflow (∞ − ∞, skipped), and the first sign change
+        // brackets the root just above -50% (u = 1/b solves 2u⁵² − u⁵³ = 1,
+        // u = 2 − 2⁻⁵² to double precision), not the root at 0.
+        let mut v = vec![0.0; 54];
+        (v[0], v[52], v[53]) = (-1.0, 2.0, -1.0);
+        approx(reduce(1152, &flows(&v), &[n(-1.0)]), -0.5);
     }
 
     #[test]
@@ -318,6 +340,8 @@ mod tests {
             vec![n(1100.0), day(46023)],
         ]);
         approx(reduce(1151, &r, &[n(0.1)]), 0.0);
+        // XNPV at -100% or below (LibreOffice Err:502, Excel #NUM!).
+        assert_eq!(reduce(1151, &r, &[n(-1.0)]), CellValue::Err(err::NUM));
         approx(reduce(1153, &r, &[]), 0.1);
         assert_eq!(reduce(1153, &r, &[n(-1.0)]), CellValue::Err(err::NUM));
         // A flow that is not a number, a date that is not a date.
