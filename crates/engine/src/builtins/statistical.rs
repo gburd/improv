@@ -824,6 +824,179 @@ mod tests {
         }
     }
 
+    /// Every distribution's value and #NUM! guards in this module's own
+    /// binary: (formula over literals, LibreOffice 25.2's result; Err:502
+    /// read as #NUM!, as the goldens do), evaluated through `eval`. The
+    /// rows marked Excel docs keep Excel's documented error where
+    /// LibreOffice answers (scripts/goldens/statistical.py's `excel=`).
+    #[test]
+    fn distributions_match_libreoffice() {
+        let rows: &[(&str, Result<f64, u8>)] = &[
+            ("BETA.DIST(0.4,2,3,TRUE)", Ok(0.5247999999999999)),
+            ("BETA.DIST(0.4,2,3,FALSE)", Ok(1.728)),
+            ("BETA.DIST(3,2,3,TRUE,2,5)", Ok(0.4074074074074075)),
+            ("BETA.DIST(0.4,0,3,TRUE)", Err(err::NUM)),
+            ("BETA.DIST(0.4,2,0,TRUE)", Err(err::NUM)),
+            ("BETA.DIST(0.4,2,3,TRUE,1,0)", Err(err::NUM)),
+            ("BETA.DIST(0.4,2,3,TRUE,0.5,1)", Err(err::NUM)),
+            ("BETA.DIST(1.4,2,3,TRUE)", Err(err::NUM)),
+            ("ERF(0.5,1.5)", Ok(0.44560526866226424)),
+            ("ERF(0.5)", Ok(0.5204998778130465)),
+            ("BETA.INV(0.4,2,3)", Ok(0.32916650337840775)),
+            ("BETA.INV(0,2,3)", Err(err::NUM)), // Excel docs (LibreOffice Ok(0.0))
+            ("BETA.INV(1.2,2,3)", Err(err::NUM)),
+            ("BETA.INV(0.4,0,3)", Err(err::NUM)),
+            ("BETA.INV(0.4,2,0)", Err(err::NUM)),
+            ("BETA.INV(0.4,2,3,1,1)", Err(err::NUM)),
+            ("BINOM.DIST(3,10,0.4,TRUE)", Ok(0.3822806015999998)),
+            ("BINOM.DIST(3,10,0.4,FALSE)", Ok(0.2149908479999999)),
+            ("BINOM.DIST(-1,10,0.4,FALSE)", Err(err::NUM)),
+            ("BINOM.DIST(11,10,0.4,FALSE)", Err(err::NUM)),
+            ("BINOM.DIST(3,10,1.4,FALSE)", Err(err::NUM)),
+            ("BINOM.INV(10,0.4,0.5)", Ok(4.0)),
+            ("BINOM.INV(-1,0.4,0.5)", Err(err::NUM)),
+            ("BINOM.INV(10,1.4,0.5)", Err(err::NUM)),
+            ("BINOM.INV(10,0.4,1.5)", Err(err::NUM)),
+            ("BINOM.DIST.RANGE(10,0.4,3)", Ok(0.2149908479999999)),
+            ("BINOM.DIST.RANGE(10,0.4,3,5)", Ok(0.6664716287999998)),
+            ("BINOM.DIST.RANGE(10,1.4,3)", Err(err::NUM)),
+            ("BINOM.DIST.RANGE(10,0.4,-1)", Err(err::NUM)),
+            ("BINOM.DIST.RANGE(10,0.4,5,3)", Err(err::NUM)),
+            ("BINOM.DIST.RANGE(10,0.4,3,11)", Err(err::NUM)),
+            ("CHISQ.DIST(2,3,TRUE)", Ok(0.42759329552912023)),
+            ("CHISQ.DIST(2,3,FALSE)", Ok(0.20755374871029736)),
+            ("CHISQ.DIST.RT(2,3)", Ok(0.5724067044708798)),
+            ("CHISQ.DIST(-2,3,TRUE)", Err(err::NUM)),
+            ("CHISQ.DIST(2,0,TRUE)", Err(err::NUM)),
+            ("CHISQ.INV(0.4,3)", Ok(1.8691684033887161)),
+            ("CHISQ.INV.RT(0.4,3)", Ok(2.946166073101949)),
+            ("CHISQ.INV(1.4,3)", Err(err::NUM)),
+            ("CHISQ.INV(0.4,0)", Err(err::NUM)),
+            ("EXPON.DIST(2,0.5,TRUE)", Ok(0.6321205588285577)),
+            ("EXPON.DIST(2,0.5,FALSE)", Ok(0.18393972058572117)),
+            ("EXPON.DIST(-2,0.5,TRUE)", Err(err::NUM)), // Excel docs (LibreOffice Ok(0.0))
+            ("EXPON.DIST(2,0,TRUE)", Err(err::NUM)),
+            ("F.DIST(2,3,4,TRUE)", Ok(0.7436128024718239)),
+            ("F.DIST(2,3,4,FALSE)", Ok(0.13942740046346697)),
+            ("F.DIST.RT(2,3,4)", Ok(0.25638719752817607)),
+            ("F.DIST(-2,3,4,TRUE)", Err(err::NUM)),
+            ("F.DIST(2,0,4,TRUE)", Err(err::NUM)),
+            ("F.DIST(2,3,0,TRUE)", Err(err::NUM)),
+            ("F.INV(0.4,3,4)", Ok(0.6985553545555817)),
+            ("F.INV.RT(0.4,3,4)", Ok(1.2605877191043346)),
+            ("F.INV(1.4,3,4)", Err(err::NUM)),
+            ("F.INV(0.4,0,4)", Err(err::NUM)),
+            ("F.INV(0.4,3,0)", Err(err::NUM)),
+            ("GAMMA.DIST(2,3,4,TRUE)", Ok(0.014387677966970689)),
+            ("GAMMA.DIST(2,3,4,FALSE)", Ok(0.018954083116019795)),
+            ("GAMMA.DIST(-2,3,4,TRUE)", Err(err::NUM)),
+            ("GAMMA.DIST(2,0,4,TRUE)", Err(err::NUM)),
+            ("GAMMA.DIST(2,3,0,TRUE)", Err(err::NUM)),
+            ("GAMMA.INV(0.4,3,4)", Ok(9.140307616013523)),
+            ("GAMMA.INV(1.4,3,4)", Err(err::NUM)),
+            ("GAMMA.INV(0.4,0,4)", Err(err::NUM)),
+            ("GAMMA.INV(0.4,3,0)", Err(err::NUM)),
+            ("HYPGEOM.DIST(2,5,4,20,TRUE)", Ok(0.9680082559339525)),
+            ("HYPGEOM.DIST(2,5,4,20,FALSE)", Ok(0.21671826625386992)),
+            ("HYPGEOM.DIST(2,5,4,0,FALSE)", Err(err::NUM)),
+            ("HYPGEOM.DIST(2,0,4,20,FALSE)", Err(err::NUM)),
+            ("HYPGEOM.DIST(2,25,4,20,FALSE)", Err(err::NUM)),
+            ("HYPGEOM.DIST(2,5,0,20,FALSE)", Err(err::NUM)), // Excel docs (LibreOffice Ok(0.0))
+            ("HYPGEOM.DIST(2,5,25,20,FALSE)", Err(err::NUM)),
+            ("HYPGEOM.DIST(0,18,4,20,FALSE)", Err(err::NUM)), // Excel docs (LibreOffice Ok(0.0))
+            ("HYPGEOM.DIST(5,5,4,20,FALSE)", Err(err::NUM)),  // Excel docs (LibreOffice Ok(0.0))
+            ("LOGNORM.DIST(2,0.5,1.2,TRUE)", Ok(0.5639359658118673)),
+            ("LOGNORM.DIST(2,0.5,1.2,FALSE)", Ok(0.1640866421418861)),
+            ("LOGNORM.DIST(-2,0.5,1.2,TRUE)", Err(err::NUM)), // Excel docs (LibreOffice Ok(0.0))
+            ("LOGNORM.DIST(2,0.5,0,TRUE)", Err(err::NUM)),
+            ("LOGNORM.INV(0.4,0.5,1.2)", Ok(1.2165068038981746)),
+            ("LOGNORM.INV(0,0.5,1.2)", Err(err::NUM)),
+            ("LOGNORM.INV(1,0.5,1.2)", Err(err::NUM)),
+            ("LOGNORM.INV(0.4,0.5,0)", Err(err::NUM)),
+            ("NEGBINOM.DIST(3,4,0.4,TRUE)", Ok(0.28979199999999994)),
+            ("NEGBINOM.DIST(3,4,0.4,FALSE)", Ok(0.11059200000000002)),
+            ("NEGBINOM.DIST(-1,4,0.4,FALSE)", Err(err::NUM)),
+            ("NEGBINOM.DIST(3,0,0.4,FALSE)", Err(err::NUM)),
+            ("NEGBINOM.DIST(3,4,1.4,FALSE)", Err(err::NUM)),
+            ("NORM.DIST(2,1,3,TRUE)", Ok(0.6305586598182363)),
+            ("NORM.DIST(2,1,3,FALSE)", Ok(0.12579440923099772)),
+            ("NORM.DIST(2,1,0,TRUE)", Err(err::NUM)),
+            ("NORM.INV(0.4,1,3)", Ok(0.23995869059260067)),
+            ("NORM.INV(0,1,3)", Err(err::NUM)), // Excel docs (LibreOffice Err(err::VALUE))
+            ("NORM.INV(1,1,3)", Err(err::NUM)), // Excel docs (LibreOffice Err(err::VALUE))
+            ("NORM.INV(0.4,1,0)", Err(err::NUM)),
+            ("NORM.S.DIST(0.5,TRUE)", Ok(0.6914624612740131)),
+            ("NORM.S.DIST(0.5,FALSE)", Ok(0.3520653267642995)),
+            ("NORM.S.INV(0.4)", Ok(-0.2533471031357998)),
+            ("NORM.S.INV(0)", Err(err::NUM)), // Excel docs (LibreOffice Err(err::VALUE))
+            ("NORM.S.INV(1)", Err(err::NUM)), // Excel docs (LibreOffice Err(err::VALUE))
+            ("POISSON.DIST(3,2.5,TRUE)", Ok(0.757576133133066)),
+            ("POISSON.DIST(3,2.5,FALSE)", Ok(0.21376301724973648)),
+            ("POISSON.DIST(-1,2.5,TRUE)", Err(err::NUM)),
+            ("POISSON.DIST(3,-2.5,TRUE)", Err(err::NUM)),
+            ("T.DIST(0.5,3,TRUE)", Ok(0.6742760175759245)),
+            ("T.DIST(0.5,3,FALSE)", Ok(0.3131809110088287)),
+            ("T.DIST.RT(0.5,3)", Ok(0.3257239824240755)),
+            ("T.DIST(0.5,0,TRUE)", Err(err::NUM)),
+            ("T.DIST.2T(0.5,3)", Ok(0.651447964848151)),
+            ("TDIST(0.5,3,1)", Ok(0.3257239824240755)),
+            ("T.DIST.2T(-0.5,3)", Err(err::NUM)),
+            ("T.DIST.2T(0.5,0)", Err(err::NUM)),
+            ("TDIST(0.5,3,3)", Err(err::NUM)),
+            ("T.INV(0.3,3)", Ok(-0.584389727439818)),
+            ("T.INV(0.7,3)", Ok(0.584389727439818)),
+            ("T.INV(0,3)", Err(err::NUM)),
+            ("T.INV(1.2,3)", Err(err::NUM)),
+            ("T.INV(0.3,0)", Err(err::NUM)),
+            ("T.INV.2T(0.3,3)", Ok(1.2497781050332248)),
+            ("T.INV.2T(0,3)", Err(err::NUM)),
+            ("T.INV.2T(1.2,3)", Err(err::NUM)),
+            ("T.INV.2T(1,3)", Ok(0.0)),
+            ("T.INV.2T(0.3,0)", Err(err::NUM)),
+            ("WEIBULL.DIST(2,1.5,3,TRUE)", Ok(0.41977020402532716)),
+            ("WEIBULL.DIST(2,1.5,3,FALSE)", Ok(0.2368778222828562)),
+            ("WEIBULL.DIST(-2,1.5,3,TRUE)", Err(err::NUM)),
+            ("WEIBULL.DIST(2,0,3,TRUE)", Err(err::NUM)),
+            ("WEIBULL.DIST(2,1.5,0,TRUE)", Err(err::NUM)),
+            ("FISHER(0.5)", Ok(0.5493061443340548)),
+            ("FISHER(1)", Err(err::NUM)),
+            ("FISHER(-1)", Err(err::NUM)),
+            ("CONFIDENCE.NORM(0.05,2,10)", Ok(1.2395900646091227)),
+            ("CONFIDENCE.T(0.05,2,10)", Ok(1.4307138119413296)),
+            ("CONFIDENCE.T(0.05,2,1)", Err(err::DIV0)),
+            ("CONFIDENCE.NORM(0,2,10)", Err(err::NUM)),
+            ("CONFIDENCE.NORM(1,2,10)", Err(err::NUM)),
+            ("CONFIDENCE.NORM(0.05,0,10)", Err(err::NUM)),
+            ("CONFIDENCE.NORM(0.05,2,0)", Err(err::NUM)),
+            ("STANDARDIZE(2,1,3)", Ok(0.3333333333333333)),
+            ("STANDARDIZE(2,1,0)", Err(err::NUM)), // Excel docs (LibreOffice Err(err::DIV0))
+            ("GAMMA(-1)", Err(err::NUM)),
+            ("GAMMA(0.5)", Ok(1.7724538509055159)),
+            ("GAMMALN(0)", Err(err::NUM)),
+            ("GAMMALN(2.5)", Ok(0.2846828704729192)),
+        ];
+        for (formula, want) in rows {
+            let (name, args) = formula.trim_end_matches(')').split_once('(').unwrap();
+            let def = improv_core_model::functions::by_name(name)
+                .find(|d| d.kind == improv_core_model::functions::Kind::Scalar)
+                .unwrap_or_else(|| panic!("{name}"));
+            let a: Vec<CellValue> = args
+                .split(',')
+                .map(|s| match s {
+                    "TRUE" => CellValue::Bool(true),
+                    "FALSE" => CellValue::Bool(false),
+                    _ => CellValue::num(s.parse().unwrap()),
+                })
+                .collect();
+            let got = eval(def.id.0, &a).map(|v| v.as_num().unwrap());
+            let same = match (got, want) {
+                (Ok(g), Ok(w)) => close(g, *w),
+                (g, w) => g == *w,
+            };
+            assert!(same, "{formula} = {got:?}, want {want:?}");
+        }
+    }
+
     #[test]
     fn unknown_ids_are_name_errors() {
         assert_eq!(call(199, &[1.0]), CellValue::Err(err::NAME));
@@ -894,7 +1067,51 @@ mod tests {
         assert!(incomplete_gamma(1.0, f64::NAN, true).is_nan());
         assert_eq!(gamma_p(2.0, f64::INFINITY), 1.0);
         assert_eq!(gamma_q(2.0, f64::INFINITY), 0.0);
-        assert!(solve(|_| 0.0, 1.0, 0.0, 1.0).is_nan());
+        // One g for every exit (solve is generic: one closure type is one
+        // instantiation): at lo already, a target never reached (the
+        // bracket doubles to infinity), and a step where bisection narrows
+        // to adjacent doubles and stops.
+        // (The step at c, for c = 2.5 the midpoint rounds onto hi, for
+        // c = 0.3 onto lo.)
+        let c = std::cell::Cell::new(2.5);
+        let g = |x: f64| if x < c.get() { 0.0 } else { 1.0 };
+        assert_eq!(solve(g, 0.0, 0.0, 1.0), 0.0);
+        assert!(solve(g, 2.0, 0.0, 1.0).is_nan());
+        let step = solve(g, 0.5, 0.0, 1.0);
+        assert!((step - 2.5).abs() <= 4.0 * f64::EPSILON, "{step}");
+        c.set(0.3);
+        let step = solve(g, 0.5, 0.0, 1.0);
+        assert!((step - 0.3).abs() <= f64::EPSILON, "{step}");
+        // The binomial with p = 0: all its mass at 0.
+        assert_eq!(binom_range(10.0, 0.0, 0.0, 3.0), 1.0);
+        assert_eq!(binom_range(10.0, 0.0, 1.0, 3.0), 0.0);
+        // Gnumeric's BETA: #NUM! at a non-positive integer a or b, 0 where
+        // only a + b is one, and a negative fractional a (0.000883).
+        assert_eq!(call(162, &[-1.0, 1.5]), CellValue::Err(err::NUM));
+        assert_eq!(call(162, &[1.5, -1.0]), CellValue::Err(err::NUM));
+        assert_eq!(call(162, &[-0.5, -0.5]), CellValue::num(0.0));
+        assert!(close(
+            num_of(call(162, &[-100.5, 100.0])),
+            0.000_882_920_793_175_656_8
+        ));
+        // IGAMMA of a negative a or x is complex-valued: #NUM! here.
+        assert_eq!(call(165, &[-2.0, 1.0]), CellValue::Err(err::NUM));
+        assert_eq!(call(165, &[2.0, -1.0]), CellValue::Err(err::NUM));
+        // IGAMMA's imaginary part over the real domain is 0 (Gnumeric).
+        let im = eval(
+            165,
+            &[2.0, 3.0]
+                .map(CellValue::num)
+                .iter()
+                .cloned()
+                .chain([
+                    CellValue::Bool(true),
+                    CellValue::Bool(true),
+                    CellValue::Bool(false),
+                ])
+                .collect::<Vec<_>>(),
+        );
+        assert_eq!(im, Ok(CellValue::num(0.0)));
         assert_eq!(gamma_inv(2.0, 1.0, 0.0), f64::INFINITY);
         assert_eq!(f_inv(2.0, 3.0, 1.0, 0.0), f64::INFINITY);
         assert_eq!(f_pdf(0.0, 1.0, 5.0), f64::INFINITY);
@@ -906,6 +1123,10 @@ mod tests {
         assert_eq!(gamma_pdf(0.0, 1.0, 2.0), Ok(0.5));
         assert_eq!(gamma_pdf(0.0, 3.0, 2.0), Ok(0.0));
         assert!(ln_beta(2.0, -0.5).is_finite());
+        // ln |B(a, b)| with a negative argument either side (Gnumeric
+        // BETALN 1.3862943611198906 = ln 4).
+        assert!(close(ln_beta(-0.5, 2.0), 1.386_294_361_119_890_6));
+        assert!(close(ln_beta(2.0, -0.5), 1.386_294_361_119_890_6));
         assert!(incomplete_gamma(0.0, 1.0, true).is_nan());
         assert_eq!(beta_pdf(0.0, 1.0, 2.0, 3.0), 0.0);
         assert_eq!(beta_pdf(1.0, 0.0, 2.0, 3.0), 0.0);
