@@ -621,12 +621,18 @@ fn beta(x: f64, a: &[f64], op: Op) -> f64 {
         ),
         Op::P { lower, log } if x <= 0.0 => tails(lower, log, 0.0, 1.0),
         Op::P { lower, log } if x >= 1.0 => tails(lower, log, 1.0, 0.0),
-        Op::P { lower, log } => tails(
-            lower,
-            log,
-            st::beta_reg(p, q, x),
-            st::beta_reg(q, p, 1.0 - x),
-        ),
+        Op::P { lower, log } => {
+            let below = st::beta_reg(p, q, x);
+            // 1 − x is exact from ½ up; below ½ it is rounded, which the
+            // upper tail's x^p factor feels, so while the upper tail is the
+            // larger one it is 1 − below.
+            let above = if x < 0.5 && below <= 0.5 {
+                1.0 - below
+            } else {
+                st::beta_reg(q, p, 1.0 - x)
+            };
+            tails(lower, log, below, above)
+        }
         Op::Q(t) => q_ends(t, 0.0, 1.0).unwrap_or_else(|| {
             split(t).map_or(NAN, |(below, above)| {
                 if below <= 0.5 {
@@ -2167,5 +2173,24 @@ mod tests {
             9_007_199_254_740_994.0
         );
         assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    /// R.PBETA's upper tail at a tiny x does not go through the rounded
+    /// 1 − x: R.PBETA(9.557513762179687e-7, 0.125, 1, FALSE) is 1 − x^⅛ =
+    /// 0.8231752240361421 (Gnumeric); it was 0.8231752240350847, and the
+    /// two tails did not add up to 1.
+    #[test]
+    fn beta_upper_tail_at_a_tiny_x() {
+        let x = 9.557_513_762_179_687e-7;
+        let up = |x: f64, a: f64, b: f64| {
+            let mut v = nums(&[x, a, b]);
+            v.push(CellValue::Bool(false));
+            call(1601, &v).unwrap().as_num().unwrap()
+        };
+        assert!((up(x, 0.125, 1.0) - 0.823_175_224_036_142_1).abs() < 2e-16);
+        assert!((up(x, 0.125, 1.0) + val(1601, &[x, 0.125, 1.0]) - 1.0).abs() < 2e-16);
+        // A small upper tail below ½ keeps its digits: 0.9¹⁰⁰⁰.
+        let tiny = up(0.1, 1.0, 1000.0);
+        assert!((tiny / 0.9f64.powi(1000) - 1.0).abs() < 1e-12, "{tiny}");
     }
 }
