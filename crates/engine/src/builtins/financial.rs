@@ -240,7 +240,8 @@ fn tvm(id: u32, a: &[CellValue]) -> R {
                     && rate > 0.0
                     && end <= nper
                     && pv > 0.0
-                    && (flag == 0.0 || flag == 1.0),
+                    && (flag == 0.0 || flag == 1.0)
+                    && end - start < CUM_MAX_PERIODS,
             )?;
             ok_num(cumulative(
                 id == 707,
@@ -296,6 +297,13 @@ fn tvm(id: u32, a: &[CellValue]) -> R {
         }
     }
 }
+
+/// CUMIPMT and CUMPRINC sum one period at a time, so the span is capped
+/// (#NUM! past it): 1e7 periods take about 0.07 s. LibreOffice and Gnumeric
+/// have no cap (Gnumeric's int periods stop at 2³¹).
+// ponytail: the interest sum has a closed form (a geometric series) that
+// would lift the cap.
+const CUM_MAX_PERIODS: f64 = 1e7;
 
 /// CUMIPMT (`interest`) or CUMPRINC from period `start` to `end`.
 fn cumulative(
@@ -696,5 +704,22 @@ mod tests {
         let p = pmt(0.5, 49.0, 0.0, 1.0, true);
         let back = pv(0.5, 49.0, p, 1.0, true);
         assert!(back.abs() < 1e-23, "{back}");
+    }
+
+    /// CUMIPMT and CUMPRINC over more than 1e7 periods are #NUM!: they summed
+    /// every period, and past 2⁵³ the counter stopped advancing (a hang).
+    #[test]
+    fn cumulative_caps_its_span() {
+        let t0 = std::time::Instant::now();
+        let num = CellValue::Err(err::NUM);
+        assert_eq!(f(707, &[1e-300, 1e15, 1e6, 1.0, 1e15, 0.0]), num);
+        assert_eq!(f(708, &[0.05, 1e300, 1e6, 1.0, 1e300, 1.0]), num);
+        assert_eq!(f(707, &[0.05, 2e7, 1e6, 1e7, 2e7, 0.0]), num);
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        // Gnumeric -0.5000838333319472 over a million periods.
+        close(
+            f(707, &[1e-9, 1e6, 1000.0, 1.0, 1e6, 0.0]),
+            -0.500_083_833_331_947,
+        );
     }
 }
