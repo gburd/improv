@@ -220,6 +220,9 @@ fn bessel_i(x: f64, n: i32) -> f64 {
     sum
 }
 
+// The coefficients are Abramowitz & Stegun 9.8.5/9.8.6's fit as Excel and
+// LibreOffice use it; -0.57721566 is the fit's, not γ to full precision.
+#[allow(clippy::approx_constant)]
 fn bessel_k0(x: f64) -> f64 {
     if x <= 2.0 {
         let h = x * 0.5;
