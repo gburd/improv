@@ -149,7 +149,10 @@ impl Model {
                     step
                 };
             }
-            if fstep > 0.0 && fstep < step {
+            // Sorted and with repeats merged, fstep is positive (or NaN,
+            // which fails the comparison too): LibreOffice's `fStep > 0`
+            // test is implied.
+            if fstep < step {
                 step = fstep;
             }
             i += 1;
@@ -248,7 +251,9 @@ impl Model {
                 s.add(((y[i] - y[i - 1]) - (y[p + i] - y[p + i - 1])).abs());
             }
             let e = s.get() / ((periods - 1) * p - 1) as f64;
-            if e <= best_err || e == 0.0 {
+            // best_err only ever holds an e ≥ 0, so LibreOffice's extra
+            // `|| fErr == 0` is implied.
+            if e <= best_err {
                 (best, best_err) = (p, e);
             }
         }
@@ -264,7 +269,7 @@ impl Model {
             self.base[0] = y[0];
             return Ok(());
         }
-        // Two periods at least.
+        // Two periods at least (so p < n below).
         if n < 2 * p {
             return Err(err::VALUE);
         }
@@ -297,9 +302,7 @@ impl Model {
             }
             self.per[j] = s.get() / periods as f64;
         }
-        if p < n {
-            self.per[p] = 0.0;
-        }
+        self.per[p] = 0.0;
         // LibreOffice divides by the first index for additive seasons too.
         self.base[0] = y[0] / self.per[0];
         Ok(())
@@ -666,6 +669,125 @@ mod tests {
         assert!(ets(Kind::Add, &rows(&ey, &ex), &num(&[10.0, 0.0])).is_ok());
     }
 
+    /// A monthly series (the 15th of each month of 2023, as serials)
+    /// against LibreOffice 25.2's FORECAST.ETS.
+    #[test]
+    fn monthly_series_match_libreoffice() {
+        let ys = [
+            12.0, 15.0, 9.0, 20.0, 14.0, 17.0, 11.0, 23.0, 16.0, 19.0, 12.0, 25.0,
+        ];
+        let xs: Vec<f64> = (0..12)
+            .map(|m| {
+                44941.0
+                    + [
+                        0.0, 31.0, 59.0, 90.0, 120.0, 151.0, 181.0, 212.0, 243.0, 273.0, 304.0,
+                        334.0,
+                    ][m]
+            })
+            .collect();
+        let near = |got: Result<f64, u8>, want: f64| {
+            let g = got.unwrap();
+            assert!((g - want).abs() <= 1e-9 * want.abs(), "{g} vs {want}");
+        };
+        let r = rows(&ys, &xs);
+        let at = |r: &Rows, t: f64, extra: &[f64]| {
+            let mut a = vec![t];
+            a.extend(extra);
+            ets(Kind::Add, r, &num(&a))
+        };
+        // Targets in a leap February, a 31-day January, a 30-day April,
+        // and March, read as fractional months from the 15th.
+        near(at(&r, 45332.0, &[0.0]), 20.497_764_286_082_294);
+        near(at(&r, 45332.0, &[1.0]), 20.659_157_714_056_583);
+        near(at(&r, 45322.0, &[0.0]), 20.377_660_095_500_758);
+        near(at(&r, 45402.0, &[0.0]), 21.399_761_055_472_01);
+        near(at(&r, 45354.0, &[0.0]), 20.800_598_423_764_77);
+        // February 2025 (28 days).
+        near(at(&r, 45698.0, &[0.0]), 25.122_832_662_921_297);
+        // May missing: filled in (averaged or zero, LibreOffice agrees).
+        let (mut gy, mut gx) = (ys.to_vec(), xs.clone());
+        gy.remove(4);
+        gx.remove(4);
+        let g = rows(&gy, &gx);
+        near(at(&g, 45332.0, &[0.0]), 21.372_916_027_773_93);
+        near(at(&g, 45332.0, &[0.0, 0.0]), 21.372_916_027_773_93);
+        // The first date twice: aggregated as AVERAGE (Excel's documented
+        // rule; LibreOffice keeps the first value instead), so (10 + 12) / 2
+        // = 11, LibreOffice's forecast with 11 there; MAX keeps 12, the
+        // plain series' forecast.
+        let (mut dy, mut dx) = (vec![10.0], vec![xs[0]]);
+        dy.extend(ys);
+        dx.extend(&xs);
+        let d = rows(&dy, &dx);
+        near(at(&d, 45332.0, &[0.0]), 20.792_835_297_245_045);
+        near(at(&d, 45332.0, &[0.0, 1.0, 4.0]), 20.497_764_286_082_294);
+    }
+
+    /// A plain (non-date) series against LibreOffice 25.2: a gap filled
+    /// by averaging or with zeros, seasonality detection, a period too
+    /// long for the data, statistics, and an uneven step.
+    #[test]
+    fn plain_series_match_libreoffice() {
+        let ys = [
+            12.0, 15.0, 9.0, 20.0, 14.0, 17.0, 11.0, 23.0, 16.0, 19.0, 12.0, 25.0,
+        ];
+        let xs: Vec<f64> = (1..=12).map(f64::from).collect();
+        let r = rows(&ys, &xs);
+        let near = |got: Result<f64, u8>, want: f64| {
+            let g = got.unwrap();
+            assert!((g - want).abs() <= 1e-9 * want.abs(), "{g} vs {want}");
+        };
+        let (mut gy, mut gx) = (ys.to_vec(), xs.clone());
+        gy.remove(4);
+        gx.remove(4);
+        let g = rows(&gy, &gx);
+        near(
+            ets(Kind::Add, &g, &num(&[14.0, 0.0])),
+            21.268_756_481_542_784,
+        );
+        near(
+            ets(Kind::Add, &g, &num(&[14.0, 0.0, 0.0])),
+            21.522_236_935_061_45,
+        );
+        near(ets(Kind::Add, &g, &num(&[14.0])), 21.001_330_714_485_185);
+        assert_eq!(ets(Kind::Add, &r, &num(&[14.0, 7.0])), Err(err::VALUE));
+        near(ets(Kind::Mult, &r, &num(&[14.0])), 21.114_764_223_025_976);
+        near(
+            ets(Kind::Mult, &r, &num(&[14.0, 4.0])),
+            21.114_764_223_025_976,
+        );
+        near(ets(Kind::StatAdd, &r, &num(&[1.0])), 0.011_718_75);
+        assert_eq!(ets(Kind::StatAdd, &r, &num(&[9.0])), Ok(4.0));
+        assert_eq!(ets(Kind::StatAdd, &r, &num(&[10.0])), Err(err::NUM));
+        assert_eq!(ets(Kind::Season, &r, &[]), Ok(4.0));
+        // Steps of 1 then 1.5: the first gap is no multiple of the step.
+        let uneven = rows(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            &[1.0, 2.0, 3.0, 4.5, 5.5, 6.5],
+        );
+        assert_eq!(ets(Kind::Add, &uneven, &num(&[8.0, 0.0])), Err(err::VALUE));
+        // Parameters out of range (LibreOffice #NUM! or Err:502).
+        for bad in [[14.0, 1.5], [14.0, -1.0]] {
+            assert_eq!(ets(Kind::Add, &r, &num(&bad)), Err(err::NUM));
+        }
+        assert_eq!(ets(Kind::Add, &r, &num(&[14.0, 0.0, 2.0])), Err(err::NUM));
+        assert_eq!(
+            ets(Kind::Add, &r, &num(&[14.0, 0.0, 1.0, 8.0])),
+            Err(err::NUM)
+        );
+        assert_eq!(ets(Kind::Season, &r, &num(&[1.0, 0.0])), Err(err::NUM));
+        // FORECAST.ETS.PI.MULT with no seasonality (LibreOffice).
+        let y16 = [
+            12.0, 15.0, 9.0, 20.0, 14.0, 17.0, 11.0, 23.0, 16.0, 19.0, 12.0, 25.0, 18.0, 22.0,
+            14.0, 27.0,
+        ];
+        let x16: Vec<f64> = (1..=16).map(f64::from).collect();
+        near(
+            ets(Kind::PiMult, &rows(&y16, &x16), &num(&[18.0, 0.8, 0.0])),
+            8.708_911_309_505_297,
+        );
+    }
+
     #[test]
     fn parameters_and_shapes() {
         let ys = [3.0, 5.0, 4.0, 6.0, 8.0, 7.0, 9.0, 11.0];
@@ -673,6 +795,7 @@ mod tests {
         let r = rows(&ys, &xs);
         // A seasonal interval is not supported: #N/A.
         assert_eq!(ets(Kind::PiAdd, &r, &num(&[10.0])), Err(err::NA));
+        assert_eq!(ets(Kind::PiMult, &r, &num(&[10.0])), Err(err::NA));
         assert_eq!(ets(Kind::PiAdd, &r, &num(&[10.0, 1.5])), Err(err::NUM));
         // The interval at the last point is empty: #NUM!; before it, and
         // a forecast before it (Excel), too.
