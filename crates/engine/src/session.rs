@@ -171,8 +171,13 @@ impl Engine {
     }
 
     /// Apply a batch of edits atomically (one time step) and return the new
-    /// snapshot of all tracked derived measures.
-    pub fn apply(&mut self, edits: Vec<Edit>) -> Result<Snapshot, EngineError> {
+    /// snapshot of all tracked derived measures. An edit's coordinate may list
+    /// its categories in any order: it is sorted into the engine's key form,
+    /// which the key kernels (`improv_verified::keys`) require.
+    pub fn apply(&mut self, mut edits: Vec<Edit>) -> Result<Snapshot, EngineError> {
+        for e in &mut edits {
+            e.coord.sort_unstable();
+        }
         // Update our shadow of current input values so retract deltas are exact.
         for e in &edits {
             let k = (e.measure, e.coord.clone());
