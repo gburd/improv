@@ -829,6 +829,21 @@ impl<'a> Parser<'a> {
         {
             return self.parse_call(&word);
         }
+        // `NAME(` that is neither a function nor a measure: say so, and name
+        // the closest functions (a typo like PMTT).
+        if is_call && self.model.measure_by_name(&word).is_none() {
+            let pos = self.toks.get(self.pos).map(|s| s.pos);
+            let near = functions::closest(&word, 3);
+            let hint = if near.is_empty() {
+                String::new()
+            } else {
+                format!("; did you mean {}?", near.join(", "))
+            };
+            return Err(ParseError::new(
+                format!("unknown function: {word}{hint}"),
+                pos,
+            ));
+        }
         self.parse_measure_ref()
     }
 
@@ -2012,6 +2027,23 @@ mod tests {
             let e = p(src).unwrap_err();
             assert!(e.message.contains(want), "{src}: {}", e.message);
         }
+    }
+
+    /// `NAME(` that is no function or measure: an "unknown function" with
+    /// the nearest names, at the name.
+    #[test]
+    fn unknown_function_suggests() {
+        let m = fixture();
+        let e = parse_expr(&m, "1 + PMTT(1, 2, 3)").unwrap_err();
+        assert!(
+            e.message
+                .starts_with("unknown function: PMTT; did you mean PMT"),
+            "{}",
+            e.message
+        );
+        assert_eq!(e.position, Some(4));
+        let e = parse_expr(&m, "Qqqqqqqqqq(1)").unwrap_err();
+        assert_eq!(e.message, "unknown function: Qqqqqqqqqq");
     }
 
     #[test]

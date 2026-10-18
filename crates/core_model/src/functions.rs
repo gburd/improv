@@ -756,6 +756,38 @@ pub fn search(query: &str) -> Vec<&'static FnDef> {
         .collect()
 }
 
+/// Up to `n` function names closest to `word` by edit distance (a typo's
+/// likely meaning), nearest first; only those within a third of its
+/// length, at least 2.
+pub fn closest(word: &str, n: usize) -> Vec<&'static str> {
+    let w = word.to_ascii_uppercase();
+    let limit = (w.chars().count() / 3).max(2);
+    let mut scored: Vec<(usize, &'static str)> = all()
+        .flat_map(|d| std::iter::once(d.name).chain(d.aliases.iter().copied()))
+        .map(|name| (edit_distance(&w, name), name))
+        .filter(|(dist, _)| *dist <= limit)
+        .collect();
+    scored.sort();
+    scored.dedup_by(|a, b| a.1 == b.1);
+    scored.into_iter().take(n).map(|(_, name)| name).collect()
+}
+
+/// Levenshtein distance over chars.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
 /// Function names (canonical and aliases) starting with `prefix`
 /// (case-insensitive), canonical first, for completion.
 pub fn complete(prefix: &str) -> Vec<(&'static str, &'static FnDef)> {
@@ -881,6 +913,11 @@ mod tests {
         assert_eq!(hint("PMT"), "PMT(rate, nper, pv, [fv], [type])");
         assert_eq!(hint("IF"), "IF(test, then, [else])");
         assert_eq!(hint("PI"), "PI()");
+        assert_eq!(closest("PMTT", 3)[0], "PMT");
+        assert_eq!(closest("xlookp", 1), ["XLOOKUP"]);
+        assert!(closest("qqqqqqqqqqqq", 3).is_empty());
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("", "ab"), 2);
         assert!(
             spelled_params("X", "X(1, 2)").is_none(),
             "an example call is not names"

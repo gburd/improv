@@ -200,10 +200,12 @@ mod tests {
             spanned("Price * Quantty"),
             ("Quantty", Some("did you mean Quantity?".into()))
         );
-        assert_eq!(
-            spanned("PMTT(1, 2, 3)"),
-            ("PMTT", Some("did you mean PMT?".into()))
-        );
+        // A misspelled function: the parser's message names the suggestion
+        // (`unknown function: PMTT; did you mean PMT?`), so no second hint.
+        let d = diag("PMTT(1, 2, 3)");
+        assert_eq!(&"PMTT(1, 2, 3)"[d.span.expect("located")], "PMTT");
+        assert!(d.message.contains("did you mean PMT"), "{}", d.message);
+        assert_eq!(d.hint, None);
         assert_eq!(
             spanned("SUM(Price OVER Tyme)"),
             ("Tyme", Some("did you mean Time?".into()))
