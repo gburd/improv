@@ -122,7 +122,8 @@ pub(super) fn year_frac(a: i64, b: i64, basis: u32) -> f64 {
                 total as f64 / (y2 - y1 + 1) as f64
             } else if (y1 == y2 && is_leap(y1))
                 || (y1 != y2
-                    && ((is_leap(y1) && (m1 < 2 || (m1 == 2 && d1 <= 29)))
+                    // (m1 ≤ 2: any February day is ≤ 29.)
+                    && ((is_leap(y1) && m1 <= 2)
                         || (is_leap(y2) && (m2 > 2 || (m2 == 2 && d2 == 29)))))
             {
                 366.0
@@ -499,6 +500,76 @@ mod tests {
         assert_eq!(ymd(c.date()), (2007, 12, 15));
         assert_eq!(diff360(days(2008, 12, 15), days(2008, 12, 31), true), 16);
         assert_eq!(diff360(days(2008, 11, 15), days(2008, 12, 31), true), 46);
+    }
+
+    /// year_diff (ACCRINTM's day count), year_frac (YEARFRAC) and
+    /// ScaDate::diff (COUPDAYBS) on the dates that reach their remaining
+    /// branches, against LibreOffice 25.2.
+    #[test]
+    fn day_counts_match_libreoffice() {
+        let d = |y, m, dd| days(y, m, dd);
+        let near = |a: f64, b: f64| assert!((a - b).abs() < 1e-15, "{a} != {b}");
+        // ACCRINTM(…, 1, 1, basis): a February start in a later month of
+        // the same year, a leap and a common actual year.
+        near(
+            year_diff(d(2008, 2, 10), d(2008, 3, 10), 0),
+            0.080_555_555_555_555_56,
+        );
+        near(
+            year_diff(d(2007, 2, 10), d(2008, 4, 10), 0),
+            1.166_666_666_666_666_7,
+        );
+        near(
+            year_diff(d(2007, 2, 10), d(2007, 4, 11), 0),
+            0.163_888_888_888_888_9,
+        );
+        near(
+            year_diff(d(2008, 1, 1), d(2008, 12, 31), 1),
+            0.997_267_759_562_841_5,
+        );
+        near(year_diff(d(2007, 1, 10), d(2008, 1, 10), 1), 1.0);
+        near(
+            year_diff(d(2008, 2, 5), d(2008, 2, 20), 0),
+            0.041_666_666_666_666_664,
+        );
+        // YEARFRAC basis 1 within a leap year, and across into one (ending
+        // before, on and after its February 29th); basis 4.
+        near(
+            year_frac(d(2007, 6, 1), d(2008, 2, 1), 1),
+            0.671_232_876_712_328_8,
+        );
+        near(
+            year_frac(d(2007, 6, 1), d(2008, 2, 29), 1),
+            0.745_901_639_344_262_3,
+        );
+        near(
+            year_frac(d(2007, 6, 1), d(2008, 3, 1), 1),
+            0.748_633_879_781_420_8,
+        );
+        near(
+            year_frac(d(2008, 2, 10), d(2008, 3, 10), 1),
+            0.079_234_972_677_595_63,
+        );
+        near(
+            year_frac(d(2007, 3, 1), d(2008, 1, 15), 1),
+            0.876_712_328_767_123_2,
+        );
+        near(year_frac(d(2008, 2, 10), d(2008, 4, 10), 4), 1.0 / 6.0);
+        // COUPDAYBS: 30E/360 from a February end, actual/actual across a
+        // month end, 30/360 US from a 31st.
+        let s = |y, m, dd, b| ScaDate::new(days(y, m, dd), b);
+        assert_eq!(ScaDate::diff(&s(2007, 8, 31, 4), &s(2008, 2, 15, 4)), 165);
+        // (LibreOffice COUPDAYBS(2008-03-01, 2009-02-28, 2, 4) = 2.)
+        assert_eq!(ScaDate::diff(&s(2008, 2, 29, 4), &s(2008, 3, 1, 4)), 2);
+        assert_eq!(coupdaybs(d(2008, 3, 1), d(2009, 2, 28), 2, 4), 2.0);
+        assert_eq!(ScaDate::diff(&s(2008, 3, 1, 1), &s(2008, 3, 15, 1)), 14);
+        assert_eq!(ScaDate::diff(&s(2008, 5, 31, 0), &s(2008, 7, 31, 0)), 60);
+        // Mid-month to mid-February, 30/360 US and 30E/360.
+        assert_eq!(ScaDate::diff(&s(2008, 1, 15, 0), &s(2008, 2, 15, 0)), 30);
+        assert_eq!(ScaDate::diff(&s(2008, 2, 10, 4), &s(2008, 3, 10, 4)), 30);
+        assert_eq!(coupdaybs(d(2008, 2, 15), d(2008, 8, 31), 2, 4), 165.0);
+        assert_eq!(coupdaybs(d(2008, 3, 15), d(2009, 3, 1), 2, 1), 14.0);
+        assert_eq!(coupdaybs(d(2008, 7, 31), d(2008, 11, 30), 2, 0), 60.0);
     }
 
     #[test]
