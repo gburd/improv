@@ -405,6 +405,14 @@ Arguments are expressions and broadcast like a binary operator's operands:
 `ROUND(Revenue / Units, 2)` ranges over the union of the arguments'
 categories. A literal argument costs nothing extra.
 
+**Math extras** follow Gnumeric, within Improv's limits so every call is
+quick: `ITHPRIME` and `NT_PI` stop at the 10⁷-th prime, `PARTITIONS` at n =
+4000, the Erlang functions at 10⁶ circuits, other number theory at 2⁵²;
+past a limit the answer is #NUM!. `HDATE_MONTH` numbers Tishri 0 to Elul
+11 (12 and 13 for Adar I and II). `ROMAN` takes Excel's TRUE/FALSE forms;
+`ARABIC` accepts a leading `-`; `ENCODEURL` keeps RFC 3986's unreserved
+characters.
+
 **Complex numbers** are text in Excel's form, `"3+4i"`, `"-j"`,
 `"2.5e-3-i"`: suffix `i` or `j`, no spaces, the same suffix in every
 argument of one call. A plain number is a real complex number. Results

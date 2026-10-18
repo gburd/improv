@@ -13,6 +13,18 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Math extras** (phase P7, 46): `LAMBERTW`, `AGM`, `GD`, `ILOG`,
+  `REDUCEPI`, `FIB`; number theory (`ISPRIME`, `ITHPRIME`, `PFACTOR`,
+  `NT_D`, `NT_SIGMA`, `NT_PHI`, `NT_MU`, `NT_OMEGA`, `NT_PI`, `NT_RADICAL`,
+  `PARTITIONS`); `FLT.MAX`, `FLT.MIN`, `FLT.RADIX`, `FLT.NEXTAFTER`; the
+  movable feasts (`EASTERSUNDAY`, `ASCENSIONTHURSDAY`, `ASHWEDNESDAY`,
+  `GOODFRIDAY`, `PENTECOSTSUNDAY`); `DATE2JULIAN`, `HDATE_JULIAN` and the
+  Hebrew calendar (`HDATE`, `HDATE_HEB`, `HDATE_DAY`, `HDATE_MONTH`,
+  `HDATE_YEAR`, `DATE2HDATE`, `DATE2HDATE_HEB`); Erlang-B (`PROBBLOCK`,
+  `OFFTRAF`, `DIMCIRC`, `OFFCAP`); text (`ASC`, `JIS`/`DBCS`, `BAHTTEXT`,
+  `ROT13`, `ENCODEURL`, `ROMAN`, `ARABIC`). Bounded so each call finishes
+  in about 2 ms. 303 goldens.
+
 - **Engineering functions** (phase P7, 72, a new *Engineering* category):
   base conversion (`BIN2DEC` … `OCT2HEX`, `BASE`/`NUMTOBASE`,
   `DECIMAL`/`BASETONUM`, `HEXREP`); 48-bit `BITAND`/`BITOR`/`BITXOR`/
