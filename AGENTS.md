@@ -57,9 +57,11 @@ The full "tidy" gate — all must be error- AND warning-free:
 5. `typos` (spell-check code + docs)
 6. `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps`, and
    `mdbook build docs` (the guide, with link checking)
-7. `scripts/gui-shot-check.sh` (GUI screenshot vs the golden) and
+7. `scripts/verify.sh` (the Verus proofs in `crates/verified`: 0 errors;
+   needs the pinned Verus release, see the script)
+8. `scripts/gui-shot-check.sh` (GUI screenshot vs the golden) and
    `scripts/coverage.sh` (≥ 90% functions and branches per crate)
-8. pg_improv, its own Cargo workspace: `ci/pg_improv.sh <PGMAJOR>` runs
+9. pg_improv, its own Cargo workspace: `ci/pg_improv.sh <PGMAJOR>` runs
    fmt, clippy, `cargo pgrx test`, pgspot, `tests/txn.sh`, `tests/logical.sh`,
    and on 17 `tests/upgrade.sh` and the PGXN dist build (see CONTRIBUTING.md)
 
@@ -104,7 +106,8 @@ Prefer `cargo nextest run` for the fast suite. Property/fuzz crates:
 
 Cargo workspace, `crates/*`: `core_model`, `engine`, `nl_formula`,
 `storage_mentat`, `storage_pg`, `store`, `storage_sql`, `storage_csv`,
-`data_source`, `extfn`, `cli`, `tui`, `gui`, `server`, `pg_model`, and
+`data_source`, `extfn`, `verified` (Verus-proven kernels), `cli`, `tui`,
+`gui`, `server`, `pg_model`, and
 `pg_improv` (the Postgres extension: its own workspace and `Cargo.lock`,
 excluded from the root because pgrx needs `pg_config` to build). Shared deps pinned in
 `[workspace.dependencies]`; the `differential-dataflow`/`timely` pin is delicate

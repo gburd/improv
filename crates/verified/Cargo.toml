@@ -1,0 +1,17 @@
+[package]
+name = "improv_verified"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Improv's machine-checked integer kernels (Verus specs and proofs; plain Rust under cargo)"
+
+[dependencies]
+vstd.workspace = true
+
+# `cargo-verus verify -p improv_verified` checks the proofs; plain cargo erases
+# the specs and builds ordinary Rust.
+[package.metadata.verus]
+verify = true

@@ -9,6 +9,7 @@ members = [
     "crates/store",
     "crates/storage_csv",
     "crates/engine",
+    "crates/verified",
     "crates/cli",
     "crates/nl_formula",
     "crates/tui",
@@ -34,6 +35,10 @@ thiserror = "2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+# Verus's standard library (specs/proofs; erased under plain rustc). Pinned
+# exactly: it must match the Verus release CI verifies with
+# (0.2026.10.04.426d8b0; see scripts/verify.sh). MIT.
+vstd = { version = "=0.0.0-2026-10-04-0306" }
 # Differential dataflow is the mandated computation engine (see AGENT_STEERING.md).
 # Version pinning is delicate: DD 0.13.7 pulls timely 0.19/timely_communication
 # 0.18 (a columnar line that won't compile on rustc 1.97); DD 0.12.0 compiles but

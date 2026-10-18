@@ -11,6 +11,8 @@ path = "src/lib.rs"
 [dependencies]
 improv_core_model = { path = "../core_model" }
 improv_extfn = { path = "../extfn" }
+# Machine-checked integer kernels (Verus proofs; plain Rust here).
+improv_verified = { path = "../verified" }
 thiserror.workspace = true
 serde.workspace = true
 chrono.workspace = true

@@ -13,6 +13,12 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Formally verified engine kernels.** A new crate, `improv_verified`,
+  holds integer kernels with [Verus](https://github.com/verus-lang/verus)
+  specifications and machine-checked proofs, and the engine calls them:
+  `GCD` / `LCM` (the result is the greatest common divisor, and `LCM`'s
+  2⁵³ overflow check is exact). `scripts/verify.sh` and a CI job check
+  the proofs. See *Architecture & Design → Formal verification*.
 - **GUI formula autocomplete.** In both formula editors a name being
   typed drops a list of matching functions (with their signatures and
   descriptions), measures and categories; Up/Down select, Tab or Enter

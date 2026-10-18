@@ -118,12 +118,7 @@ fn is_prime(n: u64) -> bool {
     true
 }
 
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
-}
+use improv_verified::gcd::gcd;
 
 /// A proper factor of the odd composite n (Brent's ρ, batched gcds).
 fn rho(n: u64) -> u64 {

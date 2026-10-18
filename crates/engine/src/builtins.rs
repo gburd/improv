@@ -418,17 +418,16 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
         }
         148 => {
             let v = nums(a)?;
-            let mut l = 1f64;
+            let mut l = 1u64;
             for x in v {
                 let k = count(x)?;
                 if k == 0 {
                     return Ok(CellValue::num(0.0));
                 }
-                let g = gcd(l as u64, k) as f64;
-                l = l / g * k as f64;
-                domain(l < 9.007_199_254_740_992e15)?;
+                // Exact: #NUM! iff the true lcm reaches 2⁵³ (proven).
+                l = improv_verified::gcd::lcm_below(l, k, 1 << 53).ok_or(err::NUM)?;
             }
-            CellValue::num(l)
+            CellValue::num(l as f64)
         }
         149 => {
             let v = nums(a)?;
@@ -774,12 +773,8 @@ fn combin(n: u64, k: u64) -> f64 {
     r.round()
 }
 
-fn gcd(mut a: u64, mut b: u64) -> u64 {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
-}
+/// Euclid's gcd, proven in [`improv_verified::gcd`].
+use improv_verified::gcd::gcd;
 
 #[derive(Clone, Copy)]
 enum Dir {

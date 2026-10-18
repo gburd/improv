@@ -9,6 +9,7 @@ the ones below it.
 |-------|---------|---------|
 | `core_model` | `improv_core_model` | Categories, items, measures, coordinates, formulas, values, and the formula text parser. No GUI or storage code. |
 | `engine` | `improv_engine` | Formula compiler and differential-dataflow evaluation: one-shot `evaluate` and the live `session::Engine`. |
+| `verified` | `improv_verified` | Small integer kernels the engine calls, with Verus specifications and machine-checked proofs (see [Formal verification](#formal-verification)). |
 | `nl_formula` | `improv_nl_formula` | Controlled natural language ⇄ formula translation. |
 | `storage_mentat` | `improv_storage_mentat` | Model ⇄ datoms in an embedded, SQLite-backed Mentat file. |
 | `storage_pg` | `improv_storage_pg` | Model ⇄ the `improv.*` catalog in Postgres, with bound measures read from and written to their fact tables. |
@@ -186,3 +187,27 @@ default; a background worker follows the commit through logical decoding),
 The core engine is deterministic and unit/property tested. The `Time × Product`
 revenue model (with results 1000 / 1000 / 1200 / 1600) is the canonical fixture
 checked by `engine`'s tests, and each crate carries its own test module.
+
+## Formal verification
+
+A few integer kernels of the engine are proven correct with
+[Verus](https://github.com/verus-lang/verus), not just tested. They live in
+`crates/verified` inside `verus! { ... }` blocks: a `spec fn` states what the
+kernel means and the executable function `ensures` it. Under plain cargo the
+specs are erased, and the engine calls these functions, so the proven code is
+the code that runs. `scripts/verify.sh` (and a CI job) checks the proofs with
+the pinned Verus release.
+
+What is proven:
+
+| Kernel | Used by | Proven |
+|--------|---------|--------|
+| `gcd::gcd` | `GCD`, `LCM`, the number-theory functions | The result is Euclid's gcd: it divides both arguments, every common divisor divides it, and `gcd(a, 0) = a`. |
+| `gcd::lcm_below` | `LCM` | The result is a positive common multiple, `a / gcd(a, b) · b`; it is `None` exactly when that reaches the cap (2⁵³), so the overflow check neither misses nor over-rejects. |
+
+What is tested instead: everything with floating point. Verus does not reason
+about `f64` arithmetic, so the kernels take and return integers and the engine
+does the float range checks and truncation before calling them. The numeric
+functions are checked against LibreOffice and Gnumeric goldens
+(`crates/engine/tests/data`), and invariants (parse ⇄ print, save ⇄ load,
+key encoding) by property tests.
