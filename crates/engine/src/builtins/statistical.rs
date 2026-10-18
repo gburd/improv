@@ -324,7 +324,7 @@ fn gamma(x: f64) -> f64 {
 }
 
 /// ln |Γ(x)|.
-fn ln_gamma(x: f64) -> f64 {
+pub(crate) fn ln_gamma(x: f64) -> f64 {
     libm::lgamma(x)
 }
 
@@ -344,7 +344,7 @@ fn beta_fn(a: f64, b: f64) -> f64 {
 }
 
 /// ln |B(a, b)|.
-fn ln_beta(a: f64, b: f64) -> f64 {
+pub(crate) fn ln_beta(a: f64, b: f64) -> f64 {
     if a > 0.0 && b > 0.0 && a + b > 171.0 {
         ln_gamma(a) + ln_gamma(b) - ln_gamma(a + b)
     } else {
@@ -402,7 +402,7 @@ fn pochhammer(x: f64, n: f64) -> f64 {
 // --- continuous kernels ---------------------------------------------------
 
 /// The regularized lower incomplete gamma P(a, x), a > 0.
-fn gamma_p(a: f64, x: f64) -> f64 {
+pub(crate) fn gamma_p(a: f64, x: f64) -> f64 {
     incomplete_gamma(a, x, true)
 }
 
@@ -428,7 +428,7 @@ fn incomplete_gamma(a: f64, x: f64, lower: bool) -> f64 {
 }
 
 /// The regularized incomplete beta I_x(a, b).
-fn beta_reg(a: f64, b: f64, x: f64) -> f64 {
+pub(crate) fn beta_reg(a: f64, b: f64, x: f64) -> f64 {
     sb::checked_beta_reg(a, b, x.clamp(0.0, 1.0)).unwrap_or(f64::NAN)
 }
 
@@ -457,7 +457,7 @@ fn gamma_pdf(x: f64, a: f64, s: f64) -> Result<f64, u8> {
 /// The x ≥ `lo` where the increasing `g` reaches `target`: grows the bracket
 /// by doubling, then bisects until it cannot shrink (about 1100 steps at
 /// worst, for a quantile among the subnormals).
-fn solve(g: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> f64 {
+pub(crate) fn solve(g: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> f64 {
     if g(lo) >= target {
         return lo;
     }
@@ -484,7 +484,7 @@ fn solve(g: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> f64 {
 
 /// The gamma(a, 1) quantile for left tail p (= 1 − q): solves the tail
 /// that is under ½ so neither saturates.
-fn gamma_inv(a: f64, p: f64, q: f64) -> f64 {
+pub(crate) fn gamma_inv(a: f64, p: f64, q: f64) -> f64 {
     if q <= 0.0 {
         f64::INFINITY
     } else if p <= 0.5 {
@@ -515,7 +515,7 @@ pub(crate) fn norm_pdf(z: f64) -> f64 {
 /// Φ⁻¹(p), p ∈ (0, 1): statrs's estimate, then Newton steps on Φ. The
 /// upper half mirrors the lower (1 − p is exact for p ≥ ½), so Φ is only
 /// ever evaluated in the left tail, where it keeps its relative precision.
-fn norm_inv(p: f64) -> f64 {
+pub(crate) fn norm_inv(p: f64) -> f64 {
     if p > 0.5 {
         return -norm_inv(1.0 - p);
     }
@@ -532,7 +532,7 @@ fn f_df(d: f64) -> bool {
     (1.0..1e10).contains(&d)
 }
 
-fn f_cdf(x: f64, d1: f64, d2: f64) -> f64 {
+pub(crate) fn f_cdf(x: f64, d1: f64, d2: f64) -> f64 {
     beta_reg(d1 / 2.0, d2 / 2.0, d1 * x / (d1 * x + d2))
 }
 
@@ -540,7 +540,7 @@ pub(crate) fn f_sf(x: f64, d1: f64, d2: f64) -> f64 {
     beta_reg(d2 / 2.0, d1 / 2.0, d2 / (d2 + d1 * x))
 }
 
-fn f_pdf(x: f64, d1: f64, d2: f64) -> f64 {
+pub(crate) fn f_pdf(x: f64, d1: f64, d2: f64) -> f64 {
     if x == 0.0 {
         // The density at 0 is infinite, 1 or 0 as d1 is 1, 2 or more.
         return if d1 == 1.0 {
@@ -557,7 +557,7 @@ fn f_pdf(x: f64, d1: f64, d2: f64) -> f64 {
 }
 
 /// The F quantile for left tail p (= 1 − q).
-fn f_inv(d1: f64, d2: f64, p: f64, q: f64) -> f64 {
+pub(crate) fn f_inv(d1: f64, d2: f64, p: f64, q: f64) -> f64 {
     if q <= 0.0 {
         f64::INFINITY
     } else if p <= 0.5 {
@@ -568,7 +568,7 @@ fn f_inv(d1: f64, d2: f64, p: f64, q: f64) -> f64 {
 }
 
 /// P(0 < T < t) for t ≥ 0: the central mass, precise near the median.
-fn t_central(t: f64, df: f64) -> f64 {
+pub(crate) fn t_central(t: f64, df: f64) -> f64 {
     let z = t * t;
     0.5 * beta_reg(0.5, df / 2.0, z / (df + z))
 }
@@ -588,12 +588,12 @@ pub(crate) fn t_sf(t: f64, df: f64) -> f64 {
     }
 }
 
-fn t_pdf(t: f64, df: f64) -> f64 {
+pub(crate) fn t_pdf(t: f64, df: f64) -> f64 {
     (-(df + 1.0) / 2.0 * (t * t / df).ln_1p() - 0.5 * df.ln() - ln_beta(0.5, df / 2.0)).exp()
 }
 
 /// The t ≥ 0 with right tail q ∈ [0, ½] (infinite at 0).
-fn t_upper_inv(q: f64, df: f64) -> f64 {
+pub(crate) fn t_upper_inv(q: f64, df: f64) -> f64 {
     if q <= 0.0 {
         return f64::INFINITY;
     }
@@ -608,7 +608,7 @@ fn t_upper_inv(q: f64, df: f64) -> f64 {
 // --- discrete kernels -----------------------------------------------------
 
 /// P(lo ≤ K ≤ hi) for K ~ Binomial(n, p), integers 0 ≤ lo ≤ hi ≤ n.
-fn binom_range(n: f64, p: f64, lo: f64, hi: f64) -> f64 {
+pub(crate) fn binom_range(n: f64, p: f64, lo: f64, hi: f64) -> f64 {
     if p == 0.0 {
         return f64::from(u8::from(lo == 0.0));
     }
@@ -666,7 +666,7 @@ fn binom_inv(n: f64, p: f64, alpha: f64) -> f64 {
 }
 
 /// C(n, k) as a product while it is small, else through ln Γ.
-fn ln_choose(n: f64, k: f64) -> f64 {
+pub(crate) fn ln_choose(n: f64, k: f64) -> f64 {
     let k = k.min(n - k);
     if k <= 1000.0 {
         let mut c = 1.0;
@@ -683,13 +683,13 @@ fn ln_choose(n: f64, k: f64) -> f64 {
 }
 
 /// P(X = k) drawing n from N holding K successes.
-fn hypgeom_pmf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
+pub(crate) fn hypgeom_pmf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
     (ln_choose(big_k, k) + ln_choose(big_n - big_k, n - k) - ln_choose(big_n, n)).exp()
 }
 
 /// P(X ≤ k): sums the tail on k's side of the mode, from k outward (the
 /// terms fall away from the mode, so the sum stops once they stop counting).
-fn hypgeom_cdf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
+pub(crate) fn hypgeom_cdf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
     let mode = ((n + 1.0) * (big_k + 1.0) / (big_n + 2.0)).floor();
     let (lo, hi) = ((n - big_n + big_k).max(0.0), n.min(big_k));
     // pmf(i + 1) / pmf(i).
@@ -725,7 +725,7 @@ fn hypgeom_cdf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
 }
 
 /// P(F = f) for f failures before the s-th success.
-fn negbinom_pmf(f: f64, s: f64, p: f64) -> f64 {
+pub(crate) fn negbinom_pmf(f: f64, s: f64, p: f64) -> f64 {
     let q = 1.0 - p;
     if f > 1e5 {
         return (ln_gamma(f + s) - ln_gamma(f + 1.0) - ln_gamma(s) + s * p.ln() + f * q.ln()).exp();
@@ -740,7 +740,7 @@ fn negbinom_pmf(f: f64, s: f64, p: f64) -> f64 {
 }
 
 /// The Poisson mass P(X = k) or distribution P(X ≤ k) at mean λ ≥ 0.
-fn poisson(k: f64, lambda: f64, cumulative: bool) -> f64 {
+pub(crate) fn poisson(k: f64, lambda: f64, cumulative: bool) -> f64 {
     if lambda == 0.0 {
         return f64::from(u8::from(cumulative || k == 0.0));
     }
