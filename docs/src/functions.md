@@ -486,6 +486,9 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `OFFTRAF(number, number)` | number | the offered traffic that carries traffic erlangs on circuits (#VALUE! if circuits cannot carry it) |
 | `DIMCIRC(number, number)` | number | the fewest circuits (up to 10⁶) that carry traffic erlangs with blocking at most gos, 0 < gos ≤ 1 |
 | `OFFCAP(number, number)` | number | the traffic circuits carry with blocking gos, 0 < gos < 1 |
+| `SSMEDIAN(number OVER category, [number])` | number | the median of grouped data (Gnumeric): each value the midpoint of an interval of width interval (default 1), interpolated within the median's interval |
+| `INTERPOLATION(number OVER category, number OVER category, number, [number], [number])` | number | INTERPOLATION(xs, ys OVER T, target, [method], [next]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over [target, next] |
+| `HPFILTER(number OVER category, [number])` | number | each item's trend under the Hodrick–Prescott filter with smoothing λ (default 1600); the cycle is y − trend; needs 6 values |
 
 ## Financial
 

@@ -71,6 +71,20 @@ DATA = {
     "V": {"cats": {"R": 3, "C": 2, "P": 2, "Q": 3}, "m": {
         "A": [["R", "C"], [[1, 2, 2, 4, 3, 6]]],
     }},
+    # Series: two groups (the second's x out of order), ties in Z.
+    "S": {"cats": {"T": 8, "G": 2}, "m": {
+        "X": [["T"], [[1, 2, 3, 4, 5, 6, 7, 8], [3, 1, 4, 1.5, 5, 9, 2, 6]]],
+        "Y": [["T"], [[2, 4, 3, 8, 7, 10, 9, 14], [5, 3, 8, 2, 4, 1, 6, 7]]],
+        "Z": [["T"], [[7, 7, 8, 9, 9, 9, 10, 12], [1, 1, 1, 2, 2, 3, 3, 3]]],
+    }},
+    # A repeated x; six values (HPFILTER's minimum).
+    "D": {"cats": {"T": 6}, "m": {
+        "X": [["T"], [[1, 2, 2, 3, 4, 5]]],
+        "Y": [["T"], [[1, 5, 2, 8, 3, 9]]],
+        "Z": [["T"], [[7, 7, 8, 8, 9, 10]]],
+    }},
+    "U": {"cats": {"T": 1}, "m": {"Z": [["T"], [[4]]]}},
+    "P": {"cats": {"T": 2}, "m": {"Z": [["T"], [[3, 8]]]}},
 }
 
 GN = "Gnumeric 1.12"
@@ -118,6 +132,32 @@ case("M", "EIGEN(S OVER R, C INTO E, Q)", GN)
 case("M", "EIGEN(A OVER R, C INTO K)", GN)
 case("W", "CHOLESKY(A OVER R, C INTO P, Q)", GN)
 case("W", "EIGEN(A OVER R, C INTO P, Q)", GN)
+
+
+# --- group 3: series (Gnumeric) -------------------------------------------------
+for t in ("0.5", "2.5", "4", "7.25", "9.5"):
+    for meth in ("0", "2", "4"):
+        case("S", f"INTERPOLATION(X, Y OVER T, {t}, {meth})", GN)
+case("S", "INTERPOLATION(X, Y OVER T, 3.3)", GN)
+for t0, t1 in (("2.5", "6.2"), ("0.5", "1.5"), ("3", "3.5"), ("7", "9.5"), ("1", "8")):
+    for meth in ("1", "3", "5"):
+        case("S", f"INTERPOLATION(X, Y OVER T, {t0}, {meth}, {t1})", GN,
+             sheet=f"INTERPOLATION(X, Y, {{{t0};{t1}}}, {meth})")
+case("D", "INTERPOLATION(X, Y OVER T, 2.5)", GN)
+case("D", "INTERPOLATION(Y, Z OVER T, 2.5, 4)", GN)
+for lam in ("", ", 100", ", 100000", ", 0.5"):
+    case("S", f"HPFILTER(Y{lam} OVER T)".replace(f"Y{lam} OVER T", f"Y OVER T{lam}"), GN)
+case("S", "HPFILTER(Z OVER T)", GN)
+case("D", "HPFILTER(Y OVER T, 10)", GN)
+for iv in ("", ", 2", ", 0.5", ", 0"):
+    case("S", f"SSMEDIAN(Z OVER T{iv})", GN)
+    case("D", f"SSMEDIAN(Z OVER T{iv})", GN)
+case("S", "SSMEDIAN(X OVER T)", GN)
+case("U", "SSMEDIAN(Z OVER T)", GN)
+case("P", "SSMEDIAN(Z OVER T)", GN)
+# "Each data point in array is the midpoint of the interval": a single
+# point is its own median; HPFILTER needs six.
+case("P", "HPFILTER(Z OVER T)", GN, sheet="HPFILTER(Z)")
 
 
 # --- layout -------------------------------------------------------------------
