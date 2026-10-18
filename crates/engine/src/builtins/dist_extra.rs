@@ -1052,10 +1052,10 @@ fn binom(x: f64, a: &[f64], op: Op) -> f64 {
     }
     let n = n.round();
     let cdf = |k: f64, lower: bool| {
+        // k < n here: the CDF answers k ≥ n itself, and the quantile search
+        // never asks above its top, n.
         if lower {
             st::binom_range(n, p, 0.0, k)
-        } else if k >= n {
-            0.0
         } else {
             st::binom_range(n, p, k + 1.0, n)
         }
@@ -1275,7 +1275,7 @@ fn norm_range(x1: f64, x2: f64) -> f64 {
         super::statistical::norm_cdf(-x1),
         super::statistical::norm_cdf(-x2),
     );
-    if (q1 - q2) * 32.0 > q1 + q2 || !x2.is_finite() {
+    if (q1 - q2) * 32.0 > q1 + q2 {
         return q1 - q2;
     }
     // The tails nearly cancel, so the interval is narrow (the density falls
@@ -1446,7 +1446,7 @@ fn owen_t(h: f64, a: f64) -> f64 {
 /// integrand is below e^(−800).
 fn owen_t_quad(h: f64, a: f64) -> f64 {
     let top = a.min(40.0 / h);
-    if top <= 0.0 || h.is_infinite() {
+    if h.is_infinite() {
         return 0.0;
     }
     let pieces = (top * h.max(2.0)).ceil();
@@ -1506,6 +1506,7 @@ const GL16: [(f64, f64); 8] = [
 ];
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
@@ -1663,6 +1664,57 @@ mod tests {
         assert_eq!(call(1657, &a), Err(err::VALUE));
         let deep = nums(&[-800.0, 4.0, 10.0, 1.0, 1.0, 1.0]);
         assert_eq!(call(1658, &deep), Ok(CellValue::Err(err::NUM)));
+    }
+
+    /// Each family rejects each bad parameter (the goldens hit one each).
+    #[test]
+    fn each_parameter_is_checked() {
+        let d = Op::D(false);
+        let nan = f64::NAN;
+        for (family, params) in [
+            (0, &[2.0, 0.0][..]),
+            (5, &[3.0, -1.0]),
+            (17, &[nan]),
+            (15, &[nan, 0.0, 1.0]),
+            (15, &[1.0, nan, 1.0]),
+            (15, &[1.0, 0.0, nan]),
+            (16, &[3.0, nan]),
+            (1, &[-1.0, 0.5]),
+            (1, &[2.5, 0.5]),
+            (9, &[3.0, 2.5, 3.0]),
+            (9, &[3.0, 2.0, 3.5]),
+            (9, &[3.0, -2.0, 1.0]),
+            (9, &[3.0, 2.0, -1.0]),
+            (18, &[2.0, 0.0]),
+        ] {
+            let (np, kernel) = r_family(family).unwrap();
+            assert_eq!(np, params.len());
+            assert!(kernel(1.0, params, d).is_nan(), "{family} {params:?}");
+        }
+        assert!(norm_range(1.0, f64::NAN).is_nan());
+        assert!(owen_t(0.5, f64::NAN).is_nan());
+        // The point mass σ = 0 sits at μ.
+        let lower = Op::P {
+            lower: true,
+            log: false,
+        };
+        assert_eq!(norm(-1.0, &[0.0, 0.0], lower), 0.0);
+        assert_eq!(weibull(-1.0, &[2.0, 1.0], Op::D(false)), 0.0);
+        assert_eq!(weibull(0.0, &[2.0, 1.0], Op::D(false)), 0.0);
+        // The skew-normal's far-tail integral needs α > 0 and α|h| ≥ 1.
+        assert_eq!(
+            sn_cdf(-0.5, 1.5),
+            st::norm_cdf(-0.5) - 2.0 * owen_t(-0.5, 1.5)
+        );
+        assert_eq!(
+            sn_cdf(-2.0, -1.0),
+            (st::norm_cdf(-2.0) - 2.0 * owen_t(-2.0, -1.0)).clamp(0.0, 1.0)
+        );
+        // The Tukey integrals' cut-offs: a vanishing density, a range already
+        // certain, and the far tail of the range integral.
+        assert!(tukey_p(0.5, 3.0, 2.0, 1.0) > 0.0);
+        assert!(range_cdf(0.001, 2.0) > 0.0);
+        assert!((range_cdf(12.0, 1e6) - 0.999_990_397_184_811).abs() < 1e-12);
     }
 
     #[test]
