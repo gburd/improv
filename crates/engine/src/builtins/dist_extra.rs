@@ -634,14 +634,7 @@ fn beta(x: f64, a: &[f64], op: Op) -> f64 {
             tails(lower, log, below, above)
         }
         Op::Q(t) => q_ends(t, 0.0, 1.0).unwrap_or_else(|| {
-            split(t).map_or(NAN, |(below, above)| {
-                if below <= 0.5 {
-                    st::solve(|x| st::beta_reg(p, q, x), below, 0.0, 1.0)
-                } else {
-                    // 1 − I_x(p, q) = I_{1−x}(q, p): solve for y = 1 − x.
-                    1.0 - st::solve(|y| st::beta_reg(q, p, y), above, 0.0, 1.0)
-                }
-            })
+            split(t).map_or(NAN, |(below, above)| st::beta_q(p, q, below, above))
         }),
     }
 }

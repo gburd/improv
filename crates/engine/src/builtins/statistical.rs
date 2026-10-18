@@ -646,13 +646,30 @@ pub(crate) fn gamma_inv(a: f64, p: f64, q: f64) -> f64 {
 /// The beta(a, b) quantile of p ∈ (0, 1].
 fn beta_inv(p: f64, a: f64, b: f64) -> f64 {
     if p == 1.0 {
-        return 1.0;
+        1.0
+    } else {
+        beta_q(a, b, p, 1.0 - p)
     }
+}
+
+/// The x with I_x(a, b) = p (= 1 − q), solved on the tail under ½ so it
+/// keeps its digits. The upper tail is I_{1−x}(b, a) as a function of x:
+/// solving for y = 1 − x and returning 1 − y lost every digit of a
+/// quantile under ε (BETA.INV(0.6, 1e15, 1e300) is 9.98e-286, not 0).
+pub(crate) fn beta_q(a: f64, b: f64, p: f64, q: f64) -> f64 {
     if p <= 0.5 {
         solve(|x| beta_reg(a, b, x), p, 0.0, 1.0)
     } else {
-        // 1 − I_x(a, b) = I_{1−x}(b, a): solve for y = 1 − x.
-        1.0 - solve(|y| beta_reg(b, a, y), 1.0 - p, 0.0, 1.0)
+        // I_{1−x}(b, a) falls as x rises; 1 − x is exact from ½ up, and
+        // below ½ the lower tail's own digits decide.
+        let upper = |x: f64| {
+            if x < 0.5 {
+                1.0 - beta_reg(a, b, x)
+            } else {
+                beta_reg(b, a, 1.0 - x)
+            }
+        };
+        solve(|x| -upper(x), -q, 0.0, 1.0)
     }
 }
 
@@ -1488,6 +1505,10 @@ mod tests {
         assert!(t0.elapsed() < std::time::Duration::from_millis(100));
         let q = call(502, &[0.5, 1e15, b]).as_num().unwrap();
         assert!((q / 7.458e-140 - 1.0).abs() < 1e-3, "{q}");
+        // Above the median, a quantile under ε (Gnumeric 9.976418892862951e-286;
+        // the median (a − 1/3)/b is 1e-285): it was 0.
+        let q = call(502, &[0.6, 1e15, 1e300]).as_num().unwrap();
+        assert!((q / 1e-285 - 1.0).abs() < 1e-5, "{q}");
         // Shapes whose sum overflows (Gnumeric's R.PBETA(0.5, 1E15,
         // 1.797E308) is 1; it was 0, and BETA.INV took 0.8 s on NaNs).
         let t0 = std::time::Instant::now();
