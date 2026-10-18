@@ -85,6 +85,7 @@ improv-tui sample.db
 | `S` / `v` | save the layout as a view / cycle views |
 | `I` / `E` | import / export CSV |
 | `R` | revert to the saved model |
+| Tab (in a formula) | complete a function, measure or category name; again to cycle |
 | `?` / F1 | search the functions; Enter inserts `NAME(` into the edit |
 | `q` | quit and save |
 

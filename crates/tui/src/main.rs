@@ -12,6 +12,7 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
+mod complete;
 mod edit;
 mod fnhelp;
 mod ui;
@@ -136,9 +137,7 @@ fn handle_event(app: &mut App, ev: Event, path: &str) {
             (KeyCode::F(1), _) => app.help = Some(fnhelp::FnHelp::new()),
             (KeyCode::Enter, Some(_)) => app.commit_edit(),
             (KeyCode::Esc, Some(_)) => app.cancel_edit(),
-            (code, Some(buf)) => {
-                buf.key(code);
-            }
+            (code, Some(_)) => app.edit_key(code),
             (code, None) => match (code, &mut app.command) {
                 (KeyCode::Enter, Some(_)) => app.commit_command(),
                 (KeyCode::Esc, Some(_)) => app.cancel_command(),
@@ -178,6 +177,7 @@ fn help_key(app: &mut App, code: KeyCode) {
         KeyCode::Enter => {
             if let (Some(d), Some(buf)) = (h.current(), &mut app.edit) {
                 buf.insert(&format!("{}(", d.name));
+                app.tab_cycle = None;
             }
             app.help = None;
         }
@@ -447,6 +447,36 @@ mod tests {
         )
         .unwrap();
         assert!(app.command.is_none());
+    }
+
+    #[test]
+    fn tab_completes_in_a_formula_only() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(102));
+        let mut ev = vec![key(KeyCode::Char('e'))];
+        ev.extend((0..30).map(|_| key(KeyCode::Backspace)));
+        ev.extend(chars("Pri"));
+        ev.push(key(KeyCode::Tab));
+        ev.extend(chars(" * quan"));
+        ev.push(key(KeyCode::Tab));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.edit.as_deref(), Some("Price * Quantity"));
+        // Several matches: the status lists them; Tab cycles; a key resets.
+        let mut ev = chars(" + sumx");
+        ev.extend([key(KeyCode::Tab), key(KeyCode::Tab)]);
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.edit.as_deref(), Some("Price * Quantity + SUMXMY2("));
+        assert!(app.status.as_deref().unwrap().starts_with("Tab cycles:"));
+        run_events(&mut app, "", vec![key(KeyCode::Backspace)]).unwrap();
+        assert!(app.tab_cycle.is_none() && app.status.is_none());
+        run_events(&mut app, "", vec![key(KeyCode::Esc)]).unwrap();
+        // In a value edit Tab does nothing.
+        view(&mut app, MeasureId(101));
+        let mut ev = vec![key(KeyCode::Char('e'))];
+        ev.extend(chars("pm"));
+        ev.push(key(KeyCode::Tab));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.edit.as_deref(), Some("100pm"));
     }
 
     #[test]

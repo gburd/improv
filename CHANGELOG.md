@@ -18,7 +18,11 @@ positional forms and recurrences, lookups, list results, `LET` and
   their signatures, and the selected one's category, aliases and
   description. Enter inserts `NAME(` into the edit. `e`/Enter on a
   derived measure edits its formula (symbolic or controlled English),
-  with a caret, and an error keeps the edit open under its message.
+  with a caret, and an error keeps the edit open under its message. In a
+  formula, Tab completes function, measure and category names (again to
+  cycle the matches); inside a call the status line shows its signature
+  with the current argument marked, and the parameters still to type
+  trail the caret, dimmed.
 - **pg_improv `commit` sync mode** (pg_improv 0.10.0;
   `improv.set_sync_mode(model, 'commit')`). Results commit or roll back
   with the writer's transaction, as in `trigger` mode, but nothing is

@@ -49,7 +49,7 @@ $I save-view m.db 1 "Revenue by quarter" 102 --rows Time --cols Product
 | Front end | Command | Notes |
 | --- | --- | --- |
 | CLI | `improv --help` | Scriptable; see `man docs/man/improv.1`. |
-| TUI | `improv-tui m.db` | Arrows move, `e`/Enter edit a cell (or a derived measure's formula), Shift+arrows select a range (Sum in the status line), `p` pivot, `[ ]` page, `f`/`F` filter, `Tab` measure, `R` revert to saved, `?`/F1 function help, `q` quit (autosaves). |
+| TUI | `improv-tui m.db` | Arrows move, `e`/Enter edit a cell (or a derived measure's formula), Shift+arrows select a range (Sum in the status line), `p` pivot, `[ ]` page, `f`/`F` filter, `Tab` measure, `R` revert to saved, `?`/F1 function help, Tab completes names in a formula, `q` quit (autosaves). |
 | GUI | `improv-gui m.db` | NeXTSTEP-style workspace: application menu top-left, worksheet windows, model browser. Double-click or Enter edits a cell; right-click a tile to move or filter it; type `Name = formula` on the formula list's last line. Run inside `nix develop` on NixOS so the GL/X11 libraries are found. |
 | Streaming | `producer \| improv stream m.db Revenue` | Edits in on stdin, changed cells out on stdout; saved at end of input. |
 | Server | `IMPROV_API_TOKEN=secret improv-server m.db` | JSON API on `127.0.0.1:3000`; see [The HTTP Server](./server.md). |

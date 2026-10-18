@@ -6,7 +6,9 @@
 //! input cells (input measures) or from `engine::evaluate` (derived measures),
 //! both keyed by `CoordKey = Vec<(u32, u32)>`.
 
+use crate::complete;
 use crate::edit::LineEdit;
+use crossterm::event::KeyCode;
 #[cfg(test)]
 use improv_core_model::Coordinate;
 use improv_core_model::{
@@ -514,6 +516,8 @@ pub struct App {
     pub command: Option<(CommandKind, String)>,
     /// When `Some`, the function help overlay (`?` / F1) is open.
     pub help: Option<crate::fnhelp::FnHelp>,
+    /// The candidates a repeated Tab cycles through; reset by any other key.
+    pub tab_cycle: Option<complete::Cycle>,
 }
 
 impl App {
@@ -574,6 +578,7 @@ impl App {
             anchor: None,
             command: None,
             help: None,
+            tab_cycle: None,
         })
     }
 
@@ -781,9 +786,28 @@ impl App {
         self.status = None;
     }
 
+    /// A key in the edit line. In a formula, Tab completes the name before
+    /// the caret ([`complete::tab`]); any other key edits, and a change
+    /// clears the message about the old text.
+    pub fn edit_key(&mut self, code: KeyCode) {
+        let formula = !self.viewed_is_input();
+        let Some(e) = &mut self.edit else { return };
+        if code == KeyCode::Tab {
+            if formula {
+                self.status = complete::tab(&self.model, e, &mut self.tab_cycle);
+            }
+            return;
+        }
+        self.tab_cycle = None;
+        if e.key(code) {
+            self.status = None;
+        }
+    }
+
     /// Cancel edit mode without committing.
     pub fn cancel_edit(&mut self) {
         self.edit = None;
+        self.tab_cycle = None;
         self.status = None;
     }
 

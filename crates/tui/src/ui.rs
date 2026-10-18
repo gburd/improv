@@ -19,6 +19,7 @@ const HELP: &[&str] = &[
     "arrows/click: move",
     "Shift+arrows: range",
     "e/Enter: edit",
+    "Tab (formula): complete",
     "[ ]: page",
     "p: pivot",
     "f/F: filter",
@@ -95,6 +96,9 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     }
     if let Some(e) = &app.edit {
         lines.push(edit_line(e, app.editing_formula()));
+        if app.editing_formula() {
+            lines.extend(signature_line(e));
+        }
     } else if let Some((kind, buf)) = &app.command {
         let prompt = match kind {
             CommandKind::ImportCsv => "import-csv",
@@ -145,17 +149,59 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
 }
 
 /// The edit prompt (`edit> `, or `formula> ` for a formula) and the text,
-/// the cell under the caret reversed.
+/// the cell under the caret reversed. In a formula with the caret at the
+/// end inside a call, the parameters still to type follow, dimmed.
 fn edit_line(e: &LineEdit, formula: bool) -> Line<'static> {
     let (before, after) = e.text.split_at(e.caret);
     let mut rest = after.chars();
     let at = rest.next().map_or(" ".to_string(), String::from);
     let prompt = if formula { "formula" } else { "edit" };
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(format!("{prompt}> {before}")),
         Span::styled(at, Style::default().add_modifier(Modifier::REVERSED)),
         Span::raw(rest.as_str().to_string()),
-    ])
+    ];
+    if let Some(g) = formula
+        .then(|| crate::complete::ghost(e, e.caret))
+        .flatten()
+    {
+        spans.push(Span::styled(
+            g,
+            Style::default().add_modifier(Modifier::DIM),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The signature of the call the caret is in, the current argument marked
+/// `‹pv›` and reversed, then the description:
+/// `PMT(rate, nper, ‹pv›, [fv], [type]) — payment per period`.
+fn signature_line(e: &LineEdit) -> Option<Line<'static>> {
+    let (d, arg) = improv_core_model::functions::call_at(e, e.caret)?;
+    let names = d.param_names();
+    // A variadic tail (`…`) takes every argument past the named ones.
+    let cur = (arg < names.len() || d.variadic).then(|| arg.min(names.len().saturating_sub(1)));
+    let mut spans = vec![Span::raw(format!("{}(", d.name))];
+    for (i, n) in names.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(", "));
+        }
+        spans.push(if Some(i) == cur {
+            Span::styled(
+                format!("\u{2039}{n}\u{203a}"),
+                Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD),
+            )
+        } else {
+            Span::raw(n.clone())
+        });
+    }
+    // Drop a doc's trailing restatement of the signature.
+    let doc = d
+        .doc
+        .find(&format!(": {}(", d.name))
+        .map_or(d.doc, |i| &d.doc[..i]);
+    spans.push(Span::raw(format!(") \u{2014} {doc}")));
+    Some(Line::from(spans))
 }
 
 /// Row-label column width, data column width, and inter-column spacing.
@@ -450,6 +496,47 @@ mod tests {
             "anchor cell in range style"
         );
         assert_eq!(buf[(data_x, y + 1)].bg, Color::Blue, "cursor cell");
+    }
+
+    #[test]
+    fn formula_edit_shows_signature_and_ghost_text() {
+        let mut app = App::new(revenue_model()).unwrap();
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
+        app.begin_edit();
+        app.edit = Some("Price * PMT(0.05, 12, ".into());
+        let buf = draw(&mut app, 120, 30);
+        let lines = text(&buf);
+        let (x, y) = find(&lines, "pv, [fv], [type])");
+        assert_eq!(row_of(&lines, "formula> Price * PMT(0.05, 12,"), y as usize);
+        assert!(buf[(x, y)].modifier.contains(Modifier::DIM), "ghost is dim");
+        let sig = "PMT(rate, nper, \u{2039}pv\u{203a}, [fv], [type]) \u{2014} payment per period";
+        let (sx, sy) = find(&lines, sig);
+        assert_eq!(sy, y + 1, "the hint is right under the edit line");
+        let at = sx + "PMT(rate, nper, ".chars().count() as u16;
+        assert!(buf[(at, sy)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(sx, sy)].modifier.contains(Modifier::REVERSED));
+        // A caret before the end: no ghost text, the hint follows the caret.
+        app.edit.as_mut().unwrap().caret = "Price * PMT(0".len();
+        let lines = text(&draw(&mut app, 120, 30));
+        assert!(!lines.iter().any(|l| l.contains("12, pv")));
+        row_of(&lines, "PMT(\u{2039}rate\u{203a}, nper");
+        // A variadic tail marks its last parameter; too many marks none.
+        app.edit = Some("CONCAT(1, 2, 3".into());
+        row_of(
+            &text(&draw(&mut app, 120, 30)),
+            "CONCAT(text1, \u{2039}\u{2026}\u{203a})",
+        );
+        app.edit = Some("ABS(1, 2".into());
+        let lines = text(&draw(&mut app, 120, 30));
+        assert!(!lines.iter().any(|l| l.contains('\u{2039}')));
+        // Outside a call, and in a value edit, neither shows.
+        app.edit = Some("Price".into());
+        let lines = text(&draw(&mut app, 120, 30));
+        assert!(!lines.iter().any(|l| l.contains('\u{2014}')));
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(101));
+        app.edit = Some("PMT(".into());
+        let lines = text(&draw(&mut app, 120, 30));
+        assert!(!lines.iter().any(|l| l.contains("rate")));
     }
 
     #[test]

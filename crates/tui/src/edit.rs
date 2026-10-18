@@ -40,6 +40,12 @@ impl LineEdit {
         self.caret += s.len();
     }
 
+    /// Replace `start..caret` with `s`, leaving the caret after it.
+    pub fn replace(&mut self, start: usize, s: &str) {
+        self.text.replace_range(start..self.caret, s);
+        self.caret = start + s.len();
+    }
+
     fn prev(&self) -> usize {
         self.text[..self.caret]
             .chars()
@@ -100,5 +106,8 @@ mod tests {
         assert!(e.key(KeyCode::Backspace));
         assert_eq!((e.text.as_str(), e.caret), ("x", 1));
         assert!(!e.key(KeyCode::F(5)));
+        e.caret = 0;
+        e.replace(0, "SUM(");
+        assert_eq!((e.text.as_str(), e.caret), ("SUM(x", 4));
     }
 }
