@@ -9,6 +9,7 @@ use super::Rows;
 use crate::builtins::{err, n_or, num};
 use crate::CellValue;
 
+mod ets;
 mod logfit;
 mod matrix;
 mod normality;
@@ -16,6 +17,62 @@ mod series;
 mod signal;
 
 type List = Result<Vec<CellValue>, u8>;
+
+/// LibreOffice's `KahanSum`: Neumaier's sum with the latest term held
+/// back, so a total that cancels to within 2⁻⁴⁸ is exactly 0.
+struct Kahan {
+    sum: f64,
+    err: f64,
+    mem: f64,
+}
+
+impl Kahan {
+    fn new(x: f64) -> Kahan {
+        Kahan {
+            sum: x,
+            err: 0.0,
+            mem: 0.0,
+        }
+    }
+
+    fn neumaier(&mut self, x: f64) {
+        let t = self.sum + x;
+        self.err += if self.sum.abs() >= x.abs() {
+            (self.sum - t) + x
+        } else {
+            (x - t) + self.sum
+        };
+        self.sum = t;
+    }
+
+    fn add(&mut self, x: f64) {
+        if x == 0.0 {
+            return;
+        }
+        if self.mem != 0.0 {
+            self.neumaier(self.mem);
+        }
+        self.mem = x;
+    }
+
+    fn get(&mut self) -> f64 {
+        let total = self.sum + self.err;
+        let m = self.mem;
+        if m == 0.0 {
+            return total;
+        }
+        // rtl::math::approxEqual(m, -total).
+        if (m < 0.0) != (total < 0.0)
+            && total != 0.0
+            && (m + total).abs() < m.abs() * 2f64.powi(-48)
+        {
+            return 0.0;
+        }
+        self.neumaier(m);
+        self.mem = 0.0;
+        self.sum + self.err
+    }
+}
 
 /// One result per group.
 pub(super) fn reduce(id: u32, rows: &Rows, params: &[CellValue]) -> CellValue {
@@ -26,6 +83,11 @@ pub(super) fn reduce(id: u32, rows: &Rows, params: &[CellValue]) -> CellValue {
         1850 | 1851 => matrix::det(rows, id == 1851),
         1856 => ssmedian(rows, params),
         1871 => cronbach(rows),
+        1872..=1878 => {
+            use ets::Kind::{Add, Mult, PiAdd, PiMult, Season, StatAdd, StatMult};
+            let kind = [Add, Mult, PiAdd, PiMult, StatAdd, StatMult, Season][(id - 1872) as usize];
+            ets::ets(kind, rows, params)
+        }
         1857 => series::interpolation(rows, params),
         1859..=1866 => {
             use normality::Test::{Ad, Cvm, Lks, Sf};

@@ -106,19 +106,45 @@ DATA = {
         "B": [["T"], [[4, 4, 3, 5, 3, 3], [2, 4, 2, 5, 3, 4]]],
         "C": [["T"], [[3, 5, 2, 4, 4, 2], [5, 1, 4, 2, 3, 3]]],
     }},
+    # Exponential smoothing: a trend with a season of 4 (additive in group
+    # 0, multiplicative in group 1); a gap and repeated x; a monthly
+    # timeline (serial dates of the 15th).
+    "F": {"cats": {"T": 16, "G": 2}, "m": {
+        "Y": [["T"], [[12, 15, 9, 20, 14, 17, 11, 23, 16, 19, 12, 25, 18, 22, 14, 27],
+                      [10, 14, 8, 18, 11, 16, 9, 21, 13, 18, 10, 24, 14, 20, 11, 27]]],
+        "X": [["T"], [list(range(1, 17)), list(range(-14, 17, 2))]],
+        "W": [["T"], [[1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+                      [1, 2, 2, 3, 4, 5, 6, 7, 7, 8, 9, 10, 11, 12, 13, 14]]],
+    }},
+    "H": {"cats": {"T": 12}, "m": {
+        "Y": [["T"], [[5.1, 6.3, 7.2, 6.8, 8.1, 9.4, 8.8, 10.2, 11.5, 10.9, 12.3, 13.1]]],
+        "X": [["T"], [[45306, 45337, 45366, 45397, 45427, 45458, 45488, 45519, 45550, 45580, 45611, 45641]]],
+    }},
     "U": {"cats": {"T": 1, "K": 2}, "m": {"Z": [["T"], [[4]]]}},
     "P": {"cats": {"T": 2}, "m": {"Z": [["T"], [[3, 8]]]}},
 }
 
 GN = "Gnumeric 1.12"
+p1.LO_NAMES = {
+    "FORECAST.ETS": "COM.MICROSOFT.FORECAST.ETS",
+    "FORECAST.ETS.MULT": "ORG.LIBREOFFICE.FORECAST.ETS.MULT",
+    "FORECAST.ETS.CONFINT": "COM.MICROSOFT.FORECAST.ETS.CONFINT",
+    "FORECAST.ETS.PI.MULT": "ORG.LIBREOFFICE.FORECAST.ETS.PI.MULT",
+    "FORECAST.ETS.STAT": "COM.MICROSOFT.FORECAST.ETS.STAT",
+    "FORECAST.ETS.STAT.MULT": "ORG.LIBREOFFICE.FORECAST.ETS.STAT.MULT",
+    "FORECAST.ETS.SEASONALITY": "COM.MICROSOFT.FORECAST.ETS.SEASONALITY",
+}
 LO = "LibreOffice"
 CASES = {name: [] for name in DATA}
 
 
-def case(ds, f, src, sheet=None, excel=None, text=False):
+def case(ds, f, src, sheet=None, excel=None, text=False, label=None):
     """A golden row: the Improv formula `f`, computed by `src` (LO or GN)
-    from `sheet` (default: `f` without OVER/INTO)."""
-    CASES[ds].append({"f": f, "src": src, "sheet": sheet, "excel": excel, "text": text})
+    from `sheet` (default: `f` without OVER/INTO; a function of the group
+    for a per-group formula), recorded with source `label` (default
+    `src`)."""
+    CASES[ds].append({"f": f, "src": src, "sheet": sheet, "excel": excel, "text": text,
+                      "label": label or src})
 
 
 # --- group 1: determinants and inverses ---------------------------------------
@@ -219,6 +245,75 @@ case("Q", "CRONBACH(A, B, C OVER T)", GN)
 case("Q", "CRONBACH(C, A OVER T)", GN)
 
 
+# --- group 6: FORECAST.ETS (LibreOffice) ----------------------------------------
+for seas in ("", ", 1", ", 4", ", 0", ", 2"):
+    for t in ("17", "18.5", "24"):
+        case("F", f"FORECAST.ETS({t}, Y, X OVER T{seas})", LO)
+        case("F", f"FORECAST.ETS.MULT({t}, Y, X OVER T{seas})", LO)
+# (Target 17 with group 1's step of 2 would read past LibreOffice's
+# coefficient array: undefined there; see the unit tests.)
+for t in ("18", "20", "21.5"):
+    for lvl in ("", ", 0.9", ", 0.5"):
+        case("F", f"FORECAST.ETS.CONFINT({t}, Y, X OVER T{lvl or ', 0.95'}, 0)", LO)
+    case("F", f"FORECAST.ETS.PI.MULT({t}, Y, X OVER T, 0.8, 0)", LO)
+for k in range(1, 10):
+    for seas in ("", ", 4", ", 0"):
+        case("F", f"FORECAST.ETS.STAT(Y, X OVER T, {k}{seas})", LO)
+        case("F", f"FORECAST.ETS.STAT.MULT(Y, X OVER T, {k}{seas})", LO)
+case("F", "FORECAST.ETS.SEASONALITY(Y, X OVER T)", LO)
+case("F", "FORECAST.ETS.SEASONALITY(Y, W OVER T)", LO)
+# The gap (group 0: 5 missing) is filled with the neighbours' mean, or 0
+# (group 1 repeats x instead: averaged, see below).
+GAPS = []
+for comp in (", 1", ", 0"):
+    GAPS += [(f"FORECAST.ETS(19, Y, W OVER T, 4{comp})", f"FORECAST.ETS(19, {{y}}, {{x}}, 4{comp})"),
+             (f"FORECAST.ETS.STAT(Y, W OVER T, 7, 4{comp})",
+              f"FORECAST.ETS.STAT({{y}}, {{x}}, 7, 4{comp})")]
+# Repeated x (group 1) aggregate: SUM, COUNT, MAX, MEDIAN, MIN.
+for agg in ("7", "2", "4", "5", "6"):
+    case("F", f"FORECAST.ETS(30, Y, W OVER T, 1, 1, {agg})", LO)
+# Excel: AVERAGE (the default) averages repeated x; LibreOffice keeps the
+# first. Excel's value: LibreOffice over the series averaged beforehand.
+
+
+def averaged(f):
+    def sheet(g):
+        ys, ws = DATA["F"]["m"]["Y"][1][g], DATA["F"]["m"]["W"][1][g]
+        by = {}
+        for w, y in zip(ws, ys):
+            by.setdefault(w, []).append(y)
+        xs = sorted(by)
+        arr = lambda v: "{" + ";".join(repr(float(x)) for x in v) + "}"  # noqa: E731
+        return f.format(y=arr([sum(by[x]) / len(by[x]) for x in xs]), x=arr(xs))
+    return sheet
+
+
+for f, sh in (("FORECAST.ETS(30, Y, W OVER T, 0)", "FORECAST.ETS(30, {y}, {x}, 0)"),
+              ("FORECAST.ETS(30, Y, W OVER T)", "FORECAST.ETS(30, {y}, {x})"),
+              ("FORECAST.ETS.STAT(Y, W OVER T, 1, 0, 1, 1)", "FORECAST.ETS.STAT({y}, {x}, 1, 0)"),
+              *GAPS):
+    case("F", f, LO, sheet=averaged(sh), label="Excel docs")
+# Excel: "If the target date is chronologically before the end of the
+# historical timeline, FORECAST.ETS returns the #NUM! error" (LibreOffice
+# interpolates within the data).
+case("F", "FORECAST.ETS(10.5, Y, X OVER T)", LO, excel=[[NUM], [NUM]])
+case("F", "FORECAST.ETS(16, Y, X OVER T, 4)", LO)
+# Bad parameters: seasonality, completion, aggregation, level, type.
+for f in ("FORECAST.ETS(20, Y, X OVER T, 1.5)", "FORECAST.ETS(20, Y, X OVER T, -1)",
+          "FORECAST.ETS(20, Y, X OVER T, 1, 2)", "FORECAST.ETS(20, Y, X OVER T, 1, 1, 8)",
+          "FORECAST.ETS(20, Y, X OVER T, 9)",
+          "FORECAST.ETS.CONFINT(20, Y, X OVER T, 1.5, 0)", "FORECAST.ETS.STAT(Y, X OVER T, 10)"):
+    case("F", f, LO)
+# A monthly timeline: x counts months, a target between months is a
+# fraction of its month.
+for t in (45703, 45717, 45823):
+    case("H", f"FORECAST.ETS({t}, Y, X OVER T)", LO)
+    case("H", f"FORECAST.ETS({t}, Y, X OVER T, 0)", LO)
+    case("H", f"FORECAST.ETS.CONFINT({t}, Y, X OVER T, 0.95, 0)", LO)
+case("H", "FORECAST.ETS.SEASONALITY(Y, X OVER T)", LO)
+case("H", "FORECAST.ETS.STAT(Y, X OVER T, 8)", LO)
+
+
 # --- layout -------------------------------------------------------------------
 def col_name(i):
     return (col_name(i // 26 - 1) if i >= 26 else "") + chr(ord("A") + i % 26)
@@ -281,6 +376,8 @@ PER_ITEM = {"HPFILTER"}
 
 def sheet_formula(ds, c, g, lo):
     f = c["sheet"]
+    if callable(f):
+        f = f(g)
     if f is None:
         cats = "|".join(DATA[ds]["cats"])
         f = re.sub(r" INTO [A-Z0-9, ]+\)$", ")", c["f"])
@@ -439,7 +536,7 @@ def main():
         print(f"@{ds}\t{json.dumps(DATA[ds])}")
         for ci, c in enumerate(cs):
             exp = [got[(ds, ci, g)] for g in range(groups(ds))]
-            src = c["src"]
+            src = c["label"]
             if c["excel"] is not None:
                 excel = [e if e is not None else exp[g] for g, e in enumerate(c["excel"])]
                 print(f"{src} differs: {ds} {c['f']} got={json.dumps(exp)} "

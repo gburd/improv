@@ -21,7 +21,7 @@ pub(super) enum Test {
 }
 
 /// Φ⁻¹(p), the registry's `NORM.S.INV`.
-fn qnorm(p: f64) -> f64 {
+pub(super) fn qnorm(p: f64) -> f64 {
     builtins::eval(FuncId(529), &[CellValue::num(p)])
         .as_num()
         .unwrap_or(f64::NAN)

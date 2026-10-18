@@ -5,10 +5,10 @@
 //! along R, columns along C, in item order. A matrix result is a list
 //! flattened row by row; `INTO R2, C2` lays it out as the block.
 
-use super::{f, over, Arg, Category, FnDef, Kind, Over, Ret};
+use super::{alias, f, over, Arg, Category, FnDef, Kind, Over, Ret};
 use crate::value::ValueType;
 
-use Arg::{Boolean as B, Number as N};
+use Arg::{Boolean as B, DateLike as DL, Number as N};
 use Category::{Math as M, Statistical as St};
 use Kind::{Aggregate as Ag, Array as Ar, PerItem as P};
 
@@ -38,4 +38,11 @@ pub(super) static ANALYSIS: &[FnDef] = &[
     over(f(1869, "FOURIER", Ar, M, &[N, B], 1, false, Ret::Fixed(ValueType::Text), "FOURIER(y OVER T, [inverse] INTO K): Gnumeric's discrete Fourier transform (scaled by 1/n, zero-padded to a power of two), each value as complex text \"a+bi\""), Over::At(&[0])),
     over(f(1870, "PERIODOGRAM", Ar, St, &[N, N], 1, false, NUM, "PERIODOGRAM(y OVER T, [filter] INTO K): the magnitudes of the first half of the Fourier transform (Gnumeric), after a window: 0 none, 1 Bartlett, 2 Hann, 3 Welch"), Over::At(&[0])),
     over(f(1871, "CRONBACH", Ag, St, &[N, N], 2, true, NUM, "CRONBACH(x1, x2, … OVER T): Cronbach's α of the items x1, x2, … (one row per respondent; population variances, as Gnumeric)"), Over::Every(0, 1)),
+    alias(over(f(1872, "FORECAST.ETS", Ag, St, &[DL, N, DL, N, N, N], 3, false, NUM, "FORECAST.ETS(target, values, timeline OVER T, [seasonality], [data_completion], [aggregation]): the additive Holt–Winters (triple exponential smoothing) forecast at target, LibreOffice's algorithm; seasonality 1 detects the season, 0 none; a target before the timeline's end is #NUM!"), Over::At(&[1, 2])), &["FORECAST.ETS.ADD"]),
+    over(f(1873, "FORECAST.ETS.MULT", Ag, St, &[DL, N, DL, N, N, N], 3, false, NUM, "FORECAST.ETS.MULT(target, values, timeline OVER T, …): FORECAST.ETS with multiplicative seasons (LibreOffice)"), Over::At(&[1, 2])),
+    alias(over(f(1874, "FORECAST.ETS.CONFINT", Ag, St, &[DL, N, DL, N, N, N, N], 3, false, NUM, "FORECAST.ETS.CONFINT(target, values, timeline OVER T, [level], [seasonality], …): the half-width of the prediction interval (default level 0.95); only for seasonality 0 (LibreOffice simulates seasonal intervals randomly): otherwise #N/A"), Over::At(&[1, 2])), &["FORECAST.ETS.PI.ADD"]),
+    over(f(1875, "FORECAST.ETS.PI.MULT", Ag, St, &[DL, N, DL, N, N, N, N], 3, false, NUM, "FORECAST.ETS.PI.MULT(target, values, timeline OVER T, …): FORECAST.ETS.CONFINT for the multiplicative model (the same for seasonality 0, the only one supported)"), Over::At(&[1, 2])),
+    alias(over(f(1876, "FORECAST.ETS.STAT", Ag, St, &[N, DL, N, N, N, N], 3, false, NUM, "FORECAST.ETS.STAT(values, timeline OVER T, type, …): a statistic of FORECAST.ETS's fit: 1 α, 2 β (trend), 3 γ (season), 4 MASE, 5 SMAPE, 6 MAE, 7 RMSE, 8 step, 9 seasonality"), Over::At(&[0, 1])), &["FORECAST.ETS.STAT.ADD"]),
+    over(f(1877, "FORECAST.ETS.STAT.MULT", Ag, St, &[N, DL, N, N, N, N], 3, false, NUM, "FORECAST.ETS.STAT.MULT(values, timeline OVER T, type, …): FORECAST.ETS.STAT of the multiplicative model"), Over::At(&[0, 1])),
+    over(f(1878, "FORECAST.ETS.SEASONALITY", Ag, St, &[N, DL, N, N], 2, false, NUM, "FORECAST.ETS.SEASONALITY(values, timeline OVER T, [data_completion], [aggregation]): the season length FORECAST.ETS detects (1: none)"), Over::At(&[0, 1])),
 ];

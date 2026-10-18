@@ -5,7 +5,7 @@
 //! and text cells are. List results are flattened row by row (`INTO R2,
 //! C2` lays them out as the block).
 
-use super::List;
+use super::{Kahan, List};
 use crate::builtins::{err, n};
 use crate::reduce::statistical::number;
 use crate::reduce::Rows;
@@ -164,62 +164,6 @@ pub(super) fn det(rows: &Rows, log: bool) -> Result<f64, u8> {
         (true, false) => Ok(0.0),
         (false, true) => Ok(diag.map(|d| d.abs().ln()).sum()),
         (false, false) => Ok(diag.fold(sign, |acc, d| acc * d)),
-    }
-}
-
-/// LibreOffice's `KahanSum`: Neumaier's sum with the latest term held
-/// back, so a total that cancels to within 2⁻⁴⁸ is exactly 0.
-struct Kahan {
-    sum: f64,
-    err: f64,
-    mem: f64,
-}
-
-impl Kahan {
-    fn new(x: f64) -> Kahan {
-        Kahan {
-            sum: x,
-            err: 0.0,
-            mem: 0.0,
-        }
-    }
-
-    fn neumaier(&mut self, x: f64) {
-        let t = self.sum + x;
-        self.err += if self.sum.abs() >= x.abs() {
-            (self.sum - t) + x
-        } else {
-            (x - t) + self.sum
-        };
-        self.sum = t;
-    }
-
-    fn add(&mut self, x: f64) {
-        if x == 0.0 {
-            return;
-        }
-        if self.mem != 0.0 {
-            self.neumaier(self.mem);
-        }
-        self.mem = x;
-    }
-
-    fn get(&mut self) -> f64 {
-        let total = self.sum + self.err;
-        let m = self.mem;
-        if m == 0.0 {
-            return total;
-        }
-        // rtl::math::approxEqual(m, -total).
-        if (m < 0.0) != (total < 0.0)
-            && total != 0.0
-            && (m + total).abs() < m.abs() * 2f64.powi(-48)
-        {
-            return 0.0;
-        }
-        self.neumaier(m);
-        self.mem = 0.0;
-        self.sum + self.err
     }
 }
 
