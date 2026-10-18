@@ -392,6 +392,13 @@ fn inter_vdb(cost: f64, salvage: f64, life: f64, life1: f64, period: f64, factor
     vdb
 }
 
+/// VDB walks every period up to `end`, so the end period is capped (#NUM!
+/// past it). LibreOffice has no cap (VDB(1000;0;1E10;0;1E10) runs for
+/// minutes, and past 2⁶⁴ its integer conversion yields 0); Gnumeric gives
+/// #VALUE! past 10,000 periods without the switch. 1e5 periods (274 years
+/// of days) take a few milliseconds.
+const VDB_MAX_PERIODS: f64 = 1e5;
+
 fn vdb(
     cost: f64,
     salvage: f64,
@@ -502,6 +509,7 @@ fn depreciation(id: u32, a: &[CellValue]) -> R {
                 start >= 0.0
                     && end >= start
                     && end <= life
+                    && approx_ceil(end) <= VDB_MAX_PERIODS
                     && cost >= 0.0
                     && salvage <= cost
                     && factor > 0.0,
@@ -646,5 +654,24 @@ mod tests {
         assert_eq!(approx_ceil(2.000_000_000_000_000_4), 2.0);
         assert_eq!(approx_ceil(2.1), 3.0);
         let _ = DAY_MS;
+    }
+
+    /// VDB over more than 1e5 periods is #NUM!; it walked every period, and
+    /// past 2⁵³ its f64 period counter stopped advancing (a hang).
+    #[test]
+    fn vdb_caps_its_periods() {
+        let t0 = std::time::Instant::now();
+        let num = CellValue::Err(super::super::err::NUM);
+        assert_eq!(f(724, &[1000.0, 0.0, 9.47e153, 0.0, 9.47e153]), num);
+        assert_eq!(f(724, &[1000.0, 0.0, 2e5, 0.0, 2e5]), num);
+        assert_eq!(f(724, &[1000.0, 0.0, 1e17, 1e17, 1e17, 2.0, 1.0]), num);
+        close(f(724, &[1000.0, 0.0, 1e5, 0.0, 1e5]), 1000.0);
+        let a = [1000.0, 10.0, 1e5, 0.5, 1e5 - 0.5, 2.0, 1.0];
+        assert!(f(724, &a).as_num().is_some());
+        // A huge life with a small end period still evaluates (LibreOffice
+        // and Gnumeric 5.27983104540655E-151).
+        let v = f(724, &[1000.0, 0.0, 9.47e153, 0.0, 5.0]).as_num().unwrap();
+        assert!((v / 5.279_831_045_406_55e-151 - 1.0).abs() < 1e-12, "{v}");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
     }
 }
