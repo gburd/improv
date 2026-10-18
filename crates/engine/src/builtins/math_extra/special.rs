@@ -1,6 +1,9 @@
 //! LAMBERTW, REDUCEPI and the Erlang-B telephone-traffic functions.
 
-use super::super::{domain, err, statistical::gamma_q};
+use super::super::{
+    domain, err,
+    statistical::{bd0, gamma_q},
+};
 
 // --- Lambert W ------------------------------------------------------------------
 
@@ -239,27 +242,6 @@ fn ln_poisson(c: f64, a: f64) -> f64 {
         (1.0 / 12.0 - (1.0 / 360.0 - 1.0 / 1260.0 / c2) / c2) / c
     };
     -stirlerr - bd0(c, a) - 0.5 * (std::f64::consts::TAU * c).ln()
-}
-
-/// c·ln(c/a) + a − c without cancellation when c ≈ a.
-fn bd0(c: f64, a: f64) -> f64 {
-    if (c - a).abs() < 0.1 * (c + a) {
-        let v = (c - a) / (c + a);
-        let mut s = (c - a) * v;
-        let mut ej = 2.0 * c * v;
-        let v2 = v * v;
-        for j in 1..1000 {
-            ej *= v2;
-            let s1 = s + ej / f64::from(2 * j + 1);
-            if s1 == s {
-                break;
-            }
-            s = s1;
-        }
-        s
-    } else {
-        c * (c / a).ln() + a - c
-    }
 }
 
 /// The x in [lo, hi] where the increasing `f` crosses 0, by bisection to

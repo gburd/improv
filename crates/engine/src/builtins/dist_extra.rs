@@ -1522,6 +1522,15 @@ mod tests {
         call(id, &nums(v)).unwrap().as_num().unwrap()
     }
 
+    /// R.QBINOM and R.PBINOM with 1e8 and 1e16 trials (Gnumeric 1.12.57
+    /// 3999999974309727; the mpmath sum 0.5000434313342542). They were
+    /// 5.7 sd low and negative before beta_reg handled huge shapes.
+    #[test]
+    fn binomial_with_huge_n() {
+        assert_eq!(val(1605, &[0.3, 1e16, 0.4]), 3_999_999_974_309_727.0);
+        assert!((val(1604, &[4e7, 1e8, 0.4]) - 0.500_043_431_334_254_2).abs() < 1e-11);
+    }
+
     #[test]
     fn helpers_cover_their_edges() {
         assert_eq!(fake_floor(3.0), 3.0);

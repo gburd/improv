@@ -334,6 +334,14 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **Binomial, beta, F and t with very large parameters.** The regularized
+  incomplete beta behind `BINOM.DIST`, `BETA.DIST`, `F.DIST`, `T.DIST`,
+  `NEGBINOM.DIST` and the `R.*` kernels lost accuracy once both shapes
+  passed about 1000, and was wrong from about 10⁸: `BINOM.DIST(4e7, 1e8,
+  0.4, TRUE)` gave −0.42 (it is 0.500043), and `R.QBINOM(0.3, 1e16,
+  0.4)` was 5.7 standard deviations low. For large shapes it now uses
+  Loader's saddle-point prefactor and runs the continued fraction to
+  convergence.
 - **`LAMBERTW` near −1/e.** For x within about 700 doubles of −1/e it
   returned `#NUM!`: Halley's iteration bounced between two values
   without converging. It now uses the branch-point series there, which

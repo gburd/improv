@@ -427,9 +427,94 @@ fn incomplete_gamma(a: f64, x: f64, lower: bool) -> f64 {
     r.unwrap_or(f64::NAN)
 }
 
-/// The regularized incomplete beta I_x(a, b).
+/// The regularized incomplete beta I_x(a, b). statrs for moderate shapes;
+/// past 1000 its prefactor (ln Γ(a+b) − ln Γ(a) − ln Γ(b) + a ln x + b ln y,
+/// terms of size a ln a that cancel to O(1)) loses about log10 a digits, and
+/// its continued fraction stops at 140 terms while it needs about √(a + b)
+/// (BINOM.DIST(4e7, 1e8, 0.4) came out −0.42). There the prefactor is
+/// Loader's saddle-point form and the fraction runs to convergence.
 pub(crate) fn beta_reg(a: f64, b: f64, x: f64) -> f64 {
-    sb::checked_beta_reg(a, b, x.clamp(0.0, 1.0)).unwrap_or(f64::NAN)
+    let x = x.clamp(0.0, 1.0);
+    if a > 1000.0 && b > 1000.0 && x > 0.0 && x < 1.0 {
+        return beta_reg_large(a, b, x);
+    }
+    sb::checked_beta_reg(a, b, x).unwrap_or(f64::NAN)
+}
+
+/// I_x(a, b) for a, b > 1000 and 0 < x < 1: the continued fraction (Numerical
+/// Recipes' `betacf`, modified Lentz) on the side where it converges fast,
+/// times x^a y^b / (a B(a, b)) computed without cancellation.
+fn beta_reg_large(a: f64, b: f64, x: f64) -> f64 {
+    let y = 1.0 - x;
+    if x < (a + 1.0) / (a + b + 2.0) {
+        (ln_beta_front(a, b, x, y).exp() * beta_cf(a, b, x)).min(1.0)
+    } else {
+        (1.0 - ln_beta_front(b, a, y, x).exp() * beta_cf(b, a, y)).max(0.0)
+    }
+}
+
+/// ln(x^a y^b / (a B(a, b))) for a, b > 1: x·y·(a+b−1) times the binomial
+/// mass of a − 1 in a + b − 2 trials, over a; the mass by Loader's form
+/// (Stirling corrections and bd0, as R's `dbinom_raw`).
+fn ln_beta_front(a: f64, b: f64, x: f64, y: f64) -> f64 {
+    let (k, n) = (a - 1.0, a + b - 2.0);
+    let ln_mass = stirlerr(n) - stirlerr(k) - stirlerr(n - k) - bd0(k, n * x) - bd0(n - k, n * y)
+        + 0.5 * (n / (std::f64::consts::TAU * k * (n - k))).ln();
+    x.ln() + y.ln() + (a + b - 1.0).ln() + ln_mass - a.ln()
+}
+
+/// The incomplete beta's continued fraction (modified Lentz), to ε, for at
+/// most a million terms (about √(a + b) are needed near the mean).
+fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
+    const TINY: f64 = 1e-300;
+    let nz = |v: f64| if v.abs() < TINY { TINY } else { v };
+    let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
+    let mut c = 1.0;
+    let mut d = 1.0 / nz(1.0 - qab * x / qap);
+    let mut h = d;
+    for m in 1..1_000_000 {
+        let (m, m2) = (f64::from(m), f64::from(2 * m));
+        let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+        d = 1.0 / nz(1.0 + aa * d);
+        c = nz(1.0 + aa / c);
+        h *= d * c;
+        let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+        d = 1.0 / nz(1.0 + aa * d);
+        c = nz(1.0 + aa / c);
+        let step = d * c;
+        h *= step;
+        if (step - 1.0).abs() < f64::EPSILON {
+            break;
+        }
+    }
+    h
+}
+
+/// ln(n!) − ln(√(2π n) (n/e)ⁿ) for n > 1000 (Stirling's series).
+fn stirlerr(n: f64) -> f64 {
+    let n2 = n * n;
+    (1.0 / 12.0 - (1.0 / 360.0 - 1.0 / 1260.0 / n2) / n2) / n
+}
+
+/// c·ln(c/a) + a − c without cancellation when c ≈ a (Loader).
+pub(crate) fn bd0(c: f64, a: f64) -> f64 {
+    if (c - a).abs() < 0.1 * (c + a) {
+        let v = (c - a) / (c + a);
+        let mut s = (c - a) * v;
+        let mut ej = 2.0 * c * v;
+        let v2 = v * v;
+        for j in 1..1000 {
+            ej *= v2;
+            let s1 = s + ej / f64::from(2 * j + 1);
+            if s1 == s {
+                break;
+            }
+            s = s1;
+        }
+        s
+    } else {
+        c * (c / a).ln() + a - c
+    }
 }
 
 /// The beta density at z, with zc = 1 − z given separately for precision.
@@ -994,6 +1079,51 @@ mod tests {
                 (g, w) => g == *w,
             };
             assert!(same, "{formula} = {got:?}, want {want:?}");
+        }
+    }
+
+    /// The binomial CDF and I_x(a, b) with shapes past 1000, where statrs'
+    /// prefactor cancels and its 140-term fraction stops short. References:
+    /// P(K ≤ k) summed exactly in mpmath (40 digits) over ±45 sd; Gnumeric's
+    /// BINOMDIST agrees to 16 digits, LibreOffice to about 8.
+    #[test]
+    fn binomial_and_beta_with_huge_shapes() {
+        for (n, p, k, want) in [
+            (1e8, 0.4, 4e7, 0.500_043_431_334_254_2),
+            (1e9, 0.4, 4e8, 0.500_013_734_193_845_4),
+            (1e10, 0.01, 1e8, 0.500_026_596_487_800_7),
+        ] {
+            let got = binom_range(n, p, 0.0, k);
+            assert!(
+                (got - want).abs() <= 1e-10 * want,
+                "P(K ≤ {k} | {n}, {p}) = {got}, want {want}"
+            );
+            // BINOM.DIST through eval.
+            let v = eval(
+                503,
+                &[
+                    CellValue::num(k),
+                    CellValue::num(n),
+                    CellValue::num(p),
+                    CellValue::Bool(true),
+                ],
+            );
+            assert!((num_of(v.unwrap()) - want).abs() <= 1e-10 * want);
+        }
+        // Where statrs is still accurate (shapes just past 1000), the two
+        // agree; both tails sum to 1.
+        for (a, b, x) in [
+            (1500.0, 2500.0, 0.37),
+            (1500.0, 2500.0, 0.38),
+            (3000.0, 1001.0, 0.75),
+        ] {
+            let old = sb::checked_beta_reg(a, b, x).unwrap();
+            let new = beta_reg(a, b, x);
+            assert!(
+                (new - old).abs() <= 1e-10 * old.max(1e-300),
+                "I_{x}({a}, {b}) = {new}, statrs {old}"
+            );
+            assert!((new + beta_reg(b, a, 1.0 - x) - 1.0).abs() < 1e-13);
         }
     }
 
