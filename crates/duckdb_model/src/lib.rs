@@ -30,8 +30,12 @@ pub mod calc;
 use std::collections::HashMap;
 
 use improv_core_model::functions::{self, Category, FnDef, Ret};
-use improv_core_model::{MeasureId, ValueType};
-use improv_engine::{CellValue, CoordKey};
+use improv_core_model::MeasureId;
+/// Re-exported so the extension shell needs no direct engine dependency.
+pub use improv_core_model::ValueType;
+/// Re-exported so the extension shell needs no direct engine dependency.
+pub use improv_engine::CellValue;
+use improv_engine::CoordKey;
 use improv_pg_model as pm;
 
 /// Everything that can go wrong building or running a model.

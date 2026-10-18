@@ -20,7 +20,9 @@ members = [
     "crates/duckdb_model",
 ]
 # pg_improv is its own workspace (pgrx needs pg_config + libclang); see its Cargo.toml.
-exclude = ["crates/pg_improv"]
+# duckdb_improv too (its loadable-extension duckdb must not unify with
+# storage_sql's bundled one); see its Cargo.toml.
+exclude = ["crates/pg_improv", "crates/duckdb_improv"]
 
 [workspace.package]
 version = "0.9.0"

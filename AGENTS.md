@@ -47,7 +47,7 @@ is tool-generated, local, and gitignored — not part of the steering set.)
 The full "tidy" gate — all must be error- AND warning-free:
 
 1. `cargo fmt -p improv_<crate> ... -- --check` for every crate under
-   `crates/` except `pg_improv` (rustfmt, config in `rustfmt.toml`). Scope to
+   `crates/` except `pg_improv` and `duckdb_improv` (rustfmt, config in `rustfmt.toml`). Scope to
    our crates, not `--all`, which would also lint the Mentat dependency.
 2. `cargo clippy -p improv_<crate> ... --all-targets --all-features -- -D
    warnings` (config in `clippy.toml`), same scoping.
@@ -64,6 +64,11 @@ The full "tidy" gate — all must be error- AND warning-free:
 9. pg_improv, its own Cargo workspace: `ci/pg_improv.sh <PGMAJOR>` runs
    fmt, clippy, `cargo pgrx test`, pgspot, `tests/txn.sh`, `tests/logical.sh`,
    and on 17 `tests/upgrade.sh` and the PGXN dist build (see CONTRIBUTING.md)
+10. duckdb_improv, its own Cargo workspace: in `crates/duckdb_improv`,
+   `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`,
+   `make configure release test_release`, and `test/smoke.sh` with BOTH a
+   DuckDB v1.5.6 CLI and a v2.0 CLI (`DUCKDB=...`): the binary must keep
+   loading into both (see its README, "Pins")
 
 `RUSTFLAGS=-Dwarnings` in CI: a warning is a failure. New code must not
 introduce warnings anywhere in the workspace.
@@ -107,9 +112,13 @@ Prefer `cargo nextest run` for the fast suite. Property/fuzz crates:
 Cargo workspace, `crates/*`: `core_model`, `engine`, `nl_formula`,
 `storage_mentat`, `storage_pg`, `store`, `storage_sql`, `storage_csv`,
 `data_source`, `extfn`, `verified` (Verus-proven kernels), `cli`, `tui`,
-`gui`, `server`, `pg_model`, and
+`gui`, `server`, `pg_model`, `duckdb_model`,
 `pg_improv` (the Postgres extension: its own workspace and `Cargo.lock`,
-excluded from the root because pgrx needs `pg_config` to build). Shared deps pinned in
+excluded from the root because pgrx needs `pg_config` to build), and
+`duckdb_improv` (the DuckDB extension `improv`: its own workspace and
+`Cargo.lock`, excluded so its `loadable-extension` duckdb does not unify
+with `storage_sql`'s `bundled` one; the DuckDB registry builds it through
+the root `Makefile`). Shared deps pinned in
 `[workspace.dependencies]`; the `differential-dataflow`/`timely` pin is delicate
 (see `.agent/steering/AGENT_ENGINE_STEERING.md` §2 — do not bump blindly). MSRV
 is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).

@@ -13,6 +13,9 @@ Cargo.lock.orig
 /coverage
 lcov.info
 
+# DuckDB extension artifacts the root Makefile copies (crates/duckdb_improv)
+/build
+
 # mdBook output
 /docs/book
 

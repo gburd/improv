@@ -1,0 +1,252 @@
+# name: test/sql/improv.test
+# description: improv DuckDB extension: improv_calc, improv_calc_text, improv_functions, improv
+# group: [improv]
+#
+# `make test_release` runs this with the DuckDB v1.5.6 Python package (the
+# extension's C API floor). test/smoke.sh runs the same surface against a
+# standalone CLI, v1.5.6 and v2.0.
+
+require improv
+
+# --- improv_calc: math, financial, text, dates, logic -------------------------
+
+query R
+SELECT improv_calc('1 + 2 * 3');
+----
+7.0
+
+query R
+SELECT improv_calc('ROUND(PMT(rate/12, n, -pv), 2)', json_object('rate', 0.06, 'n', 360, 'pv', 200000));
+----
+1199.1
+
+query R
+SELECT improv_calc('=ROUND(2.675, 2)');
+----
+2.68
+
+query R
+SELECT improv_calc('LEN(UPPER(s))', json_object('s', 'improv'));
+----
+6.0
+
+query R
+SELECT improv_calc('YEAR(DATE(2024, 2, 29) + 1)');
+----
+2024.0
+
+query R
+SELECT improv_calc('IF(flag, 10, 20)', json_object('flag', false));
+----
+20.0
+
+# A boolean result is 1/0; a date is its spreadsheet serial.
+query RR
+SELECT improv_calc('2 > 1'), improv_calc('DATE(2024, 1, 31)');
+----
+1.0	45322.0
+
+# One cached formula per (text, input names/types); many rows.
+query R
+SELECT sum(improv_calc('x * 2', json_object('x', i))) FROM range(1000) t(i);
+----
+999000.0
+
+# Per-row formulas.
+query R
+SELECT improv_calc(f, json_object('x', x)) FROM (VALUES ('x*2', 3), ('x*3', 4)) t(f, x) ORDER BY 1;
+----
+6.0
+12.0
+
+# --- NULLs and errors ----------------------------------------------------------
+
+query RRRR
+SELECT improv_calc(NULL), improv_calc('x + 1', '{"x": null}'), improv_calc('IF(TRUE, 5, x)', '{"x": null}'), improv_calc('1/0');
+----
+NULL	NULL	5.0	NULL
+
+query R
+SELECT improv_calc('"text"');
+----
+NULL
+
+statement error
+SELECT improv_calc('1 +');
+----
+improv_calc: parse error
+
+statement error
+SELECT improv_calc('y + 1', json_object('x', 1));
+----
+unknown
+
+statement error
+SELECT improv_calc('1', '{nope');
+----
+not valid JSON
+
+statement error
+SELECT improv_calc('1', '[1]');
+----
+must be a JSON object
+
+# --- improv_calc_text ------------------------------------------------------------
+
+query TTTT
+SELECT improv_calc_text('1/0'), improv_calc_text('UPPER("ada") & "!"'), improv_calc_text('1/3'), improv_calc_text('SQRT(-1)');
+----
+#DIV/0!	ADA!	0.333333333333333	#NUM!
+
+query T
+SELECT improv_calc_text('TEXT(DATE(2024, 1, 31), "yyyy-mm-dd")');
+----
+2024-01-31
+
+query T
+SELECT improv_calc_text(NULL);
+----
+NULL
+
+# --- improv_functions --------------------------------------------------------------
+
+query I
+SELECT count(*) FROM improv_functions();
+----
+674
+
+query TTTT
+SELECT name, category, signature, returns FROM improv_functions() WHERE name = 'PMT';
+----
+PMT	financial	PMT(rate, nper, pv, [fv], [type])	number
+
+query T
+SELECT name FROM improv_functions(query := 'pmt') LIMIT 1;
+----
+PMT
+
+query I
+SELECT count(*) FROM improv_functions(query := 'zzzz-none');
+----
+0
+
+query I
+SELECT count(*) > 0 FROM improv_functions() WHERE aliases IS NOT NULL;
+----
+true
+
+# --- improv(source, model): the Time x Product oracle -------------------------------
+
+statement ok
+CREATE TABLE sales(year INTEGER, product VARCHAR, price DECIMAL(10,2), qty INTEGER);
+
+# 2025/WidgetA's quantity arrives as two rows (70 + 50): `qty sum` adds them.
+statement ok
+INSERT INTO sales VALUES
+  (2024, 'WidgetA', 10, 100), (2024, 'WidgetB', 20, 50),
+  (2025, 'WidgetA', 11, 70), (2025, 'WidgetA', 11, 50), (2025, 'WidgetB', 20, 40);
+
+query TTTRT
+SELECT * FROM improv('sales', '
+category Time = year
+category Product = product
+input Price = price max
+input Quantity = qty sum
+Revenue = Price * Quantity
+Share = Revenue / SUM(Revenue OVER Product)
+Growth = Revenue - PREV(Revenue, Time, 1, 0)
+');
+----
+Revenue	2024	WidgetA	1000.0	1000
+Revenue	2024	WidgetB	1000.0	1000
+Revenue	2025	WidgetA	1320.0	1320
+Revenue	2025	WidgetB	800.0	800
+Share	2024	WidgetA	0.5	0.5
+Share	2024	WidgetB	0.5	0.5
+Share	2025	WidgetA	0.6226415094339622	0.622641509433962
+Share	2025	WidgetB	0.37735849056603776	0.377358490566038
+Growth	2024	WidgetA	1000.0	1000
+Growth	2024	WidgetB	1000.0	1000
+Growth	2025	WidgetA	320.0	320
+Growth	2025	WidgetB	-200.0	-200
+
+# A SELECT source; a measure over fewer categories has NULL for the rest.
+query TTTR
+SELECT measure, "Time", "Product", value FROM improv('SELECT * FROM sales WHERE year = 2025', '
+category Time = year
+category Product = product
+input Quantity = qty sum
+Total = SUM(Quantity OVER Product)
+');
+----
+Total	2025	NULL	160.0
+
+# The result is a table: join it, filter it.
+query R
+SELECT sum(value) FROM improv('sales', 'category Time = year
+category Product = product
+input Quantity = qty sum
+Q = Quantity') WHERE "Product" = 'WidgetA';
+----
+220.0
+
+# An error value is NULL in `value` and its code in `value_text`.
+query TRT
+SELECT "Time", value, value_text FROM improv('sales', 'category Time = year
+input Quantity = qty sum
+Bad = Quantity / 0');
+----
+2024	NULL	#DIV/0!
+2025	NULL	#DIV/0!
+
+# --- improv errors ------------------------------------------------------------------
+
+statement error
+SELECT * FROM improv('sales', 'category Time = year
+input Quantity = qty
+Q = Quantity');
+----
+model line 2: Quantity: two source rows have the coordinate (2024); add an aggregation
+
+statement error
+SELECT * FROM improv('sales', 'category Time = year
+this is not a line
+Q = 1');
+----
+model line 2: expected `category Name = column`
+
+statement error
+SELECT * FROM improv('sales', 'category Time = nope
+Q = 1');
+----
+model line 1: the source has no column "nope"
+
+statement error
+SELECT * FROM improv('sales', 'category Time = year
+input Quantity = qty sum
+Q = Quantity +');
+----
+model line 3: definition: parse error
+
+statement error
+SELECT * FROM improv('no_such_table', 'category Time = year
+Q = 1');
+----
+improv: cannot read source "no_such_table"
+
+statement error
+SELECT * FROM improv(NULL, 'category Time = year
+Q = 1');
+----
+improv: source must not be NULL
+
+# The source is read on the extension's own connection: a TEMP table (one
+# connection's) is not visible to it.
+statement ok
+CREATE TEMP TABLE tmp_sales AS SELECT * FROM sales;
+
+statement error
+SELECT * FROM improv('tmp_sales', 'category Time = year
+Q = 1');
+----
+improv: cannot read source "tmp_sales"

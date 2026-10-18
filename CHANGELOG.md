@@ -13,6 +13,18 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **A DuckDB extension, `improv`.** `improv_calc(formula, inputs)`
+  evaluates any Improv formula on named inputs from a JSON object
+  (`improv_calc('ROUND(PMT(rate/12, n, -pv), 2)', json_object(...))`),
+  NULL for an error value; `improv_calc_text` returns any type and renders
+  errors (`#DIV/0!`). `improv_functions()` lists the 674 built-in
+  functions with signatures (`query :=` searches them). `improv(source,
+  model)` reads a table or query, builds a model from a short spec
+  (`category Time = year`, `input Quantity = qty sum`, `Revenue = Price *
+  Quantity`) and returns one row per computed cell. Errors name the spec
+  line. It uses DuckDB's stable C API, so one binary loads into DuckDB
+  v1.5.6 and v2.0. The DuckDB-free logic is a new crate,
+  `improv_duckdb_model`. See *Improv in DuckDB*.
 - **Formally verified engine kernels.** A new crate, `improv_verified`,
   holds integer kernels with [Verus](https://github.com/verus-lang/verus)
   specifications and machine-checked proofs, and the engine calls them:

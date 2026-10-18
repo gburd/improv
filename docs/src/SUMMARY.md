@@ -11,6 +11,7 @@
 - [The Desktop GUI](./gui-tour.md)
 - [Improv in Postgres (pg_improv)](./postgres.md)
   - [A Family's Finances](./postgres-finance.md)
+- [Improv in DuckDB](./duckdb.md)
 - [The HTTP Server](./server.md)
 - [Controlled Natural Language](./cnl.md)
 - [Architecture & Design](./architecture.md)

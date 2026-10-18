@@ -1,0 +1,33 @@
+[package]
+name = "duckdb_improv"
+description = "DuckDB loadable extension: Improv formulas and multidimensional models over DuckDB tables"
+version = "0.9.0"
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0 OR MIT"
+authors = ["Greg Burd <greg@burd.me>"]
+repository = "https://github.com/gburd/improv"
+publish = false
+
+# A standalone workspace (and Cargo.lock): the root workspace's storage_sql
+# links duckdb with `bundled`, and cargo unifies features, so this crate's
+# `loadable-extension` duckdb (which replaces the C API with function
+# pointers DuckDB hands the entrypoint) cannot share a build with it. Listed
+# in the root's `exclude`, like pg_improv.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Pin to the DuckDB v1.5.6 line (1.10506.x = DuckDB v1.5.6). We use the
+# STABLE C API (Makefile: USE_UNSTABLE_C_API unset), so the binary loads into
+# DuckDB v1.5.6 and later, v2.0 included; see README.md "Pins".
+# `loadable-extension` brings `vtab`; `vscalar` adds the scalar functions.
+duckdb = { version = "~1.10506.1", features = ["loadable-extension", "vscalar"] }
+improv_duckdb_model = { path = "../duckdb_model" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

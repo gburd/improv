@@ -8,7 +8,7 @@ spreadsheet functions people know, Excel's names: `IF`, `ROUND`, `NPV`,
 every derived value recomputes **incrementally** through a
 differential-dataflow graph. The
 same model opens in a NeXTSTEP-style desktop GUI, a terminal UI, a CLI, a
-streaming pipe, an HTTP server, and **inside Postgres**.
+streaming pipe, an HTTP server, **inside Postgres** and **inside DuckDB**.
 
 [![Docs](https://img.shields.io/badge/docs-gburd.github.io%2Fimprov-blue)](https://gburd.github.io/improv/)
 [![CI](https://github.com/gburd/improv/actions/workflows/ci.yml/badge.svg)](https://github.com/gburd/improv/actions/workflows/ci.yml)
@@ -18,7 +18,8 @@ streaming pipe, an HTTP server, and **inside Postgres**.
 [API reference (rustdoc)](https://gburd.github.io/improv/api/) ·
 [Ways to use Improv](https://gburd.github.io/improv/ways.html) ·
 [Function reference](https://gburd.github.io/improv/functions.html) ·
-[Improv in Postgres](https://gburd.github.io/improv/postgres.html)
+[Improv in Postgres](https://gburd.github.io/improv/postgres.html) ·
+[Improv in DuckDB](https://gburd.github.io/improv/duckdb.html)
 
 ![The Improv workspace: worksheets, formulas and the model browser](docs/src/img/gui-workspace.png)
 
@@ -40,6 +41,7 @@ Revenue cell and one Total, not the sheet.
 | **Streaming** `improv stream` | pushing a live feed through a model and reading the changed results | `producer \| improv stream m.db Revenue` |
 | **Postgres** `pg_improv` | modeling data already in Postgres; results land in tables any SQL client reads | `CREATE EXTENSION pg_improv` |
 | **SQL functions** `LANGUAGE improv` | writing a SQL function as a formula | `CREATE FUNCTION … LANGUAGE improv` |
+| **DuckDB** `improv` extension | a formula or a whole model over a DuckDB table, Parquet or CSV, in one query | `LOAD improv` |
 | **Server** `improv-server` | serving a model to other programs as JSON over HTTP | `improv-server sample.db` |
 
 Each front end takes a model file or a Postgres model URL
@@ -144,6 +146,28 @@ reconciliation, budgets, net worth and savings goals for a family with jobs,
 consulting income, several accounts, cards, crypto, foreign currency, a
 house and cars), see [A family's finances in Postgres](docs/src/postgres-finance.md).
 
+## In DuckDB
+
+```sql
+LOAD improv;
+SELECT improv_calc('ROUND(PMT(rate/12, n, -pv), 2)',
+                   json_object('rate', 0.06, 'n', 360, 'pv', 200000));  -- 1199.1
+SELECT * FROM improv('sales', '
+  category Time = year
+  category Product = product
+  input Price = price
+  input Quantity = qty sum
+  Revenue = Price * Quantity
+  Share = Revenue / SUM(Revenue OVER Product)
+  Growth = Revenue - PREV(Revenue, Time, 1, 0)');
+```
+
+`improv_calc` evaluates any formula on named inputs, `improv_functions()`
+lists the 674 built-in functions, and `improv(source, model)` runs a model
+over a table or query and returns one row per computed cell. One binary
+loads into DuckDB v1.5.6 and v2.0. See [Improv in DuckDB](docs/src/duckdb.md)
+and [`crates/duckdb_improv/README.md`](crates/duckdb_improv/README.md).
+
 ## Keys
 
 **TUI:** arrows move · `e`/Enter edit · Tab next measure · `p` pivot ·
@@ -175,6 +199,8 @@ save conflict.
 | `improv_server` | `improv-server` | JSON HTTP API |
 | `improv_pg_model` | | Postgres-free core of the extension |
 | `pg_improv` | (extension) | The Postgres extension (pgrx, its own workspace) |
+| `improv_duckdb_model` | | DuckDB-free core of the DuckDB extension |
+| `duckdb_improv` | (extension) | The DuckDB extension `improv` (duckdb-rs, its own workspace) |
 
 ## Development
 

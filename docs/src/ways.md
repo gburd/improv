@@ -13,6 +13,7 @@ job, and switch when the job changes.
 | push a live feed through a model and get the changed results out | [streaming](#streaming-improv-stream) | a store file, or Postgres |
 | model data that already lives in Postgres, and read results with SQL | [pg_improv](#in-postgres-pg_improv) | Postgres tables plus the `improv` catalog |
 | write a SQL function as a formula | [`LANGUAGE improv`](#sql-functions-language-improv) | the function body |
+| run a formula or a model over data in DuckDB, from SQL | [the DuckDB extension](#in-duckdb-the-improv-extension) | nowhere: computed per query |
 | serve a model to other programs over HTTP | [the server](#the-http-server-improv-server) | a store file, or Postgres |
 
 ## The model, wherever it lives
@@ -171,6 +172,30 @@ URL: editing a cell there updates the row in `sales`.
 bindings and durability, and [A Family's Finances](./postgres-finance.md)
 is a complete worked example.
 
+## In DuckDB (the `improv` extension)
+
+**Use it for:** analytics over data DuckDB already reads (tables, Parquet,
+CSV): a formula as a column, or a model over a table, inside one query.
+Nothing is stored; each query reads its source and computes.
+
+```sql
+LOAD improv;
+SELECT improv_calc('ROUND(PMT(rate/12, n, -pv), 2)',
+                   json_object('rate', rate, 'n', n, 'pv', pv)) FROM loans;
+SELECT * FROM improv('sales', '
+  category Time = year
+  category Product = product
+  input Price = price
+  input Quantity = qty sum
+  Revenue = Price * Quantity
+  Share = Revenue / SUM(Revenue OVER Product)');
+```
+
+`improv(...)` returns one row per computed cell (`measure`, a column per
+category, `value`, `value_text`), so the result joins and pivots like any
+table. `improv_functions()` lists the built-in functions.
+[Improv in DuckDB](./duckdb.md) has the details.
+
 ## SQL functions (`LANGUAGE improv`)
 
 **Use it for:** a calculation you want in plain SQL, written as a formula.
@@ -219,4 +244,6 @@ tokens and limits.
   Use `trigger` if a writer must read its own results in the same
   transaction.
 - **A formula as a SQL function:** `LANGUAGE improv`.
+- **Data in DuckDB, Parquet or CSV, answers in one query:** the DuckDB
+  extension (`improv_calc`, `improv(source, model)`).
 - **Another service needs answers:** `improv-server`.
