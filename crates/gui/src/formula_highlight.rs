@@ -178,27 +178,59 @@ const ERROR_UNDERLINE: Stroke = Stroke {
 /// the nearest token) is rendered in [`ERROR_COLOR`] with a 2 px underline so
 /// the parse error location is visible inline.
 pub fn highlight_formula(text: &str, font: FontId, error_pos: Option<usize>) -> LayoutJob {
-    let mut job = LayoutJob::default();
+    highlight_formula_span(text, font, error_pos.and_then(|p| token_span(text, p)))
+}
+
+/// The byte range of the token at `pos` in `text`, as [`highlight_formula`]
+/// marks it: the non-whitespace token covering `pos`, else the last token
+/// starting at or before it.
+pub fn token_span(text: &str, pos: usize) -> Option<std::ops::Range<usize>> {
     let tokens = scan(text);
-    // The token (if any) covering `error_pos`, preferring a non-whitespace
-    // token; falls back to the last token starting at or before `error_pos`.
-    let error_token = error_pos.and_then(|pos| {
-        tokens
-            .iter()
-            .find(|t| t.start <= pos && pos < t.end && t.kind != TokenKind::Whitespace)
-            .or_else(|| tokens.iter().rfind(|t| t.start <= pos))
+    tokens
+        .iter()
+        .find(|t| t.start <= pos && pos < t.end && t.kind != TokenKind::Whitespace)
+        .or_else(|| tokens.iter().rfind(|t| t.start <= pos))
+        .map(|t| t.start..t.end)
+}
+
+/// [`highlight_formula`], underlining the byte range `error` (clamped to the
+/// text and to char boundaries) instead of one token: a span may cover part
+/// of a token or several.
+pub fn highlight_formula_span(
+    text: &str,
+    font: FontId,
+    error: Option<std::ops::Range<usize>>,
+) -> LayoutJob {
+    let mut job = LayoutJob::default();
+    let (lo, hi) = error.map_or((0, 0), |r| {
+        let fix = |mut i: usize| {
+            i = i.min(text.len());
+            while !text.is_char_boundary(i) {
+                i -= 1;
+            }
+            i
+        };
+        (fix(r.start), fix(r.end))
     });
-    for t in &tokens {
-        let mut fmt = TextFormat {
+    for t in scan(text) {
+        let fmt = TextFormat {
             font_id: font.clone(),
             color: color_for(t.kind),
             ..Default::default()
         };
-        if error_token == Some(t) {
-            fmt.underline = ERROR_UNDERLINE;
-            fmt.color = ERROR_COLOR;
+        let err = TextFormat {
+            underline: ERROR_UNDERLINE,
+            color: ERROR_COLOR,
+            ..fmt.clone()
+        };
+        // Up to three pieces: before the span, inside it, after it.
+        let a = lo.clamp(t.start, t.end);
+        let b = hi.clamp(a, t.end);
+        for (s, e, f) in [(t.start, a, &fmt), (a, b, &err), (b, t.end, &fmt)] {
+            if s < e {
+                job.append(&text[s..e], 0.0, f.clone());
+            }
         }
-        job.append(&text[t.start..t.end], 0.0, fmt);
     }
     job
 }
@@ -377,6 +409,27 @@ mod tests {
             .find(|s| &job.text[s.byte_range.clone()] == "Price")
             .expect("Price token present");
         assert_eq!(price.format.underline, Stroke::NONE);
+    }
+
+    /// A span underlines exactly its bytes, across or inside tokens, and
+    /// clamps an out-of-range or mid-char end.
+    #[test]
+    fn error_span_marks_exactly_its_bytes() {
+        let marked = |text: &str, r| {
+            let job = highlight_formula_span(text, FontId::default(), Some(r));
+            assert_eq!(job.text, text);
+            job.sections
+                .iter()
+                .filter(|s| s.format.underline == ERROR_UNDERLINE)
+                .map(|s| &text[s.byte_range.clone()])
+                .collect::<String>()
+        };
+        assert_eq!(marked("Price * Widgets", 0..7), "Price *");
+        assert_eq!(marked("Price * Widgets", 9..11), "id");
+        assert_eq!(marked("Price", 3..99), "ce");
+        assert_eq!(marked("é + 1", 0..1), "");
+        assert_eq!(marked("é + 1", 0..2), "é");
+        assert_eq!(token_span("Price * Widgets", 10), Some(8..15));
     }
 
     #[test]
