@@ -321,6 +321,11 @@ mod tests {
         assert_eq!(call(1313, &[txt("1"), num(37.0)]), e(err::NUM));
         assert_eq!(call(1313, &[txt(&"1".repeat(256)), num(2.0)]), e(err::NUM));
         assert_eq!(call(1314, &[num(1.0)]), txt("000000000000f03f"));
+        // Ten digits: negative when the first is at least half the base,
+        // else positive (LibreOffice and Gnumeric -1, -1, 511).
+        assert_eq!(call(1300, &[txt("1111111111")]), num(-1.0));
+        assert_eq!(call(1307, &[txt("FFFFFFFFFF")]), num(-1.0));
+        assert_eq!(call(1300, &[txt("0111111111")]), num(511.0));
     }
 
     #[test]
@@ -331,6 +336,14 @@ mod tests {
         assert_eq!(call(1383, &[num(-1.0), num(1.0)]), e(err::NUM));
         assert_eq!(call(1380, &[num(0.0), num(2.0)]), num(0.0));
         assert_eq!(call(1380, &[num(1e4), num(1.0)]), e(err::NUM), "overflow");
+        // A NaN x runs the series to its 2000-term cap: #NUM!.
+        assert_eq!(call(1380, &[num(f64::NAN), num(0.0)]), e(err::NUM));
+        // I₂₀(5) (mpmath 5.024239357971806e-11; LibreOffice and Gnumeric).
+        let i20 = call(1380, &[num(5.0), num(20.0)]).as_num().unwrap();
+        assert!(
+            (i20 / 5.024_239_357_971_806e-11 - 1.0).abs() < 1e-14,
+            "{i20}"
+        );
     }
 
     #[test]

@@ -272,6 +272,9 @@ mod tests {
             "binary prefixes are for bits"
         );
         assert_eq!(conv(1.0, "dbyte", "^"), Err(err::NA));
+        // A caret with nothing before it is no power (LibreOffice Err:502).
+        assert_eq!(conv(1.0, "^2", "m"), Err(err::NA));
+        assert_eq!(conv(1.0, "km^2", "m^2"), Ok(1e6));
         assert_eq!(conv(1.0, "", "m"), Err(err::NA));
         assert_eq!(conv(1.0, "é", "m"), Err(err::NA));
     }
