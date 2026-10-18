@@ -377,13 +377,7 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
             let x = n(a, 0)?;
             domain(x >= 0.0)?;
             let k = x.trunc() as i64;
-            let mut p = 1.0f64;
-            let mut i = k;
-            while i > 1 {
-                p *= i as f64;
-                i -= 2;
-            }
-            num(p)
+            num(product((2 - k % 2..=k).rev().step_by(2).map(|i| i as f64)))
         }
         143 => {
             let (nn, k) = (count(n(a, 0)?)?, count(n(a, 1)?)?);
@@ -402,7 +396,7 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
         145 => {
             let (nn, k) = (count(n(a, 0)?)?, count(n(a, 1)?)?);
             domain(k <= nn)?;
-            num(((nn - k + 1)..=nn).map(|i| i as f64).product())
+            num(product(((nn - k + 1)..=nn).map(|i| i as f64)))
         }
         146 => {
             let (nn, k) = (count(n(a, 0)?)?, count(n(a, 1)?)?);
@@ -431,14 +425,13 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
         }
         149 => {
             let v = nums(a)?;
+            // Π C(k₁ + … + kⱼ, kⱼ).
             let mut total = 0u64;
             let mut r = 1f64;
             for x in v {
                 let k = count(x)?;
-                for i in 1..=k {
-                    total += 1;
-                    r = r * total as f64 / i as f64;
-                }
+                total += k;
+                r *= combin(total, k);
             }
             num(r.round())
         }
@@ -761,14 +754,31 @@ fn cos_pi(x: f64) -> f64 {
 }
 
 fn fact(k: u64) -> f64 {
-    (1..=k).map(|i| i as f64).product()
+    product((1..=k).map(|i| i as f64))
+}
+
+/// The product of factors ≥ 1, stopping once it overflows (so a count near
+/// `count`'s 1e15 limit costs a few hundred steps, not 1e15).
+fn product(factors: impl Iterator<Item = f64>) -> f64 {
+    let mut p = 1f64;
+    for x in factors {
+        p *= x;
+        if p.is_infinite() {
+            break;
+        }
+    }
+    p
 }
 
 fn combin(n: u64, k: u64) -> f64 {
     let k = k.min(n - k);
     let mut r = 1f64;
+    // Every factor is ≥ 1 (i < k ≤ n/2), so once r overflows it stays so.
     for i in 0..k {
         r = r * (n - i) as f64 / (i + 1) as f64;
+        if r.is_infinite() {
+            break;
+        }
     }
     r.round()
 }
@@ -1378,5 +1388,37 @@ mod tests {
             ),
             s("a1.5TRUE")
         );
+    }
+
+    /// FACT, FACTDOUBLE, COMBIN, COMBINA, PERMUT and MULTINOMIAL of a count
+    /// near the 1e15 limit overflow to `#NUM!` in a few hundred steps; they
+    /// used to multiply up to 1e15 factors (hours).
+    #[test]
+    fn huge_counts_overflow_promptly() {
+        let n = CellValue::num;
+        let num_err = CellValue::Err(err::NUM);
+        let t0 = std::time::Instant::now();
+        assert_eq!(eval(FuncId(141), &[n(1e14)]), num_err, "FACT");
+        assert_eq!(eval(FuncId(142), &[n(1.02e14)]), num_err, "FACTDOUBLE");
+        assert_eq!(eval(FuncId(142), &[n(1e300)]), num_err, "FACTDOUBLE");
+        assert_eq!(eval(FuncId(143), &[n(1e14), n(1e13)]), num_err, "COMBIN");
+        assert_eq!(eval(FuncId(144), &[n(1e13), n(1e13)]), num_err, "COMBINA");
+        assert_eq!(eval(FuncId(145), &[n(1e14), n(1e13)]), num_err, "PERMUT");
+        assert_eq!(
+            eval(FuncId(149), &[n(1.2e13), n(52.0), n(642.0)]),
+            num_err,
+            "MULTINOMIAL"
+        );
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        // The small values are unchanged.
+        assert_eq!(eval(FuncId(141), &[n(5.0)]), n(120.0));
+        assert_eq!(eval(FuncId(142), &[n(7.0)]), n(105.0));
+        assert_eq!(eval(FuncId(142), &[n(8.0)]), n(384.0));
+        assert_eq!(eval(FuncId(142), &[n(0.0)]), n(1.0));
+        assert_eq!(eval(FuncId(143), &[n(10.0), n(3.0)]), n(120.0));
+        assert_eq!(eval(FuncId(143), &[n(1e14), n(1.0)]), n(1e14));
+        assert_eq!(eval(FuncId(145), &[n(10.0), n(3.0)]), n(720.0));
+        assert_eq!(eval(FuncId(149), &[n(2.0), n(3.0), n(4.0)]), n(1260.0));
+        assert_eq!(eval(FuncId(149), &[n(0.0), n(0.0)]), n(1.0));
     }
 }
