@@ -497,3 +497,12 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `MIRR(number OVER category, number, number)` | number | modified internal rate of return, outflows financed and inflows reinvested: MIRR(cf OVER T, finance_rate, reinvest_rate) |
 | `FMRR(number OVER category, number, number, number)` | number | financial management rate of return (GNU Oleo): outflows pulled back at the safe rate, inflows of at least reinvest_min pushed forward at the reinvestment rate: FMRR(cf OVER T, safe_rate, reinvest_rate, reinvest_min) |
 | `FVSCHEDULE(number, number OVER category)` | number | principal compounded over the rates in item order: FVSCHEDULE(principal, rate OVER T) |
+| `OPT_BS(text, number, number, number, number, number, [number])` | number | Black-Scholes price of a European option: OPT_BS(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_BS_DELTA(text, number, number, number, number, number, [number])` | number | Black-Scholes delta: OPT_BS_DELTA(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_BS_GAMMA(number, number, number, number, number, [number])` | number | Black-Scholes gamma (calls and puts alike): OPT_BS_GAMMA(spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_BS_RHO(text, number, number, number, number, number, [number])` | number | Black-Scholes rho: OPT_BS_RHO(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_BS_THETA(text, number, number, number, number, number, [number])` | number | Black-Scholes theta: OPT_BS_THETA(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_BS_VEGA(number, number, number, number, number, [number])` | number | Black-Scholes vega (calls and puts alike): OPT_BS_VEGA(spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_BS_CARRYCOST(text, number, number, number, number, number, [number])` | number | Black-Scholes sensitivity to the cost of carry: OPT_BS_CARRYCOST(call_put, spot, strike, time, rate, volatility, [cost_of_carry]) |
+| `OPT_GARMAN_KOHLHAGEN(text, number, number, number, number, number, number)` | number | currency option: OPT_GARMAN_KOHLHAGEN(call_put, spot, strike, time, domestic_rate, foreign_rate, volatility) |
+| `OPT_FRENCH(text, number, number, number, number, number, number, number)` | number | Black-Scholes with trading-day volatility: OPT_FRENCH(call_put, spot, strike, trading_time, calendar_time, rate, volatility, cost_of_carry) |

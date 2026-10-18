@@ -508,7 +508,7 @@ pub(crate) fn norm_cdf(z: f64) -> f64 {
     0.5 * libm::erfc(-z / SQRT_2)
 }
 
-fn norm_pdf(z: f64) -> f64 {
+pub(crate) fn norm_pdf(z: f64) -> f64 {
     FRAC_1_SQRT_2PI * (-z * z / 2.0).exp()
 }
 
