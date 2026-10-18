@@ -13,6 +13,13 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **GUI located formula errors.** Both formula editors (the selected
+  row and the `Name = formula` line, which before reported only to the
+  status bar) underline where a formula fails and show, under it, the
+  message and a hint: the nearest measure or category names for an
+  unknown one, what is missing or extra in a call, the `(` left
+  open, the `OVER` form an aggregation needs. A type or dimension error
+  underlines the first function or measure its message names.
 - **TUI function help and formula editing.** `?` (or F1, also while
   editing) opens a search over the built-in functions: the matches with
   their signatures, and the selected one's category, aliases and

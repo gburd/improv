@@ -8,6 +8,7 @@
 use crate::theme::{BLACK, DARK_GRAY};
 use egui::text::LayoutJob;
 use egui::{Color32, FontId, Stroke, TextFormat};
+use std::ops::Range;
 
 /// A known scalar/aggregation function name, highlighted distinctly from a
 /// plain measure/category identifier.
@@ -173,35 +174,19 @@ const ERROR_UNDERLINE: Stroke = Stroke {
 };
 
 /// Build a highlighted [`LayoutJob`] for `text`, coloring tokens per
-/// [`scan`]/[`color_for`]. If `error_pos` is `Some(byte offset)` within the
-/// text, the token at that offset (or, if it falls on a boundary/whitespace,
-/// the nearest token) is rendered in [`ERROR_COLOR`] with a 2 px underline so
-/// the parse error location is visible inline.
-pub fn highlight_formula(text: &str, font: FontId, error_pos: Option<usize>) -> LayoutJob {
-    highlight_formula_span(text, font, error_pos.and_then(|p| token_span(text, p)))
-}
-
-/// The byte range of the token at `pos` in `text`, as [`highlight_formula`]
-/// marks it: the non-whitespace token covering `pos`, else the last token
-/// starting at or before it.
-pub fn token_span(text: &str, pos: usize) -> Option<std::ops::Range<usize>> {
-    let tokens = scan(text);
-    tokens
-        .iter()
-        .find(|t| t.start <= pos && pos < t.end && t.kind != TokenKind::Whitespace)
-        .or_else(|| tokens.iter().rfind(|t| t.start <= pos))
-        .map(|t| t.start..t.end)
-}
-
-/// [`highlight_formula`], underlining the byte range `error` (clamped to the
-/// text and to char boundaries) instead of one token: a span may cover part
-/// of a token or several.
-pub fn highlight_formula_span(
-    text: &str,
-    font: FontId,
-    error: Option<std::ops::Range<usize>>,
-) -> LayoutJob {
+/// [`scan`]/[`color_for`]. If `error` is `Some(start..end)`, those bytes
+/// (clamped to the text and to char boundaries; a span may cover part of a
+/// token or several) are rendered in [`ERROR_COLOR`] with a 2 px underline so
+/// the error's location is visible inline. `crate::diagnostics` places it:
+/// the token at a parse error's position, or the name a compile error names.
+pub fn highlight_formula(text: &str, font: FontId, error: Option<Range<usize>>) -> LayoutJob {
     let mut job = LayoutJob::default();
+    if text.is_empty() {
+        // One empty section, as egui's own layouter makes: a job with none
+        // lays out zero rows high, and the edit shrinks by a pixel.
+        job.append("", 0.0, TextFormat::simple(font, BLACK));
+        return job;
+    }
     let (lo, hi) = error.map_or((0, 0), |r| {
         let fix = |mut i: usize| {
             i = i.min(text.len());
@@ -359,7 +344,7 @@ mod tests {
         ] {
             assert_tiles(text);
             // The renderer slices by the same ranges; must not panic either.
-            let job = highlight_formula(text, FontId::default(), Some(1));
+            let job = highlight_formula(text, FontId::default(), Some(1..2));
             assert_eq!(job.text, text, "rendered text differs for {text:?}");
         }
     }
@@ -383,17 +368,17 @@ mod tests {
     }
 
     #[test]
-    fn error_position_inside_a_multibyte_char_does_not_panic() {
+    fn error_span_inside_a_multibyte_char_does_not_panic() {
         // byte 1 is a continuation byte of "é": not a char boundary.
-        let job = highlight_formula("é + 1", FontId::default(), Some(1));
+        let job = highlight_formula("é + 1", FontId::default(), Some(1..2));
         assert_eq!(job.text, "é + 1");
     }
 
     #[test]
-    fn error_position_marks_the_covering_token() {
+    fn error_span_marks_the_token() {
         let text = "Price * Widgets";
-        // "Widgets" starts at byte 9; mark a position inside it.
-        let job = highlight_formula(text, FontId::default(), Some(10));
+        // "Widgets" is bytes 8..15.
+        let job = highlight_formula(text, FontId::default(), Some(8..15));
         let bad = job
             .sections
             .iter()
@@ -416,7 +401,7 @@ mod tests {
     #[test]
     fn error_span_marks_exactly_its_bytes() {
         let marked = |text: &str, r| {
-            let job = highlight_formula_span(text, FontId::default(), Some(r));
+            let job = highlight_formula(text, FontId::default(), Some(r));
             assert_eq!(job.text, text);
             job.sections
                 .iter()
@@ -429,11 +414,11 @@ mod tests {
         assert_eq!(marked("Price", 3..99), "ce");
         assert_eq!(marked("é + 1", 0..1), "");
         assert_eq!(marked("é + 1", 0..2), "é");
-        assert_eq!(token_span("Price * Widgets", 10), Some(8..15));
+        assert_eq!(marked("é + 1", 1..2), "é", "a mid-char start moves back");
     }
 
     #[test]
-    fn no_error_position_leaves_all_tokens_unmarked() {
+    fn no_error_span_leaves_all_tokens_unmarked() {
         let job = highlight_formula("Price * Quantity", FontId::default(), None);
         assert!(job
             .sections
@@ -442,11 +427,18 @@ mod tests {
     }
 
     #[test]
+    fn empty_text_keeps_one_section_for_the_row_height() {
+        let job = highlight_formula("", FontId::default(), Some(0..3));
+        assert_eq!(job.sections.len(), 1);
+        assert_eq!(job.sections[0].format.underline, Stroke::NONE);
+    }
+
+    #[test]
     fn token_colors_are_grayscale() {
         let job = highlight_formula(
             r#"SUM(x) + 1 == "s" #2025-01-01#"#,
             FontId::default(),
-            Some(0),
+            Some(0..3),
         );
         for s in &job.sections {
             let c = s.format.color;

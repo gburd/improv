@@ -12,6 +12,7 @@
 mod app;
 mod chart;
 mod csv_wizard;
+mod diagnostics;
 mod formula_highlight;
 mod menu;
 mod nxwin;

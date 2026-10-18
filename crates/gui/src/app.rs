@@ -27,6 +27,7 @@ use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_store::Store;
 
 use crate::csv_wizard::{self, ExportForm, ImportForm};
+use crate::diagnostics;
 use crate::menu::{self, Command};
 
 /// One matrix on the canvas: a measure, that matrix's OWN pivot / filter /
@@ -126,21 +127,21 @@ pub struct ImprovApp {
     /// The measure whose formula `formula_buf` currently holds (so we reload
     /// the buffer when the selection changes).
     formula_for: Option<MeasureId>,
-    /// The byte offset of the last `commit_formula` parse error, if any (for
-    /// the formula editor's inline red-underline highlight + error label). Set on
-    /// a failed commit; cleared on a successful commit or when the buffer is
+    /// The last failed `commit_formula`'s error, located in its text (the
+    /// span the editor underlines, the message and hint under the row). Set
+    /// on a failed commit; cleared on a successful one or when the buffer is
     /// edited again.
-    formula_error_pos: Option<usize>,
+    formula_error: Option<crate::diagnostics::Diagnostic>,
     /// The formula locale: how formulas are typed and shown (decimal comma,
     /// `;`, translated names). `Locale::from_env` in the real app; English
     /// in tests so they do not depend on the machine's locale.
     locale: improv_core_model::Locale,
-    /// The message of the last `commit_formula` parse error, shown directly
-    /// under the formula editor. Cleared alongside `formula_error_pos`.
-    formula_error_msg: String,
     /// Text buffer for the formula list's last line, where `Name = formula`
     /// adds a derived measure.
     new_formula_line: String,
+    /// The last failed add's error, located in `new_formula_line` (as
+    /// `formula_error` is for the selected row).
+    new_formula_error: Option<crate::diagnostics::Diagnostic>,
     /// Text buffer for the "Save view" name field.
     view_name: String,
     /// The model browser's selected view row (single click). A double-click
@@ -900,13 +901,12 @@ impl ImprovApp {
             status: String::new(),
             formula_buf: String::new(),
             formula_for: None,
-            formula_error_pos: None,
+            formula_error: None,
             locale: if cfg!(test) {
                 improv_core_model::Locale::en()
             } else {
                 improv_core_model::Locale::from_env()
             },
-            formula_error_msg: String::new(),
             view_name: String::new(),
             browser_sel: None,
             show_chart: false,
@@ -926,6 +926,7 @@ impl ImprovApp {
             redo_stack: Vec::new(),
             formula_row_rects: Vec::new(),
             new_formula_line: String::new(),
+            new_formula_error: None,
         })
     }
 
@@ -1656,10 +1657,10 @@ impl ImprovApp {
     /// a real engine build) and only published once the engine is known good
     /// and the store write succeeded. On any failure the previous model,
     /// engine, and snapshot are all left intact and the error is returned; on a
-    /// parse error `formula_error_pos`/`formula_error_msg` are also set (for the
-    /// formula bar's inline highlight). They are cleared the moment `text`
-    /// parses — a later save failure is a save error, not an inline position in
-    /// text that has no error at that offset.
+    /// parse or compile error `formula_error` is also set (located in `text`,
+    /// for the editor's underline and the explanation under the row). It is
+    /// cleared the moment `text` parses — a later save failure is a save
+    /// error, not a fault at some place in text that has none.
     ///
     /// `text` may be either the symbolic DSL (`Price * Quantity`) or the
     /// controlled English the formula editor displays (`Price times Quantity`);
@@ -1668,16 +1669,14 @@ impl ImprovApp {
         let formula = match self.parse_formula_text(text) {
             Ok(f) => f,
             Err(e) => {
-                self.formula_error_pos = e.position;
-                self.formula_error_msg = e.to_string();
+                self.formula_error = Some(diagnostics::parse_error(&self.model, text, &e));
                 return Err(e.to_string());
             }
         };
         // `text` parsed: any previous inline parse error no longer describes
-        // it. Clear BEFORE publishing, so a failed save does not leave a red
+        // it. Clear BEFORE publishing, so a failed save does not leave an
         // underline at an offset where this text is perfectly fine.
-        self.formula_error_pos = None;
-        self.formula_error_msg.clear();
+        self.formula_error = None;
         // Validate on a candidate copy: a formula that parses can still fail to
         // build (cycle, type/dimension error), which would otherwise leave the
         // app with a saved-but-broken model and a dead engine.
@@ -1687,8 +1686,9 @@ impl ImprovApp {
             .get_mut(&measure)
             .ok_or_else(|| format!("no measure with id {}", measure.0))?;
         m.kind = MeasureKind::Derived(formula);
-        self.publish(candidate)?;
-        Ok(())
+        self.publish(candidate).inspect_err(|e| {
+            self.formula_error = formula_fault(&self.model, text, e);
+        })
     }
 
     /// Whether `measure`'s formula is currently enabled (the reference's `✓`).
@@ -1951,8 +1951,7 @@ impl ImprovApp {
         }
         // Force the formula editor to reload from the restored model.
         self.formula_for = None;
-        self.formula_error_pos = None;
-        self.formula_error_msg.clear();
+        self.formula_error = None;
         self.sync_axis_state();
     }
 
@@ -1961,7 +1960,11 @@ impl ImprovApp {
     /// rule as the CLI's `add-derived`). Rebuilds the engine and autosaves. On
     /// any failure (parse error, duplicate name, engine build failure, failed
     /// store write) the model, engine, and snapshot are unchanged.
+    ///
+    /// A parse or compile error is also left in `new_formula_error`, located
+    /// in `text`.
     pub fn add_derived_measure(&mut self, name: &str, text: &str) -> Result<MeasureId, String> {
+        self.new_formula_error = None;
         let name = name.trim();
         if name.is_empty() {
             return Err("measure name is required".into());
@@ -1976,13 +1979,21 @@ impl ImprovApp {
             let canonical = self.locale.canonicalize(text);
             parser::parse_expr(&provisional, &canonical)
                 .or_else(|e| parse_nl_formula(&NlContext::new(&provisional), text).map_err(|_| e))
-                .map_err(|e| e.to_string())?
+                .map_err(|e| {
+                    self.new_formula_error = Some(diagnostics::parse_error(&provisional, text, &e));
+                    e.to_string()
+                })?
         };
         // The engine's shape: an aggregation drops what it reduces, `@ITEM`
         // is text, and so on.
         let (value_type, cats) =
-            improv_engine::compiler::derived_shape(&self.model, id, name, &formula)
-                .map_err(|e| e.to_string())?;
+            improv_engine::compiler::derived_shape(&self.model, id, name, &formula).map_err(
+                |e| {
+                    let e = e.to_string();
+                    self.new_formula_error = formula_fault(&self.model, text, &e);
+                    e
+                },
+            )?;
         let mut candidate = self.model.clone();
         candidate.add_measure(Measure {
             id,
@@ -1992,7 +2003,9 @@ impl ImprovApp {
             kind: MeasureKind::Derived(formula),
             description: None,
         });
-        self.publish(candidate)?;
+        self.publish(candidate).inspect_err(|e| {
+            self.new_formula_error = formula_fault(&self.model, text, e);
+        })?;
         Ok(id)
     }
 
@@ -2188,6 +2201,53 @@ pub struct FormulaRow {
 /// grid (drawn later, and now seeing no focus) doesn't start a cell edit.
 fn consume_enter(ui: &egui::Ui) {
     ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+}
+
+/// An engine-build failure for formula `text`, located in it; `None` for a
+/// failed save, which is no fault of the text.
+fn formula_fault(model: &Model, text: &str, err: &str) -> Option<diagnostics::Diagnostic> {
+    (!err.starts_with("save failed")).then(|| diagnostics::compile_error(model, text, err))
+}
+
+/// A formula editor: a single-line edit of `text` with id `id`, highlighted,
+/// the error `span` underlined, filling the row.
+fn formula_text_edit(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    id: egui::Id,
+    hint: &str,
+    span: Option<std::ops::Range<usize>>,
+) -> egui::text_edit::TextEditOutput {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
+        let mut job = crate::formula_highlight::highlight_formula(text, font.clone(), span.clone());
+        job.wrap.max_width = wrap_width;
+        ui.fonts(|f| f.layout_job(job))
+    };
+    egui::TextEdit::singleline(text)
+        .id(id)
+        .hint_text(hint)
+        .desired_width(f32::INFINITY)
+        .layouter(&mut layouter)
+        .show(ui)
+}
+
+/// A formula error under its row, indented past the checkbox and number:
+/// the message, and under it the hint, dimmed.
+fn formula_error_lines(ui: &mut egui::Ui, d: &diagnostics::Diagnostic) -> egui::Response {
+    ui.horizontal(|ui| {
+        ui.add_space(44.0);
+        ui.vertical(|ui| {
+            ui.colored_label(
+                crate::formula_highlight::ERROR_COLOR,
+                format!("⚠ {}", d.message),
+            );
+            if let Some(h) = &d.hint {
+                ui.label(egui::RichText::new(h).color(crate::theme::DARK_GRAY));
+            }
+        });
+    })
+    .response
 }
 
 /// Build a live engine over all derived measures in `model`, plus its initial
@@ -2616,7 +2676,7 @@ fn category_name(model: &Model, c: CategoryId) -> Option<&str> {
 /// A literal `'` inside the name is escaped by **doubling** it (`Bob''s Rate`),
 /// matching `parser`'s tokenizer exactly. There is no other escape to get
 /// wrong: the quoted form takes every other character verbatim.
-fn ident(name: &str) -> Option<String> {
+pub(crate) fn ident(name: &str) -> Option<String> {
     if is_bare_ident(name) {
         return Some(name.to_string());
     }
@@ -3220,7 +3280,7 @@ impl ImprovApp {
                             egui::RichText::new(label).weak().strikethrough()
                         };
                         let resp = if selected && editing {
-                            self.formula_editor(ui, row.measure, &row.target)
+                            self.formula_editor(ui, row.measure, &row.target, row.error.as_deref())
                         } else {
                             ui.selectable_label(selected, text)
                         };
@@ -3233,18 +3293,17 @@ impl ImprovApp {
                             select = Some(row.measure);
                         }
                     });
-                    let edit_err = (selected && editing && !self.formula_error_msg.is_empty())
-                        .then(|| self.formula_error_msg.clone());
-                    if let Some(err) = edit_err.as_ref().or(row.error.as_ref()) {
-                        ui.horizontal(|ui| {
-                            // Indent under the row's text, past the
-                            // checkbox and number.
-                            ui.add_space(44.0);
-                            ui.colored_label(
-                                crate::formula_highlight::ERROR_COLOR,
-                                format!("⚠ {err}"),
-                            );
-                        });
+                    let edit_err = if selected && editing {
+                        self.formula_error.clone()
+                    } else {
+                        None
+                    };
+                    let row_err = row
+                        .error
+                        .as_deref()
+                        .map(|e| diagnostics::compile_error(&self.model, &row.text, e));
+                    if let Some(d) = edit_err.or(row_err) {
+                        let _ = formula_error_lines(ui, &d);
                     }
                 }
                 self.new_formula_line(ui, editing);
@@ -3286,6 +3345,7 @@ impl ImprovApp {
         ui: &mut egui::Ui,
         mid: MeasureId,
         target: &str,
+        row_error: Option<&str>,
     ) -> egui::Response {
         let source = self.formula_source(mid);
         // Reload the buffer when the selection changes, clearing any stale
@@ -3293,8 +3353,7 @@ impl ImprovApp {
         if self.formula_for != Some(mid) {
             self.formula_for = Some(mid);
             self.formula_buf = source.clone().unwrap_or_default();
-            self.formula_error_pos = None;
-            self.formula_error_msg.clear();
+            self.formula_error = None;
         }
         let Some(source) = source else {
             let english = self
@@ -3311,25 +3370,25 @@ impl ImprovApp {
             return ui.selectable_label(true, format!("{target} = {english}"));
         };
         ui.strong(format!("{target} ="));
-        let error_pos = self.formula_error_pos;
-        let font = egui::TextStyle::Body.resolve(ui.style());
-        let mut layouter = move |ui: &egui::Ui, text: &str, wrap_width: f32| {
-            let mut job =
-                crate::formula_highlight::highlight_formula(text, font.clone(), error_pos);
-            job.wrap.max_width = wrap_width;
-            ui.fonts(|f| f.layout_job(job))
+        // A standing compile error is underlined while the text is unedited.
+        let standing = row_error
+            .filter(|_| self.formula_buf == source)
+            .and_then(|e| diagnostics::compile_error(&self.model, &source, e).span);
+        let span = match &self.formula_error {
+            Some(d) => d.span.clone(),
+            None => standing,
         };
-        let resp = ui.add(
-            egui::TextEdit::singleline(&mut self.formula_buf)
-                .id(egui::Id::new("formula_edit"))
-                .desired_width(f32::INFINITY)
-                .hint_text("e.g. Price * Quantity")
-                .layouter(&mut layouter),
-        );
+        let resp = formula_text_edit(
+            ui,
+            &mut self.formula_buf,
+            egui::Id::new("formula_edit"),
+            "e.g. Price * Quantity",
+            span,
+        )
+        .response;
         if resp.changed() {
             // The previous error no longer describes what's on screen.
-            self.formula_error_pos = None;
-            self.formula_error_msg.clear();
+            self.formula_error = None;
         }
         let (enter, esc) = ui.input(|i| {
             (
@@ -3339,8 +3398,7 @@ impl ImprovApp {
         });
         if esc && (resp.has_focus() || resp.lost_focus()) {
             self.formula_buf = source;
-            self.formula_error_pos = None;
-            self.formula_error_msg.clear();
+            self.formula_error = None;
             resp.surrender_focus();
         } else if enter && resp.lost_focus() {
             consume_enter(ui);
@@ -3362,34 +3420,61 @@ impl ImprovApp {
         } else {
             ui.id().with("formula_new")
         };
+        // Only the focused window's line shows (and owns) the error.
+        let span = self
+            .new_formula_error
+            .as_ref()
+            .filter(|_| editing)
+            .and_then(|d| d.span.clone());
         let resp = ui
             .horizontal(|ui| {
                 // Past the checkbox and number, under the rows' text.
                 ui.add_space(44.0);
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.new_formula_line)
-                        .id(id)
-                        .hint_text("Name = formula")
-                        .desired_width(f32::INFINITY),
-                )
+                formula_text_edit(ui, &mut self.new_formula_line, id, "Name = formula", span)
+                    .response
             })
             .inner;
-        if !(resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))) {
-            return;
+        if resp.changed() {
+            self.new_formula_error = None;
         }
-        consume_enter(ui);
+        let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        if entered {
+            consume_enter(ui);
+            self.add_from_formula_line();
+        }
+        if let Some(d) = self.new_formula_error.as_ref().filter(|_| editing) {
+            let shown = formula_error_lines(ui, d);
+            if entered {
+                // Under the last row, a fresh error may be past the pane's end.
+                shown.scroll_to_me(None);
+            }
+        }
+    }
+
+    /// Add the measure the new-formula line spells (`Name = formula`),
+    /// selecting it; on failure keep the line and locate the error in it.
+    fn add_from_formula_line(&mut self) {
         let line = self.new_formula_line.clone();
         let Some((name, expr)) = line.split_once('=') else {
             self.status = "type Name = formula".into();
             return;
         };
+        // Where the formula starts in the line, to place its error there.
+        let at = line.len() - expr.trim_start().len();
         match self.add_derived_measure(name.trim(), expr.trim()) {
             Ok(id) => {
                 self.focused_mut().select(Some(id));
                 self.new_formula_line.clear();
                 self.status = format!("added {}", name.trim());
             }
-            Err(e) => self.status = format!("formula error: {e}"),
+            Err(e) => {
+                self.new_formula_error = Some(match self.new_formula_error.take() {
+                    Some(d) => d.shifted(at),
+                    // Not the formula's fault (a duplicate name, …).
+                    None => diagnostics::Diagnostic::plain(e.clone()),
+                });
+                self.status = format!("formula error: {e}");
+            }
         }
     }
 
@@ -4850,30 +4935,27 @@ mod tests {
     #[test]
     fn commit_formula_error_sets_and_clears_error_pos() {
         let mut app = build_app(revenue_model());
-        assert_eq!(app.formula_error_pos, None);
+        assert_eq!(app.formula_error, None);
 
-        // A failing commit records the parser's reported byte offset.
+        // A failing commit locates the error at the token the parser names.
         let text = "Price * Widgets";
         let err = app.commit_formula(MeasureId(102), text).unwrap_err();
-        let expected_pos = parser::parse_expr(&app.model, text).unwrap_err().position;
-        assert!(expected_pos.is_some());
-        assert_eq!(app.formula_error_pos, expected_pos);
-        assert!(!app.formula_error_msg.is_empty());
+        let d = app.formula_error.clone().expect("located");
+        assert_eq!(d.span, Some(8..15));
+        assert_eq!(d.message, "unknown measure: Widgets");
         assert!(err.contains("Widgets") || err.contains("measure"));
 
-        // Clearing the error (what the formula editor does when the buffer is
-        // edited again) resets both fields.
-        app.formula_error_pos = None;
-        app.formula_error_msg.clear();
-        assert_eq!(app.formula_error_pos, None);
+        // A compile error has no position: the measure it names is marked.
+        app.commit_formula(MeasureId(102), "Quantity + LEN(Price)")
+            .unwrap_err();
+        let d = app.formula_error.clone().expect("located");
+        assert_eq!(d.span, Some(11..14), "{d:?}");
+        assert!(d.message.starts_with("type mismatch"), "{}", d.message);
 
         // A successful commit clears any leftover error state too.
-        app.formula_error_pos = Some(999);
-        app.formula_error_msg = "stale".into();
         app.commit_formula(MeasureId(102), "Price + Quantity")
             .expect("commit");
-        assert_eq!(app.formula_error_pos, None);
-        assert!(app.formula_error_msg.is_empty());
+        assert_eq!(app.formula_error, None);
     }
 
     #[test]
@@ -5303,13 +5385,12 @@ mod tests {
             status: String::new(),
             formula_buf: String::new(),
             formula_for: None,
-            formula_error_pos: None,
+            formula_error: None,
             locale: if cfg!(test) {
                 improv_core_model::Locale::en()
             } else {
                 improv_core_model::Locale::from_env()
             },
-            formula_error_msg: String::new(),
             view_name: String::new(),
             browser_sel: None,
             show_chart: false,
@@ -5329,6 +5410,7 @@ mod tests {
             redo_stack: Vec::new(),
             formula_row_rects: Vec::new(),
             new_formula_line: String::new(),
+            new_formula_error: None,
         }
     }
 
@@ -6661,8 +6743,7 @@ mod tests {
         // Step 1: a parse error sets the inline highlight.
         app.commit_formula(MeasureId(102), "Price *** Quantity")
             .expect_err("a parse error");
-        assert!(app.formula_error_pos.is_some(), "parse error marked");
-        assert!(!app.formula_error_msg.is_empty());
+        assert!(app.formula_error.is_some(), "parse error marked");
 
         // Step 2: a VALID formula whose save fails (unwritable store path).
         app.db = std::env::temp_dir()
@@ -6675,13 +6756,8 @@ mod tests {
             .expect_err("unwritable store must fail the commit");
         assert!(err.starts_with("save failed:"), "got {err:?}");
         assert_eq!(
-            app.formula_error_pos, None,
-            "stale inline position survived a save failure"
-        );
-        assert!(
-            app.formula_error_msg.is_empty(),
-            "stale inline parse error survived a save failure: {:?}",
-            app.formula_error_msg
+            app.formula_error, None,
+            "a stale inline parse error survived a save failure"
         );
     }
     /// A category left in `axis_order` that is NOT a dimension of the selected
@@ -11132,6 +11208,39 @@ mod tests {
         assert_eq!(app.values_for(id).get(&vec![(1, 10), (2, 20)]), Some(&69.0));
     }
 
+    /// A bad `Name = formula` line keeps its text, and its error is located
+    /// in the line (past `Name = `) and explained, under it.
+    #[test]
+    fn the_new_formula_line_errors_inline() {
+        let mut app = build_app(revenue_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let line = "Margin = Prise - 1";
+        let text = egui::Event::Text(line.into());
+        focused_frame(&ctx, &mut app, "formula_new", vec![text]);
+        focused_frame(&ctx, &mut app, "formula_new", vec![enter()]);
+        let d = app.new_formula_error.clone().expect("an inline error");
+        assert_eq!(d.span.map(|r| &line[r]), Some("Prise"));
+        assert_eq!(d.hint.as_deref(), Some("did you mean Price?"));
+        assert_eq!(app.new_formula_line, line, "the text is kept");
+        let out = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let texts = texts_of(&out);
+        assert!(
+            texts.iter().any(|t| t == "did you mean Price?"),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "⚠ unknown measure: Prise"));
+        // A compile error is placed at the measure it names; typing clears it.
+        app.new_formula_line = "Margin = Quantity + LEN(Price)".into();
+        focused_frame(&ctx, &mut app, "formula_new", vec![enter()]);
+        let d = app.new_formula_error.clone().expect("an inline error");
+        assert_eq!(d.span.map(|r| &app.new_formula_line[r]), Some("LEN"));
+        let x = egui::Event::Text("x".into());
+        focused_frame(&ctx, &mut app, "formula_new", vec![x]);
+        assert_eq!(app.new_formula_error, None);
+    }
+
     /// The selected row is the editor: Enter commits a good formula, and a
     /// bad one errors inline and leaves the model alone.
     #[test]
@@ -11150,7 +11259,7 @@ mod tests {
         let before = app.model.measures[&MeasureId(102)].kind.clone();
         app.formula_buf = "Price *".into();
         focused_frame(&ctx, &mut app, "formula_edit", vec![enter()]);
-        assert!(!app.formula_error_msg.is_empty(), "{}", app.status);
+        assert!(app.formula_error.is_some(), "{}", app.status);
         assert_eq!(app.model.measures[&MeasureId(102)].kind, before);
     }
 
@@ -11633,15 +11742,11 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::apply(&ctx);
         let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
-        app.formula_error_pos = Some(1);
-        app.formula_error_msg = "old".into();
+        app.formula_error = Some(crate::diagnostics::Diagnostic::plain("old"));
         let x = egui::Event::Text("x".into());
         focused_frame(&ctx, &mut app, "formula_edit", vec![x]);
         assert_ne!(app.formula_buf, "Price * Quantity");
-        assert_eq!(
-            (app.formula_error_pos, app.formula_error_msg.as_str()),
-            (None, "")
-        );
+        assert_eq!(app.formula_error, None);
         let esc = egui::Event::Key {
             key: egui::Key::Escape,
             physical_key: None,

@@ -82,9 +82,10 @@ The window has five regions:
 - **Formula list** (bottom of each worksheet window) — every formula,
   numbered, with a **Calc** button above and a checkbox that enables it.
   Click a row to select its measure; the selected row becomes an editor:
-  Enter commits (re-typechecks and recomputes, errors show under the row),
-  Esc reverts. Type `Name = formula` on the last line and press Enter to add
-  a measure.
+  Enter commits (re-typechecks and recomputes), Esc reverts. Type
+  `Name = formula` on the last line and press Enter to add a measure. A
+  formula that fails, in either editor, stays as typed with the fault
+  underlined (see [Formula errors](#formula-errors)).
 - **Info panel** (window, top right of the workspace, closed at start) —
   opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
   type, dimensions, dependencies, and formula. Its close box closes it.
@@ -95,6 +96,27 @@ The window has five regions:
 The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an
 in-memory model, or a model whose last autosave failed.
+
+## Formula errors
+
+When a formula fails, the place it fails is underlined in the editor, and
+under the row are the message and, dimmed, why:
+
+- an unknown measure or category: `did you mean Price?`, the nearest names
+  in the model (a misspelled function's suggestion is in the message
+  itself: `unknown function: PMTT; did you mean PMT?`);
+- the wrong number of arguments: the call's name is underlined, the
+  message spells the parameters, and the hint says what is off,
+  `missing pv: 2 given`;
+- a `(` never closed: that `(` is underlined, `( opened here is never
+  closed: add )`;
+- an aggregation without `OVER`: its form, `IRR(values OVER T,
+  [guess=0.1])`.
+
+A type or dimension error has no position, so the editor underlines the
+first function or measure the message names (in `Quantity + LEN(Price)`,
+`LEN`). A row whose saved formula no longer compiles shows its error the
+same way. Editing the text clears the mark.
 
 ## Stacked axes
 
