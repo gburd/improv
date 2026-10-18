@@ -846,9 +846,41 @@ pub(crate) fn ln_choose(n: f64, k: f64) -> f64 {
     ln_gamma(n + 1.0) - ln_gamma(k + 1.0) - ln_gamma(n - k + 1.0)
 }
 
-/// P(X = k) drawing n from N holding K successes.
+/// P(X = k) drawing n from N holding K successes. Small populations by
+/// ln C sums; past 1e6, R's `dhyper` (three binomial masses by Loader's
+/// form at p = n/N), since the ln Γ terms of size N ln N cancel to O(1)
+/// and lost every digit near 1e15 (the mass at the mode of a 2e15
+/// population came out 1.3e-14, not 3.6e-8).
 pub(crate) fn hypgeom_pmf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
-    (ln_choose(big_k, k) + ln_choose(big_n - big_k, n - k) - ln_choose(big_n, n)).exp()
+    if big_n <= 1e6 {
+        return (ln_choose(big_k, k) + ln_choose(big_n - big_k, n - k) - ln_choose(big_n, n)).exp();
+    }
+    let (p, q) = (n / big_n, (big_n - n) / big_n);
+    let b = big_n - big_k;
+    (ln_dbinom(k, big_k, p, q) + ln_dbinom(n - k, b, p, q) - ln_dbinom(n, big_n, p, q)).exp()
+}
+
+/// ln P(X = x) for X ~ Binomial(n, p), q = 1 − p given exactly: R's
+/// `dbinom_raw` (Loader's saddle point, bd0 and the Stirling errors).
+fn ln_dbinom(x: f64, n: f64, p: f64, q: f64) -> f64 {
+    if x == 0.0 {
+        return n * if p > q { q.ln() } else { (-p).ln_1p() };
+    }
+    if x == n {
+        return n * if p > q { (-q).ln_1p() } else { p.ln() };
+    }
+    let lc = stirl(n) - stirl(x) - stirl(n - x) - bd0(x, n * p) - bd0(n - x, n * q);
+    lc - 0.5 * (std::f64::consts::TAU.ln() + x.ln() + (-x / n).ln_1p())
+}
+
+/// ln(n!) − ln(√(2πn) (n/e)ⁿ): exact through ln Γ below 1000, the series
+/// above it.
+fn stirl(n: f64) -> f64 {
+    if n > 1000.0 {
+        stirlerr(n)
+    } else {
+        ln_gamma(n + 1.0) - (n + 0.5) * n.ln() + n - 0.5 * std::f64::consts::TAU.ln()
+    }
 }
 
 /// P(X ≤ k): sums the tail on k's side of the mode, from k outward (the
@@ -1519,5 +1551,48 @@ mod tests {
         let q = call(502, &[0.5, 1e15, 1e308]).as_num().unwrap();
         assert!((q / 1e-293 - 1.0).abs() < 1e-5, "{q}");
         assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    /// The hypergeometric mass past a population of 1e6 goes through R's
+    /// dhyper (binomial masses by Loader's form): the ln Γ sums lost every
+    /// digit near 1e15. mpmath: the mode of 1e15 drawn from 1e15 + 1e15 is
+    /// 3.5682482323055409e-8 (it was 1.27e-14); Gnumeric's R.PHYPER(
+    /// 499990000, 1e9, 1e9, 1e9) is 0.18555864434405578 (it was 0.1855595).
+    #[test]
+    fn hypergeometric_mass_of_huge_populations() {
+        let rel = |got: f64, want: f64| (got / want - 1.0).abs();
+        assert!(
+            rel(
+                hypgeom_pmf(5e14, 1e15, 1e15, 2e15),
+                3.568_248_232_305_541e-8
+            ) < 1e-12
+        );
+        assert!(
+            rel(
+                hypgeom_cdf(4.9999e8, 1e9, 1e9, 2e9),
+                0.185_558_644_344_055_78
+            ) < 1e-11
+        );
+        // Both ends of the support and a tiny sample (mpmath).
+        assert!(
+            rel(
+                hypgeom_pmf(2.0, 3.0, 1e7, 1e7 + 1.0),
+                2.999_999_700_000_03e-7
+            ) < 1e-12
+        );
+        assert!(
+            rel(
+                hypgeom_pmf(0.0, 3.0, 1e7, 1e7 + 5.0),
+                5.999_992_800_005_82e-20
+            ) < 1e-12
+        );
+        assert!(rel(hypgeom_pmf(3.0, 3.0, 1e7, 1e7 + 5.0), 0.999_998_500_001_35) < 1e-12);
+        // At or below 1e6 the ln C sums stand (and agree).
+        assert!(
+            rel(
+                hypgeom_pmf(400.0, 1000.0, 1000.0, 2000.0),
+                1.203_716_050_355_937_7e-19
+            ) < 1e-11
+        );
     }
 }
