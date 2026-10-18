@@ -63,6 +63,19 @@ impl Mat {
         }
     }
 
+    /// Off-diagonal pairs averaged, as Gnumeric's CHOLESKY and EIGEN do
+    /// (the asymmetry is taken for rounding noise).
+    fn symmetric(mut self) -> Mat {
+        for i in 0..self.r {
+            for j in i + 1..self.c {
+                let x = (self.at(i, j) + self.at(j, i)) / 2.0;
+                self.set(i, j, x);
+                self.set(j, i, x);
+            }
+        }
+        self
+    }
+
     fn list(&self) -> Vec<CellValue> {
         self.a.iter().map(|x| crate::builtins::num(*x)).collect()
     }
@@ -328,6 +341,130 @@ pub(super) fn pseudo_inverse(rows: &Rows, a: &[CellValue]) -> List {
     Ok(if wide { b.transpose() } else { b }.list())
 }
 
+/// CHOLESKY(a OVER R, C): the lower-triangular L with L Lᵀ = A (A made
+/// symmetric first), row by row, by Gnumeric's Cholesky–Banachiewicz
+/// loop. A matrix that is not positive definite has #NUM! where a square
+/// root of a negative number (and everything computed from it) falls.
+pub(super) fn cholesky(rows: &Rows) -> List {
+    let a = read(rows)?.square()?.symmetric();
+    let n = a.r;
+    let mut l = Mat::zero(n, n);
+    for r in 0..n {
+        for c in 0..r {
+            let s: f64 = (0..c).map(|k| l.at(r, k) * l.at(c, k)).sum();
+            l.set(r, c, (a.at(r, c) - s) / l.at(c, c));
+        }
+        let s: f64 = (0..r).map(|k| l.at(r, k) * l.at(r, k)).sum();
+        l.set(r, r, (a.at(r, r) - s).sqrt());
+    }
+    Ok(l.list())
+}
+
+/// EIGEN(a OVER R, C INTO R2, C2): the eigenvalues of A (made symmetric),
+/// largest magnitude first (ties: the larger value), then the matrix whose
+/// columns are their unit eigenvectors: (n + 1) × n values, row by row.
+/// Gnumeric's cyclic Jacobi rotations, so the vectors' signs match it.
+pub(super) fn eigen(rows: &Rows) -> List {
+    let mut a = read(rows)?.square()?.symmetric();
+    let n = a.r;
+    let mut v = Mat::identity(n);
+    let mut e: Vec<f64> = (0..n).map(|i| a.at(i, i)).collect();
+    // The column of row i's largest off-diagonal entry right of the diagonal.
+    let max_index = |a: &Mat, i: usize| {
+        let mut best = i + 1;
+        if best >= n {
+            return n - 1;
+        }
+        for j in best + 1..n {
+            if a.at(i, j).abs() > a.at(i, best).abs() {
+                best = j;
+            }
+        }
+        best
+    };
+    let mut ind: Vec<usize> = (0..n).map(|i| max_index(&a, i)).collect();
+    // How many eigenvalues still move; done when none does.
+    let mut changed = vec![true; n];
+    let mut moving = n;
+    let mut update = |e: &mut [f64], k: usize, t: f64| {
+        let y = e[k];
+        e[k] += t;
+        let still = y == e[k];
+        if changed[k] && still {
+            changed[k] = false;
+            moving -= 1;
+        } else if !changed[k] && !still {
+            changed[k] = true;
+            moving += 1;
+        }
+        moving
+    };
+    let mut left = n;
+    let rotate = |a: &mut Mat, (k, l): (usize, usize), (i, j): (usize, usize), c: f64, s: f64| {
+        let (x, y) = (a.at(k, l), a.at(i, j));
+        a.set(k, l, c * x - s * y);
+        a.set(i, j, s * x + c * y);
+    };
+    let mut steps = 0;
+    while n > 1 && left != 0 {
+        steps += 1;
+        if steps > 400_000 {
+            return Err(err::NUM);
+        }
+        let mut m = 0;
+        for k in 1..n - 1 {
+            if a.at(k, ind[k]).abs() > a.at(m, ind[m]).abs() {
+                m = k;
+            }
+        }
+        let l = ind[m];
+        let pivot = a.at(m, l);
+        if pivot == 0.0 {
+            break;
+        }
+        let y = (e[l] - e[m]) / 2.0;
+        let mut t = y.abs() + pivot.hypot(y);
+        let mut s = pivot.hypot(t);
+        let c = t / s;
+        s = pivot / s;
+        t = pivot * pivot / t;
+        if y < 0.0 {
+            s = -s;
+            t = -t;
+        }
+        a.set(m, l, 0.0);
+        update(&mut e, m, -t);
+        left = update(&mut e, l, t);
+        for i in 0..m {
+            rotate(&mut a, (i, m), (i, l), c, s);
+        }
+        for i in m + 1..l {
+            rotate(&mut a, (m, i), (i, l), c, s);
+        }
+        for i in l + 1..n {
+            rotate(&mut a, (m, i), (l, i), c, s);
+        }
+        for i in 0..n {
+            rotate(&mut v, (i, m), (i, l), c, s);
+        }
+        ind[m] = max_index(&a, m);
+        ind[l] = max_index(&a, l);
+    }
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|i, j| {
+        let (x, y) = (e[*i], e[*j]);
+        y.abs().total_cmp(&x.abs()).then(y.total_cmp(&x))
+    });
+    let mut out = Mat::zero(n + 1, n);
+    for (c, k) in order.iter().enumerate() {
+        out.set(0, c, e[*k]);
+        for r in 0..n {
+            out.set(r + 1, c, v.at(r, *k));
+        }
+    }
+    Ok(out.list())
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -372,6 +509,19 @@ mod tests {
             capacity: 2,
         };
         assert_eq!(read(&col).map(|m| (m.r, m.c)), Ok((2, 1)));
+    }
+
+    #[test]
+    fn eigen_and_cholesky_edges() {
+        // Already diagonal: no rotation; sorted by magnitude, then value.
+        close(
+            eigen(&mat(3, 3, &[-2.0, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0])),
+            &[2.0, -2.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        );
+        // Not positive definite: the root of a negative is #NUM!.
+        let r = cholesky(&mat(2, 2, &[1.0, 2.0, 2.0, 1.0])).unwrap();
+        assert_eq!(r[3], CellValue::Err(err::NUM));
+        assert_eq!(cholesky(&mat(1, 2, &[1.0, 2.0])), Err(err::VALUE));
     }
 
     #[test]

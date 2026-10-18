@@ -191,6 +191,8 @@ Angles are in radians.
 | `LOGMDETERM(Measure OVER Category)` | number | LOGMDETERM(A OVER R, C): ln |det A| (no overflow for large matrices); #NUM! if singular |
 | `MINVERSE(Measure OVER Category)` | number | MINVERSE(A OVER R, C INTO R2, C2): the inverse of the square matrix A, row by row; #NUM! if singular |
 | `MPSEUDOINVERSE(number OVER category, [number])` | number | MPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2): the Moore–Penrose pseudo-inverse (C × R, row by row); singular values up to threshold (default 256 ε) times the largest count as zero |
+| `CHOLESKY(Measure OVER Category)` | number | CHOLESKY(A OVER R, C INTO R2, C2): the lower-triangular L with L·Lᵀ = A for a symmetric positive-definite A (asymmetric pairs averaged), row by row; #NUM! where A is not positive definite |
+| `EIGEN(Measure OVER Category)` | number | EIGEN(A OVER R, C INTO R2, C2): for a symmetric A (asymmetric pairs averaged), its eigenvalues largest magnitude first, then the matrix of their unit eigenvectors as columns: (n + 1) × n values, row by row |
 
 ## Rounding
 

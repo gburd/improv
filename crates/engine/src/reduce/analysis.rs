@@ -38,6 +38,8 @@ pub(super) fn array(id: u32, rows: &Rows, params: &[CellValue]) -> Vec<CellValue
     let out = match id {
         1852 => matrix::inverse(rows),
         1853 => matrix::pseudo_inverse(rows, params),
+        1854 => matrix::cholesky(rows),
+        1855 => matrix::eigen(rows),
         _ => Err(err::NAME),
     };
     out.unwrap_or_else(|c| vec![CellValue::Err(c)])

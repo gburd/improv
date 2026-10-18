@@ -20,4 +20,6 @@ pub(super) static ANALYSIS: &[FnDef] = &[
     over(f(1851, "LOGMDETERM", Ag, M, &[N], 1, false, NUM, "LOGMDETERM(A OVER R, C): ln |det A| (no overflow for large matrices); #NUM! if singular"), Over::At(&[0])),
     over(f(1852, "MINVERSE", Ar, M, &[N], 1, false, NUM, "MINVERSE(A OVER R, C INTO R2, C2): the inverse of the square matrix A, row by row; #NUM! if singular"), Over::At(&[0])),
     over(f(1853, "MPSEUDOINVERSE", Ar, M, &[N, N], 1, false, NUM, "MPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2): the Moore–Penrose pseudo-inverse (C × R, row by row); singular values up to threshold (default 256 ε) times the largest count as zero"), Over::At(&[0])),
+    over(f(1854, "CHOLESKY", Ar, M, &[N], 1, false, NUM, "CHOLESKY(A OVER R, C INTO R2, C2): the lower-triangular L with L·Lᵀ = A for a symmetric positive-definite A (asymmetric pairs averaged), row by row; #NUM! where A is not positive definite"), Over::At(&[0])),
+    over(f(1855, "EIGEN", Ar, M, &[N], 1, false, NUM, "EIGEN(A OVER R, C INTO R2, C2): for a symmetric A (asymmetric pairs averaged), its eigenvalues largest magnitude first, then the matrix of their unit eigenvectors as columns: (n + 1) × n values, row by row"), Over::At(&[0])),
 ];

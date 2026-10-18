@@ -53,15 +53,15 @@ NA = {"error": "#N/A"}
 DATA = {
     # Two 3x3 matrices (group 0 symmetric positive definite, group 1
     # general), a singular one and one needing row swaps.
-    "M": {"cats": {"R": 3, "C": 3, "G": 2, "P": 3, "Q": 3, "K": 10}, "m": {
+    "M": {"cats": {"R": 3, "C": 3, "G": 2, "P": 3, "Q": 3, "E": 4, "K": 10}, "m": {
         "A": [["R", "C"], [[4, 2, -2, 2, 10, 4, -2, 4, 9], [1, 2, 3, 4, 5, 6, 7, 8, 10]]],
         "S": [["R", "C"], [[1, 2, 3, 2, 4, 6, 1, 0, 1], [0, 1, 2, 1, 0, 3, 4, -3, 8]]],
     }},
     # A 4x4 and a 1x1; a 2x3 (not square) and a rank-1 3x2.
-    "N": {"cats": {"R": 4, "C": 4, "P": 4, "Q": 4, "K": 17}, "m": {
+    "N": {"cats": {"R": 4, "C": 4, "P": 4, "Q": 4, "E": 5, "K": 17}, "m": {
         "A": [["R", "C"], [[2, -1, 0, 3, 1, 5, -2, 0, 0, 4, 7, 1, 6, 0, 1, -3]]],
     }},
-    "O": {"cats": {"R": 1, "C": 1, "P": 1, "Q": 1}, "m": {
+    "O": {"cats": {"R": 1, "C": 1, "P": 1, "Q": 1, "E": 2}, "m": {
         "A": [["R", "C"], [[-2.5]]],
     }},
     "W": {"cats": {"R": 2, "C": 3, "P": 3, "Q": 2, "K": 7}, "m": {
@@ -107,6 +107,17 @@ case("W", "MPSEUDOINVERSE(A OVER R, C INTO P, Q)", GN)
 case("W", "MPSEUDOINVERSE(A OVER R, C INTO K)", GN)
 case("W", "MPSEUDOINVERSE(Z OVER R, C INTO P, Q)", GN)
 case("V", "MPSEUDOINVERSE(A OVER R, C INTO P, Q)", GN)
+
+
+# --- group 2: decompositions (Gnumeric) ----------------------------------------
+for ds in ("M", "N", "O"):
+    case(ds, "CHOLESKY(A OVER R, C INTO P, Q)", GN)
+    case(ds, "EIGEN(A OVER R, C INTO E, Q)", GN)
+case("M", "CHOLESKY(S OVER R, C INTO P, Q)", GN)
+case("M", "EIGEN(S OVER R, C INTO E, Q)", GN)
+case("M", "EIGEN(A OVER R, C INTO K)", GN)
+case("W", "CHOLESKY(A OVER R, C INTO P, Q)", GN)
+case("W", "EIGEN(A OVER R, C INTO P, Q)", GN)
 
 
 # --- layout -------------------------------------------------------------------
