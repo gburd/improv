@@ -242,14 +242,19 @@ type Kernel = fn(f64, &[f64], Op) -> f64;
 fn r_family(family: u32) -> Option<(usize, Kernel)> {
     Some(match family {
         0 => (2, beta),
+        1 => (2, binom),
         2 => (2, cauchy),
         3 => (1, chisq),
         4 => (1, exp),
         5 => (2, f),
         6 => (2, gamma),
+        7 => (1, geom),
         8 => (2, gumbel),
+        9 => (3, hyper),
         10 => (2, lnorm),
+        11 => (2, nbinom),
         12 => (2, norm),
+        13 => (1, pois),
         14 => (1, rayleigh),
         17 => (1, t),
         18 => (2, weibull),
@@ -685,6 +690,214 @@ fn t(x: f64, a: &[f64], op: Op) -> f64 {
     }
 }
 
+// --- discrete families ------------------------------------------------------
+
+/// Not an integer, to R's tolerance (1e-7 relative).
+fn nonint(x: f64) -> bool {
+    (x - x.round()).abs() > 1e-7 * x.abs().max(1.0)
+}
+
+/// A mass function's value at x (`mass` of the rounded x), or 0 off the
+/// integers and below `lo`.
+// ponytail: give_log is the log of the mass, so it is −∞ where the mass
+// underflows (R keeps the log finite there); a log-space mass would fix it.
+fn mass(log: bool, x: f64, lo: f64, mass: impl Fn(f64) -> f64) -> f64 {
+    if x < lo || nonint(x) {
+        d0(log)
+    } else {
+        dens(log, mass(x.round()).ln())
+    }
+}
+
+/// The smallest integer k ∈ [lo, hi] with P(X ≤ k) ≥ p, where `cdf(k,
+/// lower)` gives P(X ≤ k) (or P(X > k)). An upper-tail p is matched on the
+/// upper tail, so it keeps its digits; a fuzz of 64 ε holds a p that rounds
+/// onto a step to that step (R's rule).
+fn disc_q(t: Tail, lo: f64, hi: f64, cdf: impl Fn(f64, bool) -> f64) -> f64 {
+    if let Some(v) = q_ends(t, lo, hi) {
+        return v;
+    }
+    let p = t.prob(t.lower);
+    let fuzz = 64.0 * f64::EPSILON;
+    let ok = |k: f64| {
+        if t.lower {
+            cdf(k, true) >= p * (1.0 - fuzz)
+        } else {
+            cdf(k, false) <= p * (1.0 + fuzz)
+        }
+    };
+    if ok(lo) {
+        return lo;
+    }
+    // Invariant: !ok(a) and ok(b) (or b = hi, the top of the support).
+    let (mut a, mut b) = (lo, hi);
+    if b.is_infinite() {
+        b = lo + 1.0;
+        while !ok(b) {
+            a = b;
+            b = lo + 2.0 * (b - lo);
+            if b > 1e15 {
+                return NAN;
+            }
+        }
+    }
+    while b - a > 1.0 {
+        let m = ((a + b) / 2.0).floor();
+        if ok(m) {
+            b = m;
+        } else {
+            a = m;
+        }
+    }
+    b
+}
+
+/// The binomial distribution of n trials of success probability p.
+fn binom(x: f64, a: &[f64], op: Op) -> f64 {
+    let (n, p) = (a[0], a[1]);
+    if !(0.0..=1.0).contains(&p) || n < 0.0 || nonint(n) {
+        return NAN;
+    }
+    let n = n.round();
+    let cdf = |k: f64, lower: bool| {
+        if lower {
+            st::binom_range(n, p, 0.0, k)
+        } else if k >= n {
+            0.0
+        } else {
+            st::binom_range(n, p, k + 1.0, n)
+        }
+    };
+    match op {
+        Op::D(log) if x > n => d0(log),
+        Op::D(log) => mass(log, x, 0.0, |k| st::binom_range(n, p, k, k)),
+        Op::P { lower, log } if x < 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } if x >= n => tails(lower, log, 1.0, 0.0),
+        Op::P { lower, log } => {
+            let k = fake_floor(x);
+            tails(lower, log, cdf(k, true), cdf(k, false))
+        }
+        Op::Q(t) => disc_q(t, 0.0, n, cdf),
+    }
+}
+
+/// The geometric distribution: failures before the first success, of
+/// success probability p ∈ (0, 1].
+fn geom(x: f64, a: &[f64], op: Op) -> f64 {
+    let p = a[0];
+    if !(p > 0.0 && p <= 1.0) {
+        return NAN;
+    }
+    match op {
+        Op::D(log) => mass(log, x, 0.0, |k| geom_pmf(k, p)),
+        Op::P { lower, log } if x < 0.0 => tails(lower, log, 0.0, 1.0),
+        // ln P(X > k) = (k + 1) ln(1 − p).
+        Op::P { lower, log } => from_ln((fake_floor(x) + 1.0) * (-p).ln_1p(), false, lower, log),
+        Op::Q(t) if !t.valid() => NAN,
+        Op::Q(_) if p == 1.0 => 0.0,
+        Op::Q(t) => q_ends(t, 0.0, INF).unwrap_or_else(|| {
+            // The fuzz keeps a quantile that lands on an integer there.
+            (t.ln(false) / (-p).ln_1p() - 1.0 - 1e-12).ceil().max(0.0)
+        }),
+    }
+}
+
+/// The negative binomial distribution: failures before the n-th success, of
+/// success probability p ∈ (0, 1] (n ≥ 0 need not be an integer).
+fn nbinom(x: f64, a: &[f64], op: Op) -> f64 {
+    let (n, p) = (a[0], a[1]);
+    if !(p > 0.0 && p <= 1.0) || n < 0.0 {
+        return NAN;
+    }
+    // n = 0 is a point mass at 0.
+    let cdf = |k: f64, lower: bool| match (n == 0.0, lower) {
+        (true, _) => f64::from(u8::from(lower)),
+        (false, true) => st::beta_reg(n, k + 1.0, p),
+        (false, false) => st::beta_reg(k + 1.0, n, 1.0 - p),
+    };
+    match op {
+        Op::D(log) => mass(log, x, 0.0, |k| {
+            if n == 0.0 {
+                f64::from(u8::from(k == 0.0))
+            } else {
+                st::negbinom_pmf(k, n, p)
+            }
+        }),
+        Op::P { lower, log } if x < 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } => {
+            let k = fake_floor(x);
+            tails(lower, log, cdf(k, true), cdf(k, false))
+        }
+        // Gnumeric returns 0 for a point mass before it checks p.
+        Op::Q(_) if p == 1.0 || n == 0.0 => 0.0,
+        Op::Q(t) => disc_q(t, 0.0, INF, cdf),
+    }
+}
+
+/// The Poisson distribution of mean λ ≥ 0.
+fn pois(x: f64, a: &[f64], op: Op) -> f64 {
+    let lambda = a[0];
+    if lambda.is_nan() || lambda < 0.0 {
+        return NAN;
+    }
+    let cdf = |k: f64, lower: bool| match (lambda == 0.0, lower) {
+        (true, _) => f64::from(u8::from(lower)),
+        (false, true) => st::gamma_q(k + 1.0, lambda),
+        (false, false) => st::gamma_p(k + 1.0, lambda),
+    };
+    match op {
+        Op::D(log) => mass(log, x, 0.0, |k| st::poisson(k, lambda, false)),
+        Op::P { lower, log } if x < 0.0 => tails(lower, log, 0.0, 1.0),
+        Op::P { lower, log } => {
+            let k = fake_floor(x);
+            tails(lower, log, cdf(k, true), cdf(k, false))
+        }
+        Op::Q(t) => disc_q(t, 0.0, INF, cdf),
+    }
+}
+
+/// The hypergeometric distribution: red balls among n drawn from r red and
+/// b black. The density wants whole parameters; the CDF and quantile round
+/// them (Gnumeric's rules).
+fn hyper(x: f64, a: &[f64], op: Op) -> f64 {
+    let (r, b, n) = (a[0], a[1], a[2]);
+    if matches!(op, Op::D(_)) && (nonint(r) || nonint(b) || nonint(n)) {
+        return NAN;
+    }
+    let (r, b, n) = (r.round(), b.round(), n.round());
+    if r < 0.0 || b < 0.0 || n < 0.0 || n > r + b || (r + b).is_infinite() {
+        return NAN;
+    }
+    let (lo, hi) = ((n - b).max(0.0), n.min(r));
+    // P(X ≤ k) for k red; P(X > k) is P(n − k − 1 or fewer black).
+    let le = |k: f64, red: f64, black: f64| {
+        let (lo, hi) = ((n - black).max(0.0), n.min(red));
+        if k < lo {
+            0.0
+        } else if k >= hi {
+            1.0
+        } else {
+            st::hypgeom_cdf(k, n, red, red + black)
+        }
+    };
+    let cdf = |k: f64, lower: bool| {
+        if lower {
+            le(k, r, b)
+        } else {
+            le(n - k - 1.0, b, r)
+        }
+    };
+    match op {
+        Op::D(log) if x > hi => d0(log),
+        Op::D(log) => mass(log, x, lo, |k| st::hypgeom_pmf(k, n, r, r + b)),
+        Op::P { lower, log } => {
+            let k = fake_floor(x);
+            tails(lower, log, cdf(k, true), cdf(k, false))
+        }
+        Op::Q(t) => disc_q(t, lo, hi, cdf),
+    }
+}
+
 /// cot(πp) for p ∈ [0, ½], exactly 0 at ½ (tan(π(½ − p)) where ½ − p is
 /// exact).
 fn cot_pi(p: f64) -> f64 {
@@ -923,6 +1136,42 @@ mod tests {
         assert!(t(1.0, &[0.0], Op::D(false)).is_nan());
         assert!(t(1.0, &[3.0], Op::Q(tail(-800.0, true, true))).is_nan());
         assert_eq!(t(0.0, &[3.0], q(0.5)).to_bits(), 0f64.to_bits());
+    }
+
+    #[test]
+    fn discrete_edges() {
+        let q = |p: f64, lower: bool| Op::Q(tail(p, lower, false));
+        let up = Op::P {
+            lower: false,
+            log: false,
+        };
+        assert!(nonint(2.5) && !nonint(3.0 + 1e-9));
+        // The bracket doubles out to a far quantile, and gives up past 1e15.
+        assert_eq!(pois(0.0, &[200.0], q(0.999, true)), 245.0);
+        assert!(disc_q(tail(0.5, true, false), 0.0, INF, |_, l| f64::from(
+            u8::from(!l)
+        ))
+        .is_nan());
+        assert_eq!(pois(0.0, &[0.0], q(0.5, false)), 0.0);
+        assert_eq!(pois(1.0, &[0.0], up), 0.0);
+        assert!(pois(1.0, &[f64::NAN], up).is_nan());
+        assert_eq!(nbinom(2.0, &[0.0, 0.5], up), 0.0);
+        assert_eq!(nbinom(0.0, &[0.0, 0.5], Op::D(false)), 1.0);
+        assert!(nbinom(1.0, &[3.0, 1.5], up).is_nan());
+        assert_eq!(
+            binom(2.0, &[10.0, 0.3], Op::D(true)).exp(),
+            binom(2.0, &[10.0, 0.3], Op::D(false))
+        );
+        assert_eq!(binom(10.0, &[10.0, 0.3], up), 0.0);
+        assert_eq!(binom(0.0, &[10.0, 0.3], q(0.0, false)), 10.0);
+        assert!(geom(1.0, &[0.3], Op::Q(tail(1.5, true, false))).is_nan());
+        assert_eq!(geom(1.0, &[0.3], q(0.0, true)), 0.0);
+        // The hypergeometric upper tail, on both sides of the support.
+        assert_eq!(hyper(-1.0, &[3.0, 2.0, 3.0], up), 1.0);
+        assert_eq!(hyper(3.0, &[3.0, 2.0, 3.0], up), 0.0);
+        assert!((hyper(1.0, &[3.0, 2.0, 3.0], up) - 0.7).abs() < 1e-15);
+        assert!(hyper(1.0, &[3.0, f64::INFINITY, 3.0], up).is_nan());
+        assert_eq!(hyper(0.0, &[3.0, 2.0, 3.0], Op::D(false)), 0.0);
     }
 
     #[test]
