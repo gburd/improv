@@ -99,6 +99,7 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
             ok_num(biv_norm(h, k, rho))
         }
         1600..=1656 => r_style(id, a),
+        1657 | 1658 => tukey(id, a),
         _ => Err(err::NAME),
     }
 }
@@ -263,6 +264,8 @@ fn r_family(family: u32) -> Option<(usize, Kernel)> {
         12 => (2, norm),
         13 => (1, pois),
         14 => (1, rayleigh),
+        15 => (3, snorm),
+        16 => (2, skew_t),
         17 => (1, t),
         18 => (2, weibull),
         _ => return None,
@@ -695,6 +698,288 @@ fn t(x: f64, a: &[f64], op: Op) -> f64 {
             })
         }),
     }
+}
+
+// --- skew distributions ----------------------------------------------------
+
+/// The z where an increasing g on the real line reaches `target`: grows a
+/// bracket from [−1, 1], then bisects to the last bit.
+fn root(g: impl Fn(f64) -> f64, target: f64) -> f64 {
+    let (mut lo, mut hi) = (-1.0, 1.0);
+    while g(lo) >= target {
+        (hi, lo) = (lo, 2.0 * lo);
+        if lo.is_infinite() {
+            return NAN;
+        }
+    }
+    while g(hi) < target {
+        (lo, hi) = (hi, 2.0 * hi);
+        if hi.is_infinite() {
+            return NAN;
+        }
+    }
+    st::solve(g, target, lo, hi)
+}
+
+/// The quantile of a continuous distribution on the real line from its
+/// lower-tail CDF: solves the smaller tail (the upper tail of shape s is the
+/// lower tail of −x under −s, so `cdf(−z, true)` is P(Z > z)).
+fn invert(t: Tail, cdf: impl Fn(f64, bool) -> f64) -> f64 {
+    q_ends(t, NEG_INF, INF).unwrap_or_else(|| {
+        split(t).map_or(NAN, |(below, above)| {
+            if below <= 0.5 {
+                root(|z| cdf(z, true), below)
+            } else {
+                root(|z| -cdf(z, false), -above)
+            }
+        })
+    })
+}
+
+/// The skew-normal distribution of shape α, location ξ and scale ω > 0:
+/// density 2/ω φ(z) Φ(αz), z = (x − ξ)/ω.
+fn snorm(x: f64, a: &[f64], op: Op) -> f64 {
+    let (shape, loc, scale) = (a[0], a[1], a[2]);
+    if scale.is_nan() || scale <= 0.0 || shape.is_nan() || loc.is_nan() {
+        return NAN;
+    }
+    let z = (x - loc) / scale;
+    // The lower tail, or (upper) the upper one: P(Z > z | α) = P(Z ≤ −z | −α).
+    let cdf = |z: f64, lower: bool| {
+        if lower {
+            sn_cdf(z, shape)
+        } else {
+            sn_cdf(-z, -shape)
+        }
+    };
+    match op {
+        Op::D(log) => dens(
+            log,
+            std::f64::consts::LN_2 - LN_SQRT_2PI - 0.5 * z * z - scale.ln()
+                + norm_p(shape * z, true),
+        ),
+        Op::P { lower, log } => tails(lower, log, cdf(z, true), cdf(z, false)),
+        Op::Q(t) => loc + scale * invert(t, cdf),
+    }
+}
+
+/// The standard skew-normal P(Z ≤ h) of shape α: Φ(h) − 2T(h, α), or, in the
+/// far left tail (α > 0, α|h| ≥ 1) where that difference cancels, the tail
+/// integral (1/π) ∫_α^∞ e^(−h²(1+x²)/2) / (1 + x²) dx.
+// ponytail: h ≈ 0 with α huge still cancels (about log10 α digits); the tail
+// integral with geometric pieces would cover it.
+fn sn_cdf(h: f64, alpha: f64) -> f64 {
+    if alpha == 0.0 {
+        return st::norm_cdf(h);
+    }
+    let g = -h;
+    if h < 0.0 && alpha > 0.0 && alpha * g >= 1.0 {
+        // With x = t/g, t = t0 + s: the integrand falls like e^(−t0 s), so
+        // pieces 1/t0 wide reach e^(−40) at s = √(t0² + 80) − t0.
+        let t0 = alpha * g;
+        let end = (t0 * t0 + 80.0).sqrt() - t0;
+        let pieces = (end * t0).ceil();
+        let w = end / pieces;
+        let f = |s: f64| (-t0 * s - 0.5 * s * s).exp() / (g * g + (t0 + s) * (t0 + s));
+        let mut sum = 0.0;
+        let mut i = 0.0;
+        while i < pieces {
+            sum += gauss_legendre(&f, i * w, (i + 1.0) * w);
+            i += 1.0;
+        }
+        return g * (-0.5 * g * g * (1.0 + alpha * alpha)).exp() / PI * sum;
+    }
+    (st::norm_cdf(h) - 2.0 * owen_t(h, alpha)).clamp(0.0, 1.0)
+}
+
+/// The skew-t distribution of n > 0 degrees of freedom and shape λ (Azzalini
+/// and Capitanio): density 2 t_n(x) T_{n+1}(λx √((n+1)/(x²+n))). Its CDF
+/// needs a whole n (the recurrence of Jamalizadeh, Khosravi and
+/// Balakrishnan, 2009, as Gnumeric uses it).
+fn skew_t(x: f64, a: &[f64], op: Op) -> f64 {
+    let (n, shape) = (a[0], a[1]);
+    if n.is_nan() || n <= 0.0 || shape.is_nan() {
+        return NAN;
+    }
+    if shape == 0.0 {
+        return t(x, &a[..1], op);
+    }
+    let cdf = |z: f64, lower: bool| {
+        if lower {
+            st_cdf(z, n, shape)
+        } else {
+            st_cdf(-z, n, -shape)
+        }
+    };
+    match op {
+        Op::D(log) => {
+            let lower_log = Op::P {
+                lower: true,
+                log: true,
+            };
+            let u = shape * x * ((n + 1.0) / (x * x + n)).sqrt();
+            dens(
+                log,
+                std::f64::consts::LN_2 + t(x, &[n], Op::D(true)) + t(u, &[n + 1.0], lower_log),
+            )
+        }
+        _ if nonint(n) => NAN,
+        Op::P { lower, log } => tails(lower, log, cdf(x, true), cdf(x, false)),
+        Op::Q(t) => invert(t, cdf),
+    }
+}
+
+/// The skew-t P(X ≤ x) for whole n: each step of the recurrence takes n down
+/// by 2, to the closed forms at n = 1 and 2.
+// ponytail: n/2 steps, so past n = 1e4 it falls back on the skew-normal
+// limit (error O(1/n)); Gnumeric does so past n = 100.
+fn st_cdf(x: f64, n: f64, shape: f64) -> f64 {
+    if n > 1e4 {
+        return sn_cdf(x, shape);
+    }
+    let (mut x, mut n, mut p) = (x, n.round(), 0.0);
+    while n > 2.0 {
+        let v = n - 1.0;
+        // ln[Γ(v/2) / (√π Γ((v+1)/2))] + ((v−1)/2) ln(v+1) − (v/2) ln(v+1+x²).
+        let lb = st::ln_beta(v / 2.0, 0.5)
+            - PI.ln()
+            - 0.5 * (v + 1.0).ln()
+            - v / 2.0 * (x * x / (v + 1.0)).ln_1p();
+        let a = v + 1.0 + x * x;
+        p += x * lb.exp() * st::t_sf(-(v.sqrt() * shape * x / a.sqrt()), v);
+        n -= 2.0;
+        x *= ((v - 1.0) / (v + 1.0)).sqrt();
+    }
+    p += if n == 1.0 {
+        (x.atan() + (shape / ((1.0 + shape * shape) * (1.0 + x * x)).sqrt()).acos()) / PI
+    } else {
+        let f = x / (2.0 + x * x).sqrt();
+        -(atan_less_half_pi(shape) + f * atan_less_half_pi(-shape * f)) / PI
+    };
+    p.clamp(0.0, 1.0)
+}
+
+/// atan(x) − π/2, without cancellation for large x.
+fn atan_less_half_pi(x: f64) -> f64 {
+    if x > 0.0 {
+        (-1.0 / x).atan()
+    } else {
+        x.atan() - std::f64::consts::FRAC_PI_2
+    }
+}
+
+// --- the studentized range ----------------------------------------------------
+
+/// `R.PTUKEY(x, nmeans, df, [nranges], …)` and `R.QTUKEY(p, …)`: the largest
+/// of `nranges` studentized ranges of `nmeans` means with `df` degrees of
+/// freedom (Copenhaver and Holland's double integral, as R computes it).
+fn tukey(id: u32, a: &[CellValue]) -> R {
+    let (v, k, df) = (n(a, 0)?, n(a, 1)?, n(a, 2)?);
+    let r = if a.len() > 3 { n(a, 3)? } else { 1.0 };
+    let flag = |i: usize, default: bool| if a.len() > i { b(a, i) } else { Ok(default) };
+    let (lower, log) = (flag(4, true)?, flag(5, false)?);
+    if id == 1657 && v <= 0.0 {
+        // Below the support, before the parameters are checked (R's order).
+        return ok_num(tails(lower, log, 0.0, 1.0));
+    }
+    domain(k >= 2.0 && df >= 2.0 && r >= 1.0)?;
+    let p = |q: f64| tukey_p(q, k, df, r);
+    ok_num(if id == 1657 {
+        let below = p(v);
+        tails(lower, log, below, 1.0 - below)
+    } else {
+        let t = Tail { p: v, lower, log };
+        q_ends(t, 0.0, INF)
+            .unwrap_or_else(|| split(t).map_or(NAN, |(below, _)| st::solve(p, below, 0.0, 1.0)))
+    })
+}
+
+/// P(Q ≤ q): ∫₀^∞ f(s) W(qs)^r ds, s the ratio of the sample standard
+/// deviation to σ (a scaled chi of df degrees of freedom, density f) and W
+/// the CDF of the range of k standard normals. Past 25000 degrees of
+/// freedom s is taken as 1 (R's rule).
+fn tukey_p(q: f64, k: f64, df: f64, r: f64) -> f64 {
+    if q <= 0.0 {
+        return 0.0;
+    }
+    if q.is_infinite() {
+        return 1.0;
+    }
+    if df > 25000.0 {
+        return range_cdf(q, k).powf(r);
+    }
+    // ln f(s) = ln c + (df − 1) ln s − (df/2) s², c = 2 (df/2)^(df/2) / Γ(df/2).
+    let h = df / 2.0;
+    let ln_c = std::f64::consts::LN_2 + h * h.ln() - st::ln_gamma(h);
+    let ln_f = |s: f64| ln_c + (df - 1.0) * s.ln() - h * s * s;
+    let f = |s: f64| {
+        if s <= 0.0 {
+            0.0
+        } else {
+            ln_f(s).exp() * range_cdf(q * s, k).powf(r)
+        }
+    };
+    // Outward from the density's mode in pieces no wider than its spread.
+    // To the right W(qs) rises and f falls, so the terms rise and then fall
+    // away; to the left both fall, and the pieces halve toward 0, where W
+    // makes its rise (on the scale 1/q). A piece adding nothing ends a side.
+    let mode = ((df - 1.0) / df).sqrt();
+    let w = 0.5f64.min(1.0 / (2.0 * df).sqrt());
+    let mut sum = 0.0;
+    let mut s = mode;
+    loop {
+        let piece = gauss_legendre(&f, s, s + w);
+        sum += piece;
+        s += w;
+        if (piece <= sum * f64::EPSILON / 2.0 && sum > 0.0) || ln_f(s) < -745.0 {
+            break;
+        }
+    }
+    let mut s = mode;
+    while s > f64::MIN_POSITIVE {
+        let lo = s - w.min(s / 2.0);
+        let piece = gauss_legendre(&f, lo, s);
+        sum += piece;
+        s = lo;
+        if piece <= sum * f64::EPSILON / 2.0 {
+            break;
+        }
+    }
+    sum.min(1.0)
+}
+
+/// P(range of k standard normals ≤ w), in Hartley's form:
+/// (2Φ(w/2) − 1)^k + 2k ∫_{w/2}^∞ φ(v) (Φ(v) − Φ(v − w))^(k−1) dv. The
+/// integrand falls monotonically, so a piece adding nothing ends it.
+fn range_cdf(w: f64, k: f64) -> f64 {
+    if w <= 0.0 {
+        return 0.0;
+    }
+    let half = w / 2.0;
+    let first = if half > 1.0 {
+        (k * (-2.0 * st::norm_cdf(-half)).ln_1p()).exp()
+    } else {
+        libm::erf(half * FRAC_1_SQRT_2).powf(k)
+    };
+    if first >= 1.0 {
+        return 1.0;
+    }
+    let f = |v: f64| st::norm_pdf(v) * norm_range(v - w, v).powf(k - 1.0);
+    let width = (3.0 / k.ln_1p()).min(1.0);
+    let mut total = first;
+    let mut v = half;
+    while v < half + 40.0 {
+        let piece = 2.0 * k * gauss_legendre(&f, v, v + width);
+        total += piece;
+        if total >= 1.0 {
+            return 1.0;
+        }
+        if piece <= total * f64::EPSILON / 2.0 {
+            break;
+        }
+        v += width;
+    }
+    total
 }
 
 // --- discrete families ------------------------------------------------------
@@ -1347,6 +1632,37 @@ mod tests {
         assert!(t(1.0, &[0.0], Op::D(false)).is_nan());
         assert!(t(1.0, &[3.0], Op::Q(tail(-800.0, true, true))).is_nan());
         assert_eq!(t(0.0, &[3.0], q(0.5)).to_bits(), 0f64.to_bits());
+    }
+
+    #[test]
+    fn skew_and_tukey_edges() {
+        let lower = Op::P {
+            lower: true,
+            log: false,
+        };
+        // A shape of 0 is the symmetric distribution.
+        assert_eq!(sn_cdf(0.7, 0.0), st::norm_cdf(0.7));
+        assert_eq!(skew_t(0.7, &[3.0, 0.0], lower), t(0.7, &[3.0], lower));
+        assert!(snorm(1.0, &[1.0, 0.0, 0.0], lower).is_nan());
+        assert!(skew_t(1.0, &[f64::NAN, 1.0], lower).is_nan());
+        // Large n falls back on the skew-normal limit.
+        assert_eq!(st_cdf(1.0, 2e4, 2.0), sn_cdf(1.0, 2.0));
+        assert!(atan_less_half_pi(-1.0) < -2.3);
+        // A bracket that runs off the reals.
+        assert!(root(|_| 0.0, 1.0).is_nan());
+        assert!(root(|_| 1.0, 0.0).is_nan());
+        assert!(snorm(0.0, &[1.0, 0.0, 1.0], Op::Q(tail(-800.0, true, true))).is_nan());
+        // The range of k normals: certain past the far tail.
+        assert_eq!(range_cdf(0.0, 3.0), 0.0);
+        assert_eq!(range_cdf(80.0, 3.0), 1.0);
+        assert_eq!(tukey_p(f64::INFINITY, 3.0, 10.0, 1.0), 1.0);
+        assert_eq!(tukey_p(0.0, 3.0, 10.0, 1.0), 0.0);
+        assert!((tukey_p(4.0, 4.0, 3e4, 1.0) - range_cdf(4.0, 4.0)).abs() < 1e-16);
+        let mut a = nums(&[0.5, 4.0, 10.0, 1.0]);
+        a.push(CellValue::Text("x".into()));
+        assert_eq!(call(1657, &a), Err(err::VALUE));
+        let deep = nums(&[-800.0, 4.0, 10.0, 1.0, 1.0, 1.0]);
+        assert_eq!(call(1658, &deep), Ok(CellValue::Err(err::NUM)));
     }
 
     #[test]

@@ -36,6 +36,27 @@ MPMATH_WINS = {
     "SNORM.DIST.RANGE(1,1.00000001)": 1e-8,
     # Its qnorm at log_p = −1000 is 6e-14 off, which exp() grows 44×.
     "R.QLNORM(-1000,0,1,TRUE,TRUE)": 1e-11,
+    # dsnorm's non-log branch passes location/shape where it means
+    # shape·location (2φ(z)Φ(αx; ξ/α, ω), not Φ(α(x − ξ)/ω)): wrong unless
+    # the location is 0. Its give_log branch is right.
+    "R.DSNORM(1,2,0.5,1)": None,
+    "R.DSNORM(-1,-3,0.5,2)": None,
+    # Its quadrature stops early at large df.
+    "R.PTUKEY(2,3,100)": 1e-9,
+    "R.PTUKEY(3,6,3000)": 1e-7,
+}
+# Rows where Gnumeric is wrong and the right answer needs no computing
+# (formula -> golden, source `R semantics`):
+OVERRIDES = {
+    # pst drops its log_p for n ≤ 100 (`gnm_log (pst (…))` is a statement
+    # whose value is discarded), so it returns the probability itself.
+    "R.PST(1,3,2,FALSE,TRUE)": "LN(R.PST(1,3,2,FALSE))",
+    # psnorm does not check the scale (R and dsnorm reject σ ≤ 0).
+    "R.PSNORM(1,2,0.5,-1)": {"error": "#NUM!"},
+    # Where the CDF is undefined (a fractional n; nmeans < 2) Gnumeric's
+    # inverter returns its first guess (−1 and 1); R gives NaN.
+    "R.QST(0.3,3.5,2)": {"error": "#NUM!"},
+    "R.QTUKEY(0.95,1,10)": {"error": "#NUM!"},
 }
 # CUM_BIV_NORM_DIST: Gnumeric uses Drezner's 5-point Gauss rule (1978),
 # good to ~3e-7 absolute; Improv's Owen's-T form is exact, so its goldens are
@@ -186,6 +207,36 @@ ROWS = [
     "OWENT(0.3,5)", "OWENT(2,5)", "OWENT(8,0.5)",
 ] + [f"CUM_BIV_NORM_DIST({h},{k},{r})" for h, k, r in BIVARIATE] + [
     "CUM_BIV_NORM_DIST(0.5,0.3,1)", "CUM_BIV_NORM_DIST(0.5,0.3,-1.2)",
+    # --- R-style kernels: skew-normal, skew-t (through Owen's T) ---
+    "R.DSNORM(1,2,0,1)", "R.DSNORM(1,2,0,1,TRUE)", "R.DSNORM(1,0,0.5,2)", "R.DSNORM(1,2,0.5,1)",
+    "R.DSNORM(-1,-3,0.5,2)", "R.DSNORM(1,2,0.5,-1)",
+    "R.PSNORM(1,2,0.5,2)", "R.PSNORM(1,2,0.5,2,FALSE,TRUE)", "R.PSNORM(1,2,0.5,2,TRUE,TRUE)",
+    "R.PSNORM(0.5,-5,0,1)", "R.PSNORM(0.5,20,0,1)", "R.PSNORM(-0.5,20,0,1)",
+    "R.PSNORM(-1,-3,0.5,2)", "R.PSNORM(-2,15,0,1)", "R.PSNORM(1,0,0.5,2)",
+    "R.PSNORM(1,2,0.5,-1)",
+    ("R.QSNORM(0.3,2,0.5,2)", 1e-12), ("R.QSNORM(0.95,2,0.5,2)", 1e-12),
+    ("R.QSNORM(0.3,2,0.5,2,FALSE)", 1e-12), ("R.QSNORM(-1,2,0.5,2,TRUE,TRUE)", 1e-12),
+    ("R.QSNORM(0.001,-2,0,1)", 1e-12), "R.QSNORM(0.3,0,0.5,2)", "R.QSNORM(1.5,2,0,1)",
+    "R.DST(1,3,2)", "R.DST(1,3,2,TRUE)", "R.DST(1,3.5,2)", "R.DST(-1,5,2)", "R.DST(1,3,0)",
+    "R.DST(1,0,2)",
+    "R.PST(1,3,2)", "R.PST(1,3,2,FALSE)", "R.PST(1,3,2,FALSE,TRUE)", "R.PST(0.5,1,-1)",
+    "R.PST(0.5,2,-1)", "R.PST(2,7,0.5)", "R.PST(-2,4,3)", "R.PST(1,30,2)", "R.PST(-3,9,-2)",
+    "R.PST(1,3,0)", "R.PST(1,3.5,2)",
+    ("R.QST(0.3,3,2)", 1e-12), ("R.QST(0.3,3,2,FALSE)", 1e-12), ("R.QST(0.95,7,-1)", 1e-12),
+    ("R.QST(0.999,3,2)", 1e-12), "R.QST(0.3,3,0)", "R.QST(0.3,3.5,2)",
+    # --- the studentized range: Gnumeric's quadrature stops at a looser
+    # point than Improv's (R.PTUKEY(3,6,3000) is 3e-8 off mpmath there), so
+    # these are compared to 1e-9 (1e-7 at df > 1000, against mpmath). ---
+    ("R.PTUKEY(3.5,4,10)", 1e-9), ("R.PTUKEY(3.5,4,10,2)", 1e-9),
+    ("R.PTUKEY(3.5,4,10,1,FALSE,TRUE)", 1e-9), ("R.PTUKEY(1,2,2)", 1e-9),
+    ("R.PTUKEY(6,10,5)", 1e-9), ("R.PTUKEY(10,4,3)", 1e-9), ("R.PTUKEY(0.1,4,10)", 1e-9),
+    ("R.PTUKEY(2,3,100)", 1e-9), ("R.PTUKEY(3,6,3000)", 1e-7),
+    ("R.PTUKEY(1000,4,2,1,FALSE)", 1e-9), "R.PTUKEY(0,4,10)", "R.PTUKEY(-1,4,1)",
+    "R.PTUKEY(3.5,1,10)", "R.PTUKEY(3.5,4,1.5)", "R.PTUKEY(3.5,4,10,0.5)",
+    ("R.QTUKEY(0.95,4,10)", 1e-9), ("R.QTUKEY(0.95,4,10,2)", 1e-9),
+    ("R.QTUKEY(0.95,4,10,1,FALSE)", 1e-9), ("R.QTUKEY(0.99,10,5)", 1e-9),
+    ("R.QTUKEY(-0.05,4,10,1,TRUE,TRUE)", 1e-9), "R.QTUKEY(0,4,10)", "R.QTUKEY(1.5,4,10)",
+    "R.QTUKEY(0.95,1,10)",
 ]
 
 
@@ -210,6 +261,36 @@ def checks():
 
     extra = {f"CUM_BIV_NORM_DIST({h},{k},{r})": bivariate(h, k, r) for h, k, r in BIVARIATE}
     extra.update({f"LANDAU({x})": landau(x) for x in (0.34, -3, -1, 2, 7, 20)})
+    def sn_pdf(x, a, loc, scale):
+        z = (x - loc) / scale
+        return 2 / scale * mp.npdf(z) * phi(a * z)
+
+    sn_tail = lambda x: mp.exp(-2 * (1 + x * x)) / (1 + x * x)
+
+    def ptukey(q, k, df):
+        def w(r):
+            first = mp.erf(r / 2 / mp.sqrt(2)) ** k
+            f = lambda v: mp.npdf(v) * (phi(v) - phi(v - r)) ** (k - 1)
+            return first + 2 * k * mp.quad(f, [r / 2, r / 2 + 3, r / 2 + 10, mp.inf])
+        h = mp.mpf(df) / 2
+        lc = mp.log(2) + h * mp.log(h) - mp.loggamma(h)
+        f = lambda s: mp.exp(lc + (df - 1) * mp.log(s) - h * s * s) * w(q * s)
+        sd = 1 / mp.sqrt(2 * df)
+        return mp.quad(f, [max(0, 1 - 14 * sd), 1 - 4 * sd, 1 - sd, 1, 1 + sd, 1 + 4 * sd, 1 + 14 * sd])
+
+    mp.mp.dps = 20
+    extra.update({
+        "R.DSNORM(1,2,0.5,1)": sn_pdf(1, 2, 0.5, 1),
+        "R.DSNORM(-1,-3,0.5,2)": sn_pdf(-1, -3, 0.5, 2),
+        # P(Z ≤ h) = (1/π) ∫_α^∞ e^(−h²(1+x²)/2)/(1+x²) dx for h < 0 < α; the
+        # integrand falls ~e^(−60 s) from x = 15, so the nodes crowd there.
+        "R.PSNORM(-2,15,0,1)": (mp.quad(sn_tail, mp.linspace(15, 15.5, 201))
+                                + mp.quad(sn_tail, mp.linspace(15.5, 17, 61))
+                                + mp.quad(sn_tail, [17, 20, mp.inf])) / mp.pi,
+        "R.PTUKEY(2,3,100)": ptukey(2, 3, 100),
+        "R.PTUKEY(3,6,3000)": ptukey(3, 6, 3000),
+    })
+    mp.mp.dps = 30
     extra.update({f"OWENT({h},{a})": owen(h, a) for h, a in
                   ((0.5, 0.7), (-0.5, 2), (3, 0.2), (5, 0.95), (2, 0.999999), (0.3, 5), (8, 0.5))})
     q1000 = mp.findroot(lambda z: mp.log(phi(z)) + 1000, mp.mpf(-44.6), tol=1e-40)
@@ -258,10 +339,11 @@ def gnumeric(formulas):
 
 def main():
     rows = [(r, None) if isinstance(r, str) else r for r in ROWS]
-    vals = gnumeric(["PI()"] + [f for f, _ in rows])
+    derived = [v for v in OVERRIDES.values() if isinstance(v, str)]
+    vals = gnumeric(["PI()"] + [f for f, _ in rows] + derived)
     if vals[0] != 3.141592653589793:
         raise SystemExit(f"precision check failed: PI() read back as {vals[0]!r}")
-    got = dict(zip((f for f, _ in rows), vals[1:]))
+    got = dict(zip([f for f, _ in rows] + derived, vals[1:]))
     source = {}
     for f, want in checks().items():
         g, want = got[f], float(want)
@@ -272,6 +354,10 @@ def main():
             raise SystemExit(f"Gnumeric and mpmath disagree: {f} = {g!r} vs {want!r}")
         if f in MPMATH_WINS:
             got[f], source[f] = want, "mpmath"
+    for f, v in OVERRIDES.items():
+        print(f"Gnumeric bug: {f} = {got[f]!r}", file=sys.stderr)
+        got[f], source[f] = (got[v], "Gnumeric 1.12.57 (LN of the probability)") \
+            if isinstance(v, str) else (v, "R semantics")
     print("formula\texpected\tsource")
     for f, tol in rows:
         assert "\t" not in f and "^" not in f, f
