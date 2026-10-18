@@ -851,15 +851,12 @@ fn sig15(x: f64) -> f64 {
     format!("{x:.14e}").parse().unwrap_or(x)
 }
 
-/// Snap a quotient to the nearest integer when it is one to 15 digits, so
-/// `FLOOR(0.3, 0.1)` is 0.3, not 0.2.
+/// A quotient to 15 significant digits (LibreOffice's `approxFloor` and
+/// `approxCeil` round it so before taking the floor or ceiling), so
+/// `FLOOR(0.3, 0.1)` is 0.3, not 0.2, but a quotient 1e-12 below an integer
+/// is not snapped up past x, and a tiny one is not snapped to 0.
 fn clean(q: f64) -> f64 {
-    let r = q.round();
-    if (q - r).abs() <= 1e-12 * r.abs().max(1.0) {
-        r
-    } else {
-        q
-    }
+    sig15(q)
 }
 
 fn proper(s: &str) -> String {
@@ -1420,5 +1417,32 @@ mod tests {
         assert_eq!(eval(FuncId(145), &[n(10.0), n(3.0)]), n(720.0));
         assert_eq!(eval(FuncId(149), &[n(2.0), n(3.0), n(4.0)]), n(1260.0));
         assert_eq!(eval(FuncId(149), &[n(0.0), n(0.0)]), n(1.0));
+    }
+
+    /// The rounding functions snap their quotient to 15 digits, not within
+    /// 1e-12 of an integer: `CEILING(1.17e-10, 117)` is 117 and
+    /// `FLOOR(-1e-13, 1)` is -1 (they were 0), `FLOOR(9618236.874990381,
+    /// 0.625)` is 9618236.25 (it was 9618236.875, above x), as in
+    /// LibreOffice and Gnumeric.
+    #[test]
+    fn floor_and_ceiling_snap_to_15_digits() {
+        let x = 9_618_236.874_990_381;
+        assert_eq!(num_of(12, &[x, 0.625]), CellValue::num(9_618_236.25));
+        assert_eq!(num_of(205, &[x, 0.625]), CellValue::num(9_618_236.875));
+        assert_eq!(num_of(208, &[x, 0.625]), CellValue::num(9_618_236.25));
+        assert_eq!(
+            num_of(205, &[1.168_724_262_385_476_7e-10, 117.0]),
+            CellValue::num(117.0)
+        );
+        assert_eq!(num_of(205, &[1e-13, 1.0]), CellValue::num(1.0));
+        assert_eq!(num_of(12, &[1e-13, 1.0]), CellValue::num(0.0));
+        assert_eq!(num_of(12, &[-1e-13, 1.0]), CellValue::num(-1.0));
+        assert_eq!(num_of(207, &[1e-13, 1.0]), CellValue::num(1.0));
+        assert_eq!(num_of(207, &[-1e-13, 1.0, 1.0]), CellValue::num(-1.0));
+        assert_eq!(num_of(206, &[1e-13, 1.0]), CellValue::num(0.0));
+        assert_eq!(num_of(205, &[0.0, 1.0]), CellValue::num(0.0));
+        // The snap near an integer stays.
+        assert_eq!(num_of(12, &[0.3, 0.1]), CellValue::num(0.3));
+        assert_eq!(num_of(205, &[0.3, 0.1]), CellValue::num(0.3));
     }
 }
