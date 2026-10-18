@@ -541,8 +541,8 @@ fn gamma_pdf(x: f64, a: f64, s: f64) -> Result<f64, u8> {
 }
 
 /// The x ≥ `lo` where the increasing `g` reaches `target`: grows the bracket
-/// by doubling, then bisects until it cannot shrink (about 1100 steps at
-/// worst, for a quantile among the subnormals).
+/// by doubling, then bisects in the floats' order until it cannot shrink
+/// (at most 65 steps, even for a quantile among the subnormals).
 pub(crate) fn solve(g: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f64) -> f64 {
     if g(lo) >= target {
         return lo;
@@ -554,8 +554,8 @@ pub(crate) fn solve(g: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f6
             return f64::NAN;
         }
     }
-    for _ in 0..2200 {
-        let mid = lo + (hi - lo) / 2.0;
+    loop {
+        let mid = float_mid(lo, hi);
         if mid <= lo || mid >= hi {
             break;
         }
@@ -566,6 +566,43 @@ pub(crate) fn solve(g: impl Fn(f64) -> f64, target: f64, mut lo: f64, mut hi: f6
         }
     }
     hi
+}
+
+/// The middle of [lo, hi] in the floats' order (0 first when they straddle
+/// it): bisecting with it reaches adjacent floats in at most 65 steps, where
+/// halving the width takes up to 2100 (1e300 down to the subnormals).
+pub(crate) fn float_mid(lo: f64, hi: f64) -> f64 {
+    if lo < 0.0 && hi > 0.0 {
+        return 0.0;
+    }
+    let m = f64::from_bits(((lo.abs().to_bits() as u128 + hi.abs().to_bits() as u128) / 2) as u64);
+    if hi <= 0.0 {
+        -m
+    } else {
+        m
+    }
+}
+
+/// The smallest integer k in (a, b] with `ok(k)`, given !ok(a) and ok(b)
+/// (or b the top of the support), for a monotone `ok`: bisects k + 1 in
+/// the floats' order, so at most about 130 steps for any a and b (halving
+/// [0, 1e300] took a thousand, and past 2⁵³ stepping to `mid + 1` never
+/// ended).
+pub(crate) fn int_search(mut a: f64, mut b: f64, ok: impl Fn(f64) -> bool) -> f64 {
+    loop {
+        let mut mid = (float_mid(a + 1.0, b + 1.0) - 1.0).floor();
+        if mid <= a || mid >= b {
+            mid = (a + (b - a) / 2.0).floor();
+        }
+        if mid <= a || mid >= b {
+            return b;
+        }
+        if ok(mid) {
+            b = mid;
+        } else {
+            a = mid;
+        }
+    }
 }
 
 /// The gamma(a, 1) quantile for left tail p (= 1 − q): solves the tail
@@ -582,6 +619,9 @@ pub(crate) fn gamma_inv(a: f64, p: f64, q: f64) -> f64 {
 
 /// The beta(a, b) quantile of p ∈ (0, 1].
 fn beta_inv(p: f64, a: f64, b: f64) -> f64 {
+    if p == 1.0 {
+        return 1.0;
+    }
     if p <= 0.5 {
         solve(|x| beta_reg(a, b, x), p, 0.0, 1.0)
     } else {
@@ -743,21 +783,7 @@ fn binom_inv(n: f64, p: f64, alpha: f64) -> f64 {
     if ok(0.0) {
         return 0.0;
     }
-    // Invariant: !ok(a), and ok(b) or b = n. Stops when no float lies
-    // strictly between them: past 2⁵³ `mid + 1` is `mid`, so stepping past
-    // the midpoint never ended.
-    let (mut a, mut b) = (0.0, n);
-    loop {
-        let mid = (a + (b - a) / 2.0).floor();
-        if mid <= a || mid >= b {
-            return b;
-        }
-        if ok(mid) {
-            b = mid;
-        } else {
-            a = mid;
-        }
-    }
+    int_search(0.0, n, ok)
 }
 
 /// C(n, k) as a product while it is small, else through ln Γ.
@@ -1379,5 +1405,45 @@ mod tests {
         assert_eq!(call(504, &[6.0, 0.5, 0.75]), CellValue::num(4.0));
         assert_eq!(call(504, &[6.0, 0.5, 0.0]), CellValue::num(0.0));
         assert_eq!(call(504, &[6.0, 0.5, 1.0]), CellValue::num(6.0));
+    }
+
+    /// The quantile bisections take a bounded number of steps whatever the
+    /// bracket: BETA.INV with shapes 1e15 and 1.8e293 took 16 s (1100
+    /// halvings, each a million-term continued fraction), BINOM.INV with
+    /// 1e300 trials 12 s.
+    #[test]
+    fn bisections_take_few_steps() {
+        let steps = std::cell::Cell::new(0);
+        let g = |x: f64| {
+            steps.set(steps.get() + 1);
+            x
+        };
+        assert_eq!(solve(g, 1e-300, 0.0, 1.0), 1e-300);
+        assert!(steps.get() < 70, "{} steps", steps.get());
+        steps.set(0);
+        assert_eq!(solve(g, 5e-324, 0.0, 1.0), 5e-324);
+        assert!(steps.get() < 70, "{} steps", steps.get());
+        steps.set(0);
+        let ok = |k: f64| {
+            steps.set(steps.get() + 1);
+            k >= 3e299
+        };
+        assert_eq!(int_search(0.0, 1e300, ok), 3e299);
+        assert!(steps.get() < 140, "{} steps", steps.get());
+        steps.set(0);
+        assert_eq!(int_search(-1.0, 1e300, |k| k >= 0.0), 0.0);
+        assert_eq!(int_search(5.0, 9.0, |k| k >= 7.0), 7.0);
+        assert_eq!(int_search(5.0, 6.0, |_| true), 6.0);
+        // Past 2⁵³ the floats are 2 apart: nothing lies between these.
+        let big = 9_007_199_254_740_994.0;
+        assert_eq!(int_search(big, big + 2.0, |_| true), big + 2.0);
+        assert_eq!(int_search(9e15, 9e15 + 2.0, |_| true), 9e15 + 1.0);
+        assert_eq!(float_mid(-1.0, 1.0), 0.0);
+        assert!(float_mid(-4.0, -1.0) < -1.0 && float_mid(-4.0, -1.0) > -4.0);
+        assert_eq!(
+            call(502, &[1.0, 1.797_693_134_862_314_3e293, 1e15]),
+            CellValue::num(1.0)
+        );
+        assert_eq!(call(502, &[0.5, 2.0, 2.0]), CellValue::num(0.5));
     }
 }

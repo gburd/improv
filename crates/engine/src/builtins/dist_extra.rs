@@ -1031,19 +1031,7 @@ fn disc_q(t: Tail, lo: f64, hi: f64, cdf: impl Fn(f64, bool) -> f64) -> f64 {
             }
         }
     }
-    while b - a > 1.0 {
-        let m = ((a + b) / 2.0).floor();
-        if m <= a || m >= b {
-            // a and b are adjacent floats (past 2⁵³): nothing between.
-            break;
-        }
-        if ok(m) {
-            b = m;
-        } else {
-            a = m;
-        }
-    }
-    b
+    st::int_search(a, b, ok)
 }
 
 /// The binomial distribution of n trials of success probability p.
