@@ -15,6 +15,9 @@ const MAX_N: f64 = 4_503_599_627_370_496.0;
 /// faster π (Meissel–Lehmer) if anyone needs it.
 const MAX_I: f64 = 1e7;
 const MAX_PI: f64 = 179_424_673.0;
+/// ponytail: p(n) is exact in 256 bits only to about n = 4400 (p(4000) ≈
+/// 1e66); a double holds p(n) to n ≈ 78 000, which needs a float
+/// recurrence (Gnumeric 1.12.60+ goes to 10⁵ that way, in O(n²)).
 const MAX_PARTITIONS: f64 = 4000.0;
 
 /// Evaluate number-theory function `id` on the truncated argument `x`.
