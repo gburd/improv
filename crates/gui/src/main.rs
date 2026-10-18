@@ -14,6 +14,7 @@ mod chart;
 mod csv_wizard;
 mod diagnostics;
 mod formula_highlight;
+mod function_help;
 mod menu;
 mod nxwin;
 mod theme;

@@ -13,6 +13,12 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **GUI function help.** Help ▸ Functions… (or F1, also while editing a
+  formula) opens a window searching the built-in functions by name,
+  alias and description, the matches grouped by category with their
+  signatures, and the selected one's category, aliases, description and
+  argument types. Insert (or a double-click, or Enter) puts `NAME(` into
+  the formula being edited, at the caret.
 - **GUI located formula errors.** Both formula editors (the selected
   row and the `Name = formula` line, which before reported only to the
   status bar) underline where a formula fails and show, under it, the

@@ -33,6 +33,8 @@ pub enum Command {
     OpenView(usize),
     ToggleChart,
     ToggleCsv,
+    /// Show or hide the function help browser (also F1).
+    FunctionHelp,
     Hide,
     Quit,
 }
@@ -102,6 +104,11 @@ const MENU: &[(&str, Option<char>, Top)] = &[
     ),
     ("Print…", Some('p'), Top::Leaf(None)),
     ("Services", None, Top::Sub(&[])),
+    (
+        "Help",
+        None,
+        Top::Sub(&[("Functions…", None, Some(C::FunctionHelp))]),
+    ),
     ("Hide", Some('h'), Top::Leaf(Some(C::Hide))),
     ("Quit", Some('q'), Top::Leaf(Some(C::Quit))),
 ];

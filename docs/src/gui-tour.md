@@ -38,7 +38,8 @@ The window has five regions:
   Matrix and Save View; **View** has **Model Browser**, which shows or hides the model browser,
   then lists the saved views, with a check on the
   current one, and picking one switches the workspace to it; **Graph ▸ Show
-  Chart** toggles the chart; **Hide** minimizes and **Quit** closes the
+  Chart** toggles the chart; **Help ▸ Functions…** (also F1) opens the
+  [function help](#function-help); **Hide** minimizes and **Quit** closes the
   window. Format, Print and Services, and New, Open, Save As and Close in the
   File menu, are not built yet and draw grayed out. Key equivalents, shown at
   the right of their item, take Ctrl (Cmd on macOS): `s` save, `z` undo,
@@ -96,6 +97,22 @@ The window has five regions:
 The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an
 in-memory model, or a model whose last autosave failed.
+
+## Function help
+
+**Help ▸ Functions…**, or F1 from anywhere (a formula edit included), opens
+the Functions window at the workspace's right: a search line, the matching
+functions grouped by category with their signatures, and the selected
+one's details. The search matches names, aliases and descriptions, best
+first (`pmt` finds PMT, then IPMT, PPMT, …; `payment` finds them by
+description). Up and Down move the selection. The details show the
+signature with the parameter names (`PMT(rate, nper, pv, [fv], [type])`,
+`[optional]`, `…` repeating), the category and aliases, the description,
+and the argument types. **Insert**, a double-click or Enter puts `NAME(`
+into the formula you were editing (the selected row's, else the
+`Name = formula` line), at the caret, and returns the keyboard to it.
+
+![The Functions window](./img/gui-function-help.png)
 
 ## Formula errors
 

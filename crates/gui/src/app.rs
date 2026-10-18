@@ -100,6 +100,47 @@ pub(crate) struct Matrix {
     rendered_axes: Option<(Vec<CategoryId>, Vec<CategoryId>)>,
 }
 
+/// One of the formula pane's two editors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FormulaEditor {
+    /// The selected row's (`formula_buf`, id `formula_edit`).
+    Row,
+    /// The `Name = formula` line (`new_formula_line`, id `formula_new`).
+    NewLine,
+}
+
+impl FormulaEditor {
+    fn id(self) -> egui::Id {
+        egui::Id::new(match self {
+            FormulaEditor::Row => "formula_edit",
+            FormulaEditor::NewLine => "formula_new",
+        })
+    }
+}
+
+/// Byte offset of the caret in text edit `id` over `text` (its end when
+/// the edit has none yet).
+fn caret_byte(ctx: &egui::Context, id: egui::Id, text: &str) -> usize {
+    egui::TextEdit::load_state(ctx, id)
+        .and_then(|s| s.cursor.char_range())
+        .map_or(text.len(), |r| {
+            text.char_indices()
+                .nth(r.primary.index)
+                .map_or(text.len(), |(b, _)| b)
+        })
+}
+
+/// Put the caret of text edit `id` over `text` at byte `at`.
+fn set_caret(ctx: &egui::Context, id: egui::Id, text: &str, at: usize) {
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    let ci = text[..at.min(text.len())].chars().count();
+    let c = egui::text::CCursor::new(ci);
+    state
+        .cursor
+        .set_char_range(Some(egui::text::CCursorRange::one(c)));
+    state.store(ctx, id);
+}
+
 /// The running GUI application.
 pub struct ImprovApp {
     /// The store path (empty = in-memory scratch); used for saving.
@@ -158,6 +199,10 @@ pub struct ImprovApp {
     import_form: ImportForm,
     /// Whether the Info panel window is shown (off until Info ▸ Info Panel…).
     show_inspector: bool,
+    /// The function help browser (Help ▸ Functions…, F1).
+    fn_help: crate::function_help::Browser,
+    /// The formula editor last focused: where the help browser inserts.
+    formula_target: FormulaEditor,
     /// Whether the model browser window is shown (View ▸ Model Browser).
     show_browser: bool,
     /// Quit was picked once on an unsaved in-memory model; the next Quit
@@ -914,6 +959,8 @@ impl ImprovApp {
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             show_inspector: false,
+            fn_help: Default::default(),
+            formula_target: FormulaEditor::NewLine,
             show_browser: true,
             quit_armed: false,
             dirty: false,
@@ -2801,6 +2848,7 @@ impl eframe::App for ImprovApp {
         // After the worksheets, so they start on top of them.
         self.model_browser(ctx, ws);
         self.info_panel(ctx, ws);
+        self.function_help(ctx, ws);
         // Last, so it floats over every panel.
         self.menu_bar(ctx, ws);
     }
@@ -2924,6 +2972,7 @@ impl ImprovApp {
             }
             Command::ToggleChart => self.show_chart = !self.show_chart,
             Command::ToggleCsv => self.toggle_csv_wizard(),
+            Command::FunctionHelp => self.fn_help.toggle(),
             Command::Hide => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
             Command::Quit => {
                 if self.quit_allowed() {
@@ -3213,6 +3262,206 @@ impl ImprovApp {
         self.show_inspector = open;
     }
 
+    /// Help ▸ Functions… (F1): a NeXT window at the workspace's right
+    /// with a search line over the built-in functions, the matches grouped
+    /// by category (each with its signature), and the selected one's
+    /// details. Insert (or a double-click, or Enter in the search line)
+    /// puts `NAME(` into the formula last edited, at its caret.
+    fn function_help(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        use crate::function_help::{aliases, category_title};
+        use crate::theme::{BLACK, BOLD, DARK_GRAY, LIGHT_GRAY, WHITE};
+        // F1 toggles it from anywhere, a formula edit included.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F1)) {
+            self.run_command(ctx, Command::FunctionHelp);
+        }
+        let mut open = self.fn_help.open;
+        if !open {
+            return;
+        }
+        let size = egui::vec2(420.0, 440.0);
+        let home =
+            egui::Rect::from_min_size(egui::pos2(ws.right() - size.x - 8.0, ws.top() + 32.0), size);
+        let win = crate::nxwin::NxWindow::new("fnhelp", "Functions");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let search_id = egui::Id::new("fnhelp_search");
+        let mut insert = None;
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .min_size(egui::vec2(300.0, 300.0))
+            .show(ctx, |ui| {
+                egui::Frame::none().inner_margin(4.0).show(ui, |ui| {
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    let bold = egui::FontId::new(font.size, egui::FontFamily::Name(BOLD.into()));
+                    let row_h = ui.text_style_height(&egui::TextStyle::Body) + 4.0;
+                    let width = ui.available_width();
+                    let search = ui
+                        .horizontal(|ui| {
+                            ui.label("Search:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.fn_help.query)
+                                    .id(search_id)
+                                    .hint_text("name or description")
+                                    .desired_width(f32::INFINITY),
+                            )
+                        })
+                        .inner;
+                    if std::mem::take(&mut self.fn_help.focus_search) {
+                        search.request_focus();
+                    }
+                    let (up, down, enter) = ui.input(|i| {
+                        (
+                            i.key_pressed(egui::Key::ArrowUp),
+                            i.key_pressed(egui::Key::ArrowDown),
+                            i.key_pressed(egui::Key::Enter),
+                        )
+                    });
+                    let mut moved = false;
+                    if search.has_focus() && (up || down) {
+                        self.fn_help.step(if up { -1 } else { 1 });
+                        moved = true;
+                    }
+                    if search.lost_focus() && enter {
+                        consume_enter(ui);
+                        insert = self.fn_help.selected;
+                    }
+                    let groups = self.fn_help.groups().to_vec();
+                    let selected = self.fn_help.selected.map(|d| d.id);
+                    let n: usize = groups.iter().map(|(_, fs)| fs.len()).sum();
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{n} function{}",
+                            if n == 1 { "" } else { "s" }
+                        ))
+                        .color(DARK_GRAY),
+                    );
+                    let detail_h = 5.0 * row_h + 36.0;
+                    let list_h = (ui.available_height() - detail_h - 8.0).max(3.0 * row_h);
+                    let boxed = || {
+                        egui::Frame::none()
+                            .fill(WHITE)
+                            .stroke(egui::Stroke::new(1.0_f32, BLACK))
+                            .inner_margin(2.0)
+                    };
+                    boxed().show(ui, |ui| {
+                        ui.set_width(width - 4.0);
+                        crate::theme::next_scroll(
+                            ui,
+                            egui::ScrollArea::vertical()
+                                .id_salt("fnhelp_list")
+                                .max_height(list_h)
+                                .min_scrolled_height(list_h)
+                                .auto_shrink(false),
+                            |ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                for (cat, fs) in &groups {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(ui.available_width(), row_h),
+                                        egui::Sense::hover(),
+                                    );
+                                    ui.painter().text(
+                                        rect.left_center() + egui::vec2(4.0, 0.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        category_title(*cat),
+                                        bold.clone(),
+                                        BLACK,
+                                    );
+                                    for &d in fs {
+                                        let (rect, resp) = ui.allocate_exact_size(
+                                            egui::vec2(ui.available_width(), row_h),
+                                            egui::Sense::click(),
+                                        );
+                                        let p = ui.painter();
+                                        if selected == Some(d.id) {
+                                            p.rect_filled(rect, 0.0, LIGHT_GRAY);
+                                            if moved {
+                                                resp.scroll_to_me(None);
+                                            }
+                                        }
+                                        p.text(
+                                            rect.left_center() + egui::vec2(16.0, 0.0),
+                                            egui::Align2::LEFT_CENTER,
+                                            d.hint(),
+                                            font.clone(),
+                                            BLACK,
+                                        );
+                                        if resp.clicked() {
+                                            self.fn_help.selected = Some(d);
+                                        }
+                                        if resp.double_clicked() {
+                                            insert = Some(d);
+                                        }
+                                    }
+                                }
+                            },
+                        );
+                    });
+                    ui.add_space(4.0);
+                    boxed().inner_margin(4.0).show(ui, |ui| {
+                        ui.set_width(width - 8.0);
+                        ui.set_min_height(detail_h - 36.0);
+                        match self.fn_help.selected {
+                            None => {
+                                ui.label("No function matches.");
+                            }
+                            Some(d) => {
+                                ui.label(egui::RichText::new(d.hint()).font(bold.clone()));
+                                let mut facts = category_title(d.category).to_string();
+                                if let Some(a) = aliases(d) {
+                                    facts.push_str(" · ");
+                                    facts.push_str(&a);
+                                }
+                                ui.label(egui::RichText::new(facts).color(DARK_GRAY));
+                                ui.label(d.doc);
+                                ui.label(
+                                    egui::RichText::new(format!("Arguments: {}", d.signature()))
+                                        .color(DARK_GRAY),
+                                );
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let can = self.fn_help.selected.is_some();
+                        if ui.add_enabled(can, egui::Button::new("Insert")).clicked() {
+                            insert = self.fn_help.selected;
+                        }
+                    });
+                });
+            });
+        self.fn_help.open = open;
+        if let Some(d) = insert {
+            self.insert_function(ctx, d.name);
+        }
+    }
+
+    /// Insert `NAME(` into the formula editor last focused (the selected
+    /// row's while it is shown, else the `Name = formula` line), at its
+    /// caret, and give that editor the keyboard.
+    fn insert_function(&mut self, ctx: &egui::Context, name: &str) {
+        let target = match self.formula_target {
+            FormulaEditor::Row if self.formula_for.is_some() => FormulaEditor::Row,
+            _ => FormulaEditor::NewLine,
+        };
+        let id = target.id();
+        let buf = match target {
+            FormulaEditor::Row => {
+                self.formula_error = None;
+                &mut self.formula_buf
+            }
+            FormulaEditor::NewLine => {
+                self.new_formula_error = None;
+                &mut self.new_formula_line
+            }
+        };
+        let caret = caret_byte(ctx, id, buf);
+        let (text, at) = crate::function_help::insert_call(buf, caret, name);
+        *buf = text;
+        set_caret(ctx, id, buf, at);
+        ctx.memory_mut(|m| m.request_focus(id));
+        self.status = format!("inserted {name}(");
+    }
+
     /// **The Step 2 formula pane** (plan
     /// `docs/reviews/2026-09-22-gui-reconstruction-plan.md`): the whole model's
     /// logic as one persistent, numbered, individually-checkable list — the
@@ -3386,6 +3635,9 @@ impl ImprovApp {
             span,
         )
         .response;
+        if resp.has_focus() {
+            self.formula_target = FormulaEditor::Row;
+        }
         if resp.changed() {
             // The previous error no longer describes what's on screen.
             self.formula_error = None;
@@ -3434,6 +3686,9 @@ impl ImprovApp {
                     .response
             })
             .inner;
+        if resp.has_focus() && editing {
+            self.formula_target = FormulaEditor::NewLine;
+        }
         if resp.changed() {
             self.new_formula_error = None;
         }
@@ -5398,6 +5653,8 @@ mod tests {
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             show_inspector: false,
+            fn_help: Default::default(),
+            formula_target: FormulaEditor::NewLine,
             show_browser: true,
             quit_armed: false,
             dirty: false,
@@ -7759,6 +8016,7 @@ mod tests {
             let ws = app.canvas_panel(ctx);
             app.model_browser(ctx, ws);
             app.info_panel(ctx, ws);
+            app.function_help(ctx, ws);
             app.menu_bar(ctx, ws);
             inspect(ctx);
         })
@@ -11206,6 +11464,76 @@ mod tests {
         assert_eq!(app.selected(), Some(id));
         assert!(app.new_formula_line.is_empty());
         assert_eq!(app.values_for(id).get(&vec![(1, 10), (2, 20)]), Some(&69.0));
+    }
+
+    fn key_event(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// F1 opens the function help, even from a formula edit; a search
+    /// filters it, and Insert puts `NAME(` into that edit at its caret and
+    /// gives it the keyboard back.
+    #[test]
+    fn the_function_help_inserts_at_the_caret() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(102));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        app.formula_buf = "Price * ".into();
+        set_caret(&ctx, egui::Id::new("formula_edit"), &app.formula_buf, 8);
+        focused_frame(
+            &ctx,
+            &mut app,
+            "formula_edit",
+            vec![key_event(egui::Key::F1)],
+        );
+        assert!(app.fn_help.open, "F1 opened it");
+        assert_eq!(app.formula_target, FormulaEditor::Row);
+        // The search line has focus: type into it.
+        let size = egui::vec2(1200.0, 800.0);
+        let _ = full_frame(&ctx, &mut app, size, 0.1);
+        let out = full_frame_with(
+            &ctx,
+            &mut app,
+            size,
+            0.2,
+            vec![egui::Event::Text("pmt".into())],
+            |_| (),
+        );
+        assert_eq!(app.fn_help.query, "pmt");
+        assert_eq!(app.fn_help.selected.map(|d| d.name), Some("PMT"));
+        let texts = texts_of(&out);
+        assert!(texts.iter().any(|t| t == "Financial"), "{texts:?}");
+        assert!(texts
+            .iter()
+            .any(|t| t == "PMT(rate, nper, pv, [fv], [type])"));
+        let insert = painted(&out.shapes, "Insert")
+            .expect("Insert shown")
+            .center();
+        let mut t = 0.3;
+        for e in [
+            vec![egui::Event::PointerMoved(insert)],
+            vec![press(insert, true)],
+            vec![press(insert, false)],
+        ] {
+            let _ = full_frame_with(&ctx, &mut app, size, t, e, |_| ());
+            t += 0.1;
+        }
+        assert_eq!(app.formula_buf, "Price * PMT(");
+        let id = egui::Id::new("formula_edit");
+        assert_eq!(caret_byte(&ctx, id, &app.formula_buf), 12);
+        let _ = full_frame(&ctx, &mut app, size, t);
+        assert!(ctx.memory(|m| m.has_focus(id)), "the edit has the keyboard");
+        // Help ▸ Functions… closes it again.
+        app.run_command(&ctx, Command::FunctionHelp);
+        assert!(!app.fn_help.open);
     }
 
     /// A bad `Name = formula` line keeps its text, and its error is located
