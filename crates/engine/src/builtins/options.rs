@@ -453,7 +453,11 @@ fn rgw(s: f64, x: f64, t1: f64, t2: f64, r: f64, d: f64, v: f64) -> f64 {
         - (x - d) * (-r * t1).exp() * nc(b2)
 }
 
-/// Cox–Ross–Rubinstein binomial tree with `steps` steps (0–100000, as Gnumeric).
+/// Cox–Ross–Rubinstein binomial tree with `steps` steps, 0–10000. The tree
+/// is O(steps²): Gnumeric's cap of 100000 took 11 s, 10000 takes 0.1 s.
+// ponytail: past 1e4 steps a European price could use the closed-form
+// binomial sum (O(n)); the tree's discretization error is already below
+// 1e-4 there.
 #[allow(clippy::too_many_arguments)]
 fn binomial(
     amer: bool,
@@ -467,7 +471,7 @@ fn binomial(
     b: f64,
 ) -> Result<f64, u8> {
     let steps = steps.floor();
-    if !(0.0..=100_000.0).contains(&steps) {
+    if !(0.0..=10_000.0).contains(&steps) {
         return Err(err::NUM);
     }
     let (z, n) = (side.z(), steps as usize);
@@ -713,6 +717,23 @@ mod tests {
         let mut a = vec![CellValue::Text(flag.into())];
         a.extend(args.iter().map(|x| CellValue::num(*x)));
         call(FuncId(id), &a)
+    }
+
+    /// OPT_BINOMIAL takes at most 1e4 steps: the tree is O(steps²), and
+    /// Gnumeric's 1e5 took 11 s.
+    #[test]
+    fn binomial_steps_are_capped() {
+        let tree = |steps: f64| {
+            let mut a = vec![CellValue::Text("a".into()), CellValue::Text("c".into())];
+            a.extend([steps, 100.0, 100.0, 1.0, 0.05, 0.2].map(CellValue::num));
+            call(FuncId(1773), &a)
+        };
+        let t0 = std::time::Instant::now();
+        assert_eq!(tree(1e5), CellValue::Err(err::NUM));
+        assert_eq!(tree(10_001.0), CellValue::Err(err::NUM));
+        let v = tree(1e4).as_num().unwrap();
+        assert!((v - 7.662_447_890_838_34).abs() < 1e-9, "{v}");
+        assert!(t0.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]
