@@ -116,3 +116,21 @@ OPT_BINOMIAL("a","c",0,100,95,0.5,0.08,0.3,0.08)	5.0	Gnumeric 1.12.57
 OPT_BINOMIAL("a","c",-1,100,95,0.5,0.08,0.3,0.08)	{"error": "#NUM!"}	Gnumeric 1.12.57
 OPT_BINOMIAL("x","c",10,100,95,0.5,0.08,0.3,0.08)	{"error": "#NUM!"}	Gnumeric 1.12.57
 OPT_BINOMIAL("a","x",10,100,95,0.5,0.08,0.3,0.08)	{"error": "#NUM!"}	Gnumeric 1.12.57
+OPT_COMPLEX_CHOOSER(50,55,48,0.25,0.5,0.5833,0.1,0.05,0.35)	{"approx": 6.050733668492748, "tol": 1e-05}	Gnumeric 1.12.57
+OPT_COMPLEX_CHOOSER(100,100,100,0.25,1,1,0.05,0.02,0.3)	{"approx": 17.277123620016216, "tol": 1e-05}	Gnumeric 1.12.57
+OPT_COMPLEX_CHOOSER(50,55,48,0.25,0.5,0.5833,0.1,0.05,0)	{"error": "#NUM!"}	Gnumeric 1.12.57
+OPT_ON_OPTIONS("pc",500,520,50,0.25,0.5,0.08,0.03,0.35)	{"approx": 22.182357748514008, "tol": 1e-09}	mpmath (Gnumeric 1.12.57 bivariate normal bug)
+OPT_ON_OPTIONS("pp",500,520,50,0.25,0.5,0.08,0.03,0.35)	{"approx": 14.390729695966797, "tol": 1e-09}	mpmath (Gnumeric 1.12.57 bivariate normal bug)
+OPT_ON_OPTIONS("cc",500,520,50,0.5,0.75,0.08,0.03,0.35)	{"approx": 29.240786463635366, "tol": 1e-05}	Gnumeric 1.12.57
+OPT_ON_OPTIONS("cp",500,520,50,0.5,0.75,0.08,0.03,0.35)	{"approx": 30.410516981065463, "tol": 1e-05}	Gnumeric 1.12.57
+OPT_ON_OPTIONS("xx",500,520,50,0.5,0.75,0.08,0.03,0.35)	{"error": "#VALUE!"}	Gnumeric 1.12.57
+OPT_EXTENDIBLE_WRITER("c",80,90,82,0.5,0.75,0.1,0.1,0.3)	{"approx": 6.823765801176901, "tol": 1e-06}	Gnumeric 1.12.57
+OPT_EXTENDIBLE_WRITER("p",80,90,82,0.5,0.75,0.1,0.1,0.3)	{"approx": 10.310462628934456, "tol": 1e-06}	Gnumeric 1.12.57
+OPT_EXTENDIBLE_WRITER("c",80,90,82,0.5,0.75,0.1,0.1,0)	{"approx": 3.9250341210586726, "tol": 1e-06}	Gnumeric 1.12.57
+OPT_EXTENDIBLE_WRITER("v",80,90,82,0.5,0.75,0.1,0.1,0.3)	{"error": "#NUM!"}	Gnumeric 1.12.57
+OPT_EXTENDIBLE_WRITER("c",100,95,100,0.25,0.5,0.05,0.02,0.25)	{"approx": 8.431173659365921, "tol": 1e-09}	mpmath (Gnumeric 1.12.57 bivariate normal bug)
+OPT_2_ASSET_CORRELATION("c",100,100,95,105,1,0.05,0.03,0.05,0.25,0.2,-0.4)	{"approx": 2.680051587717415, "tol": 1e-09}	mpmath (Gnumeric 1.12.57 bivariate normal bug)
+OPT_2_ASSET_CORRELATION("c",52,65,50,70,0.5,0.1,0.1,0.1,0.2,0.3,0.75)	{"approx": 4.707330261529005, "tol": 1e-06}	Gnumeric 1.12.57
+OPT_2_ASSET_CORRELATION("p",52,65,50,70,0.5,0.1,0.1,0.1,0.2,0.3,0.75)	{"approx": 3.909279898501918, "tol": 1e-06}	Gnumeric 1.12.57
+OPT_2_ASSET_CORRELATION("c",52,65,50,70,0,0.1,0.1,0.1,0.2,0.3,0.75)	{"approx": 0.0, "tol": 1e-06}	Gnumeric 1.12.57
+OPT_2_ASSET_CORRELATION("x",52,65,50,70,0.5,0.1,0.1,0.1,0.2,0.3,0.75)	{"error": "#NUM!"}	Gnumeric 1.12.57

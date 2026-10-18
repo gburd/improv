@@ -41,7 +41,7 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
     // The flags lead; every later argument is a number (converted first, so
     // a non-number is #VALUE! before a bad flag is #NUM!, as in Gnumeric).
     let lead = match id {
-        1752 | 1755 | 1783 | 1772 => 0,
+        1752 | 1755 | 1783 | 1772 | 1784 => 0,
         1773 => 2,
         _ => 1,
     };
@@ -79,6 +79,10 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
             };
             binomial(amer, side(a, 1)?, x(0), x(1), x(2), x(3), x(4), x(5), x(6))?
         }
+        1784 => complex_chooser(&xs),
+        1785 => on_options(&t(a, 0)?, &xs)?,
+        1786 => extendible_writer(p()?, &xs),
+        1790 => two_asset(p()?, &xs),
         _ => return Err(err::NAME),
     };
     ok_num(v)
@@ -537,6 +541,86 @@ fn bvn(a: f64, b: f64, rho: f64) -> f64 {
         }
         p
     }
+}
+
+/// A complex chooser: at `t` pick a call (strike `xc`, expiry `tc`) or a put
+/// (`xp`, `tp`).
+fn complex_chooser(x: &[f64]) -> f64 {
+    let [s, xc, xp, t, tc, tp, r, b, v] = take(x);
+    // The spot at which the call and the put are worth the same at t.
+    let i = newton(s, |si| {
+        let gap = bs(Call, si, xc, tc - t, r, v, b) - bs(Put, si, xp, tp - t, r, v, b);
+        let slope =
+            bs_delta(Call, si, xc, tc - t, r, v, b) - bs_delta(Put, si, xp, tp - t, r, v, b);
+        (gap, slope)
+    });
+    let d1 = d1(s, i, t, v, b);
+    let d2 = d1 - v * t.sqrt();
+    let y1 = self::d1(s, xc, tc, v, b);
+    let y2 = self::d1(s, xp, tp, v, b);
+    let (rho1, rho2) = ((t / tc).sqrt(), (t / tp).sqrt());
+    s * ((b - r) * tc).exp() * bvn(d1, y1, rho1)
+        - xc * (-r * tc).exp() * bvn(d2, y1 - v * tc.sqrt(), rho1)
+        - s * ((b - r) * tp).exp() * bvn(-d1, -y2, rho2)
+        + xp * (-r * tp).exp() * bvn(-d2, -y2 + v * tp.sqrt(), rho2)
+}
+
+/// An option (expiring `t1`, strike `x1`) on an option (expiring `t2`,
+/// strike `x2`); `kind` is `cc`, `cp`, `pc` or `pp` (outer, inner).
+fn on_options(kind: &str, x: &[f64]) -> Result<f64, u8> {
+    let [s, x1, x2, t1, t2, r, b, v] = take(x);
+    let inner = match kind {
+        "cc" | "pc" => Call,
+        "cp" | "pp" => Put,
+        _ => return Err(err::VALUE),
+    };
+    // The spot at t1 where the inner option is worth x2.
+    let i = newton(x1, |si| {
+        (
+            bs(inner, si, x1, t2 - t1, r, v, b) - x2,
+            bs_delta(inner, si, x1, t2 - t1, r, v, b),
+        )
+    });
+    let rho = (t1 / t2).sqrt();
+    let y1 = d1(s, i, t1, v, b);
+    let y2 = y1 - v * t1.sqrt();
+    let z1 = d1(s, x1, t2, v, b);
+    let z2 = z1 - v * t2.sqrt();
+    let carry = s * ((b - r) * t2).exp();
+    let disc1 = x1 * (-r * t2).exp();
+    let disc2 = x2 * (-r * t1).exp();
+    Ok(match kind {
+        "cc" => carry * bvn(z1, y1, rho) - disc1 * bvn(z2, y2, rho) - disc2 * nc(y2),
+        "pc" => disc1 * bvn(z2, -y2, -rho) - carry * bvn(z1, -y1, -rho) + disc2 * nc(-y2),
+        "cp" => disc1 * bvn(-z2, -y2, rho) - carry * bvn(-z1, -y1, rho) - disc2 * nc(-y2),
+        _ => carry * bvn(-z1, y1, -rho) - disc1 * bvn(-z2, y2, -rho) + disc2 * nc(y2),
+    })
+}
+
+/// A writer-extendible option: struck `x1` at `t1`, extended to `t2` with
+/// strike `x2` if out of the money.
+fn extendible_writer(side: Side, x: &[f64]) -> f64 {
+    let [s, x1, x2, t1, t2, r, b, v] = take(x);
+    let z = side.z();
+    let rho = (t1 / t2).sqrt();
+    let z1 = d1(s, x2, t2, v, b);
+    let z2 = d1(s, x1, t1, v, b);
+    let (w1, w2) = ((v * v * t1).sqrt(), (v * v * t2).sqrt());
+    bs(side, s, x1, t1, r, v, b)
+        + z * (s * ((b - r) * t2).exp() * bvn(z * z1, -z * z2, -rho)
+            - x2 * (-r * t2).exp() * bvn(z * (z1 - w2), z * (w1 - z2), -rho))
+}
+
+/// A two-asset correlation option: pays on asset 2 if asset 1 also ends in
+/// the money.
+fn two_asset(side: Side, x: &[f64]) -> f64 {
+    let [s1, s2, x1, x2, t, b1, b2, r, v1, v2, rho] = take(x);
+    let z = side.z();
+    let st = t.sqrt();
+    let y1 = ((s1 / x1).ln() + (b1 - v1 * v1 / 2.0) * t) / (v1 * st);
+    let y2 = ((s2 / x2).ln() + (b2 - v2 * v2 / 2.0) * t) / (v2 * st);
+    z * (s2 * ((b2 - r) * t).exp() * bvn(z * (y2 + v2 * st), z * (y1 + rho * v2 * st), rho)
+        - x2 * (-r * t).exp() * bvn(z * y2, z * y1, rho))
 }
 
 #[cfg(test)]

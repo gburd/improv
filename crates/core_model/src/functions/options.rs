@@ -33,4 +33,8 @@ pub(super) static OPTIONS: &[FnDef] = &[
     s(1771, "OPT_BJER_STENS", C, &[T, N, N, N, N, N, N], V::Number, "Bjerksund-Stensland American approximation: OPT_BJER_STENS(call_put, spot, strike, time, rate, volatility, cost_of_carry)"),
     s(1772, "OPT_RGW", C, &[N, N, N, N, N, N, N], V::Number, "Roll-Geske-Whaley American call with one known dividend: OPT_RGW(spot, strike, time_payout, time_exp, rate, d, volatility)"),
     so(1773, "OPT_BINOMIAL", C, &[T, T, N, N, N, N, N, N, N], 8, V::Number, "Cox-Ross-Rubinstein binomial tree: OPT_BINOMIAL(amer_euro, call_put, steps, spot, strike, time, rate, volatility, [cost_of_carry])"),
+    s(1784, "OPT_COMPLEX_CHOOSER", C, &[N, N, N, N, N, N, N, N, N], V::Number, "complex chooser option: OPT_COMPLEX_CHOOSER(spot, strike_call, strike_put, time, time_call, time_put, rate, cost_of_carry, volatility)"),
+    s(1785, "OPT_ON_OPTIONS", C, &[T, N, N, N, N, N, N, N, N], V::Number, "option on an option (\"cc\", \"cp\", \"pc\", \"pp\"): OPT_ON_OPTIONS(type, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)"),
+    s(1786, "OPT_EXTENDIBLE_WRITER", C, &[T, N, N, N, N, N, N, N, N], V::Number, "writer-extendible option: OPT_EXTENDIBLE_WRITER(call_put, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)"),
+    s(1790, "OPT_2_ASSET_CORRELATION", C, &[T, N, N, N, N, N, N, N, N, N, N, N], V::Number, "two-asset correlation option: OPT_2_ASSET_CORRELATION(call_put, spot1, spot2, strike1, strike2, time, cost_of_carry1, cost_of_carry2, rate, volatility1, volatility2, rho)"),
 ];

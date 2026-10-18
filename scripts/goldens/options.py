@@ -56,6 +56,63 @@ def mp_bs_call(s, x, t, r, v, b):
     return s * math.exp((b - r) * t) * mp_n(d1) - x * math.exp(-r * t) * mp_n(d1 - v * math.sqrt(t))
 
 
+def mp_d1(s, x, t, v, b):
+    import math
+    return (math.log(s / x) + (b + v * v / 2) * t) / (v * math.sqrt(t))
+
+
+def mp_bs(z, s, x, t, r, v, b):
+    import math
+    d1 = mp_d1(s, x, t, v, b)
+    d2 = d1 - v * math.sqrt(t)
+    return z * (s * math.exp((b - r) * t) * mp_n(z * d1) - x * math.exp(-r * t) * mp_n(z * d2))
+
+
+def mp_on_options(kind, s, x1, x2, t1, t2, r, b, v):
+    """Gnumeric's compound option formulas, critical price solved exactly."""
+    import math
+    z = 1 if kind in ("cc", "pc") else -1
+    si = x1
+    for _ in range(100):
+        g = mp_bs(z, si, x1, t2 - t1, r, v, b) - x2
+        dg = math.exp((b - r) * (t2 - t1)) * (mp_n(mp_d1(si, x1, t2 - t1, v, b)) - (z < 0))
+        step = g / dg
+        si -= step
+        if abs(step) <= 1e-13 * abs(si):
+            break
+    rho = math.sqrt(t1 / t2)
+    y1 = mp_d1(s, si, t1, v, b)
+    y2 = y1 - v * math.sqrt(t1)
+    z1 = mp_d1(s, x1, t2, v, b)
+    z2 = z1 - v * math.sqrt(t2)
+    c = s * math.exp((b - r) * t2)
+    d1, d2 = x1 * math.exp(-r * t2), x2 * math.exp(-r * t1)
+    B, N = mp_bvn, mp_n
+    return {"cc": c * B(z1, y1, rho) - d1 * B(z2, y2, rho) - d2 * N(y2),
+            "pc": d1 * B(z2, -y2, -rho) - c * B(z1, -y1, -rho) + d2 * N(-y2),
+            "cp": d1 * B(-z2, -y2, rho) - c * B(-z1, -y1, rho) - d2 * N(-y2),
+            "pp": c * B(-z1, y1, -rho) - d1 * B(-z2, y2, -rho) + d2 * N(y2)}[kind]
+
+
+def mp_extendible_writer(z, s, x1, x2, t1, t2, r, b, v):
+    import math
+    rho = math.sqrt(t1 / t2)
+    z1, z2 = mp_d1(s, x2, t2, v, b), mp_d1(s, x1, t1, v, b)
+    w1, w2 = v * math.sqrt(t1), v * math.sqrt(t2)
+    return mp_bs(z, s, x1, t1, r, v, b) + z * (
+        s * math.exp((b - r) * t2) * mp_bvn(z * z1, -z * z2, -rho)
+        - x2 * math.exp(-r * t2) * mp_bvn(z * (z1 - w2), z * (w1 - z2), -rho))
+
+
+def mp_two_asset(z, s1, s2, x1, x2, t, b1, b2, r, v1, v2, rho):
+    import math
+    st = math.sqrt(t)
+    y1 = (math.log(s1 / x1) + (b1 - v1 * v1 / 2) * t) / (v1 * st)
+    y2 = (math.log(s2 / x2) + (b2 - v2 * v2 / 2) * t) / (v2 * st)
+    return z * (s2 * math.exp((b2 - r) * t) * mp_bvn(z * (y2 + v2 * st), z * (y1 + rho * v2 * st), rho)
+                - x2 * math.exp(-r * t) * mp_bvn(z * y2, z * y1, rho))
+
+
 def mp_rgw(s, x, t1, t2, r, d, v):
     """Roll-Geske-Whaley as Gnumeric computes it (bisection to 1e-5)."""
     import math
@@ -160,6 +217,34 @@ many('OPT_BINOMIAL("a","p",100,100,95,0.5,0.08,0.3,0.08)',
      'OPT_BINOMIAL("x","c",10,100,95,0.5,0.08,0.3,0.08)',
      'OPT_BINOMIAL("a","x",10,100,95,0.5,0.08,0.3,0.08)', tol=1e-11)
 
+# --- exotics needing the bivariate normal ------------------------------------------
+# Gnumeric's bivariate normal (Drezner 1978) is good to about 1e-6, and its
+# critical-price searches stop at 1e-3 (chooser) and 1e-4 (compound).
+many("OPT_COMPLEX_CHOOSER(50,55,48,0.25,0.5,0.5833,0.1,0.05,0.35)",
+     "OPT_COMPLEX_CHOOSER(100,100,100,0.25,1,1,0.05,0.02,0.3)",
+     "OPT_COMPLEX_CHOOSER(50,55,48,0.25,0.5,0.5833,0.1,0.05,0)", tol=1e-5)
+# pc and pp reach the bug (Gnumeric 267.6 for a put worth at most its strike
+# of 50). mp_on_options agrees with direct quadrature of the payoff over the
+# lognormal spot at t1 to 1e-8.
+OO = (500, 520, 50, 0.25, 0.5, 0.08, 0.03, 0.35)
+for k in ("pc", "pp"):
+    fix(f'OPT_ON_OPTIONS("{k}",500,520,50,0.25,0.5,0.08,0.03,0.35)', mp_on_options(k, *OO), 1e-9)
+many('OPT_ON_OPTIONS("cc",500,520,50,0.5,0.75,0.08,0.03,0.35)',
+     'OPT_ON_OPTIONS("cp",500,520,50,0.5,0.75,0.08,0.03,0.35)',
+     'OPT_ON_OPTIONS("xx",500,520,50,0.5,0.75,0.08,0.03,0.35)', tol=1e-5)
+many('OPT_EXTENDIBLE_WRITER("c",80,90,82,0.5,0.75,0.1,0.1,0.3)',
+     'OPT_EXTENDIBLE_WRITER("p",80,90,82,0.5,0.75,0.1,0.1,0.3)',
+     'OPT_EXTENDIBLE_WRITER("c",80,90,82,0.5,0.75,0.1,0.1,0)',
+     'OPT_EXTENDIBLE_WRITER("v",80,90,82,0.5,0.75,0.1,0.1,0.3)', tol=1e-6)
+fix('OPT_EXTENDIBLE_WRITER("c",100,95,100,0.25,0.5,0.05,0.02,0.25)',
+    mp_extendible_writer(1, 100, 95, 100, 0.25, 0.5, 0.05, 0.02, 0.25), 1e-9)
+fix('OPT_2_ASSET_CORRELATION("c",100,100,95,105,1,0.05,0.03,0.05,0.25,0.2,-0.4)',
+    mp_two_asset(1, 100, 100, 95, 105, 1, 0.05, 0.03, 0.05, 0.25, 0.2, -0.4), 1e-9)
+many('OPT_2_ASSET_CORRELATION("c",52,65,50,70,0.5,0.1,0.1,0.1,0.2,0.3,0.75)',
+     'OPT_2_ASSET_CORRELATION("p",52,65,50,70,0.5,0.1,0.1,0.1,0.2,0.3,0.75)',
+     'OPT_2_ASSET_CORRELATION("c",52,65,50,70,0,0.1,0.1,0.1,0.2,0.3,0.75)',
+     'OPT_2_ASSET_CORRELATION("x",52,65,50,70,0.5,0.1,0.1,0.1,0.2,0.3,0.75)', tol=1e-6)
+
 
 def err(name):
     return {"error": name}
@@ -215,7 +300,7 @@ def main():
         assert "\t" not in f and "^" not in f, f
         if f in FIX:
             print(f"Gnumeric bug: {f} Gnumeric={v!r} mpmath={FIX[f]!r}", file=sys.stderr)
-            print(f"{f}\t{cell(FIX[f], tol)}\tmpmath (Gnumeric 1.12.57 bivariate normal bug)")
+            print(f"{f}\t{json.dumps({'approx': FIX[f], 'tol': tol})}\tmpmath (Gnumeric 1.12.57 bivariate normal bug)")
         else:
             print(f"{f}\t{cell(v, tol)}\tGnumeric 1.12.57")
 
