@@ -464,23 +464,24 @@ fn ln_beta_front(a: f64, b: f64, x: f64, y: f64) -> f64 {
 }
 
 /// The incomplete beta's continued fraction (modified Lentz), to ε, for at
-/// most a million terms (about √(a + b) are needed near the mean).
+/// most a million terms (about √(a + b) are needed near the mean). Lentz's
+/// usual guard against a zero denominator is left out: on this side of
+/// the mean (x < (a+1)/(a+b+2)) the first is over 2/(a+b+2) and the rest
+/// stay far from 0 (none below 5e-5 over 20000 random shapes 1e3–1e10).
 fn beta_cf(a: f64, b: f64, x: f64) -> f64 {
-    const TINY: f64 = 1e-300;
-    let nz = |v: f64| if v.abs() < TINY { TINY } else { v };
     let (qab, qap, qam) = (a + b, a + 1.0, a - 1.0);
     let mut c = 1.0;
-    let mut d = 1.0 / nz(1.0 - qab * x / qap);
+    let mut d = 1.0 / (1.0 - qab * x / qap);
     let mut h = d;
     for m in 1..1_000_000 {
         let (m, m2) = (f64::from(m), f64::from(2 * m));
         let aa = m * (b - m) * x / ((qam + m2) * (a + m2));
-        d = 1.0 / nz(1.0 + aa * d);
-        c = nz(1.0 + aa / c);
+        d = 1.0 / (1.0 + aa * d);
+        c = 1.0 + aa / c;
         h *= d * c;
         let aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
-        d = 1.0 / nz(1.0 + aa * d);
-        c = nz(1.0 + aa / c);
+        d = 1.0 / (1.0 + aa * d);
+        c = 1.0 + aa / c;
         let step = d * c;
         h *= step;
         if (step - 1.0).abs() < f64::EPSILON {
@@ -1124,6 +1125,20 @@ mod tests {
                 "I_{x}({a}, {b}) = {new}, statrs {old}"
             );
             assert!((new + beta_reg(b, a, 1.0 - x) - 1.0).abs() < 1e-13);
+        }
+        // The large-shape path for both shapes past 1000, x inside (0, 1),
+        // on each side of the mean (mpmath, 40 digits; statrs is 4e-13 off
+        // here): I_0.4(2000, 3000) and I_0.39(2000, 3000).
+        assert!((beta_reg(2000.0, 3000.0, 0.4) - 0.500_767_787_945_590_7).abs() < 1e-14);
+        assert!((beta_reg(2000.0, 3000.0, 0.39) - 0.074_150_549_711_298_32).abs() < 1e-15);
+        // The ends, and a shape at or under 1000, stay with statrs.
+        assert_eq!(beta_reg(1500.0, 1500.0, 0.0), 0.0);
+        assert_eq!(beta_reg(1500.0, 1500.0, 1.0), 1.0);
+        for (a, b) in [(1500.0, 500.0), (500.0, 1500.0)] {
+            assert_eq!(
+                beta_reg(a, b, 0.6),
+                sb::checked_beta_reg(a, b, 0.6).unwrap()
+            );
         }
     }
 

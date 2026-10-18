@@ -1315,6 +1315,10 @@ mod tests {
         assert_eq!(ev(127, &[x(-1.0)]), e(err::NUM));
         assert_eq!(ev(142, &[x(5.0)]), x(15.0));
         assert_eq!(ev(211, &[x(0.0), x(5.0)]), x(0.0));
+        // CEILING.MATH of a negative: toward 0, or away with a mode
+        // (LibreOffice -2 and -3).
+        assert_eq!(ev(207, &[x(-2.5), x(1.0), x(0.0)]), x(-2.0));
+        assert_eq!(ev(207, &[x(-2.5), x(1.0), x(1.0)]), x(-3.0));
         // MID and REPLACE with a negative length (LibreOffice Err:502).
         assert_eq!(ev(312, &[s("abc"), x(1.0), x(-1.0)]), e(err::VALUE));
         assert_eq!(ev(317, &[s("abc"), x(1.0), x(-1.0), s("x")]), e(err::VALUE));
