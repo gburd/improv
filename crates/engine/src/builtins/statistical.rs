@@ -883,8 +883,16 @@ fn stirl(n: f64) -> f64 {
     }
 }
 
+/// How many terms [`hypgeom_cdf`] sums before giving up (NaN, #NUM!). About
+/// 9 sd are needed near the mode, so this reaches an sd of 2e6 (half of a
+/// 1.6e13 population drawn from it, half red) in about 0.1 s.
+// ponytail: Gnumeric sums on (0.6 s at a 1e15 population, a hang at 1e17);
+// an asymptotic (Edgeworth) tail would lift the cap.
+const HYPGEOM_MAX_TERMS: u32 = 20_000_000;
+
 /// P(X ≤ k): sums the tail on k's side of the mode, from k outward (the
-/// terms fall away from the mode, so the sum stops once they stop counting).
+/// terms fall away from the mode, so the sum stops once they stop counting;
+/// NaN past [`HYPGEOM_MAX_TERMS`]).
 pub(crate) fn hypgeom_cdf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
     let mode = ((n + 1.0) * (big_k + 1.0) / (big_n + 2.0)).floor();
     let (lo, hi) = ((n - big_n + big_k).max(0.0), n.min(big_k));
@@ -900,10 +908,15 @@ pub(crate) fn hypgeom_cdf(k: f64, n: f64, big_k: f64, big_n: f64) -> f64 {
     }
     let mut t = hypgeom_pmf(i, n, big_k, big_n);
     let mut sum = 0.0;
+    let mut terms = 0u32;
     loop {
         sum += t;
         if t <= sum * 1e-17 || (below && i <= lo) || (!below && i >= hi) {
             break;
+        }
+        terms += 1;
+        if terms > HYPGEOM_MAX_TERMS {
+            return f64::NAN;
         }
         if below {
             i -= 1.0;

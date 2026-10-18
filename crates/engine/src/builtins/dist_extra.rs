@@ -1003,16 +1003,38 @@ fn mass(log: bool, x: f64, lo: f64, mass: impl Fn(f64) -> f64) -> f64 {
 /// upper tail, so it keeps its digits; a fuzz of 64 ε holds a p that rounds
 /// onto a step to that step (R's rule).
 fn disc_q(t: Tail, lo: f64, hi: f64, cdf: impl Fn(f64, bool) -> f64) -> f64 {
+    disc_q_near(t, lo, hi, None, cdf)
+}
+
+/// [`disc_q`] with a guess at the quantile: the bracket starts 8 either
+/// side of it and widens 16-fold until it holds the quantile, so a CDF
+/// that sums its terms near the mode is asked a handful of times rather
+/// than fifty (R.QHYPER of a 1e15 population took 7 s). A CDF that gives
+/// up (NaN) makes the quantile NaN.
+fn disc_q_near(
+    t: Tail,
+    lo: f64,
+    hi: f64,
+    guess: Option<f64>,
+    cdf: impl Fn(f64, bool) -> f64,
+) -> f64 {
     if let Some(v) = q_ends(t, lo, hi) {
         return v;
     }
     let p = t.prob(t.lower);
     let fuzz = 64.0 * f64::EPSILON;
+    let bad = std::cell::Cell::new(false);
     let ok = |k: f64| {
+        if bad.get() {
+            // A CDF gave up: answer at once, the quantile is NaN anyway.
+            return true;
+        }
+        let c = cdf(k, t.lower);
+        bad.set(c.is_nan());
         if t.lower {
-            cdf(k, true) >= p * (1.0 - fuzz)
+            c >= p * (1.0 - fuzz)
         } else {
-            cdf(k, false) <= p * (1.0 + fuzz)
+            c <= p * (1.0 + fuzz)
         }
     };
     if ok(lo) {
@@ -1020,6 +1042,19 @@ fn disc_q(t: Tail, lo: f64, hi: f64, cdf: impl Fn(f64, bool) -> f64) -> f64 {
     }
     // Invariant: !ok(a) and ok(b) (or b = hi, the top of the support).
     let (mut a, mut b) = (lo, hi);
+    if let Some(g) = guess {
+        let g = if g.is_finite() { g.clamp(lo, hi) } else { lo };
+        let _ = ok(g);
+        let mut w = 8.0;
+        while !bad.get() {
+            let (ga, gb) = ((g - w).floor().max(a), (g + w).ceil().min(b));
+            if (ga == a || !ok(ga)) && (gb == b || ok(gb)) {
+                (a, b) = (ga, gb);
+                break;
+            }
+            w *= 16.0;
+        }
+    }
     if b.is_infinite() {
         b = lo + 1.0;
         while !ok(b) {
@@ -1030,7 +1065,12 @@ fn disc_q(t: Tail, lo: f64, hi: f64, cdf: impl Fn(f64, bool) -> f64) -> f64 {
             }
         }
     }
-    st::int_search(a, b, ok)
+    let q = st::int_search(a, b, ok);
+    if bad.get() {
+        NAN
+    } else {
+        q
+    }
 }
 
 /// The binomial distribution of n trials of success probability p.
@@ -1175,7 +1215,18 @@ fn hyper(x: f64, a: &[f64], op: Op) -> f64 {
             let k = fake_floor(x);
             tails(lower, log, cdf(k, true), cdf(k, false))
         }
-        Op::Q(t) => disc_q(t, lo, hi, cdf),
+        Op::Q(t) => {
+            // The normal quantile with continuity and skewness (Cornish–
+            // Fisher) corrections: within a few of the answer once sd is
+            // large, where each CDF call costs O(sd).
+            let big_n = r + b;
+            let mean = n * r / big_n;
+            let sd = (mean * (b / big_n) * ((big_n - n) / (big_n - 1.0).max(1.0))).sqrt();
+            let z = st::norm_inv(t.prob(true).clamp(1e-300, 1.0 - 1e-16));
+            let skew = (1.0 - 2.0 * r / big_n) * (1.0 - 2.0 * n / big_n);
+            let guess = mean + sd * z + (z * z - 1.0) / 6.0 * skew - 0.5;
+            disc_q_near(t, lo, hi, Some(guess), cdf)
+        }
     }
 }
 
@@ -2185,5 +2236,31 @@ mod tests {
         // A small upper tail below ½ keeps its digits: 0.9¹⁰⁰⁰.
         let tiny = up(0.1, 1.0, 1000.0);
         assert!((tiny / 0.9f64.powi(1000) - 1.0).abs() < 1e-12, "{tiny}");
+    }
+
+    /// R.QHYPER starts its search at a Cornish–Fisher guess, so it asks
+    /// the CDF (O(sd) terms near the mode) a few times, not fifty: a 1e13
+    /// population took seconds; R.QHYPER(0.3, 1e13, 1e13, 1e13) is
+    /// 4999999413702 (Gnumeric's 1e9 and 1e11 analogues: 499994137 and
+    /// 49999941370). Past the CDF's term cap it is #NUM! at once (Gnumeric
+    /// takes 0.7 s at 1e15 and hangs at 1e17).
+    #[test]
+    fn hypergeometric_quantile_of_huge_populations() {
+        let t0 = std::time::Instant::now();
+        assert_eq!(val(1629, &[0.3, 1e9, 1e9, 1e9]), 499_994_137.0);
+        assert_eq!(val(1629, &[0.3, 1e11, 1e11, 1e11]), 49_999_941_370.0);
+        assert_eq!(val(1629, &[0.3, 1e13, 1e13, 1e13]), 4_999_999_413_702.0);
+        assert_eq!(val(1629, &[0.3, 1e6, 1e6, 1e6]), 499_815.0);
+        let num = |v: R| matches!(v, Err(e) | Ok(CellValue::Err(e)) if e == err::NUM);
+        assert!(num(call(1629, &nums(&[0.3, 1e15, 1e15, 1e15]))));
+        assert!(num(call(1629, &nums(&[0.3, 1e17, 1e17, 1e17]))));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+        // Small ones are unchanged, and the guess is clamped to the support.
+        assert_eq!(val(1629, &[0.5, 10.0, 20.0, 15.0]), 5.0);
+        assert_eq!(val(1629, &[0.3, 1e15, 1.0, 1e15]), 999_999_999_999_999.0);
+        assert_eq!(val(1629, &[0.3, 3.0, 1e15, 2.0]), 0.0);
+        let mut a = nums(&[0.3, 1e9, 1e9, 1e9]);
+        a.push(CellValue::Bool(false));
+        assert_eq!(call(1629, &a), Ok(CellValue::num(500_005_863.0)));
     }
 }
