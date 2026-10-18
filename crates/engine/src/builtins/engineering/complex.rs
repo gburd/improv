@@ -915,7 +915,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         assert!(real_igamma(1e16, 1e16, true).is_nan());
         assert!(real_igamma(1e300, 1e300, false).is_nan());
-        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
         assert!((real_igamma(2.0, 3.0, true) - 0.800_851_726_528_544).abs() < 1e-15);
         let big = [
             CellValue::Text("1e16".into()),

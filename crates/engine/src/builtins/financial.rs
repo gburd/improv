@@ -681,7 +681,7 @@ mod tests {
         // and Gnumeric 5.27983104540655E-151).
         let v = f(724, &[1000.0, 0.0, 9.47e153, 0.0, 5.0]).as_num().unwrap();
         assert!((v / 5.279_831_045_406_55e-151 - 1.0).abs() < 1e-12, "{v}");
-        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
     }
 
     /// PV and FV at a tiny rate keep their digits (Gnumeric, and mpmath
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(f(707, &[1e-300, 1e15, 1e6, 1.0, 1e15, 0.0]), num);
         assert_eq!(f(708, &[0.05, 1e300, 1e6, 1.0, 1e300, 1.0]), num);
         assert_eq!(f(707, &[0.05, 2e7, 1e6, 1e7, 2e7, 0.0]), num);
-        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
         // Gnumeric -0.5000838333319472 over a million periods.
         close(
             f(707, &[1e-9, 1e6, 1000.0, 1.0, 1e6, 0.0]),

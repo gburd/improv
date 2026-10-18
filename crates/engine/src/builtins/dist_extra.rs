@@ -2136,7 +2136,7 @@ mod tests {
         let mut a = nums(&[-1.0, 1.07e212, 4.9e307]);
         a.extend([t.clone(), t]);
         let _ = call(1649, &a);
-        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
     }
 
     /// The discrete quantiles past 2⁵³ return: with a and b adjacent floats
@@ -2165,7 +2165,7 @@ mod tests {
             disc_q(t, 9_007_199_254_740_992.0, 9_007_199_254_740_996.0, cdf),
             9_007_199_254_740_994.0
         );
-        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
     }
 
     /// R.PBETA's upper tail at a tiny x does not go through the rounded

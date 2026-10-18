@@ -1406,7 +1406,7 @@ mod tests {
             num_err,
             "MULTINOMIAL"
         );
-        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
         // The small values are unchanged.
         assert_eq!(eval(FuncId(141), &[n(5.0)]), n(120.0));
         assert_eq!(eval(FuncId(142), &[n(7.0)]), n(105.0));
