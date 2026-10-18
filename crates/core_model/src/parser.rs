@@ -6,35 +6,49 @@
 //! [`Model`] (like `NlContext`); unknown names are a clean [`ParseError`],
 //! never a panic.
 //!
-//! # Grammar (v1 subset of §4, plus named scalar calls; no `SQL("...")`)
+//! # Grammar (`AGENT_FORMULA_LANGUAGE.md` §4)
 //!
 //! ```ebnf
 //! Formula      = Identifier "=" Expression ;
 //! Expression   = OrExpr ;
 //! OrExpr       = AndExpr { "OR" AndExpr } ;
 //! AndExpr      = NotExpr { "AND" NotExpr } ;
-//! NotExpr      = "NOT" NotExpr | Comparison ;               (* NOT a > b == NOT (a > b) *)
-//! Comparison   = Concat [ ("==" | "<>" | "!=" | "<" | "<=" | ">" | ">=") Concat ] ;
-//! Concat       = Additive { "&" Additive } ;                (* text join *)
+//! NotExpr      = "NOT" NotExpr | Comparison ;        (* NOT a > b == NOT (a > b) *)
+//! Comparison   = Concat [ CmpOp Concat ] ;          (* == <> != < <= > >= *)
+//! Concat       = Additive { "&" Additive } ;
 //! Additive     = Term { ("+" | "-") Term } ;
 //! Term         = Unary { ("*" | "/") Unary } ;
 //! Unary        = "-" Unary | Power ;
-//! Power        = Postfix [ "^" Unary ] ;     (* right-assoc; -2^2 = -(2^2) = -4 *)
-//! Postfix      = Primary { "%" } ;                          (* x% = x / 100 *)
-//! Primary      = Literal
-//!              | Call
-//!              | MeasureRef
+//! Power        = Postfix [ "^" Unary ] ;            (* right-assoc; -2^2 = -4 *)
+//! Postfix      = Primary { "%" } ;                  (* x% = x / 100 *)
+//! Primary      = Literal | Call | Special | MeasureRef | Local
 //!              | "(" Expression ")" ;
-//! MeasureRef   = Name [ "[" DimList "]" ] ;                (* DimList -> DimensionSpec.by *)
-//! DimList      = Name { "," Name } ;
-//! Aggregation  = AggFunc "(" MeasureRef "OVER" Name ")" ;
-//! AggFunc      = "SUM" | "AVG" | "MIN" | "MAX" ;
-//! Literal      = Number | "TRUE" | "FALSE" | '"' text '"' ;
+//! Literal      = Number | Text | "TRUE" | "FALSE" | DateLiteral ;  (* #2025-01-31# *)
+//! MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
+//! Local        = Identifier ;                       (* bound by LET / LAMBDA *)
 //!
-//! Name         = [ Identifier "." ] Identifier ;           (* qualifier: see below *)
-//! Identifier   = BareIdent | QuotedIdent ;
-//! BareIdent    = (alpha | "_") { alnum | "_" } ;
-//! QuotedIdent  = "'" ( char-except-quote | "''" )+ "'" ;
+//! Call         = FuncName "(" [ Arg { Sep Arg } ] ")" ;  (* Sep: "," or ";" (de) *)
+//! Arg          = Expression [ OverClause ] [ IntoClause ] ;
+//! OverClause   = "OVER" ( Cats [ Window ] | "ALL" [ "EXCEPT" Cats ] )
+//!                [ "WHERE" Expression ] ;
+//! Window       = "[" Bound ".." Bound "]" ;          (* FIRST | LAST | THIS[+-n] *)
+//! IntoClause   = "INTO" Cats ;                      (* a list result, row-major *)
+//! Cats         = Name { "," Name } ;
+//!
+//! Special      = "LET" "(" { Identifier "," Expression "," } Expression ")"
+//!              | Lambda "(" Expression { "," Expression } ")"   (* called on the spot *)
+//!              | "MAP" "(" Expression { "," Expression } "," Lambda ")"
+//!              | ("SCAN" | "REDUCE") "(" Expression "," MeasureRef "OVER" Name "," Lambda ")"
+//!              | ("BYROW" | "BYCOL") "(" MeasureRef "OVER" Name "," Lambda ")"
+//!              | "MAKEARRAY" "(" Name "," Name "," Lambda ")"
+//!              | "SEQUENCE" "(" Name [ "," Expression [ "," Expression ] ] ")"
+//!              | NamedLambda "(" [ Expression { "," Expression } ] ")" ;
+//! Lambda       = "LAMBDA" "(" Identifier { "," Identifier } "," Expression ")" ;
+//!
+//! Definition   = Formula
+//!              | Identifier "=" "SQL" "(" Text ")"          (* SQL-sourced input *)
+//!              | Identifier "=" "CALL" "(" Name { "," Name } ")"  (* external fn *)
+//!              | Identifier "=" Lambda ;                   (* a named LAMBDA *)
 //! ```
 //!
 //! ## Quoted identifiers (`'Unit Price'`)
@@ -79,7 +93,7 @@
 //! `SUM(Revenue OVER Time)` -> `Call(FuncId(1), [Ref(revenue, DimensionSpec {
 //! over: [Time], by: [], except: [] })])`. The compiler (`engine::compiler`)
 //! reads the arg ref's `over` to pick the collapsed category, so only `over`
-//! is set. Func ids: SUM=1, AVG=2, MIN=3, MAX=4.
+//! is set. Function ids come from `crate::functions` (SUM is 1).
 //!
 //! ## Not implemented (deferred, per §4/§11.3)
 //!

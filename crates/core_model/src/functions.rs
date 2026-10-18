@@ -162,7 +162,7 @@ impl FnDef {
 
     /// The parameters' names, for signature help and ghost text: those the
     /// description spells (`PMT(rate, nper, pv, [fv], [type])`, or the
-    /// [`PARAM_NAMES`] table), else each parameter's type (`number`).
+    /// `PARAM_NAMES` table), else each parameter's type (`number`).
     /// Optional ones are `[bracketed]`; a variadic tail ends in `…`.
     pub fn param_names(&self) -> Vec<String> {
         if let Some(names) = PARAM_NAMES

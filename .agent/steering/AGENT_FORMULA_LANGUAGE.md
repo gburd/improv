@@ -95,34 +95,48 @@ Formula      = Identifier "=" Expression ;
 Expression   = OrExpr ;
 OrExpr       = AndExpr { "OR" AndExpr } ;
 AndExpr      = NotExpr { "AND" NotExpr } ;
-NotExpr      = "NOT" NotExpr | Comparison ;
-Comparison   = Concat [ CmpOp Concat ] ;
+NotExpr      = "NOT" NotExpr | Comparison ;        (* NOT a > b == NOT (a > b) *)
+Comparison   = Concat [ CmpOp Concat ] ;          (* == <> != < <= > >= *)
 Concat       = Additive { "&" Additive } ;
 Additive     = Term { ("+" | "-") Term } ;
 Term         = Unary { ("*" | "/") Unary } ;
 Unary        = "-" Unary | Power ;
-Power        = Postfix [ "^" Unary ] ;
-Postfix      = Primary { "%" } ;
-Primary      = Literal
-             | MeasureRef
-             | FunctionCall
-             | Aggregation
+Power        = Postfix [ "^" Unary ] ;            (* right-assoc; -2^2 = -4 *)
+Postfix      = Primary { "%" } ;                  (* x% = x / 100 *)
+Primary      = Literal | Call | Special | MeasureRef | Local
              | "(" Expression ")" ;
+Literal      = Number | Text | "TRUE" | "FALSE" | DateLiteral ;  (* #2025-01-31# *)
+MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
+Local        = Identifier ;                       (* bound by LET / LAMBDA *)
 
-MeasureRef   = Identifier [ "[" DimList "]" ] ;
-DimList      = Identifier { "," Identifier } ;
+Call         = FuncName "(" [ Arg { Sep Arg } ] ")" ;  (* Sep: "," or ";" (de) *)
+Arg          = Expression [ OverClause ] [ IntoClause ] ;
+OverClause   = "OVER" ( Cats [ Window ] | "ALL" [ "EXCEPT" Cats ] )
+               [ "WHERE" Expression ] ;
+Window       = "[" Bound ".." Bound "]" ;          (* FIRST | LAST | THIS[+-n] *)
+IntoClause   = "INTO" Cats ;                      (* a list result, row-major *)
+Cats         = Name { "," Name } ;
 
-FunctionCall = Identifier "(" [ ArgList ] ")" ;
-ArgList      = Expression { "," Expression } ;
+Special      = "LET" "(" { Identifier "," Expression "," } Expression ")"
+             | Lambda "(" Expression { "," Expression } ")"   (* called on the spot *)
+             | "MAP" "(" Expression { "," Expression } "," Lambda ")"
+             | ("SCAN" | "REDUCE") "(" Expression "," MeasureRef "OVER" Name "," Lambda ")"
+             | ("BYROW" | "BYCOL") "(" MeasureRef "OVER" Name "," Lambda ")"
+             | "MAKEARRAY" "(" Name "," Name "," Lambda ")"
+             | "SEQUENCE" "(" Name [ "," Expression [ "," Expression ] ] ")"
+             | NamedLambda "(" [ Expression { "," Expression } ] ")" ;
+Lambda       = "LAMBDA" "(" Identifier { "," Identifier } "," Expression ")" ;
 
-Aggregation  = AggFunc "(" MeasureRef "OVER" Identifier ")" ;
-AggFunc      = (* any aggregation in core_model::functions: SUM, AVERAGE/AVG,
-                MIN, MAX, PRODUCT, SUMSQ, AND, OR, XOR *) ;
+Definition   = Formula
+             | Identifier "=" "SQL" "(" Text ")"          (* SQL-sourced input *)
+             | Identifier "=" "CALL" "(" Name { "," Name } ")"  (* external fn *)
+             | Identifier "=" Lambda ;                   (* a named LAMBDA *)
 ```
 
-> The `CALL(...)` (external function, Phase 6) and `SQL("...")` (live query,
-> Phase 7) productions are added in later phases and are intentionally omitted
-> from the initial v1 grammar. See §11.3.
+> The parser (`core_model::parser`, its module docs carry the same grammar)
+> is the source of truth. Which names are functions, which arguments an
+> aggregation reduces (`OVER` after any of them), and which return lists
+> (`INTO`) come from the function registry (§11), not the grammar.
 
 ---
 
@@ -245,36 +259,36 @@ phrases. Parse↔describe must round-trip (a tested property).
 
 ## 11. Built-in Function Registry
 
-### 11.1 v1 Aggregations
+One registry, `core_model::functions` (`functions.rs` plus one file per
+family under `functions/`), drives the parser, type checking, the engine,
+the GUI printer and completion, the CNL, the TUI help and the generated
+reference `docs/src/functions.md` (a test fails if the page drifts:
+`UPDATE_DOCS=1 cargo test -p improv_core_model`). 674 functions, with
+Excel's names canonical and other products' as aliases (the functions plan,
+`docs/reviews/2026-10-16-builtin-functions-plan.md`).
 
-`SUM`, `AVG`, `MIN`, `MAX` (via the `OVER` aggregation form).
+Each entry (`FnDef`) has a persisted id (never reused; ranges per family in
+the plan), a kind (`Scalar`, `Lazy` like IF, `Aggregate`, `PerItem` like
+RANK, `Array` with `INTO`), argument kinds, which arguments are reduced
+(`Over`), a return type rule and a one-line description. Parameter names for
+signature help come from `FnDef::param_names()`. Search and completion:
+`functions::search`, `complete`, `call_at`.
 
-### 11.2 Scalar Functions
+Evaluation: scalars in `engine::builtins` (one module per family),
+reductions, per-item and list results in `engine::reduce`. Named LAMBDAs
+are model data (`Model::lambdas`), called by id and expanded at compile
+time.
 
-**Implemented** and callable as `NAME(args...)` in a formula (name-→id registry
-in `core_model::parser::scalar_func`, evaluated by the engine's scalar path):
-`ABS`, `ROUND`, `FLOOR`, `CEIL`, `SQRT`, `NEG` (arity 1) and `MIN2`, `MAX2`
-(arity 2). Arity is checked at parse time. These are pure and deterministic, so
-they behave as ordinary operators to the engine.
+### 11.3 Sources outside the engine
 
-Add further built-ins (e.g. logical helpers, date `YEAR`/`MONTH`/`DAY`)
-incrementally — only as the engine can evaluate them deterministically. Do not
-document a function the engine cannot run.
-
-### 11.3 Later-Phase Extension Points
-
-Two grammar extensions are committed for later phases (built after the v1 core,
-so the v1 grammar above stays minimal):
-
-- **External-language functions (Phase 6)** — a `CALL(func, args...)` form
-  dispatching to an external runtime. Python first (Resolver One lineage), then
-  R, Julia, and WASM. External functions must be pure, typed, and declare
-  dimensionality, so they behave as ordinary operators to the engine and keep it
-  deterministic.
-- **SQL live-query measures (Phase 7)** — a `SQL("...")` form producing a
-  measure collection. See `AGENT_DATABASE_CONNECTIVITY.md`. Live-query measures
-  are explicitly marked so determinism tests continue to treat pure paths as
-  pure.
+- **External functions** — `Target = CALL(func, Arg, …)` runs a registered
+  Python/R/Julia/Pure/Wasm function host-side (`improv_extfn`); the measure
+  is an input the refresh fills, so the engine stays deterministic.
+- **SQL-sourced measures** — `Target = SQL("SELECT …")` (CLI: `import-sql`,
+  `refresh-sql`) fills an input measure from a query, mapping columns to
+  categories. See `AGENT_DATABASE_CONNECTIVITY.md`. Set-based work (joins,
+  filters over large tables) stays in the database; the model computes on
+  the result.
 
 ---
 
