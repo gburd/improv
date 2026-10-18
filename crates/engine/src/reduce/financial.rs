@@ -209,10 +209,12 @@ fn bisect(f: impl Fn(f64) -> f64) -> Option<f64> {
 /// outflow and `c ≥ 2`, Oleo never ends: the shrinking flow sticks at the
 /// smallest subnormal.) #NUM! with fewer than two flows, or without an
 /// initial outflow after step 1 (Oleo returns 0 for one flow and a
-/// meaningless rate or NaN for the other case).
+/// meaningless rate or NaN for the other case), and with a safe rate at or
+/// below −100%: there `c ≤ 0`, a transfer grows the positive flow, and the
+/// pull-back need not end.
 fn fmrr(mut v: Vec<f64>, safe: f64, reinvest: f64, min: f64) -> Result<f64, u8> {
     let n = v.len();
-    if n < 2 {
+    if n < 2 || safe <= -1.0 {
         return Err(err::NUM);
     }
     for i in (1..n).rev() {
@@ -400,5 +402,20 @@ mod tests {
         approx(num(v), (last / 1000.0).powf(1.0 / 3.0) - 1.0);
         assert_eq!(f(&[1.0], 0.0, 0.0, 0.0), Err(err::NUM));
         assert_eq!(f(&[100.0, -50.0], 0.0, 0.0, 0.0), Err(err::NUM));
+    }
+
+    /// FMRR with a safe rate below −100% is #NUM!: the transfer factor c is
+    /// negative there, a capped transfer grew the positive flow instead of
+    /// spending it, and with |c| huge it added nothing, forever.
+    #[test]
+    fn fmrr_with_a_safe_rate_below_minus_100_percent() {
+        let t0 = std::time::Instant::now();
+        let f = |v: &[f64], s: f64| fmrr(v.to_vec(), s, 0.1, 1.0);
+        assert_eq!(f(&[-1000.0, 1.0, -1e300], -1e308), Err(err::NUM));
+        assert_eq!(f(&[-1000.0, 1.0, -1e300], -2.0), Err(err::NUM));
+        assert_eq!(f(&[-1000.0, 500.0, 700.0], -1.0), Err(err::NUM));
+        assert!(f(&[-1000.0, 1.0, -1e300], -0.999).is_ok());
+        assert!(f(&[-1000.0, 5e-324, -1e300], 0.05).is_ok());
+        assert!(t0.elapsed() < std::time::Duration::from_secs(1));
     }
 }
