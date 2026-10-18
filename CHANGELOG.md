@@ -13,10 +13,12 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
-- **TUI function help.** `?` (or F1, also while editing) opens a search
-  over the built-in functions: the matches with their signatures, and the
-  selected one's category, aliases and description. Enter inserts
-  `NAME(` into the cell being edited.
+- **TUI function help and formula editing.** `?` (or F1, also while
+  editing) opens a search over the built-in functions: the matches with
+  their signatures, and the selected one's category, aliases and
+  description. Enter inserts `NAME(` into the edit. `e`/Enter on a
+  derived measure edits its formula (symbolic or controlled English),
+  with a caret, and an error keeps the edit open under its message.
 - **pg_improv `commit` sync mode** (pg_improv 0.10.0;
   `improv.set_sync_mode(model, 'commit')`). Results commit or roll back
   with the writer's transaction, as in `trigger` mode, but nothing is

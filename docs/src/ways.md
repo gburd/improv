@@ -76,7 +76,7 @@ improv-tui sample.db
 | Key | Does |
 | --- | --- |
 | arrows, click | move |
-| `e` / Enter | edit the input cell (derived cells recompute live) |
+| `e` / Enter | edit the input cell (derived cells recompute live), or a derived measure's formula |
 | Tab / `m` | next measure |
 | `p` | pivot |
 | `[` `]` | page |

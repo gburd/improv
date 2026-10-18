@@ -2,6 +2,7 @@
 //! sized to its content, over the pivot grid as a table.
 
 use crate::app::{App, CommandKind, Grid, GridGeom};
+use crate::edit::LineEdit;
 use crate::fnhelp::FnHelp;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -92,15 +93,17 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     if let Some(f) = app.formula_text() {
         lines.push(Line::from(format!("{} = {f}", g.measure_name)));
     }
-    if let Some(buf) = &app.edit {
-        lines.push(Line::from(format!("edit> {buf}")));
+    if let Some(e) = &app.edit {
+        lines.push(edit_line(e, app.editing_formula()));
     } else if let Some((kind, buf)) = &app.command {
         let prompt = match kind {
             CommandKind::ImportCsv => "import-csv",
             CommandKind::ExportCsv => "export-csv",
         };
         lines.push(Line::from(format!("{prompt}> {buf}")));
-    } else if let Some(msg) = &app.status {
+    }
+    // Under the prompt, so an edit's error shows while it is still open.
+    if let Some(msg) = &app.status {
         lines.push(Line::from(msg.clone()));
     }
     if !g.pages.is_empty() {
@@ -139,6 +142,20 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     }
     lines.extend(help_lines(width));
     lines
+}
+
+/// The edit prompt (`edit> `, or `formula> ` for a formula) and the text,
+/// the cell under the caret reversed.
+fn edit_line(e: &LineEdit, formula: bool) -> Line<'static> {
+    let (before, after) = e.text.split_at(e.caret);
+    let mut rest = after.chars();
+    let at = rest.next().map_or(" ".to_string(), String::from);
+    let prompt = if formula { "formula" } else { "edit" };
+    Line::from(vec![
+        Span::raw(format!("{prompt}> {before}")),
+        Span::styled(at, Style::default().add_modifier(Modifier::REVERSED)),
+        Span::raw(rest.as_str().to_string()),
+    ])
 }
 
 /// Row-label column width, data column width, and inter-column spacing.
@@ -498,6 +515,7 @@ mod tests {
         // edit prompt off-screen once a pages: or filters: line appeared, and
         // the one-line help was cut off at the right edge.
         let mut app = App::new(revenue_model()).unwrap();
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(101));
         app.toggle_filter_item(
             improv_core_model::CategoryId(1),
             improv_core_model::ItemId(10),
@@ -505,6 +523,28 @@ mod tests {
         app.edit = Some("42".into());
         let lines = text(&draw(&mut app, 60, 30));
         let prompt = row_of(&lines, "edit> 42");
+        // The caret sits after the text, and moves with Left.
+        let buf = draw(&mut app, 60, 30);
+        let (x, _) = find(&lines, "edit> 42");
+        assert!(buf[(x + 8, prompt as u16)]
+            .modifier
+            .contains(Modifier::REVERSED));
+        app.edit.as_mut().unwrap().caret = 1;
+        let buf = draw(&mut app, 60, 30);
+        assert!(buf[(x + 7, prompt as u16)]
+            .modifier
+            .contains(Modifier::REVERSED));
+        // An error shows under the open edit.
+        app.status = Some("not a number: 'x'".into());
+        let lines = text(&draw(&mut app, 60, 30));
+        assert_eq!(row_of(&lines, "not a number"), prompt + 1);
+        // A derived measure's edit is its formula.
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
+        app.begin_edit();
+        row_of(
+            &text(&draw(&mut app, 60, 30)),
+            "formula> Price times Quantity",
+        );
         assert!(prompt < row_of(&lines, "filters: Time: 1 shown"));
         assert!(row_of(&lines, "arrows/click: move") > prompt);
         row_of(&lines, "q: quit");

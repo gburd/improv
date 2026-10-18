@@ -6,10 +6,12 @@
 //! input cells (input measures) or from `engine::evaluate` (derived measures),
 //! both keyed by `CoordKey = Vec<(u32, u32)>`.
 
+use crate::edit::LineEdit;
 #[cfg(test)]
 use improv_core_model::Coordinate;
 use improv_core_model::{
-    CategoryId, Filter, ItemId, MeasureId, Model, Name, Value, ValueType, View, ViewId,
+    parser, CategoryId, Filter, Formula, ItemId, MeasureId, MeasureKind, Model, Name, ParseError,
+    Value, ValueType, View, ViewId,
 };
 use improv_engine::session::Engine;
 use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
@@ -437,6 +439,16 @@ pub fn parse_typed(text: &str, vt: ValueType) -> Result<Value, String> {
     }
 }
 
+/// Parse formula text as the symbolic DSL (`Price * Quantity`), else as
+/// controlled English (`Price times Quantity`, what the status line shows).
+/// If both fail, the DSL's error: it carries the position.
+pub fn parse_formula_text(model: &Model, text: &str) -> Result<Formula, ParseError> {
+    parser::parse_expr(model, text).or_else(|e| {
+        improv_nl_formula::parse_nl_formula(&improv_nl_formula::NlContext::new(model), text)
+            .map_err(|_| e)
+    })
+}
+
 /// Measures sorted for stable cycling: derived first, then by id.
 pub fn measure_order(model: &Model) -> Vec<MeasureId> {
     let mut ids: Vec<MeasureId> = model.measures.keys().copied().collect();
@@ -473,8 +485,9 @@ pub struct App {
     pub snapshot: Snapshot,
     /// The last saved view applied via `cycle_view`, so cycling advances.
     pub applied_view: Option<ViewId>,
-    /// When `Some`, edit mode is active and this holds the in-progress text.
-    pub edit: Option<String>,
+    /// When `Some`, edit mode is active and this holds the in-progress text:
+    /// a cell value for an input measure, the formula for a derived one.
+    pub edit: Option<LineEdit>,
     /// Transient status/error message (e.g. "derived cells are computed").
     pub status: Option<String>,
     /// The store high-water the model was loaded/last saved at; saves refuse
@@ -739,11 +752,17 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// Enter edit mode on the cell under the cursor. Rejects derived measures
-    /// with a status message (they are computed, not editable).
+    /// True while the edit line holds a formula (the viewed measure is derived).
+    pub fn editing_formula(&self) -> bool {
+        self.edit.is_some() && !self.viewed_is_input()
+    }
+
+    /// Enter edit mode: on the cell under the cursor for an input measure, on
+    /// the formula (seeded with its controlled-English text) for a derived one.
     pub fn begin_edit(&mut self) {
         if !self.viewed_is_input() {
-            self.status = Some("derived cells are computed, not editable".into());
+            self.edit = Some(self.formula_text().unwrap_or_default().into());
+            self.status = None;
             return;
         }
         if !self.addressable(self.cursor_row, self.cursor_col) {
@@ -758,7 +777,7 @@ impl App {
             // Text/boolean cells seed with their display text.
             None => self.grid.display_at(self.cursor_row, self.cursor_col),
         };
-        self.edit = Some(seed);
+        self.edit = Some(seed.into());
         self.status = None;
     }
 
@@ -769,12 +788,23 @@ impl App {
     }
 
     /// Commit the in-progress edit buffer. Parses it per the measure's value
-    /// type, applies it to the model + engine, refreshes the grid, and exits
-    /// edit mode. On a parse error the buffer stays open with a status message.
+    /// type (or as a formula for a derived measure), applies it to the model +
+    /// engine, refreshes the grid, and exits edit mode. On a parse error the
+    /// buffer stays open with a status message.
     pub fn commit_edit(&mut self) {
-        let Some(buf) = self.edit.clone() else {
+        let Some(buf) = self.edit.as_ref().map(|e| e.text.clone()) else {
             return;
         };
+        if !self.viewed_is_input() {
+            match self.set_formula(&buf) {
+                Ok(()) => {
+                    self.edit = None;
+                    self.status = None;
+                }
+                Err(e) => self.status = Some(e),
+            }
+            return;
+        }
         let vt = self
             .model
             .measures
@@ -838,6 +868,32 @@ impl App {
                 }])
                 .map_err(|e| e.to_string())?;
         }
+        self.reselect();
+        Ok(())
+    }
+
+    /// Replace the viewed derived measure's formula with `text`. Validated on
+    /// a candidate model (parse, then a real engine build, which catches
+    /// cycles and type errors) and only then published; on failure nothing
+    /// changes and the error is returned.
+    pub fn set_formula(&mut self, text: &str) -> Result<(), String> {
+        let formula = parse_formula_text(&self.model, text).map_err(|e| e.to_string())?;
+        let mut candidate = self.model.clone();
+        let m = candidate
+            .measures
+            .get_mut(&self.grid.measure)
+            .ok_or("the measure no longer exists")?;
+        m.kind = MeasureKind::Derived(formula);
+        let derived: Vec<MeasureId> = self
+            .measures
+            .iter()
+            .copied()
+            .filter(|id| candidate.measures.get(id).is_some_and(|m| m.is_derived()))
+            .collect();
+        let (engine, snapshot) = Engine::new(&candidate, &derived).map_err(|e| e.to_string())?;
+        self.model = candidate;
+        self.engine = Some(engine);
+        self.snapshot = snapshot;
         self.reselect();
         Ok(())
     }
@@ -1345,13 +1401,47 @@ pub(crate) mod tests {
         assert!(err.is_err(), "derived edit must be rejected");
         assert_eq!(app.model, before, "model unchanged on rejected edit");
 
-        // begin_edit path sets a status and does not enter edit mode.
+        // begin_edit opens the formula instead, seeded with its text.
         app.begin_edit();
+        assert!(app.editing_formula());
+        assert_eq!(app.edit.as_deref(), Some("Price times Quantity"));
+    }
+
+    #[test]
+    fn editing_a_formula_recomputes_or_reports_the_error() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(102));
+        app.begin_edit();
+        // The seeded controlled English commits back unchanged.
+        app.commit_edit();
+        assert!(app.edit.is_none() && app.status.is_none());
+        assert_eq!(app.grid.display_at(0, 0), "1000");
+        app.begin_edit();
+        app.edit = Some("Price * Quantity * 2".into());
+        app.commit_edit();
         assert!(app.edit.is_none());
+        assert_eq!(app.grid.display_at(0, 0), "2000");
         assert_eq!(
-            app.status.as_deref(),
-            Some("derived cells are computed, not editable")
+            app.formula_text().as_deref(),
+            Some("Price times Quantity times 2")
         );
+        // A parse error keeps the edit open and changes nothing.
+        let before = app.model.clone();
+        app.begin_edit();
+        app.edit = Some("Price * Quantty".into());
+        app.commit_edit();
+        assert!(app.editing_formula());
+        assert!(app.status.as_deref().unwrap().contains("unknown measure"));
+        assert_eq!(app.model, before);
+        // So does a formula that parses but cannot build (a cycle).
+        app.edit = Some("Revenue + 1".into());
+        app.commit_edit();
+        assert!(app.editing_formula(), "{:?}", app.status);
+        assert_eq!(app.model, before);
+        // A value edit is not a formula edit.
+        view(&mut app, MeasureId(101));
+        app.begin_edit();
+        assert!(app.edit.is_some() && !app.editing_formula());
     }
 
     #[test]
@@ -1623,14 +1713,12 @@ pub(crate) mod tests {
         app.commit_edit();
         app.commit_command();
         assert_eq!(app.status, None);
-        // A derived edit attempt routed straight at commit is refused.
+        // A derived measure's edit line is its formula.
         view(&mut app, MeasureId(102));
         app.edit = Some("1".into());
         app.commit_edit();
-        assert_eq!(
-            app.status.as_deref(),
-            Some("derived cells are computed, not editable")
-        );
+        assert_eq!(app.status, None);
+        assert_eq!(app.formula_text().as_deref(), Some("1"));
     }
 
     #[test]

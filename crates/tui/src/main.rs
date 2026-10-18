@@ -12,6 +12,7 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
+mod edit;
 mod fnhelp;
 mod ui;
 
@@ -135,7 +136,9 @@ fn handle_event(app: &mut App, ev: Event, path: &str) {
             (KeyCode::F(1), _) => app.help = Some(fnhelp::FnHelp::new()),
             (KeyCode::Enter, Some(_)) => app.commit_edit(),
             (KeyCode::Esc, Some(_)) => app.cancel_edit(),
-            (code, Some(buf)) => line_key(buf, code),
+            (code, Some(buf)) => {
+                buf.key(code);
+            }
             (code, None) => match (code, &mut app.command) {
                 (KeyCode::Enter, Some(_)) => app.commit_command(),
                 (KeyCode::Esc, Some(_)) => app.cancel_command(),
@@ -154,7 +157,8 @@ fn handle_event(app: &mut App, ev: Event, path: &str) {
     }
 }
 
-/// Line-editing keys shared by the cell edit and the command prompt.
+/// Line-editing keys for the command prompt (the cell edit has a caret:
+/// [`edit::LineEdit::key`]).
 fn line_key(buf: &mut String, code: KeyCode) {
     match code {
         KeyCode::Backspace => {
@@ -173,8 +177,7 @@ fn help_key(app: &mut App, code: KeyCode) {
         KeyCode::Esc => app.help = None,
         KeyCode::Enter => {
             if let (Some(d), Some(buf)) = (h.current(), &mut app.edit) {
-                buf.push_str(d.name);
-                buf.push('(');
+                buf.insert(&format!("{}(", d.name));
             }
             app.help = None;
         }
