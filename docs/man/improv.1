@@ -247,6 +247,35 @@ and
 .B \-\-version
 Print the version. Also accepted as
 .BR \-V .
+.SH FORMULAS
+A derived measure's formula is an expression over measures, written
+.BR "Target = expression" :
+operators
+.BR "+ - * / ^ & %" ,
+comparisons
+.BR "== <> < <= > >=" ,
+.BR "AND OR NOT" ,
+and 674 built-in functions with Excel's names
+.RB ( ROUND ,
+.BR PMT ,
+.BR XLOOKUP ,
+.BR NORM.DIST ,
+\&...).
+An aggregation reduces a measure along a category:
+.BR "SUM(Sales OVER Month)" ;
+.B WHERE
+filters it, a window
+.B OVER Month[FIRST..THIS]
+makes a running total, and
+.B INTO
+lays a list result along a category.
+.BR LET ,
+.B LAMBDA
+and named LAMBDAs
+.RB ( "define db 1 \(dqMargin = LAMBDA(p, c, p - c)\(dq" )
+are supported. Every function is listed, with its arguments, in the
+Function Reference of the user guide (docs/src/functions.md); the language
+is described in docs/src/formulas.md.
 .SH EXAMPLES
 Build a small Time \(mu Product model:
 .PP
