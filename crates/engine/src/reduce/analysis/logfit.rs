@@ -193,9 +193,70 @@ mod tests {
         let mut t = yx(&[1.0, 2.0, 2.5, 2.8], &[1.0, 2.0, 3.0, 4.0]);
         t.vals[0][0] = CellValue::Text("x".into());
         assert!(logfit(&t).is_ok());
+        // Constant x is a vertical line.
+        assert_eq!(logfit(&yx(&[1.0, 2.0, 3.0], &[1.0; 3])), Err(err::NUM));
         // Constant y is never logarithmic.
         assert_eq!(logfit(&yx(&[5.0; 4], &[1.0, 2.0, 3.0, 4.0])), Err(err::NUM));
         assert_eq!(average(&[2.0, 2.0]), 2.0);
+    }
+
+    /// LOGFIT's numbers, against Gnumeric 1.12 (`ssconvert --recalc`).
+    fn fitted(ys: &[f64], xs: &[f64]) -> Vec<f64> {
+        let r = logfit(&yx(ys, xs)).unwrap();
+        r.iter().map(|v| v.as_num().unwrap()).collect()
+    }
+
+    fn near(got: &[f64], want: &[f64]) {
+        for (g, w) in got.iter().zip(want) {
+            assert!(
+                (g - w).abs() <= 1e-9 * w.abs().max(1e-6),
+                "{got:?} vs {want:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn logfit_matches_gnumeric() {
+        let y = [1.0, 2.2, 2.9, 3.3];
+        // An x range below 1 (log10 −0.52) scales c's accuracy down a decade.
+        let want = [
+            1.0,
+            4.73203297205448,
+            1.4454527113918036,
+            0.024476,
+            0.0015361170606230147,
+        ];
+        near(&fitted(&y, &[0.1, 0.2, 0.3, 0.4]), &want);
+        // An x range of exactly 0.1 (log10 −1, no fraction) is 1e-7 too.
+        let want = [
+            1.0,
+            5.8823052171273105,
+            1.184516686186249,
+            -0.0161629,
+            0.0071799364497637675,
+        ];
+        near(&fitted(&y, &[0.0, 0.03, 0.06, 0.1]), &want);
+        // Bending down: c sits above the data and the sign is −1.
+        let want = [
+            -1.0,
+            12.067717946397233,
+            -6.5347365646806725,
+            6.518001,
+            0.07838646158256715,
+        ];
+        near(&fitted(&[4.0, 1.0, 6.0, 2.0], &[3.0, 1.0, 4.0, 2.0]), &want);
+    }
+
+    #[test]
+    fn logfit_without_a_minimum() {
+        let x = [1.0, 2.0, 3.0, 4.0];
+        // y = ln(x − 1 + e⁻³⁰): the best c hugs the data's edge, so moving
+        // it away only makes the fit worse (Gnumeric #NUM!).
+        assert_eq!(logfit(&yx(&[-30.0, 0.0, 0.693, 1.0986], &x)), Err(err::NUM));
+        // y = ln(x + 299): the best c is the far end of the search range,
+        // 100 x-ranges out (Gnumeric #NUM!).
+        let y: Vec<f64> = x.iter().map(|x| (x + 299.0f64).ln()).collect();
+        assert_eq!(logfit(&yx(&y, &x)), Err(err::NUM));
     }
 
     #[test]
@@ -210,6 +271,7 @@ mod tests {
         assert_eq!(fake_round(2.5), 3.0);
         assert_eq!(fake_round(-2.5), -3.0);
         assert_eq!(fake_round(2.4), 2.0);
+        assert_eq!(fake_round(-3.0), -3.0);
         assert_eq!(fake_round(0.5f64.next_down()), 1.0);
     }
 }
