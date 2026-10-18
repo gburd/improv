@@ -925,7 +925,7 @@ impl<'a> Parser<'a> {
             return Err(self.err(format!(
                 "{} takes {}, got {} argument(s)",
                 def.name,
-                def.signature(),
+                def.hint(),
                 args.len()
             )));
         }
@@ -1040,7 +1040,7 @@ impl<'a> Parser<'a> {
             return Err(self.err(format!(
                 "{} takes {}, got {} argument(s)",
                 def.name,
-                def.signature(),
+                def.hint(),
                 args.len()
             )));
         }
@@ -2323,7 +2323,7 @@ mod tests {
         assert!(parse_expr(&m, "ROUND()").is_err()); // ROUND needs at least 1
         let e = parse_expr(&m, "ROUND(Price, 1, 2)").unwrap_err();
         assert!(
-            e.message.contains("ROUND(number, [number])"),
+            e.message.contains("ROUND(number, [num_digits=0])"),
             "{}",
             e.message
         );

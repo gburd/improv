@@ -239,7 +239,7 @@ fn parse_errors_name_the_problem() {
         ("X = ABS(Price", "')' to close function call"),
         (
             "X = MID(Price)",
-            "MID takes MID(text, number, number), got 1 argument(s)",
+            "MID takes MID(text, start_num, num_chars), got 1 argument(s)",
         ),
         ("X = ABS()", "ABS takes ABS(number), got 0 argument(s)"),
         ("X = SUM(Price Time)", "expected ')' to close function call"),
