@@ -37,7 +37,7 @@ step "cargo-pgrx, pgspot"
 rustup component add rustfmt clippy >/dev/null 2>&1 || true
 command -v cargo-pgrx >/dev/null || cargo install cargo-pgrx --version 0.17.0 --locked
 if ! command -v pgspot >/dev/null; then
-	python3 -m venv /opt/pgspot && /opt/pgspot/bin/pip install -q pgspot==0.9.2
+	python3 -m venv /opt/pgspot && /opt/pgspot/bin/pip install -q pgspot==0.9.3
 	export PATH="/opt/pgspot/bin:$PATH"
 fi
 id pgi >/dev/null 2>&1 || useradd -m pgi
