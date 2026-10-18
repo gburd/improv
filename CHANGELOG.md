@@ -334,6 +334,10 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **`RANK`, `PERCENTRANK` and `TREND` over an item that is text.** That
+  item is now `#VALUE!`, as in Excel, LibreOffice and Gnumeric, and the
+  other items keep their results. `PERCENTRANK(x OVER T)` used to panic
+  on such an item, and `RANK` gave it a rank.
 - **Saving a partially loaded Mentat model no longer deletes data.** A
   model from `load_partial` saved through its handle used to retract every
   cell outside the loaded closure; the save now only retracts the closure's

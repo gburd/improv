@@ -32,7 +32,10 @@ pub(super) fn reduce(id: u32, rows: &Rows, a: &[CellValue]) -> CellValue {
 /// One result per row: `RANK`, `PERCENTRANK`, `TREND`, `GROWTH`.
 pub(super) fn per_item(id: u32, rows: &Rows, a: &[CellValue]) -> Vec<CellValue> {
     match no_error(rows).and_then(|()| per_item_ok(id, rows, a)) {
-        Ok(v) => v.into_iter().map(num).collect(),
+        Ok(v) => v
+            .into_iter()
+            .map(|x| x.map_or_else(CellValue::Err, num))
+            .collect(),
         Err(c) => vec![CellValue::Err(c); rows.len()],
     }
 }
@@ -720,7 +723,12 @@ fn test(id: u32, rows: &Rows, a: &[CellValue]) -> Num {
 /// truncation (#N/A outside the values).
 fn percentrank(xs: &[f64], v: f64, inc: bool) -> Num {
     let c = xs.len();
-    if c == 0 || v < xs[0] || v > xs[c - 1] {
+    // NaN is outside, too (not between two values).
+    if !xs
+        .first()
+        .zip(xs.last())
+        .is_some_and(|(lo, hi)| (*lo..=*hi).contains(&v))
+    {
         return Err(err::NA);
     }
     if c == 1 {
@@ -741,8 +749,10 @@ fn percentrank(xs: &[f64], v: f64, inc: bool) -> Num {
     })
 }
 
-fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<f64>, u8> {
-    let own = |r: &Vec<CellValue>, i: usize| r.get(i).and_then(number).unwrap_or(f64::NAN);
+/// Each item's result; an item whose own value is not a number is #VALUE!
+/// (Excel, LibreOffice and Gnumeric: `RANK("x", …)`).
+fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<Num>, u8> {
+    let own = |r: &Vec<CellValue>, i: usize| r.get(i).and_then(number).ok_or(err::VALUE);
     let xs = || sorted(rows.col(0).filter_map(number).collect());
     match id {
         1050 | 1051 => {
@@ -752,7 +762,7 @@ fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<f64>, u8> {
                 .vals
                 .iter()
                 .map(|r| {
-                    let x = own(r, 0);
+                    let x = own(r, 0)?;
                     let less = xs.partition_point(|v| *v < x);
                     let ties = xs.partition_point(|v| *v <= x) - less;
                     let before = if ascending {
@@ -760,11 +770,11 @@ fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<f64>, u8> {
                     } else {
                         xs.len() - less - ties
                     } as f64;
-                    if id == 1050 {
+                    Ok(if id == 1050 {
                         before + 1.0
                     } else {
                         before + (ties as f64 + 1.0) / 2.0
-                    }
+                    })
                 })
                 .collect())
         }
@@ -778,9 +788,9 @@ fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<f64>, u8> {
             let rank =
                 |v: f64| percentrank(&xs, v, id == 1052).map(|r| snap(r * scale).floor() / scale);
             if a.is_empty() {
-                rows.vals.iter().map(|r| rank(own(r, 0))).collect()
+                Ok(rows.vals.iter().map(|r| own(r, 0).and_then(rank)).collect())
             } else {
-                Ok(vec![rank(n(a, 0)?)?; rows.len()])
+                Ok(vec![rank(n(a, 0)?); rows.len()])
             }
         }
         _ => {
@@ -797,12 +807,8 @@ fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<f64>, u8> {
                 .vals
                 .iter()
                 .map(|r| {
-                    let fitted = a0 + b0 * own(r, 1);
-                    if grow {
-                        fitted.exp()
-                    } else {
-                        fitted
-                    }
+                    let fitted = a0 + b0 * own(r, 1)?;
+                    Ok(if grow { fitted.exp() } else { fitted })
                 })
                 .collect())
         }
@@ -1494,5 +1500,26 @@ mod tests {
         );
         let bad = rows(&[vec![nv(1.0), e(err::NA)]]);
         assert_eq!(per_item(1050, &bad, &[]), vec![e(err::NA); 2]);
+    }
+
+    /// An item whose own value is text: #VALUE! for that item alone, as
+    /// Gnumeric 1.12 and LibreOffice (`RANK("x"; …)`, `PERCENTRANK(…;
+    /// "x")`, TREND at a text x). PERCENTRANK used to panic here.
+    #[test]
+    fn per_item_text_items() {
+        let t = rows(&[vec![nv(1.0), tx("x"), nv(3.0)]]);
+        let v = e(err::VALUE);
+        assert_eq!(per_item(1050, &t, &[]), [nv(2.0), v.clone(), nv(1.0)]);
+        assert_eq!(per_item(1051, &t, &[]), [nv(2.0), v.clone(), nv(1.0)]);
+        assert_eq!(per_item(1052, &t, &[]), [nv(0.0), v.clone(), nv(1.0)]);
+        assert_eq!(per_item(1053, &t, &[]), [nv(0.333), v.clone(), nv(0.666)]);
+        // TREND and GROWTH at each item's own x (column 1).
+        let yx = rows(&[col(&[1.0, 2.0, 3.0]), vec![nv(1.0), tx("x"), nv(3.0)]]);
+        assert_eq!(per_item(1054, &yx, &[]), [nv(1.0), v.clone(), nv(3.0)]);
+        assert_eq!(per_item(1055, &yx, &[])[1], v);
+        // PERCENTRANK of a value among no numbers, or of NaN: #N/A.
+        let none = rows(&[vec![tx("a"), tx("b")]]);
+        assert_eq!(per_item(1052, &none, &[nv(1.0)]), [e(err::NA), e(err::NA)]);
+        assert_eq!(percentrank(&[1.0, 2.0], f64::NAN, true), Err(err::NA));
     }
 }
