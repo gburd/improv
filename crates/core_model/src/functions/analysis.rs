@@ -25,4 +25,12 @@ pub(super) static ANALYSIS: &[FnDef] = &[
     over(f(1856, "SSMEDIAN", Ag, St, &[N, N], 1, false, NUM, "the median of grouped data (Gnumeric): each value the midpoint of an interval of width interval (default 1), interpolated within the median's interval"), Over::At(&[0])),
     over(f(1857, "INTERPOLATION", Ag, St, &[N, N, N, N, N], 3, false, NUM, "INTERPOLATION(xs, ys OVER T, target, [method], [next]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over [target, next]"), Over::At(&[0, 1])),
     over(f(1858, "HPFILTER", P, St, &[N, N], 1, false, NUM, "each item's trend under the Hodrick–Prescott filter with smoothing λ (default 1600); the cycle is y − trend; needs 6 values"), Over::At(&[0])),
+    over(f(1859, "ADTEST", Ag, St, &[N], 1, false, NUM, "the p-value of the Anderson–Darling test of normality (Gnumeric; 8 values or more)"), Over::At(&[0])),
+    over(f(1860, "CVMTEST", Ag, St, &[N], 1, false, NUM, "the p-value of the Cramér–von Mises test of normality (Gnumeric; 8 values or more)"), Over::At(&[0])),
+    over(f(1861, "LKSTEST", Ag, St, &[N], 1, false, NUM, "the p-value of the Lilliefors (Kolmogorov–Smirnov) test of normality (Gnumeric; 5 values or more)"), Over::At(&[0])),
+    over(f(1862, "SFTEST", Ag, St, &[N], 1, false, NUM, "the p-value of the Shapiro–Francia test of normality (Gnumeric; 5 to 5000 values)"), Over::At(&[0])),
+    over(f(1863, "ADTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Anderson–Darling statistic A² (adjusted for n), Gnumeric's ADTEST second value"), Over::At(&[0])),
+    over(f(1864, "CVMTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Cramér–von Mises statistic W², Gnumeric's CVMTEST second value"), Over::At(&[0])),
+    over(f(1865, "LKSTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Lilliefors statistic D, Gnumeric's LKSTEST second value"), Over::At(&[0])),
+    over(f(1866, "SFTEST.STAT", Ag, St, &[N], 1, false, NUM, "the Shapiro–Francia statistic W', Gnumeric's SFTEST second value"), Over::At(&[0])),
 ];

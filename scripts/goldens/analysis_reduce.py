@@ -83,6 +83,12 @@ DATA = {
         "Y": [["T"], [[1, 5, 2, 8, 3, 9]]],
         "Z": [["T"], [[7, 7, 8, 8, 9, 10]]],
     }},
+    # Normality: a near-normal sample, a skewed one; ties; constant data.
+    "T": {"cats": {"T": 12, "G": 2}, "m": {
+        "X": [["T"], [[4.2, 5.1, 3.9, 5.6, 4.8, 5.0, 4.4, 6.1, 5.3, 4.7, 5.5, 4.9],
+                      [1, 1, 2, 1, 3, 8, 1, 2, 15, 1, 2, 40]]],
+        "C": [["T"], [[3] * 12, [7] * 12]],
+    }},
     "U": {"cats": {"T": 1}, "m": {"Z": [["T"], [[4]]]}},
     "P": {"cats": {"T": 2}, "m": {"Z": [["T"], [[3, 8]]]}},
 }
@@ -158,6 +164,16 @@ case("P", "SSMEDIAN(Z OVER T)", GN)
 # "Each data point in array is the midpoint of the interval": a single
 # point is its own median; HPFILTER needs six.
 case("P", "HPFILTER(Z OVER T)", GN, sheet="HPFILTER(Z)")
+
+
+# --- group 4: normality tests (Gnumeric: {p; statistic; n}) --------------------
+for t in ("ADTEST", "CVMTEST", "LKSTEST", "SFTEST"):
+    for m in ("X", "C"):
+        case("T", f"{t}({m} OVER T)", GN, sheet=f"INDEX({t}({m}),1)")
+        case("T", f"{t}.STAT({m} OVER T)", GN, sheet=f"INDEX({t}({m}),2)")
+    for ds in ("S", "D"):
+        case(ds, f"{t}(Y OVER T)", GN, sheet=f"INDEX({t}(Y),1)")
+        case(ds, f"{t}.STAT(Y OVER T)", GN, sheet=f"INDEX({t}(Y),2)")
 
 
 # --- layout -------------------------------------------------------------------

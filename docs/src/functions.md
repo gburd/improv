@@ -489,6 +489,14 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `SSMEDIAN(number OVER category, [number])` | number | the median of grouped data (Gnumeric): each value the midpoint of an interval of width interval (default 1), interpolated within the median's interval |
 | `INTERPOLATION(number OVER category, number OVER category, number, [number], [number])` | number | INTERPOLATION(xs, ys OVER T, target, [method], [next]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over [target, next] |
 | `HPFILTER(number OVER category, [number])` | number | each item's trend under the Hodrick–Prescott filter with smoothing λ (default 1600); the cycle is y − trend; needs 6 values |
+| `ADTEST(Measure OVER Category)` | number | the p-value of the Anderson–Darling test of normality (Gnumeric; 8 values or more) |
+| `CVMTEST(Measure OVER Category)` | number | the p-value of the Cramér–von Mises test of normality (Gnumeric; 8 values or more) |
+| `LKSTEST(Measure OVER Category)` | number | the p-value of the Lilliefors (Kolmogorov–Smirnov) test of normality (Gnumeric; 5 values or more) |
+| `SFTEST(Measure OVER Category)` | number | the p-value of the Shapiro–Francia test of normality (Gnumeric; 5 to 5000 values) |
+| `ADTEST.STAT(Measure OVER Category)` | number | the Anderson–Darling statistic A² (adjusted for n), Gnumeric's ADTEST second value |
+| `CVMTEST.STAT(Measure OVER Category)` | number | the Cramér–von Mises statistic W², Gnumeric's CVMTEST second value |
+| `LKSTEST.STAT(Measure OVER Category)` | number | the Lilliefors statistic D, Gnumeric's LKSTEST second value |
+| `SFTEST.STAT(Measure OVER Category)` | number | the Shapiro–Francia statistic W', Gnumeric's SFTEST second value |
 
 ## Financial
 

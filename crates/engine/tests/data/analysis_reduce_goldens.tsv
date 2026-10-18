@@ -82,6 +82,14 @@ S	SSMEDIAN(Z OVER T, 2)	[[8.8], [2.0]]	Gnumeric 1.12
 S	SSMEDIAN(Z OVER T, 0.5)	[[8.916666666666666], [2.0]]	Gnumeric 1.12
 S	SSMEDIAN(Z OVER T, 0)	[[{"error": "#NUM!"}], [{"error": "#NUM!"}]]	Gnumeric 1.12
 S	SSMEDIAN(X OVER T)	[[4.5], [3.5]]	Gnumeric 1.12
+S	ADTEST(Y OVER T)	[[0.8153922213983139], [0.9614556929385789]]	Gnumeric 1.12
+S	ADTEST.STAT(Y OVER T)	[[0.22714968574239103], [0.15127395546221195]]	Gnumeric 1.12
+S	CVMTEST(Y OVER T)	[[0.851128980373321], [0.9801134215784806]]	Gnumeric 1.12
+S	CVMTEST.STAT(Y OVER T)	[[0.027978506053721805], [0.017355229771526107]]	Gnumeric 1.12
+S	LKSTEST(Y OVER T)	[[0.8141893790671366], [0.9981374175277882]]	Gnumeric 1.12
+S	LKSTEST.STAT(Y OVER T)	[[0.1567791593931746], [0.10485431269629009]]	Gnumeric 1.12
+S	SFTEST(Y OVER T)	[[0.8745037055253475], [0.9994612099426414]]	Gnumeric 1.12
+S	SFTEST.STAT(Y OVER T)	[[0.9650217689511204], [0.9897276434936112]]	Gnumeric 1.12
 @D	{"cats": {"T": 6}, "m": {"X": [["T"], [[1, 2, 2, 3, 4, 5]]], "Y": [["T"], [[1, 5, 2, 8, 3, 9]]], "Z": [["T"], [[7, 7, 8, 8, 9, 10]]]}}
 D	INTERPOLATION(X, Y OVER T, 2.5)	[[{"error": "#VALUE!"}]]	Gnumeric 1.12
 D	INTERPOLATION(Y, Z OVER T, 2.5, 4)	[[8.614617940199336]]	Gnumeric 1.12
@@ -90,6 +98,31 @@ D	SSMEDIAN(Z OVER T)	[[8.0]]	Gnumeric 1.12
 D	SSMEDIAN(Z OVER T, 2)	[[8.2]]	Gnumeric 1.12
 D	SSMEDIAN(Z OVER T, 0.5)	[[8.0]]	Gnumeric 1.12
 D	SSMEDIAN(Z OVER T, 0)	[[{"error": "#NUM!"}]]	Gnumeric 1.12
+D	ADTEST(Y OVER T)	[[{"error": "#VALUE!"}]]	Gnumeric 1.12
+D	ADTEST.STAT(Y OVER T)	[[{"error": "#VALUE!"}]]	Gnumeric 1.12
+D	CVMTEST(Y OVER T)	[[{"error": "#VALUE!"}]]	Gnumeric 1.12
+D	CVMTEST.STAT(Y OVER T)	[[{"error": "#VALUE!"}]]	Gnumeric 1.12
+D	LKSTEST(Y OVER T)	[[0.6736959782834084]]	Gnumeric 1.12
+D	LKSTEST.STAT(Y OVER T)	[[0.19508297816327036]]	Gnumeric 1.12
+D	SFTEST(Y OVER T)	[[0.7013106157331765]]	Gnumeric 1.12
+D	SFTEST.STAT(Y OVER T)	[[0.9420568047565495]]	Gnumeric 1.12
+@T	{"cats": {"T": 12, "G": 2}, "m": {"X": [["T"], [[4.2, 5.1, 3.9, 5.6, 4.8, 5.0, 4.4, 6.1, 5.3, 4.7, 5.5, 4.9], [1, 1, 2, 1, 3, 8, 1, 2, 15, 1, 2, 40]]], "C": [["T"], [[3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3], [7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]]]}}
+T	ADTEST(X OVER T)	[[0.9940494560705325], [3.13811946788272e-06]]	Gnumeric 1.12
+T	ADTEST.STAT(X OVER T)	[[0.10796581106466263], [2.4660538224023796]]	Gnumeric 1.12
+T	ADTEST(C OVER T)	[[{"error": "#NUM!"}], [{"error": "#NUM!"}]]	Gnumeric 1.12
+T	ADTEST.STAT(C OVER T)	[[{"error": "#NUM!"}], [{"error": "#NUM!"}]]	Gnumeric 1.12
+T	CVMTEST(X OVER T)	[[0.9968074234554384], [7.772421990263547e-06]]	Gnumeric 1.12
+T	CVMTEST.STAT(X OVER T)	[[0.013009989250045529], [0.4347757818256217]]	Gnumeric 1.12
+T	CVMTEST(C OVER T)	[[0.0], [0.0]]	Gnumeric 1.12
+T	CVMTEST.STAT(C OVER T)	[[4.0], [4.0]]	Gnumeric 1.12
+T	LKSTEST(X OVER T)	[[0.9979198533765], [7.424770681016722e-05]]	Gnumeric 1.12
+T	LKSTEST.STAT(X OVER T)	[[0.08883407451901404], [0.36814701035136765]]	Gnumeric 1.12
+T	LKSTEST(C OVER T)	[[1.3142698392376243e-40], [1.3142698392376243e-40]]	Gnumeric 1.12
+T	LKSTEST.STAT(C OVER T)	[[1.0], [1.0]]	Gnumeric 1.12
+T	SFTEST(X OVER T)	[[0.9997350184272713], [7.264028145587037e-05]]	Gnumeric 1.12
+T	SFTEST.STAT(X OVER T)	[[0.992633679124756], [0.5307680405386104]]	Gnumeric 1.12
+T	SFTEST(C OVER T)	[[{"error": "#VALUE!"}], [{"error": "#VALUE!"}]]	Gnumeric 1.12
+T	SFTEST.STAT(C OVER T)	[[{"error": "#VALUE!"}], [{"error": "#VALUE!"}]]	Gnumeric 1.12
 @U	{"cats": {"T": 1}, "m": {"Z": [["T"], [[4]]]}}
 U	SSMEDIAN(Z OVER T)	[[4.0]]	Gnumeric 1.12
 @P	{"cats": {"T": 2}, "m": {"Z": [["T"], [[3, 8]]]}}

@@ -10,6 +10,7 @@ use crate::builtins::{err, n_or, num};
 use crate::CellValue;
 
 mod matrix;
+mod normality;
 mod series;
 
 type List = Result<Vec<CellValue>, u8>;
@@ -23,6 +24,11 @@ pub(super) fn reduce(id: u32, rows: &Rows, params: &[CellValue]) -> CellValue {
         1850 | 1851 => matrix::det(rows, id == 1851),
         1856 => ssmedian(rows, params),
         1857 => series::interpolation(rows, params),
+        1859..=1866 => {
+            use normality::Test::{Ad, Cvm, Lks, Sf};
+            let test = [Ad, Cvm, Lks, Sf][(id - 1859) as usize % 4];
+            normality::normality(rows, test).map(|(p, s)| if id < 1863 { p } else { s })
+        }
         _ => Err(err::NAME),
     };
     x.map_or_else(CellValue::Err, num)
