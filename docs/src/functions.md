@@ -487,6 +487,16 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `OFFTRAF(number, number)` | number | the offered traffic that carries traffic erlangs on circuits (#VALUE! if circuits cannot carry it) |
 | `DIMCIRC(number, number)` | number | the fewest circuits (up to 10⁶) that carry traffic erlangs with blocking at most gos, 0 < gos ≤ 1 |
 | `OFFCAP(number, number)` | number | the traffic circuits carry with blocking gos, 0 < gos < 1 |
+| `BERNOULLI(number, number)` | number | the Bernoulli probability of k (0 or 1) for success probability p |
+| `CAUCHY(number, number, boolean)` | number | the Cauchy distribution of scale a at x: density, or (as Gnumeric) the right tail P(X > x) |
+| `EXPPOWDIST(number, number, number)` | number | the exponential-power density of scale a and exponent b at x |
+| `GEOMDIST(number, number, boolean)` | number | the geometric probability of k failures before the first success: P(K = k), or P(K ≤ k) |
+| `LAPLACE(number, number)` | number | the Laplace density of width a at x |
+| `LOGISTIC(number, number)` | number | the logistic density of scale a at x |
+| `PARETO(number, number, number)` | number | the Pareto density of exponent a and scale b at x |
+| `RAYLEIGH(number, number)` | number | the Rayleigh density of scale σ at x |
+| `RAYLEIGHTAIL(number, number, number)` | number | the Rayleigh tail density (lower limit a, scale σ) at x |
+| `SNORM.DIST.RANGE(number, number)` | number | Φ(x2) − Φ(x1): the standard normal probability between x1 and x2 |
 | `SSMEDIAN(number OVER category, [number])` | number | the median of grouped data (Gnumeric): each value the midpoint of an interval of width interval (default 1), interpolated within the median's interval |
 | `INTERPOLATION(number OVER category, number OVER category, number, [number], [number])` | number | INTERPOLATION(xs, ys OVER T, target, [method], [next]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over [target, next] |
 | `HPFILTER(number OVER category, [number])` | number | each item's trend under the Hodrick–Prescott filter with smoothing λ (default 1600); the cycle is y − trend; needs 6 values |
