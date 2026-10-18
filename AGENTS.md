@@ -68,7 +68,8 @@ The full "tidy" gate — all must be error- AND warning-free:
    `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`,
    `make configure release test_release`, and `test/smoke.sh` with BOTH a
    DuckDB v1.5.6 CLI and a v2.0 CLI (`DUCKDB=...`): the binary must keep
-   loading into both (see its README, "Pins")
+   loading into both (see its README, "Pins"). `ci/duckdb_improv.sh <dir>`
+   runs all of it, as CI does
 
 `RUSTFLAGS=-Dwarnings` in CI: a warning is a failure. New code must not
 introduce warnings anywhere in the workspace.
@@ -139,18 +140,35 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
 - **GitHub** (`.github/workflows/`): `ci.yml` (fmt, clippy `-D warnings` on our
   crates only, typos, cargo-deny, matrix build+test on Linux/macOS/Windows ×
   default/all-features via nextest, MSRV, rustdoc+mdBook build, the
-  coverage gate, the GUI screenshot golden, and `pg_improv` on PG 15–18 via
-  `ci/pg_improv.sh`); `docs.yml` (guide + API on every push to main,
+  coverage gate, the GUI screenshot golden, `pg_improv` on PG 15–18 via
+  `ci/pg_improv.sh`, and `test-duckdb` via `ci/duckdb_improv.sh`); `docs.yml` (guide + API on every push to main,
   deployed to GitHub Pages, https://gburd.github.io/improv/); `release.yml`
   (on a `v*` tag: qualify on four targets, all four binaries per target,
   pg_improv packages per PG major, the GitHub Release from the CHANGELOG
-  section, the PGXN upload via `pgxn.yml`, and `ci/announce.sh` for X.Y.0
-  releases); `pgxn.yml` (called by every release, or run by hand with
+  section, the PGXN upload via `pgxn.yml`, the DuckDB extension
+  (`build-duckdb-ext`, linux_amd64, attached to the Release), the DuckDB
+  registry bump PR (`duckdb-registry-pr`, see below), and `ci/announce.sh`
+  for X.Y.0 releases); `pgxn.yml` (called by every release, or run by hand with
   `gh workflow run pgxn.yml -R gburd/improv -f tag=vX.Y.Z` for a tag that
   missed PGXN: builds `ci/pgxn-dist.sh`'s zip, uploads it, and waits until
   https://api.pgxn.org/dist/pg_improv.json lists the version; it FAILS when
   the `PGXN_USERNAME`/`PGXN_PASSWORD` secrets (PGXN Manager account
-  `gregburd`) are missing, so a release cannot skip PGXN silently).
+  `gregburd`) are missing, so a release cannot skip PGXN silently);
+  `duckdb.yml` (on pushes to main touching the DuckDB crates or the root
+  `Makefile`, or by hand with `gh workflow run duckdb.yml -R gburd/improv
+  --ref <branch>`: the registry's own reusable build,
+  `duckdb/extension-ci-tools/_extension_distribution.yml@v2.0-cyanoptera`
+  with the inputs the registry passes, on every platform the descriptor
+  does not exclude, then smoke tests the linux_amd64 artifact in DuckDB
+  v1.5.6 and v2.0).
+- **DuckDB Community Extensions:** the descriptor is
+  `crates/duckdb_improv/community-extensions/description.yml`. The first
+  registration is a manual PR to duckdb/community-extensions with
+  `repo.ref` = a commit `duckdb.yml` qualified. After that every `v*` tag's
+  `duckdb-registry-pr` job opens the bump PR from the fork
+  `gburd/community-extensions`; it FAILS without the `COMMUNITY_EXT_PAT`
+  secret, except while `extensions/improv/description.yml` is not yet in
+  the registry (404), when it skips with a notice.
 - **Codeberg/Forgejo** (`.forgejo/workflows/`): `pages.yml` builds the guide on
   Codeberg's hosted `codeberg-small` runner and publishes it to
   https://gregburd.codeberg.page/improv/ with `actions/git-pages` (the

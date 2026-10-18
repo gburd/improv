@@ -169,6 +169,24 @@ jobs:
       - name: pg_improv on PG ${{ matrix.pg }} (see .github/workflows/ci.yml)
         run: improv/ci/pg_improv.sh ${{ matrix.pg }}
 
+  # The DuckDB extension (see .github/workflows/ci.yml for the rationale).
+  test-duckdb:
+    runs-on: docker
+    container:
+      image: rust:1.97-trixie
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: improv
+          submodules: recursive
+      - name: Build deps
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends python3-venv ninja-build cmake unzip
+      - name: Toolchain components
+        run: rustup component add rustfmt clippy
+      - name: duckdb_improv (see .github/workflows/ci.yml)
+        run: improv/ci/duckdb_improv.sh "$PWD/duckdb-cli"
+
   deny:
     name: cargo-deny
     runs-on: docker

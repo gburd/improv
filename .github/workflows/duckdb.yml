@@ -1,0 +1,82 @@
+name: DuckDB extension
+
+# Qualify the `improv` DuckDB extension on every platform the DuckDB
+# Community Extensions registry builds, with the registry's own reusable
+# workflow and the same inputs its build.yml passes for our descriptor
+# (crates/duckdb_improv/community-extensions/description.yml). A green run
+# on a commit is what lets that commit be the descriptor's `repo.ref`.
+#
+# The registry tests only on macOS arm64 and Windows amd64 (linux_amd64 and
+# linux_arm64 skip tests), and its test venv is DuckDB 1.5.6. So
+# `cross-version` then loads the linux_amd64 artifact it built into the
+# DuckDB v1.5.6 and v2.0.0-alpha46057 CLIs: one binary, both versions
+# (crates/duckdb_improv/README.md, "Pins").
+#
+# Run by hand on any branch of the GitHub mirror:
+#   gh workflow run duckdb.yml -R gburd/improv --ref <branch>
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - crates/duckdb_improv/**
+      - crates/duckdb_model/**
+      - Makefile
+      - .github/workflows/duckdb.yml
+      - ci/duckdb-clis.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: duckdb-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The registry's build.yml at duckdb/community-extensions#3079: DuckDB
+  # b15358c3 (v2.0.0-alpha46057), ci-tools v2.0-cyanoptera. Keep these in
+  # step with it, and exclude_archs with the descriptor's excluded_platforms.
+  build:
+    name: Registry build
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera
+    with:
+      extension_name: improv
+      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
+      duckdb_tag: v2.0.0-alpha46057
+      ci_tools_version: v2.0-cyanoptera
+      extra_toolchains: rust;python3
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl
+      # Build every platform even on a PR-like event: this is qualification.
+      reduced_ci_mode: disabled
+
+  cross-version:
+    name: linux_amd64 artifact in DuckDB v1.5.6 and v2.0
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: improv-b15358c371daf10dad799a43b6167f6ccdce84d8-extension-linux_amd64
+          path: artifact
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build cmake unzip
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: duckdb-cli
+          key: duckdb-cli-v1.5.6-b15358c371-${{ runner.os }}
+      - name: DuckDB CLIs
+        run: ci/duckdb-clis.sh "$GITHUB_WORKSPACE/duckdb-cli"
+      - name: smoke.sh in both
+        run: |
+          ext="$(find artifact -name improv.duckdb_extension | head -1)"
+          test -n "$ext"
+          tail -c 600 "$ext" | strings | grep -qx C_STRUCT   # the stable ABI, not C_STRUCT_UNSTABLE
+          for v in v1.5.6 v2.0.0-alpha46057; do
+            EXT="$PWD/$ext" DUCKDB="$GITHUB_WORKSPACE/duckdb-cli/$v/duckdb" \
+              bash crates/duckdb_improv/test/smoke.sh
+          done

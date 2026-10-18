@@ -130,10 +130,58 @@ jobs:
           path: improv/dist/*
           if-no-files-found: error
 
+  # The DuckDB extension for linux_amd64, attached to the Release:
+  # improv-<ver>-duckdb-linux_amd64.tar.gz (improv.duckdb_extension, README).
+  # Stable C API: it loads into DuckDB v1.5.6 and v2.0, and is smoke tested
+  # in both before it is packaged. The registry builds every other platform
+  # (and signs them) from the descriptor; see duckdb-registry-pr.
+  build-duckdb-ext:
+    name: DuckDB extension (linux_amd64)
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv ninja-build cmake unzip
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: duckdb-cli
+          key: duckdb-cli-v1.5.6-b15358c371-${{ runner.os }}
+      - name: DuckDB CLIs
+        run: improv/ci/duckdb-clis.sh "$GITHUB_WORKSPACE/duckdb-cli"
+      - name: Build, test, smoke in v1.5.6 and v2.0, package
+        working-directory: improv
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${REF_NAME#v}"
+          test "$(sed -n 's/^version = "\(.*\)"/\1/p' crates/duckdb_improv/Cargo.toml | head -1)" = "$ver"
+          make configure release test_release
+          ext="$PWD/build/release/extension/improv/improv.duckdb_extension"
+          for v in v1.5.6 v2.0.0-alpha46057; do
+            EXT="$ext" DUCKDB="$GITHUB_WORKSPACE/duckdb-cli/$v/duckdb" bash crates/duckdb_improv/test/smoke.sh
+          done
+          staging="improv-${ver}-duckdb-linux_amd64"
+          mkdir -p "$staging" dist
+          cp "$ext" crates/duckdb_improv/README.md LICENSE-APACHE LICENSE-MIT "$staging/"
+          tar czf "dist/${staging}.tar.gz" "$staging"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-duckdb
+          path: improv/dist/*
+          if-no-files-found: error
+
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [qualify, extension]
+    needs: [qualify, extension, build-duckdb-ext]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -175,6 +223,83 @@ jobs:
     with:
       tag: ${{ github.ref_name }}
     secrets: inherit
+
+  # DuckDB Community Extensions: point extensions/improv/description.yml at
+  # this tag and open the PR upstream (a DuckDB maintainer merges it). The
+  # first registration is a manual PR, so until the registry has the
+  # descriptor (a 404) this skips with a notice. After that it FAILS without
+  # the COMMUNITY_EXT_PAT secret (a token that can push to the fork
+  # gburd/community-extensions and open PRs from it), so a release cannot
+  # skip the registry silently.
+  duckdb-registry-pr:
+    name: PR to duckdb/community-extensions
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Is improv in the registry yet?
+        id: registered
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" \
+            https://api.github.com/repos/duckdb/community-extensions/contents/extensions/improv/description.yml)
+          case "$code" in
+            200) echo "yes=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "::notice::extensions/improv/description.yml is not in duckdb/community-extensions yet; the first registration is a manual PR (crates/duckdb_improv/README.md, \"Registry\"). Skipping."
+                 echo "yes=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "::error::GitHub API answered $code for the registry descriptor"; exit 1 ;;
+          esac
+      - name: Require COMMUNITY_EXT_PAT
+        if: steps.registered.outputs.yes == 'true'
+        env:
+          COMMUNITY_EXT_PAT: ${{ secrets.COMMUNITY_EXT_PAT }}
+        run: |
+          if [ -z "$COMMUNITY_EXT_PAT" ]; then
+            echo "::error::COMMUNITY_EXT_PAT is not set on this repository, so this release cannot reach the DuckDB registry. Set it (gh secret set COMMUNITY_EXT_PAT -R gburd/improv) and re-run this job."
+            exit 1
+          fi
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        if: steps.registered.outputs.yes == 'true'
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Check out the fork of community-extensions
+        if: steps.registered.outputs.yes == 'true'
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          repository: gburd/community-extensions
+          token: ${{ secrets.COMMUNITY_EXT_PAT }}
+          path: community-extensions
+      - name: Point the descriptor at this tag
+        if: steps.registered.outputs.yes == 'true'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p community-extensions/extensions/improv
+          sed -e "s/^  version:.*/  version: ${REF_NAME#v}/" \
+              -e "s/^  ref:.*/  ref: ${SHA}/" \
+              improv/crates/duckdb_improv/community-extensions/description.yml \
+              > community-extensions/extensions/improv/description.yml
+          grep -q "^  ref: ${SHA}$" community-extensions/extensions/improv/description.yml
+      - name: Open or update the upstream PR
+        if: steps.registered.outputs.yes == 'true'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.COMMUNITY_EXT_PAT }}
+          path: community-extensions
+          push-to-fork: gburd/community-extensions
+          branch: improv-${{ github.ref_name }}
+          commit-message: "improv ${{ github.ref_name }}"
+          title: "Update improv to ${{ github.ref_name }}"
+          body: |
+            Descriptor bump for improv ${{ github.ref_name }} (commit ${{ github.sha }}).
+            Stable C API (v1.5.6 floor): qualified with the registry's own build
+            (extension-ci-tools v2.0-cyanoptera, DuckDB v2.0.0-alpha46057) and
+            smoke tested in DuckDB v1.5.6 and v2.0 by gburd/improv's
+            duckdb.yml and release.yml.
 
   # postgresql.org news (which feeds pgsql-announce): feature and major
   # releases only. ci/announce.sh skips a patch release unless its CHANGELOG
