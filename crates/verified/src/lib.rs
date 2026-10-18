@@ -11,5 +11,7 @@
 //! `f64`), so every kernel takes and returns integers; the engine does the
 //! float range checks and truncation before calling in.
 
+pub mod bits;
 pub mod gcd;
 pub mod keys;
+pub mod radix;

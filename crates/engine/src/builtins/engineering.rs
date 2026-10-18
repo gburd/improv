@@ -4,6 +4,7 @@
 
 use super::{domain, err, n, n_or, ok_num, ok_text, t, R};
 use crate::CellValue;
+use improv_verified::{bits as vbits, radix};
 
 mod complex;
 mod convert;
@@ -45,9 +46,9 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
                 .collect(),
         ),
         // --- bits ---
-        1315 => ok_num((bits(x(0)?)? & bits(x(1)?)?) as f64),
-        1316 => ok_num((bits(x(0)?)? | bits(x(1)?)?) as f64),
-        1317 => ok_num((bits(x(0)?)? ^ bits(x(1)?)?) as f64),
+        1315 => ok_num(vbits::and(bits(x(0)?)?, bits(x(1)?)?) as f64),
+        1316 => ok_num(vbits::or(bits(x(0)?)?, bits(x(1)?)?) as f64),
+        1317 => ok_num(vbits::xor(bits(x(0)?)?, bits(x(1)?)?) as f64),
         1318 => shift(x(0)?, x(1)?.floor()),
         1319 => shift(x(0)?, -x(1)?.floor()),
         // --- tests ---
@@ -80,22 +81,26 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
 
 /// Argument 0 as digits in `base`: at most 10 of them; 10 digits whose
 /// first is at least `base / 2` are negative (10-digit two's complement).
-/// Empty text is 0.
+/// Empty text is 0. The arithmetic is [`radix::decode`], proven.
 fn from_base(a: &[CellValue], base: u32) -> Result<i64, u8> {
     if matches!(a.first(), Some(CellValue::Bool(_))) {
         return Err(err::VALUE);
     }
     let s = t(a, 0)?;
     domain(s.chars().count() <= 10)?;
-    let mut v: i64 = 0;
-    for c in s.chars() {
-        v = v * i64::from(base) + i64::from(c.to_digit(base).ok_or(err::NUM)?);
-    }
-    let first = s.chars().next().and_then(|c| c.to_digit(base));
-    if s.len() == 10 && first >= Some(base / 2) {
-        v -= i64::from(base).pow(10);
-    }
-    Ok(v)
+    // Digit values 0–35; one not below `base` is rejected by `decode`.
+    let ds = s
+        .chars()
+        .map(|c| c.to_digit(36).map(|d| d as u8).ok_or(err::NUM))
+        .collect::<Result<Vec<u8>, u8>>()?;
+    radix::decode(&ds, base).ok_or(err::NUM)
+}
+
+/// Digit values (each below `base`, as [`radix`] proves) as uppercase text.
+fn digit_text(ds: &[u8], base: u32) -> String {
+    ds.iter()
+        .map(|&d| char::from_digit(u32::from(d), base).map_or('0', |c| c.to_ascii_uppercase()))
+        .collect()
 }
 
 /// A decimal argument, truncated (its range is checked by [`to_base`]).
@@ -109,8 +114,8 @@ fn dec(x: f64) -> Result<i64, u8> {
 /// two's complement. A non-negative `v` is zero-padded to `places` (1–10,
 /// truncated); a negative one is always 10 digits.
 fn to_base(v: i64, base: u32, places: Option<f64>) -> R {
-    let full = i64::from(base).pow(10);
-    domain(-full / 2 <= v && v < full / 2)?;
+    // Proven: `None` exactly out of range, else ≤ 10 digits that decode to `v`.
+    let ds = radix::encode(v, base).ok_or(err::NUM)?;
     let places = match places {
         Some(p) => {
             let p = p.trunc();
@@ -119,12 +124,7 @@ fn to_base(v: i64, base: u32, places: Option<f64>) -> R {
         }
         None => 0,
     };
-    let u = if v < 0 { v + full } else { v };
-    let digits = match base {
-        2 => format!("{u:b}"),
-        8 => format!("{u:o}"),
-        _ => format!("{u:X}"),
-    };
+    let digits = digit_text(&ds, base);
     if v < 0 {
         return ok_text(digits);
     }
@@ -144,16 +144,7 @@ fn radix(r: f64) -> Result<u32, u8> {
 fn base(x: f64, r: f64, min_len: f64) -> R {
     let (x, r, min_len) = (x.trunc(), radix(r)?, min_len.trunc());
     domain((0.0..9_007_199_254_740_992.0).contains(&x) && (0.0..=255.0).contains(&min_len))?;
-    let mut u = x as u64;
-    let mut digits = Vec::new();
-    loop {
-        digits.push(char::from_digit((u % u64::from(r)) as u32, r).unwrap_or('0'));
-        u /= u64::from(r);
-        if u == 0 {
-            break;
-        }
-    }
-    let s: String = digits.iter().rev().collect::<String>().to_uppercase();
+    let s = digit_text(&radix::to_digits(x as u64, r), r);
     let width = min_len as usize;
     ok_text(format!("{s:0>width$}"))
 }
@@ -183,10 +174,12 @@ fn bits(x: f64) -> Result<u64, u8> {
 fn shift(x: f64, by: f64) -> R {
     let x = bits(x)?;
     domain(by.abs() <= 53.0)?;
+    // Proven exact (`x · 2ⁿ < 2¹⁰¹`, so exact in f64 too: ≤ 48 significant
+    // bits) and in range.
     if by >= 0.0 {
-        ok_num(x as f64 * 2f64.powi(by as i32))
+        ok_num(vbits::shl(x, by as u32) as f64)
     } else {
-        ok_num((x >> (-by) as u32) as f64)
+        ok_num(vbits::shr(x, (-by) as u32) as f64)
     }
 }
 

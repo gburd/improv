@@ -204,6 +204,9 @@ What is proven:
 |--------|---------|--------|
 | `gcd::gcd` | `GCD`, `LCM`, the number-theory functions | The result is Euclid's gcd: it divides both arguments, every common divisor divides it, and `gcd(a, 0) = a`. |
 | `gcd::lcm_below` | `LCM` | The result is a positive common multiple, `a / gcd(a, b) · b`; it is `None` exactly when that reaches the cap (2⁵³), so the overflow check neither misses nor over-rejects. |
+| `radix::encode` / `decode` | `DEC2BIN`, `BIN2DEC`, … (radix 2, 8, 16) | `decode(encode(v)) = v` for every `v` in [−r¹⁰/2, r¹⁰/2); `encode` is `None` exactly outside that range; its digits are each below the radix, at most 10, and 10 for a negative `v`. `decode` rejects more than 10 digits or a digit not below the radix, and otherwise means exactly 10-digit two's complement. |
+| `radix::to_digits` | `BASE`, and the above | The digits (radix 2–36) are each below the radix, have no leading zero, and are worth exactly the input. |
+| `bits::and` / `or` / `xor` / `shl` / `shr` | `BITAND`, `BITOR`, `BITXOR`, `BITLSHIFT`, `BITRSHIFT` | For operands below 2⁴⁸: every result stays below 2⁴⁸; `and` is at most either operand, `or` at least; `shl` is exactly `x · 2ⁿ` (below 2¹⁰¹, no overflow) and `shr` exactly `⌊x / 2ⁿ⌋` for shifts up to 53. |
 | `keys::project` | every join key and group-by (`project_key`) | Exactly the pairs whose category is kept, in their order; a sorted key projects to a sorted key. |
 | `keys::union_keys` | every dimensional join | A merge of two sorted keys: sorted with no category twice, contains every pair of both when they agree on shared categories, and nothing else. |
 
