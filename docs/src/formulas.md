@@ -421,6 +421,16 @@ Arguments are expressions and broadcast like a binary operator's operands:
 `ROUND(Revenue / Units, 2)` ranges over the union of the arguments'
 categories. A literal argument costs nothing extra.
 
+**R-style distributions.** `R.DNAME(x, params…, [give_log])` is the
+density or mass at x (or its logarithm); `R.PNAME(x, params…,
+[lower_tail], [log_p])` is P(X ≤ x), or P(X > x) when `lower_tail` is
+FALSE, as a logarithm when `log_p` is TRUE; `R.QNAME(p, …)` inverts it,
+reading p the same way (a discrete quantile is the smallest k with P(X ≤ k)
+≥ p). Parameters out of range are #NUM!. `CAUCHY(x, a, TRUE)` is the right
+tail P(X > x), as in Gnumeric. Improv does not copy Gnumeric's defects:
+`CUM_BIV_NORM_DIST` is exact (Owen's formula), `R.DSNORM` is right for a
+non-zero location, `R.PST` honours `log_p`.
+
 **Math extras** follow Gnumeric, within Improv's limits so every call is
 quick: `ITHPRIME` and `NT_PI` stop at the 10⁷-th prime, `PARTITIONS` at n =
 4000, the Erlang functions at 10⁶ circuits, other number theory at 2⁵²;
@@ -593,9 +603,9 @@ The engine evaluates input-measure references, literals (standalone or as
 operands), unary negation and `NOT`, the arithmetic, logical and comparison
 operators, dimension-aligning joins, aggregations (several measures,
 parameters, `WHERE`, windows, per-item results such as `RANK`, lookups,
-list results with `INTO`), `LET` and `LAMBDA`, the 418
+list results with `INTO`), `LET` and `LAMBDA`, the 674
 built-in functions of the [Function Reference](./functions.md) (math,
-rounding, text, dates, statistics and distributions, financial), the lazy
+rounding, text, dates, statistics and distributions, financial, engineering), the lazy
 `IF` family, positions and neighbours (`POSITION`, `PREV`, `NEXT`),
 recurrences, typed error values, non-numeric (Text, Boolean, DateTime)
 values, and derived measures that reference other derived measures.

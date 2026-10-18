@@ -1,9 +1,9 @@
 # Built-in functions: a five-product inventory and a plan for Improv
 
 Date: 2026-10-16 · Status: **approved 2026-10-16, with the §9 decisions
-below. P1–P6 built (2026-10-17); P7 open.**
+below. P1–P7 built (2026-10-18).**
 
-## Status (2026-10-17)
+## Status (2026-10-18)
 
 | Phase | Shipped | Deferred |
 |---|---|---|
@@ -13,11 +13,13 @@ below. P1–P6 built (2026-10-17); P7 open.**
 | P4 | 54 special functions and distributions, 72 reductions (descriptive, conditional, per-item ranks and fits, regression, tests, `AUTOCORREL`) | — (array results came with P6) |
 | P5 | 49 TVM, depreciation and bond functions; `NPV`, `XNPV`, `IRR`, `XIRR`, `MIRR`, `FMRR`, `FVSCHEDULE` | — |
 | P6 | lookups (`XLOOKUP`, `XMATCH`, `MATCH`, `LOOKUP`, `INDEX`, `SELECT` family), `DGET` and the D-functions as aliases, `ARRAYTOTEXT`; list results with `INTO` (`SORT`, `UNIQUE`, `FILTER`, `SORTBY`, `TAKE`, `DROP`, `MODE.MULT`, `LINEST`, `LOGEST`, `TEXTSPLIT`, `FREQUENCY`); `LET`, `LAMBDA`, `MAP`, `SCAN`, `REDUCE` | `ARRAY`. (Later in P6: named LAMBDAs, `SELECTLIST`, `SELECTS`, `SEQUENCE`, `MAKEARRAY`, `BYROW`, `BYCOL`, 2-D `INTO R, C`, multi-key `SORTBY`, multi-x `LINEST`/`LOGEST`.) |
+| P7 | 72 engineering (bases, bits, 45 complex, Bessel, `CONVERT`); 46 math extras (number theory, `LAMBERTW`, calendars incl. Hebrew, Erlang-B, `ROMAN`/`ARABIC`, `ASC`/`JIS`, `BAHTTEXT`); 72 distributions (Gnumeric's and the `R.*` kernels with Tukey); 32 option-pricing functions; 30 analysis reductions (matrices, normality tests, `HPFILTER`, `INTERPOLATION`, `FOURIER`, `PERIODOGRAM`, `LOGREG`/`LOGFIT`, `CRONBACH`, `FORECAST.ETS`) | `MMULT`/`LINSOLVE` (a shared-category join plus `SUM` does it); seasonal `FORECAST.ETS.CONFINT` (LibreOffice simulates it); `@DESCRIPTOR`/`@LEVEL` (no item descriptors or groups in the model) |
 
-418 functions (plus aliases), all in `docs/src/functions.md`
-(generated). 1,831 literal goldens and about 1,350 reduction cells, mostly from
-LibreOffice 25.8 headless; the rest from the Excel, Gnumeric, Numbers,
-Quantrix and Oleo sources.
+674 functions (plus aliases), all in `docs/src/functions.md`
+(generated). 4,103 golden rows: literal ones through both evaluators, and
+reduction ones over small models. Sources: LibreOffice 25.2/25.8 headless,
+Gnumeric 1.12.57, mpmath where both are wrong, and the Excel, Numbers,
+Quantrix and Oleo docs.
 
 ## Decisions (2026-10-16)
 

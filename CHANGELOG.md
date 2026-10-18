@@ -6,12 +6,23 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Phases P1–P6 of the built-in functions plan: 418 functions (plus
+Phases P1–P7 of the built-in functions plan: 674 functions (plus
 aliases) with Excel's names, typed errors, the `IF` family,
 positional forms and recurrences, lookups, list results, `LET` and
 `LAMBDA`, and locale-aware entry.
 
 ### Added
+
+- **Distributions** (phase P7, 72): Gnumeric's `BERNOULLI`, `CAUCHY`,
+  `EXPPOWDIST`, `GEOMDIST`, `LANDAU`, `LAPLACE`, `LOGISTIC`, `PARETO`,
+  `RAYLEIGH`, `RAYLEIGHTAIL`, `SNORM.DIST.RANGE`, `OWENT`,
+  `CUM_BIV_NORM_DIST`; and the R-style `R.D*`/`R.P*`/`R.Q*` for BETA,
+  BINOM, CAUCHY, CHISQ, EXP, F, GAMMA, GEOM, GUMBEL, HYPER, LNORM, NBINOM,
+  NORM, POIS, RAYLEIGH, SNORM (skew-normal), ST (skew-t), T and WEIBULL,
+  plus `R.PTUKEY`/`R.QTUKEY`, with R's `lower_tail` and `log_p` flags. 456
+  goldens (Gnumeric 1.12.57; mpmath where Gnumeric is wrong: its bivariate
+  normal is ½ too high for some sign combinations, `R.DSNORM` is wrong off
+  location 0, `R.PST` ignores `log_p`).
 
 - **Analysis reductions** (phase P7, 30): matrices as a measure over two
   categories (`MDETERM(A OVER R, C)`, `LOGMDETERM`, `MINVERSE`,

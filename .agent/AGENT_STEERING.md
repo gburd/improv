@@ -62,9 +62,8 @@ typed errors, `^ & %`, German entry, dates, positions/recurrences, lookups,
 list results via `INTO` (also `INTO R, C`), `LET`/`LAMBDA`/`MAP`/`SCAN`/
 `REDUCE`/`MAKEARRAY`/`BYROW`/`BYCOL`, named LAMBDAs (`Model::lambdas`,
 expanded at compile time; non-recursive: the language stays total),
-multi-x `LINEST`, multi-key `SORTBY`. **IN PROGRESS:** P7 (engineering,
-math extras, distributions, options, analysis) on per-family modules
-(`095d21e`); pg_improv `commit` sync mode. Mentat is `mentatdb` 1.16.0 from
+multi-x `LINEST`, multi-key `SORTBY`. P7 DONE (674 functions, 4,103 golden
+rows). **IN PROGRESS:** pg_improv `commit` sync mode. Mentat is `mentatdb` 1.16.0 from
 crates.io (`6eb9023`).
 
 ## Released: v0.7.0 (2026-09-24)
