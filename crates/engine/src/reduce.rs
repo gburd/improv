@@ -226,6 +226,11 @@ mod tests {
         );
         assert_eq!(r.len(), 3);
         assert!(!r.is_empty());
+        // An array function's error parameter is its whole result.
+        assert_eq!(
+            array(FuncId(1250), &r, &[CellValue::Err(err::NA)]),
+            vec![CellValue::Err(err::NA)]
+        );
         // TEXTJOIN: an error value or separator, and an over-long result.
         let te = rows(vec![CellValue::Text("a".into()), CellValue::Err(err::NUM)]);
         assert_eq!(

@@ -448,6 +448,22 @@ mod tests {
     }
 
     #[test]
+    fn sort_and_unique() {
+        let v = col(&[n(3.0), text("b"), n(1.0), n(3.0)]);
+        let up = [n(1.0), n(3.0), n(3.0), text("b")];
+        assert_eq!(array(1250, &v, &[]), up);
+        assert_eq!(array(1250, &v, &[n(1.0)]), up);
+        let mut down = up.clone();
+        down.reverse();
+        assert_eq!(array(1250, &v, &[n(-1.0)]), down);
+        // UNIQUE: first occurrences in item order, or (exactly_once) only
+        // the values that occur once.
+        assert_eq!(array(1251, &v, &[]), [n(3.0), text("b"), n(1.0)]);
+        let once = [CellValue::Bool(true)];
+        assert_eq!(array(1251, &v, &once), [text("b"), n(1.0)]);
+    }
+
+    #[test]
     fn sort_order_ranks_kinds() {
         use std::cmp::Ordering::*;
         assert_eq!(order(&n(1.0), &text("a")), Less);
