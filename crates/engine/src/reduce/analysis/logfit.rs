@@ -189,6 +189,13 @@ mod tests {
         // A straight line bends neither way.
         let line = yx(&[1.0, 2.0, 3.0, 4.0], &[1.0, 2.0, 3.0, 4.0]);
         assert_eq!(logfit(&line), Err(err::NUM));
+        // A point that is not a number is skipped; three left.
+        let mut t = yx(&[1.0, 2.0, 2.5, 2.8], &[1.0, 2.0, 3.0, 4.0]);
+        t.vals[0][0] = CellValue::Text("x".into());
+        assert!(logfit(&t).is_ok());
+        // Constant y is never logarithmic.
+        assert_eq!(logfit(&yx(&[5.0; 4], &[1.0, 2.0, 3.0, 4.0])), Err(err::NUM));
+        assert_eq!(average(&[2.0, 2.0]), 2.0);
     }
 
     #[test]
@@ -197,6 +204,9 @@ mod tests {
         let mut t = yx(&[1.0, 2.0], &[1.0, 2.0]);
         t.vals[1][1] = CellValue::Text("x".into());
         assert_eq!(logreg(&t, &[]), Err(err::VALUE));
+        // LINEST's own error (a bad const flag).
+        let ok = yx(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]);
+        assert_eq!(logreg(&ok, &[CellValue::Text("x".into())]), Err(err::VALUE));
         assert_eq!(fake_round(2.5), 3.0);
         assert_eq!(fake_round(-2.5), -3.0);
         assert_eq!(fake_round(2.4), 2.0);

@@ -509,6 +509,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `FORECAST.ETS.STAT(number OVER category, date OVER category, number, [number], [number], [number])` | number | FORECAST.ETS.STAT(values, timeline OVER T, type, …): a statistic of FORECAST.ETS's fit: 1 α, 2 β (trend), 3 γ (season), 4 MASE, 5 SMAPE, 6 MAE, 7 RMSE, 8 step, 9 seasonality (also `FORECAST.ETS.STAT.ADD`) |
 | `FORECAST.ETS.STAT.MULT(number OVER category, date OVER category, number, [number], [number], [number])` | number | FORECAST.ETS.STAT.MULT(values, timeline OVER T, type, …): FORECAST.ETS.STAT of the multiplicative model |
 | `FORECAST.ETS.SEASONALITY(number OVER category, date OVER category, [number], [number])` | number | FORECAST.ETS.SEASONALITY(values, timeline OVER T, [data_completion], [aggregation]): the season length FORECAST.ETS detects (1: none) |
+| `LEVERAGE(Measure OVER Category)` | number | LEVERAGE(A OVER R, C INTO K): the regression leverages, the diagonal of A·(AᵀA)⁻¹·Aᵀ, one per row of A (Gnumeric); #NUM! if A's columns are dependent |
 
 ## Financial
 

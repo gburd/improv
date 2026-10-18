@@ -68,6 +68,10 @@ DATA = {
         "A": [["R", "C"], [[1, 2, 3, 4, 5, 6.5]]],
         "Z": [["R", "C"], [[0, 0, 0, 0, 0, 0]]],
     }},
+    "Y": {"cats": {"R": 6, "C": 2, "G": 2, "K": 7}, "m": {
+        "A": [["R", "C"], [[1, 1, 1, 2, 1, 3, 1, 4, 1, 5, 1, 12],
+                           [1, 0.5, 1, -2, 1, 3.5, 1, 1, 1, 0, 1, 2]]],
+    }},
     "V": {"cats": {"R": 3, "C": 2, "P": 2, "Q": 3}, "m": {
         "A": [["R", "C"], [[1, 2, 2, 4, 3, 6]]],
     }},
@@ -170,6 +174,13 @@ case("W", "MPSEUDOINVERSE(A OVER R, C INTO P, Q)", GN)
 case("W", "MPSEUDOINVERSE(A OVER R, C INTO K)", GN)
 case("W", "MPSEUDOINVERSE(Z OVER R, C INTO P, Q)", GN)
 case("V", "MPSEUDOINVERSE(A OVER R, C INTO P, Q)", GN)
+# LEVERAGE: a design matrix (constant column and x), square, rank-deficient
+# and wide.
+case("Y", "LEVERAGE(A OVER R, C INTO K)", GN)
+case("M", "LEVERAGE(A OVER R, C INTO P)", GN)
+case("M", "LEVERAGE(S OVER R, C INTO P)", GN)
+case("V", "LEVERAGE(A OVER R, C INTO Q)", GN)
+case("W", "LEVERAGE(A OVER R, C INTO K)", GN)
 
 
 # --- group 2: decompositions (Gnumeric) ----------------------------------------

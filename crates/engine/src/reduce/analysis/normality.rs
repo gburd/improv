@@ -205,6 +205,22 @@ mod tests {
         let many: Vec<f64> = (0..150).map(|i| f64::from(i * i % 97)).collect();
         let (p, d) = normality(&rows(&many), Test::Lks).unwrap();
         assert!((0.0..=1.0).contains(&p) && d > 0.0);
+        // Every p-value band of the four tests: samples from normal to
+        // heavily skewed.
+        let mut bands = std::collections::BTreeSet::new();
+        for k in 0..60 {
+            let xs: Vec<f64> = (1..=20)
+                .map(|i| {
+                    let u = (f64::from(i) - 0.5) / 20.0;
+                    qnorm(u) + f64::from(k) * 0.05 * (3.0 * u).exp()
+                })
+                .collect();
+            for (t, name) in [(Test::Ad, "ad"), (Test::Cvm, "cvm"), (Test::Lks, "lks")] {
+                let (p, _) = normality(&rows(&xs), t).unwrap();
+                bands.insert((name, (p * 10.0) as u8));
+            }
+        }
+        assert!(bands.len() > 12, "{bands:?}");
         // A wild outlier: p = 0 in Cramér–von Mises's last branch.
         let mut out = vec![0.0; 40];
         out[39] = 1e6;

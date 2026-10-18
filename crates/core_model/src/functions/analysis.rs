@@ -45,4 +45,5 @@ pub(super) static ANALYSIS: &[FnDef] = &[
     alias(over(f(1876, "FORECAST.ETS.STAT", Ag, St, &[N, DL, N, N, N, N], 3, false, NUM, "FORECAST.ETS.STAT(values, timeline OVER T, type, …): a statistic of FORECAST.ETS's fit: 1 α, 2 β (trend), 3 γ (season), 4 MASE, 5 SMAPE, 6 MAE, 7 RMSE, 8 step, 9 seasonality"), Over::At(&[0, 1])), &["FORECAST.ETS.STAT.ADD"]),
     over(f(1877, "FORECAST.ETS.STAT.MULT", Ag, St, &[N, DL, N, N, N, N], 3, false, NUM, "FORECAST.ETS.STAT.MULT(values, timeline OVER T, type, …): FORECAST.ETS.STAT of the multiplicative model"), Over::At(&[0, 1])),
     over(f(1878, "FORECAST.ETS.SEASONALITY", Ag, St, &[N, DL, N, N], 2, false, NUM, "FORECAST.ETS.SEASONALITY(values, timeline OVER T, [data_completion], [aggregation]): the season length FORECAST.ETS detects (1: none)"), Over::At(&[0, 1])),
+    over(f(1879, "LEVERAGE", Ar, St, &[N], 1, false, NUM, "LEVERAGE(A OVER R, C INTO K): the regression leverages, the diagonal of A·(AᵀA)⁻¹·Aᵀ, one per row of A (Gnumeric); #NUM! if A's columns are dependent"), Over::At(&[0])),
 ];

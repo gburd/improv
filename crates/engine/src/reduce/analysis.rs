@@ -188,6 +188,7 @@ pub(super) fn array(id: u32, rows: &Rows, params: &[CellValue]) -> Vec<CellValue
         1868 => logfit::logfit(rows),
         1869 => signal::fourier(rows, params),
         1870 => signal::periodogram(rows, params),
+        1879 => matrix::leverage(rows),
         _ => Err(err::NAME),
     };
     out.unwrap_or_else(|c| vec![CellValue::Err(c)])

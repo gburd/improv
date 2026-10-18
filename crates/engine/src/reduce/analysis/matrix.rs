@@ -409,6 +409,24 @@ pub(super) fn eigen(rows: &Rows) -> List {
     Ok(out.list())
 }
 
+/// LEVERAGE(a OVER R, C INTO K): the diagonal of A (AᵀA)⁻¹ Aᵀ, one value
+/// per row of A (Gnumeric): Σₖ U²ᵢₖ over A's singular vectors. A matrix
+/// without full column rank (by Gnumeric's 256 ε rule) is #NUM!.
+pub(super) fn leverage(rows: &Rows) -> List {
+    let m = read(rows)?;
+    if m.r < m.c {
+        return Err(err::NUM);
+    }
+    let (u, s, _) = svd(&m);
+    let top = s.iter().copied().fold(0.0, f64::max);
+    if s.iter().any(|x| *x <= top * THRESHOLD) {
+        return Err(err::NUM);
+    }
+    Ok((0..m.r)
+        .map(|i| CellValue::num((0..m.c).map(|k| u.at(i, k).powi(2)).sum()))
+        .collect())
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {

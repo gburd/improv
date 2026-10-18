@@ -657,6 +657,13 @@ mod tests {
         let dup = ets(Kind::Add, &rows(&dy, &dx), &num(&[10.0, 0.0])).unwrap();
         assert_eq!(plain, dup);
         assert_eq!(aggregate(&[1.0, 4.0, 2.0, 3.0], 5), 2.5);
+        assert_eq!(aggregate(&[1.0, 4.0, 2.0], 5), 2.0);
+        // Repeated x at the end of the series.
+        let mut ey = ys.to_vec();
+        let mut ex = xs.to_vec();
+        ey.push(13.0);
+        ex.push(8.0);
+        assert!(ets(Kind::Add, &rows(&ey, &ex), &num(&[10.0, 0.0])).is_ok());
     }
 
     #[test]
