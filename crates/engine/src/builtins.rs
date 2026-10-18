@@ -1295,6 +1295,40 @@ mod tests {
         assert_eq!(date_plus_days(i64::MAX - 1, 1.0), CellValue::Err(err::NUM));
     }
 
+    /// Branches the goldens leave to one binary, checked against
+    /// LibreOffice 25.2.
+    #[test]
+    fn scalar_edges_against_libreoffice() {
+        let (x, s) = (CellValue::num, |v: &str| CellValue::Text(v.into()));
+        let e = CellValue::Err;
+        let ev = |id: u32, a: &[CellValue]| eval(FuncId(id), a);
+        // BETWEEN false (inclusive) on either side, ISERR of #N/A and of
+        // another error, SIGN of a negative.
+        assert_eq!(ev(38, &[x(5.0), x(1.0), x(3.0)]), CellValue::Bool(false));
+        assert_eq!(ev(38, &[x(0.0), x(1.0), x(3.0)]), CellValue::Bool(false));
+        assert_eq!(ev(51, &[e(err::NA)]), CellValue::Bool(false));
+        assert_eq!(ev(51, &[e(err::DIV0)]), CellValue::Bool(true));
+        assert_eq!(ev(100, &[x(-2.0)]), x(-1.0));
+        assert_eq!(ev(100, &[x(0.0)]), x(0.0));
+        // ATAN2(0, y), ATANH(-1), FACTDOUBLE(5), MROUND(0, 5).
+        assert_eq!(ev(121, &[x(0.0), x(1.0)]), x(std::f64::consts::FRAC_PI_2));
+        assert_eq!(ev(127, &[x(-1.0)]), e(err::NUM));
+        assert_eq!(ev(142, &[x(5.0)]), x(15.0));
+        assert_eq!(ev(211, &[x(0.0), x(5.0)]), x(0.0));
+        // MID and REPLACE with a negative length (LibreOffice Err:502).
+        assert_eq!(ev(312, &[s("abc"), x(1.0), x(-1.0)]), e(err::VALUE));
+        assert_eq!(ev(317, &[s("abc"), x(1.0), x(-1.0), s("x")]), e(err::VALUE));
+        // ROUND of a value already past 15 digits, of 0 and of infinity.
+        assert_eq!(round_to(1e20, 2.0, Dir::HalfAway), 1e20);
+        assert_eq!(round_to(0.0, 2.0, Dir::HalfAway), 0.0);
+        assert_eq!(sig15(f64::INFINITY), f64::INFINITY);
+        // SEARCH: a ? past the end of the text matches nothing.
+        assert_eq!(ev(309, &[s("a?"), s("a")]), e(err::VALUE));
+        // A serial or day count that overflows milliseconds.
+        assert_eq!(d(&[x(f64::NAN)], 0), Err(err::NUM));
+        assert_eq!(date_plus_days(0, f64::NAN), e(err::NUM));
+    }
+
     #[test]
     fn text_positions_are_characters() {
         let s = |x: &str| CellValue::Text(x.into());
