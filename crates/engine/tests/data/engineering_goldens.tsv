@@ -1,0 +1,119 @@
+formula	expected	source
+BIN2DEC("1100100")	100	LibreOffice
+BIN2DEC("1111111111")	-1	LibreOffice
+BIN2DEC(101)	5	LibreOffice
+BIN2DEC("")	0	LibreOffice
+BIN2DEC("11111111111")	{"error": "#NUM!"}	LibreOffice
+BIN2DEC("2")	{"error": "#NUM!"}	LibreOffice
+BIN2HEX("11111011",4)	"00FB"	LibreOffice
+BIN2HEX("1110")	"E"	LibreOffice
+BIN2HEX("1111111111")	"FFFFFFFFFF"	LibreOffice
+BIN2HEX("1111111111",3)	"FFFFFFFFFF"	LibreOffice
+BIN2HEX("1",0)	{"error": "#NUM!"}	LibreOffice
+BIN2HEX("1",10.9)	"0000000001"	LibreOffice
+BIN2OCT("1001",3)	"011"	LibreOffice
+BIN2OCT("1100100")	"144"	LibreOffice
+BIN2OCT("1111111111")	"7777777777"	LibreOffice
+BIN2OCT("1001",1)	{"error": "#NUM!"}	LibreOffice
+DEC2BIN(9,4)	"1001"	LibreOffice
+DEC2BIN(-100)	"1110011100"	LibreOffice
+DEC2BIN(9.9)	"1001"	LibreOffice
+DEC2BIN(-512)	"1000000000"	LibreOffice
+DEC2BIN(512)	{"error": "#NUM!"}	LibreOffice
+DEC2BIN(3,0)	{"error": "#NUM!"}	LibreOffice
+DEC2BIN(-3,11)	{"error": "#NUM!"}	LibreOffice
+DEC2HEX(100,4)	"0064"	LibreOffice
+DEC2HEX(-54)	"FFFFFFFFCA"	LibreOffice
+DEC2HEX(28)	"1C"	LibreOffice
+DEC2HEX(549755813887)	"7FFFFFFFFF"	LibreOffice
+DEC2HEX(549755813888)	{"error": "#NUM!"}	LibreOffice
+DEC2HEX(64,1)	{"error": "#NUM!"}	LibreOffice
+DEC2OCT(58,3)	"072"	LibreOffice
+DEC2OCT(-100)	"7777777634"	LibreOffice
+DEC2OCT(536870911)	"3777777777"	LibreOffice
+DEC2OCT(-536870913)	{"error": "#NUM!"}	LibreOffice
+DEC2OCT(0)	"0"	LibreOffice
+HEX2BIN("F",8)	"00001111"	LibreOffice
+HEX2BIN("B7")	"10110111"	LibreOffice
+HEX2BIN("FFFFFFFE00")	"1000000000"	LibreOffice
+HEX2BIN("FFFFFFFDFF")	{"error": "#NUM!"}	LibreOffice
+HEX2BIN("200")	{"error": "#NUM!"}	LibreOffice
+HEX2DEC("A5")	165	LibreOffice
+HEX2DEC("FFFFFFFF5B")	-165	LibreOffice
+HEX2DEC("3DA408B9")	1034160313	LibreOffice
+HEX2DEC("fffffffffe")	-2	LibreOffice
+HEX2DEC("G")	{"error": "#NUM!"}	LibreOffice
+HEX2DEC("12345678901")	{"error": "#NUM!"}	LibreOffice
+HEX2OCT("F",3)	"017"	LibreOffice
+HEX2OCT("3B4E")	"35516"	LibreOffice
+HEX2OCT("FFFFFFFF00")	"7777777400"	LibreOffice
+HEX2OCT("FFDFFFFFFF")	{"error": "#NUM!"}	LibreOffice
+OCT2BIN("3",3)	"011"	LibreOffice
+OCT2BIN("7777777000")	"1000000000"	LibreOffice
+OCT2BIN("1000")	{"error": "#NUM!"}	LibreOffice
+OCT2BIN("8")	{"error": "#NUM!"}	LibreOffice
+OCT2DEC("54")	44	LibreOffice
+OCT2DEC("7777777533")	-165	LibreOffice
+OCT2DEC("4000000000")	-536870912	LibreOffice
+OCT2DEC("19")	{"error": "#NUM!"}	LibreOffice
+OCT2HEX("100",4)	"0040"	LibreOffice
+OCT2HEX("7777777533")	"FFFFFFFF5B"	LibreOffice
+OCT2HEX("7777777777")	"FFFFFFFFFF"	LibreOffice
+OCT2HEX("1",11)	{"error": "#NUM!"}	LibreOffice
+BASE(7,2)	"111"	LibreOffice
+BASE(100,16)	"64"	LibreOffice
+BASE(15,2,10)	"0000001111"	LibreOffice
+BASE(5.9,2)	"101"	LibreOffice
+BASE(-1,2)	{"error": "#NUM!"}	LibreOffice
+BASE(5,37)	{"error": "#NUM!"}	LibreOffice
+BASE(5,2.9)	"101"	LibreOffice
+BASE(35,36)	"Z"	LibreOffice
+DECIMAL("FF",16)	255	LibreOffice
+DECIMAL("111",2)	7	LibreOffice
+DECIMAL("zap",36)	45745	LibreOffice
+DECIMAL("12",2)	{"error": "#NUM!"}	LibreOffice
+DECIMAL("",2)	0	LibreOffice
+DECIMAL("ff",16.9)	255	LibreOffice
+DECIMAL("1",1)	{"error": "#NUM!"}	LibreOffice
+BASE(9007199254740992,2)	{"error": "#NUM!"}	Excel docs
+BASE(5,2,256)	{"error": "#NUM!"}	Excel docs
+BITAND(1,5)	1	LibreOffice
+BITAND(13,25)	9	LibreOffice
+BITAND(3.9,3)	3	LibreOffice
+BITAND(-1,1)	{"error": "#NUM!"}	LibreOffice
+BITAND(281474976710656,1)	{"error": "#NUM!"}	LibreOffice
+BITAND(281474976710655,255)	255	LibreOffice
+BITOR(23,10)	31	LibreOffice
+BITOR(0,0)	0	LibreOffice
+BITOR(-1,0)	{"error": "#NUM!"}	LibreOffice
+BITOR(281474976710655,1)	281474976710655	LibreOffice
+BITXOR(5,3)	6	LibreOffice
+BITXOR(5,5)	0	LibreOffice
+BITXOR(1,281474976710656)	{"error": "#NUM!"}	LibreOffice
+BITXOR(12.5,10)	6	LibreOffice
+BITLSHIFT(4,2)	16	LibreOffice
+BITLSHIFT(5,-2)	1	LibreOffice
+BITLSHIFT(1,2.9)	4	LibreOffice
+BITLSHIFT(8,-2.5)	1	LibreOffice
+BITLSHIFT(281474976710655,53)	2.5353012004564498e+30	LibreOffice
+BITLSHIFT(-1,2)	{"error": "#NUM!"}	LibreOffice
+BITRSHIFT(13,2)	3	LibreOffice
+BITRSHIFT(13,-2)	52	LibreOffice
+BITRSHIFT(16,1.5)	8	LibreOffice
+BITRSHIFT(281474976710656,1)	{"error": "#NUM!"}	LibreOffice
+BITRSHIFT(1,54)	{"error": "#NUM!"}	Excel docs
+BITLSHIFT(1,60)	{"error": "#NUM!"}	Excel docs
+DELTA(5,4)	0	LibreOffice
+DELTA(5,5)	1	LibreOffice
+DELTA(0.5,0)	0	LibreOffice
+DELTA(0)	1	LibreOffice
+DELTA(-1,-1)	1	LibreOffice
+GESTEP(5,4)	1	LibreOffice
+GESTEP(5,5)	1	LibreOffice
+GESTEP(-4,-5)	1	LibreOffice
+GESTEP(-1)	0	LibreOffice
+GESTEP(0)	1	LibreOffice
+HEXREP(1)	"000000000000f03f"	Gnumeric 1.12
+HEXREP(-2.5)	"00000000000004c0"	Gnumeric 1.12
+HEXREP(0)	"0000000000000000"	Gnumeric 1.12
+HEXREP(0.1)	"9a9999999999b93f"	Gnumeric 1.12

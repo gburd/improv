@@ -76,6 +76,7 @@ pub enum Category {
     Statistical,
     Financial,
     Dimensional,
+    Engineering,
 }
 
 /// Which arguments of an aggregation are reduced over the `OVER` categories.
@@ -710,6 +711,7 @@ pub fn reference_markdown() -> String {
         (Category::Dimensional, "Dimensional", "Functions of a cell's position in a category, and the ordered (previous/next, running) forms."),
         (Category::Statistical, "Statistical", ""),
         (Category::Financial, "Financial", "Rates are per period; cash flows are in item order along their `OVER` category."),
+        (Category::Engineering, "Engineering", "Complex numbers are text, `\"3+4i\"` (suffix `i` or `j`); base conversions use 10-digit two's complement for negatives."),
     ];
     for (cat, title, intro) in cats {
         if all().all(|d| d.category != cat) {

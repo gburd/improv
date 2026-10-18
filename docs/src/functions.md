@@ -529,3 +529,32 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `OPT_TOUCH(number, number, number, number, number, number, number, text, text, text, [text])` | number | one/no-touch option: OPT_TOUCH(spot, vol, r, rf, T, lower, upper, foreign_domestic, in_out, continuous_or_end, [greek]) |
 | `OPT_PROB_HIT(number, number, number, number, number, number)` | number | probability of touching a barrier: OPT_PROB_HIT(spot, vol, mu, T, lower, upper) |
 | `OPT_PROB_INMONEY(number, number, number, number, number, number, [number], [text])` | number | probability of ending between the barriers (and in the money): OPT_PROB_INMONEY(spot, vol, mu, T, lower, upper, [strike], [put_call]) |
+
+## Engineering
+
+Complex numbers are text, `"3+4i"` (suffix `i` or `j`); base conversions use 10-digit two's complement for negatives.
+
+| Function | Returns | Description |
+|---|---|---|
+| `BIN2DEC(value)` | number | binary text as a number |
+| `BIN2HEX(value, [number])` | text | binary text as hexadecimal, zero-padded to `places` |
+| `BIN2OCT(value, [number])` | text | binary text as octal, zero-padded to `places` |
+| `DEC2BIN(number, [number])` | text | an integer in −512…511 as binary text |
+| `DEC2HEX(number, [number])` | text | an integer in −2³⁹…2³⁹−1 as hexadecimal text |
+| `DEC2OCT(number, [number])` | text | an integer in −2²⁹…2²⁹−1 as octal text |
+| `HEX2BIN(value, [number])` | text | hexadecimal text as binary |
+| `HEX2DEC(value)` | number | hexadecimal text as a number |
+| `HEX2OCT(value, [number])` | text | hexadecimal text as octal |
+| `OCT2BIN(value, [number])` | text | octal text as binary |
+| `OCT2DEC(value)` | number | octal text as a number |
+| `OCT2HEX(value, [number])` | text | octal text as hexadecimal |
+| `BASE(number, number, [number])` | text | an integer in 0…2⁵³−1 as text in a radix 2…36, zero-padded to `min_length` (also `NUMTOBASE`) |
+| `DECIMAL(value, number)` | number | text in a radix 2…36 as a number (also `BASETONUM`) |
+| `HEXREP(number)` | text | the bytes of a number's IEEE double, little-endian, in hexadecimal |
+| `BITAND(number, number)` | number | bitwise and |
+| `BITOR(number, number)` | number | bitwise or |
+| `BITXOR(number, number)` | number | bitwise exclusive or |
+| `BITLSHIFT(number, number)` | number | shifted left by `shift` bits (right if negative), |shift| ≤ 53 |
+| `BITRSHIFT(number, number)` | number | shifted right by `shift` bits (left if negative), |shift| ≤ 53 |
+| `DELTA(number, [number])` | number | 1 if the numbers are equal (b defaults to 0), else 0 |
+| `GESTEP(number, [number])` | number | 1 if x ≥ step (default 0), else 0 |
