@@ -405,6 +405,20 @@ Arguments are expressions and broadcast like a binary operator's operands:
 `ROUND(Revenue / Units, 2)` ranges over the union of the arguments'
 categories. A literal argument costs nothing extra.
 
+**Option pricing.** The `OPT_*` functions follow Gnumeric: the first
+argument is `"c"` or `"p"` (`"a"`/`"e"` first for `OPT_BINOMIAL`,
+`"cc"`/`"cp"`/`"pc"`/`"pp"` for `OPT_ON_OPTIONS`). Times are in years;
+rates, volatilities and cost of carry are annual fractions (cost of carry
+is r for a stock, r − q with a dividend yield, 0 for a future, r − rf for
+a currency). `OPT_BARRIER`, `OPT_TOUCH`, `OPT_PROB_HIT` and
+`OPT_PROB_INMONEY` follow LibreOffice, with case-sensitive flags
+(`"c"`/`"p"`, `"i"`/`"o"` knock in/out, `"c"`/`"e"` barrier watched
+continuously or at expiry, `"f"`/`"d"` pays foreign/domestic) and an
+optional Greek (`"delta"`, `"gamma"`, `"theta"`, `"vega"`, `"volga"`,
+`"vanna"`, `"rho"`, `"rhof"`). Where Gnumeric 1.12's bivariate normal is
+wrong (some Roll–Geske–Whaley, compound, extendible and two-asset inputs),
+Improv returns the correct value.
+
 ### IF and friends
 
 ```text

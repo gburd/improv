@@ -13,6 +13,17 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Option pricing** (phase P7, 32 functions): Gnumeric's `OPT_BS` and its
+  Greeks (`_DELTA`, `_GAMMA`, `_RHO`, `_THETA`, `_VEGA`, `_CARRYCOST`),
+  Garman–Kohlhagen, French, Merton jump diffusion, Miltersen–Schwartz,
+  Barone-Adesi–Whaley, Bjerksund–Stensland, Roll–Geske–Whaley, a binomial
+  tree, executive, forward-start, time-switch, simple and complex chooser,
+  compound, writer-extendible, two-asset correlation, exchange (European
+  and American), Kirk's spread, fixed- and floating-strike lookbacks; and
+  LibreOffice's `OPT_BARRIER`, `OPT_TOUCH`, `OPT_PROB_HIT`,
+  `OPT_PROB_INMONEY`. 200 goldens from Gnumeric 1.12.57 and LibreOffice;
+  where Gnumeric's bivariate normal is wrong, mpmath.
+
 - **More list and LAMBDA forms.** `INTO R, C` lays a list over several
   categories row by row (Excel's 2-D spill); `LINEST`/`LOGEST` take any
   number of x's (`LINEST(y, x1, x2 OVER T, TRUE, TRUE INTO Row, Col)`
