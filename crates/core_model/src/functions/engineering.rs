@@ -3,10 +3,10 @@
 //! Base-conversion and complex-number arguments are [`Arg::Any`]: Excel
 //! takes `BIN2DEC(1010)` as well as `BIN2DEC("1010")`, and `IMSUM("1+i", 2)`.
 
-use super::{alias, s, so, Arg, Category, FnDef};
+use super::{alias, s, so, sv, Arg, Category, FnDef};
 use crate::value::ValueType;
 
-use Arg::{Any as A, Number as N};
+use Arg::{Any as A, Boolean as B, Number as N, Text as T};
 use Category as C;
 use ValueType as V;
 
@@ -37,4 +37,50 @@ pub(super) static ENGINEERING: &[FnDef] = &[
     // --- tests ---
     so(1320, "DELTA", C::Engineering, &[N, N], 1, V::Number, "1 if the numbers are equal (b defaults to 0), else 0"),
     so(1321, "GESTEP", C::Engineering, &[N, N], 1, V::Number, "1 if x ≥ step (default 0), else 0"),
+    // --- complex numbers: "a+bi" text (or a number), suffix i or j ---
+    so(1330, "COMPLEX", C::Engineering, &[N, N, T], 2, V::Text, "the complex number re + im·i as text, with suffix \"i\" (default) or \"j\""),
+    s(1331, "IMREAL", C::Engineering, &[A], V::Number, "a complex number's real part"),
+    s(1332, "IMAGINARY", C::Engineering, &[A], V::Number, "a complex number's imaginary part"),
+    s(1333, "IMABS", C::Engineering, &[A], V::Number, "a complex number's modulus |z|"),
+    s(1334, "IMARGUMENT", C::Engineering, &[A], V::Number, "a complex number's angle in radians, −π…π (#NUM! at 0)"),
+    s(1335, "IMCONJUGATE", C::Engineering, &[A], V::Text, "the complex conjugate"),
+    s(1336, "IMNEG", C::Engineering, &[A], V::Text, "−z"),
+    s(1337, "IMINV", C::Engineering, &[A], V::Text, "1/z"),
+    sv(1338, "IMSUM", C::Engineering, &[A], V::Text, "the sum of complex numbers"),
+    sv(1339, "IMPRODUCT", C::Engineering, &[A], V::Text, "the product of complex numbers"),
+    s(1340, "IMSUB", C::Engineering, &[A, A], V::Text, "z1 − z2"),
+    s(1341, "IMDIV", C::Engineering, &[A, A], V::Text, "z1 / z2"),
+    s(1342, "IMPOWER", C::Engineering, &[A, N], V::Text, "z raised to a real power"),
+    s(1343, "IMSQRT", C::Engineering, &[A], V::Text, "the principal square root"),
+    s(1344, "IMEXP", C::Engineering, &[A], V::Text, "e^z"),
+    s(1345, "IMLN", C::Engineering, &[A], V::Text, "the principal natural logarithm"),
+    s(1346, "IMLOG10", C::Engineering, &[A], V::Text, "the principal base-10 logarithm"),
+    s(1347, "IMLOG2", C::Engineering, &[A], V::Text, "the principal base-2 logarithm"),
+    s(1348, "IMSIN", C::Engineering, &[A], V::Text, "the complex sine"),
+    s(1349, "IMCOS", C::Engineering, &[A], V::Text, "the complex cosine"),
+    s(1350, "IMTAN", C::Engineering, &[A], V::Text, "the complex tangent"),
+    s(1351, "IMSEC", C::Engineering, &[A], V::Text, "the complex secant"),
+    s(1352, "IMCSC", C::Engineering, &[A], V::Text, "the complex cosecant"),
+    s(1353, "IMCOT", C::Engineering, &[A], V::Text, "the complex cotangent"),
+    s(1354, "IMSINH", C::Engineering, &[A], V::Text, "the complex hyperbolic sine"),
+    s(1355, "IMCOSH", C::Engineering, &[A], V::Text, "the complex hyperbolic cosine"),
+    s(1356, "IMTANH", C::Engineering, &[A], V::Text, "the complex hyperbolic tangent"),
+    s(1357, "IMSECH", C::Engineering, &[A], V::Text, "the complex hyperbolic secant"),
+    s(1358, "IMCSCH", C::Engineering, &[A], V::Text, "the complex hyperbolic cosecant"),
+    s(1359, "IMCOTH", C::Engineering, &[A], V::Text, "the complex hyperbolic cotangent"),
+    s(1360, "IMARCSIN", C::Engineering, &[A], V::Text, "the complex arcsine (principal branch)"),
+    s(1361, "IMARCCOS", C::Engineering, &[A], V::Text, "the complex arccosine"),
+    s(1362, "IMARCTAN", C::Engineering, &[A], V::Text, "the complex arctangent"),
+    s(1363, "IMARCSEC", C::Engineering, &[A], V::Text, "the complex arcsecant"),
+    s(1364, "IMARCCSC", C::Engineering, &[A], V::Text, "the complex arccosecant"),
+    s(1365, "IMARCCOT", C::Engineering, &[A], V::Text, "the complex arccotangent"),
+    s(1366, "IMARCSINH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic sine"),
+    s(1367, "IMARCCOSH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic cosine"),
+    s(1368, "IMARCTANH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic tangent"),
+    s(1369, "IMARCSECH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic secant"),
+    s(1370, "IMARCCSCH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic cosecant"),
+    s(1371, "IMARCCOTH", C::Engineering, &[A], V::Text, "the complex inverse hyperbolic cotangent"),
+    s(1372, "IMFACT", C::Engineering, &[A], V::Text, "the complex factorial z! = Γ(z + 1)"),
+    s(1373, "IMGAMMA", C::Engineering, &[A], V::Text, "the complex gamma function Γ(z)"),
+    so(1374, "IMIGAMMA", C::Engineering, &[A, A, B, B], 2, V::Text, "the complex incomplete gamma function of a and z: lower (default) or upper, regularized (default) or not"),
 ];

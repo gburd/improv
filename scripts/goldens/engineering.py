@@ -96,6 +96,76 @@ many("DELTA(5,4)", "DELTA(5,5)", "DELTA(0.5,0)", "DELTA(0)", "DELTA(-1,-1)",
      "GESTEP(5,4)", "GESTEP(5,5)", "GESTEP(-4,-5)", "GESTEP(-1)", "GESTEP(0)")
 
 
+# --- complex numbers --------------------------------------------------------
+many('COMPLEX(3,4)', 'COMPLEX(3,4,"j")', 'COMPLEX(0,1)', 'COMPLEX(0,-1,"j")', 'COMPLEX(0,0)',
+     'COMPLEX(1.5,0)', 'COMPLEX(3,4,"")', 'COMPLEX(100000000000000000000,-2.5)',
+     'COMPLEX(0.00001,1)',
+     'IMREAL("6-9i")', 'IMREAL("-i")', 'IMREAL(5)', 'IMREAL("1e2+3i")', 'IMREAL("1.+.5i")',
+     'IMREAL("1+2I")', 'IMREAL(" 1+2i")', 'IMREAL("")',
+     'IMAGINARY("3+4i")', 'IMAGINARY("0-j")', 'IMAGINARY(4)', 'IMAGINARY("-2.5j")',
+     'IMAGINARY("3+4k")',
+     'IMABS("5+12i")', 'IMABS("-3")', 'IMABS("i")', 'IMABS("x")',
+     'IMARGUMENT("3+4i")', 'IMARGUMENT("-1")', 'IMARGUMENT("-i")', 'IMARGUMENT("0")',
+     'IMCONJUGATE("3+4i")', 'IMCONJUGATE("-j")', 'IMCONJUGATE("3")', 'IMCONJUGATE("2i")',
+     'IMSUM("3+4i","5-3i")', 'IMSUM("0","-0")', 'IMSUM("1+j",2,"j")',
+     'IMSUM("1",2,3)', 'IMSUM("1+i","q")',
+     'IMPRODUCT("3+4i","5-3i")', 'IMPRODUCT("1+2i",30)', 'IMPRODUCT("i","i")',
+     'IMPRODUCT("1+2j","j")', 'IMPRODUCT("2")',
+     'IMSUB("13+4i","5+3i")', 'IMSUB(3,"1+j")', 'IMSUB("i","i")', 'IMSUB("1","0.99999")',
+     'IMDIV("-238+240i","10+24i")', 'IMDIV("1","i")', 'IMDIV("1","0")', 'IMDIV("2j","1+j")',
+     'IMPOWER("2+3i",3)', 'IMPOWER("i",2)', 'IMPOWER("4",0.5)', 'IMPOWER("-4",0.5)',
+     'IMPOWER("0",0)', 'IMPOWER("0",2)', 'IMPOWER("2+3i",-1.5)',
+     'IMSQRT("1+i")', 'IMSQRT("-4")', 'IMSQRT("4")', 'IMSQRT("-3+4j")', 'IMSQRT("0")',
+     'IMEXP("1+i")', 'IMEXP("0")', 'IMEXP("2.5-j")', 'IMEXP("i")',
+     'IMLN("3+4i")', 'IMLN("-1")', 'IMLN("0")', 'IMLN("1")', 'IMLN("-2-2j")',
+     'IMLOG10("3+4i")', 'IMLOG10("100")', 'IMLOG10("-i")', 'IMLOG10("0")',
+     'IMLOG2("3+4i")', 'IMLOG2("8")', 'IMLOG2("-1+j")', 'IMLOG2("0")',
+     'IMSIN("4+3i")', 'IMSIN("1")', 'IMSIN("i")', 'IMSIN("1e19+i")', 'IMSIN("1e20")',
+     'IMCOS("1+i")', 'IMCOS("0")', 'IMCOS("-2.5j")', 'IMCOS("1e20")',
+     'IMTAN("4+3i")', 'IMTAN("1")', 'IMTAN("6e18+i")', 'IMTAN("1e19+i")', 'IMTAN("-2j")',
+     'IMSEC("4+3i")', 'IMSEC("1+i")', 'IMSEC("0")', 'IMSEC("1e20")',
+     'IMCSC("4+3i")', 'IMCSC("0")', 'IMCSC("1-2j")', 'IMCSC("2")',
+     'IMCOT("4+3i")', 'IMCOT("0")', 'IMCOT("1")', 'IMCOT("-1+i")',
+     'IMSINH("4+3i")', 'IMSINH("1")', 'IMSINH("i")', 'IMSINH("1+1e20i")',
+     'IMCOSH("4+3i")', 'IMCOSH("0")', 'IMCOSH("2j")', 'IMCOSH("1+1e20i")',
+     'IMSECH("4+3i")', 'IMSECH("0")', 'IMSECH("1-j")', 'IMSECH("1e20i")',
+     'IMCSCH("4+3i")', 'IMCSCH("1+i")', 'IMCSCH("0")', 'IMCSCH("-2")')
+# Excel: a suffix other than i or j, and mixed suffixes, are #VALUE!
+# ("all functions that accept two or more complex numbers require that all
+# suffixes match"); LibreOffice says Err:502 and mixes them.
+lo('COMPLEX(3,4,"I")', excel=VALUE)
+lo('IMSUM("1+i","2+j")', excel=VALUE)
+lo('IMPRODUCT("1+2j","i")', excel=VALUE)
+# Gnumeric-only (IMTANH and IMCOTH too: LibreOffice lacks them). Gnumeric
+# prints each part's shortest round-trip digits where Improv keeps Excel's 15,
+# so a complex result is checked part by part (IMREAL / IMAGINARY).
+for f in ['IMTANH("1+i")', 'IMTANH("0")', 'IMTANH("2-3j")', 'IMTANH("0.5")', 'IMTANH("x")',
+          'IMCOTH("1+i")', 'IMCOTH("2-3j")', 'IMCOTH("0.5")', 'IMCOTH("-i")',
+          'IMNEG("3+4i")', 'IMNEG("0")', 'IMNEG("-j")', 'IMNEG("2")', 'IMNEG("i5")',
+          'IMINV("2")', 'IMINV("1+i")', 'IMINV("-2j")', 'IMINV("0")',
+          'IMARCSIN("1+i")', 'IMARCSIN("0.5")', 'IMARCSIN("2")', 'IMARCSIN("-2")', 'IMARCSIN("3-4j")',
+          'IMARCSIN("0.1+0.1i")',
+          'IMARCCOS("1+i")', 'IMARCCOS("0.5")', 'IMARCCOS("2")', 'IMARCCOS("-2")', 'IMARCCOS("-3+4j")',
+          'IMARCTAN("1+i")', 'IMARCTAN("0.5")', 'IMARCTAN("2i")', 'IMARCTAN("-2i")', 'IMARCTAN("0.5i")',
+          'IMARCTAN("0.01+0.01i")',
+          'IMARCSEC("1+i")', 'IMARCSEC("2")', 'IMARCSEC("0.5")', 'IMARCSEC("0")',
+          'IMARCCSC("1+i")', 'IMARCCSC("2")', 'IMARCCSC("-0.5j")', 'IMARCCSC("0")',
+          'IMARCCOT("1+i")', 'IMARCCOT("0")', 'IMARCCOT("2")', 'IMARCCOT("-3j")',
+          'IMARCSINH("1+i")', 'IMARCSINH("0.5")', 'IMARCSINH("2i")', 'IMARCSINH("-3+j")',
+          'IMARCCOSH("1+i")', 'IMARCCOSH("1")', 'IMARCCOSH("0.5")', 'IMARCCOSH("2")', 'IMARCCOSH("-2j")',
+          'IMARCTANH("1+i")', 'IMARCTANH("0.5")', 'IMARCTANH("2")', 'IMARCTANH("-2")', 'IMARCTANH("1")',
+          'IMARCTANH("0.5j")',
+          'IMARCSECH("1+i")', 'IMARCSECH("0.5")', 'IMARCSECH("2")', 'IMARCSECH("0")',
+          'IMARCCSCH("1+i")', 'IMARCCSCH("2")', 'IMARCCSCH("0.5j")', 'IMARCCSCH("0")',
+          'IMARCCOTH("1+i")', 'IMARCCOTH("2")', 'IMARCCOTH("0.5")', 'IMARCCOTH("3j")',
+          'IMFACT("0.5+i")', 'IMFACT("4")', 'IMFACT("-0.5+2i")', 'IMFACT("i")', 'IMFACT("-1")',
+          'IMGAMMA("1+i")', 'IMGAMMA("5")', 'IMGAMMA("-1.5+0.5i")', 'IMGAMMA("0.5")', 'IMGAMMA("0")',
+          'IMGAMMA("3-4j")',
+          'IMIGAMMA("1+i","2")', 'IMIGAMMA("2","3")', 'IMIGAMMA("2","3",FALSE)',
+          'IMIGAMMA("2","3",TRUE,FALSE)', 'IMIGAMMA("1+i","2",FALSE,FALSE)', 'IMIGAMMA("-1","2")',
+          'IMIGAMMA("0.5","-1")', 'IMIGAMMA("1+i","40",FALSE)', 'IMIGAMMA("0","2",TRUE,FALSE)']:
+    gn(f, "complex", 1e-13)
+
 # --- runners ----------------------------------------------------------------
 def map_error(f, shown):
     if shown in p1.LO_ERRORS:
@@ -140,6 +210,18 @@ def gnumeric_values():
     return dict(zip(fs, got))
 
 
+def complex_parts(text):
+    """Gnumeric's complex text ("a", "bi", "a+bi", "-i", ...) as (re, im)."""
+    if text[-1] not in "ij":
+        return float(text), 0.0
+    body = text[:-1]
+    k = max((i for i, c in enumerate(body) if c in "+-" and i > 0 and body[i - 1] not in "eE"),
+            default=None)
+    re_s, im_s = ("", body) if k is None else (body[:k], body[k:])
+    im = {"": 1.0, "+": 1.0, "-": -1.0}.get(im_s)
+    return (float(re_s) if re_s else 0.0), (float(im_s) if im is None else im)
+
+
 def gn_value(shown, kind):
     if shown.startswith("#"):
         return err(shown)
@@ -161,6 +243,11 @@ def main():
             rows.append((f, v, "LibreOffice"))
     shown = gnumeric_values()
     for f, kind, tol in GN:
+        if kind == "complex" and not shown[f].startswith("#"):
+            re_, im_ = complex_parts(shown[f])
+            for part, x in (("IMREAL", re_), ("IMAGINARY", im_)):
+                rows.append((f"{part}({f})", {"approx": x, "tol": tol}, "Gnumeric 1.12"))
+            continue
         v = gn_value(shown[f], kind)
         if tol is not None and not isinstance(v, (dict, str)):
             v = {"approx": v, "tol": tol}

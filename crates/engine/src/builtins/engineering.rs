@@ -5,6 +5,8 @@
 use super::{domain, err, n, n_or, ok_num, ok_text, t, R};
 use crate::CellValue;
 
+mod complex;
+
 /// 2⁴⁸: the bit functions' exclusive bound.
 const BIT_LIMIT: f64 = 281_474_976_710_656.0;
 
@@ -50,6 +52,7 @@ pub(super) fn eval(id: u32, a: &[CellValue]) -> R {
         // --- tests ---
         1320 => ok_num(f64::from(u8::from(x(0)? == n_or(a, 1, 0.0)?))),
         1321 => ok_num(f64::from(u8::from(x(0)? >= n_or(a, 1, 0.0)?))),
+        1330..=1374 => complex::eval(id, a),
         _ => Err(err::NAME),
     }
 }

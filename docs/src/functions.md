@@ -558,3 +558,48 @@ Complex numbers are text, `"3+4i"` (suffix `i` or `j`); base conversions use 10-
 | `BITRSHIFT(number, number)` | number | shifted right by `shift` bits (left if negative), |shift| ≤ 53 |
 | `DELTA(number, [number])` | number | 1 if the numbers are equal (b defaults to 0), else 0 |
 | `GESTEP(number, [number])` | number | 1 if x ≥ step (default 0), else 0 |
+| `COMPLEX(number, number, [text])` | text | the complex number re + im·i as text, with suffix "i" (default) or "j" |
+| `IMREAL(value)` | number | a complex number's real part |
+| `IMAGINARY(value)` | number | a complex number's imaginary part |
+| `IMABS(value)` | number | a complex number's modulus |z| |
+| `IMARGUMENT(value)` | number | a complex number's angle in radians, −π…π (#NUM! at 0) |
+| `IMCONJUGATE(value)` | text | the complex conjugate |
+| `IMNEG(value)` | text | −z |
+| `IMINV(value)` | text | 1/z |
+| `IMSUM(value, …)` | text | the sum of complex numbers |
+| `IMPRODUCT(value, …)` | text | the product of complex numbers |
+| `IMSUB(value, value)` | text | z1 − z2 |
+| `IMDIV(value, value)` | text | z1 / z2 |
+| `IMPOWER(value, number)` | text | z raised to a real power |
+| `IMSQRT(value)` | text | the principal square root |
+| `IMEXP(value)` | text | e^z |
+| `IMLN(value)` | text | the principal natural logarithm |
+| `IMLOG10(value)` | text | the principal base-10 logarithm |
+| `IMLOG2(value)` | text | the principal base-2 logarithm |
+| `IMSIN(value)` | text | the complex sine |
+| `IMCOS(value)` | text | the complex cosine |
+| `IMTAN(value)` | text | the complex tangent |
+| `IMSEC(value)` | text | the complex secant |
+| `IMCSC(value)` | text | the complex cosecant |
+| `IMCOT(value)` | text | the complex cotangent |
+| `IMSINH(value)` | text | the complex hyperbolic sine |
+| `IMCOSH(value)` | text | the complex hyperbolic cosine |
+| `IMTANH(value)` | text | the complex hyperbolic tangent |
+| `IMSECH(value)` | text | the complex hyperbolic secant |
+| `IMCSCH(value)` | text | the complex hyperbolic cosecant |
+| `IMCOTH(value)` | text | the complex hyperbolic cotangent |
+| `IMARCSIN(value)` | text | the complex arcsine (principal branch) |
+| `IMARCCOS(value)` | text | the complex arccosine |
+| `IMARCTAN(value)` | text | the complex arctangent |
+| `IMARCSEC(value)` | text | the complex arcsecant |
+| `IMARCCSC(value)` | text | the complex arccosecant |
+| `IMARCCOT(value)` | text | the complex arccotangent |
+| `IMARCSINH(value)` | text | the complex inverse hyperbolic sine |
+| `IMARCCOSH(value)` | text | the complex inverse hyperbolic cosine |
+| `IMARCTANH(value)` | text | the complex inverse hyperbolic tangent |
+| `IMARCSECH(value)` | text | the complex inverse hyperbolic secant |
+| `IMARCCSCH(value)` | text | the complex inverse hyperbolic cosecant |
+| `IMARCCOTH(value)` | text | the complex inverse hyperbolic cotangent |
+| `IMFACT(value)` | text | the complex factorial z! = Γ(z + 1) |
+| `IMGAMMA(value)` | text | the complex gamma function Γ(z) |
+| `IMIGAMMA(value, value, [boolean], [boolean])` | text | the complex incomplete gamma function of a and z: lower (default) or upper, regularized (default) or not |
