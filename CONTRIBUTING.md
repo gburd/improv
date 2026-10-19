@@ -27,7 +27,8 @@ Postgres 17):
 ```sh
 cargo fmt --check && cargo clippy --features pg17 --all-targets -- -D warnings
 cargo pgrx test pg17
-cargo pgrx install --release && ./tests/logical.sh
+cargo pgrx install --release && ./tests/logical.sh && ./tests/scale.sh
+ROWS=2500000 BATCHES=1000 ./tests/scale.sh   # the full-size acceptance run
 ```
 
 A warning is a failure (`RUSTFLAGS=-Dwarnings` in CI).

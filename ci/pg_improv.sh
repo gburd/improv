@@ -10,7 +10,8 @@
 #   fmt + clippy -D warnings, the #[pg_test] suite, pgspot on the generated
 #   and update SQL, tests/txn.sh (no-preload CREATE EXTENSION, the schema
 #   check, transactional semantics, dump/restore), tests/logical.sh (the
-#   sync worker end to end), and on PG 17 also tests/upgrade.sh (ALTER
+#   sync worker end to end), tests/scale.sh at its small default size
+#   (aggregated bindings under random batches), and on PG 17 also tests/upgrade.sh (ALTER
 #   EXTENSION UPDATE from each earlier release) and the PGXN dist build.
 # Steps that need a non-root user (pgrx refuses initdb as root) run as `pgi`.
 set -euo pipefail
@@ -77,6 +78,10 @@ end
 
 step "tests/logical.sh (pg$pg)"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" N_SINGLE=10 N_BULK=3 ./tests/logical.sh
+end
+
+step "tests/scale.sh, small (pg$pg)"
+run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/scale.sh
 end
 
 if [ "$pg" = 17 ]; then
