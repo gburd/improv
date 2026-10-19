@@ -48,7 +48,30 @@ pub(crate) struct Loaded {
 // `load` + `recompute` once L1 and L2 have merged.
 pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
     pm::validate_name("model", &name)?;
-    let mut model = pm::build_model(&read_catalog(mid)?)?;
+    load_scoped(
+        name,
+        pm::build_model(&read_catalog(mid)?)?,
+        mid,
+        persist,
+        None,
+    )
+}
+
+/// The touched rows of a trigger-mode statement: their categories and
+/// dimension values (in that order).
+type Touched<'a> = (&'a [CategoryId], &'a [Vec<Option<String>>]);
+
+/// [`load`] onto `model` (the catalog's), reading each binding only at the
+/// `touched` rows' coordinates when given ([`pm::scope_filter`]): an
+/// aggregated binding then loads only those coordinates' groups. Valid only
+/// when the recompute is restricted to them too ([`pm::scopable`]).
+fn load_scoped(
+    name: String,
+    mut model: Model,
+    mid: i64,
+    persist: bool,
+    touched: Option<Touched<'_>>,
+) -> Res<Loaded> {
     // (measure id, relation, value column, agg, dimension columns)
     type Row = (i64, String, String, Option<String>, Vec<String>);
     let bindings: Vec<Row> = Spi::connect(|c| -> Res<_> {
@@ -79,14 +102,21 @@ pub(crate) fn load(mid: i64, name: String, persist: bool) -> Res<Loaded> {
     for (measure_id, rel, value_col, agg, dims) in bindings {
         check_for_interrupts!();
         let measure = MeasureId(id32(measure_id)?);
-        let vt = model
+        let m = model
             .measures
             .get(&measure)
-            .ok_or("binding for an unknown measure")?
-            .value_type;
+            .ok_or("binding for an unknown measure")?;
+        let vt = m.value_type;
+        let filter =
+            touched.and_then(|(cats, rows)| pm::scope_filter(cats, rows, &m.categories, &dims));
+        let (rel, args) = match filter {
+            Some((cols, values)) => (pm::scoped_rel_sql(&rel, &cols), values),
+            None => (rel, Vec::new()),
+        };
         let sql = pm::select_bound_sql(&rel, &dims, &value_col, agg.as_deref(), vt)?;
         let rows = Spi::connect(|c| {
-            c.select(&sql, None, &[])?
+            let args: Vec<_> = args.into_iter().map(Into::into).collect();
+            c.select(&sql, None, &args)?
                 .map(|r| {
                     let d = (1..=dims.len())
                         .map(|i| r.get::<String>(i))
@@ -349,13 +379,21 @@ fn sync(t: &PgTrigger<'_>) -> Res<()> {
         .into_iter()
         .map(|i| id32(i).map(MeasureId))
         .collect::<Res<Vec<_>>>()?;
-    let mut l = load(mid, name, true)?;
+    let cats = cats
+        .into_iter()
+        .map(|c| id32(c).map(CategoryId))
+        .collect::<Res<Vec<_>>>()?;
+    pm::validate_name("model", &name)?;
+    let model = pm::build_model(&read_catalog(mid)?)?;
+    // An element-wise recompute reads only the touched coordinates: load
+    // only their rows (an aggregated binding, only their groups).
+    let touched = rows
+        .as_deref()
+        .filter(|_| pm::scopable(&model, &changed))
+        .map(|r| (cats.as_slice(), r));
+    let mut l = load_scoped(name, model, mid, true, touched)?;
     let plan = match rows {
         Some(rows) => {
-            let cats = cats
-                .into_iter()
-                .map(|c| id32(c).map(CategoryId))
-                .collect::<Res<Vec<_>>>()?;
             let scope = pm::Scope::from_rows(&l.model, &cats, &rows);
             pm::plan(&l.model, &changed, scope)
         }
@@ -571,6 +609,50 @@ mod tests {
         Spi::get_one::<i64>(&format!("SELECT count(*) FROM {sql}"))
             .unwrap()
             .unwrap()
+    }
+
+    /// Trigger mode reads an aggregated binding only at the touched
+    /// coordinates (a GROUP BY under a WHERE on their dimension values) when
+    /// the recompute is element-wise. The proof: an untouched coordinate
+    /// whose `max(due)` is `infinity`, which a full load cannot read (no
+    /// int8 epoch: it would ERROR), does not fail writes to the others.
+    #[pg_test]
+    fn trigger_mode_loads_only_the_touched_groups() {
+        for sql in [
+            "CREATE TABLE contrib (person text, year int, due date)",
+            "INSERT INTO contrib VALUES ('ann', 2020, '2024-01-01'), ('ann', 2020, '2024-03-01'), \
+             ('ann', 2021, '2023-01-01')",
+            "SELECT improv.create_model('c')",
+            "SELECT improv.bind_category('c', 'Person', 'contrib', 'person')",
+            "SELECT improv.bind_category('c', 'Year', 'contrib', 'year')",
+            "SELECT improv.bind_measure('c', 'Latest', 'contrib', 'due', agg => 'max')",
+            "SELECT improv.define('c', 'Shown = Latest')",
+            "SELECT improv.set_sync_mode('c', 'trigger')",
+            // An unreadable group, slipped in behind the sync triggers.
+            "ALTER TABLE contrib DISABLE TRIGGER USER",
+            "INSERT INTO contrib VALUES ('bob', 1999, 'infinity')",
+            "ALTER TABLE contrib ENABLE TRIGGER USER",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        let v = |filter: &str| {
+            Spi::get_one::<String>(&format!(
+                "SELECT (SELECT value::date::text FROM improv_c.shown WHERE {filter})"
+            ))
+            .unwrap()
+        };
+        let ann = |y: u32| v(&format!("person = 'ann' AND year = '{y}'"));
+        Spi::run("INSERT INTO contrib VALUES ('ann', 2020, '2025-06-30')").unwrap();
+        assert_eq!(ann(2020).as_deref(), Some("2025-06-30"));
+        Spi::run("DELETE FROM contrib WHERE due = '2025-06-30'").unwrap();
+        assert_eq!(ann(2020).as_deref(), Some("2024-03-01"));
+        // A row moved to a new coordinate: both ends are recomputed.
+        Spi::run("UPDATE contrib SET person = 'cat' WHERE year = 2021").unwrap();
+        assert_eq!(
+            v("person = 'cat' AND year = '2021'").as_deref(),
+            Some("2023-01-01")
+        );
+        assert_eq!(ann(2021), None);
     }
 
     /// P1-4: `agg => 'count_distinct'` counts each coordinate's distinct

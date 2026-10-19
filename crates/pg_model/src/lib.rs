@@ -36,8 +36,9 @@ use improv_engine::{CellValue, CoordKey};
 
 mod delta;
 pub use delta::{
-    apply_edits, cell_changes, coord_json, dependents, measure_ids, plan, quote_literal, slot_name,
-    sync_trigger_name, touched_sql, value_json, Plan, Scope,
+    apply_edits, cell_changes, coord_json, dependents, measure_ids, plan, quote_literal, scopable,
+    scope_filter, scoped_rel_sql, slot_name, sync_trigger_name, touched_sql, value_json, Plan,
+    Scope,
 };
 
 /// Longest accepted model/category/measure name. Postgres truncates

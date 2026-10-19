@@ -165,15 +165,72 @@ pub fn plan(model: &Model, changed: &[MeasureId], touched: Scope) -> Plan {
             scope: None,
         };
     }
-    let targets = dependents(model, changed);
-    let elementwise = model
-        .measure_dependency_closure(&targets)
-        .iter()
-        .all(|id| elementwise(model, *id));
     Plan {
-        targets,
-        scope: elementwise.then_some(touched),
+        targets: dependents(model, changed),
+        scope: scopable(model, changed).then_some(touched),
     }
+}
+
+/// Whether a change to `changed` can only change cells at the touched
+/// coordinates: every measure their [`dependents`] read is element-wise.
+/// Then the inputs outside the touched coordinates' projections need not
+/// even be loaded ([`scope_filter`]).
+pub fn scopable(model: &Model, changed: &[MeasureId]) -> bool {
+    model
+        .measure_dependency_closure(&dependents(model, changed))
+        .iter()
+        .all(|id| elementwise(model, *id))
+}
+
+/// For a binding whose measure ranges over `cats`, read from dimension
+/// columns `cols` (same order), restricted to the touched rows `rows`
+/// (dimension values in `scope_cats` order, as [`Scope::from_rows`] takes
+/// them): the columns of the touched categories it has, and per column the
+/// touched values, row-aligned, each tuple once and none with a NULL. `None`
+/// when it has none of the touched categories, so every row is in scope.
+pub fn scope_filter(
+    scope_cats: &[CategoryId],
+    rows: &[Vec<Option<String>>],
+    cats: &[CategoryId],
+    cols: &[String],
+) -> Option<(Vec<String>, Vec<Vec<String>>)> {
+    let shared: Vec<(usize, &String)> = scope_cats
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| Some((i, cols.get(cats.iter().position(|m| m == c)?)?)))
+        .collect();
+    if shared.is_empty() {
+        return None;
+    }
+    let tuples: BTreeSet<Vec<&str>> = rows
+        .iter()
+        .filter_map(|r| shared.iter().map(|(i, _)| r.get(*i)?.as_deref()).collect())
+        .collect();
+    let mut values = vec![Vec::with_capacity(tuples.len()); shared.len()];
+    for t in &tuples {
+        for (v, x) in values.iter_mut().zip(t) {
+            v.push(x.to_string());
+        }
+    }
+    Some((shared.into_iter().map(|(_, c)| c.clone()).collect(), values))
+}
+
+/// Relation `rel` (already quoted) restricted to the rows whose `cols`, as
+/// text, are one of the tuples passed as `$1::text[]`, `$2::text[]`, … (one
+/// array per column, row-aligned): a subquery to read a binding through
+/// (`select_bound_sql`'s `rel`) so an aggregated binding loads only the
+/// touched coordinates' groups.
+pub fn scoped_rel_sql(rel: &str, cols: &[String]) -> String {
+    let lhs: Vec<String> = cols
+        .iter()
+        .map(|c| format!("{}::text", quote_ident(c)))
+        .collect();
+    let arrays: Vec<String> = (1..=cols.len()).map(|i| format!("${i}::text[]")).collect();
+    format!(
+        "(SELECT * FROM {rel} WHERE ({}) IN (SELECT * FROM unnest({}))) improv_scope",
+        lhs.join(", "),
+        arrays.join(", ")
+    )
 }
 
 /// An input, or a formula of operators and scalar functions over plain
@@ -604,6 +661,37 @@ mod tests {
             },
         );
         assert_eq!(plan(&m, &[PRICE], s.clone()).scope, None);
+    }
+
+    #[test]
+    fn scope_filters_restrict_bindings_to_the_touched_tuples() {
+        let rows = vec![
+            vec![Some("Q1".to_string()), Some("Widget".to_string())],
+            vec![Some("Q1".into()), Some("Widget".into())],
+            vec![Some("Q2".into()), None],
+            vec![Some("Q2".into()), Some("Gadget".into())],
+        ];
+        let cols = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // A binding over both: the distinct non-NULL tuples, row-aligned.
+        assert_eq!(
+            scope_filter(&[T, P], &rows, &[T, P], &cols(&["quarter", "product"])),
+            Some((
+                cols(&["quarter", "product"]),
+                vec![cols(&["Q1", "Q2"]), cols(&["Widget", "Gadget"])]
+            ))
+        );
+        // Over Product only, its column under its own name.
+        assert_eq!(
+            scope_filter(&[T, P], &rows, &[P], &cols(&["item"])),
+            Some((cols(&["item"]), vec![cols(&["Gadget", "Widget"])]))
+        );
+        // Over neither: every row.
+        assert_eq!(scope_filter(&[T], &rows, &[P], &cols(&["product"])), None);
+        assert_eq!(
+            scoped_rel_sql("public.sales", &cols(&["quarter", "product"])),
+            "(SELECT * FROM public.sales WHERE (\"quarter\"::text, \"product\"::text) \
+             IN (SELECT * FROM unnest($1::text[], $2::text[]))) improv_scope"
+        );
     }
 
     #[test]

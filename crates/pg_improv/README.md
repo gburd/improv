@@ -286,9 +286,18 @@ recomputes only the derived measures that depend on the relation's bound
 measures. If every measure in that chain is element-wise (operators and
 scalar functions over references to measures with the same or fewer
 dimensions, so no `SUM … OVER`, `BY`, `EXCEPT` or `CALL`), it loads and
-rewrites only the touched coordinates. Otherwise it recomputes those measures
-in full. Unchanged result rows are never rewritten. `TRUNCATE` recomputes the
-dependents in full. New dimension values mint items, as `recalc` does.
+rewrites only the touched coordinates: each binding is read under a `WHERE`
+on the touched dimension values, so an aggregated binding loads only those
+coordinates' groups (`GROUP BY` over the matching rows). Otherwise it
+recomputes those measures in full. Unchanged result rows are never
+rewritten. `TRUNCATE` recomputes the dependents in full. New dimension
+values mint items, as `recalc` does.
+
+Commit mode recomputes the written relations' dependents in full at each
+COMMIT. It has no transition tables to name the touched rows, and
+capturing them would need a row trigger (or a replica-identity read) on
+the user's tables, which commit mode exists to avoid; use trigger or
+logical mode for a large aggregated fact table.
 
 ```sql
 SELECT improv.set_sync_mode('plan', 'trigger');

@@ -474,9 +474,11 @@ fn recompute(name: &str, measures: &[i64]) -> Res<()> {
         .map(|&i| id32(i).map(MeasureId))
         .collect::<Res<Vec<_>>>()?;
     // ponytail: recomputes the written relations' dependents in full, so a
-    // one-row write costs a full recompute of them. Upgrade path: capture
-    // the touched rows per transaction (as trigger mode reads transition
-    // tables) and pass a row-level `pm::Scope` to `pm::plan`.
+    // one-row write costs a full recompute of them. A row scope needs the
+    // touched rows, and the executor hook sees only which relations were
+    // written: capturing rows means a row trigger (or a replica-identity
+    // read) on the user's tables, which commit mode exists to avoid. Users
+    // with large aggregated fact tables should use trigger or logical mode.
     let targets = pm::dependents(&l.model, &changed);
     super::trigger::recompute(
         &mut l,

@@ -105,6 +105,12 @@ positional forms and recurrences, lookups, list results, `LET` and
   to the live engine) and `rebuilds` (full loads). The 0.9.0 → 0.10.0
   update script adds them to `improv.sync_state` and recreates
   `improv.status`.
+- **pg_improv: trigger mode loads only the touched groups.** When the
+  recompute is element-wise, each binding is read under a `WHERE` on the
+  statement's touched dimension values, so an aggregated binding loads
+  only those coordinates' `GROUP BY` groups, not the whole fact table.
+  Commit mode still recomputes the written relations' dependents in full
+  (the README says why).
 - **pg_improv: distinct counting.** `improv.bind_measure(model, measure,
   rel, key_col, agg => 'count_distinct')` counts each coordinate's distinct
   `key_col` values, as `count(DISTINCT key_col)` does (the result is a
