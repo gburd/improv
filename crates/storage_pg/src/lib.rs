@@ -17,7 +17,11 @@
 //! - `cell.coord`: `{"<category id>": <item id>, …}`;
 //! - cell values: plain JSON scalars (number, bool, string; datetimes as
 //!   RFC 3339 strings);
-//! - `meta.blob`: `{external_fns, external_calls, scenarios, sql_sources, lambdas}`.
+//! - `lambda.definition`: written as serde JSON of the `NamedLambda`; read as
+//!   JSON or as `Name = LAMBDA(…)` text (what `improv.define` writes);
+//! - `meta.blob`: `{external_fns, external_calls, scenarios, sql_sources}`.
+//!   Before `improv.lambda` it also held `lambdas`, still read for a model
+//!   with no `improv.lambda` row.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
@@ -101,6 +105,13 @@ CREATE TABLE IF NOT EXISTS improv.meta (
 CREATE TABLE IF NOT EXISTS improv.model_version (
     model_id bigint PRIMARY KEY REFERENCES improv.model(id) ON DELETE CASCADE,
     tx       bigint NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS improv.lambda (
+    model_id   bigint NOT NULL REFERENCES improv.model(id) ON DELETE CASCADE,
+    id         bigint NOT NULL,
+    name       text NOT NULL,
+    definition text NOT NULL,
+    PRIMARY KEY (model_id, id)
 );
 -- Shared with the pg_improv extension (design §9.2): the same DDL in
 -- idempotent form (this runs against an existing database); the extension
@@ -401,8 +412,11 @@ pub struct PgSnapshot {
     bound: HashMap<(MeasureId, Coordinate), Value>,
     /// Unbound input cells, as read from `improv.cell`.
     cells: HashMap<(MeasureId, Coordinate), Value>,
-    /// Row ids per catalog table (`category`, `item`, `measure`, `view`).
+    /// Row ids per catalog table (`category`, `item`, `measure`, `view`,
+    /// `lambda`).
     ids: HashMap<&'static str, HashSet<i64>>,
+    /// The named LAMBDAs, to write only the changed ones.
+    lambdas: BTreeMap<u32, improv_core_model::NamedLambda>,
     /// Item names, to address a removed bound cell whose item is gone.
     names: HashMap<ItemId, String>,
 }
@@ -427,6 +441,10 @@ impl PgSnapshot {
                 model.measures.keys().map(|i| i64::from(i.0)).collect(),
             ),
             ("view", model.views.keys().map(|i| i64::from(i.0)).collect()),
+            (
+                "lambda",
+                model.lambdas.keys().map(|i| i64::from(*i)).collect(),
+            ),
         ]);
         let names = model
             .items
@@ -437,6 +455,7 @@ impl PgSnapshot {
             bound,
             cells,
             ids,
+            lambdas: model.lambdas.clone(),
             names,
         }
     }
@@ -656,10 +675,11 @@ impl PgModelStore {
                 None => "postgres connect failed (connection error)".into(),
             })
         })?;
-        // The newest catalog object: an older catalog is upgraded in place
+        // The newest catalog objects: an older catalog is upgraded in place
         // (CATALOG_SQL is idempotent).
         const INSTALLED: &str =
-            "SELECT to_regprocedure('improv.mint_items(bigint, bigint[], text[])') IS NOT NULL";
+            "SELECT to_regprocedure('improv.mint_items(bigint, bigint[], text[])') IS NOT NULL \
+             AND to_regclass('improv.lambda') IS NOT NULL";
         if !client.query_one(INSTALLED, &[])?.get::<_, bool>(0) {
             // A session lock, so the check below starts a new transaction
             // and sees a catalog another client installed meanwhile: its
@@ -799,6 +819,36 @@ impl PgModelStore {
                 description: r.get(5),
             });
         }
+        if let Some(r) = tx.query_opt(
+            "SELECT blob::text FROM improv.meta WHERE model_id = $1",
+            &[&mid],
+        )? {
+            let meta: Meta = serde_json::from_str(r.get(0))?;
+            model.external_fns = meta.external_fns;
+            model.external_calls = meta.external_calls;
+            model.scenarios = meta.scenarios;
+            model.sql_sources = meta.sql_sources;
+            // Saved before improv.lambda existed; the table's rows win.
+            model.lambdas = meta.lambdas;
+        }
+        let lambdas = tx
+            .query(
+                "SELECT id, definition FROM improv.lambda WHERE model_id = $1 ORDER BY id",
+                &[&mid],
+            )?
+            .iter()
+            .map(|r| Ok((id32(r.get(0))?, r.get::<_, String>(1))))
+            .collect::<Result<Vec<_>>>()?;
+        // The legacy blob's lambdas are not stored rows: the next save
+        // writes them to improv.lambda.
+        let legacy = lambdas.is_empty() && !model.lambdas.is_empty();
+        if !lambdas.is_empty() {
+            model.lambdas.clear();
+            model
+                .load_lambdas(&lambdas)
+                .map_err(StoreError::Integrity)?;
+        }
+        // Text formulas last: they may call any lambda.
         for (id, text) in dsl {
             let f = parse_formula_text(&model, &text).map_err(|e| {
                 StoreError::Integrity(format!("measure {}: bad formula {text:?}: {e}", id.0))
@@ -812,17 +862,6 @@ impl PgModelStore {
             &[&mid],
         )? {
             model.add_view(serde_json::from_str(r.get(0))?);
-        }
-        if let Some(r) = tx.query_opt(
-            "SELECT blob::text FROM improv.meta WHERE model_id = $1",
-            &[&mid],
-        )? {
-            let meta: Meta = serde_json::from_str(r.get(0))?;
-            model.external_fns = meta.external_fns;
-            model.external_calls = meta.external_calls;
-            model.scenarios = meta.scenarios;
-            model.sql_sources = meta.sql_sources;
-            model.lambdas = meta.lambdas;
         }
 
         // Cells: only the closure's, filtered in the database.
@@ -939,7 +978,12 @@ impl PgModelStore {
             }
         }
         self.loaded_tx = Some(tx_now);
-        self.loaded = Some(PgSnapshot::new(&model, cells));
+        let mut snap = PgSnapshot::new(&model, cells);
+        if legacy {
+            snap.lambdas.clear();
+            snap.ids.insert("lambda", HashSet::new());
+        }
+        self.loaded = Some(snap);
         Ok(model)
     }
 
@@ -1107,12 +1151,34 @@ impl PgModelStore {
         )?;
         delete_dropped(&mut tx, mid, "view", &ids, base.map(|s| &s.ids["view"]))?;
 
+        // Lambdas: one improv.lambda row each, as JSON. Only those this
+        // client changed are written, so a row improv.define wrote as text
+        // keeps its text.
+        let stored = base.map(|s| &s.lambdas);
+        let ids: Vec<i64> = model.lambdas.keys().map(|i| i64::from(*i)).collect();
+        let (mut up, mut names, mut defs) = (Vec::new(), Vec::new(), Vec::new());
+        for (id, l) in &model.lambdas {
+            if stored.is_some_and(|s| s.get(id) == Some(l)) {
+                continue;
+            }
+            up.push(i64::from(*id));
+            names.push(l.name.0.as_str());
+            defs.push(serde_json::to_string(l)?);
+        }
+        tx.execute(
+            "INSERT INTO improv.lambda(model_id, id, name, definition) \
+             SELECT $1, i, n, d FROM unnest($2::int8[], $3::text[], $4::text[]) u(i, n, d) \
+             ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, \
+             definition = EXCLUDED.definition",
+            &[&mid, &up, &names, &defs],
+        )?;
+        delete_dropped(&mut tx, mid, "lambda", &ids, base.map(|s| &s.ids["lambda"]))?;
+
         let blob = serde_json::json!({
             "external_fns": model.external_fns,
             "external_calls": model.external_calls,
             "scenarios": model.scenarios,
             "sql_sources": model.sql_sources,
-            "lambdas": model.lambdas,
         })
         .to_string();
         tx.execute(

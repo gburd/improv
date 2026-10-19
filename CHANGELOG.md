@@ -26,7 +26,10 @@ positional forms and recurrences, lookups, list results, `LET` and
   that calls it, in the caller's transaction, writing only the rows whose
   value changed; it is an error naming the measure when it would break
   one or change its type or dimensions. `improv.drop_measure` drops one,
-  and refuses while a measure or another lambda calls it.
+  and refuses while a measure or another lambda calls it. The GUI's
+  Postgres store reads and writes the same table (it creates it on an
+  older catalog). A model it saved with its lambdas in `improv.meta`
+  still loads, and its next save moves them into the table.
 - **Redefine and drop measures from SQL.** `improv.define(model,
   definition, replace => true)` redefines a derived measure. Re-running
   the same definition changes nothing: no `model_version` bump, no

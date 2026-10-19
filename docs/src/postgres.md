@@ -59,6 +59,8 @@ SELECT improv.define('merit', 'An = LOGNORM(Authored, Person)');
 in `improv.lambda`. Redefining it with `replace => true` recomputes every
 measure that calls it, as redefining a measure does;
 `improv.drop_measure('merit', 'LOGNORM')` drops it once nothing calls it.
+The GUI shares the table, so a lambda defined in either place is called
+from the other.
 
 The GUI shows the model as worksheet windows. Editing a formula there
 redefines it in Postgres; editing an input cell updates the bound row of

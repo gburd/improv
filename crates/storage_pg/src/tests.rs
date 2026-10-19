@@ -527,6 +527,109 @@ fn corrupt_rows_are_integrity_errors() {
     assert!(matches!(s.load_model(), Err(StoreError::Serde(_))));
 }
 
+/// Named LAMBDAs live in `improv.lambda` (JSON when this store writes them,
+/// text when `improv.define` does); a model saved before the table keeps
+/// its lambdas in the meta blob, and those still load.
+#[test]
+fn lambdas_live_in_improv_lambda() {
+    let Some(url) = live("lambda") else { return };
+    let mut s = PgModelStore::open(&url).unwrap();
+    let mut m = sample();
+    s.save_model(&m).unwrap();
+    let mid = s.model_id;
+    let mut c = client();
+    let rows = |c: &mut Client| -> Vec<(i64, String, String)> {
+        c.query(
+            "SELECT id, name, definition FROM improv.lambda WHERE model_id = $1 ORDER BY id",
+            &[&mid],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2)))
+        .collect()
+    };
+    let json = serde_json::to_string(&m.lambdas[&3]).unwrap();
+    assert_eq!(rows(&mut c), vec![(3, "Ident".into(), json.clone())]);
+    let blob: String = c
+        .query_one(
+            "SELECT blob::text FROM improv.meta WHERE model_id = $1",
+            &[&mid],
+        )
+        .unwrap()
+        .get(0);
+    assert!(!blob.contains("lambdas"), "{blob}");
+
+    // improv.define writes text, with a category parameter; a formula
+    // written as text calls it; a save that leaves it alone keeps the text.
+    let text = "Norm = LAMBDA(x, c, x / MAX(x OVER c))";
+    c.execute(
+        "INSERT INTO improv.lambda VALUES ($1, 4, 'Norm', $2)",
+        &[&mid, &text],
+    )
+    .unwrap();
+    c.execute(
+        "INSERT INTO improv.measure VALUES ($1, 120, 'Share', 'number', 'derived', \
+         'Share = Norm(Quantity, Time)', NULL, '{1,2,3}')",
+        &[&mid],
+    )
+    .unwrap();
+    s.set_loaded_tx(None);
+    let mut got = s.load_model().unwrap();
+    assert_eq!(got.lambdas[&4].params, ["x", "c"]);
+    let MeasureKind::Derived(f) = &got.measures[&MeasureId(120)].kind else {
+        panic!()
+    };
+    assert_eq!(
+        f.expr,
+        parse_expr(&got, "Norm(Quantity, Time)").unwrap().expr
+    );
+    got.lambdas.remove(&3);
+    s.save_model(&got).unwrap();
+    assert_eq!(rows(&mut c), vec![(4, "Norm".into(), text.into())]);
+    assert_eq!(s.reload_model().unwrap().lambdas, got.lambdas);
+
+    // The meta blob of a model saved before improv.lambda.
+    m.lambdas.insert(
+        7,
+        improv_core_model::NamedLambda {
+            name: "Old".into(),
+            params: vec!["x".into()],
+            body: improv_core_model::Expr::Literal(Value::Number(1.0)),
+        },
+    );
+    c.execute("DELETE FROM improv.lambda WHERE model_id = $1", &[&mid])
+        .unwrap();
+    c.execute(
+        "DELETE FROM improv.measure WHERE model_id = $1 AND id = 120",
+        &[&mid],
+    )
+    .unwrap();
+    let old = serde_json::json!({ "lambdas": m.lambdas }).to_string();
+    c.execute(
+        "UPDATE improv.meta SET blob = $2::text::jsonb WHERE model_id = $1",
+        &[&mid, &old],
+    )
+    .unwrap();
+    s.set_loaded_tx(None);
+    let legacy = s.load_model().unwrap();
+    assert_eq!(legacy.lambdas, m.lambdas);
+    // Saving moves them into the table.
+    s.save_model(&legacy).unwrap();
+    assert_eq!(rows(&mut c).len(), 2);
+    assert_eq!(s.reload_model().unwrap().lambdas, m.lambdas);
+    // A row that does not parse is an integrity error naming it.
+    c.execute(
+        "UPDATE improv.lambda SET definition = 'X = LAMBDA(x, Nope(x))' WHERE model_id = $1 AND id = 7",
+        &[&mid],
+    )
+    .unwrap();
+    let e = s.load_model().unwrap_err();
+    assert!(
+        matches!(&e, StoreError::Integrity(m) if m.contains("lambda 7")),
+        "{e}"
+    );
+}
+
 #[test]
 fn error_values_are_refused() {
     let Some(url) = live("errval") else { return };
