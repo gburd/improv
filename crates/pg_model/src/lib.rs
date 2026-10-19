@@ -228,8 +228,9 @@ fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
 }
 
 /// Build a [`Model`] (structure only, no input cells) from catalog rows.
-/// Input measures are added first, then derived measures in id order, so a
-/// text formula may reference any input and any earlier derived measure.
+/// Every measure is added before any formula is parsed, so a text formula
+/// may reference any measure, whatever its id (a redefinition may read a
+/// measure defined after it).
 pub fn build_model(catalog: &Catalog) -> Result<Model> {
     let mut model = Model::new();
     for c in &catalog.categories {
@@ -245,49 +246,104 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
         model.add_item(ItemId(i.id), CategoryId(i.category_id), i.name.clone());
     }
     let mut rows: Vec<&MeasureRow> = catalog.measures.iter().collect();
-    rows.sort_by_key(|r| (r.is_derived(), r.id));
-    for r in rows {
-        let kind = match (r.kind.as_str(), &r.formula) {
-            ("input", _) => MeasureKind::Input,
-            ("derived", Some(text)) => match serde_json::from_str::<Formula>(text) {
-                Ok(f) => MeasureKind::Derived(f),
-                Err(_) => {
-                    // A recurrence refers to itself: parse with its name known.
-                    let (target, formula) =
-                        parse_formula(&model.with_provisional(MeasureId(r.id), &r.name), text)?;
-                    if target != r.name {
-                        return Err(Error::Catalog(format!(
-                            "measure {} has a formula for {target}",
-                            r.name
-                        )));
-                    }
-                    MeasureKind::Derived(formula)
-                }
-            },
-            (kind, _) => {
-                return Err(Error::Catalog(format!(
-                    "measure {} has kind {kind:?} and formula {:?}",
-                    r.name, r.formula
-                )))
-            }
-        };
+    rows.sort_by_key(|r| r.id);
+    for r in &rows {
+        if !matches!(
+            (r.kind.as_str(), &r.formula),
+            ("input", _) | ("derived", Some(_))
+        ) {
+            return Err(Error::Catalog(format!(
+                "measure {} has kind {:?} and formula {:?}",
+                r.name, r.kind, r.formula
+            )));
+        }
+        // A derived measure is a placeholder until its formula is parsed.
         model.add_measure(Measure {
             id: MeasureId(r.id),
             name: Name(r.name.clone()),
             value_type: value_type_parse(&r.value_type)?,
             categories: r.categories.iter().map(|&c| CategoryId(c)).collect(),
-            kind,
+            kind: MeasureKind::Input,
             description: r.description.clone(),
         });
     }
+    for r in rows {
+        let Some(text) = r.formula.as_deref().filter(|_| r.is_derived()) else {
+            continue;
+        };
+        let formula = match serde_json::from_str::<Formula>(text) {
+            Ok(f) => f,
+            Err(_) => {
+                let (target, formula) = parse_formula(&model, text)?;
+                if target != r.name {
+                    return Err(Error::Catalog(format!(
+                        "measure {} has a formula for {target}",
+                        r.name
+                    )));
+                }
+                formula
+            }
+        };
+        if let Some(m) = model.measures.get_mut(&MeasureId(r.id)) {
+            m.kind = MeasureKind::Derived(formula);
+        }
+    }
     Ok(model)
+}
+
+/// What [`define_measure`] found to do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Defined {
+    /// A new derived measure: insert the row and create its result table.
+    New(MeasureRow),
+    /// The measure `id` already has this formula: change nothing.
+    Unchanged(u32),
+    /// A new formula for an existing derived measure: update its row, then
+    /// recompute it and its dependents.
+    Replaced {
+        /// The updated row (id, name and description kept).
+        row: MeasureRow,
+        /// Its value type or dimensions changed: recreate its result table.
+        reshaped: bool,
+    },
 }
 
 /// Validate a `Target = expr` definition against `model` and return the
 /// catalog row for the new derived measure `id`. Its categories are the
 /// engine-inferred result dimensions (an `OVER` aggregation drops the
-/// aggregated category), which is exactly the result table's shape.
+/// aggregated category), which is exactly the result table's shape. An
+/// existing target is an error ([`define_measure`] can replace it).
 pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
+    match define_measure(model, text, id, false)? {
+        Defined::New(row) => Ok(row),
+        other => Err(Error::Catalog(format!("unexpected {other:?}"))),
+    }
+}
+
+/// [`define`], or with `replace` a redefinition of an existing derived
+/// measure: [`Defined::Unchanged`] when it parses to the formula it has, else
+/// [`Defined::Replaced`]. A replacement is refused when its formula would read
+/// a measure that depends on the target (a cycle), when it changes the
+/// target's value type while another measure reads it, and when it breaks or
+/// reshapes a dependent; each error names the dependent.
+pub fn define_measure(model: &Model, text: &str, id: u32, replace: bool) -> Result<Defined> {
+    let name = text.split('=').next().unwrap_or("").trim();
+    match model
+        .measures
+        .values()
+        .find(|m| m.name.0.eq_ignore_ascii_case(name))
+    {
+        None => new_measure(model, text, id).map(Defined::New),
+        Some(m) if replace => replace_measure(model, text, m),
+        Some(m) => Err(Error::Definition(format!(
+            "measure {} already exists (improv.define(model, definition, replace => true) \
+             redefines it)",
+            m.name.0
+        ))),
+    }
+}
+
+fn new_measure(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
     // A new measure may refer to itself (a PREV recurrence): parse with its
     // name provisionally known.
     let name = text.split('=').next().unwrap_or("").trim();
@@ -306,9 +362,7 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
         improv_engine::compiler::derived_shape(model, MeasureId(id), &target, &formula)
             .map_err(|e| Error::Definition(e.to_string()))?;
     if value_type == ValueType::Enum {
-        return Err(Error::Definition(format!(
-            "{target} is an enum; enum results are not supported yet"
-        )));
+        return Err(no_enum_result(&target));
     }
     Ok(MeasureRow {
         id,
@@ -319,6 +373,142 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
         description: None,
         categories: categories.iter().map(|c| c.0).collect(),
     })
+}
+
+fn no_enum_result(name: &str) -> Error {
+    Error::Definition(format!(
+        "{name} is an enum; enum results are not supported yet"
+    ))
+}
+
+fn replace_measure(model: &Model, text: &str, m: &Measure) -> Result<Defined> {
+    let MeasureKind::Derived(old) = &m.kind else {
+        return Err(Error::Definition(format!(
+            "{} is an input measure; only a derived measure can be redefined",
+            m.name.0
+        )));
+    };
+    let (_, formula) = parse_formula(model, text)?;
+    if formula == *old {
+        return Ok(Defined::Unchanged(m.id.0));
+    }
+    let name_of = |id: &MeasureId| model.measures.get(id).map_or("?", |m| m.name.0.as_str());
+    let downstream: Vec<MeasureId> = dependents(model, &[m.id])
+        .into_iter()
+        .filter(|d| *d != m.id)
+        .collect();
+    if let Some(d) = formula
+        .referenced_measures()
+        .iter()
+        .find(|r| downstream.contains(r))
+    {
+        return Err(Error::Definition(format!(
+            "{} cannot read {}: {} depends on {}",
+            m.name.0,
+            name_of(d),
+            name_of(d),
+            m.name.0
+        )));
+    }
+    let (value_type, categories) =
+        improv_engine::compiler::derived_shape(model, m.id, &m.name.0, &formula)
+            .map_err(|e| Error::Definition(e.to_string()))?;
+    if value_type == ValueType::Enum {
+        return Err(no_enum_result(&m.name.0));
+    }
+    let readers = referencing(model, m.id);
+    if value_type != m.value_type && !readers.is_empty() {
+        return Err(Error::Definition(format!(
+            "redefining {} would change its type from {} to {}, but {} {} it: \
+             redefine or drop {} first",
+            m.name.0,
+            value_type_name(m.value_type),
+            value_type_name(value_type),
+            readers.join(", "),
+            if readers.len() == 1 { "reads" } else { "read" },
+            readers.join(", ")
+        )));
+    }
+    // Every dependent must keep its type and dimensions (its result table).
+    let mut next = model.clone();
+    if let Some(t) = next.measures.get_mut(&m.id) {
+        t.kind = MeasureKind::Derived(formula);
+        t.value_type = value_type;
+        t.categories.clone_from(&categories);
+    }
+    for d in &downstream {
+        let dm = &next.measures[d];
+        let MeasureKind::Derived(f) = &dm.kind else {
+            continue;
+        };
+        let shape =
+            improv_engine::compiler::derived_shape(&next, *d, &dm.name.0, f).map_err(|e| {
+                Error::Definition(format!(
+                    "redefining {} breaks {}, which depends on it: {e}",
+                    m.name.0, dm.name.0
+                ))
+            })?;
+        if shape != (dm.value_type, dm.categories.clone()) {
+            return Err(Error::Definition(format!(
+                "redefining {} would change the type or dimensions of {}, which depends on \
+                 it: redefine or drop {} first",
+                m.name.0, dm.name.0, dm.name.0
+            )));
+        }
+    }
+    Ok(Defined::Replaced {
+        reshaped: value_type != m.value_type || categories != m.categories,
+        row: MeasureRow {
+            id: m.id.0,
+            name: m.name.0.clone(),
+            value_type: value_type_name(value_type).into(),
+            kind: "derived".into(),
+            formula: Some(text.trim().to_string()),
+            description: m.description.clone(),
+            categories: categories.iter().map(|c| c.0).collect(),
+        },
+    })
+}
+
+/// The other derived measures whose formula reads `id` directly, by name,
+/// sorted.
+pub fn referencing(model: &Model, id: MeasureId) -> Vec<String> {
+    let mut names: Vec<String> = model
+        .measures
+        .values()
+        .filter(|m| m.id != id)
+        .filter(
+            |m| matches!(&m.kind, MeasureKind::Derived(f) if f.referenced_measures().contains(&id)),
+        )
+        .map(|m| m.name.0.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+/// The measure called `name` (any case), when no other measure reads it:
+/// dropping a measure a dependent still references is an error naming it.
+pub fn drop_target(model: &Model, name: &str) -> Result<MeasureId> {
+    let m = model
+        .measures
+        .values()
+        .find(|m| m.name.0.eq_ignore_ascii_case(name))
+        .ok_or_else(|| Error::Definition(format!("measure {name} does not exist")))?;
+    let readers = referencing(model, m.id);
+    if readers.is_empty() {
+        return Ok(m.id);
+    }
+    Err(Error::Definition(format!(
+        "cannot drop {}: {} still {} it (drop or redefine {} first)",
+        m.name.0,
+        readers.join(", "),
+        if readers.len() == 1 {
+            "references"
+        } else {
+            "reference"
+        },
+        if readers.len() == 1 { "it" } else { "them" }
+    )))
 }
 
 /// The rows of one bound input measure, as read from its fact table: one
@@ -611,8 +801,8 @@ pub fn check_value_column(table: &str, vt: ValueType, found: &str) -> Result<()>
         return Ok(());
     }
     Err(Error::Catalog(format!(
-        "{table}.value is {found} but the measure is {}; changing a measure's type is \
-         not supported: drop the model (improv.drop_model) and rebuild it",
+        "{table}.value is {found} but the measure is {}: redefine the measure \
+         (improv.define(model, definition, replace => true)) to recreate its table",
         value_type_name(vt)
     )))
 }
@@ -1083,6 +1273,86 @@ mod tests {
         assert!(matches!(err("garbage"), Error::Definition(_)));
     }
 
+    /// P1-1: replace and drop decisions, each refusal naming the dependent.
+    #[test]
+    fn redefine_and_drop() {
+        let mut cat = catalog();
+        let model = build_model(&cat).unwrap();
+        cat.measures
+            .push(define(&model, "Revenue = Price * Quantity", 3).unwrap());
+        let model = build_model(&cat).unwrap();
+        cat.measures
+            .push(define(&model, "Total = SUM(Revenue OVER Time)", 4).unwrap());
+        let model = build_model(&cat).unwrap();
+        let def = |t: &str| define_measure(&model, t, 9, true);
+        let err = |t: &str| match def(t) {
+            Err(Error::Definition(m)) => m,
+            other => panic!("{t}: {other:?}"),
+        };
+        assert_eq!(
+            def("Total = SUM(Revenue OVER Time)"),
+            Ok(Defined::Unchanged(4))
+        );
+        assert_eq!(
+            def("total=SUM( Revenue OVER Time )"),
+            Ok(Defined::Unchanged(4))
+        );
+        let Ok(Defined::Replaced { row, reshaped }) = def("Revenue = Price * Quantity * 2") else {
+            panic!()
+        };
+        assert_eq!((row.id, row.name.as_str(), reshaped), (3, "Revenue", false));
+        assert_eq!(
+            row.formula.as_deref(),
+            Some("Revenue = Price * Quantity * 2")
+        );
+        let Ok(Defined::Replaced { reshaped, row }) = def("Total = SUM(Revenue OVER Product)")
+        else {
+            panic!()
+        };
+        assert!(reshaped, "Total moves from Product to Time");
+        assert_eq!(row.categories, vec![1]);
+        assert!(err("Revenue = Price > 2").contains("from number to boolean, but Total reads it"));
+        assert!(err("Revenue = Total * 2").contains("Total depends on Revenue"));
+        // Total still sums Revenue[Product] over Time, so it keeps its shape.
+        assert!(matches!(
+            def("Revenue = SUM(Price OVER Time)"),
+            Ok(Defined::Replaced { reshaped: true, .. })
+        ));
+        let mut wider = cat.clone();
+        wider
+            .measures
+            .push(define(&model, "Double = Revenue * 2", 5).unwrap());
+        let wide = build_model(&wider).unwrap();
+        let e = define_measure(&wide, "Revenue = SUM(Price OVER Time)", 9, true).unwrap_err();
+        assert!(e.to_string().contains("dimensions of Double"), "{e}");
+        assert!(err("Price = Quantity").contains("input measure"));
+        assert!(matches!(def("New = Price"), Ok(Defined::New(r)) if r.id == 9));
+        assert!(define_measure(&model, "Total = Revenue", 9, false)
+            .is_err_and(|e| e.to_string().contains("replace => true")));
+
+        assert_eq!(referencing(&model, MeasureId(3)), vec![s("Total")]);
+        assert_eq!(drop_target(&model, "total"), Ok(MeasureId(4)));
+        let e = drop_target(&model, "Price").unwrap_err().to_string();
+        assert!(
+            e.contains("cannot drop Price: Revenue still references it"),
+            "{e}"
+        );
+        assert!(drop_target(&model, "Nope").is_err());
+
+        // A formula may read a measure with a higher id (a redefinition did).
+        cat.measures[2].formula = Some(s("Revenue = Total * 1"));
+        cat.measures[3].formula = Some(s("Total = SUM(Price OVER Time)"));
+        let model = build_model(&cat).unwrap();
+        assert_eq!(
+            model.measures[&MeasureId(3)].kind,
+            MeasureKind::Derived(
+                parser::parse_formula(&model, "Revenue = Total * 1")
+                    .unwrap()
+                    .formula
+            )
+        );
+    }
+
     #[test]
     fn bad_catalogs() {
         let mut cat = catalog();
@@ -1509,7 +1779,7 @@ mod tests {
         check_value_column("t", ValueType::Boolean, "boolean").unwrap();
         assert!(matches!(
             check_value_column("t", ValueType::Boolean, "double precision"),
-            Err(Error::Catalog(m)) if m.contains("drop the model")
+            Err(Error::Catalog(m)) if m.contains("replace => true")
         ));
 
         let mut cat = catalog();

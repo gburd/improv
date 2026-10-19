@@ -120,7 +120,8 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `create_model(name text) → bigint` | Creates the model and its result schema `improv_<lower(name)>`. |
 | `bind_category(model, category, rel regclass, col text)` | Creates the category if missing and records that `rel.col` supplies its items. |
 | `bind_measure(model, measure, rel regclass, value_col text, agg text DEFAULT NULL)` | Creates an input measure read from `rel.value_col`. Its dimensions are the categories already bound on `rel`, in category-id order. Two rows on one coordinate are an error unless `agg` (`sum`, `avg`, `min`, `max`, `count`) folds them; an aggregated measure is read-only in the GUI. |
-| `define(model, definition text) → bigint` | Adds a derived measure from `Target = expr` and creates its result table. `SQL(...)` and `CALL(...)` are rejected. |
+| `define(model, definition text, replace bool DEFAULT false) → bigint` | Adds a derived measure from `Target = expr` and creates its result table. `SQL(...)` and `CALL(...)` are rejected. An existing name is an ERROR unless `replace => true`, which redefines the derived measure (see below). Returns the measure's id. |
+| `drop_measure(model, measure text)` | Drops a measure: a derived one's result table, an input's binding and stored cells, and its catalog row. An ERROR names the measures that still reference it. |
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
 | `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once (re-run it after binding a new relation). `commit`: recomputes once, then once per writing transaction before it commits; needs the preload. `logical`/`manual`: removes the triggers. |
@@ -128,6 +129,19 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `enable_logical(model)` | Creates (or resets) the publication `improv_<model>` over the bound relations and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
 | `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error)` | How the model is kept current, and how far the logical worker is behind. |
 | `drop_model(name)` | Drops the catalog rows, the result schema, the triggers and the publication, and queues the slot for the worker to drop. |
+
+**Redefining.** `define(model, 'Merit = …', replace => true)` is safe to
+re-run from a migration. When the formula parses to the one the measure
+has (spacing and case do not matter), it changes nothing: no
+`model_version` bump, no result row written. A new formula is stored and
+the measure and everything that depends on it are recomputed at once, in
+the caller's transaction, in every sync mode; only the result rows whose
+value changed are written. The replacement is an ERROR, naming the
+dependent, when another measure reads the target and the new formula
+changes its value type, when it would change a dependent's type or
+dimensions, or when it would read one of its own dependents. A
+replacement that changes the target's dimensions (with no dependent in
+the way) recreates its result table.
 
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
 `value`). Result tables are `improv_<model>.<lower(measure)>` with one `text`
@@ -147,8 +161,9 @@ measure has the type its formula gives (`Price > 15` is boolean):
 | `date`, `timestamp`, `timestamptz` | datetime (millisecond UTC) | `timestamptz` |
 
 Any other column type is an ERROR. `agg => 'count'` is a number; `sum` and
-`avg` need a number column. A measure's type cannot change: if a result
-table exists with another `value` type, drop the model and rebuild it.
+`avg` need a number column. A derived measure's type changes only through
+`define(…, replace => true)`, which recreates its table; a result table
+found with another `value` type is an ERROR.
 `what_if` edits and results are JSON of the measure's type: a number, a
 bool, a string, or a datetime as an RFC 3339 string (`"2026-01-02T00:00:00+00:00"`).
 

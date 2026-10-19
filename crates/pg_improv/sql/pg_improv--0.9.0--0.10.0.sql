@@ -12,3 +12,13 @@ CREATE TRIGGER commit_sync AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON impro
   FOR EACH STATEMENT EXECUTE FUNCTION improv.commit_catalog_changed();
 CREATE TRIGGER commit_sync AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON improv.binding
   FOR EACH STATEMENT EXECUTE FUNCTION improv.commit_catalog_changed();
+-- Redefine and drop measures (P1-1): define() gains `replace`, and
+-- drop_measure() is new. The 2-argument define is replaced, not overloaded,
+-- so define(model, text) keeps resolving to it.
+DROP FUNCTION improv.define(text, text);
+CREATE FUNCTION improv.define(model text, definition text, replace bool DEFAULT false)
+  RETURNS bigint STRICT SECURITY INVOKER
+  LANGUAGE c AS 'MODULE_PATHNAME', 'define_wrapper';
+CREATE FUNCTION improv.drop_measure(model text, measure text)
+  RETURNS void STRICT SECURITY INVOKER
+  LANGUAGE c AS 'MODULE_PATHNAME', 'drop_measure_wrapper';

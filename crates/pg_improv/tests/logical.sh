@@ -139,6 +139,27 @@ wait_for "SELECT value FROM improv_plan.maxrev" 200000 "dimensionless, updated" 
 q "UPDATE sales SET qty = 90 WHERE quarter='Q3' AND product='Gadget'"
 echo "ok: a dimensionless measure keeps one row and follows changes"
 
+# 7c. redefine (P1-1): the same formula is a no-op; a new one is applied in
+#     the definer's transaction, and the worker's rebuild rewrites nothing
+ver() { q "SELECT tx FROM improv.model_version v JOIN improv.model m ON m.id = v.model_id WHERE m.name = 'plan'"; }
+dx() { q "SELECT max(xmin::text::bigint) FROM improv_plan.double"; }
+v0=$(ver)
+q "SELECT improv.define('plan','Double = Revenue * 2', replace => true)" >/dev/null
+[ "$(ver)" = "$v0" ] || { echo "FAIL: an unchanged redefine bumped model_version"; exit 1; }
+logpos=$(wc -c <"$D/log")
+got=$(q "SELECT improv.define('plan','Double = Revenue * 3', replace => true);
+         SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'" | tail -1)
+[ "$got" = 4200 ] || { echo "FAIL: redefine not applied in its transaction: $got"; exit 1; }
+x0=$(dx)
+for _ in $(seq 400); do tail -c +$((logpos + 1)) "$D/log" | grep -q "model plan: rebuilding (model changed)" && break; sleep 0.025; done
+tail -c +$((logpos + 1)) "$D/log" | grep -q "model plan: rebuilding (model changed)" || { echo "FAIL: the worker did not see the redefine"; exit 1; }
+q "UPDATE sales SET price = 8 WHERE quarter='Q1' AND product='Widget'"
+wait_for "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'" 4800 "redefined, then a write" >/dev/null
+n=$(q "SELECT count(*) FROM improv_plan.double WHERE xmin::text::bigint > $x0")
+[ "$n" = 1 ] || { echo "FAIL: after a redefine the worker rewrote $n double rows (want 1, the write)"; exit 1; }
+q "SELECT improv.define('plan','Double = Revenue * 2', replace => true)" >/dev/null
+echo "ok: redefine is a no-op when unchanged, applied in its transaction, and the worker rewrites nothing"
+
 # 8. incremental at 100k cells: a one-cell UPDATE rewrites exactly the
 #    affected result rows (Revenue[Q1,P1] and Total[P1]) and does not rebuild
 q "CREATE TABLE wide (quarter text, product text, price float8, qty float8)"

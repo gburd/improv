@@ -342,6 +342,9 @@ fn sync(t: &PgTrigger<'_>) -> Res<()> {
         .map(|r| req(&r, 1))
         .collect()
     })?;
+    if changed.is_empty() {
+        return Ok(()); // the relation's measures were all dropped
+    }
     let changed = changed
         .into_iter()
         .map(|i| id32(i).map(MeasureId))

@@ -38,6 +38,15 @@ SELECT * FROM improv_plan.revenue;     -- kept current from here on
 improv-gui "postgres://me@localhost/sales?model=plan"
 ```
 
+A migration can re-run `improv.define('plan', 'Revenue = …', replace =>
+true)`: the same formula changes nothing (no version bump, no row
+written), and a new one recomputes the measure and its dependents in the
+same transaction, writing only the rows whose value changed. It is an
+ERROR, naming the dependent, when the new formula would change the type a
+dependent reads. `improv.drop_measure('plan', 'Total')` drops a measure
+and its result table (an input's binding), and refuses while another
+measure references it.
+
 The GUI shows the model as worksheet windows. Editing a formula there
 redefines it in Postgres; editing an input cell updates the bound row of
 `sales`; everyone's SQL view of `improv_plan.revenue` follows.

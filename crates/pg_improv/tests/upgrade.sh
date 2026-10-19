@@ -82,6 +82,15 @@ for from in "$@"; do
 	q "SELECT improv.define('plan','Double = Revenue * 2')" >/dev/null
 	for _ in $(seq 200); do [ "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" = 6600 ] && break; sleep 0.05; done
 	eq "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" 6600 "define after the update"
+	# 0.10.0: define(…, replace => true) and drop_measure
+	q "SELECT improv.set_sync_mode('plan','manual')"
+	q "SELECT improv.define('plan','Double = Revenue * 3', replace => true)" >/dev/null
+	eq "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" 9900 "redefine after the update"
+	q "SELECT improv.drop_measure('plan','Double')"
+	eq "$(q "SELECT to_regclass('improv_plan.double') IS NULL")" t "drop_measure after the update"
+	q "SELECT improv.define('plan','Double = Revenue * 2')" >/dev/null
+	eq "$(q "SELECT count(*) FROM pg_proc WHERE proname = 'define' AND pronamespace = 'improv'::regnamespace")" 1 "one define after the update"
+	q "SELECT improv.set_sync_mode('plan','logical')"
 	cfg=$(q "SELECT count(*) FROM pg_extension, unnest(extconfig) WHERE extname = 'pg_improv'")
 	[ "$cfg" -ge 12 ] || fail "the update registered only $cfg config tables for pg_dump"
 	# (not `pg_dump | grep -q`: grep -q exits early, pg_dump gets SIGPIPE,

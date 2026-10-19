@@ -566,12 +566,23 @@ fn bind_measure(
 }
 
 /// Define a derived measure from `Target = expr` and create its result table.
+/// With `replace`, an existing derived measure gets the new formula instead:
+/// the same formula changes nothing (no version bump, no row written); a new
+/// one recomputes the measure and its dependents at once, in the caller's
+/// transaction, writing only the result rows whose value changed. Returns
+/// the measure's id.
 #[pg_extern(security_invoker)]
-fn define(model: &str, definition: &str) -> Res<i64> {
+fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<i64> {
     let (mid, model_name) = lock_model(model)?;
     let mut cat = read_catalog(mid)?;
     let id = next_id("measure", mid)?;
-    let row = pm::define(&pm::build_model(&cat)?, definition, id32(id)?)?;
+    let row = match pm::define_measure(&pm::build_model(&cat)?, definition, id32(id)?, replace)? {
+        pm::Defined::New(row) => row,
+        pm::Defined::Unchanged(id) => return Ok(i64::from(id)),
+        pm::Defined::Replaced { row, reshaped } => {
+            return redefine(mid, &model_name, &row, reshaped);
+        }
+    };
     let cats: Vec<i64> = row.categories.iter().map(|&c| i64::from(c)).collect();
     Spi::run_with_args(
         "INSERT INTO improv.measure \
@@ -596,6 +607,88 @@ fn define(model: &str, definition: &str) -> Res<i64> {
     ensure_table(&model_name, &table, &dims, m.measures[&target].value_type)?;
     bump_version(mid)?;
     Ok(id)
+}
+
+/// Store `row`'s new formula and recompute it and its dependents (a
+/// `reshaped` measure's result table is recreated first).
+fn redefine(mid: i64, model: &str, row: &pm::MeasureRow, reshaped: bool) -> Res<i64> {
+    let id = i64::from(row.id);
+    let cats: Vec<i64> = row.categories.iter().map(|&c| i64::from(c)).collect();
+    Spi::run_with_args(
+        "UPDATE improv.measure SET formula = $3, value_type = $4, categories = $5 \
+         WHERE model_id = $1 AND id = $2",
+        &[
+            mid.into(),
+            id.into(),
+            row.formula.clone().into(),
+            row.value_type.as_str().into(),
+            cats.into(),
+        ],
+    )?;
+    if reshaped {
+        pm::validate_name("measure", &row.name)?;
+        let table = pm::result_table(model, &row.name);
+        Spi::run(&format!("DROP TABLE IF EXISTS {table}"))?;
+    }
+    recompute_from(mid, model, MeasureId(row.id))?;
+    bump_version(mid)?;
+    Ok(id)
+}
+
+/// Recompute `root` and every measure that depends on it, now, in the
+/// caller's transaction (any sync mode). Returns the rows changed.
+fn recompute_from(mid: i64, model: &str, root: MeasureId) -> Res<i64> {
+    let mut l = trigger::load(mid, model.to_string(), true)?;
+    let targets = pm::dependents(&l.model, &[root]);
+    trigger::recompute(
+        &mut l,
+        &pm::Plan {
+            targets,
+            scope: None,
+        },
+    )
+}
+
+/// Drop measure `measure` from `model`: its catalog row, its binding and
+/// stored cells (an input), or its result table (a derived measure). An
+/// ERROR names the measures that still reference it.
+#[pg_extern(security_invoker)]
+fn drop_measure(model: &str, measure: &str) -> Res<()> {
+    let (mid, model_name) = lock_model(model)?;
+    let m = pm::build_model(&read_catalog(mid)?)?;
+    let target = pm::drop_target(&m, measure)?;
+    let found = &m.measures[&target];
+    let id = i64::from(target.0);
+    if found.is_derived() {
+        pm::validate_name("measure", &found.name.0)?;
+        let table = pm::result_table(&model_name, &found.name.0);
+        Spi::run(&format!("DROP TABLE IF EXISTS {table}"))?;
+    }
+    let unbinds = Spi::get_one_with_args::<i64>(
+        "WITH b AS (DELETE FROM improv.binding WHERE model_id = $1 AND measure_id = $2 \
+         RETURNING 1) SELECT count(*) FROM b",
+        &[mid.into(), id.into()],
+    )? == Some(1);
+    for table in ["cell", "measure"] {
+        let key = if table == "measure" {
+            "id"
+        } else {
+            "measure_id"
+        };
+        Spi::run_with_args(
+            &format!("DELETE FROM improv.{table} WHERE model_id = $1 AND {key} = $2"),
+            &[mid.into(), id.into()],
+        )?;
+    }
+    let mode = Spi::get_one_with_args::<String>(
+        "SELECT sync_mode FROM improv.model WHERE id = $1",
+        &[mid.into()],
+    )?;
+    if unbinds && mode.as_deref() == Some("logical") {
+        // Publish only the relations still bound.
+        worker::enable(mid, &model_name)?;
+    }
+    bump_version(mid)
 }
 
 /// Recompute every derived measure of `model` now, in the caller's
@@ -967,8 +1060,8 @@ mod tests {
         assert!(crate::create_model("bad-name").is_err());
         setup_plan();
         let err = |r: Result<i64, Box<dyn std::error::Error>>| r.unwrap_err().to_string();
-        assert!(err(crate::define("plan", "X = CALL(f, Price)")).contains("not supported"));
-        assert!(err(crate::define("nope", "X = Price * 2")).contains("does not exist"));
+        assert!(err(crate::define("plan", "X = CALL(f, Price)", false)).contains("not supported"));
+        assert!(err(crate::define("nope", "X = Price * 2", false)).contains("does not exist"));
 
         Spi::run("SET improv.max_cells = 15").unwrap();
         let e = crate::recalc("plan").unwrap_err().to_string();
@@ -1077,6 +1170,181 @@ mod tests {
         assert_eq!(count("improv.model"), 0);
         assert_eq!(count("improv.measure"), 0);
         assert_eq!(count("pg_namespace WHERE nspname = 'improv_plan'"), 0);
+    }
+
+    /// `(table, key, ctid)` of every row of the plan's result tables: an
+    /// UPDATE moves a row to a new ctid.
+    fn ctids() -> std::collections::BTreeMap<String, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for t in ["revenue", "total", "double"] {
+            let rows = Spi::connect(|c| {
+                c.select(
+                    &format!(
+                        "SELECT (to_jsonb(r) - 'value')::text, ctid::text FROM improv_plan.{t} r"
+                    ),
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| {
+                    (
+                        r.get::<String>(1).unwrap().unwrap(),
+                        r.get::<String>(2).unwrap().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+            });
+            for (k, c) in rows {
+                out.insert(format!("{t} {k}"), c);
+            }
+        }
+        out
+    }
+
+    fn version() -> i64 {
+        Spi::get_one::<i64>("SELECT tx FROM improv.model_version")
+            .unwrap()
+            .unwrap()
+    }
+
+    /// P1-1 in sync mode `mode`: the same `define(…, replace => true)` is a
+    /// no-op; a new formula rewrites only the rows whose value changed, at
+    /// once, in this transaction.
+    fn redefine_in(mode: &str) {
+        setup_plan();
+        Spi::run("SELECT improv.define('plan', 'Double = Revenue * 2')").unwrap();
+        Spi::run_with_args("SELECT improv.set_sync_mode('plan', $1)", &[mode.into()]).unwrap();
+        recalc();
+        let (v0, rows0) = (version(), ctids());
+        assert_eq!(rows0.len(), 8 + 2 + 8);
+        let sql = Spi::get_one::<i64>(
+            "SELECT improv.define('plan', 'Total = SUM(Revenue OVER Time)', replace => true)",
+        );
+        assert_eq!(sql, Ok(Some(4)));
+        for same in [
+            "Total = SUM(Revenue OVER Time)",
+            "Total=SUM( Revenue  OVER Time )",
+        ] {
+            let id = crate::define("plan", same, true).unwrap();
+            assert_eq!(id, 4);
+            assert_eq!((version(), ctids()), (v0, rows0.clone()), "{mode}: a no-op");
+        }
+        // Only Gadget's price is above 15: its rows change, Widget's do not.
+        crate::define(
+            "plan",
+            "Revenue = Price * Quantity * IF(Price > 15, 2, 1)",
+            true,
+        )
+        .unwrap();
+        assert!(version() > v0, "{mode}: a real change bumps the version");
+        assert_eq!(revenue("Q2", "Gadget"), Some(2400.0), "{mode}");
+        assert_eq!(revenue("Q2", "Widget"), Some(2000.0), "{mode}");
+        assert_eq!(
+            (total("Gadget"), total("Widget")),
+            (Some(12000.0), Some(10000.0))
+        );
+        let rows1 = ctids();
+        let moved: Vec<&String> = rows0
+            .iter()
+            .filter(|(k, c)| rows1.get(*k) != Some(*c))
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(moved.len(), 4 + 1 + 4, "{mode}: {moved:?}");
+        assert!(
+            moved.iter().all(|k| k.contains("Gadget")),
+            "{mode}: {moved:?}"
+        );
+        assert_eq!(recalc(), 0, "{mode}: already current");
+    }
+
+    #[pg_test]
+    fn redefine_manual() {
+        redefine_in("manual");
+    }
+
+    #[pg_test]
+    fn redefine_trigger() {
+        redefine_in("trigger");
+        // The new formula follows later writes.
+        Spi::run("UPDATE sales SET qty = 1 WHERE quarter = 'Q1' AND product = 'Gadget'").unwrap();
+        assert_eq!(revenue("Q1", "Gadget"), Some(40.0));
+    }
+
+    #[pg_test]
+    fn redefine_commit() {
+        redefine_in("commit");
+        Spi::run("UPDATE sales SET qty = 1 WHERE quarter = 'Q1' AND product = 'Gadget'").unwrap();
+        crate::commit::pre_commit();
+        assert_eq!(revenue("Q1", "Gadget"), Some(40.0));
+    }
+
+    #[pg_test]
+    fn redefine_logical() {
+        // The worker sees nothing of this uncommitted transaction;
+        // tests/logical.sh checks it rewrites nothing after the commit.
+        redefine_in("logical");
+    }
+
+    /// P1-1 refusals name the dependent; drop_measure removes a measure's
+    /// table or its binding.
+    #[pg_test]
+    fn redefine_and_drop_refusals() {
+        setup_plan();
+        Spi::run("SELECT improv.define('plan', 'Double = Revenue * 2')").unwrap();
+        let err = |r: Result<i64, Box<dyn std::error::Error>>| r.unwrap_err().to_string();
+        let e = err(crate::define("plan", "Revenue = Price > 15", true));
+        assert!(
+            e.contains("from number to boolean") && e.contains("Double, Total read it"),
+            "{e}"
+        );
+        let e = err(crate::define("plan", "Revenue = Total * 1", true));
+        assert!(e.contains("Total depends on Revenue"), "{e}");
+        let e = err(crate::define(
+            "plan",
+            "Revenue = SUM(Price OVER Time)",
+            true,
+        ));
+        assert!(e.contains("change the type or dimensions of Double"), "{e}");
+        let e = err(crate::define("plan", "Price = Quantity * 2", true));
+        assert!(e.contains("input measure"), "{e}");
+        let e = err(crate::define("plan", "Revenue = Price", false));
+        assert!(
+            e.contains("already exists") && e.contains("replace => true"),
+            "{e}"
+        );
+        // A replace of a new name defines it.
+        assert_eq!(
+            crate::define("plan", "Half = Revenue / 2", true).unwrap(),
+            6
+        );
+
+        let drop = |m: &str| crate::drop_measure("plan", m).map_err(|e| e.to_string());
+        let e = drop("Revenue").unwrap_err();
+        assert!(e.contains("Double, Half, Total still reference it"), "{e}");
+        assert!(drop("Price")
+            .unwrap_err()
+            .contains("Revenue still references it"));
+        assert!(drop("Nope").unwrap_err().contains("does not exist"));
+        for m in ["Double", "half", "Total"] {
+            drop(m).unwrap();
+        }
+        assert_eq!(count("pg_tables WHERE schemaname = 'improv_plan'"), 1);
+        // With no reader left, the type may change: the table is recreated.
+        crate::define("plan", "Revenue = Price > 15", true).unwrap();
+        recalc();
+        assert_eq!(
+            Spi::get_one::<bool>(
+                "SELECT value FROM improv_plan.revenue WHERE \"time\" = 'Q1' AND product = 'Gadget'"
+            ),
+            Ok(Some(true))
+        );
+        drop("Revenue").unwrap();
+        drop("Price").unwrap();
+        assert_eq!(count("improv.binding"), 1, "Price's binding is gone");
+        assert_eq!(count("improv.measure"), 1);
+        assert_eq!(count("pg_tables WHERE schemaname = 'improv_plan'"), 0);
+        // The publication follows the remaining binding; recalc still works.
+        assert_eq!(recalc(), 0);
     }
 
     /// P3-2: a measure with no categories gets a one-row table of just

@@ -13,6 +13,16 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Redefine and drop measures from SQL.** `improv.define(model,
+  definition, replace => true)` redefines a derived measure. Re-running
+  the same definition changes nothing: no `model_version` bump, no
+  result row written. A new formula recomputes the measure and its
+  dependents in the caller's transaction, in every sync mode, and
+  writes only the rows whose value changed. `improv.drop_measure(model,
+  measure)` drops a measure: a derived measure's result table, or an
+  input's binding and cells. A replacement that changes the value type
+  a dependent reads, and a drop of a referenced measure, are errors
+  that name the dependent.
 - **Dimensionless results in pg_improv.** A derived measure with no
   categories, such as `MaxVol = MAX(Vol OVER Person)`, gets a one-row
   result table with just a `value` column. `recalc`, every sync mode,
