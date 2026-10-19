@@ -2842,6 +2842,22 @@ fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
             expr_dsl(model, body)?
         ));
     }
+    // FIXPOINT(init, body, [max_iter], [tolerance]): r is placeholder (0, 0),
+    // printed as the LAMBDA's parameter.
+    if name == "FIXPOINT" {
+        let (init, body, opts) = match args {
+            [i, b, o @ ..] => (i, b, o),
+            _ => return None,
+        };
+        let mut parts = vec![
+            expr_dsl(model, init)?,
+            format!("LAMBDA(acc0, {})", expr_dsl(model, body)?),
+        ];
+        for o in opts {
+            parts.push(expr_dsl(model, o)?);
+        }
+        return Some(format!("FIXPOINT({})", parts.join(", ")));
+    }
     // Aggregation: `FUNC(MeasureRef OVER Category)` is the ONLY spelling the v1
     // grammar has for an aggregating func id, and `parse_aggregation` demands
     // it (a ref arg, exactly one OVER category, no `except`). Anything else
@@ -7109,8 +7125,9 @@ mod tests {
         }
     }
 
-    /// COALESCE, FILL, RELABEL and SWAP (category arguments) print as DSL
-    /// that commits back to the same formula.
+    /// COALESCE, FILL, RELABEL and SWAP (category arguments) and FIXPOINT
+    /// (its iterate prints as the LAMBDA parameter acc0) print as DSL that
+    /// commits back to the same formula.
     #[test]
     fn missing_cell_and_role_forms_round_trip_through_the_bar() {
         let mut model = revenue_model();
@@ -7121,6 +7138,8 @@ mod tests {
             "FILL(Quantity, 0)",
             "RELABEL(Quantity, Time, Year) * 2",
             "SWAP(Quantity, Time, Product)",
+            "FIXPOINT(Quantity, LAMBDA(acc0, acc0 / 2 + Price), 50, 0.0000000001)",
+            "FIXPOINT(FILL(Quantity, 0), LAMBDA(acc0, RELABEL(acc0, Time, Year) * 2))",
         ] {
             let f = parser::parse_expr(&model, text).unwrap_or_else(|e| panic!("{text}: {e}"));
             assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));

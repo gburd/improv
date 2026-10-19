@@ -58,6 +58,7 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `LET(name, value, …, body)` | the branches' type | LET(name, value, …, body): the body with each name bound to its value |
 | `LAMBDA(p, …, body)` | the branches' type | LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN |
 | `MAKEARRAY(rows, cols, lambda)` | the branches' type | MAKEARRAY(rows, cols, LAMBDA(r, c, body)): the body over the categories rows × cols, with r and c the item positions |
+| `FIXPOINT(init, lambda, [max_iter=100], [tolerance=1e-10])` | the branches' type | FIXPOINT(init, LAMBDA(r, body), \[max_iter=100\], \[tolerance=1e-10\]): r = init, then r = body(r) until the cells change by at most tolerance in total (Σ|Δ|), or max_iter times (then the last iterate); a measure's whole formula |
 | `BYROW(array OVER C, lambda)` | the branches' type | BYROW(array OVER C, LAMBDA(row, body)): the body per item of array's other categories, row being the values along C (the body reduces it: SUM(row), …) (also `BYCOL`) |
 | `MAP(array1, …, lambda)` | the branches' type | MAP(array1, …, LAMBDA(p, …, body)): the body applied element by element |
 

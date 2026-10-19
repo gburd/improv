@@ -182,6 +182,7 @@ pub(super) static PARAM_NAMES: &[(&str, &str)] = &[
     ("FISHER", "x"),
     ("FISHERINV", "y"),
     ("FIXED", "number, [decimals=2], [no_commas=FALSE]"),
+    ("FIXPOINT", "init, lambda, [max_iter=100], [tolerance=1e-10]"),
     ("FLOOR", "number, [significance=1]"),
     ("FLOOR.MATH", "number, [significance=1], [mode=0]"),
     ("FLOOR.PRECISE", "number, [significance=1]"),

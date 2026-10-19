@@ -40,6 +40,7 @@
 //!              | "MAP" "(" Expression { "," Expression } "," Lambda ")"
 //!              | ("SCAN" | "REDUCE") "(" Expression "," MeasureRef "OVER" Name "," Lambda ")"
 //!              | ("BYROW" | "BYCOL") "(" MeasureRef "OVER" Name "," Lambda ")"
+//!              | "FIXPOINT" "(" Expression "," Lambda [ "," Expression [ "," Expression ] ] ")"
 //!              | "MAKEARRAY" "(" Name "," Name "," Lambda ")"
 //!              | "SEQUENCE" "(" Name [ "," Expression [ "," Expression ] ] ")"
 //!              | NamedLambda "(" [ Expression { "," Expression } ] ")"
@@ -814,6 +815,7 @@ impl<'a> Parser<'a> {
                 "MAKEARRAY" => return self.parse_makearray(),
                 "BYROW" | "BYCOL" => return self.parse_byrow(&word),
                 "REDUCE" | "SCAN" => return self.parse_fold(&word),
+                "FIXPOINT" => return self.parse_fixpoint(),
                 _ => {}
             }
         }
@@ -1478,6 +1480,38 @@ impl<'a> Parser<'a> {
         Ok(Expr::Call(def.id, vec![init, x, body]))
     }
 
+    /// `FIXPOINT(init, LAMBDA(r, body), [max_iter], [tolerance])`: stored as
+    /// `Call(id, [init, body, max_iter?, tolerance?])` with `r` the
+    /// placeholder `functions::lambda_slot(k, 0)`. `k` is taken before
+    /// `init` is read, so a FIXPOINT that is the whole formula has k = 0.
+    fn parse_fixpoint(&mut self) -> Result<Expr, ParseError> {
+        let def = functions::callable("FIXPOINT").expect("FIXPOINT is registered");
+        self.bump(); // FIXPOINT
+        self.expect("(", "'(' after FIXPOINT")?;
+        let k = self.lambdas;
+        self.lambdas += 1;
+        let init = self.parse_expr()?;
+        self.expect(",", "',' then LAMBDA(r, body)")?;
+        if !self.peek_kw("lambda") {
+            return Err(self.err("FIXPOINT needs LAMBDA(r, body)"));
+        }
+        let (params, start, end) = self.parse_lambda_params()?;
+        if params.len() != 1 {
+            return Err(self.err(format!(
+                "FIXPOINT's LAMBDA takes one parameter (the iterate), got {}",
+                params.len()
+            )));
+        }
+        let r = Expr::Ref(functions::lambda_slot(k, 0), DimensionSpec::default());
+        let body = self.lambda_body(&params, vec![r], start, end)?;
+        let mut args = vec![init, body];
+        while args.len() < 4 && self.eat_op(",") {
+            args.push(self.parse_expr()?);
+        }
+        self.expect(")", "')' to close FIXPOINT")?;
+        Ok(Expr::Call(def.id, args))
+    }
+
     /// MeasureRef = Name [ "[" DimList "]" ]
     fn parse_measure_ref(&mut self) -> Result<Expr, ParseError> {
         let (name, pos) = self.parse_name("a measure name")?;
@@ -2085,6 +2119,32 @@ mod tests {
             Some((3, 1))
         );
         assert_eq!(functions::lambda_slot_of(MeasureId(5)), None);
+        // FIXPOINT: r is the first placeholder, the options stay as written.
+        let r = Expr::Ref(functions::lambda_slot(0, 0), DimensionSpec::default());
+        let fix = functions::callable("FIXPOINT").unwrap().id;
+        assert_eq!(
+            p("FIXPOINT(Price, LAMBDA(r, r / 2 + 1), 50)"),
+            Ok(Expr::Call(
+                fix,
+                vec![
+                    refr(PRICE),
+                    Expr::BinaryOp(
+                        BinaryOp::Add,
+                        Box::new(Expr::BinaryOp(
+                            BinaryOp::Div,
+                            Box::new(r.clone()),
+                            Box::new(Expr::Literal(Value::Number(2.0)))
+                        )),
+                        Box::new(Expr::Literal(Value::Number(1.0)))
+                    ),
+                    Expr::Literal(Value::Number(50.0)),
+                ]
+            ))
+        );
+        assert_eq!(
+            p("FIXPOINT(1, LAMBDA(x, x))"),
+            Ok(Expr::Call(fix, vec![Expr::Literal(Value::Number(1.0)), r]))
+        );
         for (src, want) in [
             ("LET(x, Price)", "expected"),
             ("LET(1, Price, 2)", "a name to bind"),
@@ -2116,6 +2176,13 @@ mod tests {
                 "')' to close the fold",
             ),
             ("SCAN 1", "unknown measure"),
+            ("FIXPOINT(0, 1)", "needs LAMBDA"),
+            ("FIXPOINT(0 LAMBDA(r, r))", "',' then LAMBDA"),
+            ("FIXPOINT(0, LAMBDA(a, b, a))", "one parameter"),
+            (
+                "FIXPOINT(0, LAMBDA(r, r), 5, 0, 1)",
+                "')' to close FIXPOINT",
+            ),
             ("LET 1", "unknown measure"),
         ] {
             let e = p(src).unwrap_err();
