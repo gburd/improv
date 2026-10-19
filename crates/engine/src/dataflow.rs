@@ -1712,6 +1712,87 @@ mod tests {
             Some(&CellValue::num(0.0))
         );
         assert_eq!(snap[&MeasureId(200)].len(), 4);
+        // A new Person item gets its filled cell. Items are fixed per engine
+        // build, so this takes a new Engine (a structural rebuild).
+        m.add_item(ItemId(15), person, "p5");
+        let (_, snap) = crate::session::Engine::new(&m, &[MeasureId(200)]).unwrap();
+        assert_eq!(
+            snap[&MeasureId(200)].get(&key(&[(1, 15)])),
+            Some(&CellValue::num(0.0))
+        );
+        assert_eq!(snap[&MeasureId(200)].len(), 5);
+    }
+
+    /// COUNTUNIQUE and RANK.DENSE live (P1-4, P3-1): deleting one of two
+    /// rows that share a key leaves the distinct count as it was, deleting
+    /// the other lowers it, and the dense ranks follow; the live engine and
+    /// a fresh evaluation agree after each edit.
+    #[test]
+    fn countunique_and_dense_rank_follow_deletes() {
+        let person = CategoryId(1);
+        let mut m = people();
+        // Vol: 10, 20, 30, 40; make p2 and p3 share the key 20.
+        let at = |p: u32| Coordinate::from_pairs([(person, ItemId(10 + p))]);
+        m.set_input(MeasureId(101), at(3), Value::Number(20.0));
+        define(&mut m, 200, vec![], "U = COUNTUNIQUE(Vol OVER Person)");
+        define(&mut m, 201, vec![person], "D = RANK.DENSE(Vol OVER Person)");
+        let ids = [MeasureId(200), MeasureId(201)];
+        let (mut eng, snap) = crate::session::Engine::new(&m, &ids).unwrap();
+        let u = |s: &crate::session::Snapshot| s[&MeasureId(200)][&Vec::new()].clone();
+        let d = |s: &crate::session::Snapshot| {
+            (1..=4)
+                .map(|p| s[&MeasureId(201)].get(&key(&[(1, 10 + p)])).cloned())
+                .collect::<Vec<_>>()
+        };
+        let n = |x: f64| Some(CellValue::num(x));
+        assert_eq!(u(&snap), CellValue::num(3.0));
+        assert_eq!(d(&snap), [n(3.0), n(2.0), n(2.0), n(1.0)]);
+        // Delete p2: 20 is still there (p3).
+        let snap = eng.clear(MeasureId(101), key(&[(1, 12)])).unwrap();
+        assert_eq!(u(&snap), CellValue::num(3.0));
+        assert_eq!(d(&snap), [n(3.0), None, n(2.0), n(1.0)]);
+        m.inputs.remove(&(MeasureId(101), at(2)));
+        let fresh = evaluate(&m, &ids).unwrap();
+        assert_eq!(fresh[&MeasureId(200)][&Vec::new()], CellValue::num(3.0));
+        // Delete p3: now 20 is gone.
+        let snap = eng.clear(MeasureId(101), key(&[(1, 13)])).unwrap();
+        assert_eq!(u(&snap), CellValue::num(2.0));
+        assert_eq!(d(&snap), [n(2.0), None, None, n(1.0)]);
+        // Insert a duplicate of 40: unchanged count, a shared rank.
+        let snap = eng.set(MeasureId(101), key(&[(1, 12)]), 40.0).unwrap();
+        assert_eq!(u(&snap), CellValue::num(2.0));
+        assert_eq!(d(&snap), [n(2.0), n(1.0), None, n(1.0)]);
+
+        // Random batches of sets and clears (values 0..4, so keys repeat):
+        // the count is count(DISTINCT) of the cells after every batch.
+        let mut cells: BTreeMap<u32, u64> = [(1, 10), (4, 40), (2, 40)].into();
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rand = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        for _ in 0..60 {
+            let mut batch = Vec::new();
+            for _ in 0..1 + rand(3) {
+                let p = 1 + rand(4) as u32;
+                let value = (rand(3) > 0).then(|| rand(4));
+                match value {
+                    Some(v) => cells.insert(p, v),
+                    None => cells.remove(&p),
+                };
+                batch.push(crate::session::Edit {
+                    measure: MeasureId(101),
+                    coord: key(&[(1, 10 + p)]),
+                    value: value.map(|v| CellValue::num(v as f64)),
+                });
+            }
+            let snap = eng.apply(batch).unwrap();
+            let distinct: std::collections::BTreeSet<_> = cells.values().collect();
+            let want = (!cells.is_empty()).then(|| CellValue::num(distinct.len() as f64));
+            assert_eq!(snap[&MeasureId(200)].get(&Vec::new()).cloned(), want);
+        }
     }
 
     /// Two roles of Person, Src and Dst (items a, b, c; Dst also has z, no
