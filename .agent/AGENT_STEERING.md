@@ -49,8 +49,7 @@ so the live worker applies boolean/text/date models cell by cell; `what_if`
 takes and returns typed `jsonb` values. **NEXT for pg_improv:** engine output
 deltas to drop the per-measure diff scan at 1M cells.
 
-**DuckDB extension `improv`: DONE (pending cross-platform qualification
-and the first registry PR)** — `crates/duckdb_improv` (duckdb-rs C-API
+**DuckDB extension `improv`: DONE, qualified, registration PR open** — `crates/duckdb_improv` (duckdb-rs C-API
 shell, its own workspace, mentat's layout: extension-ci-tools submodule +
 root `Makefile` for the registry) over `crates/duckdb_model` (pure core,
 reuses `pg_model`). SQL: `improv_calc`/`improv_calc_text`,
@@ -59,8 +58,12 @@ reuses `pg_model`). SQL: `improv_calc`/`improv_calc_text`,
 v2.0.0-alpha46057 since community-extensions #3079, and one binary is tested
 in v1.5.6 and v2.0 (`ci/duckdb_improv.sh`, `.github/workflows/duckdb.yml`).
 Reasoning: `crates/duckdb_improv/README.md` "Pins". Guide
-`docs/src/duckdb.md`. **NEXT:** green `duckdb.yml` on GitHub, then the manual
-registry PR with that SHA as `repo.ref`.
+`docs/src/duckdb.md`. Qualified at 874a031 on all five registry platforms
+(GitHub run 39177542841, plus the v1.5.6 + v2.0 load check); first
+registration PR duckdb/community-extensions#3139 (from
+gburd/community-extensions branch improv-0.9.0, `repo.ref` 874a031).
+**NEXT:** their review and merge; set `COMMUNITY_EXT_PAT` on gburd/improv
+so release tags open the version-bump PRs.
 
 GUI: E2 DONE (horizontal NeXT scroller inline with the row tiles, arrows
 grouped left; wide grids scroll sideways); typed edits reach the live engine;
