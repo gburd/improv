@@ -90,13 +90,21 @@ for from in "$@"; do
 	eq "$(q "SELECT to_regclass('improv_plan.double') IS NULL")" t "drop_measure after the update"
 	q "SELECT improv.define('plan','Double = Revenue * 2')" >/dev/null
 	eq "$(q "SELECT count(*) FROM pg_proc WHERE proname = 'define' AND pronamespace = 'improv'::regnamespace")" 1 "one define after the update"
+	# 0.10.0: named LAMBDAs (improv.lambda)
+	q "SELECT improv.define('plan','Twice = LAMBDA(x, x * 2)')" >/dev/null
+	q "SELECT improv.define('plan','Norm = LAMBDA(x, c, x / MAX(x OVER c))')" >/dev/null
+	q "SELECT improv.define('plan','Twice2 = Twice(Revenue) + Norm(Revenue, Time)')" >/dev/null
+	q "SELECT improv.recalc('plan')" >/dev/null
+	eq "$(q "SELECT value FROM improv_plan.twice2 WHERE time='Q1' AND product='Widget'")" 6601 "a named LAMBDA after the update"
+	q "SELECT improv.drop_measure('plan','Twice2')"
 	q "SELECT improv.set_sync_mode('plan','logical')"
 	cfg=$(q "SELECT count(*) FROM pg_extension, unnest(extconfig) WHERE extname = 'pg_improv'")
-	[ "$cfg" -ge 12 ] || fail "the update registered only $cfg config tables for pg_dump"
+	[ "$cfg" -ge 13 ] || fail "the update registered only $cfg config tables for pg_dump"
 	# (not `pg_dump | grep -q`: grep -q exits early, pg_dump gets SIGPIPE,
 	# and pipefail turns a found match into a failure)
 	"$PG_BIN/pg_dump" -h "$W" -p "$P" -U improv -Fp t >"$W/dump.sql"
 	grep -q "COPY improv.measure" "$W/dump.sql" || fail "pg_dump omits the model"
+	grep -q "COPY improv.lambda" "$W/dump.sql" || fail "pg_dump omits the lambdas"
 	eq "$(q "SELECT array_to_string(proconfig, ',') FROM pg_proc WHERE oid = 'improv.mint_items(bigint,bigint[],text[])'::regprocedure")" \
 		"search_path=pg_catalog, pg_temp" "mint_items search_path after the update"
 	q "SELECT improv.set_sync_mode('plan','commit')"

@@ -317,6 +317,7 @@ mod tests {
             ],
             items: vec![item(11, 1, "Q1"), item(12, 1, "Q2"), item(21, 2, "P1")],
             measures: vec![MeasureRow::input(5, "Price", vec![1, 2])],
+            lambdas: vec![],
         })
         .unwrap();
         m.set_input(MeasureId(5), coordinate(11, 21), Value::Number(1.0));

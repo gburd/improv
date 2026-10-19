@@ -170,6 +170,22 @@ END $$;
     requires = ["catalog"]
 );
 
+// Named LAMBDAs (P3-3): `Name = LAMBDA(…)` as given to `define`, called by
+// formulas by id (`improv_core_model::functions::named_lambda`).
+extension_sql!(
+    r#"
+CREATE TABLE improv.lambda (
+    model_id   bigint NOT NULL REFERENCES improv.model(id) ON DELETE CASCADE,
+    id         bigint NOT NULL,
+    name       text NOT NULL,
+    definition text NOT NULL,
+    PRIMARY KEY (model_id, id)
+);
+"#,
+    name = "lambda_catalog",
+    requires = ["phase2_catalog"]
+);
+
 // The catalog's rows are the user's models, not the extension's: without
 // this, pg_dump writes only the extension's DDL and a restore loses every
 // model (its tables come back empty from CREATE EXTENSION). The sequence
@@ -187,9 +203,10 @@ SELECT pg_catalog.pg_extension_config_dump('improv.cell', '');
 SELECT pg_catalog.pg_extension_config_dump('improv.view', '');
 SELECT pg_catalog.pg_extension_config_dump('improv.meta', '');
 SELECT pg_catalog.pg_extension_config_dump('improv.model_version', '');
+SELECT pg_catalog.pg_extension_config_dump('improv.lambda', '');
 "#,
     name = "dump_catalog",
-    requires = ["phase2_catalog"]
+    requires = ["lambda_catalog"]
 );
 
 /// The id and stored name of model `name`, row-locked so concurrent
@@ -429,6 +446,25 @@ fn read_catalog(model_id: i64) -> Res<pm::Catalog> {
                     .collect::<Res<_>>()?,
             });
         }
+        // Absent between installing a newer .so and ALTER EXTENSION UPDATE.
+        let lambdas = c
+            .select("SELECT to_regclass('improv.lambda') IS NOT NULL", None, &[])?
+            .first()
+            .get::<bool>(1)?
+            == Some(true);
+        if lambdas {
+            for r in c.select(
+                "SELECT id, name, definition FROM improv.lambda WHERE model_id = $1",
+                None,
+                &args,
+            )? {
+                cat.lambdas.push(pm::LambdaRow {
+                    id: id32(req(&r, 1)?)?,
+                    name: req(&r, 2)?,
+                    definition: req(&r, 3)?,
+                });
+            }
+        }
         Ok(cat)
     })
 }
@@ -565,23 +601,35 @@ fn bind_measure(
     bump_version(mid)
 }
 
-/// Define a derived measure from `Target = expr` and create its result table.
-/// With `replace`, an existing derived measure gets the new formula instead:
-/// the same formula changes nothing (no version bump, no row written); a new
-/// one recomputes the measure and its dependents at once, in the caller's
-/// transaction, writing only the result rows whose value changed. Returns
-/// the measure's id.
+/// Define a derived measure from `Target = expr` and create its result table,
+/// or a named LAMBDA from `Name = LAMBDA(p, …, body)`, which formulas then
+/// call by name. With `replace`, an existing derived measure (or lambda) gets
+/// the new definition instead: the same one changes nothing (no version
+/// bump, no row written); a new one recomputes the measure (the lambda's
+/// callers) and their dependents at once, in the caller's transaction,
+/// writing only the result rows whose value changed. Returns the measure's
+/// (or the lambda's) id.
 #[pg_extern(security_invoker)]
 fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<i64> {
     let (mid, model_name) = lock_model(model)?;
     let mut cat = read_catalog(mid)?;
+    let built = pm::build_model(&cat)?;
+    match pm::define_lambda(&built, definition, replace)? {
+        None => {}
+        Some(pm::Defined::Lambda { row, callers }) => {
+            return store_lambda(mid, &model_name, &row, &callers);
+        }
+        Some(pm::Defined::Unchanged(id)) => return Ok(i64::from(id)),
+        Some(other) => return Err(format!("unexpected {other:?}").into()),
+    }
     let id = next_id("measure", mid)?;
-    let row = match pm::define_measure(&pm::build_model(&cat)?, definition, id32(id)?, replace)? {
+    let row = match pm::define_measure(&built, definition, id32(id)?, replace)? {
         pm::Defined::New(row) => row,
         pm::Defined::Unchanged(id) => return Ok(i64::from(id)),
         pm::Defined::Replaced { row, reshaped } => {
             return redefine(mid, &model_name, &row, reshaped);
         }
+        other => return Err(format!("unexpected {other:?}").into()),
     };
     let cats: Vec<i64> = row.categories.iter().map(|&c| i64::from(c)).collect();
     Spi::run_with_args(
@@ -605,6 +653,36 @@ fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<
     let target = MeasureId(id32(id)?);
     let dims = pm::dim_columns(&m, target)?;
     ensure_table(&model_name, &table, &dims, m.measures[&target].value_type)?;
+    bump_version(mid)?;
+    Ok(id)
+}
+
+/// Insert (or update) named LAMBDA `row`, then recompute the measures that
+/// call it, `callers`, and their dependents.
+fn store_lambda(mid: i64, model: &str, row: &pm::LambdaRow, callers: &[MeasureId]) -> Res<i64> {
+    let id = i64::from(row.id);
+    Spi::run_with_args(
+        "INSERT INTO improv.lambda (model_id, id, name, definition) VALUES ($1, $2, $3, $4) \
+         ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, \
+         definition = EXCLUDED.definition",
+        &[
+            mid.into(),
+            id.into(),
+            row.name.as_str().into(),
+            row.definition.as_str().into(),
+        ],
+    )?;
+    if !callers.is_empty() {
+        let mut l = trigger::load(mid, model.to_string(), true)?;
+        let targets = pm::dependents(&l.model, callers);
+        trigger::recompute(
+            &mut l,
+            &pm::Plan {
+                targets,
+                scope: None,
+            },
+        )?;
+    }
     bump_version(mid)?;
     Ok(id)
 }
@@ -651,11 +729,19 @@ fn recompute_from(mid: i64, model: &str, root: MeasureId) -> Res<i64> {
 
 /// Drop measure `measure` from `model`: its catalog row, its binding and
 /// stored cells (an input), or its result table (a derived measure). An
-/// ERROR names the measures that still reference it.
+/// ERROR names the measures that still reference it. A named LAMBDA is
+/// dropped the same way, by name, once no measure or lambda calls it.
 #[pg_extern(security_invoker)]
 fn drop_measure(model: &str, measure: &str) -> Res<()> {
     let (mid, model_name) = lock_model(model)?;
     let m = pm::build_model(&read_catalog(mid)?)?;
+    if let Some(id) = pm::drop_lambda(&m, measure)? {
+        Spi::run_with_args(
+            "DELETE FROM improv.lambda WHERE model_id = $1 AND id = $2",
+            &[mid.into(), i64::from(id).into()],
+        )?;
+        return bump_version(mid);
+    }
     let target = pm::drop_target(&m, measure)?;
     let found = &m.measures[&target];
     let id = i64::from(target.0);
@@ -1345,6 +1431,101 @@ mod tests {
         assert_eq!(count("pg_tables WHERE schemaname = 'improv_plan'"), 0);
         // The publication follows the remaining binding; recalc still works.
         assert_eq!(recalc(), 0);
+    }
+
+    /// `contrib`: four people's contribution counts. Model `merit` binds
+    /// Person and the four counts (Authored is missing for p4).
+    fn setup_merit() {
+        for sql in [
+            "CREATE TABLE contrib (person text, authored float8, reviewed float8,
+                                   mails float8, commits float8)",
+            "INSERT INTO contrib VALUES ('p1', 300, 10, 50, 7), ('p2', 2, 40, 5, 70),
+                                        ('p3', 0, 0, 500, 1), ('p4', NULL, 1, 1, 0)",
+            "SELECT improv.create_model('merit')",
+            "SELECT improv.bind_category('merit', 'Person', 'contrib', 'person')",
+            "SELECT improv.bind_measure('merit', 'Authored', 'contrib', 'authored')",
+            "SELECT improv.bind_measure('merit', 'Reviewed', 'contrib', 'reviewed')",
+            "SELECT improv.bind_measure('merit', 'Mails', 'contrib', 'mails')",
+            "SELECT improv.bind_measure('merit', 'Commits', 'contrib', 'commits')",
+            "SELECT improv.set_sync_mode('merit', 'manual')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+    }
+
+    /// Value of `improv_merit.<table>` for `person`.
+    fn merit(table: &str, person: &str) -> Option<f64> {
+        Spi::get_one_with_args::<f64>(
+            &format!("SELECT (SELECT value FROM improv_merit.{table} WHERE person = $1)"),
+            &[person.into()],
+        )
+        .unwrap()
+    }
+
+    const NORMS: [(&str, &str); 4] = [
+        ("An", "Authored"),
+        ("Rn", "Reviewed"),
+        ("Mn", "Mails"),
+        ("Cn", "Commits"),
+    ];
+
+    /// P3-3: `LOGNORM(Authored, Person)` defined once, a body that reduces
+    /// over its category parameter, used by four measures; it cannot be
+    /// dropped while they call it.
+    #[pg_test]
+    fn named_lambda_used_by_four_measures() {
+        setup_merit();
+        let lognorm = "LOGNORM = LAMBDA(x, c, LN1P(x) / LN1P(MAX(x OVER c)))";
+        assert_eq!(crate::define("merit", lognorm, false).unwrap(), 1);
+        assert_eq!(count("improv.lambda"), 1);
+        for (m, input) in NORMS {
+            crate::define("merit", &format!("{m} = LOGNORM({input}, Person)"), false).unwrap();
+        }
+        assert!(recalc_model("merit") > 0);
+        let close = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 1e-12);
+        assert!(close(merit("an", "p2"), 2f64.ln_1p() / 300f64.ln_1p()));
+        assert!(close(merit("an", "p1"), 1.0));
+        assert_eq!(merit("an", "p4"), None, "no Authored, no cell");
+        assert!(close(merit("mn", "p1"), 50f64.ln_1p() / 500f64.ln_1p()));
+        assert!(close(merit("cn", "p2"), 1.0));
+        assert!(close(merit("rn", "p4"), 1f64.ln_1p() / 40f64.ln_1p()));
+        // The model's lambdas are visible to the next define, and unchanged.
+        let v0 = model_version("merit");
+        assert_eq!(crate::define("merit", lognorm, true).unwrap(), 1);
+        assert_eq!(model_version("merit"), v0, "an unchanged lambda is a no-op");
+        let err = |r: Result<i64, Box<dyn std::error::Error>>| r.unwrap_err().to_string();
+        assert!(err(crate::define("merit", lognorm, false)).contains("already exists"));
+        assert!(err(crate::define("merit", "Mails = LAMBDA(x, x)", false)).contains("is a measure"));
+        assert!(err(crate::define("merit", "LogNorm = Mails * 2", false)).contains("named LAMBDA"));
+
+        let drop = |m: &str| crate::drop_measure("merit", m).map_err(|e| e.to_string());
+        let e = drop("lognorm").unwrap_err();
+        assert!(
+            e.contains("cannot drop LOGNORM: An, Cn, Mn, Rn still call it"),
+            "{e}"
+        );
+        for (m, _) in NORMS {
+            drop(m).unwrap();
+        }
+        drop("LOGNORM").unwrap();
+        assert_eq!(count("improv.lambda"), 0);
+        assert!(model_version("merit") > v0);
+    }
+
+    fn recalc_model(model: &str) -> i64 {
+        Spi::get_one_with_args::<i64>("SELECT improv.recalc($1)", &[model.into()])
+            .unwrap()
+            .unwrap()
+    }
+
+    fn model_version(model: &str) -> i64 {
+        Spi::get_one_with_args::<i64>(
+            "SELECT tx FROM improv.model_version v JOIN improv.model m ON m.id = v.model_id \
+             WHERE m.name = $1",
+            &[model.into()],
+        )
+        .unwrap()
+        .unwrap()
     }
 
     /// P3-2: a measure with no categories gets a one-row table of just

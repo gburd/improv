@@ -19,6 +19,11 @@ positional forms and recurrences, lookups, list results, `LET` and
   LN1P(MAX(x OVER c)))` is called as `LOGNORM(Authored, Person)`. A
   reduced parameter takes a measure, which keeps the body's `OVER` when
   the call expands.
+- **Named LAMBDAs in pg_improv.** `improv.define(model, 'LOGNORM =
+  LAMBDA(…)')` stores a named LAMBDA in the new catalog table
+  `improv.lambda` (dumped with the model); the model's formulas call it
+  by name. `improv.drop_measure` drops one, and refuses while a measure
+  or another lambda calls it.
 - **Redefine and drop measures from SQL.** `improv.define(model,
   definition, replace => true)` redefines a derived measure. Re-running
   the same definition changes nothing: no `model_version` bump, no

@@ -167,6 +167,7 @@ echo "ok: commit mode: results at COMMIT/PREPARE; old results before it; ROLLBAC
 # Dump the logical-mode database and restore it into a fresh cluster whose
 # worker serves it: the model, its sync mode and its results come back, and
 # the restored worker creates its own slot and follows new writes.
+q "SELECT improv.define('plan','Twice = LAMBDA(x, x * 2)')" >/dev/null
 "$PG_BIN/pg_dump" -h "$D" -p "$P" -U improv -Fc t >"$D/t.dump"
 # The dump is taken; this cluster is discarded, so stop it immediately: a
 # fast shutdown on a loaded CI runner once outlasted pg_ctl's 60 s wait.
@@ -181,11 +182,12 @@ improv.poll_ms = 50"
 "$PG_BIN/pg_restore" -h "$D" -p "$P" -U improv -d t --exit-on-error "$D/t.dump"
 eq "$(q "$REV")" 4600 "restored results"
 eq "$(q "SELECT count(*) FROM improv.measure m JOIN improv.model o ON o.id = m.model_id WHERE o.name = 'plan'")" 3 "restored model measures"
+eq "$(q "SELECT count(*) FROM improv.lambda")" 1 "restored lambdas"
 eq "$(q "SELECT sync_mode FROM improv.model WHERE name = 'plan'")" logical "restored sync mode"
 q "UPDATE sales SET price = 24 WHERE quarter='Q1' AND product='Widget'"
 wait_rev 4800 "the restored model follows new writes (new slot)"
 eq "$(q "SELECT slot IS NOT NULL AND last_error IS NULL FROM improv.status('plan')")" t "restored status"
-q "SELECT improv.define('plan','Double = Revenue * 2')" >/dev/null
+q "SELECT improv.define('plan','Double = Twice(Revenue)')" >/dev/null
 q "SELECT improv.create_model('fresh')" >/dev/null
 eq "$(q "SELECT count(*) FROM improv.model")" 2 "ids keep minting after restore"
 echo "ok: pg_dump / pg_restore keeps models, sync mode and results; the restored worker resumes"

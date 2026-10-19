@@ -22,3 +22,12 @@ CREATE FUNCTION improv.define(model text, definition text, replace bool DEFAULT 
 CREATE FUNCTION improv.drop_measure(model text, measure text)
   RETURNS void STRICT SECURITY INVOKER
   LANGUAGE c AS 'MODULE_PATHNAME', 'drop_measure_wrapper';
+-- Named LAMBDAs (P3-3): define(model, 'Name = LAMBDA(...)') stores one here.
+CREATE TABLE improv.lambda (
+    model_id   bigint NOT NULL REFERENCES improv.model(id) ON DELETE CASCADE,
+    id         bigint NOT NULL,
+    name       text NOT NULL,
+    definition text NOT NULL,
+    PRIMARY KEY (model_id, id)
+);
+SELECT pg_catalog.pg_extension_config_dump('improv.lambda', '');

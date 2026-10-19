@@ -120,8 +120,8 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `create_model(name text) → bigint` | Creates the model and its result schema `improv_<lower(name)>`. |
 | `bind_category(model, category, rel regclass, col text)` | Creates the category if missing and records that `rel.col` supplies its items. |
 | `bind_measure(model, measure, rel regclass, value_col text, agg text DEFAULT NULL)` | Creates an input measure read from `rel.value_col`. Its dimensions are the categories already bound on `rel`, in category-id order. Two rows on one coordinate are an error unless `agg` (`sum`, `avg`, `min`, `max`, `count`) folds them; an aggregated measure is read-only in the GUI. |
-| `define(model, definition text, replace bool DEFAULT false) → bigint` | Adds a derived measure from `Target = expr` and creates its result table. `SQL(...)` and `CALL(...)` are rejected. An existing name is an ERROR unless `replace => true`, which redefines the derived measure (see below). Returns the measure's id. |
-| `drop_measure(model, measure text)` | Drops a measure: a derived one's result table, an input's binding and stored cells, and its catalog row. An ERROR names the measures that still reference it. |
+| `define(model, definition text, replace bool DEFAULT false) → bigint` | Adds a derived measure from `Target = expr` and creates its result table, or a named LAMBDA from `Name = LAMBDA(p, …, body)` (see below). `SQL(...)` and `CALL(...)` are rejected. An existing name is an ERROR unless `replace => true`, which redefines the derived measure (see below). Returns the measure's (or lambda's) id. |
+| `drop_measure(model, measure text)` | Drops a measure: a derived one's result table, an input's binding and stored cells, and its catalog row; or a named LAMBDA. An ERROR names the measures (and lambdas) that still reference it. |
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
 | `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once (re-run it after binding a new relation). `commit`: recomputes once, then once per writing transaction before it commits; needs the preload. `logical`/`manual`: removes the triggers. |
@@ -142,6 +142,13 @@ changes its value type, when it would change a dependent's type or
 dimensions, or when it would read one of its own dependents. A
 replacement that changes the target's dimensions (with no dependent in
 the way) recreates its result table.
+
+**Named LAMBDAs.** `define(model, 'LOGNORM = LAMBDA(x, c, LN1P(x) /
+LN1P(MAX(x OVER c)))')` stores a named LAMBDA in `improv.lambda`; every
+formula of the model can then call it, `An = LOGNORM(Authored, Person)`.
+A parameter the body uses as a category (`OVER c`) takes a category at
+the call. A body reads only its parameters (no measures). `drop_measure`
+drops a lambda by name once no measure or other lambda calls it.
 
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
 `value`). Result tables are `improv_<model>.<lower(measure)>` with one `text`

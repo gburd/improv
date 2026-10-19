@@ -210,6 +210,20 @@ pub struct Catalog {
     pub items: Vec<ItemRow>,
     /// `improv.measure` rows.
     pub measures: Vec<MeasureRow>,
+    /// `improv.lambda` rows.
+    pub lambdas: Vec<LambdaRow>,
+}
+
+/// `improv.lambda` row: a named LAMBDA.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LambdaRow {
+    /// Lambda id (unique within the model; calls store it).
+    pub id: u32,
+    /// Its name, as in the definition.
+    pub name: String,
+    /// `Name = LAMBDA(…)` text (what `improv.define` writes) or a JSON
+    /// `NamedLambda` (what the GUI's store writes).
+    pub definition: String,
 }
 
 /// Parse a `Target = expr` definition, rejecting the `SQL(...)`/`CALL(...)`
@@ -217,10 +231,10 @@ pub struct Catalog {
 fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
     match parser::parse_definition(model, text).map_err(|e| Error::Definition(e.to_string()))? {
         Definition::Formula(ft) => Ok((ft.target.0, ft.formula)),
-        Definition::Lambda(_) => Err(Error::Definition(
-            "named LAMBDAs are not supported inside Postgres; write a LANGUAGE improv function"
-                .into(),
-        )),
+        Definition::Lambda(lt) => Err(Error::Definition(format!(
+            "{} = LAMBDA(…) defines a named LAMBDA, not a measure",
+            lt.name.0
+        ))),
         _ => Err(Error::Definition(
             "SQL(...) and CALL(...) definitions are not supported inside Postgres".into(),
         )),
@@ -228,9 +242,9 @@ fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
 }
 
 /// Build a [`Model`] (structure only, no input cells) from catalog rows.
-/// Every measure is added before any formula is parsed, so a text formula
-/// may reference any measure, whatever its id (a redefinition may read a
-/// measure defined after it).
+/// Every measure and named LAMBDA is added before any formula is parsed, so
+/// a text formula may reference any measure, whatever its id (a
+/// redefinition may read a measure defined after it), and call any lambda.
 pub fn build_model(catalog: &Catalog) -> Result<Model> {
     let mut model = Model::new();
     for c in &catalog.categories {
@@ -266,6 +280,20 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
             kind: MeasureKind::Input,
             description: r.description.clone(),
         });
+    }
+    let lambdas: Vec<(u32, String)> = catalog
+        .lambdas
+        .iter()
+        .map(|l| (l.id, l.definition.clone()))
+        .collect();
+    model.load_lambdas(&lambdas).map_err(Error::Catalog)?;
+    for l in &catalog.lambdas {
+        if !model.lambdas[&l.id].name.0.eq_ignore_ascii_case(&l.name) {
+            return Err(Error::Catalog(format!(
+                "lambda {} is named {} but defines {}",
+                l.id, l.name, model.lambdas[&l.id].name.0
+            )));
+        }
     }
     for r in rows {
         let Some(text) = r.formula.as_deref().filter(|_| r.is_derived()) else {
@@ -306,6 +334,105 @@ pub enum Defined {
         /// Its value type or dimensions changed: recreate its result table.
         reshaped: bool,
     },
+    /// A named LAMBDA ([`define_lambda`]): insert or update its row, then
+    /// recompute `callers` and their dependents.
+    Lambda {
+        /// The new or updated row.
+        row: LambdaRow,
+        /// The derived measures that call it, directly or through other
+        /// lambdas (none for a new lambda).
+        callers: Vec<MeasureId>,
+    },
+}
+
+/// Whether `text` is a `Name = LAMBDA(…)` definition.
+fn is_lambda(text: &str) -> bool {
+    text.split_once('=').is_some_and(|(_, rhs)| {
+        let r = rhs.trim_start();
+        r.get(..6).is_some_and(|h| h.eq_ignore_ascii_case("lambda"))
+            && r[6..].trim_start().starts_with('(')
+    })
+}
+
+/// A `Name = LAMBDA(…)` definition for `model`: `None` when `text` defines a
+/// measure, else a new named LAMBDA ([`Defined::Lambda`]), or with `replace`
+/// [`Defined::Unchanged`] when it has this definition already. Its body may
+/// reduce over a category parameter (`LAMBDA(x, c, MAX(x OVER c))`). A name
+/// a measure has is an error.
+pub fn define_lambda(model: &Model, text: &str, replace: bool) -> Result<Option<Defined>> {
+    if !is_lambda(text) {
+        return Ok(None);
+    }
+    let lt = match parser::parse_definition(model, text)
+        .map_err(|e| Error::Definition(e.to_string()))?
+    {
+        Definition::Lambda(lt) => lt,
+        _ => {
+            return Err(Error::Definition(format!(
+                "{text:?} is not Name = LAMBDA(…)"
+            )))
+        }
+    };
+    let name = lt.name.0.as_str();
+    if let Some(m) = model
+        .measures
+        .values()
+        .find(|m| m.name.0.eq_ignore_ascii_case(name))
+    {
+        return Err(Error::Definition(format!(
+            "{} is a measure; name the LAMBDA differently",
+            m.name.0
+        )));
+    }
+    let row = |id| LambdaRow {
+        id,
+        name: name.to_string(),
+        definition: text.trim().to_string(),
+    };
+    match model.lambda_by_name(name) {
+        None => Ok(Some(Defined::Lambda {
+            row: row(model.lambdas.keys().max().map_or(1, |m| m + 1)),
+            callers: Vec::new(),
+        })),
+        Some((_, old)) if !replace => Err(Error::Definition(format!(
+            "LAMBDA {} already exists (improv.define(model, definition, replace => true) \
+             redefines it)",
+            old.name.0
+        ))),
+        Some((id, old)) if old.params == lt.lambda.params && old.body == lt.lambda.body => {
+            Ok(Some(Defined::Unchanged(id)))
+        }
+        Some((_, old)) => Err(Error::Definition(format!(
+            "redefining LAMBDA {} is not supported yet",
+            old.name.0
+        ))),
+    }
+}
+
+/// The named LAMBDA called `name` (any case) when nothing calls it, `None`
+/// when there is none: dropping a lambda a measure or another lambda still
+/// calls is an error naming them.
+pub fn drop_lambda(model: &Model, name: &str) -> Result<Option<u32>> {
+    let Some((id, l)) = model.lambda_by_name(name) else {
+        return Ok(None);
+    };
+    let (lambdas, measures) = model.lambda_users(id);
+    let mut users: Vec<&str> = measures
+        .iter()
+        .filter_map(|m| model.measures.get(m).map(|m| m.name.0.as_str()))
+        .chain(lambdas.iter().map(|i| model.lambdas[i].name.0.as_str()))
+        .collect();
+    users.sort_unstable();
+    if users.is_empty() {
+        return Ok(Some(id));
+    }
+    Err(Error::Definition(format!(
+        "cannot drop {}: {} still {} it (drop or redefine {} first)",
+        l.name.0,
+        users.join(", "),
+        if users.len() == 1 { "calls" } else { "call" },
+        if users.len() == 1 { "it" } else { "them" }
+    )))
 }
 
 /// Validate a `Target = expr` definition against `model` and return the
@@ -333,6 +460,9 @@ pub fn define_measure(model: &Model, text: &str, id: u32, replace: bool) -> Resu
         .values()
         .find(|m| m.name.0.eq_ignore_ascii_case(name))
     {
+        None if model.lambda_by_name(name).is_some() => Err(Error::Definition(format!(
+            "{name} is a named LAMBDA; name the measure differently"
+        ))),
         None => new_measure(model, text, id).map(Defined::New),
         Some(m) if replace => replace_measure(model, text, m),
         Some(m) => Err(Error::Definition(format!(
@@ -1117,7 +1247,85 @@ mod tests {
                 MeasureRow::input(1, "Price", vec![1, 2]),
                 MeasureRow::input(2, "Quantity", vec![1, 2]),
             ],
+            lambdas: vec![],
         }
+    }
+
+    /// P3-3: named LAMBDAs stored as rows, defined (with a category
+    /// parameter), called by measures, and dropped once nothing calls them.
+    #[test]
+    fn named_lambdas_in_the_catalog() {
+        let mut cat = catalog();
+        let model = build_model(&cat).unwrap();
+        let text = "LOGNORM = LAMBDA(x, c, LN1P(x) / LN1P(MAX(x OVER c)))";
+        let Ok(Some(Defined::Lambda { row, callers })) = define_lambda(&model, text, false) else {
+            panic!()
+        };
+        assert_eq!((row.id, row.name.as_str(), callers), (1, "LOGNORM", vec![]));
+        cat.lambdas.push(row);
+        let model = build_model(&cat).unwrap();
+        cat.measures
+            .push(define(&model, "PriceN = LOGNORM(Price, Time)", 3).unwrap());
+        cat.measures
+            .push(define(&model, "Qn = LOGNORM(Quantity, Product) * 2", 4).unwrap());
+        let mut model = build_model(&cat).unwrap();
+        assert_eq!(
+            model.measures[&MeasureId(3)].categories,
+            vec![CategoryId(1), CategoryId(2)]
+        );
+        load_inputs(&mut model, &sales()).unwrap();
+        let out = improv_engine::dataflow::evaluate(&model, &[MeasureId(3), MeasureId(4)]).unwrap();
+        let rows = result_rows(&model, MeasureId(4), &out[&MeasureId(4)]).unwrap();
+        // Q2: Widget 200, Gadget 100; the max over Product is 200.
+        let want = 2.0 * 100f64.ln_1p() / 200f64.ln_1p();
+        assert!(
+            matches!(rows[&vec![s("Q2"), s("Gadget")]], CellValue::Num(v) if (f64::from_bits(v) - want).abs() < 1e-12),
+            "{rows:?}"
+        );
+
+        let def = |t: &str, replace| define_lambda(&model, t, replace);
+        assert_eq!(def("Price = Quantity * 2", true), Ok(None));
+        assert_eq!(def(text, true), Ok(Some(Defined::Unchanged(1))));
+        assert_eq!(
+            def("lognorm = LAMBDA( x,c, LN1P(x)/LN1P(MAX(x OVER c)) )", true),
+            Ok(Some(Defined::Unchanged(1)))
+        );
+        let e = |r: Result<Option<Defined>>| r.unwrap_err().to_string();
+        assert!(e(def(text, false)).contains("already exists"));
+        let msg = e(def("quantity = LAMBDA(x, x)", false));
+        assert!(msg.contains("Quantity is a measure"), "{msg}");
+        assert!(e(def("X = LAMBDA(x, x + Price)", false)).contains("only its parameters"));
+        assert!(matches!(
+            def("Half = LAMBDA(x, x / 2)", false),
+            Ok(Some(Defined::Lambda { row, .. })) if row.id == 2
+        ));
+        let e = define_measure(&model, "lognorm = Price * 2", 9, false).unwrap_err();
+        assert!(e.to_string().contains("is a named LAMBDA"), "{e}");
+
+        let e = drop_lambda(&model, "LogNorm").unwrap_err().to_string();
+        assert!(
+            e.contains("cannot drop LOGNORM: PriceN, Qn still call it"),
+            "{e}"
+        );
+        assert_eq!(drop_lambda(&model, "PriceN"), Ok(None));
+        cat.measures.truncate(2);
+        assert_eq!(
+            drop_lambda(&build_model(&cat).unwrap(), "lognorm"),
+            Ok(Some(1))
+        );
+
+        // A stored row naming another lambda than it defines is refused.
+        cat.lambdas[0].name = s("Other");
+        let e = build_model(&cat).unwrap_err().to_string();
+        assert!(
+            e.contains("lambda 1 is named Other but defines LOGNORM"),
+            "{e}"
+        );
+        cat.lambdas[0].definition = s("LOGNORM = LAMBDA(x, Nope(x))");
+        assert!(build_model(&cat)
+            .unwrap_err()
+            .to_string()
+            .contains("lambda 1:"));
     }
 
     fn row(t: &str, p: &str, v: f64) -> (Vec<Option<String>>, Option<CellValue>) {

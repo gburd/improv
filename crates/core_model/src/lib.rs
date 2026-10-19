@@ -28,7 +28,7 @@ pub use parser::{
 pub use value::{Value, ValueError, ValueErrorKind, ValueType};
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// A dimension of the model (e.g. Time, Product, Region).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,6 +579,19 @@ fn substitute_params(body: &Expr, args: &[Expr]) -> Result<Expr, String> {
     })
 }
 
+/// Whether `e` calls one of the named LAMBDAs `ids`.
+fn calls_lambda(e: &Expr, ids: &BTreeSet<u32>) -> bool {
+    match e {
+        Expr::Call(f, a) => {
+            functions::named_lambda_of(*f).is_some_and(|i| ids.contains(&i))
+                || a.iter().any(|x| calls_lambda(x, ids))
+        }
+        Expr::UnaryOp(_, a) => calls_lambda(a, ids),
+        Expr::BinaryOp(_, a, b) => calls_lambda(a, ids) || calls_lambda(b, ids),
+        Expr::Literal(_) | Expr::Ref(..) | Expr::Category(_) => false,
+    }
+}
+
 mod inputs_as_seq {
     use super::{Coordinate, MeasureId, Value};
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -627,6 +640,31 @@ impl Model {
             .iter()
             .find(|(_, l)| l.name.0.eq_ignore_ascii_case(name))
             .map(|(id, l)| (*id, l))
+    }
+
+    /// What calls named LAMBDA `id`, directly or through other lambdas: the
+    /// other lambdas' ids and the derived measures, each sorted.
+    pub fn lambda_users(&self, id: u32) -> (Vec<u32>, Vec<MeasureId>) {
+        let mut hit = BTreeSet::from([id]);
+        loop {
+            let before = hit.len();
+            for (lid, l) in &self.lambdas {
+                if !hit.contains(lid) && calls_lambda(&l.body, &hit) {
+                    hit.insert(*lid);
+                }
+            }
+            if hit.len() == before {
+                break;
+            }
+        }
+        let measures = self
+            .measures
+            .values()
+            .filter(|m| matches!(&m.kind, MeasureKind::Derived(f) if calls_lambda(&f.expr, &hit)))
+            .map(|m| m.id)
+            .collect::<BTreeSet<_>>();
+        hit.remove(&id);
+        (hit.into_iter().collect(), measures.into_iter().collect())
     }
 
     /// `e` with every named-LAMBDA call replaced by the lambda's body, its
@@ -1023,6 +1061,21 @@ mod tests {
         };
         assert!(matches!(&**call, Expr::Call(f, a)
             if *f == functions::named_lambda(2) && a[1] == Expr::Category(CategoryId(1))));
+        // Big calls Norm, which calls Twice; a measure calls Big.
+        m.add_measure(Measure {
+            id: MeasureId(200),
+            name: Name("Flag".into()),
+            value_type: ValueType::Boolean,
+            categories: vec![CategoryId(2)],
+            kind: MeasureKind::Derived(Formula::new(Expr::Call(
+                functions::named_lambda(1),
+                vec![Expr::Ref(MeasureId(100), DimensionSpec::default())],
+            ))),
+            description: None,
+        });
+        assert_eq!(m.lambda_users(3), (vec![1, 2], vec![MeasureId(200)]));
+        assert_eq!(m.lambda_users(1), (vec![], vec![MeasureId(200)]));
+        assert_eq!(m.lambda_users(9), (vec![], vec![]));
         for (row, why) in [
             ("Bad = LAMBDA(x, Nope(x))", "unknown function: Nope"),
             ("Bad = Price * 2", "is not a LAMBDA"),
