@@ -454,6 +454,13 @@ positional forms and recurrences, lookups, list results, `LET` and
   unregularized lower value after the asymptotic series was the regularized
   one (`IMIGAMMA("1+i","40",TRUE,FALSE)` gave 1, not 0.498−0.155i), and
   Γ(0, z) is now E₁(z) rather than `#NUM!`.
+- **`IMIGAMMA` left of the imaginary axis.** For Re z ≤ 0 (where neither
+  continued fraction applies) it gave `#NUM!`, as Gnumeric does. All four
+  forms now follow mpmath's `gammainc` on the principal branch:
+  `IMIGAMMA("0","-1",FALSE,FALSE)` is −1.895−πi (Γ(0, −1) = −Ei(1) − iπ),
+  through the lower series (or Legendre's fraction where the series would
+  cancel) and Γ(a, z) = Γ(a) − γ(a, z). At a = 0, −1, −2, … the upper value
+  is E₁ and its recurrence, the lower one `#NUM!` (a pole).
 - **TUI import-csv that breaks a formula says so.** Importing into a
   measure a formula uses (giving `Price` a new dimension, say) left every
   derived measure blank with only "imported N cell(s)" in the status. The

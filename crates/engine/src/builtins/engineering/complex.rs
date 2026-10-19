@@ -393,17 +393,29 @@ fn fact(z: Cx) -> Cx {
 }
 
 /// Gnumeric's complex incomplete Γ(a, z): lower or upper, regularized or not.
+/// Left of the imaginary axis (Re z ≤ 0), where Gnumeric gives #NUM!, it
+/// is mpmath's principal branch (see [`igamma_left`]). At a pole of Γ(a)
+/// (a = 0, −1, −2, …) P is 1 and Q is 0, the lower γ(a, z) is a pole
+/// (#NUM!) and the upper Γ(a, z) is finite.
 fn igamma(a: Cx, z: Cx, lower: bool, reg: bool) -> Cx {
     let (mut res, have_lower, mut have_reg);
-    if reg && a.real() && a.re <= 0.0 && a.re == a.re.floor() {
+    let pole = is_pole(a);
+    if reg && pole {
         (res, have_lower, have_reg) = (cx(0.0, 0.0), false, true);
-    } else if a.real() && a.re >= 0.0 && z.real() && z.re >= 0.0 {
+    } else if a.real() && a.re > 0.0 && z.real() && z.re >= 0.0 {
         let p = real_igamma(a.re, z.re, lower);
         (res, have_lower, have_reg) = (cx(p, 0.0), lower, true);
-    } else if let Some(r) = igamma_upper_asymp(a, z) {
-        (res, have_lower, have_reg) = (fixup_upper_real(r, a, z), false, true);
+    } else if let Some(r) = upper_asymp(a, z) {
+        // Q = Γ(a, z) / Γ(a), except at a pole, where Γ(a) is infinite.
+        (res, have_lower, have_reg) = if pole {
+            (r, false, false)
+        } else {
+            (fixup_upper_real(r.div(fact(a.sub(ONE))), a, z), false, true)
+        };
     } else if let Some(r) = igamma_upper_cf(a, z) {
         (res, have_lower, have_reg) = (r, false, false);
+    } else if let Some((r, low)) = igamma_left(a, z) {
+        (res, have_lower, have_reg) = (r, low, false);
     } else if let Some(r) = igamma_lower_cf(a, z) {
         (res, have_lower, have_reg) = (r, true, false);
     } else {
@@ -426,30 +438,35 @@ fn igamma(a: Cx, z: Cx, lower: bool, reg: bool) -> Cx {
     res
 }
 
-/// The regularized P(a, x) or Q(a, x) for real a, x ≥ 0 (Γ(0, x) is the
-/// limit: P = 1), through the statistics kernels: they turn a shape past
-/// 1e12 into NaN (#NUM!), where statrs's continued fraction runs √a terms
-/// and its i32 term counter overflows (a panic, or in release a hang).
+/// Whether Γ(a) has a pole at a: a = 0, −1, −2, …
+fn is_pole(a: Cx) -> bool {
+    a.real() && a.re <= 0.0 && a.re == a.re.floor()
+}
+
+/// The regularized P(a, x) or Q(a, x) for real a > 0, x ≥ 0, through the
+/// statistics kernels: they turn a shape past 1e12 into NaN (#NUM!), where
+/// statrs's continued fraction runs √a terms and its i32 term counter
+/// overflows (a panic, or in release a hang).
 fn real_igamma(a: f64, x: f64, lower: bool) -> f64 {
     use super::super::statistical::{gamma_p, gamma_q};
-    if a == 0.0 {
-        f64::from(u8::from(lower))
-    } else if lower {
+    if lower {
         gamma_p(a, x)
     } else {
         gamma_q(a, x)
     }
 }
 
-fn igamma_upper_asymp(a: Cx, z: Cx) -> Option<Cx> {
+/// The asymptotic Γ(a, z) ~ z^(a−1) e^−z Σ (a−1)(a−2)…(a−k) / z^k, for
+/// |z| > |a| and |z| ≥ 18.4 (Gnumeric's D(a − 1, z) series, unregularized
+/// so that it also serves a pole of Γ(a)).
+fn upper_asymp(a: Cx, z: Cx) -> Option<Cx> {
     let (am, zm) = (a.abs(), z.abs());
     if am >= zm || 2.0 * zm < 53.0 * std::f64::consts::LN_2 {
         return None;
     }
     let mut s = cx(0.0, 0.0);
-    // D(a − 1, z) = z^(a−1) e^−z / Γ(a)
     let am1 = a.sub(ONE);
-    let mut t = z.pow(am1).div(z.exp()).div(fact(am1));
+    let mut t = z.pow(am1).div(z.exp());
     for i in 0..100 {
         s = s.add(t);
         if t.abs() <= s.abs() * f64::EPSILON {
@@ -483,6 +500,12 @@ fn igamma_upper_cf(a: Cx, z: Cx) -> Option<Cx> {
     if z.re <= 0.0 || z.abs() <= upper_cf_edge(a) {
         return None;
     }
+    legendre_cf(a, z)
+}
+
+/// Legendre's fraction itself. It converges anywhere off the cut (z not a
+/// negative real), slowly next to it; None when 10 000 terms do not settle.
+fn legendre_cf(a: Cx, z: Cx) -> Option<Cx> {
     let mut b = z.add(ONE).sub(a);
     let mut c = cx(1e300, 0.0);
     let mut d = b.recip();
@@ -513,6 +536,72 @@ fn upper_cf_edge(a: Cx) -> f64 {
         half_im * (a.im.abs() / -a.re).min(1.0)
     };
     edge.max(0.25)
+}
+
+/// γ(a, z) or Γ(a, z) (the bool: lower) on mpmath's principal branch for
+/// Re z ≤ 0, z ≠ 0, where the upper fraction does not reach and Gnumeric
+/// gives #NUM! (and for a pole of Γ(a), a = 0, −1, −2, …, anywhere). The
+/// lower series γ(a, z) = z^a Σ (−z)^k / (k! (a + k)) converges for every z,
+/// but its terms reach e^|z| while the sum is about e^−Re z: it loses
+/// e^(|z| + Re z), nothing on the negative real axis, all of it near the
+/// imaginary one. Past a loss of e⁴, Legendre's fraction gives Γ(a, z) once
+/// |z| passes [`upper_cf_edge`] (inside it, the lower fraction does, which
+/// stays accurate for a large Re a). igamma gets the other forms from
+/// Γ(a, z) = Γ(a) − γ(a, z). At a pole the series has one too, and Γ(a, z)
+/// is finite: E₁(z) = −γₑ − ln z − Σ (−z)^k / (k·k!), then
+/// Γ(a, z) = (z^a e^−z − Γ(a + 1, z)) / −a up to a.
+// shortcut: the upward recurrence loses about |z|^m near the negative real
+// axis for a = −m (3e-14 at m = 3, z = −12), and for Re a < 0 with
+// |Im a| > 8 a z inside the edge takes the series' loss; a Temme-style
+// expansion would close both, if a model ever needs them.
+fn igamma_left(a: Cx, z: Cx) -> Option<(Cx, bool)> {
+    let pole = is_pole(a);
+    if z.abs() == 0.0 || (z.re > 0.0 && !pole) {
+        return None;
+    }
+    let far = z.abs() + z.re > 4.0;
+    if far && z.abs() > upper_cf_edge(a) {
+        return legendre_cf(a, z).map(|r| (r, false));
+    }
+    if far && a.re > 0.0 {
+        return igamma_lower_cf(a, z).map(|r| (r, true));
+    }
+    if pole {
+        // A loop bound: past a = −1000, z^a has long overflowed (#NUM!).
+        let m = (-a.re).min(1001.0) as u32;
+        let e1 = series(z, |k| cx(k, 0.0))
+            .neg()
+            .sub(z.ln())
+            .sub(cx(EULER_GAMMA, 0.0));
+        let w = z.neg().exp();
+        let g = (1..=m).fold(e1, |g, j| {
+            let j = f64::from(j);
+            g.sub(z.powr(-j).mul(w)).scale(-1.0 / j)
+        });
+        return Some((g, false));
+    }
+    let s = series(z, |k| a.add(cx(k, 0.0))).add(a.recip());
+    Some((z.pow(a).mul(s), true))
+}
+
+/// The Euler–Mascheroni constant γₑ.
+const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
+
+/// Σ_{k ≥ 1} (−z)^k / (k! · den(k)), until a term no longer moves the sum.
+/// It ends: past k = |z| the terms shrink geometrically (to 0 at worst),
+/// and an overflow (inf) or NaN stops it at once.
+fn series(z: Cx, den: impl Fn(f64) -> Cx) -> Cx {
+    let (mut s, mut t, mut k) = (cx(0.0, 0.0), ONE, 0.0);
+    loop {
+        k += 1.0;
+        t = t.mul(z.neg()).scale(1.0 / k);
+        let d = t.div(den(k));
+        s = s.add(d);
+        // Also stops on NaN (an overflowed sum).
+        if d.abs().partial_cmp(&(s.abs() * f64::EPSILON)) != Some(std::cmp::Ordering::Greater) {
+            return s;
+        }
+    }
 }
 
 /// (sin πx, cos πx), exact at multiples of ½ (Gnumeric's sinpi / cospi).
@@ -906,10 +995,8 @@ mod tests {
             cx(1.014_793_616_146_633_6, 0.033_812_826_079_896_69)
         ));
         // igamma's fallbacks
-        assert_eq!(real_igamma(0.0, 1.0, false), 0.0);
         assert_eq!(real_igamma(2.0, 0.0, true), 0.0);
         assert_eq!(real_igamma(2.0, 0.0, false), 1.0);
-        assert_eq!(real_igamma(0.0, 1.0, true), 1.0);
         // A real shape past 1e12 is NaN (#NUM!), lower and upper alike:
         // IMIGAMMA("1e16", "1e16") overflowed statrs's term counter.
         let t0 = std::time::Instant::now();
@@ -1105,14 +1192,26 @@ mod tests {
         let nan = igamma(cx(-200.0, 1.0), cx(-150.0, 1.0), false, true);
         assert!(nan.re.is_nan() && nan.im.is_nan());
         assert!(igamma_lower_cf(cx(1.0, 0.0), cx(-500.0, 1.0)).is_none());
-        // a = 0 zeroes the lower fraction's first denominator. Left of the
-        // axis nothing else applies, so Γ(0, −1) is #NUM! as in Gnumeric,
-        // though it is E₁(−1) = −1.895 − πi; the upper fraction only
-        // covers Re z > 0.
+        // a = 0 zeroes the lower fraction's first denominator, and the
+        // upper one covers Re z > 0 only, so Gnumeric gives Γ(0, −1) as
+        // #NUM!. It is E₁(−1) = −Ei(1) − iπ on the principal branch.
         assert!(igamma_lower_cf(cx(0.0, 0.0), cx(-1.0, 0.0)).is_none());
-        assert!(igamma(cx(0.0, 0.0), cx(-1.0, 0.0), false, false)
+        let e1 = igamma(cx(0.0, 0.0), cx(-1.0, 0.0), false, false);
+        assert!(
+            e1.sub(cx(-1.895_117_816_355_936_8, -PI)).abs() < 1e-15,
+            "{e1:?}"
+        );
+        // Γ(0, 0) is infinite, and the lower γ at a pole of Γ(a) too: #NUM!.
+        assert!(igamma(cx(0.0, 0.0), cx(0.0, 0.0), false, false).re.is_nan());
+        assert!(!igamma(cx(-1.0, 0.0), cx(-1.0, 0.0), true, false)
             .re
-            .is_nan());
+            .is_finite());
+        // P and Q at a pole: 1 and 0, for any z.
+        assert_eq!(igamma(cx(0.0, 0.0), cx(-1.0, 0.0), true, true), ONE);
+        assert_eq!(
+            igamma(cx(-2.0, 0.0), cx(3.0, 0.0), false, true),
+            cx(0.0, 0.0)
+        );
         // sqrt with a positive and a negative real part; sinπ/cosπ at
         // halves and elsewhere.
         assert_eq!(cx(3.0, 4.0).sqrt(), cx(2.0, 1.0));
@@ -1121,6 +1220,392 @@ mod tests {
         assert_eq!(sin_cos_pi(1.0), (0.0, -1.0));
         let (s4, c4) = sin_cos_pi(0.25);
         assert!((s4 - FRAC_PI_2.sin() / 2f64.sqrt()).abs() < 1e-15 && (c4 - s4).abs() < 1e-15);
+    }
+
+    /// Re z ≤ 0 (and the poles of Γ(a)), where Gnumeric 1.12 gives #NUM!,
+    /// against mpmath 1.3's gammainc on the principal branch (250 digits;
+    /// scripts/goldens/imigamma_left.py): γ = Γ(a) − Γ(a, z) and the
+    /// regularized forms over Γ(a), for every lower/regularize pair.
+    #[test]
+    #[allow(
+        clippy::approx_constant,
+        reason = "mpmath's digits, verbatim (some are ±π/2, π/6)"
+    )]
+    fn left_half_plane_matches_mpmath() {
+        type Row = ((f64, f64), (f64, f64), bool, bool, (f64, f64));
+        let rows: &[Row] = &[
+            (
+                (0.5, 0.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (0.0, 1.6504257587975428),
+            ),
+            (
+                (0.5, 0.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (1.0, -43.32762975244078),
+            ),
+            (
+                (0.5, 0.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (-0.536643565778565, 5.049143703447035),
+            ),
+            (
+                (0.5, 0.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (-3361.258811653456, -2440.0975408702448),
+            ),
+            (
+                (1.0, 0.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (-1.7182818284590453, 0.0),
+            ),
+            (
+                (1.0, 0.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (148.4131591025766, 0.0),
+            ),
+            (
+                (1.0, 0.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (14.128783081462158, 15.200784463067954),
+            ),
+            (
+                (1.0, 0.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (11900.950259059775, -18534.631864193456),
+            ),
+            (
+                (2.5, 0.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (0.0, 0.6280082302883814),
+            ),
+            (
+                (2.5, 0.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (1.0, -917.081789416522),
+            ),
+            (
+                (2.5, 0.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (-82.92536490812876, -113.45792708253342),
+            ),
+            (
+                (2.5, 0.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (-416760.6579435658, -179103.31056880148),
+            ),
+            (
+                (-0.5, 0.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (0.0, 0.11679946603380065),
+            ),
+            (
+                (-0.5, 0.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (1.0, -5.881022909694438),
+            ),
+            (
+                (-0.5, 0.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (1.4123816047046476, 0.3710697885959466),
+            ),
+            (
+                (-0.5, 0.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (-172.266811579394, -160.40990072359517),
+            ),
+            (
+                (-2.5, 0.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (0.0, -1.800233399920877),
+            ),
+            (
+                (-2.5, 0.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (1.0, -1.0129640201374137),
+            ),
+            (
+                (-2.5, 0.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (1.0039768615657831, -0.0823727639589431),
+            ),
+            (
+                (-2.5, 0.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (-5.821945819831671, -10.484595208469404),
+            ),
+            ((0.0, 0.0), (-1.0, 0.0), true, true, (1.0, 0.0)),
+            ((0.0, 0.0), (-12.0, 0.0), false, true, (0.0, 0.0)),
+            (
+                (0.0, 0.0),
+                (0.0, 3.0),
+                false,
+                false,
+                (-0.11962978600800032, 0.27785620120457166),
+            ),
+            ((-1.0, 0.0), (-1.0, 0.0), true, true, (1.0, 0.0)),
+            ((-1.0, 0.0), (-12.0, 0.0), false, true, (0.0, 0.0)),
+            (
+                (-1.0, 0.0),
+                (0.0, 3.0),
+                false,
+                false,
+                (0.07258978332137792, 0.05214129766224351),
+            ),
+            ((-3.0, 0.0), (-1.0, 0.0), true, true, (1.0, 0.0)),
+            ((-3.0, 0.0), (-12.0, 0.0), false, true, (0.0, 0.0)),
+            (
+                (-3.0, 0.0),
+                (0.0, 3.0),
+                false,
+                false,
+                (-0.004492674839533322, -0.006145246793209368),
+            ),
+            (
+                (1.0, 1.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (-0.10567851915185654, 0.03321094056911651),
+            ),
+            (
+                (1.0, 1.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (-0.2168694097510336, 11.579327040166657),
+            ),
+            (
+                (1.0, 1.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (-264.7715639188388, 129.6121453555461),
+            ),
+            (
+                (1.0, 1.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (150.96042341452645, 2019.1023530475532),
+            ),
+            (
+                (-1.5, 2.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (-0.030491751711007466, -0.09436185422118547),
+            ),
+            (
+                (-1.5, 2.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (1.2090664879236328, -0.21649270707830812),
+            ),
+            (
+                (-1.5, 2.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (452.4193107395134, 1026.2644228420527),
+            ),
+            (
+                (-1.5, 2.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (10.567527755105358, 3.264640662219112),
+            ),
+            (
+                (3.0, -1.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (-3.3602974480502343, -9.084340841086266),
+            ),
+            (
+                (3.0, -1.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (30385.42953296505, -17189.074509938324),
+            ),
+            (
+                (3.0, -1.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (-23.06427334443527, 16.118206312684986),
+            ),
+            (
+                (3.0, -1.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (-18273490.517386872, -13867209.344987316),
+            ),
+            (
+                (0.0, 1.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (0.10937464735345184, 0.10012138808909089),
+            ),
+            (
+                (0.0, 1.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (3.8871876338899116, -0.012283259469378822),
+            ),
+            (
+                (0.0, 1.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (63.66034130312379, 1.428717870574448),
+            ),
+            (
+                (0.0, 1.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (228.37431774231862, 4.329835343049411),
+            ),
+            (
+                (7.25, 0.0),
+                (-1.0, 0.0),
+                true,
+                true,
+                (-0.00020438861837374537, -0.00020438861837374537),
+            ),
+            (
+                (7.25, 0.0),
+                (-5.0, 0.0),
+                false,
+                true,
+                (896.4829392179655, 895.4829392179655),
+            ),
+            (
+                (7.25, 0.0),
+                (-3.0, -4.0),
+                true,
+                true,
+                (190.02199161274027, 28.837856501221438),
+            ),
+            (
+                (7.25, 0.0),
+                (-10.0, 1.0),
+                false,
+                true,
+                (13434553.448929822, -16212331.323305843),
+            ),
+            (
+                (0.0, 0.0),
+                (0.1, 0.1),
+                false,
+                false,
+                (1.4786888267236136, -0.690287117123823),
+            ),
+            (
+                (-4.0, 9.0),
+                (-0.2, 4.3),
+                true,
+                false,
+                (3.061241286078383e-10, 6.83455267220194e-11),
+            ),
+            (
+                (30.0, 0.0),
+                (-0.8715574274765824, 9.961946980917455),
+                true,
+                false,
+                (-5.394476981071017e+28, 5.085025250108756e+28),
+            ),
+            (
+                (0.0, 0.0),
+                (-40.0, 0.0),
+                false,
+                false,
+                (-6039718263611242.0, -3.141592653589793),
+            ),
+            (
+                (-2.0, 0.0),
+                (-17.0, 0.0),
+                false,
+                false,
+                (-6088.58445316957, -1.5707963267948966),
+            ),
+            (
+                (-3.0, 0.0),
+                (-12.0, 0.0),
+                false,
+                false,
+                (13.003028870786109, 0.5235987755982989),
+            ),
+            (
+                (0.5, 0.0),
+                (-2.5, 30.0),
+                false,
+                false,
+                (1.8268002989101217, 1.264770083532028),
+            ),
+            (
+                (50.0, 5.0),
+                (-90.0, 0.0),
+                true,
+                false,
+                (-6.054503947321104e+127, -3.0897344383458527e+127),
+            ),
+        ];
+        for &(a, z, lower, reg, want) in rows {
+            let got = igamma(cx(a.0, a.1), cx(z.0, z.1), lower, reg);
+            let w = cx(want.0, want.1);
+            assert!(
+                got.sub(w).abs() <= 1e-12 * w.abs(),
+                "Γ({a:?}, {z:?}, lower {lower}, reg {reg}) = {got:?}, mpmath {want:?}"
+            );
+        }
     }
 
     /// COMPLEX's text form (Excel and LibreOffice), and exponents in parsed
@@ -1240,7 +1725,7 @@ mod tests {
                 for j in [-1.4, -0.7, 0.0, 0.7, 1.4] {
                     let r = upper_cf_edge(a) * (1.0 + 1e-15);
                     let z = cx(r * f64::cos(j), r * f64::sin(j));
-                    if igamma_upper_asymp(a, z).is_some() {
+                    if upper_asymp(a, z).is_some() {
                         continue;
                     }
                     let g = gamma(a);
