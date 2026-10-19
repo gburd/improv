@@ -373,11 +373,20 @@ cell and sets the new one). A NULL value removes the cell; a row with a NULL
 dimension is ignored, as `recalc` ignores it. The engine recomputes only
 what the edits reach, and only the derived measures whose output changed
 are diffed and written, so a one-row UPDATE rewrites only its own result
-rows. The worker rebuilds (a full load and recompute, diffed against the
-result tables) when the model's structure changed (`model_version` moved: a
-new measure, binding or formula), on a `TRUNCATE`, when a change brings a
-dimension value with no item yet (it mints the item), when two rows land on
-one coordinate, and after any error. A rebuild costs what a `recalc` costs.
+rows. A measure bound with `agg` keeps per-coordinate fold state: row
+counts, an exact running total for `sum` and `avg` (integer and
+`numeric` columns sum exactly), and each value's row count for `min`, `max`
+and `count_distinct`, so deleting one of two rows that share a key keeps
+the count. Each change takes its old row out of its coordinate's fold and
+puts its new row into its (maybe other) coordinate's; the relation gets
+`REPLICA IDENTITY FULL` so its old rows carry their values. A `TRUNCATE`
+removes the relation's cells. The worker rebuilds (a full load and
+recompute, diffed against the result tables) when the model's structure
+changed (`model_version` moved: a new measure, binding or formula), when a
+change brings a dimension value with no item yet (it mints the item), when
+two rows land on one coordinate of a measure bound without `agg`, on any
+change to a text `min` or `max` binding (text order is the collation's),
+and after any error. A rebuild costs what a `recalc` costs.
 The loaded model counts against `improv.max_cells`; leaving logical mode or
 dropping the model frees it.
 

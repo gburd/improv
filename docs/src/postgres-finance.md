@@ -454,10 +454,6 @@ them current from committed changes to the bound tables. The test measures
   compare with a tolerance, as `Reconciled` does.
 - **Only derived measures get result tables.** Read an input (a bound
   column such as `Budget`) from its own table.
-- **Aggregated bindings rebuild.** `Outflow` and the income measures use
-  `agg => 'sum'`. In logical mode a change to such a table rebuilds the whole
-  `budget` model rather than applying the changed cells. At this size that
-  takes about 0.1 s.
 - **Fill zeros, don't leave cells out.** `savings_goal` has every column for
   every goal (0 where it does not apply), because `Contribution + Payroll`
   has no cell for a goal with no `Payroll`.

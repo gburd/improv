@@ -210,10 +210,14 @@ if tail -c +$((logpos + 1)) "$D/log" | grep -q "model wide: rebuilding"; then
 fi
 echo "ok: 100k-cell model, one-cell UPDATE rewrote 1 revenue + 1 total row, no rebuild"
 
-# 9. TRUNCATE rebuilds: every result row goes
+# 9. TRUNCATE: every result row goes, without a rebuild
+logpos=$(wc -c <"$D/log")
 q "TRUNCATE wide"
 wait_for "SELECT count(*) FROM improv_wide.revenue" 0 "truncate" >/dev/null
-echo "ok: TRUNCATE emptied the results"
+if tail -c +$((logpos + 1)) "$D/log" | grep -q "model wide: rebuilding"; then
+	echo "FAIL: TRUNCATE rebuilt the model"; exit 1
+fi
+echo "ok: TRUNCATE emptied the results (no rebuild)"
 
 # 10. an aggregated binding (agg => 'sum') over duplicate rows: an UPDATE of
 #     one duplicate re-sums its coordinate
@@ -228,6 +232,49 @@ wait_for "$AT" 40 "aggregated catch-up" >/dev/null
 q "UPDATE orders SET amount = 50 WHERE product='Widget' AND amount = 30"
 wait_for "$AT" 60 "aggregated update" >/dev/null
 echo "ok: agg => 'sum' over duplicate rows; UPDATE of one duplicate re-summed (60)"
+
+# 10b. every aggregate, maintained incrementally: random INSERT, UPDATE
+#      (moving rows between coordinates) and DELETE batches, then each
+#      result equals a fresh SQL aggregate, with no rebuild. Rows share
+#      keys (sha) within a coordinate, so count_distinct sees duplicates.
+NP=${FOLD_PERSONS:-5} NY=${FOLD_YEARS:-3}
+q "CREATE TABLE facts (id int PRIMARY KEY, person text, year int, sha text, n numeric)"
+q "INSERT INTO facts SELECT g, 'p'||(g%5), 2020+g%3, 's'||(g%40), g%7 FROM generate_series(1,300) g"
+q "SELECT improv.create_model('folds')"
+q "SELECT improv.bind_category('folds','Person','facts','person')"
+q "SELECT improv.bind_category('folds','Year','facts','year')"
+AGGS="sum avg min max count count_distinct"
+for a in $AGGS; do
+	col=n; [ "$a" = count_distinct ] && col=sha
+	q "SELECT improv.bind_measure('folds','F_$a','facts','$col', agg => '$a')"
+	q "SELECT improv.define('folds','R_$a = F_$a * 1')"
+done
+# a marker write, visible once the worker has applied everything above
+q "INSERT INTO facts VALUES (0, 'p0', 2020, 'warm', 100)"
+wait_for "SELECT value FROM improv_folds.r_max WHERE person='p0' AND year='2020'" 100 "folds catch-up" >/dev/null
+logpos=$(wc -c <"$D/log")
+for i in $(seq 1 20); do
+	q "INSERT INTO facts SELECT 1000*$i + g, 'p'||(g%$NP), 2020+g%$NY, 'n'||(g%3), g%9 FROM generate_series(1, 5) g;
+	   UPDATE facts SET person = 'p'||((id + $i) % $NP), n = n + 1
+	     WHERE id IN (SELECT id FROM facts ORDER BY md5(id||'u'||$i) LIMIT 3);
+	   DELETE FROM facts WHERE id IN (SELECT id FROM facts ORDER BY md5(id||'d'||$i) LIMIT 4)"
+done
+# rows where the result differs from a fresh SQL aggregate (or one lacks a row)
+mismatch() { # agg
+	local e="$1(n)"
+	[ "$1" = count_distinct ] && e="count(DISTINCT sha)"
+	echo "SELECT count(*) FROM (SELECT person, year::text AS year, ($e)::float8 AS v
+	        FROM facts GROUP BY 1, 2) w
+	      FULL JOIN improv_folds.r_$1 r USING (person, year) WHERE w.v IS DISTINCT FROM r.value"
+}
+for a in $AGGS; do
+	wait_for "$(mismatch $a)" 0 "agg $a equals a fresh aggregate" >/dev/null
+done
+if tail -c +$((logpos + 1)) "$D/log" | grep -q "model folds: rebuilding"; then
+	echo "FAIL: an aggregated batch rebuilt the model:"
+	tail -c +$((logpos + 1)) "$D/log" | grep "model folds: rebuilding"; exit 1
+fi
+echo "ok: $AGGS follow 20 random INSERT/UPDATE/DELETE batches with no rebuild"
 
 # 11. typed measures: a numeric input feeds a derived boolean
 q "CREATE TABLE goods (product text PRIMARY KEY, price numeric)"

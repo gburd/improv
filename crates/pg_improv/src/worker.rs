@@ -25,8 +25,9 @@
 //! the result tables) when there is no live state or the model's
 //! `model_version` moved (a structural change such as `define`, checked on
 //! every poll, data change or not), and when a batch cannot be applied cell
-//! by cell (TRUNCATE, a new dimension value, …). Any error drops the live
-//! state, so the next poll rebuilds from the tables.
+//! by cell (a new dimension value, …). Aggregated bindings keep fold state
+//! in the mapper, seeded at each rebuild ([`seed_folds`]). Any error drops
+//! the live state, so the next poll rebuilds from the tables.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -193,16 +194,19 @@ pub(crate) fn disable(mid: i64, name: &str) -> Res<()> {
     bump_version(mid)
 }
 
-/// Give every bound relation without a primary key `REPLICA IDENTITY FULL`,
-/// so its updated and deleted rows carry the old dimension values. The
-/// caller must not hold the table open (see `bind_measure`).
+/// Give every bound relation without a primary key, and every relation an
+/// aggregated binding reads (its folds need the old row's value),
+/// `REPLICA IDENTITY FULL`, so its updated and deleted rows carry the old
+/// values. The caller must not hold the table open (see `bind_measure`).
 fn ensure_replica_identity(mid: i64) -> Res<()> {
     for rel in bound_rels(mid)? {
         let needs_full = Spi::get_one_with_args::<bool>(
-            "SELECT c.relreplident <> 'f' AND NOT EXISTS ( \
+            "SELECT c.relreplident <> 'f' AND (NOT EXISTS ( \
                SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) \
+               OR EXISTS (SELECT 1 FROM improv.binding b WHERE b.model_id = $2 \
+                 AND b.rel = c.oid AND b.agg IS NOT NULL)) \
              FROM pg_class c WHERE c.oid = $1::regclass",
-            &[rel.clone().into()],
+            &[rel.clone().into(), mid.into()],
         )? == Some(true);
         if needs_full {
             Spi::run(&format!("ALTER TABLE {rel} REPLICA IDENTITY FULL"))?;
@@ -693,13 +697,14 @@ fn apply(l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, Rebuild>> {
 /// write the result rows that differ from the tables. Returns the live state
 /// (none for a model the live engine cannot serve) and the rows changed.
 fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
-    let model = super::trigger::load(mid, name.to_string(), true)?.model;
+    let mut model = super::trigger::load(mid, name.to_string(), true)?.model;
     // Everything the load saw committed before this position.
     let replay_until = Spi::get_one::<String>("SELECT pg_current_wal_insert_lsn()::text")?
         .as_deref()
         .and_then(pgoutput::parse_lsn)
         .ok_or("cannot read the WAL insert position")?;
-    let mapper = live::Mapper::new(&model, bindings(mid)?);
+    let mut mapper = live::Mapper::new(&model, bindings(mid)?);
+    seed_folds(&mut model, &mut mapper)?;
     let version = model_version(mid)?;
     let targets = super::trigger::all_derived(&model);
     let (engine, snapshot) = start_engine(&model, &targets)?;
@@ -748,9 +753,65 @@ fn start_engine(model: &Model, targets: &[MeasureId]) -> Res<(Engine, Snapshot)>
     }
 }
 
+/// Load each aggregated binding's fold state ([`live::seed_sql`]) into
+/// `mapper`, and its cells into `model`. Each query reads its own snapshot,
+/// which the mapper keeps to skip the transactions already in it.
+// ponytail: a second scan of each aggregated relation per rebuild (the
+// loader's GROUP BY, then this one); feed the loader from these rows if
+// rebuilds of huge fact tables ever dominate.
+fn seed_folds(model: &mut Model, mapper: &mut live::Mapper) -> Res<()> {
+    for (rel, b) in mapper.aggregated() {
+        check_for_interrupts!();
+        let (Some(agg), dims) = (
+            b.agg,
+            b.dims.iter().map(|(_, c)| c.clone()).collect::<Vec<_>>(),
+        ) else {
+            continue;
+        };
+        let (name, oid) = Spi::connect(|c| -> Res<(String, u32)> {
+            let t = c.select(
+                "SELECT $1::oid::regclass::text, \
+                        (SELECT atttypid FROM pg_attribute WHERE attrelid = $1::oid \
+                           AND attname = $2 AND NOT attisdropped)::int8",
+                None,
+                &[i64::from(rel).into(), b.value_col.clone().into()],
+            )?;
+            let r = t.first();
+            let name = r
+                .get::<String>(1)?
+                .ok_or("an aggregated relation is gone")?;
+            let oid = r
+                .get::<i64>(2)?
+                .ok_or("an aggregated value column is gone")?;
+            Ok((name, id32(oid)?))
+        })?;
+        let sql = live::seed_sql(&name, &dims, &b.value_col, agg);
+        let n = dims.len();
+        let (rows, snap) = Spi::connect(|c| -> Res<_> {
+            let mut rows = Vec::new();
+            let mut snap = None;
+            for r in c.select(&sql, None, &[])? {
+                if let Some(s) = r.get::<String>(n + 4)? {
+                    snap = live::Snap::parse(&s);
+                    continue;
+                }
+                let d = (1..=n)
+                    .map(|i| r.get::<String>(i))
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows.push((d, r.get::<String>(n + 1)?, req(&r, n + 2)?, req(&r, n + 3)?));
+            }
+            Ok((rows, snap.ok_or("the fold seed read no snapshot")?))
+        })?;
+        mapper
+            .seed(model, b.measure, oid, &rows, snap)
+            .map_err(|e| format!("seeding the fold of measure {}: {}", b.measure.0, e.0))?;
+    }
+    Ok(())
+}
+
 /// Model `mid`'s bindings, per relation oid.
 fn bindings(mid: i64) -> Res<HashMap<u32, Vec<live::Binding>>> {
-    type Row = (i64, i64, String, Vec<i64>, Vec<String>, bool);
+    type Row = (i64, i64, String, Vec<i64>, Vec<String>, Option<String>);
     let rows: Vec<Row> = Spi::connect(|c| -> Res<_> {
         c.select(
             // `agg` via to_jsonb: the column is newer than this query.
@@ -762,7 +823,7 @@ fn bindings(mid: i64) -> Res<HashMap<u32, Vec<live::Binding>>> {
                           FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
                           JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
                           ORDER BY u.ord), \
-                    to_jsonb(b) ->> 'agg' IS NOT NULL \
+                    to_jsonb(b) ->> 'agg' \
              FROM improv.binding b \
              JOIN improv.measure m ON m.model_id = b.model_id AND m.id = b.measure_id \
              WHERE b.model_id = $1",
@@ -776,13 +837,17 @@ fn bindings(mid: i64) -> Res<HashMap<u32, Vec<live::Binding>>> {
                 req(&r, 3)?,
                 req(&r, 4)?,
                 req(&r, 5)?,
-                req(&r, 6)?,
+                r.get(6)?,
             ))
         })
         .collect()
     })?;
     let mut out: HashMap<u32, Vec<live::Binding>> = HashMap::new();
-    for (measure, rel, value_col, cats, cols, aggregated) in rows {
+    for (measure, rel, value_col, cats, cols, agg) in rows {
+        let agg = match agg.as_deref() {
+            None => None,
+            Some(a) => Some(live::Agg::parse(a).ok_or_else(|| format!("unknown agg {a:?}"))?),
+        };
         let dims = cats
             .into_iter()
             .map(|c| id32(c).map(improv_core_model::CategoryId))
@@ -795,7 +860,7 @@ fn bindings(mid: i64) -> Res<HashMap<u32, Vec<live::Binding>>> {
                 measure: MeasureId(id32(measure)?),
                 value_col,
                 dims,
-                aggregated,
+                agg,
             });
     }
     Ok(out)

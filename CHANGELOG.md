@@ -83,6 +83,15 @@ positional forms and recurrences, lookups, list results, `LET` and
   equals `count(DISTINCT x)`. The goldens are checked against PostgreSQL's
   `dense_rank()` and `count(DISTINCT …)`; LibreOffice and Gnumeric have
   neither function.
+- **pg_improv: aggregated bindings are incremental in logical mode.** A
+  measure bound with `agg` (`sum`, `avg`, `min`, `max`, `count`,
+  `count_distinct`) keeps per-coordinate fold state in the sync worker,
+  so an INSERT, UPDATE (also one that moves a row to another coordinate)
+  or DELETE updates its cell without a rebuild; deleting one of two rows
+  that share a `count_distinct` key keeps the count. A `TRUNCATE` removes
+  the relation's cells without a rebuild too. Relations an aggregated
+  binding reads get `REPLICA IDENTITY FULL`. A text `min`/`max` binding
+  still rebuilds on change.
 - **pg_improv: distinct counting.** `improv.bind_measure(model, measure,
   rel, key_col, agg => 'count_distinct')` counts each coordinate's distinct
   `key_col` values, as `count(DISTINCT key_col)` does (the result is a
