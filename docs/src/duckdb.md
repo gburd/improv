@@ -81,7 +81,7 @@ SELECT name, signature, description FROM improv_functions() WHERE category = 'fi
 SELECT name, signature FROM improv_functions(query := 'payment');
 ```
 
-One row per built-in function (674): `name`, `category`
+One row per built-in function (681): `name`, `category`
 (`math`, `financial`, `text`, `datetime`, …), `signature`
 (`PMT(rate, nper, pv, [fv], [type])`), `returns`
 (`number | boolean | text | date | any`), `description` and `aliases`

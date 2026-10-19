@@ -113,7 +113,7 @@ NULL
 query I
 SELECT count(*) FROM improv_functions();
 ----
-674
+681
 
 query TTTT
 SELECT name, category, signature, returns FROM improv_functions() WHERE name = 'PMT';

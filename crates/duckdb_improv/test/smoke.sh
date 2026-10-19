@@ -100,7 +100,10 @@ expect "tdiv=#DIV/0!"
 expect "tnum=#NUM!"
 expect "tna=#N/A"
 expect "tdate=2024-02-29"
-expect "nfun=674"
+# The registry's size, from the generated Function Reference (one table row
+# per function), so adding a function does not break this test.
+nfun=$(grep -c '^| `' "$HERE/../../docs/src/functions.md")
+expect "nfun=$nfun"
 expect "pmtsig=PMT(rate, nper, pv, [fv], [type])|financial|number"
 expect "search=PMT"
 expect "cell=Revenue[2024,WidgetA]=1000"

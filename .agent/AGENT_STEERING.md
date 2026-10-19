@@ -79,7 +79,9 @@ list results via `INTO` (also `INTO R, C`), `LET`/`LAMBDA`/`MAP`/`SCAN`/
 `REDUCE`/`MAKEARRAY`/`BYROW`/`BYCOL`, named LAMBDAs (`Model::lambdas`,
 expanded at compile time; non-recursive: the language stays total),
 multi-x `LINEST`, multi-key `SORTBY`. P7 DONE (674 functions, 4,103 golden
-rows). **IN PROGRESS:** pg_improv `commit` sync mode. Mentat is `mentatdb` 1.16.0 from
+rows); the customer requests (2026-10-18) added COALESCE, FILL, RELABEL,
+SWAP, RANK.DENSE, COUNTUNIQUE and FIXPOINT (681). pg_improv `commit` sync
+mode DONE. Mentat is `mentatdb` 1.16.0 from
 crates.io (`6eb9023`).
 
 ## Released: v0.7.0 (2026-09-24)

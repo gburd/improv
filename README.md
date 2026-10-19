@@ -163,7 +163,7 @@ SELECT * FROM improv('sales', '
 ```
 
 `improv_calc` evaluates any formula on named inputs, `improv_functions()`
-lists the 674 built-in functions, and `improv(source, model)` runs a model
+lists the 681 built-in functions, and `improv(source, model)` runs a model
 over a table or query and returns one row per computed cell. One binary
 loads into DuckDB v1.5.6 and v2.0. See [Improv in DuckDB](docs/src/duckdb.md)
 and [`crates/duckdb_improv/README.md`](crates/duckdb_improv/README.md).
