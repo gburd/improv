@@ -101,7 +101,11 @@ model. `improv.recalc('plan')` works in every mode, and
 returns the derived cells that would change, writing nothing. Its `value`
 column is `jsonb`: a number, `true`/`false`, a string, or a date as an RFC
 3339 string, and an edit's `"value"` takes the same forms.
-`improv.status('plan')` shows the mode and, in logical mode, the slot's lag.
+`improv.status('plan')` shows the mode and, in logical mode, the slot's lag
+and how the worker applied its batches: `incremental_applies` counts the
+batches it fed to the live engine, `rebuilds` its full reloads. On an
+append-only fact table `rebuilds` stays put while `incremental_applies`
+grows.
 
 ## Several rows per coordinate
 

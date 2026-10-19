@@ -119,7 +119,11 @@ CREATE TABLE improv.sync_state (
     confirmed_lsn   pg_lsn,
     last_applied_at timestamptz,
     rows_applied    bigint NOT NULL DEFAULT 0,
-    last_error      text
+    last_error      text,
+    -- Batches applied incrementally, and full rebuilds, since the slot was
+    -- made (the sync worker's work, for improv.status).
+    incremental_applies bigint NOT NULL DEFAULT 0,
+    rebuilds        bigint NOT NULL DEFAULT 0
 );
 -- Slots whose model left logical mode (or was dropped): the worker drops them.
 CREATE TABLE improv.slot_to_drop (slot text PRIMARY KEY);
@@ -239,11 +243,16 @@ type StatusRow = (
     Option<pgrx::datum::TimestampWithTimeZone>,
     Option<i64>,
     Option<String>,
+    Option<i64>,
+    Option<i64>,
 );
 
 /// How model `model`'s results are kept current, and (in logical mode) how
 /// far the worker is behind: `lag_bytes` is the WAL between the current
-/// insert position and the slot's confirmed position.
+/// insert position and the slot's confirmed position. `incremental_applies`
+/// counts the batches the worker applied to its live engine, `rebuilds`
+/// the full loads (the first catch-up, structural changes, and batches it
+/// could not apply incrementally).
 // The `name!` tuple must be spelled inline: pgrx cannot derive SQL through
 // a type alias, so clippy's type-complexity suggestion does not apply.
 #[allow(clippy::type_complexity)]
@@ -260,6 +269,8 @@ fn status(
         name!(last_applied_at, Option<pgrx::datum::TimestampWithTimeZone>),
         name!(rows_applied, Option<i64>),
         name!(last_error, Option<String>),
+        name!(incremental_applies, Option<i64>),
+        name!(rebuilds, Option<i64>),
     ),
 > {
     // pgrx 0.17 cannot generate SQL for a `Result<TableIterator>`.
@@ -274,7 +285,8 @@ fn status_row(model: &str) -> Res<StatusRow> {
         let t = c.select(
             "SELECT m.sync_mode, s.slot, \
                     (pg_current_wal_lsn() - r.confirmed_flush_lsn)::int8, \
-                    r.confirmed_flush_lsn::text, s.last_applied_at, s.rows_applied, s.last_error \
+                    r.confirmed_flush_lsn::text, s.last_applied_at, s.rows_applied, s.last_error, \
+                    s.incremental_applies, s.rebuilds \
              FROM improv.model m \
              LEFT JOIN improv.sync_state s ON s.model_id = m.id \
              LEFT JOIN pg_replication_slots r ON r.slot_name = s.slot \
@@ -294,6 +306,8 @@ fn status_row(model: &str) -> Res<StatusRow> {
             r.get::<pgrx::datum::TimestampWithTimeZone>(5)?,
             r.get::<i64>(6)?,
             r.get::<String>(7)?,
+            r.get::<i64>(8)?,
+            r.get::<i64>(9)?,
         ))
     })?;
     Ok(row)
@@ -544,7 +558,7 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
         let _ = lock_model(name)?;
         drop(state);
         let (state, changed) = rebuild(mid, name)?;
-        record(mid, changed, None)?;
+        record(mid, changed, None, Applied::Rebuild)?;
         keep(mid, state);
         return Ok(false);
     }
@@ -579,7 +593,7 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
         let _ = lock_model(name)?;
         drop(state.take());
         let (l, n) = rebuild(mid, name)?;
-        record(mid, n, None)?;
+        record(mid, n, None, Applied::Rebuild)?;
         state = l;
     }
     // Only whole committed transactions are applied; a transaction cut off
@@ -590,6 +604,7 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
     };
     let advance_to = last.end_lsn;
     let touched = stream.done.iter().any(|t| !t.changes.is_empty());
+    let mut how = Applied::Nothing;
     let changed = if touched {
         let _ = lock_model(name)?;
         // Again under the lock: a define that committed while this waited
@@ -600,8 +615,12 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
             _ => Err(Rebuild("no live state")),
         };
         match applied {
-            Ok(n) => n,
+            Ok(n) => {
+                how = Applied::Incremental;
+                n
+            }
             Err(why) => {
+                how = Applied::Rebuild;
                 log!("pg_improv sync: model {name}: rebuilding ({})", why.0);
                 // Free the old engine before building one. The load runs
                 // after the peek, so it already holds this batch.
@@ -618,7 +637,7 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
         "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
         &[slot.into(), pgoutput::format_lsn(advance_to).into()],
     )?;
-    record(mid, changed, Some(advance_to))?;
+    record(mid, changed, Some(advance_to), how)?;
     keep(mid, state);
     Ok(true)
 }
@@ -884,16 +903,27 @@ fn bindings(mid: i64) -> Res<HashMap<u32, Vec<live::Binding>>> {
     Ok(out)
 }
 
-fn record(mid: i64, changed: i64, lsn: Option<u64>) -> Res<()> {
+/// How a poll brought the results up to date, for `improv.status`'s counters.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Applied {
+    Nothing,
+    Incremental,
+    Rebuild,
+}
+
+fn record(mid: i64, changed: i64, lsn: Option<u64>, how: Applied) -> Res<()> {
     Spi::run_with_args(
         "UPDATE improv.sync_state SET last_applied_at = now(), last_error = NULL, \
            rows_applied = rows_applied + $2, \
-           confirmed_lsn = COALESCE($3::pg_lsn, confirmed_lsn) \
+           confirmed_lsn = COALESCE($3::pg_lsn, confirmed_lsn), \
+           incremental_applies = incremental_applies + $4, rebuilds = rebuilds + $5 \
          WHERE model_id = $1",
         &[
             mid.into(),
             changed.into(),
             lsn.map(pgoutput::format_lsn).into(),
+            i64::from(how == Applied::Incremental).into(),
+            i64::from(how == Applied::Rebuild).into(),
         ],
     )?;
     Ok(())

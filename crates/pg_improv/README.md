@@ -127,7 +127,7 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once (re-run it after binding a new relation). `commit`: recomputes once, then once per writing transaction before it commits; needs the preload. `logical`/`manual`: removes the triggers. |
 | `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value jsonb)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. |
 | `enable_logical(model)` | Creates (or resets) the publication `improv_<model>` over the bound relations and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
-| `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error)` | How the model is kept current, and how far the logical worker is behind. |
+| `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error, incremental_applies, rebuilds)` | How the model is kept current, how far the logical worker is behind, and how it applied its batches: `incremental_applies` to the live engine, `rebuilds` full loads (the first catch-up, structural changes, and what it could not apply incrementally). |
 | `drop_model(name)` | Drops the catalog rows, the result schema, the triggers and the publication, and queues the slot for the worker to drop. |
 
 **Redefining.** `define(model, 'Merit = …', replace => true)` is safe to

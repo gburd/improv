@@ -107,6 +107,7 @@ for from in "$@"; do
 	grep -q "COPY improv.lambda" "$W/dump.sql" || fail "pg_dump omits the lambdas"
 	eq "$(q "SELECT array_to_string(proconfig, ',') FROM pg_proc WHERE oid = 'improv.mint_items(bigint,bigint[],text[])'::regprocedure")" \
 		"search_path=pg_catalog, pg_temp" "mint_items search_path after the update"
+	eq "$(q "SELECT rebuilds >= 0 AND incremental_applies >= 0 FROM improv.status('plan')")" t "status counters after the update"
 	q "SELECT improv.set_sync_mode('plan','commit')"
 	eq "$(q "SELECT sync_mode FROM improv.status('plan')")" commit "commit mode after the update"
 	q "BEGIN; UPDATE sales SET qty = 400 WHERE quarter='Q1' AND product='Widget'; UPDATE sales SET price = 12 WHERE quarter='Q1' AND product='Widget'; COMMIT;"

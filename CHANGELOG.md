@@ -100,6 +100,11 @@ positional forms and recurrences, lookups, list results, `LET` and
   item list (`POSITION`, `PREV`/`NEXT`, windows, `INTO`, `FILL`, `RANK`,
   …; the README lists them). `improv_engine::session::Engine::serves`
   tells whether a grown model still compiles to the engine's graph.
+- **pg_improv: `improv.status` counts the worker's applies and
+  rebuilds.** Two new columns: `incremental_applies` (batches applied
+  to the live engine) and `rebuilds` (full loads). The 0.9.0 → 0.10.0
+  update script adds them to `improv.sync_state` and recreates
+  `improv.status`.
 - **pg_improv: distinct counting.** `improv.bind_measure(model, measure,
   rel, key_col, agg => 'count_distinct')` counts each coordinate's distinct
   `key_col` values, as `count(DISTINCT key_col)` does (the result is a

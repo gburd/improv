@@ -261,6 +261,8 @@ done
 q "INSERT INTO facts VALUES (0, 'p0', 2020, 'warm', 100)"
 wait_for "SELECT value FROM improv_folds.r_max WHERE person='p0' AND year='2020'" 100 "folds catch-up" >/dev/null
 logpos=$(wc -c <"$D/log")
+counters() { q "SELECT incremental_applies || ' ' || rebuilds FROM improv.status('folds')"; }
+read -r inc0 reb0 <<<"$(counters)"
 for i in $(seq 1 20); do
 	# one more person and year than the load saw: new items, minted live
 	q "INSERT INTO facts SELECT 1000*$i + g, 'p'||(g%($NP+1)), 2020+g%($NY+1), 'n'||(g%3), g%9 FROM generate_series(1, 5) g;
@@ -283,6 +285,10 @@ if tail -c +$((logpos + 1)) "$D/log" | grep -q "model folds: rebuilding"; then
 	echo "FAIL: an aggregated batch rebuilt the model:"
 	tail -c +$((logpos + 1)) "$D/log" | grep "model folds: rebuilding"; exit 1
 fi
+read -r inc1 reb1 <<<"$(counters)"
+[ "$reb1" = "$reb0" ] && [ "$inc1" -gt "$inc0" ] \
+	|| { echo "FAIL: improv.status counters went $inc0/$reb0 -> $inc1/$reb1 (want more applies, no rebuild)"; exit 1; }
+echo "   status: incremental_applies $inc0 -> $inc1, rebuilds $reb0 -> $reb1"
 [ "$(q "SELECT count(*) FROM improv_folds.r_count WHERE person = 'p$NP' OR year = '$((2020 + NY))'")" -gt 0 ] \
 	|| { echo "FAIL: the batches brought no new item"; exit 1; }
 echo "ok: $AGGS follow 20 random INSERT/UPDATE/DELETE batches (new items too) with no rebuild"

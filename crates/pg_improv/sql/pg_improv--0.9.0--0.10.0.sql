@@ -31,6 +31,18 @@ CREATE TABLE improv.lambda (
     PRIMARY KEY (model_id, id)
 );
 SELECT pg_catalog.pg_extension_config_dump('improv.lambda', '');
+-- improv.status gains the sync worker's counters (P1-3): batches applied
+-- incrementally, and full rebuilds.
+ALTER TABLE improv.sync_state
+  ADD COLUMN incremental_applies bigint NOT NULL DEFAULT 0,
+  ADD COLUMN rebuilds bigint NOT NULL DEFAULT 0;
+DROP FUNCTION improv.status(text);
+CREATE FUNCTION improv.status(model text) RETURNS TABLE (
+    sync_mode text, slot text, lag_bytes bigint, confirmed_lsn text,
+    last_applied_at timestamp with time zone, rows_applied bigint, last_error text,
+    incremental_applies bigint, rebuilds bigint)
+  STRICT SECURITY INVOKER
+  LANGUAGE c AS 'MODULE_PATHNAME', 'status_wrapper';
 -- Distinct counting (P1-4): bind_measure(..., agg => 'count_distinct').
 ALTER TABLE improv.binding DROP CONSTRAINT binding_agg_check;
 ALTER TABLE improv.binding ADD CONSTRAINT binding_agg_check
