@@ -402,10 +402,11 @@ tables) when:
 - a new item lands in a category whose item list a formula reads:
   `POSITION`, `@ITEM`, `@ITEMCOUNT`, `PREV`/`NEXT` and recurrences along
   it, a window (`OVER T[FIRST..THIS]`), a per-item or `INTO` reduction
-  (`RANK`, `SORT`), `FILL`, or any reduction over it other than `SUM`,
-  `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `SUMSQ`, `AND`, `OR`, `XOR`, `COUNT`
-  and `COUNTA` (those read only their rows' values, so a new item reaches
-  them as data);
+  (`RANK`, `SORT`), `FILL` over it (one cell per item combination),
+  `RELABEL`/`SWAP` of it (item maps), or any reduction over it other than
+  `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `SUMSQ`, `AND`, `OR`, `XOR`,
+  `COUNT`, `COUNTA` and `COUNTUNIQUE` (those read only their rows'
+  values, so a new item reaches them as data; so does `COALESCE`);
 - two rows land on one coordinate of a measure bound without `agg`;
 - a text `min` or `max` binding changes (text order is the collation's);
 - or after any error.
