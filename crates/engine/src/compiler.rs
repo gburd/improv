@@ -91,11 +91,196 @@ pub fn compile_formula(
     target: MeasureId,
     formula: &Formula,
 ) -> Result<PlanNode> {
+    if let Some(args) = top_fixpoint(&formula.expr) {
+        return compile_fixpoint(ctx, target, args);
+    }
     if formula.referenced_measures().contains(&target) {
         return compile_recurrence(ctx, target, &formula.expr);
     }
     let typed = infer(ctx, target, &formula.expr)?;
     build_plan(ctx, &typed)
+}
+
+/// The arguments of a formula that is a `FIXPOINT` call.
+fn top_fixpoint(e: &Expr) -> Option<&[Expr]> {
+    match e {
+        Expr::Call(f, args) if f.0 == dim::FIXPOINT => Some(args),
+        _ => None,
+    }
+}
+
+/// The most rounds a `FIXPOINT` may run: its `max_iter` is at most this.
+pub const FIXPOINT_MAX_ITER: u32 = 10_000;
+
+/// `FIXPOINT(init, LAMBDA(r, body), [max_iter = 100], [tolerance = 1e-10])`,
+/// a measure's whole formula; the options are constant numbers. The engine
+/// solves it host-side (`session::Engine`): r = init, then r = body(r) until
+/// Σ|body(r) − r| ≤ tolerance or max_iter rounds pass (see
+/// [`fixpoint_parts`] for r's type and categories).
+fn compile_fixpoint(ctx: &CompileContext, target: MeasureId, args: &[Expr]) -> Result<PlanNode> {
+    let usage = || {
+        CompileError::Unsupported(
+            "FIXPOINT takes (init, LAMBDA(r, body), [max_iter], [tolerance])".into(),
+        )
+    };
+    let [init, body, opts @ ..] = args else {
+        return Err(usage());
+    };
+    if opts.len() > 2 {
+        return Err(usage());
+    }
+    let mut read = init.referenced_measures();
+    read.extend(body.referenced_measures());
+    if read.contains(&target) {
+        return Err(CompileError::Unsupported(
+            "FIXPOINT may not read its own measure: the iterate is the LAMBDA's parameter".into(),
+        ));
+    }
+    let opt = |i: usize, default: f64, what: &str| -> Result<f64> {
+        let Some(e) = opts.get(i) else {
+            return Ok(default);
+        };
+        match crate::scalar::eval(e, &HashMap::new()) {
+            Ok(Some(v)) => v.as_num(),
+            _ => None,
+        }
+        .ok_or_else(|| {
+            CompileError::TypeMismatch(format!("FIXPOINT's {what} must be a constant number"))
+        })
+    };
+    let max_iter = opt(0, 100.0, "max_iter")?;
+    if !(0.0..=f64::from(FIXPOINT_MAX_ITER)).contains(&max_iter) || max_iter.fract() != 0.0 {
+        return Err(CompileError::Unsupported(format!(
+            "FIXPOINT's max_iter must be a whole number from 0 to {FIXPOINT_MAX_ITER}"
+        )));
+    }
+    let tolerance = opt(1, 1e-10, "tolerance")?;
+    // NaN is not a tolerance either.
+    if tolerance.is_nan() || tolerance < 0.0 {
+        return Err(CompileError::Unsupported(
+            "FIXPOINT's tolerance must be 0 or more".into(),
+        ));
+    }
+    let (_, _, ty) = fixpoint_parts(ctx, target, init, body, functions::lambda_slot(0, 0))?;
+    Ok(PlanNode {
+        kind: PlanNodeKind::Fixpoint {
+            init: init.clone(),
+            body: body.clone(),
+            max_iter: max_iter as u32,
+            tolerance,
+        },
+        ty,
+    })
+}
+
+/// A FIXPOINT's two plans: the first iterate, and the body reading the
+/// iterate as input measure `r` (the LAMBDA's parameter renamed). The
+/// iterate has init's type, and its categories are init's plus any the body
+/// adds: `FIXPOINT(1 / @ITEMCOUNT(Src), LAMBDA(r, … SUMPRODUCT(r, M OVER
+/// Src) …))` iterates over Src. Init then broadcasts onto every item
+/// combination of them, as `FILL` does. The body must keep the iterate's
+/// categories and type.
+pub(crate) fn fixpoint_parts(
+    ctx: &CompileContext,
+    target: MeasureId,
+    init: &Expr,
+    body: &Expr,
+    r: MeasureId,
+) -> Result<(PlanNode, PlanNode, TypeInfo)> {
+    let body = rename_ref(body, functions::lambda_slot(0, 0), r);
+    let t0 = infer(ctx, target, init)?;
+    let mut dim = t0.ty.dim.clone();
+    loop {
+        let mut measures = ctx.measures.clone();
+        measures.insert(
+            r,
+            Measure {
+                id: r,
+                name: improv_core_model::Name("r".into()),
+                value_type: t0.ty.value_type,
+                categories: dim.categories.clone(),
+                kind: improv_core_model::MeasureKind::Input,
+                description: None,
+            },
+        );
+        let bctx = CompileContext {
+            measures: &measures,
+            categories: ctx.categories,
+            items: ctx.items,
+            lambdas: ctx.lambdas,
+        };
+        let tb = infer(&bctx, target, &body).map_err(|e| match e {
+            CompileError::DimensionMismatch(s) if dim.is_scalar() => {
+                CompileError::DimensionMismatch(format!(
+                    "{s} (FIXPOINT's r ranges over the initial value's categories, here none: \
+                     start from one over them, SEQUENCE(T, x, 0) for x at every item of T)"
+                ))
+            }
+            e => e,
+        })?;
+        if tb.ty.dim != dim {
+            if !dim.is_subset_of(&tb.ty.dim) {
+                return Err(CompileError::DimensionMismatch(format!(
+                    "FIXPOINT: the body ranges over {} but the iterate over {}: the body must \
+                     keep the iterate's categories",
+                    dims_text(ctx, &tb.ty.dim),
+                    dims_text(ctx, &dim)
+                )));
+            }
+            dim = tb.ty.dim;
+            continue;
+        }
+        if tb.ty.value_type != t0.ty.value_type && !is_error_only(&t0) {
+            return Err(CompileError::TypeMismatch(format!(
+                "FIXPOINT: the initial value is {:?} but the body yields {:?}",
+                t0.ty.value_type, tb.ty.value_type
+            )));
+        }
+        if ctx.categories.is_none() && !dim.is_scalar() {
+            return Err(CompileError::Unsupported(
+                "FIXPOINT needs the model's categories".into(),
+            ));
+        }
+        let ty = TypeInfo {
+            value_type: tb.ty.value_type,
+            dim: dim.clone(),
+        };
+        let first = if t0.ty.dim == dim {
+            t0
+        } else {
+            let grid = dim
+                .categories
+                .iter()
+                .map(|c| (*c, ctx.items_of(*c)))
+                .collect();
+            TypedExpr {
+                ty: TypeInfo {
+                    value_type: t0.ty.value_type,
+                    dim,
+                },
+                kind: TypedExprKind::Coalesce {
+                    args: vec![t0],
+                    grid: Some(grid),
+                },
+            }
+        };
+        return Ok((build_plan(ctx, &first)?, build_plan(&bctx, &tb)?, ty));
+    }
+}
+
+/// `e` with every reference to measure `from` made a reference to `to`.
+fn rename_ref(e: &Expr, from: MeasureId, to: MeasureId) -> Expr {
+    match e {
+        Expr::Ref(r, s) if *r == from => Expr::Ref(to, s.clone()),
+        Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(rename_ref(a, from, to))),
+        Expr::BinaryOp(o, a, b) => Expr::BinaryOp(
+            *o,
+            Box::new(rename_ref(a, from, to)),
+            Box::new(rename_ref(b, from, to)),
+        ),
+        Expr::Call(f, a) => Expr::Call(*f, a.iter().map(|x| rename_ref(x, from, to)).collect()),
+        other => other.clone(),
+    }
 }
 
 /// The shape a new derived measure `target` named `name` takes from its
@@ -110,6 +295,10 @@ pub fn derived_shape(
     formula: &Formula,
 ) -> Result<(ValueType, Vec<CategoryId>)> {
     let ctx = CompileContext::for_model(model);
+    if let Some(args) = top_fixpoint(&formula.expr) {
+        let p = compile_fixpoint(&ctx, target, args)?;
+        return Ok((p.ty.value_type, p.ty.dim.categories));
+    }
     if !formula.referenced_measures().contains(&target) {
         let t = infer(&ctx, target, &formula.expr)?;
         return Ok((t.ty.value_type, t.ty.dim.categories));
@@ -180,20 +369,7 @@ fn compile_fold(ctx: &CompileContext, last: bool, args: &[Expr]) -> Result<PlanN
     }
     // The placeholders of this lambda (one fold per formula, so k = 0).
     let (acc, val) = (functions::lambda_slot(0, 0), functions::lambda_slot(0, 1));
-    fn subst(e: &Expr, from: MeasureId, to: MeasureId) -> Expr {
-        match e {
-            Expr::Ref(r, s) if *r == from => Expr::Ref(to, s.clone()),
-            Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(subst(a, from, to))),
-            Expr::BinaryOp(o, a, b) => Expr::BinaryOp(
-                *o,
-                Box::new(subst(a, from, to)),
-                Box::new(subst(b, from, to)),
-            ),
-            Expr::Call(f, a) => Expr::Call(*f, a.iter().map(|x| subst(x, from, to)).collect()),
-            other => other.clone(),
-        }
-    }
-    let body = subst(body, val, xid);
+    let body = rename_ref(body, val, xid);
     crate::scalar::check(&body).map_err(|e| {
         CompileError::Unsupported(format!("a fold's LAMBDA body must be scalar: {e}"))
     })?;
@@ -608,6 +784,12 @@ pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<Typ
                     ty,
                 });
             }
+            if def.id.0 == dim::FIXPOINT {
+                return Err(CompileError::Unsupported(
+                    "FIXPOINT must be a measure's whole formula: define it as its own measure"
+                        .into(),
+                ));
+            }
             if let Some(t) = infer_dimensional(ctx, target, def, args)? {
                 return Ok(t);
             }
@@ -646,6 +828,7 @@ mod dim {
     pub const REDUCE: u32 = 912;
     pub const RELABEL: u32 = 920;
     pub const SWAP: u32 = 921;
+    pub const FIXPOINT: u32 = 922;
 }
 
 /// `POSITION`, `@ITEM`, `@ID`, `@ITEMCOUNT`, `PREV` and `NEXT`, which read

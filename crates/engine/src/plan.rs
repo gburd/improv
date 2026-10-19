@@ -89,6 +89,16 @@ pub enum PlanNodeKind {
         func: FuncId,
         args: Vec<PlanNode>,
     },
+    /// `FIXPOINT(init, LAMBDA(r, body), max_iter, tolerance)`, a measure's
+    /// whole formula: `init` and `body` as written (the body reads r as
+    /// `functions::lambda_slot(0, 0)`). Not a dataflow operator: the engine
+    /// (`session::Engine`) solves it host-side, round by round.
+    Fixpoint {
+        init: improv_core_model::Expr,
+        body: improv_core_model::Expr,
+        max_iter: u32,
+        tolerance: f64,
+    },
     /// `IF(test, then, [otherwise])`, evaluated lazily: a cell where the test
     /// is true and `then` has one, where it is false and `otherwise` has one,
     /// and the test's error where it is an error. `spanning` names the branch

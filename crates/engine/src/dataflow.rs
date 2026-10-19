@@ -215,6 +215,10 @@ where
             }))
         }
 
+        PlanNodeKind::Fixpoint { .. } => Err(EngineError::Unsupported(
+            "FIXPOINT is solved by the engine, as a measure's whole formula".into(),
+        )),
+
         PlanNodeKind::Remap { input, maps } => {
             let x = build_coll(input, scope, inputs, derived)?;
             let to: HashMap<(u32, u32), (u32, u32)> = maps
@@ -998,6 +1002,15 @@ pub fn evaluate(
     // Compile every derived measure transitively needed by `targets`, in
     // dependency (topological) order.
     let plans = compile_plans(model, targets)?;
+    // A FIXPOINT is solved host-side, round by round, by the live engine.
+    // (It feeds only the inputs of their measure's type, as edits do.)
+    if plans
+        .iter()
+        .any(|(_, p)| matches!(p.kind, PlanNodeKind::Fixpoint { .. }))
+    {
+        let (_engine, snap) = crate::session::Engine::new(model, targets)?;
+        return Ok(snap.iter().map(|(m, v)| (*m, (**v).clone())).collect());
+    }
 
     // Gather input cells to feed, grouped by measure. Every model value type
     // maps into the DD lane: Number, Boolean, Text, Enum, DateTime (as

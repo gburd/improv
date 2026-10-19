@@ -58,7 +58,6 @@ Written `F(Measure OVER Category)`: collapse one category. Each also has a scala
 | `LET(name, value, …, body)` | the branches' type | LET(name, value, …, body): the body with each name bound to its value |
 | `LAMBDA(p, …, body)` | the branches' type | LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN |
 | `MAKEARRAY(rows, cols, lambda)` | the branches' type | MAKEARRAY(rows, cols, LAMBDA(r, c, body)): the body over the categories rows × cols, with r and c the item positions |
-| `FIXPOINT(init, lambda, [max_iter=100], [tolerance=1e-10])` | the branches' type | FIXPOINT(init, LAMBDA(r, body), \[max_iter=100\], \[tolerance=1e-10\]): r = init, then r = body(r) until the cells change by at most tolerance in total (Σ|Δ|), or max_iter times (then the last iterate); a measure's whole formula |
 | `BYROW(array OVER C, lambda)` | the branches' type | BYROW(array OVER C, LAMBDA(row, body)): the body per item of array's other categories, row being the values along C (the body reduces it: SUM(row), …) (also `BYCOL`) |
 | `MAP(array1, …, lambda)` | the branches' type | MAP(array1, …, LAMBDA(p, …, body)): the body applied element by element |
 
@@ -355,6 +354,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `SEQUENCE(T, [start=1], [step=1])` | the branches' type | SEQUENCE(T, \[start=1\], \[step=1\]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start |
 | `RELABEL(x, from_category, to_category)` | the branches' type | x read with category From replaced by To, each item mapped to To's item of the same name (items with no namesake are dropped) |
 | `SWAP(x, category_a, category_b)` | the branches' type | x read with categories A and B exchanged, items matched by name (W at Src = a, Dst = b is SWAP(W, Src, Dst) at Src = b, Dst = a) |
+| `FIXPOINT(init, lambda, [max_iter=100], [tolerance=1e-10])` | the branches' type | FIXPOINT(init, LAMBDA(r, body), \[max_iter=100\], \[tolerance=1e-10\]): r = init, then r = body(r) until the cells change by at most tolerance in total (Σ|Δ|), or max_iter times (then the last iterate); a measure's whole formula |
 | `FILL(x, default)` | the branches' type | a cell at every item combination of x's categories: x where it has a cell, else the default |
 | `SORT(array OVER T, [sort_order=1] INTO K)` | the branches' type | the values in ascending order (descending when sort_order is -1) |
 | `UNIQUE(array OVER T, [exactly_once=FALSE] INTO K)` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |

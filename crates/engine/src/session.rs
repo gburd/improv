@@ -17,12 +17,12 @@
 //! `Send`-friendly to hold across calls, so the worker lives on its own thread
 //! and communicates over channels. `Engine` is the `Send` handle.
 
-use crate::plan::PlanNode;
+use crate::plan::{PlanNode, PlanNodeKind};
 use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{MeasureId, MeasureKind, Model, Value, ValueType};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use crate::dataflow::{build_derived, compile_plans, EngineError};
@@ -94,17 +94,20 @@ impl Engine {
         // Compile plans up front (outside the worker), so a compile error is
         // reported synchronously rather than on the worker thread.
         let plans = compile_plans(model, targets)?;
+        let (plans, fixes) = split_fixpoints(model, plans)?;
 
         // Which input measures need sessions? Every input measure referenced by
         // any tracked plan, plus any that already has cells. We over-approximate
         // with "all input measures in the model" — extra empty sessions are
         // cheap and keep later edits to any input measure valid.
-        let input_ids: Vec<MeasureId> = model
+        let mut input_ids: Vec<MeasureId> = model
             .measures
             .iter()
             .filter(|(_, m)| matches!(m.kind, MeasureKind::Input))
             .map(|(id, _)| *id)
             .collect();
+        // A FIXPOINT's iterate and its solution ride on sessions of their own.
+        input_ids.extend(fixes.iter().flat_map(|f| [f.r, f.id]));
 
         // Seed edits: the model's current input cells of their measure's
         // type (a mistyped value, e.g. text in a number measure, is no cell).
@@ -126,7 +129,7 @@ impl Engine {
         let seed_owned = seed;
 
         let worker = std::thread::spawn(move || {
-            worker_loop(input_ids, plans_owned, seed_owned, cmd_rx, ready_tx);
+            worker_loop(input_ids, plans_owned, fixes, seed_owned, cmd_rx, ready_tx);
         });
 
         // Wait for the worker to build the graph and apply the seed.
@@ -214,17 +217,208 @@ impl Drop for Engine {
     }
 }
 
+/// The first engine-internal measure id of a FIXPOINT's parts (three per
+/// FIXPOINT), between the LAMBDA placeholders and the recurrence slots.
+const FIX_BASE: u32 = u32::MAX - 4000;
+/// How many FIXPOINT measures one engine solves.
+const FIX_LIMIT: u32 = 900;
+
+/// A FIXPOINT measure, solved host-side: the dataflow computes its first
+/// iterate (`init`) and one step (`body`, reading the iterate from session
+/// `r`); the worker iterates, and publishes the result on session `id`, the
+/// measure's own, which the measures that read it see as an input.
+struct Fix {
+    id: MeasureId,
+    r: MeasureId,
+    init: MeasureId,
+    body: MeasureId,
+    max_iter: u32,
+    tolerance: f64,
+}
+
+/// Replace each FIXPOINT plan by its first-iterate and step plans, in place
+/// (so the build order holds), and describe it.
+fn split_fixpoints(model: &Model, plans: Plans) -> Result<(Plans, Vec<Fix>), EngineError> {
+    let ctx = crate::compiler::CompileContext::for_model(model);
+    let (mut out, mut fixes) = (Vec::new(), Vec::new());
+    for (mid, plan) in plans {
+        let PlanNodeKind::Fixpoint {
+            init,
+            body,
+            max_iter,
+            tolerance,
+        } = &plan.kind
+        else {
+            out.push((mid, plan));
+            continue;
+        };
+        let n = fixes.len() as u32;
+        if n == FIX_LIMIT {
+            return Err(EngineError::Unsupported(format!(
+                "a model may have at most {FIX_LIMIT} FIXPOINT measures"
+            )));
+        }
+        let part = |j: u32| MeasureId(FIX_BASE + 3 * n + j);
+        let (r, i, b) = (part(0), part(1), part(2));
+        let (ip, bp, _) = crate::compiler::fixpoint_parts(&ctx, mid, init, body, r)?;
+        out.push((i, ip));
+        out.push((b, bp));
+        fixes.push(Fix {
+            id: mid,
+            r,
+            init: i,
+            body: b,
+            max_iter: *max_iter,
+            tolerance: *tolerance,
+        });
+    }
+    Ok((out, fixes))
+}
+
+type Sessions = HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>>;
+type Plans = Vec<(MeasureId, PlanNode)>;
+
+/// What a FIXPOINT's sessions hold: the iterate last fed to `r`, and the
+/// published result (and whether it converged).
+#[derive(Default)]
+struct FixState {
+    r: MeasureValues,
+    result: Arc<MeasureValues>,
+    converged: bool,
+}
+
+/// Turn session `s`'s cells from `old` into `new`, as deltas.
+fn replace(
+    s: &mut InputSession<u64, (CoordKey, CellValue), isize>,
+    old: &MeasureValues,
+    new: &MeasureValues,
+) {
+    for (k, v) in old {
+        if new.get(k) != Some(v) {
+            s.remove((k.clone(), v.clone()));
+        }
+    }
+    for (k, v) in new {
+        if old.get(k) != Some(v) {
+            s.insert((k.clone(), v.clone()));
+        }
+    }
+}
+
+/// Σ|a − b| over the cells, summed in key order (so a run decides the same
+/// way every time). A cell only one side has, or a non-number that differs,
+/// is an infinite change.
+fn distance(a: &MeasureValues, b: &MeasureValues) -> f64 {
+    if b.keys().any(|k| !a.contains_key(k)) {
+        return f64::INFINITY;
+    }
+    let mut d: Vec<(&CoordKey, f64)> = a
+        .iter()
+        .map(|(k, x)| {
+            let y = b.get(k);
+            let step = match (x.as_num(), y.and_then(CellValue::as_num)) {
+                _ if y == Some(x) => 0.0,
+                (Some(x), Some(y)) => (x - y).abs(),
+                _ => f64::INFINITY,
+            };
+            (k, step)
+        })
+        .collect();
+    d.sort_by(|p, q| p.0.cmp(q.0));
+    d.iter().map(|(_, x)| x).sum()
+}
+
+/// Solve every FIXPOINT, in build order (one may read another), and publish
+/// each result on its measure's session. Each round is one engine round:
+/// feed the iterate, read the step. `warm` (after an edit): restart from the
+/// previous result if it converged, on the cells the first iterate has; if
+/// that does not converge within max_iter rounds, start over from the first
+/// iterate, so a result cut off at max_iter is always a full recompute's. An
+/// edit that leaves a FIXPOINT's first iterate and its step's output as they
+/// were (nothing it reads changed) leaves its result as it was, unsolved.
+// shortcut: every round feeds the whole iterate, so a PageRank round costs a
+// full pass over the edges (~0.8 s for 100,000 in release); a dataflow
+// `iterate` scope would not change that, but a sparser step would.
+#[allow(clippy::too_many_arguments, reason = "the worker's state, passed down")]
+fn solve_fixpoints(
+    fixes: &[Fix],
+    state: &mut [FixState],
+    warm: bool,
+    sessions: &mut Sessions,
+    t: &mut u64,
+    run: &mut dyn FnMut(u64, &mut Sessions),
+    snapshot: &Mutex<Snapshot>,
+    first: &mut HashMap<MeasureId, Arc<MeasureValues>>,
+) {
+    let get = |id: MeasureId| {
+        snapshot
+            .lock()
+            .unwrap()
+            .get(&id)
+            .cloned()
+            .unwrap_or_default()
+    };
+    for (f, st) in fixes.iter().zip(state.iter_mut()) {
+        let init = get(f.init);
+        // The step's output is body(the last iterate fed), which is the
+        // result, as long as nothing the FIXPOINT reads has changed.
+        let unchanged = warm && first.get(&f.id) == Some(&init) && *get(f.body) == *st.result;
+        if unchanged {
+            continue;
+        }
+        let mut solve = |start: MeasureValues, st: &mut FixState| {
+            let mut x = start;
+            for _ in 0..f.max_iter {
+                let s = sessions
+                    .get_mut(&f.r)
+                    .expect("a FIXPOINT's iterate session");
+                replace(s, &st.r, &x);
+                st.r.clone_from(&x);
+                *t += 1;
+                run(*t, sessions);
+                let y = get(f.body);
+                let d = distance(&x, &y);
+                x = (*y).clone();
+                if d <= f.tolerance {
+                    return (x, true);
+                }
+            }
+            (x, false)
+        };
+        let mut out = None;
+        if warm && st.converged {
+            let start = init
+                .iter()
+                .map(|(k, v)| (k.clone(), st.result.get(k).unwrap_or(v).clone()))
+                .collect();
+            out = Some(solve(start, st)).filter(|(_, ok)| *ok);
+        }
+        let (x, converged) = out.unwrap_or_else(|| solve((*init).clone(), st));
+        let s = sessions
+            .get_mut(&f.id)
+            .expect("a FIXPOINT's result session");
+        replace(s, &st.result, &x);
+        st.result = Arc::new(x);
+        st.converged = converged;
+        first.insert(f.id, init);
+        *t += 1;
+        run(*t, sessions);
+        let mut snap = snapshot.lock().unwrap();
+        Arc::make_mut(&mut snap).insert(f.id, Arc::clone(&st.result));
+    }
+}
+
 /// The worker thread: builds the dataflow once, applies the seed, then serves
 /// edit rounds. Each round advances time by 1 and reports the changed outputs;
 /// we keep a running snapshot per measure so we can return a full picture.
 fn worker_loop(
     input_ids: Vec<MeasureId>,
     plans: Vec<(MeasureId, PlanNode)>,
+    fixes: Vec<Fix>,
     seed: Vec<(MeasureId, CoordKey, CellValue)>,
     cmd_rx: Receiver<Cmd>,
     ready_tx: Sender<()>,
 ) {
-    use std::sync::Mutex;
     // The accumulated snapshot, shared with the dataflow's inspect closure.
     // `Arc<Mutex<..>>` (not Rc/RefCell) so the timely closure is Send + Sync.
     // The snapshot itself is copy-on-write (see [`Snapshot`]): replies hand
@@ -247,10 +441,16 @@ fn worker_loop(
             .unwrap()
             .take()
             .expect("worker_loop runs a single timely worker");
-        let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>> =
-            HashMap::new();
+        let mut sessions: Sessions = HashMap::new();
         let snap = snapshot.clone();
         let mut probe = ProbeHandle::new();
+        // A FIXPOINT's parts are the engine's own: not edited, not reported.
+        let internal: HashSet<MeasureId> = fixes
+            .iter()
+            .flat_map(|f| [f.id, f.r, f.init, f.body])
+            .collect();
+        let mut fix_state: Vec<FixState> = fixes.iter().map(|_| FixState::default()).collect();
+        let mut first = HashMap::new();
 
         worker.dataflow::<u64, _, _>(|scope| {
             let mut input_colls = HashMap::new();
@@ -285,11 +485,7 @@ fn worker_loop(
         // Step the worker until the output frontier has passed `t`. (Advancing
         // an InputSession sets its time synchronously, so we cannot gate on the
         // session time; we gate on the dataflow probe instead.)
-        let mut run_to = |t: u64,
-                          sessions: &mut HashMap<
-            MeasureId,
-            InputSession<u64, (CoordKey, CellValue), isize>,
-        >| {
+        let mut run_to = |t: u64, sessions: &mut Sessions| {
             for s in sessions.values_mut() {
                 s.advance_to(t);
                 s.flush();
@@ -307,6 +503,29 @@ fn worker_loop(
         }
         let mut t: u64 = 1;
         run_to(t, &mut sessions);
+        solve_fixpoints(
+            &fixes,
+            &mut fix_state,
+            false,
+            &mut sessions,
+            &mut t,
+            &mut run_to,
+            &snapshot,
+            &mut first,
+        );
+        // What a reply shows: every measure but a FIXPOINT's parts.
+        let reply_snapshot = |snapshot: &Mutex<Snapshot>| {
+            let s = snapshot.lock().unwrap();
+            if fixes.is_empty() {
+                return Arc::clone(&s);
+            }
+            let mut m = (**s).clone();
+            for f in &fixes {
+                m.remove(&f.init);
+                m.remove(&f.body);
+            }
+            Arc::new(m)
+        };
         // Signal that startup is complete.
         let _ = ready_tx.send(());
 
@@ -321,7 +540,7 @@ fn worker_loop(
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
                 Cmd::Edit(edits, reply) => {
-                    for e in &edits {
+                    for e in edits.iter().filter(|e| !internal.contains(&e.measure)) {
                         let key = (e.measure, e.coord.clone());
                         let old = prev.get(&key).cloned();
                         if let Some(session) = sessions.get_mut(&e.measure) {
@@ -341,8 +560,17 @@ fn worker_loop(
                     }
                     t += 1;
                     run_to(t, &mut sessions);
-                    let out = Arc::clone(&snapshot.lock().unwrap());
-                    let _ = reply.send(out);
+                    solve_fixpoints(
+                        &fixes,
+                        &mut fix_state,
+                        true,
+                        &mut sessions,
+                        &mut t,
+                        &mut run_to,
+                        &snapshot,
+                        &mut first,
+                    );
+                    let _ = reply.send(reply_snapshot(&snapshot));
                 }
                 Cmd::Shutdown => break,
             }
