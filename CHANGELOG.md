@@ -451,6 +451,11 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **pg_improv: a `define` racing a logical-mode batch.** The worker read
+  `model_version` before taking the model's lock, so a `define` that
+  committed while the worker waited could see its new results
+  overwritten by the old formula's. The version is read again under the
+  lock.
 - **Calls that never returned now finish in milliseconds.** Property tests
   over every built-in function (hegel, each call under a time budget)
   found loops whose trip count came from an argument: `FACT`, `COMBIN`,

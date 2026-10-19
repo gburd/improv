@@ -589,6 +589,9 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
     let touched = stream.done.iter().any(|t| !t.changes.is_empty());
     let changed = if touched {
         let _ = lock_model(name)?;
+        // Again under the lock: a define that committed while this waited
+        // for it must not see its results overwritten by the old formula.
+        let version = model_version(mid)?;
         let applied = match state.as_mut() {
             Some(l) if l.version == version && l.name == name => apply(l, &stream)?,
             _ => Err(Rebuild("no live state")),
