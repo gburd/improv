@@ -454,6 +454,22 @@ engine absorbing ~111k edits (~1.5 s), decoding them (~1.5 s), and scanning
 each changed measure's snapshot for the diff (`MODES=logical SIZES=1000000`;
 the p95s are 2.0 s and 8.0 s).
 
+An aggregated fact table, from `ROWS=2500000 BATCHES=1000 tests/scale.sh`
+(c7i.8xlarge, release build; PG 17 Debian, PG 18 PGDG in `rust:1.97-trixie`):
+2.5M contribution rows bound with `agg => 'count'` and `'count_distinct'`
+into 44,750 cells of Person × Year × Release × Scope.
+
+| | PG 17 | PG 18 |
+| --- | ---: | ---: |
+| `REFRESH MATERIALIZED VIEW CONCURRENTLY` of the same `GROUP BY` | 5.4 s | 4.0 s |
+| `improv.recalc` (load, compute, write 2 × 44,750 rows) | 6.4 s | 4.9 s |
+| worker's initial build (slot, load, fold seed, live engine) | 9.7 s | 8.1 s |
+| 1,000-row INSERT batch, commit → visible (incl. a new Person) | 88–150 ms | 82–114 ms |
+
+`improv.status` shows no rebuild for the batches, and after 1,000 random
+INSERT / UPDATE / DELETE batches `count` and `sum` equal a fresh `recalc`
+and `count_distinct` equals `count(DISTINCT …)`.
+
 ## Worked example
 
 `examples/family-finance/` models a household's books: statement
