@@ -200,6 +200,33 @@ fn pagerank_case(n: usize, edges: usize) {
     assert!(l1(&warm, &ranks(n, &fresh[&pr])) < 1e-11);
 }
 
+/// The guide's example (docs/src/formulas.md, Fixed points), verbatim:
+/// max_iter 100 and tolerance 1e-10.
+#[test]
+fn the_guides_pagerank_example_runs() {
+    let n = 60;
+    let (mut m, w) = graph(n, 600, 11);
+    for (id, text) in [
+        (200, "Out      = SUM(W OVER Dst)"),
+        (201, "M        = W / Out"),
+        (202, "Dangling = FILL(0 * Out, 1)"),
+        (
+            203,
+            "PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
+             LAMBDA(r, RELABEL((1 - 0.85) / @ITEMCOUNT(Src)
+               + 0.85 * (FILL(SUMPRODUCT(r, M OVER Src), 0)
+                         + SUMPRODUCT(r, Dangling OVER Src) / @ITEMCOUNT(Src)),
+               Dst, Src)),
+             100, 0.0000000001)",
+        ),
+    ] {
+        define(&mut m, id, text);
+    }
+    let out = evaluate(&m, &[MeasureId(203)]).unwrap();
+    let err = l1(&ranks(n, &out[&MeasureId(203)]), &reference(n, &w));
+    assert!(err < 1e-9, "{err:e}");
+}
+
 /// A small model: Person p1..p3, X over Person.
 fn small() -> Model {
     let mut m = Model::new();

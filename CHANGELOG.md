@@ -61,6 +61,15 @@ positional forms and recurrences, lookups, list results, `LET` and
   tagged by position, reduced to the first per coordinate), so input edits
   stay incremental; `IF`'s laziness is unchanged. See *The Formula
   Language → Missing cells*.
+- **`FIXPOINT(init, LAMBDA(r, body), [max_iter=100], [tolerance=1e-10])`.**
+  A measure that is the fixed point of a step: r = init, then r = body(r),
+  until Σ|Δ| ≤ tolerance or max_iter rounds pass. Past max_iter it is the
+  last iterate, never a hang (max_iter ≤ 10,000), so the language stays
+  total. The engine solves it round by round, warm-starting from the
+  previous result after an edit. The customer's PageRank (damping 0.85,
+  dangling mass spread uniformly) on 1,500 nodes and 100,000 edges matches
+  a plain power iteration to 3e-15 in L1, and to the same after one edge
+  weight changes. See *Fixed points* in the formula guide.
 - **Measures reduced together may range over different categories.**
   They need to share only the `OVER` categories. The rest broadcast, and
   the result keeps them: `SUMPRODUCT(r, M OVER Src)` with `r` over `Src`

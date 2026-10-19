@@ -452,6 +452,58 @@ incrementally: an edit re-runs the chain it is in. Rules:
 
 Every evaluation still terminates: a scan is as long as the category.
 
+### Fixed points: FIXPOINT
+
+A measure can be the fixed point of a step: start from a value and apply
+the step until the value stops changing. PageRank over a person-to-person
+graph, with `Src` and `Dst` two roles of Person, `W[Src, Dst]` the edge
+weights, damping 0.85 and the rank of a person with no out-edge spread
+over everyone:
+
+```text
+Out      = SUM(W OVER Dst)                -- out-weight per Src
+M        = W / Out                        -- transition weights
+Dangling = FILL(0 * Out, 1)               -- 1 where Src has no out-edge
+PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
+             LAMBDA(r, RELABEL((1 - 0.85) / @ITEMCOUNT(Src)
+               + 0.85 * (FILL(SUMPRODUCT(r, M OVER Src), 0)
+                         + SUMPRODUCT(r, Dangling OVER Src) / @ITEMCOUNT(Src)),
+               Dst, Src)),
+             100, 0.0000000001)
+```
+
+`SUMPRODUCT(r, M OVER Src)` is Σ over Src of r·M, one value per `Dst`, and
+`RELABEL(…, Dst, Src)` reads it back over `Src` for the next round.
+
+- `FIXPOINT(init, LAMBDA(r, body), [max_iter = 100], [tolerance = 1e-10])`
+  sets r to `init`, then r to `body` evaluated at r, until the cells move
+  by at most `tolerance` in total (Σ|Δ| over the cells), or `max_iter`
+  rounds have run.
+- **Exceeding `max_iter` gives the last iterate**, not an error, and never
+  a hang: `max_iter` is a whole number from 0 to 10,000 (0 gives `init`).
+  The language stays total.
+- `max_iter` and `tolerance` are constant numbers. The parser reads digits
+  and a point only, so write 1e-10 as `0.0000000001` (or `10^-10`).
+- r has `init`'s type and categories, plus any the body adds: a constant
+  `init` with a body over `Src` iterates over every `Src` item. Give
+  `init` its categories with `SEQUENCE(Src, x, 0)` when the body needs r
+  over `Src` to begin with (`SUMPRODUCT(r, M OVER Src)` does). The body
+  must keep r's categories and type. A cell is in the result where it is in
+  both the last iterate and its step; the convergence test treats a cell in
+  only one of them as an infinite change.
+- A FIXPOINT is a measure's whole formula, and it may not read its own
+  measure (r stands for it). Other measures may read it, and its body may
+  read other FIXPOINT measures.
+- The engine solves it round by round, each round one incremental
+  dataflow update. After an edit it starts from the previous result (if
+  that converged) and agrees with a full recompute; a FIXPOINT whose
+  inputs did not change is not re-solved. A start that fails to converge
+  within `max_iter` rounds restarts from `init`, so a result cut off at
+  `max_iter` is the same as a fresh evaluation's.
+- On 1,500 people and 100,000 edges this PageRank matches a plain power
+  iteration to 3e-15 (L1), in about 14 rounds of 0.8 s each in a release
+  build.
+
 ### Functions
 
 Improv has the spreadsheet functions people expect, with Excel's names:
@@ -682,11 +734,11 @@ The engine evaluates input-measure references, literals (standalone or as
 operands), unary negation and `NOT`, the arithmetic, logical and comparison
 operators, dimension-aligning joins, aggregations (several measures,
 parameters, `WHERE`, windows, per-item results such as `RANK`, lookups,
-list results with `INTO`), `LET` and `LAMBDA`, the 674
+list results with `INTO`), `LET` and `LAMBDA`, the 681
 built-in functions of the [Function Reference](./functions.md) (math,
 rounding, text, dates, statistics and distributions, financial, engineering), the lazy
 `IF` family, positions and neighbours (`POSITION`, `PREV`, `NEXT`),
-recurrences, typed error values, non-numeric (Text, Boolean, DateTime)
+recurrences, bounded fixed points (`FIXPOINT`), typed error values, non-numeric (Text, Boolean, DateTime)
 values, and derived measures that reference other derived measures.
 
 External functions use the `CALL(...)` definition form and are evaluated
