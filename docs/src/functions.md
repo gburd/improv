@@ -352,6 +352,8 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `PREV(x, category, [n=1], [default])` | the branches' type | the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell |
 | `NEXT(x, category, [n=1], [default])` | the branches' type | the value at the n-th next item along the category (n = 1); off the end, the default, else no cell |
 | `SEQUENCE(T, [start=1], [step=1])` | the branches' type | SEQUENCE(T, \[start=1\], \[step=1\]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start |
+| `RELABEL(x, from_category, to_category)` | the branches' type | x read with category From replaced by To, each item mapped to To's item of the same name (items with no namesake are dropped) |
+| `SWAP(x, category_a, category_b)` | the branches' type | x read with categories A and B exchanged, items matched by name (W at Src = a, Dst = b is SWAP(W, Src, Dst) at Src = b, Dst = a) |
 | `FILL(x, default)` | the branches' type | a cell at every item combination of x's categories: x where it has a cell, else the default |
 | `SORT(array OVER T, [sort_order=1] INTO K)` | the branches' type | the values in ascending order (descending when sort_order is -1) |
 | `UNIQUE(array OVER T, [exactly_once=FALSE] INTO K)` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |

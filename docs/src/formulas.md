@@ -263,6 +263,27 @@ ToGo     = SUM(Budget OVER Time[THIS..LAST])
   aggregation over the items from `from` to `to`, where each bound is
   `FIRST`, `LAST`, `THIS`, `THIS-n` or `THIS+n`. An empty window is `#N/A`.
 
+### Roles: RELABEL and SWAP
+
+One dimension often plays two roles: `Src` and `Dst` are both Person in an
+interaction graph. Make each role its own category with the same item
+names, and move values between them:
+
+```text
+RankBySrc  = RELABEL(Rank[Dst, Iter], Dst, Src)   -- ranges over Src × Iter
+Reciprocal = W > 0 AND SWAP(W, Src, Dst) > 0      -- W[a, b] > 0 and W[b, a] > 0
+```
+
+- `RELABEL(x, From, To)` is x with category `From` replaced by `To`: each
+  cell's `From` item becomes the `To` item with the same name. x must range
+  over `From` and not over `To`.
+- `SWAP(x, A, B)` exchanges two categories x ranges over: its value at
+  `A = a, B = b` is x at `A = b, B = a` (items matched by name).
+- Items are matched by **name**. A cell whose item has no namesake in the
+  other category is dropped (no cell), so a role with extra items loses
+  them: relabel to a category that has them all.
+- Both are a map over the cells (a key rewrite), so they stay incremental.
+
 ### LET and LAMBDA
 
 ```text

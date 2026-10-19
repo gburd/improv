@@ -45,6 +45,12 @@ positional forms and recurrences, lookups, list results, `LET` and
   result table with just a `value` column. `recalc`, every sync mode,
   `what_if` (its `coord` is `{}`) and `status` handle it; `define` no
   longer refuses it.
+- **Role-playing categories: `RELABEL(x, From, To)` and `SWAP(x, A,
+  B)`.** `RELABEL(R[Dst, Iter], Dst, Src)` ranges over `Src × Iter` with
+  the same values; `W > 0 AND SWAP(W, Src, Dst) > 0` is the reciprocal
+  test (W read with its two roles exchanged), with no `@ITEM` or
+  `XLOOKUP`. Items match by name; one with no namesake is dropped. See
+  *The Formula Language → Roles*.
 - **`COALESCE(a, …, default)` and `FILL(x, default)`: a value for a missing
   cell.** `COALESCE` has a cell wherever an argument over all the result's
   categories has one, and takes the first argument with a cell there;

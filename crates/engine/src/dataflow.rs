@@ -215,6 +215,29 @@ where
             }))
         }
 
+        PlanNodeKind::Remap { input, maps } => {
+            let x = build_coll(input, scope, inputs, derived)?;
+            let to: HashMap<(u32, u32), (u32, u32)> = maps
+                .iter()
+                .flat_map(|(from, to, items)| {
+                    items.iter().map(|(i, j)| ((from.0, i.0), (to.0, j.0)))
+                })
+                .collect();
+            let from: Vec<u32> = maps.iter().map(|(c, _, _)| c.0).collect();
+            Ok(x.flat_map(move |(k, v)| {
+                let mut k2 = Vec::with_capacity(k.len());
+                for (c, i) in k {
+                    if from.contains(&c) {
+                        k2.push(*to.get(&(c, i))?);
+                    } else {
+                        k2.push((c, i));
+                    }
+                }
+                k2.sort_unstable();
+                Some((k2, v))
+            }))
+        }
+
         PlanNodeKind::Recurrence {
             body,
             refs,
@@ -1660,6 +1683,120 @@ mod tests {
             Some(&CellValue::num(0.0))
         );
         assert_eq!(snap[&MeasureId(200)].len(), 4);
+    }
+
+    /// Two roles of Person, Src and Dst (items a, b, c; Dst also has z, no
+    /// Src namesake), and Iter.
+    fn roles() -> Model {
+        let mut m = Model::new();
+        let (src, dst, iter) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        m.add_category(src, "Src");
+        m.add_category(dst, "Dst");
+        m.add_category(iter, "Iter");
+        for (i, n) in ["a", "b", "c"].iter().enumerate() {
+            m.add_item(ItemId(10 + i as u32), src, *n);
+        }
+        // Dst lists its items in another order: matching is by name.
+        for (id, n) in [(23, "z"), (22, "c"), (20, "a"), (21, "b")] {
+            m.add_item(ItemId(id), dst, n);
+        }
+        m.add_item(ItemId(30), iter, "1");
+        m.add_item(ItemId(31), iter, "2");
+        for (id, name, cats) in [(100, "R", vec![dst, iter]), (101, "W", vec![src, dst])] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let c2 = |a: (CategoryId, u32), b: (CategoryId, u32)| {
+            Coordinate::from_pairs([(a.0, ItemId(a.1)), (b.0, ItemId(b.1))])
+        };
+        for (d, it, v) in [(20, 30, 1.0), (21, 30, 2.0), (23, 30, 9.0), (22, 31, 3.0)] {
+            m.set_input(MeasureId(100), c2((dst, d), (iter, it)), Value::Number(v));
+        }
+        // a→b and b→a reciprocal, a→c one way, c→a with weight 0.
+        for (s, d, v) in [(10, 21, 4.0), (11, 20, 1.0), (10, 22, 2.0), (12, 20, 0.0)] {
+            m.set_input(MeasureId(101), c2((src, s), (dst, d)), Value::Number(v));
+        }
+        m
+    }
+
+    #[test]
+    fn relabel_and_swap_map_items_by_name() {
+        let (src, dst, iter) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        let mut m = roles();
+        define(
+            &mut m,
+            200,
+            vec![src, iter],
+            "Rs = RELABEL(R[Dst, Iter], Dst, Src)",
+        );
+        define(
+            &mut m,
+            201,
+            vec![src, dst],
+            "Recip = W > 0 AND SWAP(W, Src, Dst) > 0",
+        );
+        define(&mut m, 202, vec![src, dst], "Back = SWAP(W, Dst, Src)");
+        define(&mut m, 203, vec![iter], "Tot = SUM(Rs OVER Src)");
+        let out = evaluate(&m, &(200..=203).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let rs: BTreeMap<_, _> = out[&MeasureId(200)].iter().collect();
+        // Same values, over Src; z (no Src namesake) is dropped.
+        assert_eq!(
+            rs,
+            BTreeMap::from([
+                (&key(&[(1, 10), (3, 30)]), &CellValue::num(1.0)),
+                (&key(&[(1, 11), (3, 30)]), &CellValue::num(2.0)),
+                (&key(&[(1, 12), (3, 31)]), &CellValue::num(3.0)),
+            ])
+        );
+        let at =
+            |id: u32, s: u32, d: u32| out[&MeasureId(id)].get(&key(&[(1, s), (2, d)])).cloned();
+        let t = CellValue::Bool(true);
+        let f = CellValue::Bool(false);
+        // a→b with b→a: reciprocal. a→c has no c→a > 0; c→a has no a→c cell.
+        assert_eq!(at(201, 10, 21), Some(t.clone()));
+        assert_eq!(at(201, 11, 20), Some(t));
+        assert_eq!(at(201, 10, 22), Some(f));
+        assert_eq!(at(201, 12, 20), Some(CellValue::Bool(false)));
+        assert_eq!(out[&MeasureId(201)].len(), 4);
+        // SWAP is symmetric in its categories.
+        assert_eq!(at(202, 11, 20), Some(CellValue::num(4.0)));
+        assert_eq!(at(202, 12, 20), Some(CellValue::num(2.0)));
+        assert_eq!(
+            out[&MeasureId(203)].get(&key(&[(3, 30)])),
+            Some(&CellValue::num(3.0))
+        );
+        // The rules.
+        let ctx = CompileContext::for_model(&m);
+        let ty = |text: &str| {
+            let f = improv_core_model::parse_formula(&m, text).expect("parses");
+            crate::compiler::infer(&ctx, MeasureId(300), &f.formula.expr)
+        };
+        assert_eq!(
+            ty("X = RELABEL(R, Dst, Src)").unwrap().ty.dim,
+            Dim::of(vec![src, iter])
+        );
+        assert_eq!(
+            ty("X = SWAP(W, Src, Dst)").unwrap().ty.dim,
+            Dim::of(vec![src, dst])
+        );
+        for (bad, why) in [
+            ("X = RELABEL(R, Src, Dst)", "does not range over Src"),
+            ("X = RELABEL(W, Src, Dst)", "already ranges over Dst"),
+            ("X = SWAP(R, Dst, Src)", "does not range over Src"),
+            ("X = SWAP(W, Src, Src)", "both categories"),
+        ] {
+            let e = ty(bad).unwrap_err().to_string();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+        let f = improv_core_model::parse_formula(&m, "X = RELABEL(R, Dst, Src)").unwrap();
+        let bare = CompileContext::new(&m.measures);
+        assert!(crate::compiler::infer(&bare, MeasureId(300), &f.formula.expr).is_err());
     }
 
     /// IF over dimensions: the test over Product, the branches over

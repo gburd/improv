@@ -93,6 +93,13 @@ pub enum TypedExprKind {
         args: Vec<TypedExpr>,
         grid: Option<Vec<(CategoryId, Vec<improv_core_model::ItemId>)>>,
     },
+    /// `RELABEL` / `SWAP`: `input` with each `(from, to, items)` category
+    /// renamed, its items mapped `(from item, to item)`; a cell whose item
+    /// has no mapping is dropped.
+    Remap {
+        input: Box<TypedExpr>,
+        maps: crate::plan::Remaps,
+    },
     /// The value `offset` items along `cat` (`PREV` is −1), or `default`.
     Shift {
         input: Box<TypedExpr>,

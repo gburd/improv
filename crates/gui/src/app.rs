@@ -7109,6 +7109,24 @@ mod tests {
         }
     }
 
+    /// COALESCE, FILL, RELABEL and SWAP (category arguments) print as DSL
+    /// that commits back to the same formula.
+    #[test]
+    fn missing_cell_and_role_forms_round_trip_through_the_bar() {
+        let mut model = revenue_model();
+        model.add_category(CategoryId(3), "Year");
+        model.add_item(ItemId(30), CategoryId(3), "2025");
+        for text in [
+            "COALESCE(Quantity, Price * 0, 1)",
+            "FILL(Quantity, 0)",
+            "RELABEL(Quantity, Time, Year) * 2",
+            "SWAP(Quantity, Time, Product)",
+        ] {
+            let f = parser::parse_expr(&model, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));
+        }
+    }
+
     /// A named LAMBDA call prints by name and re-parses.
     #[test]
     fn named_lambda_calls_print_by_name() {

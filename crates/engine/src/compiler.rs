@@ -644,6 +644,8 @@ mod dim {
     pub const NEXT: u32 = 905;
     pub const SCAN: u32 = 911;
     pub const REDUCE: u32 = 912;
+    pub const RELABEL: u32 = 920;
+    pub const SWAP: u32 = 921;
 }
 
 /// `POSITION`, `@ITEM`, `@ID`, `@ITEMCOUNT`, `PREV` and `NEXT`, which read
@@ -767,6 +769,61 @@ fn infer_dimensional(
                     cat: c,
                     offset: if def.id.0 == dim::PREV { -n } else { n },
                     default,
+                },
+                ty,
+            }
+        }
+        dim::RELABEL | dim::SWAP => {
+            let input = infer(ctx, target, &args[0])?;
+            let (a, b) = (cat(&args[1])?, cat(&args[2])?);
+            let has = |c| input.ty.dim.categories.contains(&c);
+            let swap = def.id.0 == dim::SWAP;
+            let (an, bn) = (ctx.category_name(a), ctx.category_name(b));
+            if a == b {
+                return Err(CompileError::DimensionMismatch(format!(
+                    "{}: {an} is both categories",
+                    def.name
+                )));
+            }
+            if !has(a) || swap && !has(b) {
+                let missing = if has(a) { &bn } else { &an };
+                return Err(CompileError::DimensionMismatch(format!(
+                    "{}: the value does not range over {missing}",
+                    def.name
+                )));
+            }
+            if !swap && has(b) {
+                return Err(CompileError::DimensionMismatch(format!(
+                    "RELABEL: the value already ranges over {bn}; SWAP exchanges two \
+                     categories it has"
+                )));
+            }
+            // Items correspond by name; one with no namesake maps nowhere.
+            let pairs = |from: CategoryId, to: CategoryId| -> Result<Vec<(ItemId, ItemId)>> {
+                let names: HashMap<String, ItemId> =
+                    items_of(to)?.into_iter().map(|i| (name_of(i), i)).collect();
+                Ok(items_of(from)?
+                    .into_iter()
+                    .filter_map(|i| names.get(&name_of(i)).map(|j| (i, *j)))
+                    .collect())
+            };
+            let mut maps = vec![(a, b, pairs(a, b)?)];
+            if swap {
+                maps.push((b, a, pairs(b, a)?));
+            }
+            let mut cats = input.ty.dim.categories.clone();
+            if !swap {
+                cats.retain(|c| *c != a);
+                cats.push(b);
+            }
+            let ty = TypeInfo {
+                value_type: input.ty.value_type,
+                dim: Dim::of(cats),
+            };
+            TypedExpr {
+                kind: TypedExprKind::Remap {
+                    input: Box::new(input),
+                    maps,
                 },
                 ty,
             }
@@ -1538,6 +1595,10 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                 .map(|a| build_plan(ctx, a))
                 .collect::<Result<_>>()?,
             grid: grid.clone(),
+        },
+        TypedExprKind::Remap { input, maps } => PlanNodeKind::Remap {
+            input: Box::new(build_plan(ctx, input)?),
+            maps: maps.clone(),
         },
         TypedExprKind::Plan(p) => return Ok((**p).clone()),
         TypedExprKind::Shift {

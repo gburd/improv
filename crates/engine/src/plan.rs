@@ -67,6 +67,14 @@ pub enum PlanNodeKind {
         args: Vec<PlanNode>,
         grid: Option<Vec<(CategoryId, Vec<ItemId>)>>,
     },
+    /// `input` with its categories renamed (`RELABEL`, `SWAP`): per
+    /// `(from, to, items)`, a cell's `from` item becomes `to`'s item it maps
+    /// to; a cell whose item has no mapping is dropped. The maps apply at
+    /// once, so two maps exchange two categories.
+    Remap {
+        input: Box<PlanNode>,
+        maps: Remaps,
+    },
     /// `input` moved `offset` items along `cat` (in `order`); where no cell
     /// lands, `default` (when given) at the input's own coordinates.
     Shift {
@@ -93,6 +101,9 @@ pub enum PlanNodeKind {
         spanning: Option<u8>,
     },
 }
+
+/// Category renames: `(from, to, [(from item, to item)])`.
+pub type Remaps = Vec<(CategoryId, CategoryId, Vec<(ItemId, ItemId)>)>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanNode {
