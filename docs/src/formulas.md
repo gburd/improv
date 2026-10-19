@@ -312,8 +312,19 @@ A call is stored as a call, not its expansion, so redefining `Margin`
 changes every formula that uses it. A named LAMBDA reads only its
 parameters (pass measures as arguments), may call LAMBDAs defined before
 it, and never itself. They persist with the model (Mentat and Postgres
-stores); `improv.define` inside pg_improv does not take them (write a
-`LANGUAGE improv` function there).
+stores).
+
+A parameter the body uses where a category goes (`OVER c`, `POSITION(c)`,
+`RELABEL`'s categories) is a **category parameter**: the call passes a
+category name, and a parameter the body reduces (`MAX(x OVER c)`) takes a
+measure:
+
+```text
+LOGNORM = LAMBDA(x, c, LN1P(x) / LN1P(MAX(x OVER c)))
+An      = LOGNORM(Authored, Person)   -- LN1P(Authored) / LN1P(MAX(Authored OVER Person))
+```
+
+A parameter used both as a value and as a category is an error.
 
 ### List results: INTO
 

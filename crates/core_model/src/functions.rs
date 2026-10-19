@@ -561,6 +561,17 @@ pub fn lambda_param_of(id: crate::MeasureId) -> Option<usize> {
     (d < 256).then_some(d as usize)
 }
 
+/// The category standing for parameter `i` of a named LAMBDA whose body
+/// uses the parameter as a category (`MAX(x OVER c)`, `POSITION(c)`).
+pub fn lambda_category(i: usize) -> crate::CategoryId {
+    crate::CategoryId(LAMBDA_PARAMS - i as u32)
+}
+
+/// The parameter index of a category placeholder (see [`lambda_category`]).
+pub fn lambda_category_of(c: crate::CategoryId) -> Option<usize> {
+    lambda_param_of(crate::MeasureId(c.0))
+}
+
 /// `POSITION(T)`: an item's 1-based position along its category.
 pub const POSITION: FuncId = FuncId(900);
 

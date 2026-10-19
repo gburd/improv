@@ -13,6 +13,12 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Category parameters in named LAMBDAs.** A parameter the body uses
+  where a category goes (`OVER c`, `POSITION(c)`, `RELABEL`'s categories)
+  takes a category at the call, so `LOGNORM = LAMBDA(x, c, LN1P(x) /
+  LN1P(MAX(x OVER c)))` is called as `LOGNORM(Authored, Person)`. A
+  reduced parameter takes a measure, which keeps the body's `OVER` when
+  the call expands.
 - **Redefine and drop measures from SQL.** `improv.define(model,
   definition, replace => true)` redefines a derived measure. Re-running
   the same definition changes nothing: no `model_version` bump, no

@@ -2816,8 +2816,8 @@ fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
 }
 
 fn call_dsl(model: &Model, func: FuncId, args: &[Expr]) -> Option<String> {
-    // A named LAMBDA prints as its name; parameters of a named LAMBDA's own
-    // body print as the names it declared (see `lambda_dsl`).
+    // A named LAMBDA prints as its name and its arguments (a category
+    // parameter's argument is an `Expr::Category`, printed as its name).
     if let Some(l) =
         improv_core_model::functions::named_lambda_of(func).and_then(|id| model.lambdas.get(&id))
     {
@@ -7120,6 +7120,18 @@ mod tests {
         };
         model.lambdas.insert(1, l.lambda);
         let text = "Margin(Price, Quantity * 2)";
+        let f = parser::parse_expr(&model, text).unwrap();
+        assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));
+        // A category parameter: its argument prints as the category.
+        let improv_core_model::Definition::Lambda(l) = improv_core_model::parse_definition(
+            &model,
+            "LOGNORM = LAMBDA(x, c, LN1P(x) / LN1P(MAX(x OVER c)))",
+        )
+        .unwrap() else {
+            panic!("a lambda")
+        };
+        model.lambdas.insert(2, l.lambda);
+        let text = "LOGNORM(Quantity, Time) + Margin(Price, 1)";
         let f = parser::parse_expr(&model, text).unwrap();
         assert_eq!(formula_dsl(&model, &f).as_deref(), Some(text));
         model.lambdas.clear();

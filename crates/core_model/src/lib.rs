@@ -171,14 +171,88 @@ pub struct Model {
 }
 
 /// A named LAMBDA: its parameters and its body, in which parameter `i` is
-/// the reference [`functions::lambda_param`]`(i)`. A body reads only its
-/// parameters (no measures), so a call depends on just its arguments; it
-/// may call lambdas defined before it, never itself.
+/// the reference [`functions::lambda_param`]`(i)`, or, where the body uses
+/// it as a category (`MAX(x OVER c)`), the category
+/// [`functions::lambda_category`]`(i)`. A body reads only its parameters
+/// (no measures), so a call depends on just its arguments; it may call
+/// lambdas defined before it, never itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NamedLambda {
     pub name: Name,
     pub params: Vec<String>,
     pub body: Expr,
+}
+
+/// How a named LAMBDA's body uses a parameter, which says what a call
+/// passes for it ([`NamedLambda::param_kinds`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LambdaParam {
+    /// A value: any expression.
+    Value,
+    /// Reduced over a category (`MAX(x OVER c)`): a measure reference.
+    Reduced,
+    /// A category (`OVER c`, `POSITION(c)`): a category name.
+    Category,
+}
+
+impl NamedLambda {
+    /// What each parameter takes, from how the body uses it. An error names
+    /// a parameter used both as a value and as a category.
+    pub fn param_kinds(&self) -> Result<Vec<LambdaParam>, String> {
+        let mut uses = vec![ParamUse::default(); self.params.len()];
+        param_uses(&self.body, &mut uses);
+        self.params
+            .iter()
+            .zip(uses)
+            .map(|(p, u)| match u {
+                ParamUse {
+                    value: true,
+                    category: true,
+                    ..
+                } => Err(format!(
+                    "LAMBDA parameter {p} is used both as a value and as a category"
+                )),
+                ParamUse { category: true, .. } => Ok(LambdaParam::Category),
+                ParamUse { reduced: true, .. } => Ok(LambdaParam::Reduced),
+                _ => Ok(LambdaParam::Value),
+            })
+            .collect()
+    }
+}
+
+/// How a body uses one parameter (see [`NamedLambda::param_kinds`]).
+#[derive(Debug, Clone, Copy, Default)]
+struct ParamUse {
+    value: bool,
+    reduced: bool,
+    category: bool,
+}
+
+fn param_uses(e: &Expr, uses: &mut [ParamUse]) {
+    let cat = |c: &CategoryId, uses: &mut [ParamUse]| {
+        if let Some(u) = functions::lambda_category_of(*c).and_then(|i| uses.get_mut(i)) {
+            u.category = true;
+        }
+    };
+    match e {
+        Expr::Ref(id, s) => {
+            for c in s.by.iter().chain(&s.over).chain(&s.except) {
+                cat(c, uses);
+            }
+            if let Some(u) = functions::lambda_param_of(*id).and_then(|i| uses.get_mut(i)) {
+                u.value = true;
+                u.reduced |= *s != DimensionSpec::default();
+            }
+        }
+        Expr::Category(c) => cat(c, uses),
+        Expr::UnaryOp(_, a) => param_uses(a, uses),
+        Expr::BinaryOp(_, a, b) => {
+            param_uses(a, uses);
+            param_uses(b, uses);
+        }
+        Expr::Call(_, args) => args.iter().for_each(|a| param_uses(a, uses)),
+        Expr::Literal(_) => {}
+    }
 }
 
 /// A what-if scenario: a named overlay of input-cell overrides on the base
@@ -448,22 +522,61 @@ pub enum RefreshPolicy {
 
 /// serde adapter: (de)serialize the tuple-keyed `inputs` map as a `Vec` of
 /// `(key, value)` pairs so it survives JSON (and any string-keyed format).
-/// `body` with parameter reference `i` replaced by `args[i]`.
-fn substitute_params(body: &Expr, args: &[Expr]) -> Expr {
-    match body {
-        Expr::Ref(id, _) => match functions::lambda_param_of(*id) {
-            Some(i) if i < args.len() => args[i].clone(),
-            _ => body.clone(),
+/// `body` with parameter `i` replaced by `args[i]`: a value parameter by the
+/// argument; a reduced one (`x OVER c`) by the argument's measure reference,
+/// carrying the body's `OVER`; a category placeholder by the argument's
+/// category.
+fn substitute_params(body: &Expr, args: &[Expr]) -> Result<Expr, String> {
+    let cat = |c: &CategoryId| match functions::lambda_category_of(*c) {
+        None => Ok(*c),
+        Some(i) => match args.get(i) {
+            Some(Expr::Category(a)) => Ok(*a),
+            _ => Err(format!("argument {} must be a category", i + 1)),
         },
-        Expr::Call(f, a) => Expr::Call(*f, a.iter().map(|x| substitute_params(x, args)).collect()),
-        Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(substitute_params(a, args))),
-        Expr::BinaryOp(o, a, b) => Expr::BinaryOp(
-            *o,
-            Box::new(substitute_params(a, args)),
-            Box::new(substitute_params(b, args)),
-        ),
-        other => other.clone(),
-    }
+    };
+    let cats = |v: &[CategoryId]| v.iter().map(cat).collect::<Result<Vec<_>, String>>();
+    let sub = |e: &Expr| substitute_params(e, args);
+    Ok(match body {
+        Expr::Ref(id, spec) => {
+            let spec = DimensionSpec {
+                by: cats(&spec.by)?,
+                over: cats(&spec.over)?,
+                except: cats(&spec.except)?,
+            };
+            match functions::lambda_param_of(*id).and_then(|i| Some((i, args.get(i)?))) {
+                None => Expr::Ref(*id, spec),
+                Some((_, a)) if spec == DimensionSpec::default() => a.clone(),
+                Some((_, Expr::Ref(m, a))) => {
+                    let or = |b: Vec<CategoryId>, a: &[CategoryId]| {
+                        if b.is_empty() {
+                            a.to_vec()
+                        } else {
+                            b
+                        }
+                    };
+                    Expr::Ref(
+                        *m,
+                        DimensionSpec {
+                            by: or(spec.by, &a.by),
+                            over: or(spec.over, &a.over),
+                            except: or(spec.except, &a.except),
+                        },
+                    )
+                }
+                Some((i, _)) => {
+                    return Err(format!(
+                        "argument {} is reduced over a category, so it must be a measure",
+                        i + 1
+                    ))
+                }
+            }
+        }
+        Expr::Category(c) => Expr::Category(cat(c)?),
+        Expr::Call(f, a) => Expr::Call(*f, a.iter().map(sub).collect::<Result<_, _>>()?),
+        Expr::UnaryOp(o, a) => Expr::UnaryOp(*o, Box::new(sub(a)?)),
+        Expr::BinaryOp(o, a, b) => Expr::BinaryOp(*o, Box::new(sub(a)?), Box::new(sub(b)?)),
+        Expr::Literal(_) => body.clone(),
+    })
 }
 
 mod inputs_as_seq {
@@ -550,7 +663,8 @@ impl Model {
                                 args.len()
                             ));
                         }
-                        let body = substitute_params(&l.body, &args);
+                        let body = substitute_params(&l.body, &args)
+                            .map_err(|e| format!("{}: {e}", l.name.0))?;
                         self.expand_at(&body, depth + 1)?
                     }
                 }
@@ -563,6 +677,45 @@ impl Model {
             ),
             other => other.clone(),
         })
+    }
+
+    /// Add the named LAMBDAs stored as `(id, definition)` rows, each a JSON
+    /// [`NamedLambda`] or `Name = LAMBDA(…)` text. Text calls other lambdas
+    /// by name, and a redefined lambda may call one with a higher id, so the
+    /// text rows are parsed in passes until all are in. An error names the
+    /// row that never parsed.
+    pub fn load_lambdas(&mut self, rows: &[(u32, String)]) -> Result<(), String> {
+        let mut todo = Vec::new();
+        for (id, text) in rows {
+            match serde_json::from_str::<NamedLambda>(text) {
+                Ok(l) => {
+                    self.lambdas.insert(*id, l);
+                }
+                Err(_) => todo.push((*id, text)),
+            }
+        }
+        while !todo.is_empty() {
+            let before = todo.len();
+            let mut err = None;
+            todo.retain(|(id, text)| match parse_definition(self, text) {
+                Ok(Definition::Lambda(lt)) => {
+                    self.lambdas.insert(*id, lt.lambda);
+                    false
+                }
+                Ok(_) => {
+                    err = Some(format!("lambda {id}: {text:?} is not a LAMBDA"));
+                    true
+                }
+                Err(e) => {
+                    err.get_or_insert(format!("lambda {id}: {e}"));
+                    true
+                }
+            });
+            if todo.len() == before {
+                return Err(err.unwrap_or_default());
+            }
+        }
+        Ok(())
     }
 
     // --- builders (return the new id for convenience) ---
@@ -833,6 +986,50 @@ mod tests {
         let v2: View = serde_json::from_str(prestacking).expect("pre-stacking view");
         assert_eq!((v2.n_rows, v2.n_cols), (1, 1));
         assert_eq!(v2.matrices().len(), 1);
+    }
+
+    /// Stored lambdas load from JSON or text, a text one calling another
+    /// whatever their ids; a row that never parses is an error naming it.
+    #[test]
+    fn load_lambdas_from_rows() {
+        let mut m = time_product_model();
+        let twice = NamedLambda {
+            name: Name("Twice".into()),
+            params: vec!["x".into()],
+            body: Expr::BinaryOp(
+                BinaryOp::Mul,
+                Box::new(Expr::Ref(
+                    functions::lambda_param(0),
+                    DimensionSpec::default(),
+                )),
+                Box::new(Expr::Literal(Value::Number(2.0))),
+            ),
+        };
+        m.load_lambdas(&[
+            (1, "Big = LAMBDA(x, Norm(x, Time) > 1)".into()),
+            (2, "Norm = LAMBDA(x, c, Twice(x) / MAX(x OVER c))".into()),
+            (3, serde_json::to_string(&twice).unwrap()),
+        ])
+        .unwrap();
+        assert_eq!(m.lambdas[&3], twice);
+        assert_eq!(m.lambda_by_name("big").map(|(id, _)| id), Some(1));
+        let norm = &m.lambdas[&2];
+        assert_eq!(
+            norm.param_kinds(),
+            Ok(vec![LambdaParam::Reduced, LambdaParam::Category])
+        );
+        let Expr::BinaryOp(_, call, _) = &m.lambdas[&1].body else {
+            panic!("{:?}", m.lambdas[&1].body)
+        };
+        assert!(matches!(&**call, Expr::Call(f, a)
+            if *f == functions::named_lambda(2) && a[1] == Expr::Category(CategoryId(1))));
+        for (row, why) in [
+            ("Bad = LAMBDA(x, Nope(x))", "unknown function: Nope"),
+            ("Bad = Price * 2", "is not a LAMBDA"),
+        ] {
+            let e = m.clone().load_lambdas(&[(9, row.into())]).unwrap_err();
+            assert!(e.starts_with("lambda 9: ") && e.contains(why), "{row}: {e}");
+        }
     }
 
     #[test]

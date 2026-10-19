@@ -366,6 +366,16 @@ fn define_a_named_lambda() {
         &["define", &db, "8", "Bad = LAMBDA(x, x + Price)"],
         "only its parameters",
     );
+    // A parameter used as a category takes a category at the call.
+    ok(&["define", &db, "9", "Norm = LAMBDA(x, c, x / MAX(x OVER c))"]);
+    ok(&["define", &db, "121", "Share = Norm(Quantity, Time)"]);
+    let out = ok(&["eval", &db, "121"]);
+    stdout_has(&out, "Share[Time=Q1, Product=WidgetA] = 1\n");
+    stdout_has(&out, "Share[Time=Q2, Product=WidgetA] = 0.428");
+    fails_with(
+        &["define", &db, "122", "Bad = Norm(Quantity, Price)"],
+        "unknown category: Price",
+    );
 }
 
 #[test]

@@ -42,7 +42,8 @@
 //!              | ("BYROW" | "BYCOL") "(" MeasureRef "OVER" Name "," Lambda ")"
 //!              | "MAKEARRAY" "(" Name "," Name "," Lambda ")"
 //!              | "SEQUENCE" "(" Name [ "," Expression [ "," Expression ] ] ")"
-//!              | NamedLambda "(" [ Expression { "," Expression } ] ")" ;
+//!              | NamedLambda "(" [ Expression { "," Expression } ] ")"
+//!                (* an argument for a category parameter is a category Name *) ;
 //! Lambda       = "LAMBDA" "(" Identifier { "," Identifier } "," Expression ")" ;
 //!
 //! Definition   = Formula
@@ -544,6 +545,12 @@ impl<'a> Parser<'a> {
     }
 
     fn category_id(&self, name: &str, pos: Option<usize>) -> Result<CategoryId, ParseError> {
+        // A named LAMBDA's parameter where a category goes (`OVER c`).
+        if let Some(Expr::Ref(id, _)) = self.local(name) {
+            if let Some(i) = functions::lambda_param_of(id) {
+                return Ok(functions::lambda_category(i));
+            }
+        }
         self.model
             .category_by_name(name)
             .map(|c| c.id)
@@ -794,8 +801,8 @@ impl<'a> Parser<'a> {
         }
         if is_call && functions::callable(&word).is_none() {
             if let Some((id, l)) = self.model.lambda_by_name(&word) {
-                let n = l.params.len();
-                return self.parse_named_lambda_call(id, n, &word);
+                let kinds = l.param_kinds().map_err(|e| self.err(e))?;
+                return self.parse_named_lambda_call(id, &kinds, &word);
             }
         }
         if is_call {
@@ -1233,20 +1240,40 @@ impl<'a> Parser<'a> {
         Ok(body)
     }
 
-    /// `Name(a, …)` of a named LAMBDA with `n` parameters: stored as a call
-    /// of [`functions::named_lambda`], expanded when compiled.
+    /// `Name(a, …)` of a named LAMBDA whose parameters take `kinds`: stored
+    /// as a call of [`functions::named_lambda`], expanded when compiled. A
+    /// category parameter's argument is a category name, a reduced one's a
+    /// measure reference.
     fn parse_named_lambda_call(
         &mut self,
         id: u32,
-        n: usize,
+        kinds: &[crate::LambdaParam],
         name: &str,
     ) -> Result<Expr, ParseError> {
         self.bump(); // name
         self.expect("(", "'('")?;
+        let n = kinds.len();
         let mut args = Vec::new();
         if !self.eat_op(")") {
             loop {
-                args.push(self.parse_expr()?);
+                let arg = match kinds.get(args.len()) {
+                    Some(crate::LambdaParam::Category) => {
+                        Expr::Category(self.parse_category_name()?)
+                    }
+                    kind => {
+                        let e = self.parse_expr()?;
+                        if kind == Some(&crate::LambdaParam::Reduced) && !matches!(e, Expr::Ref(..))
+                        {
+                            return Err(self.err(format!(
+                                "{name} reduces argument {} over a category: pass a measure, \
+                                 not an expression",
+                                args.len() + 1
+                            )));
+                        }
+                        e
+                    }
+                };
+                args.push(arg);
                 if !self.eat_op(",") {
                     break;
                 }
@@ -1638,13 +1665,15 @@ fn parse_lambda_form(
             None,
         ));
     }
-    Ok(Definition::Lambda(LambdaText {
+    let lambda = crate::NamedLambda {
         name: target.clone(),
-        lambda: crate::NamedLambda {
-            name: target,
-            params,
-            body,
-        },
+        params,
+        body,
+    };
+    lambda.param_kinds().map_err(|e| ParseError::new(e, None))?;
+    Ok(Definition::Lambda(LambdaText {
+        name: target,
+        lambda,
     }))
 }
 
@@ -1954,6 +1983,71 @@ mod tests {
     }
 
     /// LET and LAMBDA expand in place; their errors name the problem.
+    /// A named LAMBDA's parameter used as a category (`OVER c`,
+    /// `POSITION(c)`) takes a category name at the call; on expansion the
+    /// reduced argument carries the `OVER` and the category maps through,
+    /// also through another lambda.
+    #[test]
+    fn named_lambda_category_parameters() {
+        use crate::LambdaParam;
+        let mut m = fixture();
+        let def = |m: &Model, t: &str| match parse_definition(m, t) {
+            Ok(Definition::Lambda(l)) => l.lambda,
+            other => panic!("{t}: {other:?}"),
+        };
+        let p = |m: &Model, t: &str| parse_expr(m, t).unwrap().expr;
+        let l = def(&m, "LOGNORM = LAMBDA(x, c, LN1P(x) / LN1P(MAX(x OVER c)))");
+        assert_eq!(
+            l.param_kinds(),
+            Ok(vec![LambdaParam::Reduced, LambdaParam::Category])
+        );
+        m.lambdas.insert(1, l);
+        let call = p(&m, "LOGNORM(Quantity, Time)");
+        assert_eq!(
+            call,
+            Expr::Call(
+                functions::named_lambda(1),
+                vec![refr(QUANTITY), Expr::Category(TIME)]
+            )
+        );
+        assert_eq!(
+            m.expand_lambdas(&call),
+            Ok(p(&m, "LN1P(Quantity) / LN1P(MAX(Quantity OVER Time))"))
+        );
+        let at = def(&m, "AT = LAMBDA(v, k, LOGNORM(v, k) * POSITION(k))");
+        assert_eq!(
+            at.param_kinds(),
+            Ok(vec![LambdaParam::Value, LambdaParam::Category])
+        );
+        m.lambdas.insert(2, at);
+        assert_eq!(
+            m.expand_lambdas(&p(&m, "AT(Quantity, Product)")),
+            Ok(p(
+                &m,
+                "LN1P(Quantity) / LN1P(MAX(Quantity OVER Product)) * POSITION(Product)"
+            ))
+        );
+        for (text, why) in [
+            ("LOGNORM(Quantity * 2, Time)", "pass a measure"),
+            ("LOGNORM(Quantity, Nope)", "unknown category: Nope"),
+            ("LOGNORM(Quantity)", "takes 2"),
+        ] {
+            let e = parse_expr(&m, text).unwrap_err();
+            assert!(e.message.contains(why), "{text}: {}", e.message);
+        }
+        let e = parse_definition(&m, "Bad = LAMBDA(x, c, c + SUM(x OVER c))").unwrap_err();
+        assert!(e.message.contains("both as a value and as a category"));
+        // Hand-built calls with the wrong kind of argument fail to expand.
+        let call = |args| Expr::Call(functions::named_lambda(1), args);
+        let e = m.expand_lambdas(&call(vec![refr(QUANTITY), refr(PRICE)]));
+        assert!(e
+            .unwrap_err()
+            .contains("LOGNORM: argument 2 must be a category"));
+        let one = Expr::Literal(Value::Number(1.0));
+        let e = m.expand_lambdas(&call(vec![one, Expr::Category(TIME)]));
+        assert!(e.unwrap_err().contains("must be a measure"));
+    }
+
     #[test]
     fn let_and_lambda() {
         let m = fixture();
