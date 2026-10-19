@@ -84,6 +84,9 @@ pub struct Engine {
     /// Current known value of each input cell, so `set` can emit the correct
     /// retract+assert delta for a cardinality-one cell.
     current: HashMap<(MeasureId, CoordKey), CellValue>,
+    /// The compiled plans, to tell whether a model with more items still
+    /// compiles to the same graph ([`Engine::serves`]).
+    plans: Vec<(MeasureId, PlanNode)>,
 }
 
 impl Engine {
@@ -125,7 +128,7 @@ impl Engine {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<Cmd>();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
         let targets_owned = targets.to_vec();
-        let plans_owned = plans;
+        let plans_owned = plans.clone();
         let seed_owned = seed;
 
         let worker = std::thread::spawn(move || {
@@ -142,6 +145,7 @@ impl Engine {
             worker: Some(worker),
             targets: targets_owned,
             current,
+            plans,
         };
 
         // Fetch the initial snapshot with an empty edit round.
@@ -205,6 +209,90 @@ impl Engine {
     /// The derived measures this engine tracks.
     pub fn targets(&self) -> &[MeasureId] {
         &self.targets
+    }
+
+    /// Whether this engine computes `model` as a new engine would, so a
+    /// model that differs from the one it was built on only in input cells
+    /// and in new items can be fed to it as edits. False when a plan reads
+    /// the item list of a category that gained items: `POSITION`, `@ITEM`,
+    /// `@ITEMCOUNT`, `PREV`/`NEXT`, recurrences, windows, per-item and
+    /// `INTO` reductions, and every reduction other than `SUM` … `XOR`,
+    /// `COUNT` and `COUNTA` (which read only their rows' values: a new item
+    /// reaches them as data, sorted last as an unknown item sorts). New
+    /// items must have ids above every item of their category and come
+    /// after them in its item order (append-only minting does both).
+    pub fn serves(&self, model: &Model) -> Result<bool, EngineError> {
+        let now = compile_plans(model, &self.targets)?;
+        Ok(now.len() == self.plans.len()
+            && now
+                .iter()
+                .zip(&self.plans)
+                .all(|((a, p), (b, q))| a == b && item_blind(p) == item_blind(q)))
+    }
+}
+
+/// `p` without the item order of the reductions that read only their rows'
+/// values (see [`Engine::serves`]).
+fn item_blind(p: &PlanNode) -> PlanNode {
+    let mut p = p.clone();
+    blind(&mut p);
+    p
+}
+
+fn blind(p: &mut PlanNode) {
+    use crate::plan::PlanNodeKind as K;
+    match &mut p.kind {
+        K::MapUnary(_, a) => blind(a),
+        K::MapBinary(_, a, b)
+        | K::Join {
+            left: a, right: b, ..
+        } => {
+            blind(a);
+            blind(b);
+        }
+        K::Aggregate {
+            inputs,
+            params,
+            pred,
+            func,
+            order,
+            window,
+            per_item,
+            into,
+            ..
+        } => {
+            inputs.iter_mut().chain(params.iter_mut()).for_each(blind);
+            if let Some(x) = pred {
+                blind(x);
+            }
+            // SUM … XOR, COUNT, COUNTA: values only, no positions or capacity.
+            let values_only = matches!(func.0, 1..=9 | 1005 | 1006);
+            if values_only && window.is_none() && !*per_item && into.is_empty() {
+                order.clear();
+            }
+        }
+        K::Recurrence { refs, .. } => refs.iter_mut().for_each(|(_, x)| blind(x)),
+        K::Shift { input, default, .. } => {
+            blind(input);
+            if let Some(d) = default {
+                blind(d);
+            }
+        }
+        K::FuncCall { args, .. } => args.iter_mut().for_each(blind),
+        K::If {
+            test,
+            then,
+            otherwise,
+            ..
+        } => {
+            blind(test);
+            blind(then);
+            if let Some(o) = otherwise {
+                blind(o);
+            }
+        }
+        // Leaves, and nodes whose item lists always count.
+        _ => {}
     }
 }
 
@@ -645,6 +733,93 @@ mod tests {
             Value::Number(50.0),
         );
         m
+    }
+
+    /// A new item reaches a value-only reduction as data: the engine serves
+    /// the grown model and computes what a new engine computes. One that a
+    /// plan enumerates (`POSITION`, `PREV`) does not.
+    #[test]
+    fn new_items_are_served_unless_a_plan_reads_their_category() {
+        use improv_core_model::parse_definition;
+        let (time, product) = (CategoryId(1), CategoryId(2));
+        let define = |m: &mut Model, id: u32, text: &str| {
+            let improv_core_model::Definition::Formula(f) = parse_definition(m, text).unwrap()
+            else {
+                panic!("{text}")
+            };
+            let name = f.target.0.clone();
+            let (value_type, categories) =
+                crate::compiler::derived_shape(m, MeasureId(id), &name, &f.formula).unwrap();
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name),
+                value_type,
+                categories,
+                kind: MeasureKind::Derived(f.formula),
+                description: None,
+            });
+        };
+        let mut m = revenue_model();
+        define(&mut m, 103, "Total = SUM(Revenue OVER Product)");
+        define(&mut m, 104, "Count = COUNT(Quantity OVER Time, Product)");
+        let targets = [MeasureId(102), MeasureId(103), MeasureId(104)];
+        let (mut e, _) = Engine::new(&m, &targets).unwrap();
+        assert!(e.serves(&m).unwrap());
+        let mut grown = m.clone();
+        grown.add_item(ItemId(22), product, "WidgetC");
+        grown.add_item(ItemId(11), time, "2026");
+        assert!(e.serves(&grown).unwrap());
+        let c = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
+        let edits = [
+            (MeasureId(100), c(&[(product, ItemId(22))]), 5.0),
+            (
+                MeasureId(101),
+                c(&[(time, ItemId(10)), (product, ItemId(22))]),
+                7.0,
+            ),
+            (
+                MeasureId(101),
+                c(&[(time, ItemId(11)), (product, ItemId(22))]),
+                3.0,
+            ),
+        ];
+        for (mid, coord, v) in &edits {
+            grown.set_input(*mid, coord.clone(), Value::Number(*v));
+        }
+        let snap = e
+            .apply(
+                edits
+                    .iter()
+                    .map(|(mid, coord, v)| Edit {
+                        measure: *mid,
+                        coord: encode_coord(coord),
+                        value: Some(CellValue::num(*v)),
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        let fresh = crate::dataflow::evaluate(&grown, &targets).unwrap();
+        for t in targets {
+            assert_eq!(
+                snap.get(&t).map(|m| (**m).clone()),
+                fresh.get(&t).cloned(),
+                "{t:?}"
+            );
+        }
+        for text in ["Pos = POSITION(Time)", "Last = PREV(Quantity, Time)"] {
+            let mut m = revenue_model();
+            define(&mut m, 105, text);
+            let (e, _) = Engine::new(&m, &[MeasureId(105)]).unwrap();
+            let mut grown = m.clone();
+            grown.add_item(ItemId(11), time, "2026");
+            assert!(!e.serves(&grown).unwrap(), "{text}");
+            grown = m.clone();
+            grown.add_item(ItemId(22), product, "WidgetC");
+            assert!(
+                e.serves(&grown).unwrap(),
+                "{text} over Time ignores Product"
+            );
+        }
     }
 
     /// Copy-on-write: an edit replaces only the changed measure's `Arc`;
