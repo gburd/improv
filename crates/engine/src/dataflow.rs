@@ -489,9 +489,25 @@ where
         .copied()
         .collect();
     let mut rows = build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+    // The reduced measures join on the categories they share; a category
+    // only some of them range over broadcasts (the rows gain it).
+    let mut full = full;
     for n in rest {
         let c = build_coll(n, scope, inputs, derived)?;
-        rows = align_with(&rows, &c, full.clone()).map(|(k, (mut vs, v))| {
+        let mine: Vec<CategoryId> =
+            n.ty.dim
+                .categories
+                .iter()
+                .chain(a.order.iter().map(|(c, _)| c))
+                .copied()
+                .collect();
+        let shared = mine.iter().copied().filter(|c| full.contains(c)).collect();
+        full.extend(
+            mine.into_iter()
+                .filter(|c| !full.contains(c))
+                .collect::<Vec<_>>(),
+        );
+        rows = align_with(&rows, &c, shared).map(|(k, (mut vs, v))| {
             vs.push(v);
             (k, vs)
         });
@@ -1797,6 +1813,79 @@ mod tests {
         let f = improv_core_model::parse_formula(&m, "X = RELABEL(R, Dst, Src)").unwrap();
         let bare = CompileContext::new(&m.measures);
         assert!(crate::compiler::infer(&bare, MeasureId(300), &f.formula.expr).is_err());
+    }
+
+    /// Measures reduced together need only reduce the same categories; the
+    /// rest broadcast: SUMPRODUCT(Rs, W OVER Src) with Rs over Src × Iter and
+    /// W over Src × Dst is Σ_src Rs·W per Dst × Iter (a matrix-vector
+    /// product, PageRank's step).
+    #[test]
+    fn reduced_measures_broadcast_their_other_categories() {
+        let (src, dst, iter) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        let mut m = roles();
+        define(
+            &mut m,
+            200,
+            vec![src, iter],
+            "Rs = RELABEL(R[Dst, Iter], Dst, Src)",
+        );
+        define(
+            &mut m,
+            201,
+            vec![dst, iter],
+            "P = SUMPRODUCT(Rs, W OVER Src)",
+        );
+        let out = evaluate(&m, &[MeasureId(201)]).unwrap();
+        let p: BTreeMap<_, _> = out[&MeasureId(201)].iter().collect();
+        let at = |d: u32, i: u32, v: f64| (key(&[(2, d), (3, i)]), CellValue::num(v));
+        let want = [
+            at(21, 30, 4.0),
+            at(20, 30, 2.0),
+            at(22, 30, 2.0),
+            at(20, 31, 0.0),
+        ];
+        assert_eq!(p, want.iter().map(|(k, v)| (k, v)).collect());
+        // Each still reduces the OVER categories it has; with none reduced,
+        // the measures must agree (no silent cross product).
+        let ctx = CompileContext::for_model(&m);
+        let err = |text: &str| {
+            let f = improv_core_model::parse_formula(&m, text).expect("parses");
+            crate::compiler::infer(&ctx, MeasureId(300), &f.formula.expr)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(err("X = SUMPRODUCT(Rs, W OVER Iter)").contains("reduce the same categories"));
+        // The customer's lookup: X over Dst x Iter, the key over Dst alone.
+        assert_eq!(
+            crate::compiler::infer(
+                &ctx,
+                MeasureId(300),
+                &improv_core_model::parse_formula(&m, "X = SUMPRODUCT(R, W OVER Dst)")
+                    .unwrap()
+                    .formula
+                    .expr
+            )
+            .unwrap()
+            .ty
+            .dim,
+            Dim::of(vec![src, iter])
+        );
+        // XLOOKUP's return measure may range beyond its key: R over Dst × Iter
+        // looked up by name along Dst, per Src.
+        define(&mut m, 202, vec![src], "SrcName = @ITEM(Src)");
+        define(&mut m, 203, vec![dst], "DstName = @ITEM(Dst)");
+        define(
+            &mut m,
+            204,
+            vec![src, iter],
+            "L = XLOOKUP(SrcName, DstName OVER Dst, R)",
+        );
+        let out = evaluate(&m, &[MeasureId(204)]).unwrap();
+        assert_eq!(
+            out[&MeasureId(204)].get(&key(&[(1, 11), (3, 30)])),
+            Some(&CellValue::num(2.0))
+        );
+        let _ = dst;
     }
 
     /// IF over dimensions: the test over Product, the branches over

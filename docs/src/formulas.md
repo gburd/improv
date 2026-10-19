@@ -224,6 +224,11 @@ Buyers   = COUNTUNIQUE(Customer OVER Order)          -- distinct values
   the wildcards `*` (any run), `?` (any one character) and `~` (the next
   character literally). In `SUMIFS(x, c1 OVER T, k1, c2, k2)` the summed
   measure and every criteria measure are reduced together.
+- Measures reduced together join on the categories they share. Each must
+  range over the `OVER` categories; any others broadcast and the result
+  keeps them: with `r` over `Src` and `M` over `Src × Dst`,
+  `SUMPRODUCT(r, M OVER Src)` is the matrix-vector product, one value per
+  `Dst`.
 - Per-item reductions (`RANK`, `RANK.AVG`, `RANK.DENSE`, `PERCENTRANK`,
   `TREND`, `GROWTH`) give one result per item of their single `OVER`
   category, and the result keeps it. `RANK.DENSE` is SQL's `dense_rank()

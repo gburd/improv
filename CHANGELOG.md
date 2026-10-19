@@ -61,6 +61,13 @@ positional forms and recurrences, lookups, list results, `LET` and
   tagged by position, reduced to the first per coordinate), so input edits
   stay incremental; `IF`'s laziness is unchanged. See *The Formula
   Language → Missing cells*.
+- **Measures reduced together may range over different categories.**
+  They need to share only the `OVER` categories. The rest broadcast, and
+  the result keeps them: `SUMPRODUCT(r, M OVER Src)` with `r` over `Src`
+  and `M` over `Src × Dst` gives one value per `Dst`, and `XLOOKUP(k,
+  Key OVER Dst, X)` takes an `X` with more categories than `Key`. These
+  were "the measures reduced together must range over the same
+  categories".
 - **`RANK.DENSE(x OVER T, [order])` and `COUNTUNIQUE(x OVER T)`.**
   `RANK.DENSE` equals SQL's `dense_rank() OVER (ORDER BY x DESC)`, ties
   included (order 1 ranks ascending); `COUNTUNIQUE` (Google Sheets' name)

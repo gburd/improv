@@ -928,22 +928,36 @@ fn infer_aggregate(
     let first = inputs.first().ok_or_else(|| {
         CompileError::Unsupported(format!("{} needs a measure OVER a category", def.name))
     })?;
-    // All reduced measures range over the same categories and collapse the
-    // same ones.
+    // All reduced measures collapse the same categories. Their other
+    // categories broadcast: the rows join on what they share, and the result
+    // keeps the union (`SUMPRODUCT(r, M OVER Src)` with r over Src and M over
+    // Src × Dst is the product of M and r, per Dst).
     let over = aggregation_over(ctx, first);
-    let full = first_full_dim(ctx, first);
+    let mut full = first_full_dim(ctx, first);
+    let mut kept = first.ty.dim.clone();
     for t in &inputs[1..] {
-        if first_full_dim(ctx, t) != full || aggregation_over(ctx, t) != over {
+        // Nothing reduced (no measure has the OVER category): no broadcast,
+        // or a typo'd category would silently cross the measures.
+        if over.is_empty() && first_full_dim(ctx, t) != full {
             return Err(CompileError::DimensionMismatch(format!(
                 "{}: the measures reduced together must range over the same categories, \
-                 but one ranges over {} and another over {} (reduced over {} and {})",
+                 but one ranges over {} and another over {}, and neither is reduced",
                 def.name,
                 dims_text(ctx, &full),
                 dims_text(ctx, &first_full_dim(ctx, t)),
+            )));
+        }
+        if aggregation_over(ctx, t) != over {
+            return Err(CompileError::DimensionMismatch(format!(
+                "{}: the measures reduced together must reduce the same categories, \
+                 but one is reduced over {} and another over {}",
+                def.name,
                 dims_text(ctx, &Dim::of(over.clone())),
                 dims_text(ctx, &Dim::of(aggregation_over(ctx, t))),
             )));
         }
+        full = full.union(&first_full_dim(ctx, t));
+        kept = kept.union(&t.ty.dim);
     }
     // No OVER category (`the sum of Quantity` in the CNL) collapses
     // nothing: each group is one cell.
@@ -971,7 +985,7 @@ fn infer_aggregate(
             )));
         }
     }
-    let mut kept: Vec<CategoryId> = first.ty.dim.categories.clone();
+    let mut kept: Vec<CategoryId> = kept.categories;
     kept.extend(into.iter().copied());
     if window.is_some() || def.kind == Kind::PerItem {
         if over.len() != 1 {
