@@ -612,7 +612,8 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
         let version = model_version(mid)?;
         let applied = match state.as_mut() {
             Some(l) if l.version == version && l.name == name => apply(mid, l, &stream)?,
-            _ => Err(Rebuild("no live state")),
+            Some(_) => Err(Rebuild("model changed")),
+            None => Err(Rebuild("no live state")),
         };
         match applied {
             Ok(n) => {
