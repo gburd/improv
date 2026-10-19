@@ -1079,6 +1079,47 @@ mod tests {
         assert_eq!(count("pg_namespace WHERE nspname = 'improv_plan'"), 0);
     }
 
+    /// P3-2: a measure with no categories gets a one-row table of just
+    /// `value`, kept current by recalc, trigger and commit mode, and
+    /// reported by what_if.
+    #[pg_test]
+    fn dimensionless_measures_get_one_row_tables() {
+        setup_plan();
+        Spi::run("SELECT improv.define('plan', 'MaxQ = MAX(Quantity OVER Time, Product)')")
+            .unwrap();
+        let cols = || {
+            Spi::get_one::<String>(
+                "SELECT string_agg(attname::text, ',' ORDER BY attnum) FROM pg_attribute \
+                 WHERE attrelid = 'improv_plan.maxq'::regclass AND attnum > 0",
+            )
+            .unwrap()
+            .unwrap()
+        };
+        assert_eq!(cols(), "value");
+        let max = || Spi::get_one::<f64>("SELECT (SELECT value FROM improv_plan.maxq)").unwrap();
+        assert!(recalc() > 0);
+        assert_eq!(max(), Some(400.0));
+        assert_eq!(recalc(), 0, "unchanged: nothing rewritten");
+        let got = Spi::get_one::<String>(
+            r#"SELECT string_agg(measure || ' ' || coord::text || ' ' || value::text, '; ')
+               FROM improv.what_if('plan', '[
+                 {"measure": "Quantity", "coord": {"Time": "Q4", "Product": "Widget"}, "value": 900}]')
+               WHERE measure = 'MaxQ'"#,
+        )
+        .unwrap();
+        assert_eq!(got.as_deref(), Some("MaxQ {} 900"));
+        Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
+        Spi::run("UPDATE sales SET qty = 500 WHERE quarter = 'Q2' AND product = 'Gadget'").unwrap();
+        assert_eq!(max(), Some(500.0));
+        Spi::run("DELETE FROM sales").unwrap();
+        assert_eq!(count("improv_plan.maxq"), 0, "no cell, no row");
+        Spi::run("SELECT improv.set_sync_mode('plan', 'commit')").unwrap();
+        Spi::run("INSERT INTO sales VALUES ('Q1', 'Widget', 1, 7)").unwrap();
+        crate::commit::pre_commit();
+        assert_eq!(max(), Some(7.0));
+        assert_eq!(count("improv_plan.maxq"), 1);
+    }
+
     /// Binding a measure in the default (logical) mode creates the
     /// publication over the bound table (the worker later gives a PK-less
     /// table `REPLICA IDENTITY FULL`) and records sync state; `status` reports it;

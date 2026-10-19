@@ -132,7 +132,9 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
 `value`). Result tables are `improv_<model>.<lower(measure)>` with one `text`
 column per dimension (named `lower(category)`), a typed `value` column, and a
-primary key on the dimensions.
+primary key on the dimensions. A measure with no dimensions
+(`MaxVol = MAX(Vol OVER Person)`) has a one-row table of just `value` (no row
+while it has no cell).
 
 `bind_measure` takes the measure's type from its column, and a derived
 measure has the type its formula gives (`Price > 15` is boolean):
@@ -156,9 +158,8 @@ of input cells `recalc` loads; above it, `recalc` raises an ERROR.
 Bound data rules: a NULL value means no cell, and a row with a NULL dimension
 is skipped. Two rows on the same coordinate are an ERROR unless the
 measure was bound with `agg` (`sum`, `avg`, `min`, `max`, `count`), which
-folds them into one cell. A derived measure must keep at least one
-dimension: `define` refuses a result with none. Item ids for bound values are
-minted once, in lexical order, and are never reused.
+folds them into one cell. Item ids for bound values are minted once, in
+lexical order, and are never reused.
 
 ## Writing SQL functions in Improv's language
 

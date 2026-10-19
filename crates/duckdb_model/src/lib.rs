@@ -391,6 +391,15 @@ pub fn run(
     let mut targets = Vec::with_capacity(spec.derived.len());
     for (m, d) in (spec.inputs.len() as u32 + 1..).zip(&spec.derived) {
         let row = pm::define(&model, &d.text, m).map_err(|e| at(d.line, e))?;
+        if row.categories.is_empty() {
+            return Err(at(
+                d.line,
+                format!(
+                    "{} has no dimensions; dimensionless results are not supported",
+                    row.name
+                ),
+            ));
+        }
         catalog.measures.push(row);
         model = pm::build_model(&catalog).map_err(|e| at(d.line, e))?;
         targets.push(MeasureId(m));

@@ -13,6 +13,11 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Added
 
+- **Dimensionless results in pg_improv.** A derived measure with no
+  categories, such as `MaxVol = MAX(Vol OVER Person)`, gets a one-row
+  result table with just a `value` column. `recalc`, every sync mode,
+  `what_if` (its `coord` is `{}`) and `status` handle it; `define` no
+  longer refuses it.
 - **A DuckDB extension, `improv`.** `improv_calc(formula, inputs)`
   evaluates any Improv formula on named inputs from a JSON object
   (`improv_calc('ROUND(PMT(rate/12, n, -pv), 2)', json_object(...))`),

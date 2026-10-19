@@ -128,6 +128,17 @@ q "UPDATE sales SET price = 7 WHERE quarter='Q1' AND product='Widget'"
 wait_for "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'" 2800 "new measure" >/dev/null
 echo "ok: a measure defined while live is computed at once ($want), then follows changes (2800)"
 
+# 7b. a dimensionless measure (P3-2): a one-row table of just `value`,
+#     applied by the live engine like any other result
+q "SELECT improv.define('plan','MaxRev = MAX(Revenue OVER Time, Product)')"
+want=$(q "SELECT max(price * qty) FROM sales")
+wait_for "SELECT value FROM improv_plan.maxrev" "$want" "dimensionless, defined" >/dev/null
+q "UPDATE sales SET qty = 10000 WHERE quarter='Q3' AND product='Gadget'"
+wait_for "SELECT value FROM improv_plan.maxrev" 200000 "dimensionless, updated" >/dev/null
+[ "$(q "SELECT count(*) FROM improv_plan.maxrev")" = 1 ] || { echo "FAIL: maxrev has more than one row"; exit 1; }
+q "UPDATE sales SET qty = 90 WHERE quarter='Q3' AND product='Gadget'"
+echo "ok: a dimensionless measure keeps one row and follows changes"
+
 # 8. incremental at 100k cells: a one-cell UPDATE rewrites exactly the
 #    affected result rows (Revenue[Q1,P1] and Total[P1]) and does not rebuild
 q "CREATE TABLE wide (quarter text, product text, price float8, qty float8)"

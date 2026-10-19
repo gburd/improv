@@ -310,11 +310,6 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
             "{target} is an enum; enum results are not supported yet"
         )));
     }
-    if categories.is_empty() {
-        return Err(Error::Definition(format!(
-            "{target} has no dimensions; dimensionless results are not supported yet"
-        )));
-    }
     Ok(MeasureRow {
         id,
         name: target,
@@ -678,16 +673,20 @@ pub fn dim_columns(model: &Model, measure: MeasureId) -> Result<Vec<String>> {
 }
 
 /// `CREATE TABLE IF NOT EXISTS` for a derived measure's result table (a
-/// measure defined through the GUI gets its table on the first recalc).
+/// measure defined through the GUI gets its table on the first recalc). A
+/// dimensionless measure's table is just `value`, holding at most one row.
 pub fn create_table_sql(table: &str, dim_cols: &[String], vt: ValueType) -> Result<String> {
+    let vt = sql_type(vt)?;
+    if dim_cols.is_empty() {
+        return Ok(format!("CREATE TABLE IF NOT EXISTS {table} (value {vt})"));
+    }
     let cols: Vec<String> = dim_cols
         .iter()
         .map(|c| format!("{} text NOT NULL", quote_ident(c)))
         .collect();
     Ok(format!(
-        "CREATE TABLE IF NOT EXISTS {table} ({}, value {}, PRIMARY KEY ({}))",
+        "CREATE TABLE IF NOT EXISTS {table} ({}, value {vt}, PRIMARY KEY ({}))",
         cols.join(", "),
-        sql_type(vt)?,
         quoted_list(dim_cols)
     ))
 }
@@ -695,11 +694,9 @@ pub fn create_table_sql(table: &str, dim_cols: &[String], vt: ValueType) -> Resu
 /// `SELECT` of a result table's current rows (dims…, value read as `vt`,
 /// see [`select_bound_sql`]).
 pub fn select_result_sql(table: &str, dim_cols: &[String], vt: ValueType) -> Result<String> {
-    Ok(format!(
-        "SELECT {}, {} FROM {table}",
-        quoted_list(dim_cols),
-        read_expr(vt, "value")?
-    ))
+    let mut cols: Vec<String> = dim_cols.iter().map(|c| quote_ident(c)).collect();
+    cols.push(read_expr(vt, "value")?);
+    Ok(format!("SELECT {} FROM {table}", cols.join(", ")))
 }
 
 /// The SQL aggregate a `binding.agg` names (`sum | avg | min | max | count`).
@@ -797,14 +794,22 @@ fn sql_text(vt: ValueType, v: &CellValue) -> Option<String> {
 impl Statement {
     /// Result rows this statement changes.
     pub fn rows(&self) -> usize {
-        self.dims.first().map_or(0, Vec::len)
+        match (self.dims.first(), &self.values) {
+            (Some(d), _) => d.len(),
+            (None, Some(Values::Number(v))) => v.len(),
+            (None, Some(Values::Text(v))) => v.len(),
+            // A dimensionless table's delete: its one row.
+            (None, None) => 1,
+        }
     }
 }
 
 /// The statements that turn `old` (the table's rows) into `new` (the engine's
 /// rows) of a `vt` measure: at most one batched upsert of new/changed rows
 /// and one batched delete of vanished rows. Unchanged rows (bit-identical
-/// value) are skipped; a value that is not a `vt` is an error.
+/// value) are skipped; a value that is not a `vt` is an error. With no
+/// dimension columns (a dimensionless measure's one-row table) the upsert
+/// replaces the table's row and the delete empties it.
 pub fn diff_statements(
     table: &str,
     dim_cols: &[String],
@@ -857,12 +862,20 @@ pub fn diff_statements(
                 format!("text[]::{}[]", sql_type(vt)?),
             ),
         };
-        out.push(Statement {
-            sql: format!(
+        let sql = if n == 0 {
+            format!(
+                "WITH gone AS (DELETE FROM {table}) \
+                 INSERT INTO {table} (value) SELECT * FROM unnest($1::{param})"
+            )
+        } else {
+            format!(
                 "INSERT INTO {table} ({cols}, value) SELECT * FROM {} \
                  ON CONFLICT ({cols}) DO UPDATE SET value = EXCLUDED.value",
                 unnest(&format!(", ${}::{param}", n + 1))
-            ),
+            )
+        };
+        out.push(Statement {
+            sql,
             dims: columns(&mut changed.iter().map(|(k, _)| *k)),
             values: Some(values),
         });
@@ -870,11 +883,16 @@ pub fn diff_statements(
 
     let gone: Vec<&Vec<String>> = old.keys().filter(|k| !new.contains_key(*k)).collect();
     if !gone.is_empty() {
-        out.push(Statement {
-            sql: format!(
+        let sql = if n == 0 {
+            format!("DELETE FROM {table}")
+        } else {
+            format!(
                 "DELETE FROM {table} WHERE ({cols}) IN (SELECT * FROM {})",
                 unnest("")
-            ),
+            )
+        };
+        out.push(Statement {
+            sql,
             dims: columns(&mut gone.into_iter()),
             values: None,
         });
@@ -1049,7 +1067,8 @@ mod tests {
             matches!(err("Price = Quantity * 2"), Error::Definition(m) if m.contains("exists"))
         );
         assert!(matches!(err("Bad = Nope * 2"), Error::Definition(_)));
-        assert!(matches!(err("Two = 2"), Error::Definition(m) if m.contains("dimension")));
+        // A dimensionless result (P3-2): a one-row table.
+        assert!(define(&model, "Two = 2", 9).unwrap().categories.is_empty());
         assert!(
             matches!(err("X = SQL(\"select 1\")"), Error::Definition(m) if m.contains("not supported"))
         );
@@ -1376,6 +1395,7 @@ mod tests {
         assert_eq!(st[1].dims, vec![vec![s("c")]]);
         assert_eq!(st[1].values, None);
         assert_eq!(st.iter().map(Statement::rows).sum::<usize>(), 3);
+        // No dimension columns and no values: a dimensionless table's delete.
         assert_eq!(
             Statement {
                 sql: s(""),
@@ -1383,7 +1403,55 @@ mod tests {
                 values: None
             }
             .rows(),
-            0
+            1
+        );
+    }
+
+    /// P3-2: a measure with no categories gets a one-row table of just
+    /// `value`; its diff replaces or deletes that row.
+    #[test]
+    fn dimensionless_results() {
+        let mut cat = catalog();
+        let model = build_model(&cat).unwrap();
+        let row = define(&model, "MaxQ = MAX(Quantity OVER Time, Product)", 3).unwrap();
+        assert!(row.categories.is_empty());
+        cat.measures.push(row);
+        let mut model = build_model(&cat).unwrap();
+        load_inputs(&mut model, &sales()).unwrap();
+        let out = improv_engine::dataflow::evaluate(&model, &[MeasureId(3)]).unwrap();
+        let rows = result_rows(&model, MeasureId(3), &out[&MeasureId(3)]).unwrap();
+        assert_eq!(rows, BTreeMap::from([(vec![], n(400.0))]));
+        let cols = dim_columns(&model, MeasureId(3)).unwrap();
+        assert!(cols.is_empty());
+        assert_eq!(
+            create_table_sql("t", &cols, ValueType::Number).unwrap(),
+            "CREATE TABLE IF NOT EXISTS t (value double precision)"
+        );
+        assert_eq!(
+            select_result_sql("t", &cols, ValueType::Number).unwrap(),
+            "SELECT value::float8 FROM t"
+        );
+        let num = ValueType::Number;
+        let none = ResultRows::new();
+        let st = diff_statements("t", &cols, num, &none, &rows).unwrap();
+        assert_eq!(st.len(), 1);
+        assert_eq!(
+            st[0].sql,
+            "WITH gone AS (DELETE FROM t) INSERT INTO t (value) SELECT * FROM unnest($1::float8[])"
+        );
+        assert_eq!((st[0].rows(), st[0].dims.len()), (1, 0));
+        assert!(diff_statements("t", &cols, num, &rows, &rows)
+            .unwrap()
+            .is_empty());
+        let st = diff_statements("t", &cols, num, &rows, &none).unwrap();
+        assert_eq!((st[0].sql.as_str(), st[0].rows()), ("DELETE FROM t", 1));
+        let text = ValueType::Text;
+        let one = BTreeMap::from([(vec![], CellValue::Text(s("x")))]);
+        let st = diff_statements("t", &cols, text, &none, &one).unwrap();
+        assert!(
+            st[0].sql.ends_with("unnest($1::text[]::text[])"),
+            "{}",
+            st[0].sql
         );
     }
 

@@ -96,9 +96,10 @@ A measure's type comes from its column: numbers (`int*`, `float*`,
 measure has the type of its formula, so `improv.define('plan', 'Pricey =
 Price > 15')` makes `improv_plan.pricey` a `boolean` column. Result tables'
 `value` columns are `double precision`, `boolean`, `text` or `timestamptz`.
-Other column types are refused by `bind_measure`. A derived measure must
-keep at least one dimension: `define` refuses a formula whose result has
-none (for example `SUM(x OVER Time)` over a measure of Time alone).
+Other column types are refused by `bind_measure`. A derived measure with
+no dimensions (`MaxVol = MAX(Vol OVER Person)` over a measure of Person
+alone) gets a one-row result table with just the `value` column; it has no
+row while the formula has no cell.
 Logical and trigger sync follow a table's row changes, so in those modes
 only tables bind; a view binds in `manual` mode (refresh with
 `improv.recalc()`).
