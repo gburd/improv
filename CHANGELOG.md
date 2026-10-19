@@ -22,8 +22,11 @@ positional forms and recurrences, lookups, list results, `LET` and
 - **Named LAMBDAs in pg_improv.** `improv.define(model, 'LOGNORM =
   LAMBDA(…)')` stores a named LAMBDA in the new catalog table
   `improv.lambda` (dumped with the model); the model's formulas call it
-  by name. `improv.drop_measure` drops one, and refuses while a measure
-  or another lambda calls it.
+  by name. Redefining one (`replace => true`) recomputes every measure
+  that calls it, in the caller's transaction, writing only the rows whose
+  value changed; it is an error naming the measure when it would break
+  one or change its type or dimensions. `improv.drop_measure` drops one,
+  and refuses while a measure or another lambda calls it.
 - **Redefine and drop measures from SQL.** `improv.define(model,
   definition, replace => true)` redefines a derived measure. Re-running
   the same definition changes nothing: no `model_version` bump, no

@@ -1512,6 +1512,128 @@ mod tests {
         assert!(model_version("merit") > v0);
     }
 
+    /// `(table person, ctid)` of every row of the four norm tables.
+    fn norm_ctids() -> std::collections::BTreeMap<String, String> {
+        let mut out = std::collections::BTreeMap::new();
+        for (m, _) in NORMS {
+            let t = m.to_lowercase();
+            let rows = Spi::connect(|c| {
+                c.select(
+                    &format!("SELECT person, ctid::text FROM improv_merit.{t}"),
+                    None,
+                    &[],
+                )
+                .unwrap()
+                .map(|r| {
+                    (
+                        r.get::<String>(1).unwrap().unwrap(),
+                        r.get::<String>(2).unwrap().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+            });
+            for (p, c) in rows {
+                out.insert(format!("{t} {p}"), c);
+            }
+        }
+        out
+    }
+
+    /// P3-3 with P1-1, in sync mode `mode`: redefining LOGNORM rewrites the
+    /// four measures that call it at once, in this transaction, and only
+    /// the rows whose value changed (a zero stays zero).
+    fn lambda_redefine_in(mode: &str) {
+        setup_merit();
+        crate::define(
+            "merit",
+            "LOGNORM = LAMBDA(x, c, LN1P(x) / LN1P(MAX(x OVER c)))",
+            false,
+        )
+        .unwrap();
+        for (m, input) in NORMS {
+            crate::define("merit", &format!("{m} = LOGNORM({input}, Person)"), false).unwrap();
+        }
+        Spi::run_with_args("SELECT improv.set_sync_mode('merit', $1)", &[mode.into()]).unwrap();
+        recalc_model("merit");
+        let (v0, rows0) = (model_version("merit"), norm_ctids());
+        assert_eq!(rows0.len(), 3 + 4 + 4 + 4, "{mode}");
+        let p2: Vec<Option<f64>> = NORMS
+            .iter()
+            .map(|(m, _)| merit(&m.to_lowercase(), "p2"))
+            .collect();
+        crate::define(
+            "merit",
+            "LOGNORM = LAMBDA(x, c, 2 * LN1P(x) / LN1P(MAX(x OVER c)))",
+            true,
+        )
+        .unwrap();
+        assert!(model_version("merit") > v0, "{mode}");
+        // All four callers follow the new body.
+        for ((m, _), was) in NORMS.iter().zip(&p2) {
+            let now = merit(&m.to_lowercase(), "p2");
+            assert_eq!(now, was.map(|v| 2.0 * v), "{mode} {m}");
+        }
+        let rows1 = norm_ctids();
+        let kept: Vec<&String> = rows0
+            .iter()
+            .filter(|(k, c)| rows1.get(*k) == Some(*c))
+            .map(|(k, _)| k)
+            .collect();
+        // p3 authored and reviewed nothing, p4 committed nothing: 2 * 0 is
+        // still 0, so those rows are not rewritten.
+        assert_eq!(kept, ["an p3", "cn p4", "rn p3"], "{mode}");
+        assert_eq!(rows1.len(), rows0.len(), "{mode}");
+        assert_eq!(recalc_model("merit"), 0, "{mode}: already current");
+    }
+
+    #[pg_test]
+    fn lambda_redefine_manual() {
+        lambda_redefine_in("manual");
+    }
+
+    #[pg_test]
+    fn lambda_redefine_trigger() {
+        lambda_redefine_in("trigger");
+        // The new body follows later writes.
+        Spi::run("UPDATE contrib SET authored = 3 WHERE person = 'p2'").unwrap();
+        let want = 2.0 * 3f64.ln_1p() / 300f64.ln_1p();
+        assert!(merit("an", "p2").is_some_and(|v| (v - want).abs() < 1e-12));
+    }
+
+    #[pg_test]
+    fn lambda_redefine_commit() {
+        lambda_redefine_in("commit");
+        Spi::run("UPDATE contrib SET authored = 3 WHERE person = 'p2'").unwrap();
+        crate::commit::pre_commit();
+        let want = 2.0 * 3f64.ln_1p() / 300f64.ln_1p();
+        assert!(merit("an", "p2").is_some_and(|v| (v - want).abs() < 1e-12));
+    }
+
+    #[pg_test]
+    fn lambda_redefine_logical() {
+        // tests/logical.sh checks the worker rewrites nothing after it.
+        lambda_redefine_in("logical");
+    }
+
+    /// A lambda redefinition that would reshape a caller is an ERROR naming
+    /// it, and changes nothing.
+    #[pg_test]
+    fn lambda_redefine_refusals() {
+        setup_merit();
+        crate::define("merit", "Ratio = LAMBDA(x, c, x / MAX(x OVER c))", false).unwrap();
+        crate::define("merit", "Share = Ratio(Mails, Person)", false).unwrap();
+        crate::define("merit", "Big = Share > 0.5", false).unwrap();
+        let v0 = model_version("merit");
+        let err = |t: &str| crate::define("merit", t, true).unwrap_err().to_string();
+        let e = err("Ratio = LAMBDA(x, c, x > MAX(x OVER c))");
+        assert!(e.contains("change the type or dimensions of Share"), "{e}");
+        let e = err("Ratio = LAMBDA(x, c, SUM(x OVER c))");
+        assert!(e.contains("change the type or dimensions of Share"), "{e}");
+        let e = err("Ratio = LAMBDA(x, LN1P(x))");
+        assert!(e.contains("breaks Share"), "{e}");
+        assert_eq!(model_version("merit"), v0);
+    }
+
     fn recalc_model(model: &str) -> i64 {
         Spi::get_one_with_args::<i64>("SELECT improv.recalc($1)", &[model.into()])
             .unwrap()

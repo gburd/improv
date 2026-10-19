@@ -56,8 +56,9 @@ SELECT improv.define('merit', 'An = LOGNORM(Authored, Person)');
 ```
 
 `c` is a category parameter: the call passes a category. The lambda lives
-in `improv.lambda`; `improv.drop_measure('merit', 'LOGNORM')` drops it once
-nothing calls it.
+in `improv.lambda`. Redefining it with `replace => true` recomputes every
+measure that calls it, as redefining a measure does;
+`improv.drop_measure('merit', 'LOGNORM')` drops it once nothing calls it.
 
 The GUI shows the model as worksheet windows. Editing a formula there
 redefines it in Postgres; editing an input cell updates the bound row of

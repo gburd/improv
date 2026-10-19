@@ -160,6 +160,28 @@ n=$(q "SELECT count(*) FROM improv_plan.double WHERE xmin::text::bigint > $x0")
 q "SELECT improv.define('plan','Double = Revenue * 2', replace => true)" >/dev/null
 echo "ok: redefine is a no-op when unchanged, applied in its transaction, and the worker rewrites nothing"
 
+# 7d. a named LAMBDA (P3-3) with a category parameter, called by two
+#     measures; redefining it rewrites both in the definer's transaction,
+#     and the worker's rebuild rewrites nothing
+q "SELECT improv.define('plan','Share = LAMBDA(x, c, x / MAX(x OVER c))')" >/dev/null
+q "SELECT improv.define('plan','RevShare = Share(Revenue, Time)')" >/dev/null
+q "SELECT improv.define('plan','QtyShare = Share(Quantity, Product)')" >/dev/null
+wait_for "SELECT count(*) FROM improv_plan.qtyshare WHERE value = 1" 4 "lambda callers computed" >/dev/null
+sx() { q "SELECT max(xmin::text::bigint) FROM (SELECT xmin FROM improv_plan.revshare UNION ALL SELECT xmin FROM improv_plan.qtyshare) t"; }
+logpos=$(wc -c <"$D/log")
+got=$(q "SELECT improv.define('plan','Share = LAMBDA(x, c, 100 * x / MAX(x OVER c))', replace => true);
+         SELECT count(*) FROM improv_plan.qtyshare WHERE value = 100" | tail -1)
+[ "$got" = 4 ] || { echo "FAIL: lambda redefine not applied in its transaction: $got"; exit 1; }
+x0=$(sx)
+for _ in $(seq 400); do tail -c +$((logpos + 1)) "$D/log" | grep -q "model plan: rebuilding (model changed)" && break; sleep 0.025; done
+tail -c +$((logpos + 1)) "$D/log" | grep -q "model plan: rebuilding (model changed)" || { echo "FAIL: the worker did not see the lambda redefine"; exit 1; }
+sleep 0.5
+n=$(q "SELECT count(*) FROM (SELECT xmin FROM improv_plan.revshare UNION ALL SELECT xmin FROM improv_plan.qtyshare) t WHERE xmin::text::bigint > $x0")
+[ "$n" = 0 ] || { echo "FAIL: after a lambda redefine the worker rewrote $n rows"; exit 1; }
+for m in RevShare QtyShare; do q "SELECT improv.drop_measure('plan','$m')"; done
+q "SELECT improv.drop_measure('plan','Share')"
+echo "ok: a named LAMBDA's callers are rewritten in the redefiner's transaction; the worker rewrites nothing"
+
 # 8. incremental at 100k cells: a one-cell UPDATE rewrites exactly the
 #    affected result rows (Revenue[Q1,P1] and Total[P1]) and does not rebuild
 q "CREATE TABLE wide (quarter text, product text, price float8, qty float8)"

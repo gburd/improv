@@ -147,8 +147,13 @@ the way) recreates its result table.
 LN1P(MAX(x OVER c)))')` stores a named LAMBDA in `improv.lambda`; every
 formula of the model can then call it, `An = LOGNORM(Authored, Person)`.
 A parameter the body uses as a category (`OVER c`) takes a category at
-the call. A body reads only its parameters (no measures). `drop_measure`
-drops a lambda by name once no measure or other lambda calls it.
+the call. A body reads only its parameters (no measures). Redefining a
+lambda (`replace => true`) works as redefining a measure: the same
+definition is a no-op, and a new one recomputes every measure that calls
+it, at once, writing only the rows whose value changed; it is an ERROR,
+naming the measure, when it would break one or change its type or
+dimensions. `drop_measure` drops a lambda by name once no measure or
+other lambda calls it.
 
 Names must match `^[A-Za-z][A-Za-z0-9_]*$` (at most 56 characters, and not
 `value`). Result tables are `improv_<model>.<lower(measure)>` with one `text`

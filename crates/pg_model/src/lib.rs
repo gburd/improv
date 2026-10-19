@@ -28,8 +28,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use improv_core_model::parser::{self, Definition};
 use improv_core_model::{
-    CategoryId, Coordinate, Formula, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value,
-    ValueType,
+    CategoryId, Coordinate, Expr, Formula, ItemId, Measure, MeasureId, MeasureKind, Model, Name,
+    Value, ValueType,
 };
 use improv_data_source::ItemInterner;
 use improv_engine::{CellValue, CoordKey};
@@ -356,9 +356,13 @@ fn is_lambda(text: &str) -> bool {
 
 /// A `Name = LAMBDA(…)` definition for `model`: `None` when `text` defines a
 /// measure, else a new named LAMBDA ([`Defined::Lambda`]), or with `replace`
-/// [`Defined::Unchanged`] when it has this definition already. Its body may
+/// [`Defined::Unchanged`] when it has this definition already, else its
+/// redefinition, with the measures that call it to recompute. Its body may
 /// reduce over a category parameter (`LAMBDA(x, c, MAX(x OVER c))`). A name
-/// a measure has is an error.
+/// a measure has is an error, and so is a redefinition that would call a
+/// lambda calling it, or break or change the type or dimensions of a
+/// measure that calls it (or depends on one that does): each error names
+/// the dependent.
 pub fn define_lambda(model: &Model, text: &str, replace: bool) -> Result<Option<Defined>> {
     if !is_lambda(text) {
         return Ok(None);
@@ -402,10 +406,79 @@ pub fn define_lambda(model: &Model, text: &str, replace: bool) -> Result<Option<
         Some((id, old)) if old.params == lt.lambda.params && old.body == lt.lambda.body => {
             Ok(Some(Defined::Unchanged(id)))
         }
-        Some((_, old)) => Err(Error::Definition(format!(
-            "redefining LAMBDA {} is not supported yet",
-            old.name.0
-        ))),
+        Some((id, old)) => {
+            let callers = replace_lambda(model, id, &old.name.0, lt.lambda)?;
+            Ok(Some(Defined::Lambda {
+                row: row(id),
+                callers,
+            }))
+        }
+    }
+}
+
+/// Check that lambda `id` (`name`) may become `new`, and return the derived
+/// measures that call it.
+fn replace_lambda(
+    model: &Model,
+    id: u32,
+    name: &str,
+    new: improv_core_model::NamedLambda,
+) -> Result<Vec<MeasureId>> {
+    let (lambdas, callers) = model.lambda_users(id);
+    let lambda_name = |i: &u32| model.lambdas[i].name.0.clone();
+    // `new` may not call a lambda that calls it (directly or not): a cycle.
+    for l in &lambdas {
+        if calls_named(&new.body, *l) {
+            return Err(Error::Definition(format!(
+                "{name} cannot call {}: {} calls {name}",
+                lambda_name(l),
+                lambda_name(l)
+            )));
+        }
+    }
+    let mut next = model.clone();
+    next.lambdas.insert(id, new);
+    for l in &lambdas {
+        next.expand_lambdas(&next.lambdas[l].body).map_err(|e| {
+            Error::Definition(format!(
+                "redefining {name} breaks LAMBDA {}, which calls it: {e}",
+                lambda_name(l)
+            ))
+        })?;
+    }
+    for d in dependents(&next, &callers) {
+        let m = &next.measures[&d];
+        let MeasureKind::Derived(f) = &m.kind else {
+            continue;
+        };
+        let shape =
+            improv_engine::compiler::derived_shape(&next, d, &m.name.0, f).map_err(|e| {
+                Error::Definition(format!(
+                    "redefining {name} breaks {}, which depends on it: {e}",
+                    m.name.0
+                ))
+            })?;
+        if shape != (m.value_type, m.categories.clone()) {
+            return Err(Error::Definition(format!(
+                "redefining {name} would change the type or dimensions of {}, which depends \
+                 on it: redefine or drop {} first",
+                m.name.0, m.name.0
+            )));
+        }
+    }
+    Ok(callers)
+}
+
+/// Whether `e` calls named LAMBDA `id` directly.
+fn calls_named(e: &Expr, id: u32) -> bool {
+    match e {
+        Expr::Call(f, a) => {
+            improv_core_model::functions::named_lambda_of(*f) == Some(id)
+                || a.iter().any(|x| calls_named(x, id))
+        }
+        Expr::UnaryOp(_, a) => calls_named(a, id),
+        Expr::BinaryOp(_, a, b) => calls_named(a, id) || calls_named(b, id),
+        Expr::Literal(_) | Expr::Ref(..) | Expr::Category(_) => false,
     }
 }
 
@@ -1299,8 +1372,50 @@ mod tests {
             def("Half = LAMBDA(x, x / 2)", false),
             Ok(Some(Defined::Lambda { row, .. })) if row.id == 2
         ));
-        let e = define_measure(&model, "lognorm = Price * 2", 9, false).unwrap_err();
-        assert!(e.to_string().contains("is a named LAMBDA"), "{e}");
+        let err = define_measure(&model, "lognorm = Price * 2", 9, false).unwrap_err();
+        assert!(err.to_string().contains("is a named LAMBDA"), "{err}");
+
+        // Redefining: the callers to recompute; refusals name the dependent.
+        let twice = "LOGNORM = LAMBDA(x, c, 2 * LN1P(x) / LN1P(MAX(x OVER c)))";
+        assert!(matches!(
+            def(twice, true),
+            Ok(Some(Defined::Lambda { row, callers }))
+                if row.id == 1 && row.definition == twice
+                    && callers == vec![MeasureId(3), MeasureId(4)]
+        ));
+        let msg = e(def("LOGNORM = LAMBDA(x, c, x > MAX(x OVER c))", true));
+        assert!(
+            msg.contains("change the type or dimensions of PriceN"),
+            "{msg}"
+        );
+        let msg = e(def("LOGNORM = LAMBDA(x, LN1P(x))", true));
+        assert!(
+            msg.contains("breaks PriceN") && msg.contains("takes 1"),
+            "{msg}"
+        );
+        let msg = e(def("LOGNORM = LAMBDA(x, c, MAX(x OVER c))", true));
+        assert!(
+            msg.contains("change the type or dimensions of PriceN"),
+            "{msg}"
+        );
+        let mut chain = cat.clone();
+        chain.lambdas.push(LambdaRow {
+            id: 2,
+            name: s("Outer"),
+            definition: s("Outer = LAMBDA(v, LOGNORM(v, Time) + 1)"),
+        });
+        let chained = build_model(&chain).unwrap();
+        let msg = define_lambda(&chained, "LOGNORM = LAMBDA(x, c, Outer(x))", true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("LOGNORM cannot call Outer: Outer calls LOGNORM"),
+            "{msg}"
+        );
+        let msg = define_lambda(&chained, "LOGNORM = LAMBDA(x, x)", true)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("breaks LAMBDA Outer, which calls it"), "{msg}");
 
         let e = drop_lambda(&model, "LogNorm").unwrap_err().to_string();
         assert!(
