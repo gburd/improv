@@ -84,8 +84,9 @@ pub struct Engine {
     /// Current known value of each input cell, so `set` can emit the correct
     /// retract+assert delta for a cardinality-one cell.
     current: HashMap<(MeasureId, CoordKey), CellValue>,
-    /// The compiled plans, to tell whether a model with more items still
-    /// compiles to the same graph ([`Engine::serves`]).
+    /// The compiled plans (a FIXPOINT as its first-iterate and step parts),
+    /// to tell whether a model with more items still compiles to the same
+    /// graph ([`Engine::serves`]).
     plans: Vec<(MeasureId, PlanNode)>,
 }
 
@@ -216,13 +217,15 @@ impl Engine {
     /// and in new items can be fed to it as edits. False when a plan reads
     /// the item list of a category that gained items: `POSITION`, `@ITEM`,
     /// `@ITEMCOUNT`, `PREV`/`NEXT`, recurrences, windows, per-item and
-    /// `INTO` reductions, and every reduction other than `SUM` … `XOR`,
-    /// `COUNT` and `COUNTA` (which read only their rows' values: a new item
+    /// `INTO` reductions, `FILL` (its grid), `RELABEL`/`SWAP` (their item
+    /// maps), and every
+    /// reduction other than `SUM` … `XOR`, `COUNT`, `COUNTA` and
+    /// `COUNTUNIQUE` (which read only their rows' values: a new item
     /// reaches them as data, sorted last as an unknown item sorts). New
     /// items must have ids above every item of their category and come
     /// after them in its item order (append-only minting does both).
     pub fn serves(&self, model: &Model) -> Result<bool, EngineError> {
-        let now = compile_plans(model, &self.targets)?;
+        let (now, _) = split_fixpoints(model, compile_plans(model, &self.targets)?)?;
         Ok(now.len() == self.plans.len()
             && now
                 .iter()
@@ -265,8 +268,9 @@ fn blind(p: &mut PlanNode) {
             if let Some(x) = pred {
                 blind(x);
             }
-            // SUM … XOR, COUNT, COUNTA: values only, no positions or capacity.
-            let values_only = matches!(func.0, 1..=9 | 1005 | 1006);
+            // SUM … XOR, COUNT, COUNTA, COUNTUNIQUE: values only, no
+            // positions or capacity.
+            let values_only = matches!(func.0, 1..=9 | 1005 | 1006 | 1100);
             if values_only && window.is_none() && !*per_item && into.is_empty() {
                 order.clear();
             }
@@ -279,6 +283,9 @@ fn blind(p: &mut PlanNode) {
             }
         }
         K::FuncCall { args, .. } => args.iter_mut().for_each(blind),
+        // COALESCE's domain is its arguments' cells; FILL's grid lists items.
+        K::Coalesce { args, .. } => args.iter_mut().for_each(blind),
+        K::Remap { input, .. } => blind(input),
         K::If {
             test,
             then,
@@ -820,6 +827,39 @@ mod tests {
                 "{text} over Time ignores Product"
             );
         }
+        // FILL fills every item combination: a new item of either category
+        // is a new grid row, so neither is served.
+        let mut m = revenue_model();
+        define(&mut m, 105, "Filled = FILL(Quantity, 0)");
+        let (e, _) = Engine::new(&m, &[MeasureId(105)]).unwrap();
+        for (id, cat) in [(11, time), (22, product)] {
+            let mut grown = m.clone();
+            grown.add_item(ItemId(id), cat, "new");
+            assert!(!e.serves(&grown).unwrap(), "FILL with a new item {id}");
+        }
+        // A FIXPOINT is served when its parts are: here its step reads
+        // @ITEMCOUNT(Product), so a new product is not served.
+        let mut m = revenue_model();
+        define(
+            &mut m,
+            105,
+            "Fix = FIXPOINT(Price, LAMBDA(r, r / @ITEMCOUNT(Product) + 1))",
+        );
+        let (e, _) = Engine::new(&m, &[MeasureId(105)]).unwrap();
+        let mut grown = m.clone();
+        grown.add_item(ItemId(11), time, "2026");
+        assert!(e.serves(&grown).unwrap());
+        grown.add_item(ItemId(22), product, "WidgetC");
+        assert!(!e.serves(&grown).unwrap());
+        // COALESCE (no grid) and COUNTUNIQUE read only cells.
+        let mut m = revenue_model();
+        define(&mut m, 105, "Either = COALESCE(Quantity, Price)");
+        define(&mut m, 106, "Kinds = COUNTUNIQUE(Quantity OVER Product)");
+        let (e, _) = Engine::new(&m, &[MeasureId(105), MeasureId(106)]).unwrap();
+        let mut grown = m.clone();
+        grown.add_item(ItemId(22), product, "WidgetC");
+        grown.add_item(ItemId(11), time, "2026");
+        assert!(e.serves(&grown).unwrap());
     }
 
     /// Copy-on-write: an edit replaces only the changed measure's `Arc`;
