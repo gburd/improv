@@ -113,6 +113,10 @@ fn eval_checked(expr: &Expr, env: &HashMap<MeasureId, CellValue>) -> Option<Cell
                 other => Some(other),
             }
         }
+        // COALESCE: the first argument with a value.
+        Expr::Call(func, args) if func.0 == lazy::COALESCE => {
+            args.iter().find_map(|a| eval_checked(a, env))
+        }
         Expr::Call(func, args) if functions::by_id(*func).is_some_and(|d| d.kind == Kind::Lazy) => {
             eval_checked(&desugar_lazy(*func, args).ok()?, env)
         }

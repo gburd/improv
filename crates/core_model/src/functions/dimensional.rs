@@ -26,6 +26,7 @@ pub(super) static DIMENSIONAL: &[FnDef] = &[
     f(914, "LAMBDA", Kind::Lazy, Category::Logical, &[A, A], 2, true, Ret::Unify, "LAMBDA(p, …, body): a function of its parameters, called on the spot or passed to MAP, REDUCE or SCAN"),
     f(916, "SEQUENCE", Kind::Lazy, Category::Dimensional, &[A, A, A], 1, false, Ret::Unify, "SEQUENCE(T, [start=1], [step=1]): start, start + step, … along T's items, (POSITION(T) - 1) * step + start"),
     f(917, "MAKEARRAY", Kind::Lazy, Category::Logical, &[A, A, A], 3, false, Ret::Unify, "MAKEARRAY(rows, cols, LAMBDA(r, c, body)): the body over the categories rows × cols, with r and c the item positions"),
+    f(919, "FILL", Kind::Lazy, D, &[A, A], 2, false, Ret::Unify, "a cell at every item combination of x's categories: x where it has a cell, else the default"),
     alias(f(918, "BYROW", Kind::Lazy, Category::Logical, &[A, A], 2, false, Ret::Unify, "BYROW(array OVER C, LAMBDA(row, body)): the body per item of array's other categories, row being the values along C (the body reduces it: SUM(row), …)"), &["BYCOL"]),
     f(915, "MAP", Kind::Lazy, Category::Logical, &[A, A], 2, true, Ret::Unify, "MAP(array1, …, LAMBDA(p, …, body)): the body applied element by element"),
     over(f(909, "TEXTJOIN", Kind::Aggregate, Category::Aggregation, &[T, B, A], 3, false, Ret::Fixed(V::Text), "the values in item order joined by the delimiter (skipping empty text when ignore_empty is TRUE)"), Over::At(&[2])),

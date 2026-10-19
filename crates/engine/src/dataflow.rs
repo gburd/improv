@@ -154,6 +154,67 @@ where
             Ok(rows.to_stream(scope).as_collection())
         }
 
+        PlanNodeKind::Coalesce { args, grid } => {
+            let colls = args
+                .iter()
+                .map(|a| build_coll(a, scope, inputs, derived))
+                .collect::<Result<Vec<_>, _>>()?;
+            let spans = |a: &PlanNode| a.ty.dim == node.ty.dim;
+            // The domain: every item combination of the grid, or the cells of
+            // the arguments over all the result's categories.
+            let domain = match grid {
+                Some(g) => {
+                    let keys = g.iter().fold(vec![Vec::new()], |acc, (c, items)| {
+                        acc.iter()
+                            .flat_map(|pre: &CoordKey| {
+                                items.iter().map(move |i| {
+                                    let mut k = pre.clone();
+                                    k.push((c.0, i.0));
+                                    k
+                                })
+                            })
+                            .collect::<Vec<CoordKey>>()
+                    });
+                    let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
+                    keys.into_iter()
+                        .map(|k| (k, t.clone(), 1isize))
+                        .collect::<Vec<_>>()
+                        .to_stream(scope)
+                        .as_collection()
+                }
+                None => {
+                    let mut keys = None::<Collection<G, CoordKey, isize>>;
+                    for (_, c) in args.iter().zip(&colls).filter(|(a, _)| spans(a)) {
+                        let k = c.map(|(k, _)| k);
+                        keys = Some(keys.map_or(k.clone(), |acc| acc.concat(&k)));
+                    }
+                    keys.expect("the widest argument spans the result")
+                        .distinct()
+                }
+            };
+            let domain = domain.map(|k| (k, CellValue::Bool(true)));
+            // Each argument's cells on the domain, tagged with its position;
+            // per coordinate the lowest position wins.
+            let mut tagged = None::<Collection<G, (CoordKey, (u32, CellValue)), isize>>;
+            for (i, (a, c)) in args.iter().zip(&colls).enumerate() {
+                let i = i as u32;
+                let t = if spans(a) {
+                    c.map(move |(k, v)| (k, (i, v)))
+                } else {
+                    align(&domain, c, a.ty.dim.categories.clone())
+                        .map(move |(k, (_, v))| (k, (i, v)))
+                };
+                tagged = Some(tagged.map_or(t.clone(), |acc| acc.concat(&t)));
+            }
+            let tagged = tagged.expect("COALESCE has arguments");
+            Ok(tagged.reduce(|_k, input, output| {
+                // Values arrive sorted, so the first is the lowest position.
+                if let Some(((_, v), _)) = input.iter().find(|(_, m)| *m > 0) {
+                    output.push((v.clone(), 1isize));
+                }
+            }))
+        }
+
         PlanNodeKind::Recurrence {
             body,
             refs,
@@ -1447,6 +1508,158 @@ mod tests {
             kind: MeasureKind::Derived(f.formula),
             description: None,
         });
+    }
+
+    /// The customer's case (P1-2): Person has four items, Authored a cell
+    /// for two, Vol for all four. COALESCE and FILL give all four cells;
+    /// IFNA and an IF on ISNUMBER keep Authored's two.
+    fn people() -> Model {
+        let mut m = Model::new();
+        let (person, year) = (CategoryId(1), CategoryId(2));
+        m.add_category(person, "Person");
+        m.add_category(year, "Year");
+        for i in 1..=4 {
+            m.add_item(ItemId(10 + i), person, format!("p{i}"));
+        }
+        m.add_item(ItemId(21), year, "2025");
+        m.add_item(ItemId(22), year, "2026");
+        for (id, name, cats) in [
+            (100, "Authored", vec![person]),
+            (101, "Vol", vec![person]),
+            (102, "Mail", vec![person, year]),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let at = |p: u32| Coordinate::from_pairs([(person, ItemId(10 + p))]);
+        m.set_input(MeasureId(100), at(1), Value::Number(300.0));
+        m.set_input(MeasureId(100), at(2), Value::Number(2.0));
+        for p in 1..=4 {
+            m.set_input(MeasureId(101), at(p), Value::Number(f64::from(p) * 10.0));
+        }
+        let py =
+            |p: u32, y: u32| Coordinate::from_pairs([(person, ItemId(10 + p)), (year, ItemId(y))]);
+        m.set_input(MeasureId(102), py(1, 21), Value::Number(5.0));
+        m.set_input(MeasureId(102), py(3, 22), Value::Number(7.0));
+        m
+    }
+
+    #[test]
+    fn coalesce_and_fill_give_every_person_a_cell() {
+        let (person, year) = (CategoryId(1), CategoryId(2));
+        let mut m = people();
+        define(&mut m, 200, vec![person], "C = COALESCE(Authored, Vol*0)");
+        define(&mut m, 201, vec![person], "F = FILL(Authored, 0)");
+        define(&mut m, 202, vec![person], "N = IFNA(Authored, 0)");
+        define(
+            &mut m,
+            203,
+            vec![person],
+            "Merit = 0.3 * Vol + 0.25 * FILL(Authored, 0)",
+        );
+        // Three arguments, the first with no cell anywhere but p3's Vol.
+        define(
+            &mut m,
+            204,
+            vec![person],
+            "D = COALESCE(Authored, IF(Vol > 25, Vol), -1)",
+        );
+        // A per-Person default broadcast under Person × Year: Mail's cells
+        // only (Vol adds no Year).
+        define(&mut m, 205, vec![person, year], "Y = COALESCE(Mail, Vol)");
+        define(&mut m, 206, vec![person, year], "G = FILL(Mail, Vol)");
+        define(&mut m, 207, vec![person, year], "Z = FILL(Mail, 0)");
+        let out = evaluate(&m, &(200..=207).map(MeasureId).collect::<Vec<_>>()).unwrap();
+        let col = |id: u32| {
+            (1..=4)
+                .map(|p| {
+                    out[&MeasureId(id)]
+                        .get(&key(&[(1, 10 + p)]))
+                        .and_then(CellValue::as_num)
+                })
+                .collect::<Vec<_>>()
+        };
+        let all = |v: &[f64]| v.iter().map(|x| Some(*x)).collect::<Vec<_>>();
+        assert_eq!(col(200), all(&[300.0, 2.0, 0.0, 0.0]));
+        assert_eq!(col(201), all(&[300.0, 2.0, 0.0, 0.0]));
+        assert_eq!(col(202), [Some(300.0), Some(2.0), None, None]);
+        assert_eq!(col(203), all(&[78.0, 6.5, 9.0, 12.0]));
+        assert_eq!(col(204), all(&[300.0, 2.0, 30.0, 40.0]));
+        let py = |id: u32, p: u32, y: u32| {
+            out[&MeasureId(id)]
+                .get(&key(&[(1, 10 + p), (2, y)]))
+                .and_then(CellValue::as_num)
+        };
+        assert_eq!(out[&MeasureId(205)].len(), 2);
+        assert_eq!(py(205, 1, 21), Some(5.0));
+        assert_eq!(out[&MeasureId(206)].len(), 8);
+        assert_eq!(
+            (py(206, 1, 21), py(206, 1, 22), py(206, 4, 21)),
+            (Some(5.0), Some(10.0), Some(40.0))
+        );
+        assert_eq!(out[&MeasureId(207)].len(), 8);
+        assert_eq!((py(207, 3, 22), py(207, 2, 21)), (Some(7.0), Some(0.0)));
+    }
+
+    #[test]
+    fn coalesce_and_fill_type_and_dimension_rules() {
+        let m = people();
+        let ctx = CompileContext::for_model(&m);
+        let ty = |text: &str| {
+            let f = improv_core_model::parse_formula(&m, text).expect("parses");
+            crate::compiler::infer(&ctx, MeasureId(300), &f.formula.expr).map(|t| t.ty)
+        };
+        // Error-only arguments take the others' type.
+        assert_eq!(
+            ty("X = COALESCE(Authored, NA())").unwrap().value_type,
+            ValueType::Number
+        );
+        assert!(ty("X = COALESCE(Authored, \"none\")").is_err());
+        // FILL's default must not range beyond x.
+        assert!(ty("X = FILL(Authored, Mail)").is_err());
+        // Categories must nest.
+        let e = ty("X = COALESCE(SUM(Mail OVER Person), Authored)");
+        assert!(
+            matches!(e, Err(crate::compiler::CompileError::DimensionMismatch(_))),
+            "{e:?}"
+        );
+        // FILL needs the model's categories.
+        let f = improv_core_model::parse_formula(&m, "X = FILL(Authored, 0)").unwrap();
+        let bare = CompileContext::new(&m.measures);
+        assert!(crate::compiler::infer(&bare, MeasureId(300), &f.formula.expr).is_err());
+        // Scalar: the first argument with a value.
+        let env: HashMap<MeasureId, CellValue> = [(MeasureId(101), CellValue::num(4.0))].into();
+        let c = improv_core_model::parse_formula(&m, "X = COALESCE(Authored, Vol, 1)").unwrap();
+        assert_eq!(
+            crate::scalar::eval(&c.formula.expr, &env),
+            Ok(Some(CellValue::num(4.0)))
+        );
+    }
+
+    /// The edit path: a cell appearing or going away in an earlier argument
+    /// moves the winner, without a rebuild.
+    #[test]
+    fn coalesce_follows_edits() {
+        let person = CategoryId(1);
+        let mut m = people();
+        define(&mut m, 200, vec![person], "F = FILL(Authored, 0)");
+        let (mut eng, snap) = crate::session::Engine::new(&m, &[MeasureId(200)]).unwrap();
+        let k3 = key(&[(1, 13)]);
+        assert_eq!(snap[&MeasureId(200)].get(&k3), Some(&CellValue::num(0.0)));
+        let snap = eng.set(MeasureId(100), k3.clone(), 9.0).unwrap();
+        assert_eq!(snap[&MeasureId(200)].get(&k3), Some(&CellValue::num(9.0)));
+        let snap = eng.clear(MeasureId(100), key(&[(1, 11)])).unwrap();
+        assert_eq!(
+            snap[&MeasureId(200)].get(&key(&[(1, 11)])),
+            Some(&CellValue::num(0.0))
+        );
+        assert_eq!(snap[&MeasureId(200)].len(), 4);
     }
 
     /// IF over dimensions: the test over Product, the branches over

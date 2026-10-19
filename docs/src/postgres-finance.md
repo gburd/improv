@@ -75,8 +75,8 @@ dimension, so it handles those in SQL. Improv now has all three (`IF`,
 `^` / `POWER`, `PREV` and running windows such as `SUM(x OVER
 Month[FIRST..THIS])`; see [The Formula Language](./formulas.md)); the
 example still shows the SQL route, which works on every Improv version. A
-formula over a missing cell still has no cell (there is no `COALESCE`;
-`IFERROR` covers errors, not missing cells):
+formula over a missing cell still has no cell unless it says otherwise
+with `COALESCE` or `FILL` (`IFERROR` covers errors, not missing cells):
 
 | Need | Where | How |
 | --- | --- | --- |

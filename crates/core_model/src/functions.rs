@@ -407,6 +407,7 @@ pub static CORE: &[FnDef] = &[
     f(35, "IFNA", Kind::Lazy, C::Logical, &[A, A], 2, false, Ret::Unify, "the value, or the alternative where it is #N/A"),
     f(36, "CLEARERROR", Kind::Lazy, C::Logical, &[A, A], 1, false, Ret::Unify, "the value, or the alternative (or no cell) where it is an error"),
     f(37, "CLEARZERO", Kind::Lazy, C::Logical, &[N, N], 1, false, Ret::Fixed(V::Number), "the value, or the alternative (or no cell) where it is zero"),
+    f(41, "COALESCE", Kind::Lazy, C::Logical, &[A, A], 2, true, Ret::Unify, "a cell wherever any argument that reads a measure has one: the first argument with a cell, else the last (the default)"),
     so(38, "BETWEEN", C::Logical, &[N, N, N, B], 3, V::Boolean, "whether low ≤ x ≤ high (strict when inclusive is FALSE)"),
     s(39, "TRUE", C::Logical, &[], V::Boolean, "TRUE"),
     s(40, "FALSE", C::Logical, &[], V::Boolean, "FALSE"),

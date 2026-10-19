@@ -466,6 +466,9 @@ pub(crate) mod lazy {
     pub const IFNA: u32 = 35;
     pub const CLEARERROR: u32 = 36;
     pub const CLEARZERO: u32 = 37;
+    pub const COALESCE: u32 = 41;
+    /// `FILL` sits with the dimensional functions (it reads categories).
+    pub const FILL: u32 = 919;
 }
 
 /// Pass 1: type + dimension inference.
@@ -1116,7 +1119,73 @@ fn infer_lazy(
     if def.id.0 == lazy::IF {
         return infer_if(ctx, target, args);
     }
+    if def.id.0 == lazy::COALESCE || def.id.0 == lazy::FILL {
+        return infer_coalesce(ctx, target, def, args);
+    }
     infer(ctx, target, &desugar_lazy(def.id, args)?)
+}
+
+/// `COALESCE(a, …, default)` and `FILL(x, default)`: the first argument with
+/// a cell, over an outer union of the arguments' cells (no `IF` or join can
+/// say "a cell where any of them has one").
+///
+/// The arguments' categories must nest (`union_dim`); the result ranges over
+/// the largest. `COALESCE` has a cell wherever an argument over all of the
+/// result's categories has one; an argument over fewer (a literal, a
+/// per-Person default under a Person × Year result) broadcasts onto those
+/// cells and adds none. `FILL` has a cell at every item combination of x's
+/// categories, and its default may not range beyond them.
+fn infer_coalesce(
+    ctx: &CompileContext,
+    target: MeasureId,
+    def: &functions::FnDef,
+    args: &[Expr],
+) -> Result<TypedExpr> {
+    let typed: Vec<TypedExpr> = args
+        .iter()
+        .map(|a| infer(ctx, target, a))
+        .collect::<Result<_>>()?;
+    let mut value_type = None;
+    for t in typed.iter().filter(|t| !is_error_only(t)) {
+        match value_type {
+            None => value_type = Some(t.ty.value_type),
+            Some(v) if v != t.ty.value_type => {
+                return Err(CompileError::TypeMismatch(format!(
+                    "{} arguments must have the same type, got {v:?} and {:?}",
+                    def.name, t.ty.value_type
+                )))
+            }
+            Some(_) => {}
+        }
+    }
+    let value_type = value_type.unwrap_or(typed[0].ty.value_type);
+    let dim = union_dim(ctx, def.name, typed.iter().map(|a| &a.ty.dim))?;
+    let grid = if def.id.0 == lazy::FILL {
+        if dim != typed[0].ty.dim {
+            return Err(CompileError::DimensionMismatch(format!(
+                "FILL's default ranges over {}, beyond x's {}",
+                dims_text(ctx, &dim),
+                dims_text(ctx, &typed[0].ty.dim)
+            )));
+        }
+        if ctx.categories.is_none() && !dim.is_scalar() {
+            return Err(CompileError::Unsupported(
+                "FILL needs the model's categories".into(),
+            ));
+        }
+        Some(
+            dim.categories
+                .iter()
+                .map(|c| (*c, ctx.items_of(*c)))
+                .collect(),
+        )
+    } else {
+        None
+    };
+    Ok(TypedExpr {
+        kind: TypedExprKind::Coalesce { args: typed, grid },
+        ty: TypeInfo { value_type, dim },
+    })
 }
 
 /// The nested-`IF` form of a lazy call other than `IF` itself (see
@@ -1463,6 +1532,13 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
             }
         }
         TypedExprKind::Items(c, vals) => PlanNodeKind::Items(*c, vals.clone()),
+        TypedExprKind::Coalesce { args, grid } => PlanNodeKind::Coalesce {
+            args: args
+                .iter()
+                .map(|a| build_plan(ctx, a))
+                .collect::<Result<_>>()?,
+            grid: grid.clone(),
+        },
         TypedExprKind::Plan(p) => return Ok((**p).clone()),
         TypedExprKind::Shift {
             input,

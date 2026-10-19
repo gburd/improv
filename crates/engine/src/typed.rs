@@ -85,6 +85,14 @@ pub enum TypedExprKind {
     Items(CategoryId, Vec<(improv_core_model::ItemId, Value)>),
     /// A fold (`SCAN`/`REDUCE`), already lowered: the whole formula.
     Plan(Box<crate::plan::PlanNode>),
+    /// `COALESCE(a, …, default)` and `FILL(x, default)`: at each coordinate
+    /// of the domain, the first argument with a cell. The domain is `grid`
+    /// (every item combination, `FILL`) or else the cells of the arguments
+    /// that span the result (see `compiler::infer_coalesce`).
+    Coalesce {
+        args: Vec<TypedExpr>,
+        grid: Option<Vec<(CategoryId, Vec<improv_core_model::ItemId>)>>,
+    },
     /// The value `offset` items along `cat` (`PREV` is −1), or `default`.
     Shift {
         input: Box<TypedExpr>,

@@ -45,6 +45,16 @@ positional forms and recurrences, lookups, list results, `LET` and
   result table with just a `value` column. `recalc`, every sync mode,
   `what_if` (its `coord` is `{}`) and `status` handle it; `define` no
   longer refuses it.
+- **`COALESCE(a, …, default)` and `FILL(x, default)`: a value for a missing
+  cell.** `COALESCE` has a cell wherever an argument over all the result's
+  categories has one, and takes the first argument with a cell there;
+  `FILL` has a cell at every item combination of x's categories. With
+  `Authored` set for 2 of 4 people, `COALESCE(Authored, Vol * 0)` and
+  `FILL(Authored, 0)` both give 4 cells, where `IFNA` and `IF(ISNUMBER(…))`
+  give 2. Both are an outer union in the dataflow (the arguments' cells,
+  tagged by position, reduced to the first per coordinate), so input edits
+  stay incremental; `IF`'s laziness is unchanged. See *The Formula
+  Language → Missing cells*.
 - **`RANK.DENSE(x OVER T, [order])` and `COUNTUNIQUE(x OVER T)`.**
   `RANK.DENSE` equals SQL's `dense_rank() OVER (ORDER BY x DESC)`, ties
   included (order 1 ranks ascending); `COUNTUNIQUE` (Google Sheets' name)

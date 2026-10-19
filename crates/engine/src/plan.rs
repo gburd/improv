@@ -58,6 +58,15 @@ pub enum PlanNodeKind {
         cat: CategoryId,
         order: Vec<ItemId>,
     },
+    /// An outer union: at each coordinate of the domain, the first of `args`
+    /// with a cell there. The domain is every item combination of `grid`
+    /// (`FILL`), else the cells of the arguments whose dimension is the
+    /// result's. An argument over fewer categories broadcasts onto the
+    /// domain; it never adds coordinates of its own.
+    Coalesce {
+        args: Vec<PlanNode>,
+        grid: Option<Vec<(CategoryId, Vec<ItemId>)>>,
+    },
     /// `input` moved `offset` items along `cat` (in `order`); where no cell
     /// lands, `default` (when given) at the input's own coordinates.
     Shift {

@@ -503,6 +503,39 @@ fills in the test's missing categories is a dimension error.
 `IFS`, `SWITCH`, `CHOOSE`, `IFERROR`, `IFNA`, `CLEARERROR` and `CLEARZERO`
 are built on `IF` and behave the same way.
 
+### Missing cells: COALESCE and FILL
+
+A formula over a missing cell has no cell, and `IF`, `IFNA` and `ISNUMBER`
+cannot change that: they only see the cells their test has. Two functions
+give a value where an input has none:
+
+```text
+An    = COALESCE(Authored, Vol * 0)   -- Authored, else 0 wherever Vol has a cell
+An    = FILL(Authored, 0)             -- Authored, else 0 for every Person
+Merit = 0.30 * Vn + 0.25 * FILL(Authored, 0)
+Best  = COALESCE(Final, Draft, Estimate, 0)
+```
+
+- `COALESCE(a, b, …, default)` has a cell wherever an argument that ranges
+  over all of the result's categories has one, and takes the first argument
+  with a cell there (the last argument is the default). With `Authored` set
+  for 2 of 4 people and `Vol` for all 4, `COALESCE(Authored, Vol * 0)` has 4
+  cells.
+- `FILL(x, default)` has a cell at every item combination of x's
+  categories: x where it has a cell, else the default.
+- The arguments' categories must nest, and the result ranges over the
+  largest set. An argument over fewer categories (a literal, or `Vol` over
+  Person under a Person × Year result) broadcasts onto the cells the others
+  supply but adds none of its own: `COALESCE(Mail, Vol)` with `Mail` over
+  Person × Year has `Mail`'s cells, `FILL(Mail, Vol)` every Person × Year.
+  `FILL`'s default may not range beyond x's categories.
+- The arguments must have one type (an error-only argument, `NA()`, takes
+  the others'). An error is a value, so `COALESCE` keeps it: `IFERROR`
+  replaces errors.
+- `FILL`'s cells come from the item list, which is fixed for the life of an
+  engine: an edit to an input moves the result incrementally, but a new
+  item takes a rebuild, as any structural change does.
+
 ### Source forms: CALL and SQL
 
 Two forms are allowed only as the **whole** right-hand side, and only through
