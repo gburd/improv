@@ -193,6 +193,8 @@ Fit      = CORREL(Price, Quantity OVER Time)
 Big      = COUNTIF(Revenue OVER Time, ">1000")
 Sold     = SUMIFS(Revenue, Region OVER Time, "N*", Quantity, ">=10")
 Rank     = RANK(Revenue OVER Product)                -- per item: keeps Product
+Tier     = RANK.DENSE(Score OVER Person)             -- ties share a rank, no gaps
+Buyers   = COUNTUNIQUE(Customer OVER Order)          -- distinct values
 ```
 
 - The reduced arguments must be measure references (with an optional `[…]`
@@ -222,9 +224,14 @@ Rank     = RANK(Revenue OVER Product)                -- per item: keeps Product
   the wildcards `*` (any run), `?` (any one character) and `~` (the next
   character literally). In `SUMIFS(x, c1 OVER T, k1, c2, k2)` the summed
   measure and every criteria measure are reduced together.
-- Per-item reductions (`RANK`, `RANK.AVG`, `PERCENTRANK`, `TREND`, `GROWTH`)
-  give one result per item of their single `OVER` category, and the result
-  keeps it.
+- Per-item reductions (`RANK`, `RANK.AVG`, `RANK.DENSE`, `PERCENTRANK`,
+  `TREND`, `GROWTH`) give one result per item of their single `OVER`
+  category, and the result keeps it. `RANK.DENSE` is SQL's `dense_rank()
+  OVER (ORDER BY x DESC)` (order 1: `ASC`): tied values share a rank and the
+  next value ranks one after them, so 9, 7, 7, 4 rank 1, 2, 2, 3.
+- `COUNTUNIQUE` (Google Sheets' name) is SQL's `count(DISTINCT x)`: the
+  number of distinct values among the cells, numbers by value and text
+  case-sensitively. Neither LibreOffice nor Gnumeric has it or a dense rank.
 - An error among the rows is the result, except that `COUNT` skips errors,
   `COUNTA` counts them, the `…IF` functions skip rows whose criteria cell is
   an error, and `AGGREGATE`'s options 2, 3, 6 and 7 ignore them.

@@ -45,6 +45,12 @@ positional forms and recurrences, lookups, list results, `LET` and
   result table with just a `value` column. `recalc`, every sync mode,
   `what_if` (its `coord` is `{}`) and `status` handle it; `define` no
   longer refuses it.
+- **`RANK.DENSE(x OVER T, [order])` and `COUNTUNIQUE(x OVER T)`.**
+  `RANK.DENSE` equals SQL's `dense_rank() OVER (ORDER BY x DESC)`, ties
+  included (order 1 ranks ascending); `COUNTUNIQUE` (Google Sheets' name)
+  equals `count(DISTINCT x)`. The goldens are checked against PostgreSQL's
+  `dense_rank()` and `count(DISTINCT …)`; LibreOffice and Gnumeric have
+  neither function.
 - **A DuckDB extension, `improv`.** `improv_calc(formula, inputs)`
   evaluates any Improv formula on named inputs from a JSON object
   (`improv_calc('ROUND(PMT(rate/12, n, -pv), 2)', json_object(...))`),

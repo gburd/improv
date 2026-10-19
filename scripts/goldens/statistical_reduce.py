@@ -178,6 +178,25 @@ def growth(ds, g):
 GN = "Gnumeric definition (plugins/fn-stat)"
 QX = "Quantrix (plan §5.12, assumed)"
 
+def dense_rank(m, ascending=False):
+    """SQL's dense_rank() OVER (ORDER BY m DESC) (ASC with `ascending`): one
+    plus the number of distinct values ahead; no cell, no rank."""
+    def at(ds, g):
+        xs = cells(ds, m, g)
+        vals = sorted({float(v) for v in xs if v is not None})
+        ahead = (lambda x: sum(1 for v in vals if v < x)) if ascending else \
+            (lambda x: sum(1 for v in vals if v > x))
+        return [None if x is None else float(ahead(x) + 1) for x in xs]
+    return at
+
+
+def count_distinct(m):
+    """SQL's count(DISTINCT m): numbers by value, text case-sensitively."""
+    return lambda ds, g: float(len({v for v in cells(ds, m, g) if v is not None}))
+
+
+SQL = "PostgreSQL dense_rank() / count(DISTINCT)"
+
 # --- dataset A: one group, ties -----------------------------------------------
 many("A",
      "COUNT(X OVER T)", "COUNTA(C OVER T)", "COUNTBLANK(X OVER T)", "AVERAGEA(B OVER T)",
@@ -316,6 +335,14 @@ for f, t, ex in [
          percentrank("X", False, 4.5, 4))]:
     item("A", f, t, ex)
 
+for f, fn in [("RANK.DENSE(X OVER T)", dense_rank("X")),
+              ("RANK.DENSE(Y OVER T)", dense_rank("Y")),
+              ("RANK.DENSE(Y OVER T, 1)", dense_rank("Y", True)),
+              ("COUNTUNIQUE(X OVER T)", count_distinct("X")),
+              ("COUNTUNIQUE(Y OVER T)", count_distinct("Y")),
+              ("COUNTUNIQUE(C OVER T)", count_distinct("C"))]:
+    hand("A", f, fn, SQL)
+
 # --- dataset S: a single value -------------------------------------------------
 many("S",
      "COUNT(X OVER T)", "COUNTA(X OVER T)", "COUNTBLANK(X OVER T)", "AVERAGEA(X OVER T)",
@@ -362,6 +389,11 @@ hand("G", "EXPB(Y, X OVER T)", lambda ds, g: exp_fit(ds, g, False)[1], QX)
 for f, t in [("RANK(X OVER T)", "RANK(@X;X)"), ("RANK.AVG(X OVER T, 1)", "COM.MICROSOFT.RANK.AVG(@X;X;1)"),
              ("TREND(Y, X OVER T)", "FORECAST(@X;Y;X)")]:
     item("G", f, t)
+for f, fn in [("RANK.DENSE(X OVER T)", dense_rank("X")),
+              ("RANK.DENSE(X OVER T, 1)", dense_rank("X", True)),
+              ("COUNTUNIQUE(X OVER T)", count_distinct("X")),
+              ("COUNTUNIQUE(C OVER T)", count_distinct("C"))]:
+    hand("G", f, fn, SQL)
 hand("G", "GROWTH(Y, X OVER T)", growth, "least squares of ln y (LibreOffice's GROWTH rejects blanks)")
 
 # --- dataset N: negatives, zero, tied modes -------------------------------------
@@ -385,6 +417,9 @@ item("N", "PERCENTRANK(X OVER T)", "PERCENTRANK(X;@X)", percentrank("X", True))
 item("N", "PERCENTRANK.EXC(X OVER T)", "COM.MICROSOFT.PERCENTRANK.EXC(X;@X)",
      percentrank("X", False))
 hand("N", "POLYNOMIAL(3, X OVER T)", polynomial(3.0), "Numbers (plan §5.4)")
+hand("N", "RANK.DENSE(X OVER T)", dense_rank("X"), SQL)
+hand("N", "RANK.DENSE(X OVER T, 1)", dense_rank("X", True), SQL)
+hand("N", "COUNTUNIQUE(X OVER T)", count_distinct("X"), SQL)
 for f, t in [("RANK(X OVER T)", "RANK(@X;X)"), ("RANK.AVG(X OVER T)", "COM.MICROSOFT.RANK.AVG(@X;X)"),
              ("RANK.AVG(X OVER T, 1)", "COM.MICROSOFT.RANK.AVG(@X;X;1)"),
              ("TREND(Y, X OVER T)", "FORECAST(@X;Y;X)")]:

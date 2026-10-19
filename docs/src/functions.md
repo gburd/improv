@@ -426,6 +426,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `AVEDEV(values OVER T)` | number | the mean absolute deviation from the mean |
 | `COUNT(values OVER T)` | number | the number of numbers (and dates) (also `DCOUNT`) |
 | `COUNTA(values OVER T)` | number | the number of cells (errors included) (also `DCOUNTA`) |
+| `COUNTUNIQUE(values OVER T)` | number | the number of distinct values, SQL's count(DISTINCT …) (text compares case-sensitively; an error among them is the result) |
 | `COUNTBLANK(range OVER T)` | number | the number of items with no cell (or empty text) |
 | `COUNTIF(range OVER T, criteria)` | number | the number of cells meeting the criterion (">5", "<>x", "a*", 3) |
 | `COUNTIFS(criteria_range1 OVER T, criteria1, …)` | number | the number of rows where every criteria measure meets its criterion |
@@ -465,6 +466,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `RANK(ref OVER T, [order=0])` | number | each item's rank among the values (order 0, the default, ranks the largest 1) (also `RANK.EQ`) |
 | `RANK.AVG(ref OVER T, [order=0])` | number | each item's rank, ties sharing their mean rank |
 | `PERCENTRANK(array OVER T, [x], [significance=3])` | number | each item's (or x's) rank as a fraction 0 … 1, to significance (3) significant digits (also `PERCENTRANK.INC`) |
+| `RANK.DENSE(ref OVER T, [order=0])` | number | each item's dense rank: tied values share a rank and the next value ranks one after them, SQL's dense_rank() (order 0, the default, ranks the largest 1) |
 | `PERCENTRANK.EXC(array OVER T, [x], [significance=3])` | number | each item's (or x's) rank as a fraction, exclusive of 0 and 1 |
 | `TREND(known_ys, known_xs OVER T, [const=TRUE])` | number | each item's value on the least-squares line of y on x, at its own x (through 0 if const is FALSE) |
 | `GROWTH(known_ys, known_xs OVER T, [const=TRUE])` | number | each item's value on the least-squares curve y = b·mˣ (fitting ln y; b = 1 if const is FALSE) |

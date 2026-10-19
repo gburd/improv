@@ -193,6 +193,12 @@ A	PERCENTRANK(X OVER T, 2.5, 2)	[[0.35, 0.35, 0.35, 0.35, 0.35, 0.35, 0.35, 0.35
 A	PERCENTRANK(X OVER T, 7.3, 5)	[[0.91904, 0.91904, 0.91904, 0.91904, 0.91904, 0.91904, 0.91904, 0.91904]]	Excel docs
 A	PERCENTRANK.EXC(X OVER T)	[[0.444, 0.111, 0.555, 0.111, 0.666, 0.888, 0.333, 0.777]]	Excel docs
 A	PERCENTRANK.EXC(X OVER T, 4.5, 4)	[[0.6111, 0.6111, 0.6111, 0.6111, 0.6111, 0.6111, 0.6111, 0.6111]]	LibreOffice
+A	RANK.DENSE(X OVER T)	[[5.0, 7.0, 4.0, 7.0, 3.0, 1.0, 6.0, 2.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+A	RANK.DENSE(Y OVER T)	[[3.0, 2.0, 5.0, 1.0, 3.0, 1.0, 4.0, 1.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+A	RANK.DENSE(Y OVER T, 1)	[[3.0, 4.0, 1.0, 5.0, 3.0, 5.0, 2.0, 5.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+A	COUNTUNIQUE(X OVER T)	[7.0]	PostgreSQL dense_rank() / count(DISTINCT)
+A	COUNTUNIQUE(Y OVER T)	[5.0]	PostgreSQL dense_rank() / count(DISTINCT)
+A	COUNTUNIQUE(C OVER T)	[7.0]	PostgreSQL dense_rank() / count(DISTINCT)
 @S	{"T": 3, "m": {"X": [[7, null, null]], "Y": [[2, null, null]]}}
 S	COUNT(X OVER T)	[1.0]	LibreOffice
 S	COUNTA(X OVER T)	[1.0]	LibreOffice
@@ -278,6 +284,10 @@ G	EXPB(Y, X OVER T)	[0.02729212002482033, -0.22462015640575417]	Quantrix (plan ย
 G	RANK(X OVER T)	[[6.0, 4.0, 4.0, 3.0, 2.0, 1.0], [2.0, 3.0, 1.0, null, 3.0, 5.0]]	LibreOffice
 G	RANK.AVG(X OVER T, 1)	[[1.0, 2.5, 2.5, 4.0, 5.0, 6.0], [4.0, 2.5, 5.0, null, 2.5, 1.0]]	LibreOffice
 G	TREND(Y, X OVER T)	[[1.353448275862068, 2.344827586206896, 2.344827586206896, 4.327586206896552, 5.318965517241379, 6.310344827586206], [2.9214285714285717, 4.2785714285714285, 0.8857142857142857, null, 4.2785714285714285, 5.635714285714286]]	LibreOffice
+G	RANK.DENSE(X OVER T)	[[5.0, 4.0, 4.0, 3.0, 2.0, 1.0], [2.0, 3.0, 1.0, null, 3.0, 4.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+G	RANK.DENSE(X OVER T, 1)	[[1.0, 2.0, 2.0, 3.0, 4.0, 5.0], [3.0, 2.0, 4.0, null, 2.0, 1.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+G	COUNTUNIQUE(X OVER T)	[5.0, 4.0]	PostgreSQL dense_rank() / count(DISTINCT)
+G	COUNTUNIQUE(C OVER T)	[3.0, 3.0]	PostgreSQL dense_rank() / count(DISTINCT)
 G	GROWTH(Y, X OVER T)	[[1.6367323838757075, 2.184877229905683, 2.184877229905683, 3.893370780723253, 5.197268197406381, 6.937843384840414], [2.3046788570972496, 3.8857430510558024, 1.0527249732971753, null, 3.8857430510558024, 6.551454668979649]]	least squares of ln y (LibreOffice's GROWTH rejects blanks)
 @N	{"T": 7, "m": {"X": [[2.5, 4, 0, -1, null, -1, 4]], "Y": [[1, 2, 3, 4, null, 6, 7]]}}
 N	COUNT(X OVER T)	[6.0]	LibreOffice
@@ -314,6 +324,9 @@ N	AUTOCORREL(X OVER T)	[0.07656326932545554]	GSL definition
 N	PERCENTRANK(X OVER T)	[[0.6, 0.8, 0.4, 0.0, null, 0.0, 0.8]]	LibreOffice
 N	PERCENTRANK.EXC(X OVER T)	[[0.571, 0.714, 0.428, 0.142, null, 0.142, 0.714]]	Excel docs
 N	POLYNOMIAL(3, X OVER T)	[2660.5]	Numbers (plan ยง5.4)
+N	RANK.DENSE(X OVER T)	[[2.0, 1.0, 3.0, 4.0, null, 4.0, 1.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+N	RANK.DENSE(X OVER T, 1)	[[3.0, 4.0, 2.0, 1.0, null, 1.0, 4.0]]	PostgreSQL dense_rank() / count(DISTINCT)
+N	COUNTUNIQUE(X OVER T)	[4.0]	PostgreSQL dense_rank() / count(DISTINCT)
 N	RANK(X OVER T)	[[3.0, 1.0, 4.0, 5.0, null, 5.0, 1.0]]	LibreOffice
 N	RANK.AVG(X OVER T)	[[3.0, 1.5, 4.0, 5.5, null, 5.5, 1.5]]	LibreOffice
 N	RANK.AVG(X OVER T, 1)	[[4.0, 5.5, 3.0, 1.5, null, 1.5, 5.5]]	LibreOffice

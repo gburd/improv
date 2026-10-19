@@ -426,6 +426,20 @@ fn eval(id: u32, rows: &Rows, a: &[CellValue]) -> Num {
             let code = code_in(c, 1..=11)?;
             by_code(code, &rows.col(0).collect::<Vec<_>>(), 0.0)
         }
+        // Distinct values: numbers by value (0 and -0 agree), the rest
+        // exactly (text case-sensitively), as SQL's count(DISTINCT …).
+        1100 => {
+            let mut seen: Vec<CellValue> = rows
+                .col(0)
+                .map(|v| match number(v) {
+                    Some(x) if matches!(v, CellValue::Num(_)) => CellValue::num(x + 0.0),
+                    _ => v.clone(),
+                })
+                .collect();
+            seen.sort();
+            seen.dedup();
+            Ok(seen.len() as f64)
+        }
         1043 => Ok(sum(rows.vals.iter().map(|r| {
             r.iter().map(|v| number(v).unwrap_or(0.0)).product::<f64>()
         }))),
@@ -777,6 +791,25 @@ fn per_item_ok(id: u32, rows: &Rows, a: &[CellValue]) -> Result<Vec<Num>, u8> {
                     } else {
                         before + (ties as f64 + 1.0) / 2.0
                     })
+                })
+                .collect())
+        }
+        // RANK.DENSE: one plus the number of distinct values ranked ahead.
+        1056 => {
+            let ascending = n_or(a, 0, 0.0)? != 0.0;
+            let mut xs = xs();
+            xs.dedup();
+            Ok(rows
+                .vals
+                .iter()
+                .map(|r| {
+                    let x = own(r, 0)?;
+                    let ahead = if ascending {
+                        xs.partition_point(|v| *v < x)
+                    } else {
+                        xs.len() - xs.partition_point(|v| *v <= x)
+                    };
+                    Ok(ahead as f64 + 1.0)
                 })
                 .collect())
         }
@@ -1458,6 +1491,16 @@ mod tests {
             [3.0, 1.0, 4.0, 1.0, 5.0]
         );
         assert_eq!(nums(per_item(1051, &r, &[])), [3.0, 4.5, 2.0, 4.5, 1.0]);
+        // RANK.DENSE: 5 4 3 1 1 -> 1 2 3 4 4, ascending 1 1 2 3 4.
+        assert_eq!(nums(per_item(1056, &r, &[])), [3.0, 4.0, 2.0, 4.0, 1.0]);
+        assert_eq!(
+            nums(per_item(1056, &r, &[nv(1.0)])),
+            [2.0, 1.0, 3.0, 1.0, 4.0]
+        );
+        let z = r1(&[0.0, -0.0, 2.0, 2.0, 7.0]);
+        assert_eq!(nums(per_item(1056, &z, &[])), [3.0, 3.0, 2.0, 2.0, 1.0]);
+        assert_eq!(go(1100, &z, &[]), nv(3.0));
+        assert_eq!(go(1100, &r1(&[]), &[]), nv(0.0));
         assert_eq!(
             nums(per_item(1051, &r, &[nv(1.0)])),
             [3.0, 1.5, 4.0, 1.5, 5.0]
