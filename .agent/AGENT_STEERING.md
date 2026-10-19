@@ -81,7 +81,14 @@ expanded at compile time; non-recursive: the language stays total),
 multi-x `LINEST`, multi-key `SORTBY`. P7 DONE (674 functions, 4,103 golden
 rows); the customer requests (2026-10-18) added COALESCE, FILL, RELABEL,
 SWAP, RANK.DENSE, COUNTUNIQUE and FIXPOINT (681). pg_improv `commit` sync
-mode DONE. Mentat is `mentatdb` 1.16.0 from
+mode DONE. Customer requests (2026-10-18) DONE, answered in
+`docs/reviews/2026-10-19-customer-requests-response.md`: redefine/drop
+measures, dimensionless results, named LAMBDAs with category parameters
+(`improv.lambda`), `count_distinct`, incremental aggregated bindings and new
+items in logical mode (status counts applies/rebuilds; `tests/scale.sh`),
+scoped trigger loads. **Open:** FILL rebuilds on a new item; FIXPOINT is
+~14 s per solve on 1.5k nodes (each round feeds the whole iterate); commit
+mode still recomputes in full. Mentat is `mentatdb` 1.16.0 from
 crates.io (`6eb9023`).
 
 ## Released: v0.7.0 (2026-09-24)
