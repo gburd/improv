@@ -573,6 +573,40 @@ mod tests {
             .unwrap()
     }
 
+    /// P1-4: `agg => 'count_distinct'` counts each coordinate's distinct
+    /// values, in the load and in trigger mode; deleting one of two rows
+    /// that share a value keeps the count.
+    #[pg_test]
+    fn count_distinct_bindings_count_distinct_values() {
+        for sql in [
+            "CREATE TABLE contrib (person text, sha text)",
+            "INSERT INTO contrib VALUES ('ann', 'a1'), ('ann', 'a1'), ('ann', 'a2'), ('bob', 'b1')",
+            "SELECT improv.create_model('c')",
+            "SELECT improv.bind_category('c', 'Person', 'contrib', 'person')",
+            "SELECT improv.bind_measure('c', 'Commits', 'contrib', 'sha', agg => 'count_distinct')",
+            "SELECT improv.define('c', 'Shown = Commits * 1')",
+            "SELECT improv.set_sync_mode('c', 'trigger')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        let n = |p: &str| {
+            Spi::get_one::<f64>(&format!(
+                "SELECT (SELECT value FROM improv_c.shown WHERE person = '{p}')"
+            ))
+            .unwrap()
+        };
+        assert_eq!((n("ann"), n("bob")), (Some(2.0), Some(1.0)));
+        Spi::run(
+            "DELETE FROM contrib WHERE ctid = (SELECT min(ctid) FROM contrib WHERE sha = 'a1')",
+        )
+        .unwrap();
+        assert_eq!(n("ann"), Some(2.0));
+        Spi::run("DELETE FROM contrib WHERE sha = 'a1'").unwrap();
+        assert_eq!(n("ann"), Some(1.0));
+        Spi::run("INSERT INTO contrib VALUES ('bob', 'b1'), ('bob', 'b2'), ('cat', 'c1')").unwrap();
+        assert_eq!((n("bob"), n("cat")), (Some(2.0), Some(1.0)));
+    }
+
     /// Every entry point locks its model first; that must work as the first
     /// statement of a transaction, before anything has assigned an xid.
     #[pg_test]

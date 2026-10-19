@@ -175,7 +175,7 @@ PIVOT (SELECT * FROM improv('sales', '...') WHERE measure = 'Revenue')
 **Errors** fail the query and name the line:
 
 ```text
-improv: model line 2: Quantity: two source rows have the coordinate (2025, WidgetA); add an aggregation (sum, avg, min, max or count) to the input line
+improv: model line 2: Quantity: two source rows have the coordinate (2025, WidgetA); add an aggregation (sum, avg, min, max, count or count_distinct) to the input line
 improv: model line 1: the source has no column "yr" (it has: year, product, price, qty)
 improv: model line 7: definition: parse error at 12: unknown measure: Revnue
 ```

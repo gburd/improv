@@ -419,7 +419,7 @@ pub fn run(
                 line,
                 format!(
                     "{measure}: two source rows have the coordinate ({}); add an aggregation \
-                     (sum, avg, min, max or count) to the input line",
+                     (sum, avg, min, max, count or count_distinct) to the input line",
                     coord.join(", ")
                 ),
             )

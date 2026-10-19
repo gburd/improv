@@ -144,7 +144,7 @@ extension_sql!(
 -- these, and IF NOT EXISTS / OR REPLACE could adopt a hostile role's object
 -- (pgspot PS014/PS002). storage_pg keeps the idempotent forms.
 ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
-  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count'));
+  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count', 'count_distinct'));
 CREATE UNIQUE INDEX item_name_uniq ON improv.item (model_id, category_id, name);
 CREATE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
 RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql

@@ -172,10 +172,10 @@ measure has the type its formula gives (`Price > 15` is boolean):
 | `text`, `varchar`, `bpchar` | text | `text` |
 | `date`, `timestamp`, `timestamptz` | datetime (millisecond UTC) | `timestamptz` |
 
-Any other column type is an ERROR. `agg => 'count'` is a number; `sum` and
-`avg` need a number column. A derived measure's type changes only through
-`define(…, replace => true)`, which recreates its table; a result table
-found with another `value` type is an ERROR.
+Any other column type is an ERROR. `agg => 'count'` and `'count_distinct'`
+are numbers; `sum` and `avg` need a number column. A derived measure's type
+changes only through `define(…, replace => true)`, which recreates its table;
+a result table found with another `value` type is an ERROR.
 `what_if` edits and results are JSON of the measure's type: a number, a
 bool, a string, or a datetime as an RFC 3339 string (`"2026-01-02T00:00:00+00:00"`).
 
@@ -184,9 +184,10 @@ of input cells `recalc` loads; above it, `recalc` raises an ERROR.
 
 Bound data rules: a NULL value means no cell, and a row with a NULL dimension
 is skipped. Two rows on the same coordinate are an ERROR unless the
-measure was bound with `agg` (`sum`, `avg`, `min`, `max`, `count`), which
-folds them into one cell. Item ids for bound values are minted once, in
-lexical order, and are never reused.
+measure was bound with `agg` (`sum`, `avg`, `min`, `max`, `count`, or
+`count_distinct`, SQL's `count(DISTINCT value_col)`), which folds them into
+one cell. Item ids for bound values are minted once, in lexical order, and
+are never reused.
 
 ## Writing SQL functions in Improv's language
 

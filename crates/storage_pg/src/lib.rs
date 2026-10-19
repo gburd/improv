@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS improv.lambda (
 -- idempotent form (this runs against an existing database); the extension
 -- uses plain CREATE. Both pin mint_items' search_path.
 ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
-  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count'));
+  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count', 'count_distinct'));
 CREATE UNIQUE INDEX IF NOT EXISTS item_name_uniq ON improv.item (model_id, category_id, name);
 CREATE OR REPLACE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
 RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql
@@ -304,12 +304,15 @@ fn json_to_value(vt: ValueType, j: &serde_json::Value) -> Result<Value> {
     })
 }
 
-/// The SQL aggregate a `binding.agg` names.
-fn agg_fn(agg: &str) -> Result<&'static str> {
-    ["sum", "avg", "min", "max", "count"]
-        .into_iter()
-        .find(|a| *a == agg)
-        .ok_or_else(|| StoreError::Integrity(format!("unknown binding agg {agg:?}")))
+/// The SQL aggregate call a `binding.agg` names, over value expression `v`.
+fn agg_call(agg: &str, v: &str) -> Result<String> {
+    match agg {
+        "sum" | "avg" | "min" | "max" | "count" => Ok(format!("{agg}({v})")),
+        "count_distinct" => Ok(format!("count(DISTINCT {v})")),
+        _ => Err(StoreError::Integrity(format!(
+            "unknown binding agg {agg:?}"
+        ))),
+    }
 }
 
 fn value_type_of(model: &Model, m: MeasureId) -> Result<ValueType> {
@@ -355,7 +358,7 @@ struct Binding {
     value_col: String,
     /// `(category, column)`, in `dim_cols` key order.
     dims: Vec<(CategoryId, String)>,
-    /// `sum | avg | min | max | count`: rows per coordinate are aggregated
+    /// `sum | avg | min | max | count | count_distinct`: rows per coordinate are aggregated
     /// on load and the measure is read-only.
     agg: Option<String>,
 }
@@ -906,7 +909,7 @@ impl PgModelStore {
                 .collect();
             let mut v = ident(&b.value_col);
             if let Some(a) = b.agg.as_deref() {
-                v = format!("{}({v})", agg_fn(a)?);
+                v = agg_call(a, &v)?;
             }
             // A date/timestamp column as timestamptz: its JSON is RFC 3339.
             if vt == ValueType::DateTime {

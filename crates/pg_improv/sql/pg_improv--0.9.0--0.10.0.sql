@@ -31,3 +31,7 @@ CREATE TABLE improv.lambda (
     PRIMARY KEY (model_id, id)
 );
 SELECT pg_catalog.pg_extension_config_dump('improv.lambda', '');
+-- Distinct counting (P1-4): bind_measure(..., agg => 'count_distinct').
+ALTER TABLE improv.binding DROP CONSTRAINT binding_agg_check;
+ALTER TABLE improv.binding ADD CONSTRAINT binding_agg_check
+  CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count', 'count_distinct'));

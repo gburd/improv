@@ -966,7 +966,7 @@ pub fn bound_value_type(typname: &str, shown: &str, agg: Option<&str>) -> Result
         }
     };
     match agg.map(agg_sql).transpose()? {
-        Some("count") => Ok(ValueType::Number),
+        Some("count" | "count_distinct") => Ok(ValueType::Number),
         Some(a @ ("sum" | "avg")) if vt != ValueType::Number => Err(Error::Catalog(format!(
             "agg {a} needs a number column, not {shown}"
         ))),
@@ -1092,7 +1092,8 @@ pub fn select_result_sql(table: &str, dim_cols: &[String], vt: ValueType) -> Res
     Ok(format!("SELECT {} FROM {table}", cols.join(", ")))
 }
 
-/// The SQL aggregate a `binding.agg` names (`sum | avg | min | max | count`).
+/// The canonical name of a `binding.agg` (`sum | avg | min | max | count |
+/// count_distinct`); an error for anything else.
 pub fn agg_sql(agg: &str) -> Result<&'static str> {
     Ok(match agg {
         "sum" => "sum",
@@ -1100,11 +1101,21 @@ pub fn agg_sql(agg: &str) -> Result<&'static str> {
         "min" => "min",
         "max" => "max",
         "count" => "count",
+        "count_distinct" => "count_distinct",
         other => {
             return Err(Error::Catalog(format!(
-                "agg must be sum, avg, min, max or count, not {other:?}"
+                "agg must be sum, avg, min, max, count or count_distinct, not {other:?}"
             )))
         }
+    })
+}
+
+/// The SQL aggregate call of `binding.agg` `agg` over the (quoted) value
+/// expression `v`: `sum(v)`, …, `count(DISTINCT v)`.
+pub fn agg_call(agg: &str, v: &str) -> Result<String> {
+    Ok(match agg_sql(agg)? {
+        "count_distinct" => format!("count(DISTINCT {v})"),
+        a => format!("{a}({v})"),
     })
 }
 
@@ -1135,7 +1146,7 @@ pub fn select_bound_sql(
             format!(
                 "SELECT {}, {} FROM {rel} GROUP BY {}",
                 dims.join(", "),
-                read_expr(vt, &format!("{}({v})", agg_sql(a)?))?,
+                read_expr(vt, &agg_call(a, &v)?)?,
                 by.join(", ")
             )
         }
@@ -1538,6 +1549,11 @@ mod tests {
         );
         assert!(select_bound_sql("s", &cols, "price", Some("median; --"), num).is_err());
         assert_eq!(agg_sql("count").unwrap(), "count");
+        assert_eq!(
+            select_bound_sql("s", &cols, "sha", Some("count_distinct"), num).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, count(DISTINCT \"sha\")::float8 \
+             FROM s GROUP BY 1, 2"
+        );
     }
 
     #[test]
@@ -2094,6 +2110,10 @@ mod tests {
             assert_eq!(vt(t, None).unwrap(), want, "{t}");
         }
         assert_eq!(vt("text", Some("count")).unwrap(), ValueType::Number);
+        assert_eq!(
+            vt("text", Some("count_distinct")).unwrap(),
+            ValueType::Number
+        );
         assert_eq!(vt("bool", Some("max")).unwrap(), ValueType::Boolean);
         assert!(matches!(vt("jsonb", None), Err(Error::Catalog(m)) if m.contains("type jsonb")));
         assert!(matches!(vt("text", Some("sum")), Err(Error::Catalog(m)) if m.contains("number")));

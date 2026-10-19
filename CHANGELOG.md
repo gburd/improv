@@ -83,6 +83,11 @@ positional forms and recurrences, lookups, list results, `LET` and
   equals `count(DISTINCT x)`. The goldens are checked against PostgreSQL's
   `dense_rank()` and `count(DISTINCT …)`; LibreOffice and Gnumeric have
   neither function.
+- **pg_improv: distinct counting.** `improv.bind_measure(model, measure,
+  rel, key_col, agg => 'count_distinct')` counts each coordinate's distinct
+  `key_col` values, as `count(DISTINCT key_col)` does (the result is a
+  number). The `improv.binding.agg` CHECK accepts it; the 0.9.0 → 0.10.0
+  update script widens it. DuckDB's `input X = col count_distinct` too.
 - **A DuckDB extension, `improv`.** `improv_calc(formula, inputs)`
   evaluates any Improv formula on named inputs from a JSON object
   (`improv_calc('ROUND(PMT(rate/12, n, -pv), 2)', json_object(...))`),
