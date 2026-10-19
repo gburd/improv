@@ -92,6 +92,14 @@ positional forms and recurrences, lookups, list results, `LET` and
   the relation's cells without a rebuild too. Relations an aggregated
   binding reads get `REPLICA IDENTITY FULL`. A text `min`/`max` binding
   still rebuilds on change.
+- **pg_improv: new items without a rebuild in logical mode.** A row with
+  a dimension value the model has no item for no longer rebuilds the
+  model: the worker mints the item through `improv.mint_items` in its
+  own transaction (same ids and order as a load) and feeds the row to the
+  live engine. It still rebuilds when a formula reads that category's
+  item list (`POSITION`, `PREV`/`NEXT`, windows, `INTO`, `FILL`, `RANK`,
+  …; the README lists them). `improv_engine::session::Engine::serves`
+  tells whether a grown model still compiles to the engine's graph.
 - **pg_improv: distinct counting.** `improv.bind_measure(model, measure,
   rel, key_col, agg => 'count_distinct')` counts each coordinate's distinct
   `key_col` values, as `count(DISTINCT key_col)` does (the result is a

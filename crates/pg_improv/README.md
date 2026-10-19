@@ -380,13 +380,28 @@ and `count_distinct`, so deleting one of two rows that share a key keeps
 the count. Each change takes its old row out of its coordinate's fold and
 puts its new row into its (maybe other) coordinate's; the relation gets
 `REPLICA IDENTITY FULL` so its old rows carry their values. A `TRUNCATE`
-removes the relation's cells. The worker rebuilds (a full load and
-recompute, diffed against the result tables) when the model's structure
-changed (`model_version` moved: a new measure, binding or formula), when a
-change brings a dimension value with no item yet (it mints the item), when
-two rows land on one coordinate of a measure bound without `agg`, on any
-change to a text `min` or `max` binding (text order is the collation's),
-and after any error. A rebuild costs what a `recalc` costs.
+removes the relation's cells. A dimension value with no item yet is minted
+through `improv.mint_items` in the worker's transaction (the same ids, in
+the same order, as a `recalc` would mint), and its cells go to the live
+engine as edits.
+
+The worker rebuilds (a full load and recompute, diffed against the result
+tables) when:
+
+- the model's structure changed (`model_version` moved: a new measure,
+  binding or formula);
+- a new item lands in a category whose item list a formula reads:
+  `POSITION`, `@ITEM`, `@ITEMCOUNT`, `PREV`/`NEXT` and recurrences along
+  it, a window (`OVER T[FIRST..THIS]`), a per-item or `INTO` reduction
+  (`RANK`, `SORT`), `FILL`, or any reduction over it other than `SUM`,
+  `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `SUMSQ`, `AND`, `OR`, `XOR`, `COUNT`
+  and `COUNTA` (those read only their rows' values, so a new item reaches
+  them as data);
+- two rows land on one coordinate of a measure bound without `agg`;
+- a text `min` or `max` binding changes (text order is the collation's);
+- or after any error.
+
+A rebuild costs what a `recalc` costs.
 The loaded model counts against `improv.max_cells`; leaving logical mode or
 dropping the model frees it.
 

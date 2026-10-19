@@ -242,23 +242,36 @@ fn id32(v: i64) -> Res<u32> {
 /// through `improv.mint_items` (the one minter, shared with the GUI's store),
 /// and add them to `m`. Minting is append-only: no `model_version` bump.
 fn mint_items(mid: i64, m: &mut Model, bound: &[pm::BoundRows]) -> Res<()> {
-    let new = pm::unknown_items(m, bound)?;
+    for (cat, name, id) in mint(mid, pm::unknown_items(m, bound)?)? {
+        m.add_item(id, cat, name);
+    }
+    Ok(())
+}
+
+/// Mint `new` `(category, name)` pairs through `improv.mint_items` (ids
+/// above the model's highest, in category-then-name order; a name another
+/// transaction minted first keeps its id). Returns each item.
+fn mint(mid: i64, new: Vec<(CategoryId, String)>) -> Res<Vec<(CategoryId, String, ItemId)>> {
     if new.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
     let (cats, names): (Vec<i64>, Vec<String>) =
         new.into_iter().map(|(c, n)| (i64::from(c.0), n)).unzip();
     Spi::connect_mut(|c| {
         let t = c.update(
-            "SELECT category_id, name, id FROM improv.mint_items($1, $2::int8[], $3::text[])",
+            "SELECT category_id, name, id FROM improv.mint_items($1, $2::int8[], $3::text[]) \
+             ORDER BY id",
             None,
             &[mid.into(), cats.into(), names.into()],
         )?;
-        for r in t {
-            let cat = CategoryId(id32(req(&r, 1)?)?);
-            m.add_item(ItemId(id32(req(&r, 3)?)?), cat, req::<String>(&r, 2)?);
-        }
-        Ok(())
+        t.map(|r| {
+            Ok((
+                CategoryId(id32(req(&r, 1)?)?),
+                req::<String>(&r, 2)?,
+                ItemId(id32(req(&r, 3)?)?),
+            ))
+        })
+        .collect()
     })
 }
 

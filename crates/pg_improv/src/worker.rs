@@ -25,7 +25,9 @@
 //! the result tables) when there is no live state or the model's
 //! `model_version` moved (a structural change such as `define`, checked on
 //! every poll, data change or not), and when a batch cannot be applied cell
-//! by cell (a new dimension value, …). Aggregated bindings keep fold state
+//! by cell (two rows on one coordinate, or a new item in a category whose
+//! item list a formula reads: see [`Engine::serves`]). New dimension values
+//! are minted in the worker's transaction. Aggregated bindings keep fold state
 //! in the mapper, seeded at each rebuild ([`seed_folds`]). Any error drops
 //! the live state, so the next poll rebuilds from the tables.
 
@@ -45,7 +47,8 @@ use pgrx::prelude::*;
 use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting};
 
 use super::{
-    bump_version, ensure_table, id32, lock_model, read_results, req, write_results, Res, MAX_CELLS,
+    bump_version, ensure_table, id32, lock_model, mint, read_results, req, write_results, Res,
+    MAX_CELLS,
 };
 
 /// `improv.database`: the database the sync worker connects to.
@@ -593,7 +596,7 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
         // for it must not see its results overwritten by the old formula.
         let version = model_version(mid)?;
         let applied = match state.as_mut() {
-            Some(l) if l.version == version && l.name == name => apply(l, &stream)?,
+            Some(l) if l.version == version && l.name == name => apply(mid, l, &stream)?,
             _ => Err(Rebuild("no live state")),
         };
         match applied {
@@ -636,8 +639,20 @@ fn model_version(mid: i64) -> Res<i64> {
 
 /// Apply a batch to live state `l` incrementally and write the changed
 /// result rows; `Ok(Err(_))` when the batch needs a rebuild instead (then
-/// `l` is stale: drop it).
-fn apply(l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, Rebuild>> {
+/// `l` is stale: drop it). Dimension values with no item yet are minted
+/// first, in this (the worker's) transaction; the engine keeps going when
+/// its plans do not read the item lists that grew ([`Engine::serves`]).
+fn apply(mid: i64, l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, Rebuild>> {
+    let new = l.mapper.unknown(&stream.relations, &stream.done);
+    if !new.is_empty() {
+        for (cat, name, id) in mint(mid, new)? {
+            l.mapper.add_item(cat, &name, id);
+            l.model.add_item(id, cat, name);
+        }
+        if !l.engine.serves(&l.model)? {
+            return Ok(Err(Rebuild("new item in a category a formula enumerates")));
+        }
+    }
     let edits = match l.mapper.map(
         &mut l.model,
         &stream.relations,

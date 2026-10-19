@@ -4,10 +4,12 @@
 //! per model. [`Mapper::map`] turns one batch of committed row changes into
 //! the input-cell [`Edit`]s it makes (one per touched cell, its final value),
 //! or says the batch cannot be applied cell by cell ([`Rebuild`]) and the
-//! caller must reload the model: a dimension value with no item yet, two
-//! rows on one coordinate of a binding without `agg`, a value the loader
-//! would not read, or an old row whose values were not replicated. A
-//! TRUNCATE removes every cell its relation's bindings feed.
+//! caller must reload the model: two rows on one coordinate of a binding
+//! without `agg`, a value the loader would not read, or an old row whose
+//! values were not replicated. A TRUNCATE removes every cell its
+//! relation's bindings feed. Dimension values with no item yet are listed
+//! by [`Mapper::unknown`]: the caller mints them (`improv.mint_items`) and
+//! adds them ([`Mapper::add_item`]) before mapping.
 //!
 //! Aggregated bindings (`improv.binding.agg`) keep per-coordinate fold state
 //! ([`Fold`]): the row counts, an exact total for `sum` and `avg`, and for
@@ -230,6 +232,51 @@ impl Mapper {
     /// Whether relation `oid` feeds the model.
     pub fn binds(&self, oid: u32) -> bool {
         self.bindings.contains_key(&oid)
+    }
+
+    /// The dimension values in `txns`' rows of bound relations (old rows
+    /// and new, as the loader's `::text` reads them) that have no item yet,
+    /// sorted. As the loader does, a row's non-NULL values count even when
+    /// another of its dimensions is NULL.
+    pub fn unknown(
+        &self,
+        rels: &HashMap<u32, Relation>,
+        txns: &[Txn],
+    ) -> Vec<(CategoryId, String)> {
+        let mut out = BTreeSet::new();
+        for change in txns.iter().flat_map(|t| &t.changes) {
+            let (rel, tuples) = match change {
+                Message::Insert { rel, new } => (rel, [None, Some(new)]),
+                Message::Update { rel, old, new } => (rel, [old.as_ref(), Some(new)]),
+                Message::Delete { rel, old } => (rel, [Some(old), None]),
+                _ => continue,
+            };
+            let (Some(bs), Some(r)) = (self.bindings.get(rel), rels.get(rel)) else {
+                continue;
+            };
+            for (b, t) in bs
+                .iter()
+                .flat_map(|b| tuples.iter().flatten().map(move |t| (b, t)))
+            {
+                for (cat, col) in &b.dims {
+                    let Ok(Some(name)) = dim_name(r, col, t) else {
+                        continue;
+                    };
+                    if !self.items.get(cat).is_some_and(|m| m.contains_key(&name)) {
+                        out.insert((*cat, name));
+                    }
+                }
+            }
+        }
+        out.into_iter().collect()
+    }
+
+    /// Add item `id`, named `name`, of category `cat` (minted by the caller).
+    pub fn add_item(&mut self, cat: CategoryId, name: &str, id: ItemId) {
+        self.items
+            .entry(cat)
+            .or_default()
+            .insert(name.to_string(), id);
     }
 
     /// Load aggregated measure `measure`'s fold state from the rows of its
@@ -548,14 +595,34 @@ fn coord(
 ) -> Result<Option<Coordinate>, Rebuild> {
     let mut names = Vec::with_capacity(b.dims.len());
     for (_, col) in &b.dims {
-        names.push(match r.get(t, col) {
-            None => return Err(Rebuild("bound column missing")),
-            Some(Datum::Null) => None,
-            Some(Datum::Unchanged) => return Err(Rebuild("unchanged TOAST value")),
-            Some(Datum::Text(s)) => Some(s.as_str()),
-        });
+        names.push(dim_name(r, col, t)?);
     }
+    let names: Vec<Option<&str>> = names.iter().map(Option::as_deref).collect();
     coord_of(items, b, &names)
+}
+
+/// Dimension column `col` of tuple `t` as the loader's `col::text` reads
+/// it: a `bool` as `true`/`false` (`pgoutput` sends `t`/`f`), `char(n)`
+/// without its padding, anything else as `pgoutput` sends it. `None` for
+/// NULL.
+fn dim_name(r: &Relation, col: &str, t: &Tuple) -> Result<Option<String>, Rebuild> {
+    let s = match r.get(t, col) {
+        None => return Err(Rebuild("bound column missing")),
+        Some(Datum::Null) => return Ok(None),
+        Some(Datum::Unchanged) => return Err(Rebuild("unchanged TOAST value")),
+        Some(Datum::Text(s)) => s,
+    };
+    let oid = r
+        .columns
+        .iter()
+        .find(|c| c.name == col)
+        .map_or(0, |c| c.type_oid);
+    Ok(Some(match (oid, s.as_str()) {
+        (BOOL, "t") => "true".into(),
+        (BOOL, "f") => "false".into(),
+        (BPCHAR, s) => s.trim_end_matches(' ').into(),
+        (_, s) => s.into(),
+    }))
 }
 
 /// The coordinate of dimension values `names` (in `b.dims` order); `None`
@@ -1374,6 +1441,71 @@ mod tests {
         assert_eq!(
             mp.map(&mut m, &r, &later, 9).err(),
             Some(Rebuild("two rows on one coordinate"))
+        );
+    }
+
+    #[test]
+    fn new_dimension_values_are_listed_then_minted() {
+        let mut m = model();
+        let mut mp = mapper(&m, None);
+        let r = rels(b'f', &[]);
+        let batch = txn(vec![
+            ins(full("Q3", "1")),
+            ins(row(Some("Q4"), None, Some("1"))),
+            upd(
+                Some(full("Q1", "1")),
+                row(Some("Q1"), Some("P2"), Some("2")),
+            ),
+            del(full("Q3", "1")),
+            ins(full("Q1", "9")),
+        ]);
+        assert_eq!(
+            mp.unknown(&r, &batch),
+            [
+                (CategoryId(1), "Q3".to_string()),
+                (CategoryId(1), "Q4".into()),
+                (CategoryId(2), "P2".into())
+            ]
+        );
+        assert_eq!(
+            mp.map(&mut m, &r, &batch, 0).err(),
+            Some(Rebuild("new item"))
+        );
+        let mut m = model();
+        for (cat, name, id) in [(1, "Q3", 31), (1, "Q4", 32), (2, "P2", 33)] {
+            m.add_item(ItemId(id), CategoryId(cat), name);
+            mp.add_item(CategoryId(cat), name, ItemId(id));
+        }
+        assert!(mp.unknown(&r, &batch).is_empty());
+        let edits = mp.map(&mut m, &r, &batch, 0).unwrap();
+        let got: Vec<_> = edits
+            .iter()
+            .map(|e| (e.coord.clone(), e.value.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (key(11, 21), Some(CellValue::num(9.0))),
+                (key(11, 33), Some(CellValue::num(2.0))),
+            ]
+        );
+    }
+
+    #[test]
+    fn dimension_names_read_as_the_loader_casts_them() {
+        let mut r = rels(b'f', &[]);
+        r.get_mut(&F).unwrap().columns[0].type_oid = BOOL;
+        r.get_mut(&F).unwrap().columns[1].type_oid = BPCHAR;
+        let f = &r[&F];
+        let t = row(Some("t"), Some("P1  "), Some("1"));
+        assert_eq!(dim_name(f, "quarter", &t), Ok(Some("true".into())));
+        assert_eq!(dim_name(f, "product", &t), Ok(Some("P1".into())));
+        let t = row(Some("f"), None, Some("1"));
+        assert_eq!(dim_name(f, "quarter", &t), Ok(Some("false".into())));
+        assert_eq!(dim_name(f, "product", &t), Ok(None));
+        assert_eq!(
+            dim_name(f, "nope", &t),
+            Err(Rebuild("bound column missing"))
         );
     }
 

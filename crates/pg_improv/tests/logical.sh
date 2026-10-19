@@ -83,12 +83,20 @@ sleep 0.5
 [ "$(q "$REV")" = "1100" ] || { echo "FAIL: rollback leaked"; exit 1; }
 echo "ok: rolled-back UPDATE did not propagate"
 
-# 4. INSERT of a new item and DELETE
+# 4. INSERT of a new item and DELETE: the worker mints the item and applies
+#    the row without a rebuild (no formula enumerates Product's items)
+logpos=$(wc -c <"$D/log")
 q "INSERT INTO sales VALUES ('Q1','Gizmo',5,10)"
 wait_for "SELECT value FROM improv_plan.revenue WHERE time='Q1' AND product='Gizmo'" 50 "insert Gizmo" >/dev/null
+wait_for "SELECT value FROM improv_plan.total WHERE product='Gizmo'" 50 "total Gizmo" >/dev/null
 q "DELETE FROM sales WHERE product='Gizmo'"
 wait_for "SELECT count(*) FROM improv_plan.revenue WHERE product='Gizmo'" 0 "delete Gizmo" >/dev/null
-echo "ok: INSERT (new item) and DELETE propagated"
+[ "$(q "SELECT count(*) FROM improv.item i JOIN improv.model m ON m.id = i.model_id WHERE m.name = 'plan' AND i.name = 'Gizmo'")" = 1 ] \
+	|| { echo "FAIL: Gizmo was not minted once"; exit 1; }
+if tail -c +$((logpos + 1)) "$D/log" | grep -q "model plan: rebuilding"; then
+	echo "FAIL: a new item rebuilt the model"; exit 1
+fi
+echo "ok: INSERT (new item, minted without a rebuild) and DELETE propagated"
 
 # 5. kill the worker mid-stream; commits while it is down are not lost
 q "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE backend_type = 'pg_improv sync'" >/dev/null
@@ -254,7 +262,8 @@ q "INSERT INTO facts VALUES (0, 'p0', 2020, 'warm', 100)"
 wait_for "SELECT value FROM improv_folds.r_max WHERE person='p0' AND year='2020'" 100 "folds catch-up" >/dev/null
 logpos=$(wc -c <"$D/log")
 for i in $(seq 1 20); do
-	q "INSERT INTO facts SELECT 1000*$i + g, 'p'||(g%$NP), 2020+g%$NY, 'n'||(g%3), g%9 FROM generate_series(1, 5) g;
+	# one more person and year than the load saw: new items, minted live
+	q "INSERT INTO facts SELECT 1000*$i + g, 'p'||(g%($NP+1)), 2020+g%($NY+1), 'n'||(g%3), g%9 FROM generate_series(1, 5) g;
 	   UPDATE facts SET person = 'p'||((id + $i) % $NP), n = n + 1
 	     WHERE id IN (SELECT id FROM facts ORDER BY md5(id||'u'||$i) LIMIT 3);
 	   DELETE FROM facts WHERE id IN (SELECT id FROM facts ORDER BY md5(id||'d'||$i) LIMIT 4)"
@@ -274,7 +283,26 @@ if tail -c +$((logpos + 1)) "$D/log" | grep -q "model folds: rebuilding"; then
 	echo "FAIL: an aggregated batch rebuilt the model:"
 	tail -c +$((logpos + 1)) "$D/log" | grep "model folds: rebuilding"; exit 1
 fi
-echo "ok: $AGGS follow 20 random INSERT/UPDATE/DELETE batches with no rebuild"
+[ "$(q "SELECT count(*) FROM improv_folds.r_count WHERE person = 'p$NP' OR year = '$((2020 + NY))'")" -gt 0 ] \
+	|| { echo "FAIL: the batches brought no new item"; exit 1; }
+echo "ok: $AGGS follow 20 random INSERT/UPDATE/DELETE batches (new items too) with no rebuild"
+
+# 10c. a formula that enumerates a category's items (POSITION) rebuilds when
+#      the category gains one, and is right afterwards
+q "CREATE TABLE ranked (product text PRIMARY KEY, v float8)"
+q "INSERT INTO ranked VALUES ('A', 1), ('C', 3)"
+q "SELECT improv.create_model('pos')"
+q "SELECT improv.bind_category('pos','Product','ranked','product')"
+q "SELECT improv.bind_measure('pos','V','ranked','v')"
+q "SELECT improv.define('pos','Pos = POSITION(Product) + 0 * V')"
+q "UPDATE ranked SET v = 2 WHERE product = 'A'" # warm the live state
+wait_for "SELECT value FROM improv_pos.pos WHERE product='C'" 2 "pos catch-up" >/dev/null
+logpos=$(wc -c <"$D/log")
+q "INSERT INTO ranked VALUES ('B', 2)"
+wait_for "SELECT value FROM improv_pos.pos WHERE product='B'" 3 "pos of a new item" >/dev/null
+tail -c +$((logpos + 1)) "$D/log" | grep -q "model pos: rebuilding (new item in a category a formula enumerates)" \
+	|| { echo "FAIL: a new item under POSITION did not rebuild"; exit 1; }
+echo "ok: a new item in a category POSITION enumerates rebuilds (B is item 3)"
 
 # 11. typed measures: a numeric input feeds a derived boolean
 q "CREATE TABLE goods (product text PRIMARY KEY, price numeric)"
