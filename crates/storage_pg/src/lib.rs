@@ -656,22 +656,19 @@ impl PgModelStore {
                 None => "postgres connect failed (connection error)".into(),
             })
         })?;
-        let installed: bool = client
-            .query_one(
-                // The newest catalog object: an older catalog is upgraded in
-                // place (CATALOG_SQL is idempotent).
-                "SELECT to_regprocedure('improv.mint_items(bigint, bigint[], text[])') IS NOT NULL",
-                &[],
-            )?
-            .get(0);
-        if !installed {
-            let mut tx = client.transaction()?;
-            tx.execute(
-                "SELECT pg_advisory_xact_lock(hashtext('improv.catalog'))",
-                &[],
-            )?;
-            tx.batch_execute(CATALOG_SQL)?;
-            tx.commit()?;
+        // The newest catalog object: an older catalog is upgraded in place
+        // (CATALOG_SQL is idempotent).
+        const INSTALLED: &str =
+            "SELECT to_regprocedure('improv.mint_items(bigint, bigint[], text[])') IS NOT NULL";
+        if !client.query_one(INSTALLED, &[])?.get::<_, bool>(0) {
+            // A session lock, so the check below starts a new transaction
+            // and sees a catalog another client installed meanwhile: its
+            // DDL rerun against that client's writes would deadlock.
+            client.execute("SELECT pg_advisory_lock(hashtext('improv.catalog'))", &[])?;
+            if !client.query_one(INSTALLED, &[])?.get::<_, bool>(0) {
+                client.batch_execute(&format!("BEGIN; {CATALOG_SQL} COMMIT;"))?;
+            }
+            client.execute("SELECT pg_advisory_unlock(hashtext('improv.catalog'))", &[])?;
         }
         let model_id: i64 = client
             .query_one(
