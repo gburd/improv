@@ -572,7 +572,7 @@ fn igamma_left(a: Cx, z: Cx) -> Option<(Cx, bool)> {
         let e1 = series(z, |k| cx(k, 0.0))
             .neg()
             .sub(z.ln())
-            .sub(cx(EULER_GAMMA, 0.0));
+            .sub(cx(std::f64::consts::EULER_GAMMA, 0.0));
         let w = z.neg().exp();
         let g = (1..=m).fold(e1, |g, j| {
             let j = f64::from(j);
@@ -583,9 +583,6 @@ fn igamma_left(a: Cx, z: Cx) -> Option<(Cx, bool)> {
     let s = series(z, |k| a.add(cx(k, 0.0))).add(a.recip());
     Some((z.pow(a).mul(s), true))
 }
-
-/// The Euler–Mascheroni constant γₑ.
-const EULER_GAMMA: f64 = 0.577_215_664_901_532_9;
 
 /// Σ_{k ≥ 1} (−z)^k / (k! · den(k)), until a term no longer moves the sum.
 /// It ends: past k = |z| the terms shrink geometrically (to 0 at worst),

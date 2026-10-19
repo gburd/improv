@@ -12,7 +12,7 @@
 //! adds them ([`Mapper::add_item`]) before mapping.
 //!
 //! Aggregated bindings (`improv.binding.agg`) keep per-coordinate fold state
-//! ([`Fold`]): the row counts, an exact total for `sum` and `avg`, and for
+//! (`Fold`): the row counts, an exact total for `sum` and `avg`, and for
 //! `min`, `max` and `count_distinct` each distinct value's row count, so
 //! deleting one of two rows that share a value keeps it. [`Mapper::seed`]
 //! loads that state at a rebuild; each change then removes its old row from
