@@ -167,22 +167,29 @@ fn wide() {
 
 /// §3c: one category of `PROBE_ITEMS` items (100), `PROBE_N` measures in a
 /// `fan` (`Mk = X + k`) or `chain` (`Mk = Mk-1 + 1`); edit one root cell.
+/// `split` is a fan whose measures but the first read another input `Z`,
+/// so the edit reaches one measure.
 #[test]
 #[ignore = "probe; run with --ignored --nocapture"]
 fn measures() {
     let n = env_or("PROBE_N", 2_000);
     let items = env_or("PROBE_ITEMS", 100);
     let edits = env_or("PROBE_EDITS", 20);
-    let chain = std::env::var("PROBE_SHAPE").is_ok_and(|s| s == "chain");
+    let shape_name = std::env::var("PROBE_SHAPE").unwrap_or_else(|_| "fan".into());
+    let chain = shape_name == "chain";
+    let split = shape_name == "split";
     let mut m = Model::new();
     let c = category(&mut m, W, "C", 1_000_000, items);
     input(&mut m, X.0, "X", vec![CategoryId(W)]);
+    input(&mut m, Y.0, "Z", vec![CategoryId(W)]);
     for (i, it) in c.iter().enumerate() {
-        m.set_input(
-            X,
-            Coordinate::from_pairs([(CategoryId(W), *it)]),
-            Value::Number(i as f64),
-        );
+        for id in [X, Y] {
+            m.set_input(
+                id,
+                Coordinate::from_pairs([(CategoryId(W), *it)]),
+                Value::Number(i as f64),
+            );
+        }
     }
     let t0 = Instant::now();
     let mut targets = Vec::new();
@@ -194,6 +201,8 @@ fn measures() {
                 format!("M{}", k - 1)
             };
             format!("M{k} = {prev} + 1")
+        } else if split && k > 1 {
+            format!("M{k} = Z + {k}")
         } else {
             format!("M{k} = X + {k}")
         };
@@ -216,8 +225,14 @@ fn measures() {
             .set(X, vec![(W, c[0].0)], 1000.0 + e as f64)
             .expect("set");
         lat.push(t.elapsed());
-        let last = s.get(targets.last().unwrap()).unwrap();
-        let want = 1000.0 + e as f64 + n as f64;
+        let (last, want) = if split {
+            (s.get(&targets[0]).unwrap(), 1001.0 + e as f64)
+        } else {
+            (
+                s.get(targets.last().unwrap()).unwrap(),
+                1000.0 + e as f64 + n as f64,
+            )
+        };
         assert_eq!(
             last.get(&vec![(W, c[0].0)]).and_then(|v| v.as_num()),
             Some(want)
@@ -226,7 +241,7 @@ fn measures() {
     eprintln!(
         "[measures] {} n={n} items={items}: parse+shape {shape:?}, evaluate {eval:?}, \
          Engine::new {new:?}; root edit {}",
-        if chain { "chain" } else { "fan" },
+        shape_name,
         stats(lat)
     );
 }

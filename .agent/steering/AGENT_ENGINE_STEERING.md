@@ -289,6 +289,18 @@ Goals:
 Techniques: incremental recalculation (only deltas), topological scheduling,
 DD operator parallelism, and cached view slices.
 
+**Per-measure cost.** Every operator of every tracked measure is a timely
+operator, and an edit round moves every frontier, so a round costs
+progress tracking (`propagate_pointstamps`, its `BinaryHeap`) per operator
+even where no data moves. Two things keep the operator count down:
+`build_derived` does not collapse (a `reduce`, so an arrangement) a
+measure whose plan is a map of an input or of another such measure
+(`dataflow::functional`: inputs hold one value per key, and maps keep the
+order the session sent, so the snapshot's +1/-1 rule still holds), and the
+worker attaches one probe to the concatenation of every output rather than
+one per measure. At 20,000 `Mk = X + k` measures an edit went from 734 ms
+to 131 ms, and memory from 3.4 GB to 1.4 GB.
+
 ---
 
 ## 14. Testing Strategy

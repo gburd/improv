@@ -28,7 +28,7 @@ use improv_core_model::{
 };
 #[cfg(test)]
 use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use timely::dataflow::operators::ToStream;
 use timely::dataflow::Scope;
@@ -1029,9 +1029,28 @@ pub(crate) fn compile_plans(
         .collect()
 }
 
+/// Whether `p`'s collection has one value per key, each once, given that
+/// the measures in `f` do: a map (unary, or binary with a literal side) of
+/// such a measure. Its collection needs no collapse.
+pub(crate) fn functional(p: &PlanNode, f: &HashSet<MeasureId>) -> bool {
+    match &p.kind {
+        PlanNodeKind::InputMeasure(m) => f.contains(m),
+        PlanNodeKind::MapUnary(_, a) => functional(a, f),
+        PlanNodeKind::MapBinary(_, a, b) => match (literal_value(a), literal_value(b)) {
+            (Some(_), None) => functional(b, f),
+            (None, Some(_)) => functional(a, f),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Build each plan's collection, collapsed to one value per key, in order (so
 /// a later plan can reference an earlier one). A plan that fails to build, such
-/// as a ref to an input measure with no collection, is left out.
+/// as a ref to an input measure with no collection, is left out. Input
+/// collections hold one value per key, so a [`functional`] plan's needs no
+/// collapse: skipping it saves an arrangement per measure, and a chain of
+/// such measures settles in one scheduling step rather than one per link.
 pub(crate) fn build_derived<G: Scope>(
     scope: &mut G,
     plans: &[(MeasureId, PlanNode)],
@@ -1042,10 +1061,17 @@ where
 {
     let mut derived = HashMap::new();
     let mut built = Vec::new();
+    let mut flat: HashSet<MeasureId> = inputs.keys().copied().collect();
     for (mid, plan) in plans {
         let Ok(coll) = build_coll(plan, scope, inputs, &derived) else {
             continue;
         };
+        if functional(plan, &flat) {
+            flat.insert(*mid);
+            derived.insert(*mid, coll.clone());
+            built.push((*mid, coll));
+            continue;
+        }
         let reduced = coll.reduce(|_k, inp, out| {
             for (val, mult) in inp {
                 if *mult > 0 {

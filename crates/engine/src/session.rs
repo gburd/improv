@@ -29,6 +29,7 @@ use std::thread::JoinHandle;
 use crate::dataflow::{build_derived, compile_plans, EngineError};
 use differential_dataflow::input::InputSession;
 use timely::dataflow::operators::probe::Handle as ProbeHandle;
+use timely::dataflow::operators::{Concatenate as _, Probe as _};
 
 /// A single input-cell edit: set `measure[coord]` to `value` (or remove it when
 /// `value` is `None`).
@@ -610,7 +611,7 @@ fn worker_loop(
             .expect("worker_loop runs a single timely worker");
         let mut sessions: Sessions = HashMap::new();
         let snap = snapshot.clone();
-        let mut probe = ProbeHandle::new();
+        let probe = ProbeHandle::new();
         // A FIXPOINT's parts are the engine's own: not edited, not reported.
         let internal: HashSet<MeasureId> = fixes
             .iter()
@@ -634,28 +635,30 @@ fn worker_loop(
             }
 
             let mut built = HashSet::new();
+            let mut outs = Vec::new();
             for (mid, reduced) in build_derived(scope, &plans, &input_colls) {
                 built.insert(mid);
                 let snap = snap.clone();
                 let mark = mark.clone();
-                reduced
-                    .inspect(move |((k, val), _t, diff)| {
-                        // Maintain the running snapshot from the delta
-                        // stream: a +1 sets the value, a -1 removes it. A
-                        // changed cell's `+new` may arrive before its `-old`
-                        // (updates are ordered by value), so a retraction
-                        // only removes the value it retracts.
-                        mark.lock().unwrap().insert(mid);
-                        let mut s = snap.lock().unwrap();
-                        let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
-                        if *diff > 0 {
-                            m.insert(k.clone(), val.clone());
-                        } else if *diff < 0 && m.get(k) == Some(val) {
-                            m.remove(k);
-                        }
-                    })
-                    .probe_with(&mut probe);
+                let out = reduced.inspect(move |((k, val), _t, diff)| {
+                    // Maintain the running snapshot from the delta
+                    // stream: a +1 sets the value, a -1 removes it. A
+                    // changed cell's `+new` may arrive before its `-old`
+                    // (updates are ordered by value), so a retraction
+                    // only removes the value it retracts.
+                    mark.lock().unwrap().insert(mid);
+                    let mut s = snap.lock().unwrap();
+                    let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
+                    if *diff > 0 {
+                        m.insert(k.clone(), val.clone());
+                    } else if *diff < 0 && m.get(k) == Some(val) {
+                        m.remove(k);
+                    }
+                });
+                outs.push(out.inner);
             }
+            // One probe over every output, not an operator per measure.
+            scope.concatenate(outs).probe_with(&probe);
             built
         });
         // A body reading a measure with no collection would not build as a
@@ -1327,6 +1330,67 @@ mod tests {
             let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
             assert_eq!(a, b, "after {e:?}");
         }
+    }
+
+    /// A chain of maps from an input is not collapsed per measure: edits
+    /// that set a cell to its value, set it twice or clear it in one batch,
+    /// or map two inputs to one result still leave what `evaluate` gives.
+    #[test]
+    fn uncollapsed_map_chains_follow_every_edit() {
+        let mut m = revenue_model();
+        for (id, text) in [
+            (200, "A = Price + 1"),
+            (201, "B = -A * 2"),
+            (202, "C = B * 0"),
+            (203, "D = 3 - C"),
+        ] {
+            define_text(&mut m, id, text);
+        }
+        let ids: Vec<MeasureId> = (200..=203).map(MeasureId).collect();
+        let plans = compile_plans(&m, &ids).unwrap();
+        let inputs: HashSet<MeasureId> = [MeasureId(100), MeasureId(101)].into();
+        let mut flat = inputs.clone();
+        for (mid, p) in &plans {
+            assert!(crate::dataflow::functional(p, &flat), "{mid:?}");
+            flat.insert(*mid);
+        }
+        let (mut e, _) = Engine::new(&m, &ids).unwrap();
+        let price = MeasureId(100);
+        let at = |i| vec![(2, i)];
+        let cell = |i, v: Option<f64>| Edit {
+            measure: price,
+            coord: at(i),
+            value: v.map(CellValue::num),
+        };
+        let batches = [
+            vec![cell(20, Some(5.0))],
+            vec![cell(20, Some(5.0))],
+            vec![cell(20, Some(6.0)), cell(20, Some(7.0))],
+            vec![cell(21, Some(1.0)), cell(21, None)],
+            vec![cell(20, None), cell(20, Some(7.0))],
+            vec![cell(20, Some(-1.0)), cell(21, Some(9.0))],
+        ];
+        for b in batches {
+            for x in &b {
+                let c = Coordinate::from_pairs([(CategoryId(2), ItemId(x.coord[0].1))]);
+                match x.value.as_ref().and_then(CellValue::as_num) {
+                    Some(v) => m.set_input(price, c, Value::Number(v)),
+                    None => {
+                        m.inputs.remove(&(price, c));
+                    }
+                }
+            }
+            let snap = e.apply(b).unwrap();
+            for (mid, cells) in crate::dataflow::evaluate(&m, &ids).unwrap() {
+                assert_eq!(*snap[&mid], cells, "{mid:?}");
+            }
+        }
+        // A map of a reduction's or a join's result is collapsed.
+        let sum = compile_plans(&m, &[MeasureId(102)]).unwrap();
+        assert!(!crate::dataflow::functional(
+            &sum.last().unwrap().1,
+            &inputs
+        ));
     }
 
     /// A reduction over more items than reduce flat is two-level: the

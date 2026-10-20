@@ -27,6 +27,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   Fractional `SUM`/`AVERAGE`/`PRODUCT`/`SUMSQ` over such a category are a
   fixed two-level summation and may differ from a single pass in the last
   bits; at up to 1,024 items results are unchanged.
+- **Edits cost less per tracked measure.** A measure that maps one input or
+  map measure (`M = X + 1`, `-X`, `X * 2`) no longer gets a collapse
+  operator and arrangement of its own, and the live engine has one output
+  probe instead of one per measure: at 20,000 such measures an edit takes
+  0.13 s (0.73 s before), and the engine uses 1.4 GB (3.4 GB before).
 
 ### Fixed
 
