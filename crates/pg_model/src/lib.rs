@@ -313,9 +313,11 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
                 formula
             }
         };
-        if let Some(m) = model.measures.get_mut(&MeasureId(r.id)) {
-            m.kind = MeasureKind::Derived(formula);
-        }
+        // Added above, as a placeholder.
+        model
+            .measures
+            .entry(MeasureId(r.id))
+            .and_modify(|m| m.kind = MeasureKind::Derived(formula));
     }
     Ok(model)
 }
@@ -447,13 +449,21 @@ fn replace_lambda(
             ))
         })?;
     }
-    for d in dependents(&next, &callers) {
-        let m = &next.measures[&d];
+    keep_shapes(&next, name, &dependents(&next, &callers))?;
+    Ok(callers)
+}
+
+/// Check that each derived measure of `ids`, which depend on `name`, still
+/// compiles in `next` to the type and dimensions it has (its result table).
+/// An input keeps its shape.
+fn keep_shapes(next: &Model, name: &str, ids: &[MeasureId]) -> Result<()> {
+    for d in ids {
+        let m = &next.measures[d];
         let MeasureKind::Derived(f) = &m.kind else {
             continue;
         };
         let shape =
-            improv_engine::compiler::derived_shape(&next, d, &m.name.0, f).map_err(|e| {
+            improv_engine::compiler::derived_shape(next, *d, &m.name.0, f).map_err(|e| {
                 Error::Definition(format!(
                     "redefining {name} breaks {}, which depends on it: {e}",
                     m.name.0
@@ -467,7 +477,7 @@ fn replace_lambda(
             )));
         }
     }
-    Ok(callers)
+    Ok(())
 }
 
 /// Whether `e` calls named LAMBDA `id` directly.
@@ -515,10 +525,28 @@ pub fn drop_lambda(model: &Model, name: &str) -> Result<Option<u32>> {
 /// aggregated category), which is exactly the result table's shape. An
 /// existing target is an error ([`define_measure`] can replace it).
 pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
-    match define_measure(model, text, id, false)? {
-        Defined::New(row) => Ok(row),
-        other => Err(Error::Catalog(format!("unexpected {other:?}"))),
+    match target(model, text) {
+        (name, None) if model.lambda_by_name(name).is_some() => Err(Error::Definition(format!(
+            "{name} is a named LAMBDA; name the measure differently"
+        ))),
+        (_, None) => new_measure(model, text, id),
+        (_, Some(m)) => Err(Error::Definition(format!(
+            "measure {} already exists (improv.define(model, definition, replace => true) \
+             redefines it)",
+            m.name.0
+        ))),
     }
+}
+
+/// The target name of definition `text`, and the measure of that name (any
+/// case) in `model`.
+fn target<'a>(model: &'a Model, text: &'a str) -> (&'a str, Option<&'a Measure>) {
+    let name = text.split('=').next().unwrap_or("").trim();
+    let m = model
+        .measures
+        .values()
+        .find(|m| m.name.0.eq_ignore_ascii_case(name));
+    (name, m)
 }
 
 /// [`define`], or with `replace` a redefinition of an existing derived
@@ -528,22 +556,9 @@ pub fn define(model: &Model, text: &str, id: u32) -> Result<MeasureRow> {
 /// target's value type while another measure reads it, and when it breaks or
 /// reshapes a dependent; each error names the dependent.
 pub fn define_measure(model: &Model, text: &str, id: u32, replace: bool) -> Result<Defined> {
-    let name = text.split('=').next().unwrap_or("").trim();
-    match model
-        .measures
-        .values()
-        .find(|m| m.name.0.eq_ignore_ascii_case(name))
-    {
-        None if model.lambda_by_name(name).is_some() => Err(Error::Definition(format!(
-            "{name} is a named LAMBDA; name the measure differently"
-        ))),
-        None => new_measure(model, text, id).map(Defined::New),
-        Some(m) if replace => replace_measure(model, text, m),
-        Some(m) => Err(Error::Definition(format!(
-            "measure {} already exists (improv.define(model, definition, replace => true) \
-             redefines it)",
-            m.name.0
-        ))),
+    match target(model, text) {
+        (_, Some(m)) if replace => replace_measure(model, text, m),
+        _ => define(model, text, id).map(Defined::New),
     }
 }
 
@@ -635,31 +650,13 @@ fn replace_measure(model: &Model, text: &str, m: &Measure) -> Result<Defined> {
     }
     // Every dependent must keep its type and dimensions (its result table).
     let mut next = model.clone();
-    if let Some(t) = next.measures.get_mut(&m.id) {
-        t.kind = MeasureKind::Derived(formula);
-        t.value_type = value_type;
-        t.categories.clone_from(&categories);
-    }
-    for d in &downstream {
-        let dm = &next.measures[d];
-        let MeasureKind::Derived(f) = &dm.kind else {
-            continue;
-        };
-        let shape =
-            improv_engine::compiler::derived_shape(&next, *d, &dm.name.0, f).map_err(|e| {
-                Error::Definition(format!(
-                    "redefining {} breaks {}, which depends on it: {e}",
-                    m.name.0, dm.name.0
-                ))
-            })?;
-        if shape != (dm.value_type, dm.categories.clone()) {
-            return Err(Error::Definition(format!(
-                "redefining {} would change the type or dimensions of {}, which depends on \
-                 it: redefine or drop {} first",
-                m.name.0, dm.name.0, dm.name.0
-            )));
-        }
-    }
+    next.add_measure(Measure {
+        kind: MeasureKind::Derived(formula),
+        value_type,
+        categories: categories.clone(),
+        ..m.clone()
+    });
+    keep_shapes(&next, &m.name.0, &downstream)?;
     Ok(Defined::Replaced {
         reshaped: value_type != m.value_type || categories != m.categories,
         row: MeasureRow {
@@ -1859,6 +1856,15 @@ mod tests {
         let redefine = |t: &str| define_measure(&model, t, 9, true).unwrap_err().to_string();
         assert!(redefine("D = Price").contains("D is an enum"));
         assert!(redefine("D = Quantity + \"a\"").contains("type mismatch"));
+    }
+
+    #[test]
+    fn inputs_keep_their_shape() {
+        let model = build_model(&catalog()).unwrap();
+        assert_eq!(
+            keep_shapes(&model, "X", &[MeasureId(1), MeasureId(2)]),
+            Ok(())
+        );
     }
 
     /// A redefinition is checked against every dependent, also one that
