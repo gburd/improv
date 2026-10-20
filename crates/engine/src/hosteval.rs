@@ -26,7 +26,7 @@ use crate::dataflow::{
     project, remap_key, remap_table, shared_cats, union_keys, where_row, windows, AggRow, AggSpec,
 };
 use crate::plan::{PlanNode, PlanNodeKind as K};
-use crate::reduce::{self, Rows};
+use crate::reduce::{self, two_level, Rows};
 use crate::session::MeasureValues;
 use crate::{CellValue, CoordKey};
 use improv_core_model::{CategoryId, FuncId, ItemId, MeasureId};
@@ -228,7 +228,12 @@ fn emit(
             out.push((k, v));
         }
     } else if a.window.is_none() && !a.per_item {
-        out.push((g.clone(), reduce::reduce(a.func, rs, params)));
+        let v = if two_level::applies(a.func, a.ins.len(), a.params.len(), a.order) {
+            two_level::reduce(a.func, rs, items)
+        } else {
+            reduce::reduce(a.func, rs, params)
+        };
+        out.push((g.clone(), v));
     } else {
         let outs = match a.window {
             None => reduce::per_item(a.func, rs, params),

@@ -17,7 +17,7 @@
 use crate::builtins::{self, err};
 use crate::compiler::{compile_formula, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
-use crate::reduce::{self, Rows};
+use crate::reduce::{self, two_level, Rows};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::{Join as _, Reduce, Threshold};
@@ -705,6 +705,26 @@ where
             key.sort_unstable();
             (key, v)
         }));
+    }
+    if a.window.is_none() && !a.per_item && two_level::applies(func, n_in, a.params.len(), a.order)
+    {
+        // Each block of a group reduces to a part, the parts to the result:
+        // an edit re-reduces its block and the group's parts.
+        let parts = keyed
+            .map(|(g, row)| ((g, two_level::block(row.0 .1)), row))
+            .reduce(move |_k, input, output| {
+                let (rs, _, _) = to_rows(input);
+                if !rs.is_empty() {
+                    output.push((two_level::part(func, &rs), 1isize));
+                }
+            });
+        return Ok(parts
+            .map(|((g, b), p)| (g, (b, p)))
+            .reduce(move |_k, input, output| {
+                let parts = input.iter().map(|((_, p), _)| p);
+                let v = two_level::finish(func, &two_level::merge(func, parts));
+                output.push((v, 1isize));
+            }));
     }
     if a.window.is_none() && !a.per_item {
         return Ok(keyed.reduce(move |_k, input, output| {

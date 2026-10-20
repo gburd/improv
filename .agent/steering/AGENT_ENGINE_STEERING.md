@@ -221,6 +221,23 @@ TotalRevenue[Product] = SUM(Revenue OVER Time)
 Aggregation must name the collapsed category and operate on a measure
 collection.
 
+**Two-level reduce** (`reduce/two_level.rs`). DD's `reduce` re-runs a key's
+whole input when one value changes, so one edit under `SUM(X OVER W)` cost
+O(|W|) (0.6 s at 1M items). The decomposable reductions (SUM … XOR,
+COUNT, COUNTA; one input, no parameters) over a single category of more
+than `FLAT_MAX` = 1,024 items reduce in two stages: rows keyed by
+`(group, item id >> 10)` reduce to a `Part` (count, first error by
+position, a text/bad flag, a true/number count, the float accumulator),
+and the parts merge per group in block order. An edit re-reduces one block
+(≤ 1,024 rows) and the group's parts (≤ |W|/1,024). Blocks are by item
+*id*, not position, so an engine fed appended items (`Engine::serves`)
+blocks them as a fresh engine would; whether a reduction is two-level
+depends on the item count, so `serves` keeps that bit. The float folds
+(SUM, AVERAGE, PRODUCT, SUMSQ) are a fixed two-level summation, not
+bit-equal to one left fold; at ≤ 1,024 items nothing changes, so every
+golden stays bit-identical. The FIXPOINT host evaluator calls the same
+`two_level::reduce`, so host and dataflow steps agree bit for bit.
+
 ---
 
 ## 9. Scenarios (design target)

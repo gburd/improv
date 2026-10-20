@@ -20,6 +20,7 @@ mod array;
 mod financial;
 mod lookup;
 mod statistical;
+pub(crate) mod two_level;
 
 /// One group's rows, in item order.
 #[derive(Debug, Clone, PartialEq)]

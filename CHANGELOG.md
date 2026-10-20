@@ -19,6 +19,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   (category) per lookup; they now go through a name → id index the model
   builds on first use (never saved). Parsing 20k chained definitions took
   558 ms and now takes 25 ms.
+- **One edit under `SUM`/`AVERAGE`/`MIN`/`MAX`/`COUNT` … over a large
+  category is incremental.** Over more than 1,024 items those reductions
+  (and `PRODUCT`, `SUMSQ`, `AND`, `OR`, `XOR`, `COUNTA`) reduce in two
+  levels, by blocks of 1,024 item ids, so an edit re-reduces one block:
+  `SUM(X OVER W)` over 1M items takes 0.4 ms per edit (0.6 s before).
+  Fractional `SUM`/`AVERAGE`/`PRODUCT`/`SUMSQ` over such a category are a
+  fixed two-level summation and may differ from a single pass in the last
+  bits; at up to 1,024 items results are unchanged.
 
 ### Fixed
 

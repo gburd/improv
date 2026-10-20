@@ -18,8 +18,9 @@
 //! and communicates over channels. `Engine` is the `Send` handle.
 
 use crate::plan::{PlanNode, PlanNodeKind};
+use crate::reduce::two_level;
 use crate::{encode_coord, CellValue, CoordKey};
-use improv_core_model::{MeasureId, MeasureKind, Model, Value, ValueType};
+use improv_core_model::{CategoryId, MeasureId, MeasureKind, Model, Value, ValueType};
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -286,7 +287,13 @@ fn blind(p: &mut PlanNode) {
             // positions or capacity.
             let values_only = matches!(func.0, 1..=9 | 1005 | 1006 | 1100);
             if values_only && window.is_none() && !*per_item && into.is_empty() {
+                // A two-level reduction blocks by item id, but whether it is
+                // two-level depends on the item count.
+                let two = two_level::applies(*func, inputs.len(), params.len(), order);
                 order.clear();
+                if two {
+                    order.push((CategoryId(0), Vec::new()));
+                }
             }
         }
         K::Recurrence { refs, .. } => refs.iter_mut().for_each(|(_, x)| blind(x)),
@@ -1320,5 +1327,103 @@ mod tests {
             let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
             assert_eq!(a, b, "after {e:?}");
         }
+    }
+
+    /// A reduction over more items than reduce flat is two-level: the
+    /// same in `evaluate`, the live engine after edits, a FIXPOINT's host
+    /// and dataflow steps; and it still serves a model with appended items.
+    #[test]
+    fn two_level_reductions_agree_everywhere() {
+        let n = 3000u32;
+        let mut m = Model::new();
+        let w = CategoryId(1);
+        m.add_category(w, "W");
+        for i in 0..n {
+            m.add_item(ItemId(i), w, format!("w{i}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(10),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![w],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        for i in 0..n {
+            let x = f64::from(i % 97) / 7.0 - 3.0;
+            let at = Coordinate::from_pairs([(w, ItemId(i))]);
+            m.set_input(MeasureId(10), at, Value::Number(x));
+        }
+        let texts = [
+            "S = SUM(X OVER W)",
+            "A = AVERAGE(X OVER W)",
+            "Lo = MIN(X OVER W)",
+            "Hi = MAX(X OVER W)",
+            "C = COUNT(X OVER W)",
+            "Big = X > 10",
+            "Any = OR(Big OVER W)",
+            "F = FIXPOINT(0, LAMBDA(r, (r + SUM(X OVER W)) / 2), 60, 0)",
+        ];
+        for (j, t) in texts.iter().enumerate() {
+            define_text(&mut m, 20 + j as u32, t);
+        }
+        let ids: Vec<MeasureId> = (20..20 + texts.len() as u32).map(MeasureId).collect();
+        let fresh = |m: &Model| crate::dataflow::evaluate(m, &ids).unwrap();
+        let (mut host, a) = Engine::build(&m, &ids, true).unwrap();
+        let (mut dd, b) = Engine::build(&m, &ids, false).unwrap();
+        assert_eq!(a, b);
+        for (mid, cells) in fresh(&m) {
+            assert_eq!(*a[&mid], cells, "{mid:?}");
+        }
+        let sum = a[&MeasureId(20)][&Vec::new()].as_num().unwrap();
+        let flat: f64 = (0..n).map(|i| f64::from(i % 97) / 7.0 - 3.0).sum();
+        assert!((sum - flat).abs() < 1e-9, "{sum} vs {flat}");
+        assert_eq!(a[&MeasureId(24)][&Vec::new()], CellValue::num(f64::from(n)));
+        assert_eq!(a[&MeasureId(26)][&Vec::new()], CellValue::Bool(true));
+        for (i, x) in [(5u32, 40.0), (2000, -1.5), (2999, 0.25)] {
+            m.set_input(
+                MeasureId(10),
+                Coordinate::from_pairs([(w, ItemId(i))]),
+                Value::Number(x),
+            );
+            let edit = vec![Edit {
+                measure: MeasureId(10),
+                coord: vec![(1, i)],
+                value: Some(CellValue::num(x)),
+            }];
+            let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
+            assert_eq!(a, b);
+            // A FIXPOINT re-solves warm from its last solution: host and
+            // dataflow steps agree on it, a fresh solve only to rounding.
+            for (mid, cells) in fresh(&m).into_iter().filter(|(m, _)| m.0 != 27) {
+                assert_eq!(*a[&mid], cells, "{mid:?} after editing {i}");
+            }
+        }
+        // An appended item reaches the reductions as data.
+        let (mut live, _) = Engine::new(&m, &ids[..7]).unwrap();
+        m.add_item(ItemId(n), w, "new");
+        assert!(live.serves(&m).unwrap());
+        m.set_input(
+            MeasureId(10),
+            Coordinate::from_pairs([(w, ItemId(n))]),
+            Value::Number(7.0),
+        );
+        let snap = live.set(MeasureId(10), vec![(1, n)], 7.0).unwrap();
+        let want = crate::dataflow::evaluate(&m, &ids[..7]).unwrap();
+        for (mid, cells) in want {
+            assert_eq!(*snap[&mid], cells, "{mid:?} with an appended item");
+        }
+        // A category that grows past the flat limit no longer serves.
+        let mut small = Model::new();
+        small.add_category(w, "W");
+        for i in 0..1024 {
+            small.add_item(ItemId(i), w, format!("w{i}"));
+        }
+        small.add_measure(m.measures[&MeasureId(10)].clone());
+        define_text(&mut small, 20, texts[0]);
+        let (e, _) = Engine::new(&small, &[MeasureId(20)]).unwrap();
+        assert!(e.serves(&small).unwrap());
+        small.add_item(ItemId(1024), w, "w1024");
+        assert!(!e.serves(&small).unwrap());
     }
 }

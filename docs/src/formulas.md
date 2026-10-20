@@ -724,6 +724,17 @@ categories (`Product`), with `func = FuncId(1)`.
 take the extremum. An aggregation's argument must be numeric, except `AND`,
 `OR` and `XOR`, which take booleans.
 
+**Large categories.** Over a single category of more than 1,024 items, the
+aggregations above and `COUNT` and `COUNTA` reduce in two levels, so that
+an edit to one cell costs a block of the group rather than all of it: the
+cells split into blocks of 1,024 item ids, each block folds in item order,
+and the block results combine in block order. The counts, `MIN`, `MAX`,
+`AND`, `OR`, `XOR` and sums of integers give the same result as one pass.
+`SUM`, `AVERAGE`, `PRODUCT` and `SUMSQ` of fractional values are a fixed
+two-level summation: deterministic, identical in every evaluation path,
+and usually closer to the exact sum than one left-to-right pass, but they
+can differ from it in the last bits. Over up to 1,024 items nothing changes.
+
 ## Type and dimension checking
 
 Compiling a formula (`improv_engine::compiler::compile_formula`) runs two
