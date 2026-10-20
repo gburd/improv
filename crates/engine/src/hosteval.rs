@@ -170,14 +170,23 @@ impl Shape {
             })
     }
 
-    /// Refill every group's rows from `kids` and reduce it into `out`.
-    fn fill(&mut self, a: &AggSpec<'_>, consts: &[Option<CellValue>], out: &mut Cells) {
+    /// Refill every group's rows from `kids` (only the values read from a
+    /// collection `stale` marks) and reduce it into `out`.
+    fn fill(
+        &mut self,
+        a: &AggSpec<'_>,
+        consts: &[Option<CellValue>],
+        stale: &[bool],
+        out: &mut Cells,
+    ) {
         let (n_in, cells) = (a.ins.len(), into_cells(a));
         let kids = &self.kids;
         for g in &mut self.groups {
             for (row, srcs) in g.rows.vals.iter_mut().zip(g.srcs.chunks(g.width)) {
                 for (v, s) in row.iter_mut().zip(srcs) {
-                    *v = value(kids, s);
+                    if matches!(s, Src::Cell(j, _) if stale[*j as usize]) {
+                        *v = value(kids, s);
+                    }
                 }
             }
             // The joined parameters are the first row's (see `agg_rows`).
@@ -550,8 +559,14 @@ impl Host {
         let (p, pred) = (self.node(n), a.pred.map(|_| a.ins.len()));
         let mut out = Vec::new();
         if let Some(s) = self.shapes.get_mut(&p).filter(|s| s.fits(&kids, pred)) {
+            let stale: Vec<bool> = s
+                .kids
+                .iter()
+                .zip(&kids)
+                .map(|(a, b)| !Rc::ptr_eq(a, b))
+                .collect();
             s.kids = kids;
-            s.fill(&a, &consts, &mut out);
+            s.fill(&a, &consts, &stale, &mut out);
             return out;
         }
         let groups = group_rows(&a, self.tagged_rows(&a, &nodes, &kids));
@@ -588,7 +603,7 @@ impl Host {
                     key,
                     rows: Rows {
                         pos: Vec::with_capacity(rows.len()),
-                        vals: vec![vec![CellValue::Bool(false); n_in]; rows.len()],
+                        vals: Vec::with_capacity(rows.len()),
                         capacity,
                     },
                     items: Vec::with_capacity(rows.len()),
@@ -597,6 +612,9 @@ impl Host {
                 };
                 for ((pos, item), srcs) in rows {
                     g.rows.pos.push(pos);
+                    g.rows
+                        .vals
+                        .push(srcs[..n_in].iter().map(|s| value(&kids, s)).collect());
                     g.items.push(item);
                     g.srcs.extend(srcs);
                 }
@@ -604,7 +622,8 @@ impl Host {
             })
             .collect();
         let mut s = Shape { kids, groups };
-        s.fill(&a, &consts, &mut out);
+        let fresh = vec![false; s.kids.len()];
+        s.fill(&a, &consts, &fresh, &mut out);
         self.shapes.insert(p, s);
         out
     }
@@ -958,6 +977,8 @@ mod tests {
         "SUM(R OVER A[FIRST..THIS])",
         "LARGE(Y OVER A, 2)",
         "LARGE(Y OVER A, K)",
+        "LARGE(X OVER A, K)",
+        "LARGE(R OVER A, K)",
         "SORT(R OVER A, -1 INTO B)",
         "FILL(SUMPRODUCT(R, Y OVER A), 0)",
         "RELABEL(FILL(SUMPRODUCT(R, Y OVER A), 0), B, A)",
@@ -1079,5 +1100,116 @@ mod tests {
         let mut seen = HashSet::new();
         reads(plan(202), &mut seen);
         assert_eq!(seen, HashSet::from([R]));
+    }
+
+    /// Hand-built `plan` as `T` over input `cells`, through the dataflow.
+    fn run_dd(plan: PlanNode, cells: Vec<(MeasureId, MeasureValues)>) -> MeasureValues {
+        let out = Arc::new(std::sync::Mutex::new(MeasureValues::new()));
+        let out2 = Arc::clone(&out);
+        timely::execute::execute_directly(move |worker| {
+            let mut sessions = Vec::new();
+            worker.dataflow::<u64, _, _>(|scope| {
+                let mut inputs = HashMap::new();
+                for (mid, _) in &cells {
+                    let mut s = differential_dataflow::input::InputSession::new();
+                    inputs.insert(*mid, s.to_collection(scope));
+                    sessions.push(s);
+                }
+                for (_, coll) in crate::dataflow::build_derived(scope, &[(T, plan)], &inputs) {
+                    let out = Arc::clone(&out2);
+                    coll.inspect(move |((k, v), _, d)| {
+                        if *d > 0 {
+                            out.lock().unwrap().insert(k.clone(), v.clone());
+                        }
+                    });
+                }
+            });
+            for ((_, cs), s) in cells.iter().zip(&mut sessions) {
+                for (k, v) in cs {
+                    s.insert((k.clone(), v.clone()));
+                }
+                s.advance_to(1);
+                s.flush();
+            }
+        });
+        let got = out.lock().unwrap().clone();
+        got
+    }
+
+    /// Rows that share their item positions (R·Y over A × B reduced over A
+    /// alone): the kernel sees them in value order, so the host sorts such
+    /// groups every round, and gives the dataflow's cells.
+    #[test]
+    fn rows_at_one_item_reach_the_kernel_in_value_order() {
+        use crate::typed::{Dim, TypeInfo};
+        let ty = |cats: Vec<CategoryId>| TypeInfo {
+            value_type: ValueType::Number,
+            dim: Dim::of(cats),
+        };
+        let leaf = |m: MeasureId, cats: Vec<CategoryId>| PlanNode {
+            kind: K::InputMeasure(m),
+            ty: ty(cats),
+        };
+        let y = MeasureId(102);
+        let wide = PlanNode {
+            kind: K::Join {
+                left: Box::new(leaf(R, vec![A])),
+                right: Box::new(leaf(y, vec![A, B])),
+                join_keys: vec![A],
+            },
+            ty: ty(vec![A, B]),
+        };
+        let product = PlanNode {
+            kind: K::MapBinary(
+                improv_core_model::BinaryOp::Mul,
+                Box::new(wide),
+                Box::new(leaf(y, vec![A, B])),
+            ),
+            ty: ty(vec![A, B]),
+        };
+        let items: Vec<ItemId> = (0..3).map(|i| ItemId(10 + i)).collect();
+        let num = |x: f64| CellValue::num(x);
+        let mut r = MeasureValues::new();
+        let mut yv = MeasureValues::new();
+        for (i, a) in items.iter().enumerate() {
+            r.insert(vec![(A.0, a.0)], num(i as f64 - 1.0));
+            for j in 0..3u32 {
+                // Equal values at one item too: a row with multiplicity 2.
+                let v = f64::from((j * 7 + i as u32 * 3) % 4);
+                yv.insert(vec![(A.0, a.0), (B.0, 30 + j)], num(v));
+            }
+        }
+        for name in ["FIRST", "LAST", "SUM", "TEXTJOIN"] {
+            let def = improv_core_model::functions::by_name(name).next().unwrap();
+            let params = if name == "TEXTJOIN" {
+                let lit = |v: Value| PlanNode {
+                    kind: K::Literal(v),
+                    ty: ty(vec![]),
+                };
+                vec![lit(Value::Text("-".into())), lit(Value::Boolean(true))]
+            } else {
+                vec![]
+            };
+            let agg = PlanNode {
+                kind: K::Aggregate {
+                    inputs: vec![product.clone()],
+                    params,
+                    pred: None,
+                    group_by: vec![],
+                    func: def.id,
+                    order: vec![(A, items.clone())],
+                    window: None,
+                    per_item: false,
+                    into: vec![],
+                },
+                ty: ty(vec![]),
+            };
+            let want = run_dd(agg.clone(), vec![(R, r.clone()), (y, yv.clone())]);
+            let mut h = Host::new(agg, R);
+            h.refresh(HashMap::from([(y, Arc::new(yv.clone()))]));
+            assert_eq!(h.step(&r), want, "{name}");
+            assert_eq!(h.step(&r), want, "{name}, again");
+            assert!(h.shapes.is_empty(), "{name}: tied rows are never laid out");
+        }
     }
 }
