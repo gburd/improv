@@ -95,10 +95,24 @@ impl Engine {
     /// Seeds the graph with the model's current input cells and returns a handle
     /// plus the initial snapshot.
     pub fn new(model: &Model, targets: &[MeasureId]) -> Result<(Engine, Snapshot), EngineError> {
+        Self::build(model, targets, true)
+    }
+
+    /// [`Engine::new`]; with `host_steps` false every FIXPOINT step is a
+    /// dataflow round (the path a body the host evaluator does not cover
+    /// takes), so tests can hold the two paths to the same answer.
+    fn build(
+        model: &Model,
+        targets: &[MeasureId],
+        host_steps: bool,
+    ) -> Result<(Engine, Snapshot), EngineError> {
         // Compile plans up front (outside the worker), so a compile error is
         // reported synchronously rather than on the worker thread.
         let plans = compile_plans(model, targets)?;
-        let (plans, fixes) = split_fixpoints(model, plans)?;
+        let (plans, mut fixes) = split_fixpoints(model, plans)?;
+        if !host_steps {
+            fixes.iter_mut().for_each(|f| f.host = None);
+        }
 
         // Which input measures need sessions? Every input measure referenced by
         // any tracked plan, plus any that already has cells. We over-approximate
@@ -319,9 +333,11 @@ const FIX_BASE: u32 = u32::MAX - 4000;
 const FIX_LIMIT: u32 = 900;
 
 /// A FIXPOINT measure, solved host-side: the dataflow computes its first
-/// iterate (`init`) and one step (`body`, reading the iterate from session
-/// `r`); the worker iterates, and publishes the result on session `id`, the
-/// measure's own, which the measures that read it see as an input.
+/// iterate (`init`); the worker iterates, and publishes the result on
+/// session `id`, the measure's own, which the measures that read it see as
+/// an input. A step is `host`, the body's plan evaluated in memory
+/// ([`crate::hosteval`]), when it covers the body; else the dataflow's
+/// `body`, reading the iterate from session `r`.
 struct Fix {
     id: MeasureId,
     r: MeasureId,
@@ -329,6 +345,9 @@ struct Fix {
     body: MeasureId,
     max_iter: u32,
     tolerance: f64,
+    host: Option<PlanNode>,
+    /// The measures the body reads, but r.
+    reads: Vec<MeasureId>,
 }
 
 /// Replace each FIXPOINT plan by its first-iterate and step plans, in place
@@ -356,6 +375,10 @@ fn split_fixpoints(model: &Model, plans: Plans) -> Result<(Plans, Vec<Fix>), Eng
         let part = |j: u32| MeasureId(FIX_BASE + 3 * n + j);
         let (r, i, b) = (part(0), part(1), part(2));
         let (ip, bp, _) = crate::compiler::fixpoint_parts(&ctx, mid, init, body, r)?;
+        let host = crate::hosteval::covers(&bp, r, &|_| true).then(|| bp.clone());
+        let mut reads = HashSet::new();
+        crate::hosteval::reads(&bp, &mut reads);
+        reads.remove(&r);
         out.push((i, ip));
         out.push((b, bp));
         fixes.push(Fix {
@@ -365,6 +388,8 @@ fn split_fixpoints(model: &Model, plans: Plans) -> Result<(Plans, Vec<Fix>), Eng
             body: b,
             max_iter: *max_iter,
             tolerance: *tolerance,
+            host,
+            reads: reads.into_iter().collect(),
         });
     }
     Ok((out, fixes))
@@ -423,17 +448,27 @@ fn distance(a: &MeasureValues, b: &MeasureValues) -> f64 {
     d.iter().map(|(_, x)| x).sum()
 }
 
+/// The worker's view of the model for a FIXPOINT solve: the input cells per
+/// measure, and the measures changed since the last solve.
+struct World<'w> {
+    inputs: &'w HashMap<MeasureId, Arc<MeasureValues>>,
+    dirty: &'w Mutex<HashSet<MeasureId>>,
+}
+
 /// Solve every FIXPOINT, in build order (one may read another), and publish
-/// each result on its measure's session. Each round is one engine round:
-/// feed the iterate, read the step. `warm` (after an edit): restart from the
-/// previous result if it converged, on the cells the first iterate has; if
-/// that does not converge within max_iter rounds, start over from the first
-/// iterate, so a result cut off at max_iter is always a full recompute's. An
-/// edit that leaves a FIXPOINT's first iterate and its step's output as they
-/// were (nothing it reads changed) leaves its result as it was, unsolved.
-// shortcut: every round feeds the whole iterate, so a PageRank round costs a
-// full pass over the edges (~0.8 s for 100,000 in release); a dataflow
-// `iterate` scope would not change that, but a sparser step would.
+/// each result on its measure's session. A round is one step: the body's
+/// plan evaluated host-side at the iterate (with what it reads but r fixed
+/// for the solve), or, for a body the host evaluator does not cover, one
+/// engine round: feed the iterate, read the step. `warm` (after an edit):
+/// restart from the previous result if it converged, on the cells the first
+/// iterate has; if that does not converge within max_iter rounds, start over
+/// from the first iterate, so a result cut off at max_iter is always a full
+/// recompute's. An edit that leaves a FIXPOINT's first iterate and what its
+/// step reads as they were leaves its result as it was, unsolved.
+// shortcut: a host round is a full pass over the edges (every PageRank cell
+// moves every round, so a delta step would touch them all anyway), about
+// 1/30 of a dataflow round's cost; a sparse step (delta-PageRank) would pay
+// only when few cells still move.
 #[allow(clippy::too_many_arguments, reason = "the worker's state, passed down")]
 fn solve_fixpoints(
     fixes: &[Fix],
@@ -444,6 +479,7 @@ fn solve_fixpoints(
     run: &mut dyn FnMut(u64, &mut Sessions),
     snapshot: &Mutex<Snapshot>,
     first: &mut HashMap<MeasureId, Arc<MeasureValues>>,
+    world: &World<'_>,
 ) {
     let get = |id: MeasureId| {
         snapshot
@@ -457,23 +493,42 @@ fn solve_fixpoints(
         let init = get(f.init);
         // The step's output is body(the last iterate fed), which is the
         // result, as long as nothing the FIXPOINT reads has changed.
-        let unchanged = warm && first.get(&f.id) == Some(&init) && *get(f.body) == *st.result;
-        if unchanged {
+        let same = |st: &FixState| match f.host {
+            Some(_) => {
+                let dirty = world.dirty.lock().unwrap();
+                !f.reads.iter().any(|m| dirty.contains(m))
+            }
+            None => *get(f.body) == *st.result,
+        };
+        if warm && first.get(&f.id) == Some(&init) && same(st) {
             continue;
         }
+        let mut host = f.host.as_ref().map(|plan| {
+            let snap = snapshot.lock().unwrap();
+            let env = f.reads.iter().filter_map(|m| {
+                let vals = world.inputs.get(m).or_else(|| snap.get(m))?;
+                Some((*m, Arc::clone(vals)))
+            });
+            crate::hosteval::Host::new(plan, f.r, env.collect())
+        });
         let mut solve = |start: MeasureValues, st: &mut FixState| {
             let mut x = start;
             for _ in 0..f.max_iter {
-                let s = sessions
-                    .get_mut(&f.r)
-                    .expect("a FIXPOINT's iterate session");
-                replace(s, &st.r, &x);
-                st.r.clone_from(&x);
-                *t += 1;
-                run(*t, sessions);
-                let y = get(f.body);
+                let y = match host.as_mut() {
+                    Some(h) => h.step(&x),
+                    None => {
+                        let s = sessions
+                            .get_mut(&f.r)
+                            .expect("a FIXPOINT's iterate session");
+                        replace(s, &st.r, &x);
+                        st.r.clone_from(&x);
+                        *t += 1;
+                        run(*t, sessions);
+                        (*get(f.body)).clone()
+                    }
+                };
                 let d = distance(&x, &y);
-                x = (*y).clone();
+                x = y;
                 if d <= f.tolerance {
                     return (x, true);
                 }
@@ -489,6 +544,10 @@ fn solve_fixpoints(
             out = Some(solve(start, st)).filter(|(_, ok)| *ok);
         }
         let (x, converged) = out.unwrap_or_else(|| solve((*init).clone(), st));
+        drop(host);
+        if x != *st.result {
+            world.dirty.lock().unwrap().insert(f.id);
+        }
         let s = sessions
             .get_mut(&f.id)
             .expect("a FIXPOINT's result session");
@@ -520,6 +579,8 @@ fn worker_loop(
     // out an `Arc` clone, and `Arc::make_mut` below copies only what a caller
     // still shares and this round changes.
     let snapshot: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(Snapshot::default()));
+    // The measures whose cells changed since the last edit round began.
+    let dirty: Arc<Mutex<HashSet<MeasureId>>> = Arc::default();
     // The command receiver is `!Sync`; wrap it so the (Sync-bounded) timely
     // closure can hold it, and take it out once inside (single worker).
     let cmd_rx = Arc::new(Mutex::new(Some(cmd_rx)));
@@ -546,8 +607,13 @@ fn worker_loop(
             .collect();
         let mut fix_state: Vec<FixState> = fixes.iter().map(|_| FixState::default()).collect();
         let mut first = HashMap::new();
+        // A body the host evaluates is no dataflow of its own.
+        let mut fixes = fixes;
+        let mut plans = plans;
+        plans.retain(|(m, _)| !fixes.iter().any(|f| f.body == *m && f.host.is_some()));
+        let mark = dirty.clone();
 
-        worker.dataflow::<u64, _, _>(|scope| {
+        let built: HashSet<MeasureId> = worker.dataflow::<u64, _, _>(|scope| {
             let mut input_colls = HashMap::new();
             for id in &input_ids {
                 let mut s = InputSession::new();
@@ -556,8 +622,11 @@ fn worker_loop(
                 input_colls.insert(*id, coll);
             }
 
+            let mut built = HashSet::new();
             for (mid, reduced) in build_derived(scope, &plans, &input_colls) {
+                built.insert(mid);
                 let snap = snap.clone();
+                let mark = mark.clone();
                 reduced
                     .inspect(move |((k, val), _t, diff)| {
                         // Maintain the running snapshot from the delta
@@ -565,6 +634,7 @@ fn worker_loop(
                         // changed cell's `+new` may arrive before its `-old`
                         // (updates are ordered by value), so a retraction
                         // only removes the value it retracts.
+                        mark.lock().unwrap().insert(mid);
                         let mut s = snap.lock().unwrap();
                         let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
                         if *diff > 0 {
@@ -575,7 +645,16 @@ fn worker_loop(
                     })
                     .probe_with(&mut probe);
             }
+            built
         });
+        // A body reading a measure with no collection would not build as a
+        // dataflow either: it takes the dataflow path, with no step cells.
+        for f in &mut fixes {
+            let has = |m: &MeasureId| sessions.contains_key(m) || built.contains(m);
+            if !f.reads.iter().all(has) {
+                f.host = None;
+            }
+        }
 
         // Step the worker until the output frontier has passed `t`. (Advancing
         // an InputSession sets its time synchronously, so we cannot gate on the
@@ -590,10 +669,14 @@ fn worker_loop(
             }
         };
 
-        // Apply the seed at time 0, then advance to 1 and run.
+        // Apply the seed at time 0, then advance to 1 and run. We keep each
+        // input cell's value so a "set" is a proper retract(old)+assert(new)
+        // on the cardinality-one cell, and a FIXPOINT step reads them.
+        let mut inputs: HashMap<MeasureId, Arc<MeasureValues>> = HashMap::new();
         for (mid, coord, v) in &seed {
             if let Some(session) = sessions.get_mut(mid) {
                 session.insert((coord.clone(), v.clone()));
+                Arc::make_mut(inputs.entry(*mid).or_default()).insert(coord.clone(), v.clone());
             }
         }
         let mut t: u64 = 1;
@@ -607,6 +690,10 @@ fn worker_loop(
             &mut run_to,
             &snapshot,
             &mut first,
+            &World {
+                inputs: &inputs,
+                dirty: &dirty,
+            },
         );
         // What a reply shows: every measure but a FIXPOINT's parts.
         let reply_snapshot = |snapshot: &Mutex<Snapshot>| {
@@ -625,32 +712,21 @@ fn worker_loop(
         let _ = ready_tx.send(());
 
         // Serve edit rounds.
-        // We track the previous value of each cell so a "set" is a proper
-        // retract(old)+assert(new) on the cardinality-one cell.
-        let mut prev: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
-        for (mid, coord, v) in &seed {
-            prev.insert((*mid, coord.clone()), v.clone());
-        }
-
         while let Ok(cmd) = cmd_rx.recv() {
             match cmd {
                 Cmd::Edit(edits, reply) => {
+                    dirty.lock().unwrap().clear();
                     for e in edits.iter().filter(|e| !internal.contains(&e.measure)) {
-                        let key = (e.measure, e.coord.clone());
-                        let old = prev.get(&key).cloned();
                         if let Some(session) = sessions.get_mut(&e.measure) {
-                            if let Some(old_val) = old {
+                            let cells = Arc::make_mut(inputs.entry(e.measure).or_default());
+                            if let Some(old_val) = cells.remove(&e.coord) {
                                 session.remove((e.coord.clone(), old_val));
                             }
-                            match &e.value {
-                                Some(cv) => {
-                                    session.insert((e.coord.clone(), cv.clone()));
-                                    prev.insert(key, cv.clone());
-                                }
-                                None => {
-                                    prev.remove(&key);
-                                }
+                            if let Some(cv) = &e.value {
+                                session.insert((e.coord.clone(), cv.clone()));
+                                cells.insert(e.coord.clone(), cv.clone());
                             }
+                            dirty.lock().unwrap().insert(e.measure);
                         }
                     }
                     t += 1;
@@ -664,6 +740,10 @@ fn worker_loop(
                         &mut run_to,
                         &snapshot,
                         &mut first,
+                        &World {
+                            inputs: &inputs,
+                            dirty: &dirty,
+                        },
                     );
                     let _ = reply.send(reply_snapshot(&snapshot));
                 }
@@ -1106,5 +1186,135 @@ mod tests {
                 .and_then(|v| v.as_num()),
             Some(21.0)
         );
+    }
+
+    /// Define derived measure `id` from `text`, with the engine's shape.
+    fn define_text(m: &mut Model, id: u32, text: &str) {
+        let f = improv_core_model::parse_formula(m, text).unwrap_or_else(|e| panic!("{e}"));
+        let (value_type, categories) =
+            crate::compiler::derived_shape(m, MeasureId(id), &f.target.0, &f.formula).unwrap();
+        m.add_measure(Measure {
+            id: MeasureId(id),
+            name: f.target,
+            value_type,
+            categories,
+            kind: MeasureKind::Derived(f.formula),
+            description: None,
+        });
+    }
+
+    /// One role pair Src/Dst of n people, inputs X[Src] = 1, 2, … and a
+    /// pseudo-random weighted graph W[Src, Dst] (person 0 dangling).
+    fn graph_model(n: u32) -> Model {
+        let mut m = Model::new();
+        let (s, d) = (CategoryId(1), CategoryId(2));
+        m.add_category(s, "Src");
+        m.add_category(d, "Dst");
+        for i in 0..n {
+            m.add_item(ItemId(100 + i), s, format!("p{i}"));
+            m.add_item(ItemId(200 + i), d, format!("p{i}"));
+        }
+        for (id, name, cats) in [(10, "X", vec![s]), (11, "W", vec![s, d])] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let mut seed = 7u64;
+        for i in 0..n {
+            let at = Coordinate::from_pairs([(s, ItemId(100 + i))]);
+            m.set_input(MeasureId(10), at, Value::Number(f64::from(i) + 1.0));
+            for j in 0..n {
+                seed = seed
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                if i > 0 && i != j && (seed >> 33).is_multiple_of(3) {
+                    let at = Coordinate::from_pairs([(s, ItemId(100 + i)), (d, ItemId(200 + j))]);
+                    let w = 1.0 + ((seed >> 40) % 9) as f64;
+                    m.set_input(MeasureId(11), at, Value::Number(w));
+                }
+            }
+        }
+        m
+    }
+
+    /// The fixpoint suite's FIXPOINTs, solved with host steps and with
+    /// dataflow steps: the same snapshot bit for bit, fresh and after an
+    /// edit and a clear. A body with an uncovered node (PREV is a shift)
+    /// solves on the dataflow either way, to the hand-computed answer.
+    #[test]
+    fn host_and_dataflow_steps_agree_bit_for_bit() {
+        let mut m = graph_model(12);
+        for (id, text) in [
+            (300, "Out = SUM(W OVER Dst)"),
+            (301, "M = W / Out"),
+            (302, "Dangling = FILL(0 * Out, 1)"),
+            (
+                303,
+                "PR = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0), \
+                 LAMBDA(r, RELABEL((1 - 0.85) / @ITEMCOUNT(Src) \
+                 + 0.85 * (FILL(SUMPRODUCT(r, M OVER Src), 0) \
+                 + SUMPRODUCT(r, Dangling OVER Src) / @ITEMCOUNT(Src)), Dst, Src)), \
+                 200, 0.0000000000001)",
+            ),
+            (304, "Two = FIXPOINT(X, LAMBDA(r, r / 2 + X))"),
+            (305, "Cut = FIXPOINT(X, LAMBDA(r, r / 2 + X), 3)"),
+            (306, "Grow = FIXPOINT(X, LAMBDA(r, r * 2), 40, 0)"),
+            (307, "Zero = FIXPOINT(X, LAMBDA(r, r * 2), 0)"),
+            (308, "Half = Two / 2"),
+            (309, "Again = FIXPOINT(Two, LAMBDA(r, (r + Half) / 2))"),
+            (310, "Root = FIXPOINT(1, LAMBDA(r, (r + 2 / r) / 2))"),
+            (311, "Wide = FIXPOINT(0, LAMBDA(r, r / 2 + X))"),
+            (
+                312,
+                "Back = FIXPOINT(X, LAMBDA(r, PREV(r, Src, 1, 0) / 2 + X))",
+            ),
+        ] {
+            define_text(&mut m, id, text);
+        }
+        let ids: Vec<MeasureId> = (300..=312).map(MeasureId).collect();
+        let (_, fixes) = split_fixpoints(&m, compile_plans(&m, &ids).unwrap()).unwrap();
+        let hosted: Vec<u32> = fixes
+            .iter()
+            .filter(|f| f.host.is_some())
+            .map(|f| f.id.0)
+            .collect();
+        assert_eq!(hosted, [303, 304, 305, 306, 307, 309, 310, 311]);
+        let (mut host, a) = Engine::build(&m, &ids, true).unwrap();
+        let (mut dd, b) = Engine::build(&m, &ids, false).unwrap();
+        assert_eq!(a, b);
+        let back = |s: &Snapshot| {
+            (0..12)
+                .map(|i| s[&MeasureId(312)][&vec![(1, 100 + i)]].as_num().unwrap())
+                .collect::<Vec<_>>()
+        };
+        // r_i = r_(i-1) / 2 + X_i, from r_0 = X_0 = 1: exact in 12 rounds.
+        let mut want = vec![0.0; 12];
+        for i in 0..12 {
+            want[i] = f64::from(i as u32 + 1) + if i > 0 { want[i - 1] / 2.0 } else { 0.0 };
+        }
+        assert_eq!(back(&a), want);
+        let pr: f64 = a[&MeasureId(303)]
+            .values()
+            .filter_map(CellValue::as_num)
+            .sum();
+        assert!((pr - 1.0).abs() < 1e-12);
+        for e in [
+            (MeasureId(11), vec![(1, 103), (2, 200)], Some(30.0)),
+            (MeasureId(10), vec![(1, 105)], Some(-4.0)),
+            (MeasureId(10), vec![(1, 102)], None),
+        ] {
+            let edit = vec![Edit {
+                measure: e.0,
+                coord: e.1.clone(),
+                value: e.2.map(CellValue::num),
+            }];
+            let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
+            assert_eq!(a, b, "after {e:?}");
+        }
     }
 }

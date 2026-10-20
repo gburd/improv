@@ -494,15 +494,21 @@ PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
 - A FIXPOINT is a measure's whole formula, and it may not read its own
   measure (r stands for it). Other measures may read it, and its body may
   read other FIXPOINT measures.
-- The engine solves it round by round, each round one incremental
-  dataflow update. After an edit it starts from the previous result (if
-  that converged) and agrees with a full recompute; a FIXPOINT whose
-  inputs did not change is not re-solved. A start that fails to converge
+- The engine solves it round by round. A round evaluates the body's
+  compiled plan in memory at the iterate: the measures it reads (here
+  `M` and `Dangling`) are fixed for the solve, and the joins over them
+  are indexed once. Those measures still update incrementally on the
+  dataflow when an input changes. A body with a node the in-memory
+  evaluator does not take (`PREV`, a recurrence) runs each round as one
+  dataflow update instead. Both use the same cell operations and give
+  the same cells bit for bit. After an edit it starts from the previous
+  result (if that converged) and agrees with a full recompute; a
+  FIXPOINT whose inputs did not change is not re-solved. A start that fails to converge
   within `max_iter` rounds restarts from `init`, so a result cut off at
   `max_iter` is the same as a fresh evaluation's.
 - On 1,500 people and 100,000 edges this PageRank matches a plain power
-  iteration to 3e-15 (L1), in about 14 rounds of 0.8 s each in a release
-  build.
+  iteration to 3e-15 (L1), in 14 rounds of about 0.1 s each in a release
+  build (1.8 s in all, 0.25 s of it building the dataflow).
 
 ### Functions
 

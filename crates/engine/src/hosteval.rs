@@ -14,8 +14,6 @@
 //! dataflow's `reduce` sorts them, so a round gives the dataflow's values bit
 //! for bit. [`covers`] says which plans it takes; the rest (`PREV`,
 //! recurrences) stay on the dataflow.
-// Wired into the FIXPOINT solve in the next change.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use crate::dataflow::{
     agg_key, agg_order, agg_rows, apply_binary, apply_unary, call_with, grid_keys, literal_value,
