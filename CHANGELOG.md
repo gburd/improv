@@ -6,6 +6,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Adding items to a wide category is linear, not quadratic.**
+  `Model::add_item` and `ItemInterner::register` (CSV/SQL import, every
+  pg_improv load, DuckDB `improv()`) scanned the category's item list once
+  per item. 300k items took 12.5 s through `add_item` and now take
+  40 ms (1M items: 140 s, now 0.15 s); DuckDB `improv()` over one
+  300k-item category went from 38 s to 1.6 s.
+
 ### Fixed
 
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets

@@ -28,7 +28,7 @@
 use improv_core_model::{
     Category, CategoryId, Item, ItemId, Measure, MeasureId, MeasureKind, Model, Name, ValueType,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Ensure a category exists for each `(id, name)` pair. Idempotent: an
 /// existing category (e.g. from a prior import) is left untouched.
@@ -116,6 +116,13 @@ impl ItemInterner {
     /// Call once, after all rows are interned.
     pub fn register(&self, model: &mut Model) {
         for (cat, items) in &self.map {
+            // The category's list as a set, built once: a `Vec::contains`
+            // per item made a wide category O(n²).
+            let mut listed: HashSet<ItemId> = model
+                .categories
+                .get(cat)
+                .map(|c| c.items.iter().copied().collect())
+                .unwrap_or_default();
             for (name, id) in items {
                 model.items.entry(*id).or_insert_with(|| Item {
                     id: *id,
@@ -123,7 +130,7 @@ impl ItemInterner {
                     name: Name(name.clone()),
                 });
                 if let Some(c) = model.categories.get_mut(cat) {
-                    if !c.items.contains(id) {
+                    if listed.insert(*id) {
                         c.items.push(*id);
                     }
                 }
@@ -152,6 +159,40 @@ mod tests {
         // Calling again must not reset the category (or its items).
         ensure_categories(&mut model, [(cat, "Time")]);
         assert_eq!(model.categories.get(&cat).unwrap().items, vec![ItemId(1)]);
+    }
+
+    #[test]
+    fn register_lists_each_item_once_and_skips_unknown_categories() {
+        let mut model = Model::new();
+        let (cat, gone) = (CategoryId(1), CategoryId(9));
+        ensure_categories(&mut model, [(cat, "Time")]);
+        model.items.insert(
+            ItemId(1),
+            Item {
+                id: ItemId(1),
+                category: cat,
+                name: Name("2025".into()),
+            },
+        );
+        model
+            .categories
+            .get_mut(&cat)
+            .unwrap()
+            .items
+            .push(ItemId(1));
+        let mut interner = ItemInterner::seeded_from(&model, 10);
+        interner.intern(cat, "2025");
+        let (a, b) = (interner.intern(cat, "2026"), interner.intern(cat, "2027"));
+        let orphan = interner.intern(gone, "x");
+        interner.register(&mut model);
+        interner.register(&mut model); // a second register adds nothing
+        let mut listed = model.categories[&cat].items.clone();
+        assert_eq!(listed[0], ItemId(1), "the existing item keeps its place");
+        listed.sort();
+        assert_eq!(listed, [ItemId(1), a, b]);
+        // No category: the item is recorded, no category appears.
+        assert_eq!(model.items[&orphan].category, gone);
+        assert!(!model.categories.contains_key(&gone));
     }
 
     #[test]

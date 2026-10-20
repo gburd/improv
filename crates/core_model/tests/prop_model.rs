@@ -112,6 +112,30 @@ proptest! {
     }
 }
 
+proptest! {
+    /// `add_item` lists exactly what the `Vec::contains` version listed, in
+    /// the same order, through re-adds, moves and unknown categories.
+    #[test]
+    fn add_item_lists_like_the_scan(adds in prop::collection::vec((0u32..12, 0u32..4), 0..60)) {
+        let mut m = Model::new();
+        for c in 0..3 {
+            m.add_category(CategoryId(c), format!("C{c}"));
+        }
+        let mut want: Vec<Vec<ItemId>> = vec![Vec::new(); 3];
+        for (i, c) in adds {
+            m.add_item(ItemId(i), CategoryId(c), format!("I{i}"));
+            if let Some(l) = want.get_mut(c as usize) {
+                if !l.contains(&ItemId(i)) {
+                    l.push(ItemId(i));
+                }
+            }
+        }
+        for (c, l) in (0..).zip(&want) {
+            prop_assert_eq!(&m.categories[&CategoryId(c)].items, l);
+        }
+    }
+}
+
 // Keep `Item` referenced so an unused-import lint never fires if the strategy
 // changes; also a trivial structural check that add_item wires the category.
 #[test]

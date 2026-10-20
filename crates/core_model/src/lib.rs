@@ -769,8 +769,11 @@ impl Model {
         );
     }
 
+    /// Add (or replace) item `id` in `category`, appending it to the
+    /// category's item order when it is not there yet. Re-adding an id under
+    /// a different category leaves it in the old category's list too.
     pub fn add_item(&mut self, id: ItemId, category: CategoryId, name: impl Into<String>) {
-        self.items.insert(
+        let old = self.items.insert(
             id,
             Item {
                 id,
@@ -779,7 +782,10 @@ impl Model {
             },
         );
         if let Some(c) = self.categories.get_mut(&category) {
-            if !c.items.contains(&id) {
+            // Every listed id is in `items` (the model's invariant), so an id
+            // new to `items` is in no list: only a re-add pays the O(n) scan
+            // (a scan per insert made bulk loads O(n²)).
+            if old.is_none() || !c.items.contains(&id) {
                 c.items.push(id);
             }
         }
@@ -926,6 +932,34 @@ mod tests {
         assert!(m.measure_by_name("Price").unwrap().is_input());
         let coord = Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);
         assert_eq!(m.input(MeasureId(100), &coord), Some(&Value::Number(10.0)));
+    }
+
+    #[test]
+    fn add_item_relists_nothing_and_a_move_stays_listed_in_the_old_category() {
+        let mut m = Model::new();
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        m.add_item(ItemId(7), a, "x");
+        m.add_item(ItemId(8), a, "y");
+        m.add_item(ItemId(7), a, "x2"); // a re-add renames, listed once
+        assert_eq!(m.categories[&a].items, [ItemId(7), ItemId(8)]);
+        assert_eq!(m.items[&ItemId(7)].name.0, "x2");
+        // A move: the item belongs to `b` but stays in `a`'s list too.
+        m.add_item(ItemId(7), b, "x3");
+        assert_eq!(m.categories[&a].items, [ItemId(7), ItemId(8)]);
+        assert_eq!(m.categories[&b].items, [ItemId(7)]);
+        assert_eq!(m.items[&ItemId(7)].category, b);
+        m.add_item(ItemId(7), b, "x4");
+        assert_eq!(m.categories[&b].items, [ItemId(7)]);
+        // An item whose list entry is missing is listed again on a re-add.
+        m.categories.get_mut(&b).unwrap().items.clear();
+        m.add_item(ItemId(7), b, "x5");
+        assert_eq!(m.categories[&b].items, [ItemId(7)]);
+        // An unknown category: the item is recorded, no list changes.
+        m.add_item(ItemId(9), CategoryId(3), "z");
+        assert_eq!(m.items[&ItemId(9)].category, CategoryId(3));
+        assert_eq!(m.categories.len(), 2);
     }
 
     #[test]
