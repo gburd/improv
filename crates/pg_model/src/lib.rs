@@ -1423,6 +1423,11 @@ mod tests {
             name: s("Outer"),
             definition: s("Outer = LAMBDA(v, LOGNORM(v, Time) + 1)"),
         });
+        chain.lambdas.push(LambdaRow {
+            id: 3,
+            name: s("Again"),
+            definition: s("Again = LAMBDA(v, Outer(v))"),
+        });
         let chained = build_model(&chain).unwrap();
         let msg = define_lambda(&chained, "LOGNORM = LAMBDA(x, c, Outer(x))", true)
             .unwrap_err()
@@ -1430,6 +1435,17 @@ mod tests {
         assert!(
             msg.contains("LOGNORM cannot call Outer: Outer calls LOGNORM"),
             "{msg}"
+        );
+        // Found anywhere in the body: under an operator, or an argument.
+        for body in ["-Again(x)", "Again(x) + 1", "1 + Again(x)", "ABS(Again(x))"] {
+            let t = format!("LOGNORM = LAMBDA(x, c, {body})");
+            let msg = define_lambda(&chained, &t, true).unwrap_err().to_string();
+            assert!(msg.contains("cannot call Again"), "{body}: {msg}");
+        }
+        let e = drop_lambda(&chained, "Outer").unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "definition: cannot drop Outer: Again still calls it (drop or redefine it first)"
         );
         let msg = define_lambda(&chained, "LOGNORM = LAMBDA(x, x)", true)
             .unwrap_err()
@@ -1673,6 +1689,12 @@ mod tests {
         assert!(reshaped, "Total moves from Product to Time");
         assert_eq!(row.categories, vec![1]);
         assert!(err("Revenue = Price > 2").contains("from number to boolean, but Total reads it"));
+        // Nothing reads Total: it may change its type.
+        let Ok(Defined::Replaced { row, reshaped }) = def("Total = SUM(Revenue OVER Time) > 1")
+        else {
+            panic!()
+        };
+        assert_eq!((row.value_type.as_str(), reshaped), ("boolean", true));
         assert!(err("Revenue = Total * 2").contains("Total depends on Revenue"));
         // Total still sums Revenue[Product] over Time, so it keeps its shape.
         assert!(matches!(
@@ -1803,6 +1825,83 @@ mod tests {
         let model = build_model(&cat).unwrap();
         assert_eq!(model.measures[&MeasureId(3)].kind, MeasureKind::Derived(f));
         assert_eq!(value_type_name(ValueType::Enum), "enum");
+        assert_eq!(value_type_name(ValueType::Text), "text");
+    }
+
+    /// The definitions `define` and `define_lambda` refuse, each naming why.
+    #[test]
+    fn definition_refusals_name_their_cause() {
+        let mut cat = catalog();
+        let model = build_model(&cat).unwrap();
+        let err = |r: Result<MeasureRow>| r.unwrap_err().to_string();
+        let msg = err(define(&model, "Half = LAMBDA(x, x / 2)", 9));
+        assert!(
+            msg.contains("defines a named LAMBDA, not a measure"),
+            "{msg}"
+        );
+        // A quoted target is found only once parsed.
+        let msg = err(define(&model, "'Price' = 1", 9));
+        assert_eq!(msg, "definition: measure Price already exists");
+        let msg = err(define(&model, "X = Price + \"a\"", 9));
+        assert!(msg.contains("type mismatch"), "{msg}");
+        // Looks like a lambda (`… = LAMBDA(`), but its target is quoted text.
+        let msg = define_lambda(&model, "'x = LAMBDA(' = 1", false)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("is not Name = LAMBDA(…)"), "{msg}");
+        // A derived measure may not have an enum result (yet).
+        cat.measures[0].value_type = s("enum");
+        cat.measures
+            .push(define(&model, "D = Quantity * 2", 3).unwrap());
+        let model = build_model(&cat).unwrap();
+        let msg = err(define(&model, "E = Price", 9));
+        assert!(msg.contains("E is an enum; enum results"), "{msg}");
+        let redefine = |t: &str| define_measure(&model, t, 9, true).unwrap_err().to_string();
+        assert!(redefine("D = Price").contains("D is an enum"));
+        assert!(redefine("D = Quantity + \"a\"").contains("type mismatch"));
+    }
+
+    /// A redefinition is checked against every dependent, also one that
+    /// depends on it only through another measure.
+    #[test]
+    fn redefinitions_keep_every_dependent_valid() {
+        let mut cat = catalog();
+        cat.measures.push(MeasureRow::input(5, "Cost", vec![1, 2]));
+        let model = build_model(&cat).unwrap();
+        cat.measures
+            .push(define(&model, "D = Quantity * 2", 3).unwrap());
+        let model = build_model(&cat).unwrap();
+        cat.measures
+            .push(define(&model, "Prev = PREV(D, Time)", 4).unwrap());
+        let model = build_model(&cat).unwrap();
+        let redefine = |t: &str| define_measure(&model, t, 9, true);
+        let msg = redefine("D = SUM(Quantity OVER Time)")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("redefining D breaks Prev, which depends on it")
+                && msg.contains("does not range over Time"),
+            "{msg}"
+        );
+        assert!(matches!(
+            redefine("D = Cost * 2"),
+            Ok(Defined::Replaced {
+                reshaped: false,
+                ..
+            })
+        ));
+        // Two readers are named together.
+        cat.measures.push(define(&model, "Neg = -D", 6).unwrap());
+        let model = build_model(&cat).unwrap();
+        let msg = define_measure(&model, "D = Quantity > 1", 9, true)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("but Neg, Prev read it"), "{msg}");
+        let msg = drop_target(&model, "d").unwrap_err().to_string();
+        assert_eq!(
+            msg,
+            "definition: cannot drop D: Neg, Prev still reference it (drop or redefine them first)"
+        );
     }
 
     #[test]
@@ -2084,6 +2183,7 @@ mod tests {
             "{}",
             st[0].sql
         );
+        assert_eq!(st[0].rows(), 1);
     }
 
     #[test]
@@ -2139,8 +2239,18 @@ mod tests {
         assert_eq!(vt("bool", Some("max")).unwrap(), ValueType::Boolean);
         assert!(matches!(vt("jsonb", None), Err(Error::Catalog(m)) if m.contains("type jsonb")));
         assert!(matches!(vt("text", Some("sum")), Err(Error::Catalog(m)) if m.contains("number")));
+        assert!(matches!(vt("bool", Some("avg")), Err(Error::Catalog(m)) if m.contains("agg avg")));
+        assert_eq!(vt("int4", Some("sum")).unwrap(), ValueType::Number);
+        assert_eq!(vt("numeric", Some("avg")).unwrap(), ValueType::Number);
         assert!(vt("int4", Some("median")).is_err());
         assert_eq!(sql_type(ValueType::Text).unwrap(), "text");
+        assert!(sql_type(ValueType::Enum).is_err());
+        let cols = vec![s("p")];
+        assert_eq!(
+            select_bound_sql("s", &cols, "v", None, ValueType::Text).unwrap(),
+            "SELECT \"p\"::text, \"v\"::text FROM s"
+        );
+        assert!(select_bound_sql("s", &cols, "v", None, ValueType::Enum).is_err());
         check_value_column("t", ValueType::Boolean, "boolean").unwrap();
         assert!(matches!(
             check_value_column("t", ValueType::Boolean, "double precision"),
@@ -2174,6 +2284,17 @@ mod tests {
             rows: at(CellValue::Date(i64::MAX)),
         }];
         assert!(load_inputs(&mut model, &huge).is_err());
+        cat.measures[1].value_type = s("boolean");
+        let mut model = build_model(&cat).unwrap();
+        let flag = [BoundRows {
+            measure_id: 2,
+            rows: at(CellValue::Bool(true)),
+        }];
+        load_inputs(&mut model, &flag).unwrap();
+        assert_eq!(
+            model.inputs.values().collect::<Vec<_>>(),
+            [&Value::Boolean(true)]
+        );
 
         let cols = vec![s("product")];
         let one = |v: CellValue| ResultRows::from([(vec![s("a")], v)]);
