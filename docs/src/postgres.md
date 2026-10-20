@@ -113,7 +113,8 @@ A fact table often has many rows per coordinate (one per order, say). Bind
 the measure with an aggregate and each coordinate's rows are folded into
 one input cell: `improv.bind_measure('plan', 'Amount', 'orders', 'amount',
 agg => 'sum')` (also `avg`, `min`, `max`, `count`, and `count_distinct`, SQL's
-`count(DISTINCT value_col)`). Without `agg`, two rows on
+`count(DISTINCT value_col)`; over a `bool` column, `min` and `max` are
+SQL's `bool_and` and `bool_or`). Without `agg`, two rows on
 one coordinate are an error. An aggregated measure is read-only from the
 GUI: a save that edits one of its cells fails, so change the rows in SQL.
 

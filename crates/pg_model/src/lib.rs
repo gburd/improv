@@ -1123,7 +1123,9 @@ pub fn agg_call(agg: &str, v: &str) -> Result<String> {
 /// `SELECT` of a binding's fact rows: dims as text…, then the value read as
 /// `vt` (`float8`, `bool`, `text`, or a datetime as `int8` epoch
 /// milliseconds). With `agg`, one row per coordinate, its rows' values
-/// aggregated. `rel` is a `regclass::text`, which Postgres has already quoted.
+/// aggregated (a `bool`'s `min` and `max` as `bool_and` and `bool_or`: SQL
+/// has no `max(bool)`). `rel` is a `regclass::text`, which Postgres has
+/// already quoted.
 pub fn select_bound_sql(
     rel: &str,
     dim_cols: &[String],
@@ -1144,10 +1146,15 @@ pub fn select_bound_sql(
         ),
         Some(a) => {
             let by: Vec<String> = (1..=dims.len()).map(|i| i.to_string()).collect();
+            let call = match (agg_sql(a)?, vt) {
+                ("min", ValueType::Boolean) => format!("bool_and({v})"),
+                ("max", ValueType::Boolean) => format!("bool_or({v})"),
+                _ => agg_call(a, &v)?,
+            };
             format!(
                 "SELECT {}, {} FROM {rel} GROUP BY {}",
                 dims.join(", "),
-                read_expr(vt, &agg_call(a, &v)?)?,
+                read_expr(vt, &call)?,
                 by.join(", ")
             )
         }
@@ -1544,9 +1551,23 @@ mod tests {
             select_bound_sql("s", &cols, "price", Some("avg"), num).unwrap(),
             "SELECT \"time\"::text, \"product\"::text, avg(\"price\")::float8 FROM s GROUP BY 1, 2"
         );
+        // Postgres has no max(bool) or min(bool): bool_or and bool_and are.
+        let bool = ValueType::Boolean;
         assert_eq!(
-            select_bound_sql("s", &cols, "ok", Some("max"), ValueType::Boolean).unwrap(),
-            "SELECT \"time\"::text, \"product\"::text, max(\"ok\")::bool FROM s GROUP BY 1, 2"
+            select_bound_sql("s", &cols, "ok", Some("max"), bool).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, bool_or(\"ok\")::bool FROM s GROUP BY 1, 2"
+        );
+        assert_eq!(
+            select_bound_sql("s", &cols, "ok", Some("min"), bool).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, bool_and(\"ok\")::bool FROM s GROUP BY 1, 2"
+        );
+        assert_eq!(
+            select_bound_sql("s", &cols, "ok", Some("count"), num).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, count(\"ok\")::float8 FROM s GROUP BY 1, 2"
+        );
+        assert_eq!(
+            select_bound_sql("s", &cols, "price", Some("min"), num).unwrap(),
+            "SELECT \"time\"::text, \"product\"::text, min(\"price\")::float8 FROM s GROUP BY 1, 2"
         );
         assert!(select_bound_sql("s", &cols, "price", Some("median; --"), num).is_err());
         assert_eq!(agg_sql("count").unwrap(), "count");

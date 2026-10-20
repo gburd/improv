@@ -470,6 +470,10 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **pg_improv: `agg => 'min'` or `'max'` on a `bool` column.** The load
+  read `max(value)`, which Postgres does not have for `bool`, so every
+  load of such a binding (in each sync mode, and the logical worker's
+  rebuild) failed. It reads `bool_and` (min) and `bool_or` (max).
 - **pg_improv: a `define` racing a logical-mode batch.** The worker read
   `model_version` before taking the model's lock, so a `define` that
   committed while the worker waited could see its new results
