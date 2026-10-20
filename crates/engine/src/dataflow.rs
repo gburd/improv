@@ -24,7 +24,7 @@ use differential_dataflow::operators::{Join as _, Reduce, Threshold};
 use differential_dataflow::AsCollection;
 use differential_dataflow::Collection;
 use improv_core_model::{
-    BinaryOp, CategoryId, Formula, FuncId, MeasureId, MeasureKind, Model, UnaryOp,
+    BinaryOp, CategoryId, Formula, FuncId, ItemId, MeasureId, MeasureKind, Model, UnaryOp,
 };
 #[cfg(test)]
 use std::collections::BTreeMap;
@@ -164,19 +164,9 @@ where
             // the arguments over all the result's categories.
             let domain = match grid {
                 Some(g) => {
-                    let keys = g.iter().fold(vec![Vec::new()], |acc, (c, items)| {
-                        acc.iter()
-                            .flat_map(|pre: &CoordKey| {
-                                items.iter().map(move |i| {
-                                    let mut k = pre.clone();
-                                    k.push((c.0, i.0));
-                                    k
-                                })
-                            })
-                            .collect::<Vec<CoordKey>>()
-                    });
                     let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-                    keys.into_iter()
+                    grid_keys(g)
+                        .into_iter()
                         .map(|k| (k, t.clone(), 1isize))
                         .collect::<Vec<_>>()
                         .to_stream(scope)
@@ -221,25 +211,8 @@ where
 
         PlanNodeKind::Remap { input, maps } => {
             let x = build_coll(input, scope, inputs, derived)?;
-            let to: HashMap<(u32, u32), (u32, u32)> = maps
-                .iter()
-                .flat_map(|(from, to, items)| {
-                    items.iter().map(|(i, j)| ((from.0, i.0), (to.0, j.0)))
-                })
-                .collect();
-            let from: Vec<u32> = maps.iter().map(|(c, _, _)| c.0).collect();
-            Ok(x.flat_map(move |(k, v)| {
-                let mut k2 = Vec::with_capacity(k.len());
-                for (c, i) in k {
-                    if from.contains(&c) {
-                        k2.push(*to.get(&(c, i))?);
-                    } else {
-                        k2.push((c, i));
-                    }
-                }
-                k2.sort_unstable();
-                Some((k2, v))
-            }))
+            let (from, to) = remap_table(maps);
+            Ok(x.flat_map(move |(k, v)| Some((remap_key(&k, &from, &to)?, v))))
         }
 
         PlanNodeKind::Recurrence {
@@ -375,17 +348,7 @@ where
                 .enumerate()
                 .filter(|(i, _)| template[*i].is_none())
                 .collect();
-            let fill = move |vals: &[CellValue]| {
-                let mut it = vals.iter();
-                let full: Vec<CellValue> = template
-                    .iter()
-                    .map(|t| match t {
-                        Some(v) => v.clone(),
-                        None => it.next().expect("one value per collection arg").clone(),
-                    })
-                    .collect();
-                builtins::eval(func, &full)
-            };
+            let fill = move |vals: &[CellValue]| call_with(func, &template, vals);
             let Some(((_, first), rest)) = colls.split_first() else {
                 // No collection argument: a constant at the empty coordinate.
                 return Ok(constant(scope, fill(&[])));
@@ -453,19 +416,176 @@ where
 
 /// A reduction row as the `reduce` sees it: (item positions along the
 /// reduced categories, the first reduced category's item), then the values.
-type AggRow = ((Vec<u32>, u32), Vec<CellValue>);
+pub(crate) type AggRow = ((Vec<u32>, u32), Vec<CellValue>);
 
 /// The pieces of an `Aggregate` plan node, for [`build_aggregate`].
-struct AggSpec<'p> {
-    ins: &'p [PlanNode],
-    params: &'p [PlanNode],
-    pred: Option<&'p PlanNode>,
-    group_by: &'p [CategoryId],
+pub(crate) struct AggSpec<'p> {
+    pub(crate) ins: &'p [PlanNode],
+    pub(crate) params: &'p [PlanNode],
+    pub(crate) pred: Option<&'p PlanNode>,
+    pub(crate) group_by: &'p [CategoryId],
+    pub(crate) func: FuncId,
+    pub(crate) order: &'p [(CategoryId, Vec<ItemId>)],
+    pub(crate) window: Option<crate::typed::Window>,
+    pub(crate) per_item: bool,
+    pub(crate) into: &'p [(CategoryId, Vec<ItemId>)],
+}
+
+/// Each reduced category's item positions, for [`agg_key`].
+pub(crate) type AggOrder = Vec<(u32, HashMap<u32, u32>)>;
+
+/// The item positions along `order`'s categories.
+pub(crate) fn agg_order(order: &[(CategoryId, Vec<ItemId>)]) -> AggOrder {
+    order
+        .iter()
+        .map(|(c, items)| {
+            let pos = items
+                .iter()
+                .enumerate()
+                .map(|(i, it)| (it.0, i as u32))
+                .collect();
+            (c.0, pos)
+        })
+        .collect()
+}
+
+/// A reduction row at `k`, values `vs`: its group key (`k` on `gb`) and the
+/// row as the reduction sees it (its item positions along `order`, its item
+/// of the first reduced category, the values).
+pub(crate) fn agg_key(
+    k: &CoordKey,
+    vs: Vec<CellValue>,
+    order: &AggOrder,
+    gb: &[u32],
+) -> (CoordKey, AggRow) {
+    let pos: Vec<u32> = order
+        .iter()
+        .map(|(c, m)| {
+            let item = k.iter().find(|(cc, _)| cc == c).map_or(0, |(_, i)| *i);
+            // Unknown items (no model order) sort by id after known ones.
+            m.get(&item).copied().unwrap_or(u32::MAX / 2 + item)
+        })
+        .collect();
+    let item = order
+        .first()
+        .and_then(|(c, _)| k.iter().find(|(cc, _)| cc == c))
+        .map_or(0, |(_, i)| *i);
+    (project(k, gb), ((pos, item), vs))
+}
+
+/// A group's reduction input (sorted rows, with multiplicities) as the
+/// kernels take it: the rows, the parameters (`consts`, the joined ones
+/// filled from the first row), and each row's item.
+pub(crate) fn agg_rows(
+    input: &[(&AggRow, isize)],
+    n_in: usize,
+    consts: &[Option<CellValue>],
+    capacity: usize,
+) -> (Rows, Vec<CellValue>, Vec<u32>) {
+    let mut rs = Rows {
+        pos: Vec::new(),
+        vals: Vec::new(),
+        capacity,
+    };
+    let mut params: Vec<CellValue> = Vec::new();
+    let mut items = Vec::new();
+    for ((pk, vs), mult) in input {
+        for _ in 0..(*mult).max(0) {
+            rs.pos.push(pk.0.clone());
+            rs.vals.push(vs[..n_in].to_vec());
+            items.push(pk.1);
+            if params.is_empty() {
+                // Joined parameters follow the inputs, in order.
+                let mut joined = vs[n_in..].iter();
+                params = consts
+                    .iter()
+                    .map(|c| match c {
+                        Some(v) => v.clone(),
+                        None => joined.next().cloned().unwrap_or(CellValue::Err(err::NA)),
+                    })
+                    .collect();
+            }
+        }
+    }
+    if params.is_empty() {
+        params = consts
+            .iter()
+            .map(|c| c.clone().unwrap_or(CellValue::Err(err::NA)))
+            .collect();
+    }
+    (rs, params, items)
+}
+
+/// A reduction row under a `WHERE` condition `t`: kept where it is true,
+/// every value the error where it is an error, else dropped.
+pub(crate) fn where_row(vs: Vec<CellValue>, t: CellValue) -> Option<Vec<CellValue>> {
+    match t {
+        CellValue::Bool(true) => Some(vs),
+        CellValue::Err(_) => Some(vec![t; vs.len()]),
+        _ => None,
+    }
+}
+
+/// Every item combination of `grid`, row-major (the last category fastest).
+pub(crate) fn grid_keys(grid: &[(CategoryId, Vec<ItemId>)]) -> Vec<CoordKey> {
+    grid.iter().fold(vec![Vec::new()], |acc, (c, items)| {
+        acc.iter()
+            .flat_map(|pre: &CoordKey| {
+                items.iter().map(move |i| {
+                    let mut k = pre.clone();
+                    k.push((c.0, i.0));
+                    k
+                })
+            })
+            .collect()
+    })
+}
+
+/// A RELABEL's maps as the renamed categories and each renamed item's target.
+pub(crate) type RemapTable = (Vec<u32>, HashMap<(u32, u32), (u32, u32)>);
+
+/// [`RemapTable`] of `maps`.
+pub(crate) fn remap_table(maps: &crate::plan::Remaps) -> RemapTable {
+    let to = maps
+        .iter()
+        .flat_map(|(from, to, items)| items.iter().map(|(i, j)| ((from.0, i.0), (to.0, j.0))))
+        .collect();
+    (maps.iter().map(|(c, _, _)| c.0).collect(), to)
+}
+
+/// `k` renamed by a [`RemapTable`]; `None` where a renamed item has no target.
+pub(crate) fn remap_key(
+    k: &CoordKey,
+    from: &[u32],
+    to: &HashMap<(u32, u32), (u32, u32)>,
+) -> Option<CoordKey> {
+    let mut k2 = Vec::with_capacity(k.len());
+    for &(c, i) in k {
+        if from.contains(&c) {
+            k2.push(*to.get(&(c, i))?);
+        } else {
+            k2.push((c, i));
+        }
+    }
+    k2.sort_unstable();
+    Some(k2)
+}
+
+/// A scalar call: `template`'s literals with `vals` in the other slots.
+pub(crate) fn call_with(
     func: FuncId,
-    order: &'p [(CategoryId, Vec<improv_core_model::ItemId>)],
-    window: Option<crate::typed::Window>,
-    per_item: bool,
-    into: &'p [(CategoryId, Vec<improv_core_model::ItemId>)],
+    template: &[Option<CellValue>],
+    vals: &[CellValue],
+) -> CellValue {
+    let mut it = vals.iter();
+    let full: Vec<CellValue> = template
+        .iter()
+        .map(|t| match t {
+            Some(v) => v.clone(),
+            None => it.next().expect("one value per collection arg").clone(),
+        })
+        .collect();
+    builtins::eval(func, &full)
 }
 
 /// A reduction's rows: the reduced measures aligned on their coordinate
@@ -519,14 +639,8 @@ where
     let n_in = a.ins.len();
     if let Some(p) = a.pred {
         let pc = build_coll(p, scope, inputs, derived)?;
-        rows = align_with(&rows, &pc, p.ty.dim.categories.clone()).flat_map(|(k, (vs, t))| {
-            match t {
-                CellValue::Bool(true) => Some((k, vs)),
-                // An error in the condition makes the row that error.
-                CellValue::Err(_) => Some((k, vec![t; vs.len()])),
-                _ => None,
-            }
-        });
+        rows = align_with(&rows, &pc, p.ty.dim.categories.clone())
+            .flat_map(|(k, (vs, t))| where_row(vs, t).map(|vs| (k, vs)));
     }
     // Parameters: literals fold; the rest join per row on the categories they
     // share with the rows so far. Categories only a parameter has join in
@@ -560,86 +674,18 @@ where
             }
         }
     }
-    let order: Vec<(u32, HashMap<u32, u32>)> = a
-        .order
-        .iter()
-        .map(|(c, items)| {
-            let pos = items
-                .iter()
-                .enumerate()
-                .map(|(i, it)| (it.0, i as u32))
-                .collect();
-            (c.0, pos)
-        })
-        .collect();
+    let order = agg_order(a.order);
     let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
     let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
     // (group key, ((positions, item of the first reduced category), values))
-    let keyed = rows.map(move |(k, vs)| {
-        let pos: Vec<u32> = order
-            .iter()
-            .map(|(c, m)| {
-                let item = k.iter().find(|(cc, _)| cc == c).map_or(0, |(_, i)| *i);
-                // Unknown items (no model order) sort by id after known ones.
-                m.get(&item).copied().unwrap_or(u32::MAX / 2 + item)
-            })
-            .collect();
-        let item = order
-            .first()
-            .and_then(|(c, _)| k.iter().find(|(cc, _)| cc == c))
-            .map_or(0, |(_, i)| *i);
-        (project(&k, &gb), ((pos, item), vs))
-    });
+    let keyed = rows.map(move |(k, vs)| agg_key(&k, vs, &order, &gb));
     let func = a.func;
-    let to_rows = move |input: &[(&AggRow, isize)]| {
-        let mut rs = Rows {
-            pos: Vec::new(),
-            vals: Vec::new(),
-            capacity,
-        };
-        let mut params: Vec<CellValue> = Vec::new();
-        let mut items = Vec::new();
-        for ((pk, vs), mult) in input {
-            for _ in 0..(*mult).max(0) {
-                rs.pos.push(pk.0.clone());
-                rs.vals.push(vs[..n_in].to_vec());
-                items.push(pk.1);
-                if params.is_empty() {
-                    // Joined parameters follow the inputs, in order.
-                    let mut joined = vs[n_in..].iter();
-                    params = consts
-                        .iter()
-                        .map(|c| match c {
-                            Some(v) => v.clone(),
-                            None => joined.next().cloned().unwrap_or(CellValue::Err(err::NA)),
-                        })
-                        .collect();
-                }
-            }
-        }
-        if params.is_empty() {
-            params = consts
-                .iter()
-                .map(|c| c.clone().unwrap_or(CellValue::Err(err::NA)))
-                .collect();
-        }
-        (rs, params, items)
-    };
+    let to_rows = move |input: &[(&AggRow, isize)]| agg_rows(input, n_in, &consts, capacity);
     let cat0 = a.order.first().map(|(c, _)| c.0);
     if !a.into.is_empty() {
         // A list of results laid over the landing categories row-major: the
         // k-th result at the k-th cell of their product (last fastest).
-        let cells: Vec<CoordKey> = a.into.iter().fold(vec![Vec::new()], |acc, (c, items)| {
-            acc.iter()
-                .flat_map(|pre| {
-                    items.iter().map(move |i| {
-                        let mut k = pre.clone();
-                        k.push((c.0, i.0));
-                        k
-                    })
-                })
-                .collect()
-        });
+        let cells = grid_keys(a.into);
         let lists = keyed.reduce(
             move |_k, input, output: &mut Vec<((CoordKey, CellValue), isize)>| {
                 let (rs, params, _) = to_rows(input);
@@ -688,7 +734,7 @@ where
 
 /// One result per row: the reduction over the rows whose position lies in
 /// the row's window (positions along the single reduced category).
-fn windows(
+pub(crate) fn windows(
     func: FuncId,
     rs: &Rows,
     params: &[CellValue],
@@ -772,7 +818,7 @@ where
 }
 
 /// The categories both plan nodes range over: their broadcast join key.
-fn shared_cats(a: &PlanNode, b: &PlanNode) -> Vec<CategoryId> {
+pub(crate) fn shared_cats(a: &PlanNode, b: &PlanNode) -> Vec<CategoryId> {
     a.ty.dim
         .categories
         .iter()
@@ -783,7 +829,7 @@ fn shared_cats(a: &PlanNode, b: &PlanNode) -> Vec<CategoryId> {
 
 /// If a plan node is a literal, return its `CellValue` (for folding a constant
 /// operand into a `MapBinary` map rather than materializing a collection).
-fn literal_value(node: &PlanNode) -> Option<CellValue> {
+pub(crate) fn literal_value(node: &PlanNode) -> Option<CellValue> {
     match &node.kind {
         PlanNodeKind::Literal(v) => CellValue::from_model_value(v),
         _ => None,
@@ -886,14 +932,14 @@ fn truthy(v: &CellValue) -> bool {
 
 /// Project a coordinate key down to a subset of category ids (proven in
 /// [`improv_verified::keys::project`]).
-fn project(k: &CoordKey, keep: &[u32]) -> CoordKey {
+pub(crate) fn project(k: &CoordKey, keep: &[u32]) -> CoordKey {
     improv_verified::keys::project(k, keep)
 }
 
 /// Merge two sorted coordinate keys (right's extra dims added to left; shared
 /// dims agree, they were the join key). A proven merge:
 /// [`improv_verified::keys::union_keys`].
-fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
+pub(crate) fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
     improv_verified::keys::union_keys(a, b)
 }
 

@@ -25,6 +25,7 @@ pub mod builtins;
 pub mod compiler;
 pub mod dataflow;
 pub mod external;
+mod hosteval;
 pub mod plan;
 pub mod reduce;
 pub mod scalar;
