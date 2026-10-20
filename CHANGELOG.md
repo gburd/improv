@@ -44,6 +44,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   worker frees the seed once it has applied it: a PageRank FIXPOINT over
   10M edges peaks at 15.0 GB (16.8 GB before), about 1.0 kB per edge in
   the engine (1.2 kB).
+- **`count_distinct` bindings load about 4x faster.** pg_improv, `storage_pg`
+  and the DuckDB `improv()` function read them as `count(v)` over
+  `SELECT DISTINCT dims, v` (two hash aggregates) instead of
+  `count(DISTINCT v)`, which sorted every fact row by its text keys. On
+  2.5M rows the load query drops from 4.5 s to 1.1 s. Results are
+  unchanged, NULLs included.
 
 ### Fixed
 

@@ -1109,10 +1109,11 @@ pub fn agg_sql(agg: &str) -> Result<&'static str> {
 }
 
 /// The SQL aggregate call of `binding.agg` `agg` over the (quoted) value
-/// expression `v`: `sum(v)`, …, `count(DISTINCT v)`.
+/// expression `v`: `sum(v)`, …, `count(v)` for `count_distinct` too, whose
+/// rows [`select_bound_sql`] has already made distinct.
 pub fn agg_call(agg: &str, v: &str) -> Result<String> {
     Ok(match agg_sql(agg)? {
-        "count_distinct" => format!("count(DISTINCT {v})"),
+        "count_distinct" => format!("count({v})"),
         a => format!("{a}({v})"),
     })
 }
@@ -1123,6 +1124,12 @@ pub fn agg_call(agg: &str, v: &str) -> Result<String> {
 /// aggregated (a `bool`'s `min` and `max` as `bool_and` and `bool_or`: SQL
 /// has no `max(bool)`). `rel` is a `regclass::text`, which Postgres has
 /// already quoted.
+///
+/// `count_distinct` is `count(v)` over `SELECT DISTINCT dims::text, v`, two
+/// hash aggregates: `count(DISTINCT v)` sorts every row by its text keys,
+/// about 5x slower at 2.5M rows. It is equal: both group by the dims' text
+/// and use `v`'s equality, `DISTINCT` keeps one NULL that `count` skips, and
+/// a group of only NULLs still counts 0.
 pub fn select_bound_sql(
     rel: &str,
     dim_cols: &[String],
@@ -1143,10 +1150,23 @@ pub fn select_bound_sql(
         ),
         Some(a) => {
             let by: Vec<String> = (1..=dims.len()).map(|i| i.to_string()).collect();
-            let call = match (agg_sql(a)?, vt) {
-                ("min", ValueType::Boolean) => format!("bool_and({v})"),
-                ("max", ValueType::Boolean) => format!("bool_or({v})"),
-                _ => agg_call(a, &v)?,
+            let (call, dims, rel) = match (agg_sql(a)?, vt) {
+                ("min", ValueType::Boolean) => (format!("bool_and({v})"), dims, rel.to_string()),
+                ("max", ValueType::Boolean) => (format!("bool_or({v})"), dims, rel.to_string()),
+                ("count_distinct", _) => {
+                    let names: Vec<String> = (1..=dims.len()).map(|i| format!("d{i}")).collect();
+                    let inner: Vec<String> = dims
+                        .iter()
+                        .zip(&names)
+                        .map(|(d, n)| format!("{d} AS {n}"))
+                        .collect();
+                    let rel = format!(
+                        "(SELECT DISTINCT {}, {v} AS v FROM {rel}) improv_distinct",
+                        inner.join(", ")
+                    );
+                    (agg_call(a, "v")?, names, rel)
+                }
+                _ => (agg_call(a, &v)?, dims, rel.to_string()),
             };
             format!(
                 "SELECT {}, {} FROM {rel} GROUP BY {}",
@@ -1586,8 +1606,8 @@ mod tests {
         assert_eq!(agg_sql("count").unwrap(), "count");
         assert_eq!(
             select_bound_sql("s", &cols, "sha", Some("count_distinct"), num).unwrap(),
-            "SELECT \"time\"::text, \"product\"::text, count(DISTINCT \"sha\")::float8 \
-             FROM s GROUP BY 1, 2"
+            "SELECT d1, d2, count(v)::float8 FROM (SELECT DISTINCT \"time\"::text AS d1, \
+             \"product\"::text AS d2, \"sha\" AS v FROM s) improv_distinct GROUP BY 1, 2"
         );
     }
 

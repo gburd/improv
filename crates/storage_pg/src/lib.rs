@@ -304,15 +304,16 @@ fn json_to_value(vt: ValueType, j: &serde_json::Value) -> Result<Value> {
     })
 }
 
-/// The SQL aggregate call a `binding.agg` names, over value expression `v`.
 /// The SQL aggregate call of a binding's `agg` over `v`. Postgres has no
 /// `min(bool)` or `max(bool)`: they are `bool_and` and `bool_or`.
+/// `count_distinct` is `count(v)`: the caller reads it over `SELECT
+/// DISTINCT dims, v` (two hash aggregates, not `count(DISTINCT v)`'s sort).
 fn agg_call(agg: &str, v: &str, vt: ValueType) -> Result<String> {
     match (agg, vt) {
         ("min", ValueType::Boolean) => Ok(format!("bool_and({v})")),
         ("max", ValueType::Boolean) => Ok(format!("bool_or({v})")),
         ("sum" | "avg" | "min" | "max" | "count", _) => Ok(format!("{agg}({v})")),
-        ("count_distinct", _) => Ok(format!("count(DISTINCT {v})")),
+        ("count_distinct", _) => Ok(format!("count({v})")),
         _ => Err(StoreError::Integrity(format!(
             "unknown binding agg {agg:?}"
         ))),
@@ -912,6 +913,21 @@ impl PgModelStore {
                 .map(|(_, c)| format!("{}::text", ident(c)))
                 .collect();
             let mut v = ident(&b.value_col);
+            let mut table = b.table.clone();
+            if b.agg.as_deref() == Some("count_distinct") {
+                // pg_model's `select_bound_sql` form: equal to count(DISTINCT v).
+                let inner: Vec<String> = cols
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| format!("{c} AS d{i}"))
+                    .collect();
+                table = format!(
+                    "(SELECT DISTINCT {}, {v} AS v FROM {table}) d",
+                    inner.join(", ")
+                );
+                cols = (0..cols.len()).map(|i| format!("d{i}")).collect();
+                v = "v".into();
+            }
             if let Some(a) = b.agg.as_deref() {
                 v = agg_call(a, &v, vt)?;
             }
@@ -921,13 +937,12 @@ impl PgModelStore {
             }
             cols.push(format!("to_jsonb({v})::text"));
             let sql = match b.agg {
-                None => format!("SELECT {} FROM {}", cols.join(", "), b.table),
+                None => format!("SELECT {} FROM {table}", cols.join(", ")),
                 Some(_) => {
                     let by: Vec<String> = (1..cols.len()).map(|i| i.to_string()).collect();
                     format!(
-                        "SELECT {} FROM {} GROUP BY {}",
+                        "SELECT {} FROM {table} GROUP BY {}",
                         cols.join(", "),
-                        b.table,
                         by.join(", ")
                     )
                 }

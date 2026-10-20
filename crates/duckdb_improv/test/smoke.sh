@@ -79,6 +79,16 @@ SELECT 'boolagg=' || string_agg(measure || ':' || "Region" || '=' || value_text,
 input AllOk = ok min
 input AnyOk = ok max
 Mixed = AnyOk AND NOT AllOk');
+-- count_distinct: two-level DISTINCT then count, equal to count(DISTINCT):
+-- NULLs are not counted, a region of only NULLs counts 0.
+CREATE TABLE shas(region VARCHAR, sha VARCHAR);
+INSERT INTO shas VALUES ('n', 'a'), ('n', 'a'), ('n', 'b'), ('n', NULL), ('s', NULL), ('s', NULL);
+SELECT 'distinct=' || string_agg("Region" || '=' || value_text, ',' ORDER BY "Region")
+  FROM improv('shas', 'category Region = region
+input Shas = sha count_distinct
+Shown = Shas * 1');
+SELECT 'cdref=' || string_agg(region || '=' || n, ',' ORDER BY region)
+  FROM (SELECT region, count(DISTINCT sha) AS n FROM shas GROUP BY region);
 -- Joins like any table.
 SELECT 'join=' || string_agg(i."Product" || ':' || i.value_text, ',' ORDER BY i."Product")
   FROM improv('sales', revenue_model()) i JOIN (VALUES ('WidgetA')) p(name) ON p.name = i."Product"
@@ -114,6 +124,8 @@ expect "tdate=2024-02-29"
 nfun=$(grep -c '^| `' "$HERE/../../docs/src/functions.md")
 expect "nfun=$nfun"
 expect "boolagg=Mixed:n=true,Mixed:s=false"
+expect "distinct=n=2,s=0"
+expect "cdref=n=2,s=0"
 expect "pmtsig=PMT(rate, nper, pv, [fv], [type])|financial|number"
 expect "search=PMT"
 expect "cell=Revenue[2024,WidgetA]=1000"

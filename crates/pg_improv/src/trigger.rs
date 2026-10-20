@@ -657,12 +657,14 @@ mod tests {
 
     /// P1-4: `agg => 'count_distinct'` counts each coordinate's distinct
     /// values, in the load and in trigger mode; deleting one of two rows
-    /// that share a value keeps the count.
+    /// that share a value keeps the count. NULLs are not counted, as in
+    /// `count(DISTINCT)`: a coordinate of only NULLs counts 0.
     #[pg_test]
     fn count_distinct_bindings_count_distinct_values() {
         for sql in [
             "CREATE TABLE contrib (person text, sha text)",
-            "INSERT INTO contrib VALUES ('ann', 'a1'), ('ann', 'a1'), ('ann', 'a2'), ('bob', 'b1')",
+            "INSERT INTO contrib VALUES ('ann', 'a1'), ('ann', 'a1'), ('ann', 'a2'), ('bob', 'b1'), \
+             ('ann', NULL), ('ann', NULL), ('dan', NULL), (NULL, 'z1')",
             "SELECT improv.create_model('c')",
             "SELECT improv.bind_category('c', 'Person', 'contrib', 'person')",
             "SELECT improv.bind_measure('c', 'Commits', 'contrib', 'sha', agg => 'count_distinct')",
@@ -677,7 +679,14 @@ mod tests {
             ))
             .unwrap()
         };
-        assert_eq!((n("ann"), n("bob")), (Some(2.0), Some(1.0)));
+        assert_eq!(
+            (n("ann"), n("bob"), n("dan")),
+            (Some(2.0), Some(1.0), Some(0.0))
+        );
+        let same = "SELECT count(*) FROM (SELECT person, count(DISTINCT sha)::float8 AS v \
+                    FROM contrib WHERE person IS NOT NULL GROUP BY 1) w \
+                    FULL JOIN improv_c.shown s USING (person) WHERE w.v IS DISTINCT FROM s.value";
+        assert_eq!(Spi::get_one::<i64>(same).unwrap(), Some(0));
         Spi::run(
             "DELETE FROM contrib WHERE ctid = (SELECT min(ctid) FROM contrib WHERE sha = 'a1')",
         )

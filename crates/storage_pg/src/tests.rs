@@ -777,7 +777,8 @@ fn aggregated_bindings_load_folded_and_are_read_only() {
         .batch_execute(&format!(
             "DROP TABLE IF EXISTS {table}; \
              CREATE TABLE {table} (quarter text, product text, price float8); \
-             INSERT INTO {table} VALUES ('Q1','Widget',10), ('Q1','Widget',30), ('Q2','Widget',5)"
+             INSERT INTO {table} VALUES ('Q1','Widget',10), ('Q1','Widget',30), ('Q2','Widget',5), \
+               ('Q1','Widget',10), ('Q1','Widget',NULL), ('Q3','Widget',NULL)"
         ))
         .unwrap();
     let mut s = PgModelStore::open(&url).unwrap();
@@ -785,19 +786,26 @@ fn aggregated_bindings_load_folded_and_are_read_only() {
     m.add_category(T, "Time");
     m.add_category(P, "Product");
     m.add_measure(measure(100, "Price", &[T, P], MeasureKind::Input));
+    m.add_measure(measure(101, "Prices", &[T, P], MeasureKind::Input));
     s.save_model(&m).unwrap();
-    s.client
-        .execute(
-            "INSERT INTO improv.binding(model_id, measure_id, rel, value_col, dim_cols, agg) \
-             VALUES ($1, 100, $2::text::regclass, 'price', \
-                     '{\"Time\":\"quarter\",\"Product\":\"product\"}', 'sum')",
-            &[&s.model_id, &table],
-        )
-        .unwrap();
+    for (id, agg) in [(100, "sum"), (101, "count_distinct")] {
+        s.client
+            .execute(
+                "INSERT INTO improv.binding(model_id, measure_id, rel, value_col, dim_cols, agg) \
+                 VALUES ($1, $2, $3::text::regclass, 'price', \
+                         '{\"Time\":\"quarter\",\"Product\":\"product\"}', $4)",
+                &[&s.model_id, &i64::from(id), &table, &agg],
+            )
+            .unwrap();
+    }
     let mut m = s.load_model().unwrap();
     let cell = |m: &Model, q| m.inputs.get(&(PRICE, at(m, q, "Widget"))).cloned();
-    assert_eq!(cell(&m, "Q1"), Some(Value::Number(40.0)));
+    assert_eq!(cell(&m, "Q1"), Some(Value::Number(50.0)));
     assert_eq!(cell(&m, "Q2"), Some(Value::Number(5.0)));
+    // count_distinct as count(DISTINCT): NULLs not counted, all-NULL is 0.
+    let n = |m: &Model, q| m.inputs.get(&(QTY, at(m, q, "Widget"))).cloned();
+    assert_eq!(n(&m, "Q1"), Some(Value::Number(2.0)));
+    assert_eq!(n(&m, "Q3"), Some(Value::Number(0.0)));
     s.save_model(&m).unwrap();
     m.set_input(PRICE, at(&m, "Q1", "Widget"), Value::Number(1.0));
     let e = s.save_model(&m).unwrap_err();
@@ -1175,7 +1183,7 @@ fn snapshotless_saves_overwrite_and_duplicate_rows_conflict() {
 
 /// A binding's aggregate in SQL: `bool` min/max are `bool_and`/`bool_or`
 /// (Postgres has no `max(bool)`), the rest by name, `count_distinct` as
-/// `count(DISTINCT …)`; anything else is refused.
+/// `count(…)` (over rows the load made distinct); anything else is refused.
 #[test]
 fn agg_call_spells_each_aggregate() {
     use super::agg_call;
@@ -1191,7 +1199,7 @@ fn agg_call_spells_each_aggregate() {
     assert_eq!(agg_call("sum", "v", ValueType::Number).unwrap(), "sum(v)");
     assert_eq!(
         agg_call("count_distinct", "v", ValueType::Text).unwrap(),
-        "count(DISTINCT v)"
+        "count(v)"
     );
     assert!(agg_call("median", "v", ValueType::Number).is_err());
 }
