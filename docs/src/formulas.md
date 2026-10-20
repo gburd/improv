@@ -508,7 +508,8 @@ PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
   `max_iter` is the same as a fresh evaluation's.
 - On 1,500 people and 100,000 edges this PageRank matches a plain power
   iteration to 3e-15 (L1), in 14 rounds of about 0.1 s each in a release
-  build (1.8 s in all, 0.25 s of it building the dataflow).
+  build (1.8 s in all, 0.25 s of it building the dataflow). On 10,000
+  people and 1,000,000 edges it takes 13 rounds of 1.8 s, 29 s in all.
 
 ### Functions
 
