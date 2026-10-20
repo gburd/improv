@@ -14,6 +14,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   per item. 300k items took 12.5 s through `add_item` and now take
   40 ms (1M items: 140 s, now 0.15 s); DuckDB `improv()` over one
   300k-item category went from 38 s to 1.6 s.
+- **Defining many measures is linear, not quadratic.**
+  `Model::measure_by_name` and `category_by_name` scanned every measure
+  (category) per lookup; they now go through a name → id index the model
+  builds on first use (never saved). Parsing 20k chained definitions took
+  558 ms and now takes 25 ms.
 
 ### Fixed
 

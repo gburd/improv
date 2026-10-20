@@ -136,6 +136,72 @@ proptest! {
     }
 }
 
+/// One edit of the measures, straight through the pub map or the builder.
+#[derive(Debug, Clone)]
+enum Edit {
+    Add(u32, u32),
+    Insert(u32, u32),
+    Rename(u32, u32),
+    Remove(u32),
+    Lookup(u32),
+}
+
+fn arb_edit() -> impl Strategy<Value = Edit> {
+    prop_oneof![
+        (0u32..6, 0u32..6).prop_map(|(i, n)| Edit::Add(i, n)),
+        (0u32..6, 0u32..6).prop_map(|(i, n)| Edit::Insert(i, n)),
+        (0u32..6, 0u32..6).prop_map(|(i, n)| Edit::Rename(i, n)),
+        (0u32..6).prop_map(Edit::Remove),
+        (0u32..6).prop_map(Edit::Lookup),
+    ]
+}
+
+proptest! {
+    /// Whatever the edits, `measure_by_name` answers like the scan it
+    /// replaced: a measure of that name when there is one, else none.
+    #[test]
+    fn measure_by_name_agrees_with_a_scan(edits in prop::collection::vec(arb_edit(), 0..40)) {
+        let measure = |id: u32, n: u32| Measure {
+            id: MeasureId(id),
+            name: Name(format!("N{n}")),
+            value_type: ValueType::Number,
+            categories: Vec::new(),
+            kind: MeasureKind::Input,
+            description: None,
+        };
+        let mut m = Model::new();
+        for e in edits {
+            match e {
+                Edit::Add(i, n) => m.add_measure(measure(i, n)),
+                Edit::Insert(i, n) => {
+                    m.measures.insert(MeasureId(i), measure(i, n));
+                }
+                Edit::Rename(i, n) => {
+                    if let Some(x) = m.measures.get_mut(&MeasureId(i)) {
+                        x.name = Name(format!("N{n}"));
+                    }
+                }
+                Edit::Remove(i) => {
+                    m.measures.remove(&MeasureId(i));
+                }
+                Edit::Lookup(n) => {
+                    m.measure_by_name(&format!("N{n}"));
+                }
+            }
+            for n in 0..6 {
+                let name = format!("N{n}");
+                let found = m.measure_by_name(&name);
+                let any = m.measures.values().any(|x| x.name.0 == name);
+                prop_assert_eq!(found.is_some(), any);
+                if let Some(x) = found {
+                    prop_assert_eq!(&x.name.0, &name);
+                    prop_assert_eq!(m.measures.get(&x.id), Some(x));
+                }
+            }
+        }
+    }
+}
+
 // Keep `Item` referenced so an unused-import lint never fires if the strategy
 // changes; also a trivial structural check that add_item wires the category.
 #[test]

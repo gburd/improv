@@ -168,6 +168,57 @@ pub struct Model {
     /// expanded when compiled, so editing the lambda changes every use.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub lambdas: BTreeMap<u32, NamedLambda>,
+    /// Name → id hints for the `*_by_name` lookups. Not saved: built on the
+    /// first lookup, so every load path gets them.
+    #[serde(skip)]
+    names: NameHints,
+}
+
+/// Name → id hints for [`Model::measure_by_name`] and
+/// [`Model::category_by_name`], so a bulk define resolves names in O(1)
+/// instead of scanning every measure. Built from the maps on the first
+/// lookup; [`Model::add_measure`] and [`Model::add_category`] keep a built
+/// one current. `measures` and `categories` are pub and can change behind
+/// the hints' back, so a lookup trusts a hint only after checking that its
+/// id still has that name, and scans when there is no hint or a stale one:
+/// a hint saves time and never changes the answer. Ignored by `==`, so a
+/// loaded model still equals the one saved.
+#[derive(Clone, Default)]
+struct NameHints(std::sync::OnceLock<Hints>);
+
+#[derive(Clone, Default)]
+struct Hints {
+    measures: HashMap<String, MeasureId>,
+    categories: HashMap<String, CategoryId>,
+}
+
+impl NameHints {
+    fn get(&self, model: &Model) -> &Hints {
+        self.0.get_or_init(|| Hints {
+            measures: model
+                .measures
+                .values()
+                .map(|m| (m.name.0.clone(), m.id))
+                .collect(),
+            categories: model
+                .categories
+                .values()
+                .map(|c| (c.name.0.clone(), c.id))
+                .collect(),
+        })
+    }
+}
+
+impl PartialEq for NameHints {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for NameHints {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("NameHints")
+    }
 }
 
 /// A named LAMBDA: its parameters and its body, in which parameter `i` is
@@ -759,11 +810,15 @@ impl Model {
     // --- builders (return the new id for convenience) ---
 
     pub fn add_category(&mut self, id: CategoryId, name: impl Into<String>) {
+        let name = name.into();
+        if let Some(h) = self.names.0.get_mut() {
+            h.categories.insert(name.clone(), id);
+        }
         self.categories.insert(
             id,
             Category {
                 id,
-                name: Name(name.into()),
+                name: Name(name),
                 items: Vec::new(),
             },
         );
@@ -792,6 +847,9 @@ impl Model {
     }
 
     pub fn add_measure(&mut self, m: Measure) {
+        if let Some(h) = self.names.0.get_mut() {
+            h.measures.insert(m.name.0.clone(), m.id);
+        }
         self.measures.insert(m.id, m);
     }
 
@@ -837,13 +895,22 @@ impl Model {
     }
 
     /// Look up a measure by its human name.
+    // shortcut: a name with no hint (absent, or put into the pub map
+    // directly after the first lookup) still scans; make the maps private
+    // and keep an exact index if misses show up in a profile.
     pub fn measure_by_name(&self, name: &str) -> Option<&Measure> {
-        self.measures.values().find(|m| m.name.0 == name)
+        let hint = self.names.get(self).measures.get(name);
+        hint.and_then(|id| self.measures.get(id))
+            .filter(|m| m.name.0 == name)
+            .or_else(|| self.measures.values().find(|m| m.name.0 == name))
     }
 
     /// Look up a category by its human name.
     pub fn category_by_name(&self, name: &str) -> Option<&Category> {
-        self.categories.values().find(|c| c.name.0 == name)
+        let hint = self.names.get(self).categories.get(name);
+        hint.and_then(|id| self.categories.get(id))
+            .filter(|c| c.name.0 == name)
+            .or_else(|| self.categories.values().find(|c| c.name.0 == name))
     }
 
     /// Save (or replace) a view.
@@ -932,6 +999,63 @@ mod tests {
         assert!(m.measure_by_name("Price").unwrap().is_input());
         let coord = Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);
         assert_eq!(m.input(MeasureId(100), &coord), Some(&Value::Number(10.0)));
+    }
+
+    #[test]
+    fn name_lookups_survive_direct_edits_of_the_pub_maps() {
+        let num = |id: u32, name: &str| Measure {
+            id: MeasureId(id),
+            name: Name(name.into()),
+            value_type: ValueType::Number,
+            categories: Vec::new(),
+            kind: MeasureKind::Input,
+            description: None,
+        };
+        let mut m = Model::new();
+        // Inserted straight into the maps before any lookup: the hints are
+        // built from the maps on the first lookup.
+        m.measures.insert(MeasureId(1), num(1, "A"));
+        m.categories.insert(
+            CategoryId(1),
+            Category {
+                id: CategoryId(1),
+                name: Name("T".into()),
+                items: Vec::new(),
+            },
+        );
+        assert_eq!(m.measure_by_name("A").unwrap().id, MeasureId(1));
+        assert_eq!(m.category_by_name("T").unwrap().id, CategoryId(1));
+        // Added through the builders after the hints exist: kept current.
+        m.add_measure(num(2, "B"));
+        m.add_category(CategoryId(2), "P");
+        assert_eq!(m.measure_by_name("B").unwrap().id, MeasureId(2));
+        assert_eq!(m.category_by_name("P").unwrap().id, CategoryId(2));
+        // Inserted directly after the hints exist: found by the scan.
+        m.measures.insert(MeasureId(3), num(3, "C"));
+        assert_eq!(m.measure_by_name("C").unwrap().id, MeasureId(3));
+        // Renamed in place: the stale hint is not trusted.
+        m.measures.get_mut(&MeasureId(1)).unwrap().name = Name("A2".into());
+        m.categories.get_mut(&CategoryId(1)).unwrap().name = Name("T2".into());
+        assert!(m.measure_by_name("A").is_none());
+        assert!(m.category_by_name("T").is_none());
+        assert_eq!(m.measure_by_name("A2").unwrap().id, MeasureId(1));
+        assert_eq!(m.category_by_name("T2").unwrap().id, CategoryId(1));
+        // Removed, or replaced under the same id with another name.
+        m.measures.remove(&MeasureId(2));
+        assert!(m.measure_by_name("B").is_none());
+        m.add_measure(num(3, "D"));
+        assert!(m.measure_by_name("C").is_none());
+        assert_eq!(m.measure_by_name("D").unwrap().id, MeasureId(3));
+        // A clone keeps answering, the hints are not saved, and `==` and
+        // `Debug` ignore them.
+        let copy = m.clone();
+        assert_eq!(copy.measure_by_name("D").unwrap().id, MeasureId(3));
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("names"), "{json}");
+        let back: Model = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+        assert_eq!(back.measure_by_name("A2").unwrap().id, MeasureId(1));
+        assert!(format!("{m:?}").contains("names: NameHints"));
     }
 
     #[test]
