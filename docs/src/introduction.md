@@ -34,7 +34,7 @@ Improv](./ways.md) says which to reach for and when.
 
 ## Status
 
-Version 0.9.0 builds and passes its tests on Linux, macOS and Windows; the
+Version 0.10.0 builds and passes its tests on Linux, macOS and Windows; the
 Postgres extension supports Postgres 15 to 18. External functions in Python, R,
 Julia or Pure run under a bubblewrap sandbox on Linux; WebAssembly functions
 run in-process with fuel and memory limits. On other systems they are

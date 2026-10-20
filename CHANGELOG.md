@@ -6,6 +6,27 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-20
+
+The formula language gets a function registry of 681 built-in functions
+with Excel's and Gnumeric's names (0.9.0 had a few scalars): math, text,
+dates, statistics, finance, lookups, arrays, LET and LAMBDA (named
+LAMBDAs too), engineering, options, distributions, matrix analysis, and
+`FIXPOINT` for iterative models such as PageRank. Every function has
+parameter names, help, autocomplete with ghost arguments in the GUI and
+TUI, and located error messages.
+
+pg_improv 0.10.0 keeps large models live. Aggregated bindings (`sum`,
+`count`, `min`, `max`, `avg` and the new `count_distinct`) and new items
+apply incrementally in logical mode: on 2.5 million rows, a 1,000-row
+batch is visible in about 0.1 s with no rebuild. There is a new `commit`
+sync mode; you can redefine and drop measures from SQL; dimensionless
+results are supported; and named LAMBDAs are kept in `improv.lambda`.
+
+New here: a DuckDB extension, `improv`, which loads into DuckDB 1.5.6 and
+2.0; Mentat 1.16.0 from crates.io; Verus-proven integer kernels; and every
+release is published to PGXN.
+
 Phases P1–P7 of the built-in functions plan: 674 functions (plus
 aliases) with Excel's names, typed errors, the `IF` family,
 positional forms and recurrences, lookups, list results, `LET` and
@@ -1389,7 +1410,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.9.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.10.0...main
+[0.10.0]: https://codeberg.org/gregburd/improv/compare/v0.9.0...v0.10.0
 [0.9.0]: https://codeberg.org/gregburd/improv/compare/v0.8.1...v0.9.0
 [0.8.1]: https://codeberg.org/gregburd/improv/compare/v0.8.0...v0.8.1
 [0.8.0]: https://codeberg.org/gregburd/improv/compare/v0.7.0...v0.8.0
