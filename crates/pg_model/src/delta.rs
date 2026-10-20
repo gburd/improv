@@ -526,6 +526,11 @@ mod tests {
     /// {Q1, Q2} × {Widget, Gadget} (items 1..4), every input cell set, plus
     /// `defs` as measures 10, 11, ...
     fn model(defs: &[&str]) -> Model {
+        model_with(&[], defs)
+    }
+
+    /// [`model`] with named LAMBDAs `lambdas` (ids 1, 2, ...) defined first.
+    fn model_with(lambdas: &[&str], defs: &[&str]) -> Model {
         let mut cat = Catalog::default();
         cat.categories.extend([
             CategoryRow {
@@ -555,6 +560,13 @@ mod tests {
             input(2, "Quantity", &[1, 2]),
             input(3, "Cost", &[2]),
         ]);
+        for (id, l) in (1..).zip(lambdas) {
+            cat.lambdas.push(crate::LambdaRow {
+                id,
+                name: l.split('=').next().unwrap().trim().into(),
+                definition: l.to_string(),
+            });
+        }
         for (id, d) in (10..).zip(defs) {
             let row = define(&build_model(&cat).unwrap(), d, id).unwrap();
             cat.measures.push(row);
@@ -661,6 +673,29 @@ mod tests {
             },
         );
         assert_eq!(plan(&m, &[PRICE], s.clone()).scope, None);
+        // A named LAMBDA is element-wise when its body is.
+        let lambdas = [
+            "Twice = LAMBDA(x, x * 2)",
+            "Top = LAMBDA(x, c, MAX(x OVER c))",
+        ];
+        let m = model_with(
+            &lambdas,
+            &["D = Twice(Price)", "Share = Price / Top(Price, Time)"],
+        );
+        assert!(scopable(&m, &[MeasureId(10)]));
+        assert!(!scopable(&m, &[MeasureId(11)]));
+        // One it cannot expand (gone from the model) is not.
+        let mut gone = m.clone();
+        gone.lambdas.clear();
+        assert!(!scopable(&gone, &[MeasureId(10)]));
+        // An aggregation on either side of an operator is not.
+        let m = model(&["Left = SUM(Price OVER Time) + Cost"]);
+        assert!(!scopable(&m, &[COST]));
+        // Nor is a measure the model does not have, or a reference to one.
+        let mut m = model(&["Spread = Price - Cost"]);
+        m.measures.remove(&COST);
+        assert!(!elementwise(&m, COST));
+        assert!(!elementwise(&m, MeasureId(10)));
     }
 
     #[test]
@@ -868,6 +903,10 @@ mod tests {
             serde_json::json!({"Time": "Q1", "Product": "Widget"})
         );
         assert!(coord_json(&m, MeasureId(99), &[]).is_err());
+        let mut no_time = m.clone();
+        no_time.categories.remove(&T);
+        let e = coord_json(&no_time, PRICE, &["Q1".into(), "Widget".into()]).unwrap_err();
+        assert_eq!(e.to_string(), "catalog: unknown category 1");
     }
 
     #[test]
