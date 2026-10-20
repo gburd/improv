@@ -499,21 +499,22 @@ PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
   `M` and `Dangling`) are fixed for the solve, the joins over them are
   indexed once, and a reduction's rows (which iterate cell meets which
   edge) are laid out once and refilled each round, as long as the
-  coordinates stay the same. Those measures still update incrementally on the
-  dataflow when an input changes. A body with a node the in-memory
-  evaluator does not take (`PREV`, a recurrence) runs each round as one
-  dataflow update instead. Both use the same cell operations and give
-  the same cells bit for bit. After an edit it starts from the previous
-  result (if that converged) and agrees with a full recompute; a
-  FIXPOINT whose inputs did not change is not re-solved. A start that fails to converge
-  within `max_iter` rounds restarts from `init`, so a result cut off at
-  `max_iter` is the same as a fresh evaluation's.
+  coordinates stay the same. Those measures still update incrementally
+  on the dataflow when an input changes. A body with a node the
+  in-memory evaluator does not take (`PREV`, a recurrence) runs each
+  round as one dataflow update instead. Both use the same cell
+  operations and give the same cells bit for bit. After an edit it
+  starts from the previous result (if that converged) and agrees with a
+  full recompute; a FIXPOINT whose inputs did not change is not
+  re-solved. A start that fails to converge within `max_iter` rounds
+  restarts from `init`, so a result cut off at `max_iter` is the same as
+  a fresh evaluation's.
 - On 1,500 people and 100,000 edges this PageRank matches a plain power
-  iteration to 3e-15 (L1) in 14 rounds, in 0.43 s in a release build (4 ms
+  iteration to 3e-15 (L1) in 14 rounds, in 0.44 s in a release build (4 ms
   a round once the rows are laid out; the dataflow over the edges takes
   0.25 s), and re-solves after an edge edit in 0.07 s. On 10,000 people
-  and 1,000,000 edges: 13 rounds of 85 ms, 6.7 s in all (3.7 s of it the
-  dataflow), 1.3 s to re-solve after an edit, 3.3 GB at peak.
+  and 1,000,000 edges: 13 rounds of 75 ms, 6.9 s in all (3.7 s of it the
+  dataflow), 1.2 s to re-solve after an edit, 3.3 GB at peak.
 
 ### Functions
 

@@ -72,9 +72,9 @@ positional forms and recurrences, lookups, list results, `LET` and
   evaluator does not cover (`PREV`, recurrences) is a dataflow round. The
   two give the same cells bit for bit. The customer's PageRank (damping
   0.85, dangling mass spread uniformly) on 1,500 nodes and 100,000 edges
-  matches a plain power iteration to 3e-15 in L1, in 14 rounds and 0.43 s
+  matches a plain power iteration to 3e-15 in L1, in 14 rounds and 0.44 s
   (release), and to the same after one edge weight changes (0.07 s). On
-  10,000 nodes and 1,000,000 edges it takes 6.7 s, 1.3 s after an edit.
+  10,000 nodes and 1,000,000 edges it takes 6.9 s, 1.2 s after an edit.
   See *Fixed points* in the formula guide.
 - **Measures reduced together may range over different categories.**
   They need to share only the `OVER` categories. The rest broadcast, and

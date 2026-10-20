@@ -155,16 +155,17 @@ fn l1(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).sum()
 }
 
-/// The acceptance case: 1,500 nodes, 100,000 edges (about 5 s in release,
-/// a minute in debug, so it is a heavy test).
+/// The acceptance case: 1,500 nodes, 100,000 edges (about a second in
+/// release, the reference iteration included; slow in debug).
 #[test]
 #[ignore = "heavy; cargo test --release -p improv_engine --test fixpoint -- --ignored"]
 fn pagerank_1500_nodes_100k_edges() {
     pagerank_case(1500, 100_000);
 }
 
-/// The scale case: 10,000 nodes, 1,000,000 edges (release only: about 30 s
-/// to build and solve, 20 s to re-solve after the edit, 3.6 GB peak).
+/// The scale case: 10,000 nodes, 1,000,000 edges (release only: about 7 s
+/// to build and solve, 1.2 s to re-solve after the edit, 3.3 GB peak; 20 s
+/// in all with the reference iterations and the fresh evaluation).
 #[test]
 #[ignore = "heavy; cargo test --release -p improv_engine --test fixpoint -- --ignored"]
 fn pagerank_10k_nodes_1m_edges() {

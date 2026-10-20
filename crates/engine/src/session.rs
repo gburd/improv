@@ -469,7 +469,7 @@ struct World<'w> {
 /// step reads as they were leaves its result as it was, unsolved.
 // shortcut: a host round still reads every edge (every PageRank cell moves
 // every round, so a delta step would touch them all anyway), though only to
-// refill laid-out rows: about 4 ms at 100,000 edges, 85 ms at 1,000,000. A
+// refill laid-out rows: about 4 ms at 100,000 edges, 75 ms at 1,000,000. A
 // sparse step (delta-PageRank) would pay only once few cells still move.
 #[allow(clippy::too_many_arguments, reason = "the worker's state, passed down")]
 fn solve_fixpoints(
