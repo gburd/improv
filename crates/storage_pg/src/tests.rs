@@ -1172,3 +1172,26 @@ fn snapshotless_saves_overwrite_and_duplicate_rows_conflict() {
         .batch_execute(&format!("DROP TABLE {table}"))
         .unwrap();
 }
+
+/// A binding's aggregate in SQL: `bool` min/max are `bool_and`/`bool_or`
+/// (Postgres has no `max(bool)`), the rest by name, `count_distinct` as
+/// `count(DISTINCT …)`; anything else is refused.
+#[test]
+fn agg_call_spells_each_aggregate() {
+    use super::agg_call;
+    assert_eq!(
+        agg_call("max", "v", ValueType::Boolean).unwrap(),
+        "bool_or(v)"
+    );
+    assert_eq!(
+        agg_call("min", "v", ValueType::Boolean).unwrap(),
+        "bool_and(v)"
+    );
+    assert_eq!(agg_call("max", "v", ValueType::Number).unwrap(), "max(v)");
+    assert_eq!(agg_call("sum", "v", ValueType::Number).unwrap(), "sum(v)");
+    assert_eq!(
+        agg_call("count_distinct", "v", ValueType::Text).unwrap(),
+        "count(DISTINCT v)"
+    );
+    assert!(agg_call("median", "v", ValueType::Number).is_err());
+}

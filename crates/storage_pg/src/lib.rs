@@ -305,10 +305,14 @@ fn json_to_value(vt: ValueType, j: &serde_json::Value) -> Result<Value> {
 }
 
 /// The SQL aggregate call a `binding.agg` names, over value expression `v`.
-fn agg_call(agg: &str, v: &str) -> Result<String> {
-    match agg {
-        "sum" | "avg" | "min" | "max" | "count" => Ok(format!("{agg}({v})")),
-        "count_distinct" => Ok(format!("count(DISTINCT {v})")),
+/// The SQL aggregate call of a binding's `agg` over `v`. Postgres has no
+/// `min(bool)` or `max(bool)`: they are `bool_and` and `bool_or`.
+fn agg_call(agg: &str, v: &str, vt: ValueType) -> Result<String> {
+    match (agg, vt) {
+        ("min", ValueType::Boolean) => Ok(format!("bool_and({v})")),
+        ("max", ValueType::Boolean) => Ok(format!("bool_or({v})")),
+        ("sum" | "avg" | "min" | "max" | "count", _) => Ok(format!("{agg}({v})")),
+        ("count_distinct", _) => Ok(format!("count(DISTINCT {v})")),
         _ => Err(StoreError::Integrity(format!(
             "unknown binding agg {agg:?}"
         ))),
@@ -909,7 +913,7 @@ impl PgModelStore {
                 .collect();
             let mut v = ident(&b.value_col);
             if let Some(a) = b.agg.as_deref() {
-                v = agg_call(a, &v)?;
+                v = agg_call(a, &v, vt)?;
             }
             // A date/timestamp column as timestamptz: its JSON is RFC 3339.
             if vt == ValueType::DateTime {

@@ -470,6 +470,10 @@ positional forms and recurrences, lookups, list results, `LET` and
 
 ### Fixed
 
+- **The GUI's Postgres store loads `bool` min/max bindings.** `storage_pg`
+  built `max(b)` for a boolean column, which Postgres does not have; it
+  now reads `bool_or`/`bool_and`, as pg_model's loader does.
+
 - **pg_improv: `agg => 'min'` or `'max'` on a `bool` column.** The load
   read `max(value)`, which Postgres does not have for `bool`, so every
   load of such a binding (in each sync mode, and the logical worker's
