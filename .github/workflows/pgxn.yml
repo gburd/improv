@@ -70,7 +70,8 @@ jobs:
           pg-start 17
           apt-get install -y -qq --no-install-recommends libclang-dev clang curl zip python3
           curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain 1.97.1
-          . "$HOME/.cargo/env"
+          # pgxn-tools sets CARGO_HOME=/usr/share/cargo (not ~/.cargo).
+          . "${CARGO_HOME:-$HOME/.cargo}/env"
           pgrx=$(sed -n 's/^pgrx = "=\{0,1\}\([0-9.]*\)"/\1/p' crates/pg_improv/Cargo.toml | head -1)
           cargo install cargo-pgrx --version "$pgrx" --locked
           cargo pgrx init --pg17 "$(command -v pg_config)"

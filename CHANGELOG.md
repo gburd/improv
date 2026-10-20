@@ -6,6 +6,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
+  `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
+  `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.
+
 ## [0.10.0] - 2026-10-20
 
 The formula language gets a function registry of 681 built-in functions
