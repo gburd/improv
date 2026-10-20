@@ -70,6 +70,15 @@ SELECT 'select=' || "Time" || ',' || coalesce("Product", 'NULL') || '=' || value
 category Product = product
 input Quantity = qty sum
 Total = SUM(Quantity OVER Product)');
+-- A BOOLEAN column aggregated by min and max (bool_and / bool_or): two
+-- rows per region, one true and one false for 'n'.
+CREATE TABLE flags(region VARCHAR, ok BOOLEAN);
+INSERT INTO flags VALUES ('n', true), ('n', false), ('s', true), ('s', true);
+SELECT 'boolagg=' || string_agg(measure || ':' || "Region" || '=' || value_text, ',' ORDER BY measure, "Region")
+  FROM improv('flags', 'category Region = region
+input AllOk = ok min
+input AnyOk = ok max
+Mixed = AnyOk AND NOT AllOk');
 -- Joins like any table.
 SELECT 'join=' || string_agg(i."Product" || ':' || i.value_text, ',' ORDER BY i."Product")
   FROM improv('sales', revenue_model()) i JOIN (VALUES ('WidgetA')) p(name) ON p.name = i."Product"
@@ -104,6 +113,7 @@ expect "tdate=2024-02-29"
 # per function), so adding a function does not break this test.
 nfun=$(grep -c '^| `' "$HERE/../../docs/src/functions.md")
 expect "nfun=$nfun"
+expect "boolagg=Mixed:n=true,Mixed:s=false"
 expect "pmtsig=PMT(rate, nper, pv, [fv], [type])|financial|number"
 expect "search=PMT"
 expect "cell=Revenue[2024,WidgetA]=1000"
