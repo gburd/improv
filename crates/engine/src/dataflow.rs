@@ -416,7 +416,7 @@ where
 
 /// A reduction row as the `reduce` sees it: (item positions along the
 /// reduced categories, the first reduced category's item), then the values.
-pub(crate) type AggRow = ((Vec<u32>, u32), Vec<CellValue>);
+pub(crate) type AggRow<V = CellValue> = ((Vec<u32>, u32), Vec<V>);
 
 /// The pieces of an `Aggregate` plan node, for [`build_aggregate`].
 pub(crate) struct AggSpec<'p> {
@@ -452,12 +452,12 @@ pub(crate) fn agg_order(order: &[(CategoryId, Vec<ItemId>)]) -> AggOrder {
 /// A reduction row at `k`, values `vs`: its group key (`k` on `gb`) and the
 /// row as the reduction sees it (its item positions along `order`, its item
 /// of the first reduced category, the values).
-pub(crate) fn agg_key(
+pub(crate) fn agg_key<V>(
     k: &CoordKey,
-    vs: Vec<CellValue>,
+    vs: Vec<V>,
     order: &AggOrder,
     gb: &[u32],
-) -> (CoordKey, AggRow) {
+) -> (CoordKey, AggRow<V>) {
     let pos: Vec<u32> = order
         .iter()
         .map(|(c, m)| {
@@ -517,11 +517,16 @@ pub(crate) fn agg_rows(
 }
 
 /// A reduction row under a `WHERE` condition `t`: kept where it is true,
-/// every value the error where it is an error, else dropped.
-pub(crate) fn where_row(vs: Vec<CellValue>, t: CellValue) -> Option<Vec<CellValue>> {
+/// every value the error (as `err` makes it a value) where it is an error,
+/// else dropped.
+pub(crate) fn where_row<V: Clone>(
+    vs: Vec<V>,
+    t: CellValue,
+    err: impl Fn(CellValue) -> V,
+) -> Option<Vec<V>> {
     match t {
         CellValue::Bool(true) => Some(vs),
-        CellValue::Err(_) => Some(vec![t; vs.len()]),
+        CellValue::Err(_) => Some(vec![err(t); vs.len()]),
         _ => None,
     }
 }
@@ -640,7 +645,7 @@ where
     if let Some(p) = a.pred {
         let pc = build_coll(p, scope, inputs, derived)?;
         rows = align_with(&rows, &pc, p.ty.dim.categories.clone())
-            .flat_map(|(k, (vs, t))| where_row(vs, t).map(|vs| (k, vs)));
+            .flat_map(|(k, (vs, t))| where_row(vs, t, |t| t).map(|vs| (k, vs)));
     }
     // Parameters: literals fold; the rest join per row on the categories they
     // share with the rows so far. Categories only a parameter has join in

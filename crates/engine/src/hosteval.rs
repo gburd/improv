@@ -4,8 +4,13 @@
 //! through the dataflow, a round re-joins every edge an iterate cell touches,
 //! and in PageRank every cell moves every round: a round is a full pass at
 //! dataflow cost (arrangement merges, history replay, allocation). The worker
-//! instead evaluates the same plan in memory, the parts that do not read r
-//! (and the join indexes over them) once per solve and the rest per round.
+//! instead evaluates the same plan in memory. The parts that do not read r,
+//! and the join indexes over them, are evaluated once per solve; a subtree
+//! the plan repeats is evaluated once per round. A reduction lays its rows
+//! out once (which cell each row value reads, in the order its kernel sees
+//! them); while its collections keep their coordinates, which an iterate
+//! does from round to round, a round only refills the values and calls the
+//! kernel.
 //!
 //! Only the plan's structure lives here: alignment, a reduction's rows,
 //! RELABEL, FILL and COALESCE, IF's branches. Every cell operation is the
@@ -15,12 +20,13 @@
 //! for bit. [`covers`] says which plans it takes; the rest (`PREV`,
 //! recurrences) stay on the dataflow.
 
+use crate::builtins::err;
 use crate::dataflow::{
     agg_key, agg_order, agg_rows, apply_binary, apply_unary, call_with, grid_keys, literal_value,
     project, remap_key, remap_table, shared_cats, union_keys, where_row, windows, AggRow, AggSpec,
 };
 use crate::plan::{PlanNode, PlanNodeKind as K};
-use crate::reduce;
+use crate::reduce::{self, Rows};
 use crate::session::MeasureValues;
 use crate::{CellValue, CoordKey};
 use improv_core_model::{CategoryId, FuncId, ItemId, MeasureId};
@@ -31,10 +37,14 @@ use std::sync::Arc;
 /// A collection: a multiset of cells (a cell may repeat, as a dataflow
 /// collection's multiplicity).
 type Cells = Vec<(CoordKey, CellValue)>;
-/// A collection's cells by their projection onto join categories.
-type Index = HashMap<CoordKey, Vec<(CoordKey, CellValue)>>;
-/// A plan node, by address (the plan outlives a solve).
+/// The positions of a collection's cells by their projection onto join
+/// categories.
+type Index = HashMap<CoordKey, Vec<u32>>;
+/// A plan node, by address (only compared: the plan is shared and never
+/// changes, so its nodes do not move).
 type Node = *const PlanNode;
+/// A reduction row in layout: (item positions, item), value sources.
+type SrcRow = AggRow<Src>;
 
 /// The plan nodes `n` reads, for the kinds [`covers`] takes.
 fn kids(n: &PlanNode) -> Vec<&PlanNode> {
@@ -100,45 +110,222 @@ fn mark(n: &PlanNode, r: MeasureId, live: &mut HashSet<Node>) -> bool {
     me
 }
 
+/// `n` and the nodes under it, parents first.
+fn preorder<'a>(n: &'a PlanNode, out: &mut Vec<&'a PlanNode>) {
+    out.push(n);
+    for k in kids(n) {
+        preorder(k, out);
+    }
+}
+
+/// Where a reduction row's value comes from: cell `i` of the reduction's
+/// `j`-th collection (`Cell(j, i)`), or a value (a `WHERE` condition's
+/// error).
+#[derive(Clone, Debug)]
+enum Src {
+    Cell(u32, u32),
+    Val(CellValue),
+}
+
+fn value(kids: &[Rc<Cells>], s: &Src) -> CellValue {
+    match s {
+        Src::Cell(j, i) => kids[*j as usize][*i as usize].1.clone(),
+        Src::Val(v) => v.clone(),
+    }
+}
+
+/// A reduction's rows laid out on its collections' coordinates: which cell
+/// each row value reads, per group, in the order the kernel sees them.
+struct Shape {
+    /// The collections it was laid out on (or last refilled from).
+    kids: Vec<Rc<Cells>>,
+    groups: Vec<Group>,
+}
+
+/// One group of a [`Shape`]: its rows (values refilled each round), each
+/// row's item, and each row's value sources (the inputs', then the joined
+/// parameters', `width` in all).
+struct Group {
+    key: CoordKey,
+    rows: Rows,
+    items: Vec<u32>,
+    srcs: Vec<Src>,
+    width: usize,
+}
+
+impl Shape {
+    /// Whether `kids` have the coordinates, in order, it was laid out on
+    /// (and the `WHERE` condition, at `pred`, its values too).
+    fn fits(&self, kids: &[Rc<Cells>], pred: Option<usize>) -> bool {
+        let same_keys =
+            |a: &Cells, b: &Cells| a.len() == b.len() && a.iter().zip(b).all(|(c, d)| c.0 == d.0);
+        self.kids.len() == kids.len()
+            && self.kids.iter().zip(kids).enumerate().all(|(j, (a, b))| {
+                Rc::ptr_eq(a, b)
+                    || if pred == Some(j) {
+                        a == b
+                    } else {
+                        same_keys(a, b)
+                    }
+            })
+    }
+
+    /// Refill every group's rows from `kids` and reduce it into `out`.
+    fn fill(&mut self, a: &AggSpec<'_>, consts: &[Option<CellValue>], out: &mut Cells) {
+        let (n_in, cells) = (a.ins.len(), into_cells(a));
+        let kids = &self.kids;
+        for g in &mut self.groups {
+            for (row, srcs) in g.rows.vals.iter_mut().zip(g.srcs.chunks(g.width)) {
+                for (v, s) in row.iter_mut().zip(srcs) {
+                    *v = value(kids, s);
+                }
+            }
+            // The joined parameters are the first row's (see `agg_rows`).
+            let mut joined = g.srcs[n_in..g.width].iter();
+            let params: Vec<CellValue> = consts
+                .iter()
+                .map(|c| match c {
+                    Some(v) => v.clone(),
+                    None => joined
+                        .next()
+                        .map_or(CellValue::Err(err::NA), |s| value(kids, s)),
+                })
+                .collect();
+            emit(a, cells.as_deref(), &g.key, &g.rows, &params, &g.items, out);
+        }
+    }
+}
+
+/// An array reduction's landing cells (see the dataflow's `build_aggregate`).
+fn into_cells(a: &AggSpec<'_>) -> Option<Vec<CoordKey>> {
+    (!a.into.is_empty()).then(|| grid_keys(a.into))
+}
+
+/// Group `g`'s results, as the dataflow's `build_aggregate` gives them.
+fn emit(
+    a: &AggSpec<'_>,
+    cells: Option<&[CoordKey]>,
+    g: &CoordKey,
+    rs: &Rows,
+    params: &[CellValue],
+    items: &[u32],
+    out: &mut Cells,
+) {
+    if let Some(cells) = cells {
+        for (cell, v) in cells.iter().zip(reduce::array(a.func, rs, params)) {
+            let mut k = g.clone();
+            k.extend(cell.iter().copied());
+            k.sort_unstable();
+            out.push((k, v));
+        }
+    } else if a.window.is_none() && !a.per_item {
+        out.push((g.clone(), reduce::reduce(a.func, rs, params)));
+    } else {
+        let outs = match a.window {
+            None => reduce::per_item(a.func, rs, params),
+            Some(w) => windows(a.func, rs, params, w),
+        };
+        let cat0 = a.order.first().map_or(0, |(c, _)| c.0);
+        for (item, v) in items.iter().zip(outs) {
+            let mut k = g.clone();
+            k.push((cat0, *item));
+            k.sort_unstable();
+            out.push((k, v));
+        }
+    }
+}
+
+/// A reduction's rows by group, groups in key order, each group's rows in
+/// item order.
+fn group_rows(a: &AggSpec<'_>, rows: Vec<(CoordKey, Vec<Src>)>) -> Vec<(CoordKey, Vec<SrcRow>)> {
+    let order = agg_order(a.order);
+    let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
+    let mut groups: HashMap<CoordKey, Vec<SrcRow>> = HashMap::new();
+    for (k, srcs) in rows {
+        let (g, row) = agg_key(&k, srcs, &order, &gb);
+        groups.entry(g).or_default().push(row);
+    }
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    groups.sort_unstable_by(|x, y| x.0.cmp(&y.0));
+    for (_, rows) in &mut groups {
+        rows.sort_by(|x, y| x.0.cmp(&y.0));
+    }
+    groups
+}
+
 /// A FIXPOINT step's plan, evaluated round after round at one iterate after
-/// another, with the measures it reads (but r) fixed for the solve.
-pub(crate) struct Host<'p> {
-    plan: &'p PlanNode,
+/// another, with the measures it reads (but r) fixed between refreshes.
+pub(crate) struct Host {
+    plan: Rc<PlanNode>,
     r: MeasureId,
     env: HashMap<MeasureId, Arc<MeasureValues>>,
+    /// Each node's first structurally equal node, by which it is cached.
+    canon: HashMap<Node, Node>,
     /// The nodes that read r, evaluated every round.
     live: HashSet<Node>,
-    /// The other nodes' cells, evaluated once.
+    /// The other nodes' cells, evaluated once per refresh.
     fixed: HashMap<Node, Rc<Cells>>,
     /// Join indexes over the other nodes, by node and join categories.
     index: HashMap<(Node, Vec<u32>), Rc<Index>>,
+    /// This round's cells of the nodes that read r.
+    round: HashMap<Node, Rc<Cells>>,
+    /// Each reduction's row layout.
+    shapes: HashMap<Node, Shape>,
+    /// r's coordinates, in the order a round reads them.
+    r_keys: Vec<CoordKey>,
 }
 
-impl<'p> Host<'p> {
-    /// `plan` (covered: [`covers`]) reading the iterate as `r` and every
-    /// other measure from `env` (a measure `env` lacks has no cells).
-    pub(crate) fn new(
-        plan: &'p PlanNode,
-        r: MeasureId,
-        env: HashMap<MeasureId, Arc<MeasureValues>>,
-    ) -> Self {
+impl Host {
+    /// `plan` (covered: [`covers`]) reading the iterate as `r`, and no other
+    /// measure's cells until [`Host::refresh`].
+    pub(crate) fn new(plan: PlanNode, r: MeasureId) -> Self {
+        let plan = Rc::new(plan);
+        let mut canon = HashMap::new();
+        let mut all = Vec::new();
+        preorder(&plan, &mut all);
+        for (i, &n) in all.iter().enumerate() {
+            let first = all[..i].iter().copied().find(|&m| m == n).unwrap_or(n);
+            canon.insert(n as Node, first as Node);
+        }
         let mut live = HashSet::new();
-        mark(plan, r, &mut live);
+        mark(&plan, r, &mut live);
         Host {
             plan,
             r,
-            env,
+            env: HashMap::new(),
+            canon,
             live,
             fixed: HashMap::new(),
             index: HashMap::new(),
+            round: HashMap::new(),
+            shapes: HashMap::new(),
+            r_keys: Vec::new(),
         }
+    }
+
+    /// Read every measure but r from `env` (one it lacks has no cells).
+    /// The row layouts stay: they are checked against the cells each round.
+    pub(crate) fn refresh(&mut self, env: HashMap<MeasureId, Arc<MeasureValues>>) {
+        let same = env.len() == self.env.len()
+            && env
+                .iter()
+                .all(|(m, v)| self.env.get(m).is_some_and(|w| Arc::ptr_eq(v, w)));
+        if !same {
+            self.fixed.clear();
+            self.index.clear();
+        }
+        self.env = env;
     }
 
     /// The step at iterate `x`: one value per cell (of several, the
     /// greatest, as the engine's snapshot keeps the last of a sorted batch).
     pub(crate) fn step(&mut self, x: &MeasureValues) -> MeasureValues {
-        let mut out = MeasureValues::new();
-        for (k, v) in self.eval(self.plan, x).iter() {
+        self.round.clear();
+        let plan = Rc::clone(&self.plan);
+        let cells = self.eval(&plan, x);
+        self.round.clear();
+        let mut out = MeasureValues::with_capacity(cells.len());
+        for (k, v) in cells.iter() {
             match out.get(k) {
                 Some(w) if w >= v => {}
                 _ => {
@@ -149,31 +336,45 @@ impl<'p> Host<'p> {
         out
     }
 
+    fn node(&self, n: &PlanNode) -> Node {
+        self.canon[&(n as Node)]
+    }
+
     fn eval(&mut self, n: &PlanNode, x: &MeasureValues) -> Rc<Cells> {
-        let p = n as Node;
-        if self.live.contains(&p) {
-            return Rc::new(self.compute(n, x));
-        }
-        if let Some(c) = self.fixed.get(&p) {
+        let p = self.node(n);
+        let live = self.live.contains(&p);
+        let memo = if live { &self.round } else { &self.fixed };
+        if let Some(c) = memo.get(&p) {
             return Rc::clone(c);
         }
         let c = Rc::new(self.compute(n, x));
-        self.fixed.insert(p, Rc::clone(&c));
+        let memo = if live {
+            &mut self.round
+        } else {
+            &mut self.fixed
+        };
+        memo.insert(p, Rc::clone(&c));
         c
     }
 
     fn compute(&mut self, n: &PlanNode, x: &MeasureValues) -> Cells {
         match &n.kind {
-            K::InputMeasure(m) => {
-                let vals = if *m == self.r {
-                    Some(x)
-                } else {
-                    self.env.get(m).map(|a| &**a)
-                };
-                vals.map_or_else(Vec::new, |v| {
-                    v.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-                })
+            K::InputMeasure(m) if *m == self.r => {
+                // r in a fixed coordinate order, so the layouts fit.
+                let same =
+                    self.r_keys.len() == x.len() && self.r_keys.iter().all(|k| x.contains_key(k));
+                if !same {
+                    self.r_keys = x.keys().cloned().collect();
+                    self.r_keys.sort_unstable();
+                }
+                self.r_keys
+                    .iter()
+                    .map(|k| (k.clone(), x[k].clone()))
+                    .collect()
             }
+            K::InputMeasure(m) => self.env.get(m).map_or_else(Vec::new, |v| {
+                v.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+            }),
             K::Literal(v) => {
                 let v = CellValue::from_model_value(v).expect("covers checks literals");
                 vec![(Vec::new(), v)]
@@ -228,6 +429,7 @@ impl<'p> Host<'p> {
                 per_item,
                 into,
             } => self.aggregate(
+                n,
                 AggSpec {
                     ins,
                     params,
@@ -293,18 +495,18 @@ impl<'p> Host<'p> {
         }
     }
 
-    /// The dataflow's `align_with`: every pair of a row of `l` and a cell of
-    /// node `n` (its cells `c`) that agree on `keys`, at the union coordinate.
-    /// A node that does not read r keeps its index for the solve.
-    fn align<V: Clone>(
+    /// The dataflow's `align_with`, by position: every pair of a row of `l`
+    /// and a cell `i` of node `n` (its cells `c`) that agree on `keys`, at
+    /// the union coordinate. A node that does not read r keeps its index.
+    fn align_idx<V: Clone>(
         &mut self,
         l: &[(CoordKey, V)],
         n: &PlanNode,
         c: &Cells,
         keys: &[CategoryId],
-    ) -> Vec<(CoordKey, (V, CellValue))> {
+    ) -> Vec<(CoordKey, (V, u32))> {
         let keys: Vec<u32> = keys.iter().map(|c| c.0).collect();
-        let p = n as Node;
+        let p = self.node(n);
         let idx = if self.live.contains(&p) {
             Rc::new(index(c, &keys))
         } else {
@@ -314,55 +516,150 @@ impl<'p> Host<'p> {
         let mut out = Vec::new();
         for (lk, lv) in l {
             if let Some(rs) = idx.get(&project(lk, &keys)) {
-                for (rk, rv) in rs {
-                    out.push((union_keys(lk, rk), (lv.clone(), rv.clone())));
+                for &i in rs {
+                    out.push((union_keys(lk, &c[i as usize].0), (lv.clone(), i)));
                 }
             }
         }
         out
     }
 
-    /// The dataflow's `build_aggregate`, its rows grouped and sorted as its
-    /// `reduce` sees them.
-    fn aggregate(&mut self, a: AggSpec<'_>, x: &MeasureValues) -> Cells {
-        let (first, rest) = a.ins.split_first().expect("covers checks inputs");
+    /// [`Host::align_idx`] with the cells' values.
+    fn align<V: Clone>(
+        &mut self,
+        l: &[(CoordKey, V)],
+        n: &PlanNode,
+        c: &Cells,
+        keys: &[CategoryId],
+    ) -> Vec<(CoordKey, (V, CellValue))> {
+        self.align_idx(l, n, c, keys)
+            .into_iter()
+            .map(|(k, (v, i))| (k, (v, c[i as usize].1.clone())))
+            .collect()
+    }
+
+    /// The dataflow's `build_aggregate`. Its rows are laid out once and
+    /// refilled while its collections keep their coordinates; a group with
+    /// two rows at one item (which the kernel sees in value order) is
+    /// sorted by value every round.
+    fn aggregate(&mut self, n: &PlanNode, a: AggSpec<'_>, x: &MeasureValues) -> Cells {
+        let joined = a.params.iter().filter(|q| literal_value(q).is_none());
+        let nodes: Vec<&PlanNode> = a.ins.iter().chain(a.pred).chain(joined).collect();
+        let kids: Vec<Rc<Cells>> = nodes.iter().map(|q| self.eval(q, x)).collect();
+        let consts: Vec<Option<CellValue>> = a.params.iter().map(literal_value).collect();
+        let (p, pred) = (self.node(n), a.pred.map(|_| a.ins.len()));
+        let mut out = Vec::new();
+        if let Some(s) = self.shapes.get_mut(&p).filter(|s| s.fits(&kids, pred)) {
+            s.kids = kids;
+            s.fill(&a, &consts, &mut out);
+            return out;
+        }
+        let groups = group_rows(&a, self.tagged_rows(&a, &nodes, &kids));
+        let ties = groups
+            .iter()
+            .any(|(_, rows)| rows.windows(2).any(|w| w[0].0 == w[1].0));
+        let n_in = a.ins.len();
+        let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
+        if ties {
+            let cells = into_cells(&a);
+            for (g, rows) in groups {
+                let mut vals: Vec<AggRow> = rows
+                    .into_iter()
+                    .map(|(pi, srcs)| (pi, srcs.iter().map(|s| value(&kids, s)).collect()))
+                    .collect();
+                vals.sort();
+                let mut input: Vec<(&AggRow, isize)> = Vec::new();
+                for row in &vals {
+                    match input.last_mut() {
+                        Some((r, m)) if *r == row => *m += 1,
+                        _ => input.push((row, 1)),
+                    }
+                }
+                let (rs, params, items) = agg_rows(&input, n_in, &consts, capacity);
+                emit(&a, cells.as_deref(), &g, &rs, &params, &items, &mut out);
+            }
+            return out;
+        }
+        let groups = groups
+            .into_iter()
+            .map(|(key, rows)| {
+                let width = rows.first().map_or(n_in, |r| r.1.len());
+                let mut g = Group {
+                    key,
+                    rows: Rows {
+                        pos: Vec::with_capacity(rows.len()),
+                        vals: vec![vec![CellValue::Bool(false); n_in]; rows.len()],
+                        capacity,
+                    },
+                    items: Vec::with_capacity(rows.len()),
+                    srcs: Vec::with_capacity(rows.len() * width),
+                    width,
+                };
+                for ((pos, item), srcs) in rows {
+                    g.rows.pos.push(pos);
+                    g.items.push(item);
+                    g.srcs.extend(srcs);
+                }
+                g
+            })
+            .collect();
+        let mut s = Shape { kids, groups };
+        s.fill(&a, &consts, &mut out);
+        self.shapes.insert(p, s);
+        out
+    }
+
+    /// A reduction's rows, as the dataflow builds them, with each value as
+    /// its source: `nodes` are the inputs, the condition and the joined
+    /// parameters, `kids` their cells.
+    fn tagged_rows(
+        &mut self,
+        a: &AggSpec<'_>,
+        nodes: &[&PlanNode],
+        kids: &[Rc<Cells>],
+    ) -> Vec<(CoordKey, Vec<Src>)> {
         let with_order = |n: &PlanNode| -> Vec<CategoryId> {
             let order = a.order.iter().map(|(c, _)| *c);
             n.ty.dim.categories.iter().copied().chain(order).collect()
         };
-        let mut full = with_order(first);
-        let mut rows: Vec<(CoordKey, Vec<CellValue>)> = self
-            .eval(first, x)
+        let n_in = a.ins.len();
+        let mut full = with_order(nodes[0]);
+        let mut rows: Vec<(CoordKey, Vec<Src>)> = kids[0]
             .iter()
-            .map(|(k, v)| (k.clone(), vec![v.clone()]))
+            .enumerate()
+            .map(|(i, (k, _))| (k.clone(), vec![Src::Cell(0, i as u32)]))
             .collect();
-        for n in rest {
-            let c = self.eval(n, x);
-            let mine = with_order(n);
+        let push = |j: usize, rows: Vec<(CoordKey, (Vec<Src>, u32))>| {
+            rows.into_iter()
+                .map(|(k, (mut vs, i))| {
+                    vs.push(Src::Cell(j as u32, i));
+                    (k, vs)
+                })
+                .collect()
+        };
+        for j in 1..n_in {
+            let mine = with_order(nodes[j]);
             let shared: Vec<CategoryId> =
                 mine.iter().copied().filter(|c| full.contains(c)).collect();
             let more: Vec<CategoryId> = mine.into_iter().filter(|c| !full.contains(c)).collect();
             full.extend(more);
-            rows = push_each(self.align(&rows, n, &c, &shared));
+            rows = push(j, self.align_idx(&rows, nodes[j], &kids[j], &shared));
         }
+        let mut j = n_in;
         if let Some(p) = a.pred {
-            let pc = self.eval(p, x);
+            let pc = &kids[j];
             rows = self
-                .align(&rows, p, &pc, &p.ty.dim.categories)
+                .align_idx(&rows, p, pc, &p.ty.dim.categories)
                 .into_iter()
-                .filter_map(|(k, (vs, t))| where_row(vs, t).map(|vs| (k, vs)))
+                .filter_map(|(k, (vs, i))| {
+                    where_row(vs, pc[i as usize].1.clone(), Src::Val).map(|vs| (k, vs))
+                })
                 .collect();
+            j += 1;
         }
-        let mut consts = Vec::new();
         let mut row_dim = full;
-        for p in a.params {
-            if let Some(v) = literal_value(p) {
-                consts.push(Some(v));
-                continue;
-            }
-            consts.push(None);
-            let pc = self.eval(p, x);
-            let cats = &p.ty.dim.categories;
+        for (q, c) in nodes[j..].iter().zip(&kids[j..]) {
+            let cats = &q.ty.dim.categories;
             let shared: Vec<CategoryId> = cats
                 .iter()
                 .copied()
@@ -373,57 +670,14 @@ impl<'p> Host<'p> {
                     row_dim.push(*c);
                 }
             }
-            rows = push_each(self.align(&rows, p, &pc, &shared));
+            rows = push(j, self.align_idx(&rows, q, c, &shared));
+            j += 1;
         }
-        let order = agg_order(a.order);
-        let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
-        let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
-        let mut groups: HashMap<CoordKey, Vec<AggRow>> = HashMap::new();
-        for (k, vs) in rows {
-            let (g, row) = agg_key(&k, vs, &order, &gb);
-            groups.entry(g).or_default().push(row);
-        }
-        let cells = (!a.into.is_empty()).then(|| grid_keys(a.into));
-        let cat0 = a.order.first().map_or(0, |(c, _)| c.0);
-        let n_in = a.ins.len();
-        let mut out = Vec::new();
-        for (g, mut group) in groups {
-            group.sort();
-            let mut input: Vec<(&AggRow, isize)> = Vec::new();
-            for row in &group {
-                match input.last_mut() {
-                    Some((r, m)) if *r == row => *m += 1,
-                    _ => input.push((row, 1)),
-                }
-            }
-            let (rs, params, items) = agg_rows(&input, n_in, &consts, capacity);
-            if let Some(cells) = &cells {
-                for (cell, v) in cells.iter().zip(reduce::array(a.func, &rs, &params)) {
-                    let mut k = g.clone();
-                    k.extend(cell.iter().copied());
-                    k.sort_unstable();
-                    out.push((k, v));
-                }
-            } else if a.window.is_none() && !a.per_item {
-                out.push((g, reduce::reduce(a.func, &rs, &params)));
-            } else {
-                let outs = match a.window {
-                    None => reduce::per_item(a.func, &rs, &params),
-                    Some(w) => windows(a.func, &rs, &params, w),
-                };
-                for (item, v) in items.into_iter().zip(outs) {
-                    let mut k = g.clone();
-                    k.push((cat0, item));
-                    k.sort_unstable();
-                    out.push((k, v));
-                }
-            }
-        }
-        out
+        rows
     }
 
     /// The dataflow's Coalesce: at each coordinate of the domain, the first
-    /// argument's cell.
+    /// argument's cell (in coordinate order).
     fn coalesce(
         &mut self,
         n: &PlanNode,
@@ -471,7 +725,9 @@ impl<'p> Host<'p> {
                 }
             }
         }
-        best.into_iter().map(|(k, (_, v))| (k, v)).collect()
+        let mut out: Cells = best.into_iter().map(|(k, (_, v))| (k, v)).collect();
+        out.sort_unstable();
+        out
     }
 
     /// The dataflow's FuncCall: the collection arguments aligned into one
@@ -501,7 +757,14 @@ impl<'p> Host<'p> {
                 .copied()
                 .filter(|c| a.ty.dim.categories.contains(c))
                 .collect();
-            acc = push_each(self.align(&acc, a, &c, &keys));
+            acc = self
+                .align(&acc, a, &c, &keys)
+                .into_iter()
+                .map(|(k, (mut vs, v))| {
+                    vs.push(v);
+                    (k, vs)
+                })
+                .collect();
             dim = dim.union(&a.ty.dim);
         }
         acc.into_iter()
@@ -523,27 +786,13 @@ impl<'p> Host<'p> {
     }
 }
 
-/// `c`'s cells by their projection onto `keys`.
+/// The positions of `c`'s cells by their projection onto `keys`.
 fn index(c: &Cells, keys: &[u32]) -> Index {
     let mut idx: Index = HashMap::new();
-    for (k, v) in c {
-        idx.entry(project(k, keys))
-            .or_default()
-            .push((k.clone(), v.clone()));
+    for (i, (k, _)) in c.iter().enumerate() {
+        idx.entry(project(k, keys)).or_default().push(i as u32);
     }
     idx
-}
-
-/// Aligned rows with the joined value appended to each row's values.
-fn push_each(
-    rows: Vec<(CoordKey, (Vec<CellValue>, CellValue))>,
-) -> Vec<(CoordKey, Vec<CellValue>)> {
-    rows.into_iter()
-        .map(|(k, (mut vs, v))| {
-            vs.push(v);
-            (k, vs)
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -666,7 +915,11 @@ mod tests {
         let has = |id: MeasureId| env.contains_key(&id) || ids.contains(&id) || id.0 < 200;
         assert!(covers(plan, R, &has), "{text}");
         let x = env.get(&R).map(|a| (**a).clone()).unwrap_or_default();
-        let host = Host::new(plan, R, env).step(&x);
+        let mut h = Host::new(plan.clone(), R);
+        h.refresh(env);
+        let host = h.step(&x);
+        // A second round on the laid-out rows gives the same.
+        assert_eq!(h.step(&x), host, "{text}: the refilled round");
         Some((host, dd.remove(&T).unwrap_or_default()))
     }
 

@@ -405,6 +405,8 @@ struct FixState {
     r: MeasureValues,
     result: Arc<MeasureValues>,
     converged: bool,
+    /// The host-side step, kept between solves for its row layouts.
+    host: Option<crate::hosteval::Host>,
 }
 
 /// Turn session `s`'s cells from `old` into `new`, as deltas.
@@ -465,10 +467,10 @@ struct World<'w> {
 /// from the first iterate, so a result cut off at max_iter is always a full
 /// recompute's. An edit that leaves a FIXPOINT's first iterate and what its
 /// step reads as they were leaves its result as it was, unsolved.
-// shortcut: a host round is a full pass over the edges (every PageRank cell
-// moves every round, so a delta step would touch them all anyway), about
-// 1/30 of a dataflow round's cost; a sparse step (delta-PageRank) would pay
-// only when few cells still move.
+// shortcut: a host round still reads every edge (every PageRank cell moves
+// every round, so a delta step would touch them all anyway), though only to
+// refill laid-out rows: about 4 ms at 100,000 edges, 85 ms at 1,000,000. A
+// sparse step (delta-PageRank) would pay only once few cells still move.
 #[allow(clippy::too_many_arguments, reason = "the worker's state, passed down")]
 fn solve_fixpoints(
     fixes: &[Fix],
@@ -503,14 +505,16 @@ fn solve_fixpoints(
         if warm && first.get(&f.id) == Some(&init) && same(st) {
             continue;
         }
-        let mut host = f.host.as_ref().map(|plan| {
+        let mut host = st.host.take();
+        if let Some(plan) = &f.host {
             let snap = snapshot.lock().unwrap();
             let env = f.reads.iter().filter_map(|m| {
                 let vals = world.inputs.get(m).or_else(|| snap.get(m))?;
                 Some((*m, Arc::clone(vals)))
             });
-            crate::hosteval::Host::new(plan, f.r, env.collect())
-        });
+            let h = host.get_or_insert_with(|| crate::hosteval::Host::new(plan.clone(), f.r));
+            h.refresh(env.collect());
+        }
         let mut solve = |start: MeasureValues, st: &mut FixState| {
             let mut x = start;
             for _ in 0..f.max_iter {
@@ -544,7 +548,7 @@ fn solve_fixpoints(
             out = Some(solve(start, st)).filter(|(_, ok)| *ok);
         }
         let (x, converged) = out.unwrap_or_else(|| solve((*init).clone(), st));
-        drop(host);
+        st.host = host;
         if x != *st.result {
             world.dirty.lock().unwrap().insert(f.id);
         }
