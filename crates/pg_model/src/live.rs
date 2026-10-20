@@ -1066,9 +1066,9 @@ mod tests {
         }
     }
 
-    /// Time {Q1=11, Q2=12} × Product {P1=21}; input Price (5); Price[Q1,P1] = 1.
-    fn model() -> Model {
-        let mut m = build_model(&Catalog {
+    /// Time {Q1=11, Q2=12} × Product {P1=21}; input Price (5).
+    fn catalog() -> Catalog {
+        Catalog {
             categories: vec![
                 CategoryRow {
                     id: 1,
@@ -1082,8 +1082,12 @@ mod tests {
             items: vec![item(11, 1, "Q1"), item(12, 1, "Q2"), item(21, 2, "P1")],
             measures: vec![MeasureRow::input(5, "Price", vec![1, 2])],
             lambdas: vec![],
-        })
-        .unwrap();
+        }
+    }
+
+    /// [`catalog`]'s model with Price[Q1,P1] = 1.
+    fn model() -> Model {
+        let mut m = build_model(&catalog()).unwrap();
         m.set_input(MeasureId(5), coordinate(11, 21), Value::Number(1.0));
         m
     }
@@ -1932,6 +1936,12 @@ mod tests {
         assert_eq!(nanos("+0.000000001"), Some(1));
         assert_eq!(nanos(".5"), Some(500_000_000));
         assert_eq!(nanos("7"), Some(7 * NANOS));
+        // Past 20 integer digits a value sums as a float.
+        assert_eq!(nanos("123456789012345678901"), None);
+        assert_eq!(
+            Num::parse("123456789012345678901"),
+            Ok(Num::Float(1.2345678901234568e20))
+        );
         for s in ["1e5", "1.0000000001", "", "-", ".", "NaN", "1.2.3", "1-2"] {
             assert_eq!(nanos(s), None, "{s}");
         }
@@ -1966,7 +1976,7 @@ mod tests {
     #[test]
     fn averages_divide_as_postgres_numeric_does() {
         // (sum, its scale, count) -> Postgres's (sum::numeric / count)::float8
-        let cases: [(&str, i32, i64, f64); 12] = [
+        let cases: [(&str, i32, i64, f64); 13] = [
             ("11", 0, 9, 1.222222222222222),
             ("10", 0, 3, 3.3333333333333335),
             ("4", 0, 3, 1.3333333333333333),
@@ -1979,6 +1989,13 @@ mod tests {
             ("-0.000000001", 9, 3, -3.333333333333333e-10),
             ("17", 0, 6, 2.8333333333333335),
             ("0", 0, 5, 0.0),
+            // Rounding carries through every digit into the integer part.
+            (
+                "8999999999999999999.999999999",
+                9,
+                9_000_000_000_000_000_000,
+                1.0,
+            ),
         ];
         for (s, scale, n, want) in cases {
             let got = numeric_div(nanos(s).unwrap(), scale, n);
@@ -1997,6 +2014,11 @@ mod tests {
         let mut t = Total::default();
         t.add(num("11"), 1);
         assert_eq!(t.avg(9, true), 11.0 / 9.0);
+        // So does a numeric column once a value was summed as a float.
+        let mut t = Total::default();
+        t.add(num("1e2"), 1);
+        t.add(num("2"), 1);
+        assert_eq!(t.avg(2, false), 51.0);
     }
 
     #[test]
@@ -2030,6 +2052,14 @@ mod tests {
         assert_eq!(distinct_text(NUMERIC, "2.000"), "2");
         assert_eq!(distinct_text(NUMERIC, "100"), "100");
         assert_eq!(distinct_text(FLOAT8, "-0"), "0");
+        assert_eq!(distinct_text(FLOAT4, "-0"), "0");
+        assert_eq!(distinct_text(FLOAT8, "-1"), "-1");
+        assert_eq!(distinct_text(FLOAT4, "1.5"), "1.5");
+        assert_eq!(
+            Key::order(Value::Number(-0.0)),
+            Key::order(Value::Number(0.0))
+        );
+        assert_eq!(Key::Text("a".into()).value(), Some(Value::Text("a".into())));
         assert_eq!(distinct_text(25, "a  "), "a  ");
         assert_eq!(distinct_text(BOOL, "true"), distinct_text(BOOL, "t"));
         assert_eq!(
@@ -2058,6 +2088,332 @@ mod tests {
             seed_sql("s", &["a".into()], "v", Agg::Count),
             "(SELECT \"a\"::text, NULL::text, count(\"v\"), count(*), NULL::text FROM s \
              GROUP BY 1) UNION ALL SELECT NULL, NULL, 0, 0, pg_current_snapshot()::text"
+        );
+        assert_eq!(
+            seed_sql("s", &["a".into()], "v", Agg::Sum),
+            "(SELECT \"a\"::text, coalesce(improv_special, sum(\"v\")::text), count(\"v\"), \
+             count(*), NULL::text FROM (SELECT *, CASE WHEN \"v\"::text IN ('Infinity', \
+             '-Infinity', 'NaN') THEN \"v\"::text END AS improv_special FROM s) t \
+             GROUP BY 1, improv_special) UNION ALL SELECT NULL, NULL, 0, 0, \
+             pg_current_snapshot()::text"
+        );
+        for agg in [Agg::Min, Agg::Max, Agg::CountDistinct] {
+            assert_eq!(
+                seed_sql("s", &["a".into()], "v", agg),
+                "(SELECT \"a\"::text, \"v\"::text, count(\"v\"), count(*), NULL::text FROM s \
+                 GROUP BY 1, 2) UNION ALL SELECT NULL, NULL, 0, 0, pg_current_snapshot()::text"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mapper_lists_its_aggregated_bindings() {
+        let plain = Binding {
+            measure: MeasureId(5),
+            value_col: "price".into(),
+            dims: vec![],
+            agg: None,
+        };
+        let summed = |id| Binding {
+            measure: MeasureId(id),
+            agg: Some(Agg::Sum),
+            ..plain.clone()
+        };
+        let mp = Mapper::new(
+            &model(),
+            HashMap::from([
+                (F, vec![plain.clone(), summed(9)]),
+                (OTHER, vec![summed(6)]),
+            ]),
+        );
+        assert_eq!(mp.aggregated(), [(OTHER, summed(6)), (F, summed(9))]);
+        assert!(mp.binds(F) && mp.binds(OTHER) && !mp.binds(3));
+    }
+
+    /// One [`seed_sql`] row of Price over (`q`, P1).
+    fn group(q: Option<&str>, v: Option<&str>, n: i64, all: i64) -> FoldRow {
+        (
+            vec![q.map(str::to_string), Some("P1".into())],
+            v.map(str::to_string),
+            n,
+            all,
+        )
+    }
+
+    /// Price as a `vt` in a value column of type `oid`, bound through
+    /// `agg` and seeded with `seed`, after `changes`: its cells by quarter.
+    fn fold_as(
+        agg: Agg,
+        (vt, oid): (ValueType, u32),
+        seed: &[FoldRow],
+        changes: Vec<Message>,
+    ) -> Result<BTreeMap<String, Value>, Rebuild> {
+        let mut m = model();
+        m.measures.get_mut(&MeasureId(5)).unwrap().value_type = vt;
+        let mut r = rels(b'f', &[]);
+        r.get_mut(&F).unwrap().columns[2].type_oid = oid;
+        let mut mp = mapper(&m, Some(agg));
+        mp.seed(&mut m, MeasureId(5), oid, seed, Snap::default())?;
+        mp.map(&mut m, &r, &txn(changes), 0)?;
+        Ok(cells(&m))
+    }
+
+    fn values(pairs: &[(&str, Value)]) -> Result<BTreeMap<String, Value>, Rebuild> {
+        Ok(pairs
+            .iter()
+            .map(|(q, v)| (q.to_string(), v.clone()))
+            .collect())
+    }
+
+    #[test]
+    fn min_and_max_fall_back_when_their_extreme_goes() {
+        let num = (ValueType::Number, FLOAT8);
+        let q1 = |v| full("Q1", v);
+        // NaN orders above every number: it is the max until it goes.
+        let nan = [
+            group(Some("Q1"), Some("3"), 1, 1),
+            group(Some("Q1"), Some("NaN"), 1, 1),
+        ];
+        let max = |changes| fold_as(Agg::Max, num, &nan, changes).unwrap();
+        assert!(matches!(max(vec![])["Q1"], Value::Number(x) if x.is_nan()));
+        assert_eq!(Ok(max(vec![del(q1("NaN"))])), nums(&[("Q1", 3.0)]));
+        let min = fold_as(Agg::Min, num, &nan, vec![del(q1("3"))]).unwrap();
+        assert!(matches!(min["Q1"], Value::Number(x) if x.is_nan()));
+        // An UPDATE moves the max to Q2; Q1 falls back to its next value.
+        let five = [
+            group(Some("Q1"), Some("3"), 1, 1),
+            group(Some("Q1"), Some("5"), 2, 2),
+        ];
+        let moved = upd(Some(q1("5")), full("Q2", "5"));
+        assert_eq!(
+            fold_as(Agg::Max, num, &five, vec![moved.clone()]),
+            nums(&[("Q1", 5.0), ("Q2", 5.0)])
+        );
+        assert_eq!(
+            fold_as(Agg::Max, num, &five, vec![moved.clone(), moved]),
+            nums(&[("Q1", 3.0), ("Q2", 5.0)])
+        );
+        // A bool's seed text is true/false and pgoutput's t/f: one value.
+        let bool = (ValueType::Boolean, BOOL);
+        let tf = [
+            group(Some("Q1"), Some("false"), 1, 1),
+            group(Some("Q1"), Some("true"), 2, 2),
+        ];
+        let b = |x| Value::Boolean(x);
+        assert_eq!(
+            fold_as(Agg::Max, bool, &tf, vec![del(q1("t"))]),
+            values(&[("Q1", b(true))])
+        );
+        assert_eq!(
+            fold_as(Agg::Max, bool, &tf, vec![del(q1("t")), del(q1("t"))]),
+            values(&[("Q1", b(false))])
+        );
+        assert_eq!(
+            fold_as(Agg::Min, bool, &tf, vec![del(q1("f"))]),
+            values(&[("Q1", b(true))])
+        );
+        let distinct = (ValueType::Number, BOOL);
+        assert_eq!(
+            fold_as(Agg::CountDistinct, distinct, &tf, vec![del(q1("t"))]),
+            nums(&[("Q1", 2.0)])
+        );
+        assert_eq!(
+            fold_as(
+                Agg::CountDistinct,
+                distinct,
+                &tf,
+                vec![del(q1("t")), del(q1("t"))]
+            ),
+            nums(&[("Q1", 1.0)])
+        );
+        // Dates.
+        let date = (ValueType::DateTime, 1082);
+        let days = [
+            group(Some("Q1"), Some("2026-01-01"), 1, 1),
+            group(Some("Q1"), Some("2026-03-01"), 1, 1),
+        ];
+        let day = |s| Value::DateTime(datetime(s).unwrap());
+        assert_eq!(
+            fold_as(Agg::Max, date, &days, vec![del(q1("2026-03-01"))]),
+            values(&[("Q1", day("2026-01-01"))])
+        );
+        assert_eq!(
+            fold_as(Agg::Min, date, &days, vec![del(q1("2026-01-01"))]),
+            values(&[("Q1", day("2026-03-01"))])
+        );
+        // count_distinct finds float -0 and 0 equal, as Postgres does.
+        let zero = [group(Some("Q1"), Some("0"), 1, 1)];
+        assert_eq!(
+            fold_as(Agg::CountDistinct, num, &zero, vec![ins(q1("-0"))]),
+            nums(&[("Q1", 1.0)])
+        );
+    }
+
+    #[test]
+    fn sums_and_averages_seed_from_groups() {
+        // Postgres: avg(1.50, 2.25, -0.10) and avg(2.25, -0.10).
+        let numeric = (ValueType::Number, NUMERIC);
+        let q1 = |v| full("Q1", v);
+        let two = [group(Some("Q1"), Some("3.75"), 2, 2)];
+        assert_eq!(
+            fold_as(Agg::Avg, numeric, &two, vec![ins(q1("-0.10"))]),
+            nums(&[("Q1", 1.2166666666666666)])
+        );
+        assert_eq!(
+            fold_as(
+                Agg::Avg,
+                numeric,
+                &two,
+                vec![ins(q1("-0.10")), del(q1("1.50"))]
+            ),
+            nums(&[("Q1", 1.075)])
+        );
+        // Postgres: avg(0.1, 0.2, 0.05) = 0.11666666666666666667.
+        assert_eq!(
+            fold_as(
+                Agg::Avg,
+                numeric,
+                &[group(Some("Q1"), Some("0.3"), 2, 2)],
+                vec![ins(q1("0.05"))]
+            ),
+            nums(&[("Q1", 0.11666666666666667)])
+        );
+        // A NaN group of its own makes the sum NaN until its row goes.
+        let num = (ValueType::Number, FLOAT8);
+        let nan = [
+            group(Some("Q1"), Some("3"), 1, 1),
+            group(Some("Q1"), Some("NaN"), 1, 1),
+        ];
+        let sum = fold_as(Agg::Sum, num, &nan, vec![]).unwrap();
+        assert!(matches!(sum["Q1"], Value::Number(x) if x.is_nan()));
+        assert_eq!(
+            fold_as(Agg::Sum, num, &nan, vec![del(q1("NaN"))]),
+            nums(&[("Q1", 3.0)])
+        );
+    }
+
+    #[test]
+    fn seeds_skip_null_dimensions_and_refuse_bad_counts() {
+        let num = (ValueType::Number, FLOAT8);
+        // The loader skips a NULL dimension; a sum over NULLs only is no cell,
+        // a count over them is 0.
+        let seed = [group(None, Some("7"), 1, 1), group(Some("Q2"), None, 0, 2)];
+        assert_eq!(fold_as(Agg::Sum, num, &seed, vec![]), nums(&[]));
+        assert_eq!(
+            fold_as(Agg::Count, num, &seed, vec![]),
+            nums(&[("Q2", 0.0)])
+        );
+        let null = || del(row(Some("Q2"), Some("P1"), None));
+        assert_eq!(
+            fold_as(Agg::Count, num, &seed, vec![null()]),
+            nums(&[("Q2", 0.0)])
+        );
+        assert_eq!(
+            fold_as(Agg::Count, num, &seed, vec![null(), null()]),
+            nums(&[])
+        );
+        // count(*) below count(value) cannot be: the seed is out of step.
+        let step = Err(Rebuild("a fold went out of step"));
+        assert_eq!(
+            fold_as(Agg::Count, num, &[group(Some("Q1"), None, 0, -1)], vec![]),
+            step
+        );
+        assert_eq!(
+            fold_as(Agg::Sum, num, &[group(Some("Q1"), Some("3"), 2, 0)], vec![]),
+            step
+        );
+    }
+
+    #[test]
+    fn rows_a_change_cannot_place_are_skipped_or_rebuild() {
+        // A NULL dimension is no coordinate: not a plain binding's old row,
+        // nor an aggregated binding's row.
+        assert_eq!(run(vec![del(row(None, Some("P1"), Some("1")))]), Ok(vec![]));
+        assert_eq!(
+            fold(
+                Agg::Sum,
+                &[("Q1", Some("1"))],
+                vec![ins(row(None, Some("P1"), Some("5")))]
+            ),
+            nums(&[("Q1", 1.0)])
+        );
+        // A FULL identity sends every old row; an update without one rebuilds.
+        assert_eq!(
+            run(vec![upd(None, full("Q1", "2"))]),
+            Err(Rebuild("old row not replicated"))
+        );
+        let mut t = full("Q2", "1");
+        t[0] = Datum::Unchanged;
+        assert_eq!(run(vec![ins(t)]), Err(Rebuild("unchanged TOAST value")));
+        // Messages other than row changes change nothing.
+        let origin = Message::Origin {
+            lsn: 1,
+            name: "o".into(),
+        };
+        assert_eq!(run(vec![origin.clone()]), Ok(vec![]));
+        // Nor do they, or unbound relations, have unknown dimension values.
+        let unbound = Message::Insert {
+            rel: OTHER,
+            new: full("Q9", "1"),
+        };
+        let r = rels(b'f', &[]);
+        assert!(mapper(&model(), None)
+            .unknown(&r, &txn(vec![origin, unbound]))
+            .is_empty());
+        // A replayed TRUNCATE of a plain binding's relation rebuilds.
+        let mut m = model();
+        let truncate = txn(vec![Message::Truncate {
+            options: 0,
+            rels: vec![F],
+        }]);
+        assert_eq!(
+            mapper(&m, None).map(&mut m, &r, &truncate, 10).err(),
+            Some(Rebuild("truncate"))
+        );
+    }
+
+    /// New dimension values without a rebuild: minted into the mapper and
+    /// the model, the batch's edits bring an engine to a fresh evaluation
+    /// when its plans serve the grown model ([`Engine::serves`]); a plan
+    /// that enumerates the grown category does not.
+    ///
+    /// [`Engine::serves`]: improv_engine::session::Engine::serves
+    #[test]
+    fn new_items_feed_an_engine_that_serves_the_grown_model() {
+        use improv_engine::session::Engine;
+        let derived = |id, name: &str, text: &str, categories| MeasureRow {
+            id,
+            name: name.into(),
+            value_type: "number".into(),
+            kind: "derived".into(),
+            formula: Some(text.into()),
+            description: None,
+            categories,
+        };
+        let mut cat = catalog();
+        cat.measures
+            .push(derived(6, "Total", "Total = SUM(Price OVER Time)", vec![2]));
+        cat.measures
+            .push(derived(7, "Pos", "Pos = POSITION(Time)", vec![1]));
+        let mut m = build_model(&cat).unwrap();
+        m.set_input(MeasureId(5), coordinate(11, 21), Value::Number(1.0));
+        let (mut total, _) = Engine::new(&m, &[MeasureId(6)]).unwrap();
+        let (pos, _) = Engine::new(&m, &[MeasureId(7)]).unwrap();
+        let mut mp = mapper(&m, None);
+        let r = rels(b'f', &[]);
+        let batch = txn(vec![ins(full("Q3", "4")), ins(full("Q2", "2"))]);
+        assert_eq!(mp.unknown(&r, &batch), [(CategoryId(1), "Q3".to_string())]);
+        mp.add_item(CategoryId(1), "Q3", ItemId(13));
+        m.add_item(ItemId(13), CategoryId(1), "Q3");
+        assert!(total.serves(&m).unwrap());
+        assert!(!pos.serves(&m).unwrap());
+        let snap = total.apply(mp.map(&mut m, &r, &batch, 0).unwrap()).unwrap();
+        let fresh = improv_engine::dataflow::evaluate(&m, &[MeasureId(6)]).unwrap();
+        let total = &fresh[&MeasureId(6)];
+        assert_eq!(total[&vec![(2, 21)]], CellValue::num(7.0));
+        assert_eq!(
+            snap.get(&MeasureId(6)).map(|v| (**v).clone()),
+            Some(total.clone())
         );
     }
 }
