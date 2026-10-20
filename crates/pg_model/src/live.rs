@@ -543,9 +543,6 @@ fn fold_row(
 ) -> Result<(), Rebuild> {
     let agg = b.agg.ok_or(Rebuild("not an aggregated binding"))?;
     let vt = value_type(model, b.measure)?;
-    if unfoldable(agg, vt) {
-        return Err(Rebuild("min or max of text"));
-    }
     // Only a FULL old row carries the old value (the worker gives the
     // relations of aggregated bindings REPLICA IDENTITY FULL).
     let old = match old {
@@ -971,9 +968,10 @@ fn numeric_div(nanos: i128, scale: i32, n: i64) -> f64 {
             int += 1;
         }
     }
-    let zero = int == 0 && digits.iter().all(|x| *x == 0);
+    // The quotient exceeds 10^(4·qweight) and rscale keeps 16 digits below
+    // that: a nonzero sum never rounds to zero, so its sign stands.
     let frac: String = digits.iter().map(|x| char::from(b'0' + x)).collect();
-    let sign = if nanos < 0 && !zero { "-" } else { "" };
+    let sign = if nanos < 0 { "-" } else { "" };
     format!("{sign}{int}.{frac}0").parse().unwrap_or(f64::NAN)
 }
 
