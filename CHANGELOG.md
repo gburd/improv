@@ -26,6 +26,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.
 
+### Security
+
+- **rustls-webpki 0.103.16 and webpki-roots 1.0.10** (were 0.103.15 and
+  1.0.9): RUSTSEC-2026-0382 and RUSTSEC-2026-0381, certificate paths through
+  the distrusted emSign intermediates. Only libduckdb-sys's build script
+  uses them (to fetch DuckDB's sources); no Improv binary links them.
+
 ## [0.10.0] - 2026-10-20
 
 The formula language gets a function registry of 681 built-in functions
