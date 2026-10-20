@@ -111,7 +111,7 @@ SELECT improv.bind_measure('contrib', 'Commits', 'contribution_rows', 'commit_sh
 - **In formulas.** The reduction `COUNTUNIQUE(x OVER T)` (Google Sheets'
   name) does the same inside a formula.
 
-## P2-1. Fixed-point iteration (PageRank) — met for correctness; slower than your SQL
+## P2-1. Fixed-point iteration (PageRank) — met, and faster than your SQL
 
 ```text
 Out      = SUM(W OVER Dst)
@@ -139,12 +139,18 @@ PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
   reference power iteration is 3.4e-15, against your 1e-9 bound.
 - **Edits.** After one edge weight changes, the result is within 2.6e-15 of
   the reference and matches a fresh evaluation.
-- **Speed: about 14 s on that graph**, roughly 0.9 s per round, against your
-  4.6 s for 40 iterations in SQL. Every round feeds the whole iterate
-  through the dataflow, and an edit costs about as much, because a warm
-  start saves only a couple of rounds.
-  - We'd keep PeopleRank in SQL for now.
-  - Making each round incremental is the next step for FIXPOINT.
+- **Speed.** The step is evaluated in memory with the engine's own cell
+  operations: what doesn't read `r` (M, Out, Dangling) is computed once per
+  solve and kept up to date incrementally between edits.
+
+  | graph | rounds | per round | solve (incl. build) | after one edge edit | peak memory |
+  | --- | ---: | ---: | ---: | ---: | ---: |
+  | 1,500 nodes, 100k edges | 14 | 3.6 ms | 0.43 s | 0.064 s | 314 MB |
+  | 10,000 nodes, 1M edges | 13 | 73 ms | 6.6 s | 1.15 s | 3.2 GB |
+
+  Your SQL takes 4.6 s for 40 iterations on the smaller graph. A body
+  using something the in-memory step doesn't cover (PREV, a recurrence)
+  still solves, through the dataflow, at the old speed.
 
 ## P2-2. Role-playing categories — met
 

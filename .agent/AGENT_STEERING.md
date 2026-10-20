@@ -86,9 +86,10 @@ mode DONE. Customer requests (2026-10-18) DONE, answered in
 measures, dimensionless results, named LAMBDAs with category parameters
 (`improv.lambda`), `count_distinct`, incremental aggregated bindings and new
 items in logical mode (status counts applies/rebuilds; `tests/scale.sh`),
-scoped trigger loads. **Open:** FILL rebuilds on a new item; FIXPOINT is
-~14 s per solve on 1.5k nodes (each round feeds the whole iterate); commit
-mode still recomputes in full. Mentat is `mentatdb` 1.16.0 from
+scoped trigger loads. FIXPOINT steps run host-side
+(`engine/src/hosteval.rs`, DD fallback): 0.43 s at 1.5k/100k, 6.6 s at
+10k/1M. **Open:** FILL rebuilds on a new item; commit mode still
+recomputes in full. Mentat is `mentatdb` 1.16.0 from
 crates.io (`6eb9023`).
 
 ## Released: v0.7.0 (2026-09-24)
