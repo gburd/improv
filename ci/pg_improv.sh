@@ -14,7 +14,8 @@
 #   (aggregated bindings under random batches), tests/failover.sh on PG 17+
 #   (a streaming standby promoted, with and without failover slots), and on
 #   PG 17 also tests/upgrade.sh (ALTER EXTENSION UPDATE from each earlier
-#   release) and the PGXN dist build.
+#   release), and the PGXN dist build. On PG 18, tests/pg_upgrade.sh
+#   (pg_upgrade from PG 17, which it installs too).
 # Steps that need a non-root user (pgrx refuses initdb as root) run as `pgi`.
 set -euo pipefail
 pg=${1:?usage: ci/pg_improv.sh <PGMAJOR>}
@@ -89,6 +90,19 @@ end
 if [ "$pg" -ge 17 ]; then
 	step "tests/failover.sh: a standby promoted (pg$pg)"
 	run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/failover.sh
+	end
+fi
+
+if [ "$pg" = 18 ]; then
+	step "tests/pg_upgrade.sh: pg_upgrade 17 -> 18"
+	old=/usr/lib/postgresql/17/bin
+	if [ ! -x "$old/pg_config" ]; then
+		apt-get install -y -qq --no-install-recommends postgresql-17 postgresql-server-dev-17 >/dev/null
+		chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
+	fi
+	run cargo pgrx init --pg17 "$old/pg_config" >/dev/null
+	run cargo pgrx install --release --no-default-features --features pg17 --pg-config "$old/pg_config"
+	run env OLD_BIN="$old" NEW_BIN="/usr/lib/postgresql/18/bin" ./tests/pg_upgrade.sh
 	end
 fi
 

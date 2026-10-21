@@ -555,6 +555,37 @@ slot (PG 17+), so there are two cases.
 failover slot on its next poll and rebuilds each model once.
 `tests/failover.sh` checks both cases on PG 17 and 18.
 
+### pg_upgrade
+
+Install pg_improv into both majors first (`cargo pgrx install --release
+-c <pg_config>`, once per major), with the same `shared_preload_libraries`,
+`wal_level = logical` and `improv.*` settings in the new cluster's
+`postgresql.conf`. The sync worker exits at once in binary-upgrade mode, so
+it holds no slot while `pg_upgrade` runs.
+
+**From PG 17 or later.** `pg_upgrade` carries the `improv_db` slot when the
+slot has caught up. It refuses a slot with a transaction past its confirmed
+position ("has not consumed the WAL yet"). Before stopping the old cluster,
+stop the writers to the bound tables and let the worker apply their last
+transactions: `lag_bytes` in `improv.status` stops moving and
+`last_applied_at` is after the last write. An idle worker writes no WAL, so
+the slot then stays caught up. Run `pg_upgrade --check`, then `pg_upgrade`.
+On the new cluster the worker continues on the carried slot with each
+model's progress. Trigger, commit and manual models need nothing.
+
+**From PG 15 or 16** (`pg_upgrade` does not carry logical slots, and
+refuses a cluster that has one): drop the slot on the old cluster,
+`SELECT pg_drop_replication_slot('improv_db')`, while the worker is not
+holding it, for instance with `improv.database` pointed at another database
+and a restart. Upgrade, then start the new cluster: the worker makes a new
+slot and rebuilds each logical-mode model from its tables (one `recalc`
+each). The same works from PG 17 if you would rather not wait for the slot
+to catch up.
+
+Either way, check afterwards: `SELECT improv.recalc(name) FROM improv.model`
+returns 0 for every model whose results are current. `tests/pg_upgrade.sh`
+upgrades a PG 17 cluster with a model in each sync mode to PG 18.
+
 ### Removing pg_improv
 
 The clean order is `improv.drop_model(name)` for each model, then

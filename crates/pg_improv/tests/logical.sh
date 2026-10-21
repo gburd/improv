@@ -472,17 +472,27 @@ IDLE_S=${IDLE_S:-60}
 REVQ="SELECT price * qty FROM sales WHERE quarter='Q1' AND product='Widget'"
 q "UPDATE sales SET price = 13 WHERE quarter='Q1' AND product='Widget'"
 wait_for "$REV" "$(q "$REVQ")" "a write before the idle window" >/dev/null
+# autovacuum off for the window: an ANALYZE writes WAL of its own
+q "ALTER SYSTEM SET autovacuum = off"
+q "SELECT pg_reload_conf()" >/dev/null
 sleep 1
 logpos=$(wc -c <"$D/log")
+wal0=$(q "SELECT pg_current_wal_insert_lsn()")
 sleep "$IDLE_S"
 decoding() { tail -c +$((logpos + 1)) "$D/log" | grep -c "logical decoding" || true; }
 eq14 "$(decoding)" 0 "decoding lines logged over ${IDLE_S}s idle"
+# an idle worker writes no WAL (it wrote two commit records a poll, which it
+# then decoded); a bgwriter snapshot or a timed checkpoint is under 4 kB
+walmoved=$(q "SELECT pg_current_wal_insert_lsn() - '$wal0'")
+[ "$walmoved" -lt 4096 ] || { echo "FAIL: ${IDLE_S}s idle wrote $walmoved bytes of WAL"; exit 1; }
+q "ALTER SYSTEM RESET autovacuum"
+q "SELECT pg_reload_conf()" >/dev/null
 for i in $(seq 1 10); do
 	q "UPDATE sales SET price = $((20 + i)) WHERE quarter='Q1' AND product='Widget'"
 	wait_for "$REV" "$(q "$REVQ")" "write $i after the idle window" >/dev/null
 done
 eq14 "$(decoding)" 0 "decoding lines logged by 10 applied writes"
-echo "ok: ${IDLE_S}s idle at poll_ms 50 logged no decoding line; 10 later writes applied, quietly"
+echo "ok: ${IDLE_S}s idle at poll_ms 50 wrote $walmoved bytes of WAL and logged no decoding line; 10 later writes applied, quietly"
 
 # 16. a configuration reload reaches the worker (D9): ALTER SYSTEM SET
 #     improv.poll_ms then pg_reload_conf() changes the poll interval at once

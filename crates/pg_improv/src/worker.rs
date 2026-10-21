@@ -443,6 +443,15 @@ fn status_row(model: &str) -> Res<StatusRow> {
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM);
+    // pg_upgrade starts both clusters in binary-upgrade mode with their
+    // configured preload, and checks (then copies) the slot: hold nothing.
+    // Status 0, so the postmaster does not restart the worker.
+    // SAFETY: a plain read of a postmaster global, and a normal exit.
+    unsafe {
+        if pg_sys::IsBinaryUpgrade {
+            pg_sys::proc_exit(0);
+        }
+    }
     let db = DATABASE
         .get()
         .and_then(|c| c.into_string().ok())
@@ -832,11 +841,19 @@ fn drop_queued() {
 /// Whether pg_improv's L2 catalog, 0.11.0's shared slot included, exists in
 /// the worker's database.
 fn installed() -> bool {
-    Spi::get_one::<bool>(
-        "SELECT to_regclass('improv.sync_state') IS NOT NULL \
-           AND to_regclass('improv.slot_to_drop') IS NOT NULL \
-           AND to_regprocedure('improv.sync_publication()') IS NOT NULL",
-    )
+    // Read-only SPI: pgrx's `get_one` assigns a transaction id, so every
+    // idle poll would write a commit record (see [`advance`]).
+    Spi::connect(|c| {
+        c.select(
+            "SELECT to_regclass('improv.sync_state') IS NOT NULL \
+               AND to_regclass('improv.slot_to_drop') IS NOT NULL \
+               AND to_regprocedure('improv.sync_publication()') IS NOT NULL",
+            None,
+            &[],
+        )?
+        .first()
+        .get::<bool>(1)
+    })
     .ok()
     .flatten()
         == Some(true)
@@ -1044,24 +1061,36 @@ fn peek() -> Res<Option<Peeked>> {
 /// Confirm the slot up to `target` when it is past the slot's position: at
 /// once when `eager`, else only once the slot lags by [`IDLE_ADVANCE`].
 /// Returns whether it moved.
+///
+/// Read-only SPI throughout: a transaction id would write a commit record
+/// past the slot's new position, so the slot would never catch up to the
+/// end of the WAL. An idle worker would then write WAL (and decode it)
+/// every poll, and `pg_upgrade` refuses a slot that has not caught up.
 fn advance(target: u64, eager: bool) -> Res<bool> {
-    let at = Spi::get_one_with_args::<String>(
-        "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
-        &[SLOT.into()],
-    )?
-    .as_deref()
-    .and_then(pgoutput::parse_lsn)
-    .ok_or("the slot is gone")?;
-    if target <= at || (!eager && target - at < IDLE_ADVANCE) {
-        return Ok(false);
-    }
-    // The advance decodes too, so it would log the same two lines.
-    Spi::run(QUIET)?;
-    Spi::run_with_args(
-        "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
-        &[SLOT.into(), pgoutput::format_lsn(target).into()],
-    )?;
-    Ok(true)
+    Spi::connect(|c| -> Res<bool> {
+        let at = c
+            .select(
+                "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
+                None,
+                &[SLOT.into()],
+            )?
+            .first()
+            .get::<String>(1)?
+            .as_deref()
+            .and_then(pgoutput::parse_lsn)
+            .ok_or("the slot is gone")?;
+        if target <= at || (!eager && target - at < IDLE_ADVANCE) {
+            return Ok(false);
+        }
+        // The advance decodes too, so it would log the same two lines.
+        c.select(QUIET, None, &[])?;
+        c.select(
+            "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
+            None,
+            &[SLOT.into(), pgoutput::format_lsn(target).into()],
+        )?;
+        Ok(true)
+    })
 }
 
 thread_local! {

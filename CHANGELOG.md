@@ -178,6 +178,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.poll_ms` and `improv.max_changes` changed only when the worker
   restarted. pgrx's latch wait never reread the configuration; the worker
   now does that on SIGHUP.
+- **pg_improv: `pg_upgrade` carries logical-mode models (PG 17 → 18).** The
+  sync worker exits in binary-upgrade mode, where it had held the slot that
+  `pg_upgrade --check` reads ("replication slot improv_db is active"). An
+  idle worker no longer writes WAL: two commit records a poll, which kept
+  the slot from ever catching up, so `pg_upgrade` refused it. The
+  README's "pg_upgrade" section gives the procedure, including from PG 15
+  and 16 (drop the slot first, and the worker rebuilds), and
+  `tests/pg_upgrade.sh` tests it.
 - **pg_improv: failover.** On PG 17+ the sync worker makes `improv_db` a
   failover slot. With `sync_replication_slots` on a standby, the models
   continue on the synced slot after a promotion. Without it (or on PG 15
