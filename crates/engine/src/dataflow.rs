@@ -1179,7 +1179,7 @@ pub fn evaluate(
         }
     });
 
-    let out = results.lock().unwrap().clone();
+    let out = std::mem::take(&mut *results.lock().unwrap());
     Ok(out)
 }
 
