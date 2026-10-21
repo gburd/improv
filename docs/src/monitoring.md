@@ -3,7 +3,8 @@
 This page is for whoever runs a Postgres database with `pg_improv` in it,
 and for anyone running `improv-server`. It covers what to watch, what the
 signals mean, and when to page someone. It describes `pg_improv` 0.11.0,
-the version on `main`.
+the version on `main`. [Operations runbook](./runbook-ops.md) has what to
+do when an alert fires.
 
 Ready-made files:
 
@@ -87,7 +88,7 @@ SELECT slot_name, active, active_pid, wal_status, safe_wal_size,
   `max_slot_wal_keep_size`. `lost` means Postgres removed WAL the slot
   needed: the slot is dead, results no longer follow writes, and on 0.11.0
   and earlier the worker does not recover by itself
-  (see the operations runbook).
+  ([runbook](./runbook-ops.md#the-slot-is-lost)).
 - **`safe_wal_size`** is how much more WAL may be written before the slot
   is lost (NULL when `max_slot_wal_keep_size` is unlimited, which is the
   Postgres default; set it).
@@ -130,10 +131,10 @@ The worker logs at `LOG` level into the server log. Every line starts with
 | `pg_improv sync: creating the slot improv_db: <error>` | Slot creation failed, usually `max_replication_slots` reached or `wal_level` not `logical`. No logical model is updated until it succeeds. | fix the setting and restart |
 | `pg_improv sync: creating the publication improv_db: <error>` | The publication was missing (dropped by hand) and recreating it failed. | run `SELECT improv.sync_publication()` and read its error |
 | `pg_improv sync: resetting progress: <error>` | A new slot was created, and resetting the models' recorded positions failed. | check the error |
-| `pg_improv sync: reading improv_db: <error>` | Decoding the slot failed, so **no model was updated this poll**. Repeated every poll with `can no longer access replication slot "improv_db"` and `invalidated due to "wal_removed"` in the detail, it means the slot is lost. | operations runbook |
-| `pg_improv sync: model <name>: <error>` | That model's apply failed. The same text is in its `last_error`, and it is retried with backoff. The other models are not held back. | operations runbook |
+| `pg_improv sync: reading improv_db: <error>` | Decoding the slot failed, so **no model was updated this poll**. Repeated every poll with `can no longer access replication slot "improv_db"` and `invalidated due to "wal_removed"` in the detail, it means the slot is lost. | [runbook](./runbook-ops.md#the-slot-is-lost) |
+| `pg_improv sync: model <name>: <error>` | That model's apply failed. The same text is in its `last_error`, and it is retried with backoff. The other models are not held back. | [runbook](./runbook-ops.md#a-model-is-stuck-with-last_error) |
 | `pg_improv sync: model <name>: rebuilding (model changed)` | Its structure changed (`define`, `bind_*`), so it is rebuilt from its tables. | none; expected after a deploy |
-| `pg_improv sync: model <name>: rebuilding (<reason>)` | The batch could not be applied incrementally. The reasons are listed below. | if it repeats, see the operations runbook |
+| `pg_improv sync: model <name>: rebuilding (<reason>)` | The batch could not be applied incrementally. The reasons are listed below. | if it repeats, see [rebuild loop](./runbook-ops.md#a-rebuild-loop) |
 | `pg_improv sync: advancing improv_db: <error>` | The slot could not be moved forward. The models' results are already written, but WAL is retained until the next successful advance. | check the error |
 | `pg_improv sync: dropping queued slots: <error>` | An old per-model slot (`improv_<model>`, from 0.10.0) left by the upgrade could not be dropped. | drop it by hand |
 
@@ -185,7 +186,7 @@ write rate.
 | Retained WAL high | retained bytes > 50 % of `max_slot_wal_keep_size` (or of free space on the `pg_wal` volume if unset) | 10 min | warn | the worker is behind or stopped |
 | Lag growing | `lag_bytes` > 64 MB and rising | 15 min | warn | an idle slot stays at or below 16 MB; more than that, rising, means the worker is not keeping up |
 | Model failing | `last_error IS NOT NULL` | 5 min | warn (page if it is a business-critical model) | the model's results are stale and every retry is a full rebuild |
-| Rebuilds rising | `rebuilds` increases by more than 3 in 15 min outside a deploy | 15 min | warn | a rebuild loop: each costs a full recompute |
+| Rebuilds rising | `rebuilds` increases by more than 3 in 15 min outside a deploy | 15 min | warn | a [rebuild loop](./runbook-ops.md#a-rebuild-loop): each costs a full recompute |
 | Stale model | `last_applied_at` older than 10 min while its bound tables were written (`n_tup_ins + n_tup_upd + n_tup_del` in `pg_stat_user_tables` moved) | 10 min | warn | the worker is not reaching this model |
 | Commit/trigger failures | the server log shows `improv: model … could not recompute` | any | warn | writers' transactions are being rolled back |
 
