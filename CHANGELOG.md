@@ -60,6 +60,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   or `groff -man -ww` warns; `UPDATE_DOCS=1 cargo test -p improv_cli`
   regenerates it. The release archive installs them as `man/man{1,5,7}`.
 
+- **Shell completions** for `improv`, `improv-gui`, `improv-tui` and
+  `improv-server`, in bash, zsh and fish, generated from the same parsers
+  into `docs/completions/` (checked for drift the same way) and shipped in
+  the release archive's `completions/`.
+
 ### Changed
 
 - **`improv` parses its arguments with clap.** Every invocation that worked

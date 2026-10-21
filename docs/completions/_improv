@@ -1,0 +1,673 @@
+#compdef improv
+
+autoload -U is-at-least
+
+_improv() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_improv_commands" \
+"*::: :->improv" \
+&& ret=0
+    case $state in
+    (improv)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:improv-command-$line[1]:"
+        case $line[1] in
+            (init)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+&& ret=0
+;;
+(add-category)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':id -- The category'\''s numeric id:_default' \
+':name -- The category'\''s name:_default' \
+&& ret=0
+;;
+(add-item)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':id -- The item'\''s numeric id:_default' \
+':category -- The id of the item'\''s category:_default' \
+':name -- The item'\''s name:_default' \
+&& ret=0
+;;
+(add-measure)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':id -- The measure'\''s numeric id:_default' \
+':name -- The measure'\''s name:_default' \
+':value_type -- number, boolean or text:_default' \
+':kind -- The word input:_default' \
+'*::categories -- The categories the measure ranges over, by name:_default' \
+&& ret=0
+;;
+(add-derived)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':id -- The measure'\''s numeric id:_default' \
+':name -- The measure'\''s name:_default' \
+':formula -- The formula text (in IMPROV_LOCALE'\''s spelling):_default' \
+&& ret=0
+;;
+(define)
+_arguments "${_arguments_options[@]}" : \
+'--refresh=[A CALL(...) measure'\''s refresh policy]:policy:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':id -- The measure'\''s (or LAMBDA'\''s) numeric id:_default' \
+':definition -- The definition\: Target = formula, CALL(...) or LAMBDA(...):_default' \
+&& ret=0
+;;
+(register-ext)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':name -- The function'\''s name, as CALL(...) names it:_default' \
+':arity -- How many arguments it takes:_default' \
+':body -- The Python body:_default' \
+&& ret=0
+;;
+(refresh-ext)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'*--at=[The cell'\''s coordinate\: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags]:Cat=Item:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+':value -- The cell'\''s value:_default' \
+'*::stray -- A coordinate given without --at (refused, with a hint):_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+&& ret=0
+;;
+(save-view)
+_arguments "${_arguments_options[@]}" : \
+'--rows=[The row categories, comma-separated, outer first]:Cat,...:_default' \
+'--cols=[The column categories, comma-separated, outer first]:Cat,...:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':id -- The view'\''s numeric id:_default' \
+':name -- The view'\''s name:_default' \
+':measure -- The measure, by id or name:_default' \
+&& ret=0
+;;
+(show)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+&& ret=0
+;;
+(eval)
+_arguments "${_arguments_options[@]}" : \
+'--scenario=[The scenario to evaluate under]:name:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+&& ret=0
+;;
+(scenario)
+_arguments "${_arguments_options[@]}" : \
+'*--at=[The cell'\''s coordinate\: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags]:Cat=Item:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':scenario -- The scenario'\''s name:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+':value -- The overriding value:_default' \
+'*::stray -- A coordinate given without --at (refused, with a hint):_default' \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help]' \
+'--help[Print help]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+&& ret=0
+;;
+(import-sql)
+_arguments "${_arguments_options[@]}" : \
+'--refresh=[The measure'\''s refresh policy]:policy:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':source -- The SQLite database to query:_default' \
+':measure -- The new measure'\''s numeric id:_default' \
+':name -- The new measure'\''s name:_default' \
+':query -- The query:_default' \
+':value_col -- The result column holding the values:_default' \
+'*::dims -- COLUMN\:CATEGORY-ID\:CATEGORY-NAME\: a column, and the category its distinct values become items of:_default' \
+&& ret=0
+;;
+(refresh-sql)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':source -- The SQLite database to query:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+&& ret=0
+;;
+(refresh-all)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+'::source -- The SQLite database the SQL-backed measures query:_default' \
+&& ret=0
+;;
+(serve-refresh)
+_arguments "${_arguments_options[@]}" : \
+'--tick=[Seconds between ticks]:SECS:_default' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+'::source -- The SQLite database the SQL-backed measures query:_default' \
+&& ret=0
+;;
+(export-sql)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':target -- The SQLite database to write:_default' \
+':measure -- A measure'\''s numeric id:_default' \
+':table -- The table:_default' \
+':value_col -- The value column'\''s name:_default' \
+&& ret=0
+;;
+(import-csv)
+_arguments "${_arguments_options[@]}" : \
+'--tsv[Tab-separated]' \
+'--no-header[The file has no header row\: columns are 0-based indices]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':file -- The file to read:_default' \
+':measure -- The new measure'\''s numeric id:_default' \
+':name -- The new measure'\''s name:_default' \
+':value_col -- The column holding the values:_default' \
+'*::dims -- COLUMN\:CATEGORY-ID\:CATEGORY-NAME\: a column, and the category its distinct values become items of:_default' \
+&& ret=0
+;;
+(export-csv)
+_arguments "${_arguments_options[@]}" : \
+'--tsv[Tab-separated]' \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':target -- The file to write (tab-separated if it ends in .tsv):_default' \
+':measure -- A measure'\''s numeric id:_default' \
+&& ret=0
+;;
+(stream)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+'*::targets -- The measures whose changes to print, by id or name:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_improv__subcmd__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:improv-help-command-$line[1]:"
+        case $line[1] in
+            (init)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add-category)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add-item)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add-measure)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add-derived)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(define)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(register-ext)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(refresh-ext)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(save-view)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(show)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(eval)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(scenario)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(import-sql)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(refresh-sql)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(refresh-all)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(serve-refresh)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export-sql)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(import-csv)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(export-csv)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(stream)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_improv_commands] )) ||
+_improv_commands() {
+    local commands; commands=(
+'init:Create or open a store and install the schema' \
+'add-category:Add a category (a dimension, such as Time)' \
+'add-item:Add an item (a member of a category)' \
+'add-measure:Add an input measure' \
+'add-derived:Add a derived (formula) measure' \
+'define:Create a measure or LAMBDA from a definition, "Target = ..."' \
+'register-ext:Register a Python external function' \
+'refresh-ext:Run a CALL(...) measure'\''s function and store its cells' \
+'set:Set an input cell' \
+'list:Print the categories, items, measures, views and input cells' \
+'save-view:Save a named view of a measure, as the GUI does' \
+'show:Print one measure and its input cells' \
+'eval:Compute a derived measure and print its cells' \
+'scenario:Add an input-cell override to a what-if scenario' \
+'export:Print the whole model as JSON' \
+'import-sql:Import a SQLite query into a new SQL-backed input measure' \
+'refresh-sql:Re-run an SQL-backed measure'\''s query and replace its cells' \
+'refresh-all:Refresh every external measure now' \
+'serve-refresh:Refresh measures as their refresh policies fall due, until interrupted' \
+'export-sql:Write a measure'\''s input cells to a SQLite table' \
+'import-csv:Import a CSV or TSV file into a new input measure' \
+'export-csv:Write a measure'\''s cells to a CSV or TSV file' \
+'stream:Apply input edits from stdin and print the cells they change' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'improv commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__add-category_commands] )) ||
+_improv__subcmd__add-category_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv add-category commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__add-derived_commands] )) ||
+_improv__subcmd__add-derived_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv add-derived commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__add-item_commands] )) ||
+_improv__subcmd__add-item_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv add-item commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__add-measure_commands] )) ||
+_improv__subcmd__add-measure_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv add-measure commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__define_commands] )) ||
+_improv__subcmd__define_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv define commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__eval_commands] )) ||
+_improv__subcmd__eval_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv eval commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__export_commands] )) ||
+_improv__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv export commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__export-csv_commands] )) ||
+_improv__subcmd__export-csv_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv export-csv commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__export-sql_commands] )) ||
+_improv__subcmd__export-sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv export-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help_commands] )) ||
+_improv__subcmd__help_commands() {
+    local commands; commands=(
+'init:Create or open a store and install the schema' \
+'add-category:Add a category (a dimension, such as Time)' \
+'add-item:Add an item (a member of a category)' \
+'add-measure:Add an input measure' \
+'add-derived:Add a derived (formula) measure' \
+'define:Create a measure or LAMBDA from a definition, "Target = ..."' \
+'register-ext:Register a Python external function' \
+'refresh-ext:Run a CALL(...) measure'\''s function and store its cells' \
+'set:Set an input cell' \
+'list:Print the categories, items, measures, views and input cells' \
+'save-view:Save a named view of a measure, as the GUI does' \
+'show:Print one measure and its input cells' \
+'eval:Compute a derived measure and print its cells' \
+'scenario:Add an input-cell override to a what-if scenario' \
+'export:Print the whole model as JSON' \
+'import-sql:Import a SQLite query into a new SQL-backed input measure' \
+'refresh-sql:Re-run an SQL-backed measure'\''s query and replace its cells' \
+'refresh-all:Refresh every external measure now' \
+'serve-refresh:Refresh measures as their refresh policies fall due, until interrupted' \
+'export-sql:Write a measure'\''s input cells to a SQLite table' \
+'import-csv:Import a CSV or TSV file into a new input measure' \
+'export-csv:Write a measure'\''s cells to a CSV or TSV file' \
+'stream:Apply input edits from stdin and print the cells they change' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'improv help commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__add-category_commands] )) ||
+_improv__subcmd__help__subcmd__add-category_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help add-category commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__add-derived_commands] )) ||
+_improv__subcmd__help__subcmd__add-derived_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help add-derived commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__add-item_commands] )) ||
+_improv__subcmd__help__subcmd__add-item_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help add-item commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__add-measure_commands] )) ||
+_improv__subcmd__help__subcmd__add-measure_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help add-measure commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__define_commands] )) ||
+_improv__subcmd__help__subcmd__define_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help define commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__eval_commands] )) ||
+_improv__subcmd__help__subcmd__eval_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help eval commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__export_commands] )) ||
+_improv__subcmd__help__subcmd__export_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help export commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__export-csv_commands] )) ||
+_improv__subcmd__help__subcmd__export-csv_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help export-csv commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__export-sql_commands] )) ||
+_improv__subcmd__help__subcmd__export-sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help export-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__help_commands] )) ||
+_improv__subcmd__help__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help help commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__import-csv_commands] )) ||
+_improv__subcmd__help__subcmd__import-csv_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help import-csv commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__import-sql_commands] )) ||
+_improv__subcmd__help__subcmd__import-sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help import-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__init_commands] )) ||
+_improv__subcmd__help__subcmd__init_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help init commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__list_commands] )) ||
+_improv__subcmd__help__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help list commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__refresh-all_commands] )) ||
+_improv__subcmd__help__subcmd__refresh-all_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help refresh-all commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__refresh-ext_commands] )) ||
+_improv__subcmd__help__subcmd__refresh-ext_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help refresh-ext commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__refresh-sql_commands] )) ||
+_improv__subcmd__help__subcmd__refresh-sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help refresh-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__register-ext_commands] )) ||
+_improv__subcmd__help__subcmd__register-ext_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help register-ext commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__save-view_commands] )) ||
+_improv__subcmd__help__subcmd__save-view_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help save-view commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__scenario_commands] )) ||
+_improv__subcmd__help__subcmd__scenario_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help scenario commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__serve-refresh_commands] )) ||
+_improv__subcmd__help__subcmd__serve-refresh_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help serve-refresh commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__set_commands] )) ||
+_improv__subcmd__help__subcmd__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help set commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__show_commands] )) ||
+_improv__subcmd__help__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help show commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__stream_commands] )) ||
+_improv__subcmd__help__subcmd__stream_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help stream commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__import-csv_commands] )) ||
+_improv__subcmd__import-csv_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv import-csv commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__import-sql_commands] )) ||
+_improv__subcmd__import-sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv import-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__init_commands] )) ||
+_improv__subcmd__init_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv init commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__list_commands] )) ||
+_improv__subcmd__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv list commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__refresh-all_commands] )) ||
+_improv__subcmd__refresh-all_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv refresh-all commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__refresh-ext_commands] )) ||
+_improv__subcmd__refresh-ext_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv refresh-ext commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__refresh-sql_commands] )) ||
+_improv__subcmd__refresh-sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv refresh-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__register-ext_commands] )) ||
+_improv__subcmd__register-ext_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv register-ext commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__save-view_commands] )) ||
+_improv__subcmd__save-view_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv save-view commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__scenario_commands] )) ||
+_improv__subcmd__scenario_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv scenario commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__serve-refresh_commands] )) ||
+_improv__subcmd__serve-refresh_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv serve-refresh commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__set_commands] )) ||
+_improv__subcmd__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv set commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__show_commands] )) ||
+_improv__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv show commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__stream_commands] )) ||
+_improv__subcmd__stream_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv stream commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_improv" ]; then
+    _improv "$@"
+else
+    compdef _improv improv
+fi

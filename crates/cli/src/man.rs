@@ -1,6 +1,7 @@
-//! The man pages (`docs/man`), generated from the clap definitions (this
-//! crate's `args.rs` and the other binaries' `src/args.rs`), the
-//! hand-written sections in `crates/cli/man/`, and the function registry. The tests fail when the committed files differ;
+//! The man pages (`docs/man`) and shell completions (`docs/completions`),
+//! generated from the clap definitions (this crate's `args.rs` and the other
+//! binaries' `src/args.rs`), the hand-written sections in `crates/cli/man/`,
+//! and the function registry. The tests fail when the committed files differ;
 //! `UPDATE_DOCS=1 cargo test -p improv_cli` rewrites them.
 
 use clap::CommandFactory;
@@ -252,6 +253,26 @@ fn ascii(c: char) -> String {
     }
 }
 
+/// Completion scripts for each binary, for bash, zsh and fish.
+fn completions() -> Vec<(String, String)> {
+    use clap_complete::{generate, Generator, Shell};
+    let mut out = Vec::new();
+    for mut cmd in [
+        crate::args::Cli::command(),
+        gui_args::Cli::command(),
+        tui_args::Cli::command(),
+        server_args::Cli::command(),
+    ] {
+        let bin = cmd.get_name().to_string();
+        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+            let mut buf = Vec::new();
+            generate(shell, &mut cmd, &bin, &mut buf);
+            out.push((shell.file_name(&bin), String::from_utf8(buf).unwrap()));
+        }
+    }
+    out
+}
+
 fn repo(dir: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -330,6 +351,11 @@ fn man_pages_are_current_and_groff_clean() {
     };
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && err.is_empty(), "groff: {err}");
+}
+
+#[test]
+fn completions_are_current() {
+    check("docs/completions", &completions(), |_| true);
 }
 
 /// Each command's page has the synopsis `improv help COMMAND` prints, a

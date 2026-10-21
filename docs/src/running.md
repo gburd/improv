@@ -48,7 +48,7 @@ $I save-view m.db 1 "Revenue by quarter" 102 --rows Time --cols Product
 
 | Front end | Command | Notes |
 | --- | --- | --- |
-| CLI | `improv --help` | Scriptable; `improv help <command>` for one command, and see the [man pages](#man-pages). |
+| CLI | `improv --help` | Scriptable; `improv help <command>` for one command, and see the [man pages](#man-pages-and-shell-completions). |
 | TUI | `improv-tui m.db` | Arrows move, `e`/Enter edit a cell (or a derived measure's formula), Shift+arrows select a range (Sum in the status line), `p` pivot, `[ ]` page, `f`/`F` filter, `Tab` measure, `R` revert to saved, `?`/F1 function help, Tab completes names in a formula, `q` quit (autosaves). |
 | GUI | `improv-gui m.db` | NeXTSTEP-style workspace: application menu top-left, worksheet windows, model browser. Double-click or Enter edits a cell; right-click a tile to move or filter it; type `Name = formula` on the formula list's last line. Run inside `nix develop` on NixOS so the GL/X11 libraries are found. |
 | Streaming | `producer \| improv stream m.db Revenue` | Edits in on stdin, changed cells out on stdout; saved at end of input. |
@@ -65,7 +65,7 @@ curl -s -H 'Authorization: Bearer secret' -X POST localhost:3000/measures/102/ev
   -H 'content-type: application/json' -d '{"edits":[]}'
 ```
 
-## Man pages
+## Man pages and shell completions
 
 Every command has a man page in `docs/man/`. The release archive lays them
 out as `man/man1`, `man/man5` and `man/man7`, so with its `man/` on
@@ -91,6 +91,15 @@ parsers and the function registry; the hand-written parts of the `(1)` pages
 are in `crates/cli/man/`. `UPDATE_DOCS=1 cargo test -p improv_cli`
 regenerates them, and the test fails when they are stale or `groff -man -ww`
 complains. The other pages are written by hand.
+
+Shell completions for all four binaries are in `docs/completions/` (and the
+archive's `completions/`), generated the same way:
+
+```sh
+source docs/completions/improv.bash                                  # bash
+fpath=(docs/completions $fpath); autoload -Uz compinit; compinit     # zsh
+cp docs/completions/*.fish ~/.config/fish/completions/              # fish
+```
 
 ## Open a Postgres-hosted model
 

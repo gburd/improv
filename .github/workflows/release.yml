@@ -65,12 +65,15 @@ jobs:
           ext=""
           case "$TARGET" in *windows*) ext=".exe" ;; esac
           staging="improv-${REF_NAME}-${TARGET}"
-          # man/man{1,5,7}, as MANPATH wants them.
-          mkdir -p "$staging"/man/man{1,5,7}
+          # man/man{1,5,7} as MANPATH wants them; completions/{bash,zsh,fish}.
+          mkdir -p "$staging"/man/man{1,5,7} "$staging"/completions/{bash,zsh,fish}
           for bin in improv improv-tui improv-server improv-gui; do
             cp "target/$TARGET/release/${bin}${ext}" "$staging/"
           done
           for s in 1 5 7; do cp docs/man/*."$s" "$staging/man/man$s/"; done
+          cp docs/completions/*.bash "$staging/completions/bash/"
+          cp docs/completions/_* "$staging/completions/zsh/"
+          cp docs/completions/*.fish "$staging/completions/fish/"
           cp README.md LICENSE-APACHE LICENSE-MIT CHANGELOG.md "$staging/"
           mkdir -p dist
           if [ -n "$ext" ]; then
