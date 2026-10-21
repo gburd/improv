@@ -199,10 +199,13 @@ fn functions_page() -> String {
 /// backslashes escaped, and a leading `.` or `'` kept from reading as a
 /// request.
 fn inline(md: &str) -> String {
+    // `\` and `-` as roff wants them: a backslash, and a minus sign that
+    // copies as `-` (a bare `-` is a hyphen).
     let md = md
         .replace("\\[", "[")
         .replace("\\]", "]")
-        .replace('\\', "\\e");
+        .replace('\\', "\\e")
+        .replace('-', "\\-");
     let mut out = String::new();
     let mut code = false;
     let mut rest = md.as_str();
@@ -381,6 +384,7 @@ fn every_command_has_a_page() {
         assert!(text.contains(".BR improv (1)"), "{file}");
     }
     assert!(inline("`a\\b` [x](y) z").ends_with("\\fBa\\eb\\fR x z"));
+    assert_eq!(inline("-1"), "\\-1");
     assert_eq!(inline(".x"), "\\&.x");
     assert_eq!(ascii('²'), "^2");
     assert_eq!(ascii('ₙ'), "_n");

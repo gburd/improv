@@ -32,11 +32,11 @@
 .SH NAME
 improv-functions \- the built-in functions of Improv formulas
 .SH DESCRIPTION
-Every built-in function, by category. Names are case-insensitive;
+Every built\-in function, by category. Names are case\-insensitive;
 \fB[x]\fR is optional (\fB[x=1]\fR: 1 if omitted), \fB\[u2026]\fR repeats the
 arguments before it, \fBx OVER T\fR is reduced over a category and
 \fBINTO K\fR lays a list result along one. Positions are
-1-based. An error argument (\fB#DIV/0!\fR, \fB#N/A\fR, \[u2026]) makes the result
+1\-based. An error argument (\fB#DIV/0!\fR, \fB#N/A\fR, \[u2026]) makes the result
 that error, except in the functions that test for errors. See
 The Formula Language for operators, types and
 dimensions.
@@ -103,7 +103,7 @@ the value paired with the first true test
 the result paired with the first value equal to the expression, else the default
 .TP
 \fBCHOOSE(index_num, value1, \[u2026])\fR \(-> the branches' type
-the index_num-th value (1-based)
+the index_num\-th value (1\-based)
 .TP
 \fBIFERROR(value, value_if_error)\fR \(-> the branches' type
 the value, or the alternative where it is an error
@@ -167,7 +167,7 @@ the #N/A error
 the error a code names ("#DIV/0!")
 .TP
 \fBERROR.TYPE(error_val)\fR \(-> number
-1 #NULL!, 2 #DIV/0!, 3 #VALUE!, 4 #REF!, 5 #NAME?, 6 #NUM!, 7 #N/A; #N/A for a non-error
+1 #NULL!, 2 #DIV/0!, 3 #VALUE!, 4 #REF!, 5 #NAME?, 6 #NUM!, 7 #N/A; #N/A for a non\-error
 .TP
 \fBISBLANK(value)\fR \(-> boolean
 whether the value is blank: always FALSE for a value, since a missing cell has none (ISBLANK("") is FALSE) (also \fBISEMPTY\fR)
@@ -256,10 +256,10 @@ ln(1 + x), accurate near 0
 logarithm to a base (default 10)
 .TP
 \fBLOG10(number)\fR \(-> number
-base-10 logarithm
+base\-10 logarithm
 .TP
 \fBLOG2(x)\fR \(-> number
-base-2 logarithm
+base\-2 logarithm
 .TP
 \fBPOWER(number, power)\fR \(-> number
 number raised to power (same as ^)
@@ -448,7 +448,7 @@ the sum, counting TRUE as 1 and text as 0
 the Lambert W function: the w with w\[u00B7]e\[u02B7] = x, on branch k 0 (the default, x \[u2265] \[u2212]1/e) or \[u2212]1 (\[u2212]1/e \[u2264] x < 0)
 .TP
 \fBAGM(a, b)\fR \(-> number
-the arithmetic-geometric mean of a, b \[u2265] 0
+the arithmetic\-geometric mean of a, b \[u2265] 0
 .TP
 \fBGD(x)\fR \(-> number
 the Gudermannian function: 2\[u00B7]atan(tanh(x/2))
@@ -460,13 +460,13 @@ the integer logarithm: the largest k with base\[u1D4F] \[u2264] x, for x > 0 and
 x reduced modulo \[u03C0]/2\[u1D49] as if \[u03C0] were exact: the xr with x = xr + j\[u00B7]\[u03C0]/2\[u1D49] and |xr| \[u2264] \[u03C0]/2\[u1D49]\[u207A]\[u00B9] (e \[u2212]1 to 7, truncated), or with q TRUE the e+1 low bits of j
 .TP
 \fBFIB(n)\fR \(-> number
-the n-th Fibonacci number, n \[u2265] 1 (truncated); #NUM! past n = 1476, where it overflows
+the n\-th Fibonacci number, n \[u2265] 1 (truncated); #NUM! past n = 1476, where it overflows
 .TP
 \fBISPRIME(n)\fR \(-> boolean
 whether n is prime (FALSE below 2)
 .TP
 \fBITHPRIME(i)\fR \(-> number
-the i-th prime, i from 1 to 10\[u2077] (Gnumeric: 10\[u2078])
+the i\-th prime, i from 1 to 10\[u2077] (Gnumeric: 10\[u2078])
 .TP
 \fBPFACTOR(n)\fR \(-> number
 the smallest prime factor of n \[u2265] 2 (#VALUE! below 2)
@@ -487,7 +487,7 @@ the M\[u00F6]bius function of n \[u2265] 1: 0 if a square divides n, else (\[u22
 the number of distinct prime factors of n \[u2265] 1
 .TP
 \fBNT_PI(n)\fR \(-> number
-how many primes are \[u2264] n (0 below 2; n up to 179 424 673, the 10\[u2077]-th prime)
+how many primes are \[u2264] n (0 below 2; n up to 179 424 673, the 10\[u2077]\-th prime)
 .TP
 \fBNT_RADICAL(n)\fR \(-> number
 the product of the distinct prime factors of n \[u2265] 1
@@ -499,13 +499,13 @@ the number of ways to write n \[u2265] 0 as a sum of positive integers (n up to 
 the largest finite double, 1.7976931348623157e308
 .TP
 \fBFLT.MIN()\fR \(-> number
-the smallest positive normal double, 2.2250738585072014e-308
+the smallest positive normal double, 2.2250738585072014e\-308
 .TP
 \fBFLT.RADIX()\fR \(-> number
-the floating-point base, 2
+the floating\-point base, 2
 .TP
 \fBFLT.NEXTAFTER(x, y)\fR \(-> number
-the next double after x toward y ("+" or "-" for the infinities); y itself if y = x
+the next double after x toward y ("+" or "\-" for the infinities); y itself if y = x
 .TP
 \fBMDETERM(A OVER R, C)\fR \(-> number
 MDETERM(A OVER R, C): the determinant of the square matrix A (rows along R, columns along C); 0 if singular
@@ -517,16 +517,16 @@ LOGMDETERM(A OVER R, C): ln |det A| (no overflow for large matrices); #NUM! if s
 MINVERSE(A OVER R, C INTO R2, C2): the inverse of the square matrix A, row by row; #NUM! if singular
 .TP
 \fBMPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2)\fR \(-> number
-MPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2): the Moore\[u2013]Penrose pseudo-inverse (C \[u00D7] R, row by row); singular values up to threshold (default 256 \[u03B5]) times the largest count as zero
+MPSEUDOINVERSE(A OVER R, C, [threshold] INTO C2, R2): the Moore\[u2013]Penrose pseudo\-inverse (C \[u00D7] R, row by row); singular values up to threshold (default 256 \[u03B5]) times the largest count as zero
 .TP
 \fBCHOLESKY(A OVER R, C INTO R2, C2)\fR \(-> number
-CHOLESKY(A OVER R, C INTO R2, C2): the lower-triangular L with L\[u00B7]L\[u1D40] = A for a symmetric positive-definite A (asymmetric pairs averaged), row by row; #NUM! where A is not positive definite
+CHOLESKY(A OVER R, C INTO R2, C2): the lower\-triangular L with L\[u00B7]L\[u1D40] = A for a symmetric positive\-definite A (asymmetric pairs averaged), row by row; #NUM! where A is not positive definite
 .TP
 \fBEIGEN(A OVER R, C INTO R2, C2)\fR \(-> number
 EIGEN(A OVER R, C INTO R2, C2): for a symmetric A (asymmetric pairs averaged), its eigenvalues largest magnitude first, then the matrix of their unit eigenvectors as columns: (n + 1) \[u00D7] n values, row by row
 .TP
 \fBFOURIER(y OVER T, [inverse] INTO K)\fR \(-> text
-FOURIER(y OVER T, [inverse] INTO K): Gnumeric's discrete Fourier transform (scaled by 1/n, zero-padded to a power of two), each value as complex text "a+bi"
+FOURIER(y OVER T, [inverse] INTO K): Gnumeric's discrete Fourier transform (scaled by 1/n, zero\-padded to a power of two), each value as complex text "a+bi"
 .SH "ROUNDING"
 Rounding is decimal: \fBROUND(2.675, 2)\fR is 2.68.
 .TP
@@ -596,7 +596,7 @@ the code of the first character
 the code point of the first character
 .TP
 \fBCLEAN(text)\fR \(-> text
-remove non-printing characters
+remove non\-printing characters
 .TP
 \fBCONCAT(text1, \[u2026])\fR \(-> text
 join values as text (same as &)
@@ -605,13 +605,13 @@ join values as text (same as &)
 join values as text
 .TP
 \fBEXACT(text1, text2)\fR \(-> boolean
-case-sensitive equality
+case\-sensitive equality
 .TP
 \fBFIND(find_text, within_text, [start_num=1])\fR \(-> number
-1-based position of find_text in within_text, case-sensitive
+1\-based position of find_text in within_text, case\-sensitive
 .TP
 \fBSEARCH(find_text, within_text, [start_num=1])\fR \(-> number
-1-based position, case-insensitive, with * and ? wildcards
+1\-based position, case\-insensitive, with * and ? wildcards
 .TP
 \fBLEFT(text, [num_chars=1])\fR \(-> text
 the first num_chars characters (default 1)
@@ -620,7 +620,7 @@ the first num_chars characters (default 1)
 the last num_chars characters (default 1)
 .TP
 \fBMID(text, start_num, num_chars)\fR \(-> text
-num_chars characters from a 1-based start_num
+num_chars characters from a 1\-based start_num
 .TP
 \fBLEN(text)\fR \(-> number
 the number of characters
@@ -635,13 +635,13 @@ uppercase
 capitalize each word
 .TP
 \fBREPLACE(old_text, start_num, num_chars, new_text)\fR \(-> text
-replace num_chars characters from a 1-based start_num
+replace num_chars characters from a 1\-based start_num
 .TP
 \fBREPT(text, number_times)\fR \(-> text
 repeat text number_times times
 .TP
 \fBSUBSTITUTE(text, old_text, new_text, [instance_num])\fR \(-> text
-replace every (or the instance_num-th) occurrence of old_text
+replace every (or the instance_num\-th) occurrence of old_text
 .TP
 \fBTRIM(text)\fR \(-> text
 remove leading, trailing and repeated spaces
@@ -650,10 +650,10 @@ remove leading, trailing and repeated spaces
 text as a number
 .TP
 \fBTEXTBEFORE(text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found])\fR \(-> text
-text before the instance_num-th delimiter
+text before the instance_num\-th delimiter
 .TP
 \fBTEXTAFTER(text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found])\fR \(-> text
-text after the instance_num-th delimiter
+text after the instance_num\-th delimiter
 .TP
 \fBTEXTBETWEEN(text, start_delimiter, end_delimiter)\fR \(-> text
 text between the first start delimiter and the next end delimiter
@@ -662,13 +662,13 @@ text between the first start delimiter and the next end delimiter
 how many times search occurs in text
 .TP
 \fBTEXT(value, format_text)\fR \(-> text
-format with an Excel number-format code: 0 # ? . , % E+ E- "text" \ec _c *c, General, ; sections (positive;negative;zero;text with @), colors; dates y m d h s AM/PM A/P. Unsupported (#VALUE!): conditions, locales, [h] elapsed time, fractional seconds, fractions, eras
+format with an Excel number\-format code: 0 # ? . , % E+ E\- "text" \ec _c *c, General, ; sections (positive;negative;zero;text with @), colors; dates y m d h s AM/PM A/P. Unsupported (#VALUE!): conditions, locales, [h] elapsed time, fractional seconds, fractions, eras
 .TP
 \fBFIXED(number, [decimals=2], [no_commas=FALSE])\fR \(-> text
 rounded to decimals places (default 2) as text, with thousands commas unless no_commas
 .TP
 \fBDOLLAR(number, [decimals=2])\fR \(-> text
-as en-US currency text: $1,234.57, negatives in parentheses, decimals default 2
+as en\-US currency text: $1,234.57, negatives in parentheses, decimals default 2
 .TP
 \fBNUMBERVALUE(text, [decimal_separator="."], [group_separator=","])\fR \(-> number
 text as a number with explicit decimal (default .) and group (default ,) separators
@@ -686,19 +686,19 @@ whether the pattern matches; case_sensitivity 1 ignores case. Rust regex syntax
 the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #VALUE!. Rust regex syntax (also \fBREGEX.EXTRACT\fR)
 .TP
 \fBREGEXREPLACE(text, pattern, replacement, [occurrence=0], [case_sensitivity=0])\fR \(-> text
-replace every match (or the occurrence-th, negative from the end) with $n-style replacement text. Rust regex syntax
+replace every match (or the occurrence\-th, negative from the end) with $n\-style replacement text. Rust regex syntax
 .TP
 \fBTEXTSPLIT(text OVER T, col_delimiter, [row_delimiter], [ignore_empty=FALSE] INTO K)\fR \(-> text
-the parts of the text between col_delimiter matches (case-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE!
+the parts of the text between col_delimiter matches (case\-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE!
 .TP
 \fBARRAYTOTEXT(array OVER T, [format=0])\fR \(-> text
 the values as text in item order: format 0 "1, 2, a", format 1 {1,2,"a"}
 .TP
 \fBASC(text)\fR \(-> text
-full-width ASCII and katakana as half-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark)
+full\-width ASCII and katakana as half\-width, as LibreOffice's ASC (a voiced kana becomes its letter and a sound mark)
 .TP
 \fBJIS(text)\fR \(-> text
-half-width ASCII and katakana as full-width, as LibreOffice's JIS (a letter and its sound mark join) (also \fBDBCS\fR)
+half\-width ASCII and katakana as full\-width, as LibreOffice's JIS (a letter and its sound mark join) (also \fBDBCS\fR)
 .TP
 \fBBAHTTEXT(number)\fR \(-> text
 a number as Thai baht and satang in words, rounded to the satang
@@ -707,27 +707,27 @@ a number as Thai baht and satang in words, rounded to the satang
 ASCII letters rotated 13 places; anything else unchanged
 .TP
 \fBENCODEURL(text)\fR \(-> text
-UTF-8 percent-encoding of every byte but A\[u2013]Z a\[u2013]z 0\[u2013]9 - _ . ~ (#VALUE! for empty text)
+UTF\-8 percent\-encoding of every byte but A\[u2013]Z a\[u2013]z 0\[u2013]9 \- _ . ~ (#VALUE! for empty text)
 .TP
 \fBROMAN(number, [form=0])\fR \(-> text
 0\[u2013]3999 in Roman numerals; form 0 classic (or TRUE) to 4 most concise (or FALSE)
 .TP
 \fBARABIC(text)\fR \(-> number
-Roman numerals (0\[u2013]3999) as a number; case and surrounding spaces ignored, a leading - negates, "" is 0
+Roman numerals (0\[u2013]3999) as a number; case and surrounding spaces ignored, a leading \- negates, "" is 0
 .SH "DATE AND TIME"
-Dates are date-time values (UTC, millisecond precision). A number given where a date is wanted is a spreadsheet serial date (1 = 1900-01-01).
+Dates are date\-time values (UTC, millisecond precision). A number given where a date is wanted is a spreadsheet serial date, as in LibreOffice: 61 is 1900\-03\-01, and 1 is 1899\-12\-31 (Excel's 1 is 1900\-01\-01, because it counts a fictitious 1900\-02\-29).
 .TP
 \fBDATE(year, month, day)\fR \(-> date
-a date; out-of-range months and days roll over, years 0\[u2013]1899 add 1900
+a date; out\-of\-range months and days roll over, years 0\[u2013]1899 add 1900
 .TP
 \fBDATEVALUE(date_text)\fR \(-> date
-parse a date: 2025-01-31, 2025-01-31T09:30:00Z (the time is dropped) or 1/31/2025
+parse a date: 2025\-01\-31, 2025\-01\-31T09:30:00Z (the time is dropped) or 1/31/2025
 .TP
 \fBTIME(hour, minute, second)\fR \(-> date
-a time of day on serial day 0 (1899-12-30), wrapping at 24 hours
+a time of day on serial day 0 (1899\-12\-30), wrapping at 24 hours
 .TP
 \fBTIMEVALUE(time_text)\fR \(-> number
-parse a time (09:30, 9:30 PM, 2025-01-31T09:30:00Z) as a fraction of a day
+parse a time (09:30, 9:30 PM, 2025\-01\-31T09:30:00Z) as a fraction of a day
 .TP
 \fBYEAR(serial_number)\fR \(-> number
 the year
@@ -757,7 +757,7 @@ week of the year (the week of January 1 is 1), weeks starting on type's day as i
 the ISO 8601 week number
 .TP
 \fBISOYEAR(date)\fR \(-> number
-the ISO 8601 week-numbering year
+the ISO 8601 week\-numbering year
 .TP
 \fBDAYOFYEAR(date)\fR \(-> number
 the day of the year, 1\[u2013]366
@@ -772,7 +772,7 @@ the English name of month 1\[u2013]12
 days from start to end (end \[u2212] start, times included)
 .TP
 \fBDAYS360(start_date, end_date, [method=FALSE])\fR \(-> number
-days between on a 360-day year, US (NASD) method or European when TRUE
+days between on a 360\-day year, US (NASD) method or European when TRUE
 .TP
 \fBDATEDIF(start_date, end_date, unit)\fR \(-> number
 complete "Y" years, "M" months or "D" days between; "YM", "YD", "MD" ignore the larger units
@@ -790,7 +790,7 @@ the fraction of a year between: basis 0 US 30/360 (default), 1 actual/actual, 2 
 working days (Monday\[u2013]Friday) from start to end inclusive; no holidays argument yet (it needs an aggregation) (also \fBNETWORKDAYS_EXCEL2003\fR)
 .TP
 \fBNETWORKDAYS.INTL(start_date, end_date, [weekend=1])\fR \(-> number
-working days with a weekend of 1\[u2013]7 (two days), 11\[u2013]17 (one day) or a "0000011" Monday-first mask; no holidays argument yet
+working days with a weekend of 1\[u2013]7 (two days), 11\[u2013]17 (one day) or a "0000011" Monday\-first mask; no holidays argument yet
 .TP
 \fBWORKDAY(start_date, days)\fR \(-> date
 the date n working days (Monday\[u2013]Friday) after start; no holidays argument yet
@@ -799,10 +799,10 @@ the date n working days (Monday\[u2013]Friday) after start; no holidays argument
 WORKDAY with a weekend as in NETWORKDAYS.INTL; no holidays argument yet
 .TP
 \fBNOW()\fR \(-> date
-the current date and time (UTC); re-evaluated when the model is recalculated
+the current date and time (UTC); re\-evaluated when the model is recalculated
 .TP
 \fBTODAY()\fR \(-> date
-the current date (UTC midnight); re-evaluated when the model is recalculated
+the current date (UTC midnight); re\-evaluated when the model is recalculated
 .TP
 \fBDAYSINMONTH(date)\fR \(-> number
 the number of days in the date's month
@@ -871,7 +871,7 @@ Pentecost Sunday, 49 days after Easter Sunday
 the Julian day number of a date
 .TP
 \fBHDATE_JULIAN(year, month, day)\fR \(-> number
-the Julian day number of Gregorian year, month, day (out-of-range days and months roll over)
+the Julian day number of Gregorian year, month, day (out\-of\-range days and months roll over)
 .TP
 \fBHDATE(year, month, day)\fR \(-> text
 the Hebrew date of Gregorian year, month, day, as "20 Tebet 5784" (#VALUE! for a month outside 1\[u2013]12 or a day outside 1\[u2013]31)
@@ -897,7 +897,7 @@ the Hebrew date of a date in Hebrew
 Functions of a cell's position in a category, and the ordered (previous/next, running) forms.
 .TP
 \fBPOSITION(category)\fR \(-> number
-1-based position of this cell's item along the category
+1\-based position of this cell's item along the category
 .TP
 \fB@ITEM(category)\fR \(-> text
 the name of this cell's item along the category
@@ -909,13 +909,13 @@ the item name (Improv item names are unique within a category)
 the number of items in the category
 .TP
 \fBPREV(x, category, [n=1], [default])\fR \(-> the branches' type
-the value at the n-th previous item along the category (n = 1); off the end, the default, else no cell
+the value at the n\-th previous item along the category (n = 1); off the end, the default, else no cell
 .TP
 \fBNEXT(x, category, [n=1], [default])\fR \(-> the branches' type
-the value at the n-th next item along the category (n = 1); off the end, the default, else no cell
+the value at the n\-th next item along the category (n = 1); off the end, the default, else no cell
 .TP
 \fBSEQUENCE(T, [start=1], [step=1])\fR \(-> the branches' type
-SEQUENCE(T, [start=1], [step=1]): start, start + step, \[u2026] along T's items, (POSITION(T) - 1) * step + start
+SEQUENCE(T, [start=1], [step=1]): start, start + step, \[u2026] along T's items, (POSITION(T) \- 1) * step + start
 .TP
 \fBRELABEL(x, from_category, to_category)\fR \(-> the branches' type
 x read with category From replaced by To, each item mapped to To's item of the same name (items with no namesake are dropped)
@@ -923,14 +923,14 @@ x read with category From replaced by To, each item mapped to To's item of the s
 \fBSWAP(x, category_a, category_b)\fR \(-> the branches' type
 x read with categories A and B exchanged, items matched by name (W at Src = a, Dst = b is SWAP(W, Src, Dst) at Src = b, Dst = a)
 .TP
-\fBFIXPOINT(init, lambda, [max_iter=100], [tolerance=1e-10])\fR \(-> the branches' type
-FIXPOINT(init, LAMBDA(r, body), [max_iter=100], [tolerance=1e-10]): r = init, then r = body(r) until the cells change by at most tolerance in total (\[u03A3]|\[u0394]|), or max_iter times (then the last iterate); a measure's whole formula
+\fBFIXPOINT(init, lambda, [max_iter=100], [tolerance=1e\-10])\fR \(-> the branches' type
+FIXPOINT(init, LAMBDA(r, body), [max_iter=100], [tolerance=1e\-10]): r = init, then r = body(r) until the cells change by at most tolerance in total (\[u03A3]|\[u0394]|), or max_iter times (then the last iterate); a measure's whole formula
 .TP
 \fBFILL(x, default)\fR \(-> the branches' type
 a cell at every item combination of x's categories: x where it has a cell, else the default
 .TP
 \fBSORT(array OVER T, [sort_order=1] INTO K)\fR \(-> the branches' type
-the values in ascending order (descending when sort_order is -1)
+the values in ascending order (descending when sort_order is \-1)
 .TP
 \fBUNIQUE(array OVER T, [exactly_once=FALSE] INTO K)\fR \(-> the branches' type
 each distinct value once, in item order (only values that occur once when exactly_once is TRUE)
@@ -939,31 +939,31 @@ each distinct value once, in item order (only values that occur once when exactl
 the values of array whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!)
 .TP
 \fBSORTBY(array, by_array1 OVER T, [sort_order1], \[u2026] INTO K)\fR \(-> the branches' type
-SORTBY(array, by_array1 OVER T, [sort_order1], [by_array2, sort_order2], \[u2026]): the values of array sorted by by_array1, ties by by_array2, \[u2026] (stable; a key descends when its order is -1)
+SORTBY(array, by_array1 OVER T, [sort_order1], [by_array2, sort_order2], \[u2026]): the values of array sorted by by_array1, ties by by_array2, \[u2026] (stable; a key descends when its order is \-1)
 .TP
 \fBTAKE(array OVER T, rows INTO K)\fR \(-> the branches' type
-the first rows values in item order (the last -rows when rows is negative)
+the first rows values in item order (the last \-rows when rows is negative)
 .TP
 \fBDROP(array OVER T, rows INTO K)\fR \(-> the branches' type
-the values TAKE leaves out: all but the first rows (the last -rows when rows is negative), in item order
+the values TAKE leaves out: all but the first rows (the last \-rows when rows is negative), in item order
 .TP
 \fBSELECTS(values, tests OVER T, condition INTO K)\fR \(-> the branches' type
 Quantrix: the values whose test meets the condition (a criterion like ">5" or "a*", as in SUMIF), in item order
 .TP
 \fBXLOOKUP(lookup_value, lookup_array OVER T, return_array, [if_not_found], [match_mode=0], [search_mode=1])\fR \(-> the values' type
-return_array at the item where lookup_array matches lookup_value (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, \[u00B1]2 the same as \[u00B1]1); if_not_found (else #N/A) when none does
+return_array at the item where lookup_array matches lookup_value (match_mode 0 exact, \-1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, \-1 last to first, \[u00B1]2 the same as \[u00B1]1); if_not_found (else #N/A) when none does
 .TP
 \fBXMATCH(lookup_value, lookup_array OVER T, [match_mode=0], [search_mode=1])\fR \(-> number
-the 1-based item position along the category where lookup_array matches lookup_value (XLOOKUP's modes); #N/A when none does
+the 1\-based item position along the category where lookup_array matches lookup_value (XLOOKUP's modes); #N/A when none does
 .TP
 \fBMATCH(lookup_value, lookup_array OVER T, [match_type=1])\fR \(-> number
-the 1-based item position of lookup_value: match_type 1 (default) the largest \[u2264] it, 0 the first equal (text with * and ? wildcards), -1 the smallest \[u2265] it; #N/A when none
+the 1\-based item position of lookup_value: match_type 1 (default) the largest \[u2264] it, 0 the first equal (text with * and ? wildcards), \-1 the smallest \[u2265] it; #N/A when none
 .TP
 \fBLOOKUP(lookup_value, lookup_vector OVER T, result_vector)\fR \(-> the values' type
 result_vector at the largest lookup_vector \[u2264] lookup_value (ascending); #N/A when none
 .TP
 \fBINDEX(array OVER T, row_num)\fR \(-> the branches' type
-the value at the row_num-th item (1-based); #REF! out of range, #N/A where that item has no cell (also \fBVALUEAT\fR)
+the value at the row_num\-th item (1\-based); #REF! out of range, #N/A where that item has no cell (also \fBVALUEAT\fR)
 .TP
 \fBSELECT(values, keys OVER T, lookup)\fR \(-> the branches' type
 values at the first item (in item order) whose key equals lookup; #N/A when none (SELECTLIST: a lookup over its own category gives one result per lookup) (also \fBSELECTLIST\fR)
@@ -982,7 +982,7 @@ values at the first item whose key is < lookup (\[u2264] when inclusive is TRUE)
 every most frequent value, in order of first occurrence (#N/A if none repeats)
 .TP
 \fBLINEST(known_ys, known_xs1, \[u2026] OVER T, [const=TRUE], [stats=FALSE] INTO K)\fR \(-> number
-LINEST(known_ys, known_xs1, [known_xs2, \[u2026]] OVER T, [const], [stats]): the least-squares fit y = m1\[u00B7]x1 + \[u2026] + b: mk, \[u2026], m1, b (const = FALSE: b = 0); with stats, Excel's 5\[u00D7](k+1) block row by row (one x: m, b, se_m, se_b, r\[u00B2], se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block
+LINEST(known_ys, known_xs1, [known_xs2, \[u2026]] OVER T, [const], [stats]): the least\-squares fit y = m1\[u00B7]x1 + \[u2026] + b: mk, \[u2026], m1, b (const = FALSE: b = 0); with stats, Excel's 5\[u00D7](k+1) block row by row (one x: m, b, se_m, se_b, r\[u00B2], se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block
 .TP
 \fBLOGEST(known_ys, known_xs1, \[u2026] OVER T, [const=TRUE], [stats=FALSE] INTO K)\fR \(-> number
 LOGEST(known_ys, known_xs1, [known_xs2, \[u2026]] OVER T, [const], [stats]): y = b\[u00B7]m1^x1\[u00B7]\[u2026], fitted to ln y: mk, \[u2026], m1, b (const = FALSE: b = 1); with stats LINEST's block, for ln y
@@ -1009,16 +1009,16 @@ the smallest k with binomial P(K \[u2264] k) \[u2265] alpha, for n trials of pro
 the binomial P(k1 \[u2264] K \[u2264] k2) for n trials of probability p (k2 defaults to k1) (also \fBB\fR)
 .TP
 \fBCHISQ.DIST(x, deg_freedom, cumulative)\fR \(-> number
-the chi-square distribution: density, or left tail (also \fBCHISQDIST\fR)
+the chi\-square distribution: density, or left tail (also \fBCHISQDIST\fR)
 .TP
 \fBCHISQ.DIST.RT(x, deg_freedom)\fR \(-> number
-the chi-square right tail (also \fBCHIDIST\fR)
+the chi\-square right tail (also \fBCHIDIST\fR)
 .TP
 \fBCHISQ.INV(probability, deg_freedom)\fR \(-> number
-the chi-square left-tail quantile (also \fBCHISQINV\fR)
+the chi\-square left\-tail quantile (also \fBCHISQINV\fR)
 .TP
 \fBCHISQ.INV.RT(probability, deg_freedom)\fR \(-> number
-the chi-square right-tail quantile (also \fBCHIINV\fR)
+the chi\-square right\-tail quantile (also \fBCHIINV\fR)
 .TP
 \fBEXPON.DIST(x, lambda, cumulative)\fR \(-> number
 the exponential distribution of rate \[u03BB]: density, or cumulative (also \fBEXPONDIST\fR)
@@ -1030,10 +1030,10 @@ the F distribution: density, or left tail
 the F right tail (also \fBFDIST\fR)
 .TP
 \fBF.INV(probability, deg_freedom1, deg_freedom2)\fR \(-> number
-the F left-tail quantile
+the F left\-tail quantile
 .TP
 \fBF.INV.RT(probability, deg_freedom1, deg_freedom2)\fR \(-> number
-the F right-tail quantile (also \fBFINV\fR)
+the F right\-tail quantile (also \fBFINV\fR)
 .TP
 \fBGAMMA.DIST(x, alpha, beta, cumulative)\fR \(-> number
 the gamma distribution of shape \[u03B1] and scale \[u03B2]: density, or cumulative (also \fBGAMMADIST\fR)
@@ -1051,16 +1051,16 @@ the hypergeometric probability of k successes in a sample of n from N holding K:
 the hypergeometric probability P(X = k)
 .TP
 \fBLOGNORM.DIST(x, mean, standard_dev, cumulative)\fR \(-> number
-the log-normal distribution: density, or cumulative
+the log\-normal distribution: density, or cumulative
 .TP
 \fBLOGNORMDIST(x, mean, standard_dev)\fR \(-> number
-the cumulative log-normal distribution
+the cumulative log\-normal distribution
 .TP
 \fBLOGNORM.INV(probability, mean, standard_dev)\fR \(-> number
-the log-normal quantile (also \fBLOGINV\fR)
+the log\-normal quantile (also \fBLOGINV\fR)
 .TP
 \fBNEGBINOM.DIST(number_f, number_s, probability_s, cumulative)\fR \(-> number
-the negative binomial probability of f failures before the s-th success: P(F = f), or P(F \[u2264] f)
+the negative binomial probability of f failures before the s\-th success: P(F = f), or P(F \[u2264] f)
 .TP
 \fBNEGBINOMDIST(number_f, number_s, probability_s)\fR \(-> number
 the negative binomial probability P(F = f)
@@ -1093,16 +1093,16 @@ Student's t distribution: density, or left tail
 Student's t right tail
 .TP
 \fBT.DIST.2T(x, deg_freedom)\fR \(-> number
-Student's t two-tailed probability
+Student's t two\-tailed probability
 .TP
 \fBTDIST(x, deg_freedom, tails)\fR \(-> number
-Student's t right tail (tails = 1) or two-tailed probability (tails = 2), for x \[u2265] 0
+Student's t right tail (tails = 1) or two\-tailed probability (tails = 2), for x \[u2265] 0
 .TP
 \fBT.INV(probability, deg_freedom)\fR \(-> number
-Student's t left-tail quantile
+Student's t left\-tail quantile
 .TP
 \fBT.INV.2T(probability, deg_freedom)\fR \(-> number
-Student's t two-tailed quantile (also \fBTINV\fR)
+Student's t two\-tailed quantile (also \fBTINV\fR)
 .TP
 \fBWEIBULL.DIST(x, alpha, beta, cumulative)\fR \(-> number
 the Weibull distribution of shape \[u03B1] and scale \[u03B2]: density, or cumulative (also \fBWEIBULL\fR)
@@ -1114,13 +1114,13 @@ the Fisher transformation atanh(x)
 the inverse Fisher transformation tanh(y)
 .TP
 \fBCONFIDENCE.NORM(alpha, standard_dev, size)\fR \(-> number
-the half-width of a normal confidence interval at significance alpha, for sd and sample size n (also \fBCONFIDENCE\fR)
+the half\-width of a normal confidence interval at significance alpha, for sd and sample size n (also \fBCONFIDENCE\fR)
 .TP
 \fBCONFIDENCE.T(alpha, standard_dev, size)\fR \(-> number
-the half-width of a Student's t confidence interval at significance alpha, for sd and sample size n
+the half\-width of a Student's t confidence interval at significance alpha, for sd and sample size n
 .TP
 \fBSTANDARDIZE(x, mean, standard_dev)\fR \(-> number
-the z-score (x \[u2212] mean) / sd
+the z\-score (x \[u2212] mean) / sd
 .TP
 \fBAVERAGEA(values OVER T)\fR \(-> number
 the mean, counting TRUE as 1 and text and FALSE as 0
@@ -1141,7 +1141,7 @@ the number of numbers (and dates) (also \fBDCOUNT\fR)
 the number of cells (errors included) (also \fBDCOUNTA\fR)
 .TP
 \fBCOUNTUNIQUE(values OVER T)\fR \(-> number
-the number of distinct values, SQL's count(DISTINCT \[u2026]) (text compares case-sensitively; an error among them is the result)
+the number of distinct values, SQL's count(DISTINCT \[u2026]) (text compares case\-sensitively; an error among them is the result)
 .TP
 \fBCOUNTBLANK(range OVER T)\fR \(-> number
 the number of items with no cell (or empty text)
@@ -1225,22 +1225,22 @@ the sample skewness
 the population skewness (also \fBSKEW.P\fR)
 .TP
 \fBLARGE(array OVER T, k)\fR \(-> number
-the k-th largest value
+the k\-th largest value
 .TP
 \fBSMALL(array OVER T, k)\fR \(-> number
-the k-th smallest value
+the k\-th smallest value
 .TP
 \fBPERCENTILE(array OVER T, k)\fR \(-> number
-the p-th percentile, interpolated, 0 \[u2264] p \[u2264] 1 (also \fBPERCENTILE.INC\fR)
+the p\-th percentile, interpolated, 0 \[u2264] p \[u2264] 1 (also \fBPERCENTILE.INC\fR)
 .TP
 \fBPERCENTILE.EXC(array OVER T, k)\fR \(-> number
-the p-th percentile, exclusive of 0 and 1
+the p\-th percentile, exclusive of 0 and 1
 .TP
 \fBQUARTILE(array OVER T, quart)\fR \(-> number
-the q-th quartile (0 min \[u2026] 4 max) (also \fBQUARTILE.INC\fR)
+the q\-th quartile (0 min \[u2026] 4 max) (also \fBQUARTILE.INC\fR)
 .TP
 \fBQUARTILE.EXC(array OVER T, quart)\fR \(-> number
-the q-th quartile (1 \[u2026] 3), exclusive
+the q\-th quartile (1 \[u2026] 3), exclusive
 .TP
 \fBPROB(x_range, prob_range OVER T, lower_limit, [upper_limit])\fR \(-> number
 \[u03A3] p over the values x in [low, high] (x = low without high); #NUM! unless every 0 < p \[u2264] 1 and \[u03A3] p = 1
@@ -1267,10 +1267,10 @@ each item's dense rank: tied values share a rank and the next value ranks one af
 each item's (or x's) rank as a fraction, exclusive of 0 and 1
 .TP
 \fBTREND(known_ys, known_xs OVER T, [const=TRUE])\fR \(-> number
-each item's value on the least-squares line of y on x, at its own x (through 0 if const is FALSE)
+each item's value on the least\-squares line of y on x, at its own x (through 0 if const is FALSE)
 .TP
 \fBGROWTH(known_ys, known_xs OVER T, [const=TRUE])\fR \(-> number
-each item's value on the least-squares curve y = b\[u00B7]m\[u02E3] (fitting ln y; b = 1 if const is FALSE)
+each item's value on the least\-squares curve y = b\[u00B7]m\[u02E3] (fitting ln y; b = 1 if const is FALSE)
 .TP
 \fBCORREL(array1, array2 OVER T)\fR \(-> number
 the Pearson correlation of x and y (also \fBPEARSON\fR)
@@ -1285,16 +1285,16 @@ the population covariance (also \fBCOVARIANCE.P\fR)
 the sample covariance
 .TP
 \fBSLOPE(known_ys, known_xs OVER T)\fR \(-> number
-the least-squares slope of y on x
+the least\-squares slope of y on x
 .TP
 \fBINTERCEPT(known_ys, known_xs OVER T)\fR \(-> number
-the least-squares intercept of y on x
+the least\-squares intercept of y on x
 .TP
 \fBSTEYX(known_ys, known_xs OVER T)\fR \(-> number
 the standard error of the predicted y
 .TP
 \fBFORECAST(x, known_ys, known_xs OVER T)\fR \(-> number
-the least-squares line of y on x at x0 (also \fBFORECAST.LINEAR\fR)
+the least\-squares line of y on x at x0 (also \fBFORECAST.LINEAR\fR)
 .TP
 \fBEXPA(known_ys, known_xs OVER T, [simple])\fR \(-> number
 A of the fit y = A\[u00B7]e^(Bx): least squares of ln y weighted by y (simple = TRUE: unweighted, as LOGEST)
@@ -1306,25 +1306,25 @@ B of the fit y = A\[u00B7]e^(Bx)
 the fit y = A\[u00B7]e^(Bx) at x0
 .TP
 \fBCHITEST(actual_range, expected_range OVER T)\fR \(-> number
-the \[u03C7]\[u00B2] test p-value of actual against expected (also \fBCHISQ.TEST\fR)
+the \[u03C7]\[u00B2] test p\-value of actual against expected (also \fBCHISQ.TEST\fR)
 .TP
 \fBFTEST(array1, array2 OVER T)\fR \(-> number
-the two-tailed F-test p-value that a and b have the same variance (also \fBF.TEST\fR)
+the two\-tailed F\-test p\-value that a and b have the same variance (also \fBF.TEST\fR)
 .TP
 \fBTTEST(array1, array2 OVER T, tails, type)\fR \(-> number
-the t-test p-value (tails 1 or 2; type 1 paired, 2 equal variance, 3 unequal) (also \fBT.TEST\fR)
+the t\-test p\-value (tails 1 or 2; type 1 paired, 2 equal variance, 3 unequal) (also \fBT.TEST\fR)
 .TP
 \fBZTEST(array OVER T, x, [sigma])\fR \(-> number
-the one-tailed z-test p-value of the mean against \[u03BC]0 (\[u03C3] defaults to the sample's) (also \fBZ.TEST\fR)
+the one\-tailed z\-test p\-value of the mean against \[u03BC]0 (\[u03C3] defaults to the sample's) (also \fBZ.TEST\fR)
 .TP
 \fBAUTOCORREL(values OVER T)\fR \(-> number
-the lag-1 autocorrelation in item order (GSL) (also \fBGSL_STATS_LAG1_AUTOCORRELATION\fR)
+the lag\-1 autocorrelation in item order (GSL) (also \fBGSL_STATS_LAG1_AUTOCORRELATION\fR)
 .TP
 \fBDGET(values OVER T)\fR \(-> the branches' type
 the single value (with WHERE, the single match); #NUM! when more than one (a WHERE that keeps none leaves no cell)
 .TP
 \fBPROBBLOCK(traffic, circuits)\fR \(-> number
-the Erlang-B probability that a call is blocked when traffic erlangs load circuits (1 to 10\[u2076]; truncated below 100)
+the Erlang\-B probability that a call is blocked when traffic erlangs load circuits (1 to 10\[u2076]; truncated below 100)
 .TP
 \fBOFFTRAF(traffic, circuits)\fR \(-> number
 the offered traffic that carries traffic erlangs on circuits (#VALUE! if circuits cannot carry it)
@@ -1342,7 +1342,7 @@ the Bernoulli probability of k (0 or 1) for success probability p
 the Cauchy distribution of scale a at x: density, or (as Gnumeric) the right tail P(X > x)
 .TP
 \fBEXPPOWDIST(x, a, b)\fR \(-> number
-the exponential-power density of scale a and exponent b at x
+the exponential\-power density of scale a and exponent b at x
 .TP
 \fBGEOMDIST(k, p, cumulative)\fR \(-> number
 the geometric probability of k failures before the first success: P(K = k), or P(K \[u2264] k)
@@ -1402,13 +1402,13 @@ P(X \[u2264] x) for the Cauchy distribution of location and scale, or P(X > x) (
 the quantile of the Cauchy distribution of location and scale: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DCHISQ(x, df, [give_log])\fR \(-> number
-the density at x of the chi-square distribution of df degrees of freedom, or its logarithm (give_log)
+the density at x of the chi\-square distribution of df degrees of freedom, or its logarithm (give_log)
 .TP
 \fBR.PCHISQ(x, df, [lower_tail], [log_p])\fR \(-> number
-P(X \[u2264] x) for the chi-square distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
+P(X \[u2264] x) for the chi\-square distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
 .TP
 \fBR.QCHISQ(p, df, [lower_tail], [log_p])\fR \(-> number
-the quantile of the chi-square distribution of df degrees of freedom: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
+the quantile of the chi\-square distribution of df degrees of freedom: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DEXP(x, scale, [give_log])\fR \(-> number
 the density at x of the exponential distribution of the given scale (mean), or its logarithm (give_log)
@@ -1465,22 +1465,22 @@ P(X \[u2264] x) for the hypergeometric distribution of the white balls among k d
 the quantile of the hypergeometric distribution of the white balls among k drawn from m white and n black: the smallest x with P(X \[u2264] x) \[u2265] p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DLNORM(x, meanlog, sdlog, [give_log])\fR \(-> number
-the density at x of the log-normal distribution of log-mean and log-sd, or its logarithm (give_log)
+the density at x of the log\-normal distribution of log\-mean and log\-sd, or its logarithm (give_log)
 .TP
 \fBR.PLNORM(x, meanlog, sdlog, [lower_tail], [log_p])\fR \(-> number
-P(X \[u2264] x) for the log-normal distribution of log-mean and log-sd, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
+P(X \[u2264] x) for the log\-normal distribution of log\-mean and log\-sd, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
 .TP
 \fBR.QLNORM(p, meanlog, sdlog, [lower_tail], [log_p])\fR \(-> number
-the quantile of the log-normal distribution of log-mean and log-sd: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
+the quantile of the log\-normal distribution of log\-mean and log\-sd: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DNBINOM(x, size, prob, [give_log])\fR \(-> number
-the probability mass at x of the negative binomial distribution (failures before the size-th success) of success probability prob, or its logarithm (give_log)
+the probability mass at x of the negative binomial distribution (failures before the size\-th success) of success probability prob, or its logarithm (give_log)
 .TP
 \fBR.PNBINOM(x, size, prob, [lower_tail], [log_p])\fR \(-> number
-P(X \[u2264] x) for the negative binomial distribution (failures before the size-th success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
+P(X \[u2264] x) for the negative binomial distribution (failures before the size\-th success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
 .TP
 \fBR.QNBINOM(p, size, prob, [lower_tail], [log_p])\fR \(-> number
-the quantile of the negative binomial distribution (failures before the size-th success) of success probability prob: the smallest x with P(X \[u2264] x) \[u2265] p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
+the quantile of the negative binomial distribution (failures before the size\-th success) of success probability prob: the smallest x with P(X \[u2264] x) \[u2265] p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DNORM(x, mean, sd, [give_log])\fR \(-> number
 the density at x of the normal distribution of mean \[u03BC] and standard deviation \[u03C3], or its logarithm (give_log)
@@ -1510,22 +1510,22 @@ P(X \[u2264] x) for the Rayleigh distribution of the given scale, or P(X > x) (l
 the quantile of the Rayleigh distribution of the given scale: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DSNORM(x, shape, location, scale, [give_log])\fR \(-> number
-the density at x of the skew-normal distribution of shape, location and scale, or its logarithm (give_log)
+the density at x of the skew\-normal distribution of shape, location and scale, or its logarithm (give_log)
 .TP
 \fBR.PSNORM(x, shape, location, scale, [lower_tail], [log_p])\fR \(-> number
-P(X \[u2264] x) for the skew-normal distribution of shape, location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
+P(X \[u2264] x) for the skew\-normal distribution of shape, location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
 .TP
 \fBR.QSNORM(p, shape, location, scale, [lower_tail], [log_p])\fR \(-> number
-the quantile of the skew-normal distribution of shape, location and scale: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
+the quantile of the skew\-normal distribution of shape, location and scale: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DST(x, df, shape, [give_log])\fR \(-> number
-the density at x of the skew-t distribution of df degrees of freedom and the given shape, or its logarithm (give_log)
+the density at x of the skew\-t distribution of df degrees of freedom and the given shape, or its logarithm (give_log)
 .TP
 \fBR.PST(x, df, shape, [lower_tail], [log_p])\fR \(-> number
-P(X \[u2264] x) for the skew-t distribution of df degrees of freedom and the given shape, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
+P(X \[u2264] x) for the skew\-t distribution of df degrees of freedom and the given shape, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p)
 .TP
 \fBR.QST(p, df, shape, [lower_tail], [log_p])\fR \(-> number
-the quantile of the skew-t distribution of df degrees of freedom and the given shape: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
+the quantile of the skew\-t distribution of df degrees of freedom and the given shape: the x with P(X \[u2264] x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p)
 .TP
 \fBR.DT(x, df, [give_log])\fR \(-> number
 the density at x of the Student t distribution of df degrees of freedom, or its logarithm (give_log)
@@ -1561,16 +1561,16 @@ INTERPOLATION(xs, ys OVER T, target, [method], [next]): ys interpolated at targe
 each item's trend under the Hodrick\[u2013]Prescott filter with smoothing \[u03BB] (default 1600); the cycle is y \[u2212] trend; needs 6 values
 .TP
 \fBADTEST(values OVER T)\fR \(-> number
-the p-value of the Anderson\[u2013]Darling test of normality (Gnumeric; 8 values or more)
+the p\-value of the Anderson\[u2013]Darling test of normality (Gnumeric; 8 values or more)
 .TP
 \fBCVMTEST(values OVER T)\fR \(-> number
-the p-value of the Cram\[u00E9]r\[u2013]von Mises test of normality (Gnumeric; 8 values or more)
+the p\-value of the Cram\[u00E9]r\[u2013]von Mises test of normality (Gnumeric; 8 values or more)
 .TP
 \fBLKSTEST(values OVER T)\fR \(-> number
-the p-value of the Lilliefors (Kolmogorov\[u2013]Smirnov) test of normality (Gnumeric; 5 values or more)
+the p\-value of the Lilliefors (Kolmogorov\[u2013]Smirnov) test of normality (Gnumeric; 5 values or more)
 .TP
 \fBSFTEST(values OVER T)\fR \(-> number
-the p-value of the Shapiro\[u2013]Francia test of normality (Gnumeric; 5 to 5000 values)
+the p\-value of the Shapiro\[u2013]Francia test of normality (Gnumeric; 5 to 5000 values)
 .TP
 \fBADTEST.STAT(values OVER T)\fR \(-> number
 the Anderson\[u2013]Darling statistic A\[u00B2] (adjusted for n), Gnumeric's ADTEST second value
@@ -1585,10 +1585,10 @@ the Lilliefors statistic D, Gnumeric's LKSTEST second value
 the Shapiro\[u2013]Francia statistic W', Gnumeric's SFTEST second value
 .TP
 \fBLOGREG(known_ys, known_xs OVER T, [affine], [stats] INTO K)\fR \(-> number
-LOGREG(known_ys, known_xs OVER T, [affine], [stats] INTO K): the least-squares fit y = m\[u00B7]ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5\[u00D7]2 block for ln x, row by row
+LOGREG(known_ys, known_xs OVER T, [affine], [stats] INTO K): the least\-squares fit y = m\[u00B7]ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5\[u00D7]2 block for ln x, row by row
 .TP
 \fBLOGFIT(known_ys, known_xs OVER T INTO K)\fR \(-> number
-LOGFIT(known_ys, known_xs OVER T INTO K): the fit y = a + b\[u00B7]ln(sign\[u00B7](x \[u2212] c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough
+LOGFIT(known_ys, known_xs OVER T INTO K): the fit y = a + b\[u00B7]ln(sign\[u00B7](x \[u2212] c)) by Gnumeric's trial\-and\-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough
 .TP
 \fBPERIODOGRAM(y OVER T, [filter] INTO K)\fR \(-> number
 PERIODOGRAM(y OVER T, [filter] INTO K): the magnitudes of the first half of the Fourier transform (Gnumeric), after a window: 0 none, 1 Bartlett, 2 Hann, 3 Welch
@@ -1603,7 +1603,7 @@ FORECAST.ETS(target_date, values, timeline OVER T, [seasonality], [data_completi
 FORECAST.ETS.MULT(target_date, values, timeline OVER T, \[u2026]): FORECAST.ETS with multiplicative seasons (LibreOffice)
 .TP
 \fBFORECAST.ETS.CONFINT(target_date, values, timeline OVER T, [confidence_level=0.95], [seasonality], [data_completion], [aggregation])\fR \(-> number
-FORECAST.ETS.CONFINT(target_date, values, timeline OVER T, [confidence_level], [seasonality], \[u2026]): the half-width of the prediction interval (default confidence_level 0.95); only for seasonality 0 (LibreOffice simulates seasonal intervals randomly): otherwise #N/A (also \fBFORECAST.ETS.PI.ADD\fR)
+FORECAST.ETS.CONFINT(target_date, values, timeline OVER T, [confidence_level], [seasonality], \[u2026]): the half\-width of the prediction interval (default confidence_level 0.95); only for seasonality 0 (LibreOffice simulates seasonal intervals randomly): otherwise #N/A (also \fBFORECAST.ETS.PI.ADD\fR)
 .TP
 \fBFORECAST.ETS.PI.MULT(target_date, values, timeline OVER T, [confidence_level=0.95], [seasonality], [data_completion], [aggregation])\fR \(-> number
 FORECAST.ETS.PI.MULT(target_date, values, timeline OVER T, \[u2026]): FORECAST.ETS.CONFINT for the multiplicative model (the same for seasonality 0, the only one supported)
@@ -1650,7 +1650,7 @@ interest paid from period start to end: CUMIPMT(rate, nper, pv, start_period, en
 principal paid from period start to end: CUMPRINC(rate, nper, pv, start_period, end_period, type) (also \fBCUMPRINC_ADD\fR)
 .TP
 \fBISPMT(rate, per, nper, pv)\fR \(-> number
-interest of period per with straight-line principal: ISPMT(rate, per, nper, pv)
+interest of period per with straight\-line principal: ISPMT(rate, per, nper, pv)
 .TP
 \fBEFFECT(nominal_rate, npery)\fR \(-> number
 effective annual rate of a nominal rate compounded npery times (also \fBEFFECT_ADD\fR)
@@ -1671,10 +1671,10 @@ a fractional dollar price (1.02 with fraction 16 is 1 and 2/16) as a decimal
 a decimal dollar price as a fraction (in the integer part's units)
 .TP
 \fBSLN(cost, salvage, life)\fR \(-> number
-straight-line depreciation per period: SLN(cost, salvage, life)
+straight\-line depreciation per period: SLN(cost, salvage, life)
 .TP
 \fBSYD(cost, salvage, life, per)\fR \(-> number
-sum-of-years'-digits depreciation: SYD(cost, salvage, life, per)
+sum\-of\-years'\-digits depreciation: SYD(cost, salvage, life, per)
 .TP
 \fBDB(cost, salvage, life, period, [month=12])\fR \(-> number
 fixed declining balance: DB(cost, salvage, life, period, [month=12])
@@ -1692,7 +1692,7 @@ French degressive depreciation: AMORDEGRC(cost, date_purchased, first_period, sa
 French linear depreciation: AMORLINC(cost, date_purchased, first_period, salvage, period, rate, [basis])
 .TP
 \fBACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])\fR \(-> number
-accrued interest of a periodic-coupon security: ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])
+accrued interest of a periodic\-coupon security: ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])
 .TP
 \fBACCRINTM(issue, settlement, rate, [par=1000], [basis])\fR \(-> number
 accrued interest paid at maturity: ACCRINTM(issue, settlement, rate, [par=1000], [basis])
@@ -1752,7 +1752,7 @@ price of a security paying interest at maturity: PRICEMAT(settlement, maturity, 
 amount at maturity of a fully invested security: RECEIVED(settlement, maturity, investment, discount, [basis])
 .TP
 \fBTBILLEQ(settlement, maturity, discount)\fR \(-> number
-bond-equivalent yield of a Treasury bill: TBILLEQ(settlement, maturity, discount)
+bond\-equivalent yield of a Treasury bill: TBILLEQ(settlement, maturity, discount)
 .TP
 \fBTBILLPRICE(settlement, maturity, discount)\fR \(-> number
 price per 100 face of a Treasury bill: TBILLPRICE(settlement, maturity, discount)
@@ -1761,7 +1761,7 @@ price per 100 face of a Treasury bill: TBILLPRICE(settlement, maturity, discount
 yield of a Treasury bill: TBILLYIELD(settlement, maturity, pr)
 .TP
 \fBYIELD(settlement, maturity, rate, pr, redemption, frequency, [basis])\fR \(-> number
-yield of a periodic-coupon security (iterative): YIELD(settlement, maturity, rate, pr, redemption, frequency, [basis])
+yield of a periodic\-coupon security (iterative): YIELD(settlement, maturity, rate, pr, redemption, frequency, [basis])
 .TP
 \fBYIELDDISC(settlement, maturity, pr, redemption, [basis])\fR \(-> number
 annual yield of a discounted security: YIELDDISC(settlement, maturity, pr, redemption, [basis])
@@ -1773,7 +1773,7 @@ annual yield of a security paying interest at maturity: YIELDMAT(settlement, mat
 net present value of the flows in item order, the first discounted one period (a missing item is skipped, not zero): NPV(rate, values OVER T)
 .TP
 \fBXNPV(rate, values, dates OVER T)\fR \(-> number
-net present value of flows at dates, discounted from the first date (365-day years): XNPV(rate, values, dates OVER T)
+net present value of flows at dates, discounted from the first date (365\-day years): XNPV(rate, values, dates OVER T)
 .TP
 \fBIRR(values OVER T, [guess=0.1])\fR \(-> number
 internal rate of return of the flows in item order (iterative): IRR(values OVER T, [guess=0.1])
@@ -1791,31 +1791,31 @@ financial management rate of return (GNU Oleo): outflows pulled back at the safe
 principal compounded over the rates in item order: FVSCHEDULE(principal, schedule OVER T)
 .TP
 \fBOPT_BS(call_put, spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes price of a European option: OPT_BS(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes price of a European option: OPT_BS(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_BS_DELTA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes delta: OPT_BS_DELTA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes delta: OPT_BS_DELTA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_BS_GAMMA(spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes gamma (calls and puts alike): OPT_BS_GAMMA(spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes gamma (calls and puts alike): OPT_BS_GAMMA(spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_BS_RHO(call_put, spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes rho: OPT_BS_RHO(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes rho: OPT_BS_RHO(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_BS_THETA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes theta: OPT_BS_THETA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes theta: OPT_BS_THETA(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_BS_VEGA(spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes vega (calls and puts alike): OPT_BS_VEGA(spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes vega (calls and puts alike): OPT_BS_VEGA(spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_BS_CARRYCOST(call_put, spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Black-Scholes sensitivity to the cost of carry: OPT_BS_CARRYCOST(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
+Black\-Scholes sensitivity to the cost of carry: OPT_BS_CARRYCOST(call_put, spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_GARMAN_KOHLHAGEN(call_put, spot, strike, time, domestic_rate, foreign_rate, volatility)\fR \(-> number
 currency option: OPT_GARMAN_KOHLHAGEN(call_put, spot, strike, time, domestic_rate, foreign_rate, volatility)
 .TP
 \fBOPT_FRENCH(call_put, spot, strike, trading_time, calendar_time, rate, volatility, cost_of_carry)\fR \(-> number
-Black-Scholes with trading-day volatility: OPT_FRENCH(call_put, spot, strike, trading_time, calendar_time, rate, volatility, cost_of_carry)
+Black\-Scholes with trading\-day volatility: OPT_FRENCH(call_put, spot, strike, trading_time, calendar_time, rate, volatility, cost_of_carry)
 .TP
 \fBOPT_JUMP_DIFF(call_put, spot, strike, time, rate, volatility, lambda, gamma)\fR \(-> number
 Merton jump diffusion: OPT_JUMP_DIFF(call_put, spot, strike, time, rate, volatility, lambda, gamma)
@@ -1836,16 +1836,16 @@ discrete time switch option: OPT_TIME_SWITCH(call_put, spot, strike, a, time, m,
 simple chooser option: OPT_SIMPLE_CHOOSER(spot, strike, time1, time2, rate, cost_of_carry, volatility)
 .TP
 \fBOPT_BAW_AMER(call_put, spot, strike, time, rate, volatility, cost_of_carry)\fR \(-> number
-Barone-Adesi-Whaley American approximation: OPT_BAW_AMER(call_put, spot, strike, time, rate, volatility, cost_of_carry)
+Barone\-Adesi\-Whaley American approximation: OPT_BAW_AMER(call_put, spot, strike, time, rate, volatility, cost_of_carry)
 .TP
 \fBOPT_BJER_STENS(call_put, spot, strike, time, rate, volatility, cost_of_carry)\fR \(-> number
-Bjerksund-Stensland American approximation: OPT_BJER_STENS(call_put, spot, strike, time, rate, volatility, cost_of_carry)
+Bjerksund\-Stensland American approximation: OPT_BJER_STENS(call_put, spot, strike, time, rate, volatility, cost_of_carry)
 .TP
 \fBOPT_RGW(spot, strike, time_payout, time_exp, rate, d, volatility)\fR \(-> number
-Roll-Geske-Whaley American call with one known dividend: OPT_RGW(spot, strike, time_payout, time_exp, rate, d, volatility)
+Roll\-Geske\-Whaley American call with one known dividend: OPT_RGW(spot, strike, time_payout, time_exp, rate, d, volatility)
 .TP
 \fBOPT_BINOMIAL(amer_euro, call_put, steps, spot, strike, time, rate, volatility, [cost_of_carry])\fR \(-> number
-Cox-Ross-Rubinstein binomial tree: OPT_BINOMIAL(amer_euro, call_put, steps, spot, strike, time, rate, volatility, [cost_of_carry])
+Cox\-Ross\-Rubinstein binomial tree: OPT_BINOMIAL(amer_euro, call_put, steps, spot, strike, time, rate, volatility, [cost_of_carry])
 .TP
 \fBOPT_COMPLEX_CHOOSER(spot, strike_call, strike_put, time, time_call, time_put, rate, cost_of_carry, volatility)\fR \(-> number
 complex chooser option: OPT_COMPLEX_CHOOSER(spot, strike_call, strike_put, time, time_call, time_put, rate, cost_of_carry, volatility)
@@ -1854,10 +1854,10 @@ complex chooser option: OPT_COMPLEX_CHOOSER(spot, strike_call, strike_put, time,
 option on an option ("cc", "cp", "pc", "pp"): OPT_ON_OPTIONS(type, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)
 .TP
 \fBOPT_EXTENDIBLE_WRITER(call_put, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)\fR \(-> number
-writer-extendible option: OPT_EXTENDIBLE_WRITER(call_put, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)
+writer\-extendible option: OPT_EXTENDIBLE_WRITER(call_put, spot, strike1, strike2, time1, time2, rate, cost_of_carry, volatility)
 .TP
 \fBOPT_2_ASSET_CORRELATION(call_put, spot1, spot2, strike1, strike2, time, cost_of_carry1, cost_of_carry2, rate, volatility1, volatility2, rho)\fR \(-> number
-two-asset correlation option: OPT_2_ASSET_CORRELATION(call_put, spot1, spot2, strike1, strike2, time, cost_of_carry1, cost_of_carry2, rate, volatility1, volatility2, rho)
+two\-asset correlation option: OPT_2_ASSET_CORRELATION(call_put, spot1, spot2, strike1, strike2, time, cost_of_carry1, cost_of_carry2, rate, volatility1, volatility2, rho)
 .TP
 \fBOPT_EURO_EXCHANGE(spot1, spot2, qty1, qty2, time, rate, cost_of_carry1, cost_of_carry2, volatility1, volatility2, rho)\fR \(-> number
 European option to exchange asset 2 for asset 1: OPT_EURO_EXCHANGE(spot1, spot2, qty1, qty2, time, rate, cost_of_carry1, cost_of_carry2, volatility1, volatility2, rho)
@@ -1869,16 +1869,16 @@ American option to exchange asset 2 for asset 1: OPT_AMER_EXCHANGE(spot1, spot2,
 Kirk's futures spread option approximation: OPT_SPREAD_APPROX(call_put, fut_price1, fut_price2, strike, time, rate, volatility1, volatility2, rho)
 .TP
 \fBOPT_FIXED_STRK_LKBK(call_put, spot, spot_min, spot_max, strike, time, rate, cost_of_carry, volatility)\fR \(-> number
-fixed-strike lookback: OPT_FIXED_STRK_LKBK(call_put, spot, spot_min, spot_max, strike, time, rate, cost_of_carry, volatility)
+fixed\-strike lookback: OPT_FIXED_STRK_LKBK(call_put, spot, spot_min, spot_max, strike, time, rate, cost_of_carry, volatility)
 .TP
 \fBOPT_FLOAT_STRK_LKBK(call_put, spot, spot_min, spot_max, time, rate, cost_of_carry, volatility)\fR \(-> number
-floating-strike lookback: OPT_FLOAT_STRK_LKBK(call_put, spot, spot_min, spot_max, time, rate, cost_of_carry, volatility)
+floating\-strike lookback: OPT_FLOAT_STRK_LKBK(call_put, spot, spot_min, spot_max, time, rate, cost_of_carry, volatility)
 .TP
 \fBOPT_BARRIER(spot, vol, r, rf, maturity, strike, lower, upper, rebate, put_call, in_out, continuous_or_end, [greek])\fR \(-> number
 barrier option: OPT_BARRIER(spot, vol, r, rf, maturity, strike, lower, upper, rebate, put_call, in_out, continuous_or_end, [greek])
 .TP
 \fBOPT_TOUCH(spot, vol, r, rf, maturity, lower, upper, foreign_domestic, in_out, continuous_or_end, [greek])\fR \(-> number
-one/no-touch option: OPT_TOUCH(spot, vol, r, rf, maturity, lower, upper, foreign_domestic, in_out, continuous_or_end, [greek])
+one/no\-touch option: OPT_TOUCH(spot, vol, r, rf, maturity, lower, upper, foreign_domestic, in_out, continuous_or_end, [greek])
 .TP
 \fBOPT_PROB_HIT(spot, vol, mu, maturity, lower, upper)\fR \(-> number
 probability of touching a barrier: OPT_PROB_HIT(spot, vol, mu, maturity, lower, upper)
@@ -1886,16 +1886,16 @@ probability of touching a barrier: OPT_PROB_HIT(spot, vol, mu, maturity, lower, 
 \fBOPT_PROB_INMONEY(spot, vol, mu, maturity, lower, upper, [strike], [put_call])\fR \(-> number
 probability of ending between the barriers (and in the money): OPT_PROB_INMONEY(spot, vol, mu, maturity, lower, upper, [strike], [put_call])
 .SH "ENGINEERING"
-Complex numbers are text, \fB"3+4i"\fR (suffix \fBi\fR or \fBj\fR); base conversions use 10-digit two's complement for negatives.
+Complex numbers are text, \fB"3+4i"\fR (suffix \fBi\fR or \fBj\fR); base conversions use 10\-digit two's complement for negatives.
 .TP
 \fBBIN2DEC(number)\fR \(-> number
 binary text as a number
 .TP
 \fBBIN2HEX(number, [places])\fR \(-> text
-binary text as hexadecimal, zero-padded to \fBplaces\fR
+binary text as hexadecimal, zero\-padded to \fBplaces\fR
 .TP
 \fBBIN2OCT(number, [places])\fR \(-> text
-binary text as octal, zero-padded to \fBplaces\fR
+binary text as octal, zero\-padded to \fBplaces\fR
 .TP
 \fBDEC2BIN(number, [places])\fR \(-> text
 an integer in \[u2212]512\[u2026]511 as binary text
@@ -1925,13 +1925,13 @@ octal text as a number
 octal text as hexadecimal
 .TP
 \fBBASE(number, radix, [min_length])\fR \(-> text
-an integer in 0\[u2026]2\[u2075]\[u00B3]\[u2212]1 as text in a radix 2\[u2026]36, zero-padded to \fBmin_length\fR (also \fBNUMTOBASE\fR)
+an integer in 0\[u2026]2\[u2075]\[u00B3]\[u2212]1 as text in a radix 2\[u2026]36, zero\-padded to \fBmin_length\fR (also \fBNUMTOBASE\fR)
 .TP
 \fBDECIMAL(text, radix)\fR \(-> number
 text in a radix 2\[u2026]36 as a number (also \fBBASETONUM\fR)
 .TP
 \fBHEXREP(x)\fR \(-> text
-the bytes of a number's IEEE double, little-endian, in hexadecimal
+the bytes of a number's IEEE double, little\-endian, in hexadecimal
 .TP
 \fBBITAND(number1, number2)\fR \(-> number
 bitwise and
@@ -2006,10 +2006,10 @@ e^z
 the principal natural logarithm
 .TP
 \fBIMLOG10(inumber)\fR \(-> text
-the principal base-10 logarithm
+the principal base\-10 logarithm
 .TP
 \fBIMLOG2(inumber)\fR \(-> text
-the principal base-2 logarithm
+the principal base\-2 logarithm
 .TP
 \fBIMSIN(inumber)\fR \(-> text
 the complex sine
