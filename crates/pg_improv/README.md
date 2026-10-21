@@ -395,6 +395,14 @@ from its tables, and each model's rebuild reads its fold state with its own
 snapshot, so it skips exactly the transactions its load already saw. With no
 logical-mode model left the worker drops the slot.
 
+When `max_slot_wal_keep_size` is exceeded (say the worker was down too
+long), Postgres invalidates the slot and removes the WAL it held. From then
+on `improv.status` reports it in `last_error`. Once the worker runs, it
+drops the slot, makes a new one, logs that once, and rebuilds every model
+from its tables; each model's `last_error` clears when its rebuild
+succeeds. Any other failure to read the slot also appears as every model's
+`last_error`, not only in the server log.
+
 Before 0.11.0 each model had its own slot and publication, `improv_<model>`,
 and every poll decoded the WAL once per model. `ALTER EXTENSION pg_improv
 UPDATE` to 0.11.0 drops those publications and queues their slots; the

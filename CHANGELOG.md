@@ -168,6 +168,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   builder: cyclic measure dependency at MeasureId(300)`).
 - **`improv refresh-all` reports measures in id order.** It walked a hash
   map, so the order of its lines changed from run to run.
+- **pg_improv: an invalidated slot no longer stops logical sync silently.**
+  When `max_slot_wal_keep_size` invalidated the `improv_db` slot, every poll
+  logged "can no longer access replication slot", `improv.status` showed no
+  error, and results stopped following writes. The worker now drops the
+  slot, makes a new one, and rebuilds every model, and it logs this once.
+  `last_error` reports the lost slot until each model's rebuild succeeds.
+  Any other failure to read the slot also shows in `last_error`.
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.

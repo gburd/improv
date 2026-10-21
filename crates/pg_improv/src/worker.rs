@@ -329,7 +329,10 @@ fn status_row(model: &str) -> Res<StatusRow> {
         let t = c.select(
             "SELECT m.sync_mode, s.slot, \
                     (pg_current_wal_lsn() - r.confirmed_flush_lsn)::int8, \
-                    r.confirmed_flush_lsn::text, s.last_applied_at, s.rows_applied, s.last_error, \
+                    r.confirmed_flush_lsn::text, s.last_applied_at, s.rows_applied, \
+                    coalesce(s.last_error, CASE WHEN r.wal_status = 'lost' THEN \
+                      'the slot ' || s.slot || ' is invalidated (the WAL it held is gone): \
+                       the sync worker makes a new one and rebuilds every model' END), \
                     s.incremental_applies, s.rebuilds \
              FROM improv.model m \
              LEFT JOIN improv.sync_state s ON s.model_id = m.id \
@@ -432,6 +435,7 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// ended at or before it: a crash between the models' commits and the
 /// slot's advance re-reads the batch, and re-applies none of it.
 fn sweep() {
+    release_slot();
     let listed = match in_txn(list_models) {
         Ok(m) => m,
         Err(e) => return log!("pg_improv sync: listing models: {e}"),
@@ -456,21 +460,37 @@ fn sweep() {
     // Slot creation needs a transaction that has not written (and a failed
     // attempt leaves a half-made slot with no plugin): its own transaction.
     match in_txn(ensure_slot) {
-        Err(e) => return log!("pg_improv sync: creating the slot {SLOT}: {e}"),
+        Err(e) => return slot_error(&listed, &format!("creating the slot {SLOT}: {e}")),
         // The publication was dropped by hand: make it; the slot follows.
         Ok(None) => {
             if let Err(e) = in_txn(sync_publication) {
-                log!("pg_improv sync: creating the publication {SLOT}: {e}");
+                slot_error(&listed, &format!("creating the publication {SLOT}: {e}"));
             }
             return;
         }
+        Ok(Some(Slot::Kept)) => {}
         // A new slot starts at the current WAL position, so the models'
         // recorded progress (a restored dump's, an upgrade's, or a slot
-        // dropped by hand) no longer applies: each catches up from scratch.
-        Ok(Some(true)) => {
+        // dropped by hand or invalidated) no longer applies: each catches up
+        // from scratch. An invalidation stays each model's `last_error`
+        // until its rebuild succeeds.
+        Ok(Some(made)) => {
+            let note = match made {
+                Slot::Recreated(why) => {
+                    let note = format!(
+                        "the slot {SLOT} was invalidated ({why}), so the WAL it held is gone: \
+                         made a new one, and every model rebuilds from its tables"
+                    );
+                    log!("pg_improv sync: {note}");
+                    Some(note)
+                }
+                _ => None,
+            };
             let reset = in_txn(|| {
-                Spi::run(
-                    "UPDATE improv.sync_state SET confirmed_lsn = NULL, last_applied_at = NULL",
+                Spi::run_with_args(
+                    "UPDATE improv.sync_state \
+                     SET confirmed_lsn = NULL, last_applied_at = NULL, last_error = $1",
+                    &[note.clone().into()],
                 )?;
                 Ok(())
             });
@@ -478,12 +498,12 @@ fn sweep() {
                 return log!("pg_improv sync: resetting progress: {e}");
             }
         }
-        Ok(Some(false)) => {}
     }
     let peeked = match in_txn(peek) {
         Ok(p) => p,
-        Err(e) => return log!("pg_improv sync: reading {SLOT}: {e}"),
+        Err(e) => return slot_error(&listed, &format!("reading the slot {SLOT}: {e}")),
     };
+    slot_ok();
     let mut by_rel: HashMap<u32, Vec<i64>> = HashMap::new();
     for m in &listed {
         for r in &m.rels {
@@ -579,6 +599,56 @@ fn sweep() {
     drop_queued();
 }
 
+/// A Postgres ERROR in a slot function (the peek of an invalidated slot)
+/// leaves the slot acquired by this session, and an acquired slot cannot be
+/// dropped: a background worker has no `PostgresMain` error cleanup to
+/// release it, so each poll does that first.
+fn release_slot() {
+    // SAFETY: a read of this backend's own global, and the release of the
+    // slot it holds, as `PostgresMain`'s error cleanup does.
+    unsafe {
+        if !pg_sys::MyReplicationSlot.is_null() {
+            pg_sys::ReplicationSlotRelease();
+        }
+    }
+}
+
+/// The shared slot (or its publication) failed, so no model follows its
+/// tables: record why as every model's `last_error`, which `improv.status`
+/// shows, and log it once rather than every poll.
+fn slot_error(listed: &[Listed], e: &str) {
+    if SLOT_ERROR
+        .with(|s| s.replace(Some(e.to_string())))
+        .as_deref()
+        != Some(e)
+    {
+        log!("pg_improv sync: {e}");
+    }
+    let ids: Vec<i64> = listed.iter().map(|m| m.id).collect();
+    let _ = in_txn(|| {
+        Spi::run_with_args(
+            "UPDATE improv.sync_state SET last_error = $2 \
+             WHERE model_id = ANY($1) AND last_error IS DISTINCT FROM $2",
+            &[ids.into(), e.into()],
+        )?;
+        Ok(())
+    });
+}
+
+/// The slot was read after a [`slot_error`]: clear that error.
+fn slot_ok() {
+    if let Some(e) = SLOT_ERROR.with(|s| s.take()) {
+        log!("pg_improv sync: reading the slot {SLOT} again");
+        let _ = in_txn(|| {
+            Spi::run_with_args(
+                "UPDATE improv.sync_state SET last_error = NULL WHERE last_error = $1",
+                &[e.into()],
+            )?;
+            Ok(())
+        });
+    }
+}
+
 fn drop_queued() {
     if let Err(e) = in_txn(drop_queued_slots) {
         log!("pg_improv sync: dropping queued slots: {e}");
@@ -640,41 +710,66 @@ fn list_models() -> Res<Vec<Listed>> {
     })
 }
 
+/// What [`ensure_slot`] did.
+enum Slot {
+    /// The slot was there, usable.
+    Kept,
+    /// Made it: there was none, or one without the plugin.
+    Created,
+    /// Dropped one that was invalidated (why) and made it again.
+    Recreated(String),
+}
+
 /// Make sure the shared slot exists with the `pgoutput` plugin. Runs in its
 /// own worker transaction, before anything in it writes (Postgres refuses
 /// to create a slot otherwise). A slot left without a plugin by an earlier
-/// failed creation is dropped and recreated. Returns whether it created the
-/// slot (the models then catch up with a full recompute), or `None` while
-/// the publication does not exist: a slot must not start before it, or
-/// decoding the WAL in between fails on the missing publication.
-fn ensure_slot() -> Res<Option<bool>> {
+/// failed creation, or invalidated (its WAL removed past
+/// `max_slot_wal_keep_size`, or a recovery conflict), is dropped and made
+/// again; a peek of an invalidated slot fails every time. Returns what it
+/// did (after a new slot the models catch up with a full recompute), or
+/// `None` while the publication does not exist: a slot must not start
+/// before it, or decoding the WAL in between fails on the missing
+/// publication.
+fn ensure_slot() -> Res<Option<Slot>> {
     // Read-only SPI only (`Spi::connect` + `select`): pgrx's `get_one*` and
     // `run*` helpers go through `connect_mut`, which assigns a transaction
     // id, and Postgres refuses to create a slot in a transaction that has
     // one ("…that has performed writes").
-    let (published, plugin) = Spi::connect(|c| -> Res<_> {
+    let (published, plugin, invalid) = Spi::connect(|c| -> Res<_> {
+        // `invalidation_reason` is PG 17+, `conflicting` PG 16+; `lost`
+        // (PG 13+) is a slot whose WAL was removed.
         let t = c.select(
             "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1), \
-                    (SELECT plugin::text FROM pg_replication_slots WHERE slot_name = $1)",
+                    (SELECT plugin::text FROM pg_replication_slots WHERE slot_name = $1), \
+                    (SELECT coalesce(to_jsonb(r) ->> 'invalidation_reason', \
+                              CASE WHEN r.wal_status = 'lost' THEN 'wal_removed' \
+                                   WHEN to_jsonb(r) ->> 'conflicting' = 'true' \
+                                   THEN 'rows_removed' END) \
+                     FROM pg_replication_slots r WHERE r.slot_name = $1)",
             None,
             &[SLOT.into()],
         )?;
         let r = t.first();
-        Ok((r.get::<bool>(1)? == Some(true), r.get::<String>(2)?))
+        Ok((
+            r.get::<bool>(1)? == Some(true),
+            r.get::<String>(2)?,
+            r.get::<String>(3)?,
+        ))
     })?;
     if !published {
         return Ok(None);
     }
-    match plugin.as_deref() {
-        Some("pgoutput") => return Ok(Some(false)),
-        Some(_) => {
+    let made = match (plugin.as_deref(), invalid) {
+        (Some("pgoutput"), None) => return Ok(Some(Slot::Kept)),
+        (None, _) => Slot::Created,
+        (Some(_), why) => {
             Spi::connect(|c| -> Res<()> {
                 c.select("SELECT pg_drop_replication_slot($1)", None, &[SLOT.into()])?;
                 Ok(())
             })?;
+            why.map_or(Slot::Created, Slot::Recreated)
         }
-        None => {}
-    }
+    };
     Spi::connect(|c| -> Res<()> {
         c.select(
             "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
@@ -683,7 +778,7 @@ fn ensure_slot() -> Res<Option<bool>> {
         )?;
         Ok(())
     })?;
-    Ok(Some(true))
+    Ok(Some(made))
 }
 
 /// One decode of the shared slot.
@@ -753,6 +848,8 @@ thread_local! {
     static LIVE: RefCell<HashMap<i64, Live>> = RefCell::new(HashMap::new());
     /// Failing models: when to retry, and the current delay.
     static RETRY: RefCell<HashMap<i64, (Instant, Duration)>> = RefCell::new(HashMap::new());
+    /// The shared slot's last failure, logged once ([`slot_error`]).
+    static SLOT_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     /// A standby snapshot was logged that the slot has not advanced past.
     static SNAPSHOT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }

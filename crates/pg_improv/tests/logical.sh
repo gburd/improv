@@ -428,4 +428,40 @@ wait_for "SELECT last_error IS NULL FROM improv.status('m_e')" t "m_e's error cl
 q "INSERT INTO evx VALUES (6, 'x6', 1)"
 wait_for "SELECT count(*) FROM improv_m_e.t" 6 "m_e follows writes again" >/dev/null
 echo "ok: one slot for every model; routing by table; models added, rebuilt and dropped mid-stream stay exact; a failing model holds no one back and recovers"
+
+# 14. an invalidated slot (D11): with the worker away (improv.database points
+#     elsewhere), the slot falls past max_slot_wal_keep_size and is lost, and
+#     status says so. Back, the worker drops it, makes a new one, logs that
+#     once, and rebuilds every model: the results equal a fresh recalc.
+restart() { "$PG_BIN/pg_ctl" -D "$D" -l "$D/log" -w restart -m fast >/dev/null; }
+eq14() { [ "$1" = "$2" ] || { echo "FAIL: $3: got '$1', want '$2'"; tail -20 "$D/log"; exit 1; }; }
+q "ALTER SYSTEM SET improv.database = 'postgres'"
+q "ALTER SYSTEM SET max_slot_wal_keep_size = '1MB'"
+restart
+q "UPDATE sales SET price = 9 WHERE quarter='Q1' AND product='Widget'" # while the worker is away
+q "CREATE TABLE ballast (b text)"
+SLOTST="SELECT wal_status FROM pg_replication_slots WHERE slot_name = 'improv_db'"
+for _ in $(seq 20); do
+	[ "$(q "$SLOTST")" = lost ] && break
+	q "INSERT INTO ballast SELECT repeat('x', 1000) FROM generate_series(1, 4000)"
+	q "SELECT pg_switch_wal()" >/dev/null
+	q "CHECKPOINT"
+done
+eq14 "$(q "$SLOTST")" lost "the slot is lost"
+eq14 "$(q "SELECT last_error LIKE '%invalidated%' FROM improv.status('plan')")" t "status reports the lost slot"
+logpos=$(wc -c <"$D/log")
+q "ALTER SYSTEM RESET improv.database"
+q "ALTER SYSTEM RESET max_slot_wal_keep_size"
+restart
+SYNCED="SELECT bool_and(last_applied_at IS NOT NULL AND last_error IS NULL) FROM improv.sync_state"
+wait_for "$SYNCED" t "every model rebuilt after the lost slot" >/dev/null
+wait_for "$REV" "$(q "SELECT price * qty FROM sales WHERE quarter='Q1' AND product='Widget'")" "the write made while away" >/dev/null
+eq14 "$(q "$SLOTST")" reserved "a new slot"
+eq14 "$(q "SELECT sum(improv.recalc(name)) FROM improv.model WHERE sync_mode = 'logical'")" 0 \
+	"every model equals a fresh recalc"
+q "UPDATE sales SET price = 10 WHERE quarter='Q1' AND product='Widget'"
+wait_for "$REV" "$(q "SELECT price * qty FROM sales WHERE quarter='Q1' AND product='Widget'")" "a write after the new slot" >/dev/null
+eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "slot improv_db was invalidated")" 1 "the invalidation logged once"
+eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "can no longer")" 0 "no peek of the invalidated slot"
+echo "ok: a lost slot is reported, dropped, made again and logged once; every model rebuilds and equals a fresh recalc"
 echo "PASS"
