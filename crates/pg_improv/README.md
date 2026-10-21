@@ -518,6 +518,24 @@ into 44,750 cells of Person × Year × Release × Scope.
 INSERT / UPDATE / DELETE batches `count` and `sum` equal a fresh `recalc`
 and `count_distinct` equals `count(DISTINCT …)`.
 
+### Removing pg_improv
+
+The clean order is `improv.drop_model(name)` for each model, then
+`DROP EXTENSION pg_improv`. `drop_model` removes the model's result schema
+and takes its tables out of the publication. The worker drops the slot once
+no logical-mode model is left.
+
+A bare `DROP EXTENSION pg_improv CASCADE` cannot drop the replication slot,
+which would retain WAL forever. The sync worker notices that the extension is
+gone and drops the `improv_db` slot and publication itself, within a poll,
+and logs this once. It leaves two things in place:
+
+- the `improv_<model>` result schemas, which are user data, kept
+  deliberately (`DROP SCHEMA improv_<model> CASCADE` removes one);
+- `REPLICA IDENTITY FULL`, which logical mode gave each bound table that has
+  no primary key, or that an aggregated binding reads (`ALTER TABLE …
+  REPLICA IDENTITY DEFAULT` restores it).
+
 ## Worked example
 
 `examples/family-finance/` models a household's books: statement

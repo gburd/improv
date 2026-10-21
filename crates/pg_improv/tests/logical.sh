@@ -534,4 +534,18 @@ eq14 "$(q "SELECT last_error IS NULL FROM improv.status('plan')")" t "status in 
 "$PG_BIN/dropdb" -h "$D" -p "$P" -U improv improv_other
 echo "ok: outside improv.database logical mode is refused with a hint, and status reports that no worker serves it"
 
+# 18. DROP EXTENSION ... CASCADE with logical models (D13): the worker drops
+#     the slot and publication it left, which would retain WAL forever, and
+#     logs that once; the result schemas (user data) stay
+logpos=$(wc -c <"$D/log")
+q "DROP EXTENSION pg_improv CASCADE" 2>/dev/null
+wait_for "SELECT count(*) FROM pg_replication_slots" 0 "the orphaned slot dropped" >/dev/null
+wait_for "SELECT count(*) FROM pg_publication" 0 "the orphaned publication dropped" >/dev/null
+sleep 0.5
+eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "pg_improv is not installed in this database: dropped the slot and publication improv_db")" 1 \
+	"the orphan drop logged once"
+eq14 "$(q "SELECT count(*) FROM pg_namespace WHERE nspname = 'improv_plan'")" 1 "the result schema kept"
+q "CREATE EXTENSION pg_improv"
+eq14 "$(q "SELECT count(*) FROM pg_replication_slots")" 0 "no slot without a logical model"
+echo "ok: DROP EXTENSION CASCADE: the worker dropped the orphaned slot and publication (logged once); results kept"
 echo "PASS"

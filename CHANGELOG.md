@@ -178,6 +178,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.poll_ms` and `improv.max_changes` changed only when the worker
   restarted. pgrx's latch wait never reread the configuration; the worker
   now does that on SIGHUP.
+- **pg_improv: `DROP EXTENSION pg_improv CASCADE` no longer leaves the slot
+  retaining WAL forever.** The worker saw no extension and did nothing, so
+  the `improv_db` slot pinned WAL until someone dropped it by hand. It now
+  drops the database's `improv_db` slot and publication when the extension
+  is gone, and logs this once. The README's "Removing pg_improv" gives the
+  clean order and what a bare drop leaves: the result schemas (user data)
+  and `REPLICA IDENTITY FULL`.
 - **pg_improv: logical mode outside `improv.database` is refused.** The sync
   worker serves one database. In any other,
   `set_sync_mode(m, 'logical')` succeeded and `improv.status` reported no

@@ -458,6 +458,9 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         if !BackgroundWorker::transaction(installed) {
             // A re-created extension reuses model ids: forget them.
             LIVE.with(|l| l.borrow_mut().clear());
+            PEEKED_TO.set(0);
+            release_slot();
+            orphaned();
             continue;
         }
         sweep();
@@ -670,6 +673,59 @@ fn sweep() {
         Ok(_) => {}
     }
     drop_queued();
+}
+
+/// With pg_improv not installed (a `DROP EXTENSION`, which cannot drop a
+/// slot), drop the database's `improv_db` slot, which would retain WAL
+/// forever, and its publication. Logs once per drop; idle otherwise.
+fn orphaned() {
+    let r = in_txn(|| {
+        let slot = Spi::connect(|c| -> Res<_> {
+            let t = c.select(
+                "SELECT EXISTS (SELECT 1 FROM pg_replication_slots \
+                   WHERE slot_name = $1 AND database = current_database()), \
+                        EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)",
+                None,
+                &[SLOT.into()],
+            )?;
+            let r = t.first();
+            Ok((
+                r.get::<bool>(1)? == Some(true),
+                r.get::<bool>(2)? == Some(true),
+            ))
+        })?;
+        if slot.0 {
+            // Read-only SPI: a slot drop refuses a transaction that wrote.
+            Spi::connect(|c| -> Res<()> {
+                c.select("SELECT pg_drop_replication_slot($1)", None, &[SLOT.into()])?;
+                Ok(())
+            })?;
+        }
+        Ok(slot)
+    });
+    match r {
+        Ok((false, false)) => {}
+        Ok((slot, publication)) => {
+            if publication {
+                if let Err(e) = in_txn(|| {
+                    Spi::run(&format!("DROP PUBLICATION {}", pm::quote_ident(SLOT)))?;
+                    Ok(())
+                }) {
+                    return log!("pg_improv sync: dropping the publication {SLOT}: {e}");
+                }
+            }
+            log!(
+                "pg_improv sync: pg_improv is not installed in this database: dropped the \
+                 {} {SLOT}, which nothing reads",
+                match (slot, publication) {
+                    (true, true) => "slot and publication",
+                    (true, false) => "slot",
+                    _ => "publication",
+                }
+            );
+        }
+        Err(e) => log!("pg_improv sync: dropping the slot {SLOT}: {e}"),
+    }
 }
 
 /// A Postgres ERROR in a slot function (the peek of an invalidated slot)
