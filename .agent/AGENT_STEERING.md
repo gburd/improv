@@ -6,6 +6,18 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
+## Active priority — the road to 1.0.0 (2026-10-21)
+
+The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`: workstreams A
+(the Mentat `resolve_avs` fix, in flight with the Mentat team; 0.11.0 waits
+on it), B scalability, C security (C1: the logical worker reads bound tables
+as the bootstrap superuser, bypassing RLS), D Postgres operations (failover,
+pg_upgrade, partitions, resource limits), E language, F the operations docs
+(concepts, when-to-use, monitoring, capacity planning, backup/restore and
+operations runbooks), G man pages for every tool from a clap parser, H TUI/GUI
+review, I a web-GUI decision, J release engineering. Its "1.0.0 exit criteria"
+section is the bar; mark tasks done there as they land.
+
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
 DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
