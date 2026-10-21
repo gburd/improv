@@ -187,7 +187,9 @@ privileges therefore apply to a model as they do to its owner: its results
 aggregate only the rows the owner may read, and are as visible as their
 tables' grants. If the owner loses SELECT on a bound table, the next logical
 apply fails with a `last_error` naming the columns; nothing is read as a
-superuser. `what_if` reads as its caller. See the
+superuser. Only a superuser, or a member of both the current and the new
+owner, may change a model's owner (a trigger on `improv.model`), so no one
+can make a model read as a role that sees more than they do. `what_if` reads as its caller. See the
 [pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#privileges)
 for the mechanism.
 

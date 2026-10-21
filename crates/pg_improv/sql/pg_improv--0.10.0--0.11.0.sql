@@ -52,6 +52,32 @@ UPDATE improv.model SET owner = '10'::pg_catalog.oid::pg_catalog.regrole WHERE o
 ALTER TABLE improv.model
   ALTER COLUMN owner SET DEFAULT pg_catalog.to_regrole(pg_catalog.quote_ident(CURRENT_USER)),
   ALTER COLUMN owner SET NOT NULL;
+-- Who may set a model's owner, as which the model reads its tables: the
+-- rule of ALTER TABLE ... OWNER TO. A superuser, or a role that could make
+-- itself the new owner (SET ROLE; on PG 15 any member) and, to change it,
+-- the current one. Otherwise anyone who may write improv.model could point
+-- a model at a role that reads what they cannot. A pg_restore passes when
+-- its role may own each model: a superuser, or the role owning them all.
+CREATE FUNCTION improv.check_owner() RETURNS trigger LANGUAGE plpgsql
+SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  how text := CASE WHEN pg_catalog.current_setting('server_version_num')::pg_catalog.int4
+                          OPERATOR(pg_catalog.>=) 160000 THEN 'SET' ELSE 'MEMBER' END;
+BEGIN
+  -- (pg_has_role is true for a superuser.)
+  IF TG_OP OPERATOR(pg_catalog.=) 'UPDATE'
+     AND NOT pg_catalog.pg_has_role(CURRENT_USER, OLD.owner::pg_catalog.oid, how) THEN
+    RAISE EXCEPTION 'only a superuser or a member of role % may change the owner of model %',
+      OLD.owner, OLD.name USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  IF NOT pg_catalog.pg_has_role(CURRENT_USER, NEW.owner::pg_catalog.oid, how) THEN
+    RAISE EXCEPTION 'only a superuser or a member of role % may make it a model''s owner',
+      NEW.owner USING ERRCODE = 'insufficient_privilege';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER check_owner BEFORE INSERT OR UPDATE OF owner ON improv.model
+  FOR EACH ROW EXECUTE FUNCTION improv.check_owner();
 -- The owner now writes the result tables, which the sync worker made as the
 -- bootstrap superuser (logical mode) and trigger mode as the writing role.
 DO $$

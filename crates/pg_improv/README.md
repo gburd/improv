@@ -672,9 +672,23 @@ a `recalc`). `tests/privileges.sh` checks all of this in every sync mode.
 Models made before 0.11.0 get the owner of their result schema (the role
 that created them) at `ALTER EXTENSION pg_improv UPDATE`, which also hands
 it their result tables; a model without one gets the bootstrap superuser,
-with a NOTICE. Change a model's owner with
-`UPDATE improv.model SET owner = 'role' WHERE name = 'model'` (as a
-superuser), and `ALTER SCHEMA improv_<model> OWNER TO role`.
+with a NOTICE.
+
+**Who may set a model's owner.** A trigger on `improv.model`
+(`improv.check_owner`) applies the rule of `ALTER TABLE … OWNER TO`: a
+superuser may set any owner; anyone else must be a member of the new owner
+and, to change it, of the current one, with the right to `SET ROLE` to
+each on PG 16+ (any member on PG 15). Otherwise anyone who may write
+`improv.model` could make a model read as a role that sees what they
+cannot. A refusal is an ERROR: "only a superuser or a member of role X may
+make it a model's owner" (or "… may change the owner of model M").
+`create_model` makes the caller the owner, which always passes; a direct
+`INSERT` naming another role is checked the same way. Change a model's
+owner with `UPDATE improv.model SET owner = 'role' WHERE name = 'model'`,
+and its result tables' with `ALTER TABLE improv_<model>.<measure> OWNER TO
+role` (and `ALTER SCHEMA improv_<model> OWNER TO role`). A restore
+re-inserts each model, so it must run as a superuser or as a role that may
+own each model (`pg_restore` without `--disable-triggers`).
 
 ## Catalog
 

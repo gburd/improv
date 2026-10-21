@@ -54,7 +54,7 @@ outside=$(q "SELECT count(*) FROM pg_depend d JOIN pg_extension e ON e.oid = d.r
                 OR (d.classid = 'pg_class'::regclass AND (SELECT relnamespace FROM pg_class WHERE oid = d.objid) <> 'improv'::regnamespace)
                 OR (d.classid = 'pg_type'::regclass AND (SELECT typnamespace FROM pg_type WHERE oid = d.objid) <> 'improv'::regnamespace)")
 eq "$outside" 0 "extension objects outside schema improv"
-eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace")" 18 "functions in improv"
+eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace")" 19 "functions in improv"
 q "CREATE TABLE sales (quarter text, product text, price float8, qty float8, PRIMARY KEY (quarter, product))"
 q "INSERT INTO sales VALUES ('Q1','Widget',10,100), ('Q1','Gadget',20,30)"
 for s in "create_model('plan')" "bind_category('plan','Time','sales','quarter')" \
