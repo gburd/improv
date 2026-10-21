@@ -1,0 +1,97 @@
+# Custom queries for prometheus-community/postgres_exporter: pg_improv's
+# per-model sync status, the logical worker's slot, and the worker itself.
+# Use with --extend.query-path=postgres_exporter-queries.yaml (or
+# PG_EXPORTER_EXTEND_QUERY_PATH), against the database named by
+# improv.database. The exporter's role needs USAGE on schema improv and
+# SELECT on its tables (improv.status is SECURITY INVOKER), and
+# pg_monitor for pg_stat_activity. Metric names are <key>_<column>, e.g.
+# pg_improv_status_lag_bytes. See docs/src/monitoring.md.
+
+pg_improv_status:
+  query: |
+    SELECT m.name AS model,
+           s.sync_mode,
+           COALESCE(s.lag_bytes, 0) AS lag_bytes,
+           COALESCE(s.rows_applied, 0) AS rows_applied,
+           COALESCE(s.incremental_applies, 0) AS incremental_applies,
+           COALESCE(s.rebuilds, 0) AS rebuilds,
+           (s.last_error IS NOT NULL)::int AS last_error,
+           COALESCE(EXTRACT(EPOCH FROM now() - s.last_applied_at), -1) AS seconds_since_apply
+      FROM improv.model m
+      CROSS JOIN LATERAL improv.status(m.name) s
+  master: true
+  metrics:
+    - model:
+        usage: "LABEL"
+        description: "Improv model name"
+    - sync_mode:
+        usage: "LABEL"
+        description: "logical, trigger, commit or manual"
+    - lag_bytes:
+        usage: "GAUGE"
+        description: "WAL bytes between the server's current position and the improv_db slot's confirmed position (0 outside logical mode)"
+    - rows_applied:
+        usage: "COUNTER"
+        description: "Result rows the logical worker has written for this model"
+    - incremental_applies:
+        usage: "COUNTER"
+        description: "Batches the worker applied to the live engine"
+    - rebuilds:
+        usage: "COUNTER"
+        description: "Full reloads and recomputes by the worker (the first catch-up counts one)"
+    - last_error:
+        usage: "GAUGE"
+        description: "1 while the worker's last attempt at this model failed (improv.status last_error is set)"
+    - seconds_since_apply:
+        usage: "GAUGE"
+        description: "Seconds since the worker last applied a batch or rebuilt this model (-1: never; it does not move while the bound tables are idle)"
+
+pg_improv_slot:
+  query: |
+    SELECT slot_name AS slot,
+           COALESCE(wal_status, 'unknown') AS wal_status,
+           active::int AS active,
+           (wal_status IN ('unreserved', 'lost'))::int AS at_risk,
+           COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn), 0) AS retained_bytes,
+           COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn), 0) AS confirm_lag_bytes,
+           COALESCE(safe_wal_size, -1) AS safe_wal_size_bytes
+      FROM pg_replication_slots
+     WHERE slot_name = 'improv_db' AND NOT pg_is_in_recovery()
+  master: true
+  metrics:
+    - slot:
+        usage: "LABEL"
+        description: "Slot name (improv_db)"
+    - wal_status:
+        usage: "LABEL"
+        description: "reserved, extended, unreserved or lost"
+    - active:
+        usage: "GAUGE"
+        description: "1 while a backend is decoding the slot (the worker holds it only during a poll)"
+    - at_risk:
+        usage: "GAUGE"
+        description: "1 when wal_status is unreserved (about to be lost) or lost (results have stopped; improv.status shows no error)"
+    - retained_bytes:
+        usage: "GAUGE"
+        description: "WAL the slot keeps on disk: current position minus restart_lsn (0 once the slot is lost)"
+    - confirm_lag_bytes:
+        usage: "GAUGE"
+        description: "Current position minus confirmed_flush_lsn"
+    - safe_wal_size_bytes:
+        usage: "GAUGE"
+        description: "WAL that may still be written before the slot is lost to max_slot_wal_keep_size (-1: no limit)"
+
+pg_improv_worker:
+  query: |
+    SELECT count(*) AS running,
+           COALESCE(EXTRACT(EPOCH FROM now() - min(backend_start)), -1) AS uptime_seconds
+      FROM pg_stat_activity
+     WHERE backend_type = 'pg_improv sync'
+  master: true
+  metrics:
+    - running:
+        usage: "GAUGE"
+        description: "pg_improv sync workers running (1 expected with the preload)"
+    - uptime_seconds:
+        usage: "GAUGE"
+        description: "Seconds since the worker started (-1: not running); a value that keeps resetting means it is restarting"

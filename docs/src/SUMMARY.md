@@ -18,3 +18,7 @@
 - [Controlled Natural Language](./cnl.md)
 - [Architecture & Design](./architecture.md)
 - [Storage & Persistence](./storage.md)
+
+# Operations
+
+- [Monitoring](./monitoring.md)
