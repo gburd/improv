@@ -548,4 +548,81 @@ eq14 "$(q "SELECT count(*) FROM pg_namespace WHERE nspname = 'improv_plan'")" 1 
 q "CREATE EXTENSION pg_improv"
 eq14 "$(q "SELECT count(*) FROM pg_replication_slots")" 0 "no slot without a logical model"
 echo "ok: DROP EXTENSION CASCADE: the worker dropped the orphaned slot and publication (logged once); results kept"
+
+# 19. partitioned tables (D3): a range-partitioned and a list-partitioned
+#     bound table follow INSERT, UPDATE (across partitions too) and DELETE,
+#     and attaching, detaching and truncating a partition while a writer
+#     streams; each result then equals a fresh SQL aggregate and recalc
+logpos19=$(wc -c <"$D/log")
+q "CREATE TABLE pr (id int, d date, k text, n float8) PARTITION BY RANGE (d)"
+q "CREATE TABLE pr_2024 PARTITION OF pr FOR VALUES FROM ('2024-01-01') TO ('2025-01-01')"
+q "CREATE TABLE pr_2025 PARTITION OF pr FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')"
+q "CREATE TABLE pl (id int, region text, k text, n float8, PRIMARY KEY (region, id)) PARTITION BY LIST (region)"
+q "CREATE TABLE pl_east PARTITION OF pl FOR VALUES IN ('east')"
+q "CREATE TABLE pl_west PARTITION OF pl FOR VALUES IN ('west')"
+q "INSERT INTO pr SELECT g, date '2024-01-01' + g * 3, 'k' || g % 3, g FROM generate_series(1, 200) g"
+q "INSERT INTO pl SELECT g, CASE WHEN g % 2 = 0 THEN 'east' ELSE 'west' END, 'k' || g % 3, g FROM generate_series(1, 100) g"
+for t in pr pl; do
+	q "SELECT improv.create_model('m_$t')" >/dev/null
+	q "SELECT improv.bind_category('m_$t','K','$t','k')" >/dev/null
+	q "SELECT improv.bind_measure('m_$t','N','$t','n', agg => 'sum')" >/dev/null
+	q "SELECT improv.define('m_$t','T = N * 1')" >/dev/null
+done
+eq14 "$(q "SELECT pubviaroot FROM pg_publication WHERE pubname = 'improv_db'")" t "publish_via_partition_root"
+eq14 "$(q "SELECT string_agg(relname || '=' || relreplident::text, ',' ORDER BY relname) FROM pg_class WHERE relname ~ '^pr(_|$)'")" \
+	"pr=f,pr_2024=f,pr_2025=f" "replica identity FULL on the root and each partition"
+psum() { echo "SELECT coalesce(string_agg(k || '=' || s, ',' ORDER BY k), '') FROM (SELECT k, sum(n) s FROM $1 GROUP BY k) x"; }
+pres() { echo "SELECT coalesce(string_agg(k || '=' || value, ',' ORDER BY k), '') FROM improv_m_$1.t"; }
+peq() { for t in pr pl; do wait_for "$(pres $t)" "$(q "$(psum $t)")" "m_$t $1" >/dev/null; done; }
+peq "caught up"
+q "INSERT INTO pr VALUES (1001, '2025-06-01', 'k0', 1000)"
+q "UPDATE pr SET n = n + 1 WHERE id % 10 = 0"
+q "UPDATE pr SET d = '2025-02-02' WHERE id = 5" # moves a row from pr_2024 to pr_2025
+q "DELETE FROM pr WHERE id = 7"
+q "INSERT INTO pl VALUES (1001, 'east', 'k1', 500)"
+q "UPDATE pl SET region = 'east' WHERE id = 3" # moves a row from pl_west to pl_east
+q "DELETE FROM pl WHERE id = 4"
+peq "after row changes"
+# a writer into both, while partitions come and go (stopped before each
+# comparison: the expected sums are read once)
+writer19() { # first id
+	rm -f "$D/stop19"
+	( i=$1; while [ ! -f "$D/stop19" ]; do
+		q "INSERT INTO pr VALUES ($i, date '2025-01-01' + $i % 300, 'k' || $i % 3, 1); INSERT INTO pl VALUES ($i, 'east', 'k' || $i % 3, 1)" 2>/dev/null
+		i=$((i + 1)); sleep 0.02; done ) &
+	writer=$!
+	sleep 0.5
+}
+stop19() { sleep 0.5; touch "$D/stop19"; wait "$writer"; }
+writer19 2000
+q "CREATE TABLE pr_2026 (LIKE pr)"
+q "INSERT INTO pr_2026 SELECT g, date '2026-01-01' + g, 'k' || g % 3, 100 FROM generate_series(1, 20) g"
+q "ALTER TABLE pr ATTACH PARTITION pr_2026 FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')"
+q "CREATE TABLE pl_north (LIKE pl INCLUDING ALL)"
+q "INSERT INTO pl_north SELECT g, 'north', 'k' || g % 3, 100 FROM generate_series(1, 10) g"
+q "ALTER TABLE pl ATTACH PARTITION pl_north FOR VALUES IN ('north')"
+stop19
+peq "after attaching a partition"
+writer19 5000
+# the worker gave the attached PK-less partition REPLICA IDENTITY FULL, so
+# an UPDATE through the root reaches it (Postgres refuses one otherwise)
+q "UPDATE pr SET n = n + 1 WHERE d >= '2026-01-01' AND id <= 5"
+q "INSERT INTO pr VALUES (3001, '2026-06-01', 'k2', 7)"
+q "UPDATE pl SET n = n + 1 WHERE region = 'north'"
+q "ALTER TABLE pr DETACH PARTITION pr_2024"
+q "ALTER TABLE pl DETACH PARTITION pl_west"
+sleep 0.5
+q "TRUNCATE pl_north"
+stop19
+peq "after detaching and truncating a partition"
+q "UPDATE pr_2024 SET n = 0" # detached: no longer the model's
+q "INSERT INTO pr VALUES (3002, '2025-03-01', 'k1', 9)"
+peq "after writes to the detached partition"
+eq14 "$(q "SELECT improv.recalc('m_pr') + improv.recalc('m_pl')")" 0 "the partitioned models equal a fresh recalc"
+eq14 "$(q "SELECT count(*) FROM improv.sync_state WHERE last_error IS NOT NULL")" 0 "no model failed"
+for t in pr pl; do
+	[ "$(tail -c +$((logpos19 + 1)) "$D/log" | grep -c "model m_$t: rebuilding (partitions changed)")" -ge 2 ] \
+		|| { echo "FAIL: m_$t did not rebuild on ATTACH and DETACH"; exit 1; }
+done
+echo "ok: range- and list-partitioned tables follow row changes, cross-partition moves, ATTACH, DETACH and TRUNCATE of a partition"
 echo "PASS"

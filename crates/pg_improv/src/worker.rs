@@ -259,10 +259,15 @@ fn sync_publication() -> Res<()> {
         &[SLOT.into()],
     )? == Some(true);
     let q = pm::quote_ident(SLOT);
+    // A partition's changes are published as its root's, the relation the
+    // models bind (and route by), in the root's column layout.
+    // shortcut: a model that binds a partition directly misses its changes
+    // while another logical model binds the root; bind the root instead.
+    let via_root = "WITH (publish_via_partition_root = true)";
     match (exists, rels.is_empty()) {
-        (false, true) => Spi::run(&format!("CREATE PUBLICATION {q}"))?,
+        (false, true) => Spi::run(&format!("CREATE PUBLICATION {q} {via_root}"))?,
         (false, false) => Spi::run(&format!(
-            "CREATE PUBLICATION {q} FOR TABLE {}",
+            "CREATE PUBLICATION {q} FOR TABLE {} {via_root}",
             rels.join(", ")
         ))?,
         // `SET TABLE` with an empty list is a syntax error.
@@ -289,6 +294,16 @@ fn sync_publication() -> Res<()> {
             rels.join(", ")
         ))?,
     }
+    // Made before 0.12.0, without it.
+    let via = Spi::get_one_with_args::<bool>(
+        "SELECT pubviaroot FROM pg_publication WHERE pubname = $1",
+        &[SLOT.into()],
+    )?;
+    if via == Some(false) {
+        Spi::run(&format!(
+            "ALTER PUBLICATION {q} SET (publish_via_partition_root = true)"
+        ))?;
+    }
     Ok(())
 }
 
@@ -296,34 +311,42 @@ fn sync_publication() -> Res<()> {
 /// aggregated binding reads (its folds need the old row's value),
 /// `REPLICA IDENTITY FULL`, so its updated and deleted rows carry the old
 /// values. The caller must not hold the table open (see `bind_measure`).
+///
+/// Each partition of a bound partitioned table too: a partition's old row
+/// is sent by its own replica identity (which `ALTER TABLE` on the root does
+/// not set), and Postgres refuses an UPDATE or DELETE of a published
+/// partition that has none.
 fn ensure_replica_identity(mid: i64) -> Res<()> {
-    for rel in bound_rels(mid)? {
-        let needs_full = Spi::get_one_with_args::<bool>(
-            "SELECT c.relreplident <> 'f' AND (NOT EXISTS ( \
-               SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) \
-               OR EXISTS (SELECT 1 FROM improv.binding b WHERE b.model_id = $2 \
-                 AND b.rel = c.oid AND b.agg IS NOT NULL)) \
-             FROM pg_class c WHERE c.oid = $1::regclass",
-            &[rel.clone().into(), mid.into()],
-        )? == Some(true);
-        if needs_full {
-            Spi::run(&format!("ALTER TABLE {rel} REPLICA IDENTITY FULL"))?;
-        }
-    }
-    Ok(())
-}
-
-fn bound_rels(mid: i64) -> Res<Vec<String>> {
-    Spi::connect(|c| -> Res<_> {
+    let rels: Vec<String> = Spi::connect(|c| -> Res<_> {
         c.select(
-            "SELECT DISTINCT rel::text FROM improv.binding WHERE model_id = $1 ORDER BY 1",
+            &format!(
+                "{TREE} SELECT DISTINCT c.oid::regclass::text FROM tree t \
+                 JOIN pg_class c ON c.oid = t.rel \
+                 WHERE c.relkind IN ('r', 'p') AND c.relreplident <> 'f' AND (NOT EXISTS ( \
+                   SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary) \
+                   OR EXISTS (SELECT 1 FROM improv.binding b WHERE b.model_id = $1 \
+                     AND b.rel = t.root AND b.agg IS NOT NULL)) \
+                 ORDER BY 1"
+            ),
             None,
             &[mid.into()],
         )?
         .map(|r| req(&r, 1))
         .collect()
-    })
+    })?;
+    for rel in rels {
+        Spi::run(&format!("ALTER TABLE {rel} REPLICA IDENTITY FULL"))?;
+    }
+    Ok(())
 }
+
+/// `tree(root, rel)`: model `$1`'s bound relations (`root`) and every
+/// partition (or inheritance child) below them, read from `pg_inherits`
+/// without the locks `pg_partition_tree` takes on every partition.
+const TREE: &str = "WITH RECURSIVE tree(root, rel) AS ( \
+       SELECT DISTINCT b.rel::oid, b.rel::oid FROM improv.binding b WHERE b.model_id = $1 \
+     UNION \
+       SELECT t.root, i.inhrelid FROM pg_inherits i JOIN tree t ON i.inhparent = t.rel)";
 
 /// One row of `improv.status` (see [`status`] for the column names).
 type StatusRow = (
@@ -518,6 +541,10 @@ fn sweep() {
         r.borrow_mut()
             .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
     });
+    PARTITIONS.with(|p| {
+        p.borrow_mut()
+            .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
+    });
     if listed.is_empty() {
         // No model to serve: drop the slot rather than let it retain WAL;
         // the next model to enter logical mode gets a new one.
@@ -590,6 +617,22 @@ fn sweep() {
     let rels = &peeked.stream.relations;
     for m in &listed {
         let txns = routed.remove(&m.id).unwrap_or_default();
+        let moved = PARTITIONS.with(|p| {
+            p.borrow_mut()
+                .insert(m.id, m.partitions.clone())
+                .is_some_and(|was| was != m.partitions)
+        });
+        if moved {
+            log!(
+                "pg_improv sync: model {}: rebuilding (partitions changed)",
+                m.name
+            );
+            LIVE.with(|l| l.borrow_mut().remove(&m.id));
+            // An attached partition needs the root's replica identity.
+            if let Err(e) = in_txn(|| ensure_replica_identity(m.id)) {
+                log!("pg_improv sync: model {}: {e}", m.name);
+            }
+        }
         let current = LIVE.with(|l| {
             l.borrow()
                 .get(&m.id)
@@ -807,6 +850,11 @@ struct Listed {
     caught_up: bool,
     /// The relations it binds.
     rels: Vec<u32>,
+    /// Their partitions, each with its relfilenode: attaching, detaching or
+    /// dropping a partition, or truncating one (published via its root,
+    /// a partition's `TRUNCATE` is not sent), moves rows without a row
+    /// change in the WAL, so a change here rebuilds.
+    partitions: Option<String>,
 }
 
 /// The models in logical mode that have sync state, in id order.
@@ -816,7 +864,15 @@ fn list_models() -> Res<Vec<Listed>> {
             "SELECT m.id, m.name, coalesce(v.tx, 0), \
                     s.confirmed_lsn IS NOT NULL OR s.last_applied_at IS NOT NULL, \
                     ARRAY(SELECT DISTINCT b.rel::oid::int8 FROM improv.binding b \
-                          WHERE b.model_id = m.id) \
+                          WHERE b.model_id = m.id), \
+                    (SELECT string_agg(c.oid || ':' || c.relfilenode, ',' ORDER BY c.oid) \
+                     FROM pg_class c WHERE c.oid IN ( \
+                       WITH RECURSIVE p(rel) AS ( \
+                           SELECT i.inhrelid FROM improv.binding b \
+                           JOIN pg_inherits i ON i.inhparent = b.rel WHERE b.model_id = m.id \
+                         UNION \
+                           SELECT i.inhrelid FROM pg_inherits i JOIN p ON i.inhparent = p.rel) \
+                       SELECT rel FROM p)) \
              FROM improv.model m JOIN improv.sync_state s ON s.model_id = m.id \
              LEFT JOIN improv.model_version v ON v.model_id = m.id \
              WHERE m.sync_mode = 'logical' ORDER BY m.id",
@@ -833,6 +889,7 @@ fn list_models() -> Res<Vec<Listed>> {
                     .into_iter()
                     .map(u32::try_from)
                     .collect::<Result<_, _>>()?,
+                partitions: r.get(6)?,
             })
         })
         .collect()
@@ -1005,6 +1062,8 @@ thread_local! {
     static LIVE: RefCell<HashMap<i64, Live>> = RefCell::new(HashMap::new());
     /// Failing models: when to retry, and the current delay.
     static RETRY: RefCell<HashMap<i64, (Instant, Duration)>> = RefCell::new(HashMap::new());
+    /// Each model's partitions as the last poll saw them ([`Listed`]).
+    static PARTITIONS: RefCell<HashMap<i64, Option<String>>> = RefCell::new(HashMap::new());
     /// The flush position the last complete decode read to ([`peek`]).
     static PEEKED_TO: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The shared slot's last failure, logged once ([`slot_error`]).

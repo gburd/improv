@@ -178,6 +178,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.poll_ms` and `improv.max_changes` changed only when the worker
   restarted. pgrx's latch wait never reread the configuration; the worker
   now does that on SIGHUP.
+- **pg_improv: logical mode follows partitioned tables.** The publication
+  sent each partition's changes under the partition's own oid, which no
+  model binds, so a model on a partitioned table followed no writes.
+  `improv_db` is now `publish_via_partition_root` (set on an existing one
+  too). Each partition gets the replica identity it needs, and attaching,
+  detaching, dropping or truncating a partition rebuilds the model.
 - **pg_improv: `DROP EXTENSION pg_improv CASCADE` no longer leaves the slot
   retaining WAL forever.** The worker saw no extension and did nothing, so
   the `improv_db` slot pinned WAL until someone dropped it by hand. It now
