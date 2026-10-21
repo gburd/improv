@@ -511,23 +511,64 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
             .ok_or_else(|| format!("improv model {model:?} does not exist"))?;
         Ok((req(&r, 1)?, req(&r, 2)?))
     })?;
-    let mut l = load(mid, name, false)?;
-    let changed = pm::apply_edits(&mut l.model, &edits.0.to_string())?;
-    let targets = pm::dependents(&l.model, &changed);
-    let out = evaluate(&l.model, &targets)?;
+    pm::validate_name("model", &name)?;
+    let text = edits.0.to_string();
+    let model = pm::build_model(&read_catalog(mid)?)?;
+    // Edits of one category set, under an element-wise chain, reach only
+    // their own coordinates: load and compare only those, as trigger mode
+    // does. (Edits naming an item not minted yet take the full load.)
+    let scoped = pm::parse_edits(&model, &text).ok().and_then(|e| {
+        let changed: std::collections::BTreeSet<MeasureId> = e.iter().map(|x| x.0).collect();
+        let changed: Vec<MeasureId> = changed.into_iter().collect();
+        let rows = pm::edit_rows(&model, &e).filter(|_| pm::scopable(&model, &changed))?;
+        Some((e, rows))
+    });
+    let (l, plan) = match scoped {
+        Some((e, (cats, rows))) => {
+            let mut l = load_scoped(name, model, mid, false, Some((&cats, &rows)))?;
+            let changed = pm::set_edits(&mut l.model, &e);
+            let scope = pm::Scope::from_rows(&l.model, &cats, &rows);
+            let plan = pm::Plan {
+                targets: pm::dependents(&l.model, &changed),
+                scope: Some(scope),
+            };
+            (l, plan)
+        }
+        None => {
+            let mut l = load_scoped(name, model, mid, false, None)?;
+            let changed = pm::apply_edits(&mut l.model, &text)?;
+            let targets = pm::dependents(&l.model, &changed);
+            (
+                l,
+                pm::Plan {
+                    targets,
+                    scope: None,
+                },
+            )
+        }
+    };
+    let mut l = l;
+    if let Some(s) = &plan.scope {
+        s.restrict_inputs(&mut l.model);
+    }
+    let out = evaluate(&l.model, &plan.targets)?;
     let empty = Default::default();
     let mut rows = Vec::new();
-    for target in targets {
-        let new = pm::result_rows(&l.model, target, out.get(&target).unwrap_or(&empty))?;
+    for &target in &plan.targets {
+        let mut new = pm::result_rows(&l.model, target, out.get(&target).unwrap_or(&empty))?;
         let dims = pm::dim_columns(&l.model, target)?;
         let mname = l.model.measures[&target].name.0.clone();
         pm::validate_name("measure", &mname)?;
         let table = pm::result_table(&l.name, &mname);
-        let old = if exists(&table)? {
+        let mut old = if exists(&table)? {
             read_results(&table, &dims, l.model.measures[&target].value_type)?
         } else {
             Default::default()
         };
+        if let Some(s) = &plan.scope {
+            s.retain_rows(&l.model, target, &mut old)?;
+            s.retain_rows(&l.model, target, &mut new)?;
+        }
         for (key, v) in pm::cell_changes(&old, &new) {
             rows.push((
                 mname.clone(),
@@ -1089,6 +1130,32 @@ mod tests {
         );
         assert_eq!(snapshot(), before, "what_if writes nothing");
         assert_eq!(count("improv.what_if('plan', '[]')"), 0);
+        // Edits of one category set under an element-wise chain (Cost feeds
+        // only Margin and Overhead) load and compare only their coordinates:
+        // a stale result elsewhere is not reported, as nothing there changes.
+        Spi::run("UPDATE improv_plan.overhead SET value = 999 WHERE product = 'Widget'").unwrap();
+        let got = text(
+            r#"SELECT string_agg(measure || ' ' || coord::text || ' ' || coalesce(value::text, 'NULL'),
+                 '; ' ORDER BY measure, coord::text)
+               FROM improv.what_if('plan', '[
+                 {"measure": "Cost", "coord": {"Product": "Gadget"}, "value": 6}]')"#,
+        );
+        assert_eq!(
+            got,
+            "Margin {\"Time\": \"Q1\", \"Product\": \"Gadget\"} 14; \
+             Margin {\"Time\": \"Q2\", \"Product\": \"Gadget\"} 14; \
+             Margin {\"Time\": \"Q3\", \"Product\": \"Gadget\"} 14; \
+             Margin {\"Time\": \"Q4\", \"Product\": \"Gadget\"} 14; \
+             Overhead {\"Product\": \"Gadget\"} 12"
+        );
+        // Mixed category sets take the full load, which sees the stale row.
+        let full = text(
+            r#"SELECT string_agg(measure || ' ' || coord::text, '; ' ORDER BY measure, coord::text)
+               FROM improv.what_if('plan', '[
+                 {"measure": "Cost", "coord": {"Product": "Gadget"}, "value": 5},
+                 {"measure": "Price", "coord": {"Time": "Q1", "Product": "Gadget"}, "value": 20}]')"#,
+        );
+        assert_eq!(full, "Overhead {\"Product\": \"Widget\"}");
         // `error!` would abort the test's transaction: call the Rust side.
         let obj = Spi::get_one::<pgrx::JsonB>("SELECT '{}'::jsonb")
             .unwrap()

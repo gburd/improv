@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use improv_core_model::{CategoryId, Coordinate, Expr, ItemId, MeasureId, MeasureKind, Model};
+use improv_core_model::{
+    CategoryId, Coordinate, Expr, ItemId, MeasureId, MeasureKind, Model, Value,
+};
 
 use crate::{quote_ident, Error, Result, ResultRows};
 
@@ -296,19 +298,67 @@ fn find_measure(model: &Model, name: &str) -> Option<MeasureId> {
         .map(|m| m.id)
 }
 
+/// One touched row's dimension values (item names), in some category order.
+pub type DimRow = Vec<Option<String>>;
+
+/// One what-if edit: an input measure, a coordinate, and its new value
+/// (`None` removes the cell).
+pub type Edit = (MeasureId, Coordinate, Option<Value>);
+
 /// Apply what-if `edits` to `model`'s input cells in memory and return the
-/// edited measures. `edits` is a JSON array of `{"measure": name, "coord":
-/// {category: item}, "value": v | null}`: `v` a number, a bool, a string, or
-/// a datetime as an RFC 3339 string, by the measure's type (measure and
-/// category names case-insensitive; `null` removes the cell).
+/// edited measures ([`parse_edits`], then [`set_edits`]).
 pub fn apply_edits(model: &mut Model, edits: &str) -> Result<Vec<MeasureId>> {
+    let edits = parse_edits(model, edits)?;
+    Ok(set_edits(model, &edits))
+}
+
+/// Set `edits` on `model`'s input cells; returns the edited measures, sorted.
+pub fn set_edits(model: &mut Model, edits: &[Edit]) -> Vec<MeasureId> {
+    for (id, coord, v) in edits {
+        match v {
+            None => {
+                model.inputs.remove(&(*id, coord.clone()));
+            }
+            Some(v) => model.set_input(*id, coord.clone(), v.clone()),
+        }
+    }
+    let ids: BTreeSet<MeasureId> = edits.iter().map(|(id, _, _)| *id).collect();
+    ids.into_iter().collect()
+}
+
+/// The coordinates `edits` touch, as [`Scope::from_rows`] and
+/// [`scope_filter`] take them: the edited measures' categories and one row
+/// of item names per edit. `None` unless every edited measure has the same
+/// categories (or there are no edits).
+pub fn edit_rows(model: &Model, edits: &[Edit]) -> Option<(Vec<CategoryId>, Vec<DimRow>)> {
+    let cats = model.measures.get(&edits.first()?.0)?.categories.clone();
+    let mut rows = Vec::with_capacity(edits.len());
+    for (id, coord, _) in edits {
+        let m = model.measures.get(id)?;
+        if m.categories.len() != cats.len() || !m.categories.iter().all(|c| cats.contains(c)) {
+            return None;
+        }
+        let name = |c: &CategoryId| {
+            let item = coord.dims.get(c)?;
+            Some(model.items.get(item)?.name.0.clone())
+        };
+        rows.push(cats.iter().map(name).collect());
+    }
+    Some((cats, rows))
+}
+
+/// Parse what-if `edits` against `model`: a JSON array of `{"measure": name,
+/// "coord": {category: item}, "value": v | null}`, `v` a number, a bool, a
+/// string, or a datetime as an RFC 3339 string, by the measure's type
+/// (measure and category names case-insensitive; `null` removes the cell).
+pub fn parse_edits(model: &Model, edits: &str) -> Result<Vec<Edit>> {
     use serde_json::Value as J;
     let bad = |what: String| Error::Catalog(format!("what_if edit: {what}"));
     let json: J = serde_json::from_str(edits).map_err(|e| bad(e.to_string()))?;
     let list = json
         .as_array()
         .ok_or_else(|| bad("edits must be a JSON array".into()))?;
-    let mut changed = BTreeSet::new();
+    let mut out = Vec::with_capacity(list.len());
     for e in list {
         let name = e
             .get("measure")
@@ -347,23 +397,18 @@ pub fn apply_edits(model: &mut Model, edits: &str) -> Result<Vec<MeasureId>> {
             return Err(bad(format!("coord must name exactly {name}'s categories")));
         }
         let coord = Coordinate { dims };
-        match e.get("value") {
-            Some(J::Null) => {
-                model.inputs.remove(&(id, coord));
-            }
-            v => {
-                let v = v.and_then(|v| crate::json_value(vt, v)).ok_or_else(|| {
-                    bad(format!(
-                        "{e} needs a {} or null \"value\"",
-                        crate::value_type_name(vt)
-                    ))
-                })?;
-                model.set_input(id, coord, v);
-            }
-        }
-        changed.insert(id);
+        let v = match e.get("value") {
+            Some(J::Null) => None,
+            v => Some(v.and_then(|v| crate::json_value(vt, v)).ok_or_else(|| {
+                bad(format!(
+                    "{e} needs a {} or null \"value\"",
+                    crate::value_type_name(vt)
+                ))
+            })?),
+        };
+        out.push((id, coord, v));
     }
-    Ok(changed.into_iter().collect())
+    Ok(out)
 }
 
 /// The cells of `new` that differ from `old` (`Some`), and the cells of
@@ -878,6 +923,45 @@ mod tests {
             let e = apply_edits(&mut m.clone(), edits).unwrap_err().to_string();
             assert!(e.contains(err), "{edits}: {e}");
         }
+    }
+
+    /// `edit_rows` names each edit's coordinate in the first edit's category
+    /// order, or gives up on mixed category sets; `set_edits` sets and
+    /// clears the cells.
+    #[test]
+    fn edit_rows_and_set_edits() {
+        let m = model(&[]);
+        let e = parse_edits(
+            &m,
+            r#"[{"measure": "Cost", "coord": {"Product": "Gadget"}, "value": 6},
+                {"measure": "Cost", "coord": {"Product": "Widget"}, "value": null}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            edit_rows(&m, &e),
+            Some((
+                vec![P],
+                vec![vec![Some("Gadget".into())], vec![Some("Widget".into())]]
+            ))
+        );
+        let mut m2 = m.clone();
+        assert_eq!(set_edits(&mut m2, &e), vec![COST]);
+        assert_eq!(m2.input(COST, &coord(&[(2, 4)])), Some(&Value::Number(6.0)));
+        assert_eq!(m2.input(COST, &coord(&[(2, 3)])), None);
+        let mixed = parse_edits(
+            &m,
+            r#"[{"measure": "Cost", "coord": {"Product": "Gadget"}, "value": 6},
+                {"measure": "Price", "coord": {"Time": "Q1", "Product": "Gadget"}, "value": 1}]"#,
+        )
+        .unwrap();
+        assert_eq!(edit_rows(&m, &mixed), None);
+        assert_eq!(edit_rows(&m, &[]), None);
+        // An unknown item or measure: no name, or no rows.
+        let ghost = vec![(COST, coord(&[(2, 99)]), None)];
+        assert_eq!(edit_rows(&m, &ghost), Some((vec![P], vec![vec![None]])));
+        assert_eq!(edit_rows(&m, &[(MeasureId(77), coord(&[]), None)]), None);
+        let tail = vec![e[0].clone(), (MeasureId(77), coord(&[]), None)];
+        assert_eq!(edit_rows(&m, &tail), None);
     }
 
     #[test]

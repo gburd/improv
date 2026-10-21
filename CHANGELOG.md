@@ -49,7 +49,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   `SELECT DISTINCT dims, v` (two hash aggregates) instead of
   `count(DISTINCT v)`, which sorted every fact row by its text keys. On
   2.5M rows the load query drops from 4.5 s to 1.1 s. Results are
-  unchanged, NULLs included.
+  unchanged, NULLs included. `recalc` and a `commit`-mode transaction on
+  the benchmark model drop from 5.6 s to 2.1–2.4 s.
+- **`improv.what_if` loads only the edited coordinates** when every edit
+  has the same categories and the chain they feed is element-wise (as in
+  trigger mode): 0.27 s instead of 5.3 s for a one-cell edit on 2.5M
+  rows. Other edits still load the whole model.
 
 ### Fixed
 
