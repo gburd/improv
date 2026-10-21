@@ -573,7 +573,9 @@ slot (PG 17+), so there are two cases.
   promote, or logical decoding on the new primary waits for a slot that does
   not exist.
 
-`improv_db` slots made before 0.12.0 are not failover slots. Drop one with
+The worker makes `improv_db` a failover slot on PG 17+ (0.11.0 is the
+first release with `improv_db`). A slot made on PG 15 or 16 and carried
+over by `pg_upgrade` is not one. Drop it with
 `SELECT pg_drop_replication_slot('improv_db')`; the worker makes a new
 failover slot on its next poll and rebuilds each model once.
 `tests/failover.sh` checks both cases on PG 17 and 18.

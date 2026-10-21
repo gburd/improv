@@ -311,7 +311,8 @@ fn sync_publication() -> Res<()> {
             rels.join(", ")
         ))?,
     }
-    // Made before 0.12.0, without it.
+    // An improv_db made without it (no release did: 0.11.0 made the first),
+    // or with it switched off by hand.
     let via = Spi::get_one_with_args::<bool>(
         "SELECT pubviaroot FROM pg_publication WHERE pubname = $1",
         &[SLOT.into()],
