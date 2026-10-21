@@ -69,6 +69,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   0.10.0 fills it from the owner of each model's result schema, which
   `create_model` made as the caller; a model without one gets the
   bootstrap superuser and a NOTICE.
+- **`crates/pg_improv/tests/privileges.sh`** (in `ci/pg_improv.sh`): a
+  bound table with a row-level security policy that shows the owner half
+  its rows gives results over that half in trigger, commit, logical and
+  manual + `recalc` modes, whoever writes the table.
 
 ### Changed
 
@@ -243,6 +247,24 @@ this project follows [Semantic Versioning](https://semver.org/).
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.
 
 ### Security
+
+- **pg_improv models act as their owner (C1).** The logical sync worker
+  connected as the bootstrap superuser and read every bound table that way,
+  bypassing row-level security and table privileges, then wrote aggregates
+  of rows the model's owner may not see into result tables with ordinary
+  grants. Every read of a model's bound tables and every write of its
+  results now runs as `improv.model.owner`
+  (`SetUserIdAndSecContext(owner, SECURITY_RESTRICTED_OPERATION)`, with
+  `search_path` pinned), in the worker, in trigger and commit mode (which
+  ran as the writing role), in `define` and in `recalc` (which ran as the
+  caller). A worker apply whose owner lost SELECT fails with a
+  `last_error` naming the columns. `what_if` still reads as its caller.
+- **Writers no longer need privileges on schema `improv`.** With the
+  library preloaded, any write by a role without USAGE on `improv` failed
+  ("permission denied for schema improv": the commit hook looked up the
+  catalog as the writer), as did any write to a trigger-mode model's table
+  by a role without the catalog privileges. Those lookups now run as the
+  bootstrap superuser.
 
 - **rustls-webpki 0.103.16 and webpki-roots 1.0.10** (were 0.103.15 and
   1.0.9): RUSTSEC-2026-0382 and RUSTSEC-2026-0381, certificate paths through

@@ -38,6 +38,7 @@ const EVENTS: [(&str, &str, &str); 4] = [
 /// A model with every input cell loaded.
 pub(crate) struct Loaded {
     name: String,
+    mid: i64,
     pub(crate) model: Model,
 }
 
@@ -64,7 +65,9 @@ type Touched<'a> = (&'a [CategoryId], &'a [Vec<Option<String>>]);
 /// [`load`] onto `model` (the catalog's), reading each binding only at the
 /// `touched` rows' coordinates when given ([`pm::scope_filter`]): an
 /// aggregated binding then loads only those coordinates' groups. Valid only
-/// when the recompute is restricted to them too ([`pm::scopable`]).
+/// when the recompute is restricted to them too ([`pm::scopable`]). A
+/// `persist` load (a sync or a recalc) reads the bound tables as the
+/// model's owner; `what_if`'s reads as its caller.
 fn load_scoped(
     name: String,
     mut model: Model,
@@ -72,11 +75,13 @@ fn load_scoped(
     persist: bool,
     touched: Option<Touched<'_>>,
 ) -> Res<Loaded> {
-    // (measure id, relation, value column, agg, dimension columns)
-    type Row = (i64, String, String, Option<String>, Vec<String>);
-    let bindings: Vec<Row> = Spi::connect(|c| -> Res<_> {
+    let bindings: Vec<BindingRow> = Spi::connect(|c| -> Res<_> {
         c.select(
-            "SELECT b.measure_id, b.rel::text, b.value_col, b.agg, \
+            // Qualified: the owner's reads run under a pinned search_path.
+            "SELECT b.measure_id, \
+                    (SELECT format('%I.%I', n.nspname, c.relname) FROM pg_class c \
+                     JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.oid = b.rel), \
+                    b.value_col, b.agg, \
                     ARRAY(SELECT b.dim_cols ->> c.name \
                           FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
                           JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
@@ -98,6 +103,41 @@ fn load_scoped(
         })
         .collect::<Res<_>>()
     })?;
+    let owner = if persist {
+        super::owner::owner_of(mid)?
+    } else {
+        None
+    };
+    let bound = super::owner::as_role(owner, || read_bound(&model, bindings, touched))?;
+    if persist {
+        mint_items(mid, &mut model, &bound)?;
+    }
+    let loaded = pm::load_inputs(&mut model, &bound)?;
+    let cells: Vec<(u32, String, String)> = Spi::connect(|c| -> Res<_> {
+        c.select(
+            "SELECT measure_id, coord::text, value::text FROM improv.cell c \
+             WHERE model_id = $1 AND NOT EXISTS (SELECT 1 FROM improv.binding b \
+               WHERE b.model_id = c.model_id AND b.measure_id = c.measure_id)",
+            None,
+            &[mid.into()],
+        )?
+        .map(|r| Ok((id32(req(&r, 1)?)?, req(&r, 2)?, req(&r, 3)?)))
+        .collect()
+    })?;
+    let unbound = pm::load_cells(&mut model, &cells)?;
+    pm::check_cell_budget(loaded.cells + unbound, MAX_CELLS.get().max(0) as usize)?;
+    Ok(Loaded { name, mid, model })
+}
+
+/// One binding: (measure id, relation, value column, agg, dimension columns).
+type BindingRow = (i64, String, String, Option<String>, Vec<String>);
+
+/// Read each binding's rows (at the `touched` coordinates when given).
+fn read_bound(
+    model: &Model,
+    bindings: Vec<BindingRow>,
+    touched: Option<Touched<'_>>,
+) -> Res<Vec<pm::BoundRows>> {
     let mut bound = Vec::with_capacity(bindings.len());
     for (measure_id, rel, value_col, agg, dims) in bindings {
         check_for_interrupts!();
@@ -130,24 +170,7 @@ fn load_scoped(
             rows,
         });
     }
-    if persist {
-        mint_items(mid, &mut model, &bound)?;
-    }
-    let loaded = pm::load_inputs(&mut model, &bound)?;
-    let cells: Vec<(u32, String, String)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT measure_id, coord::text, value::text FROM improv.cell c \
-             WHERE model_id = $1 AND NOT EXISTS (SELECT 1 FROM improv.binding b \
-               WHERE b.model_id = c.model_id AND b.measure_id = c.measure_id)",
-            None,
-            &[mid.into()],
-        )?
-        .map(|r| Ok((id32(req(&r, 1)?)?, req(&r, 2)?, req(&r, 3)?)))
-        .collect()
-    })?;
-    let unbound = pm::load_cells(&mut model, &cells)?;
-    pm::check_cell_budget(loaded.cells + unbound, MAX_CELLS.get().max(0) as usize)?;
-    Ok(Loaded { name, model })
+    Ok(bound)
 }
 
 /// Every derived measure, sorted.
@@ -192,8 +215,14 @@ pub(crate) fn exists(table: &str) -> Res<bool> {
 }
 
 /// Recompute `plan.targets` and write their changed result rows (only rows
-/// in `plan.scope`, when given). Returns the rows changed.
+/// in `plan.scope`, when given), as the model's owner. Returns the rows
+/// changed.
 pub(crate) fn recompute(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
+    let owner = super::owner::owner_of(l.mid)?;
+    super::owner::as_role(owner, || write_plan(l, plan))
+}
+
+fn write_plan(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
     if plan.targets.is_empty() {
         return Ok(0);
     }
@@ -222,25 +251,33 @@ pub(crate) fn recompute(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
     Ok(changed)
 }
 
-/// Drop model `name`'s sync triggers from every relation.
+/// Drop model `name`'s sync triggers from every relation. As the extension:
+/// the TRIGGER privilege that let a model's owner create them does not let
+/// it drop them (only the table's owner may), and these are the model's own
+/// (named for it, calling `improv.on_change`).
 pub(crate) fn remove_triggers(name: &str) -> Res<()> {
     let names = EVENTS
         .iter()
         .map(|(op, _, _)| pm::sync_trigger_name(name, op))
         .collect::<pm::Result<Vec<_>>>()?;
-    let found: Vec<(String, String)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT tgrelid::regclass::text, tgname::text FROM pg_trigger WHERE tgname = ANY($1)",
-            None,
-            &[names.into()],
-        )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?)))
-        .collect()
-    })?;
-    for (rel, tg) in found {
-        Spi::run(&format!("DROP TRIGGER {} ON {rel}", pm::quote_ident(&tg)))?;
-    }
-    Ok(())
+    super::owner::as_catalog(|| {
+        let found: Vec<(String, String)> = Spi::connect(|c| -> Res<_> {
+            c.select(
+                "SELECT format('%I.%I', n.nspname, c.relname), t.tgname::text \
+                 FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace \
+                 WHERE t.tgname = ANY($1) AND t.tgfoid = 'improv.on_change'::regproc",
+                None,
+                &[names.into()],
+            )?
+            .map(|r| Ok((req(&r, 1)?, req(&r, 2)?)))
+            .collect()
+        })?;
+        for (rel, tg) in found {
+            Spi::run(&format!("DROP TRIGGER {} ON {rel}", pm::quote_ident(&tg)))?;
+        }
+        Ok(())
+    })
 }
 
 /// Set how `model`'s results follow its bound data: `trigger` installs
@@ -317,12 +354,14 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
 }
 
 /// The sync trigger: recompute the changed inputs' dependents in the
-/// writer's transaction. Its one argument is the model name.
+/// writer's transaction, as the model's owner (the catalog as the extension:
+/// the writer needs no privilege on `improv`). Its one argument is the model
+/// name.
 #[pg_trigger]
 fn on_change<'a>(
     t: &'a PgTrigger<'a>,
 ) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, PgHeapTupleError> {
-    if let Err(e) = sync(t) {
+    if let Err(e) = super::owner::as_catalog(|| sync(t)) {
         error!("improv.on_change: {e}");
     }
     Ok(None)

@@ -381,20 +381,22 @@ pub(crate) fn pre_commit() {
         if written.is_empty() {
             break;
         }
-        let hits = match bound_hits(&written) {
+        let hits = match super::owner::as_catalog(|| bound_hits(&written)) {
             Ok(h) => h,
             Err(e) => error!("improv: commit-mode sync could not read its catalog: {e}"),
         };
         if hits.is_empty() {
             break;
         }
-        let models = match models_for(&hits) {
+        let models = match super::owner::as_catalog(|| models_for(&hits)) {
             Ok(m) => m,
             Err(e) => error!("improv: commit-mode sync could not read its catalog: {e}"),
         };
         for (name, measures) in models {
             let r = PgTryBuilder::new(|| {
-                recompute(&name, &measures)
+                // The catalog as the extension (the writer needs no
+                // privilege on `improv`), the model as its owner.
+                super::owner::as_catalog(|| recompute(&name, &measures))
                     .map_err(|e| (PgSqlErrorCode::ERRCODE_INTERNAL_ERROR, e.to_string()))
             })
             .catch_others(|e| {

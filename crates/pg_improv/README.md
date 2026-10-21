@@ -327,7 +327,8 @@ writable CTEs; `ProcessUtility_hook` for TRUNCATE and `COPY FROM`) note
 which relations each transaction wrote. Just before it commits (or
 prepares), every commit-mode model bound to one of them, or to a partition
 or parent of one, is locked, loaded and its written measures' dependents
-recomputed in full, in the writer's transaction and as the writing role.
+recomputed in full, in the writer's transaction and as the model's owner
+(see [Privileges](#privileges)).
 Work rolled back to a savepoint is forgotten, and a statement that changed
 no row does not count. A transaction that wrote no commit-bound table pays
 one set lookup: each backend caches the commit-bound relations, and
@@ -339,10 +340,10 @@ preloaded (`shared_preload_libraries`, or `session_preload_libraries` for
 new sessions), and `set_sync_mode` refuses `commit` in a backend that
 loaded it on demand. As with trigger mode, the role that enables commit
 mode (or binds a table to a commit-mode model) needs the TRIGGER privilege
-on each bound table, since the model then runs in other roles' commits, and
-every role that writes a bound table must be able to write the result
-tables. A recompute that fails (a writer without that privilege, or a model
-over `improv.max_cells`) aborts the COMMIT, and the error names the model.
+on each bound table, since the model then runs in other roles' commits.
+The writers need no privilege on the model: it reads and writes as its
+owner. A recompute that fails (the owner lost its SELECT, or a model over
+`improv.max_cells`) aborts the COMMIT, and the error names the model.
 
 Commit mode reloads the written tables' measures in full (it knows which
 tables a transaction wrote, not which rows): 2.1 s per commit on the 2.5M-row
@@ -622,6 +623,46 @@ bank, card, retirement, 529, brokerage, crypto, foreign-currency and property
 accounts, and savings-goal projections with what-if. `tests/finance.sh` runs
 it and checks the numbers; the guide chapter is
 [A family's finances](../../docs/src/postgres-finance.md).
+
+## Privileges
+
+A model acts as its **owner**, `improv.model.owner`: the role that called
+`create_model`. Every read of its bound tables and every write of its
+result tables runs as that role, whoever triggers it: the sync worker
+(which connects as the bootstrap superuser), a writer's trigger or commit,
+`define`, or `recalc`. So a model's results aggregate **what its owner can
+read**: row-level security policies and column privileges apply to the
+model as they apply to the owner, and a superuser's `recalc` publishes no
+row the owner could not see. The results are then as visible as their
+tables' grants: the owner owns them and grants them like any table.
+
+The switch is `SetUserIdAndSecContext(owner, SECURITY_RESTRICTED_OPERATION)`
+(as `REFRESH MATERIALIZED VIEW` runs as the view's owner) with
+`search_path = pg_catalog, pg_temp`, restored afterwards even on error. A
+writer firing a trigger or committing is not a member of the owner, so
+`SET ROLE` would not work there; the restriction also stops a function the
+owner controls (a policy, a default) from changing the caller's session.
+In a writer's trigger or commit the catalog lookups (`improv.*`) run as
+the bootstrap superuser, so writers need no privilege on schema `improv`.
+
+`what_if` reads as its caller: it writes nothing, and returns only what the
+caller could compute from what it can read.
+
+In logical mode the decoded WAL carries every row, so the worker checks
+the owner may still read each bound column before applying a batch; when
+it may not, the model fails with a `last_error` that names the role and
+the columns (it is not read as the superuser), and resumes once the
+privilege is back. A bound table whose rows a policy filters for the owner
+is not applied row by row from the WAL either: each batch that touches it
+is applied by a rebuild, which reads the table as the owner (as costly as
+a `recalc`). `tests/privileges.sh` checks all of this in every sync mode.
+
+Models made before 0.11.0 get the owner of their result schema (the role
+that created them) at `ALTER EXTENSION pg_improv UPDATE`, which also hands
+it their result tables; a model without one gets the bootstrap superuser,
+with a NOTICE. Change a model's owner with
+`UPDATE improv.model SET owner = 'role' WHERE name = 'model'` (as a
+superuser), and `ALTER SCHEMA improv_<model> OWNER TO role`.
 
 ## Catalog
 

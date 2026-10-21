@@ -52,3 +52,21 @@ UPDATE improv.model SET owner = '10'::pg_catalog.oid::pg_catalog.regrole WHERE o
 ALTER TABLE improv.model
   ALTER COLUMN owner SET DEFAULT pg_catalog.to_regrole(pg_catalog.quote_ident(CURRENT_USER)),
   ALTER COLUMN owner SET NOT NULL;
+-- The owner now writes the result tables, which the sync worker made as the
+-- bootstrap superuser (logical mode) and trigger mode as the writing role.
+DO $$
+DECLARE t record;
+BEGIN
+  FOR t IN SELECT c.oid::pg_catalog.regclass AS rel, m.owner
+             FROM improv.model m
+             JOIN improv.measure d ON d.model_id OPERATOR(pg_catalog.=) m.id
+                                  AND d.kind OPERATOR(pg_catalog.=) 'derived'
+             JOIN pg_catalog.pg_namespace n
+               ON n.nspname OPERATOR(pg_catalog.=) ('improv_' OPERATOR(pg_catalog.||) pg_catalog.lower(m.name))
+             JOIN pg_catalog.pg_class c ON c.relnamespace OPERATOR(pg_catalog.=) n.oid
+                                       AND c.relname OPERATOR(pg_catalog.=) pg_catalog.lower(d.name)
+            WHERE c.relowner OPERATOR(pg_catalog.<>) m.owner::pg_catalog.oid
+  LOOP
+    EXECUTE pg_catalog.format('ALTER TABLE %s OWNER TO %s', t.rel, t.owner);
+  END LOOP;
+END $$;

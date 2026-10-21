@@ -9,7 +9,8 @@
 # builds pg_improv for it with pgrx, and runs, in order:
 #   fmt + clippy -D warnings, the #[pg_test] suite, pgspot on the generated
 #   and update SQL, tests/txn.sh (no-preload CREATE EXTENSION, the schema
-#   check, transactional semantics, dump/restore), tests/logical.sh (the
+#   check, transactional semantics, dump/restore), tests/privileges.sh (a
+#   model acts as its owner: RLS in every sync mode), tests/logical.sh (the
 #   sync worker end to end), tests/scale.sh at its small default size
 #   (aggregated bindings under random batches), tests/failover.sh on PG 17+
 #   (a streaming standby promoted, with and without failover slots), and on
@@ -77,6 +78,10 @@ end
 step "install, tests/txn.sh (pg$pg)"
 run cargo pgrx install --release "${feat[@]}" --pg-config "$PG_CONFIG"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/txn.sh
+end
+
+step "tests/privileges.sh (pg$pg)"
+run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/privileges.sh
 end
 
 step "tests/logical.sh (pg$pg)"

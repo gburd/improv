@@ -178,6 +178,19 @@ moves logical-mode models from one slot each (`improv_<model>`) to the
 shared `improv_db`: the update drops the old publications, the worker
 drops the old slots and catches each model up with one recompute.
 
+## Privileges
+
+A model reads its bound tables and writes its results as its **owner**,
+the role that called `create_model` (`improv.model.owner`), in every sync
+mode and in `recalc`, whoever writes the tables. Row-level security and
+privileges therefore apply to a model as they do to its owner: its results
+aggregate only the rows the owner may read, and are as visible as their
+tables' grants. If the owner loses SELECT on a bound table, the next logical
+apply fails with a `last_error` naming the columns; nothing is read as a
+superuser. `what_if` reads as its caller. See the
+[pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#privileges)
+for the mechanism.
+
 ## Durability
 
 In logical mode the worker writes a model's share of a batch and records

@@ -52,8 +52,9 @@ use improv_core_model::{MeasureId, Model};
 use improv_engine::session::{Engine, MeasureValues, Snapshot};
 use improv_pg_model as pm;
 use improv_pg_model::live::{self, Rebuild};
-use improv_pg_model::pgoutput;
+use improv_pg_model::pgoutput::{self, Message};
 use pgrx::bgworkers::*;
+use pgrx::pg_sys::panic::CaughtError;
 use pgrx::prelude::*;
 use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting};
 
@@ -233,7 +234,8 @@ pub(crate) fn enable(mid: i64, _name: &str) -> Res<()> {
          ON CONFLICT (model_id) DO NOTHING",
         &[mid.into(), SLOT.into()],
     )?;
-    sync_publication()
+    // The publication is the extension's: a model's owner need not own it.
+    super::owner::as_catalog(sync_publication)
 }
 
 /// Undo [`enable`]: forget the model's sync state and take relations no
@@ -243,7 +245,7 @@ pub(crate) fn disable(mid: i64, _name: &str) -> Res<()> {
         "DELETE FROM improv.sync_state WHERE model_id = $1",
         &[mid.into()],
     )?;
-    sync_publication()?;
+    super::owner::as_catalog(sync_publication)?;
     bump_version(mid)
 }
 
@@ -534,7 +536,11 @@ fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
         })
         .catch_others(|e| {
             release_lwlocks();
-            Err(format!("{e:?}"))
+            Err(match e {
+                CaughtError::PostgresError(r)
+                | CaughtError::ErrorReport(r)
+                | CaughtError::RustPanic { ereport: r, .. } => r.message().to_string(),
+            })
         })
         .execute()
     })
@@ -1231,7 +1237,14 @@ fn tick(
         // for it must not see its results overwritten by the old formula.
         let version = model_version(mid)?;
         let applied = match state.as_mut() {
-            Some(l) if l.version == version && l.name == name => apply(mid, l, rels, &txns)?,
+            Some(l) if l.version == version && l.name == name => {
+                let owner = super::owner::owner_of(mid)?;
+                if owner_reads(mid, name, owner, Some(changed_rels(&txns)))? {
+                    Err(OWNER_RLS)
+                } else {
+                    apply(owner, mid, l, rels, &txns)?
+                }
+            }
             Some(_) => Err(Rebuild("model changed")),
             None => Err(Rebuild("no live state")),
         };
@@ -1242,7 +1255,9 @@ fn tick(
             }
             Err(why) => {
                 how = Applied::Rebuild;
-                log!("pg_improv sync: model {name}: rebuilding ({})", why.0);
+                if why != OWNER_RLS {
+                    log!("pg_improv sync: model {name}: rebuilding ({})", why.0);
+                }
                 // Free the old engine before building one. The load runs
                 // after the decode, so it already holds this batch.
                 drop(state.take());
@@ -1257,6 +1272,74 @@ fn tick(
     record(mid, changed, Some(last), how)?;
     keep(mid, state);
     Ok(())
+}
+
+/// Decoded rows bypass row-level security: a batch on a relation whose
+/// rows RLS filters for the model's owner is applied by a rebuild, which
+/// reads the tables as the owner.
+const OWNER_RLS: Rebuild = Rebuild("row-level security filters a bound table for the owner");
+
+/// The relations `txns` changed.
+fn changed_rels(txns: &[pgoutput::Txn]) -> Vec<i64> {
+    let mut v: Vec<i64> = txns
+        .iter()
+        .flat_map(|t| &t.changes)
+        .flat_map(|c| match c {
+            Message::Insert { rel, .. }
+            | Message::Update { rel, .. }
+            | Message::Delete { rel, .. } => vec![*rel],
+            Message::Truncate { rels, .. } => rels.clone(),
+            _ => Vec::new(),
+        })
+        .map(i64::from)
+        .collect();
+    v.sort_unstable();
+    v.dedup();
+    v
+}
+
+/// Check that model `mid`'s owner may read every bound column of `rels`
+/// (all its bound relations when `None`): decoded rows bypass privileges,
+/// so the worker must not apply what the owner could not read. Returns
+/// whether row-level security filters one of them for the owner.
+fn owner_reads(
+    mid: i64,
+    name: &str,
+    owner: Option<pg_sys::Oid>,
+    rels: Option<Vec<i64>>,
+) -> Res<bool> {
+    let Some(owner) = owner else {
+        return Ok(false);
+    };
+    let (denied, bound) = Spi::connect(|c| -> Res<_> {
+        let t = c.select(
+            "SELECT string_agg(DISTINCT format('%s.%I', b.rel, k.col), ', ') \
+                      FILTER (WHERE NOT has_column_privilege($2, b.rel::oid, k.col, 'SELECT')), \
+                    array_agg(DISTINCT b.rel::oid::int8) \
+             FROM improv.binding b, LATERAL (SELECT b.value_col \
+               UNION SELECT j.v FROM jsonb_each_text(b.dim_cols) j(n, v)) k(col) \
+             WHERE b.model_id = $1 AND ($3::int8[] IS NULL OR b.rel::oid::int8 = ANY($3))",
+            None,
+            &[mid.into(), owner.into(), rels.into()],
+        )?;
+        let r = t.first();
+        Ok((
+            r.get::<String>(1)?,
+            r.get::<Vec<i64>>(2)?.unwrap_or_default(),
+        ))
+    })?;
+    if let Some(cols) = denied {
+        let role = Spi::get_one_with_args::<String>("SELECT $1::regrole::text", &[owner.into()])?
+            .unwrap_or_default();
+        return Err(format!(
+            "model {name} reads its tables as its owner, {role}, who may not read {cols}: \
+             grant {role} SELECT on them, or give the model another owner"
+        )
+        .into());
+    }
+    Ok(bound
+        .into_iter()
+        .any(|r| super::owner::rls_applies(pg_sys::Oid::from(r as u32), owner)))
 }
 
 fn keep(mid: i64, state: Option<Live>) {
@@ -1274,11 +1357,13 @@ fn model_version(mid: i64) -> Res<i64> {
 }
 
 /// Apply a batch to live state `l` incrementally and write the changed
-/// result rows; `Ok(Err(_))` when the batch needs a rebuild instead (then
-/// `l` is stale: drop it). Dimension values with no item yet are minted
-/// first, in this (the worker's) transaction; the engine keeps going when
-/// its plans do not read the item lists that grew ([`Engine::serves`]).
+/// result rows (as the model's `owner`); `Ok(Err(_))` when the batch needs
+/// a rebuild instead (then `l` is stale: drop it). Dimension values with no
+/// item yet are minted first, in this (the worker's) transaction; the
+/// engine keeps going when its plans do not read the item lists that grew
+/// ([`Engine::serves`]).
 fn apply(
+    owner: Option<pg_sys::Oid>,
     mid: i64,
     l: &mut Live,
     rels: &HashMap<u32, pgoutput::Relation>,
@@ -1305,6 +1390,14 @@ fn apply(
     check_for_interrupts!();
     let snapshot = l.engine.apply(edits)?;
     let mut changed = 0;
+    super::owner::as_role(owner, || write_changed(l, &snapshot, &mut changed))?;
+    l.snapshot = snapshot;
+    Ok(Ok(changed))
+}
+
+/// Write the result rows that moved from `l.snapshot` to `snapshot`,
+/// adding the rows changed to `changed`.
+fn write_changed(l: &Live, snapshot: &Snapshot, changed: &mut i64) -> Res<()> {
     for (target, table, dims) in &l.tables {
         let (old, new) = (l.snapshot.get(target), snapshot.get(target));
         // Copy-on-write: a measure the edits did not reach is the same Arc.
@@ -1335,7 +1428,7 @@ fn apply(
                 was.insert(k.clone(), v.clone());
             }
         }
-        changed += write_results(
+        *changed += write_results(
             table,
             dims,
             l.model.measures[target].value_type,
@@ -1343,14 +1436,16 @@ fn apply(
             &pm::result_rows(&l.model, *target, &now)?,
         )?;
     }
-    l.snapshot = snapshot;
-    Ok(Ok(changed))
+    Ok(())
 }
 
 /// Load model `mid` from its tables, compute every derived measure, and
 /// write the result rows that differ from the tables. Returns the live state
 /// (none for a model the live engine cannot serve) and the rows changed.
+/// The tables are read and written as the model's owner.
 fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
+    let owner = super::owner::owner_of(mid)?;
+    owner_reads(mid, name, owner, None)?;
     let mut model = super::trigger::load(mid, name.to_string(), true)?.model;
     // Everything the load saw committed before this position.
     let replay_until = Spi::get_one::<String>("SELECT pg_current_wal_insert_lsn()::text")?
@@ -1358,26 +1453,15 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         .and_then(pgoutput::parse_lsn)
         .ok_or("cannot read the WAL insert position")?;
     let mut mapper = live::Mapper::new(&model, bindings(mid)?);
-    seed_folds(&mut model, &mut mapper)?;
+    super::owner::as_role(owner, || seed_folds(&mut model, &mut mapper))?;
     let version = model_version(mid)?;
     let targets = super::trigger::all_derived(&model);
     let (engine, snapshot) = start_engine(&model, &targets)?;
     let mut tables = Vec::with_capacity(targets.len());
     let mut changed = 0;
-    let empty = MeasureValues::new();
-    for &target in &targets {
-        check_for_interrupts!();
-        let measure = &model.measures[&target].name.0;
-        pm::validate_name("measure", measure)?;
-        let table = pm::result_table(name, measure);
-        let dims = pm::dim_columns(&model, target)?;
-        let vt = model.measures[&target].value_type;
-        ensure_table(name, &table, &dims, vt)?;
-        let new = pm::result_rows(&model, target, snapshot.get(&target).map_or(&empty, |m| m))?;
-        let old = read_results(&table, &dims, vt)?;
-        changed += write_results(&table, &dims, vt, &old, &new)?;
-        tables.push((target, table, dims));
-    }
+    super::owner::as_role(owner, || {
+        write_all(name, &model, &targets, &snapshot, &mut tables, &mut changed)
+    })?;
     let l = Live {
         name: name.to_string(),
         version,
@@ -1389,6 +1473,33 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         replay_until,
     };
     Ok((Some(l), changed))
+}
+
+/// Per derived measure in `targets`: ensure its result table, write the
+/// rows that differ from `snapshot`, and note the table in `tables`.
+fn write_all(
+    name: &str,
+    model: &Model,
+    targets: &[MeasureId],
+    snapshot: &Snapshot,
+    tables: &mut Vec<(MeasureId, String, Vec<String>)>,
+    changed: &mut i64,
+) -> Res<()> {
+    let empty = MeasureValues::new();
+    for &target in targets {
+        check_for_interrupts!();
+        let measure = &model.measures[&target].name.0;
+        pm::validate_name("measure", measure)?;
+        let table = pm::result_table(name, measure);
+        let dims = pm::dim_columns(model, target)?;
+        let vt = model.measures[&target].value_type;
+        ensure_table(name, &table, &dims, vt)?;
+        let new = pm::result_rows(model, target, snapshot.get(&target).map_or(&empty, |m| m))?;
+        let old = read_results(&table, &dims, vt)?;
+        *changed += write_results(&table, &dims, vt, &old, &new)?;
+        tables.push((target, table, dims));
+    }
+    Ok(())
 }
 
 /// `Engine::new` with every Postgres-handled signal blocked, so the compute

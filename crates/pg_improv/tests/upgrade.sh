@@ -72,6 +72,11 @@ for from in "$@"; do
 	done
 	q "UPDATE sales SET price = 11 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 1100 "old version computes"
+	# As if alice, not a superuser, had made the model: from 0.11.0 the worker
+	# reads sales and writes the results as her. (sales is improv.sales: the
+	# superuser is named improv, and search_path starts with "\$user".)
+	q "CREATE ROLE alice; GRANT USAGE ON SCHEMA improv TO alice; GRANT SELECT ON sales TO alice"
+	q "ALTER SCHEMA improv_plan OWNER TO alice"
 
 	# The new release over the old: SQL scripts side by side, the new .so.
 	install "$here"
@@ -81,7 +86,8 @@ for from in "$@"; do
 	q "ALTER EXTENSION pg_improv UPDATE"
 	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$to" "updated version"
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
-	eq "$(q "SELECT owner::text FROM improv.model WHERE name = 'plan'")" improv "the update records the owner"
+	eq "$(q "SELECT owner::text FROM improv.model WHERE name = 'plan'")" alice "the update records the owner"
+	eq "$(q "SELECT string_agg(DISTINCT tableowner, ',') FROM pg_tables WHERE schemaname = 'improv_plan'")" alice "the owner owns the result tables"
 	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 3300 "the worker follows writes after the update"

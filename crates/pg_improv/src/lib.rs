@@ -19,6 +19,7 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 
 mod commit;
 mod language;
+mod owner;
 mod trigger;
 mod worker;
 
@@ -673,7 +674,8 @@ fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<
     let m = pm::build_model(&cat)?;
     let target = MeasureId(id32(id)?);
     let dims = pm::dim_columns(&m, target)?;
-    ensure_table(&model_name, &table, &dims, m.measures[&target].value_type)?;
+    let vt = m.measures[&target].value_type;
+    owner::as_owner(mid, || ensure_table(&model_name, &table, &dims, vt))?;
     bump_version(mid)?;
     Ok(id)
 }
