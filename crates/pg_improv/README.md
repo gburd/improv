@@ -55,8 +55,8 @@ decoding (then restart Postgres):
 shared_preload_libraries = 'pg_improv'
 wal_level = logical
 improv.database = 'sales'       # the database the sync worker serves (default: postgres)
-#improv.poll_ms = 200           # how often it polls its slot
-#improv.max_changes = 10000     # most decoded changes per poll
+#improv.poll_ms = 200           # how often it polls its slot (reloadable)
+#improv.max_changes = 10000     # most decoded changes per poll (reloadable)
 max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retain
 ```
 

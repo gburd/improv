@@ -382,7 +382,20 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
             break; // SIGTERM
         }
         if BackgroundWorker::sighup_received() {
-            // GUCs are reloaded by the latch wait; nothing else to refresh.
+            // pgrx's latch wait does not reload the configuration (its
+            // SIGHUP handler only flags it): reload here, as a backend's
+            // main loop does, so `poll_ms` and `max_changes` follow
+            // `pg_reload_conf()`.
+            // SAFETY: outside any transaction, as `PostgresMain` calls it.
+            unsafe {
+                (&raw mut pg_sys::ConfigReloadPending).write_volatile(0);
+                pg_sys::ProcessConfigFile(pg_sys::GucContext::PGC_SIGHUP);
+            }
+            log!(
+                "pg_improv sync: reloaded the configuration (poll_ms = {}, max_changes = {})",
+                POLL_MS.get(),
+                MAX_CHANGES.get()
+            );
         }
         // Nothing to do until the extension (0.11.0 or later: the shared
         // slot) is installed in this database. (A Postgres ERROR is not a

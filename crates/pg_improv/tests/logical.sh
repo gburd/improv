@@ -484,4 +484,24 @@ done
 eq14 "$(decoding)" 0 "decoding lines logged by 10 applied writes"
 echo "ok: ${IDLE_S}s idle at poll_ms 50 logged no decoding line; 10 later writes applied, quietly"
 
+# 16. a configuration reload reaches the worker (D9): ALTER SYSTEM SET
+#     improv.poll_ms then pg_reload_conf() changes the poll interval at once
+logpos=$(wc -c <"$D/log")
+q "ALTER SYSTEM SET improv.poll_ms = 60000"
+q "SELECT pg_reload_conf()" >/dev/null
+for _ in $(seq 200); do
+	tail -c +$((logpos + 1)) "$D/log" | grep -q "reloaded the configuration (poll_ms = 60000" && break
+	sleep 0.025
+done
+tail -c +$((logpos + 1)) "$D/log" | grep -q "reloaded the configuration (poll_ms = 60000" \
+	|| { echo "FAIL: the worker did not reload its configuration"; tail -20 "$D/log"; exit 1; }
+sleep 0.5 # let the poll the reload woke finish
+before=$(q "$REV")
+q "UPDATE sales SET price = 41 WHERE quarter='Q1' AND product='Widget'"
+sleep 2
+eq14 "$(q "$REV")" "$before" "at poll_ms 60000 a write waits for the next poll"
+q "ALTER SYSTEM RESET improv.poll_ms"
+q "SELECT pg_reload_conf()" >/dev/null
+wait_for "$REV" "$(q "$REVQ")" "the reload back to poll_ms 50" >/dev/null
+echo "ok: pg_reload_conf() changed improv.poll_ms without a restart (60000, then back to 50)"
 echo "PASS"

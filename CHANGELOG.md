@@ -174,6 +174,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   consistent point"), about 310 MB a day at the default `poll_ms`. A poll
   now decodes only when WAL was written since its last decode, and it
   decodes with `log_min_messages = fatal`.
+- **pg_improv: `pg_reload_conf()` reaches the sync worker.**
+  `improv.poll_ms` and `improv.max_changes` changed only when the worker
+  restarted. pgrx's latch wait never reread the configuration; the worker
+  now does that on SIGHUP.
 - **pg_improv: an invalidated slot no longer stops logical sync silently.**
   When `max_slot_wal_keep_size` invalidated the `improv_db` slot, every poll
   logged "can no longer access replication slot", `improv.status` showed no
