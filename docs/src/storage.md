@@ -222,11 +222,11 @@ The model is stored normalized in the `improv` schema. The DDL is
 
 | Table | Holds |
 |-------|-------|
-| `improv.model` | one row per model: `name` (unique), `sync_mode` (`logical`, `trigger`, `manual`), `slot_name` |
+| `improv.model` | one row per model: `name` (unique), `sync_mode` (`logical`, `trigger`, `commit`, `manual`), `slot_name` |
 | `improv.category` | categories, keyed by `(model_id, id)` |
 | `improv.item` | items, with `category_id` |
 | `improv.measure` | `name`, `value_type`, `kind`, `formula`, `description`, `categories bigint[]` |
-| `improv.binding` | a measure bound to a fact table: `rel`, `value_col`, `dim_cols` (category name → column), optional `agg` (`sum`, `avg`, `min`, `max`, `count`) |
+| `improv.binding` | a measure bound to a fact table: `rel`, `value_col`, `dim_cols` (category name → column), optional `agg` (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`) |
 | `improv.cell` | unbound input cells: `coord jsonb`, `value jsonb` |
 | `improv.view` | saved views, `layout jsonb` |
 | `improv.meta` | one `blob jsonb` per model: external functions, external calls, scenarios, SQL sources |
