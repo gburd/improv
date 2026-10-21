@@ -873,9 +873,15 @@ pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellVa
     if let CellValue::Err(_) = b {
         return b.clone();
     }
+    // Numbers compare as numbers, not bit patterns: -0 = 0 (NaN = NaN is
+    // FALSE, as `<=` already says). Other values compare exactly.
+    let same = match (a.as_num(), b.as_num()) {
+        (Some(x), Some(y)) => x == y,
+        _ => a == b,
+    };
     match op {
-        BinaryOp::Eq => return CellValue::Bool(a == b),
-        BinaryOp::Ne => return CellValue::Bool(a != b),
+        BinaryOp::Eq => return CellValue::Bool(same),
+        BinaryOp::Ne => return CellValue::Bool(!same),
         BinaryOp::And => return CellValue::Bool(truthy(a) && truthy(b)),
         BinaryOp::Or => return CellValue::Bool(truthy(a) || truthy(b)),
         BinaryOp::Concat => {
@@ -3437,6 +3443,14 @@ mod tests {
         ] {
             assert_eq!(apply_binary(op, &n(1.0), &n(2.0)), b(want), "{op:?}");
         }
+        // Numerically, not by bits: -0 = 0, and NaN is unequal to itself.
+        assert_eq!(apply_binary(BinaryOp::Eq, &n(-0.0), &n(0.0)), b(true));
+        assert_eq!(apply_binary(BinaryOp::Ne, &n(-0.0), &n(0.0)), b(false));
+        assert_eq!(
+            apply_binary(BinaryOp::Eq, &n(f64::NAN), &n(f64::NAN)),
+            b(false)
+        );
+        assert_eq!(apply_binary(BinaryOp::Eq, &b(true), &n(1.0)), b(false));
         assert_eq!(apply_unary(UnaryOp::Neg, &n(2.0)), n(-2.0));
         assert_eq!(apply_unary(UnaryOp::Not, &b(true)), b(false));
         assert!(truthy(&n(1.0)) && !truthy(&n(0.0)));

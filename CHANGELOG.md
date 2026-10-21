@@ -85,6 +85,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`-0 == 0` is TRUE.** `==` and `!=` compared numbers by bit pattern, so
+  `ROUND(-0.4, 0) == 0` and `0 * -1 == 0` were FALSE while `<=` said TRUE.
+  Numbers now compare numerically (NaN stays unequal to itself); other
+  values compare exactly, as before.
+
 - **The coordinate-codec fuzz target builds again.** `CoordKey` became a
   `SmallVec` (no `Arbitrary`), so it fuzzes the pairs as a `Vec`. Its
   lockfile, last refreshed at 0.5.0, is current, and CI now checks that the
