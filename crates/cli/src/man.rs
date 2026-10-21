@@ -377,7 +377,8 @@ fn man_pages_are_current_and_groff_clean() {
         return;
     }
     let Ok(out) = std::process::Command::new("groff")
-        .args(["-man", "-ww", "-z"])
+        // ascii: the device with the fewest glyphs, as CI checks.
+        .args(["-man", "-ww", "-z", "-Tascii"])
         .args(&files)
         .output()
     else {
