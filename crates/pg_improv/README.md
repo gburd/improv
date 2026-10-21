@@ -57,6 +57,7 @@ wal_level = logical
 improv.database = 'sales'       # the database the sync worker serves (default: postgres)
 #improv.poll_ms = 200           # how often it polls its slot (reloadable)
 #improv.max_changes = 10000     # most decoded changes per poll (reloadable)
+#improv.max_slot_lag = 4GB      # past this the worker drops its slot and rebuilds (reloadable; 0 = never)
 max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retain
 ```
 
@@ -416,6 +417,15 @@ drops the slot, makes a new one, logs that once, and rebuilds every model
 from its tables; each model's `last_error` clears when its rebuild
 succeeds. Any other failure to read the slot also appears as every model's
 `last_error`, not only in the server log.
+
+`improv.max_slot_lag` (default 4 GB, 0 turns it off) caps the WAL a running
+but slow worker retains. When the slot's restart point falls further
+behind, the worker drops the slot and rebuilds every model, the same as for
+an invalidated slot. While the worker is down only `max_slot_wal_keep_size`
+caps the slot, so set both. When the worker cannot make its slot
+(`max_replication_slots` all in use, say), each model's `last_error` gives
+the reason. The worker logs it once and keeps polling, and it makes the slot
+as soon as one is free.
 
 Before 0.11.0 each model had its own slot and publication, `improv_<model>`,
 and every poll decoded the WAL once per model. `ALTER EXTENSION pg_improv

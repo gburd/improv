@@ -67,6 +67,9 @@ pub(crate) static DATABASE: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"postgres"));
 /// `improv.poll_ms`: how often the worker polls the slot.
 pub(crate) static POLL_MS: GucSetting<i32> = GucSetting::<i32>::new(200);
+/// `improv.max_slot_lag`: past this many MB of WAL behind, the worker
+/// drops the slot and rebuilds rather than retain more (0: never).
+pub(crate) static MAX_SLOT_LAG: GucSetting<i32> = GucSetting::<i32>::new(4096);
 /// `improv.max_changes`: the most decoded changes one poll reads.
 pub(crate) static MAX_CHANGES: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 
@@ -105,6 +108,18 @@ pub(crate) fn init() {
         60_000,
         GucContext::Sighup,
         GucFlags::default(),
+    );
+    GucRegistry::define_int_guc(
+        c"improv.max_slot_lag",
+        c"WAL (MB) the sync worker's slot may lag before it is dropped and remade.",
+        c"Past it the worker drops the slot and rebuilds each model from its tables, \
+          rather than retain more WAL; 0 never drops it. A cap that also holds while the \
+          worker is down is max_slot_wal_keep_size.",
+        &MAX_SLOT_LAG,
+        0,
+        i32::MAX,
+        GucContext::Sighup,
+        GucFlags::UNIT_MB,
     );
     GucRegistry::define_int_guc(
         c"improv.max_changes",
@@ -517,9 +532,25 @@ fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
             let f = f;
             (f.0)().map_err(|e| e.to_string())
         })
-        .catch_others(|e| Err(format!("{e:?}")))
+        .catch_others(|e| {
+            release_lwlocks();
+            Err(format!("{e:?}"))
+        })
         .execute()
     })
+}
+
+/// After a caught ERROR, release what `AbortTransaction` would: the
+/// transaction commits instead, and LWLocks are not resource-owned, so one
+/// held at the ERROR (`ReplicationSlotAllocationLock`, when every slot is in
+/// use) stays held and every slot creation or drop in the cluster waits.
+fn release_lwlocks() {
+    // SAFETY: what `AbortTransaction` does first; this backend holds no
+    // LWLock it still needs once the ERROR has unwound its holder.
+    unsafe {
+        pg_sys::LWLockReleaseAll();
+        pg_sys::ConditionVariableCancelSleep();
+    }
 }
 
 /// WAL the slot may lag with nothing to apply before an idle advance.
@@ -949,10 +980,15 @@ fn ensure_slot() -> Res<Option<Slot>> {
                     (SELECT coalesce(to_jsonb(r) ->> 'invalidation_reason', \
                               CASE WHEN r.wal_status = 'lost' THEN 'wal_removed' \
                                    WHEN to_jsonb(r) ->> 'conflicting' = 'true' \
-                                   THEN 'rows_removed' END) \
+                                   THEN 'rows_removed' \
+                                   WHEN $2 > 0 AND pg_current_wal_lsn() - r.restart_lsn \
+                                          > $2::numeric * 1048576 \
+                                   THEN 'improv.max_slot_lag exceeded, ' \
+                                     || pg_size_pretty(pg_current_wal_lsn() - r.restart_lsn) \
+                                     || ' behind' END) \
                      FROM pg_replication_slots r WHERE r.slot_name = $1)",
             None,
-            &[SLOT.into()],
+            &[SLOT.into(), MAX_SLOT_LAG.get().into()],
         )?;
         let r = t.first();
         Ok((

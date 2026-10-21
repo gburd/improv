@@ -215,6 +215,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   HINT naming `improv.database`, and so is `bind_measure` on a logical
   model. `improv.status` matches the slot by database, and a logical model
   outside it reports "no sync worker serves this database" in `last_error`.
+- **pg_improv: `improv.max_slot_lag`** (default 4 GB, 0 = off). When the
+  sync slot's restart point is further behind, the worker drops the slot
+  and rebuilds each model rather than retain more WAL. Logged once, and in
+  `last_error` until the rebuild.
+- **pg_improv: a failed slot creation no longer blocks every slot in the
+  cluster.** With `max_replication_slots` all in use, the worker's caught
+  ERROR left `ReplicationSlotAllocationLock` held, since a caught error
+  skips the abort that releases LWLocks. Every later slot creation or drop
+  in the cluster, `pg_drop_replication_slot` included, then hung. The
+  worker now releases them, reports the reason in `last_error`, and makes
+  its slot once one is free.
 - **pg_improv: an invalidated slot no longer stops logical sync silently.**
   When `max_slot_wal_keep_size` invalidated the `improv_db` slot, every poll
   logged "can no longer access replication slot", `improv.status` showed no

@@ -433,7 +433,7 @@ echo "ok: one slot for every model; routing by table; models added, rebuilt and 
 #     elsewhere), the slot falls past max_slot_wal_keep_size and is lost, and
 #     status says so. Back, the worker drops it, makes a new one, logs that
 #     once, and rebuilds every model: the results equal a fresh recalc.
-restart() { "$PG_BIN/pg_ctl" -D "$D" -l "$D/log" -w restart -m fast >/dev/null; }
+restart() { "$PG_BIN/pg_ctl" -D "$D" -l "$D/log" -w restart -m fast >/dev/null 3>&-; }
 eq14() { [ "$1" = "$2" ] || { echo "FAIL: $3: got '$1', want '$2'"; tail -20 "$D/log"; exit 1; }; }
 q "ALTER SYSTEM SET improv.database = 'postgres'"
 q "ALTER SYSTEM SET max_slot_wal_keep_size = '1MB'"
@@ -464,6 +464,54 @@ wait_for "$REV" "$(q "SELECT price * qty FROM sales WHERE quarter='Q1' AND produ
 eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "slot improv_db was invalidated")" 1 "the invalidation logged once"
 eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "can no longer")" 0 "no peek of the invalidated slot"
 echo "ok: a lost slot is reported, dropped, made again and logged once; every model rebuilds and equals a fresh recalc"
+
+# 14b. improv.max_slot_lag (D7): a slot that falls that far behind (here a
+#      slow worker: poll_ms = 60000) is dropped and remade, and every model
+#      rebuilds, rather than retain more WAL
+q "ALTER SYSTEM SET improv.max_slot_lag = '2MB'"
+q "ALTER SYSTEM SET improv.poll_ms = 60000"
+q "SELECT pg_reload_conf()" >/dev/null
+sleep 1
+logpos=$(wc -c <"$D/log")
+q "UPDATE sales SET price = 14 WHERE quarter='Q1' AND product='Widget'"
+q "INSERT INTO ballast SELECT repeat('y', 1000) FROM generate_series(1, 4000)"
+q "ALTER SYSTEM RESET improv.poll_ms"
+q "SELECT pg_reload_conf()" >/dev/null
+wait_for "$REV" "$(q "SELECT price * qty FROM sales WHERE quarter='Q1' AND product='Widget'")" "the write past max_slot_lag" >/dev/null
+wait_for "$SYNCED" t "every model rebuilt after max_slot_lag" >/dev/null
+eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "slot improv_db was invalidated (improv.max_slot_lag exceeded")" 1 \
+	"the max_slot_lag drop logged once"
+eq14 "$(q "SELECT sum(improv.recalc(name)) FROM improv.model WHERE sync_mode = 'logical'")" 0 \
+	"every model equals a fresh recalc after max_slot_lag"
+q "ALTER SYSTEM RESET improv.max_slot_lag"
+q "SELECT pg_reload_conf()" >/dev/null
+echo "ok: past improv.max_slot_lag the slot is dropped and remade, and every model rebuilds"
+
+# 14c. max_replication_slots exhausted (D7): the worker cannot make its slot.
+#      status shows why, the worker logs it once and keeps running (no crash
+#      loop), and once a slot is free it makes one and every model rebuilds
+q "ALTER SYSTEM SET improv.database = 'postgres'"
+restart
+q "SELECT pg_drop_replication_slot('improv_db')"
+q "ALTER SYSTEM SET max_replication_slots = 1"
+restart
+q "SELECT 1 FROM pg_create_physical_replication_slot('hog')" >/dev/null
+q "UPDATE sales SET price = 15 WHERE quarter='Q1' AND product='Widget'"
+logpos=$(wc -c <"$D/log")
+q "ALTER SYSTEM RESET improv.database"
+restart
+wait_for "SELECT coalesce(last_error, '') LIKE '%replication slots are in use%' FROM improv.status('plan')" t \
+	"status reports the exhausted slots" >/dev/null
+pid=$(q "SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_improv sync'")
+sleep 1
+eq14 "$(q "SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_improv sync'")" "$pid" "the worker keeps running"
+eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "pg_improv sync: creating the slot improv_db")" 1 "the failure logged once"
+q "SELECT pg_drop_replication_slot('hog')"
+wait_for "$SYNCED" t "every model rebuilt once a slot is free" >/dev/null
+wait_for "$REV" "$(q "SELECT price * qty FROM sales WHERE quarter='Q1' AND product='Widget'")" "the write made while no slot was free" >/dev/null
+q "ALTER SYSTEM RESET max_replication_slots"
+restart
+echo "ok: max_replication_slots exhausted: status shows it, logged once, no crash loop; a free slot recovers every model"
 
 # 15. an idle worker is quiet (D8): at poll_ms = 50 an idle window (60 s by
 #     default) adds no "logical decoding" line to the server log, as every
