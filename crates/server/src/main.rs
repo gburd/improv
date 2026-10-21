@@ -10,6 +10,10 @@
 // coverage builds would otherwise warn that the feature is unused.
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
+// Declarations only (the clap derive).
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod args;
+
 use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -135,14 +139,12 @@ impl AppState {
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[tokio::main]
 async fn main() {
-    // argv[1]: db path (default in-memory-ish temp file). argv[2] or
-    // IMPROV_ADDR: bind address (default 127.0.0.1:3000).
-    let mut args = std::env::args().skip(1);
-    let db_path = args.next().unwrap_or_else(|| "improv.db".to_string());
-    let addr = args
-        .next()
-        .or_else(|| std::env::var("IMPROV_ADDR").ok())
-        .unwrap_or_else(|| "127.0.0.1:3000".to_string());
+    // The model (default improv.db), and the address: an argument, else
+    // IMPROV_ADDR, else 127.0.0.1:3000.
+    let args::Cli {
+        model: db_path,
+        addr,
+    } = <args::Cli as clap::Parser>::parse();
 
     let auth = Auth::from_env();
     if matches!(auth, Auth::Disabled) {

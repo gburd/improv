@@ -62,6 +62,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   **An argument a command does not take is an error** (exit 2): the hand
   parser ignored it, so `improv eval m.db 102 --scenrio high` evaluated
   without the scenario and `improv init m.db extra` succeeded.
+- **`improv-gui`, `improv-tui` and `improv-server` parse their arguments
+  with clap**, and gain `--help` and `--version`. Their arguments are
+  unchanged (`improv-server [model] [addr]`, `IMPROV_ADDR` when `addr` is
+  not given). An extra argument is a usage error (exit 2): `improv-server`
+  panicked on one, and `improv-tui` with no model now exits 2 (it exited
+  1).
 - **Adding items to a wide category is linear, not quadratic.**
   `Model::add_item` and `ItemInterner::register` (CSV/SQL import, every
   pg_improv load, DuckDB `improv()`) scanned the category's item list once

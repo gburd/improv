@@ -12,6 +12,9 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
+// Declarations only (the clap derive).
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod args;
 mod complete;
 mod diagnose;
 mod edit;
@@ -19,6 +22,7 @@ mod fnhelp;
 mod ui;
 
 use app::App;
+use clap::Parser;
 use crossterm::{
     event::{
         self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
@@ -38,10 +42,7 @@ use std::io;
 // lives in `load`/`save`, which are tested.
 #[cfg_attr(coverage_nightly, coverage(off))]
 fn main() {
-    let Some(path) = std::env::args().nth(1) else {
-        eprintln!("usage: improv-tui <model.db>");
-        std::process::exit(1);
-    };
+    let path = args::Cli::parse().model;
     // Load the model BEFORE touching the terminal, so errors print cleanly.
     if let Err(e) = load(&path).and_then(|app| run(app, &path)) {
         eprintln!("error: {e}");

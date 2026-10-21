@@ -2756,6 +2756,7 @@ dependencies = [
 name = "improv_gui"
 version = "0.10.0"
 dependencies = [
+ "clap",
  "eframe",
  "egui",
  "egui_extras",
@@ -2794,6 +2795,7 @@ name = "improv_server"
 version = "0.10.0"
 dependencies = [
  "axum",
+ "clap",
  "hyper",
  "hyper-util",
  "improv_core_model",
@@ -2874,6 +2876,7 @@ dependencies = [
 name = "improv_tui"
 version = "0.10.0"
 dependencies = [
+ "clap",
  "crossterm",
  "improv_core_model",
  "improv_engine",

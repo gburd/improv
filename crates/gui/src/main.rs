@@ -10,6 +10,9 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 mod app;
+// Declarations only (the clap derive).
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod args;
 mod chart;
 mod completion;
 mod csv_wizard;
@@ -21,10 +24,11 @@ mod nxwin;
 mod theme;
 
 use app::ImprovApp;
+use clap::Parser;
 
 fn main() -> eframe::Result<()> {
-    // Model store path from argv[1]; "" is an in-memory scratch model.
-    let db = std::env::args().nth(1).unwrap_or_default();
+    // No model is "": an in-memory scratch model.
+    let db = args::Cli::parse().model.unwrap_or_default();
 
     let app = match ImprovApp::load(&db) {
         Ok(a) => a,

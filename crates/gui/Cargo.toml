@@ -9,6 +9,7 @@ name = "improv-gui"
 path = "src/main.rs"
 
 [dependencies]
+clap.workspace = true
 improv_core_model = { path = "../core_model" }
 improv_store = { path = "../store" }
 improv_storage_csv = { path = "../storage_csv" }
