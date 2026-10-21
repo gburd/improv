@@ -11,8 +11,10 @@
 #   and update SQL, tests/txn.sh (no-preload CREATE EXTENSION, the schema
 #   check, transactional semantics, dump/restore), tests/logical.sh (the
 #   sync worker end to end), tests/scale.sh at its small default size
-#   (aggregated bindings under random batches), and on PG 17 also tests/upgrade.sh (ALTER
-#   EXTENSION UPDATE from each earlier release) and the PGXN dist build.
+#   (aggregated bindings under random batches), tests/failover.sh on PG 17+
+#   (a streaming standby promoted, with and without failover slots), and on
+#   PG 17 also tests/upgrade.sh (ALTER EXTENSION UPDATE from each earlier
+#   release) and the PGXN dist build.
 # Steps that need a non-root user (pgrx refuses initdb as root) run as `pgi`.
 set -euo pipefail
 pg=${1:?usage: ci/pg_improv.sh <PGMAJOR>}
@@ -83,6 +85,12 @@ end
 step "tests/scale.sh, small (pg$pg)"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/scale.sh
 end
+
+if [ "$pg" -ge 17 ]; then
+	step "tests/failover.sh: a standby promoted (pg$pg)"
+	run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/failover.sh
+	end
+fi
 
 if [ "$pg" = 17 ]; then
 	step "tests/upgrade.sh: ALTER EXTENSION UPDATE from earlier releases"

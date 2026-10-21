@@ -527,6 +527,34 @@ into 44,750 cells of Person × Year × Release × Scope.
 INSERT / UPDATE / DELETE batches `count` and `sum` equal a fresh `recalc`
 and `count_distinct` equals `count(DISTINCT …)`.
 
+### Standbys and failover
+
+The result tables are ordinary tables, so a physical standby has them, and
+`improv.status` works there (`lag_bytes` is measured from the replay
+position). No sync worker runs on a hot standby: it starts once recovery
+ends. A logical slot does not survive a promotion unless it is a failover
+slot (PG 17+), so there are two cases.
+
+- **PG 15 and 16, or no slot sync.** After a promotion the worker on the new
+  primary finds no `improv_db` slot. It makes one and rebuilds every model
+  from its tables (one `recalc` each). Nothing to configure.
+- **PG 17+ with slot sync.** The worker makes `improv_db` with
+  `failover => true`. A standby that syncs slots keeps it in step, and after
+  a promotion the worker continues on it with every model's recorded
+  progress (it loads each model into memory, as at any worker start). On the
+  standby, set `sync_replication_slots = on` and `hot_standby_feedback = on`,
+  use a physical slot (`primary_slot_name`), and put `dbname=` in
+  `primary_conninfo`. On the primary, set `synchronized_standby_slots` to
+  that physical slot, so the worker never confirms WAL the standby lacks. A
+  standby made with `pg_basebackup` copies that setting: clear it when you
+  promote, or logical decoding on the new primary waits for a slot that does
+  not exist.
+
+`improv_db` slots made before 0.12.0 are not failover slots. Drop one with
+`SELECT pg_drop_replication_slot('improv_db')`; the worker makes a new
+failover slot on its next poll and rebuilds each model once.
+`tests/failover.sh` checks both cases on PG 17 and 18.
+
 ### Removing pg_improv
 
 The clean order is `improv.drop_model(name)` for each model, then

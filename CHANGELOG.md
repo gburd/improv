@@ -178,6 +178,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.poll_ms` and `improv.max_changes` changed only when the worker
   restarted. pgrx's latch wait never reread the configuration; the worker
   now does that on SIGHUP.
+- **pg_improv: failover.** On PG 17+ the sync worker makes `improv_db` a
+  failover slot. With `sync_replication_slots` on a standby, the models
+  continue on the synced slot after a promotion. Without it (or on PG 15
+  and 16) the worker makes a new slot and rebuilds each model. `improv.status`
+  works on a hot standby: `lag_bytes` was an error there, because it called
+  `pg_current_wal_lsn()`, which recovery forbids. The README's "Standbys
+  and failover" gives the settings, and `tests/failover.sh` tests a
+  primary, a streaming standby and a promotion, in both modes.
 - **pg_improv: logical mode follows partitioned tables.** The publication
   sent each partition's changes under the partition's own oid, which no
   model binds, so a model on a partitioned table followed no writes.

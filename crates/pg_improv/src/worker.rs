@@ -399,7 +399,8 @@ fn status_row(model: &str) -> Res<StatusRow> {
     let row = Spi::connect(|c| -> Res<_> {
         let t = c.select(
             "SELECT m.sync_mode, s.slot, \
-                    (pg_current_wal_lsn() - r.confirmed_flush_lsn)::int8, \
+                    (CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() \
+                          ELSE pg_current_wal_lsn() END - r.confirmed_flush_lsn)::int8, \
                     r.confirmed_flush_lsn::text, s.last_applied_at, s.rows_applied, \
                     coalesce(CASE WHEN r.wal_status = 'lost' THEN \
                       'the slot ' || s.slot || ' is invalidated (the WAL it held is gone): \
@@ -572,6 +573,7 @@ fn sweep() {
         // from scratch. An invalidation stays each model's `last_error`
         // until its rebuild succeeds.
         Ok(Some(made)) => {
+            log!("pg_improv sync: created the slot {SLOT}");
             let note = match made {
                 Slot::Recreated(why) => {
                     let note = format!(
@@ -956,12 +958,17 @@ fn ensure_slot() -> Res<Option<Slot>> {
             why.map_or(Slot::Created, Slot::Recreated)
         }
     };
+    // PG 17+: a failover slot, which a standby with `sync_replication_slots`
+    // keeps in step, so after a promotion the worker continues on it with
+    // its models' progress (otherwise it makes a new slot and each model
+    // rebuilds).
+    let create = if cfg!(any(feature = "pg15", feature = "pg16")) {
+        "SELECT pg_create_logical_replication_slot($1, 'pgoutput')"
+    } else {
+        "SELECT pg_create_logical_replication_slot($1, 'pgoutput', failover => true)"
+    };
     Spi::connect(|c| -> Res<()> {
-        c.select(
-            "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
-            None,
-            &[SLOT.into()],
-        )?;
+        c.select(create, None, &[SLOT.into()])?;
         Ok(())
     })?;
     Ok(Some(made))
