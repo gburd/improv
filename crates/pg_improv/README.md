@@ -190,7 +190,11 @@ a result table found with another `value` type is an ERROR.
 bool, a string, or a datetime as an RFC 3339 string (`"2026-01-02T00:00:00+00:00"`).
 
 `improv.max_cells` (default 5 000 000, settable per session) caps the number
-of input cells `recalc` loads; above it, `recalc` raises an ERROR.
+of input cells any load of a model holds: `recalc`, `define`, a trigger-mode
+statement's or commit-mode transaction's recompute (which then fails the
+statement or aborts the COMMIT), and the sync worker's rebuilds and applies
+(the model then records a `last_error`). Above it, the load raises an
+ERROR.
 
 Bound data rules: a NULL value means no cell, and a row with a NULL dimension
 is skipped. Two rows on the same coordinate are an ERROR unless the

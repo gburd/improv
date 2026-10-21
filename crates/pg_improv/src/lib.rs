@@ -39,7 +39,7 @@ pub extern "C-unwind" fn _PG_init() {
     GucRegistry::define_int_guc(
         c"improv.max_cells",
         c"Maximum bound input cells per Improv model.",
-        c"improv.recalc refuses to build an engine over a model with more bound input cells.",
+        c"Every load of a model (recalc, define, a trigger-mode or commit-mode recompute, the sync worker's rebuild and apply) refuses a model with more bound input cells.",
         &MAX_CELLS,
         0,
         i32::MAX,
