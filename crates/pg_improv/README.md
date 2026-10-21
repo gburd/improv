@@ -456,6 +456,12 @@ poll decodes only new WAL rather than everything since the bgwriter's last
 snapshot (up to 15 s of it). With the bound tables idle it also moves the
 slot past unrelated WAL once it lags by 16 MB.
 
+An idle worker does not decode. Each poll first compares the WAL insert
+position with where its last decode ended, and decodes only when something
+was written since. Postgres logs "starting logical decoding" and "found
+consistent point" at LOG for every decode, so the worker decodes with
+`log_min_messages = fatal` and logs its own errors.
+
 ### Benchmark
 
 From `docs/reviews/bench/bench-pg-modes.sh` on a c7i.4xlarge (Debian 13,

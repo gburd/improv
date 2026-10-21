@@ -464,4 +464,24 @@ wait_for "$REV" "$(q "SELECT price * qty FROM sales WHERE quarter='Q1' AND produ
 eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "slot improv_db was invalidated")" 1 "the invalidation logged once"
 eq14 "$(tail -c +$((logpos + 1)) "$D/log" | grep -c "can no longer")" 0 "no peek of the invalidated slot"
 echo "ok: a lost slot is reported, dropped, made again and logged once; every model rebuilds and equals a fresh recalc"
+
+# 15. an idle worker is quiet (D8): at poll_ms = 50 an idle window (60 s by
+#     default) adds no "logical decoding" line to the server log, as every
+#     decode used to; writes after it are still applied, and log none either
+IDLE_S=${IDLE_S:-60}
+REVQ="SELECT price * qty FROM sales WHERE quarter='Q1' AND product='Widget'"
+q "UPDATE sales SET price = 13 WHERE quarter='Q1' AND product='Widget'"
+wait_for "$REV" "$(q "$REVQ")" "a write before the idle window" >/dev/null
+sleep 1
+logpos=$(wc -c <"$D/log")
+sleep "$IDLE_S"
+decoding() { tail -c +$((logpos + 1)) "$D/log" | grep -c "logical decoding" || true; }
+eq14 "$(decoding)" 0 "decoding lines logged over ${IDLE_S}s idle"
+for i in $(seq 1 10); do
+	q "UPDATE sales SET price = $((20 + i)) WHERE quarter='Q1' AND product='Widget'"
+	wait_for "$REV" "$(q "$REVQ")" "write $i after the idle window" >/dev/null
+done
+eq14 "$(decoding)" 0 "decoding lines logged by 10 applied writes"
+echo "ok: ${IDLE_S}s idle at poll_ms 50 logged no decoding line; 10 later writes applied, quietly"
+
 echo "PASS"

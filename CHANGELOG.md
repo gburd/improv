@@ -168,6 +168,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   builder: cyclic measure dependency at MeasureId(300)`).
 - **`improv refresh-all` reports measures in id order.** It walked a hash
   map, so the order of its lines changed from run to run.
+- **pg_improv: the idle sync worker no longer floods the server log.**
+  Every poll decoded the slot, and Postgres logs two LOG lines per decode
+  ("starting logical decoding for slot improv_db", "logical decoding found
+  consistent point"), about 310 MB a day at the default `poll_ms`. A poll
+  now decodes only when WAL was written since its last decode, and it
+  decodes with `log_min_messages = fatal`.
 - **pg_improv: an invalidated slot no longer stops logical sync silently.**
   When `max_slot_wal_keep_size` invalidated the `improv_db` slot, every poll
   logged "can no longer access replication slot", `improv.status` showed no

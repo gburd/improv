@@ -500,7 +500,13 @@ fn sweep() {
         }
     }
     let peeked = match in_txn(peek) {
-        Ok(p) => p,
+        Ok(Some(p)) => p,
+        // No WAL since the last decode: nothing to route, nor to confirm.
+        Ok(None) => Peeked {
+            stream: pgoutput::Stream::default(),
+            full: true,
+            flush: 0,
+        },
         Err(e) => return slot_error(&listed, &format!("reading the slot {SLOT}: {e}")),
     };
     slot_ok();
@@ -790,16 +796,35 @@ struct Peeked {
     flush: u64,
 }
 
-fn peek() -> Res<Peeked> {
+/// The decode under `log_min_messages = fatal`: every decoding context
+/// logs "starting logical decoding" and "found consistent point" at LOG,
+/// which outranks ERROR in the server log (so `warning` would not hide
+/// them), and an idle worker at `poll_ms = 200` made about 310 MB of log a
+/// day. The worker catches and logs its errors itself.
+const QUIET: &str = "SELECT set_config('log_min_messages', 'fatal', true)";
+
+/// One decode of the shared slot, or `None` when no WAL was written since
+/// the last complete one (so an idle worker does not decode at all).
+fn peek() -> Res<Option<Peeked>> {
     let max = MAX_CHANGES.get().max(1);
-    let (flush, rows) = Spi::connect(|c| -> Res<_> {
-        let flush = c
-            .select("SELECT pg_current_wal_flush_lsn()::text", None, &[])?
-            .first()
-            .get::<String>(1)?
-            .as_deref()
-            .and_then(pgoutput::parse_lsn)
-            .ok_or("cannot read the WAL flush position")?;
+    let got = Spi::connect(|c| -> Res<_> {
+        let t = c.select(
+            "SELECT pg_current_wal_insert_lsn()::text, pg_current_wal_flush_lsn()::text",
+            None,
+            &[],
+        )?;
+        let r = t.first();
+        let lsn = |i| -> Res<u64> {
+            Ok(r.get::<String>(i)?
+                .as_deref()
+                .and_then(pgoutput::parse_lsn)
+                .ok_or("cannot read the WAL position")?)
+        };
+        let (insert, flush) = (lsn(1)?, lsn(2)?);
+        if insert <= PEEKED_TO.get() {
+            return Ok(None);
+        }
+        c.select(QUIET, None, &[])?;
         let rows: Vec<Vec<u8>> = c
             .select(
                 "SELECT data FROM pg_logical_slot_peek_binary_changes( \
@@ -809,17 +834,24 @@ fn peek() -> Res<Peeked> {
             )?
             .map(|r| req(&r, 1))
             .collect::<Res<_>>()?;
-        Ok((flush, rows))
+        Ok(Some((flush, rows)))
     })?;
+    let Some((flush, rows)) = got else {
+        return Ok(None);
+    };
     let mut stream = pgoutput::Stream::default();
     for data in &rows {
         stream.feed(data)?;
     }
-    Ok(Peeked {
+    let full = rows.len() >= max as usize;
+    // A decode that stopped short read everything flushed before it; WAL
+    // inserted but not yet flushed is past `flush`, so it is read next poll.
+    PEEKED_TO.set(if full { 0 } else { flush });
+    Ok(Some(Peeked {
         stream,
-        full: rows.len() >= max as usize,
+        full,
         flush,
-    })
+    }))
 }
 
 /// Confirm the slot up to `target` when it is past the slot's position: at
@@ -836,6 +868,8 @@ fn advance(target: u64, eager: bool) -> Res<bool> {
     if target <= at || (!eager && target - at < IDLE_ADVANCE) {
         return Ok(false);
     }
+    // The advance decodes too, so it would log the same two lines.
+    Spi::run(QUIET)?;
     Spi::run_with_args(
         "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
         &[SLOT.into(), pgoutput::format_lsn(target).into()],
@@ -848,6 +882,8 @@ thread_local! {
     static LIVE: RefCell<HashMap<i64, Live>> = RefCell::new(HashMap::new());
     /// Failing models: when to retry, and the current delay.
     static RETRY: RefCell<HashMap<i64, (Instant, Duration)>> = RefCell::new(HashMap::new());
+    /// The flush position the last complete decode read to ([`peek`]).
+    static PEEKED_TO: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The shared slot's last failure, logged once ([`slot_error`]).
     static SLOT_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     /// A standby snapshot was logged that the slot has not advanced past.
