@@ -155,7 +155,7 @@ every derived cell recomputed.
 - **In Postgres**, also: two rows landing on one coordinate of a measure
   bound without an aggregate, a change to a text `min`/`max` binding, and
   any error. The full list is in
-  [the pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#logical-mode-default).
+  [the pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md) (logical mode).
 
 A rebuild costs what loading and computing the model from scratch costs, so
 a model that rebuilds on every write gets none of the incremental benefit.
