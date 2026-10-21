@@ -46,11 +46,17 @@ for what changed in each release.
 
 ## Reading order
 
-1. [Ways to Use Improv](./ways.md): pick a front end.
-2. [The Improv Model](./model.md): categories, items, measures, coordinates.
-3. [Getting Started](./getting-started.md): build a model from the CLI.
-4. [The Formula Language](./formulas.md): dimension-aware formulas and
+1. [Concepts](./concepts.md): the ideas, before the syntax.
+2. [When to Use Improv](./when-to-use.md), and when not.
+3. [Ways to Use Improv](./ways.md): pick a front end.
+4. [The Improv Model](./model.md): categories, items, measures, coordinates.
+5. [Getting Started](./getting-started.md): build a model from the CLI.
+6. [The Formula Language](./formulas.md): dimension-aware formulas and
    aggregation.
-5. [The Desktop GUI](./gui-tour.md) and [Improv in Postgres](./postgres.md).
-6. [Architecture & Design](./architecture.md) and
+7. [The Desktop GUI](./gui-tour.md) and [Improv in Postgres](./postgres.md).
+8. Running pg_improv in production: [Monitoring](./monitoring.md),
+   [Capacity Planning](./capacity.md), [Backup and
+   Restore](./runbook-backup.md), the [Operations Runbook](./runbook-ops.md)
+   and [Troubleshooting](./troubleshooting.md).
+9. [Architecture & Design](./architecture.md) and
    [Storage & Persistence](./storage.md): how it works inside.

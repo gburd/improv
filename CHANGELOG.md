@@ -6,6 +6,20 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Concepts, operations and troubleshooting guides.** The guide gains
+  Concepts (the ideas before the syntax), When to Use Improv (each wrong
+  fit, what to use instead, and the measured limits), and an Operations
+  part: Monitoring (`improv.status` column by column, the `improv_db`
+  slot, the worker's log lines, alert rules, the HTTP server), Capacity
+  Planning (sizing formulas and a worked 2.5M-row example), Backup and
+  Restore and Operations runbooks (each procedure tested on PG 18), and
+  Troubleshooting (every formula error message, CLI errors, "why is this
+  slow"). `docs/ops/` ships a postgres_exporter queries file and a
+  Grafana dashboard. The guide's contents are regrouped into Guides,
+  Operations, Reference and Design.
+
 ### Changed
 
 - **Adding items to a wide category is linear, not quadratic.**
