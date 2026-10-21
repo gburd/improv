@@ -387,7 +387,9 @@ jobs:
           sudo apt-get install -y groff
           status=0
           for f in docs/man/*.[157]; do
-            if ! out="$(groff -man -ww -z "$f" 2>&1)" || [ -n "$out" ]; then
+            # ascii has the fewest glyphs (ps has no Greek either): a page
+            # clean there is clean on every device.
+            if ! out="$(groff -man -ww -z -Tascii "$f" 2>&1)" || [ -n "$out" ]; then
               echo "::error file=$f::groff: $out"
               status=1
             fi

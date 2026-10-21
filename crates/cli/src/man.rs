@@ -164,10 +164,11 @@ fn functions_page() -> String {
         }
     }
     let body = lines.join("\n") + "\n";
-    // groff 1.23 has no glyph for the superscripts, subscripts, modifier
-    // letters and Hebrew the registry uses: give each a fallback, so every
-    // output device prints something and `-ww` stays quiet.
-    let mut chars: Vec<char> = body.chars().filter(|&c| no_glyph(c)).collect();
+    // Which glyphs a groff device has varies by device (ps has no Greek,
+    // ascii no Greek or superscripts) and by groff version, so every
+    // non-ASCII character gets a fallback; `.if !c` makes it a no-op where
+    // the glyph exists, and `-ww` stays quiet on every device.
+    let mut chars: Vec<char> = body.chars().filter(|c| !c.is_ascii()).collect();
     chars.sort_unstable();
     chars.dedup();
     let fallbacks: String = chars
@@ -235,22 +236,53 @@ fn link(s: &str) -> Option<(&str, &str)> {
     (!text.contains(['[', ']'])).then_some((text, rest))
 }
 
-/// Whether groff 1.23 lacks a glyph for `c` (it warns "special character
-/// not defined").
-fn no_glyph(c: char) -> bool {
-    matches!(c as u32, 0x02B0..=0x036F | 0x0590..=0x05FF | 0x1D00..=0x1DBF | 0x2070..=0x209F)
-}
-
 /// What an ASCII terminal shows for `c` when groff has no glyph for it.
 fn ascii(c: char) -> String {
     const SUP: &str = "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻ⁱᵀᵉᵏʷˣ";
     const SUP_ASCII: &str = "0123456789+-iTekwx";
     const SUB: &str = "₀ᵢₙ";
     const SUB_ASCII: &str = "0in";
+    const NAMED: [(char, &str); 25] = [
+        ('²', "^2"),
+        ('³', "^3"),
+        ('¹', "^1"),
+        ('·', "*"),
+        ('×', "x"),
+        ('±', "+/-"),
+        ('√', "sqrt"),
+        ('≠', "!="),
+        ('≤', "<="),
+        ('≥', ">="),
+        ('−', "-"),
+        ('–', "-"),
+        ('…', "..."),
+        ('é', "e"),
+        ('ö', "o"),
+        ('Γ', "Gamma"),
+        ('Δ', "Delta"),
+        ('Π', "Pi"),
+        ('Σ', "Sigma"),
+        ('Φ', "Phi"),
+        ('α', "alpha"),
+        ('β', "beta"),
+        ('γ', "gamma"),
+        ('ε', "epsilon"),
+        ('λ', "lambda"),
+    ];
+    const NAMED2: [(char, &str); 6] = [
+        ('μ', "mu"),
+        ('π', "pi"),
+        ('ρ', "rho"),
+        ('σ', "sigma"),
+        ('χ', "chi"),
+        ('ψ', "psi"),
+    ];
     if let Some(i) = SUP.chars().position(|s| s == c) {
         format!("^{}", SUP_ASCII.as_bytes()[i] as char)
     } else if let Some(i) = SUB.chars().position(|s| s == c) {
         format!("_{}", SUB_ASCII.as_bytes()[i] as char)
+    } else if let Some((_, a)) = NAMED.iter().chain(&NAMED2).find(|(n, _)| *n == c) {
+        (*a).into()
     } else {
         "?".into()
     }
@@ -389,5 +421,6 @@ fn every_command_has_a_page() {
     assert_eq!(ascii('²'), "^2");
     assert_eq!(ascii('ₙ'), "_n");
     assert_eq!(ascii('ב'), "?");
-    assert!(no_glyph('ᵀ') && no_glyph('ב') && !no_glyph('≤') && !no_glyph('²'));
+    assert_eq!(ascii('π'), "pi");
+    assert_eq!(ascii('≤'), "<=");
 }
