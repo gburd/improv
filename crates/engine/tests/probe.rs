@@ -15,6 +15,7 @@ use improv_core_model::{
 };
 use improv_engine::dataflow::evaluate;
 use improv_engine::session::Engine;
+use improv_engine::CoordKey;
 use std::time::{Duration, Instant};
 
 fn env_or(name: &str, default: usize) -> usize {
@@ -141,7 +142,7 @@ fn wide() {
         let it = w[n / 2 + e % (n / 2)];
         let t = Instant::now();
         let s = engine
-            .set(X, vec![(W, it.0)], 10.0 + e as f64)
+            .set(X, CoordKey::from_slice(&[(W, it.0)]), 10.0 + e as f64)
             .expect("set");
         maxes.push(t.elapsed());
         drop(s);
@@ -152,7 +153,11 @@ fn wide() {
     for e in 0..edits {
         let t = Instant::now();
         let s = engine
-            .set(X, vec![(W, last.0)], 0.5 * (e + 1) as f64)
+            .set(
+                X,
+                CoordKey::from_slice(&[(W, last.0)]),
+                0.5 * (e + 1) as f64,
+            )
             .expect("set");
         tails.push(t.elapsed());
         drop(s);
@@ -222,7 +227,7 @@ fn measures() {
     for e in 0..edits {
         let t = Instant::now();
         let s = engine
-            .set(X, vec![(W, c[0].0)], 1000.0 + e as f64)
+            .set(X, CoordKey::from_slice(&[(W, c[0].0)]), 1000.0 + e as f64)
             .expect("set");
         lat.push(t.elapsed());
         let (last, want) = if split {
@@ -234,7 +239,7 @@ fn measures() {
             )
         };
         assert_eq!(
-            last.get(&vec![(W, c[0].0)]).and_then(|v| v.as_num()),
+            last.get([(W, c[0].0)].as_slice()).and_then(|v| v.as_num()),
             Some(want)
         );
     }

@@ -194,7 +194,7 @@ fn statistical_reductions_match_libreoffice() {
                 };
                 for (key, w) in cells {
                     let want = expected(w);
-                    let got = res.get(&key);
+                    let got = res.get(key.as_slice());
                     let ok = match (got, &want) {
                         (Some(g), Some(want)) => close(g, want, w),
                         (None, None) => true,

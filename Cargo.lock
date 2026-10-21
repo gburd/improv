@@ -2614,6 +2614,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "smallvec",
  "statrs",
  "thiserror 2.0.20",
  "timely",

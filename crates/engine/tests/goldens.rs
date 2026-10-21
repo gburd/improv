@@ -165,7 +165,7 @@ fn dataflow_matches_scalar_on_the_goldens() {
     let ids: Vec<MeasureId> = want.keys().copied().collect();
     let out = evaluate(&model, &ids).expect("evaluate");
     for (id, v) in &want {
-        let got = out.get(id).and_then(|m| m.get(&Vec::new()));
+        let got = out.get(id).and_then(|m| m.get([].as_slice()));
         assert_eq!(got, Some(v), "{}", model.measures[id].name.0);
     }
     assert!(want.len() > 500);

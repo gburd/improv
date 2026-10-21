@@ -34,8 +34,15 @@ pub mod typed;
 
 use improv_core_model::{CategoryId, Coordinate, ItemId, Value};
 
-/// The dataflow encoding of a coordinate: sorted `(category_id, item_id)` pairs.
-pub type CoordKey = Vec<(u32, u32)>;
+/// The dataflow encoding of a coordinate: sorted `(category_id, item_id)`
+/// pairs. Up to three pairs are held inline (no heap allocation): a key is a
+/// DD key, hashed, compared and copied per cell, and models rarely range a
+/// measure over more than three categories.
+pub type CoordKey = smallvec::SmallVec<[(u32, u32); 3]>;
+
+/// The crate [`CoordKey`] is built on, so callers can write
+/// `improv_engine::smallvec::smallvec![(c, i)]` without depending on it.
+pub use smallvec;
 
 /// The dataflow encoding of a cell value.
 ///
@@ -139,7 +146,7 @@ pub fn decode_coord(k: &CoordKey) -> Coordinate {
 /// Exactly the pairs whose category is kept, in order (proven in
 /// [`improv_verified::keys::project`]).
 pub fn project_key(k: &CoordKey, keep: &[u32]) -> CoordKey {
-    improv_verified::keys::project(k, keep)
+    improv_verified::keys::project(k, keep).into()
 }
 
 #[cfg(test)]
@@ -334,8 +341,8 @@ mod tests {
     fn coord_keys_round_trip_and_project() {
         let c = Coordinate::from_pairs([(CategoryId(2), ItemId(20)), (CategoryId(1), ItemId(10))]);
         let k = encode_coord(&c);
-        assert_eq!(k, vec![(1, 10), (2, 20)]);
+        assert_eq!(k.as_slice(), [(1, 10), (2, 20)]);
         assert_eq!(decode_coord(&k), c);
-        assert_eq!(project_key(&k, &[2]), vec![(2, 20)]);
+        assert_eq!(project_key(&k, &[2]).as_slice(), [(2, 20)]);
     }
 }

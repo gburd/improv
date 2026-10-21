@@ -391,7 +391,7 @@ impl Host {
             }),
             K::Literal(v) => {
                 let v = CellValue::from_model_value(v).expect("covers checks literals");
-                vec![(Vec::new(), v)]
+                vec![(CoordKey::new(), v)]
             }
             K::MapUnary(op, a) => self
                 .eval(a, x)
@@ -411,7 +411,7 @@ impl Host {
                         .iter()
                         .map(|(k, v)| (k.clone(), apply_binary(op, v, &r)))
                         .collect(),
-                    (Some(l), Some(r)) => vec![(Vec::new(), apply_binary(op, &l, &r))],
+                    (Some(l), Some(r)) => vec![(CoordKey::new(), apply_binary(op, &l, &r))],
                     (None, None) => {
                         let (l, r) = (self.eval(a, x), self.eval(b, x));
                         self.align(&l, b, &r, &shared_cats(a, b))
@@ -459,7 +459,12 @@ impl Host {
             ),
             K::Items(cat, vals) => vals
                 .iter()
-                .filter_map(|(i, v)| Some((vec![(cat.0, i.0)], CellValue::from_model_value(v)?)))
+                .filter_map(|(i, v)| {
+                    Some((
+                        smallvec::smallvec![(cat.0, i.0)],
+                        CellValue::from_model_value(v)?,
+                    ))
+                })
                 .collect(),
             K::Coalesce { args, grid } => self.coalesce(n, args, grid.as_deref(), x),
             K::Remap { input, maps } => {
@@ -765,7 +770,7 @@ impl Host {
             .map(|(a, _)| a)
             .collect();
         let Some((first, rest)) = colls.split_first() else {
-            return vec![(Vec::new(), call_with(func, &template, &[]))];
+            return vec![(CoordKey::new(), call_with(func, &template, &[]))];
         };
         let mut acc: Vec<(CoordKey, Vec<CellValue>)> = self
             .eval(first, x)
@@ -1177,11 +1182,11 @@ mod tests {
         let mut r = MeasureValues::new();
         let mut yv = MeasureValues::new();
         for (i, a) in items.iter().enumerate() {
-            r.insert(vec![(A.0, a.0)], num(i as f64 - 1.0));
+            r.insert(CoordKey::from_slice(&[(A.0, a.0)]), num(i as f64 - 1.0));
             for j in 0..3u32 {
                 // Equal values at one item too: a row with multiplicity 2.
                 let v = f64::from((j * 7 + i as u32 * 3) % 4);
-                yv.insert(vec![(A.0, a.0), (B.0, 30 + j)], num(v));
+                yv.insert(CoordKey::from_slice(&[(A.0, a.0), (B.0, 30 + j)]), num(v));
             }
         }
         for name in ["FIRST", "LAST", "SUM", "TEXTJOIN"] {

@@ -32,7 +32,7 @@ fn product_item(p: u32) -> ItemId {
 fn key(pairs: &[(u32, u32)]) -> CoordKey {
     let mut k: Vec<(u32, u32)> = pairs.to_vec();
     k.sort();
-    k
+    k.into()
 }
 
 /// Build the schema (categories, items, measures) for an `n_time x m_product`

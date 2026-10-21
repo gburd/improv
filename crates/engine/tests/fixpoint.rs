@@ -144,7 +144,7 @@ fn reference(n: usize, w: &BTreeMap<(usize, usize), f64>) -> Vec<f64> {
 fn ranks(n: usize, vals: &HashMap<CoordKey, CellValue>) -> Vec<f64> {
     (0..n)
         .map(|i| {
-            vals.get(&vec![(SRC.0, src(i).0)])
+            vals.get([(SRC.0, src(i).0)].as_slice())
                 .and_then(CellValue::as_num)
                 .unwrap_or_else(|| panic!("no rank for p{i}"))
         })
@@ -291,7 +291,7 @@ fn fixpoint_converges_stops_at_max_iter_and_feeds_other_measures() {
     let col = |id: u32| {
         (0..3)
             .map(|i| {
-                out[&MeasureId(id)][&vec![(SRC.0, src(i).0)]]
+                out[&MeasureId(id)][[(SRC.0, src(i).0)].as_slice()]
                     .as_num()
                     .unwrap()
             })
@@ -312,12 +312,12 @@ fn fixpoint_converges_stops_at_max_iter_and_feeds_other_measures() {
     for (got, want) in col(207).iter().zip([2.0, 4.0, 6.0]) {
         assert!((got - want).abs() < 1e-9, "{got} vs {want}");
     }
-    let root = out[&MeasureId(206)][&Vec::new()].as_num().unwrap();
+    let root = out[&MeasureId(206)][[].as_slice()].as_num().unwrap();
     assert!((root - 2f64.sqrt()).abs() < 1e-15);
 
     // Live: an edit re-solves, warm, and agrees with a fresh evaluation.
     let (mut eng, _) = Engine::new(&m, &ids).unwrap();
-    let k1 = vec![(SRC.0, src(1).0)];
+    let k1 = CoordKey::from_slice(&[(SRC.0, src(1).0)]);
     let snap = eng.set(W, k1.clone(), 10.0).unwrap();
     m.set_input(
         W,

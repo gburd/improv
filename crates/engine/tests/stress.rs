@@ -58,7 +58,7 @@ fn region_item(r: usize) -> ItemId {
 fn key(pairs: &[(u32, u32)]) -> CoordKey {
     let mut k: Vec<(u32, u32)> = pairs.to_vec();
     k.sort();
-    k
+    k.into()
 }
 
 /// Known input values (integer-valued f64, so `Price*Quantity` is exact).

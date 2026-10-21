@@ -87,7 +87,7 @@ where
                 (Some(a), Some(b)) => {
                     // Both literals: a scalar result at the empty coordinate.
                     let v = apply_binary(op, &a, &b);
-                    let empty: CoordKey = Vec::new();
+                    let empty = CoordKey::new();
                     let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
                     Ok(vec![((empty, v), t, 1isize)]
                         .to_stream(scope)
@@ -148,7 +148,11 @@ where
                 .iter()
                 .filter_map(|(item, v)| {
                     let cv = CellValue::from_model_value(v)?;
-                    Some(((vec![(cat.0, item.0)], cv), t.clone(), 1isize))
+                    Some((
+                        (smallvec::smallvec![(cat.0, item.0)], cv),
+                        t.clone(),
+                        1isize,
+                    ))
                 })
                 .collect();
             Ok(rows.to_stream(scope).as_collection())
@@ -332,7 +336,7 @@ where
             // references it. Build a constant single-cell collection.
             let cv = CellValue::from_model_value(v)
                 .ok_or_else(|| EngineError::Unsupported("literal has no cell value".into()))?;
-            let empty: CoordKey = Vec::new();
+            let empty = CoordKey::new();
             let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
             Ok(vec![((empty, cv), t, 1isize)]
                 .to_stream(scope)
@@ -533,7 +537,7 @@ pub(crate) fn where_row<V: Clone>(
 
 /// Every item combination of `grid`, row-major (the last category fastest).
 pub(crate) fn grid_keys(grid: &[(CategoryId, Vec<ItemId>)]) -> Vec<CoordKey> {
-    grid.iter().fold(vec![Vec::new()], |acc, (c, items)| {
+    grid.iter().fold(vec![CoordKey::new()], |acc, (c, items)| {
         acc.iter()
             .flat_map(|pre: &CoordKey| {
                 items.iter().map(move |i| {
@@ -564,7 +568,7 @@ pub(crate) fn remap_key(
     from: &[u32],
     to: &HashMap<(u32, u32), (u32, u32)>,
 ) -> Option<CoordKey> {
-    let mut k2 = Vec::with_capacity(k.len());
+    let mut k2 = CoordKey::with_capacity(k.len());
     for &(c, i) in k {
         if from.contains(&c) {
             k2.push(*to.get(&(c, i))?);
@@ -800,7 +804,7 @@ fn constant<G: Scope>(scope: &mut G, v: CellValue) -> Coll<G>
 where
     G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
 {
-    let empty: CoordKey = Vec::new();
+    let empty = CoordKey::new();
     let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
     vec![((empty, v), t, 1isize)]
         .to_stream(scope)
@@ -958,14 +962,14 @@ fn truthy(v: &CellValue) -> bool {
 /// Project a coordinate key down to a subset of category ids (proven in
 /// [`improv_verified::keys::project`]).
 pub(crate) fn project(k: &CoordKey, keep: &[u32]) -> CoordKey {
-    improv_verified::keys::project(k, keep)
+    improv_verified::keys::project(k, keep).into()
 }
 
 /// Merge two sorted coordinate keys (right's extra dims added to left; shared
 /// dims agree, they were the join key). A proven merge:
 /// [`improv_verified::keys::union_keys`].
 pub(crate) fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
-    improv_verified::keys::union_keys(a, b)
+    improv_verified::keys::union_keys(a, b).into()
 }
 
 /// Compute the derived measures transitively needed by `targets`, in
@@ -1835,7 +1839,7 @@ mod tests {
         define(&mut m, 201, vec![person], "D = RANK.DENSE(Vol OVER Person)");
         let ids = [MeasureId(200), MeasureId(201)];
         let (mut eng, snap) = crate::session::Engine::new(&m, &ids).unwrap();
-        let u = |s: &crate::session::Snapshot| s[&MeasureId(200)][&Vec::new()].clone();
+        let u = |s: &crate::session::Snapshot| s[&MeasureId(200)][&CoordKey::new()].clone();
         let d = |s: &crate::session::Snapshot| {
             (1..=4)
                 .map(|p| s[&MeasureId(201)].get(&key(&[(1, 10 + p)])).cloned())
@@ -1850,7 +1854,10 @@ mod tests {
         assert_eq!(d(&snap), [n(3.0), None, n(2.0), n(1.0)]);
         m.inputs.remove(&(MeasureId(101), at(2)));
         let fresh = evaluate(&m, &ids).unwrap();
-        assert_eq!(fresh[&MeasureId(200)][&Vec::new()], CellValue::num(3.0));
+        assert_eq!(
+            fresh[&MeasureId(200)][&CoordKey::new()],
+            CellValue::num(3.0)
+        );
         // Delete p3: now 20 is gone.
         let snap = eng.clear(MeasureId(101), key(&[(1, 13)])).unwrap();
         assert_eq!(u(&snap), CellValue::num(2.0));
@@ -1888,7 +1895,7 @@ mod tests {
             let snap = eng.apply(batch).unwrap();
             let distinct: std::collections::BTreeSet<_> = cells.values().collect();
             let want = (!cells.is_empty()).then(|| CellValue::num(distinct.len() as f64));
-            assert_eq!(snap[&MeasureId(200)].get(&Vec::new()).cloned(), want);
+            assert_eq!(snap[&MeasureId(200)].get(&CoordKey::new()).cloned(), want);
         }
     }
 
@@ -2946,7 +2953,10 @@ mod tests {
         // WidgetB: Ratio 0.1 > 0 selects the literal 0, at Revenue's cells.
         assert_eq!(at(201, 10, 21), Some(CellValue::num(0.0)));
         assert_eq!(out[&MeasureId(201)].len(), 4);
-        assert_eq!(out[&MeasureId(202)][&Vec::new()], CellValue::Err(err::DIV0));
+        assert_eq!(
+            out[&MeasureId(202)][&CoordKey::new()],
+            CellValue::Err(err::DIV0)
+        );
         // No else-branch: a false test is no cell.
         assert_eq!(at(203, 10, 20), None);
         assert_eq!(at(203, 10, 21), Some(CellValue::num(1000.0)));
@@ -2979,16 +2989,25 @@ mod tests {
         let n = CellValue::num;
         assert_eq!(out[&MeasureId(200)][&key(&[(1, 10), (2, 20)])], n(121.0));
         assert_eq!(out[&MeasureId(201)][&key(&[(2, 21)])], n(4000.0));
-        assert_eq!(out[&MeasureId(203)][&Vec::new()], CellValue::Bool(true));
-        assert_eq!(out[&MeasureId(204)][&Vec::new()], CellValue::Bool(false));
+        assert_eq!(
+            out[&MeasureId(203)][&CoordKey::new()],
+            CellValue::Bool(true)
+        );
+        assert_eq!(
+            out[&MeasureId(204)][&CoordKey::new()],
+            CellValue::Bool(false)
+        );
         assert_eq!(out[&MeasureId(205)][&key(&[(2, 20)])], n(3.33));
-        assert_eq!(out[&MeasureId(206)][&Vec::new()], n(std::f64::consts::PI));
+        assert_eq!(
+            out[&MeasureId(206)][&CoordKey::new()],
+            n(std::f64::consts::PI)
+        );
     }
 
     fn key(pairs: &[(u32, u32)]) -> CoordKey {
         let mut k: Vec<(u32, u32)> = pairs.to_vec();
         k.sort();
-        k
+        k.into()
     }
 
     #[test]

@@ -1703,7 +1703,10 @@ mod tests {
         let cells = out.get(&MeasureId(102)).unwrap();
         let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
-        assert_eq!(cells.get(&key).and_then(|v| v.as_num()), Some(70.0));
+        assert_eq!(
+            cells.get(key.as_slice()).and_then(|v| v.as_num()),
+            Some(70.0)
+        );
 
         // `eval` on an input measure is a clear error, not a crash.
         assert!(run(&s(&["eval", &db, "100"])).is_err());

@@ -46,10 +46,13 @@ fn unsorted_edit_coord_is_the_sorted_key() {
     );
     let (mut engine, _) = Engine::new(&m, &[revenue]).unwrap();
     // Qty[t1, p1] = 5, its key given Product first.
-    let snap = engine.set(qty, vec![(2, 20), (1, 10)], 5.0).unwrap();
+    let snap = engine
+        .set(qty, [(2, 20), (1, 10)].as_slice().into(), 5.0)
+        .unwrap();
     let rev = snap.get(&revenue).unwrap();
     assert_eq!(
-        rev.get(&vec![(1, 10), (2, 20)]).and_then(|v| v.as_num()),
+        rev.get([(1, 10), (2, 20)].as_slice())
+            .and_then(|v| v.as_num()),
         Some(15.0)
     );
     assert_eq!(rev.len(), 1);

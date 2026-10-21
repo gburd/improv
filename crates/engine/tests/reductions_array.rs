@@ -180,7 +180,7 @@ fn array_functions_match_libreoffice() {
                     key.extend(gc.map(|c| (c.0, item(c, g).0)));
                     key.sort_unstable();
                     let want = expected(w);
-                    let got = res.get(&key);
+                    let got = res.get(key.as_slice());
                     seen += usize::from(got.is_some());
                     missing += usize::from(want.is_none());
                     let ok = match (got, &want) {
@@ -246,7 +246,7 @@ fn textsplit_without_over_splits_each_cell() {
     let at = |t: usize, k: usize| {
         let mut key = vec![(T.0, item(T, t).0), (K.0, item(K, k).0)];
         key.sort_unstable();
-        out.get(&key).cloned()
+        out.get(key.as_slice()).cloned()
     };
     let text = |s: &str| Some(CellValue::Text(s.into()));
     // "a,b,c" has three parts for K's two items: "c" is dropped.

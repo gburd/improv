@@ -418,7 +418,7 @@ mod tests {
         }
         let out = crate::dataflow::evaluate(&m, &[target]).expect("dataflow evaluate");
         out.get(&target)
-            .and_then(|cells| cells.get(&Vec::new()).cloned())
+            .and_then(|cells| cells.get(&crate::CoordKey::new()).cloned())
     }
 
     fn num_expr() -> impl Strategy<Value = Expr> {

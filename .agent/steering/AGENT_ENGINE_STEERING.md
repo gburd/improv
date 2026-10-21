@@ -55,8 +55,17 @@ could be built on DD.
 **Gate status: CLEARED** (`engine` test `dd_revenue_is_incremental`). The viable
 encoding, which all engine code must follow:
 
-- **DD key = serialized coordinate** as a sorted `Vec<(u32, u32)>` of
+- **DD key = serialized coordinate** as a sorted list of
   `(category_id, item_id)` pairs — fixed-shape, `Ord + Hash`, exchange-safe.
+  `CoordKey` is `SmallVec<[(u32, u32); 3]>` (re-exported as
+  `improv_engine::smallvec`): up to three categories inline. A `Vec` key
+  was a heap allocation per cell, and malloc/free and `hash_one(Vec<..>)`
+  led every profile; inline keys halve `evaluate` on the 1M/5M grids
+  (4.3 → 2.2 s, 27.7 → 12.7 s) and cut peak RSS 10–15 %. Capacity 2 is
+  slightly leaner on 2-D grids but spills every 3-D key (the 3-D stress
+  case is 0.83 s at 2, 0.48 s at 3, 0.77 s with `Vec`); 4 costs memory
+  for no speed. Look keys up by slice (`map.get(&[(c, i)][..])`):
+  `SmallVec` borrows as `[T]`, not as `Vec`.
 - **Numeric value = `f64::to_bits()` as `u64`** carried in data position (not as
   the diff), so equality/order are well-defined.
 - **Diff = `isize` multiplicity**; a final `reduce` collapses to one value per

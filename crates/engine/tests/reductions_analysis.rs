@@ -271,7 +271,7 @@ fn analysis_functions_match_libreoffice_and_gnumeric() {
                 assert_eq!(ks.len(), cells.len(), "{line}: {formula}: golden shape");
                 for (key, w) in ks.iter().zip(cells) {
                     let want = expected(w);
-                    let got = res.get(key);
+                    let got = res.get(key.as_slice());
                     seen += usize::from(got.is_some());
                     let ok = match (got, &want) {
                         (Some(g), Some(want)) => close(g, want),

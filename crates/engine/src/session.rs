@@ -1048,7 +1048,7 @@ mod tests {
     fn key(pairs: &[(u32, u32)]) -> CoordKey {
         let mut k: Vec<(u32, u32)> = pairs.to_vec();
         k.sort();
-        k
+        k.into()
     }
 
     #[test]
@@ -1303,7 +1303,11 @@ mod tests {
         assert_eq!(a, b);
         let back = |s: &Snapshot| {
             (0..12)
-                .map(|i| s[&MeasureId(312)][&vec![(1, 100 + i)]].as_num().unwrap())
+                .map(|i| {
+                    s[&MeasureId(312)][&CoordKey::from_slice(&[(1, 100 + i)])]
+                        .as_num()
+                        .unwrap()
+                })
                 .collect::<Vec<_>>()
         };
         // r_i = r_(i-1) / 2 + X_i, from r_0 = X_0 = 1: exact in 12 rounds.
@@ -1324,7 +1328,7 @@ mod tests {
         ] {
             let edit = vec![Edit {
                 measure: e.0,
-                coord: e.1.clone(),
+                coord: e.1.clone().into(),
                 value: e.2.map(CellValue::num),
             }];
             let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
@@ -1356,7 +1360,7 @@ mod tests {
         }
         let (mut e, _) = Engine::new(&m, &ids).unwrap();
         let price = MeasureId(100);
-        let at = |i| vec![(2, i)];
+        let at = |i| CoordKey::from_slice(&[(2, i)]);
         let cell = |i, v: Option<f64>| Edit {
             measure: price,
             coord: at(i),
@@ -1439,11 +1443,14 @@ mod tests {
         for (mid, cells) in fresh(&m) {
             assert_eq!(*a[&mid], cells, "{mid:?}");
         }
-        let sum = a[&MeasureId(20)][&Vec::new()].as_num().unwrap();
+        let sum = a[&MeasureId(20)][&CoordKey::new()].as_num().unwrap();
         let flat: f64 = (0..n).map(|i| f64::from(i % 97) / 7.0 - 3.0).sum();
         assert!((sum - flat).abs() < 1e-9, "{sum} vs {flat}");
-        assert_eq!(a[&MeasureId(24)][&Vec::new()], CellValue::num(f64::from(n)));
-        assert_eq!(a[&MeasureId(26)][&Vec::new()], CellValue::Bool(true));
+        assert_eq!(
+            a[&MeasureId(24)][&CoordKey::new()],
+            CellValue::num(f64::from(n))
+        );
+        assert_eq!(a[&MeasureId(26)][&CoordKey::new()], CellValue::Bool(true));
         for (i, x) in [(5u32, 40.0), (2000, -1.5), (2999, 0.25)] {
             m.set_input(
                 MeasureId(10),
@@ -1452,7 +1459,7 @@ mod tests {
             );
             let edit = vec![Edit {
                 measure: MeasureId(10),
-                coord: vec![(1, i)],
+                coord: CoordKey::from_slice(&[(1, i)]),
                 value: Some(CellValue::num(x)),
             }];
             let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
@@ -1472,7 +1479,9 @@ mod tests {
             Coordinate::from_pairs([(w, ItemId(n))]),
             Value::Number(7.0),
         );
-        let snap = live.set(MeasureId(10), vec![(1, n)], 7.0).unwrap();
+        let snap = live
+            .set(MeasureId(10), CoordKey::from_slice(&[(1, n)]), 7.0)
+            .unwrap();
         let want = crate::dataflow::evaluate(&m, &ids[..7]).unwrap();
         for (mid, cells) in want {
             assert_eq!(*snap[&mid], cells, "{mid:?} with an appended item");

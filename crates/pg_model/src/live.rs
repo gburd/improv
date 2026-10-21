@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     fn key(q: u32, p: u32) -> CoordKey {
-        vec![(1, q), (2, p)]
+        CoordKey::from_slice(&[(1, q), (2, p)])
     }
 
     /// Relation `f (quarter, product, price, note)` with `keys` as its key.
@@ -2408,7 +2408,7 @@ mod tests {
         let snap = total.apply(mp.map(&mut m, &r, &batch, 0).unwrap()).unwrap();
         let fresh = improv_engine::dataflow::evaluate(&m, &[MeasureId(6)]).unwrap();
         let total = &fresh[&MeasureId(6)];
-        assert_eq!(total[&vec![(2, 21)]], CellValue::num(7.0));
+        assert_eq!(total[[(2, 21)].as_slice()], CellValue::num(7.0));
         assert_eq!(
             snap.get(&MeasureId(6)).map(|v| (**v).clone()),
             Some(total.clone())

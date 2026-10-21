@@ -104,7 +104,7 @@ fn run(formula: &str, groups: &[Group]) -> Vec<Option<CellValue>> {
     (0..groups.len() as u32)
         .map(|g| {
             let key = if several { vec![(2, 1000 + g)] } else { vec![] };
-            r.get(&key).cloned()
+            r.get(key.as_slice()).cloned()
         })
         .collect()
 }

@@ -225,7 +225,7 @@ fn lookups_match_the_goldens() {
                 for (key, w) in cells {
                     let want = expected(w);
                     expected_cells += usize::from(want.is_some());
-                    let got = res.get(&key);
+                    let got = res.get(key.as_slice());
                     let ok = match (got, &want) {
                         (Some(g), Some(want)) => close(g, want),
                         (None, None) => true,
@@ -309,7 +309,7 @@ fn rate_per_employee_from_a_band_table() {
         description: None,
     });
     let out = evaluate(&m, &[MeasureId(20)]).unwrap();
-    let rate = |e: usize| out[&MeasureId(20)][&vec![(emp.0, item(200, e).0)]].clone();
+    let rate = |e: usize| out[&MeasureId(20)][[(emp.0, item(200, e).0)].as_slice()].clone();
     assert_eq!(
         (0..4).map(rate).collect::<Vec<_>>(),
         [20.0, 30.0, 0.0, 10.0].map(CellValue::num)

@@ -2209,15 +2209,18 @@ mod tests {
         ];
         let model = build_model(&cat).unwrap();
         let cells = HashMap::from([
-            (vec![(1, 1), (2, 2)], CellValue::num(7.0)),
-            (vec![(1, 1), (2, 2), (3, 3)], CellValue::Text(s("x"))),
+            (CoordKey::from_slice(&[(1, 1), (2, 2)]), CellValue::num(7.0)),
+            (
+                CoordKey::from_slice(&[(1, 1), (2, 2), (3, 3)]),
+                CellValue::Text(s("x")),
+            ),
         ]);
         let rows = result_rows(&model, MeasureId(1), &cells).unwrap();
         assert_eq!(
             rows,
             ResultRows::from([(vec![s("Q1"), s("Widget")], n(7.0))])
         );
-        let foreign = HashMap::from([(vec![(1, 1)], CellValue::num(1.0))]);
+        let foreign = HashMap::from([(CoordKey::from_slice(&[(1, 1)]), CellValue::num(1.0))]);
         assert!(result_rows(&model, MeasureId(1), &foreign).is_err());
     }
 

@@ -828,6 +828,7 @@ dependencies = [
  "libm",
  "regex",
  "serde",
+ "smallvec",
  "statrs",
  "thiserror",
  "timely",

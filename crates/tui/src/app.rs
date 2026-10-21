@@ -306,7 +306,7 @@ fn cell_key(
     row: usize,
     col: usize,
 ) -> CoordKey {
-    let mut key: CoordKey = Vec::new();
+    let mut key = CoordKey::new();
     if let (Some((c, _)), Some((item, _))) = (row_cat, rows.get(row)) {
         key.push((c.0, item.0));
     }
@@ -1427,7 +1427,7 @@ pub(crate) mod tests {
         let rev_key = {
             let mut k = vec![(1u32, 10u32), (2, 20)];
             k.sort();
-            k
+            CoordKey::from_vec(k)
         };
         assert_eq!(
             app.snapshot
@@ -1530,7 +1530,7 @@ pub(crate) mod tests {
         let key = app.grid.coord_key(1, 1);
         let mut expect = vec![(1u32, 11u32), (2, 21)];
         expect.sort();
-        assert_eq!(key, expect, "cursor cell -> CoordKey");
+        assert_eq!(key.as_slice(), expect, "cursor cell -> CoordKey");
 
         // Round-trip: key -> Coordinate -> back matches cursor_coord.
         let (_m, coord) = app.cursor_coord();

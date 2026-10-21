@@ -5285,7 +5285,7 @@ fn cell_key_multi(
         pairs.push((c.0, i.0));
     }
     pairs.sort();
-    pairs
+    CoordKey::from_vec(pairs)
 }
 
 /// The number of axis lines the Cartesian product of `lists` produces: the
@@ -5409,7 +5409,7 @@ mod tests {
         // Revenue is derived and selected by default.
         assert_eq!(app.selected(), Some(MeasureId(102)));
         let vals = app.values_for(MeasureId(102));
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(vals.get(&key), Some(&70.0)); // 10 * 7
     }
@@ -5418,7 +5418,7 @@ mod tests {
     fn editing_recomputes_derived() {
         let mut app = build_app(revenue_model());
         // Set Quantity[2025,WidgetA] = 9 -> Revenue = 90.
-        let mut qkey = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut qkey: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         qkey.sort();
         app.set_cell(MeasureId(101), qkey.clone(), Value::Number(9.0))
             .unwrap();
@@ -5429,7 +5429,7 @@ mod tests {
     #[test]
     fn editing_derived_is_rejected() {
         let mut app = build_app(revenue_model());
-        let key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         assert!(app
             .set_cell(MeasureId(102), key, Value::Number(1.0))
             .is_err());
@@ -5445,7 +5445,7 @@ mod tests {
             .add_derived_measure("Revenue", "Price * Quantity")
             .expect("add derived");
         let vals = app.values_for(rev);
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(vals.get(&key), Some(&70.0)); // 10 * 7
                                                  // The measure is derived and its categories are the union {Time, Product}.
@@ -5461,7 +5461,7 @@ mod tests {
         app.commit_formula(MeasureId(102), "Price + Quantity")
             .expect("commit");
         let vals = app.values_for(MeasureId(102));
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(vals.get(&key), Some(&17.0));
     }
@@ -5475,7 +5475,7 @@ mod tests {
         assert_eq!(app.model, before, "model unchanged on parse error");
         // Snapshot still computes the original Revenue.
         let vals = app.values_for(MeasureId(102));
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(vals.get(&key), Some(&70.0));
     }
@@ -5817,7 +5817,7 @@ mod tests {
         let mut app = build_app(revenue_model());
         app.db = db;
 
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         let err = app
             .set_cell(MeasureId(101), key, Value::Number(9.0))
@@ -5868,7 +5868,7 @@ mod tests {
             app.formula_source(MeasureId(102)).as_deref(),
             Some("Price * Quantity")
         );
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(app.values_for(MeasureId(102)).get(&key), Some(&70.0));
 
@@ -6052,7 +6052,7 @@ mod tests {
         assert_eq!(tuples[0].len(), 2, "tuple binds both stacked categories");
         // The cell key for that row (no columns) binds Time AND Product, sorted.
         let key = cell_key_multi(&app.row_cats(), &tuples[0], &[], &[], &[]);
-        assert_eq!(key, vec![(1, 10), (2, 20)]);
+        assert_eq!(key.as_slice(), [(1, 10), (2, 20)]);
         // Grid dims: 1 row line, 1 col line (no col categories).
         assert_eq!(app.grid_dims(), (1, 1));
     }
@@ -6166,7 +6166,8 @@ mod tests {
         app.focused_mut().cursor_row = total - 1;
         app.focused_mut().cursor_col = 0;
         let key = app.cursor_key().expect("cursor addresses a cell");
-        let mut want = vec![(big.0, 1_000 + n_big - 1), (small.0, 12)];
+        let mut want: CoordKey =
+            improv_engine::smallvec::smallvec![(big.0, 1_000 + n_big - 1), (small.0, 12)];
         want.sort();
         assert_eq!(key, want);
     }
@@ -6199,7 +6200,8 @@ mod tests {
 
         // Cell [2025, WidgetA, North] = 100.
         let vals = app.values_for(MeasureId(200));
-        let mut north = vec![(1u32, 10u32), (2, 20), (3, 30)];
+        let mut north: CoordKey =
+            improv_engine::smallvec::smallvec![(1u32, 10u32), (2, 20), (3, 30)];
         north.sort();
         assert_eq!(vals.get(&north), Some(&100.0));
 
@@ -6207,7 +6209,8 @@ mod tests {
         app.set_page(0, 1);
         let (_, _, pinned) = app.resolved_axes();
         assert_eq!(pinned, vec![(CategoryId(3), ItemId(31))]); // South
-        let mut south = vec![(1u32, 10u32), (2, 20), (3, 31)];
+        let mut south: CoordKey =
+            improv_engine::smallvec::smallvec![(1u32, 10u32), (2, 20), (3, 31)];
         south.sort();
         assert_eq!(vals.get(&south), Some(&250.0));
     }
@@ -6352,14 +6355,14 @@ mod tests {
         // [1,1] = Quantity[2026, WidgetB] = Time(11), Product(21).
         app.focused_mut().cursor_row = 1;
         app.focused_mut().cursor_col = 1;
-        let mut expect = vec![(1u32, 11u32), (2, 21)];
+        let mut expect: CoordKey = improv_engine::smallvec::smallvec![(1u32, 11u32), (2, 21)];
         expect.sort();
         assert_eq!(app.cursor_key(), Some(expect));
 
         // [0,1] = Quantity[2025, WidgetB] = Time(10), Product(21).
         app.focused_mut().cursor_row = 0;
         app.focused_mut().cursor_col = 1;
-        let mut expect = vec![(1u32, 10u32), (2, 21)];
+        let mut expect: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2, 21)];
         expect.sort();
         assert_eq!(app.cursor_key(), Some(expect));
     }
@@ -6379,7 +6382,7 @@ mod tests {
             .unwrap();
 
         // Revenue[2025, WidgetA] = Price(10) * 200 = 2000 in the snapshot.
-        let mut rkey = vec![(1u32, 10u32), (2, 20)];
+        let mut rkey: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2, 20)];
         rkey.sort();
         let rev = app.values_for(MeasureId(102));
         assert_eq!(rev.get(&rkey), Some(&2000.0));
@@ -6536,7 +6539,7 @@ mod tests {
         );
         // That single scalar line has a complete key (Price's only dimension).
         let key = app.cursor_key().expect("scalar column line has a cell");
-        assert_eq!(key, vec![(2u32, 20u32)]);
+        assert_eq!(key.as_slice(), [(2u32, 20u32)]);
         assert!(app.cursor_is_editable());
 
         // Same model, but now the ROW category is emptied: 0 rows, while the
@@ -7418,7 +7421,7 @@ mod tests {
         // An unwritable store path: save() must fail.
         app.db = "/nonexistent-dir-improv/cannot-write.db".to_string();
         let measure = MeasureId(101); // Quantity (input)
-        let coord = vec![(1u32, 10u32), (2u32, 20u32)];
+        let coord: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         let before = app.model.input(measure, &decode(&coord)).cloned();
 
         let res = app.set_cell(measure, coord.clone(), Value::Number(999.0));
@@ -7469,7 +7472,7 @@ mod tests {
     }
 
     fn typed_key() -> CoordKey {
-        vec![(1u32, 10u32)]
+        improv_engine::smallvec::smallvec![(1u32, 10u32)]
     }
 
     /// A typed edit flows through the live engine: a derived measure over a
@@ -7543,7 +7546,13 @@ mod tests {
             Some("2025-03-04T00:00:00+00:00")
         );
         // A cell with no value is still blank (absence, not type).
-        assert_eq!(app.cell_text(MeasureId(2), &vec![(1u32, 99u32)]), None);
+        assert_eq!(
+            app.cell_text(
+                MeasureId(2),
+                &improv_engine::smallvec::smallvec![(1u32, 99u32)]
+            ),
+            None
+        );
     }
 
     /// Each declared type round-trips through an edit: type-appropriate text in,
@@ -7662,7 +7671,7 @@ mod tests {
     #[test]
     fn clearing_a_numeric_cell_retracts_it_from_the_engine() {
         let mut app = build_app(revenue_model());
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(
             app.values_for(MeasureId(102)).get(&key),
@@ -7694,7 +7703,7 @@ mod tests {
             .get_mut(&MeasureId(101))
             .expect("Quantity")
             .value_type = ValueType::Text;
-        let mut key = vec![(1u32, 10u32), (2u32, 20u32)];
+        let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         assert_eq!(
             app.values_for(MeasureId(102)).get(&key),
@@ -7970,7 +7979,7 @@ mod tests {
 
     /// The oracle cell + its Revenue key for the 2x2 fixture.
     fn q_and_rev_keys() -> (CoordKey, CoordKey) {
-        let mut k = vec![(1u32, 10u32), (2, 20)];
+        let mut k: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2, 20)];
         k.sort();
         (k.clone(), k)
     }
@@ -8018,7 +8027,7 @@ mod tests {
     #[test]
     fn undo_a_formula_commit_and_a_new_derived_measure() {
         let mut app = build_app(revenue_model());
-        let mut rkey = vec![(1u32, 10u32), (2, 20)];
+        let mut rkey: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2, 20)];
         rkey.sort();
         assert_eq!(app.values_for(MeasureId(102)).get(&rkey), Some(&70.0));
 
@@ -9737,7 +9746,7 @@ mod tests {
         );
         // The other coordinates of Revenue are untouched (an incremental
         // recompute, not a wholesale reset).
-        let mut other = vec![(1u32, 11u32), (2, 20)];
+        let mut other: CoordKey = improv_engine::smallvec::smallvec![(1u32, 11u32), (2, 20)];
         other.sort();
         assert_eq!(
             app.cell_text(MeasureId(102), &other).as_deref(),
@@ -11789,7 +11798,10 @@ mod tests {
         assert_eq!(app.status, "added Margin");
         assert_eq!(app.selected(), Some(id));
         assert!(app.new_formula_line.is_empty());
-        assert_eq!(app.values_for(id).get(&vec![(1, 10), (2, 20)]), Some(&69.0));
+        assert_eq!(
+            app.values_for(id).get([(1, 10), (2, 20)].as_slice()),
+            Some(&69.0)
+        );
     }
 
     fn key_event(key: egui::Key) -> egui::Event {
@@ -12081,7 +12093,7 @@ mod tests {
         app.formula_buf = "Price + Quantity".into();
         focused_frame(&ctx, &mut app, "formula_edit", vec![enter()]);
         assert_eq!(app.status, "formula updated");
-        let key = vec![(1, 10), (2, 20)];
+        let key: CoordKey = improv_engine::smallvec::smallvec![(1, 10), (2, 20)];
         assert_eq!(app.values_for(MeasureId(102)).get(&key), Some(&17.0));
         let before = app.model.measures[&MeasureId(102)].kind.clone();
         app.formula_buf = "Price *".into();
@@ -12178,7 +12190,10 @@ mod tests {
         app.sync_axis_state();
         app.set_axis(CategoryId(2), Axis::Columns);
         assert!(app.row_cats().is_empty());
-        assert_eq!(app.cursor_key(), Some(vec![(2, 20)]));
+        assert_eq!(
+            app.cursor_key(),
+            Some(improv_engine::smallvec::smallvec![(2, 20)])
+        );
     }
 
     #[test]
@@ -12361,7 +12376,7 @@ mod tests {
         key(&mut desk, &mut app, Key::Enter, M::NONE);
         assert!(app.matrices[0].editing.is_none());
         assert_eq!(app.status, "cell updated");
-        let k = vec![(1, 11), (2, 21)];
+        let k: CoordKey = improv_engine::smallvec::smallvec![(1, 11), (2, 21)];
         assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some("9"));
     }
 
@@ -12416,8 +12431,11 @@ mod tests {
         app.show_inspector = true;
         // One #ERR cell in Revenue's snapshot.
         let mut snap = (*app.snapshot).clone();
-        let errs: improv_engine::session::MeasureValues =
-            [(vec![(1, 10), (2, 20)], CellValue::Err(0))].into();
+        let errs: improv_engine::session::MeasureValues = [(
+            improv_engine::smallvec::smallvec![(1, 10), (2, 20)],
+            CellValue::Err(0),
+        )]
+        .into();
         snap.insert(MeasureId(102), std::sync::Arc::new(errs));
         app.snapshot = std::sync::Arc::new(snap);
         let mut desk = Desk::new();

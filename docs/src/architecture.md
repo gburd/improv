@@ -143,8 +143,9 @@ must be hashable. The model's `Coordinate` is a dynamic-arity `BTreeMap` and
 `Value` holds an `f64`, which is neither `Ord` nor `Hash`. The engine encodes
 at the dataflow boundary:
 
-- **Key** — a coordinate becomes a sorted `Vec<(u32, u32)>` of
-  `(category_id, item_id)` pairs (`CoordKey`). The `BTreeMap` already iterates
+- **Key** — a coordinate becomes a sorted list of `(category_id, item_id)`
+  pairs (`CoordKey`, a `SmallVec<[(u32, u32); 3]>`: up to three pairs inline,
+  no heap allocation per cell). The `BTreeMap` already iterates
   in sorted order, so the encoding is deterministic and `Ord + Hash`.
   `encode_coord` / `decode_coord` convert at the edge; `project_key` narrows a
   key to a subset of categories (used for joins and group-bys).

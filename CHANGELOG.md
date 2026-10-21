@@ -32,6 +32,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   operator and arrangement of its own, and the live engine has one output
   probe instead of one per measure: at 20,000 such measures an edit takes
   0.13 s (0.73 s before), and the engine uses 1.4 GB (3.4 GB before).
+- **`improv_engine::CoordKey` is a `SmallVec<[(u32, u32); 3]>`** (was a
+  `Vec<(u32, u32)>`): a key of up to three categories needs no heap
+  allocation. `evaluate` of a 1M-cell grid takes 2.2 s (4.3 s), 5M cells
+  12.7 s (27.7 s), with 10–15 % less memory; a single-cell edit 56 µs
+  (73 µs). API: build keys with `CoordKey::from_slice`, `.into()` from a
+  `Vec`, or `improv_engine::smallvec::smallvec![…]`, and look them up by
+  slice (`map.get(&[(c, i)][..])`).
 
 ### Fixed
 
