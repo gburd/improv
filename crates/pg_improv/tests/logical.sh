@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end test of pg_improv's logical-decoding sync (L2), with real
-# commits. Needs: cargo-pgrx installed and pg_improv installed into the PG
+# commits. Section 13 covers the shared slot: routing by table (two models
+# on one table, a model on two), models added, redefined and dropped while
+# a writer streams, and a failing model that holds no one back. Needs: cargo-pgrx installed and pg_improv installed into the PG
 # found by PG_BIN (default: Debian's PG 17). Uses its own data dir and port.
 #
 #   crates/pg_improv/tests/logical.sh            # run, print latency table
@@ -353,4 +355,77 @@ if tail -c +$((logpos + 1)) "$D/log" | grep -q "model tagged: rebuilding"; then
 	echo "FAIL: a typed update rebuilt the model"; exit 1
 fi
 echo "ok: text/bool/date UPDATE applied cell by cell (1 row per result, no rebuild)"
+# 13. one shared slot (0.11.0): routing by relation, and per-model state.
+#     m_a and m_b both bind ev (two models on one table); m_c binds ev and
+#     ev2 (a model on two tables). Then a writer streams into ev while a
+#     model is added, one is rebuilt, one is dropped, and one fails.
+q "CREATE TABLE ev (id int PRIMARY KEY, k text, n float8)"
+q "CREATE TABLE ev2 (k text PRIMARY KEY, w float8)"
+q "INSERT INTO ev SELECT g, 'k' || g % 3, 1 FROM generate_series(1, 30) g"
+q "INSERT INTO ev2 VALUES ('k0', 10), ('k1', 20), ('k2', 30)"
+mk() { # model on ev: T = sum(n) per k
+	q "SELECT improv.create_model('$1')" >/dev/null
+	q "SELECT improv.bind_category('$1','K','ev','k')" >/dev/null
+	q "SELECT improv.bind_measure('$1','N','ev','n', agg => 'sum')" >/dev/null
+	q "SELECT improv.define('$1','T = N * 1')" >/dev/null
+}
+mk m_a; mk m_b; mk m_c
+q "SELECT improv.bind_category('m_c','K','ev2','k')" >/dev/null
+q "SELECT improv.bind_measure('m_c','W','ev2','w')" >/dev/null
+q "SELECT improv.define('m_c','TW = N * W')" >/dev/null
+eq13() { [ "$1" = "$2" ] || { echo "FAIL: $3: got '$1', want '$2'"; tail -20 "$D/log"; exit 1; }; }
+SUMK="SELECT string_agg(k || '=' || s, ',' ORDER BY k) FROM (SELECT k, sum(n) s FROM ev GROUP BY k) x"
+T="string_agg(k || '=' || value, ',' ORDER BY k)"
+for m in m_a m_b m_c; do wait_for "SELECT $T FROM improv_$m.t" "$(q "$SUMK")" "$m caught up" >/dev/null; done
+wait_for "SELECT count(*) FROM improv_m_c.tw" 3 "m_c's TW" >/dev/null
+eq13 "$(q "SELECT count(*) FROM pg_replication_slots")" 1 "one slot for every model"
+eq13 "$(q "SELECT string_agg(DISTINCT slot, ',') FROM improv.sync_state")" improv_db "every model on the shared slot"
+eq13 "$(q "SELECT count(*) FROM pg_publication_tables WHERE pubname = 'improv_db' AND tablename IN ('ev', 'ev2')")" 2 \
+	"the publication holds each bound table once"
+# routing: a write to ev2 reaches m_c only (m_a and m_b apply nothing)
+cnt() { q "SELECT incremental_applies + rebuilds FROM improv.status('$1')"; }
+a0=$(cnt m_a) b0=$(cnt m_b)
+q "UPDATE ev2 SET w = 11 WHERE k = 'k0'"
+wait_for "SELECT value FROM improv_m_c.tw WHERE k = 'k0'" 110 "m_c follows ev2" >/dev/null
+eq13 "$(cnt m_a) $(cnt m_b)" "$a0 $b0" "a write to ev2 does not reach m_a or m_b"
+# a writer: one row per 20 ms into ev, until told to stop
+( i=1000; while [ ! -f "$D/stop13" ]; do q "INSERT INTO ev VALUES ($i, 'k' || $i % 3, 1)" 2>/dev/null; i=$((i + 1)); sleep 0.02; done ) &
+writer=$!
+sleep 0.5
+mk m_d                                                        # added mid-stream
+q "SELECT improv.define('m_b','T = N * 1 + 0', replace => true)" >/dev/null  # rebuilt
+q "SELECT improv.drop_model('m_a')"                           # dropped
+# a failing model: its result table refuses the worker's writes
+q "CREATE TABLE evx (id int PRIMARY KEY, k text, n float8)"
+q "INSERT INTO evx SELECT g, 'x' || g, 1 FROM generate_series(1, 5) g"
+q "SELECT improv.create_model('m_e')" >/dev/null
+q "SELECT improv.set_sync_mode('m_e','manual')" >/dev/null
+q "SELECT improv.bind_category('m_e','K','evx','k')" >/dev/null
+q "SELECT improv.bind_measure('m_e','N','evx','n')" >/dev/null
+q "SELECT improv.define('m_e','T = N * 1')" >/dev/null
+q "ALTER TABLE improv_m_e.t ADD CONSTRAINT refuse CHECK (value < 0) NOT VALID"
+q "SELECT improv.set_sync_mode('m_e','logical')" >/dev/null
+wait_for "SELECT last_error IS NOT NULL FROM improv.status('m_e')" t "m_e fails" >/dev/null
+echo "   m_e: $(q "SELECT left(last_error, 120) FROM improv.status('m_e')")"
+sleep 1
+touch "$D/stop13"; wait "$writer"
+want=$(q "$SUMK")
+for m in m_b m_c m_d; do
+	wait_for "SELECT $T FROM improv_$m.t" "$want" "$m exact after streaming past the failing model" >/dev/null
+done
+# a marker routed to m_c only: once it shows, the slot is past it, though m_e still fails
+mark=$(q "SELECT pg_current_wal_insert_lsn()")
+q "UPDATE ev2 SET w = 12 WHERE k = 'k0'"
+wait_for "SELECT value FROM improv_m_c.tw WHERE k = 'k0'" "$(q "SELECT sum(n) * 12 FROM ev WHERE k = 'k0'")" "m_c marker" >/dev/null
+wait_for "SELECT confirmed_flush_lsn > '$mark' FROM pg_replication_slots WHERE slot_name = 'improv_db'" t \
+	"the failing model does not hold the slot back" >/dev/null
+eq13 "$(q "SELECT last_error IS NOT NULL FROM improv.status('m_e')")" t "m_e still failing"
+eq13 "$(q "SELECT count(*) FROM improv.model WHERE name = 'm_a'")" 0 "m_a dropped"
+eq13 "$(q "SELECT count(*) FROM pg_replication_slots")" 1 "still one slot"
+q "ALTER TABLE improv_m_e.t DROP CONSTRAINT refuse"
+wait_for "SELECT count(*) FROM improv_m_e.t" 5 "m_e recovers (retried with backoff)" >/dev/null
+wait_for "SELECT last_error IS NULL FROM improv.status('m_e')" t "m_e's error clears" >/dev/null
+q "INSERT INTO evx VALUES (6, 'x6', 1)"
+wait_for "SELECT count(*) FROM improv_m_e.t" 6 "m_e follows writes again" >/dev/null
+echo "ok: one slot for every model; routing by table; models added, rebuilt and dropped mid-stream stay exact; a failing model holds no one back and recovers"
 echo "PASS"

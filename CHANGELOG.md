@@ -57,8 +57,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   The sync worker decodes the WAL once per poll and routes each change by
   table to the models bound there; each model records its own position
   with its result writes, so a crash re-applies nothing twice, and a
-  failing model rebuilds from its tables on its next poll instead of
-  holding the slot back. One standby snapshot is logged per poll, not one
+  failing model rebuilds from its tables on its retry (backing off from
+  0.5 s to 60 s) instead of holding the slot back. One standby snapshot is logged per poll, not one
   per model. At 1,000 small models a one-row change used to wait 5–70 s and
   a write touching every model 97 s. `ALTER EXTENSION pg_improv UPDATE`
   drops the old `improv_<model>` publications, and the worker drops their

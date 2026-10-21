@@ -16,8 +16,10 @@
 //! Every model applies a poll's batch in the same pass, so the slot is then
 //! confirmed (`pg_replication_slot_advance`) to the batch's end. A model
 //! that fails (its `last_error` says why) has dropped its live state, and
-//! its next poll rebuilds it from its tables, which needs none of the WAL
-//! it skipped: a failing model never holds the others' slot back.
+//! its retry rebuilds it from its tables, which needs none of the WAL it
+//! skipped: a failing model never holds the others' slot back. Retries back
+//! off from 0.5 s to 60 s, so a failing model's rebuilds do not stall the
+//! others.
 //!
 //! Slots cannot be created in a transaction that has already written, so
 //! `improv.enable_logical` (called by `bind_measure` and
@@ -44,7 +46,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use improv_core_model::{MeasureId, Model};
 use improv_engine::session::{Engine, MeasureValues, Snapshot};
@@ -416,6 +418,9 @@ fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
 
 /// WAL the slot may lag with nothing to apply before an idle advance.
 const IDLE_ADVANCE: u64 = 16 << 20;
+/// A failing model's first retry delay, doubled per failure up to the max.
+const RETRY_FIRST: Duration = Duration::from_millis(500);
+const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// One poll: decode the shared slot once, route each transaction's changes
 /// to the models bound to its relations, apply each model's share in its
@@ -435,6 +440,10 @@ fn sweep() {
         l.borrow_mut()
             .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
     });
+    RETRY.with(|r| {
+        r.borrow_mut()
+            .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
+    });
     if listed.is_empty() {
         // No model to serve: drop the slot rather than let it retain WAL;
         // the next model to enter logical mode gets a new one.
@@ -448,7 +457,13 @@ fn sweep() {
     // attempt leaves a half-made slot with no plugin): its own transaction.
     match in_txn(ensure_slot) {
         Err(e) => return log!("pg_improv sync: creating the slot {SLOT}: {e}"),
-        Ok(None) => return, // no publication yet
+        // The publication was dropped by hand: make it; the slot follows.
+        Ok(None) => {
+            if let Err(e) = in_txn(sync_publication) {
+                log!("pg_improv sync: creating the publication {SLOT}: {e}");
+            }
+            return;
+        }
         // A new slot starts at the current WAL position, so the models'
         // recorded progress (a restored dump's, an upgrade's, or a slot
         // dropped by hand) no longer applies: each catches up from scratch.
@@ -487,7 +502,28 @@ fn sweep() {
         if txns.is_empty() && m.caught_up && current {
             continue; // nothing for it, and its live state is current
         }
-        if let Err(e) = in_txn(|| tick(m.id, &m.name, txns, rels)) {
+        // A failing model is retried with backoff: each retry is a full
+        // rebuild, which must not stall the other models every poll.
+        let now = Instant::now();
+        if RETRY.with(|r| r.borrow().get(&m.id).is_some_and(|(at, _)| now < *at)) {
+            continue;
+        }
+        let r = in_txn(|| tick(m.id, &m.name, txns, rels));
+        RETRY.with(|retry| {
+            let mut retry = retry.borrow_mut();
+            match &r {
+                Ok(()) => {
+                    retry.remove(&m.id);
+                }
+                Err(_) => {
+                    let wait = retry
+                        .get(&m.id)
+                        .map_or(RETRY_FIRST, |(_, w)| (*w * 2).min(RETRY_MAX));
+                    retry.insert(m.id, (now + wait, wait));
+                }
+            }
+        });
+        if let Err(e) = r {
             let _ = in_txn(|| {
                 Spi::run_with_args(
                     "UPDATE improv.sync_state SET last_error = $2 WHERE model_id = $1",
@@ -511,9 +547,14 @@ fn sweep() {
     let Some(target) = target else {
         return drop_queued();
     };
-    match in_txn(|| advance(target, last.is_some())) {
+    // After a standby snapshot, advance once more even when idle, so the
+    // restart point passes it and idle peeks stop re-decoding the batch.
+    let eager = last.is_some() || SNAPSHOT_PENDING.get();
+    match in_txn(|| advance(target, eager)) {
         Err(e) => log!("pg_improv sync: advancing {SLOT}: {e}"),
-        Ok(true) if last.is_some() => {
+        Ok(true) if last.is_none() => SNAPSHOT_PENDING.set(false),
+        Ok(true) => {
+            SNAPSHOT_PENDING.set(true);
             // The slot's restart point only moves past a running-xacts WAL
             // record (the bgwriter logs one every 15 s), and every peek and
             // advance re-decodes from it. Log one now, once per poll that
@@ -687,9 +728,9 @@ fn peek() -> Res<Peeked> {
 }
 
 /// Confirm the slot up to `target` when it is past the slot's position: at
-/// once when `applied` (the poll applied transactions), else only once the
-/// slot lags by [`IDLE_ADVANCE`]. Returns whether it moved.
-fn advance(target: u64, applied: bool) -> Res<bool> {
+/// once when `eager`, else only once the slot lags by [`IDLE_ADVANCE`].
+/// Returns whether it moved.
+fn advance(target: u64, eager: bool) -> Res<bool> {
     let at = Spi::get_one_with_args::<String>(
         "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
         &[SLOT.into()],
@@ -697,7 +738,7 @@ fn advance(target: u64, applied: bool) -> Res<bool> {
     .as_deref()
     .and_then(pgoutput::parse_lsn)
     .ok_or("the slot is gone")?;
-    if target <= at || (!applied && target - at < IDLE_ADVANCE) {
+    if target <= at || (!eager && target - at < IDLE_ADVANCE) {
         return Ok(false);
     }
     Spi::run_with_args(
@@ -710,6 +751,10 @@ fn advance(target: u64, applied: bool) -> Res<bool> {
 thread_local! {
     /// The worker's live state per model id (the worker is one thread).
     static LIVE: RefCell<HashMap<i64, Live>> = RefCell::new(HashMap::new());
+    /// Failing models: when to retry, and the current delay.
+    static RETRY: RefCell<HashMap<i64, (Instant, Duration)>> = RefCell::new(HashMap::new());
+    /// A standby snapshot was logged that the slot has not advanced past.
+    static SNAPSHOT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A model kept loaded between polls, with its live engine.
