@@ -662,6 +662,193 @@ Neither may appear inside a larger expression.
 | `M.Price` | error: `unknown qualifier: M` |
 | `Quantity EXCEPT Time` | error: no `EXCEPT` syntax |
 
+## Differences from Excel
+
+Improv uses Excel's function names and, where it can, Excel's results. The
+items below are where it does not, each decided for 1.0: what Excel
+does, what Improv does, and why. Most come from the model itself, which
+has categories instead of a grid. The ones marked **follow-up** look
+accidental; each is a row (E5) in the road-to-1.0 plan, and the behavior
+described here stays until that row lands.
+
+**Syntax**
+
+- **Equality is `==`.** Excel writes `=A1=B1`. In Improv `=` is only the
+  assignment after the target (`Flag = Price == 10`), so a single `=`
+  inside an expression is an error, never a silent comparison. `<>` and
+  `!=` both mean not-equal.
+- **`NOT` is an operator that binds looser than a comparison**, as in SQL:
+  `NOT Price > 15` is `NOT (Price > 15)`. Excel has only the function
+  `NOT(x)`, which Improv also reads, since `NOT(x)` is the operator applied
+  to `(x)`. One consequence: `NOT(a) > b` is `NOT (a > b)` in Improv, while
+  Excel compares `NOT(a)` with `b`. Write `(NOT a) > b` for Excel's reading.
+- **`^` is right-associative and binds tighter than unary minus:** `2^3^2`
+  is 512 and `-2^2` is −4, the mathematical convention. Excel gives 64 and
+  4. Write `(2^3)^2` and `(-2)^2` for Excel's reading. The usual written
+  meaning wins over spreadsheet compatibility, and a reader of `-x^2` expects
+  −x².
+- **One comparison per level:** `a < b < c` is an error. Excel reads it as
+  `(a < b) < c`, comparing a boolean with a number, which is never what was
+  meant.
+- **Text literals have no escapes.** Excel writes a quote inside text as
+  `""`. Improv's string literal has no escapes: `"a""b"` is an error, and
+  `CHAR(34)` gives a `"`. **Follow-up:** add `""` inside a string (it is an
+  error today, so it is a compatible addition).
+- **No leading `.`:** `.5` is an error; write `0.5`.
+- **A number too large for a float is a parse error.** `1e999` is the error
+  `number out of range` when the formula is entered; Excel accepts it and
+  shows `#NUM!`. A literal that cannot be a number is a typing mistake, and
+  the editor reports it where it was typed.
+- **No cell references, ranges or sheets.** `A1`, `A1:B5`, `Sheet1!A1`,
+  `OFFSET`, `INDIRECT`, `ROW` and `COLUMN` have no meaning in a model:
+  formulas name measures and categories. `M.Price` parses, but is refused
+  with a message naming the qualifier. This is the point of the design.
+- **Ranges are measures reduced `OVER` categories.** Excel's
+  `SUM(B2:B13)` is `SUM(Revenue OVER Time)`. In a function with several
+  arguments, `OVER` follows the measures it reduces, and everything else is
+  a parameter with one value per group: `LARGE(x OVER T, 2)`,
+  `NPV(rate, cf OVER T)`, `SUMIFS(sum, crit1 OVER T, ">5")`. The argument
+  order is Excel's. Only the `OVER` keyword is new.
+- **Missing arguments.** Excel allows `IF(x, , 1)` (an empty argument);
+  Improv does not. Leave trailing optional arguments out instead.
+
+**Values and types**
+
+- **Types are checked when the formula compiles; there is no coercion.**
+  Excel turns `TRUE + 1` into 2, `"3" + 1` into 4, and `IF(1, …)` treats 1
+  as TRUE. In Improv each is a compile error: arithmetic takes numbers,
+  `IF`, `AND` and `OR` take booleans, and a comparison takes two values of
+  one type (`1 == TRUE` and `"1" == 1` are errors, where Excel gives FALSE).
+  Convert explicitly with `VALUE`, `N`, `TEXT` or a comparison. A formula is
+  defined once for every cell, so a type mismatch is a bug in the formula,
+  better found at entry than as `#VALUE!` in some cells.
+- **Dates are not numbers in arithmetic.** In Excel a date is a number,
+  so `date * 2` and `ABS(date)` are valid. In Improv a date is its own
+  type: `date + 1` is the next day, `date - date` is days, `N(date)` is
+  its serial number and `ISNUMBER(date)` is TRUE, as in Excel, but `date * 2`,
+  `ABS(date)` and `date == 45658` are compile errors. A number given to a
+  date function (`YEAR(45658)`) is read as a serial date. `&` joins any
+  two values as text.
+- **Text comparison is case-sensitive.** `"a" == "A"` is FALSE and
+  `"a" < "B"` is FALSE (code-point order); Excel ignores case in `=` and
+  `<`. The criteria of the `…IF` functions, lookups (`MATCH`, `XLOOKUP`,
+  `SELECT`) and `SORT` do ignore case, as in Excel. The operators compare
+  exactly, as SQL's `=` does in Postgres and DuckDB, where a model's data
+  usually comes from, and `<` is code-point order, as under
+  `COLLATE "C"`: a test in `WHERE` or `IF` never matches text that only
+  looks alike. `EXACT` behaves the same in both products. To compare
+  without case, write `UPPER(a) == UPPER(b)`. **Follow-up:**
+  `UNIQUE` keeps `"a"` and `"A"` apart, where Excel's ignores case; align
+  it with Excel.
+- **Numbers are 64-bit floats, with no integer type and no 15-digit
+  truncation.** Excel stores 15 significant digits and treats a result
+  within an ulp or so of a "round" value as equal; Improv keeps the full
+  float and compares exactly, so `0.1 + 0.2 == 0.3` is FALSE in both
+  products, while near-equal values Excel would round together stay unequal
+  in Improv. Text built from a number (`"x" & n`, `TEXT`) and the grid show
+  15 significant digits, as Excel does. Exports keep every bit. Arguments
+  that must be whole numbers (`LEFT(t, n)`, `CHAR`, `max_iter`) are
+  truncated toward zero, as in Excel. `==` and `!=` compare numbers by
+  value, so `-0 == 0` is TRUE, as in Excel.
+- **Number to text.** `"x" & 1e21` gives `x1000000000000000000000` and
+  `"x" & 1e-10` gives `x0.0000000001`; Excel switches to `1E+21` and
+  `1E-10`. **Follow-up:** align with Excel's General format.
+- **Dates are timestamps, not serial numbers.** A date is a UTC instant
+  with millisecond precision. Where a number is given for a date, or a date
+  is turned into a number (`N(date)`), it is a serial date on the 1900
+  system with the fictitious 1900-02-29 left out, as LibreOffice and
+  Gnumeric do: serial 61 is 1900-03-01 in both Improv and Excel, but below
+  61 Improv is one day off from Excel (serial 1 is 1899-12-31, not
+  1900-01-01; serial 60 is 1900-02-28, not Excel's 1900-02-29). There is no
+  1904 system. `NOW()` and `TODAY()` are UTC. Excel's leap-year bug is not
+  worth copying, and a model's dates come from typed `#…#` literals and
+  imports, not serial arithmetic.
+- **A missing cell is not zero.** Where an input has no cell, a formula
+  over it has no cell, and an aggregation skips it. Excel treats a blank as
+  0 (or as `""`). `COALESCE` and `FILL` give a value where an input has
+  none. A model has cells only where data is, so inventing zeros would
+  fill the whole cross product.
+- **`IF` without `else`:** a false test gives no cell, where Excel gives
+  FALSE.
+
+**Errors**
+
+- **Errors are values, as in Excel,** with Excel's names and `ERROR.TYPE`
+  codes. An operator or function given an error returns it (the left
+  operand, the first argument first, as in Excel), and an aggregation over
+  several errors returns the one with the smallest `ERROR.TYPE` code. Excel
+  returns the first one it meets, which in a model has no fixed meaning:
+  the smallest code is deterministic.
+- **No `#CALC!`, `#SPILL!` or `#FIELD!`.** An empty list (`FILTER` with
+  nothing included and no `if_empty`, `TAKE` of 0, `UNIQUE` with nothing
+  left) is `#N/A`, where Excel gives `#CALC!`. `#N/A` already means "no
+  value", `IFNA` handles it, and a 1.0 error set that matches the codes of
+  `ERROR.TYPE` in every product (LibreOffice and Gnumeric have no
+  `#CALC!` either) keeps imports and exports lossless. A list never spills
+  over other cells, so there is no `#SPILL!`.
+- **`#NAME?`, `#REF!` and `#NULL!` are never produced.** An unknown name or
+  function is a parse error when the formula is entered, with a
+  suggestion, not a `#NAME?` cell; there are no references to break and no
+  range intersections. `ERROR("#NAME?")` makes one, so imported values
+  survive.
+
+**Functions**
+
+- **List results land `INTO` a category.** Excel's dynamic arrays spill
+  into the cells below and to the right. Improv has no "below", so a
+  function that returns a list (`SORT`, `UNIQUE`, `FILTER`, `TAKE`,
+  `FREQUENCY`, `LINEST`, `TEXTSPLIT`, …) names the category the list lands
+  on, as the last thing in the call: `SORT(Sales OVER Product, -1 INTO
+  Rank)`. `INTO R, C` lays a 2-D result row by row, the order in which Excel
+  spills a block. Results beyond the category's last item are dropped,
+  where Excel would give `#SPILL!`.
+- **`FREQUENCY` takes its bins as separate numbers:**
+  `FREQUENCY(x OVER T, 10, 20 INTO Bin)`, where Excel takes a range,
+  `FREQUENCY(data, bins)`. A range of bins would be a second measure over
+  its own category; the bins are almost always a few constants, and
+  numbers keep the call on one line. The counts are Excel's: ≤ b1,
+  (b1, b2], …, > bn.
+- **`TEXTSPLIT` keeps Excel's argument order**, `TEXTSPLIT(text,
+  col_delimiter, [row_delimiter], [ignore_empty])`, with `INTO` added, and
+  stops after `ignore_empty`: Excel's `match_mode` and `pad_with` are not
+  accepted. A `row_delimiter` other than `""` is `#VALUE!`, since a 2-D split
+  needs two categories. **Follow-up:** `match_mode`, `pad_with`, and rows
+  as a second `INTO` category.
+- **`SORT` and `UNIQUE` take one option.** `SORT(x OVER T, [sort_order])`
+  has no `sort_index` or `by_col`, and `UNIQUE(x OVER T, [exactly_once])`
+  has no `by_col`: a list has one column. Use `SORTBY` to sort by another
+  measure.
+- **`SEQUENCE` and `MAKEARRAY` take categories, not sizes.**
+  `SEQUENCE(Month, 100, 5)` numbers Month's items; Excel's
+  `SEQUENCE(rows, [columns], [start], [step])` takes counts. A model's
+  length is its category's item count.
+- **Database functions take `WHERE`, not a criteria range:**
+  `DSUM(Sales OVER Region WHERE Year == 2025)`, where Excel writes
+  `DSUM(database, field, criteria)`. A model has no header row to name a
+  field by.
+- **No volatile or random functions.** `RAND`, `RANDBETWEEN`, `RANDARRAY`,
+  `INDIRECT` and `OFFSET` are not in the language: recalculation is
+  incremental and must give the same result every time. `NOW()` and
+  `TODAY()` are the exceptions, read when the model recalculates.
+- **No grid functions.** `VLOOKUP`, `HLOOKUP`, `TRANSPOSE`, `HSTACK`,
+  `VSTACK`, `TOCOL`, `WRAPROWS`, `CHOOSECOLS` and the other reshaping
+  functions rearrange a grid; in Improv the layout is a view (pivot the
+  categories). Use `XLOOKUP` or `SELECT` for lookups.
+- **Cash flows and blanks.** `NPV`, `IRR` and the other cash-flow
+  functions skip a period with no cell (Excel's rule for a blank in a
+  range), so the flows after it move up a period; enter 0 for an empty
+  period.
+- **`LINEST` with several x's** refuses collinear x's (`#NUM!`); Excel drops
+  one and reports a zero coefficient. **Follow-up:** drop as Excel does.
+- **LAMBDA.** A named LAMBDA cannot call itself (every formula terminates);
+  write a recurrence with `SCAN`, `PREV` or `FIXPOINT` instead. A LAMBDA
+  cannot be named like a built-in function.
+- **Financial and statistical functions** follow Excel's documented results
+  where LibreOffice and Gnumeric depart from them (`DURATION` on
+  actual/actual, `PRICE`/`YIELD` with one coupon left, and others listed in
+  the CHANGELOG). Functions Excel lacks follow Gnumeric or LibreOffice, and
+  the [Function Reference](./functions.md) says which.
+
 ## Broadcasting: the Revenue example
 
 The canonical formula is:

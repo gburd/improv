@@ -1074,7 +1074,7 @@ pub fn reference_markdown() -> String {
         (Category::Math, "Math and trigonometry", "Angles are in radians."),
         (Category::Rounding, "Rounding", "Rounding is decimal: `ROUND(2.675, 2)` is 2.68."),
         (Category::Text, "Text", "Lengths and positions count characters, not bytes."),
-        (Category::DateTime, "Date and time", "Dates are date-time values (UTC, millisecond precision). A number given where a date is wanted is a spreadsheet serial date (1 = 1900-01-01)."),
+        (Category::DateTime, "Date and time", "Dates are date-time values (UTC, millisecond precision). A number given where a date is wanted is a spreadsheet serial date, as in LibreOffice: 61 is 1900-03-01, and 1 is 1899-12-31 (Excel's 1 is 1900-01-01, because it counts a fictitious 1900-02-29)."),
         (Category::Dimensional, "Dimensional", "Functions of a cell's position in a category, and the ordered (previous/next, running) forms."),
         (Category::Statistical, "Statistical", ""),
         (Category::Financial, "Financial", "Rates are per period; cash flows are in item order along their `OVER` category."),

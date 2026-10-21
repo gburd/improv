@@ -31,6 +31,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   (`price minus 1e-10`, and now `2.5`, which split at the point before),
   DuckDB's `improv_calc` and pg_improv's `plimprov` accept them, and
   `improv_core_model::parser::number_literal` is the shared printer.
+- **Differences from Excel**, a section of the formula guide
+  (`formulas.md`): every place the language departs from Excel on purpose
+  (`==` for equality, `NOT` and `^` precedence, no coercion, case-sensitive
+  `==`, dates as timestamps on LibreOffice's serial numbering, missing
+  cells, `#N/A` for Excel's `#CALC!`, lists `INTO` a category, variadic
+  `FREQUENCY` bins, `TEXTSPLIT`, no volatile functions), with what Excel
+  does and why. Five that look accidental are planned as follow-ups
+  (road-to-1.0 plan, E5).
 
 ### Changed
 
@@ -106,7 +114,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   `SmallVec` (no `Arbitrary`), so it fuzzes the pairs as a `Vec`. Its
   lockfile, last refreshed at 0.5.0, is current, and CI now checks that the
   fuzz targets build.
-
+- **The function reference's date intro said serial date 1 is
+  1900-01-01**, which is Excel's numbering. Improv numbers as LibreOffice
+  does (1 is 1899-12-31, 61 is 1900-03-01); the text now says so.
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.
