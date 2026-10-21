@@ -56,6 +56,16 @@ Formulas have no side effects; identical inputs yield identical outputs.
 
 Errors propagate through the dependency graph rather than aborting evaluation.
 
+### 2.7 Stable from 1.0
+
+The language is a compatibility promise from 1.0 (decided 2026-10-21; user
+guide formulas.md, "Language stability" and "Differences from Excel"). A
+1.x may add functions, optional trailing arguments and syntax that is a
+parse error today; it never changes a valid formula's result, type or
+categories (except a documented bug fix), a function's name or argument
+order, precedence, or a FuncId. Deprecation warns in 1.x; removal is 2.0.
+Before adding syntax, check that the text is an error today.
+
 ---
 
 ## 3. Syntax Overview

@@ -669,7 +669,9 @@ items below are where it does not, each decided for 1.0: what Excel
 does, what Improv does, and why. Most come from the model itself, which
 has categories instead of a grid. The ones marked **follow-up** look
 accidental; each is a row (E5) in the road-to-1.0 plan, and the behavior
-described here stays until that row lands.
+described here stays until that row lands. The
+[stability policy](#language-stability) covers these items like the rest
+of the language.
 
 **Syntax**
 
@@ -848,6 +850,70 @@ described here stays until that row lands.
   actual/actual, `PRICE`/`YIELD` with one coupon left, and others listed in
   the CHANGELOG). Functions Excel lacks follow Gnumeric or LibreOffice, and
   the [Function Reference](./functions.md) says which.
+
+## Language stability
+
+From 1.0.0 the formula language follows [Semantic Versioning](https://semver.org/):
+a formula that is valid in 1.0 is valid in every 1.x, with the same meaning.
+
+**A 1.x release may add:**
+
+- new functions, and new aliases of existing ones;
+- new optional trailing arguments to a function (an omitted argument keeps
+  today's result);
+- new syntax, but only where today's text is a parse error (named arguments,
+  `""` inside a string, a leading `.` in a number): no valid formula changes
+  meaning;
+- new error messages and better suggestions, and new locales;
+- results where today's are an error caused by a missing feature, for
+  example a `TEXTSPLIT` row delimiter, which is `#VALUE!` today.
+
+**A 1.x release will not change:**
+
+- the result, the result type or the categories of a valid formula, other
+  than to fix a documented bug (below);
+- the name, the argument order or the argument meaning of a function;
+  the meaning of an alias; what an omitted optional argument means;
+- operator precedence and associativity, the keywords, and the literal
+  forms;
+- the error a formula gives: which of `#DIV/0!`, `#NUM!`, `#VALUE!` and
+  `#N/A`, and which one wins when several meet;
+- the stored form: function ids (`FuncId`) are permanent and never reused,
+  so a model saved by 1.0 opens in every 1.x unchanged.
+
+Adding a keyword or a function can take a word some model uses as a
+measure name. That is a compatible change: a name followed by `(` is a
+call, and a measure called like a function still parses as long as it is
+not followed by `(`. A quoted name (`'Over'`) is never a keyword. The parser
+already reads keywords only where they belong, so a release that adds one
+says so in the CHANGELOG and checks that existing names keep their meaning.
+
+**Bug fixes.** Where a result disagrees with this guide, with the
+[Function Reference](./functions.md) or with the reference products the
+CHANGELOG names for a function (Excel's documentation, LibreOffice,
+Gnumeric), the result is a bug and a 1.x release may fix it. The fix is
+listed under **Fixed** in the CHANGELOG with the old and new result.
+Results that change in the last bits of a float, for a documented reason
+such as a more accurate summation, are listed the same way.
+
+**Deprecation.** A function or form is never removed in 1.x. To retire one:
+
+1. A minor release marks it deprecated: the
+   [Function Reference](./functions.md) and the CHANGELOG say so and name
+   the replacement. The formula still parses and gives the same result.
+2. The formula editors (GUI, TUI, `improv define`) warn when a deprecated
+   form is entered or a model that uses it is opened. Stored models are
+   never rewritten without being asked.
+3. It is removed only in the next major release (2.0), whose CHANGELOG
+   lists every removal, and a model that uses a removed form still opens:
+   the formula is reported as an error, not dropped.
+
+The [Differences from Excel](#differences-from-excel) are part of the 1.0
+language and covered by this policy. A follow-up there that changes a valid
+formula's result (for example `UNIQUE`'s case, or number-to-text formatting) is a
+bug fix in the sense above and lands in a 1.x release with a **Fixed**
+entry; one that only accepts more (string escapes, more `TEXTSPLIT`
+options) is an addition.
 
 ## Broadcasting: the Revenue example
 

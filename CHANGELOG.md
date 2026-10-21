@@ -39,6 +39,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   `FREQUENCY` bins, `TEXTSPLIT`, no volatile functions), with what Excel
   does and why. Five that look accidental are planned as follow-ups
   (road-to-1.0 plan, E5).
+- **The formula language's stability policy for 1.x**
+  ([Language stability](https://gburd.github.io/improv/formulas.html#language-stability)): a 1.x
+  release may add functions, optional trailing arguments, and syntax that
+  is a parse error today. It will not change the result, result type or
+  categories of a valid formula (except a documented bug fix, listed under
+  Fixed), a function's name or argument order, precedence, or the stored
+  function ids. A deprecated form keeps working, warns in the editors, and
+  is removed only in 2.0.
 
 ### Changed
 
