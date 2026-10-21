@@ -6,6 +6,8 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "improv-gui",
+    // Not argv[0]: "improv.exe" on Windows would change every help text.
+    bin_name = "improv-gui",
     version,
     about = "desktop workspace for Improv models",
     long_about = "Open a model in a NeXTSTEP-style workspace."

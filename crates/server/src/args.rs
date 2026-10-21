@@ -6,6 +6,8 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "improv-server",
+    // Not argv[0]: "improv.exe" on Windows would change every help text.
+    bin_name = "improv-server",
     version,
     about = "JSON HTTP API over an Improv model",
     long_about = "Serve one model over HTTP/1.1 as JSON."

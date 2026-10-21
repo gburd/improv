@@ -17,6 +17,8 @@ const REFRESH: &str = "When serve-refresh re-runs it: manual, on-load or interva
 #[derive(Parser, Debug)]
 #[command(
     name = "improv",
+    // Not argv[0]: "improv.exe" on Windows would change every help text.
+    bin_name = "improv",
     version,
     about = "headless multidimensional spreadsheet model CLI",
     long_about = "Build, edit and evaluate Improv models from the shell. Each command \
