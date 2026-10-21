@@ -25,3 +25,4 @@
 - [Capacity Planning](./capacity.md)
 - [Backup and Restore](./runbook-backup.md)
 - [Operations Runbook](./runbook-ops.md)
+- [Troubleshooting and FAQ](./troubleshooting.md)
