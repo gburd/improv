@@ -64,6 +64,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv-server`, in bash, zsh and fish, generated from the same parsers
   into `docs/completions/` (checked for drift the same way) and shipped in
   the release archive's `completions/`.
+- **pg_improv records each model's owner.** `improv.model.owner`
+  (`regrole`) is the role that called `create_model`. The update from
+  0.10.0 fills it from the owner of each model's result schema, which
+  `create_model` made as the caller; a model without one gets the
+  bootstrap superuser and a NOTICE.
 
 ### Changed
 

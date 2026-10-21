@@ -31,3 +31,24 @@ INSERT INTO improv.slot_to_drop (slot)
      AND slot_name OPERATOR(pg_catalog.~) '^improv_' AND slot_name OPERATOR(pg_catalog.<>) 'improv_db'
      AND pg_catalog.substr(slot_name, 8) IN (SELECT pg_catalog.lower(name) FROM improv.model)
   ON CONFLICT DO NOTHING;
+-- Each model acts as its owner: its loads and result writes run as that
+-- role, so row-level security and privileges apply as they do to it. A
+-- model made before 0.11.0 is owned by the role that made it, which
+-- create_model recorded as the owner of its result schema; a model with no
+-- result schema left falls back to the bootstrap superuser, which is how
+-- the sync worker read every model until now.
+ALTER TABLE improv.model ADD COLUMN owner regrole;
+UPDATE improv.model m SET owner = n.nspowner::pg_catalog.regrole
+  FROM pg_catalog.pg_namespace n
+ WHERE n.nspname OPERATOR(pg_catalog.=) ('improv_' OPERATOR(pg_catalog.||) pg_catalog.lower(m.name));
+DO $$
+DECLARE m text;
+BEGIN
+  FOR m IN SELECT name FROM improv.model WHERE owner IS NULL ORDER BY id LOOP
+    RAISE NOTICE 'pg_improv: model % has no result schema naming the role that created it, so its owner is now the bootstrap superuser; give it another with UPDATE improv.model SET owner = ''<role>'' WHERE name = %', m, pg_catalog.quote_literal(m);
+  END LOOP;
+END $$;
+UPDATE improv.model SET owner = '10'::pg_catalog.oid::pg_catalog.regrole WHERE owner IS NULL;
+ALTER TABLE improv.model
+  ALTER COLUMN owner SET DEFAULT pg_catalog.to_regrole(pg_catalog.quote_ident(CURRENT_USER)),
+  ALTER COLUMN owner SET NOT NULL;

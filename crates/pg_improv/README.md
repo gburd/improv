@@ -628,6 +628,8 @@ it and checks the numbers; the guide chapter is
 The `improv.*` tables are a compatible superset of the catalog that
 `improv_storage_pg` (the GUI/CLI's `postgres://` store) creates, so a model
 created in SQL opens in the GUI and vice versa. The extension adds
+`improv.model.owner` (the role that created the model, as which it reads
+its tables and writes its results),
 `improv.category_binding` (category ⇄ column bindings) and, for logical
 mode, `improv.sync_state` (each model's slot, progress and last error) and
 `improv.slot_to_drop` (old per-model slots the worker drops after the

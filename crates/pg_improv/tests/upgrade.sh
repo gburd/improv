@@ -80,6 +80,8 @@ for from in "$@"; do
 	q "UPDATE sales SET qty = 250 WHERE quarter='Q1' AND product='Widget'"
 	q "ALTER EXTENSION pg_improv UPDATE"
 	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$to" "updated version"
+	# 0.11.0: each model acts as its owner, its result schema's owner before.
+	eq "$(q "SELECT owner::text FROM improv.model WHERE name = 'plan'")" improv "the update records the owner"
 	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 3300 "the worker follows writes after the update"

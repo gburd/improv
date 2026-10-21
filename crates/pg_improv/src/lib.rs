@@ -67,7 +67,11 @@ CREATE TABLE improv.model (
     sync_mode text NOT NULL DEFAULT 'logical'
               CHECK (sync_mode IN ('logical', 'trigger', 'commit', 'manual')),
     slot_name text,
-    created   timestamptz NOT NULL DEFAULT now()
+    created   timestamptz NOT NULL DEFAULT now(),
+    -- The role the model acts as: create_model's caller. Every read of its
+    -- bound tables and every write of its results runs as this role.
+    owner     regrole NOT NULL
+              DEFAULT pg_catalog.to_regrole(pg_catalog.quote_ident(CURRENT_USER))
 );
 CREATE TABLE improv.category (
     model_id bigint NOT NULL REFERENCES improv.model(id) ON DELETE CASCADE,
@@ -482,13 +486,16 @@ fn read_catalog(model_id: i64) -> Res<pm::Catalog> {
     })
 }
 
-/// Create a model and its result schema `improv_<lower(name)>`.
+/// Create a model owned by the calling role (`improv.model.owner`) and its
+/// result schema `improv_<lower(name)>`.
 #[pg_extern(security_invoker)]
 fn create_model(name: &str) -> Res<i64> {
     pm::validate_name("model", name)?;
+    // SAFETY: a plain read of the backend's current user.
+    let owner = unsafe { pg_sys::GetUserId() };
     let id = Spi::get_one_with_args::<i64>(
-        "INSERT INTO improv.model (name) VALUES ($1) RETURNING id",
-        &[name.into()],
+        "INSERT INTO improv.model (name, owner) VALUES ($1, $2::oid::regrole) RETURNING id",
+        &[name.into(), owner.into()],
     )?
     .ok_or("INSERT returned no id")?;
     Spi::run_with_args(
@@ -1260,6 +1267,16 @@ mod tests {
         .unwrap();
         assert_eq!(missing, None, "storage_pg indexes or functions differ here");
         assert_eq!(count("pg_indexes WHERE indexname = 'item_name_uniq'"), 2);
+    }
+
+    #[pg_test]
+    fn create_model_records_its_owner() {
+        setup_plan();
+        let owner = Spi::get_one::<bool>(
+            "SELECT owner::oid = (SELECT oid FROM pg_roles WHERE rolname = current_user) \
+             FROM improv.model WHERE name = 'plan'",
+        );
+        assert_eq!(owner, Ok(Some(true)));
     }
 
     #[pg_test]
