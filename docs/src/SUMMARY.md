@@ -2,6 +2,7 @@
 
 [Introduction](./introduction.md)
 
+- [Concepts](./concepts.md)
 - [Ways to Use Improv](./ways.md)
 - [The Improv Model](./model.md)
 - [Getting Started](./getting-started.md)

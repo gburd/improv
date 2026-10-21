@@ -1,8 +1,9 @@
 # The Improv Model
 
-Improv models a problem as a **multidimensional cube** rather than a flat grid.
-The vocabulary is small and maps directly onto the types in
-`improv_core_model`.
+This page maps the model's vocabulary onto the types in `improv_core_model`.
+For the ideas themselves (categories, items, measures, coordinates, input and
+derived measures, and why formulas are written over categories), read
+[Concepts](./concepts.md) first.
 
 ## Categories
 
@@ -46,18 +47,6 @@ lets the engine derive a stable dataflow key (see
 
 Input data lives in the model as a map from `(measure, coordinate)` to a value.
 Only input measures have entries; derived measures are computed by the engine.
-
-## Structure, logic, and data
-
-The payoff of naming everything is that the three concerns move independently:
-
-- **Rename freely.** Names are cosmetic; formulas bind to ids, not names, so
-  renaming a category or measure never breaks a formula.
-- **Add items without touching formulas.** Adding `2027` to `Time` extends
-  every measure defined over `Time` automatically — a formula like
-  `Revenue = Price * Quantity` needs no edit.
-- **Edit logic in one place.** A formula is defined once per measure, over
-  dimensions, instead of being copied down a column of cells.
 
 ## The canonical example
 

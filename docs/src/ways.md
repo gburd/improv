@@ -18,20 +18,17 @@ job, and switch when the job changes.
 
 ## The model, wherever it lives
 
-A **store file** (`model.db`) is a single SQLite file holding the model as
-[Mentat](./storage.md) datoms: one file to copy, mail or check in. Every
-front end takes its path.
-
-A **Postgres model** is named by a URL instead of a path:
+A model is a store file or lives in a Postgres database; [Concepts: where
+data lives](./concepts.md#where-data-lives) says what each holds. Every
+front end takes a store file's path. A **Postgres model** is named by a URL
+instead:
 
 ```text
 postgres://user@host/database?model=plan
 ```
 
-Pass that URL to the CLI, TUI, GUI or server and they work on the model
-stored in that database's `improv` schema. When the `pg_improv` extension is
-installed, input measures can be **bound** to columns of your own tables:
-the GUI then edits those rows, and SQL sees every result. See
+Pass that URL to the CLI, TUI, GUI or server. With `pg_improv` installed,
+the GUI's edits to a bound measure update your table's rows. See
 [Improv in Postgres](./postgres.md).
 
 Two writers never silently overwrite each other. If someone else saved after
@@ -158,13 +155,9 @@ SELECT improv.define('plan', 'Revenue = Price * Quantity');
 SELECT * FROM improv_plan.revenue;     -- kept current as sales changes
 ```
 
-Choose how results follow your writes:
-
-- **`logical`** (default): a background worker applies committed changes
-  incrementally, so writers pay nothing. At 100k cells a one-row change is
-  visible about 50 ms after commit.
-- **`trigger`**: results update inside the writer's own transaction.
-- **`improv.recalc()`**: results update when you call it, in your snapshot.
+How results follow your writes is the model's sync mode: [Concepts: the
+sync modes](./concepts.md#keeping-postgres-results-current-the-sync-modes)
+is the decision.
 
 Open the same model in the GUI or TUI with its `postgres://…?model=plan`
 URL: editing a cell there updates the row in `sales`.
