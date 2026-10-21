@@ -1,18 +1,27 @@
 //! L2: logical-decoding sync, the default `sync_mode`.
 //!
 //! A background worker (`pg_improv sync`, registered when the library is in
-//! `shared_preload_libraries`) polls, per model in `logical` mode, a logical
-//! replication slot `improv_<model>` (plugin `pgoutput`, publication
-//! `improv_<model>` over the model's bound relations). When committed source
-//! transactions touched a bound relation it applies their row changes to
-//! the model's derived results and writes them **in one worker transaction
-//! that also advances the slot**, so a crash re-reads and re-applies (the
-//! result writes are idempotent upserts and deletes) and never loses a
-//! change.
+//! `shared_preload_libraries`) reads one logical replication slot per
+//! database, `improv_db` (plugin `pgoutput`, publication `improv_db` over
+//! the union of every logical-mode model's bound relations; see
+//! [`sync_publication`]). Each poll decodes the slot once, routes each
+//! committed transaction's changes by relation oid to the models bound
+//! there ([`live::route`]), and applies each model's share to its derived
+//! results in that model's own worker transaction, which also records the
+//! model's progress (`improv.sync_state.confirmed_lsn`). A model skips
+//! transactions that ended at or before its own progress, so a crash
+//! re-reads and re-applies only what was not recorded (the result writes
+//! are idempotent upserts and deletes) and never loses a change.
+//!
+//! Every model applies a poll's batch in the same pass, so the slot is then
+//! confirmed (`pg_replication_slot_advance`) to the batch's end. A model
+//! that fails (its `last_error` says why) has dropped its live state, and
+//! its next poll rebuilds it from its tables, which needs none of the WAL
+//! it skipped: a failing model never holds the others' slot back.
 //!
 //! Slots cannot be created in a transaction that has already written, so
 //! `improv.enable_logical` (called by `bind_measure` and
-//! `set_sync_mode(…, 'logical')`) only creates the publication and records
+//! `set_sync_mode(…, 'logical')`) only updates the publication and records
 //! the intent in `improv.sync_state`; the worker creates the slot at the
 //! start of its own fresh transaction.
 //!
@@ -54,10 +63,13 @@ use super::{
 /// `improv.database`: the database the sync worker connects to.
 pub(crate) static DATABASE: GucSetting<Option<std::ffi::CString>> =
     GucSetting::<Option<std::ffi::CString>>::new(Some(c"postgres"));
-/// `improv.poll_ms`: how often the worker polls each slot.
+/// `improv.poll_ms`: how often the worker polls the slot.
 pub(crate) static POLL_MS: GucSetting<i32> = GucSetting::<i32>::new(200);
-/// `improv.max_changes`: the most decoded changes one poll reads per model.
+/// `improv.max_changes`: the most decoded changes one poll reads.
 pub(crate) static MAX_CHANGES: GucSetting<i32> = GucSetting::<i32>::new(10_000);
+
+/// The database's one slot and publication.
+pub(crate) const SLOT: &str = "improv_db";
 
 /// Register the L2 GUCs (always) and the worker (only under preload).
 pub(crate) fn init() {
@@ -80,7 +92,7 @@ pub(crate) fn init() {
     }
     GucRegistry::define_int_guc(
         c"improv.poll_ms",
-        c"How often the pg_improv sync worker polls each slot, in ms.",
+        c"How often the pg_improv sync worker polls its slot, in ms.",
         c"Lower is fresher results; higher is fewer idle wakeups.",
         &POLL_MS,
         10,
@@ -90,14 +102,15 @@ pub(crate) fn init() {
     );
     GucRegistry::define_int_guc(
         c"improv.max_changes",
-        c"Most decoded changes one poll reads per model.",
-        c"Bounds the work (and memory) of one worker transaction.",
+        c"Most decoded changes one poll of the sync worker reads.",
+        c"Bounds the work (and memory) of one poll.",
         &MAX_CHANGES,
         1,
         i32::MAX,
         GucContext::Sighup,
         GucFlags::default(),
     );
+
     if preload {
         BackgroundWorkerBuilder::new("pg_improv sync")
             .set_function("improv_worker_main")
@@ -125,7 +138,7 @@ CREATE TABLE improv.sync_state (
     incremental_applies bigint NOT NULL DEFAULT 0,
     rebuilds        bigint NOT NULL DEFAULT 0
 );
--- Slots whose model left logical mode (or was dropped): the worker drops them.
+-- Slots no longer used (0.10.0's per-model slots): the worker drops them.
 CREATE TABLE improv.slot_to_drop (slot text PRIMARY KEY);
 -- A model's sync state is part of it, so a dump keeps it. A restored
 -- database has no slot: the worker creates one and resets the row's
@@ -137,68 +150,96 @@ SELECT pg_catalog.pg_extension_config_dump('improv.sync_state', '');
 );
 
 /// Ensure model `model` can be synced by logical decoding: give PK-less
-/// bound relations `REPLICA IDENTITY FULL`, create (or reset) the
-/// publication `improv_<model>` over the bound relations, and record the
-/// slot intent in `improv.sync_state`. Idempotent. The worker creates the
-/// slot.
+/// bound relations `REPLICA IDENTITY FULL`, add them to the database's
+/// publication `improv_db` ([`sync_publication`]), and record the model in
+/// `improv.sync_state`. Idempotent. The worker creates the slot.
 #[pg_extern(security_invoker)]
 fn enable_logical(model: &str) -> Res<()> {
     let (mid, name) = lock_model(model)?;
     enable(mid, &name)
 }
 
-pub(crate) fn enable(mid: i64, name: &str) -> Res<()> {
-    let slot = pm::slot_name(name)?;
-    let rels = bound_rels(mid)?;
+pub(crate) fn enable(mid: i64, _name: &str) -> Res<()> {
     // Before publishing: Postgres rejects UPDATE/DELETE on a published table
     // that has no replica identity.
     ensure_replica_identity(mid)?;
+    Spi::run_with_args(
+        "INSERT INTO improv.sync_state (model_id, slot, publication) VALUES ($1, $2, $2) \
+         ON CONFLICT (model_id) DO NOTHING",
+        &[mid.into(), SLOT.into()],
+    )?;
+    sync_publication()
+}
+
+/// Undo [`enable`]: forget the model's sync state and take relations no
+/// other logical-mode model binds out of the publication.
+pub(crate) fn disable(mid: i64, _name: &str) -> Res<()> {
+    Spi::run_with_args(
+        "DELETE FROM improv.sync_state WHERE model_id = $1",
+        &[mid.into()],
+    )?;
+    sync_publication()?;
+    bump_version(mid)
+}
+
+/// Set the publication `improv_db` to the union of the relations bound by
+/// every logical-mode model with sync state (creating it when missing), so
+/// one slot carries every model's changes. Run by `bind_measure`,
+/// `drop_measure`, `set_sync_mode` and `drop_model`; idempotent, and
+/// callable by hand to repair the publication.
+#[pg_extern(security_invoker)]
+fn sync_publication() -> Res<()> {
+    // Serializes publication changes: two sessions' SET TABLE must not
+    // interleave with each other's catalog reads.
+    Spi::run("SELECT pg_advisory_xact_lock(hashtext('improv.sync_publication'))")?;
+    let rels: Vec<String> = Spi::connect(|c| -> Res<_> {
+        c.select(
+            "SELECT DISTINCT b.rel::text FROM improv.binding b \
+             JOIN improv.model m ON m.id = b.model_id \
+             JOIN improv.sync_state s ON s.model_id = m.id \
+             WHERE m.sync_mode = 'logical' ORDER BY 1",
+            None,
+            &[],
+        )?
+        .map(|r| req(&r, 1))
+        .collect()
+    })?;
     let exists = Spi::get_one_with_args::<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1)",
-        &[slot.clone().into()],
+        &[SLOT.into()],
     )? == Some(true);
-    let q = pm::quote_ident(&slot);
+    let q = pm::quote_ident(SLOT);
     match (exists, rels.is_empty()) {
         (false, true) => Spi::run(&format!("CREATE PUBLICATION {q}"))?,
         (false, false) => Spi::run(&format!(
             "CREATE PUBLICATION {q} FOR TABLE {}",
             rels.join(", ")
         ))?,
-        (true, true) => {}
+        // `SET TABLE` with an empty list is a syntax error.
+        (true, true) => {
+            let have: Vec<String> = Spi::connect(|c| -> Res<_> {
+                c.select(
+                    "SELECT format('%I.%I', schemaname, tablename) FROM pg_publication_tables \
+                     WHERE pubname = $1",
+                    None,
+                    &[SLOT.into()],
+                )?
+                .map(|r| req(&r, 1))
+                .collect()
+            })?;
+            if !have.is_empty() {
+                Spi::run(&format!(
+                    "ALTER PUBLICATION {q} DROP TABLE {}",
+                    have.join(", ")
+                ))?;
+            }
+        }
         (true, false) => Spi::run(&format!(
             "ALTER PUBLICATION {q} SET TABLE {}",
             rels.join(", ")
         ))?,
     }
-    Spi::run_with_args(
-        "INSERT INTO improv.sync_state (model_id, slot, publication) VALUES ($1, $2, $2) \
-         ON CONFLICT (model_id) DO NOTHING",
-        &[mid.into(), slot.clone().into()],
-    )?;
-    Spi::run_with_args(
-        "DELETE FROM improv.slot_to_drop WHERE slot = $1",
-        &[slot.into()],
-    )?;
     Ok(())
-}
-
-/// Undo [`enable`]: drop the publication, forget the sync state, and queue
-/// the slot for the worker to drop.
-pub(crate) fn disable(mid: i64, name: &str) -> Res<()> {
-    let slot = pm::slot_name(name)?;
-    Spi::run(&format!(
-        "DROP PUBLICATION IF EXISTS {}",
-        pm::quote_ident(&slot)
-    ))?;
-    Spi::run_with_args(
-        "DELETE FROM improv.sync_state WHERE model_id = $1",
-        &[mid.into()],
-    )?;
-    Spi::run_with_args(
-        "INSERT INTO improv.slot_to_drop (slot) VALUES ($1) ON CONFLICT DO NOTHING",
-        &[slot.into()],
-    )?;
-    bump_version(mid)
 }
 
 /// Give every bound relation without a primary key, and every relation an
@@ -249,7 +290,8 @@ type StatusRow = (
 
 /// How model `model`'s results are kept current, and (in logical mode) how
 /// far the worker is behind: `lag_bytes` is the WAL between the current
-/// insert position and the slot's confirmed position. `incremental_applies`
+/// insert position and the shared slot's confirmed position (a failing
+/// model does not hold the slot: see `last_error`). `incremental_applies`
 /// counts the batches the worker applied to its live engine, `rebuilds`
 /// the full loads (the first catch-up, structural changes, and batches it
 /// could not apply incrementally).
@@ -337,99 +379,16 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         if BackgroundWorker::sighup_received() {
             // GUCs are reloaded by the latch wait; nothing else to refresh.
         }
-        // Nothing to do until the extension is installed in this database.
-        // (A Postgres ERROR is not a Rust `Err`: querying a missing
-        // `improv.*` table would unwind out of the worker and kill it.)
+        // Nothing to do until the extension (0.11.0 or later: the shared
+        // slot) is installed in this database. (A Postgres ERROR is not a
+        // Rust `Err`: querying a missing `improv.*` table would unwind out
+        // of the worker and kill it.)
         if !BackgroundWorker::transaction(installed) {
             // A re-created extension reuses model ids: forget them.
             LIVE.with(|l| l.borrow_mut().clear());
             continue;
         }
-        // Each model in its own transaction, so one model's error neither
-        // blocks the others nor rolls back their progress.
-        let models = BackgroundWorker::transaction(|| {
-            PgTryBuilder::new(|| list_models().unwrap_or_default())
-                .catch_others(|_| Vec::new())
-                .execute()
-        });
-        LIVE.with(|l| {
-            l.borrow_mut()
-                .retain(|mid, _| models.iter().any(|(m, _)| m == mid))
-        });
-        for (mid, name) in models {
-            // Slot creation needs a transaction that has not written (and a
-            // failed attempt leaves a half-made slot with no plugin), so it
-            // gets its own transaction, before the model's poll.
-            let created = BackgroundWorker::transaction(|| {
-                PgTryBuilder::new(|| ensure_slot(&name).map_err(|e| e.to_string()))
-                    .catch_others(|e| Err(format!("{e:?}")))
-                    .execute()
-            });
-            match created {
-                Err(e) => {
-                    log!("pg_improv sync: model {name}: creating its slot: {e}");
-                    continue;
-                }
-                // A new slot starts at the current WAL position, so the
-                // model's recorded progress (a restored dump's, or a slot
-                // dropped by hand) no longer applies: catch up from scratch.
-                Ok(true) => BackgroundWorker::transaction(|| {
-                    let _ = Spi::run_with_args(
-                        "UPDATE improv.sync_state SET confirmed_lsn = NULL, \
-                           last_applied_at = NULL WHERE model_id = $1",
-                        &[mid.into()],
-                    );
-                }),
-                Ok(false) => {}
-            }
-            let r = BackgroundWorker::transaction(|| {
-                PgTryBuilder::new(|| tick(mid, &name).map_err(|e| e.to_string()))
-                    .catch_others(|e| Err(format!("{e:?}")))
-                    .execute()
-            });
-            if r == Ok(true) {
-                // The slot's restart point only moves past a running-xacts
-                // WAL record (the bgwriter logs one every 15 s), and every
-                // peek and advance re-decodes from it. Log one now, in a
-                // transaction without an xid (one logged inside the tick
-                // names the tick as running and pins the restart point), so
-                // the next advance moves it here and a poll re-reads about
-                // one batch of WAL, not everything since the bgwriter's last.
-                BackgroundWorker::transaction(|| {
-                    PgTryBuilder::new(|| {
-                        Spi::connect(|c| {
-                            c.select(
-                                "SELECT pg_log_standby_snapshot() WHERE NOT pg_is_in_recovery()",
-                                None,
-                                &[],
-                            )
-                            .map(|_| ())
-                        })
-                    })
-                    .catch_others(|_| Ok(()))
-                    .execute()
-                    .unwrap_or(())
-                });
-            }
-            if let Err(e) = r {
-                BackgroundWorker::transaction(|| {
-                    let _ = Spi::run_with_args(
-                        "UPDATE improv.sync_state SET last_error = $2 WHERE model_id = $1",
-                        &[mid.into(), e.clone().into()],
-                    );
-                });
-                log!("pg_improv sync: model {name}: {e}");
-            }
-        }
-        BackgroundWorker::transaction(|| {
-            PgTryBuilder::new(|| {
-                if let Err(e) = drop_queued_slots() {
-                    log!("pg_improv sync: dropping queued slots: {e}");
-                }
-            })
-            .catch_others(|e| log!("pg_improv sync: dropping queued slots: {e:?}"))
-            .execute()
-        });
+        sweep();
     }
     log!("pg_improv sync worker stopping");
     // A bgworker that exits with status 0 is never restarted. Exit 1 so a
@@ -441,63 +400,235 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
     unsafe { pg_sys::proc_exit(1) };
 }
 
-/// Whether pg_improv's L2 catalog exists in the worker's database.
+/// `f` in its own worker transaction, a Postgres ERROR as an `Err`.
+fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
+    let f = AssertUnwindSafe(f);
+    BackgroundWorker::transaction(move || {
+        PgTryBuilder::new(move || {
+            // The whole wrapper, not its field: closures capture disjointly.
+            let f = f;
+            (f.0)().map_err(|e| e.to_string())
+        })
+        .catch_others(|e| Err(format!("{e:?}")))
+        .execute()
+    })
+}
+
+/// WAL the slot may lag with nothing to apply before an idle advance.
+const IDLE_ADVANCE: u64 = 16 << 20;
+
+/// One poll: decode the shared slot once, route each transaction's changes
+/// to the models bound to its relations, apply each model's share in its
+/// own transaction, then confirm the slot. Every model applies the batch in
+/// the same pass, so the slot moves to its end; a model that fails has
+/// dropped its live state and rebuilds from its tables on its next poll,
+/// which does not need the WAL it skipped (so it never holds the others
+/// back). Each model records its own progress, and skips transactions that
+/// ended at or before it: a crash between the models' commits and the
+/// slot's advance re-reads the batch, and re-applies none of it.
+fn sweep() {
+    let listed = match in_txn(list_models) {
+        Ok(m) => m,
+        Err(e) => return log!("pg_improv sync: listing models: {e}"),
+    };
+    LIVE.with(|l| {
+        l.borrow_mut()
+            .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
+    });
+    if listed.is_empty() {
+        // No model to serve: drop the slot rather than let it retain WAL;
+        // the next model to enter logical mode gets a new one.
+        if let Err(e) = in_txn(|| drop_slot(SLOT)) {
+            log!("pg_improv sync: dropping {SLOT}: {e}");
+        }
+        drop_queued();
+        return;
+    }
+    // Slot creation needs a transaction that has not written (and a failed
+    // attempt leaves a half-made slot with no plugin): its own transaction.
+    match in_txn(ensure_slot) {
+        Err(e) => return log!("pg_improv sync: creating the slot {SLOT}: {e}"),
+        Ok(None) => return, // no publication yet
+        // A new slot starts at the current WAL position, so the models'
+        // recorded progress (a restored dump's, an upgrade's, or a slot
+        // dropped by hand) no longer applies: each catches up from scratch.
+        Ok(Some(true)) => {
+            let reset = in_txn(|| {
+                Spi::run(
+                    "UPDATE improv.sync_state SET confirmed_lsn = NULL, last_applied_at = NULL",
+                )?;
+                Ok(())
+            });
+            if let Err(e) = reset {
+                return log!("pg_improv sync: resetting progress: {e}");
+            }
+        }
+        Ok(Some(false)) => {}
+    }
+    let peeked = match in_txn(peek) {
+        Ok(p) => p,
+        Err(e) => return log!("pg_improv sync: reading {SLOT}: {e}"),
+    };
+    let mut by_rel: HashMap<u32, Vec<i64>> = HashMap::new();
+    for m in &listed {
+        for r in &m.rels {
+            by_rel.entry(*r).or_default().push(m.id);
+        }
+    }
+    let mut routed = live::route(&peeked.stream.done, &by_rel);
+    let rels = &peeked.stream.relations;
+    for m in &listed {
+        let txns = routed.remove(&m.id).unwrap_or_default();
+        let current = LIVE.with(|l| {
+            l.borrow()
+                .get(&m.id)
+                .is_some_and(|l| l.version == m.version && l.name == m.name)
+        });
+        if txns.is_empty() && m.caught_up && current {
+            continue; // nothing for it, and its live state is current
+        }
+        if let Err(e) = in_txn(|| tick(m.id, &m.name, txns, rels)) {
+            let _ = in_txn(|| {
+                Spi::run_with_args(
+                    "UPDATE improv.sync_state SET last_error = $2 WHERE model_id = $1",
+                    &[m.id.into(), e.clone().into()],
+                )?;
+                Ok(())
+            });
+            log!("pg_improv sync: model {}: {e}", m.name);
+        }
+    }
+    // A poll that stopped short of `max_changes` decoded the WAL up to at
+    // least the flush position read before it, so the slot may move there
+    // even past WAL with nothing for any model (which otherwise it would
+    // retain forever while the bound tables are idle).
+    let last = peeked.stream.done.last().map(|t| t.end_lsn);
+    let target = if peeked.full {
+        last
+    } else {
+        Some(last.unwrap_or(0).max(peeked.flush))
+    };
+    let Some(target) = target else {
+        return drop_queued();
+    };
+    match in_txn(|| advance(target, last.is_some())) {
+        Err(e) => log!("pg_improv sync: advancing {SLOT}: {e}"),
+        Ok(true) if last.is_some() => {
+            // The slot's restart point only moves past a running-xacts WAL
+            // record (the bgwriter logs one every 15 s), and every peek and
+            // advance re-decodes from it. Log one now, once per poll that
+            // applied something, in a transaction without an xid (one
+            // logged inside a model's transaction names it as running and
+            // pins the restart point), so the next advance moves it here
+            // and a poll re-reads about one batch of WAL.
+            let _ = in_txn(|| {
+                Spi::connect(|c| {
+                    c.select(
+                        "SELECT pg_log_standby_snapshot() WHERE NOT pg_is_in_recovery()",
+                        None,
+                        &[],
+                    )
+                    .map(|_| ())
+                })?;
+                Ok(())
+            });
+        }
+        Ok(_) => {}
+    }
+    drop_queued();
+}
+
+fn drop_queued() {
+    if let Err(e) = in_txn(drop_queued_slots) {
+        log!("pg_improv sync: dropping queued slots: {e}");
+    }
+}
+
+/// Whether pg_improv's L2 catalog, 0.11.0's shared slot included, exists in
+/// the worker's database.
 fn installed() -> bool {
     Spi::get_one::<bool>(
         "SELECT to_regclass('improv.sync_state') IS NOT NULL \
-           AND to_regclass('improv.slot_to_drop') IS NOT NULL",
+           AND to_regclass('improv.slot_to_drop') IS NOT NULL \
+           AND to_regprocedure('improv.sync_publication()') IS NOT NULL",
     )
     .ok()
     .flatten()
         == Some(true)
 }
 
-/// Models in logical mode that have sync state (i.e. a publication).
-fn list_models() -> Res<Vec<(i64, String)>> {
+/// A logical-mode model with sync state, as one poll sees it.
+struct Listed {
+    id: i64,
+    name: String,
+    /// Its `model_version`.
+    version: i64,
+    /// Whether it has caught up once since its progress was reset.
+    caught_up: bool,
+    /// The relations it binds.
+    rels: Vec<u32>,
+}
+
+/// The models in logical mode that have sync state, in id order.
+fn list_models() -> Res<Vec<Listed>> {
     Spi::connect(|c| -> Res<_> {
         c.select(
-            "SELECT m.id, m.name FROM improv.model m JOIN improv.sync_state s ON s.model_id = m.id \
+            "SELECT m.id, m.name, coalesce(v.tx, 0), \
+                    s.confirmed_lsn IS NOT NULL OR s.last_applied_at IS NOT NULL, \
+                    ARRAY(SELECT DISTINCT b.rel::oid::int8 FROM improv.binding b \
+                          WHERE b.model_id = m.id) \
+             FROM improv.model m JOIN improv.sync_state s ON s.model_id = m.id \
+             LEFT JOIN improv.model_version v ON v.model_id = m.id \
              WHERE m.sync_mode = 'logical' ORDER BY m.id",
             None,
             &[],
         )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?)))
+        .map(|r| {
+            Ok(Listed {
+                id: req(&r, 1)?,
+                name: req(&r, 2)?,
+                version: req(&r, 3)?,
+                caught_up: req(&r, 4)?,
+                rels: req::<Vec<i64>>(&r, 5)?
+                    .into_iter()
+                    .map(u32::try_from)
+                    .collect::<Result<_, _>>()?,
+            })
+        })
         .collect()
     })
 }
 
-/// Make sure model `name`'s slot exists with the `pgoutput` plugin. Runs in
-/// its own worker transaction, before anything in it writes (Postgres
-/// refuses to create a slot otherwise). A slot left without a plugin by an
-/// earlier failed creation is dropped and recreated. Returns whether it
-/// created the slot (the caller then catches up with a full recompute).
-fn ensure_slot(name: &str) -> Res<bool> {
+/// Make sure the shared slot exists with the `pgoutput` plugin. Runs in its
+/// own worker transaction, before anything in it writes (Postgres refuses
+/// to create a slot otherwise). A slot left without a plugin by an earlier
+/// failed creation is dropped and recreated. Returns whether it created the
+/// slot (the models then catch up with a full recompute), or `None` while
+/// the publication does not exist: a slot must not start before it, or
+/// decoding the WAL in between fails on the missing publication.
+fn ensure_slot() -> Res<Option<bool>> {
     // Read-only SPI only (`Spi::connect` + `select`): pgrx's `get_one*` and
     // `run*` helpers go through `connect_mut`, which assigns a transaction
     // id, and Postgres refuses to create a slot in a transaction that has
     // one ("…that has performed writes").
-    let slot = pm::slot_name(name)?;
-    let plugin: Option<String> = Spi::connect(|c| -> Res<_> {
+    let (published, plugin) = Spi::connect(|c| -> Res<_> {
         let t = c.select(
-            "SELECT plugin::text FROM pg_replication_slots WHERE slot_name = $1",
+            "SELECT EXISTS (SELECT 1 FROM pg_publication WHERE pubname = $1), \
+                    (SELECT plugin::text FROM pg_replication_slots WHERE slot_name = $1)",
             None,
-            &[slot.clone().into()],
+            &[SLOT.into()],
         )?;
-        Ok(if t.is_empty() {
-            None
-        } else {
-            t.first().get::<String>(1)?
-        })
+        let r = t.first();
+        Ok((r.get::<bool>(1)? == Some(true), r.get::<String>(2)?))
     })?;
+    if !published {
+        return Ok(None);
+    }
     match plugin.as_deref() {
-        Some("pgoutput") => return Ok(false),
+        Some("pgoutput") => return Ok(Some(false)),
         Some(_) => {
             Spi::connect(|c| -> Res<()> {
-                c.select(
-                    "SELECT pg_drop_replication_slot($1)",
-                    None,
-                    &[slot.clone().into()],
-                )?;
+                c.select("SELECT pg_drop_replication_slot($1)", None, &[SLOT.into()])?;
                 Ok(())
             })?;
         }
@@ -507,10 +638,72 @@ fn ensure_slot(name: &str) -> Res<bool> {
         c.select(
             "SELECT pg_create_logical_replication_slot($1, 'pgoutput')",
             None,
-            &[slot.into()],
+            &[SLOT.into()],
         )?;
         Ok(())
     })?;
+    Ok(Some(true))
+}
+
+/// One decode of the shared slot.
+struct Peeked {
+    stream: pgoutput::Stream,
+    /// The decode returned `max_changes` rows, so it may have stopped early.
+    full: bool,
+    /// The WAL flush position read just before the decode.
+    flush: u64,
+}
+
+fn peek() -> Res<Peeked> {
+    let max = MAX_CHANGES.get().max(1);
+    let (flush, rows) = Spi::connect(|c| -> Res<_> {
+        let flush = c
+            .select("SELECT pg_current_wal_flush_lsn()::text", None, &[])?
+            .first()
+            .get::<String>(1)?
+            .as_deref()
+            .and_then(pgoutput::parse_lsn)
+            .ok_or("cannot read the WAL flush position")?;
+        let rows: Vec<Vec<u8>> = c
+            .select(
+                "SELECT data FROM pg_logical_slot_peek_binary_changes( \
+                   $1, NULL, $2, 'proto_version', '1', 'publication_names', $1)",
+                None,
+                &[SLOT.into(), max.into()],
+            )?
+            .map(|r| req(&r, 1))
+            .collect::<Res<_>>()?;
+        Ok((flush, rows))
+    })?;
+    let mut stream = pgoutput::Stream::default();
+    for data in &rows {
+        stream.feed(data)?;
+    }
+    Ok(Peeked {
+        stream,
+        full: rows.len() >= max as usize,
+        flush,
+    })
+}
+
+/// Confirm the slot up to `target` when it is past the slot's position: at
+/// once when `applied` (the poll applied transactions), else only once the
+/// slot lags by [`IDLE_ADVANCE`]. Returns whether it moved.
+fn advance(target: u64, applied: bool) -> Res<bool> {
+    let at = Spi::get_one_with_args::<String>(
+        "SELECT confirmed_flush_lsn::text FROM pg_replication_slots WHERE slot_name = $1",
+        &[SLOT.into()],
+    )?
+    .as_deref()
+    .and_then(pgoutput::parse_lsn)
+    .ok_or("the slot is gone")?;
+    if target <= at || (!applied && target - at < IDLE_ADVANCE) {
+        return Ok(false);
+    }
+    Spi::run_with_args(
+        "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
+        &[SLOT.into(), pgoutput::format_lsn(target).into()],
+    )?;
     Ok(true)
 }
 
@@ -538,50 +731,49 @@ struct Live {
     replay_until: u64,
 }
 
-/// One poll of one model, inside the caller's (worker) transaction.
-/// Returns whether it advanced the slot.
-fn tick(mid: i64, name: &str) -> Res<bool> {
+/// One model's share of a poll (`txns`, of relations `rels`), inside the
+/// caller's worker transaction: skip what its recorded progress already
+/// holds, (re)build its live state when it has none or the model changed,
+/// apply the rest, and record its progress with the result writes.
+fn tick(
+    mid: i64,
+    name: &str,
+    mut txns: Vec<pgoutput::Txn>,
+    rels: &HashMap<u32, pgoutput::Relation>,
+) -> Res<()> {
     // Taken out for the poll and put back only on success: any error (or a
     // Postgres ERROR unwinding through here) drops it, and the next poll
     // rebuilds from the tables.
     let mut state = LIVE.with(|l| l.borrow_mut().remove(&mid));
-    let slot = pm::slot_name(name)?;
-    // A brand-new slot starts at the current WAL position: everything
-    // committed before it is caught up by one full recompute.
-    let caught_up = Spi::get_one_with_args::<bool>(
-        "SELECT confirmed_lsn IS NOT NULL OR last_applied_at IS NOT NULL \
-         FROM improv.sync_state WHERE model_id = $1",
-        &[mid.into()],
-    )? == Some(true);
-    if !caught_up {
-        ensure_replica_identity(mid)?;
-        let _ = lock_model(name)?;
-        drop(state);
-        let (state, changed) = rebuild(mid, name)?;
-        record(mid, changed, None, Applied::Rebuild)?;
-        keep(mid, state);
-        return Ok(false);
-    }
-    let max = MAX_CHANGES.get().max(1);
-    let rows: Vec<(String, Vec<u8>)> = Spi::connect(|c| -> Res<_> {
-        c.select(
-            "SELECT lsn::text, data FROM pg_logical_slot_peek_binary_changes( \
-               $1, NULL, $2, 'proto_version', '1', 'publication_names', $1)",
+    let (caught_up, progress) = Spi::connect(|c| -> Res<_> {
+        let t = c.select(
+            "SELECT confirmed_lsn IS NOT NULL OR last_applied_at IS NOT NULL, confirmed_lsn::text \
+             FROM improv.sync_state WHERE model_id = $1",
             None,
-            &[slot.clone().into(), max.into()],
-        )?
-        .map(|r| Ok((req(&r, 1)?, req(&r, 2)?)))
-        .collect()
+            &[mid.into()],
+        )?;
+        let r = t.first();
+        Ok((
+            r.get::<bool>(1)? == Some(true),
+            r.get::<String>(2)?.as_deref().and_then(pgoutput::parse_lsn),
+        ))
     })?;
-    let mut stream = pgoutput::Stream::default();
-    for (_, data) in &rows {
-        stream.feed(data)?;
+    // Applied (with the result writes) before a crash or a failed advance.
+    if let Some(p) = progress {
+        txns.retain(|t| t.end_lsn > p);
+    }
+    if !caught_up {
+        // A new or reset model: everything before the slot is caught up by
+        // one full recompute.
+        ensure_replica_identity(mid)?;
+        drop(state.take());
     }
     // A structural change (`define`, a new binding) bumps `model_version`
     // but may touch no bound row, so no decoded change would ever prompt a
-    // rebuild: check the version on every poll, and build the live state
-    // when there is none (after a worker restart), so results always follow
-    // the model as it is now.
+    // rebuild: build the live state when there is none (after a worker
+    // restart) or the version moved, so results always follow the model as
+    // it is now. The load runs after the decode, so it already holds every
+    // transaction in `txns`; re-applying them converges (see `live`).
     let version = model_version(mid)?;
     if state
         .as_ref()
@@ -596,22 +788,18 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
         record(mid, n, None, Applied::Rebuild)?;
         state = l;
     }
-    // Only whole committed transactions are applied; a transaction cut off
-    // by `max_changes` is re-read next poll.
-    let Some(last) = stream.done.last() else {
+    let Some(last) = txns.last().map(|t| t.end_lsn) else {
         keep(mid, state);
-        return Ok(false);
+        return Ok(());
     };
-    let advance_to = last.end_lsn;
-    let touched = stream.done.iter().any(|t| !t.changes.is_empty());
     let mut how = Applied::Nothing;
-    let changed = if touched {
+    let changed = if txns.iter().any(|t| !t.changes.is_empty()) {
         let _ = lock_model(name)?;
         // Again under the lock: a define that committed while this waited
         // for it must not see its results overwritten by the old formula.
         let version = model_version(mid)?;
         let applied = match state.as_mut() {
-            Some(l) if l.version == version && l.name == name => apply(mid, l, &stream)?,
+            Some(l) if l.version == version && l.name == name => apply(mid, l, rels, &txns)?,
             Some(_) => Err(Rebuild("model changed")),
             None => Err(Rebuild("no live state")),
         };
@@ -624,7 +812,7 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
                 how = Applied::Rebuild;
                 log!("pg_improv sync: model {name}: rebuilding ({})", why.0);
                 // Free the old engine before building one. The load runs
-                // after the peek, so it already holds this batch.
+                // after the decode, so it already holds this batch.
                 drop(state.take());
                 let (l, n) = rebuild(mid, name)?;
                 state = l;
@@ -634,13 +822,9 @@ fn tick(mid: i64, name: &str) -> Res<bool> {
     } else {
         0
     };
-    Spi::run_with_args(
-        "SELECT pg_replication_slot_advance($1, $2::pg_lsn)",
-        &[slot.into(), pgoutput::format_lsn(advance_to).into()],
-    )?;
-    record(mid, changed, Some(advance_to), how)?;
+    record(mid, changed, Some(last), how)?;
     keep(mid, state);
-    Ok(true)
+    Ok(())
 }
 
 fn keep(mid: i64, state: Option<Live>) {
@@ -662,8 +846,13 @@ fn model_version(mid: i64) -> Res<i64> {
 /// `l` is stale: drop it). Dimension values with no item yet are minted
 /// first, in this (the worker's) transaction; the engine keeps going when
 /// its plans do not read the item lists that grew ([`Engine::serves`]).
-fn apply(mid: i64, l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, Rebuild>> {
-    let new = l.mapper.unknown(&stream.relations, &stream.done);
+fn apply(
+    mid: i64,
+    l: &mut Live,
+    rels: &HashMap<u32, pgoutput::Relation>,
+    txns: &[pgoutput::Txn],
+) -> Res<Result<i64, Rebuild>> {
+    let new = l.mapper.unknown(rels, txns);
     if !new.is_empty() {
         for (cat, name, id) in mint(mid, new)? {
             l.mapper.add_item(cat, &name, id);
@@ -673,12 +862,7 @@ fn apply(mid: i64, l: &mut Live, stream: &pgoutput::Stream) -> Res<Result<i64, R
             return Ok(Err(Rebuild("new item in a category a formula enumerates")));
         }
     }
-    let edits = match l.mapper.map(
-        &mut l.model,
-        &stream.relations,
-        &stream.done,
-        l.replay_until,
-    ) {
+    let edits = match l.mapper.map(&mut l.model, rels, txns, l.replay_until) {
         Ok(e) => e,
         Err(why) => return Ok(Err(why)),
     };
@@ -930,8 +1114,21 @@ fn record(mid: i64, changed: i64, lsn: Option<u64>, how: Applied) -> Res<()> {
     Ok(())
 }
 
-/// Drop slots queued by [`disable`]. Each drop needs a transaction that has
-/// not written, so a failure (e.g. the slot is active) leaves it queued.
+/// Drop slot `slot` if it exists.
+fn drop_slot(slot: &str) -> Res<()> {
+    let exists = Spi::get_one_with_args::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
+        &[slot.into()],
+    )? == Some(true);
+    if exists {
+        Spi::run_with_args("SELECT pg_drop_replication_slot($1)", &[slot.into()])?;
+    }
+    Ok(())
+}
+
+/// Drop the slots queued in `improv.slot_to_drop` (0.10.0's per-model
+/// slots, after an upgrade). Each drop needs a transaction that has not
+/// written, so a failure (e.g. the slot is active) leaves it queued.
 fn drop_queued_slots() -> Res<()> {
     let queued: Vec<String> = Spi::connect(|c| -> Res<_> {
         c.select("SELECT slot FROM improv.slot_to_drop", None, &[])?
@@ -939,16 +1136,7 @@ fn drop_queued_slots() -> Res<()> {
             .collect()
     })?;
     for slot in queued {
-        let exists = Spi::get_one_with_args::<bool>(
-            "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
-            &[slot.clone().into()],
-        )? == Some(true);
-        if exists {
-            Spi::run_with_args(
-                "SELECT pg_drop_replication_slot($1)",
-                &[slot.clone().into()],
-            )?;
-        }
+        drop_slot(&slot)?;
         Spi::run_with_args(
             "DELETE FROM improv.slot_to_drop WHERE slot = $1",
             &[slot.into()],

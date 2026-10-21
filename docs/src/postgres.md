@@ -78,15 +78,17 @@ transaction sees the old results (call `improv.recalc('plan')` there to
 read your writes). In `logical` mode the
 results follow the commit in the worker's own transaction, and an aborted
 write never reaches them at all, because logical decoding carries committed
-transactions only. A batch's results and the slot's position commit
-together, so a crash neither loses nor doubles a change.
+transactions only. A batch's results and the model's recorded position
+commit together, so a crash neither loses nor doubles a change. The worker
+reads one replication slot per database (`improv_db`), however many models
+there are, and routes each change to the models bound to its table.
 
 | | `logical` (default) | `trigger` | `commit` | `improv.recalc()` |
 | --- | --- | --- | --- | --- |
 | Results update | after the commit, by a background worker | inside the writer's statement | inside the writer's transaction, just before `COMMIT` | when you call it |
 | Consistency | eventual (lags the commit by one poll plus the change's own work) | transactional, read-your-writes | transactional; reads before `COMMIT` see the old results | transactional, in your snapshot |
 | Writer pays | nothing (the worker applies only the changed cells) | the recompute, on every write statement | one recompute per transaction, of the written tables' dependents | the recompute, when you choose |
-| On your tables | a publication (and `REPLICA IDENTITY FULL` if no PK) | four statement triggers each | nothing | nothing |
+| On your tables | membership of the publication `improv_db` (and `REPLICA IDENTITY FULL` if no PK) | four statement triggers each | nothing | nothing |
 | Needs | `wal_level = logical`, preload, a PK or `REPLICA IDENTITY FULL` (set for you) | nothing | preload | nothing |
 
 Switch with `SELECT improv.set_sync_mode('plan', 'commit')` (or `'logical'`,
@@ -171,15 +173,22 @@ body and 0.24 µs for `bonus` above. See
 pg_improv supports Postgres 15–18. To upgrade, install the new release,
 restart Postgres, then run `ALTER EXTENSION pg_improv UPDATE`. `pg_dump`
 keeps the models and their results. A restored database's worker makes a
-new replication slot and catches up with one recompute.
+new replication slot and catches up with one recompute. Updating to 0.11.0
+moves logical-mode models from one slot each (`improv_<model>`) to the
+shared `improv_db`: the update drops the old publications, the worker
+drops the old slots and catches each model up with one recompute.
 
 ## Durability
 
-In logical mode the worker writes a batch of results and advances its slot
-in **one** transaction, so after a crash or `pg_terminate_backend` it
-re-reads and re-applies; nothing is lost or counted twice, and rolled-back
-writes never appear. A slot retains WAL until confirmed, so set
-`max_slot_wal_keep_size` and watch `improv.status(model).lag_bytes`.
+In logical mode the worker writes a model's share of a batch and records
+that model's position in **one** transaction, and confirms the shared slot
+once every model has applied the batch, so after a crash or
+`pg_terminate_backend` it re-reads and re-applies only what was not
+recorded; nothing is lost or counted twice, and rolled-back writes never
+appear. A model that fails records `last_error` and rebuilds from its
+tables on its next poll, so it never holds the other models' slot back. A
+slot retains WAL until confirmed, so set `max_slot_wal_keep_size` and watch
+`improv.status(model).lag_bytes`.
 
 See `crates/pg_improv/README.md` for the full SQL API, limits
 (`improv.max_cells`), and the benchmark table.

@@ -8,7 +8,9 @@
 # by side; one .so, the new one), restart, ALTER EXTENSION ... UPDATE, and
 # check the version, the results, that the worker still follows writes, that
 # a define() still works, that pg_dump now keeps the model, and that the
-# model then moves to commit sync (0.10.0) and recomputes at COMMIT.
+# model then moves to commit sync (0.10.0) and recomputes at COMMIT. From
+# before 0.11.0: the per-model slot and publication give way to the shared
+# improv_db, and the model stays in sync through the switch.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
@@ -74,11 +76,21 @@ for from in "$@"; do
 	# The new release over the old: SQL scripts side by side, the new .so.
 	install "$here"
 	"$PG_BIN/pg_ctl" -D "$W/data" -l "$W/log" -w restart >/dev/null 3>&-
+	# A write the old worker may not have applied yet: the update must not lose it.
+	q "UPDATE sales SET qty = 250 WHERE quarter='Q1' AND product='Widget'"
 	q "ALTER EXTENSION pg_improv UPDATE"
 	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$to" "updated version"
-	eq "$(q "$REV")" 1100 "results kept across the update"
+	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 3300 "the worker follows writes after the update"
+	# 0.11.0: one slot and publication per database; the per-model ones go.
+	for _ in $(seq 200); do
+		[ "$(q "SELECT string_agg(slot_name, ',' ORDER BY slot_name) FROM pg_replication_slots")" = improv_db ] && break
+		sleep 0.05
+	done
+	eq "$(q "SELECT string_agg(slot_name, ',' ORDER BY slot_name) FROM pg_replication_slots")" improv_db "only the shared slot after the update"
+	eq "$(q "SELECT string_agg(pubname, ',' ORDER BY pubname) FROM pg_publication")" improv_db "only the shared publication after the update"
+	eq "$(q "SELECT slot || ' ' || (last_error IS NULL)::text FROM improv.status('plan')")" "improv_db true" "status names the shared slot"
 	q "SELECT improv.define('plan','Double = Revenue * 2')" >/dev/null
 	for _ in $(seq 200); do [ "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" = 6600 ] && break; sleep 0.05; done
 	eq "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" 6600 "define after the update"

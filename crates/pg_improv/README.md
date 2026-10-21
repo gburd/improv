@@ -55,7 +55,7 @@ decoding (then restart Postgres):
 shared_preload_libraries = 'pg_improv'
 wal_level = logical
 improv.database = 'sales'       # the database the sync worker serves (default: postgres)
-#improv.poll_ms = 200           # how often it polls each model's slot
+#improv.poll_ms = 200           # how often it polls its slot
 #improv.max_changes = 10000     # most decoded changes per poll
 max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retain
 ```
@@ -126,9 +126,10 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
 | `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once (re-run it after binding a new relation). `commit`: recomputes once, then once per writing transaction before it commits; needs the preload. `logical`/`manual`: removes the triggers. |
 | `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value jsonb)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. When every edit has the same categories and the measures they feed are element-wise, it loads and compares only the edited coordinates, as trigger mode does. |
-| `enable_logical(model)` | Creates (or resets) the publication `improv_<model>` over the bound relations and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
+| `enable_logical(model)` | Adds the model's bound relations to the database's publication `improv_db` and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
+| `sync_publication()` | Sets `improv_db` to the union of the relations every logical-mode model binds (creating it when missing). Called for you by every function that changes that set; run it by hand to repair a publication edited by hand. |
 | `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error, incremental_applies, rebuilds)` | How the model is kept current, how far the logical worker is behind, and how it applied its batches: `incremental_applies` to the live engine, `rebuilds` full loads (the first catch-up, structural changes, and what it could not apply incrementally). |
-| `drop_model(name)` | Drops the catalog rows, the result schema, the triggers and the publication, and queues the slot for the worker to drop. |
+| `drop_model(name)` | Drops the catalog rows, the result schema and the triggers, and takes relations no other logical-mode model binds out of `improv_db`. |
 
 **Redefining.** `define(model, 'Merit = …', replace => true)` is safe to
 re-run from a migration. When the formula parses to the one the measure
@@ -360,19 +361,40 @@ UPDATE takes 77 ms in both.
 ### Logical mode (default)
 
 A background worker (`pg_improv sync`, one per server, serving
-`improv.database`) polls, for each model in `logical` mode, a logical
-replication slot `improv_<model>` (plugin `pgoutput`) over the publication
-`improv_<model>`. When committed source transactions touched a bound
-relation it applies their row changes and writes the changed results **in
-one worker transaction that also advances the slot**. A crash or
-`pg_terminate_backend` therefore re-reads and re-applies (the writes are
-idempotent upserts and deletes); nothing is lost or applied twice. Rolled-back source transactions
-never appear. The worker restarts itself 5 s after it is killed.
+`improv.database`) polls one logical replication slot, `improv_db` (plugin
+`pgoutput`), over the publication `improv_db`, which holds every relation
+any logical-mode model binds. Each poll decodes the slot once and routes
+each committed transaction's row changes, by relation, to the models bound
+there; models with nothing in the batch cost nothing. Each model applies
+its share and writes its changed results **in one worker transaction that
+also records the model's position** (`improv.sync_state.confirmed_lsn`), and
+skips transactions at or before it. When every model has applied the batch,
+the worker advances the slot to its end. A crash or `pg_terminate_backend`
+therefore re-reads and re-applies only what no model recorded (the writes
+are idempotent upserts and deletes); nothing is lost or applied twice.
+Rolled-back source transactions never appear. The worker restarts itself 5
+s after it is killed.
+
+A model that fails (an error in its transaction: `last_error` in
+`improv.status` says why) drops its live state, and its next poll rebuilds
+it from its tables, which needs none of the WAL it skipped. So a failing
+model never holds the slot, or the other models, back: it is retried every
+poll and catches up in one rebuild once it works again.
 
 The slot retains WAL until the worker confirms it: watch `lag_bytes` in
-`improv.status`, and set `max_slot_wal_keep_size`. Slots are created by the
-worker (Postgres forbids creating one in a transaction that has written), so
-a new model in logical mode starts updating within one poll of being bound.
+`improv.status`, and set `max_slot_wal_keep_size`. The slot is created by
+the worker (Postgres forbids creating one in a transaction that has
+written), so the first model in logical mode starts updating within one
+poll of being bound; a model that joins later is caught up by one rebuild
+from its tables, and each model's rebuild reads its fold state with its own
+snapshot, so it skips exactly the transactions its load already saw. With no
+logical-mode model left the worker drops the slot.
+
+Before 0.11.0 each model had its own slot and publication, `improv_<model>`,
+and every poll decoded the WAL once per model. `ALTER EXTENSION pg_improv
+UPDATE` to 0.11.0 drops those publications and queues their slots; the
+worker drops the slots, creates `improv_db`, and catches each model up with
+one rebuild.
 
 Apply strategy: incremental. The worker keeps each model loaded, with a
 live engine (its own compute thread; it never calls Postgres). Decoded row
@@ -415,10 +437,11 @@ A rebuild costs what a `recalc` costs.
 The loaded model counts against `improv.max_cells`; leaving logical mode or
 dropping the model frees it.
 
-After each batch the worker logs a standby snapshot
+After each poll that applied a batch the worker logs one standby snapshot
 (`pg_log_standby_snapshot()`), so the slot's restart point keeps up and a
 poll decodes only new WAL rather than everything since the bgwriter's last
-snapshot (up to 15 s of it).
+snapshot (up to 15 s of it). With the bound tables idle it also moves the
+slot past unrelated WAL once it lags by 16 MB.
 
 ### Benchmark
 
@@ -487,6 +510,6 @@ The `improv.*` tables are a compatible superset of the catalog that
 created in SQL opens in the GUI and vice versa. The extension adds
 `improv.category_binding` (category ⇄ column bindings) and, for logical
 mode, `improv.sync_state` (each model's slot, progress and last error) and
-`improv.slot_to_drop` (slots the worker drops after a model leaves logical
-mode). A pg_test checks the superset property against
+`improv.slot_to_drop` (old per-model slots the worker drops after the
+update to 0.11.0). A pg_test checks the superset property against
 `improv_storage_pg::CATALOG_SQL`.

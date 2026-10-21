@@ -1704,52 +1704,79 @@ mod tests {
         assert_eq!(count("improv_plan.maxq"), 1);
     }
 
-    /// Binding a measure in the default (logical) mode creates the
-    /// publication over the bound table (the worker later gives a PK-less
-    /// table `REPLICA IDENTITY FULL`) and records sync state; `status` reports it;
-    /// `drop_model` removes the publication and queues the slot for the
-    /// worker to drop.
+    /// The tables of the shared publication `improv_db`, sorted.
+    fn published() -> Vec<String> {
+        Spi::get_one::<Vec<String>>(
+            "SELECT coalesce(array_agg(tablename::text ORDER BY tablename), '{}') \
+             FROM pg_publication_tables WHERE pubname = 'improv_db'",
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    /// Binding a measure in the default (logical) mode adds the bound table
+    /// to the database's one publication, `improv_db` (the worker later
+    /// gives a PK-less table `REPLICA IDENTITY FULL`), and records sync
+    /// state; `status` reports the shared slot; `drop_model` takes the table
+    /// out again and leaves no per-model publication or slot behind.
     #[pg_test]
     fn logical_mode_publication_lifecycle() {
         setup_plan();
-        let pubs = Spi::get_one::<Vec<String>>(
-            "SELECT array_agg(tablename::text) FROM pg_publication_tables WHERE pubname = 'improv_plan'",
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(pubs, vec!["sales".to_string()]);
+        assert_eq!(published(), vec!["sales".to_string()]);
         let (mode, slot) =
             Spi::get_two::<String, String>("SELECT sync_mode, slot FROM improv.status('plan')")
                 .unwrap();
         assert_eq!(mode.as_deref(), Some("logical"));
-        assert_eq!(slot.as_deref(), Some("improv_plan"));
+        assert_eq!(slot.as_deref(), Some("improv_db"));
         Spi::run("SELECT improv.drop_model('plan')").unwrap();
-        let left = Spi::get_one::<i64>(
-            "SELECT count(*) FROM pg_publication WHERE pubname = 'improv_plan'",
-        )
-        .unwrap();
-        assert_eq!(left, Some(0));
-        let queued = Spi::get_one::<i64>(
-            "SELECT count(*) FROM improv.slot_to_drop WHERE slot = 'improv_plan'",
-        )
-        .unwrap();
-        assert_eq!(queued, Some(1));
+        assert!(published().is_empty());
+        let other =
+            Spi::get_one::<i64>("SELECT count(*) FROM pg_publication WHERE pubname <> 'improv_db'")
+                .unwrap();
+        assert_eq!(other, Some(0));
+        assert_eq!(
+            Spi::get_one::<i64>("SELECT count(*) FROM improv.slot_to_drop").unwrap(),
+            Some(0)
+        );
     }
 
-    /// Leaving logical mode drops the publication; returning recreates it.
+    /// The shared publication is the union over the logical-mode models:
+    /// two models on one table publish it once, a model on two tables
+    /// publishes both, and a table leaves only when no logical model binds
+    /// it (mode switch, drop_measure, drop_model).
     #[pg_test]
-    fn sync_mode_switch_manages_the_publication() {
+    fn shared_publication_is_the_union_of_logical_models() {
         setup_plan();
-        let count = || {
-            Spi::get_one::<i64>("SELECT count(*) FROM pg_publication WHERE pubname = 'improv_plan'")
-                .unwrap()
-                .unwrap()
-        };
-        assert_eq!(count(), 1);
+        for sql in [
+            "CREATE TABLE costs (product text PRIMARY KEY, cost float8)",
+            "SELECT improv.create_model('two')",
+            "SELECT improv.bind_category('two', 'Product', 'sales', 'product')",
+            "SELECT improv.bind_category('two', 'Product', 'costs', 'product')",
+            "SELECT improv.bind_measure('two', 'Qty', 'sales', 'qty', agg => 'sum')",
+            "SELECT improv.bind_measure('two', 'Cost', 'costs', 'cost')",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        let both = vec!["costs".to_string(), "sales".to_string()];
+        assert_eq!(published(), both);
         Spi::run("SELECT improv.set_sync_mode('plan', 'manual')").unwrap();
-        assert_eq!(count(), 0);
+        assert_eq!(published(), both, "two still binds sales");
+        Spi::run("SELECT improv.drop_measure('two', 'Qty')").unwrap();
+        assert_eq!(published(), vec!["costs".to_string()]);
         Spi::run("SELECT improv.set_sync_mode('plan', 'logical')").unwrap();
-        assert_eq!(count(), 1);
+        assert_eq!(published(), both);
+        Spi::run("SELECT improv.drop_model('two')").unwrap();
+        assert_eq!(published(), vec!["sales".to_string()]);
+        Spi::run("SELECT improv.set_sync_mode('plan', 'trigger')").unwrap();
+        assert!(published().is_empty());
+        // Idempotent, and repairs a publication changed by hand.
+        Spi::run("ALTER PUBLICATION improv_db ADD TABLE costs").unwrap();
+        Spi::run("SELECT improv.sync_publication()").unwrap();
+        Spi::run("SELECT improv.sync_publication()").unwrap();
+        assert!(published().is_empty());
+        Spi::run("DROP PUBLICATION improv_db").unwrap();
+        Spi::run("SELECT improv.set_sync_mode('plan', 'logical')").unwrap();
+        assert_eq!(published(), vec!["sales".to_string()]);
     }
 
     /// The sync worker is registered when preloaded and connected to

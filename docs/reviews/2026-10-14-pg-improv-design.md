@@ -66,16 +66,26 @@ All three share one pure core (`improv_engine::evaluate` / `session::Engine`)
 and one writer (`apply_deltas`: upsert changed cells, delete vanished ones).
 
 ### 4.1 Logical decoding (default, `sync_mode='logical'`)
-A background worker per database (`pg_improv sync`) owns, per model:
-a logical replication slot (`pgoutput`, publication `improv_<model>` over the
-bound tables), and a live `session::Engine` (its own compute thread; **no
-Postgres call ever happens off the worker's main thread**).
-Loop: read changes since the slot's confirmed LSN
-(`pg_logical_slot_peek_binary_changes`), decode the bound tables' rows,
-group by source transaction, apply each source transaction's deltas to the
-engine, write the result delta to the result tables **in one worker
-transaction that also advances the slot** (`pg_replication_slot_advance`) —
-so a crash re-reads and re-applies (idempotent upserts), never loses.
+A background worker per database (`pg_improv sync`) owns one logical
+replication slot, `improv_db` (`pgoutput`, publication `improv_db` over the
+union of the logical-mode models' bound tables, kept by
+`improv.sync_publication()` on bind, unbind, mode switch and drop), and per
+model a live `session::Engine` (its own compute thread; **no Postgres call
+ever happens off the worker's main thread**). (Until 0.11.0 each model had
+its own slot and publication `improv_<model>`; at 1,000 models every poll
+re-decoded the same WAL once per slot, and a one-row change waited 12–120 s.)
+Loop: read changes since the slot's confirmed LSN, once per poll
+(`pg_logical_slot_peek_binary_changes`), group by source transaction, route
+each transaction's changes by relation oid to the models bound there
+(`live::route`), and per model apply them to the engine and write the
+result delta **in one worker transaction that also records the model's
+position** (`sync_state.confirmed_lsn`; it skips transactions that ended at
+or before it). Every model applies the batch in the same pass; then the
+slot is advanced (`pg_replication_slot_advance`) to its end and one standby
+snapshot is logged. A crash re-reads and re-applies only unrecorded work
+(idempotent upserts), never loses. A failing model drops its live state and
+rebuilds from its tables next poll, so it needs none of the skipped WAL and
+never holds the slot back for the others; `last_error` reports it.
 - Built (G1): the worker keeps per model the loaded `Model`, the live
   `Engine` and its last `Snapshot` (a worker-thread-local map; the engine
   thread is spawned with Postgres' signals blocked). `pg_model::live::Mapper`
@@ -86,8 +96,9 @@ so a crash re-reads and re-applies (idempotent upserts), never loses.
   diff against the tables) when there is no state, `model_version` moved,
   on TRUNCATE, a new item, a duplicate coordinate, an aggregated binding, or
   an old row whose dimensions were not replicated; any error drops the
-  state. After each batch it logs a standby snapshot so the slot's restart
-  point keeps up and each poll decodes only new WAL. 100k cells, p50
+  state. After each poll that applied something it logs one standby
+  snapshot so the slot's restart point keeps up and each poll decodes only
+  new WAL. 100k cells, p50
   freshness: 1-row 1161 → 52 ms, bulk 1552 → 559 ms.
 - ✚ zero cost in the writer's transaction; batching; survives restarts
   (slot position is the checkpoint); replicas get result tables via WAL.

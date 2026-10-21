@@ -51,6 +51,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   2.5M rows the load query drops from 4.5 s to 1.1 s. Results are
   unchanged, NULLs included. `recalc` and a `commit`-mode transaction on
   the benchmark model drop from 5.6 s to 2.1–2.4 s.
+- **pg_improv 0.11.0: one replication slot per database, not per model.**
+  Logical-mode models share the slot and publication `improv_db` (the
+  union of their bound tables, kept by the new `improv.sync_publication()`).
+  The sync worker decodes the WAL once per poll and routes each change by
+  table to the models bound there; each model records its own position
+  with its result writes, so a crash re-applies nothing twice, and a
+  failing model rebuilds from its tables on its next poll instead of
+  holding the slot back. One standby snapshot is logged per poll, not one
+  per model. At 1,000 small models a one-row change used to wait 5–70 s and
+  a write touching every model 97 s. `ALTER EXTENSION pg_improv UPDATE`
+  drops the old `improv_<model>` publications, and the worker drops their
+  slots and catches each model up with one rebuild. `improv.status` reports
+  `slot = 'improv_db'`.
 - **`improv.what_if` loads only the edited coordinates** when every edit
   has the same categories and the chain they feed is element-wise (as in
   trigger mode): 0.27 s instead of 5.3 s for a one-cell edit on 2.5M
