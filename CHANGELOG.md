@@ -19,6 +19,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   slow"). `docs/ops/` ships a postgres_exporter queries file and a
   Grafana dashboard. The guide's contents are regrouped into Guides,
   Operations, Reference and Design.
+- **Exponent literals in formulas:** `1e-10`, `2.5E+3`, `6.02e23`. Before,
+  `2e3` was a parse error and FIXPOINT's tolerance had to be written
+  `0.0000000001`. An exponent without digits (`1e`, `1e+`) is a located
+  error; one that overflows a 64-bit float (`1e999`) is the error `number
+  out of range` (not infinity, and not Excel's `#NUM!`), and one that
+  underflows reads as 0. Names are unaffected, since a name never starts
+  with a digit: `e`, `E` and `e1` are still measures. The GUI formula bar
+  prints such numbers back in exponent form (below 1e-6 and from 1e21), so
+  they stay editable, the controlled English reads and writes them
+  (`price minus 1e-10`, and now `2.5`, which split at the point before),
+  DuckDB's `improv_calc` and pg_improv's `plimprov` accept them, and
+  `improv_core_model::parser::number_literal` is the shared printer.
 
 ### Changed
 

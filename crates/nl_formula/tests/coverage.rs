@@ -77,11 +77,25 @@ fn copula_parens_numbers_and_punctuation() {
         parse("x equals 3").unwrap(),
         Expr::Literal(Value::Number(3.0))
     );
-    // `.` is a word separator, so a decimal literal splits in two.
+    // A number keeps its point and exponent; a sentence's `.` still ends it.
+    let lit = |n| Expr::Literal(Value::Number(n));
     assert_eq!(
-        parse("price plus 2.5"),
-        Err(NlError::Unexpected("5".into()))
+        parse("price plus 2.5.").unwrap(),
+        bin(BinaryOp::Add, r(PRICE), lit(2.5))
     );
+    assert_eq!(
+        parse("price minus 1e-10").unwrap(),
+        bin(BinaryOp::Sub, r(PRICE), lit(1e-10))
+    );
+    assert_eq!(parse("6.02E+23").unwrap(), lit(6.02e23));
+    assert_eq!(
+        parse("2-1").unwrap(),
+        bin(BinaryOp::Sub, lit(2.0), lit(1.0))
+    );
+    assert_eq!(parse("1e999"), Err(NlError::Unexpected("1e999".into())));
+    // A word not starting with a digit is a name, even `inf`.
+    assert_eq!(parse("inf"), Err(NlError::UnknownMeasure("inf".into())));
+    assert_eq!(parse("1.2.3"), Err(NlError::Unexpected("3".into())));
     // "divided" without "by" is not an operator: trailing junk.
     assert_eq!(
         parse("price divided quantity"),
@@ -182,6 +196,8 @@ fn describe_renders_every_shape() {
     assert_eq!(d(Expr::Literal(Value::Boolean(true))), "Boolean(true)");
     assert_eq!(d(Expr::Literal(Value::Number(2.5))), "2.5");
     assert_eq!(d(Expr::Literal(Value::Number(-3.0))), "-3");
+    assert_eq!(d(Expr::Literal(Value::Number(-1e-10))), "-1e-10");
+    assert_eq!(d(Expr::Literal(Value::Number(6.02e23))), "6.02e23");
     for (f, word) in [
         (FUNC_SUM, "sum"),
         (FUNC_AVERAGE, "average"),

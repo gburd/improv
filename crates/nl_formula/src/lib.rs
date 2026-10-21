@@ -12,7 +12,7 @@
 //!
 //! expr       = term { ("plus" | "+" | "minus" | "-") term }
 //! term       = factor { ("times" | "*" | "divided" "by" | "/") factor }
-//! factor     = number
+//! factor     = number          (* 42, 2.5, 1e-10, as in a formula *)
 //!            | agg-call
 //!            | measure-ref
 //!            | "(" expr ")"
@@ -125,7 +125,18 @@ pub const MAX_PARSE_DEPTH: usize = 200;
 fn tokenize(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
-    for ch in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        // A number keeps its point and its exponent's sign: `2.5`, `1e-10`.
+        let next_digit = chars.peek().is_some_and(char::is_ascii_digit);
+        if next_digit && word.starts_with(|c: char| c.is_ascii_digit()) {
+            let point = ch == '.' && !word.contains(['.', 'e']);
+            let sign = matches!(ch, '+' | '-') && word.ends_with('e');
+            if point || sign {
+                word.push(ch);
+                continue;
+            }
+        }
         match ch {
             '+' | '-' | '*' | '/' | '(' | ')' => {
                 if !word.is_empty() {
@@ -299,7 +310,14 @@ impl<'a, 'm> Parser<'a, 'm> {
             }
             Some(w) if is_agg_word(w) => self.parse_agg(),
             Some(w) => {
-                if let Ok(n) = w.parse::<f64>() {
+                // Only a word that starts with a digit is a number, so a
+                // measure named `inf` or `nan` stays a name.
+                let digit = w.starts_with(|c: char| c.is_ascii_digit());
+                if let Some(n) = w.parse::<f64>().ok().filter(|_| digit) {
+                    // `1e999` is an error, as in the formula language.
+                    if n.is_infinite() {
+                        return Err(NlError::Unexpected(w.to_string()));
+                    }
                     self.bump();
                     return Ok(Expr::Literal(Value::Number(n)));
                 }
@@ -514,11 +532,13 @@ fn cat_list(ctx: &NlContext, cats: &[CategoryId]) -> String {
         .join(" and ")
 }
 
+/// The formula language's spelling of `n` (`2.5`, `1e-10`), which the
+/// tokenizer above reads back as one word.
 fn fmt_num(n: f64) -> String {
-    if n.fract() == 0.0 && n.is_finite() {
-        format!("{}", n as i64)
-    } else {
-        format!("{n}")
+    match improv_core_model::parser::number_literal(n.abs()) {
+        Some(s) if n < 0.0 => format!("-{s}"),
+        Some(s) => s,
+        None => format!("{n}"), // inf, NaN: no literal
     }
 }
 

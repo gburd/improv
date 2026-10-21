@@ -216,6 +216,8 @@ mod tests {
         let typed = "WENN(Preis > 1,5; RUNDEN(Preis; 2); kürzen(Preis))";
         let canon = de.canonicalize(typed);
         assert_eq!(canon, "IF(Preis > 1.5, ROUND(Preis, 2), TRUNC(Preis))");
+        assert_eq!(de.canonicalize("RUNDEN(1,5e-3; 2)"), "ROUND(1.5e-3, 2)");
+        assert_eq!(de.localize("ROUND(1.5e-3, 2)"), "RUNDEN(1,5e-3; 2)");
         assert_eq!(
             de.localize(&canon),
             "WENN(Preis > 1,5; RUNDEN(Preis; 2); KÜRZEN(Preis))"

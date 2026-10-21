@@ -22,7 +22,7 @@ copula     = "equals" | "is"
 
 expr       = term { ("plus" | "+" | "minus" | "-") term }
 term       = factor { ("times" | "*" | "divided" "by" | "/") factor }
-factor     = number
+factor     = number                (* 42, 2.5, 1e-10, as in a formula *)
            | agg-call
            | measure-ref
            | "(" expr ")"

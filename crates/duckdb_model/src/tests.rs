@@ -417,6 +417,7 @@ fn text(c: &Cache, f: &str, inputs: Option<&str>) -> Option<String> {
 fn calc_values() {
     let c = Cache::default();
     assert_eq!(text(&c, "1 + 2 * 3", None).as_deref(), Some("7"));
+    assert_eq!(text(&c, "2.5E+3 * 1e-3", None).as_deref(), Some("2.5"));
     assert_eq!(
         text(&c, "=ROUND(2.675, 2)", Some("")).as_deref(),
         Some("2.68")
@@ -451,6 +452,7 @@ fn calc_errors() {
     let c = Cache::default();
     for (f, inputs, want) in [
         ("1 +", None, "improv_calc: parse error"),
+        ("1e999", None, "number out of range"),
         ("y + 1", Some(r#"{"x": 1}"#), "unknown"),
         ("SUM(x OVER T)", Some(r#"{"x": 1}"#), "improv_calc"),
         ("1", Some("{nope"), "not valid JSON"),

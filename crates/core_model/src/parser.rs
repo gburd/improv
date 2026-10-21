@@ -24,6 +24,8 @@
 //! Primary      = Literal | Call | Special | MeasureRef | Local
 //!              | "(" Expression ")" ;
 //! Literal      = Number | Text | "TRUE" | "FALSE" | DateLiteral ;  (* #2025-01-31# *)
+//! Number       = Digits [ "." Digits ] [ ( "e" | "E" ) [ "+" | "-" ] Digits ] ;
+//!                                                   (* 42, 1.07, 1e-10, 6.02E23 *)
 //! MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
 //! Local        = Identifier ;                       (* bound by LET / LAMBDA *)
 //!
@@ -230,6 +232,22 @@ fn parse_date_literal(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     None
 }
 
+/// `n` as a number literal that parses back to the same `f64`: the
+/// shortest round-trip digits, in exponent form (`1e-10`, `6.02e23`) below
+/// 1e-6 or from 1e21 up, as JavaScript prints numbers. `None` for a
+/// negative, infinite or NaN `n`, which no literal spells (`-5` is negation
+/// applied to `5`).
+pub fn number_literal(n: f64) -> Option<String> {
+    if !n.is_finite() || n.is_sign_negative() {
+        return None;
+    }
+    Some(if n != 0.0 && !(1e-6..1e21).contains(&n) {
+        format!("{n:e}")
+    } else {
+        format!("{n}")
+    })
+}
+
 fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -294,10 +312,37 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
                 {
                     i += 1;
                 }
+                // An exponent: `e` or `E`, an optional sign, digits. A name
+                // never starts with a digit, so `2e3` is always 2000 and
+                // `2 * e3` multiplies by the name `e3`.
+                if matches!(bytes.get(i), Some(b'e' | b'E')) {
+                    i += 1;
+                    if matches!(bytes.get(i), Some(b'+' | b'-')) {
+                        i += 1;
+                    }
+                    let digits = i;
+                    while bytes.get(i).is_some_and(u8::is_ascii_digit) {
+                        i += 1;
+                    }
+                    if i == digits {
+                        return Err(ParseError::new(
+                            format!("exponent without digits: {}", &text[start..i]),
+                            Some(start),
+                        ));
+                    }
+                }
                 let raw = &text[start..i];
                 let n = raw
                     .parse::<f64>()
                     .map_err(|_| ParseError::new(format!("invalid number: {raw}"), Some(start)))?;
+                // `1e999` is a located error, not infinity: no cell holds
+                // infinity. Underflow (`1e-999`) reads as 0, as in Excel.
+                if n.is_infinite() {
+                    return Err(ParseError::new(
+                        format!("number out of range: {raw} (the largest is about 1.8e308)"),
+                        Some(start),
+                    ));
+                }
                 out.push(Spanned {
                     tok: Tok::Number(n),
                     pos: start,
@@ -2627,6 +2672,10 @@ mod tests {
             "#not-a-date#",
             "999999999999999999999999999999999999999999999999",
             "1e999999999999999999999999999999",
+            "1e",
+            "1e+",
+            "1E-99999999999999999999",
+            "9.9.9e9e9",
             "+++++---***///",
             "CALL(",
             "CALL(f,)",
@@ -2919,6 +2968,77 @@ mod tests {
                 let _ = parse_definition(&m, s);
             }))
             .unwrap_or_else(|e| panic!("parser panicked on input {s:?}: {e:?}"));
+        }
+    }
+
+    /// Exponent literals, their errors, and names that start with `e`.
+    #[test]
+    fn exponent_literals() {
+        let mut m = fixture();
+        for (id, name) in [(120, "E"), (121, "e1")] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: vec![],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let p = |s: &str| parse_expr(&m, s).map(|f| f.expr);
+        let num = |n: f64| Expr::Literal(Value::Number(n));
+        let mul = |a, b| Expr::BinaryOp(BinaryOp::Mul, Box::new(a), Box::new(b));
+        for (text, n) in [
+            ("1e-10", 1e-10),
+            ("2.5E+3", 2500.0),
+            ("6.02e23", 6.02e23),
+            ("1E3", 1000.0),
+            ("0e0", 0.0),
+            ("1e-999", 0.0), // underflow reads as 0
+        ] {
+            assert_eq!(p(text), Ok(num(n)), "{text}");
+        }
+        // A name never starts with a digit: `2e1` is 20, `2 * e1` a name.
+        let (e, e1) = (refr(MeasureId(120)), refr(MeasureId(121)));
+        assert_eq!(p("2e1"), Ok(num(20.0)));
+        assert_eq!(p("2 * e1"), Ok(mul(num(2.0), e1.clone())));
+        assert_eq!(p("E * e1"), Ok(mul(e, e1)));
+        assert!(p("e").unwrap_err().message.contains("unknown measure: e"));
+        for (text, msg, pos) in [
+            ("1e", "exponent without digits: 1e", 0),
+            ("1e+", "exponent without digits: 1e+", 0),
+            ("Price * 2.5E-", "exponent without digits: 2.5E-", 8),
+            ("2else", "exponent without digits: 2e", 0),
+            ("1e999", "number out of range: 1e999", 0),
+            ("1 + 2e308", "number out of range: 2e308", 4),
+        ] {
+            let err = p(text).unwrap_err();
+            assert!(err.message.starts_with(msg), "{text}: {}", err.message);
+            assert_eq!(err.position, Some(pos), "{text}");
+        }
+    }
+
+    #[test]
+    fn number_literals_print_and_read_back() {
+        for (n, text) in [
+            (0.0, "0"),
+            (42.0, "42"),
+            (1.07, "1.07"),
+            (0.000001, "0.000001"),
+            (1e-7, "1e-7"),
+            (1e-10, "1e-10"),
+            (6.02e23, "6.02e23"),
+            (1e21, "1e21"),
+            (123456789012345680000.0, "123456789012345680000"),
+            (f64::MAX, "1.7976931348623157e308"),
+            (5e-324, "5e-324"),
+        ] {
+            assert_eq!(number_literal(n).as_deref(), Some(text));
+            let f = parse_expr(&Model::new(), text).unwrap();
+            assert_eq!(f.expr, Expr::Literal(Value::Number(n)), "{text}");
+        }
+        for n in [-1.0, -0.0, f64::INFINITY, f64::NAN] {
+            assert_eq!(number_literal(n), None, "{n}");
         }
     }
 

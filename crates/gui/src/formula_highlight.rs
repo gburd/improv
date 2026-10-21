@@ -109,6 +109,16 @@ pub fn scan(text: &str) -> Vec<Token> {
                 while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
                     i += 1;
                 }
+                // An exponent (`1e-10`): `e`, a sign, digits.
+                let sign = usize::from(matches!(bytes.get(i + 1), Some(b'+' | b'-')));
+                if matches!(bytes.get(i), Some(b'e' | b'E'))
+                    && bytes.get(i + 1 + sign).is_some_and(u8::is_ascii_digit)
+                {
+                    i += 1 + sign;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
                 TokenKind::Number
             }
             c if c.is_alphabetic() || c == '_' => {
@@ -273,6 +283,16 @@ mod tests {
         assert_eq!(toks[0], (TokenKind::Number, "3.14"));
         assert_eq!(toks[1], (TokenKind::Operator, "+"));
         assert_eq!(toks[2], (TokenKind::Number, "2"));
+
+        let toks = kinds("1e-10 + 2.5E+3 * 6e2x");
+        assert_eq!(toks[0], (TokenKind::Number, "1e-10"));
+        assert_eq!(toks[2], (TokenKind::Number, "2.5E+3"));
+        assert_eq!(toks[4], (TokenKind::Number, "6e2"));
+        assert_eq!(toks[5], (TokenKind::Ident, "x"));
+        // No digits after the `e`: the number ends before it.
+        let toks = kinds("1e+");
+        assert_eq!(toks[0], (TokenKind::Number, "1"));
+        assert_eq!(toks[1], (TokenKind::Ident, "e"));
 
         let toks = kinds("Date > #2025-01-01#");
         assert_eq!(toks[0], (TokenKind::Ident, "Date"));

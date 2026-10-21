@@ -5,6 +5,7 @@
 //!   * measure refs with `over` / `by` dimension phrases (no `except`, which
 //!     the surface never emits),
 //!   * single-level SUM/AVG/MIN/MAX aggregation of one measure ref,
+//!   * non-negative number literals, in exponent form too (`1e-10`),
 //!   * arithmetic (+ - * /) built with the SAME precedence and associativity
 //!     the parser uses, so the flat (paren-free) description re-parses to the
 //!     identical tree.
@@ -14,7 +15,7 @@
 
 use improv_core_model::{
     BinaryOp, CategoryId, DimensionSpec, Expr, Formula, Measure, MeasureId, MeasureKind, Model,
-    Name, ValueType,
+    Name, Value, ValueType,
 };
 use improv_nl_formula::{
     describe_formula, parse_nl_formula, NlContext, FUNC_AVERAGE, FUNC_MAX, FUNC_MIN, FUNC_SUM,
@@ -93,10 +94,21 @@ fn arb_agg() -> impl Strategy<Value = Expr> {
     (funcs, arb_ref()).prop_map(|(f, r)| Expr::Call(f, vec![r]))
 }
 
-/// A "factor": a ref or an aggregation (the parser's `factor`, minus literals
-/// and parens which are outside this round-trip's scope).
+/// A finite non-negative number literal: whole numbers, and any bit
+/// pattern down to the subnormals (`2.5`, `1e-10`, `6.02e23`).
+fn arb_number() -> impl Strategy<Value = Expr> {
+    use prop::num::f64::{NORMAL, POSITIVE, SUBNORMAL, ZERO};
+    let n = prop_oneof![
+        (0u32..10_000).prop_map(f64::from),
+        POSITIVE | NORMAL | SUBNORMAL | ZERO,
+    ];
+    n.prop_map(|n| Expr::Literal(Value::Number(n)))
+}
+
+/// A "factor": a ref, an aggregation or a number (the parser's `factor`,
+/// minus parens which are outside this round-trip's scope).
 fn arb_factor() -> impl Strategy<Value = Expr> {
-    prop_oneof![arb_ref(), arb_agg()]
+    prop_oneof![arb_ref(), arb_agg(), arb_number()]
 }
 
 /// A left-associative arithmetic expression matching the parser's grammar:

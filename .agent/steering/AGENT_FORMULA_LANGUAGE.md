@@ -73,7 +73,8 @@ function calls, and aggregations.
 
 ### 3.3 Literals
 
-- Numbers: `123`, `3.14`
+- Numbers: `123`, `3.14`, `1e-10`, `6.02E+23` (an exponent overflowing
+  f64, `1e999`, is a parse error; decided 2026-10-21)
 - Text: `"hello"`
 - Boolean: `TRUE`, `FALSE`
 - Date: `#2025-01-01#`
@@ -106,6 +107,7 @@ Postfix      = Primary { "%" } ;                  (* x% = x / 100 *)
 Primary      = Literal | Call | Special | MeasureRef | Local
              | "(" Expression ")" ;
 Literal      = Number | Text | "TRUE" | "FALSE" | DateLiteral ;  (* #2025-01-31# *)
+Number       = Digits [ "." Digits ] [ ( "e" | "E" ) [ "+" | "-" ] Digits ] ;
 MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
 Local        = Identifier ;                       (* bound by LET / LAMBDA *)
 

@@ -130,7 +130,7 @@ German are the locales so far; another is a table of names
 
 | Literal | Example | Notes |
 |---------|---------|-------|
-| number | `42`, `1.07` | digits and `.`; no exponent (`1e3`) and no leading `.` (`.5`) |
+| number | `42`, `1.07`, `1e-10`, `6.02E+23` | digits, an optional `.digits`, an optional exponent (`e` or `E`, a sign, digits); no leading `.` (`.5`) |
 | text | `"hello"` | double quotes; no escapes, so the text cannot contain `"` |
 | boolean | `TRUE`, `FALSE` | |
 | date | `#2025-01-01#` | midnight UTC |
@@ -139,6 +139,16 @@ German are the locales so far; another is a table of names
 A literal may stand alone (`X = 42`) or appear inside an expression
 (`Price * 1.07`). A literal has no categories, so it broadcasts over the other
 operand.
+
+A number with an exponent is one token: `2e3` is 2000, and `2 * e3`
+multiplies 2 by the measure `e3`. A name cannot start with a digit, so the
+two never collide, and `e`, `E` and `e1` stay names. An exponent without
+digits (`1e`, `1e+`) is an error at the number. A number too large for a
+64-bit float (`1e999`) is an error too, `number out of range`, rather than
+Excel's `#NUM!`: it is a typing mistake, caught before the formula is
+saved. One too small (`1e-999`) reads as 0, as in Excel. A formula prints
+its numbers the shortest way that reads back exactly, with an exponent
+below 0.000001 and from 1e21 up (`1e-10`, `6.02e23`).
 
 ### Names
 
@@ -469,7 +479,7 @@ PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
                + 0.85 * (FILL(SUMPRODUCT(r, M OVER Src), 0)
                          + SUMPRODUCT(r, Dangling OVER Src) / @ITEMCOUNT(Src)),
                Dst, Src)),
-             100, 0.0000000001)
+             100, 1e-10)
 ```
 
 `SUMPRODUCT(r, M OVER Src)` is Σ over Src of r·M, one value per `Dst`, and
@@ -482,8 +492,7 @@ PR       = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0),
 - **Exceeding `max_iter` gives the last iterate**, not an error, and never
   a hang: `max_iter` is a whole number from 0 to 10,000 (0 gives `init`).
   The language stays total.
-- `max_iter` and `tolerance` are constant numbers. The parser reads digits
-  and a point only, so write 1e-10 as `0.0000000001` (or `10^-10`).
+- `max_iter` and `tolerance` are constant numbers.
 - r has `init`'s type and categories, plus any the body adds: a constant
   `init` with a body over `Src` iterates over every `Src` item. Give
   `init` its categories with `SEQUENCE(Src, x, 0)` when the body needs r

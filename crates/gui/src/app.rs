@@ -2704,7 +2704,7 @@ fn try_build_engine(model: &Model) -> Result<(Option<Engine>, Snapshot), String>
 /// back to the *identical* AST, or `None` when the v1 grammar has no exact
 /// spelling for the shape (a bare ref carrying `over`/`except`, a
 /// multi-category `OVER`, an empty measure/category name, an
-/// enum/error/negative/exponent literal, an unknown function id). Callers fall
+/// enum/error/negative/non-finite literal, an unknown function id). Callers fall
 /// back to the controlled-English description for those, which
 /// `commit_formula` also accepts.
 ///
@@ -3032,12 +3032,8 @@ fn is_bare_ident(name: &str) -> bool {
 
 fn literal_dsl(v: &Value) -> Option<String> {
     match v {
-        // The number tokenizer reads digits and '.' only: no sign, no exponent.
-        Value::Number(n) => {
-            let s = format!("{n}");
-            (n.is_finite() && *n >= 0.0 && s.chars().all(|c| c.is_ascii_digit() || c == '.'))
-                .then_some(s)
-        }
+        // No sign (`-5` is a negation) and no infinity in a literal.
+        Value::Number(n) => parser::number_literal(*n),
         Value::Boolean(b) => Some(if *b { "TRUE".into() } else { "FALSE".into() }),
         // The v1 string literal has no escapes, so only text that survives
         // verbatim between quotes is expressible.
@@ -3055,9 +3051,8 @@ fn literal_dsl(v: &Value) -> Option<String> {
 ///
 /// Dates and booleans reuse the formula grammar's own literal forms (via
 /// `parser::parse_expr` on `#...#` / `TRUE`|`FALSE`), so a date a formula
-/// accepts is a date a cell accepts. Numbers use `f64::from_str` instead: the
-/// formula tokenizer reads digits and `.` only, and a cell must accept `-3.5`
-/// and `1e9`.
+/// accepts is a date a cell accepts. Numbers use `f64::from_str` instead: a
+/// cell must accept `-3.5`, which a formula reads as a negation.
 fn parse_typed(model: &Model, declared: ValueType, text: &str) -> Result<Value, String> {
     let literal = |src: String| match parser::parse_expr(model, &src) {
         Ok(f) => match f.expr {
@@ -7141,7 +7136,8 @@ mod tests {
             "FILL(Quantity, 0)",
             "RELABEL(Quantity, Time, Year) * 2",
             "SWAP(Quantity, Time, Product)",
-            "FIXPOINT(Quantity, LAMBDA(acc0, acc0 / 2 + Price), 50, 0.0000000001)",
+            "FIXPOINT(Quantity, LAMBDA(acc0, acc0 / 2 + Price), 50, 1e-10)",
+            "Price * 6.02e23 + 0.5",
             "FIXPOINT(FILL(Quantity, 0), LAMBDA(acc0, RELABEL(acc0, Time, Year) * 2))",
         ] {
             let f = parser::parse_expr(&model, text).unwrap_or_else(|e| panic!("{text}: {e}"));
@@ -12258,6 +12254,8 @@ mod tests {
     #[test]
     fn literals_without_a_dsl_token_are_refused() {
         assert_eq!(literal_dsl(&Value::Number(f64::INFINITY)), None);
+        assert_eq!(literal_dsl(&Value::Number(-1.0)), None);
+        assert_eq!(literal_dsl(&Value::Number(1e-10)).as_deref(), Some("1e-10"));
         assert_eq!(
             literal_dsl(&Value::Boolean(false)).as_deref(),
             Some("FALSE")

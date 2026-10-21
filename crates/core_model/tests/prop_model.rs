@@ -1,14 +1,17 @@
 //! Property tests for the core model.
 //!
-//! Two properties:
+//! Properties:
 //! 1. A random Model (categories/items/measures/number inputs) survives a
 //!    serde JSON round trip unchanged.
 //! 2. A Coordinate built from pairs is order-independent, and `get` returns the
 //!    inserted item for every category.
+//! 3. Every finite number prints as a literal (`1e-10`, `6.02e23`) that
+//!    parses back to the same `f64`, alone and inside an expression.
 
+use improv_core_model::parser::number_literal;
 use improv_core_model::{
-    CategoryId, Coordinate, Item, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Value,
-    ValueType,
+    parse_expr, BinaryOp, CategoryId, Coordinate, Expr, Item, ItemId, Measure, MeasureId,
+    MeasureKind, Model, Name, UnaryOp, Value, ValueType,
 };
 use proptest::prelude::*;
 
@@ -132,6 +135,39 @@ proptest! {
         }
         for (c, l) in (0..).zip(&want) {
             prop_assert_eq!(&m.categories[&CategoryId(c)].items, l);
+        }
+    }
+}
+
+proptest! {
+    /// parse(print(n)) == n for every finite number: whole, fractional,
+    /// huge, tiny and subnormal. A negative one prints as a negation.
+    #[test]
+    fn number_literals_round_trip(
+        n in prop_oneof![
+            (0u32..100_000).prop_map(f64::from),
+            prop::num::f64::NORMAL | prop::num::f64::SUBNORMAL | prop::num::f64::ZERO,
+        ],
+        e in -330i32..330,
+    ) {
+        let m = Model::new();
+        let lit = |n: f64| Expr::Literal(Value::Number(n));
+        let read = |text: &str| parse_expr(&m, text).map(|f| f.expr);
+        let text = number_literal(n.abs()).expect("finite");
+        let want = if n < 0.0 { Expr::UnaryOp(UnaryOp::Neg, Box::new(lit(-n))) } else { lit(n) };
+        let src = if n < 0.0 { format!("-{text}") } else { text.clone() };
+        prop_assert_eq!(read(&src), Ok(want));
+        // In an expression, `+` after an exponent stays an operator.
+        prop_assert_eq!(
+            read(&format!("{text}+{text}")),
+            Ok(Expr::BinaryOp(BinaryOp::Add, Box::new(lit(n.abs())), Box::new(lit(n.abs()))))
+        );
+        // A typed exponent reads as Rust's own parse (or overflows, an error).
+        let typed = format!("7.5e{e}");
+        let want: f64 = typed.parse().unwrap();
+        match read(&typed) {
+            Ok(got) => prop_assert_eq!(got, lit(want)),
+            Err(err) => prop_assert!(want.is_infinite(), "{typed}: {err}"),
         }
     }
 }
