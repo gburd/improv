@@ -48,7 +48,7 @@ $I save-view m.db 1 "Revenue by quarter" 102 --rows Time --cols Product
 
 | Front end | Command | Notes |
 | --- | --- | --- |
-| CLI | `improv --help` | Scriptable; see `man docs/man/improv.1`. |
+| CLI | `improv --help` | Scriptable; `improv help <command>` for one command, and see the [man pages](#man-pages). |
 | TUI | `improv-tui m.db` | Arrows move, `e`/Enter edit a cell (or a derived measure's formula), Shift+arrows select a range (Sum in the status line), `p` pivot, `[ ]` page, `f`/`F` filter, `Tab` measure, `R` revert to saved, `?`/F1 function help, Tab completes names in a formula, `q` quit (autosaves). |
 | GUI | `improv-gui m.db` | NeXTSTEP-style workspace: application menu top-left, worksheet windows, model browser. Double-click or Enter edits a cell; right-click a tile to move or filter it; type `Name = formula` on the formula list's last line. Run inside `nix develop` on NixOS so the GL/X11 libraries are found. |
 | Streaming | `producer \| improv stream m.db Revenue` | Edits in on stdin, changed cells out on stdout; saved at end of input. |
@@ -64,6 +64,33 @@ curl -s -H 'Authorization: Bearer secret' localhost:3000/measures
 curl -s -H 'Authorization: Bearer secret' -X POST localhost:3000/measures/102/eval \
   -H 'content-type: application/json' -d '{"edits":[]}'
 ```
+
+## Man pages
+
+Every command has a man page in `docs/man/`. The release archive lays them
+out as `man/man1`, `man/man5` and `man/man7`, so with its `man/` on
+`MANPATH`, `man -k improv` lists them all:
+
+| Page | What |
+| --- | --- |
+| `improv(1)` | the CLI: every command, formulas in brief, examples, environment |
+| `improv-<command>(1)` | one page per command, git-style: `improv-init`, `improv-add-category`, `improv-add-item`, `improv-add-measure`, `improv-add-derived`, `improv-define`, `improv-register-ext`, `improv-refresh-ext`, `improv-set`, `improv-list`, `improv-save-view`, `improv-show`, `improv-eval`, `improv-scenario`, `improv-export`, `improv-import-sql`, `improv-refresh-sql`, `improv-refresh-all`, `improv-serve-refresh`, `improv-export-sql`, `improv-import-csv`, `improv-export-csv`, `improv-stream` |
+| `improv-gui(1)`, `improv-tui(1)`, `improv-server(1)` | the desktop, terminal and HTTP front ends |
+| `improv-files(5)` | the model file, the CSV import format, the DuckDB model text |
+| `improv-formulas(7)` | the formula language, in brief |
+| `improv-functions(7)` | every built-in function |
+| `pg_improv(7)` | the Postgres extension's SQL API and settings |
+
+```sh
+man -l docs/man/improv-import-csv.1               # from a checkout
+MANPATH=improv-v1.0.0-x86_64-unknown-linux-gnu/man: man improv-import-csv
+```
+
+The `(1)` pages and `improv-functions(7)` are generated from the argument
+parsers and the function registry; the hand-written parts of the `(1)` pages
+are in `crates/cli/man/`. `UPDATE_DOCS=1 cargo test -p improv_cli`
+regenerates them, and the test fails when they are stale or `groff -man -ww`
+complains. The other pages are written by hand.
 
 ## Open a Postgres-hosted model
 

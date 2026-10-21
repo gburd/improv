@@ -1,10 +1,11 @@
-.\" Man page for improv-server.
-.TH IMPROV-SERVER 1 "2026-10-20" "improv 0.10.0" "Improv Manual"
+.\" Generated from its parser and crates/cli/man/improv-server.1.roff by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-SERVER 1 "" "improv" "Improv Manual"
 .SH NAME
-improv-server \- JSON HTTP API over an Improv model
+improv\-server \- JSON HTTP API over an Improv model
 .SH SYNOPSIS
-.B improv-server
-.RI [ model " [" addr ]]
+\fBimprov\-server\fR [model] [addr]
 .SH DESCRIPTION
 .B improv-server
 serves one model over HTTP/1.1 as JSON: read the model and measures, compute
@@ -20,7 +21,19 @@ A model is a store file made by
 .BR improv (1),
 or a Postgres model URL,
 .BI postgres:// user @ host / db ?model= name\fR.
-
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fImodel\fR] [default: improv.db]
+The model: a store file, or postgres://USER@HOST/DB?model=NAME
+.TP
+[\fIaddr\fR] [default: 127.0.0.1:3000]
+The address to listen on
 .SH ROUTES
 .nf
 GET  /health                 liveness, no token needed
@@ -73,5 +86,7 @@ curl -H 'Authorization: Bearer secret' localhost:3000/measures
 Greg Burd <greg@burd.me>
 .SH SEE ALSO
 .BR improv (1),
+.BR improv-files (5),
+.BR improv-formulas (7),
 .BR improv-tui (1),
 .BR improv-gui (1).

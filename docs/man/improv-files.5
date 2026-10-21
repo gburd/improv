@@ -1,0 +1,136 @@
+.\" improv-files(5): the files Improv reads and writes.
+.TH IMPROV-FILES 5 "" "improv" "Improv Manual"
+.SH NAME
+improv-files \- Improv's model file, CSV import format and DuckDB model text
+.SH DESCRIPTION
+Improv keeps a model in a store: a Mentat file or a Postgres database. It
+reads tables from CSV and TSV files, and the DuckDB extension reads a model
+from a short text.
+.SH THE MODEL FILE
+A store file is an SQLite database holding a Mentat datom store: each fact
+is an entity, attribute and value. Every front end
+.RB ( improv (1),
+.BR improv-tui (1),
+.BR improv-gui (1),
+.BR improv-server (1))
+opens it by path; opening one creates it and installs the schema. An empty
+path is an in-memory store. The attributes:
+.TP
+.BR :category/id ", " :category/name
+A category (a dimension).
+.TP
+.BR :item/id ", " :item/name ", " :item/category
+An item, a member of one category.
+.TP
+.BR :measure/id ", " :measure/name ", " :measure/value-type ", " :measure/categories ", " :measure/category-order ", " :measure/kind ", " :measure/formula
+A measure:
+.B input
+or
+.BR derived ,
+its categories and their order, and a derived measure's formula as JSON.
+.BR :measure/description " and " :measure/sql-source
+are optional.
+.TP
+.BR :cell/key ", " :cell/measure ", " :cell/coord ", " :cell/value-number ", " :cell/value-boolean ", " :cell/value-text
+One input cell: its measure, its coordinate (JSON) and its value.
+.TP
+.BR :view/id ", " :view/json
+A saved view.
+.TP
+.BR :meta/external-fns ", " :meta/external-calls ", " :meta/scenarios ", " :meta/lambdas
+The model's external functions,
+.B CALL(...)
+measures, scenarios and named LAMBDAs, as JSON.
+.PP
+A save writes only the cells that changed. A save fails, writing nothing,
+when another writer has saved since this one loaded the model: reload and
+edit again.
+.B MENTAT_MMAP_SIZE
+sets how many bytes of the file SQLite memory-maps
+.RB ( 0 :
+none).
+.PP
+A model kept in Postgres is named by a URL,
+.BI postgres:// user @ host / db ?model= name\fR,
+and lives in the
+.B improv
+schema's catalog tables (the same catalog
+.BR pg_improv (7)
+uses).
+.SH CSV AND TSV IMPORT
+.B improv import-csv
+reads one table into a new input measure:
+.IP \(bu 2
+The first row names the columns, unless
+.B \-\-no\-header
+is given; then columns are 0-based indices.
+.IP \(bu 2
+Fields are separated by commas, or by tabs with
+.B \-\-tsv
+or when the file name ends in
+.BR .tsv .
+Quoting is RFC 4180's: a field in double quotes may hold the separator, a
+newline, or
+.B \(dq\(dq
+for a quote.
+.IP \(bu 2
+Each dimension column
+.RI ( col : cat-id : cat-name )
+supplies a category; its distinct values become items, reusing an item that
+already has the name. The value column must be a number in every row.
+.IP \(bu 2
+A short row, a non-numeric value, more than 10,000,000 records, a field over
+1 MiB or a record over 64 MiB is an error, and nothing is imported.
+.PP
+.B improv export-csv
+writes the same layout: one column per category, then the value, header row
+first. Text a spreadsheet would run as a formula
+.RB ( = ,
+.BR + ,
+.BR \- ,
+.B @
+first, or a tab or carriage return) is written with a leading quote.
+.SH DUCKDB MODEL TEXT
+The DuckDB extension's
+.BI improv( source ", " model )
+table function reads a model as text, one item per line:
+.PP
+.RS
+.nf
+category Time = year
+category Product = product
+input Price = price max
+input Quantity = qty sum
+Revenue = Price * Quantity
+.fi
+.RE
+.TP
+.BI category " Name " = " column"
+A category made from a column: its distinct non-NULL values, in the
+column's order.
+.TP
+.BI input " Name " = " column " "\fR[\fBsum\fR|\fBavg\fR|\fBmin\fR|\fBmax\fR|\fBcount\fR]"
+An input measure over every category. Two source rows on one coordinate are
+an error unless an aggregation is named.
+.TP
+.IB Name " = " formula
+A derived measure, as in
+.BR improv-formulas (7).
+.PP
+Blank lines and lines starting with
+.B #
+or
+.B \-\-
+are ignored; keywords are case-insensitive; a column name with spaces or
+capitals goes in double quotes. The result has a row per derived cell:
+.BR measure ,
+one column per category,
+.B value
+and
+.BR value_text .
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-import-csv (1),
+.BR improv-export-csv (1),
+.BR improv-formulas (7),
+.BR pg_improv (7).

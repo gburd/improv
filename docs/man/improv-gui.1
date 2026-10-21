@@ -1,10 +1,11 @@
-.\" Man page for improv-gui.
-.TH IMPROV-GUI 1 "2026-10-20" "improv 0.10.0" "Improv Manual"
+.\" Generated from its parser and crates/cli/man/improv-gui.1.roff by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-GUI 1 "" "improv" "Improv Manual"
 .SH NAME
-improv-gui \- desktop workspace for Improv models
+improv\-gui \- desktop workspace for Improv models
 .SH SYNOPSIS
-.B improv-gui
-.RI [ model ]
+\fBimprov\-gui\fR [model]
 .SH DESCRIPTION
 .B improv-gui
 opens a model in a NeXTSTEP-style workspace: an application menu, one
@@ -19,7 +20,16 @@ A model is a store file made by
 .BR improv (1),
 or a Postgres model URL,
 .BI postgres:// user @ host / db ?model= name\fR.
-
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+[\fImodel\fR]
+The model: a store file, or postgres://USER@HOST/DB?model=NAME. Without it the model is in memory only
 .SH KEYS
 Key equivalents take Ctrl (Cmd on macOS):
 .BR s " save, " z " undo, " Z " or " y " redo, " h " hide, " q " quit."
@@ -72,5 +82,7 @@ improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 Greg Burd <greg@burd.me>
 .SH SEE ALSO
 .BR improv (1),
+.BR improv-files (5),
+.BR improv-formulas (7),
 .BR improv-tui (1),
 .BR improv-server (1).

@@ -1,0 +1,32 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-DEFINE 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-define \- Create a measure or LAMBDA from a definition, "Target = ..."
+.SH SYNOPSIS
+\fBimprov define\fR [OPTIONS] <db> <id> <definition>
+.SH DESCRIPTION
+Create a measure or LAMBDA from a definition, "Target = ...".
+.PP
+Three forms: a formula, "Revenue = Price * Quantity"; an external call, "H = CALL(hypot, Price, Quantity)", which refresh\-ext populates; or a named LAMBDA, "Margin = LAMBDA(p, c, p \- c)", which formulas then call as Margin(Price, Cost). The id names a LAMBDA, and redefining one keeps its first id. The SQL(...) form needs a column\-to\-dimension map: use import\-sql. A formula cycle is refused.
+.SH OPTIONS
+.TP
+\fB\-\-refresh\fR \fI<policy>\fR [default: manual]
+When serve\-refresh re\-runs it: manual, on\-load or interval:SECS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIid\fR>
+The measure\*(Aqs (or LAMBDA\*(Aqs) numeric id
+.TP
+<\fIdefinition\fR>
+The definition: Target = formula, CALL(...) or LAMBDA(...)
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-formulas (7),
+.BR improv-functions (7).

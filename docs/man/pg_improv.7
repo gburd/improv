@@ -1,0 +1,156 @@
+.\" pg_improv(7): the SQL API and GUCs, condensed from crates/pg_improv/README.md.
+.TH PG_IMPROV 7 "" "improv" "Improv Manual"
+.SH NAME
+pg_improv \- Improv's incremental modeling engine as a Postgres extension
+.SH SYNOPSIS
+.nf
+CREATE EXTENSION pg_improv;
+SELECT improv.create_model(\(aqplan\(aq);
+SELECT improv.bind_category(\(aqplan\(aq, \(aqTime\(aq, \(aqsales\(aq, \(aqyear\(aq);
+SELECT improv.bind_measure(\(aqplan\(aq, \(aqPrice\(aq, \(aqsales\(aq, \(aqprice\(aq, \(aqmax\(aq);
+SELECT improv.define(\(aqplan\(aq, \(aqRevenue = Price * Quantity\(aq);
+SELECT * FROM improv_plan.revenue;
+.fi
+.SH DESCRIPTION
+.B pg_improv
+binds table columns to Improv categories and measures, defines derived
+measures in Improv's formula language
+.RB ( improv-formulas (7)),
+and keeps their results in ordinary tables,
+.BI improv_ model . measure\fR,
+with one
+.B text
+column per dimension, a typed
+.B value
+column and a primary key on the dimensions. It supports Postgres 15 to 18.
+Every function is in schema
+.B improv
+and is
+.BR "SECURITY INVOKER" ;
+.B CREATE EXTENSION
+needs a superuser.
+.SH FUNCTIONS
+.TP
+.BI create_model( name )
+Create a model and its result schema
+.BI improv_ name\fR.
+.TP
+.BI bind_category( model ", " category ", " rel ", " col )
+Record that
+.IB rel . col
+supplies the category's items.
+.TP
+.BI bind_measure( model ", " measure ", " rel ", " value_col " [, " agg ])
+An input measure read from
+.IB rel . value_col\fR,
+over the categories bound on
+.IR rel .
+Two rows on one coordinate are an error unless
+.I agg
+.RB ( sum ,
+.BR avg ,
+.BR min ,
+.BR max ,
+.BR count ,
+.BR count_distinct )
+folds them.
+.TP
+.BI define( model ", " definition " [, " replace ])
+A derived measure from
+.IR "Target = expr" ,
+or a named LAMBDA. An existing name is an error unless
+.I replace
+is true; an unchanged formula is then a no-op.
+.TP
+.BI drop_measure( model ", " measure )
+Drop a measure or LAMBDA; an error names what still uses it.
+.TP
+.BI recalc( model " [, " measures ])
+Recompute (the named measures and their dependents) in the caller's
+transaction; returns the rows changed.
+.TP
+.BI set_sync_mode( model ", " mode )
+.B logical
+(the default),
+.BR trigger ,
+.B commit
+or
+.BR manual .
+.TP
+.BI what_if( model ", " edits )
+The derived cells that
+.I edits
+(jsonb) would change, computed in memory; writes nothing.
+.TP
+.BI status( model )
+The sync mode, the logical worker's slot and lag, and its last error.
+.TP
+.BI enable_logical( model "), sync_publication()"
+Maintain the publication
+.B improv_db
+(called for you).
+.TP
+.BI drop_model( name )
+Drop the model, its result schema and its triggers.
+.SH SYNC MODES
+.TP
+.B logical
+A background worker tails a logical replication slot and applies each
+batch of committed changes in one transaction, shortly after the commit.
+Needs
+.B shared_preload_libraries = \(aqpg_improv\(aq
+and
+.BR wal_level=logical .
+.TP
+.B trigger
+Statement triggers recompute in the writer's statement: read-your-writes.
+.TP
+.B commit
+Recompute once per writing transaction, just before it commits.
+.TP
+.B manual
+Only
+.B improv.recalc
+updates results.
+.SH LANGUAGE improv
+.nf
+CREATE FUNCTION margin(price float8, cost float8) RETURNS float8
+  LANGUAGE improv IMMUTABLE AS $$ price \- cost $$;
+.fi
+.PP
+A function body is Improv formulas over the named arguments; the last line
+is the result. A NULL argument is a missing input, and an error value
+returns NULL (or raises, with
+.BR improv.raise_errors ).
+The language is trusted.
+.SH CONFIGURATION
+.TP
+.BR improv.database " (string, default " postgres ", postmaster)"
+The database the sync worker serves. Registered only when the library is
+preloaded.
+.TP
+.BR improv.poll_ms " (integer, default 200, 10 to 60000, sighup)"
+How often the sync worker polls its slot, in milliseconds.
+.TP
+.BR improv.max_changes " (integer, default 10000, sighup)"
+The most decoded changes one poll reads.
+.TP
+.BR improv.max_cells " (integer, default 5000000, user)"
+The most bound input cells
+.B recalc
+loads; above it, it raises an error.
+.TP
+.BR improv.raise_errors " (boolean, default off, user)"
+Make a
+.B LANGUAGE improv
+function whose result is an error value raise it instead of returning NULL.
+.PP
+Set
+.B max_slot_wal_keep_size
+to cap the WAL a stuck worker can retain.
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-formulas (7),
+.BR improv-functions (7).
+The full reference: crates/pg_improv/README.md, or Improv in Postgres in
+the user guide, https://gregburd.codeberg.page/improv/.

@@ -1,0 +1,33 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-SCENARIO 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-scenario \- Add an input\-cell override to a what\-if scenario
+.SH SYNOPSIS
+\fBimprov scenario\fR [OPTIONS] <db> <scenario\-name> <measure\-id> <value>
+.SH DESCRIPTION
+Add an input\-cell override to a what\-if scenario.
+.PP
+The scenario is created if it is new. The base model is untouched; evaluate under it with eval ... \-\-scenario NAME. \-\-at takes the same forms as for set.
+.SH OPTIONS
+.TP
+\fB\-\-at\fR \fI<Cat=Item>...\fR
+The cell\*(Aqs coordinate: Category=Item pairs, comma\-joined, space\-separated, or in repeated \-\-at flags
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIscenario\-name\fR>
+The scenario\*(Aqs name
+.TP
+<\fImeasure\-id\fR>
+A measure\*(Aqs numeric id
+.TP
+<\fIvalue\fR>
+The overriding value
+.SH SEE ALSO
+.BR improv (1).

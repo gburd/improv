@@ -1,0 +1,163 @@
+.\" Hand-written sections of improv(1); crates/cli/src/man.rs adds the rest.
+.SH DESCRIPTION
+.B improv
+is the command-line front-end to the Improv multidimensional spreadsheet.
+It operates on a model store backed by an embedded (SQLite) Mentat datom
+database, or, when
+.I <db>
+is a
+.BI postgres:// ...?model= name
+(or
+.BR postgresql:// )
+URL, on that model in a Postgres database's
+.B improv
+catalog. Each invocation opens the store, mutates the loaded model, and saves
+it back.
+.PP
+A model is built from
+.B categories
+(dimensions such as Time or Product),
+.B items
+(members of a category, such as 2025 or WidgetA),
+.B measures
+(named variables indexed by a subset of the categories), and
+.B input cells
+(raw values at a coordinate). A coordinate maps category names to item names.
+.PP
+The
+.B \-\-at
+flag on
+.B set
+and
+.B scenario
+names a coordinate as
+.IR Category = Item
+pairs, resolved against the loaded model. Pairs may be comma-joined
+.RB ( "\-\-at Time=Q1,Product=A" ),
+space-separated after one flag
+.RB ( "\-\-at Time=Q1 Product=A" ),
+or spread over repeated flags
+.RB ( "\-\-at Time=Q1 \-\-at Product=A" );
+all are merged. Naming a category twice is an error, as is any argument that
+is not a pair after
+.BR \-\-at .
+Numeric ids are given directly on the command line.
+.SH FORMULAS
+A derived measure's formula is an expression over measures, written
+.BR "Target = expression" :
+operators
+.BR "+ - * / ^ & %" ,
+comparisons
+.BR "== <> < <= > >=" ,
+.BR "AND OR NOT" ,
+and 681 built-in functions with Excel's names
+.RB ( ROUND ,
+.BR PMT ,
+.BR XLOOKUP ,
+.BR NORM.DIST ,
+\&...).
+An aggregation reduces a measure along a category:
+.BR "SUM(Sales OVER Month)" ;
+.B WHERE
+filters it, a window
+.B OVER Month[FIRST..THIS]
+makes a running total, and
+.B INTO
+lays a list result along a category.
+.BR LET ,
+.B LAMBDA
+and named LAMBDAs
+.RB ( "define db 1 \(dqMargin = LAMBDA(p, c, p - c)\(dq" )
+are supported. Every function is listed, with its arguments, in the
+Function Reference of the user guide (docs/src/functions.md); the language
+is described in docs/src/formulas.md.
+.SH EXAMPLES
+Build a small Time \(mu Product model:
+.PP
+.RS
+.nf
+improv init          model.db
+improv add-category  model.db 1 Time
+improv add-category  model.db 2 Product
+improv add-item      model.db 10 1 2025
+improv add-item      model.db 20 2 WidgetA
+improv add-measure   model.db 100 Price    number input
+improv add-measure   model.db 101 Quantity number input
+improv set           model.db 100 10 --at Product=WidgetA
+improv set           model.db 101 100 --at Time=2025,Product=WidgetA
+improv save-view     model.db 1 Prices 100 --rows Product --cols Time
+improv list          model.db
+improv show          model.db 100
+improv export        model.db
+.fi
+.RE
+Pipe new data through a model and print what it changes:
+.PP
+.RS
+.nf
+improv define model.db 102 \(dqRevenue = Price * Quantity\(dq
+printf \(aqPrice 15 Product=WidgetA\en\(aq | improv stream model.db Revenue
+.fi
+.RE
+.PP
+Work on a model stored in Postgres:
+.PP
+.RS
+.nf
+improv list \(aqpostgres://me@127.0.0.1/sales?model=plan\(aq
+.fi
+.RE
+.SH FILES
+.TP
+.I <db>
+The model store: a single SQLite file created and read by
+.BR improv ,
+or a
+.BI postgres:// ...?model= name
+URL. An empty string names an in-memory database that is discarded on exit.
+.SH ENVIRONMENT
+.TP
+.B IMPROV_LOCALE
+The formula locale for
+.B define
+and
+.BR add-derived ,
+else the OS locale
+.RB ( LC_ALL ,
+.BR LC_MESSAGES ,
+.BR LANG ).
+In German
+.RB ( de )
+a formula may use the German function names, a decimal comma and
+.B ;
+between arguments:
+.BR "WENN(Price > 1,5; RUNDEN(Price; 2); 0)" .
+The English spelling is always accepted; models store it.
+.TP
+.B IMPROV_EXTFN_TRUSTED=1
+Run external functions without the sandbox.
+.TP
+.B IMPROV_EXTFN_ALLOW_UNSANDBOXED=1
+Without bubblewrap, run external functions under resource limits only
+(otherwise they are refused).
+.TP
+.B MENTAT_MMAP_SIZE
+Bytes of the store file SQLite may memory-map;
+.B 0
+turns mapping off.
+.SH AUTHOR
+Greg Burd <greg@burd.me>
+.SH LICENSE
+Dual-licensed under Apache-2.0 OR MIT, at your option.
+.SH SEE ALSO
+.BR improv-formulas (7),
+.BR improv-functions (7),
+.BR improv-files (5),
+.BR improv-tui (1),
+.BR improv-gui (1),
+.BR improv-server (1),
+.BR pg_improv (7),
+and a page per command, such as
+.BR improv-import-csv (1).
+The user guide: https://gregburd.codeberg.page/improv/ (also
+https://gburd.github.io/improv/).

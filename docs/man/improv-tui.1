@@ -1,10 +1,11 @@
-.\" Man page for improv-tui.
-.TH IMPROV-TUI 1 "2026-10-20" "improv 0.10.0" "Improv Manual"
+.\" Generated from its parser and crates/cli/man/improv-tui.1.roff by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-TUI 1 "" "improv" "Improv Manual"
 .SH NAME
-improv-tui \- terminal pivot viewer and editor for Improv models
+improv\-tui \- terminal pivot viewer and editor for Improv models
 .SH SYNOPSIS
-.B improv-tui
-.I model
+\fBimprov\-tui\fR <model>
 .SH DESCRIPTION
 .B improv-tui
 shows one measure of a model as a pivot grid in the terminal: one category
@@ -16,7 +17,16 @@ A model is a store file made by
 .BR improv (1),
 or a Postgres model URL,
 .BI postgres:// user @ host / db ?model= name\fR.
-
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.TP
+<\fImodel\fR>
+The model: a store file, or postgres://USER@HOST/DB?model=NAME
 .SH KEYS
 .TP
 .B arrows\fR, mouse click
@@ -91,5 +101,7 @@ improv-tui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 Greg Burd <greg@burd.me>
 .SH SEE ALSO
 .BR improv (1),
+.BR improv-files (5),
+.BR improv-formulas (7),
 .BR improv-gui (1),
 .BR improv-server (1).

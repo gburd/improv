@@ -47,6 +47,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   Fixed), a function's name or argument order, precedence, or the stored
   function ids. A deprecated form keeps working, warns in the editors, and
   is removed only in 2.0.
+- **A man page for every command and surface, generated from the
+  parsers.** `improv(1)`, one page per command in the git style
+  (`improv-import-csv(1)`, `improv-set(1)`, … 23 in all),
+  `improv-gui(1)`, `improv-tui(1)` and `improv-server(1)` are built from
+  the clap definitions and the hand-written sections in `crates/cli/man/`;
+  `improv-functions(7)` from the function registry, the same source as the
+  guide's Function Reference. New hand-written pages: `improv-formulas(7)`
+  (the language), `pg_improv(7)` (the SQL API and settings) and
+  `improv-files(5)` (the model file, the CSV import format, the DuckDB
+  model text). `cargo test -p improv_cli` fails when `docs/man` is stale
+  or `groff -man -ww` warns; `UPDATE_DOCS=1 cargo test -p improv_cli`
+  regenerates it. The release archive installs them as `man/man{1,5,7}`.
 
 ### Changed
 
@@ -1347,7 +1359,6 @@ Improv becomes buildable by anyone who clones it.
   command: `sample-model.sh` went from 12m31s to about 3s.
 - Scale claims are stated end-to-end (build + save + reload + evaluate) rather
   than from `evaluate()` alone.
-
 
 ## [0.6.0] - 2026-09-07
 

@@ -1,0 +1,42 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-IMPORT-SQL 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-import\-sql \- Import a SQLite query into a new SQL\-backed input measure
+.SH SYNOPSIS
+\fBimprov import\-sql\fR [OPTIONS] <db> <source.sqlite> <measure\-id> <measure\-name> <SELECT> <value\-col> <dim\-col:cat\-id:cat\-name>...
+.SH DESCRIPTION
+Import a SQLite query into a new SQL\-backed input measure.
+.PP
+Each dimension spec maps a result column to a category (its distinct values become items); the value column holds the numbers. Re\-run the query with refresh\-sql. Example: improv import\-sql m.db sales.db 100 Revenue "SELECT t,p,r FROM sales" r t:1:Time p:2:Product
+.SH OPTIONS
+.TP
+\fB\-\-refresh\fR \fI<policy>\fR [default: manual]
+When serve\-refresh re\-runs it: manual, on\-load or interval:SECS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIsource.sqlite\fR>
+The SQLite database to query
+.TP
+<\fImeasure\-id\fR>
+The new measure\*(Aqs numeric id
+.TP
+<\fImeasure\-name\fR>
+The new measure\*(Aqs name
+.TP
+<\fISELECT\fR>
+The query
+.TP
+<\fIvalue\-col\fR>
+The result column holding the values
+.TP
+<\fIdim\-col:cat\-id:cat\-name\fR>
+COLUMN:CATEGORY\-ID:CATEGORY\-NAME: a column, and the category its distinct values become items of
+.SH SEE ALSO
+.BR improv (1).

@@ -1,0 +1,30 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-SET 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-set \- Set an input cell
+.SH SYNOPSIS
+\fBimprov set\fR [OPTIONS] <db> <measure\-id> <value>
+.SH DESCRIPTION
+Set an input cell.
+.PP
+The value is parsed by the measure\*(Aqs type: a number, true or false, or verbatim text. \-\-at maps category names to item names; omit it for a scalar cell. Pairs may be comma\-joined (\-\-at Time=Q1,Product=A), space\-separated (\-\-at Time=Q1 Product=A) or in repeated flags; they are merged, and a category may appear only once.
+.SH OPTIONS
+.TP
+\fB\-\-at\fR \fI<Cat=Item>...\fR
+The cell\*(Aqs coordinate: Category=Item pairs, comma\-joined, space\-separated, or in repeated \-\-at flags
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fImeasure\-id\fR>
+A measure\*(Aqs numeric id
+.TP
+<\fIvalue\fR>
+The cell\*(Aqs value
+.SH SEE ALSO
+.BR improv (1).

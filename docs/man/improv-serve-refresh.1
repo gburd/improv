@@ -1,0 +1,27 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-SERVE-REFRESH 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-serve\-refresh \- Refresh measures as their refresh policies fall due, until interrupted
+.SH SYNOPSIS
+\fBimprov serve\-refresh\fR [OPTIONS] <db> [source.sqlite]
+.SH DESCRIPTION
+Refresh measures as their refresh policies fall due, until interrupted.
+.PP
+On every tick: on\-load measures once, interval:N measures every N seconds. SQL\-backed measures refresh only when a source is given.
+.SH OPTIONS
+.TP
+\fB\-\-tick\fR \fI<SECS>\fR [default: 5]
+Seconds between ticks
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+[\fIsource.sqlite\fR]
+The SQLite database the SQL\-backed measures query
+.SH SEE ALSO
+.BR improv (1).

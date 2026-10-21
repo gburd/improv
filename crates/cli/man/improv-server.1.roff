@@ -1,0 +1,72 @@
+.\" Hand-written sections of improv-server(1); crates/cli/src/man.rs adds the rest.
+.SH DESCRIPTION
+.B improv-server
+serves one model over HTTP/1.1 as JSON: read the model and measures, compute
+what-if edits through the live engine, and write input cells. It listens on
+.I addr
+(default 127.0.0.1:3000, or
+.BR IMPROV_ADDR ).
+.I model
+defaults to
+.IR improv.db .
+.PP
+A model is a store file made by
+.BR improv (1),
+or a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR.
+.SH ROUTES
+.nf
+GET  /health                 liveness, no token needed
+GET  /model                  the whole model
+GET  /measures               id, name, kind, categories
+GET  /measures/:id/values    stored inputs or computed values
+POST /measures/:id/eval      what-if edits; "persist": true writes through
+POST /measures/:id/cells     set one input cell
+POST /nl/parse, /nl/describe controlled English to formula and back
+GET  /scheduler/status       refresh scheduler state
+.fi
+.SH ENVIRONMENT
+.TP
+.BR IMPROV_API_TOKEN ", " IMPROV_API_TOKENS
+Read-write bearer tokens (one, or comma-separated).
+.TP
+.B IMPROV_API_TOKENS_RO
+Read-only bearer tokens.
+.TP
+.B IMPROV_ALLOW_OPEN=1
+Allow running without a token on a non-loopback address (otherwise the
+server refuses to start).
+.TP
+.B IMPROV_SCHEDULER=1
+Refresh external-function measures in the background. It runs only functions
+whose digest is listed in the file named by
+.BR IMPROV_EXTFN_ALLOW .
+.TP
+.B IMPROV_ADDR
+The address to listen on when no
+.I addr
+argument is given.
+.TP
+.B IMPROV_EXTFN_ALLOW
+The allowlist file for the scheduler: one lowercase hex SHA-256 of
+.IR name \e0 body
+per line.
+.TP
+.B IMPROV_SCHEDULER_TICK_SECS
+The scheduler's tick period (default 5).
+.TP
+.B IMPROV_HEADER_TIMEOUT_MS
+Header read timeout (default 10000).
+.SH EXAMPLES
+.nf
+IMPROV_API_TOKEN=secret improv-server sample.db
+curl -H 'Authorization: Bearer secret' localhost:3000/measures
+.fi
+.SH AUTHOR
+Greg Burd <greg@burd.me>
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-files (5),
+.BR improv-formulas (7),
+.BR improv-tui (1),
+.BR improv-gui (1).

@@ -1,0 +1,43 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-IMPORT-CSV 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-import\-csv \- Import a CSV or TSV file into a new input measure
+.SH SYNOPSIS
+\fBimprov import\-csv\fR [OPTIONS] <db> <file.csv> <measure\-id> <measure\-name> <value\-col> <dim\-col:cat\-id:cat\-name>...
+.SH DESCRIPTION
+Import a CSV or TSV file into a new input measure.
+.PP
+Columns are header names, or 0\-based indices with \-\-no\-header. The delimiter is a comma unless \-\-tsv is given or the file ends in .tsv. Example: improv import\-csv m.db sales.csv 100 Revenue r t:1:Time p:2:Product
+.SH OPTIONS
+.TP
+\fB\-\-tsv\fR
+Tab\-separated
+.TP
+\fB\-\-no\-header\fR
+The file has no header row: columns are 0\-based indices
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIfile.csv\fR>
+The file to read
+.TP
+<\fImeasure\-id\fR>
+The new measure\*(Aqs numeric id
+.TP
+<\fImeasure\-name\fR>
+The new measure\*(Aqs name
+.TP
+<\fIvalue\-col\fR>
+The column holding the values
+.TP
+<\fIdim\-col:cat\-id:cat\-name\fR>
+COLUMN:CATEGORY\-ID:CATEGORY\-NAME: a column, and the category its distinct values become items of
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-files (5).

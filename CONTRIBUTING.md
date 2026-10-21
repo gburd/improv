@@ -96,7 +96,9 @@ Look at the new golden before committing it.
 
 If you change a public API, the CLI surface, the formula/CNL grammar, the
 Mentat schema or the `pg_improv` SQL API, update the rustdoc, the guide page
-under `docs/src/`, the man pages under `docs/man/`, and `CHANGELOG.md` in the
+under `docs/src/`, the man pages under `docs/man/` (the `(1)` pages are
+generated: edit `crates/cli/src/args.rs` or `crates/cli/man/`, then
+`UPDATE_DOCS=1 cargo test -p improv_cli`), and `CHANGELOG.md` in the
 same change. Stale docs are treated as defects.
 
 The README's movies are reproducible: `docs/demo/tui-demo.sh` and

@@ -1,0 +1,24 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-REFRESH-EXT 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-refresh\-ext \- Run a CALL(...) measure\*(Aqs function and store its cells
+.SH SYNOPSIS
+\fBimprov refresh\-ext\fR <db> <measure\-id>
+.SH DESCRIPTION
+Run a CALL(...) measure\*(Aqs function and store its cells.
+.PP
+The function runs host\-side, over its argument measures; external calls stay off the dataflow engine.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fImeasure\-id\fR>
+A measure\*(Aqs numeric id
+.SH SEE ALSO
+.BR improv (1).

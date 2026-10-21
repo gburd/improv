@@ -26,6 +26,10 @@ use std::collections::HashMap;
 // Declarations only (the clap derives); the value parsers below are tested.
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod args;
+// The man pages and completions, generated in tests.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod man;
 
 use args::{Cli, Cmd};
 use clap::{CommandFactory, Parser};

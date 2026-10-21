@@ -1,11 +1,11 @@
-.\" Man page for the Improv CLI.
-.TH IMPROV 1 "2026-10-20" "improv 0.10.0" "Improv Manual"
+.\" Generated from its parser and crates/cli/man/improv.1.roff by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV 1 "" "improv" "Improv Manual"
 .SH NAME
 improv \- headless multidimensional spreadsheet model CLI
 .SH SYNOPSIS
-.B improv
-.I command
-.RI [ args ]
+\fBimprov\fR [COMMAND]
 .SH DESCRIPTION
 .B improv
 is the command-line front-end to the Improv multidimensional spreadsheet.
@@ -49,204 +49,83 @@ all are merged. Naming a category twice is an error, as is any argument that
 is not a pair after
 .BR \-\-at .
 Numeric ids are given directly on the command line.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
 .SH COMMANDS
 .TP
-.B init \fI<db>\fR
-Create or open the store at
-.IR <db> ,
-and install the schema. An existing model is left untouched. Use an empty
-string for an in-memory database.
+improv\-init(1)
+Create or open a store and install the schema
 .TP
-.B add-category \fI<db> <id> <name>\fR
-Add a category (dimension).
-.I <id>
-is a number.
+improv\-add\-category(1)
+Add a category (a dimension, such as Time)
 .TP
-.B add-item \fI<db> <id> <category-id> <name>\fR
-Add an item (a member of a category).
-.I <id>
-and
-.I <category-id>
-are numbers. The category must already exist.
+improv\-add\-item(1)
+Add an item (a member of a category)
 .TP
-.B add-measure \fI<db> <id> <name>\fR number|boolean|text\fR input\fR [\fICategory ...\fR]
-Add an input measure.
-.I <id>
-is a number. The type keyword
-.RB ( number ,
-.BR boolean ,
-or
-.BR text )
-declares how
-.B set
-parses values for this measure. The trailing
-.B input
-keyword is required. Any further arguments are category
-.I names
-declaring the dimensions this measure ranges over, e.g.
-.BR "input Time Product" .
+improv\-add\-measure(1)
+Add an input measure
 .TP
-.B add-derived \fI<db> <id> <name> <formula>\fR
-Add a derived (formula) measure. The
-.I <formula>
-is Improv formula text, e.g.
-.BR \(dqPrice * Quantity\(dq
-or
-.BR \(dqSUM(Revenue OVER Time)\(dq ,
-with measure and category names resolved against the model. The measure's
-categories are inferred from the measures it references.
+improv\-add\-derived(1)
+Add a derived (formula) measure
 .TP
-.B define \fI<db> <id> \(dq<Target = ...>\(dq\fR
-Create a measure from a definition string whose left side is the target name.
-Three forms: an ordinary formula (
-.BR \(dqRevenue = Price * Quantity\(dq ),
-an external call (
-.BR \(dqH = CALL(hypot, Price, Quantity)\(dq ),
-which registers an external-function measure populated by
-.BR refresh-ext ,
-or a named LAMBDA (
-.BR \(dqMargin = LAMBDA(p, c, p - c)\(dq ),
-which formulas then call as
-.BR Margin(Price, Cost) ;
-.I id
-names the lambda, and redefining a name keeps its first id.
-A
-.B CALL(...)
-measure also takes
-.B \-\-refresh
-.RI manual | on-load | interval: SECS
-(when
-.B serve-refresh
-re-runs it).
+improv\-define(1)
+Create a measure or LAMBDA from a definition, "Target = ..."
 .TP
-.B register-ext \fI<db> <name> <arity> \(dq<python body>\(dq\fR
-Register a pure Python external function (Number arguments and result). The
-body binds a list
-.I args
-and sets
-.IR result .
+improv\-register\-ext(1)
+Register a Python external function
 .TP
-.B refresh-ext \fI<db> <measure-id>\fR
-Re-populate a
-.BR CALL(...)
-measure by running its function over its argument measures, host-side
-(external calls stay off the differential-dataflow evaluation path).
+improv\-refresh\-ext(1)
+Run a CALL(...) measure\*(Aqs function and store its cells
 .TP
-.B set \fI<db> <measure-id> <value>\fR [\fB\-\-at\fR \fICat=Item,Cat=Item ...\fR]
-Set an input cell. The
-.I <value>
-is parsed by the measure's declared type (a float for
-.BR number ,
-.B true
-or
-.B false
-for
-.BR boolean ,
-verbatim text for
-.BR text ).
-.B \-\-at
-maps category names to item names; omit it for a scalar cell.
+improv\-set(1)
+Set an input cell
 .TP
-.B list \fI<db>\fR
-Print all categories, items, measures, saved views, and input cells.
+improv\-list(1)
+Print the categories, items, measures, views and input cells
 .TP
-.B save\-view \fI<db> <view-id> <name> <measure>\fR [\fB\-\-rows\fR \fICat,Cat\fR] [\fB\-\-cols\fR \fICat,...\fR]
-Save a named view of
-.I <measure>
-(an id or a name), the same shape the GUI's Save View writes.
-.B \-\-rows
-and
-.B \-\-cols
-stack category names outer-to-inner; each defaults to the next unused
-category of the measure. The remaining categories become pages, pinned to
-their first item. A view with the same id is replaced.
+improv\-save\-view(1)
+Save a named view of a measure, as the GUI does
 .TP
-.B show \fI<db> <measure-id>\fR
-Print one measure and its input cells.
+improv\-show(1)
+Print one measure and its input cells
 .TP
-.B eval \fI<db> <measure-id>\fR [\fB\-\-scenario\fR \fIname\fR]
-Compute a derived measure through the engine and print its cells, optionally
-under a named scenario's overrides.
+improv\-eval(1)
+Compute a derived measure and print its cells
 .TP
-.B stream \fI<db> <target-measure>\fR...
-Read input-cell edits from standard input, one per line, as
-.IR "<measure> <value> [Cat=Item,...]"
-(the measure by id or name; no coordinate for a scalar measure). Each line is
-applied to a live incremental engine, a delta rather than a re-evaluation,
-and every cell of a target measure that changed is printed to standard output
-as
-.IR "<measure> <Cat=Item,...> = <value>" .
-A malformed line is reported on standard error and skipped. At end of input
-the final state is saved back to
-.IR <db> .
-Use it to put Improv in a pipeline:
-.BR "producer | improv stream m.db Revenue | consumer" .
+improv\-scenario(1)
+Add an input\-cell override to a what\-if scenario
 .TP
-.B export \fI<db>\fR
-Print the whole model as pretty-printed JSON.
+improv\-export(1)
+Print the whole model as JSON
 .TP
-.B import-sql \fI<db> <source.sqlite> <measure-id> <measure-name> <SELECT> <value-col> <dim-col:cat-id:cat-name>...\fR
-Import a SQLite query into a new input measure. Each
-.I dim-col:cat-id:cat-name
-maps a result column to a category (distinct values become items); the
-.I value-col
-column supplies the numeric measure value. SQL data enters as ordinary input
-cells.
-Add
-.B \-\-refresh
-.RI manual | on-load | interval: SECS
-to record when
-.B serve-refresh
-re-runs the query.
+improv\-import\-sql(1)
+Import a SQLite query into a new SQL\-backed input measure
 .TP
-.B refresh-sql \fI<db> <source.sqlite> <measure-id>\fR
-Re-run an SQL-backed measure's stored query and replace its cells with the
-fresh result (new dimension values become new items).
+improv\-refresh\-sql(1)
+Re\-run an SQL\-backed measure\*(Aqs query and replace its cells
 .TP
-.B refresh-all \fI<db>\fR [\fIsource.sqlite\fR]
-Refresh every externally sourced measure at once: all
-.B CALL(...)
-measures, plus every SQL-backed measure when a source is given.
+improv\-refresh\-all(1)
+Refresh every external measure now
 .TP
-.B serve-refresh \fI<db>\fR [\fIsource.sqlite\fR] [\fB\-\-tick\fR \fIsecs\fR]
-Run until interrupted, refreshing on each tick (default 5 s) the measures
-whose refresh policy is due:
-.B on-load
-once,
-.BI interval: N
-every
-.I N
-seconds. SQL measures refresh only when a source is given.
+improv\-serve\-refresh(1)
+Refresh measures as their refresh policies fall due, until interrupted
 .TP
-.B import-csv \fI<db> <file.csv> <measure-id> <measure-name> <value-col> <dim-col:cat-id:cat-name>...\fR [\fB\-\-tsv\fR] [\fB\-\-no\-header\fR]
-Import a CSV or TSV file into a new input measure. Columns are header names
-(0-based indices with
-.BR \-\-no\-header ).
-The delimiter is a comma unless
-.B \-\-tsv
-is given or the file ends in
-.BR .tsv .
+improv\-export\-sql(1)
+Write a measure\*(Aqs input cells to a SQLite table
 .TP
-.B export-csv \fI<db> <target.csv> <measure-id>\fR [\fB\-\-tsv\fR]
-Write a measure's cells (an input measure's stored cells, or a derived
-measure's computed ones) to a CSV or TSV file: one column per dimension
-category plus the value column, header row first. Text that a spreadsheet
-would run as a formula is prefixed with a quote.
+improv\-import\-csv(1)
+Import a CSV or TSV file into a new input measure
 .TP
-.B export-sql \fI<db> <target.sqlite> <measure-id> <table> <value-col>\fR
-Write a measure's input cells to a SQLite table (one column per dimension
-category plus the value column; the table is created if absent). Identifiers
-are validated and values bound as parameters.
+improv\-export\-csv(1)
+Write a measure\*(Aqs cells to a CSV or TSV file
 .TP
-.B help
-Show usage. Also accepted as
-.B \-\-help
-and
-.BR \-h .
-.TP
-.B \-\-version
-Print the version. Also accepted as
-.BR \-V .
+improv\-stream(1)
+Apply input edits from stdin and print the cells they change
 .SH FORMULAS
 A derived measure's formula is an expression over measures, written
 .BR "Target = expression" :
@@ -355,8 +234,14 @@ Greg Burd <greg@burd.me>
 .SH LICENSE
 Dual-licensed under Apache-2.0 OR MIT, at your option.
 .SH SEE ALSO
+.BR improv-formulas (7),
+.BR improv-functions (7),
+.BR improv-files (5),
 .BR improv-tui (1),
 .BR improv-gui (1),
-.BR improv-server (1).
+.BR improv-server (1),
+.BR pg_improv (7),
+and a page per command, such as
+.BR improv-import-csv (1).
 The user guide: https://gregburd.codeberg.page/improv/ (also
 https://gburd.github.io/improv/).

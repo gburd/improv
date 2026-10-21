@@ -28,7 +28,12 @@ All three tools (`mdbook`, `mdbook-mermaid`, `mdbook-linkcheck`) must be on
 ```sh
 man -l docs/man/improv.1                 # render and page it (also improv-tui.1, …)
 groff -man -Tascii docs/man/improv.1     # render to stdout
+UPDATE_DOCS=1 cargo test -p improv_cli   # regenerate the generated pages
 ```
+
+The `(1)` pages and `improv-functions.7` are generated (see
+[Running Improv](src/running.md#man-pages)); edit
+`crates/cli/src/args.rs` or `crates/cli/man/*.roff`, not the page.
 
 ## Where the docs are published
 

@@ -1,0 +1,71 @@
+.\" Hand-written sections of improv-gui(1); crates/cli/src/man.rs adds the rest.
+.SH DESCRIPTION
+.B improv-gui
+opens a model in a NeXTSTEP-style workspace: an application menu, one
+worksheet window per matrix, and a model browser. Pivot by dragging a
+category tile between a worksheet's strips; edit an input cell by
+double-clicking it; add a formula by typing
+.I Name = formula
+on the last line of a worksheet's formula list. Every change is saved as it
+is made. Without an argument the model is in memory only.
+.PP
+A model is a store file made by
+.BR improv (1),
+or a Postgres model URL,
+.BI postgres:// user @ host / db ?model= name\fR.
+.SH KEYS
+Key equivalents take Ctrl (Cmd on macOS):
+.BR s " save, " z " undo, " Z " or " y " redo, " h " hide, " q " quit."
+In a grid: arrows or
+.B hjkl
+move, Shift+arrows select a range (the status bar shows its sum), Enter or
+F2 edits,
+.BR [ " and " ]
+(or PageUp and PageDown) page,
+.B n
+and Shift+\fBn\fR cycle the measure forward and back.
+.PP
+F1, anywhere (a formula edit included), or
+.B Help \(-> Functions...
+opens the function help: a search over the built-in functions by name,
+alias or description, the matches grouped by category, and the selected
+one's signature, category, aliases, description and argument types.
+Up and Down move the selection; Enter, a double-click or
+.B Insert
+puts
+.I NAME(
+into the formula last edited, at its caret. F1 again closes it.
+.PP
+In a formula edit, a name being typed drops a list of matching functions,
+measures and categories: Up and Down select, Tab or Enter accepts
+(a function as
+.IR NAME( ),
+Esc closes the list; with the list closed Enter commits. The rest of the
+selected name, or inside a call the parameters still to give, trail the
+caret in gray, and a tooltip shows the signature with the current
+argument in bold.
+.SH ENVIRONMENT
+.TP
+.B IMPROV_LOCALE
+The formula locale (else the OS locale): formulas are shown and typed in
+it, e.g. German names, a decimal comma and
+.B ;
+separators for
+.BR de .
+.TP
+.B MENTAT_MMAP_SIZE
+As for
+.BR improv (1).
+.SH EXAMPLES
+.nf
+improv-gui sample.db
+improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
+.fi
+.SH AUTHOR
+Greg Burd <greg@burd.me>
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-files (5),
+.BR improv-formulas (7),
+.BR improv-tui (1),
+.BR improv-server (1).

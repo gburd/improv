@@ -1,0 +1,36 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-SAVE-VIEW 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-save\-view \- Save a named view of a measure, as the GUI does
+.SH SYNOPSIS
+\fBimprov save\-view\fR [OPTIONS] <db> <view\-id> <name> <measure>
+.SH DESCRIPTION
+Save a named view of a measure, as the GUI does.
+.PP
+\-\-rows and \-\-cols stack category names outer to inner; each defaults to the next unused category of the measure. The other categories are pages, pinned to their first item. A view with the same id is replaced.
+.SH OPTIONS
+.TP
+\fB\-\-rows\fR \fI<Cat,...>\fR
+The row categories, comma\-separated, outer first
+.TP
+\fB\-\-cols\fR \fI<Cat,...>\fR
+The column categories, comma\-separated, outer first
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIview\-id\fR>
+The view\*(Aqs numeric id
+.TP
+<\fIname\fR>
+The view\*(Aqs name
+.TP
+<\fImeasure\fR>
+The measure, by id or name
+.SH SEE ALSO
+.BR improv (1).

@@ -1,0 +1,30 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-ADD-ITEM 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-add\-item \- Add an item (a member of a category)
+.SH SYNOPSIS
+\fBimprov add\-item\fR <db> <id> <category\-id> <name>
+.SH DESCRIPTION
+Add an item (a member of a category).
+.PP
+The category must exist.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIid\fR>
+The item\*(Aqs numeric id
+.TP
+<\fIcategory\-id\fR>
+The id of the item\*(Aqs category
+.TP
+<\fIname\fR>
+The item\*(Aqs name
+.SH SEE ALSO
+.BR improv (1).

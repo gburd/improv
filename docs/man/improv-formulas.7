@@ -1,0 +1,157 @@
+.\" improv-formulas(7): the formula language, condensed from docs/src/formulas.md.
+.TH IMPROV-FORMULAS 7 "" "improv" "Improv Manual"
+.SH NAME
+improv-formulas \- the Improv formula language
+.SH SYNOPSIS
+.I Target
+.B =
+.I expression
+.SH DESCRIPTION
+A formula defines a derived measure in terms of other measures and
+categories, never cell addresses: the rule is written once and applies to
+every cell of the target. Names resolve against the model, so every
+measure and category a formula names must exist; the target need not.
+.PP
+.B improv add-derived
+takes the expression only;
+.B improv define
+takes the whole definition.
+.SH OPERATORS
+From lowest to highest precedence:
+.PP
+.RS
+.nf
+OR                       left-associative
+AND                      left-associative
+NOT                      prefix; applies to a whole comparison
+== <> != < <= > >=       at most one per level: a < b < c is an error
+&                        text join
++ \-                      left-associative
+* /                      left-associative
+\-                        unary minus
+^                        power, right-associative: 2^3^2 is 512, \-2^2 is \-4
+%                        postfix: x% is x / 100
+.fi
+.RE
+.PP
+.B =
+is only the assignment after the target; equality is
+.BR == .
+Keywords and function names are case-insensitive.
+.SH VALUES
+Numbers
+.RB ( 42 ,
+.BR 1.07 ;
+no exponent, no leading point), text in double quotes
+.RB ( \(dqhello\(dq ,
+no escapes), booleans
+.RB ( TRUE ,
+.BR FALSE ),
+dates
+.RB ( #2025-01-01# )
+and date-times
+.RB ( #2025-01-01T09:30:00Z# ).
+An error is a value:
+.BR #DIV/0! ,
+.BR #NUM! ,
+.BR #VALUE! ,
+.BR #N/A .
+An operator or function given an error returns it;
+.B IFERROR
+and
+.B ISERROR
+handle them. A missing cell is not an error: where an input has no cell,
+the result has none.
+.SH NAMES
+A bare name starts with a letter or
+.B _
+and continues with letters, digits or
+.BR _ .
+Any other name goes in single quotes, with
+.B \(aq\(aq
+for a quote:
+.BR "\(aqBob\(aq\(aqs Rate\(aq" .
+A quoted name is always a measure or category, never a keyword.
+.SH AGGREGATIONS
+.nf
+Total  = SUM(Revenue OVER Time)
+Others = SUM(Revenue OVER ALL EXCEPT Product)
+Big    = SUM(Revenue OVER Time WHERE Revenue > 1000)
+Rank   = RANK(Revenue OVER Product)
+.fi
+.PP
+.IB F ( Measure " OVER " Categories )
+collapses those categories.
+.B WHERE
+keeps the cells where its condition holds. The reduced arguments are
+measure references; rows reach the reduction in item order.
+.IB Measure [ Cat ", ...]"
+keeps only the listed categories.
+.SH POSITIONS AND RECURRENCES
+.nf
+Growth  = Revenue \- PREV(Revenue, Time, 1, 0)
+Running = SUM(Revenue OVER Time[FIRST..THIS])
+Balance = PREV(Balance, Time, 1, Opening) + Deposits
+.fi
+.PP
+.BR POSITION ,
+.BR @ITEM ,
+.BR PREV ,
+.B NEXT
+and windows
+.BI OVER " T" [ from .. to ]
+use a category's item order. A measure may read its own earlier values
+through
+.BR PREV ;
+any other cycle between measures is an error, and
+.B improv define
+refuses it.
+.SH LET, LAMBDA AND LISTS
+.nf
+Margin = LET(rev, Price * Quantity, (rev \- Cost) / rev)
+Final  = REDUCE(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
+Top    = SORT(Sales OVER Product, \-1 INTO Rank)
+.fi
+.PP
+.BR LET ,
+.BR LAMBDA ,
+.BR MAP ,
+.BR SCAN ,
+.B REDUCE
+and
+.B MAKEARRAY
+are supported. A named LAMBDA
+.RB ( "improv define m.db 1 \(dqMargin = LAMBDA(p, c, p \- c)\(dq" )
+is called by name. A list result says where it lands:
+.B INTO
+a category.
+.B FIXPOINT(init, LAMBDA(r, step), [max_iter], [tolerance])
+iterates to a fixed point and always terminates.
+.SH SOURCE FORMS
+Only as a whole right-hand side, through
+.BR "improv define" :
+.B CALL(fn, m1, ...)
+(an external function, populated by
+.BR "improv refresh-ext" )
+and
+.B SQL(\(dqquery\(dq)
+(use
+.BR "improv import-sql" ).
+.SH LOCALE
+.B improv define
+and
+.B add-derived
+read formulas in the locale named by
+.BR IMPROV_LOCALE ,
+else the OS locale. In German a formula uses German function names, a
+decimal comma and
+.B ;
+between arguments:
+.BR "WENN(Price > 1,5; RUNDEN(Price; 2); 0)" .
+The English spelling is always accepted; models store it.
+.SH SEE ALSO
+.BR improv (1),
+.BR improv-functions (7),
+.BR improv-files (5).
+The full language: docs/src/formulas.md, or The Formula Language in the
+user guide, https://gregburd.codeberg.page/improv/.

@@ -1,0 +1,30 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-REGISTER-EXT 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-register\-ext \- Register a Python external function
+.SH SYNOPSIS
+\fBimprov register\-ext\fR <db> <name> <arity> <python\-body>
+.SH DESCRIPTION
+Register a Python external function.
+.PP
+Number arguments and a Number result: the body reads the list args and sets result, e.g. register\-ext m.db hypot 2 "result = (args[0]**2 + args[1]**2) ** 0.5".
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fIname\fR>
+The function\*(Aqs name, as CALL(...) names it
+.TP
+<\fIarity\fR>
+How many arguments it takes
+.TP
+<\fIpython\-body\fR>
+The Python body
+.SH SEE ALSO
+.BR improv (1).
