@@ -988,6 +988,21 @@ mod tests {
     }
 
     #[pg_test]
+    fn commit_mode_skips_result_tables_without_their_key() {
+        setup("commit");
+        commit();
+        // As in a restore, before its post-data step adds the keys.
+        Spi::run("ALTER TABLE improv_plan.revenue DROP CONSTRAINT revenue_pkey").unwrap();
+        Spi::run("UPDATE sales SET qty = 1 WHERE product = 'Widget'").unwrap();
+        assert_eq!(commit(), 0);
+        assert_eq!(rows("total", "true"), "Gadget=6000 Widget=10000");
+        Spi::run("ALTER TABLE improv_plan.revenue ADD PRIMARY KEY (\"time\", product)").unwrap();
+        Spi::run("UPDATE sales SET qty = 1 WHERE product = 'Widget'").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(rows("total", "true"), "Gadget=6000 Widget=40");
+    }
+
+    #[pg_test]
     fn commit_mode_recomputes_once_per_transaction() {
         setup("commit");
         commit(); // setup's own writes

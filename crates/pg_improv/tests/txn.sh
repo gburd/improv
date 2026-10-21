@@ -14,6 +14,11 @@
 #      recompute aborts the COMMIT with a clear message
 #   4. pg_dump / pg_restore of a database with a model: results and the
 #      model survive, and recalc / the sync worker carry on
+#   4b. a model in each sync mode, over tables that load after the catalog
+#      (schema public), restored by a plain pg_restore (no
+#      --single-transaction) and by psql -f of a plain dump: both succeed
+#      (a commit-mode recompute is skipped while its result tables have no
+#      primary key yet) and every model follows writes afterwards
 # Usage: tests/txn.sh   (needs pg_improv installed into $PG_BIN's install)
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
@@ -191,4 +196,64 @@ q "SELECT improv.define('plan','Double = Twice(Revenue)')" >/dev/null
 q "SELECT improv.create_model('fresh')" >/dev/null
 eq "$(q "SELECT count(*) FROM improv.model")" 2 "ids keep minting after restore"
 echo "ok: pg_dump / pg_restore keeps models, sync mode and results; the restored worker resumes"
+
+# ---- 4b. every sync mode through a plain restore ----------------------------
+# pg_dump orders table data by schema, then name, and adds primary keys after
+# all of it: public.* rows load after improv.* and improv_*, each COPY in its
+# own transaction, while the result tables have no key yet. W reads f_* and
+# g_*: when f_*'s COPY commits g_* is still empty, so a recompute would move
+# W and upsert into a result table with no key to upsert on.
+DB=s q "SELECT 1" >/dev/null 2>&1 || "$PG_BIN/createdb" -h "$D" -p "$P" -U improv s
+DB=s q "CREATE EXTENSION IF NOT EXISTS pg_improv"
+for m in lg tg cm mn; do
+	DB=s q "CREATE TABLE public.f_$m (k text PRIMARY KEY, v float8)"
+	DB=s q "CREATE TABLE public.g_$m (k text PRIMARY KEY, u float8)"
+	DB=s q "INSERT INTO public.f_$m VALUES ('a', 1), ('b', 2); INSERT INTO public.g_$m VALUES ('a', 5), ('b', 5)"
+	for s in "create_model('$m')" "set_sync_mode('$m','manual')" "bind_category('$m','K','public.f_$m','k')" \
+		"bind_measure('$m','V','public.f_$m','v')" "bind_category('$m','K','public.g_$m','k')" \
+		"bind_measure('$m','U','public.g_$m','u')" "define('$m','W = V - U')"; do
+		DB=s q "SELECT improv.$s" >/dev/null
+	done
+done
+for x in "tg trigger" "cm commit"; do DB=s q "SELECT improv.set_sync_mode('${x% *}','${x#* }')"; done
+# No worker serves s, where logical mode is refused: lg is made logical as a
+# dump restored here would leave it.
+DB=s q "UPDATE improv.model SET sync_mode = 'logical' WHERE name = 'lg'"
+DB=s q "INSERT INTO improv.sync_state (model_id, slot, publication) SELECT id, 'improv_db', 'improv_db' FROM improv.model WHERE name = 'lg'"
+DB=s q "SELECT improv.sync_publication()" >/dev/null
+# (The worker serves database t, not s: recalc the logical model too.)
+for m in mn lg; do DB=s q "SELECT improv.recalc('$m')" >/dev/null; done
+W="SELECT string_agg(k || '=' || value, ',' ORDER BY k) FROM"
+for m in lg tg cm mn; do
+	for _ in $(seq 200); do [ "$(DB=s q "$W improv_$m.w")" = "a=-4,b=-3" ] && break; sleep 0.05; done
+	eq "$(DB=s q "$W improv_$m.w")" "a=-4,b=-3" "$m before the dump"
+done
+"$PG_BIN/pg_dump" -h "$D" -p "$P" -U improv -Fc s >"$D/s.dump"
+"$PG_BIN/pg_dump" -h "$D" -p "$P" -U improv -Fp s >"$D/s.sql"
+"$PG_BIN/createdb" -h "$D" -p "$P" -U improv r1
+"$PG_BIN/createdb" -h "$D" -p "$P" -U improv r2
+"$PG_BIN/pg_restore" -h "$D" -p "$P" -U improv -d r1 --exit-on-error "$D/s.dump" 2>"$D/r1.err" ||
+	fail "plain pg_restore of every sync mode: $(cat "$D/r1.err")"
+"$PG_BIN/psql" -h "$D" -p "$P" -U improv -d r2 -qX -v ON_ERROR_STOP=1 -f "$D/s.sql" >/dev/null 2>"$D/r2.err" ||
+	fail "psql -f of a plain dump of every sync mode: $(cat "$D/r2.err")"
+
+for db in r1 r2; do
+	for m in lg tg cm mn; do
+		eq "$(DB=$db q "$W improv_$m.w")" "a=-4,b=-3" "$db: $m's restored results"
+		eq "$(DB=$db q "SELECT sync_mode FROM improv.model WHERE name = '$m'")" \
+			"$(DB=s q "SELECT sync_mode FROM improv.model WHERE name = '$m'")" "$db: $m's sync mode"
+		DB=$db q "UPDATE public.f_$m SET v = 3 WHERE k = 'a'"
+	done
+	DB=$db q "SELECT improv.recalc('mn')" >/dev/null
+	eq "$(DB=$db q "$W improv_tg.w")" "a=-2,b=-3" "$db: trigger mode follows a write"
+	eq "$(DB=$db q "$W improv_cm.w")" "a=-2,b=-3" "$db: commit mode follows a write"
+	eq "$(DB=$db q "$W improv_mn.w")" "a=-2,b=-3" "$db: manual mode recalcs"
+done
+# The worker serves database t only: a logical model in r1 or r2 is checked
+# by a recalc; the restored model in t above shows the worker resumes.
+for db in r1 r2; do
+	DB=$db q "SELECT improv.recalc('lg')" >/dev/null
+	eq "$(DB=$db q "$W improv_lg.w")" "a=-2,b=-3" "$db: the logical model recalcs"
+done
+echo "ok: a plain pg_restore and psql -f restore every sync mode; each follows writes"
 echo PASS

@@ -41,10 +41,18 @@ update scripts (`sql/pg_improv--<old>--<new>.sql`) ship with every release,
 and `tests/upgrade.sh` checks each one against a live model.
 
 **Backups:** `pg_dump` keeps your models (the `improv.*` catalog is
-registered with `pg_extension_config_dump`) and their result tables.
-After a restore, the sync worker creates a fresh replication slot and
-catches up with one recompute. Before 0.9.0 a dump restored every model
-empty.
+registered with `pg_extension_config_dump`) and their result tables, and
+`pg_restore` (with or without `--single-transaction`) or `psql -f` of a
+plain dump brings them back in every sync mode; `tests/txn.sh` restores a
+model of each mode both ways and checks each follows writes afterwards.
+Restore the roles first (`pg_dumpall --globals-only`): a model's owner is
+dumped by name, and its catalog row does not load without that role. A
+restored logical-mode model's worker creates a fresh
+replication slot and catches up with one recompute. While a restore loads
+the data, a commit-mode model's result tables have no primary key yet (it
+is added after the data), so its recompute at each COMMIT is skipped with a
+NOTICE; its results come from the dump, and the next write recomputes.
+Before 0.9.0 a dump restored every model empty.
 
 
 For the default `logical` mode, preload the library and enable logical

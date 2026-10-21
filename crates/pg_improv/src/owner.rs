@@ -15,9 +15,12 @@
 //! not. `SECURITY_RESTRICTED_OPERATION` forbids `SET ROLE`, temporary
 //! tables and other state that outlives the operation (cursors `WITH HOLD`,
 //! `LISTEN`), so a function the owner controls (an RLS policy, a column
-//! default) cannot take over the session it runs in, and `search_path` is pinned to `pg_catalog, pg_temp`, so no schema can
-//! shadow a name the generated SQL uses. Both are restored afterwards, on
-//! error too.
+//! default) cannot take over the session it runs in, `search_path` is
+//! pinned to `pg_catalog, pg_temp`, so no schema can shadow a name the
+//! generated SQL uses, and `row_security` is pinned on, since with
+//! it off (as pg_dump and pg_restore set it) a policy that applies to the
+//! owner makes its reads fail instead of filtering them. All of it is
+//! restored afterwards, on error too.
 
 use pgrx::prelude::*;
 
@@ -56,7 +59,7 @@ pub(crate) fn as_catalog<R>(f: impl FnOnce() -> Res<R>) -> Res<R> {
 }
 
 /// Run `f` as `role` (as the current role when `None`), restricted, with
-/// `search_path = pg_catalog, pg_temp`.
+/// `search_path = pg_catalog, pg_temp` and `row_security = on`.
 pub(crate) fn as_role<R>(role: Option<pg_sys::Oid>, f: impl FnOnce() -> Res<R>) -> Res<R> {
     let Some(role) = role else { return f() };
     let (mut saved, mut ctx) = (pg_sys::InvalidOid, 0);
@@ -66,16 +69,21 @@ pub(crate) fn as_role<R>(role: Option<pg_sys::Oid>, f: impl FnOnce() -> Res<R>) 
     let nest = unsafe {
         pg_sys::GetUserIdAndSecContext(&mut saved, &mut ctx);
         let nest = pg_sys::NewGUCNestLevel();
-        pg_sys::set_config_option(
-            c"search_path".as_ptr(),
-            c"pg_catalog, pg_temp".as_ptr(),
-            pg_sys::GucContext::PGC_USERSET,
-            pg_sys::GucSource::PGC_S_SESSION,
-            pg_sys::GucAction::GUC_ACTION_SAVE,
-            true,
-            0,
-            false,
-        );
+        for (name, value) in [
+            (c"search_path", c"pg_catalog, pg_temp"),
+            (c"row_security", c"on"),
+        ] {
+            pg_sys::set_config_option(
+                name.as_ptr(),
+                value.as_ptr(),
+                pg_sys::GucContext::PGC_USERSET,
+                pg_sys::GucSource::PGC_S_SESSION,
+                pg_sys::GucAction::GUC_ACTION_SAVE,
+                true,
+                0,
+                false,
+            );
+        }
         let restricted =
             pg_sys::SECURITY_LOCAL_USERID_CHANGE | pg_sys::SECURITY_RESTRICTED_OPERATION;
         pg_sys::SetUserIdAndSecContext(role, ctx | restricted as i32);

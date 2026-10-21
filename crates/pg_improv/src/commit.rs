@@ -470,6 +470,19 @@ fn recompute(name: &str, measures: &[i64]) -> Res<()> {
     if mode.as_deref() != Some("commit") {
         return Ok(()); // switched while we waited for the lock
     }
+    if let Some(tables) = unkeyed_results(mid, &name)? {
+        // Mid-restore: pg_restore and a plain dump load each table's data in
+        // its own transaction and add primary keys after all of it, so a
+        // bound table's COPY commits while the result tables have no key to
+        // upsert on. The dump carries the results, consistent with the
+        // tables; the next write (or recalc) recomputes.
+        notice!(
+            "improv: model {name:?} (sync_mode commit) skipped its recompute at this COMMIT: its \
+             result tables {tables} have no primary key yet, as during a pg_restore; the next \
+             write to its tables (or improv.recalc) recomputes it"
+        );
+        return Ok(());
+    }
     let mut l = super::trigger::load(mid, name, true)?;
     let changed = measures
         .iter()
@@ -495,6 +508,23 @@ fn recompute(name: &str, measures: &[i64]) -> Res<()> {
     )?;
     RECOMPUTES.with(|n| n.set(n.get() + 1));
     Ok(())
+}
+
+/// Model `mid`'s result tables that have dimension columns but no primary
+/// key (the upsert's conflict target), or `None`. A restore makes those:
+/// it creates the tables first and adds their keys after all the data.
+fn unkeyed_results(mid: i64, name: &str) -> Res<Option<String>> {
+    Ok(Spi::get_one_with_args::<String>(
+        "SELECT string_agg(format('%I.%I', n.nspname, c.relname), ', ' ORDER BY c.relname) \
+         FROM improv.measure d \
+         JOIN pg_namespace n ON n.nspname = $2 \
+         JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = lower(d.name) \
+         WHERE d.model_id = $1 AND d.kind = 'derived' \
+           AND EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attnum > 0 \
+                       AND NOT a.attisdropped AND a.attname <> 'value') \
+           AND NOT EXISTS (SELECT 1 FROM pg_index i WHERE i.indrelid = c.oid AND i.indisprimary)",
+        &[mid.into(), pm::result_schema(name).into()],
+    )?)
 }
 
 /// Pre-commit model recomputes run by this backend so far.

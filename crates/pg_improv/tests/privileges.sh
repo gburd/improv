@@ -84,6 +84,11 @@ U=bob q "BEGIN; UPDATE sales SET amount = 6 WHERE region = 'north' AND product =
 eq "$(q "$TOTAL")" 9 "commit: bob's commit"
 q "INSERT INTO sales VALUES ('south','c',100)"
 eq "$(q "$TOTAL")" 9 "commit: a superuser's commit to the other half"
+# row_security = off (as pg_dump and pg_restore set it) errors where a policy
+# applies, instead of filtering: the owner's recompute pins it on.
+q "SET row_security = off; UPDATE sales SET amount = 5 WHERE region = 'north' AND product = 'c'"
+eq "$(q "$TOTAL")" 8 "commit: a commit with row_security off"
+q "UPDATE sales SET amount = 6 WHERE region = 'north' AND product = 'c'"
 
 U=alice q "SELECT improv.set_sync_mode('m','logical')"
 wait_for "SELECT last_applied_at IS NOT NULL FROM improv.status('m')" t "logical: caught up"

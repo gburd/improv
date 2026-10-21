@@ -242,6 +242,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   slot, makes a new one, and rebuilds every model, and it logs this once.
   `last_error` reports the lost slot until each model's rebuild succeeds.
   Any other failure to read the slot also shows in `last_error`.
+- **A plain restore of a database with a commit-mode pg_improv model
+  failed.** `pg_restore` without `--single-transaction`, and `psql -f` of a
+  plain dump, commit each table's data on its own and add primary keys
+  last, so the commit hook's recompute upserted into a result table with no
+  key yet and aborted the restore ("there is no unique or exclusion
+  constraint matching the ON CONFLICT specification"). A commit-mode
+  recompute is now skipped, with a NOTICE, while a result table lacks its
+  primary key; the dump carries the results, and the next write or
+  `recalc` recomputes. `tests/txn.sh` restores a model of each sync mode
+  both ways.
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.
