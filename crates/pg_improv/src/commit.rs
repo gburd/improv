@@ -473,12 +473,16 @@ fn recompute(name: &str, measures: &[i64]) -> Res<()> {
         .iter()
         .map(|&i| id32(i).map(MeasureId))
         .collect::<Res<Vec<_>>>()?;
-    // ponytail: recomputes the written relations' dependents in full, so a
-    // one-row write costs a full recompute of them. A row scope needs the
-    // touched rows, and the executor hook sees only which relations were
-    // written: capturing rows means a row trigger (or a replica-identity
-    // read) on the user's tables, which commit mode exists to avoid. Users
-    // with large aggregated fact tables should use trigger or logical mode.
+    // shortcut: recomputes the written relations' dependents in full (2.1 s
+    // per commit at 2.5M rows, the load). A row scope needs the touched
+    // rows, and the executor hook sees only which relations were written.
+    // Measured in 0.11.0 and rejected: a transition-table statement trigger
+    // costs about 1 ms per 1,000-row statement but 35% on a 1M-row INSERT,
+    // and is the trigger on users' tables commit mode exists to avoid; an
+    // `xmin = current xid` scan reads the whole table (0.44 s at 2.5M rows,
+    // a fifth of the load, before any recompute). Upgrade when a hook can
+    // see modified tuples without a trigger. Use trigger or logical mode for
+    // large aggregated fact tables.
     let targets = pm::dependents(&l.model, &changed);
     super::trigger::recompute(
         &mut l,

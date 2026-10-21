@@ -343,6 +343,11 @@ every role that writes a bound table must be able to write the result
 tables. A recompute that fails (a writer without that privilege, or a model
 over `improv.max_cells`) aborts the COMMIT, and the error names the model.
 
+Commit mode reloads the written tables' measures in full (it knows which
+tables a transaction wrote, not which rows): 2.1 s per commit on the 2.5M-row
+benchmark model, against 0.36 s per 1,000-row statement in trigger mode and
+about 0.1 s in logical mode. Pick it for small or unaggregated models.
+
 ```sql
 SELECT improv.set_sync_mode('plan', 'commit');
 BEGIN;
