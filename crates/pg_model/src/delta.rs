@@ -955,6 +955,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(edit_rows(&m, &mixed), None);
+        // As many categories, but other ones.
+        let mut other = m.clone();
+        other.measures.get_mut(&PRICE).unwrap().categories = vec![T];
+        let swapped = vec![e[0].clone(), (PRICE, coord(&[(1, 1)]), None)];
+        assert_eq!(edit_rows(&other, &swapped), None);
         assert_eq!(edit_rows(&m, &[]), None);
         // An unknown item or measure: no name, or no rows.
         let ghost = vec![(COST, coord(&[(2, 99)]), None)];
