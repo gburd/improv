@@ -125,6 +125,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **The function reference's date intro said serial date 1 is
   1900-01-01**, which is Excel's numbering. Improv numbers as LibreOffice
   does (1 is 1899-12-31, 61 is 1900-03-01); the text now says so.
+- **`improv define` and `add-derived` refuse a formula cycle.** They saved
+  formulas that depend on each other in a loop (`A1 = B1 + 1` with
+  `B1 = A1 * 2`), and every later `eval` of them failed. Now the command
+  fails and saves nothing. The engine names the loop in its error, everywhere:
+  `formula cycle: A1 → B1 → A1` (was `unsupported plan node in v1 dataflow
+  builder: cyclic measure dependency at MeasureId(300)`).
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.

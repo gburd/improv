@@ -127,6 +127,31 @@ fn load(db: &str) -> improv_core_model::Model {
     improv_store::Store::open(db).unwrap().load_model().unwrap()
 }
 
+/// `define` and `add-derived` used to save formulas that depend on each
+/// other in a loop; every later `eval` of them then failed.
+#[test]
+fn a_formula_cycle_is_refused_and_named() {
+    let (dir, db) = model("cycle");
+    let d = db.as_str();
+    ok(&["define", d, "300", "A1 = Quantity + 1"]);
+    ok(&["define", d, "301", "B1 = A1 * 2"]);
+    let before = ok(&["eval", d, "300"]);
+    fails_with(
+        &["define", d, "300", "A1 = B1 + 1"],
+        "formula cycle: A1 → B1 → A1",
+    );
+    ok(&["define", d, "302", "C1 = B1 + 1"]);
+    fails_with(
+        &["add-derived", d, "300", "A1", "C1 + 1"],
+        "formula cycle: A1 → C1 → B1 → A1",
+    );
+    // Nothing was saved: A1 still evaluates as before.
+    assert_eq!(ok(&["eval", d, "300"]), before);
+    // A measure's reference to itself is a recurrence, not a cycle.
+    ok(&["define", d, "303", "Run = PREV(Run, Time, 1, 0) + Quantity"]);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn help_prints_usage_for_every_spelling_and_no_args() {
     let cases: [&[&str]; 4] = [&[], &["help"], &["--help"], &["-h"]];

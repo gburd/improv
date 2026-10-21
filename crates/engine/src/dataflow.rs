@@ -39,6 +39,10 @@ pub enum EngineError {
     Compile(#[from] crate::compiler::CompileError),
     #[error("unsupported plan node in v1 dataflow builder: {0}")]
     Unsupported(String),
+    /// Formulas that depend on each other in a loop, named in order:
+    /// `A1 → B1 → A1`.
+    #[error("formula cycle: {0}")]
+    Cycle(String),
 }
 
 /// A DD collection of `(coordinate, cell value)`.
@@ -980,8 +984,8 @@ pub(crate) fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
 
 /// Compute the derived measures transitively needed by `targets`, in
 /// dependency order (a measure comes after every derived measure it
-/// references). Rejects cycles.
-pub(crate) fn derived_build_order<'m>(
+/// references). Rejects a cycle, naming it.
+pub fn derived_build_order<'m>(
     model: &'m Model,
     targets: &[MeasureId],
 ) -> Result<Vec<(MeasureId, &'m Formula)>, EngineError> {
@@ -1020,11 +1024,48 @@ pub(crate) fn derived_build_order<'m>(
     // error exactly when a cycle is reachable.
     match improv_verified::graph::build_order(&graph, &roots) {
         Ok(order) => Ok(order.into_iter().map(|i| derived[i]).collect()),
-        Err(i) => Err(EngineError::Unsupported(format!(
-            "cyclic measure dependency at {:?}",
-            derived[i].0
-        ))),
+        Err(i) => Err(EngineError::Cycle(cycle_names(model, &derived, &graph, i))),
     }
+}
+
+/// The cycle through `start` (a node `build_order` found on one) as measure
+/// names, from its lowest measure id back to itself: `A1 → B1 → A1`.
+fn cycle_names(
+    model: &Model,
+    derived: &[(MeasureId, &Formula)],
+    graph: &[Vec<usize>],
+    start: usize,
+) -> String {
+    // Breadth-first from `start` until an edge leads back to it.
+    let mut parent: HashMap<usize, usize> = HashMap::new();
+    let mut queue = std::collections::VecDeque::from([start]);
+    let mut last = start;
+    'search: while let Some(u) = queue.pop_front() {
+        for &v in &graph[u] {
+            if v == start {
+                last = u;
+                break 'search;
+            }
+            if let std::collections::hash_map::Entry::Vacant(e) = parent.entry(v) {
+                e.insert(u);
+                queue.push_back(v);
+            }
+        }
+    }
+    let mut ids = vec![derived[last].0];
+    let mut at = last;
+    while let Some(&p) = parent.get(&at) {
+        ids.push(derived[p].0);
+        at = p;
+    }
+    ids.reverse();
+    let low = (0..ids.len()).min_by_key(|&k| ids[k].0).unwrap_or(0);
+    ids.rotate_left(low);
+    ids.push(ids[0]);
+    ids.iter()
+        .map(|id| model.measures[id].name.to_string())
+        .collect::<Vec<_>>()
+        .join(" → ")
 }
 
 /// Compile every derived measure `targets` transitively needs, in build order.
@@ -3316,10 +3357,27 @@ mod tests {
             kind: MeasureKind::Derived(mul(MeasureId(1), MeasureId(1))),
             description: None,
         });
-        assert!(
-            evaluate(&model, &[MeasureId(1)]).is_err(),
-            "cycle must be rejected"
-        );
+        let err = evaluate(&model, &[MeasureId(1)]).unwrap_err().to_string();
+        assert_eq!(err, "formula cycle: A → B → A");
+        // A longer loop is named whole, from its lowest id, whichever
+        // measure the search starts at.
+        let refs = |a| improv_core_model::Formula::new(Expr::Ref(a, DimensionSpec::default()));
+        for (id, name, dep) in [(3, "C", 1), (1, "A", 2)] {
+            model.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: vec![],
+                kind: MeasureKind::Derived(refs(MeasureId(dep))),
+                description: None,
+            });
+        }
+        model.measures.get_mut(&MeasureId(2)).unwrap().kind =
+            MeasureKind::Derived(refs(MeasureId(3)));
+        for start in 1..=3 {
+            let err = evaluate(&model, &[MeasureId(start)]).unwrap_err();
+            assert_eq!(err.to_string(), "formula cycle: A → B → C → A");
+        }
     }
 
     /// A plan the compiler would never emit (an unknown function) still

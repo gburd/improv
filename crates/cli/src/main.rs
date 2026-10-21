@@ -320,6 +320,7 @@ fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
         kind: MeasureKind::Derived(formula),
         description: None,
     });
+    check_acyclic(&model)?;
     store.save_model(&model).map_err(|e| e.to_string())?;
     println!("added derived measure {} '{name}'", id.0);
     Ok(())
@@ -437,8 +438,23 @@ fn cmd_define(rest: &[String]) -> Result<(), String> {
             println!("defined LAMBDA {id} '{}'({params})", lt.name.0);
         }
     }
+    check_acyclic(&model)?;
     store.save_model(&model).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Refuse to save formulas that depend on each other in a loop: the engine
+/// could not build the model, so every later `eval` would fail.
+fn check_acyclic(model: &Model) -> Result<(), String> {
+    let derived: Vec<MeasureId> = model
+        .measures
+        .values()
+        .filter(|m| m.is_derived())
+        .map(|m| m.id)
+        .collect();
+    improv_engine::dataflow::derived_build_order(model, &derived)
+        .map(drop)
+        .map_err(|e| e.to_string())
 }
 
 /// `register-ext <db> <name> <arity> "<python body>"` — register a pure Python
