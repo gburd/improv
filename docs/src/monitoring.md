@@ -172,7 +172,8 @@ restarts:
 
 ## Alerts
 
-Thresholds are starting points (one poll is 200 ms). Tune them to your
+Thresholds are starting points for a database like the
+[capacity planning](./capacity.md) example (one poll is 200 ms). Tune them to your
 write rate.
 
 | Alert | Condition | For | Severity | Why |

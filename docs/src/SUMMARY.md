@@ -22,3 +22,4 @@
 # Operations
 
 - [Monitoring](./monitoring.md)
+- [Capacity Planning](./capacity.md)

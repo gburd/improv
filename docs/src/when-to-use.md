@@ -11,7 +11,8 @@ outgrown Improv.
 The limits quoted here were measured on EC2 c7i.8xlarge with release
 builds. Sources: the
 [v0.10.0 scale benchmark][bench] and the post-0.10.0 fixes listed in the
-[CHANGELOG][changelog] (marked "after the fixes").
+[CHANGELOG][changelog] (marked "after the fixes"). [Capacity
+planning](./capacity.md) turns them into sizing formulas.
 
 ## Use Improv when
 
@@ -50,9 +51,9 @@ million cells at v0.10.0 ([benchmark §3a][bench]), 0.7–0.8 GB after the fixes
 A model does not need your raw rows as cells, though. In Postgres and DuckDB a
 measure bound with an aggregate (`agg => 'sum'`, `count`, `count_distinct`,
 …) folds the rows to one cell per coordinate. 2.5M fact rows become 44,750
-cells, and the fold runs where the data is. Only the logical worker's fold
-state grows with the rows, at about 180 bytes per fact row
-([benchmark §1][bench]).
+cells, and the fold runs where the data is. Only the logical worker's
+memory grows with the rows: about 180 bytes per fact row in all, fold state
+and engine together ([benchmark §1][bench]).
 
 **Instead:** bind with `agg`, or summarize first (a view or a rollup table)
 and bind the summary. Keep raw event-level analytics in the database or a
@@ -135,7 +136,7 @@ or put it in `manual` mode and refresh it on a schedule.
 | Engine evaluate | 2.2 s per million cells after the fixes (4.7–5.5 s at v0.10.0) | same |
 | Single-cell edit | 56 µs, independent of model size (64 µs at v0.10.0) | same |
 | Logical-mode apply, 1,000-row batch, 2.5M rows / 44,750 cells | 86–130 ms commit → visible | [§1][bench], re-measured on `main` |
-| Worker memory, same model | about 450 MB private (180 B per fact row) | [§1][bench], re-measured on `main` |
+| Worker memory, same model | about 450 MB private (180 B per fact row, engine included) | [§1][bench], re-measured on `main` |
 | Trigger mode, same model | about 290 ms per statement | [§3e][bench] |
 | Commit mode, same model | 2.1–2.4 s per transaction after the fixes | [CHANGELOG][changelog] |
 | Models per database (logical) | 1,000 small models: 54–146 ms per change, 0.6 MB each | re-measured on `main` with the §3f harness of the [benchmark][bench] |
