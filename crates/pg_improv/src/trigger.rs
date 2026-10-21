@@ -259,6 +259,9 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
     if mode == "commit" {
         super::commit::check_preloaded()?;
     }
+    if mode == "logical" {
+        super::worker::check_served(model)?;
+    }
     let (mid, name) = lock_model(model)?;
     pm::validate_name("model", &name)?;
     let bound: Vec<(String, pg_sys::Oid)> = Spi::connect(|c| -> Res<_> {

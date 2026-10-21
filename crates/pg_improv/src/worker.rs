@@ -70,6 +70,10 @@ pub(crate) static POLL_MS: GucSetting<i32> = GucSetting::<i32>::new(200);
 /// `improv.max_changes`: the most decoded changes one poll reads.
 pub(crate) static MAX_CHANGES: GucSetting<i32> = GucSetting::<i32>::new(10_000);
 
+/// Whether this library was in `shared_preload_libraries`, so a sync worker
+/// runs (a backend inherits it from the postmaster's `_PG_init`).
+static WORKER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The database's one slot and publication.
 pub(crate) const SLOT: &str = "improv_db";
 
@@ -114,6 +118,7 @@ pub(crate) fn init() {
     );
 
     if preload {
+        WORKER.store(true, std::sync::atomic::Ordering::Relaxed);
         BackgroundWorkerBuilder::new("pg_improv sync")
             .set_function("improv_worker_main")
             .set_library("pg_improv")
@@ -150,6 +155,49 @@ SELECT pg_catalog.pg_extension_config_dump('improv.sync_state', '');
     name = "l2_logical",
     requires = ["catalog"]
 );
+
+/// The database the sync worker serves when it runs (`improv.database`),
+/// or `None` when the library is not preloaded (then no worker runs).
+fn served_database() -> Option<String> {
+    WORKER
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .then(|| DATABASE.get())
+        .flatten()
+        .and_then(|c| c.into_string().ok())
+}
+
+/// Refuse logical mode for `model` in a database no sync worker serves:
+/// the model would report logical mode and never follow its tables.
+/// Without the preload there is no worker at all, and logical models
+/// update only through `recalc` (documented), so that is not refused.
+pub(crate) fn check_served(model: &str) -> Res<()> {
+    // The pg_test cluster's worker serves `postgres` (pgrx drops and
+    // recreates its own test database), and the tests' models are logical.
+    if cfg!(feature = "pg_test") {
+        return Ok(());
+    }
+    let Some(db) = served_database() else {
+        return Ok(());
+    };
+    let here = Spi::get_one::<String>("SELECT current_database()::text")?.unwrap_or_default();
+    if here == db {
+        return Ok(());
+    }
+    pgrx::pg_sys::panic::ErrorReport::new(
+        PgSqlErrorCode::ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE,
+        format!(
+            "logical sync of model {model:?} needs the sync worker, which serves database \
+             {db:?}, not {here:?}"
+        ),
+        "improv logical sync",
+    )
+    .set_hint(
+        "Set improv.database to this database and restart Postgres, or use \
+         improv.set_sync_mode(model, 'commit'), 'trigger' or 'manual' here.",
+    )
+    .report(PgLogLevel::ERROR);
+    unreachable!("an ERROR does not return")
+}
 
 /// Ensure model `model` can be synced by logical decoding: give PK-less
 /// bound relations `REPLICA IDENTITY FULL`, add them to the database's
@@ -330,16 +378,22 @@ fn status_row(model: &str) -> Res<StatusRow> {
             "SELECT m.sync_mode, s.slot, \
                     (pg_current_wal_lsn() - r.confirmed_flush_lsn)::int8, \
                     r.confirmed_flush_lsn::text, s.last_applied_at, s.rows_applied, \
-                    coalesce(s.last_error, CASE WHEN r.wal_status = 'lost' THEN \
+                    coalesce(CASE WHEN r.wal_status = 'lost' THEN \
                       'the slot ' || s.slot || ' is invalidated (the WAL it held is gone): \
-                       the sync worker makes a new one and rebuilds every model' END), \
+                       the sync worker makes a new one and rebuilds every model' END, \
+                    CASE WHEN m.sync_mode = 'logical' AND $2::text IS DISTINCT FROM \
+                               current_database()::text THEN \
+                      'no sync worker serves this database (improv.database = ' \
+                      || coalesce($2, 'unset: pg_improv is not preloaded') || ')' END, \
+                    s.last_error), \
                     s.incremental_applies, s.rebuilds \
              FROM improv.model m \
              LEFT JOIN improv.sync_state s ON s.model_id = m.id \
              LEFT JOIN pg_replication_slots r ON r.slot_name = s.slot \
+               AND r.database = current_database() \
              WHERE m.name = $1",
             None,
-            &[model.into()],
+            &[model.into(), served_database().into()],
         )?;
         let r = t.first();
         if r.is_empty() {

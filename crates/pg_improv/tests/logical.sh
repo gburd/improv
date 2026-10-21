@@ -504,4 +504,34 @@ q "ALTER SYSTEM RESET improv.poll_ms"
 q "SELECT pg_reload_conf()" >/dev/null
 wait_for "$REV" "$(q "$REVQ")" "the reload back to poll_ms 50" >/dev/null
 echo "ok: pg_reload_conf() changed improv.poll_ms without a restart (60000, then back to 50)"
+
+# 17. a database the worker does not serve (D12): logical mode is refused
+#     there, with a hint, and status reports no worker rather than reading
+#     the served database's slot of the same name
+"$PG_BIN/createdb" -h "$D" -p "$P" -U improv improv_other
+q2() { "$PG_BIN/psql" -h "$D" -p "$P" -U improv -d improv_other -qAtX -v ON_ERROR_STOP=1 -c "$1"; }
+q2 "CREATE EXTENSION pg_improv"
+q2 "CREATE TABLE sales (quarter text, product text, price float8)"
+q2 "INSERT INTO sales VALUES ('Q1', 'Widget', 10)"
+q2 "SELECT improv.create_model('o')" >/dev/null
+q2 "SELECT improv.bind_category('o','Time','sales','quarter')"
+err=$(q2 "SELECT improv.bind_measure('o','Price','sales','price')" 2>&1) && { echo "FAIL: bind_measure of a logical model outside improv.database"; exit 1; }
+case $err in *"serves database \"improv_e2e\""*HINT*improv.database*) ;; *) echo "FAIL: bind_measure outside improv.database: $err"; exit 1 ;; esac
+q2 "SELECT improv.set_sync_mode('o','trigger')"
+q2 "SELECT improv.bind_measure('o','Price','sales','price')"
+q2 "SELECT improv.define('o','Double = Price * 2')"
+q2 "SELECT improv.recalc('o')" >/dev/null
+eq14 "$(q2 "SELECT value FROM improv_o.double")" 20 "trigger mode outside improv.database"
+err=$(q2 "SELECT improv.set_sync_mode('o','logical')" 2>&1) && { echo "FAIL: logical mode outside improv.database"; exit 1; }
+case $err in *HINT*improv.database*) ;; *) echo "FAIL: set_sync_mode outside improv.database: $err"; exit 1 ;; esac
+# a model left logical by a restored dump: its sync state names improv_db,
+# the slot of the served database
+q2 "UPDATE improv.model SET sync_mode = 'logical' WHERE name = 'o'"
+q2 "INSERT INTO improv.sync_state (model_id, slot, publication) SELECT id, 'improv_db', 'improv_db' FROM improv.model WHERE name = 'o'"
+eq14 "$(q2 "SELECT (lag_bytes IS NULL) || ' ' || last_error FROM improv.status('o')")" \
+	"true no sync worker serves this database (improv.database = improv_e2e)" "status outside improv.database"
+eq14 "$(q "SELECT last_error IS NULL FROM improv.status('plan')")" t "status in the served database"
+"$PG_BIN/dropdb" -h "$D" -p "$P" -U improv improv_other
+echo "ok: outside improv.database logical mode is refused with a hint, and status reports that no worker serves it"
+
 echo "PASS"

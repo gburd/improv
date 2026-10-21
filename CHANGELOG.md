@@ -178,6 +178,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.poll_ms` and `improv.max_changes` changed only when the worker
   restarted. pgrx's latch wait never reread the configuration; the worker
   now does that on SIGHUP.
+- **pg_improv: logical mode outside `improv.database` is refused.** The sync
+  worker serves one database. In any other,
+  `set_sync_mode(m, 'logical')` succeeded and `improv.status` reported no
+  error, with `lag_bytes` read from the served database's slot of the same
+  name, while results never followed writes. It is now an ERROR, with a
+  HINT naming `improv.database`, and so is `bind_measure` on a logical
+  model. `improv.status` matches the slot by database, and a logical model
+  outside it reports "no sync worker serves this database" in `last_error`.
 - **pg_improv: an invalidated slot no longer stops logical sync silently.**
   When `max_slot_wal_keep_size` invalidated the `improv_db` slot, every poll
   logged "can no longer access replication slot", `improv.status` showed no

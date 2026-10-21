@@ -609,6 +609,7 @@ fn bind_measure(
             &[mid.into()],
         )?
         .unwrap_or_default();
+        worker::check_served(&name)?;
         worker::enable(mid, &name)?;
     }
     bump_version(mid)

@@ -368,7 +368,12 @@ UPDATE takes 77 ms in both.
 A background worker (`pg_improv sync`, one per server, serving
 `improv.database`) polls one logical replication slot, `improv_db` (plugin
 `pgoutput`), over the publication `improv_db`, which holds every relation
-any logical-mode model binds. Each poll decodes the slot once and routes
+any logical-mode model binds. Only that database has a worker. In any other
+database, `set_sync_mode(…, 'logical')` and `bind_measure` on a logical model
+fail with a hint naming `improv.database`. A model that is logical there
+anyway (for example, from a restored dump) shows `last_error` = "no sync
+worker serves this database" in `improv.status`. Use `commit`, `trigger` or
+`manual` mode there instead. Each poll decodes the slot once and routes
 each committed transaction's row changes, by relation, to the models bound
 there; models with nothing in the batch cost nothing. Each model applies
 its share and writes its changed results **in one worker transaction that
