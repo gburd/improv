@@ -310,6 +310,28 @@ worker attaches one probe to the concatenation of every output rather than
 one per measure. At 20,000 `Mk = X + k` measures an edit went from 734 ms
 to 131 ms, and memory from 3.4 GB to 1.4 GB.
 
+**FIXPOINT memory (PageRank, live heap via `mallinfo2`, `tests/probe.rs`
+`pagerank`).** At 10k nodes / 1M edges, the Model holds 250 B per edge
+(`Model.inputs`: a `BTreeMap` coordinate plus the hash entry), and the
+engine about 1.0 kB per edge: the worker's own map of the input cells
+(a set retracts the old value from it; FIXPOINT steps read it) and the
+input session's pending batch about 190 B, the dataflow build (`Out = SUM(W OVER Dst)`, `M =
+W / Out` and the FIXPOINT's first iterate, whose joins arrange `W` and `M`
+again keyed by the shared category) about 440 B, and the host evaluator's
+step about 260 B (`M`'s cells as a `Vec`, the `M OVER Src` join index, and
+the reduction's laid-out rows and sources). `Out` alone costs 290 B per edge
+and `M` 720 B (it joins `W` to `Out`). The engine used to keep two more
+copies of every input cell: `Engine::current` (a shadow map nothing read;
+the worker keeps the values it retracts) and the seed `Vec`, held for the
+worker's life by its closure. Both are gone: 1.29 kB → 1.06 kB per edge at
+1M edges, 1.21 → 1.03 kB at 10M (peak RSS 16.8 → 15.0 GB). What is left is
+one copy per operator that must arrange (DD arranges each join input and
+each reduce input), so the next step is structural: share one arrangement
+of `W` between `Out`'s reduce and `M`'s join (`arrange` once, `join_core` /
+`reduce_core` on it), and let the host step read `M` from that arrangement
+instead of its own `Vec` + index. Neither is a few-line change; it is not
+done.
+
 ---
 
 ## 14. Testing Strategy

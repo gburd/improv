@@ -250,3 +250,127 @@ fn measures() {
         stats(lat)
     );
 }
+
+/// Live heap in MB (glibc's `mallinfo2`: allocated bytes, not what the
+/// allocator keeps), so each phase's own allocations are measured.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn heap_mb() -> f64 {
+    #[repr(C)]
+    struct MallInfo2 {
+        arena: usize,
+        ordblks: usize,
+        smblks: usize,
+        hblks: usize,
+        hblkhd: usize,
+        usmblks: usize,
+        fsmblks: usize,
+        uordblks: usize,
+        fordblks: usize,
+        keepcost: usize,
+    }
+    extern "C" {
+        fn mallinfo2() -> MallInfo2;
+    }
+    // SAFETY: mallinfo2 takes no arguments and returns a plain struct.
+    let m = unsafe { mallinfo2() };
+    (m.uordblks + m.hblkhd) as f64 / (1024.0 * 1024.0)
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn heap_mb() -> f64 {
+    0.0
+}
+
+/// Current RSS in MB (glibc may keep freed memory, so a drop is a floor).
+fn rss_mb() -> f64 {
+    let s = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    s.lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|v| v.trim().trim_end_matches(" kB").trim().parse::<f64>().ok())
+        .map_or(0.0, |kb| kb / 1024.0)
+}
+
+/// §2: the PageRank FIXPOINT of `tests/fixpoint.rs` on `PROBE_N` nodes and
+/// `PROBE_EDGES` edges (item ids far apart, so any n works), with RSS
+/// after each phase, to attribute memory per edge.
+#[test]
+#[ignore = "probe; run with --ignored --nocapture"]
+fn pagerank() {
+    let n = env_or("PROBE_N", 10_000);
+    let edges = env_or("PROBE_EDGES", 100 * n);
+    let (src, dst) = (CategoryId(1), CategoryId(2));
+    let w = MeasureId(100);
+    let (r0, h0) = (rss_mb(), heap_mb());
+    let t0 = Instant::now();
+    let mut m = Model::new();
+    // Two roles of one Person: RELABEL maps the items by name.
+    m.add_category(src, "Src");
+    m.add_category(dst, "Dst");
+    for i in 0..n as u32 {
+        m.add_item(ItemId(1_000_000 + i), src, format!("p{i}"));
+        m.add_item(ItemId(100_000_000 + i), dst, format!("p{i}"));
+    }
+    input(&mut m, w.0, "W", vec![src, dst]);
+    let mut seed = 7u64;
+    let dangling = n / 20;
+    let mut seen = std::collections::HashSet::new();
+    while seen.len() < edges {
+        let s = dangling + (lcg(&mut seed) * (n - dangling) as f64) as usize;
+        let d = (lcg(&mut seed) * n as f64) as usize;
+        if s != d && seen.insert((s, d)) {
+            let x = 1.0 + (lcg(&mut seed) * 9.0).floor();
+            let at = Coordinate::from_pairs([
+                (src, ItemId(1_000_000 + s as u32)),
+                (dst, ItemId(100_000_000 + d as u32)),
+            ]);
+            m.set_input(w, at, Value::Number(x));
+        }
+    }
+    drop(seen);
+    define(&mut m, 200, "Out = SUM(W OVER Dst)");
+    define(&mut m, 201, "M = W / Out");
+    define(&mut m, 202, "Dangling = FILL(0 * Out, 1)");
+    define(
+        &mut m,
+        203,
+        "PR = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0), \
+         LAMBDA(r, RELABEL((1 - 0.85) / @ITEMCOUNT(Src) \
+         + 0.85 * (FILL(SUMPRODUCT(r, M OVER Src), 0) \
+         + SUMPRODUCT(r, Dangling OVER Src) / @ITEMCOUNT(Src)), Dst, Src)), \
+         200, 0.0000000000001)",
+    );
+    let build = t0.elapsed();
+    let (r1, h1) = (rss_mb(), heap_mb());
+    let t1 = Instant::now();
+    // PROBE_TARGET=200 (Out), 201 (M), 202 (Dangling): a part only.
+    let target = MeasureId(env_or("PROBE_TARGET", 203) as u32);
+    let (mut eng, snap) = Engine::new(&m, &[target]).expect("engine");
+    let new = t1.elapsed();
+    let (r2, h2) = (rss_mb(), heap_mb());
+    if target.0 == 203 {
+        assert_eq!(snap[&target].len(), n);
+    }
+    drop(snap);
+    let at: CoordKey = [(1, 1_000_000 + dangling as u32), (2, 100_000_000)]
+        .as_slice()
+        .into();
+    let t2 = Instant::now();
+    let s = eng.set(w, at, 25.0).expect("set");
+    let edit = t2.elapsed();
+    drop(s);
+    let (r3, h3) = (rss_mb(), heap_mb());
+    let per = |a: f64, b: f64| (b - a) * 1024.0 * 1024.0 / edges as f64;
+    eprintln!(
+        "[pagerank] n={n} edges={edges}: model {build:?} ({:.0} B/edge), \
+         Engine::new {new:?} ({:.0} B/edge), edit {edit:?} ({:.0} B/edge more); \
+         RSS {r0:.0} -> {r1:.0} -> {r2:.0} -> {r3:.0} MB; \
+         live heap {h0:.0} -> {h1:.0} -> {h2:.0} -> {h3:.0} MB \
+         (model {:.0}, engine {:.0}, edit {:.0} B/edge)",
+        per(r0, r1),
+        per(r1, r2),
+        per(r2, r3),
+        per(h0, h1),
+        per(h1, h2),
+        per(h2, h3)
+    );
+}

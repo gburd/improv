@@ -39,6 +39,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   (73 µs). API: build keys with `CoordKey::from_slice`, `.into()` from a
   `Vec`, or `improv_engine::smallvec::smallvec![…]`, and look them up by
   slice (`map.get(&[(c, i)][..])`).
+- **A live engine keeps two fewer copies of its input cells.** `Engine`
+  no longer shadows every input cell (nothing read the copy), and the
+  worker frees the seed once it has applied it: a PageRank FIXPOINT over
+  10M edges peaks at 15.0 GB (16.8 GB before), about 1.0 kB per edge in
+  the engine (1.2 kB).
 
 ### Fixed
 

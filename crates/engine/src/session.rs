@@ -83,9 +83,6 @@ pub struct Engine {
     worker: Option<JoinHandle<()>>,
     /// The derived measures this engine tracks (its `evaluate` targets).
     targets: Vec<MeasureId>,
-    /// Current known value of each input cell, so `set` can emit the correct
-    /// retract+assert delta for a cardinality-one cell.
-    current: HashMap<(MeasureId, CoordKey), CellValue>,
     /// The compiled plans (a FIXPOINT as its first-iterate and step parts),
     /// to tell whether a model with more items still compiles to the same
     /// graph ([`Engine::serves`]).
@@ -131,14 +128,12 @@ impl Engine {
 
         // Seed edits: the model's current input cells of their measure's
         // type (a mistyped value, e.g. text in a number measure, is no cell).
+        // (The worker keeps each cell's value, so a set retracts the old.)
         let mut seed: Vec<(MeasureId, CoordKey, CellValue)> = Vec::new();
-        let mut current: HashMap<(MeasureId, CoordKey), CellValue> = HashMap::new();
         for ((mid, coord), val) in &model.inputs {
             let ty = model.measures.get(mid).map(|m| m.value_type);
             if let Some(cv) = ty.and_then(|t| input_cell(t, val)) {
-                let key = encode_coord(coord);
-                seed.push((*mid, key.clone(), cv.clone()));
-                current.insert((*mid, key), cv);
+                seed.push((*mid, encode_coord(coord), cv));
             }
         }
 
@@ -161,7 +156,6 @@ impl Engine {
             tx: cmd_tx,
             worker: Some(worker),
             targets: targets_owned,
-            current,
             plans,
         };
 
@@ -201,18 +195,6 @@ impl Engine {
     pub fn apply(&mut self, mut edits: Vec<Edit>) -> Result<Snapshot, EngineError> {
         for e in &mut edits {
             e.coord.sort_unstable();
-        }
-        // Update our shadow of current input values so retract deltas are exact.
-        for e in &edits {
-            let k = (e.measure, e.coord.clone());
-            match &e.value {
-                Some(v) => {
-                    self.current.insert(k, v.clone());
-                }
-                None => {
-                    self.current.remove(&k);
-                }
-            }
         }
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         self.tx
@@ -597,6 +579,8 @@ fn worker_loop(
     // closure can hold it, and take it out once inside (single worker).
     let cmd_rx = Arc::new(Mutex::new(Some(cmd_rx)));
     let ready_tx = Arc::new(Mutex::new(Some(ready_tx)));
+    // Taken (and so freed once applied), not held for the worker's life.
+    let seed = Mutex::new(seed);
 
     timely::execute::execute_directly(move |worker| {
         let cmd_rx = cmd_rx
@@ -687,10 +671,10 @@ fn worker_loop(
         // input cell's value so a "set" is a proper retract(old)+assert(new)
         // on the cardinality-one cell, and a FIXPOINT step reads them.
         let mut inputs: HashMap<MeasureId, Arc<MeasureValues>> = HashMap::new();
-        for (mid, coord, v) in &seed {
-            if let Some(session) = sessions.get_mut(mid) {
+        for (mid, coord, v) in std::mem::take(&mut *seed.lock().unwrap()) {
+            if let Some(session) = sessions.get_mut(&mid) {
                 session.insert((coord.clone(), v.clone()));
-                Arc::make_mut(inputs.entry(*mid).or_default()).insert(coord.clone(), v.clone());
+                Arc::make_mut(inputs.entry(mid).or_default()).insert(coord, v);
             }
         }
         let mut t: u64 = 1;
