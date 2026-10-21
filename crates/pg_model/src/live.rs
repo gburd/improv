@@ -179,6 +179,42 @@ fn group_sql(rel: &str, dim_cols: &[String], value_col: &str, agg: Agg) -> Strin
     }
 }
 
+/// Split one decoded batch by model: each model gets, in commit order, the
+/// transactions that changed a relation it binds (`models` per relation
+/// oid), holding only those changes. A `TRUNCATE` of several relations goes
+/// whole to each model that binds one of them ([`Mapper::map`] skips the
+/// rest). Models no change reaches are absent.
+pub fn route(txns: &[Txn], models: &HashMap<u32, Vec<i64>>) -> BTreeMap<i64, Vec<Txn>> {
+    let mut out: BTreeMap<i64, Vec<Txn>> = BTreeMap::new();
+    for t in txns {
+        let mut per: BTreeMap<i64, Vec<Message>> = BTreeMap::new();
+        for c in &t.changes {
+            let rels: &[u32] = match c {
+                Message::Insert { rel, .. }
+                | Message::Update { rel, .. }
+                | Message::Delete { rel, .. } => std::slice::from_ref(rel),
+                Message::Truncate { rels, .. } => rels,
+                _ => &[],
+            };
+            let hit: BTreeSet<i64> = rels
+                .iter()
+                .flat_map(|r| models.get(r).into_iter().flatten().copied())
+                .collect();
+            for m in hit {
+                per.entry(m).or_default().push(c.clone());
+            }
+        }
+        for (m, changes) in per {
+            out.entry(m).or_default().push(Txn {
+                xid: t.xid,
+                end_lsn: t.end_lsn,
+                changes,
+            });
+        }
+    }
+    out
+}
+
 /// Why a batch cannot be applied incrementally; the caller rebuilds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rebuild(pub &'static str);
@@ -1048,6 +1084,63 @@ impl Total {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    /// `route` gives each model only the transactions and changes on its
+    /// relations: two models on one table both get it, a model on two tables
+    /// gets both, an unbound relation reaches nobody.
+    #[test]
+    fn route_splits_a_batch_by_model() {
+        use crate::pgoutput::Tuple;
+        let ins = |rel| Message::Insert {
+            rel,
+            new: Tuple::default(),
+        };
+        let txns = vec![
+            Txn {
+                xid: 7,
+                end_lsn: 70,
+                changes: vec![ins(1), ins(2), ins(9)],
+            },
+            Txn {
+                xid: 8,
+                end_lsn: 80,
+                changes: vec![Message::Truncate {
+                    options: 0,
+                    rels: vec![2, 3],
+                }],
+            },
+            Txn {
+                xid: 9,
+                end_lsn: 90,
+                changes: vec![ins(9)],
+            },
+        ];
+        // 1 -> models 10 and 11; 2 -> 11; 3 -> 11 and 12.
+        let models = HashMap::from([(1, vec![10, 11]), (2, vec![11]), (3, vec![11, 12])]);
+        let r = route(&txns, &models);
+        assert_eq!(r.keys().copied().collect::<Vec<_>>(), vec![10, 11, 12]);
+        assert_eq!(r[&10].len(), 1);
+        assert_eq!(r[&10][0].changes, vec![ins(1)]);
+        assert_eq!((r[&10][0].xid, r[&10][0].end_lsn), (7, 70));
+        assert_eq!(r[&11].len(), 2);
+        assert_eq!(r[&11][0].changes, vec![ins(1), ins(2)]);
+        // A truncate of two of its relations reaches model 11 once.
+        assert_eq!(r[&11][1].changes, txns[1].changes);
+        assert_eq!(r[&12][0].changes, txns[1].changes);
+        assert_eq!(r[&12][0].end_lsn, 80);
+        assert!(route(&txns, &HashMap::new()).is_empty());
+        let begin = Message::Begin {
+            final_lsn: 0,
+            commit_ts: 0,
+            xid: 1,
+        };
+        let odd = vec![Txn {
+            xid: 1,
+            end_lsn: 1,
+            changes: vec![begin],
+        }];
+        assert!(route(&odd, &models).is_empty());
+    }
+
     use super::*;
     use crate::pgoutput::Column;
     use crate::{build_model, Catalog, CategoryRow, ItemRow, MeasureRow};
