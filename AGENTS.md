@@ -55,8 +55,11 @@ The full "tidy" gate — all must be error- AND warning-free:
    live Postgres tests too)
 4. `cargo deny check` (licenses, advisories, bans — config in `deny.toml`)
 5. `typos` (spell-check code + docs)
-6. `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps`, and
-   `mdbook build docs` (the guide, with link checking)
+6. `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps`,
+   `mdbook build docs` (the guide, with link checking), and
+   `for f in docs/man/*.[157]; do groff -man -ww -z "$f"; done` with no
+   output (`UPDATE_DOCS=1 cargo test -p improv_cli` regenerates the
+   generated pages and completions first, if their sources changed)
 7. `scripts/verify.sh` (the Verus proofs in `crates/verified`: 0 errors;
    needs the pinned Verus release, see the script)
 8. `scripts/gui-shot-check.sh` (GUI screenshot vs the golden) and

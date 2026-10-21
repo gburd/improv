@@ -377,3 +377,19 @@ jobs:
       - name: Build book
         working-directory: improv
         run: mdbook build docs
+      # groff exits 0 on a warning, so any output fails the step. The
+      # generated pages' drift test (cargo test -p improv_cli) runs groff
+      # too, but skips without it; this is the check that always runs.
+      - name: Man pages (groff -ww)
+        working-directory: improv
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y groff
+          status=0
+          for f in docs/man/*.[157]; do
+            if ! out="$(groff -man -ww -z "$f" 2>&1)" || [ -n "$out" ]; then
+              echo "::error file=$f::groff: $out"
+              status=1
+            fi
+          done
+          exit "$status"
