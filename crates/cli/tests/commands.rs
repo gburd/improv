@@ -157,8 +157,17 @@ fn help_prints_usage_for_every_spelling_and_no_args() {
     let cases: [&[&str]; 4] = [&[], &["help"], &["--help"], &["-h"]];
     for args in cases {
         let out = ok(args);
-        stdout_has(&out, "USAGE:");
-        stdout_has(&out, "serve-refresh <db>");
+        stdout_has(&out, "Usage: improv [COMMAND]");
+        stdout_has(&out, "serve-refresh");
+    }
+    // One command's help, three ways; it starts with the man page's NAME line.
+    for args in [&["help", "set"][..], &["set", "--help"], &["set", "-h"]] {
+        let out = ok(args);
+        stdout_has(&out, "Set an input cell");
+        stdout_has(
+            &out,
+            "Usage: improv set [OPTIONS] <db> <measure-id> <value>",
+        );
     }
 }
 
@@ -173,10 +182,12 @@ fn version_prints_the_crate_version() {
 }
 
 #[test]
-fn unknown_command_is_an_error_with_usage() {
-    let e = err(&["frobnicate"]);
-    stdout_has(&e, "unknown command 'frobnicate'");
-    stdout_has(&e, "USAGE:");
+fn unknown_command_is_a_usage_error() {
+    let o = improv(&["frobnicate"]);
+    assert_eq!(o.status.code(), Some(2));
+    let e = String::from_utf8_lossy(&o.stderr);
+    stdout_has(&e, "error: unknown command 'frobnicate'");
+    stdout_has(&e, "Usage: improv [COMMAND]");
 }
 
 #[test]

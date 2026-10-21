@@ -67,3 +67,8 @@ tower = "0.5"
 eframe = "=0.29"
 egui = "=0.29"
 egui_extras = "=0.29"
+# Command-line parsing for the four binaries, and the man pages and shell
+# completions generated from the same definitions (G1-G3).
+clap = { version = "4.6.7", features = ["derive", "env"] }
+clap_mangen = "0.3.3"
+clap_complete = "4.6.11"

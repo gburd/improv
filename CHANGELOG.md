@@ -50,6 +50,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`improv` parses its arguments with clap.** Every invocation that worked
+  still works, with the same output (a test, `crates/cli/tests/compat.rs`,
+  pins them). What changed: `--help` and `improv help <command>` are clap's,
+  with a page per command; `-V`/`--version` print `improv <version>` as
+  before. **A usage error (unknown command, missing or malformed argument)
+  now exits 2, not 1**, and prints the usage line after the message; the
+  message itself is unchanged (`missing argument <db>`, `<measure-id> must
+  be a number, got 'x'`, …). Errors from the model itself still exit 1.
+  `--at=Time=Q1` and `--` before an argument now work as clap allows.
+  **An argument a command does not take is an error** (exit 2): the hand
+  parser ignored it, so `improv eval m.db 102 --scenrio high` evaluated
+  without the scenario and `improv init m.db extra` succeeded.
 - **Adding items to a wide category is linear, not quadratic.**
   `Model::add_item` and `ItemInterner::register` (CSV/SQL import, every
   pg_improv load, DuckDB `improv()`) scanned the category's item list once

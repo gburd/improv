@@ -1,7 +1,9 @@
 //! The CLI's argument syntax is a compatibility surface. Every invocation
 //! here comes from `crates/cli/tests`, the man page EXAMPLES, `docs/src` or a
 //! smoke script, and its stdout was recorded from the hand-written parser
-//! (before the clap move). It must keep working, byte for byte.
+//! (before the clap move). It must keep working, byte for byte. The failures
+//! keep their message; a usage error (clap's) exits 2 where the hand parser
+//! exited 1.
 //!
 //! `{d}` is a scratch directory, `{v}` the crate version.
 
@@ -97,25 +99,26 @@ const CASES: &[Case] = &[
     (EN, &["list", "{d}/c.db"], None, Some("categories:\n  1 Time\n  2 Product\nitems:\n  1000000 2025 (category 1)\n  1000001 A (category 2)\n  1000002 2026 (category 1)\n  1000003 B (category 2)\nmeasures:\n  100 Revenue [input] Number\n  101 R2 [input] Number\n  102 R3 [input] Number\n  103 R4 [input] Number\nviews:\ninputs:\n  100::{Time=2025,Product=A} = 10\n  100::{Time=2026,Product=B} = 20\n  101::{Time=2025,Product=A} = 1\n  102::{Time=2025,Product=A} = 5\n  103::{Time=2026,Product=B} = 6\n")),
 ];
 
-/// Invocations that fail today: the exit code, and the text of the error.
+/// Invocations that fail: the exit code (2 for a usage error, 1 for one
+/// the command reports) and the text of the error.
 const FAILS: &[(&[&str], i32, &str)] = &[
-    (&["init"], 1, "missing argument <db>"),
+    (&["init"], 2, "missing argument <db>"),
     (
         &["add-category", "{d}/m.db", "2"],
-        1,
+        2,
         "missing argument <name>",
     ),
     (
         &["add-category", "{d}/m.db", "x", "T"],
-        1,
+        2,
         "<id> must be a number, got 'x'",
     ),
     (
         &["add-item", "{d}/m.db", "11", "y", "Q2"],
-        1,
+        2,
         "<category-id> must be a number",
     ),
-    (&["set", "{d}/m.db", "100"], 1, "missing argument <value>"),
+    (&["set", "{d}/m.db", "100"], 2, "missing argument <value>"),
     (
         &["set", "{d}/m.db", "100", "1", "Product=WidgetA"],
         1,
@@ -142,10 +145,10 @@ const FAILS: &[(&[&str], i32, &str)] = &[
     ),
     (
         &["show", "{d}/m.db", "x"],
-        1,
+        2,
         "<measure-id> must be a number",
     ),
-    (&["eval", "{d}/m.db"], 1, "missing argument <measure-id>"),
+    (&["eval", "{d}/m.db"], 2, "missing argument <measure-id>"),
     (
         &["eval", "{d}/m.db", "102", "--scenario", "nope"],
         1,
@@ -153,7 +156,7 @@ const FAILS: &[(&[&str], i32, &str)] = &[
     ),
     (
         &["register-ext", "{d}/m.db", "f", "x", "result = 1"],
-        1,
+        2,
         "<arity> must be a number",
     ),
     (
@@ -167,17 +170,17 @@ const FAILS: &[(&[&str], i32, &str)] = &[
             "r",
             "t:1",
         ],
-        1,
+        2,
         "dimension spec 't:1' must be <col>:<cat-id>:<cat-name>",
     ),
     (
         &["import-csv", "{d}/c.db", "{d}/sales.csv", "109", "X", "r"],
-        1,
+        2,
         "at least one dimension mapping is required",
     ),
     (
         &["stream", "{d}/m.db"],
-        1,
+        2,
         "stream needs at least one target measure",
     ),
 ];

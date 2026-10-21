@@ -1,11 +1,12 @@
-//! Improv CLI (Phase 2, headless subset).
+//! The `improv` command line.
 //!
 //! A thin front-end over `improv_store::Store` (a Mentat file or a
 //! `postgres://…?model=` Postgres model). Each subcommand
 //! opens the store, mutates the loaded `Model`, and saves it back.
 //!
 //! Coordinates (`--at`) resolve category *names* and item *names* to ids via
-//! the loaded model, e.g. `--at Time=2025,Product=WidgetA`.
+//! the loaded model, e.g. `--at Time=2025,Product=WidgetA`. The arguments
+//! are declared in [`args`], which `--help` and the man pages come from.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // The attribute is only used inside #[cfg(test)] modules, so non-test
 // coverage builds would otherwise warn that the feature is unused.
@@ -22,184 +23,248 @@ use improv_storage_sql::{
 use improv_store::Store;
 use std::collections::HashMap;
 
-const USAGE: &str = "\
-improv — headless spreadsheet model CLI
+// Declarations only (the clap derives); the value parsers below are tested.
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod args;
 
-USAGE:
-    improv <command> [args]
-
-COMMANDS:
-    init <db>
-        Create/open the store and install the schema (an existing model is kept).
-
-    add-category <db> <id> <name>
-        Add a category (dimension). <id> is a number.
-
-    add-item <db> <id> <category-id> <name>
-        Add an item (member of a category). <id>, <category-id> are numbers.
-
-    add-measure <db> <id> <name> <number|boolean|text> input [Category ...]
-        Add an input measure. The type declares how `set` parses values.
-        Trailing category NAMES declare the dimensions it ranges over.
-
-    add-derived <db> <id> <name> <formula>
-        Add a derived (formula) measure, e.g.
-        add-derived m.db 102 Revenue \"Price * Quantity\".
-        Categories are inferred from the referenced measures.
-
-    define <db> <id> <definition>
-        Create a measure from a definition string. Two forms:
-          Formula: define m.db 102 \"Revenue = Price * Quantity\"
-          External call: define m.db 200 \"H = CALL(hypot, Price, Quantity)\"
-        (SQL(...) form: use import-sql, which needs a column-to-dimension map.)
-        A CALL(...) measure accepts --refresh <manual|on-load|interval:SECS>.
-
-    register-ext <db> <name> <arity> <python-body>
-        Register a pure Python external function (Number args + Number result;
-        the body binds a list `args` and sets `result`), e.g.
-        register-ext m.db hypot 2 \"result = (args[0]**2 + args[1]**2) ** 0.5\".
-
-    refresh-ext <db> <measure-id>
-        (Re)populate a CALL(...) measure by running its function over its
-        argument measures, host-side (external calls stay off the engine path).
-
-    set <db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]
-        Set an input cell. --at maps category NAMES to item NAMES. Pairs may
-        be comma-joined, space-separated (--at Time=Q1 Product=A), or given
-        as repeated --at flags; all are merged, and a category may appear
-        only once.
-        Value is parsed by the measure's declared type.
-
-    list <db>
-        Print categories, items, measures, views, and input cells.
-
-    save-view <db> <view-id> <name> <measure> [--rows Cat,Cat] [--cols Cat,...]
-        Save a named view of <measure> (id or name), as the GUI does: --rows
-        and --cols stack category NAMES outer-to-inner (each defaults to the
-        next unused category of the measure); the remaining categories are
-        pages, pinned to their first item. Replaces a view with the same id.
-
-    show <db> <measure-id>
-        Print one measure and its input cells.
-
-    eval <db> <measure-id> [--scenario <name>]
-        Compute a derived measure via the engine and print its cells. With
-        --scenario, evaluate under a what-if overlay (its input overrides win).
-
-    scenario <db> <scenario-name> <measure-id> <value> [--at Cat=Item,...]
-        Create or update a what-if scenario by adding one input-cell override.
-        --at accepts the same forms as for `set`.
-        The base model is untouched; evaluate with `eval ... --scenario <name>`.
-
-    export <db>
-        Print the whole model as pretty JSON.
-
-    import-sql <db> <source.sqlite> <measure-id> <measure-name> <SELECT> \
-               <value-col> <dim-col:cat-id:cat-name> [<dim-col:cat-id:cat-name> ...]
-        Import a SQLite query into a new input measure. Each dim-col maps a
-        result column to a category (distinct values become items); value-col
-        is the numeric measure value. Example:
-        import-sql m.db sales.db 100 Revenue \"SELECT t,p,r FROM sales\" r \
-                   t:1:Time p:2:Product
-        The measure is SQL-backed and can be re-run with refresh-sql.
-        Add --refresh <manual|on-load|interval:SECS> to record a refresh policy.
-
-    refresh-sql <db> <source.sqlite> <measure-id>
-        Re-run an SQL-backed measure's stored query and replace its cells with
-        the fresh result (new dimension values become new items).
-
-    refresh-all <db> [source.sqlite]
-        Refresh every external-sourced measure at once: all CALL(...) measures,
-        plus all SQL-backed measures when a source.sqlite is given. Reports each
-        measure's refresh policy. (Timing policies are advisory metadata; this
-        is the manual \"do it now\" batch.)
-
-    serve-refresh <db> [source.sqlite] [--tick SECS]
-        Run a daemon that honors each measure's refresh policy: on every tick
-        (default 5s) it refreshes the measures that are due (on-load once,
-        interval every N seconds). SQL measures refresh only if a source.sqlite
-        is given; CALL(...) measures always. Ctrl-C to stop.
-
-    export-sql <db> <target.sqlite> <measure-id> <table> <value-col>
-        Write a measure's input cells to a SQLite table (one column per
-        dimension category + the value column; created if absent).
-
-    import-csv <db> <file.csv> <measure-id> <measure-name> <value-col> \
-               <dim-col:cat-id:cat-name> [<dim-col:cat-id:cat-name> ...] \
-               [--tsv] [--no-header]
-        Import a CSV/TSV file into a new input measure. Columns are header
-        names by default (0-based indices with --no-header). Delimiter is
-        comma unless --tsv is given or the file ends in .tsv. Example:
-        import-csv m.db sales.csv 100 Revenue r t:1:Time p:2:Product
-
-    export-csv <db> <target.csv> <measure-id> [--tsv]
-        Write a measure's input cells to a CSV/TSV file (one column per
-        dimension category + the value column, header row first).
-
-    help | --help
-        Show this help.
-
-    --version | -V
-        Print the version.
-
-    stream <db> <target-measure> [<target-measure> ...]
-        Read input-cell edits from stdin, one per line:
-          <measure> <value> [Cat=Item,Cat=Item,...]
-        (<measure> is a numeric id or a name; the coordinate is omitted for a
-        scalar measure). Each line applies incrementally to a live engine
-        (a delta, not a full re-evaluation), and every changed cell of the
-        target measure(s) prints to stdout as:
-          <measure> <Cat=Item,...> = <value>
-        A malformed line is reported on stderr and skipped, not fatal. On EOF
-        the final state is saved back to <db>. Example:
-          printf 'Price 12 Product=WidgetA\n' | improv stream m.db Revenue
-";
+use args::{Cli, Cmd};
+use clap::{CommandFactory, Parser};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Err(e) = run(&args) {
+    let cli = Cli::try_parse().unwrap_or_else(|e| exit_usage(e));
+    if let Err(e) = run(cli) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
-fn run(args: &[String]) -> Result<(), String> {
-    let cmd = args.first().map(String::as_str).unwrap_or("help");
-    let rest = &args[1.min(args.len())..];
-    match cmd {
-        "help" | "--help" | "-h" => {
-            print!("{USAGE}");
-            Ok(())
+/// Exit for a parse error: `--help`/`--version` print and exit 0; a usage
+/// error prints the reason, in the words the hand parser used, and exits 2.
+fn exit_usage(e: clap::Error) -> ! {
+    use clap::error::ErrorKind;
+    match e.kind() {
+        ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => e.exit(),
+        _ => {
+            eprintln!("error: {}", usage_message(&e));
+            if let Some(clap::error::ContextValue::StyledStr(u)) =
+                e.get(clap::error::ContextKind::Usage)
+            {
+                eprintln!("\n{u}");
+            }
+            eprintln!("\nFor more information, try '--help'.");
+            std::process::exit(2);
         }
-        "--version" | "-V" => {
-            println!("improv {}", env!("CARGO_PKG_VERSION"));
-            Ok(())
-        }
-        "init" => cmd_init(rest),
-        "add-category" => cmd_add_category(rest),
-        "add-item" => cmd_add_item(rest),
-        "add-measure" => cmd_add_measure(rest),
-        "add-derived" => cmd_add_derived(rest),
-        "scenario" => cmd_scenario(rest),
-        "define" => cmd_define(rest),
-        "register-ext" => cmd_register_ext(rest),
-        "refresh-ext" => cmd_refresh_ext(rest),
-        "set" => cmd_set(rest),
-        "list" => cmd_list(rest),
-        "save-view" => cmd_save_view(rest),
-        "show" => cmd_show(rest),
-        "eval" => cmd_eval(rest),
-        "export" => cmd_export(rest),
-        "import-sql" => cmd_import_sql(rest),
-        "refresh-sql" => cmd_refresh_sql(rest),
-        "refresh-all" => cmd_refresh_all(rest),
-        "serve-refresh" => cmd_serve_refresh(rest),
-        "export-sql" => cmd_export_sql(rest),
-        "import-csv" => cmd_import_csv(rest),
-        "export-csv" => cmd_export_csv(rest),
-        "stream" => cmd_stream(rest),
-        other => Err(format!("unknown command '{other}'\n\n{USAGE}")),
     }
+}
+
+/// A clap error as one line, in the hand parser's words where tests and
+/// docs quote them.
+fn usage_message(e: &clap::Error) -> String {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    let ctx = |k| match e.get(k) {
+        Some(ContextValue::String(s)) => vec![s.clone()],
+        Some(ContextValue::Strings(v)) => v.clone(),
+        _ => Vec::new(),
+    };
+    let arg = ctx(ContextKind::InvalidArg).join(" ");
+    let first_line = || {
+        let text = e.render().to_string();
+        let line = text.lines().next().unwrap_or_default();
+        line.trim_start_matches("error: ").to_string()
+    };
+    match e.kind() {
+        ErrorKind::InvalidSubcommand => format!(
+            "unknown command '{}'",
+            ctx(ContextKind::InvalidSubcommand).join(" ")
+        ),
+        ErrorKind::MissingRequiredArgument => ctx(ContextKind::InvalidArg)
+            .iter()
+            .map(|a| match a.trim_end_matches("...") {
+                "<dim-col:cat-id:cat-name>" => "at least one dimension mapping is required".into(),
+                "<target-measure>" => "stream needs at least one target measure".into(),
+                a => format!("missing argument {a}"),
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        // A flag without its value: `--tick` rather than `--tick 5`.
+        ErrorKind::InvalidValue if ctx(ContextKind::InvalidValue).concat().is_empty() => {
+            match arg.split(' ').next().unwrap_or_default() {
+                "--at" => "--at needs an argument, e.g. Time=2025".into(),
+                "--scenario" => "--scenario needs a name".into(),
+                "--tick" => "--tick needs a value in seconds".into(),
+                flag => format!("{flag} needs a value"),
+            }
+        }
+        // Our value parsers' own message, as the hand parser printed it.
+        ErrorKind::ValueValidation => {
+            std::error::Error::source(e).map_or_else(first_line, |why| why.to_string())
+        }
+        ErrorKind::UnknownArgument => format!("unexpected argument '{arg}'"),
+        _ => first_line(),
+    }
+}
+
+fn run(cli: Cli) -> Result<(), String> {
+    let Some(cmd) = cli.command else {
+        // No command: print the help, as `improv help` does.
+        Cli::command()
+            .print_long_help()
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    };
+    match cmd {
+        Cmd::Init { db } => cmd_init(&db),
+        Cmd::AddCategory { db, id, name } => cmd_add_category(&db, id, &name),
+        Cmd::AddItem {
+            db,
+            id,
+            category,
+            name,
+        } => cmd_add_item(&db, id, category, &name),
+        Cmd::AddMeasure {
+            db,
+            id,
+            name,
+            value_type,
+            kind,
+            categories,
+        } => cmd_add_measure(&db, id, &name, value_type, &kind, &categories),
+        Cmd::AddDerived {
+            db,
+            id,
+            name,
+            formula,
+        } => cmd_add_derived(&db, id, &name, &formula),
+        Cmd::Scenario {
+            db,
+            scenario,
+            measure,
+            value,
+            at,
+            stray,
+        } => cmd_scenario(&db, &scenario, measure, &value, &coordinate(&at, &stray)?),
+        Cmd::Define {
+            db,
+            id,
+            definition,
+            refresh,
+        } => cmd_define(&db, id, &definition, refresh),
+        Cmd::RegisterExt {
+            db,
+            name,
+            arity,
+            body,
+        } => cmd_register_ext(&db, &name, arity, &body),
+        Cmd::RefreshExt { db, measure } => cmd_refresh_ext(&db, measure),
+        Cmd::Set {
+            db,
+            measure,
+            value,
+            at,
+            stray,
+        } => cmd_set(&db, measure, &value, &coordinate(&at, &stray)?),
+        Cmd::List { db } => cmd_list(&db),
+        Cmd::SaveView {
+            db,
+            id,
+            name,
+            measure,
+            rows,
+            cols,
+        } => cmd_save_view(&db, id, &name, &measure, rows.as_deref(), cols.as_deref()),
+        Cmd::Show { db, measure } => cmd_show(&db, measure),
+        Cmd::Eval {
+            db,
+            measure,
+            scenario,
+        } => cmd_eval(&db, measure, scenario.as_deref()),
+        Cmd::Export { db } => cmd_export(&db),
+        Cmd::ImportSql(a) => cmd_import_sql(a),
+        Cmd::RefreshSql {
+            db,
+            source,
+            measure,
+        } => cmd_refresh_sql(&db, &source, measure),
+        Cmd::RefreshAll { db, source } => cmd_refresh_all(&db, source.as_deref()),
+        Cmd::ServeRefresh { db, source, tick } => cmd_serve_refresh(&db, source.as_deref(), tick),
+        Cmd::ExportSql {
+            db,
+            target,
+            measure,
+            table,
+            value_col,
+        } => cmd_export_sql(&db, &target, measure, &table, &value_col),
+        Cmd::ImportCsv(a) => cmd_import_csv(a),
+        Cmd::ExportCsv {
+            db,
+            target,
+            measure,
+            tsv,
+        } => cmd_export_csv(&db, &target, measure, tsv),
+        Cmd::Stream { db, targets } => cmd_stream(&db, &targets),
+    }
+}
+
+/// The `--at` pairs of `set`/`scenario`, as the hand parser saw them: a
+/// token clap left over (`stray`) is the `--at` the user forgot.
+fn coordinate(at: &[String], stray: &[String]) -> Result<Vec<(String, String)>, String> {
+    let mut tokens: Vec<String> = stray.to_vec();
+    if !at.is_empty() {
+        tokens.push("--at".into());
+        tokens.extend(at.iter().cloned());
+    }
+    parse_at_flag(&tokens)
+}
+
+// --- argument value parsers ---
+
+/// A value parser for a number that errors as "NAME must be a number, got 'x'".
+pub(crate) fn number<T: std::str::FromStr>(
+    name: &'static str,
+) -> impl Fn(&str) -> Result<T, String> + Clone + Send + Sync + 'static {
+    move |s| {
+        s.parse()
+            .map_err(|_| format!("{name} must be a number, got '{s}'"))
+    }
+}
+
+/// `number`, `boolean` or `text`.
+pub fn value_type(s: &str) -> Result<ValueType, String> {
+    match s {
+        "number" => Ok(ValueType::Number),
+        "boolean" => Ok(ValueType::Boolean),
+        "text" => Ok(ValueType::Text),
+        other => Err(format!("type must be number|boolean|text, got '{other}'")),
+    }
+}
+
+/// `manual`, `on-load` or `interval:SECS`.
+pub fn refresh_policy(s: &str) -> Result<RefreshPolicy, String> {
+    match s {
+        "manual" => Ok(RefreshPolicy::Manual),
+        "on-load" => Ok(RefreshPolicy::OnLoad),
+        other => match other.strip_prefix("interval:") {
+            Some(secs) => secs
+                .parse::<u64>()
+                .map(|secs| RefreshPolicy::Interval { secs })
+                .map_err(|_| "interval:SECS must be a number".to_string()),
+            None => Err(format!(
+                "unknown refresh policy '{other}': use manual | on-load | interval:SECS"
+            )),
+        },
+    }
+}
+
+/// `col:cat-id:cat-name`, as import-sql and import-csv map a column.
+pub fn dim_spec(spec: &str) -> Result<(String, CategoryId, String), String> {
+    let parts: Vec<&str> = spec.splitn(3, ':').collect();
+    let [col, id, name] = parts[..] else {
+        return Err(format!(
+            "dimension spec '{spec}' must be <col>:<cat-id>:<cat-name>"
+        ));
+    };
+    let id = number::<u32>("<cat-id>")(id)?;
+    Ok((col.to_string(), CategoryId(id), name.to_string()))
 }
 
 // --- helpers ---
@@ -208,21 +273,9 @@ fn open(db: &str) -> Result<Store, String> {
     Store::open(db).map_err(|e| e.to_string())
 }
 
-fn arg<'a>(rest: &'a [String], i: usize, name: &str) -> Result<&'a str, String> {
-    rest.get(i)
-        .map(String::as_str)
-        .ok_or_else(|| format!("missing argument <{name}>"))
-}
-
-fn parse_u32(s: &str, name: &str) -> Result<u32, String> {
-    s.parse::<u32>()
-        .map_err(|_| format!("<{name}> must be a number, got '{s}'"))
-}
-
 // --- commands ---
 
-fn cmd_init(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
+fn cmd_init(db: &str) -> Result<(), String> {
     // Opening installs the schema; that is all `init` does. It must not save
     // an empty model: `save_model` retracts stored cells the model lacks, so
     // re-running `init` on a populated store would delete every cell.
@@ -231,10 +284,8 @@ fn cmd_init(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_add_category(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let id = CategoryId(parse_u32(arg(rest, 1, "id")?, "id")?);
-    let name = arg(rest, 2, "name")?;
+fn cmd_add_category(db: &str, id: u32, name: &str) -> Result<(), String> {
+    let id = CategoryId(id);
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
     model.add_category(id, name);
@@ -243,11 +294,8 @@ fn cmd_add_category(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_add_item(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let id = ItemId(parse_u32(arg(rest, 1, "id")?, "id")?);
-    let cat = CategoryId(parse_u32(arg(rest, 2, "category-id")?, "category-id")?);
-    let name = arg(rest, 3, "name")?;
+fn cmd_add_item(db: &str, id: u32, cat: u32, name: &str) -> Result<(), String> {
+    let (id, cat) = (ItemId(id), CategoryId(cat));
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
     if !model.categories.contains_key(&cat) {
@@ -259,12 +307,15 @@ fn cmd_add_item(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_add_measure(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let id = MeasureId(parse_u32(arg(rest, 1, "id")?, "id")?);
-    let name = arg(rest, 2, "name")?;
-    let value_type = parse_value_type(arg(rest, 3, "type")?)?;
-    let kind = arg(rest, 4, "input")?;
+fn cmd_add_measure(
+    db: &str,
+    id: u32,
+    name: &str,
+    value_type: ValueType,
+    kind: &str,
+    category_names: &[String],
+) -> Result<(), String> {
+    let id = MeasureId(id);
     if kind != "input" {
         return Err(format!("only 'input' measures are supported, got '{kind}'"));
     }
@@ -274,7 +325,7 @@ fn cmd_add_measure(rest: &[String]) -> Result<(), String> {
     // Optional trailing args name the categories this measure ranges over,
     // resolved by name against the model, e.g. `... input Time Product`.
     let mut categories = Vec::new();
-    for cat_name in &rest[5.min(rest.len())..] {
+    for cat_name in category_names {
         let c = model
             .category_by_name(cat_name)
             .ok_or_else(|| format!("unknown category '{cat_name}'"))?;
@@ -294,11 +345,8 @@ fn cmd_add_measure(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let id = MeasureId(parse_u32(arg(rest, 1, "id")?, "id")?);
-    let name = arg(rest, 2, "name")?;
-    let formula_text = arg(rest, 3, "formula")?;
+fn cmd_add_derived(db: &str, id: u32, name: &str, formula_text: &str) -> Result<(), String> {
+    let id = MeasureId(id);
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
@@ -331,10 +379,8 @@ fn cmd_add_derived(rest: &[String]) -> Result<(), String> {
 /// external-call source form (`Target = CALL(func, ArgMeasure, ...)`). The SQL
 /// source form is handled by `import-sql` (it needs a column→dimension mapping
 /// beyond the query string). The target name is taken from the definition's LHS.
-fn cmd_define(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let id = MeasureId(parse_u32(arg(rest, 1, "id")?, "id")?);
-    let text = arg(rest, 2, "definition")?;
+fn cmd_define(db: &str, id: u32, text: &str, refresh_policy: RefreshPolicy) -> Result<(), String> {
+    let id = MeasureId(id);
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
@@ -404,7 +450,7 @@ fn cmd_define(rest: &[String]) -> Result<(), String> {
                 ExternalCall {
                     func: func.clone(),
                     arg_measures: arg_ids,
-                    refresh_policy: parse_refresh_flag(rest)?,
+                    refresh_policy,
                 },
             );
             println!(
@@ -461,12 +507,9 @@ fn check_acyclic(model: &Model) -> Result<(), String> {
 /// external function (all Number args + Number result; the body binds `args`
 /// and sets `result`). Enough to make `define ... CALL(name, ...)` usable from
 /// the CLI; richer type signatures are a future flag.
-fn cmd_register_ext(rest: &[String]) -> Result<(), String> {
+fn cmd_register_ext(db: &str, name: &str, arity: u32, body: &str) -> Result<(), String> {
     use improv_core_model::{ExternalFn, Language};
-    let db = arg(rest, 0, "db")?;
-    let name = arg(rest, 1, "name")?;
-    let arity = parse_u32(arg(rest, 2, "arity")?, "arity")? as usize;
-    let body = arg(rest, 3, "python-body")?;
+    let arity = arity as usize;
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
@@ -486,42 +529,12 @@ fn cmd_register_ext(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse an optional `--refresh <manual|on-load|interval:SECS>` flag from an
-/// argument list; absent means `Manual`.
-fn parse_refresh_flag(rest: &[String]) -> Result<RefreshPolicy, String> {
-    let Some(pos) = rest.iter().position(|a| a == "--refresh") else {
-        return Ok(RefreshPolicy::Manual);
-    };
-    let val = rest
-        .get(pos + 1)
-        .ok_or("--refresh needs a value: manual | on-load | interval:SECS")?;
-    match val.as_str() {
-        "manual" => Ok(RefreshPolicy::Manual),
-        "on-load" => Ok(RefreshPolicy::OnLoad),
-        other => {
-            if let Some(secs) = other.strip_prefix("interval:") {
-                let secs = secs
-                    .parse::<u64>()
-                    .map_err(|_| "interval:SECS must be a number")?;
-                Ok(RefreshPolicy::Interval { secs })
-            } else {
-                Err(format!(
-                    "unknown refresh policy '{other}': use manual | on-load | interval:SECS"
-                ))
-            }
-        }
-    }
-}
-
 /// `refresh-all <db> [source.sqlite]` — refresh every external-sourced measure:
 /// all external-function (`CALL`) measures, plus all SQL-backed measures when a
 /// SQLite source is given. This honors nothing about `RefreshPolicy` timing
 /// itself — it is the manual "do it now" batch; a scheduler that consults the
 /// policy is future work. Policy metadata is reported so it is visible.
-fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let source = rest.get(1).cloned();
-
+fn cmd_refresh_all(db: &str, source: Option<&str>) -> Result<(), String> {
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
@@ -544,7 +557,7 @@ fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
     let mut sql_ids: Vec<MeasureId> = model.sql_sources.keys().copied().collect();
     sql_ids.sort_by_key(|m| m.0);
     if !sql_ids.is_empty() {
-        match &source {
+        match source {
             Some(src) => {
                 let conn = rusqlite::Connection::open(src).map_err(|e| e.to_string())?;
                 for mid in sql_ids {
@@ -574,20 +587,8 @@ fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
 /// and saving the model each cycle. SQL measures are refreshed only if a
 /// source.sqlite is given; external (CALL) measures always can be. Ctrl-C to
 /// stop. The scheduling decision is the pure `core_model::schedule::due_measures`.
-fn cmd_serve_refresh(rest: &[String]) -> Result<(), String> {
+fn cmd_serve_refresh(db: &str, source: Option<&str>, tick_secs: u64) -> Result<(), String> {
     use std::time::{Duration, Instant};
-
-    let db = arg(rest, 0, "db")?;
-    // Optional positional source.sqlite (anything not starting with '--').
-    let source = rest.get(1).filter(|a| !a.starts_with("--")).cloned();
-    let tick_secs = match rest.iter().position(|a| a == "--tick") {
-        Some(p) => rest
-            .get(p + 1)
-            .ok_or("--tick needs a value in seconds")?
-            .parse::<u64>()
-            .map_err(|_| "--tick SECS must be a number")?,
-        None => 5,
-    };
 
     let start = Instant::now();
     // last_run per measure, in whole seconds since `start`.
@@ -595,12 +596,7 @@ fn cmd_serve_refresh(rest: &[String]) -> Result<(), String> {
 
     eprintln!("serve-refresh: honoring refresh policies every {tick_secs}s (Ctrl-C to stop)");
     loop {
-        serve_refresh_tick(
-            db,
-            source.as_deref(),
-            start.elapsed().as_secs(),
-            &mut last_run,
-        )?;
+        serve_refresh_tick(db, source, start.elapsed().as_secs(), &mut last_run)?;
         std::thread::sleep(Duration::from_secs(tick_secs));
     }
 }
@@ -662,9 +658,8 @@ fn serve_refresh_tick(
 
 /// `refresh-ext <db> <measure-id>` — (re)populate an external-call measure by
 /// running its function over its argument measures, host-side.
-fn cmd_refresh_ext(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
+fn cmd_refresh_ext(db: &str, mid: u32) -> Result<(), String> {
+    let mid = MeasureId(mid);
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
@@ -682,12 +677,14 @@ fn cmd_refresh_ext(rest: &[String]) -> Result<(), String> {
 /// `scenario <db> <scenario-name> <measure-id> <value> [--at Cat=Item,...]`
 /// — create or update a what-if scenario by adding one input-cell override.
 /// Evaluate under it with `eval <db> <measure-id> --scenario <name>`.
-fn cmd_scenario(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let sname = arg(rest, 1, "scenario-name")?.to_string();
-    let mid = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
-    let value_arg = arg(rest, 3, "value")?;
-    let at = parse_at_flag(&rest[4.min(rest.len())..])?;
+fn cmd_scenario(
+    db: &str,
+    sname: &str,
+    mid: u32,
+    value_arg: &str,
+    at: &[(String, String)],
+) -> Result<(), String> {
+    let (sname, mid) = (sname.to_string(), MeasureId(mid));
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
@@ -697,7 +694,7 @@ fn cmd_scenario(rest: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("no measure with id {}", mid.0))?
         .value_type;
     let value = parse_value(value_arg, vt)?;
-    let coord = resolve_coord(&model, mid, &at)?;
+    let coord = resolve_coord(&model, mid, at)?;
 
     // Find an existing scenario by name, else mint a new id.
     let existing = model
@@ -727,11 +724,8 @@ fn cmd_scenario(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_set(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
-    let value_arg = arg(rest, 2, "value")?;
-    let at = parse_at_flag(&rest[3.min(rest.len())..])?;
+fn cmd_set(db: &str, mid: u32, value_arg: &str, at: &[(String, String)]) -> Result<(), String> {
+    let mid = MeasureId(mid);
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
@@ -742,7 +736,7 @@ fn cmd_set(rest: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("no measure with id {}", mid.0))?
         .value_type;
     let value = parse_value(value_arg, vt)?;
-    let coord = resolve_coord(&model, mid, &at)?;
+    let coord = resolve_coord(&model, mid, at)?;
 
     model.set_input(mid, coord, value);
     store.save_model(&model).map_err(|e| e.to_string())?;
@@ -750,8 +744,7 @@ fn cmd_set(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_list(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
+fn cmd_list(db: &str) -> Result<(), String> {
     let mut store = open(db)?;
     let model = store.load_model().map_err(|e| e.to_string())?;
 
@@ -788,32 +781,22 @@ fn cmd_list(rest: &[String]) -> Result<(), String> {
 /// a single-matrix `View` filled the way the GUI's `build_view` fills it:
 /// `axis_order` = rows ++ cols ++ the measure's remaining categories (pages),
 /// each page pinned to its lowest-id item, no filters, default geometry.
-fn cmd_save_view(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let id = ViewId(parse_u32(arg(rest, 1, "view-id")?, "view-id")?);
-    let name = arg(rest, 2, "name")?.trim();
+fn cmd_save_view(
+    db: &str,
+    id: u32,
+    name: &str,
+    measure: &str,
+    rows: Option<&str>,
+    cols: Option<&str>,
+) -> Result<(), String> {
+    let (id, name) = (ViewId(id), name.trim());
     if name.is_empty() {
         return Err("view name is required".into());
     }
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
-    let mid = resolve_measure(&model, arg(rest, 3, "measure")?)?;
+    let mid = resolve_measure(&model, measure)?;
     let cats = model.measures[&mid].categories.clone();
-    let (mut rows, mut cols) = (None, None);
-    let mut flags = rest[4.min(rest.len())..].iter();
-    while let Some(flag) = flags.next() {
-        let slot = match flag.as_str() {
-            "--rows" => &mut rows,
-            "--cols" => &mut cols,
-            other => return Err(format!("unexpected argument '{other}'")),
-        };
-        *slot = Some(
-            flags
-                .next()
-                .ok_or(format!("{flag} needs a value"))?
-                .as_str(),
-        );
-    }
     // Rows then cols: named categories, or the next unused one by default.
     let mut order: Vec<CategoryId> = Vec::new();
     let mut counts = [0; 2];
@@ -874,9 +857,8 @@ fn cmd_save_view(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_show(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
+fn cmd_show(db: &str, mid: u32) -> Result<(), String> {
+    let mid = MeasureId(mid);
     let mut store = open(db)?;
     let model = store.load_partial(&[mid]).map_err(|e| e.to_string())?;
     let m = model
@@ -901,8 +883,7 @@ fn cmd_show(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_export(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
+fn cmd_export(db: &str) -> Result<(), String> {
     let mut store = open(db)?;
     let model = store.load_model().map_err(|e| e.to_string())?;
     let json = serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?;
@@ -939,18 +920,13 @@ fn resolve_measure(model: &Model, s: &str) -> Result<MeasureId, String> {
 /// A malformed line is reported on stderr and skipped (does not abort the
 /// stream -- a long-running pipe shouldn't die on one bad line). On EOF the
 /// final model state is saved back to `<db>`, exactly like `set` persists.
-fn cmd_stream(rest: &[String]) -> Result<(), String> {
+fn cmd_stream(db: &str, target_names: &[String]) -> Result<(), String> {
     use std::io::BufRead;
-
-    let db = arg(rest, 0, "db")?;
-    if rest.len() < 2 {
-        return Err("stream needs at least one target measure".into());
-    }
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
-    let targets: Vec<MeasureId> = rest[1..]
+    let targets: Vec<MeasureId> = target_names
         .iter()
         .map(|s| resolve_measure(&model, s))
         .collect::<Result<_, _>>()?;
@@ -1054,9 +1030,8 @@ fn print_stream_diff(
     }
 }
 
-fn cmd_eval(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let mid = MeasureId(parse_u32(arg(rest, 1, "measure-id")?, "measure-id")?);
+fn cmd_eval(db: &str, mid: u32, scenario: Option<&str>) -> Result<(), String> {
+    let mid = MeasureId(mid);
     let mut store = open(db)?;
     // load_partial loads only mid's dependency closure (its formula chain /
     // external-call args), not every cell of every measure in the store --
@@ -1064,9 +1039,8 @@ fn cmd_eval(rest: &[String]) -> Result<(), String> {
     let base = store.load_partial(&[mid]).map_err(|e| e.to_string())?;
 
     // Optional `--scenario NAME`: evaluate under a what-if overlay.
-    let model = match rest.iter().position(|a| a == "--scenario") {
-        Some(p) => {
-            let name = rest.get(p + 1).ok_or("--scenario needs a name")?;
+    let model = match scenario {
+        Some(name) => {
             let sid = base
                 .scenario_by_name(name)
                 .ok_or_else(|| format!("no scenario named '{name}'"))?
@@ -1129,41 +1103,20 @@ fn render_coord_key(model: &Model, key: &[(u32, u32)]) -> String {
         .join(", ")
 }
 
-fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let source = arg(rest, 1, "source.sqlite")?;
-    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
-    let measure_name = arg(rest, 3, "measure-name")?.to_string();
-    let query = arg(rest, 4, "SELECT")?.to_string();
-    let value_column = arg(rest, 5, "value-col")?.to_string();
-
-    // Remaining args: dim-col:cat-id:cat-name, plus an optional
-    // `--refresh <manual|on-load|interval:SECS>` flag anywhere after them.
-    let refresh_policy = parse_refresh_flag(rest)?;
-    let mut dimensions = Vec::new();
-    let mut i = 6;
-    while i < rest.len() {
-        let spec = &rest[i];
-        if spec == "--refresh" {
-            i += 2; // skip flag + its value
-            continue;
-        }
-        let parts: Vec<&str> = spec.splitn(3, ':').collect();
-        if parts.len() != 3 {
-            return Err(format!(
-                "dimension spec '{spec}' must be <col>:<cat-id>:<cat-name>"
-            ));
-        }
-        dimensions.push(DimensionMapping {
-            column: parts[0].to_string(),
-            category_id: CategoryId(parse_u32(parts[1], "cat-id")?),
-            category_name: parts[2].to_string(),
-        });
-        i += 1;
-    }
-    if dimensions.is_empty() {
-        return Err("at least one dimension mapping is required".into());
-    }
+fn cmd_import_sql(a: args::ImportSql) -> Result<(), String> {
+    let measure_id = MeasureId(a.measure);
+    let (source, measure_name) = (a.source.as_str(), a.name);
+    let (query, value_column, refresh_policy) = (a.query, a.value_col, a.refresh);
+    let dimensions = a
+        .dims
+        .into_iter()
+        .map(|(column, category_id, category_name)| DimensionMapping {
+            column,
+            category_id,
+            category_name,
+        })
+        .collect();
+    let db = a.db.as_str();
 
     let conn = rusqlite::Connection::open(source).map_err(|e| e.to_string())?;
     let spec = ImportSpec {
@@ -1188,10 +1141,8 @@ fn cmd_import_sql(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_refresh_sql(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let source = arg(rest, 1, "source.sqlite")?;
-    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
+fn cmd_refresh_sql(db: &str, source: &str, measure_id: u32) -> Result<(), String> {
+    let measure_id = MeasureId(measure_id);
 
     let conn = rusqlite::Connection::open(source).map_err(|e| e.to_string())?;
     let mut store = open(db)?;
@@ -1202,12 +1153,14 @@ fn cmd_refresh_sql(rest: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_export_sql(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let target = arg(rest, 1, "target.sqlite")?;
-    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
-    let table = arg(rest, 3, "table")?;
-    let value_column = arg(rest, 4, "value-col")?;
+fn cmd_export_sql(
+    db: &str,
+    target: &str,
+    measure_id: u32,
+    table: &str,
+    value_column: &str,
+) -> Result<(), String> {
+    let measure_id = MeasureId(measure_id);
 
     let mut store = open(db)?;
     let model = store.load_model().map_err(|e| e.to_string())?;
@@ -1226,15 +1179,12 @@ fn cmd_export_sql(rest: &[String]) -> Result<(), String> {
 /// Mirrors import-sql's dimension-mapping syntax. `<value-col>`/`<dim-col>` are
 /// header names by default (or 0-based indices with `--no-header`). Delimiter
 /// is comma unless `--tsv` is given or the file ends in `.tsv`.
-fn cmd_import_csv(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let path = arg(rest, 1, "file.csv")?;
-    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
-    let measure_name = arg(rest, 3, "measure-name")?.to_string();
-    let value_col = arg(rest, 4, "value-col")?;
-
-    let has_header = !rest.iter().any(|a| a == "--no-header");
-    let tsv = rest.iter().any(|a| a == "--tsv") || path.ends_with(".tsv");
+fn cmd_import_csv(a: args::ImportCsv) -> Result<(), String> {
+    let (db, path) = (a.db.as_str(), a.file.as_str());
+    let measure_id = MeasureId(a.measure);
+    let (measure_name, value_col) = (a.name, a.value_col.as_str());
+    let has_header = !a.no_header;
+    let tsv = a.tsv || path.ends_with(".tsv");
     let delimiter = if tsv { b'\t' } else { b',' };
     let col_ref = |s: &str| -> improv_storage_csv::ColumnRef {
         if has_header {
@@ -1245,27 +1195,17 @@ fn cmd_import_csv(rest: &[String]) -> Result<(), String> {
                 .unwrap_or_else(|_| improv_storage_csv::ColumnRef::Name(s.to_string()))
         }
     };
-
-    let mut dimensions = Vec::new();
-    for spec in &rest[5.min(rest.len())..] {
-        if spec.starts_with("--") {
-            continue;
-        }
-        let parts: Vec<&str> = spec.splitn(3, ':').collect();
-        if parts.len() != 3 {
-            return Err(format!(
-                "dimension spec '{spec}' must be <col>:<cat-id>:<cat-name>"
-            ));
-        }
-        dimensions.push(improv_storage_csv::DimensionMapping {
-            column: col_ref(parts[0]),
-            category_id: CategoryId(parse_u32(parts[1], "cat-id")?),
-            category_name: parts[2].to_string(),
-        });
-    }
-    if dimensions.is_empty() {
-        return Err("at least one dimension mapping is required".into());
-    }
+    let dimensions = a
+        .dims
+        .iter()
+        .map(
+            |(column, category_id, name)| improv_storage_csv::DimensionMapping {
+                column: col_ref(column),
+                category_id: *category_id,
+                category_name: name.clone(),
+            },
+        )
+        .collect();
 
     let spec = improv_storage_csv::ImportSpec {
         path: path.into(),
@@ -1292,11 +1232,9 @@ fn cmd_import_csv(rest: &[String]) -> Result<(), String> {
 }
 
 /// `export-csv <db> <target.csv> <measure-id> [--tsv]`
-fn cmd_export_csv(rest: &[String]) -> Result<(), String> {
-    let db = arg(rest, 0, "db")?;
-    let target = arg(rest, 1, "target.csv")?;
-    let measure_id = MeasureId(parse_u32(arg(rest, 2, "measure-id")?, "measure-id")?);
-    let tsv = rest.iter().any(|a| a == "--tsv") || target.ends_with(".tsv");
+fn cmd_export_csv(db: &str, target: &str, measure_id: u32, tsv: bool) -> Result<(), String> {
+    let measure_id = MeasureId(measure_id);
+    let tsv = tsv || target.ends_with(".tsv");
     let delimiter = if tsv { b'\t' } else { b',' };
 
     let mut store = open(db)?;
@@ -1316,15 +1254,6 @@ fn cmd_export_csv(rest: &[String]) -> Result<(), String> {
 }
 
 // --- parsing / resolution ---
-
-fn parse_value_type(s: &str) -> Result<ValueType, String> {
-    match s {
-        "number" => Ok(ValueType::Number),
-        "boolean" => Ok(ValueType::Boolean),
-        "text" => Ok(ValueType::Text),
-        other => Err(format!("type must be number|boolean|text, got '{other}'")),
-    }
-}
 
 fn parse_value(s: &str, vt: ValueType) -> Result<Value, String> {
     match vt {
@@ -1531,20 +1460,75 @@ fn fmt_value(v: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// Parse `args` as the command line and run it.
+    fn run_args(args: &[String]) -> Result<(), String> {
+        let argv = std::iter::once("improv".to_string()).chain(args.iter().cloned());
+        run(Cli::try_parse_from(argv).map_err(|e| usage_message(&e))?)
+    }
+
     #[test]
     fn refresh_flag_parses_all_forms() {
-        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        assert_eq!(parse_refresh_flag(&s(&[])).unwrap(), RefreshPolicy::Manual);
+        assert_eq!(refresh_policy("manual").unwrap(), RefreshPolicy::Manual);
+        assert_eq!(refresh_policy("on-load").unwrap(), RefreshPolicy::OnLoad);
         assert_eq!(
-            parse_refresh_flag(&s(&["--refresh", "on-load"])).unwrap(),
-            RefreshPolicy::OnLoad
-        );
-        assert_eq!(
-            parse_refresh_flag(&s(&["x", "--refresh", "interval:30"])).unwrap(),
+            refresh_policy("interval:30").unwrap(),
             RefreshPolicy::Interval { secs: 30 }
         );
-        assert!(parse_refresh_flag(&s(&["--refresh", "hourly"])).is_err());
-        assert!(parse_refresh_flag(&s(&["--refresh"])).is_err()); // missing value
+        assert!(refresh_policy("hourly").is_err());
+        assert!(refresh_policy("interval:x").is_err());
+    }
+
+    /// Usage errors keep the hand parser's wording.
+    #[test]
+    fn usage_errors_read_as_before() {
+        let cases: &[(&[&str], &str)] = &[
+            (&["frob"], "unknown command 'frob'"),
+            (&["init"], "missing argument <db>"),
+            (
+                &["add-measure", "m", "1", "X"],
+                "missing argument <type>; missing argument <input>",
+            ),
+            (&["stream", "m"], "stream needs at least one target measure"),
+            (
+                &["import-csv", "m", "f", "1", "n", "v"],
+                "at least one dimension mapping is required",
+            ),
+            (
+                &["set", "m", "1", "2", "--at"],
+                "--at needs an argument, e.g. Time=2025",
+            ),
+            (&["eval", "m", "1", "--scenario"], "--scenario needs a name"),
+            (
+                &["serve-refresh", "m", "--tick"],
+                "--tick needs a value in seconds",
+            ),
+            (
+                &["save-view", "m", "1", "v", "x", "--rows"],
+                "--rows needs a value",
+            ),
+            (
+                &["show", "m", "x"],
+                "<measure-id> must be a number, got 'x'",
+            ),
+            (
+                &["serve-refresh", "m", "--tick", "x"],
+                "--tick SECS must be a number, got 'x'",
+            ),
+            (
+                &["import-sql", "m", "s", "1", "n", "q", "v", "t:x:T"],
+                "<cat-id> must be a number",
+            ),
+            (
+                &["add-measure", "m", "1", "X", "date", "input"],
+                "got 'date'",
+            ),
+            (&["list", "m", "extra"], "unexpected argument 'extra'"),
+            (&["export-csv", "m", "t", "1", "--tsv=yes"], "--tsv"),
+        ];
+        for (args, want) in cases {
+            let err = run_args(&s(args)).unwrap_err();
+            assert!(err.contains(want), "{args:?}: want '{want}' in '{err}'");
+        }
     }
 
     fn tmp_db() -> String {
@@ -1568,11 +1552,11 @@ mod tests {
         let db = tmp_db();
         let _guard = scopeguard(&db);
 
-        run(&s(&["init", &db])).unwrap();
-        run(&s(&["add-category", &db, "1", "Product"])).unwrap();
-        run(&s(&["add-item", &db, "20", "1", "WidgetA"])).unwrap();
-        run(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
-        run(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
+        run_args(&s(&["init", &db])).unwrap();
+        run_args(&s(&["add-category", &db, "1", "Product"])).unwrap();
+        run_args(&s(&["add-item", &db, "20", "1", "WidgetA"])).unwrap();
+        run_args(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
+        run_args(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
 
         let mut store = Store::open(&db).unwrap();
         let model = store.load_model().unwrap();
@@ -1598,12 +1582,12 @@ mod tests {
     fn init_on_existing_store_keeps_cells() {
         let db = tmp_db();
         let _guard = scopeguard(&db);
-        run(&s(&["init", &db])).unwrap();
-        run(&s(&["add-category", &db, "1", "Product"])).unwrap();
-        run(&s(&["add-item", &db, "20", "1", "WidgetA"])).unwrap();
-        run(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
-        run(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
-        run(&s(&["init", &db])).unwrap();
+        run_args(&s(&["init", &db])).unwrap();
+        run_args(&s(&["add-category", &db, "1", "Product"])).unwrap();
+        run_args(&s(&["add-item", &db, "20", "1", "WidgetA"])).unwrap();
+        run_args(&s(&["add-measure", &db, "100", "Price", "number", "input"])).unwrap();
+        run_args(&s(&["set", &db, "100", "10.5", "--at", "Product=WidgetA"])).unwrap();
+        run_args(&s(&["init", &db])).unwrap();
         let model = Store::open(&db).unwrap().load_model().unwrap();
         assert_eq!(model.inputs.len(), 1);
     }
@@ -1612,16 +1596,16 @@ mod tests {
     fn bad_input_does_not_panic() {
         let db = tmp_db();
         let _guard = scopeguard(&db);
-        run(&s(&["init", &db])).unwrap();
-        run(&s(&["add-measure", &db, "1", "M", "number", "input"])).unwrap();
+        run_args(&s(&["init", &db])).unwrap();
+        run_args(&s(&["add-measure", &db, "1", "M", "number", "input"])).unwrap();
 
         // non-numeric value for a number measure -> Err, not panic.
-        assert!(run(&s(&["set", &db, "1", "notanumber"])).is_err());
+        assert!(run_args(&s(&["set", &db, "1", "notanumber"])).is_err());
         // unknown category name -> Err.
-        run(&s(&["add-measure", &db, "2", "M2", "number", "input"])).unwrap();
-        assert!(run(&s(&["set", &db, "2", "1", "--at", "Nope=X"])).is_err());
+        run_args(&s(&["add-measure", &db, "2", "M2", "number", "input"])).unwrap();
+        assert!(run_args(&s(&["set", &db, "2", "1", "--at", "Nope=X"])).is_err());
         // unknown command -> Err.
-        assert!(run(&s(&["frobnicate"])).is_err());
+        assert!(run_args(&s(&["frobnicate"])).is_err());
     }
 
     fn parse_value_covers_types() {
@@ -1663,12 +1647,12 @@ mod tests {
         let db = tmp_db();
         let _guard = scopeguard(&db);
 
-        run(&s(&["init", &db])).unwrap();
-        run(&s(&["add-category", &db, "1", "Time"])).unwrap();
-        run(&s(&["add-category", &db, "2", "Product"])).unwrap();
-        run(&s(&["add-item", &db, "10", "1", "Y2025"])).unwrap();
-        run(&s(&["add-item", &db, "20", "2", "WidgetA"])).unwrap();
-        run(&s(&[
+        run_args(&s(&["init", &db])).unwrap();
+        run_args(&s(&["add-category", &db, "1", "Time"])).unwrap();
+        run_args(&s(&["add-category", &db, "2", "Product"])).unwrap();
+        run_args(&s(&["add-item", &db, "10", "1", "Y2025"])).unwrap();
+        run_args(&s(&["add-item", &db, "20", "2", "WidgetA"])).unwrap();
+        run_args(&s(&[
             "add-measure",
             &db,
             "100",
@@ -1678,7 +1662,7 @@ mod tests {
             "Product",
         ]))
         .unwrap();
-        run(&s(&[
+        run_args(&s(&[
             "add-measure",
             &db,
             "101",
@@ -1689,8 +1673,8 @@ mod tests {
             "Product",
         ]))
         .unwrap();
-        run(&s(&["set", &db, "100", "10", "--at", "Product=WidgetA"])).unwrap();
-        run(&s(&[
+        run_args(&s(&["set", &db, "100", "10", "--at", "Product=WidgetA"])).unwrap();
+        run_args(&s(&[
             "set",
             &db,
             "101",
@@ -1701,7 +1685,7 @@ mod tests {
         .unwrap();
 
         // Define a derived measure from a textual formula.
-        run(&s(&[
+        run_args(&s(&[
             "add-derived",
             &db,
             "102",
@@ -1728,7 +1712,7 @@ mod tests {
         );
 
         // `eval` on an input measure is a clear error, not a crash.
-        assert!(run(&s(&["eval", &db, "100"])).is_err());
+        assert!(run_args(&s(&["eval", &db, "100"])).is_err());
     }
 
     #[test]
@@ -1747,8 +1731,8 @@ mod tests {
             .unwrap();
         }
 
-        run(&s(&["init", &db])).unwrap();
-        run(&s(&[
+        run_args(&s(&["init", &db])).unwrap();
+        run_args(&s(&[
             "import-sql",
             &db,
             &src,
@@ -2069,8 +2053,8 @@ mod tests {
             src,
             "CREATE TABLE sales(p TEXT, r REAL); INSERT INTO sales VALUES ('A', 1.0);",
         );
-        run(&s(&["init", db])).unwrap();
-        run(&s(&[
+        run_args(&s(&["init", db])).unwrap();
+        run_args(&s(&[
             "import-sql",
             db,
             src,
@@ -2083,7 +2067,7 @@ mod tests {
             "interval:60",
         ]))
         .unwrap();
-        run(&s(&[
+        run_args(&s(&[
             "register-ext",
             db,
             "dbl",
@@ -2091,7 +2075,7 @@ mod tests {
             "result = args[0] * 2",
         ]))
         .unwrap();
-        run(&s(&[
+        run_args(&s(&[
             "define",
             db,
             "200",
@@ -2159,7 +2143,7 @@ mod tests {
         let e = serve_refresh_tick(&db, Some(&empty), 0, &mut only_sql_due()).unwrap_err();
         assert!(e.contains("sales"), "{e}");
         // The CALL fails once its function's arity no longer matches.
-        run(&s(&["register-ext", &db, "dbl", "2", "result = 0"])).unwrap();
+        run_args(&s(&["register-ext", &db, "dbl", "2", "result = 0"])).unwrap();
         let e = serve_refresh_tick(&db, None, 0, &mut HashMap::new()).unwrap_err();
         assert!(e.contains("dbl"), "{e}");
 

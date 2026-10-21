@@ -16,6 +16,7 @@ improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }
 thiserror.workspace = true
 serde_json.workspace = true
+clap.workspace = true
 
 [dependencies.rusqlite]
 version = "0.40"
@@ -28,3 +29,5 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
 [dev-dependencies]
 improv_extfn = { path = "../extfn" }
+clap_mangen.workspace = true
+clap_complete.workspace = true
