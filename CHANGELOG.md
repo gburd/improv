@@ -85,6 +85,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The coordinate-codec fuzz target builds again.** `CoordKey` became a
+  `SmallVec` (no `Arbitrary`), so it fuzzes the pairs as a `Vec`. Its
+  lockfile, last refreshed at 0.5.0, is current, and CI now checks that the
+  fuzz targets build.
+
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.

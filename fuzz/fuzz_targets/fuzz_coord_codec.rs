@@ -11,7 +11,8 @@ use improv_engine::{decode_coord, encode_coord, project_key, CoordKey};
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
 
-fuzz_target!(|raw: CoordKey| {
+// CoordKey is a SmallVec (no `Arbitrary`): fuzz the pairs as a Vec.
+fuzz_target!(|raw: Vec<(u32, u32)>| {
     // Canonicalize: dedup by category (last wins), sorted -> matches encode's
     // output domain.
     let canon: CoordKey = raw
