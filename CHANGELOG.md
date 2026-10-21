@@ -131,6 +131,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   fails and saves nothing. The engine names the loop in its error, everywhere:
   `formula cycle: A1 → B1 → A1` (was `unsupported plan node in v1 dataflow
   builder: cyclic measure dependency at MeasureId(300)`).
+- **`improv refresh-all` reports measures in id order.** It walked a hash
+  map, so the order of its lines changed from run to run.
 - **The PGXN publish job found no cargo.** The `pgxn/pgxn-tools` image sets
   `CARGO_HOME=/usr/share/cargo`, so rustup's env file is not under
   `~/.cargo`; v0.10.0's upload failed there and was re-run by hand.

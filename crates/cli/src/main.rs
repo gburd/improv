@@ -527,7 +527,9 @@ fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
 
     let mut total = 0usize;
     // External-function measures need no external connection.
-    let ext_ids: Vec<MeasureId> = model.external_calls.keys().copied().collect();
+    // In id order, so the report is the same on every run.
+    let mut ext_ids: Vec<MeasureId> = model.external_calls.keys().copied().collect();
+    ext_ids.sort_by_key(|m| m.0);
     for mid in ext_ids {
         let n = improv_engine::external::refresh_external_measure(
             &mut model,
@@ -539,7 +541,8 @@ fn cmd_refresh_all(rest: &[String]) -> Result<(), String> {
         total += n;
     }
     // SQL measures need the source database.
-    let sql_ids: Vec<MeasureId> = model.sql_sources.keys().copied().collect();
+    let mut sql_ids: Vec<MeasureId> = model.sql_sources.keys().copied().collect();
+    sql_ids.sort_by_key(|m| m.0);
     if !sql_ids.is_empty() {
         match &source {
             Some(src) => {
