@@ -120,8 +120,10 @@ pub(super) fn linest(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List 
 /// squares by the normal equations, Gaussian elimination with partial
 /// pivoting. Excel's order: `[mk, …, m1, b]`, and with stats a 5 × (k + 1)
 /// block row by row — `se` of those; `r², se_y` then #N/A; `F, df` then
-/// #N/A; `ss_reg, ss_resid` then #N/A. Collinear x's are #NUM! (Excel
-/// drops them; that is not done here).
+/// #N/A; `ss_reg, ss_resid` then #N/A. An x that is a linear combination
+/// of the ones before it (or, with const, of the constant) is dropped, as
+/// Excel documents and Gnumeric does: its m and se are 0, the others fit
+/// without it, and df gains one per dropped x.
 // ponytail: normal equations square the condition number; switch to QR if
 // ill-conditioned fits ever matter.
 fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
@@ -148,24 +150,29 @@ fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
         ys.push(y);
     }
     let n = ys.len();
-    if n < p {
+    // The columns kept: the constant first, then each x not a combination
+    // of those kept before it. Indices into a row (x1…xk, then the 1).
+    let kept = independent(&xs, k, konst);
+    let q = kept.len();
+    if n < q {
         return Err(err::NUM);
     }
-    // XᵀX | Xᵀy, then XᵀX⁻¹ (for the standard errors) by Gauss–Jordan.
-    let mut m = vec![vec![0.0; 2 * p + 1]; p];
+    // XᵀX | Xᵀy over the kept columns, then XᵀX⁻¹ (for the standard
+    // errors) by Gauss–Jordan.
+    let mut m = vec![vec![0.0; 2 * q + 1]; q];
     for (row, y) in xs.iter().zip(&ys) {
-        for i in 0..p {
-            for j in 0..p {
-                m[i][j] += row[i] * row[j];
+        for (i, &ci) in kept.iter().enumerate() {
+            for (j, &cj) in kept.iter().enumerate() {
+                m[i][j] += row[ci] * row[cj];
             }
-            m[i][2 * p] += row[i] * y;
+            m[i][2 * q] += row[ci] * y;
         }
     }
     for (i, r) in m.iter_mut().enumerate() {
-        r[p + i] = 1.0;
+        r[q + i] = 1.0;
     }
-    for c in 0..p {
-        let piv = (c..p)
+    for c in 0..q {
+        let piv = (c..q)
             .max_by(|x, y| m[*x][c].abs().total_cmp(&m[*y][c].abs()))
             .unwrap_or(c);
         if m[piv][c].abs() < 1e-12 {
@@ -174,7 +181,7 @@ fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
         m.swap(c, piv);
         let d = m[c][c];
         m[c].iter_mut().for_each(|v| *v /= d);
-        for r in 0..p {
+        for r in 0..q {
             if r != c {
                 let f = m[r][c];
                 let pivot = m[c].clone();
@@ -182,7 +189,14 @@ fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
             }
         }
     }
-    let coef: Vec<f64> = m.iter().map(|r| r[2 * p]).collect();
+    // Back in row order (x1…xk, the 1); a dropped column's coefficient
+    // and variance are 0.
+    let mut coef = vec![0.0; p];
+    let mut var = vec![0.0; p];
+    for (i, &c) in kept.iter().enumerate() {
+        coef[c] = m[i][2 * q];
+        var[c] = m[i][q + i];
+    }
     let fitted: Vec<f64> = xs
         .iter()
         .map(|r| r.iter().zip(&coef).map(|(x, c)| x * c).sum())
@@ -203,13 +217,13 @@ fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
     let ss_resid: f64 = ys.iter().zip(&fitted).map(|(y, f)| (y - f).powi(2)).sum();
     let ss_tot: f64 = ys.iter().map(|y| (y - mean).powi(2)).sum();
     let ss_reg = ss_tot - ss_resid;
-    let df = n - p;
+    let df = n - q;
     let se_y = if df > 0 {
         (ss_resid / df as f64).sqrt()
     } else {
         0.0
     };
-    let se = |j: usize| CellValue::num(se_y * m[j][p + j].max(0.0).sqrt());
+    let se = |j: usize| CellValue::num(se_y * var[j].max(0.0).sqrt());
     res.extend((0..k).rev().map(se));
     res.push(if konst { se(k) } else { na() });
     let pad = |v: &mut Vec<CellValue>| v.extend((0..k - 1).map(|_| na()));
@@ -220,8 +234,10 @@ fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
     }));
     res.push(CellValue::num(se_y));
     pad(&mut res);
-    res.push(if df > 0 && ss_resid > 0.0 {
-        CellValue::num((ss_reg / k as f64) / (ss_resid / df as f64))
+    // F's numerator has one degree of freedom per x kept.
+    let used = q - usize::from(konst);
+    res.push(if df > 0 && ss_resid > 0.0 && used > 0 {
+        CellValue::num((ss_reg / used as f64) / (ss_resid / df as f64))
     } else {
         na()
     });
@@ -231,6 +247,34 @@ fn multi(rows: &Rows, a: &[CellValue], log: bool, k: usize) -> List {
     res.push(CellValue::num(ss_resid));
     pad(&mut res);
     Ok(res)
+}
+
+/// The row columns `multi` fits: with `konst` the constant (column `k`)
+/// first, then x1…xk in order, each kept when it is not (to a relative
+/// 1e-9) a linear combination of those kept so far, by Gram–Schmidt on
+/// the columns.
+fn independent(xs: &[Vec<f64>], k: usize, konst: bool) -> Vec<usize> {
+    let col = |c: usize| xs.iter().map(|r| r[c]).collect::<Vec<f64>>();
+    let dot = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let mut basis: Vec<Vec<f64>> = Vec::new();
+    let mut kept = Vec::new();
+    let order = konst.then_some(k).into_iter().chain(0..k);
+    for c in order {
+        let mut v = col(c);
+        let norm = dot(&v, &v).sqrt();
+        for b in &basis {
+            let f = dot(&v, b);
+            v.iter_mut().zip(b).for_each(|(x, y)| *x -= f * y);
+        }
+        let rest = dot(&v, &v).sqrt();
+        if norm > 0.0 && rest > 1e-9 * norm {
+            v.iter_mut().for_each(|x| *x /= rest);
+            basis.push(v);
+            kept.push(c);
+        }
+    }
+    kept.sort_unstable();
+    kept
 }
 
 #[cfg(test)]
@@ -373,16 +417,26 @@ mod tests {
         ]);
         let l = linest(&lg, &[], true, 2).unwrap();
         assert!(l.iter().all(|v| v.as_num().is_some_and(|x| x > 0.0)));
-        // Collinear x's, too few rows, a bad value.
+        // Collinear x's are dropped (m 0); too few rows, a bad value.
         let col = rows(vec![
             vec![n(1.0), n(1.0), n(2.0)],
             vec![n(2.0), n(2.0), n(4.0)],
             vec![n(3.0), n(3.0), n(6.0)],
         ]);
-        assert_eq!(linest(&col, &[], false, 2), Err(err::NUM));
+        assert_eq!(
+            linest(&col, &[], false, 2),
+            Ok(vec![n(0.0), n(1.0), n(0.0)])
+        );
+        // One row: both x's are collinear with b, which fits alone (the
+        // one-x rule; LibreOffice and Gnumeric give an error).
         assert_eq!(
             linest(&rows(vec![vec![n(1.0), n(1.0), n(2.0)]]), &[], false, 2),
-            Err(err::NUM)
+            Ok(vec![n(0.0), n(0.0), n(1.0)])
+        );
+        // Without const, x2 = 2·x1 is dropped: y = 1·x1.
+        assert_eq!(
+            linest(&rows(vec![vec![n(1.0), n(1.0), n(2.0)]]), &[F], false, 2),
+            Ok(vec![n(0.0), n(1.0), n(0.0)])
         );
         assert_eq!(
             linest(&rows(vec![vec![n(1.0), n(1.0)]]), &[], false, 2),
@@ -395,6 +449,159 @@ mod tests {
         assert_eq!(len(&[T, T], 3), 20);
         assert_eq!(len(&[], 3), 4);
         assert_eq!(len(&[T, F], 3), 4);
+    }
+
+    /// Collinear x's are dropped, the later one, as Excel documents
+    /// ("removes any redundant X columns") and Gnumeric 1.12.57 does:
+    /// LINEST(y, xs, const, TRUE) blocks from Gnumeric (LibreOffice 25.2
+    /// gives an ill-conditioned fit or #VALUE! for these), `None` for #N/A.
+    #[test]
+    fn collinear_xs_are_dropped() {
+        let y = [1.0, 3.0, 2.0, 5.0, 7.5, 6.0];
+        let x1 = [1.0, 2.0, 3.0, 4.0, 6.0, 7.0];
+        let x3 = [0.5, 1.0, 4.0, 2.0, 3.0, 1.0];
+        let fit = |xs: &[Vec<f64>], konst: bool| {
+            let r = rows(
+                (0..6)
+                    .map(|i| {
+                        let mut row = vec![n(y[i])];
+                        row.extend(xs.iter().map(|x| n(x[i])));
+                        row
+                    })
+                    .collect(),
+            );
+            linest(&r, &[CellValue::Bool(konst), T], false, xs.len()).unwrap()
+        };
+        let check = |got: Vec<CellValue>, want: &[Option<f64>]| {
+            assert_eq!(got.len(), want.len());
+            for (i, (g, w)) in got.iter().zip(want).enumerate() {
+                match w {
+                    None => assert_eq!(*g, NA, "{i}: {got:?}"),
+                    Some(x) => {
+                        let v = g.as_num().unwrap();
+                        assert!((v - x).abs() <= 1e-9 * x.abs().max(1.0), "{i}: {v} vs {x}");
+                    }
+                }
+            }
+        };
+        let double: Vec<f64> = x1.iter().map(|v| 2.0 * v).collect();
+        let sum: Vec<f64> = x1.iter().zip(&x3).map(|(a, b)| a + b).collect();
+        let (s, na) = (Some, None);
+        // x2 = 2·x1: x2 dropped; the fit is y on x1 alone, df 4.
+        check(
+            fit(&[x1.to_vec(), double.clone()], true),
+            &[
+                s(0.0),
+                s(0.972_049_689_440_993_8),
+                s(0.357_142_857_142_857_2),
+                s(0.0),
+                s(0.233_539_546_714_543_1),
+                s(1.022_430_338_797_216),
+                s(0.812_420_701_722_379_3),
+                s(1.209_755_891_397_18),
+                na,
+                s(17.324_314_765_694_08),
+                s(4.0),
+                na,
+                s(25.354_296_066_252_59),
+                s(5.854_037_267_080_745),
+                na,
+            ],
+        );
+        check(
+            fit(&[x1.to_vec(), double], false),
+            &[
+                s(0.0),
+                s(1.043_478_260_869_565),
+                s(0.0),
+                s(0.0),
+                s(0.102_427_991_212_084_7),
+                na,
+                s(0.954_037_267_080_745_3),
+                s(1.098_417_834_492_155),
+                na,
+                s(103.783_783_783_783_7),
+                s(5.0),
+                na,
+                s(125.217_391_304_347_8),
+                s(6.032_608_695_652_174),
+                na,
+            ],
+        );
+        // x1 + x3 after x1 and x3: dropped.
+        check(
+            fit(&[x1.to_vec(), x3.to_vec(), sum], true),
+            &[
+                s(0.0),
+                s(-0.031_858_407_079_646_02),
+                s(0.976_106_194_690_265_5),
+                s(0.402_654_867_256_637_2),
+                s(0.0),
+                s(0.471_254_241_030_072_6),
+                s(0.276_063_172_656_084_5),
+                s(1.358_279_759_198_106),
+                s(0.812_706_026_914_942_6),
+                s(1.395_842_964_348_406),
+                na,
+                na,
+                s(6.508_800_151_400_455),
+                s(3.0),
+                na,
+                na,
+                s(25.363_200_589_970_5),
+                s(5.845_132_743_362_832),
+                na,
+                na,
+            ],
+        );
+        // A constant x with const: collinear with b, dropped; without const
+        // it is a regressor like any other.
+        let three = vec![3.0; 6];
+        check(
+            fit(&[x1.to_vec(), three.clone()], true),
+            &[
+                s(0.0),
+                s(0.972_049_689_440_993_8),
+                s(0.357_142_857_142_857_2),
+                s(0.0),
+                s(0.233_539_546_714_543_1),
+                s(1.022_430_338_797_216),
+                s(0.812_420_701_722_379_3),
+                s(1.209_755_891_397_18),
+                na,
+                s(17.324_314_765_694_08),
+                s(4.0),
+                na,
+                s(25.354_296_066_252_59),
+                s(5.854_037_267_080_745),
+                na,
+            ],
+        );
+        check(
+            fit(&[x1.to_vec(), three], false),
+            &[
+                s(0.119_047_619_047_619),
+                s(0.972_049_689_440_993_8),
+                s(0.0),
+                s(0.340_810_112_932_405_4),
+                s(0.233_539_546_714_543_1),
+                na,
+                s(0.955_397_811_298_432_4),
+                s(1.209_755_891_397_18),
+                na,
+                s(42.840_848_806_366),
+                s(4.0),
+                na,
+                s(125.395_962_732_919_3),
+                s(5.854_037_267_080_745),
+                na,
+            ],
+        );
+        // Every x zero without const: nothing to fit, all m 0 and F #N/A.
+        let zero = vec![0.0; 6];
+        let z = fit(&[zero.clone(), zero], false);
+        assert_eq!(&z[..3], [n(0.0), n(0.0), n(0.0)]);
+        assert_eq!(z[9], NA, "F with no x");
     }
 
     /// One x with residuals: LibreOffice 25.2 LINEST({1;2;4}; {1;2;3}; 1; 1).

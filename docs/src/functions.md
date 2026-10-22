@@ -378,7 +378,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | Function | Returns | Description |
 |---|---|---|
 | `MODE.MULT(values OVER T INTO K)` | number | every most frequent value, in order of first occurrence (#N/A if none repeats) |
-| `LINEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LINEST(known_ys, known_xs1, \[known_xs2, …\] OVER T, \[const\], \[stats\]): the least-squares fit y = m1·x1 + … + b: mk, …, m1, b (const = FALSE: b = 0); with stats, Excel's 5×(k+1) block row by row (one x: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block |
+| `LINEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LINEST(known_ys, known_xs1, \[known_xs2, …\] OVER T, \[const\], \[stats\]): the least-squares fit y = m1·x1 + … + b: mk, …, m1, b (const = FALSE: b = 0); an x collinear with those before it (or with the constant) is dropped, m = 0, as Excel; with stats, Excel's 5×(k+1) block row by row (one x: m, b, se_m, se_b, r², se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block |
 | `LOGEST(known_ys, known_xs1, … OVER T, [const=TRUE], [stats=FALSE] INTO K)` | number | LOGEST(known_ys, known_xs1, \[known_xs2, …\] OVER T, \[const\], \[stats\]): y = b·m1^x1·…, fitted to ln y: mk, …, m1, b (const = FALSE: b = 1); with stats LINEST's block, for ln y |
 | `FREQUENCY(data_array OVER T, bin1, … INTO K)` | number | counts of x in the bins given as numbers b1, b2, …: ≤ b1, (b1, b2\], …, > bn (n + 1 counts; Excel takes the bins as a range) |
 | `BETA.DIST(x, alpha, beta, cumulative, [a=0], [b=1])` | number | the beta distribution of x on \[A, B\] (default \[0, 1\]): density, or cumulative |

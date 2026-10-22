@@ -63,6 +63,11 @@ E	DROP(X OVER T, 2 INTO K)	[[2.0, 8.0, {"error": "#DIV/0!"}, null, null]]	LibreO
 E	MODE.MULT(X OVER T INTO K)	[[{"error": "#N/A"}, null, null, null, null]]	LibreOffice
 E	LINEST(Y, X OVER T INTO K)	[[{"error": "#N/A"}, {"error": "#N/A"}, null, null, null]]	LibreOffice
 E	FREQUENCY(X OVER T, 3 INTO K)	[[{"error": "#N/A"}, null, null, null, null]]	LibreOffice
+@C	{"T": 6, "K": 20, "m": {"Y": [[1, 3, 2, 5, 7.5, 6]], "X": [[1, 2, 3, 4, 6, 7]], "Z": [[0.5, 1, 4, 2, 3, 1]], "D": [[2, 4, 6, 8, 12, 14]], "S": [[1.5, 3, 7, 6, 9, 8]]}}
+C	LINEST(Y, X, D OVER T, TRUE, TRUE INTO K)	[[0.0, 0.9720496894409938, 0.35714285714285715, 0.0, 0.23353954671454313, 1.0224303387972162, 0.8124207017223793, 1.2097558913971802, {"error": "#N/A"}, 17.32431476569408, 4.0, {"error": "#N/A"}, 25.354296066252587, 5.854037267080745, {"error": "#N/A"}, null, null, null, null, null]]	Gnumeric
+C	LINEST(Y, X, Z, S OVER T, TRUE, TRUE INTO K)	[[0.0, -0.03185840707964602, 0.9761061946902655, 0.4026548672566372, 0.0, 0.4712542410300726, 0.2760631726560845, 1.3582797591981064, 0.8127060269149426, 1.3958429643484056, {"error": "#N/A"}, {"error": "#N/A"}, 6.508800151400455, 3.0, {"error": "#N/A"}, {"error": "#N/A"}, 25.3632005899705, 5.845132743362832, {"error": "#N/A"}, {"error": "#N/A"}]]	Gnumeric
+C	LINEST(Y, X, D OVER T INTO K)	[[0.0, 0.9720496894409938, 0.35714285714285715, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]]	Gnumeric
+C	LINEST(Y, D, X OVER T, FALSE INTO K)	[[0.0, 0.5217391304347826, 0.0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null]]	Gnumeric
 @S	{"T": 7, "K": 3, "m": {"C": [["a,b,,c", "one", ",x,", "aXbxc", "p, q, r", "", ",,"]]}}
 S	TEXTSPLIT(C, "," INTO K)	[["a", "b", ""], ["one", null, null], ["", "x", ""], ["aXbxc", null, null], ["p", " q", " r"], [{"error": "#VALUE!"}, null, null], ["", "", ""]]	Excel docs
 S	TEXTSPLIT(C, ",", "", TRUE INTO K)	[["a", "b", "c"], ["one", null, null], ["x", null, null], ["aXbxc", null, null], ["p", " q", " r"], [{"error": "#VALUE!"}, null, null], [{"error": "#N/A"}, null, null]]	LibreOffice

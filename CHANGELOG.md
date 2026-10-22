@@ -249,6 +249,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
+  ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
+  linear combination of the x's before it (or, with `const`, a constant x)
+  gets m = 0 and se = 0, the others fit without it, and df gains one per
+  dropped x. `LINEST(Y, X, D OVER T, TRUE, TRUE INTO K)` with D = 2·X was
+  `#NUM!`; it is now Y's fit on X alone, with a 0 for D. Goldens from
+  Gnumeric 1.12.57, which drops them the same way (dataset `C` in
+  `array_reduce_goldens.tsv`); LibreOffice 25.2 returns an
+  ill-conditioned fit or `#VALUE!`. One x was already dropped this way.
 - **`UNIQUE` ignores case**, as Excel's does (and LibreOffice's and
   Gnumeric's): `"Fig"` and `"fig"` are one value, kept in its first
   spelling, and with `exactly_once` they count as a repeat. Before, text

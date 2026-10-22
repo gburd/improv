@@ -859,8 +859,6 @@ of the language.
   functions skip a period with no cell (Excel's rule for a blank in a
   range), so the flows after it move up a period; enter 0 for an empty
   period.
-- **`LINEST` with several x's** refuses collinear x's (`#NUM!`); Excel drops
-  one and reports a zero coefficient. **Follow-up:** drop as Excel does.
 - **LAMBDA.** A named LAMBDA cannot call itself (every formula terminates);
   write a recurrence with `SCAN`, `PREV` or `FIXPOINT` instead. A LAMBDA
   cannot be named like a built-in function.
@@ -1054,8 +1052,7 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
-- `TEXTSPLIT` takes no row delimiter; `LINEST` with several x's refuses
-  collinear x's (#NUM!) rather than dropping them as Excel does;
+- `TEXTSPLIT` takes no row delimiter;
 - named LAMBDAs are defined with `improv define` (no GUI editor yet);
 - no `MMULT` or `LINSOLVE` function: a matrix product is a join and a sum
   (see Matrices); `FORECAST.ETS.CONFINT` is #N/A for seasonal models

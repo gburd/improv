@@ -1013,7 +1013,7 @@ values at the first item whose key is < lookup (\[u2264] when inclusive is TRUE)
 every most frequent value, in order of first occurrence (#N/A if none repeats)
 .TP
 \fBLINEST(known_ys, known_xs1, \[u2026] OVER T, [const=TRUE], [stats=FALSE] INTO K)\fR \(-> number
-LINEST(known_ys, known_xs1, [known_xs2, \[u2026]] OVER T, [const], [stats]): the least\-squares fit y = m1\[u00B7]x1 + \[u2026] + b: mk, \[u2026], m1, b (const = FALSE: b = 0); with stats, Excel's 5\[u00D7](k+1) block row by row (one x: m, b, se_m, se_b, r\[u00B2], se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block
+LINEST(known_ys, known_xs1, [known_xs2, \[u2026]] OVER T, [const], [stats]): the least\-squares fit y = m1\[u00B7]x1 + \[u2026] + b: mk, \[u2026], m1, b (const = FALSE: b = 0); an x collinear with those before it (or with the constant) is dropped, m = 0, as Excel; with stats, Excel's 5\[u00D7](k+1) block row by row (one x: m, b, se_m, se_b, r\[u00B2], se_y, F, df, ss_reg, ss_resid); INTO R, C lays it out as the block
 .TP
 \fBLOGEST(known_ys, known_xs1, \[u2026] OVER T, [const=TRUE], [stats=FALSE] INTO K)\fR \(-> number
 LOGEST(known_ys, known_xs1, [known_xs2, \[u2026]] OVER T, [const], [stats]): y = b\[u00B7]m1^x1\[u00B7]\[u2026], fitted to ln y: mk, \[u2026], m1, b (const = FALSE: b = 1); with stats LINEST's block, for ln y
