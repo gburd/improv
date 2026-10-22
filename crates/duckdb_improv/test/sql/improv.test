@@ -118,7 +118,7 @@ SELECT count(*) FROM improv_functions();
 query TTTT
 SELECT name, category, signature, returns FROM improv_functions() WHERE name = 'PMT';
 ----
-PMT	financial	PMT(rate, nper, pv, [fv], [type])	number
+PMT	financial	PMT(rate, nper, pv, [fv=0], [type=0])	number
 
 query T
 SELECT name FROM improv_functions(query := 'pmt') LIMIT 1;

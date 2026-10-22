@@ -83,7 +83,7 @@ SELECT name, signature FROM improv_functions(query := 'payment');
 
 One row per built-in function (681): `name`, `category`
 (`math`, `financial`, `text`, `datetime`, …), `signature`
-(`PMT(rate, nper, pv, [fv], [type])`), `returns`
+(`PMT(rate, nper, pv, [fv=0], [type=0])`), `returns`
 (`number | boolean | text | date | any`), `description` and `aliases`
 (other spellings, or NULL). With `query :=`, only the functions whose name
 or description matches, best match first.
