@@ -8,6 +8,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **What 1.x promises:** [Compatibility](docs/src/compatibility.md), a new
+  Reference page. For each surface (formulas, the pg_improv functions,
+  GUCs, result tables and `improv.status`, model files, the CLI's arguments
+  and exit codes, the `/v1` HTTP API, the DuckDB functions and version
+  floor) it says what is stable, what a 1.x minor may add, and how a
+  deprecation works. The pg_improv catalog tables are internal, and the
+  Rust crates are not a stable API in 1.x (J2 first).
 - **Concepts, operations and troubleshooting guides.** The guide gains
   Concepts (the ideas before the syntax), When to Use Improv (each wrong
   fit, what to use instead, and the measured limits), and an Operations
