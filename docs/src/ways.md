@@ -16,6 +16,8 @@ job, and switch when the job changes.
 | run a formula or a model over data in DuckDB, from SQL | [the DuckDB extension](#in-duckdb-the-improv-extension) | nowhere: computed per query |
 | serve a model to other programs over HTTP | [the server](#the-http-server-improv-server) | a store file, or Postgres |
 
+[What each front end can do](#what-each-front-end-can-do) compares them feature by feature.
+
 ## The model, wherever it lives
 
 A model is a store file or lives in a Postgres database; [Concepts: where
@@ -227,6 +229,40 @@ An edit names its measure and coordinate by id (`[[category, item], …]`);
 the answer comes back by name. `/eval` computes through the live engine and
 writes nothing unless you ask it to (`"persist": true`). [The HTTP Server](./server.md) lists the routes,
 tokens and limits.
+
+## What each front end can do
+
+Checked against each tool on 2026-10-22 (0.11.0 development). **yes**: it
+does it; **—**: it does not; a note says how, or what is missing. The
+bold gaps are tracked as tasks for 1.0.
+
+| | CLI | TUI | GUI | server | pg_improv | DuckDB |
+| --- | --- | --- | --- | --- | --- | --- |
+| **Open a model** (file or `postgres://`) | yes | from the command line | from the command line (File ▸ Open is disabled) | one per process | its own catalog | — (computed per query) |
+| **Create a model** | `init` | — | — (File ▸ New is disabled) | — | `create_model` | inline `improv(source, model)` |
+| Add categories and items | `add-category`, `add-item` | via CSV import | via CSV import | — | `bind_category` (items from the column) | `category` lines |
+| Add an input measure | `add-measure` | via CSV import | via CSV import | — | `bind_measure` | `input` lines |
+| **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
+| **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
+| Edit an input cell | `set` | yes | yes | `POST /measures/:id/cells` | write your table | — |
+| **Formulas: edit** | `define`, `add-derived` | the viewed measure's formula; **no new measure** | edit and add | — | `define` | `Name = formula` lines |
+| Autocomplete | shell completion of commands only | Tab | as you type | — | — | — |
+| Located errors | `parse error at N` | marked under the token, with a hint | underlined, explained | — | `parse error at N` | `model line L: … at N` |
+| Function help | `man improv-functions` | `?` / F1 | Help ▸ Functions… | — | — | `improv_functions()` |
+| Import CSV | `import-csv` | `I` | wizard | — | `COPY` into a table | `read_csv` as the source |
+| Import SQL | `import-sql` (SQLite), `refresh-sql` | — | — | refreshed by the scheduler | bind any table | any query as the source |
+| `SQL("…")` source | `define` refuses it; use `import-sql` | — | — | — | refused | — |
+| Export | `export` (JSON), `export-csv`, `export-sql` | `E` (CSV) | wizard (CSV) | `GET /model` (JSON) | the result tables | it is a query |
+| **Scenarios** | `scenario`, `eval --scenario` | — | — | — | — | — |
+| **Undo** | — | **—** | Edit ▸ Undo, Redo | — | — | — |
+| Named LAMBDAs | `define` | **calls work; define them in the CLI** | **calls work; define them in the CLI** | computes them | `define` | — (refused; inline `LAMBDA` works) |
+| FIXPOINT | yes | yes (the same parser and engine) | yes | yes | yes | in `improv(…)`; not in `improv_calc` |
+| what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |
+| **Live sync** (see others' writes) | each command reloads | `R` to revert | File ▸ Revert to Saved | **no: serves its cached copy until its own write hits a conflict** | logical, trigger, commit sync | — |
+| Controlled English | — | accepts it as a formula | shows and accepts it | `/nl/parse`, `/nl/describe` | — | — |
+
+Every front end that saves refuses to overwrite another writer: the save
+fails with a conflict, and you reload and redo the change.
 
 ## Choosing quickly
 
