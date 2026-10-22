@@ -1301,8 +1301,8 @@ mod tests {
     fn scoped_state(env: &[(&str, &str)]) -> Arc<AppState> {
         let (_, path) = seeded_app();
         let auth = Auth::Tokens(vec![
-            token("w", Scope::Write, "ws"),
-            token("r", Scope::Read, "rs"),
+            token("w", Scope::Write, "wsecret-9f3c"),
+            token("r", Scope::Read, "rsecret-7a1d"),
         ]);
         let mut state = AppState::new(path.to_str().unwrap().into(), auth, None);
         state.configure(&lookup(env)).unwrap();
@@ -1994,25 +1994,31 @@ mod tests {
         let app = app(scoped_state(&[]));
         let resp = app
             .clone()
-            .oneshot(get_with_bearer("/measures", Some("rs")));
+            .oneshot(get_with_bearer("/measures", Some("rsecret-7a1d")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
         let cell = json!({"coord": {"dims": {"2": 20}}, "value": 5.0});
-        let resp = app
-            .clone()
-            .oneshot(post_cell("/measures/100/cells", cell.clone(), Some("rs")));
+        let resp = app.clone().oneshot(post_cell(
+            "/measures/100/cells",
+            cell.clone(),
+            Some("rsecret-7a1d"),
+        ));
         assert_eq!(resp.await.unwrap().status(), StatusCode::FORBIDDEN);
         let edit = json!([{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 1.0}]);
         let persist = json!({"persist": true, "edits": edit});
-        let resp = app
-            .clone()
-            .oneshot(post_cell("/measures/102/eval", persist, Some("rs")));
+        let resp = app.clone().oneshot(post_cell(
+            "/measures/102/eval",
+            persist,
+            Some("rsecret-7a1d"),
+        ));
         assert_eq!(resp.await.unwrap().status(), StatusCode::FORBIDDEN);
         let what_if = json!({"edits": edit});
-        let resp = app
-            .clone()
-            .oneshot(post_cell("/measures/102/eval", what_if, Some("rs")));
+        let resp = app.clone().oneshot(post_cell(
+            "/measures/102/eval",
+            what_if,
+            Some("rsecret-7a1d"),
+        ));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
-        let resp = app.oneshot(post_cell("/measures/100/cells", cell, Some("ws")));
+        let resp = app.oneshot(post_cell("/measures/100/cells", cell, Some("wsecret-9f3c")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
     }
 
@@ -2209,7 +2215,7 @@ mod tests {
         let parse = json!({"text": "revenue is price times quantity"});
         let resp = app
             .clone()
-            .oneshot(post_cell("/nl/parse", parse.clone(), Some("rs")));
+            .oneshot(post_cell("/nl/parse", parse.clone(), Some("rsecret-7a1d")));
         let describe = json!({"formula": body_json(resp.await.unwrap()).await});
         let req = |m: &str, uri: &str, t: Option<&str>| -> Request<Body> {
             let body = match uri.rsplit('/').next().unwrap() {
@@ -2241,7 +2247,11 @@ mod tests {
                     let r = app.clone().oneshot(req(&m, &uri, t));
                     async { r.await.unwrap().status() }
                 };
-                let (none, read, write) = (status(None), status(Some("rs")), status(Some("ws")));
+                let (none, read, write) = (
+                    status(None),
+                    status(Some("rsecret-7a1d")),
+                    status(Some("wsecret-9f3c")),
+                );
                 let (none, read, write) = (none.await, read.await, write.await);
                 let want = match scope {
                     Scope::Public => [StatusCode::OK; 3],
@@ -2265,7 +2275,7 @@ mod tests {
         for (body, want) in [(small, 400), (big, 413)] {
             let req = Request::post("/v1/nl/parse")
                 .header("content-type", "application/json")
-                .header("authorization", "Bearer rs")
+                .header("authorization", "Bearer rsecret-7a1d")
                 .body(Body::from(body))
                 .unwrap();
             let resp = app.clone().oneshot(req).await.unwrap();
@@ -2283,17 +2293,20 @@ mod tests {
             async { r.await.unwrap() }
         };
         for _ in 0..2 {
-            assert_eq!(status("rs").await.status(), StatusCode::OK);
+            assert_eq!(status("rsecret-7a1d").await.status(), StatusCode::OK);
         }
-        let resp = status("rs").await;
+        let resp = status("rsecret-7a1d").await;
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(resp.headers()[header::RETRY_AFTER], "31");
         // Another token has its own bucket.
-        assert_eq!(status("ws").await.status(), StatusCode::OK);
+        assert_eq!(status("wsecret-9f3c").await.status(), StatusCode::OK);
         // Two a minute: one is back after 30 s.
         tokio::time::advance(Duration::from_secs(30)).await;
-        assert_eq!(status("rs").await.status(), StatusCode::OK);
-        assert_eq!(status("rs").await.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(status("rsecret-7a1d").await.status(), StatusCode::OK);
+        assert_eq!(
+            status("rsecret-7a1d").await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
         // Bad tokens are limited by address (here: none known), not let through.
         let bad = |_| {
             app.clone()
@@ -2379,18 +2392,18 @@ mod tests {
         let persist = json!({"persist": true, "edits": edit});
         let what_if = json!({"edits": edit});
         for (uri, body, tok, want) in [
-            ("/v1/measures/100/cells", &cell, Some("ws"), 200),
-            ("/measures/100/cells", &bad_cell, Some("ws"), 400),
-            ("/v1/measures/100/cells", &cell, Some("rs"), 403),
+            ("/v1/measures/100/cells", &cell, Some("wsecret-9f3c"), 200),
+            ("/measures/100/cells", &bad_cell, Some("wsecret-9f3c"), 400),
+            ("/v1/measures/100/cells", &cell, Some("rsecret-7a1d"), 403),
             ("/v1/measures/100/cells", &cell, None, 401),
-            ("/v1/measures/102/eval", &persist, Some("ws"), 200),
-            ("/v1/measures/102/eval", &persist, Some("rs"), 403),
-            ("/v1/measures/102/eval", &what_if, Some("rs"), 200),
+            ("/v1/measures/102/eval", &persist, Some("wsecret-9f3c"), 200),
+            ("/v1/measures/102/eval", &persist, Some("rsecret-7a1d"), 403),
+            ("/v1/measures/102/eval", &what_if, Some("rsecret-7a1d"), 200),
         ] {
             let resp = app.clone().oneshot(post_cell(uri, body.clone(), tok));
             assert_eq!(resp.await.unwrap().status().as_u16(), want, "{uri}");
         }
-        let resp = app.oneshot(get_with_bearer("/v1/measures", Some("rs")));
+        let resp = app.oneshot(get_with_bearer("/v1/measures", Some("rsecret-7a1d")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
 
         let lines = audit_lines(&log);
@@ -2417,7 +2430,7 @@ mod tests {
         );
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(
-            !text.contains("ws") && !text.contains("rs"),
+            !text.contains("wsecret-9f3c") && !text.contains("rsecret-7a1d"),
             "a secret leaked"
         );
     }
