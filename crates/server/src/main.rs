@@ -2481,6 +2481,26 @@ mod tests {
             .collect();
         want.sort();
         assert_eq!(openapi_ops(), want, "docs/openapi.json is out of date");
+        // GET /v1/model dumps the internal Model (the J2 problem): it stays
+        // outside the /v1 promise until it returns a documented shape.
+        let doc: serde_json::Value = serde_json::from_str(OPENAPI).unwrap();
+        let unstable: Vec<&str> = doc["paths"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, ops)| {
+                ops.as_object()
+                    .unwrap()
+                    .values()
+                    .any(|o| o["x-improv-unstable"] == true)
+            })
+            .map(|(p, _)| p.as_str())
+            .collect();
+        assert_eq!(
+            unstable,
+            ["/v1/model"],
+            "the endpoints outside the /v1 promise"
+        );
     }
 
     #[tokio::test]

@@ -31,7 +31,9 @@
     "/v1/model": {
       "get": {
         "summary": "The whole model",
+        "description": "Unstable: the body is the store's internal serialization of the model (ids, expression trees, function ids as numbers) and may change in any release. Not covered by the /v1 compatibility promise; use /v1/measures and /v1/measures/{id}/values for a stable view.",
         "x-improv-scope": "read",
+        "x-improv-unstable": true,
         "responses": {
           "200": { "description": "The model, as the store serializes it.", "content": { "application/json": { "schema": { "type": "object" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },

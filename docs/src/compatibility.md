@@ -196,7 +196,11 @@ problem, and says so.
 keeps being served for the rest of 1.x. A deprecated `/v1` endpoint
 answers with a `Deprecation` header and keeps working.
 
-Paths outside `/v1/` (other than `/health`) are not covered.
+Paths outside `/v1/` (other than `/health`) are not covered, nor is any
+endpoint the OpenAPI document marks `x-improv-unstable`. Today that is
+`GET /v1/model`: it returns the store's internal serialization of the
+model, which follows the Rust types (see "Rust crates" below) and may
+change in any release. Read measures and values through `/v1/measures`.
 
 ## DuckDB
 
