@@ -681,6 +681,34 @@ that created them) at `ALTER EXTENSION pg_improv UPDATE`, which also hands
 it their result tables; a model without one gets the bootstrap superuser,
 with a NOTICE.
 
+**Roles: what to grant a builder.** `CREATE EXTENSION` makes two roles when
+they are missing, both `NOLOGIN`. Roles belong to the cluster, so a second
+database's install reuses them (and grants them that database's catalog),
+and `DROP EXTENSION` keeps them and their members (`DROP ROLE` removes
+them once no database's extension uses them).
+
+- **`improv_user`** builds models. It has `USAGE` on schema `improv`,
+  `EXECUTE` on the API, the catalog DML (`SELECT`, `INSERT`, `UPDATE`,
+  `DELETE` on the per-model `improv.*` tables, which row-level security
+  then confines to the models it may act as the owner of). Its result schemas are made by the extension and owned
+  by it, so a builder needs no `CREATE` on the database. A builder still
+  needs `SELECT` on each table it binds, and `TRIGGER` on it for trigger
+  and commit mode.
+- **`improv_admin`** enrolls builders: it holds `improv_user` `WITH ADMIN
+  OPTION`, so it may `GRANT improv_user TO r` and `REVOKE` it, and builds
+  models itself. It acts on no one else's model. Acting on a model is
+  acting as its owner (its reads and writes run as the owner), so a role
+  that acted on every model would act as every owner, superusers among
+  them, through any model. A policy clause `OR pg_has_role(current_user,
+  'improv_admin', 'MEMBER')` would hand that to every admin, quietly and
+  without `BYPASSRLS`. Only a superuser acts on every model, and handing a
+  model to another role is `UPDATE improv.model SET owner`, by the rule below.
+
+```sql
+GRANT improv_user TO alice;                 -- as a superuser or an improv_admin
+GRANT SELECT, TRIGGER ON sales TO alice;    -- the tables alice binds
+```
+
 **Who may change a model.** Only a role that may **act as its owner**: a
 superuser, or a member of the owner with the right to `SET ROLE` to it on
 PG 16+ (any member on PG 15), the rule `ALTER TABLE … OWNER TO` uses

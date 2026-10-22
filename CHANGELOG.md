@@ -37,6 +37,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   `param_default`, `closest_param`, and `complete_named`; `call_at` maps a
   named argument to its parameter.
 
+- **pg_improv: the `improv_user` and `improv_admin` roles.** `CREATE
+  EXTENSION` (and the update to 0.11.0) makes them when missing.
+  `improv_user` is what a non-superuser needs to build models: `USAGE` on
+  schema `improv`, `EXECUTE` on the API, and the catalog DML that
+  row-level security confines to its own models. Result schemas are now
+  made by the extension, owned by the model's owner, so a builder needs no
+  `CREATE` on the database. `improv_admin` grants and revokes
+  `improv_user`. It does not act on other roles' models, because that
+  would mean acting as their owners; only a superuser does. `DROP
+  EXTENSION` keeps both roles. `drop_model` and `drop_measure` drop result
+  tables as the model's owner, so a member of the owner with `SET` but not
+  `INHERIT` may drop them too.
 - **Release sums, signatures and SBOMs.** Every GitHub Release carries
   `SHA256SUMS` over all its files, `SHA256SUMS.sigstore.json` (a cosign
   keyless signature from the release workflow's GitHub OIDC identity,

@@ -55,6 +55,17 @@ pub(crate) fn as_owner<R>(mid: i64, f: impl FnOnce() -> Res<R>) -> Res<R> {
     as_role(owner_of(mid)?, f)
 }
 
+/// Run `f`, DDL on model `mid`'s results, as its owner, who owns them (a
+/// member of it with SET but not INHERIT does not); a superuser runs it as
+/// itself, so it may drop what is left of a model whose owner is gone.
+pub(crate) fn as_results_owner<R>(mid: i64, f: impl FnOnce() -> Res<R>) -> Res<R> {
+    // SAFETY: a plain read of the backend's current user's attributes.
+    if unsafe { pg_sys::superuser() } {
+        return f();
+    }
+    as_owner(mid, f)
+}
+
 /// Run `f` as the bootstrap superuser: catalog work only, never a read of
 /// a bound table or a write of a result table.
 pub(crate) fn as_catalog<R>(f: impl FnOnce() -> Res<R>) -> Res<R> {
@@ -197,6 +208,41 @@ CREATE POLICY write ON improv.sync_state USING (improv.may_act_as((SELECT m.owne
 "#,
     name = "check_owner",
     requires = ["dump_catalog", "l2_logical"]
+);
+
+extension_sql!(
+    r#"
+-- The roles (see the README's Privileges). Roles are cluster-wide: made here
+-- when missing (another database's install, or the DBA, may have made them),
+-- and kept by DROP EXTENSION. improv_user builds models: schema USAGE, the
+-- API (EXECUTE: PUBLIC has it too, unless the DBA revokes it), the catalog
+-- DML that row-level security confines to the models it may act as the
+-- owner of. No UPDATE on improv.sync_state (the
+-- worker's progress) and nothing on improv.slot_to_drop (the worker drops
+-- the slots it names). improv_admin enrolls builders (ADMIN OPTION on
+-- improv_user) and acts on no one else's model: acting on a model is acting
+-- as its owner, so acting on every model would be acting as every owner,
+-- superusers included. Only a superuser does that.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) 'improv_user') THEN
+    CREATE ROLE improv_user NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) 'improv_admin') THEN
+    CREATE ROLE improv_admin NOLOGIN;
+    GRANT improv_user TO improv_admin WITH ADMIN OPTION;
+  END IF;
+END $$;
+GRANT USAGE ON SCHEMA improv TO improv_user;
+GRANT SELECT, INSERT, UPDATE, DELETE ON improv.model, improv.category, improv.item,
+  improv.measure, improv.binding, improv.category_binding, improv.cell, improv.view,
+  improv.meta, improv.model_version, improv.lambda TO improv_user;
+GRANT SELECT, INSERT, DELETE ON improv.sync_state TO improv_user;
+GRANT USAGE ON SEQUENCE improv.model_id_seq TO improv_user;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA improv TO improv_user;
+"#,
+    name = "roles",
+    finalize
 );
 
 /// Whether row-level security filters what `role` reads from `rel` (a

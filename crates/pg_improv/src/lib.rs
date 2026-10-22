@@ -403,7 +403,7 @@ fn ensure_table(model: &str, table: &str, dims: &[String], vt: ValueType) -> Res
         &[schema.as_str().into()],
     )?;
     if have != Some(true) {
-        Spi::run(&format!("CREATE SCHEMA {}", pm::quote_ident(&schema)))?;
+        create_result_schema(&schema)?;
     }
     Spi::run(&pm::create_table_sql(table, dims, vt)?)?;
     Ok(())
@@ -522,11 +522,21 @@ fn create_model(name: &str) -> Res<i64> {
         "INSERT INTO improv.model_version (model_id, tx) VALUES ($1, 1)",
         &[id.into()],
     )?;
-    Spi::run(&format!(
-        "CREATE SCHEMA {}",
-        pm::quote_ident(&pm::result_schema(name))
-    ))?;
+    create_result_schema(&pm::result_schema(name))?;
     Ok(id)
+}
+
+/// Create result schema `schema` owned by the current role. As the
+/// extension: a model's owner needs no CREATE on the database, and a
+/// schema that exists already (anyone's) is an error, never adopted.
+fn create_result_schema(schema: &str) -> Res<()> {
+    let me =
+        Spi::get_one::<String>("SELECT quote_ident(current_user)")?.ok_or("no current user")?;
+    let sql = format!(
+        "CREATE SCHEMA {} AUTHORIZATION {me}",
+        pm::quote_ident(schema)
+    );
+    owner::as_catalog(|| Ok(Spi::run(&sql)?))
 }
 
 /// Bind category `category` (created if missing) to column `col` of `rel`.
@@ -747,7 +757,9 @@ fn redefine(mid: i64, model: &str, row: &pm::MeasureRow, reshaped: bool) -> Res<
     if reshaped {
         pm::validate_name("measure", &row.name)?;
         let table = pm::result_table(model, &row.name);
-        Spi::run(&format!("DROP TABLE IF EXISTS {table}"))?;
+        owner::as_results_owner(mid, || {
+            Ok(Spi::run(&format!("DROP TABLE IF EXISTS {table}"))?)
+        })?;
     }
     recompute_from(mid, model, MeasureId(row.id))?;
     bump_version(mid)?;
@@ -789,7 +801,9 @@ fn drop_measure(model: &str, measure: &str) -> Res<()> {
     if found.is_derived() {
         pm::validate_name("measure", &found.name.0)?;
         let table = pm::result_table(&model_name, &found.name.0);
-        Spi::run(&format!("DROP TABLE IF EXISTS {table}"))?;
+        owner::as_results_owner(mid, || {
+            Ok(Spi::run(&format!("DROP TABLE IF EXISTS {table}"))?)
+        })?;
     }
     let unbinds = Spi::get_one_with_args::<i64>(
         "WITH b AS (DELETE FROM improv.binding WHERE model_id = $1 AND measure_id = $2 \
@@ -853,10 +867,11 @@ fn drop_model(name: &str) -> Res<()> {
     bump_version(mid)?;
     trigger::remove_triggers(&stored)?;
     worker::disable(mid, &stored)?;
-    Spi::run(&format!(
+    let drop = format!(
         "DROP SCHEMA IF EXISTS {} CASCADE",
         pm::quote_ident(&pm::result_schema(&stored))
-    ))?;
+    );
+    owner::as_results_owner(mid, || Ok(Spi::run(&drop)?))?;
     Spi::run_with_args("DELETE FROM improv.model WHERE id = $1", &[mid.into()])?;
     Ok(())
 }

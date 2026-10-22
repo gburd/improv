@@ -23,7 +23,10 @@
 #      else; a writer who is not the owner still drives trigger, commit and
 #      logical sync
 #   5. a restore of the catalog by the models' owner or a superuser loads
-#      it; one by a role that may not own them is refused
+#      it; one by a role that may not own them is refused; DROP EXTENSION
+#      keeps the roles, and a new CREATE EXTENSION uses them
+# The builders are members of improv_user (made by CREATE EXTENSION), not
+# granted the catalog by hand; they have no CREATE on the database.
 # Usage: tests/privileges.sh
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
@@ -58,9 +61,8 @@ wait_for() { # sql want what
 }
 
 q "CREATE EXTENSION pg_improv"
-q "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN; GRANT USAGE ON SCHEMA improv TO alice"
-q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO alice"
-q "GRANT USAGE ON ALL SEQUENCES IN SCHEMA improv TO alice; GRANT CREATE ON DATABASE t TO alice"
+q "CREATE ROLE alice LOGIN; CREATE ROLE bob LOGIN; GRANT improv_user TO alice"
+eq "$(q "SELECT has_database_privilege('alice', 't', 'CREATE')")" f "alice has no CREATE on the database"
 # Region north is alice's half: 1 + 2 + 3 = 6 of a total 6 + 40 = 46.
 q "CREATE TABLE sales (region text, product text, amount float8, PRIMARY KEY (region, product))"
 q "INSERT INTO sales VALUES ('north','a',1), ('north','b',2), ('north','c',3), ('south','a',10), ('south','b',30)"
@@ -133,8 +135,7 @@ echo "ok: revoking the owner's SELECT fails the apply with a clear last_error"
 q "CREATE TABLE secret (k text PRIMARY KEY, v float8); INSERT INTO secret VALUES ('a', 42)"
 # team is a role bob belongs to: what team reads, bob reads already.
 q "CREATE ROLE team; GRANT team TO bob"
-q "GRANT USAGE ON SCHEMA improv TO bob, team; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO bob, team"
-q "GRANT USAGE ON ALL SEQUENCES IN SCHEMA improv TO bob, team; GRANT CREATE ON DATABASE t TO bob, team"
+q "GRANT improv_user TO bob"
 refused() { # sql what
 	local err
 	err=$(U=bob q "$1" 2>&1) && fail "$2: allowed"
@@ -254,8 +255,7 @@ PG16=$(q "SELECT current_setting('server_version_num')::int >= 160000")
 # on PG 16+, so she reads nothing of alice's herself.
 if [ "$PG16" = t ]; then q "CREATE ROLE carol LOGIN; GRANT alice TO carol WITH INHERIT FALSE, SET TRUE"
 else q "CREATE ROLE carol LOGIN; GRANT alice TO carol"; fi
-q "GRANT USAGE ON SCHEMA improv TO carol"
-q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO carol; GRANT USAGE ON ALL SEQUENCES IN SCHEMA improv TO carol"
+q "GRANT improv_user TO carol"
 [ "$PG16" = t ] && { U=carol q "SELECT count(*) FROM pub" >/dev/null 2>&1 && fail "carol (INHERIT FALSE) reads pub"; }
 eq "$(U=carol q "$WI improv.what_if('p', $EDIT)")" 'W {"K": "a"} 5' "carol's what_if, as alice"
 U=carol q "SELECT improv.define('p','U = V * 2')" >/dev/null
@@ -263,8 +263,7 @@ U=carol q "SELECT improv.recalc('p')" >/dev/null
 eq "$(q "SELECT value FROM improv_p.u")" 2 "carol, a member of alice, changes alice's model"
 if [ "$PG16" = t ]; then
 	# A member without SET may not act as alice (PG 16+, as ALTER ... OWNER TO).
-	q "CREATE ROLE dave LOGIN; GRANT alice TO dave WITH SET FALSE, INHERIT FALSE; GRANT USAGE ON SCHEMA improv TO dave"
-	q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO dave"
+	q "CREATE ROLE dave LOGIN; GRANT alice TO dave WITH SET FALSE, INHERIT FALSE; GRANT improv_user TO dave"
 	denied dave "SELECT improv.define('p','X = V * 3')" "dave, a member of alice without SET"
 	U=dave q "$WI improv.what_if('p', $EDIT)" >/dev/null 2>&1 && fail "dave, a member of alice without SET, runs what_if"
 	echo "ok: alice and carol (a member of alice with SET) change her model and what_if it; dave (a member without SET) may not"
@@ -273,6 +272,8 @@ else
 fi
 # Privileges' option (b): alice wraps what_if on p, and grants EXECUTE on it.
 # (The README's function text, for model p and analyst bob.)
+# (the wrapper's own schema: building models needs no CREATE on the database)
+q "GRANT CREATE ON DATABASE t TO alice"
 U=alice q "CREATE SCHEMA alice_api"
 U=alice q "CREATE FUNCTION alice_api.what_if_p(edits jsonb)
 RETURNS TABLE (measure text, coord jsonb, value jsonb)
@@ -333,9 +334,7 @@ for r in bob alice postgres; do
 	# (the catalog names bound tables by regclass: the pre-data comes first)
 	"$PG_BIN/psql" -h "$D" -p "$P" -U postgres -d "r_$r" -qAtX -v ON_ERROR_STOP=1 -c "CREATE EXTENSION pg_improv" \
 		-c "CREATE TABLE secret (k text PRIMARY KEY, v float8)" \
-		-c "GRANT USAGE ON SCHEMA improv TO $r" \
-		-c "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO $r" \
-		-c "GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA improv TO $r"
+		-c "GRANT UPDATE ON SEQUENCE improv.model_id_seq TO $r" # the dump's setval
 done
 restore bob r_bob || fail "the owner's restore: $(cat "$D/r_bob.err")"
 eq "$(models r_bob)" s:bob "restored by its owner"
@@ -346,4 +345,15 @@ eq "$(models r_alice)" "" "nothing restored by alice"
 restore postgres r_postgres || fail "a superuser's restore: $(cat "$D/r_postgres.err")"
 eq "$(models r_postgres)" s:bob "restored by a superuser"
 echo "ok: a restore by the models' owner or a superuser loads them; one by a role that may not own them is refused"
+# Roles are the cluster's: DROP EXTENSION keeps them (and their members),
+# and CREATE EXTENSION again grants improv_user the new catalog.
+qr() { "$PG_BIN/psql" -h "$D" -p "$P" -U "${U:-postgres}" -d r_postgres -qAtX -v ON_ERROR_STOP=1 -c "$1"; }
+qr "DROP EXTENSION pg_improv CASCADE"
+eq "$(qr "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE 'improv\_%'")" improv_admin,improv_user \
+	"DROP EXTENSION keeps the roles"
+qr "CREATE EXTENSION pg_improv"
+U=bob qr "SELECT improv.create_model('again')" >/dev/null
+eq "$(qr "SELECT owner FROM improv.model WHERE name = 'again'")" bob "an improv_user builds after DROP and CREATE EXTENSION"
+echo "ok: DROP EXTENSION keeps improv_user and improv_admin; CREATE EXTENSION again grants improv_user its catalog"
+
 echo PASS
