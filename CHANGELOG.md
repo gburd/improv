@@ -189,6 +189,19 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **improv-server: an unknown token gets 401, not 403.** 403 now means the
   token is valid but its scope is too narrow. A 401 carries
   `WWW-Authenticate: Bearer` and a JSON error body.
+- **pg_improv trigger mode is 3x faster per statement, and 20x with an
+  index.** A trigger-mode statement read each bound table once per
+  binding, serially: pgrx ran the scoped load read-write, which kept
+  Postgres from using parallel workers. It now finds the touched rows in
+  one read-only (parallel) scan per table, reads them back by `ctid` for
+  every binding, and reads only the touched coordinates' result rows.
+  Integer, text, `bool`, `numeric` and `uuid` dimension columns compare
+  as themselves, so an index on the bound dimension columns serves the
+  scan. At 2.5M rows (PG 18): a one-row INSERT takes 105 ms (was 310),
+  ten in one transaction 900 ms (was 2.9 s), a 1,000-row INSERT 159 ms
+  (was 370); with an index on the dimension columns, 15 ms, 50 ms and
+  79 ms. The guide's Postgres page says when to add the index.
+
 - **The logical worker folds text `min`/`max` under the column's
   collation.** Before, every change to a text `min` or `max` binding
   reloaded the model. The fold now orders texts by the value column's

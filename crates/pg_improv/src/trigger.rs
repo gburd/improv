@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use improv_core_model::{CategoryId, MeasureId, Model};
+use improv_core_model::{CategoryId, MeasureId, Model, ValueType};
 use improv_engine::{CellValue, CoordKey};
 use improv_pg_model as pm;
 use pgrx::prelude::*;
@@ -84,7 +84,16 @@ fn load_scoped(
                     ARRAY(SELECT b.dim_cols ->> c.name \
                           FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
                           JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
-                          ORDER BY u.ord) \
+                          ORDER BY u.ord), \
+                    ARRAY(SELECT (SELECT t.typname::text FROM pg_attribute a \
+                                  JOIN pg_type t ON t.oid = a.atttypid \
+                                  WHERE a.attrelid = b.rel AND a.attname = b.dim_cols ->> c.name \
+                                    AND NOT a.attisdropped) \
+                          FROM unnest(m.categories) WITH ORDINALITY u(cid, ord) \
+                          JOIN improv.category c ON c.model_id = b.model_id AND c.id = u.cid \
+                          ORDER BY u.ord), \
+                    (SELECT c.relkind = 'r' AND NOT c.relhassubclass FROM pg_class c \
+                     WHERE c.oid = b.rel) \
              FROM improv.binding b \
              JOIN improv.measure m ON m.model_id = b.model_id AND m.id = b.measure_id \
              WHERE b.model_id = $1 ORDER BY b.measure_id",
@@ -98,6 +107,8 @@ fn load_scoped(
                 req(&r, 3)?,
                 r.get(4)?,
                 req(&r, 5)?,
+                req(&r, 6)?,
+                r.get(7)?.unwrap_or(false),
             ))
         })
         .collect::<Res<_>>()
@@ -124,33 +135,90 @@ fn load_scoped(
     Ok(Loaded { name, mid, model })
 }
 
-/// One binding: (measure id, relation, value column, agg, dimension columns).
-type BindingRow = (i64, String, String, Option<String>, Vec<String>);
+/// One binding: (measure id, relation, value column, agg, dimension
+/// columns, their types, whether the relation is a plain table without
+/// inheritance children).
+type BindingRow = (
+    i64,
+    String,
+    String,
+    Option<String>,
+    Vec<String>,
+    Vec<Option<String>>,
+    bool,
+);
+
+/// A scope filter on one relation: the relation, its filtered columns and
+/// their types, and the touched values (row-aligned, one list per column).
+type Filter = (String, Vec<String>, Vec<Option<String>>, Vec<Vec<String>>);
 
 /// Read each binding's rows (at the `touched` coordinates when given).
+/// Bindings on one plain table under one filter find its touched rows in a
+/// single scan ([`pm::scoped_tids_sql`]) and each reads them by `ctid`.
 fn read_bound(
     model: &Model,
     bindings: Vec<BindingRow>,
     touched: Option<Touched<'_>>,
 ) -> Res<Vec<pm::BoundRows>> {
-    let mut bound = Vec::with_capacity(bindings.len());
-    for (measure_id, rel, value_col, agg, dims) in bindings {
-        check_for_interrupts!();
+    let mut reads = Vec::with_capacity(bindings.len());
+    let mut sharing: HashMap<Filter, usize> = HashMap::new();
+    for (measure_id, rel, value_col, agg, dims, types, plain) in bindings {
         let measure = MeasureId(id32(measure_id)?);
         let m = model
             .measures
             .get(&measure)
             .ok_or("binding for an unknown measure")?;
-        let vt = m.value_type;
-        let filter =
-            touched.and_then(|(cats, rows)| pm::scope_filter(cats, rows, &m.categories, &dims));
-        let (rel, args) = match filter {
-            Some((cols, values)) => (pm::scoped_rel_sql(&rel, &cols), values),
+        let filter = touched
+            .and_then(|(cats, rows)| pm::scope_filter(cats, rows, &m.categories, &dims))
+            .map(|(cols, values)| {
+                let types = cols
+                    .iter()
+                    .map(|c| {
+                        dims.iter()
+                            .position(|d| d == c)
+                            .and_then(|i| types.get(i).cloned().flatten())
+                    })
+                    .collect();
+                (rel.clone(), cols, types, values)
+            });
+        if let (Some(f), true) = (&filter, plain) {
+            *sharing.entry(f.clone()).or_default() += 1;
+        }
+        reads.push((measure, rel, value_col, agg, dims, m.value_type, filter));
+    }
+    let mut tids: HashMap<Filter, Option<String>> = HashMap::new();
+    let mut bound = Vec::with_capacity(reads.len());
+    for (measure, rel, value_col, agg, dims, vt, filter) in reads {
+        check_for_interrupts!();
+        // A text[] per filtered column, or the touched rows' ctids as text.
+        let (rel, args): (String, Vec<pgrx::datum::DatumWithOid>) = match filter {
             None => (rel, Vec::new()),
+            Some(f) => {
+                let types: Vec<Option<&str>> = f.2.iter().map(Option::as_deref).collect();
+                let tid = match tids.get(&f) {
+                    Some(t) => t.clone(),
+                    None if sharing.get(&f).is_some_and(|n| *n > 1) => {
+                        let sql = pm::scoped_tids_sql(&f.0, &f.1, &types);
+                        let args: Vec<_> = f.3.iter().cloned().map(Into::into).collect();
+                        // Read-only (`select`, not `get_one`'s `update`), so
+                        // the scan may run in parallel.
+                        let t = Spi::connect(|c| c.select(&sql, None, &args)?.first().get_one())?;
+                        tids.insert(f.clone(), t.clone());
+                        t
+                    }
+                    None => None,
+                };
+                match tid {
+                    Some(t) => (pm::tid_rel_sql(&f.0), vec![t.into()]),
+                    None => (
+                        pm::scoped_rel_sql(&f.0, &f.1, &types),
+                        f.3.into_iter().map(Into::into).collect(),
+                    ),
+                }
+            }
         };
         let sql = pm::select_bound_sql(&rel, &dims, &value_col, agg.as_deref(), vt)?;
         let rows = Spi::connect(|c| {
-            let args: Vec<_> = args.into_iter().map(Into::into).collect();
             c.select(&sql, None, &args)?
                 .map(|r| {
                     let d = (1..=dims.len())
@@ -236,7 +304,17 @@ fn write_plan(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
         let table = pm::result_table(&l.name, name);
         let vt = l.model.measures[&target].value_type;
         ensure_table(&l.name, &table, &dims, vt)?;
-        let mut old = read_results(&table, &dims, vt)?;
+        let filter = match &plan.scope {
+            Some(s) => s.result_filter(&l.model, target)?,
+            None => None,
+        };
+        let mut old = match filter {
+            Some((positions, values)) => {
+                let sql = pm::scoped_result_sql(&table, &dims, vt, &positions)?;
+                read_rows(&sql, dims.len(), vt, values)?
+            }
+            None => read_results(&table, &dims, vt)?,
+        };
         if let Some(s) = &plan.scope {
             s.retain_rows(&l.model, target, &mut old)?;
             s.retain_rows(&l.model, target, &mut new)?;
@@ -244,6 +322,24 @@ fn write_plan(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
         changed += write_results(&table, &dims, vt, &old, &new)?;
     }
     Ok(changed)
+}
+
+/// The result rows `sql` (a [`pm::scoped_result_sql`]) reads with one
+/// `text[]` per filtered column in `values`.
+fn read_rows(sql: &str, n: usize, vt: ValueType, values: Vec<Vec<String>>) -> Res<pm::ResultRows> {
+    let args: Vec<pgrx::datum::DatumWithOid> = values.into_iter().map(Into::into).collect();
+    Spi::connect(|c| {
+        let mut rows = pm::ResultRows::new();
+        for r in c.select(sql, None, &args)? {
+            let key = (1..=n)
+                .map(|i| req::<String>(&r, i))
+                .collect::<Result<Vec<_>, _>>()?;
+            if let Some(v) = get_value(&r, n + 1, vt)? {
+                rows.insert(key, v);
+            }
+        }
+        Ok(rows)
+    })
 }
 
 /// Drop model `name`'s sync triggers from every relation. As the extension:
@@ -754,6 +850,40 @@ mod tests {
             Some("2023-01-01")
         );
         assert_eq!(ann(2021), None);
+    }
+
+    /// B3: two bindings on one table share one scan for the touched rows
+    /// (read back by `ctid`), and a `numeric` or `int` dimension compares as
+    /// itself: `1.50` and `1.5` are equal numbers but two items, and a write
+    /// to one leaves the other's cell alone.
+    #[pg_test]
+    fn trigger_mode_reads_touched_rows_once_per_table() {
+        for sql in [
+            "CREATE TABLE f (k numeric, y int, a float8, b float8)",
+            "INSERT INTO f VALUES (1.50, 2020, 1, 10), (1.5, 2020, 2, 20), (2, 2021, 3, 30)",
+            "SELECT improv.create_model('n')",
+            "SELECT improv.bind_category('n', 'K', 'f', 'k')",
+            "SELECT improv.bind_category('n', 'Y', 'f', 'y')",
+            "SELECT improv.bind_measure('n', 'A', 'f', 'a', agg => 'sum')",
+            "SELECT improv.bind_measure('n', 'B', 'f', 'b', agg => 'sum')",
+            "SELECT improv.define('n', 'RA = A * 1')",
+            "SELECT improv.define('n', 'RB = B + A')",
+            "SELECT improv.set_sync_mode('n', 'trigger')",
+            "INSERT INTO f VALUES (1.5, 2020, 5, 50)",
+        ] {
+            Spi::run(sql).unwrap();
+        }
+        let all = |t: &str| {
+            text(&format!(
+                "SELECT string_agg(k || '/' || y || '=' || value, ' ' ORDER BY k, y) FROM improv_n.{t}"
+            ))
+        };
+        assert_eq!(all("ra"), "1.5/2020=7 1.50/2020=1 2/2021=3");
+        assert_eq!(all("rb"), "1.5/2020=77 1.50/2020=11 2/2021=33");
+        Spi::run("UPDATE f SET a = a + 100 WHERE k = 1.50 AND k::text = '1.50'").unwrap();
+        assert_eq!(all("ra"), "1.5/2020=7 1.50/2020=101 2/2021=3");
+        Spi::run("DELETE FROM f WHERE y = 2021").unwrap();
+        assert_eq!(all("rb"), "1.5/2020=77 1.50/2020=111");
     }
 
     /// P1-4: `agg => 'count_distinct'` counts each coordinate's distinct

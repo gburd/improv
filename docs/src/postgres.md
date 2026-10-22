@@ -167,6 +167,19 @@ one-row updates in one transaction at 10k cells: 82 ms, against 6.6 s in
 trigger mode), or when you can't put triggers on the tables. Use `recalc`
 after bulk loads or inside migrations.
 
+**Trigger mode's cost** is one read of the touched coordinates' rows in
+each bound table, per statement, plus the engine's recompute of those
+coordinates. Without an index the read is a sequential scan, so it grows
+with the table: at 2.5M rows a one-row INSERT takes about 105 ms and a
+1,000-row INSERT about 160 ms (PG 18, two aggregated bindings). An index
+on the bound dimension columns, in the model's category order (`CREATE
+INDEX ON contribution_rows (person, year, release, scope)`), makes the
+read an index lookup: 15 ms for a one-row INSERT, 50 ms for ten in one
+transaction, 79 ms for 1,000 rows. Integer, text, `bool`, `numeric` and
+`uuid` columns compare as themselves, so such an index serves them;
+float, date and timestamp columns compare as their text, and no plain
+index helps.
+
 ## Functions written in Improv's language
 
 `LANGUAGE improv` lets any role write a SQL function as an Improv formula:

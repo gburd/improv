@@ -117,6 +117,34 @@ impl Scope {
         });
     }
 
+    /// For `measure`'s result table: the positions (in its dimension
+    /// columns) of the touched categories it has, and per position the
+    /// touched item names, row-aligned. `None` when it has none of them, so
+    /// every row is in scope. Rows read through it ([`scoped_result_sql`])
+    /// are exactly those [`Scope::retain_rows`] keeps.
+    pub fn result_filter(&self, model: &Model, measure: MeasureId) -> Result<Option<ResultFilter>> {
+        let m = model
+            .measures
+            .get(&measure)
+            .ok_or_else(|| Error::Catalog(format!("unknown measure {}", measure.0)))?;
+        let (shared, keys) = self.project(&m.categories);
+        if shared.is_empty() {
+            return Ok(None);
+        }
+        let name = |id: &ItemId| model.items.get(id).map(|i| i.name.0.clone());
+        let tuples: BTreeSet<Vec<String>> = keys
+            .iter()
+            .filter_map(|k| k.iter().map(name).collect())
+            .collect();
+        let mut values = vec![Vec::with_capacity(tuples.len()); shared.len()];
+        for t in tuples {
+            for (v, x) in values.iter_mut().zip(t) {
+                v.push(x);
+            }
+        }
+        Ok(Some((shared.iter().map(|&(_, p)| p).collect(), values)))
+    }
+
     /// Keep only `measure`'s result rows in scope.
     pub fn retain_rows(
         &self,
@@ -144,6 +172,10 @@ impl Scope {
         Ok(())
     }
 }
+
+/// [`Scope::result_filter`]: dimension positions, and per position the
+/// touched names (row-aligned).
+pub type ResultFilter = (Vec<usize>, Vec<Vec<String>>);
 
 /// What a change to some input measures must recompute.
 #[derive(Debug, Clone, PartialEq)]
@@ -217,19 +249,110 @@ pub fn scope_filter(
     Some((shared.into_iter().map(|(_, c)| c.clone()).collect(), values))
 }
 
-/// Relation `rel` (already quoted) restricted to the rows whose `cols`, as
-/// text, are one of the tuples passed as `$1::text[]`, `$2::text[]`, … (one
+/// The most rows [`scoped_tids_sql`] lists; past it, it returns NULL.
+pub const MAX_TIDS: usize = 100_000;
+
+/// The `ctid`s of [`scoped_rel_sql`]'s rows (`rel` a plain table, without
+/// inheritance children), as `tid[]` text, or NULL past 100,000 rows: one
+/// scan finds the touched rows for every binding on `rel`, which then read
+/// them by [`tid_rel_sql`].
+pub fn scoped_tids_sql(rel: &str, cols: &[String], types: &[Option<&str>]) -> String {
+    format!(
+        "SELECT CASE WHEN count(*) <= {MAX_TIDS} THEN coalesce(array_agg(ctid), '{{}}')::text END \
+         FROM {rel} WHERE {}",
+        scope_where(cols, types)
+    )
+}
+
+/// Whether a dimension column of type `typname` compares as itself in a
+/// scope filter ([`scoped_rel_sql`]): its `::text` read back as the type is
+/// equal to it, so the filter can use the column's own equality (and an
+/// index on it). Not for floats (their text depends on
+/// `extra_float_digits`) nor dates and timestamps (on `DateStyle`).
+pub fn native_scope_type(typname: &str) -> bool {
+    matches!(
+        typname,
+        "int2" | "int4" | "int8" | "text" | "varchar" | "bpchar" | "bool" | "numeric" | "uuid"
+    )
+}
+
+/// Relation `rel` restricted to the rows whose `ctid` is in `$1::tid[]` (a
+/// TID scan): [`scoped_tids_sql`]'s rows, as `select_bound_sql`'s `rel`.
+/// Read under the same snapshot as [`scoped_tids_sql`] (one trigger call's
+/// active snapshot), a `ctid` still names the row version that query saw.
+pub fn tid_rel_sql(rel: &str) -> String {
+    format!("(SELECT * FROM {rel} WHERE ctid = ANY($1::text::tid[])) improv_scope")
+}
+
+/// `select_result_sql` restricted to the rows whose dimension columns at
+/// `positions` are one of the tuples passed as `$1::text[]`, … (one array
+/// per position, row-aligned): the in-scope rows of a result table
+/// ([`Scope::result_filter`]), through its primary key.
+pub fn scoped_result_sql(
+    table: &str,
+    dim_cols: &[String],
+    vt: improv_core_model::ValueType,
+    positions: &[usize],
+) -> Result<String> {
+    let lhs: Vec<String> = positions
+        .iter()
+        .map(|&p| {
+            dim_cols
+                .get(p)
+                .map(|c| quote_ident(c))
+                .ok_or_else(|| Error::Catalog(format!("no dimension column {p}")))
+        })
+        .collect::<Result<_>>()?;
+    let arrays: Vec<String> = (1..=lhs.len()).map(|i| format!("${i}::text[]")).collect();
+    Ok(format!(
+        "{} WHERE ({}) IN (SELECT * FROM unnest({}))",
+        crate::select_result_sql(table, dim_cols, vt)?,
+        lhs.join(", "),
+        arrays.join(", ")
+    ))
+}
+
+/// Relation `rel` (already quoted) restricted to the rows whose `cols` are
+/// one of the tuples passed, as text, in `$1::text[]`, `$2::text[]`, … (one
 /// array per column, row-aligned): a subquery to read a binding through
 /// (`select_bound_sql`'s `rel`) so an aggregated binding loads only the
-/// touched coordinates' groups.
-pub fn scoped_rel_sql(rel: &str, cols: &[String]) -> String {
+/// touched coordinates' groups. A column whose type is in `types` (by
+/// position, `None` for text) and [`native_scope_type`] compares as that
+/// type, so an index on it serves the filter; the values then may match
+/// more rows than their text (`1.50` and `1.5`), which the caller drops
+/// ([`Scope::restrict_inputs`]).
+pub fn scoped_rel_sql(rel: &str, cols: &[String], types: &[Option<&str>]) -> String {
+    format!(
+        "(SELECT * FROM {rel} WHERE {}) improv_scope",
+        scope_where(cols, types)
+    )
+}
+
+/// [`scoped_rel_sql`]'s condition.
+fn scope_where(cols: &[String], types: &[Option<&str>]) -> String {
+    let native = |i: usize| {
+        types
+            .get(i)
+            .copied()
+            .flatten()
+            .filter(|t| native_scope_type(t))
+    };
     let lhs: Vec<String> = cols
         .iter()
-        .map(|c| format!("{}::text", quote_ident(c)))
+        .enumerate()
+        .map(|(i, c)| match native(i) {
+            Some(_) => quote_ident(c),
+            None => format!("{}::text", quote_ident(c)),
+        })
         .collect();
-    let arrays: Vec<String> = (1..=cols.len()).map(|i| format!("${i}::text[]")).collect();
+    let arrays: Vec<String> = (1..=cols.len())
+        .map(|i| match native(i - 1) {
+            Some(t) => format!("${i}::text[]::{}[]", quote_ident(t)),
+            None => format!("${i}::text[]"),
+        })
+        .collect();
     format!(
-        "(SELECT * FROM {rel} WHERE ({}) IN (SELECT * FROM unnest({}))) improv_scope",
+        "({}) IN (SELECT * FROM unnest({}))",
         lhs.join(", "),
         arrays.join(", ")
     )
@@ -768,10 +891,21 @@ mod tests {
         // Over neither: every row.
         assert_eq!(scope_filter(&[T], &rows, &[P], &cols(&["product"])), None);
         assert_eq!(
-            scoped_rel_sql("public.sales", &cols(&["quarter", "product"])),
+            scoped_rel_sql("public.sales", &cols(&["quarter", "product"]), &[]),
             "(SELECT * FROM public.sales WHERE (\"quarter\"::text, \"product\"::text) \
              IN (SELECT * FROM unnest($1::text[], $2::text[]))) improv_scope"
         );
+        // An int and a text column compare natively; a float as text.
+        assert_eq!(
+            scoped_rel_sql(
+                "s",
+                &cols(&["y", "p", "f"]),
+                &[Some("int4"), Some("text"), Some("float8")]
+            ),
+            "(SELECT * FROM s WHERE (\"y\", \"p\", \"f\"::text) IN (SELECT * FROM \
+             unnest($1::text[]::\"int4\"[], $2::text[]::\"text\"[], $3::text[]))) improv_scope"
+        );
+        assert!(native_scope_type("uuid") && !native_scope_type("date"));
     }
 
     #[test]
@@ -819,6 +953,38 @@ mod tests {
         assert!(Scope::default()
             .retain_rows(&m, MeasureId(99), &mut rows)
             .is_err());
+        // The SQL filter keeps the same rows: Widget at position 1.
+        let s = touched(&m, &[P], &[&[Some("Widget")], &[Some("Widget")]]);
+        assert_eq!(
+            s.result_filter(&m, PRICE).unwrap(),
+            Some((vec![1], vec![vec!["Widget".to_string()]]))
+        );
+        let s = touched(&m, &[T, P], &[&[Some("Q2"), Some("Gadget")]]);
+        assert_eq!(
+            s.result_filter(&m, PRICE).unwrap(),
+            Some((vec![0, 1], vec![vec!["Q2".into()], vec!["Gadget".into()]]))
+        );
+        assert!(s.result_filter(&m, MeasureId(99)).is_err());
+        // A measure with none of the touched categories: every row.
+        let mut m2 = m.clone();
+        m2.measures.get_mut(&PRICE).unwrap().categories = vec![];
+        assert_eq!(s.result_filter(&m2, PRICE).unwrap(), None);
+        let cols = |c: &[&str]| c.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            scoped_result_sql("r", &cols(&["time", "product"]), ValueType::Number, &[1]).unwrap(),
+            "SELECT \"time\", \"product\", value::float8 FROM r WHERE (\"product\") \
+             IN (SELECT * FROM unnest($1::text[]))"
+        );
+        assert!(scoped_result_sql("r", &cols(&["time"]), ValueType::Number, &[1]).is_err());
+        assert_eq!(
+            scoped_tids_sql("s", &cols(&["a"]), &[None]),
+            "SELECT CASE WHEN count(*) <= 100000 THEN coalesce(array_agg(ctid), '{}')::text END \
+             FROM s WHERE (\"a\"::text) IN (SELECT * FROM unnest($1::text[]))"
+        );
+        assert_eq!(
+            tid_rel_sql("s"),
+            "(SELECT * FROM s WHERE ctid = ANY($1::text::tid[])) improv_scope"
+        );
     }
 
     #[test]
