@@ -74,6 +74,7 @@ as the model's owner; that privilege model (see
 | --- | --- | --- | --- |
 | `improv.max_cells` | integer | 5000000 | any session |
 | `improv.raise_errors` | boolean | off | any session |
+| `improv.commit_capture` | enum: `relations`, `rows` | `relations` | any session; read by `set_sync_mode` |
 | `improv.database` | string | | `postgresql.conf`, restart; only with `shared_preload_libraries` |
 | `improv.poll_ms` | integer, ms (10–60000) | 200 | `postgresql.conf`, reload |
 | `improv.max_slot_lag` | integer, MB (0 = never) | 4096 | `postgresql.conf`, reload |

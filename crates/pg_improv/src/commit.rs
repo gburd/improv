@@ -18,6 +18,19 @@
 //! commit: each backend caches the commit-mode models' bound relations,
 //! and a statement trigger on `improv.model` and `improv.binding` sends a
 //! relcache invalidation that drops every backend's copy.
+//!
+//! The hooks see which relations were written, not which rows, so the
+//! recompute is in full. With `improv.commit_capture = 'rows'` when the
+//! mode is entered, each bound relation also gets statement triggers that
+//! note the touched coordinates from their transition tables
+//! ([`capture`]), and the recompute reads and recomputes only those, as
+//! trigger mode does ([`super::trigger::sync_rows`]), once per relation at
+//! COMMIT. It does so only when the model's capture saw every statement
+//! that wrote one of its relations: [`executor_finish`] checks each
+//! statement's captures. A write without one (triggers disabled, a
+//! relation bound after the mode was entered), a TRUNCATE, a model over a
+//! partitioned or inherited table, or more than 100,000 captured
+//! coordinates, recomputes in full.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
@@ -32,6 +45,33 @@ use pgrx::{PgList, PgLogLevel, PgSqlErrorCode};
 
 use super::{id32, lock_model, req, Res};
 
+/// `improv.commit_capture`: what entering commit mode installs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, pgrx::PostgresGucEnum)]
+pub(crate) enum Capture {
+    /// Nothing: the written relations' dependents recompute in full.
+    #[name = c"relations"]
+    Relations,
+    /// Statement triggers that capture the touched coordinates.
+    #[name = c"rows"]
+    Rows,
+}
+
+pub(crate) static CAPTURE: pgrx::GucSetting<Capture> =
+    pgrx::GucSetting::<Capture>::new(Capture::Relations);
+
+/// The most coordinates a capture keeps per relation; past it, in full.
+const MAX_CAPTURE: usize = 100_000;
+
+/// Touched dimension values, one list per row.
+type Rows = Vec<Vec<Option<String>>>;
+
+/// A relation's captures for one model: its categories and the touched
+/// coordinates (`None`: recompute in full).
+type Captured = (Vec<i64>, Option<Rows>);
+
+/// One statement's captures: (model, relation).
+type Frame = HashSet<(String, pg_sys::Oid)>;
+
 thread_local! {
     /// Relations this transaction wrote, each with the subtransaction that
     /// first wrote it.
@@ -39,6 +79,15 @@ thread_local! {
         RefCell::default();
     /// Pre-commit model recomputes run by this backend (read by the tests).
     static RECOMPUTES: Cell<u64> = const { Cell::new(0) };
+    /// Of those, the ones restricted to captured rows (read by the tests).
+    static SCOPED: Cell<u64> = const { Cell::new(0) };
+    /// Per (model, relation), what its capture triggers saw.
+    static CAPTURED: RefCell<HashMap<(String, pg_sys::Oid), Captured>> = RefCell::default();
+    /// Per written relation, the models whose capture saw every statement
+    /// that wrote it.
+    static CAP_OK: RefCell<HashMap<pg_sys::Oid, HashSet<String>>> = RefCell::default();
+    /// Per running statement (ExecutorFinish or utility), its captures.
+    static FRAMES: RefCell<Vec<Frame>> = RefCell::default();
     /// The commit-mode models' bound relations (and their partition
     /// ancestors and descendants), loaded at [`CACHE_GEN`] = the first.
     static BOUND: RefCell<Option<(u64, HashSet<pg_sys::Oid>)>> = RefCell::default();
@@ -56,6 +105,16 @@ static mut PREV_UTILITY: pg_sys::ProcessUtility_hook_type = None;
 
 /// Install the hooks and the transaction callbacks (from `_PG_init`).
 pub(crate) fn init() {
+    pgrx::GucRegistry::define_enum_guc(
+        c"improv.commit_capture",
+        c"What entering commit sync mode installs on the bound tables.",
+        c"relations (the default): nothing, and each COMMIT recomputes the written tables' \
+          dependents in full; rows: statement triggers that capture the touched coordinates, so \
+          COMMIT recomputes only those. Read by improv.set_sync_mode.",
+        &CAPTURE,
+        pgrx::GucContext::Userset,
+        pgrx::GucFlags::default(),
+    );
     // SAFETY: _PG_init runs once per process, on the backend thread, before
     // any query; the hooks chain to whatever was installed before them.
     unsafe {
@@ -155,11 +214,44 @@ pub(crate) fn check_preloaded() -> Res<()> {
 /// Stands for every relation (`TRUNCATE … CASCADE`).
 const ANY_REL: pg_sys::Oid = pg_sys::InvalidOid;
 
-/// Note that the current (sub)transaction wrote relation `rel`.
-fn note(rel: pg_sys::Oid) {
+/// Note that the current (sub)transaction wrote relation `rel`, in a
+/// statement whose capture triggers made `frame`'s captures.
+fn note(rel: pg_sys::Oid, frame: &Frame) {
     if rel.to_u32() >= pg_sys::FirstNormalObjectId {
         note_raw(rel); // not a catalog, nor InvalidOid (a missing name)
+        seen(rel, frame);
     }
+}
+
+/// Keep, of the models whose capture saw every write to `rel` so far, only
+/// those `frame` shows captured this one.
+fn seen(rel: pg_sys::Oid, frame: &Frame) {
+    let caught: HashSet<String> = frame
+        .iter()
+        .filter(|(_, r)| *r == rel)
+        .map(|(m, _)| m.clone())
+        .collect();
+    CAP_OK.with(|c| {
+        let mut c = c.borrow_mut();
+        match c.get_mut(&rel) {
+            Some(ok) => ok.retain(|m| caught.contains(m)),
+            None => {
+                c.insert(rel, caught);
+            }
+        }
+    });
+}
+
+/// Start a statement's frame of captures (its AFTER STATEMENT triggers fire
+/// before [`pop_frame`]).
+fn push_frame() {
+    FRAMES.with(|f| f.borrow_mut().push(Frame::new()));
+}
+
+/// End the statement's frame. (A statement that errors leaves its frame;
+/// the next ones push above it, and the transaction's end clears them.)
+fn pop_frame() -> Frame {
+    FRAMES.with(|f| f.borrow_mut().pop()).unwrap_or_default()
 }
 
 fn note_raw(rel: pg_sys::Oid) {
@@ -172,10 +264,12 @@ fn note_raw(rel: pg_sys::Oid) {
 
 #[pg_guard]
 unsafe extern "C-unwind" fn executor_finish(qd: *mut pg_sys::QueryDesc) {
+    push_frame();
     match PREV_FINISH {
         Some(prev) => pg_guard_ffi_boundary(|| prev(qd)),
         None => pg_sys::standard_ExecutorFinish(qd),
     }
+    let frame = pop_frame();
     let ps = (*qd).plannedstmt;
     if ps.is_null() || (*ps).resultRelations.is_null() {
         return;
@@ -191,7 +285,7 @@ unsafe extern "C-unwind" fn executor_finish(qd: *mut pg_sys::QueryDesc) {
     let rtable = PgList::<pg_sys::RangeTblEntry>::from_pg((*ps).rtable);
     for i in PgList::<()>::from_pg((*ps).resultRelations).iter_int() {
         if let Some(rte) = usize::try_from(i - 1).ok().and_then(|i| rtable.get_ptr(i)) {
-            note((*rte).relid);
+            note((*rte).relid, &frame);
         }
     }
 }
@@ -208,6 +302,7 @@ unsafe extern "C-unwind" fn process_utility(
     dest: *mut pg_sys::DestReceiver,
     qc: *mut pg_sys::QueryCompletion,
 ) {
+    push_frame();
     match PREV_UTILITY {
         Some(prev) => pg_guard_ffi_boundary(|| {
             prev(pstmt, query, read_only_tree, context, params, env, dest, qc)
@@ -223,6 +318,7 @@ unsafe extern "C-unwind" fn process_utility(
             qc,
         ),
     }
+    let frame = pop_frame();
     // TRUNCATE and COPY FROM write without the executor hooks. Resolved
     // after the statement ran: the names resolve as they did for it.
     let node = (*pstmt).utilityStmt;
@@ -242,12 +338,12 @@ unsafe extern "C-unwind" fn process_utility(
             note_raw(ANY_REL);
         }
         for rv in PgList::<pg_sys::RangeVar>::from_pg((*t).relations).iter_ptr() {
-            note(relid(rv));
+            note(relid(rv), &frame);
         }
     } else if pgrx::is_a(node, pg_sys::NodeTag::T_CopyStmt) {
         let copy = node.cast::<pg_sys::CopyStmt>();
         if (*copy).is_from && !(*copy).relation.is_null() {
-            note(relid((*copy).relation));
+            note(relid((*copy).relation), &frame);
         }
     }
 }
@@ -281,8 +377,109 @@ pub(crate) unsafe extern "C-unwind" fn xact_callback(
     use pg_sys::XactEvent::*;
     match event {
         XACT_EVENT_PRE_COMMIT | XACT_EVENT_PRE_PREPARE => pre_commit(),
-        _ => WRITTEN.with(|w| w.borrow_mut().clear()),
+        _ => forget(),
     }
+}
+
+/// Forget this transaction's writes and captures.
+fn forget() {
+    WRITTEN.with(|w| w.borrow_mut().clear());
+    CAPTURED.with(|c| c.borrow_mut().clear());
+    CAP_OK.with(|c| c.borrow_mut().clear());
+    FRAMES.with(|f| f.borrow_mut().clear());
+}
+
+/// Commit mode's row capture trigger (`improv.commit_capture = 'rows'`):
+/// note the coordinates the statement touched, for the pre-commit
+/// recompute. Its one argument is the model name.
+#[pg_trigger]
+fn commit_capture<'a>(
+    t: &'a PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, PgHeapTupleError> {
+    if let Err(e) = super::owner::as_catalog(|| capture(t)) {
+        error!("improv.commit_capture: {e}");
+    }
+    Ok(None)
+}
+
+fn capture(t: &PgTrigger<'_>) -> Res<()> {
+    let model = t
+        .extra_args()?
+        .into_iter()
+        .next()
+        .ok_or("the trigger has no model argument")?;
+    let rel = t.relid()?;
+    let mid = Spi::connect(|c| {
+        c.select(
+            // A scalar subquery: one row, NULL when not in commit mode.
+            "SELECT (SELECT id FROM improv.model WHERE name = $1 AND sync_mode = 'commit')",
+            None,
+            &[model.clone().into()],
+        )?
+        .first()
+        .get_one::<i64>()
+    })?;
+    let Some(mid) = mid else { return Ok(()) };
+    let (cats, cols) = super::trigger::touched_cols(mid, rel)?;
+    let rows = super::trigger::touched_rows(t, &cols)?;
+    CAPTURED.with(|c| {
+        let mut c = c.borrow_mut();
+        let e = c
+            .entry((model.clone(), rel))
+            .or_insert_with(|| (cats, Some(Vec::new())));
+        match (&mut e.1, rows) {
+            (Some(r), Some(rows)) if r.len() + rows.len() <= MAX_CAPTURE => r.extend(rows),
+            _ => e.1 = None,
+        }
+    });
+    FRAMES.with(|f| {
+        if let Some(top) = f.borrow_mut().last_mut() {
+            top.insert((model, rel));
+        }
+    });
+    Ok(())
+}
+
+/// One relation's capture for a model: its oid, categories and rows.
+type CapturedRel = (pg_sys::Oid, Vec<i64>, Rows);
+
+/// Model `name`'s captured coordinates for each relation of `written` it
+/// binds, when its capture saw every statement that wrote them and it
+/// binds only plain tables (no partitions, no inheritance); `None` to
+/// recompute in full.
+fn scoped_captures(name: &str, written: &[pg_sys::Oid]) -> Res<Option<Vec<CapturedRel>>> {
+    if written.contains(&ANY_REL) {
+        return Ok(None);
+    }
+    let (rels, plain) = Spi::connect(|c| -> Res<_> {
+        let t = c.select(
+            "SELECT array_agg(DISTINCT b.rel::oid), \
+                    bool_and(c.relkind = 'r' AND NOT c.relhassubclass AND NOT c.relispartition) \
+             FROM improv.binding b JOIN improv.model m ON m.id = b.model_id \
+             JOIN pg_class c ON c.oid = b.rel WHERE m.name = $1",
+            None,
+            &[name.into()],
+        )?;
+        let r = t.first();
+        Ok((
+            r.get::<Vec<pg_sys::Oid>>(1)?.unwrap_or_default(),
+            r.get::<bool>(2)?.unwrap_or(false),
+        ))
+    })?;
+    if !plain {
+        return Ok(None);
+    }
+    let mut out = Vec::new();
+    for rel in written.iter().filter(|r| rels.contains(r)) {
+        let ok = CAP_OK.with(|c| c.borrow().get(rel).is_some_and(|s| s.contains(name)));
+        let cap = CAPTURED.with(|c| c.borrow().get(&(name.to_string(), *rel)).cloned());
+        match (ok, cap) {
+            (true, Some((cats, Some(rows)))) => out.push((*rel, cats, rows)),
+            _ => return Ok(None),
+        }
+    }
+    // None of its own relations written (a partition of one): in full.
+    Ok((!out.is_empty()).then_some(out))
 }
 
 /// The relations in `written` that a commit-mode model binds (all of them
@@ -359,6 +556,7 @@ fn load_bound() -> Res<HashSet<pg_sys::Oid>> {
 /// Raises (aborting the commit) when one fails.
 pub(crate) fn pre_commit() {
     if WRITTEN.with(|w| w.borrow().is_empty()) {
+        forget();
         return;
     }
     // SAFETY: in a live transaction; applies other backends' committed
@@ -367,7 +565,7 @@ pub(crate) fn pre_commit() {
     // The common case, writes to no commit-bound relation: one set lookup.
     let written: Vec<pg_sys::Oid> = WRITTEN.with(|w| w.borrow().keys().copied().collect());
     if cached_hits(&written).is_some_and(|h| h.is_empty()) {
-        WRITTEN.with(|w| w.borrow_mut().clear());
+        forget();
         return;
     }
     // SPI needs an active snapshot that sees this transaction's writes.
@@ -396,8 +594,11 @@ pub(crate) fn pre_commit() {
             let r = PgTryBuilder::new(|| {
                 // The catalog as the extension (the writer needs no
                 // privilege on `improv`), the model as its owner.
-                super::owner::as_catalog(|| recompute(&name, &measures))
-                    .map_err(|e| (PgSqlErrorCode::ERRCODE_INTERNAL_ERROR, e.to_string()))
+                super::owner::as_catalog(|| {
+                    let captured = scoped_captures(&name, &written)?;
+                    recompute(&name, &measures, captured)
+                })
+                .map_err(|e| (PgSqlErrorCode::ERRCODE_INTERNAL_ERROR, e.to_string()))
             })
             .catch_others(|e| {
                 Err(match e {
@@ -424,7 +625,7 @@ pub(crate) fn pre_commit() {
     }
     // SAFETY: pops the snapshot pushed above.
     unsafe { pg_sys::PopActiveSnapshot() };
-    WRITTEN.with(|w| w.borrow_mut().clear());
+    forget();
 }
 
 /// Give SPI an active snapshot that sees this transaction's own writes (an
@@ -460,8 +661,10 @@ fn models_for(written: &[pg_sys::Oid]) -> Res<Vec<(String, Vec<i64>)>> {
     })
 }
 
-/// Lock, load and recompute model `name`: the dependents of `measures`.
-fn recompute(name: &str, measures: &[i64]) -> Res<()> {
+/// Lock, load and recompute model `name`: the dependents of `measures`,
+/// only at the `captured` coordinates when given and the recompute is
+/// element-wise there, else in full.
+fn recompute(name: &str, measures: &[i64], captured: Option<Vec<CapturedRel>>) -> Res<()> {
     let (mid, name) = lock_model(name)?;
     let mode = Spi::get_one_with_args::<String>(
         "SELECT sync_mode FROM improv.model WHERE id = $1",
@@ -483,21 +686,24 @@ fn recompute(name: &str, measures: &[i64]) -> Res<()> {
         );
         return Ok(());
     }
-    let mut l = super::trigger::load(mid, name, true)?;
     let changed = measures
         .iter()
         .map(|&i| id32(i).map(MeasureId))
         .collect::<Res<Vec<_>>>()?;
-    // shortcut: recomputes the written relations' dependents in full (2.1 s
-    // per commit at 2.5M rows, the load). A row scope needs the touched
-    // rows, and the executor hook sees only which relations were written.
-    // Measured in 0.11.0 and rejected: a transition-table statement trigger
-    // costs about 1 ms per 1,000-row statement but 35% on a 1M-row INSERT,
-    // and is the trigger on users' tables commit mode exists to avoid; an
-    // `xmin = current xid` scan reads the whole table (0.44 s at 2.5M rows,
-    // a fifth of the load, before any recompute). Upgrade when a hook can
-    // see modified tuples without a trigger. Use trigger or logical mode for
-    // large aggregated fact tables.
+    if let Some(caps) = captured {
+        let model = pm::build_model(&super::read_catalog(mid)?)?;
+        if pm::scopable(&model, &changed) {
+            for (rel, cats, rows) in caps {
+                super::trigger::sync_rows(mid, name.clone(), rel, cats, Some(rows))?;
+            }
+            RECOMPUTES.with(|n| n.set(n.get() + 1));
+            SCOPED.with(|n| n.set(n.get() + 1));
+            return Ok(());
+        }
+    }
+    let mut l = super::trigger::load(mid, name, true)?;
+    // In full: no capture (the default, improv.commit_capture = relations),
+    // or one this transaction's writes got past (see the module docs).
     let targets = pm::dependents(&l.model, &changed);
     super::trigger::recompute(
         &mut l,
@@ -531,4 +737,10 @@ fn unkeyed_results(mid: i64, name: &str) -> Res<Option<String>> {
 #[cfg(any(test, feature = "pg_test"))]
 pub(crate) fn recomputes() -> u64 {
     RECOMPUTES.with(Cell::get)
+}
+
+/// Of [`recomputes`], those restricted to captured rows.
+#[cfg(any(test, feature = "pg_test"))]
+pub(crate) fn scoped() -> u64 {
+    SCOPED.with(Cell::get)
 }

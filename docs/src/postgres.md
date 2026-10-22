@@ -88,7 +88,7 @@ there are, and routes each change to the models bound to its table.
 | Results update | after the commit, by a background worker | inside the writer's statement | inside the writer's transaction, just before `COMMIT` | when you call it |
 | Consistency | eventual (lags the commit by one poll plus the change's own work) | transactional, read-your-writes | transactional; reads before `COMMIT` see the old results | transactional, in your snapshot |
 | Writer pays | nothing (the worker applies only the changed cells) | the recompute, on every write statement | one recompute per transaction, of the written tables' dependents | the recompute, when you choose |
-| On your tables | membership of the publication `improv_db` (and `REPLICA IDENTITY FULL` if no PK) | four statement triggers each | nothing | nothing |
+| On your tables | membership of the publication `improv_db` (and `REPLICA IDENTITY FULL` if no PK) | four statement triggers each | nothing (four statement triggers each with `improv.commit_capture = 'rows'`) | nothing |
 | Needs | `wal_level = logical`, preload, a PK or `REPLICA IDENTITY FULL` (set for you) | nothing | preload | nothing |
 
 Switch with `SELECT improv.set_sync_mode('plan', 'commit')` (or `'logical'`,
@@ -166,6 +166,27 @@ results must commit with the write but a transaction makes many writes (100
 one-row updates in one transaction at 10k cells: 82 ms, against 6.6 s in
 trigger mode), or when you can't put triggers on the tables. Use `recalc`
 after bulk loads or inside migrations.
+
+**Commit mode's cost.** By default commit mode knows which tables a
+transaction wrote, not which rows, so each `COMMIT` reloads and
+recomputes everything those tables feed: about 2.1 s at 2.5M rows,
+whatever the transaction wrote. With `SET improv.commit_capture =
+'rows'` before `improv.set_sync_mode('plan', 'commit')`, entering the
+mode also puts four statement triggers on each bound table. They note
+the coordinates each statement touched, and `COMMIT` recomputes only
+those, once per table: a 1,000-row INSERT then commits in 145 ms, and
+ten one-row INSERT statements in one transaction in 112 ms (PG 18, 2.5M
+rows, no index; an index on the dimension columns helps as in trigger
+mode). The triggers cost the writer about 30% on a 1M-row INSERT (2.24 s
+→ 2.97 s, the transition tables), and under 3 ms on a 1,000-row one.
+`COMMIT` falls back to the full recompute when it cannot trust the
+capture: a statement that wrote a bound table without firing it (`ALTER
+TABLE … DISABLE TRIGGER`, `session_replication_role = replica`, a table
+bound after the mode was entered), a `TRUNCATE`, a partitioned or
+inherited bound table, a formula that is not element-wise over the
+written measures (an aggregation `OVER` a category), or more than
+100,000 touched coordinates. Re-run `set_sync_mode` after binding a new
+table.
 
 **Trigger mode's cost** is one read of the touched coordinates' rows in
 each bound table, per statement, plus the engine's recompute of those

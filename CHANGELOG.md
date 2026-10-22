@@ -36,6 +36,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv_core_model::functions`: `FnDef::param_index`, `param_name`,
   `param_default`, `closest_param`, and `complete_named`; `call_at` maps a
   named argument to its parameter.
+- **`improv.commit_capture = 'rows'`: commit mode recomputes only what a
+  transaction touched.** Commit mode recomputed the written tables'
+  dependents in full at every `COMMIT` (2.1 s at 2.5M rows). Set the GUC
+  to `rows` before `improv.set_sync_mode(model, 'commit')` and entering
+  the mode installs statement triggers that capture the touched
+  coordinates, so `COMMIT` recomputes only those: a 1,000-row INSERT
+  commits in 145 ms, ten one-row INSERT statements in 112 ms. The
+  triggers cost about 30% on a 1M-row INSERT. A write the capture did not
+  see, a `TRUNCATE`, partitioned bound tables and aggregating formulas
+  fall back to the full recompute. The default, `relations`, is
+  unchanged: no triggers on your tables.
 
 - **pg_improv: the resource limits left in D7.** If `max_worker_processes`
   leaves no room for the sync worker, `improv.status` says the worker is

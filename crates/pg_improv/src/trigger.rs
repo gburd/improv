@@ -342,22 +342,40 @@ fn read_rows(sql: &str, n: usize, vt: ValueType, values: Vec<Vec<String>>) -> Re
     })
 }
 
-/// Drop model `name`'s sync triggers from every relation. As the extension:
-/// the TRIGGER privilege that let a model's owner create them does not let
-/// it drop them (only the table's owner may), and these are the model's own
-/// (named for it, calling `improv.on_change`).
+/// The function behind trigger mode's sync triggers and commit mode's
+/// capture triggers (`improv_<model>_sync_<op>` and `_cap_<op>`).
+const TRIGGER_FNS: [(&str, &str); 2] = [
+    ("sync", "improv.on_change"),
+    ("cap", "improv.commit_capture"),
+];
+
+/// Model `model`'s `kind` (`sync` or `cap`) trigger for event `op`:
+/// `improv_<model>_<kind>_<op>`, as long as [`pm::sync_trigger_name`]'s.
+fn trigger_name(model: &str, kind: &str, op: &str) -> Res<String> {
+    let name = pm::sync_trigger_name(model, op)?;
+    Ok(name.replacen("_sync_", &format!("_{kind}_"), 1))
+}
+
+/// Drop model `name`'s sync and capture triggers from every relation. As
+/// the extension: the TRIGGER privilege that let a model's owner create
+/// them does not let it drop them (only the table's owner may), and these
+/// are the model's own (named for it, calling `improv.on_change` or
+/// `improv.commit_capture`).
 pub(crate) fn remove_triggers(name: &str) -> Res<()> {
-    let names = EVENTS
-        .iter()
-        .map(|(op, _, _)| pm::sync_trigger_name(name, op))
-        .collect::<pm::Result<Vec<_>>>()?;
+    let mut names = Vec::new();
+    for (kind, _) in TRIGGER_FNS {
+        for (op, _, _) in EVENTS {
+            names.push(trigger_name(name, kind, op)?);
+        }
+    }
     super::owner::as_catalog(|| {
         let found: Vec<(String, String)> = Spi::connect(|c| -> Res<_> {
             c.select(
                 "SELECT format('%I.%I', n.nspname, c.relname), t.tgname::text \
                  FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid \
                  JOIN pg_namespace n ON n.oid = c.relnamespace \
-                 WHERE t.tgname = ANY($1) AND t.tgfoid = 'improv.on_change'::regproc",
+                 WHERE t.tgname = ANY($1) \
+                   AND t.tgfoid IN ('improv.on_change'::regproc, 'improv.commit_capture'::regproc)",
                 None,
                 &[names.into()],
             )?
@@ -417,7 +435,14 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
     } else {
         super::worker::disable(mid, &name)?;
     }
-    if mode == "trigger" {
+    let kind = match mode {
+        "trigger" => Some(TRIGGER_FNS[0]),
+        "commit" if super::commit::CAPTURE.get() == super::commit::Capture::Rows => {
+            Some(TRIGGER_FNS[1])
+        }
+        _ => None,
+    };
+    if let Some((kind, func)) = kind {
         let rels: Vec<String> = Spi::connect(|c| -> Res<_> {
             c.select(
                 "SELECT DISTINCT rel::text FROM improv.binding WHERE model_id = $1 ORDER BY 1",
@@ -429,10 +454,11 @@ fn set_sync_mode(model: &str, mode: &str) -> Res<()> {
         })?;
         for rel in rels {
             for (op, event, refs) in EVENTS {
+                let tg = trigger_name(&name, kind, op)?;
                 Spi::run(&format!(
                     "CREATE TRIGGER {} AFTER {event} ON {rel} {refs} \
-                     FOR EACH STATEMENT EXECUTE FUNCTION improv.on_change({})",
-                    pm::quote_ident(&pm::sync_trigger_name(&name, op)?),
+                     FOR EACH STATEMENT EXECUTE FUNCTION {func}({})",
+                    pm::quote_ident(&tg),
                     pm::quote_literal(&name)
                 ))?;
             }
@@ -473,7 +499,15 @@ fn sync(t: &PgTrigger<'_>) -> Res<()> {
     if mode.as_deref() != Some("trigger") {
         return Ok(());
     }
-    let (cats, cols): (Vec<i64>, Vec<String>) = Spi::connect(|c| -> Res<Vec<(i64, String)>> {
+    let cols = touched_cols(mid, rel)?;
+    let rows = touched_rows(t, &cols.1)?;
+    sync_rows(mid, name, rel, cols.0, rows)
+}
+
+/// The dimension categories of relation `rel` in model `mid` that a bound
+/// measure has, and their columns (in category order).
+pub(crate) fn touched_cols(mid: i64, rel: pg_sys::Oid) -> Res<(Vec<i64>, Vec<String>)> {
+    Ok(Spi::connect(|c| -> Res<Vec<(i64, String)>> {
         c.select(
             // Only categories a bound measure has: a column bound after its
             // measures has values no load ever minted.
@@ -490,8 +524,21 @@ fn sync(t: &PgTrigger<'_>) -> Res<()> {
         .collect()
     })?
     .into_iter()
-    .unzip();
-    let rows = touched_rows(t, &cols)?;
+    .unzip())
+}
+
+/// Recompute model `mid` (named `name`) after its relation `rel` changed
+/// at the coordinates of `rows` (dimension values of categories `cats`, in
+/// order; `None`: everywhere, as after a TRUNCATE), in the caller's
+/// transaction: a statement's sync trigger, or commit mode's pre-commit
+/// recompute with captured rows. Returns the result rows changed.
+pub(crate) fn sync_rows(
+    mid: i64,
+    name: String,
+    rel: pg_sys::Oid,
+    cats: Vec<i64>,
+    rows: Option<Vec<Vec<Option<String>>>>,
+) -> Res<()> {
     if rows.as_ref().is_some_and(Vec::is_empty) {
         return Ok(());
     }
@@ -542,7 +589,10 @@ fn sync(t: &PgTrigger<'_>) -> Res<()> {
 
 /// The dimension values (in `cols` order) in the firing statement's
 /// transition tables; `None` when it has none (TRUNCATE).
-fn touched_rows(t: &PgTrigger<'_>, cols: &[String]) -> Res<Option<Vec<Vec<Option<String>>>>> {
+pub(crate) fn touched_rows(
+    t: &PgTrigger<'_>,
+    cols: &[String],
+) -> Res<Option<Vec<Vec<Option<String>>>>> {
     let Some(sql) = pm::touched_sql(
         t.old_transition_table_name()?,
         t.new_transition_table_name()?,
@@ -1243,6 +1293,72 @@ mod tests {
         assert_eq!(count("improv_plan.overhead"), 0);
         assert_eq!(count("improv_plan.margin"), 0);
         assert_eq!(count("improv_plan.revenue"), 8);
+    }
+
+    /// B2: with `improv.commit_capture = 'rows'`, COMMIT recomputes only
+    /// the captured coordinates (the results equal a full recompute's), and
+    /// falls back to a full recompute when a write got past the capture or
+    /// the change is not element-wise.
+    #[pg_test]
+    fn commit_mode_capture_recomputes_the_touched_rows() {
+        let scoped = || crate::commit::scoped();
+        setup("manual");
+        Spi::run("SET improv.commit_capture = 'rows'").unwrap();
+        Spi::run("SELECT improv.set_sync_mode('plan', 'commit')").unwrap();
+        commit();
+        assert_eq!(
+            count("pg_trigger WHERE tgname LIKE 'improv_plan_cap_%'"),
+            8,
+            "four events on each of sales and costs"
+        );
+        assert_eq!(
+            count("pg_trigger WHERE tgname LIKE 'improv_plan_sync_%'"),
+            0
+        );
+        // Margin and Overhead read only Cost and Price, element-wise: an
+        // UPDATE of costs is captured and scoped.
+        let s0 = scoped();
+        Spi::run("UPDATE costs SET cost = 1 WHERE product = 'Widget'").unwrap();
+        Spi::run("INSERT INTO costs VALUES ('Doohickey', 3)").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(scoped(), s0 + 1);
+        assert_eq!(rows("overhead", "true"), "Doohickey=6 Gadget=10 Widget=2");
+        assert_eq!(
+            cell("margin", "\"time\" = 'Q1' AND product = 'Widget'"),
+            Some(9.0)
+        );
+        // Total sums Revenue over Time: not element-wise, so in full.
+        Spi::run("UPDATE sales SET price = 11 WHERE product = 'Widget'").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(scoped(), s0 + 1);
+        assert_eq!(rows("total", "true"), "Gadget=6000 Widget=11000");
+        // A write with the capture disabled: in full, and still right.
+        Spi::run("ALTER TABLE costs DISABLE TRIGGER USER").unwrap();
+        Spi::run("UPDATE costs SET cost = 2 WHERE product = 'Gadget'").unwrap();
+        Spi::run("ALTER TABLE costs ENABLE TRIGGER USER").unwrap();
+        Spi::run("UPDATE costs SET cost = 3 WHERE product = 'Widget'").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(scoped(), s0 + 1, "a statement got past the capture");
+        assert_eq!(rows("overhead", "true"), "Doohickey=6 Gadget=4 Widget=6");
+        // A rolled-back savepoint's capture goes with it; TRUNCATE is in full.
+        Spi::run(
+            "DO $$ BEGIN
+               BEGIN UPDATE costs SET cost = 50; RAISE EXCEPTION 'undo';
+               EXCEPTION WHEN raise_exception THEN NULL; END;
+             END $$",
+        )
+        .unwrap();
+        assert_eq!(commit(), 0, "rolled-back savepoint");
+        Spi::run("TRUNCATE costs").unwrap();
+        assert_eq!(commit(), 1);
+        assert_eq!(count("improv_plan.overhead"), 0);
+        // Leaving commit mode removes the capture triggers.
+        Spi::run("SELECT improv.set_sync_mode('plan', 'manual')").unwrap();
+        assert_eq!(count("pg_trigger WHERE tgname LIKE 'improv_plan_cap_%'"), 0);
+        assert_eq!(
+            text("SELECT current_setting('improv.commit_capture')"),
+            "rows"
+        );
     }
 
     #[pg_test]

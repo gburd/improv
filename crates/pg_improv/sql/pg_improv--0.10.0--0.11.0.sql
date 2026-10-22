@@ -154,6 +154,11 @@ BEGIN
     EXECUTE pg_catalog.format('ALTER TABLE %s OWNER TO %s', t.rel, t.owner);
   END LOOP;
 END $$;
+
+-- Commit mode's opt-in row capture (improv.commit_capture = 'rows').
+CREATE FUNCTION improv.commit_capture() RETURNS trigger
+  LANGUAGE c AS 'MODULE_PATHNAME', 'commit_capture_wrapper';
+
 -- The roles (see the README's Privileges). Roles are cluster-wide: made here
 -- when missing (another database's install, or the DBA, may have made them),
 -- and kept by DROP EXTENSION. improv_user builds models: schema USAGE, the

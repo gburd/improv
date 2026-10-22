@@ -4,8 +4,9 @@
 #   1. a model acts as its owner: with a row-level security policy that lets
 #      the owner (alice, not a superuser) see half of a bound table's rows,
 #      the results aggregate only that half, in every sync mode (trigger,
-#      commit, logical, manual + recalc), whoever writes the table (a
-#      superuser, or bob, who has no privilege on schema improv at all)
+#      commit (also with improv.commit_capture = 'rows'), logical, manual +
+#      recalc), whoever writes the table (a superuser, or bob, who has no
+#      privilege on schema improv at all)
 #   2. revoking alice's SELECT makes the next logical apply fail with a
 #      clear last_error instead of reading the table as the worker's
 #      superuser; granting it back resumes the model
@@ -110,6 +111,24 @@ eq "$(q "$TOTAL")" 9 "commit: a superuser's commit to the other half"
 # applies, instead of filtering: the owner's recompute pins it on.
 q "SET row_security = off; UPDATE sales SET amount = 5 WHERE region = 'north' AND product = 'c'"
 eq "$(q "$TOTAL")" 8 "commit: a commit with row_security off"
+q "UPDATE sales SET amount = 6 WHERE region = 'north' AND product = 'c'"
+# With the row capture: its triggers run as the writer and read only the
+# transition tables; the recompute still reads as the owner.
+U=alice q "SET improv.commit_capture = 'rows'; SELECT improv.set_sync_mode('m','commit')"
+eq "$(q "$TOTAL")" 9 "commit capture: entering the mode"
+U=bob q "UPDATE sales SET amount = 7 WHERE region = 'north' AND product = 'c'"
+eq "$(q "$TOTAL")" 10 "commit capture: bob's commit"
+q "UPDATE sales SET amount = 61 WHERE region = 'south' AND product = 'a'"
+eq "$(q "$TOTAL")" 10 "commit capture: a superuser's commit to the other half"
+# An element-wise measure: bob's commit recomputes only its coordinate,
+# and a row RLS hides from the owner yields no cell.
+U=alice q "SELECT improv.define('m','Twice = Amount * 2')" >/dev/null
+U=alice q "SELECT improv.recalc('m')" >/dev/null
+U=bob q "INSERT INTO sales VALUES ('north','e',4), ('south','e',40)"
+eq "$(q "SELECT string_agg(region || product || '=' || value, ',' ORDER BY 1) FROM improv_m.twice WHERE product = 'e'")" \
+	"northe=8" "commit capture: a scoped recompute reads as the owner"
+U=bob q "DELETE FROM sales WHERE product = 'e'"
+eq "$(q "SELECT count(*) FROM improv_m.twice WHERE product = 'e'")" 0 "commit capture: a DELETE"
 q "UPDATE sales SET amount = 6 WHERE region = 'north' AND product = 'c'"
 
 U=alice q "SELECT improv.set_sync_mode('m','logical')"
