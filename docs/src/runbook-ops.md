@@ -261,7 +261,10 @@ load (seconds on large models), and the other models wait behind it.
   item list of.
 - `two rows on one coordinate`: a measure bound without `agg` gets
   duplicate keys.
-- `min or max of text`: a text `min`/`max` binding changes.
+- `nondeterministic collation`: a text `min`, `max` or `count_distinct`
+  binding over a column with a nondeterministic (case- or
+  accent-insensitive) collation changes. Bind a deterministic column, or
+  use trigger or commit mode for that model.
 - `truncate`: the bound table is truncated and reloaded.
 - `old row not replicated`: UPDATE or DELETE statements on a table without
   `REPLICA IDENTITY FULL` (set it).

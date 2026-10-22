@@ -189,6 +189,23 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **improv-server: an unknown token gets 401, not 403.** 403 now means the
   token is valid but its scope is too narrow. A 401 carries
   `WWW-Authenticate: Bearer` and a JSON error body.
+- **The logical worker folds text `min`/`max` under the column's
+  collation.** Before, every change to a text `min` or `max` binding
+  reloaded the model. The fold now orders texts by the value column's
+  collation: bytes for `C` and `POSIX`, Postgres's own compare
+  (`varstr_cmp`) for any other deterministic one. A column with a
+  nondeterministic collation, where only Postgres can tell which texts
+  are equal, reloads on a change to its `min`, `max` or `count_distinct`
+  (the rebuild reason is `nondeterministic collation`). Before,
+  `count_distinct` compared bytes there and could count `Apple` and
+  `apple` twice under a case-insensitive collation.
+- **Float sums in the logical worker are exact and order-free.** A
+  `float4`/`float8` column's `sum` and `avg` keep the floats' exact sum
+  (a fixed-point accumulator) and round once, so the result no longer
+  depends on the order the changes arrived in. A fresh `sum` adds floats
+  in scan order and can still differ in the last bits; the guide's
+  Postgres page documents this. An `avg` of a `numeric` column keeps its
+  scale after deletes.
 - **pg_improv: `what_if` is for those who may act as the model's owner,
   and computes as the owner.** It read as its caller, so a caller who saw
   other rows than the owner got deltas that came from what they could see,

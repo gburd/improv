@@ -1562,11 +1562,16 @@ fn seed_folds(model: &mut Model, mapper: &mut live::Mapper) -> Res<()> {
         ) else {
             continue;
         };
-        let (name, oid) = Spi::connect(|c| -> Res<(String, u32)> {
+        type Coll = Option<(u32, bool, bool)>;
+        let (name, oid, coll) = Spi::connect(|c| -> Res<(String, u32, Coll)> {
             let t = c.select(
-                "SELECT $1::oid::regclass::text, \
-                        (SELECT atttypid FROM pg_attribute WHERE attrelid = $1::oid \
-                           AND attname = $2 AND NOT attisdropped)::int8",
+                "SELECT $1::oid::regclass::text, a.atttypid::int8, \
+                        nullif(a.attcollation, 0)::int8, co.collisdeterministic, \
+                        a.attcollation IN ('\"C\"'::regcollation, '\"POSIX\"'::regcollation) \
+                 FROM (SELECT) one \
+                 LEFT JOIN pg_attribute a ON a.attrelid = $1::oid AND a.attname = $2 \
+                   AND NOT a.attisdropped \
+                 LEFT JOIN pg_collation co ON co.oid = a.attcollation",
                 None,
                 &[i64::from(rel).into(), b.value_col.clone().into()],
             )?;
@@ -1577,8 +1582,19 @@ fn seed_folds(model: &mut Model, mapper: &mut live::Mapper) -> Res<()> {
             let oid = r
                 .get::<i64>(2)?
                 .ok_or("an aggregated value column is gone")?;
-            Ok((name, id32(oid)?))
+            let coll = match r.get::<i64>(3)? {
+                Some(c) => Some((
+                    id32(c)?,
+                    r.get::<bool>(4)?.unwrap_or(true),
+                    r.get::<bool>(5)?.unwrap_or(false),
+                )),
+                None => None,
+            };
+            Ok((name, id32(oid)?, coll))
         })?;
+        if let Some(c) = coll {
+            mapper.collate(b.measure, collation(c));
+        }
         let sql = live::seed_sql(&name, &dims, &b.value_col, agg);
         let n = dims.len();
         let (rows, snap) = Spi::connect(|c| -> Res<_> {
@@ -1601,6 +1617,33 @@ fn seed_folds(model: &mut Model, mapper: &mut live::Mapper) -> Res<()> {
             .map_err(|e| format!("seeding the fold of measure {}: {}", b.measure.0, e.0))?;
     }
     Ok(())
+}
+
+/// How the fold compares texts of collation `coll`: `C` and `POSIX`
+/// (`bytewise`) by their bytes, another deterministic collation by
+/// Postgres's `varstr_cmp`.
+fn collation((coll, deterministic, bytewise): (u32, bool, bool)) -> live::Collation {
+    if !deterministic {
+        return live::Collation::Nondeterministic;
+    }
+    if bytewise {
+        return live::Collation::Deterministic(Arc::new(|a: &str, b: &str| a.cmp(b)));
+    }
+    live::Collation::Deterministic(Arc::new(move |a: &str, b: &str| {
+        // SAFETY: two valid buffers with their lengths (a text is under
+        // 1 GB, so they fit a c_int), and a collation oid read from
+        // pg_attribute; pgrx turns an ereport into a panic.
+        let r = unsafe {
+            pg_sys::varstr_cmp(
+                a.as_ptr().cast(),
+                a.len() as i32,
+                b.as_ptr().cast(),
+                b.len() as i32,
+                pg_sys::Oid::from(coll),
+            )
+        };
+        r.cmp(&0)
+    }))
 }
 
 /// Model `mid`'s bindings, per relation oid.

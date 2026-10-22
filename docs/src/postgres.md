@@ -120,6 +120,28 @@ SQL's `bool_and` and `bool_or`). Without `agg`, two rows on
 one coordinate are an error. An aggregated measure is read-only from the
 GUI: a save that edits one of its cells fails, so change the rows in SQL.
 
+In `logical` mode the sync worker folds each change into the cell, and
+the result is the aggregate a fresh `improv.recalc` computes, with these
+cases:
+
+- **Text `min` and `max`** order by the column's collation: `C` and
+  `POSIX` by bytes, any other deterministic collation (libc, ICU,
+  builtin) by Postgres's own compare.
+- **Nondeterministic collations** (`CREATE COLLATION … deterministic =
+  false`) can find texts with different bytes equal. Only Postgres can
+  tell, so a text `min`, `max` or `count_distinct` over such a column
+  reloads the model on every change (`rebuilds` grows, the log says
+  `nondeterministic collation`). The result is still exact.
+- **Sums of `float4` and `float8` columns** are the values' exact sum
+  rounded once. Postgres adds the floats in scan order, so a fresh
+  `sum` can differ in the last bits, as two scans of the same table can
+  in Postgres itself. The fold's total does not depend on the order of
+  the changes: inserting and deleting the same rows gives the same bits.
+- **`numeric` values with more than 9 decimals**, or written with an
+  exponent, are read as `float8` and summed exactly as floats. Integer
+  columns, and `numeric` values with up to 9 decimals, sum exactly, as
+  Postgres does.
+
 ## Value types
 
 A measure's type comes from its column: numbers (`int*`, `float*`,

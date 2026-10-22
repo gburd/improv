@@ -18,6 +18,9 @@
 #    improv.recalc of a copy of the model (count, sum) and count(DISTINCT …)
 #    (count_distinct), with no rebuild; deleting one of two rows that share a
 #    key keeps the distinct count.
+# 3. Collations and floats: text min/max under an ICU collation and "C", and
+#    a float8 sum, fold without a rebuild and equal a fresh recalc; a
+#    nondeterministic collation's min and count_distinct rebuild instead.
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
 D=${PGI_DATA:-$HOME/pgi-scale}
@@ -33,7 +36,9 @@ cleanup() {
 trap '[ -n "${KEEP:-}" ] || cleanup' EXIT
 cleanup
 
-"$PG_BIN/initdb" -D "$D" -A trust -U improv >/dev/null
+# UTF8 (section 3 makes ICU collations): a container without locales
+# would otherwise default to SQL_ASCII.
+"$PG_BIN/initdb" -D "$D" -A trust -U improv -E UTF8 --locale=C >/dev/null
 cat >>"$D/postgresql.conf" <<EOF
 port = $P
 listen_addresses = ''
@@ -200,4 +205,67 @@ wait_for "SELECT value FROM improv_live.rn WHERE person = 'dup'" 2
 q "DELETE FROM facts WHERE id = -3"
 wait_for "SELECT value FROM improv_live.rshas WHERE person = 'dup'" 1
 echo "ok: deleting one of two rows that share a key keeps count_distinct (2), the second lowers it (1)"
+
+# ---- 3. collations and floats -----------------------------------------------
+q "CREATE COLLATION IF NOT EXISTS improv_ci (provider = icu, locale = 'und-u-ks-level2', deterministic = false)"
+q "CREATE TABLE words (id int PRIMARY KEY, g text, w text COLLATE \"en-x-icu\", c text COLLATE \"C\",
+     x float8)"
+q "INSERT INTO words SELECT i, 'g' || i % 7, (ARRAY['apple', 'Banana', 'cherry', 'Äpfel', 'banana', 'zebra',
+     'Zulu'])[1 + i % 7], (ARRAY['b', 'A', 'c', 'a'])[1 + i % 4], i * 0.1 + 1e-12 * i
+   FROM generate_series(1, 300) i"
+for m in wfresh wlive; do
+	x "SELECT improv.create_model('$m')"
+	[ $m = wfresh ] && x "SELECT improv.set_sync_mode('wfresh', 'manual')"
+	x "SELECT improv.bind_category('$m', 'G', 'words', 'g')"
+	x "SELECT improv.bind_measure('$m', 'WMin', 'words', 'w', agg => 'min')"
+	x "SELECT improv.bind_measure('$m', 'WMax', 'words', 'w', agg => 'max')"
+	x "SELECT improv.bind_measure('$m', 'CMax', 'words', 'c', agg => 'max')"
+	x "SELECT improv.bind_measure('$m', 'X', 'words', 'x', agg => 'sum')"
+	for r in "RWMin = WMin" "RWMax = WMax" "RCMax = CMax" "RX = X * 1"; do x "SELECT improv.define('$m', '$r')"; done
+done
+q "INSERT INTO words VALUES (0, 'g0', 'warm', 'w', 0)"
+wait_for "SELECT count(*) FROM improv_wlive.rx" 7
+read -r inc0 reb0 <<<"$(counters wlive)"
+for i in $(seq 1 60); do
+	case $((i % 3)) in
+	0) q "INSERT INTO words SELECT 1000 * $i + g, 'g' || (g * $i) % 8,
+	        (ARRAY['apple', 'Banana', 'cherry', 'Äpfel', 'banana', 'zebra', 'Zulu', 'éclair'])[1 + (g + $i) % 8],
+	        (ARRAY['b', 'A', 'c', 'a', 'B'])[1 + (g * $i) % 5], (g + $i) * 0.3e-3 FROM generate_series(1, 1 + $i % 4) g" ;;
+	1) q "UPDATE words SET g = 'g' || (id + $i) % 8, x = x * 1.5 + 1e-9
+	      WHERE id IN (SELECT id FROM words ORDER BY md5(id || 'u' || $i) LIMIT 1 + $i % 4)" ;;
+	2) q "DELETE FROM words WHERE id IN (SELECT id FROM words ORDER BY md5(id || 'd' || $i) LIMIT 1 + $i % 5)" ;;
+	esac
+done
+q "INSERT INTO words VALUES (-1, 'marker', 'm', 'm', 1)"
+wait_for "SELECT count(*) FROM improv_wlive.rx WHERE g = 'marker'" 1 120
+q "SELECT improv.recalc('wfresh')" >/dev/null
+for r in rwmin rwmax rcmax; do
+	n=$(q "SELECT count(*) FROM improv_wlive.$r l FULL JOIN improv_wfresh.$r f USING (g)
+	       WHERE l.value IS DISTINCT FROM f.value")
+	[ "$n" = 0 ] || fail "$r: $n cells differ from a fresh recalc"
+done
+# The fold's float8 sum is exact then rounded once; Postgres adds in scan
+# order: equal to within a few ulps (the documented limit).
+n=$(q "SELECT count(*) FROM improv_wlive.rx l FULL JOIN improv_wfresh.rx f USING (g)
+       WHERE abs(l.value - f.value) > 1e-14 * greatest(abs(f.value), 1) OR (l.value IS NULL) <> (f.value IS NULL)")
+[ "$n" = 0 ] || fail "rx: $n cells differ from a fresh recalc beyond rounding"
+read -r inc1 reb1 <<<"$(counters wlive)"
+[ "$reb1" = "$reb0" ] || fail "collated text min/max rebuilt the model ($reb0 -> $reb1 rebuilds)"
+echo "ok: text min/max under en-x-icu and C, and a float8 sum, folded: equal to a fresh recalc;" \
+	"rebuilds $reb0 -> $reb1"
+
+# A nondeterministic collation: min and count_distinct rebuild on a change.
+q "CREATE TABLE ci (id int PRIMARY KEY, g text, w text COLLATE improv_ci)"
+q "INSERT INTO ci VALUES (1, 'g', 'Apple'), (2, 'g', 'apple'), (3, 'g', 'banana')"
+x "SELECT improv.create_model('ci')"
+x "SELECT improv.bind_category('ci', 'G', 'ci', 'g')"
+x "SELECT improv.bind_measure('ci', 'W', 'ci', 'w', agg => 'count_distinct')"
+x "SELECT improv.define('ci', 'RW = W * 1')"
+wait_for "SELECT value FROM improv_ci.rw" 2
+read -r inc0 reb0 <<<"$(counters ci)"
+q "INSERT INTO ci VALUES (4, 'g', 'BANANA'), (5, 'g', 'cherry')"
+wait_for "SELECT value FROM improv_ci.rw" 3
+read -r inc1 reb1 <<<"$(counters ci)"
+[ "$reb1" -gt "$reb0" ] || fail "a nondeterministic count_distinct did not rebuild"
+echo "ok: count_distinct under a nondeterministic collation counts as Postgres does (rebuilds $reb0 -> $reb1)"
 echo PASS

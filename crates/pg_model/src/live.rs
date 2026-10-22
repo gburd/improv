@@ -36,7 +36,10 @@
 //! the same statement), and [`Mapper::map`] skips exactly the transactions
 //! that snapshot saw.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt;
+use std::sync::Arc;
 
 use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, Model, Value, ValueType};
 use improv_engine::session::Edit;
@@ -90,6 +93,32 @@ pub struct Binding {
     pub agg: Option<Agg>,
 }
 
+/// Compares two texts as Postgres does under one collation.
+pub type TextCmp = dyn Fn(&str, &str) -> Ordering + Send + Sync;
+
+/// How a binding's text values compare: its value column's collation, as
+/// the caller reads it from Postgres ([`Mapper::collate`]).
+#[derive(Clone)]
+pub enum Collation {
+    /// A deterministic collation: two texts are equal only when their bytes
+    /// are, and they order by this compare (Postgres's `varstr_cmp` under
+    /// the collation; byte order for `C` and `POSIX`).
+    Deterministic(Arc<TextCmp>),
+    /// A nondeterministic collation: texts with different bytes may be
+    /// equal, which only Postgres can tell, so a text `min` or `max` and a
+    /// `count_distinct` rebuild on every change.
+    Nondeterministic,
+}
+
+impl fmt::Debug for Collation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Collation::Deterministic(_) => "Deterministic",
+            Collation::Nondeterministic => "Nondeterministic",
+        })
+    }
+}
+
 /// Each cell a batch touched, with its value before the batch.
 type Touched = BTreeMap<(MeasureId, Coordinate), Option<Value>>;
 
@@ -139,7 +168,8 @@ impl Snap {
 /// already quoted), the value text the fold keeps, `count(value_col)` and
 /// `count(*)` ([`FoldRow`]), then a NULL. For `count` no value; for `sum` and
 /// `avg` the finite values' sum and, in groups of their own, the infinities
-/// and NaNs; for `min`, `max` and `count_distinct` one group per value text.
+/// and NaNs (and for an `avg` of `numeric`, one group per scale); for `min`,
+/// `max` and `count_distinct` one group per value text.
 /// One more row has NULL dimensions and, last, the statement's snapshot.
 pub fn seed_sql(rel: &str, dim_cols: &[String], value_col: &str, agg: Agg) -> String {
     let nulls = vec!["NULL"; dim_cols.len()].join(", ");
@@ -164,12 +194,23 @@ fn group_sql(rel: &str, dim_cols: &[String], value_col: &str, agg: Agg) -> Strin
                  GROUP BY {by}"
             )
         }
-        Agg::Sum | Agg::Avg => format!(
+        Agg::Sum => format!(
             "SELECT {dims}, coalesce(improv_special, sum({v})::text), count({v}), count(*), \
                     NULL::text \
              FROM (SELECT *, CASE WHEN {v}::text IN ('Infinity', '-Infinity', 'NaN') \
                    THEN {v}::text END AS improv_special FROM {rel}) t \
              GROUP BY {by}, improv_special"
+        ),
+        // A numeric's average keeps its values' largest scale: one group per
+        // scale, so the fold knows each scale's rows ([`Total::count`]).
+        Agg::Avg => format!(
+            "SELECT {dims}, coalesce(improv_special, sum({v})::text), count({v}), count(*), \
+                    NULL::text \
+             FROM (SELECT *, CASE WHEN {v}::text IN ('Infinity', '-Infinity', 'NaN') \
+                   THEN {v}::text END AS improv_special, \
+                   CASE WHEN pg_typeof({v}) = 'numeric'::regtype \
+                   THEN scale({v}::numeric) END AS improv_scale FROM {rel}) t \
+             GROUP BY {by}, improv_special, improv_scale"
         ),
         Agg::Min | Agg::Max | Agg::CountDistinct => format!(
             "SELECT {dims}, {v}::text, count({v}), count(*), NULL::text FROM {rel} \
@@ -230,6 +271,8 @@ pub struct Mapper {
     folds: HashMap<MeasureId, HashMap<Coordinate, Fold>>,
     /// Per aggregated measure, the snapshot its fold was seeded with.
     seeded: HashMap<MeasureId, Snap>,
+    /// Per aggregated measure over a text column, its collation.
+    collations: HashMap<MeasureId, Collation>,
 }
 
 impl Mapper {
@@ -249,7 +292,16 @@ impl Mapper {
             items,
             folds: HashMap::new(),
             seeded: HashMap::new(),
+            collations: HashMap::new(),
         }
+    }
+
+    /// Compare aggregated measure `measure`'s text values under `c`, its
+    /// value column's collation; call it before [`Mapper::seed`]. Without
+    /// one, a text `min` or `max` rebuilds on every change and
+    /// `count_distinct` finds two texts equal when their bytes are.
+    pub fn collate(&mut self, measure: MeasureId, c: Collation) {
+        self.collations.insert(measure, c);
     }
 
     /// The aggregated bindings, with their relation oids: each needs a
@@ -318,8 +370,10 @@ impl Mapper {
     /// Load aggregated measure `measure`'s fold state from the rows of its
     /// [`seed_sql`] (`snap` the snapshot they were read with), its value
     /// column being of Postgres type `oid`, and set `model`'s cells for it
-    /// to the folds'. A text `min` or `max` keeps no state (its changes
-    /// rebuild) and leaves the model's cells as they are.
+    /// to the folds'. A text `min` or `max` without a collation, and a text
+    /// `min`, `max` or `count_distinct` under a nondeterministic one, keep
+    /// no state (their changes rebuild) and leave the model's cells as they
+    /// are.
     pub fn seed(
         &mut self,
         model: &mut Model,
@@ -336,9 +390,11 @@ impl Mapper {
             .ok_or(Rebuild("unknown binding"))?;
         let agg = b.agg.ok_or(Rebuild("not an aggregated binding"))?;
         let vt = value_type(model, measure)?;
-        if unfoldable(agg, vt) {
+        let coll = self.collations.get(&measure);
+        if unfoldable(agg, vt, coll).is_some() {
             return Ok(());
         }
+        let cmp = text_cmp(coll);
         self.seeded.insert(measure, snap);
         let folds = self.folds.entry(measure).or_default();
         for (dims, v, n, all) in rows {
@@ -353,6 +409,7 @@ impl Mapper {
                 Some(s) => match part_of(agg, vt, oid, s)? {
                     // A group's finite sum stands for its `n` rows at once.
                     Part::Total(x) if x.is_finite() => {
+                        f.total.count(x, n - 1);
                         f.add(&Part::Total(x), 1) && f.add(&Part::Count, n - 1)
                     }
                     p => f.add(&p, *n),
@@ -363,8 +420,8 @@ impl Mapper {
             }
         }
         model.inputs.retain(|(m, _), _| *m != measure);
-        for (c, f) in folds.iter() {
-            if let Some(v) = f.cell(agg, oid) {
+        for (c, f) in folds.iter_mut() {
+            if let Some(v) = f.cell(agg, oid, cmp) {
                 model.set_input(measure, c.clone(), v);
             }
         }
@@ -440,7 +497,8 @@ impl Mapper {
                 row(&self.items, model, r, b, (old, new), replay, touched)?;
             } else if !self.loaded(model, b, xid)? {
                 let folds = self.folds.entry(b.measure).or_default();
-                fold_row(&self.items, folds, model, r, b, (old, new), touched)?;
+                let cmp = text_cmp(self.collations.get(&b.measure));
+                fold_row(&self.items, (folds, cmp), model, r, b, (old, new), touched)?;
             }
         }
         Ok(())
@@ -451,10 +509,10 @@ impl Mapper {
     fn loaded(&self, model: &Model, b: &Binding, xid: u32) -> Result<bool, Rebuild> {
         match self.seeded.get(&b.measure) {
             Some(s) => Ok(s.sees(xid)),
-            None if b.agg.is_some_and(|a| unfoldable(a, vt_of(model, b))) => {
-                Err(Rebuild("min or max of text"))
-            }
-            None => Err(Rebuild("fold not seeded")),
+            None => Err(b
+                .agg
+                .and_then(|a| unfoldable(a, vt_of(model, b), self.collations.get(&b.measure)))
+                .unwrap_or(Rebuild("fold not seeded"))),
         }
     }
 
@@ -570,7 +628,7 @@ fn row(
 /// coordinate's, and set each touched cell to its fold's value.
 fn fold_row(
     items: &Items,
-    folds: &mut HashMap<Coordinate, Fold>,
+    (folds, cmp): (&mut HashMap<Coordinate, Fold>, Option<&TextCmp>),
     model: &mut Model,
     r: &Relation,
     b: &Binding,
@@ -596,7 +654,10 @@ fn fold_row(
         if !f.add(&p, k) {
             return Err(Rebuild("a fold went out of step"));
         }
-        let cell = f.cell(agg, value_oid(r, b));
+        if k > 0 {
+            f.offer(&p, agg, cmp);
+        }
+        let cell = f.cell(agg, value_oid(r, b), cmp);
         if f.rows == 0 {
             folds.remove(&c);
         }
@@ -610,12 +671,39 @@ fn fold_row(
     Ok(())
 }
 
-/// Postgres orders text by its collation, which a byte order would not
-/// match, so a text `min` or `max` keeps no fold and rebuilds.
-// shortcut: text min/max rebuilds on every change; fold it under COLLATE "C"
-// (or ask Postgres for the order) if it ever matters.
-fn unfoldable(agg: Agg, vt: ValueType) -> bool {
-    matches!(agg, Agg::Min | Agg::Max) && vt == ValueType::Text
+/// Why aggregate `agg` of a `vt` measure under collation `c` keeps no fold
+/// (its changes rebuild): a text `min` or `max` orders by its collation, so
+/// it needs one; a nondeterministic collation's equality is Postgres's alone.
+fn unfoldable(agg: Agg, vt: ValueType, c: Option<&Collation>) -> Option<Rebuild> {
+    match (agg, c) {
+        (Agg::Min | Agg::Max | Agg::CountDistinct, Some(Collation::Nondeterministic)) => {
+            Some(Rebuild("nondeterministic collation"))
+        }
+        (Agg::Min | Agg::Max, None) if vt == ValueType::Text => Some(Rebuild("min or max of text")),
+        _ => None,
+    }
+}
+
+/// The text compare of collation `c`, when it is deterministic.
+fn text_cmp(c: Option<&Collation>) -> Option<&TextCmp> {
+    match c {
+        Some(Collation::Deterministic(cmp)) => Some(&**cmp),
+        _ => None,
+    }
+}
+
+/// Whether value `a` is a better `min` (or `max`) than `b`: texts by `cmp`,
+/// the rest by their key order.
+fn beats(agg: Agg, cmp: &TextCmp, a: &Key, b: &Key) -> bool {
+    let o = match (a, b) {
+        (Key::Text(a), Key::Text(b)) => cmp(a, b),
+        _ => a.cmp(b),
+    };
+    if agg == Agg::Max {
+        o.is_gt()
+    } else {
+        o.is_lt()
+    }
 }
 
 /// The coordinate of tuple `t`; `None` when a dimension is NULL (the
@@ -758,9 +846,11 @@ struct Fold {
     n: i64,
     /// `sum`, `avg`: the values' total.
     total: Total,
-    /// `min`, `max`: each value's row count, in value order;
-    /// `count_distinct`: each distinct value's.
+    /// `min`, `max`: each value's row count, in value order (a text's by
+    /// its bytes); `count_distinct`: each distinct value's.
     values: BTreeMap<Key, i64>,
+    /// A text `min` or `max` under a collation: its value, when known.
+    best: Option<Key>,
 }
 
 /// What one row adds to a fold.
@@ -800,9 +890,20 @@ impl Fold {
         self.rows >= 0 && self.n >= 0
     }
 
+    /// A text `min` or `max` under compare `cmp`: `p`, just added, may be its
+    /// new value. (A removed one is noticed by [`Fold::cell`].)
+    fn offer(&mut self, p: &Part, agg: Agg, cmp: Option<&TextCmp>) {
+        if let (Part::Key(k), Some(cmp), Some(best)) = (p, cmp, &self.best) {
+            if beats(agg, cmp, k, best) {
+                self.best = Some(k.clone());
+            }
+        }
+    }
+
     /// The cell the rows make, as Postgres's aggregate computes it over a
-    /// value column of type `oid`.
-    fn cell(&self, agg: Agg, oid: u32) -> Option<Value> {
+    /// value column of type `oid` (texts ordered by `cmp`, their collation's
+    /// compare, when there is one).
+    fn cell(&mut self, agg: Agg, oid: u32, cmp: Option<&TextCmp>) -> Option<Value> {
         if self.rows <= 0 {
             return None;
         }
@@ -814,8 +915,25 @@ impl Fold {
             _ if self.n <= 0 => None,
             Agg::Sum => num(self.total.value()),
             Agg::Avg => num(self.total.avg(self.n, matches!(oid, FLOAT4 | FLOAT8))),
-            Agg::Min => self.values.keys().next().and_then(Key::value),
-            Agg::Max => self.values.keys().next_back().and_then(Key::value),
+            Agg::Min | Agg::Max => match cmp {
+                Some(cmp) => {
+                    // Rescan only when the value went (or was never found).
+                    if !self
+                        .best
+                        .as_ref()
+                        .is_some_and(|b| self.values.contains_key(b))
+                    {
+                        self.best = self
+                            .values
+                            .keys()
+                            .reduce(|b, k| if beats(agg, cmp, k, b) { k } else { b })
+                            .cloned();
+                    }
+                    self.best.as_ref().and_then(Key::value)
+                }
+                None if agg == Agg::Min => self.values.keys().next().and_then(Key::value),
+                None => self.values.keys().next_back().and_then(Key::value),
+            },
         }
     }
 }
@@ -826,7 +944,7 @@ fn part_of(agg: Agg, vt: ValueType, oid: u32, s: &str) -> Result<Part, Rebuild> 
     Ok(match agg {
         Agg::Count => Part::Count,
         Agg::CountDistinct => Part::Key(Key::Text(distinct_text(oid, s))),
-        Agg::Sum | Agg::Avg => Part::Total(Num::parse(s)?),
+        Agg::Sum | Agg::Avg => Part::Total(Num::parse(s, matches!(oid, FLOAT4 | FLOAT8))?),
         Agg::Min | Agg::Max => Part::Key(Key::order(parse(vt, s, oid == BPCHAR)?)?),
     })
 }
@@ -842,10 +960,9 @@ fn part(agg: Agg, r: &Relation, b: &Binding, t: &Tuple, vt: ValueType) -> Result
 /// Value text `s` of type `oid`, normalized so that two values Postgres
 /// finds equal have the same text: `char(n)` without its padding, a bool as
 /// `t` or `f` (pgoutput's; `bool::text` is `true`), `numeric` without
-/// trailing fractional zeros (`1.50` = `1.5`), and float `-0` as `0`.
-// shortcut: other types compare as their text, exact for the default
-// (deterministic) collations; a nondeterministic collation would need
-// Postgres to compare.
+/// trailing fractional zeros (`1.50` = `1.5`), and float `-0` as `0`. Other
+/// types compare as their text: exact under a deterministic collation, the
+/// only kind that folds ([`unfoldable`]).
 fn distinct_text(oid: u32, s: &str) -> String {
     match oid {
         BPCHAR => s.trim_end_matches(' ').to_string(),
@@ -864,7 +981,8 @@ enum Key {
     Bool(bool),
     /// Milliseconds since the epoch.
     Date(i64),
-    /// `count_distinct`: the normalized text ([`distinct_text`]).
+    /// A text (`min`, `max`: ordered by its collation, [`Fold::cell`]), or
+    /// for `count_distinct` the normalized text ([`distinct_text`]).
     Text(String),
 }
 
@@ -876,8 +994,8 @@ impl Key {
             Value::Number(x) => Key::Num(ord_bits(x + 0.0)),
             Value::Boolean(b) => Key::Bool(b),
             Value::DateTime(d) => Key::Date(d.timestamp_millis()),
-            // Text min/max keeps no fold ([`unfoldable`]).
-            _ => return Err(Rebuild("min or max of text")),
+            Value::Text(s) => Key::Text(s),
+            _ => return Err(Rebuild("value the loader would not read")),
         })
     }
 
@@ -903,7 +1021,8 @@ fn ord_bits_inverse(k: i64) -> u64 {
 }
 
 /// A summed number: exact nanos when its text is a plain decimal with at
-/// most 9 decimals (every integer, most `numeric`s), else a float.
+/// most 9 decimals (every integer, most `numeric`s), else a float (every
+/// value of a float column, whose float8s Postgres sums).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Num {
     /// Nanos, and the text's decimal places.
@@ -921,8 +1040,8 @@ impl Num {
         }
     }
 
-    fn parse(s: &str) -> Result<Num, Rebuild> {
-        if let Some(n) = nanos(s) {
+    fn parse(s: &str, float: bool) -> Result<Num, Rebuild> {
+        if let Some(n) = nanos(s).filter(|_| !float) {
             let scale = s.split_once('.').map_or(0, |(_, f)| f.len());
             return Ok(Num::Nanos(n, scale as u8));
         }
@@ -1013,23 +1132,23 @@ fn numeric_div(nanos: i128, scale: i32, n: i64) -> f64 {
 
 /// A running total that removing a value undoes exactly: decimal values in
 /// integer nanos (so `sum(int)` and `sum(numeric)` come out as Postgres's
-/// exact sum rounded once to `float8`), other finite values as a float sum,
-/// and the infinities and NaNs counted.
-// shortcut: values with more than 9 decimals or an exponent sum as floats in
-// change order, and a float8 column's decimals sum exactly then round once
-// where Postgres adds float8s in scan order: either can differ from a fresh
-// sum in the last bits (as Postgres's own float8 sum does across scan
-// orders). Integer and numeric(p, s <= 9) sums are exact.
+/// exact sum rounded once to `float8`), other finite values exactly in an
+/// [`Exact`], and the infinities and NaNs counted. So the total is the same
+/// whatever the order of the changes that made it.
+///
+/// Two documented limits (docs/src/postgres.md): a float column's total is
+/// its float8s' exact sum rounded once, where Postgres adds them in scan
+/// order, so a fresh `sum` can differ in the last bits (as Postgres's own
+/// does across scan orders); a `numeric` value with more than 9 decimals
+/// rounds to float8 before it is summed.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Total {
     nanos: i128,
     /// Rows summed in nanos, per decimal places (a numeric sum's scale is
     /// its values' largest).
-    // shortcut: a seed group counts once at its sum's scale, so after
-    // deletes the scale can read low; it only matters for an avg of 10^8 or
-    // more with 9 decimals (the result scale is then the column's).
     scales: [i64; 10],
-    float: f64,
+    /// The floats' exact sum (boxed: most totals have none).
+    float: Option<Box<Exact>>,
     /// Rows summed as floats.
     floats: i64,
     /// Rows of +∞, -∞ and NaN.
@@ -1037,6 +1156,15 @@ struct Total {
 }
 
 impl Total {
+    /// Count `k` more rows of `x`'s kind without adding to the sum: a seed
+    /// group's sum stands for all of its rows.
+    fn count(&mut self, x: Num, k: i64) {
+        match x {
+            Num::Nanos(_, scale) => self.scales[usize::from(scale)] += k,
+            Num::Float(_) => self.floats += k,
+        }
+    }
+
     fn add(&mut self, x: Num, k: i64) {
         match x {
             Num::Nanos(n, scale) => {
@@ -1047,7 +1175,7 @@ impl Total {
             Num::Float(f) if f == f64::INFINITY => self.special[0] += k,
             Num::Float(f) if f == f64::NEG_INFINITY => self.special[1] += k,
             Num::Float(f) => {
-                self.float += f * k as f64;
+                self.float.get_or_insert_default().add(f, k);
                 self.floats += k;
             }
         }
@@ -1075,9 +1203,123 @@ impl Total {
                 let sign = if self.nanos < 0 && q == 0 { "-" } else { "" };
                 // Decimal text to float8, as Postgres's numeric_float8 does.
                 let exact: f64 = format!("{sign}{q}.{r:09}").parse().unwrap_or(f64::NAN);
-                exact + self.float
+                match &self.float {
+                    Some(f) => exact + f.value(),
+                    None => exact,
+                }
             }
         }
+    }
+}
+
+/// The exact sum of finite floats, `k` times each: a two's-complement
+/// integer in units of 2⁻¹⁰⁷⁴ (the least subnormal) over [`Exact::LIMBS`]
+/// 64-bit limbs, room for 2²⁰⁵ times the largest float.
+#[derive(Debug, Clone, PartialEq)]
+struct Exact([u64; Exact::LIMBS]);
+
+impl Default for Exact {
+    fn default() -> Self {
+        Exact([0; Exact::LIMBS])
+    }
+}
+
+impl Exact {
+    const LIMBS: usize = 36;
+
+    /// Add `k` times finite `x`.
+    fn add(&mut self, x: f64, k: i64) {
+        let bits = x.to_bits();
+        let (e, frac) = ((bits >> 52) & 0x7ff, bits & ((1 << 52) - 1));
+        // x = m · 2^shift units.
+        let (m, shift) = if e == 0 {
+            (frac, 0)
+        } else {
+            (frac | 1 << 52, e - 1)
+        };
+        let v = u128::from(m) * u128::from(k.unsigned_abs());
+        let (at, off) = ((shift / 64) as usize, (shift % 64) as u32);
+        let (lo, hi) = (v as u64, (v >> 64) as u64);
+        let words = if off == 0 {
+            [lo, hi, 0]
+        } else {
+            [lo << off, hi << off | lo >> (64 - off), hi >> (64 - off)]
+        };
+        let neg = (bits >> 63 == 1) != (k < 0);
+        let mut carry = false;
+        for (i, limb) in self.0.iter_mut().enumerate().skip(at) {
+            let w = words.get(i - at).copied().unwrap_or(0);
+            if w == 0 && !carry {
+                if i - at >= 2 {
+                    break;
+                }
+                continue;
+            }
+            let (s, c1) = if neg {
+                limb.overflowing_sub(w)
+            } else {
+                limb.overflowing_add(w)
+            };
+            let (s, c2) = if neg {
+                s.overflowing_sub(u64::from(carry))
+            } else {
+                s.overflowing_add(u64::from(carry))
+            };
+            *limb = s;
+            carry = c1 || c2;
+        }
+    }
+
+    /// The sum, rounded once to the nearest float (ties to even).
+    fn value(&self) -> f64 {
+        let neg = self.0[Self::LIMBS - 1] >> 63 == 1;
+        let mut mag = self.0;
+        if neg {
+            // Two's-complement negate.
+            let mut carry = true;
+            for l in &mut mag {
+                let (s, c) = (!*l).overflowing_add(u64::from(carry));
+                *l = s;
+                carry = c;
+            }
+        }
+        let sign = if neg { -1.0 } else { 1.0 };
+        let Some(top) = mag.iter().rposition(|l| *l != 0) else {
+            return 0.0;
+        };
+        // Its bit length, and its top 64 bits with any bit below kept in
+        // the last (a sticky bit, so the one rounding is correct).
+        let len = 64 * top as i32 + 64 - mag[top].leading_zeros() as i32;
+        if len <= 64 {
+            // An exact multiple of 2^-1074: a subnormal or a normal float.
+            return sign * mag[0] as f64 * f64::from_bits(1);
+        }
+        let get = |bit: i32| -> u64 {
+            let (i, o) = ((bit / 64) as usize, bit % 64);
+            let w = mag[i] >> o;
+            if o == 0 || i + 1 > top {
+                w
+            } else {
+                w | mag[i + 1] << (64 - o)
+            }
+        };
+        let low = len - 64;
+        let sticky = mag[..(low / 64) as usize].iter().any(|l| *l != 0)
+            || mag[(low / 64) as usize] & ((1u64 << (low % 64)) - 1) != 0;
+        let x = (get(low) | u64::from(sticky)) as f64;
+        sign * pow2_scale(x, low - 1074)
+    }
+}
+
+/// `x` (a normal float below 2⁶⁴) times 2^`p`, exact unless it overflows.
+fn pow2_scale(x: f64, p: i32) -> f64 {
+    let pow2 = |p: i32| f64::from_bits(((p + 1023) as u64) << 52);
+    if p > 1023 {
+        f64::INFINITY
+    } else if p < -1022 {
+        x * pow2(-1022) * pow2(p + 1022)
+    } else {
+        x * pow2(p)
     }
 }
 
@@ -1854,7 +2096,7 @@ mod tests {
         assert!(mp
             .map(&mut m, &pk, &txn(vec![ins(full("Q2", "1"))]), 0)
             .is_ok());
-        // Text min/max is not folded (collation order): it always rebuilds.
+        // Text min/max without a collation to order by: it always rebuilds.
         let mut m = model();
         m.measures.get_mut(&MeasureId(5)).unwrap().value_type = ValueType::Text;
         let mut mp = mapper(&m, Some(Agg::Max));
@@ -1880,6 +2122,295 @@ mod tests {
             plain.seed(&mut m, MeasureId(5), 25, &[], Snap::default()),
             Err(Rebuild("not an aggregated binding"))
         );
+    }
+
+    /// A case-insensitive order, as a stand-in for a linguistic collation:
+    /// `a` < `B` < `c`, where byte order has `B` < `a` < `c`.
+    fn folded() -> Collation {
+        Collation::Deterministic(Arc::new(|a: &str, b: &str| {
+            a.to_lowercase()
+                .cmp(&b.to_lowercase())
+                .then_with(|| a.cmp(b))
+        }))
+    }
+
+    /// Price as text bound through `agg` under collation `c`, seeded with
+    /// `seed`, after `changes`: its cells by quarter.
+    fn text_fold(
+        agg: Agg,
+        c: Option<Collation>,
+        seed: &[(&str, Option<&str>)],
+        changes: Vec<Message>,
+    ) -> Result<BTreeMap<String, Value>, Rebuild> {
+        let mut m = model();
+        m.measures.get_mut(&MeasureId(5)).unwrap().value_type = ValueType::Text;
+        let mut mp = mapper(&m, Some(agg));
+        if let Some(c) = c {
+            mp.collate(MeasureId(5), c);
+        }
+        let rows = seed_rows(agg, &rows_of(seed));
+        mp.seed(&mut m, MeasureId(5), 25, &rows, Snap::default())?;
+        mp.map(&mut m, &rels(b'f', &[]), &txn(changes), 0)?;
+        Ok(cells(&m))
+    }
+
+    #[test]
+    fn text_min_and_max_fold_under_their_collation() {
+        let q1 = |v| full("Q1", v);
+        let text = |pairs: &[(&str, &str)]| {
+            values(
+                &pairs
+                    .iter()
+                    .map(|(q, s)| (*q, Value::Text(s.to_string())))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let seed = [("Q1", Some("c")), ("Q1", Some("B")), ("Q2", Some("a"))];
+        // Under the collation, not byte order (which would give `B`, `c`).
+        let ins_a = vec![ins(q1("a"))];
+        assert_eq!(
+            text_fold(Agg::Min, Some(folded()), &seed, ins_a.clone()),
+            text(&[("Q1", "a"), ("Q2", "a")])
+        );
+        assert_eq!(
+            text_fold(Agg::Max, Some(folded()), &seed, vec![]),
+            text(&[("Q1", "c"), ("Q2", "a")])
+        );
+        // The extreme goes: the fold rescans for the next.
+        assert_eq!(
+            text_fold(Agg::Max, Some(folded()), &seed, vec![del(q1("c"))]),
+            text(&[("Q1", "B"), ("Q2", "a")])
+        );
+        assert_eq!(
+            text_fold(
+                Agg::Min,
+                Some(folded()),
+                &seed,
+                vec![del(q1("B")), del(q1("c"))]
+            ),
+            text(&[("Q2", "a")])
+        );
+        // Byte order (`C`) is a collation too.
+        let bytes = Collation::Deterministic(Arc::new(|a: &str, b: &str| a.cmp(b)));
+        assert_eq!(
+            text_fold(Agg::Min, Some(bytes), &seed, ins_a.clone()),
+            text(&[("Q1", "B"), ("Q2", "a")])
+        );
+        // No collation: rebuild. A nondeterministic one: rebuild, also for
+        // count_distinct, whose equality only Postgres knows.
+        assert_eq!(
+            text_fold(Agg::Min, None, &seed, ins_a.clone()),
+            Err(Rebuild("min or max of text"))
+        );
+        for agg in [Agg::Min, Agg::Max, Agg::CountDistinct] {
+            assert_eq!(
+                text_fold(agg, Some(Collation::Nondeterministic), &seed, ins_a.clone()),
+                Err(Rebuild("nondeterministic collation")),
+                "{agg:?}"
+            );
+        }
+        assert_eq!(format!("{:?}", folded()), "Deterministic");
+        assert_eq!(
+            format!("{:?}", Collation::Nondeterministic),
+            "Nondeterministic"
+        );
+    }
+
+    #[test]
+    fn collated_folds_equal_a_fresh_aggregate_after_random_batches() {
+        const VALUES: [Option<&str>; 7] = [
+            Some("a"),
+            Some("B"),
+            Some("b"),
+            Some("c"),
+            Some("ä"),
+            Some(""),
+            None,
+        ];
+        let Collation::Deterministic(cmp) = folded() else {
+            unreachable!()
+        };
+        let tuple = |(q, v): &(String, Option<String>)| row(Some(q), Some("P1"), v.as_deref());
+        for agg in [Agg::Min, Agg::Max] {
+            let mut rng = Rng(0x9e37_79b9_7f4a_7c15 + agg as u64);
+            let pick = |rng: &mut Rng| {
+                (
+                    ["Q1", "Q2"][rng.below(2)].to_string(),
+                    VALUES[rng.below(VALUES.len())].map(str::to_string),
+                )
+            };
+            let mut rows: Rows = (0..4).map(|_| pick(&mut rng)).collect();
+            let mut m = model();
+            m.measures.get_mut(&MeasureId(5)).unwrap().value_type = ValueType::Text;
+            let mut mp = mapper(&m, Some(agg));
+            mp.collate(MeasureId(5), folded());
+            mp.seed(
+                &mut m,
+                MeasureId(5),
+                25,
+                &seed_rows(agg, &rows),
+                Snap::default(),
+            )
+            .unwrap();
+            for batch in 0..300u32 {
+                let mut changes = Vec::new();
+                for _ in 0..1 + rng.below(3) {
+                    let new = pick(&mut rng);
+                    match rng.below(3) {
+                        0 => {
+                            changes.push(ins(tuple(&new)));
+                            rows.push(new);
+                        }
+                        _ if rows.is_empty() => {}
+                        1 => changes.push(del(tuple(&rows.swap_remove(rng.below(rows.len()))))),
+                        _ => {
+                            let at = rng.below(rows.len());
+                            changes.push(upd(Some(tuple(&rows[at])), tuple(&new)));
+                            rows[at] = new;
+                        }
+                    }
+                }
+                let t = Txn {
+                    xid: batch,
+                    end_lsn: 100 + u64::from(batch),
+                    changes,
+                };
+                mp.map(&mut m, &rels(b'f', &[]), &[t], 0).unwrap();
+                let mut want: BTreeMap<String, Value> = BTreeMap::new();
+                for (q, v) in &rows {
+                    let Some(v) = v else { continue };
+                    let better = |w: &Value| match w {
+                        Value::Text(w) => {
+                            let o = cmp(v, w);
+                            if agg == Agg::Min {
+                                o.is_lt()
+                            } else {
+                                o.is_gt()
+                            }
+                        }
+                        _ => false,
+                    };
+                    if want.get(q).is_none_or(better) {
+                        want.insert(q.clone(), Value::Text(v.clone()));
+                    }
+                }
+                assert_eq!(cells(&m), want, "{agg:?}, batch {batch}");
+            }
+        }
+    }
+
+    #[test]
+    fn float_totals_are_exact_and_order_free() {
+        let float = |s| Num::parse(s, true).unwrap();
+        // A float column's values sum as float8s, even plain decimals.
+        assert_eq!(float("0.1"), Num::Float(0.1));
+        let mut t = Total::default();
+        for s in ["0.1", "0.2", "0.3"] {
+            t.add(float(s), 1);
+        }
+        // The float8s' exact sum, rounded once: 0.6. Postgres adds them in
+        // scan order, 0.6000000000000001: the documented limit.
+        assert_eq!(t.value(), 0.6);
+        assert_eq!(0.1 + 0.2 + 0.3, 0.6000000000000001);
+        // Cancellation leaves no residue: Postgres's sum(1e16, 1, -1e16) is
+        // 0 in one order and 1 in another; the exact sum is 1.
+        let mut t = Total::default();
+        for (s, k) in [("1e16", 1), ("1", 1), ("-1e16", 1)] {
+            t.add(float(s), k);
+        }
+        assert_eq!(t.value(), 1.0);
+        t.add(float("1"), -1);
+        assert_eq!(t.value(), 0.0);
+        // Order-free: the same values in any order (and with removals) give
+        // the same bits. Against an exact reference: the values are integers
+        // times 2^-40 spread over 2^60, so an i128 sum of them is exact.
+        let mut rng = Rng(42);
+        let xs: Vec<f64> = (0..2000)
+            .map(|_| {
+                let m = rng.below(1 << 30) as f64 - (1 << 29) as f64;
+                m * 2f64.powi(rng.below(60) as i32 - 40)
+            })
+            .collect();
+        let mut a = Total::default();
+        let mut b = Total::default();
+        for x in &xs {
+            a.add(Num::Float(*x), 1);
+        }
+        for x in xs.iter().rev() {
+            b.add(Num::Float(*x), 2);
+            b.add(Num::Float(*x), -1);
+        }
+        assert_eq!(a.value().to_bits(), b.value().to_bits());
+        let units: i128 = xs.iter().map(|x| (x * 2f64.powi(40)) as i128).sum();
+        assert!(xs.iter().all(|x| (x * 2f64.powi(40)).fract() == 0.0));
+        assert_eq!(a.value(), units as f64 / 2f64.powi(40));
+        // Extremes: subnormals, the largest float, overflow to infinity.
+        let tiny = f64::from_bits(1);
+        let mut e = Exact::default();
+        e.add(tiny, 3);
+        assert_eq!(e.value(), 3.0 * tiny);
+        e.add(tiny, -5);
+        assert_eq!(e.value(), -2.0 * tiny);
+        let mut e = Exact::default();
+        e.add(f64::MAX, 1);
+        assert_eq!(e.value(), f64::MAX);
+        e.add(f64::MAX, 1);
+        assert_eq!(e.value(), f64::INFINITY);
+        e.add(f64::MAX, -3);
+        assert_eq!(e.value(), -f64::MAX);
+        let mut e = Exact::default();
+        e.add(-0.0, 1);
+        assert_eq!(e.value(), 0.0);
+        // Rounds once, to nearest even: 2^53 + 1 is a tie, 2^53 + 1 + 2^-60 not.
+        let mut e = Exact::default();
+        e.add(2f64.powi(53), 1);
+        e.add(1.0, 1);
+        assert_eq!(e.value(), 2f64.powi(53));
+        e.add(2f64.powi(-60), 1);
+        assert_eq!(e.value(), 2f64.powi(53) + 2.0);
+        assert_eq!(pow2_scale(1.5, -1074), f64::from_bits(2));
+        // A numeric column's exponent-form and long values sum as floats too.
+        assert_eq!(Num::parse("1e2", false), Ok(Num::Float(100.0)));
+        assert_eq!(
+            Num::parse("0.1234567891", false),
+            Ok(Num::Float(0.1234567891))
+        );
+    }
+
+    #[test]
+    fn a_numeric_average_keeps_its_scale_after_deletes() {
+        // Seeded per scale: avg(10^8.123456789, 10^8) over 2 rows, then the
+        // 9-decimal row goes; avg(100000000) is 100000000.00000000 (scale
+        // 8 from 16 significant digits), the same float either way, but a
+        // 2-row group at scale 9 must still count 1 row at scale 9.
+        let numeric = (ValueType::Number, NUMERIC);
+        let seed = [
+            group(Some("Q1"), Some("200000000.000000000"), 2, 2),
+            group(Some("Q1"), Some("100000000.123456789"), 1, 1),
+        ];
+        let q1 = |v| full("Q1", v);
+        // Postgres: avg of 100000000.000000000 (x2) and 100000000.123456789
+        // = 100000000.041152263 (scale 9).
+        assert_eq!(
+            fold_as(Agg::Avg, numeric, &seed, vec![]),
+            nums(&[("Q1", 100_000_000.041_152_27)])
+        );
+        // Delete the scale-9 row: the two 100000000.000000000 rows keep
+        // scale 9; avg = 100000000.000000000.
+        let mut m = model();
+        let mut mp = mapper(&m, Some(Agg::Avg));
+        mp.seed(&mut m, MeasureId(5), NUMERIC, &seed, Snap::default())
+            .unwrap();
+        mp.map(
+            &mut m,
+            &rels(b'f', &[]),
+            &txn(vec![del(q1("100000000.123456789"))]),
+            0,
+        )
+        .unwrap();
+        let f = &mp.folds[&MeasureId(5)][&coordinate(11, 21)];
+        assert_eq!(f.total.scales[9], 2);
+        assert_eq!(f.n, 2);
     }
 
     #[test]
@@ -2030,13 +2561,13 @@ mod tests {
         // Past 20 integer digits a value sums as a float.
         assert_eq!(nanos("123456789012345678901"), None);
         assert_eq!(
-            Num::parse("123456789012345678901"),
+            Num::parse("123456789012345678901", false),
             Ok(Num::Float(1.2345678901234568e20))
         );
         for s in ["1e5", "1.0000000001", "", "-", ".", "NaN", "1.2.3", "1-2"] {
             assert_eq!(nanos(s), None, "{s}");
         }
-        let num = |s| Num::parse(s).unwrap();
+        let num = |s| Num::parse(s, false).unwrap();
         let mut t = Total::default();
         t.add(num("0.1"), 1);
         t.add(num("0.2"), 1);
@@ -2056,7 +2587,7 @@ mod tests {
         t.add(num("NaN"), 1);
         assert!(t.value().is_nan());
         assert_eq!(
-            Num::parse("abc"),
+            Num::parse("abc", false),
             Err(Rebuild("value the loader would not read"))
         );
         let mut t = Total::default();
@@ -2092,7 +2623,7 @@ mod tests {
             let got = numeric_div(nanos(s).unwrap(), scale, n);
             assert_eq!(got.to_bits(), want.to_bits(), "{s} / {n}: {got} != {want}");
         }
-        let num = |s| Num::parse(s).unwrap();
+        let num = |s| Num::parse(s, false).unwrap();
         let mut t = Total::default();
         for s in ["1.50", "2.25", "-0.10"] {
             t.add(num(s), 1);
@@ -2136,7 +2667,11 @@ mod tests {
         assert!(Key::Bool(false) < Key::Bool(true));
         assert_eq!(
             Key::order(Value::Text("a".into())),
-            Err(Rebuild("min or max of text"))
+            Ok(Key::Text("a".into()))
+        );
+        assert_eq!(
+            Key::order(Value::Enum(1)),
+            Err(Rebuild("value the loader would not read"))
         );
         assert_eq!(distinct_text(BPCHAR, "ab  "), "ab");
         assert_eq!(distinct_text(NUMERIC, "1.50"), "1.5");

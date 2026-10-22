@@ -147,7 +147,8 @@ Rebuild reasons (in `crates/pg_model/src/live.rs` and `worker.rs`):
 | `no live state` | first batch after a restart or a failure |
 | `new item in a category a formula enumerates` / `new item` | a new dimension value in a category whose item list a formula reads (`POSITION`, `PREV`, `RANK`, `FILL`, …) |
 | `two rows on one coordinate` | a measure bound without `agg` got a second row for one coordinate; bind it with `agg` |
-| `min or max of text` | a text `min`/`max` binding changed (collation order is Postgres's) |
+| `min or max of text` | a text `min`/`max` binding whose value column has no collation changed (rare: a text column always has one) |
+| `nondeterministic collation` | a text `min`, `max` or `count_distinct` binding over a column with a nondeterministic collation (`deterministic = false`) changed: only Postgres can tell which texts are equal |
 | `truncate` | `TRUNCATE` of a bound table |
 | `old row not replicated`, `unchanged TOAST value`, `bound column missing` | an UPDATE or DELETE whose old row the decoder did not carry; the table needs `REPLICA IDENTITY FULL` (the worker sets it on tables without a primary key) |
 | `value the loader would not read`, `a fold went out of step`, `fold not seeded`, `unknown binding`, `unknown measure`, `undescribed relation`, `not an aggregated binding`, `no row` | internal consistency checks; the rebuild makes the result exact again. If one repeats, report it with the model's definition |
