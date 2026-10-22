@@ -1,0 +1,24 @@
+formula	expected	source
+"x" & 1e21	"x1E+21"	Gnumeric
+"x" & 1e20	"x1E+20"	Gnumeric
+"x" & 1e100	"x1E+100"	Gnumeric and LibreOffice
+"x" & 2.5e-300	"x2.5E-300"	Gnumeric and LibreOffice
+"x" & 1e-10	"x1E-10"	Gnumeric
+"x" & 1e-5	"x1E-05"	Gnumeric
+"x" & 1.5e-7	"x1.5E-07"	Gnumeric
+"x" & 0.0000123	"x1.23E-05"	Gnumeric
+"x" & 0.0001	"x0.0001"	Gnumeric and LibreOffice
+"x" & 0.000123456789	"x0.000123456789"	Gnumeric and LibreOffice
+"x" & 123456789012345	"x123456789012345"	Gnumeric and LibreOffice
+"x" & 999999999999999	"x999999999999999"	Gnumeric and LibreOffice
+"x" & 1e15	"x1E+15"	%.15G
+"x" & 1125899906842624	"x1.12589990684262E+15"	%.15G
+"x" & 1e16	"x1E+16"	%.15G
+"x" & 123456789012345678901	"x1.23456789012346E+20"	%.15G
+"x" & 1.23456789e20	"x1.23456789E+20"	Gnumeric
+"x" & 12345678901.2345	"x12345678901.2345"	Gnumeric and LibreOffice
+"x" & 1 / 3	"x0.333333333333333"	LibreOffice
+"x" & 0.1 + 0.2	"x0.3"	LibreOffice
+"x" & 2 / 3 * 1e-5	"x6.66666666666667E-06"	%.15G
+"x" & 0 - 1e21	"x-1E+21"	Gnumeric
+"x" & 0 - 1e-10	"x-1E-10"	Gnumeric

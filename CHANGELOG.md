@@ -245,6 +245,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Number to text uses Excel's General form.** A number joined to text
+  (`"x" & n`, `CONCAT`, `TEXT(n, "General")`), shown in the grid, or
+  returned by DuckDB's `improv_calc_text` switches to an exponent below
+  1E-4 and from 1E+15, with 15 significant digits, as Excel (and C's
+  `%.15G`) does. Before: `"x" & 1e21` was `x1000000000000000000000`, now
+  `x1E+21`; `"x" & 1e-10` was `x0.0000000001`, now `x1E-10`; `"x" &
+  1.5e-7` was `x0.00000015`, now `x1.5E-07`. Numbers from 1E-4 to under
+  1E+15 are unchanged. Goldens: `numtext_goldens.tsv`
+  (`scripts/goldens/numtext.py`), checked against LibreOffice and
+  Gnumeric, which differ from Excel and each other at the switch points
+  (LibreOffice writes `1E+021` and switches at 1E-15 and 1E+16; Gnumeric
+  keeps 17 digits).
 - **`-0 == 0` is TRUE.** `==` and `!=` compared numbers by bit pattern, so
   `ROUND(-0.4, 0) == 0` and `0 * -1 == 0` were FALSE while `<=` said TRUE.
   Numbers now compare numerically (NaN stays unequal to itself); other

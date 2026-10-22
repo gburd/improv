@@ -772,13 +772,12 @@ of the language.
   float and compares exactly, so `0.1 + 0.2 == 0.3` is FALSE in both
   products, while near-equal values Excel would round together stay unequal
   in Improv. Text built from a number (`"x" & n`, `TEXT`) and the grid show
-  15 significant digits, as Excel does. Exports keep every bit. Arguments
+  15 significant digits in Excel's General form, as Excel does: `"x" &
+  1e21` is `x1E+21`, `"x" & 1e-10` is `x1E-10` (an exponent below 1E-4
+  and from 1E+15; LibreOffice and Gnumeric each switch at other points). Exports keep every bit. Arguments
   that must be whole numbers (`LEFT(t, n)`, `CHAR`, `max_iter`) are
   truncated toward zero, as in Excel. `==` and `!=` compare numbers by
   value, so `-0 == 0` is TRUE, as in Excel.
-- **Number to text.** `"x" & 1e21` gives `x1000000000000000000000` and
-  `"x" & 1e-10` gives `x0.0000000001`; Excel switches to `1E+21` and
-  `1E-10`. **Follow-up:** align with Excel's General format.
 - **Dates are timestamps, not serial numbers.** A date is a UTC instant
   with millisecond precision. Where a number is given for a date, or a date
   is turned into a number (`N(date)`), it is a serial date on the 1900

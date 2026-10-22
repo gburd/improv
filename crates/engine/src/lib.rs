@@ -118,18 +118,28 @@ impl std::fmt::Display for CellValue {
     }
 }
 
-/// A number as people read it: at most 15 significant digits, the precision
-/// an `f64` always carries through decimal, so binary noise like
-/// `58.650000000000006` (from `1173 * 0.05`) shows as `58.65`. The value
-/// itself is untouched; exports (CSV, SQL, Postgres) keep every bit.
+/// A number as people read it, in Excel's General form: at most 15
+/// significant digits, the precision an `f64` always carries through
+/// decimal, so binary noise like `58.650000000000006` (from `1173 * 0.05`)
+/// shows as `58.65`; in exponent form (`1E+21`, `1.5E-07`) below 1E-4 or
+/// from 1E+15, as C's `%.15G`. The value itself is untouched; exports (CSV,
+/// SQL, Postgres) keep every bit.
 pub fn display_number(n: f64) -> String {
     if !n.is_finite() || n == 0.0 {
         return if n == 0.0 { "0".into() } else { n.to_string() };
     }
-    // `{:.14e}` rounds to 15 significant digits; parsing it back and printing
-    // with `{}` gives the shortest decimal for that rounded value.
-    let rounded: f64 = format!("{n:.14e}").parse().unwrap_or(n);
-    rounded.to_string()
+    // `{:.14e}` rounds to 15 significant digits (`1.50000000000000e-7`).
+    let sci = format!("{n:.14e}");
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exp: i32 = exp.parse().unwrap_or(0);
+    if (-4..15).contains(&exp) {
+        // The shortest decimal for the rounded value.
+        let rounded: f64 = sci.parse().unwrap_or(n);
+        return rounded.to_string();
+    }
+    let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
+    let sign = if exp < 0 { '-' } else { '+' };
+    format!("{mantissa}E{sign}{:02}", exp.unsigned_abs())
 }
 
 /// Encode a `Coordinate` as its dataflow key (BTreeMap already iterates sorted).
@@ -289,8 +299,19 @@ mod tests {
         assert_eq!(d(-0.0), "0");
         assert_eq!(d(1.0 / 3.0), "0.333333333333333");
         assert_eq!(d(123_456_789_012_345.0), "123456789012345");
-        assert_eq!(d(1e300), 1e300.to_string(), "no exponent form, as before");
-        assert_eq!(d(1.5e-7), "0.00000015");
+        // Excel's General form: an exponent below 1E-4 and from 1E+15.
+        assert_eq!(d(1e300), "1E+300");
+        assert_eq!(d(1.5e-7), "1.5E-07");
+        assert_eq!(d(1e21), "1E+21");
+        assert_eq!(d(-1e-10), "-1E-10");
+        assert_eq!(d(0.0001), "0.0001");
+        assert_eq!(d(0.00001), "1E-05");
+        assert_eq!(d(999_999_999_999_999.0), "999999999999999");
+        assert_eq!(d(1e15), "1E+15");
+        assert_eq!(d(9_999_999_999_999_999.0), "1E+16", "rounded to 15 digits");
+        assert_eq!(d(1_234_567_890_123_456.0), "1.23456789012346E+15");
+        assert_eq!(d(0.1 + 0.2 - 0.3), "5.55111512312578E-17");
+        assert_eq!(d(9.999_999_999_999_999e-5), "0.0001", "rounds into fixed");
         assert_eq!(d(f64::NAN), "NaN");
         assert_eq!(d(f64::INFINITY), "inf");
         assert_eq!(super::CellValue::num(1173.0 * 0.05).to_string(), "58.65");
