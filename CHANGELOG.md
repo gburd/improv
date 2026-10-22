@@ -273,6 +273,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **The GUI's Postgres store refuses a model its role may not act as.**
+  Under pg_improv 0.11's row security such a role sees none of the model's
+  items or cells, so `improv-gui postgres://…?model=` (and the CLI) opened
+  it empty. Opening now fails: "permission denied for improv model …: only
+  its owner, …, or a role that may act as it may open it".
+
 - **pg_improv models act as their owner (C1).** The logical sync worker
   connected as the bootstrap superuser and read every bound table that way,
   bypassing row-level security and table privileges, then wrote aggregates

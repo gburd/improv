@@ -706,6 +706,33 @@ impl PgModelStore {
                 &[&name],
             )?
             .get(0);
+        // Under pg_improv's row security a role that may not act as the
+        // model's owner sees none of its items or cells: refuse to open it
+        // rather than load an empty model (whose save would fail anyway).
+        // The plain catalog (no extension) has no owner: anyone may open.
+        // (Two queries: Postgres resolves `m.owner` when it parses, even in
+        // a branch that never runs.)
+        let has_owner: bool = client
+            .query_one(
+                "SELECT to_regprocedure('improv.may_act_as(regrole)') IS NOT NULL",
+                &[],
+            )?
+            .get(0);
+        if has_owner {
+            let denied: Option<String> = client
+                .query_one(
+                    "SELECT CASE WHEN improv.may_act_as(m.owner) THEN NULL ELSE m.owner::text END \
+                     FROM improv.model m WHERE m.id = $1",
+                    &[&model_id],
+                )?
+                .get(0);
+            if let Some(owner) = denied {
+                return Err(StoreError::Pg(format!(
+                    "permission denied for improv model \"{name}\": only its owner, {owner}, \
+                     or a role that may act as it may open it"
+                )));
+            }
+        }
         client.execute(
             "INSERT INTO improv.model_version(model_id) VALUES ($1) ON CONFLICT DO NOTHING",
             &[&model_id],

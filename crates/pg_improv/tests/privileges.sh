@@ -213,6 +213,16 @@ eq "$(q "SELECT count(*) FROM improv.binding b JOIN improv.model m ON m.id = b.m
 # cells are data, readable only by those who may act as the owner.
 eq "$(U=bob q "SELECT formula FROM improv.measure m JOIN improv.model o ON o.id = m.model_id WHERE o.name = 'p' AND m.name = 'W'")" "W = V * 1" "bob reads alice's formulas"
 eq "$(U=bob q "SELECT sync_mode FROM improv.status('p')")" manual "bob reads alice's model status"
+# The GUI's Postgres store (improv CLI and improv-gui postgres://…?model=)
+# refuses a model its role may not act as, rather than load it empty.
+if [ -n "${IMPROV:-}" ]; then
+	url="postgres:///t?host=$D&port=$P&user=bob&model=p"
+	err=$("$IMPROV" list "$url" 2>&1) && fail "bob opened alice's model through the store"
+	case $err in *"permission denied for improv model \"p\""*) ;; *) fail "the store, as bob: $err" ;; esac
+	"$IMPROV" list "postgres:///t?host=$D&port=$P&user=alice&model=p" | grep -q "W" ||
+		fail "alice opens her model through the store"
+	echo "ok: the Postgres model store opens a model only for those who may act as its owner"
+fi
 q "INSERT INTO improv.cell (model_id, measure_id, coord, value) SELECT id, 1, '{}', '7' FROM improv.model WHERE name = 'p'"
 CELLS="SELECT count(*) FROM improv.cell c JOIN improv.model m ON m.id = c.model_id WHERE m.name = 'p'"
 ITEMS="SELECT count(*) FROM improv.item i JOIN improv.model m ON m.id = i.model_id WHERE m.name = 'p'"

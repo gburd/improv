@@ -81,7 +81,9 @@ run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/txn.sh
 end
 
 step "tests/privileges.sh (pg$pg)"
-run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/privileges.sh
+# The improv CLI, to check the Postgres model store against this catalog.
+(cd "$root" && run cargo build -q -p improv_cli)
+run env PG_BIN="/usr/lib/postgresql/$pg/bin" IMPROV="$root/target/debug/improv" ./tests/privileges.sh
 end
 
 step "tests/logical.sh (pg$pg)"
