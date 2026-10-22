@@ -66,6 +66,24 @@ cold cache costs about a minute per release and a warm run about 7 s each.
 A release adds its update script to `sql/`; the test fails if a released
 version has no chain of scripts to the new one.
 
+### The scale gate
+
+`.github/workflows/scale-gate.yml` runs weekly, or by hand (`gh workflow run
+scale-gate.yml -R gburd/improv`), and fails when a scale probe is more than
+25% slower than `docs/reviews/bench/baseline.json`. Times are taken relative
+to a reference probe from the same run, so runner speed cancels out (the
+workflow's comment explains how). After a change that is meant to move a
+probe, refresh the baseline on one machine:
+
+```sh
+cargo build --release -p improv_cli
+cargo test --release -p improv_engine --test probe --test stress --no-run
+for i in 1 2 3 4 5; do
+  PG_BIN=<bindir with pg_improv> docs/reviews/bench/scale-gate.py run --out r$i.json
+done
+docs/reviews/bench/scale-gate.py baseline r*.json
+```
+
 ## Coverage
 
 Every crate must keep **>= 90% of functions and >= 90% of branches**

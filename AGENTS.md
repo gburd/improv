@@ -158,6 +158,9 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   https://api.pgxn.org/dist/pg_improv.json lists the version; it FAILS when
   the `PGXN_USERNAME`/`PGXN_PASSWORD` secrets (PGXN Manager account
   `gregburd`) are missing, so a release cannot skip PGXN silently);
+  `scale-gate.yml` (weekly and by hand: the scale probes against
+  `docs/reviews/bench/baseline.json`, normalized by a reference probe; see
+  CONTRIBUTING.md "The scale gate");
   `duckdb.yml` (on pushes to main touching the DuckDB crates or the root
   `Makefile`, or by hand with `gh workflow run duckdb.yml -R gburd/improv
   --ref <branch>`: the registry's own reusable build,

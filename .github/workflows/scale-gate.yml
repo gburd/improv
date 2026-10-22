@@ -1,0 +1,109 @@
+name: Scale gate
+
+# The scale regression gate (road-to-1.0 B11): the v0.10.0 benchmark's probes
+# at sizes a GitHub runner runs in minutes, compared with a committed
+# baseline, docs/reviews/bench/baseline.json. The full sizes stay a
+# release-qualification step on EC2 (J3).
+#
+# The probes (docs/reviews/bench/scale-gate.py; each the median of 3 runs):
+# - crates/engine/tests/probe.rs: wide (SUM and RANK over 100k items:
+#   evaluate, Engine::new, one-cell edits), measures (fan and chain of 2,000),
+#   pagerank (1,500 nodes, 150k edges: Engine::new and one edge edit);
+# - crates/engine/tests/stress.rs scale_evaluate_100k;
+# - `improv import-csv` of 100k cells into a fresh Mentat file;
+# - crates/pg_improv/tests/scale.sh at its small default (50k fact rows):
+#   recalc, the worker's initial build, 100 random batches.
+#
+# Normalization. GitHub runners differ in speed by up to 2x from one job to
+# the next (CPU model, noisy neighbours), so an absolute time cannot be
+# compared with one taken elsewhere. The gate also runs a reference probe,
+# docs/reviews/bench/reference.rs: a fixed workload that uses no Improv code
+# (ordered-map inserts and lookups, a sort, hash aggregation, small
+# allocations: the engine's kind of work). Each probe run is divided by a
+# reference run taken just before it, in the same job. A slower runner, or a
+# noisy neighbour for a few seconds, slows both, so the ratio is about the
+# same on any machine, and only a change in Improv moves it. A probe fails
+# when its ratio (the median of 3) is more than 25% above the baseline's and
+# it is also more than its noise floor (`floor_ms`: the spread of the
+# baseline runs, at least 1 ms and 5%) slower on this runner, so a 0.2 ms
+# edit probe that jitters does not fail the gate. A probe that does not run
+# fails it too. The ratios also differ a little between CPU models (cache
+# sizes, memory latency): if GitHub's runners sit consistently off the
+# box-made baseline, rebuild the baseline from these jobs' uploaded results.
+#
+# Refresh the baseline after an intended change in speed: run
+# `scale-gate.py run --out rN.json` a few times on one machine, then
+# `scale-gate.py baseline r1.json r2.json ...`, and commit baseline.json
+# (docs/reviews/bench/README.md).
+
+on:
+  schedule:
+    - cron: "17 4 * * 1" # Mondays 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scale-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  scale-gate:
+    name: Scale gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Debian 13 and Rust 1.97 like the pg_improv job, so ci/pg_improv.sh's
+    # Postgres setup and pgrx build serve here too.
+    container:
+      image: rust:1.97-trixie
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: |
+            improv
+            improv/crates/pg_improv
+          key: scale-gate
+      - name: Postgres 17, pg_improv and the probes (release builds)
+        working-directory: improv
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends postgresql-common ca-certificates curl gnupg python3 sudo libclang-dev clang >/dev/null
+          /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
+          apt-get install -y -qq --no-install-recommends postgresql-17 postgresql-server-dev-17 >/dev/null
+          chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
+          command -v cargo-pgrx >/dev/null || cargo install cargo-pgrx --version 0.17.0 --locked
+          useradd -m pgi
+          chown -R pgi . "$CARGO_HOME"
+          as_pgi() { sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"; }
+          as_pgi cargo pgrx init --pg17 /usr/lib/postgresql/17/bin/pg_config >/dev/null
+          (cd crates/pg_improv && as_pgi cargo pgrx install --release --no-default-features --features pg17 --pg-config /usr/lib/postgresql/17/bin/pg_config)
+          as_pgi cargo build --release -p improv_cli
+          as_pgi cargo test --release -p improv_engine --test probe --test stress --no-run
+      - name: Run the probes
+        working-directory: improv
+        # initdb refuses root: the probes run as pgi.
+        run: >
+          sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME"
+          PG_BIN=/usr/lib/postgresql/17/bin
+          python3 docs/reviews/bench/scale-gate.py run --out target/scale-gate.json
+      - name: Compare with the baseline
+        working-directory: improv
+        run: |
+          python3 docs/reviews/bench/scale-gate.py selftest
+          python3 docs/reviews/bench/scale-gate.py check target/scale-gate.json
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scale-gate
+          path: improv/target/scale-gate.json
+          if-no-files-found: ignore

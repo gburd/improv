@@ -50,6 +50,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   the whole matrix takes under a minute per major once warm. The test now
   runs Postgres from a private copy of the install, so it never writes the
   system's extension directories.
+- **A weekly scale regression gate** (`.github/workflows/scale-gate.yml`,
+  also run by hand). It runs the v0.10.0 benchmark's probes at sizes that
+  fit a GitHub runner: the engine's wide, measures and pagerank probes,
+  `stress.rs` at 100k cells, `improv import-csv` of 100k cells into
+  Mentat, and pg_improv's `tests/scale.sh`. It fails when a probe is more
+  than 25% slower than `docs/reviews/bench/baseline.json`. Each time is
+  taken relative to a reference workload (`reference.rs`, no Improv code)
+  measured in the same run, so a slow or fast runner does not move the
+  result. `docs/reviews/bench/scale-gate.py` runs and checks the probes,
+  and writes a new baseline.
 
 - **Concepts, operations and troubleshooting guides.** The guide gains
   Concepts (the ideas before the syntax), When to Use Improv (each wrong
