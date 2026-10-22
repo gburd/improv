@@ -8,6 +8,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Release sums, signatures and SBOMs.** Every GitHub Release carries
+  `SHA256SUMS` over all its files, `SHA256SUMS.sigstore.json` (a cosign
+  keyless signature from the release workflow's GitHub OIDC identity,
+  logged in Rekor), and a CycloneDX SBOM per binary, target and extension.
+  `ci/release-attest.sh` makes them, and runs locally without the signing.
+  Verifying a release is in the guide's Running page and in
+  CONTRIBUTING.md.
 - **improv-server: token scopes, a token file, limits, an audit log, `/v1`
   and OpenAPI.** Each token has a name and a read or write scope; the
   read routes take either, `POST /cells` and `/eval` with

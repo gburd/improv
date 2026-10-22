@@ -21,6 +21,33 @@ cargo build --workspace --release
 The binaries land in `target/release/`: `improv` (CLI), `improv-tui`,
 `improv-gui` and `improv-server`.
 
+## Verifying a release
+
+Each GitHub Release carries, besides the archives:
+
+| File | What |
+| --- | --- |
+| `SHA256SUMS` | The SHA-256 of every other file in the release. |
+| `SHA256SUMS.sigstore.json` | A [cosign](https://docs.sigstore.dev/) keyless signature of `SHA256SUMS`: the certificate names the release workflow and the tag, and the signing is logged in Rekor, the public transparency log. |
+| `<binary>-vX.Y.Z-<target>.cdx.json` | A CycloneDX SBOM per binary (`improv`, `improv-tui`, `improv-server`, `improv-gui`) and target, from `cargo cyclonedx`. |
+| `pg_improv-X.Y.Z-pgN-x86_64-linux.cdx.json`, `improv-X.Y.Z-duckdb-linux_amd64.cdx.json` | The extensions' SBOMs. |
+
+Check the signature on the sums, then the files against the sums (cosign
+2.4 or later):
+
+```sh
+tag=v1.0.0
+cosign verify-blob SHA256SUMS --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/gburd/improv/.github/workflows/release.yml@refs/tags/$tag" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --ignore-missing -c SHA256SUMS    # macOS: shasum -a 256 --ignore-missing -c SHA256SUMS
+```
+
+`Verified OK` means GitHub Actions signed these sums while running
+`release.yml` for that tag in `gburd/improv`; `--ignore-missing` checks only
+the files you downloaded. Without cosign, `sha256sum -c` still catches a
+corrupt download, but not a substituted one.
+
 ## A model to play with
 
 ```sh

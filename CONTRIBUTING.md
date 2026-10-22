@@ -124,6 +124,26 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
    postgresql.org news for an X.Y.0 release (`ci/announce.sh`).
 4. Check the run succeeded and that https://api.pgxn.org/dist/pg_improv.json
    lists the version (`pgxn.yml` waits for it and fails if it does not).
+5. Verify the release as a user would ([Verifying a
+   release](docs/src/running.md#verifying-a-release)): download it with
+   `gh release download vX.Y.Z -R gburd/improv`, then run `cosign
+   verify-blob` on `SHA256SUMS` and `sha256sum -c SHA256SUMS`.
+
+The `release` job runs `ci/release-attest.sh` on the downloaded artifacts
+before it publishes. The script writes a CycloneDX SBOM per binary and
+extension (`cargo cyclonedx`), `SHA256SUMS` over everything, and
+`SHA256SUMS.sigstore.json`, a cosign keyless signature through the job's
+GitHub OIDC token (`id-token: write`). Keyless means there is no signing key
+or secret to keep, rotate or leak: the certificate names the workflow and the
+tag, and Rekor logs the signing publicly. A minisign key would need a
+secret in the repository, and users would have to find the public key
+somewhere they trust. The script refuses an artifact it has no SBOM rule
+for, so a new release file fails the release until the script learns about
+it. To try it on locally built archives, without signing:
+
+```sh
+ci/release-attest.sh vX.Y.Z dist    # needs cargo-cyclonedx 0.5.9
+```
 
 PGXN needs the `PGXN_USERNAME`/`PGXN_PASSWORD` secrets on `gburd/improv`
 (PGXN Manager account `gregburd`; PGXN has no API tokens). A tag released
