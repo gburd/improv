@@ -30,6 +30,7 @@
 # Reference
 
 - [Function Reference](./functions.md)
+- [Compatibility](./compatibility.md)
 
 # Design
 
