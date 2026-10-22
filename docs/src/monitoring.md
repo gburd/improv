@@ -40,7 +40,8 @@ the error. A `manual` model changes only when someone calls
 ## `improv.status(model)`
 
 One row per model, `SECURITY INVOKER`, readable by anyone with `USAGE` on
-schema `improv` and `SELECT` on its tables.
+schema `improv` and `SELECT` on its tables (row-level security hides only
+a model's input cells from roles that may not act as its owner).
 
 ```sql
 SELECT m.name, s.*

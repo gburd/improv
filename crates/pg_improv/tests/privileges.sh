@@ -13,8 +13,15 @@
 #      bob may not point his model at a superuser to read a table he
 #      cannot, by UPDATE or by INSERT; he may hand it to a role he is a
 #      member of; alice may not take a model she does not own; a superuser
-#      may set any owner. A pg_restore by the models' owner or a superuser
-#      passes; one by a role that may not own them is refused
+#      may set any owner
+#   4. only those who may act as a model's owner change the model: bob may
+#      not bind a table into alice's model, redefine a result she shared
+#      with him, recalc it, or change its catalog rows by hand (row-level
+#      security on improv.*), nor read its input cells; alice and a member
+#      of alice may; a writer who is not the owner still drives trigger,
+#      commit and logical sync
+#   5. a restore of the catalog by the models' owner or a superuser loads
+#      it; one by a role that may not own them is refused
 # Usage: tests/privileges.sh
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
@@ -154,25 +161,114 @@ U=bob q "SELECT improv.recalc('s')" >/dev/null 2>&1 && fail "the model read secr
 q "GRANT SELECT ON secret TO team"
 U=bob q "SELECT improv.recalc('s')" >/dev/null
 eq "$(q "SELECT value FROM improv_s.w")" 42 "a model owned by team reads as team"
-err=$(U=alice q "UPDATE improv.model SET owner = 'alice' WHERE name = 's'" 2>&1) &&
-	fail "alice took team's model"
-case $err in *"only a superuser or a member of role team may change the owner of model s"*) ;;
-	*) fail "alice takes team's model: $err" ;; esac
+# alice may not take team's model: row-level security hides its row from
+# her UPDATE (0 rows), and the trigger would refuse it if it did not.
+eq "$(U=alice q "WITH u AS (UPDATE improv.model SET owner = 'alice' WHERE name = 's' RETURNING 1) SELECT count(*) FROM u")" 0 \
+	"alice takes team's model"
 eq "$(q "SELECT owner FROM improv.model WHERE name = 's'")" team "the owner after alice's attempt"
 q "UPDATE improv.model SET owner = 'alice' WHERE name = 's'"
 eq "$(q "SELECT owner FROM improv.model WHERE name = 's'")" alice "a superuser sets any owner"
 echo "ok: only a superuser or a member of a role may make it a model's owner (UPDATE and INSERT)"
 
+# ---- 4. only those who may act as the owner change a model ----------------
+# alice owns model p over pub, and shares its result with bob. priv is a
+# table alice reads and bob does not: bob must not get it through p.
+q "CREATE TABLE pub (k text PRIMARY KEY, v float8); INSERT INTO pub VALUES ('a', 1)"
+q "CREATE TABLE priv (k text PRIMARY KEY, v float8); INSERT INTO priv VALUES ('a', 42)"
+q "GRANT SELECT, TRIGGER ON pub, priv TO alice; GRANT ALL ON pub TO bob"
+for s in "create_model('p')" "set_sync_mode('p','manual')" "bind_category('p','K','pub','k')" \
+	"bind_measure('p','V','pub','v')" "define('p','W = V * 1')" "recalc('p')"; do
+	U=alice q "SELECT improv.$s" >/dev/null
+done
+U=alice q "GRANT USAGE ON SCHEMA improv_p TO bob; GRANT SELECT ON improv_p.w TO bob"
+W="SELECT string_agg(k || '=' || value, ',' ORDER BY k) FROM improv_p.w"
+eq "$(U=bob q "$W")" a=1 "bob reads alice's shared result"
+denied() { # role sql what
+	local err
+	err=$(U=$1 q "$2" 2>&1) && fail "$3: allowed"
+	case $err in *"permission denied for improv model \"p\""*|*"row-level security"*|*"0 rows"*) ;;
+		*) fail "$3: $err" ;; esac
+}
+for s in "bind_category('p','K','priv','k')" "bind_measure('p','S','priv','v')" \
+	"define('p','W = V * 100', replace => true)" "recalc('p')" "set_sync_mode('p','trigger')" \
+	"drop_measure('p','W')" "drop_model('p')"; do
+	denied bob "SELECT improv.$s" "bob: $s on alice's model"
+done
+# By hand: RLS hides alice's rows from bob's UPDATE and DELETE (0 rows) and
+# refuses what he inserts.
+for t in "INSERT INTO improv.category_binding SELECT model_id, category_id, 'priv'::regclass, col FROM improv.category_binding WHERE model_id = (SELECT id FROM improv.model WHERE name = 'p')" \
+	"INSERT INTO improv.cell (model_id, measure_id, coord, value) SELECT id, 1, '{}', '1' FROM improv.model WHERE name = 'p'"; do
+	denied bob "$t" "bob inserts into alice's catalog"
+done
+eq "$(U=bob q "WITH u AS (UPDATE improv.measure SET formula = 'V * 100' WHERE model_id = (SELECT id FROM improv.model WHERE name = 'p') RETURNING 1) SELECT count(*) FROM u")" 0 "bob's UPDATE of alice's formulas"
+eq "$(U=bob q "WITH u AS (UPDATE improv.binding SET rel = 'priv' WHERE model_id = (SELECT id FROM improv.model WHERE name = 'p') RETURNING 1) SELECT count(*) FROM u")" 0 "bob's UPDATE of alice's bindings"
+eq "$(U=bob q "WITH u AS (DELETE FROM improv.measure WHERE model_id = (SELECT id FROM improv.model WHERE name = 'p') RETURNING 1) SELECT count(*) FROM u")" 0 "bob's DELETE of alice's measures"
+eq "$(U=bob q "WITH u AS (UPDATE improv.model SET sync_mode = 'trigger' WHERE name = 'p' RETURNING 1) SELECT count(*) FROM u")" 0 "bob's UPDATE of alice's model row"
+q "SELECT improv.recalc('p')" >/dev/null
+eq "$(U=bob q "$W")" a=1 "priv never reached alice's shared result"
+eq "$(q "SELECT count(*) FROM improv.binding b JOIN improv.model m ON m.id = b.model_id WHERE m.name = 'p' AND b.rel = 'priv'::regclass")" 0 "no binding of priv"
+# The catalog's names and formulas stay readable (status reads them); input
+# cells are data, readable only by those who may act as the owner.
+eq "$(U=bob q "SELECT formula FROM improv.measure m JOIN improv.model o ON o.id = m.model_id WHERE o.name = 'p' AND m.name = 'W'")" "W = V * 1" "bob reads alice's formulas"
+eq "$(U=bob q "SELECT sync_mode FROM improv.status('p')")" manual "bob reads alice's model status"
+q "INSERT INTO improv.cell (model_id, measure_id, coord, value) SELECT id, 1, '{}', '7' FROM improv.model WHERE name = 'p'"
+eq "$(U=alice q "SELECT count(*) FROM improv.cell c JOIN improv.model m ON m.id = c.model_id WHERE m.name = 'p'")" 1 "alice reads her cells"
+eq "$(U=bob q "SELECT count(*) FROM improv.cell c JOIN improv.model m ON m.id = c.model_id WHERE m.name = 'p'")" 0 "bob does not read alice's cells"
+q "DELETE FROM improv.cell WHERE model_id = (SELECT id FROM improv.model WHERE name = 'p')"
+echo "ok: bob may not bind, define, recalc, re-mode or drop alice's model, nor change its catalog rows by hand or read its cells"
+# alice herself, and carol, a member of alice (with SET), change it.
+U=alice q "SELECT improv.bind_category('p','K','priv','k')"
+U=alice q "SELECT improv.bind_measure('p','S','priv','v')"
+U=alice q "SELECT improv.define('p','T = S * 1')" >/dev/null
+U=alice q "SELECT improv.recalc('p')" >/dev/null
+eq "$(q "SELECT value FROM improv_p.t")" 42 "alice binds a table she reads into her model"
+q "CREATE ROLE carol LOGIN; GRANT alice TO carol; GRANT USAGE ON SCHEMA improv TO carol"
+q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO carol; GRANT USAGE ON ALL SEQUENCES IN SCHEMA improv TO carol"
+U=carol q "SELECT improv.define('p','U = V * 2')" >/dev/null
+U=carol q "SELECT improv.recalc('p')" >/dev/null
+eq "$(q "SELECT value FROM improv_p.u")" 2 "carol, a member of alice, changes alice's model"
+if [ "$(q "SELECT current_setting('server_version_num')::int >= 160000")" = t ]; then
+	# A member without SET may not act as alice (PG 16+, as ALTER ... OWNER TO).
+	q "CREATE ROLE dave LOGIN; GRANT alice TO dave WITH SET FALSE, INHERIT FALSE; GRANT USAGE ON SCHEMA improv TO dave"
+	q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO dave"
+	denied dave "SELECT improv.define('p','X = V * 3')" "dave, a member of alice without SET"
+	echo "ok: alice and carol (a member of alice) change her model; dave (a member without SET) may not"
+else
+	echo "ok: alice and carol (a member of alice) change her model"
+fi
+# A writer who is not the owner (bob) still drives every sync mode: the
+# trigger and the commit hook read the catalog as the bootstrap superuser,
+# the worker is one, and the model reads pub as alice.
+TOT="SELECT value FROM improv_p.w WHERE k = 'a'"
+U=alice q "SELECT improv.set_sync_mode('p','trigger')"
+U=bob q "UPDATE pub SET v = 2 WHERE k = 'a'"
+eq "$(q "$TOT")" 2 "trigger: bob's write"
+U=alice q "SELECT improv.set_sync_mode('p','commit')"
+U=bob q "UPDATE pub SET v = 3 WHERE k = 'a'"
+eq "$(q "$TOT")" 3 "commit: bob's write"
+U=alice q "SELECT improv.set_sync_mode('p','logical')"
+U=bob q "UPDATE pub SET v = 4 WHERE k = 'a'"
+wait_for "$TOT" 4 "logical: bob's write"
+eq "$(q "SELECT last_error IS NULL FROM improv.status('p')")" t "logical: no error"
+echo "ok: bob's writes to alice's bound table drive trigger, commit and logical sync"
+U=alice q "SELECT improv.drop_model('p')"
+
+# ---- 5. a restore ------------------------------------------------------------
 # A restore re-inserts every improv.model row with the trigger on (pg_restore
 # without --disable-triggers). CREATE EXTENSION needs a superuser, so it is
 # made first and the catalog restored as data: by the models' owner it loads,
 # by a role that may not own them it is refused, by a superuser it loads.
 q "UPDATE improv.model SET owner = 'bob' WHERE name = 's'"
 q "SELECT improv.drop_model('m')" >/dev/null
-"$PG_BIN/pg_dump" -h "$D" -p "$P" -U postgres --data-only -t 'improv.*' t >"$D/cat.sql"
-grep -q "^COPY improv.model " "$D/cat.sql" || fail "the catalog dump has no models"
+# A superuser restores a plain dump (row_security = off, COPY); a role under
+# the catalog's row-level security needs one made with --enable-row-security
+# --inserts (COPY FROM does not support row-level security).
+"$PG_BIN/pg_dump" -h "$D" -p "$P" -U postgres --data-only -t 'improv.*' t >"$D/cat-postgres.sql"
+grep -q "^COPY improv.model " "$D/cat-postgres.sql" || fail "the catalog dump has no models"
+"$PG_BIN/pg_dump" -h "$D" -p "$P" -U postgres --data-only -t 'improv.*' --enable-row-security --inserts t >"$D/cat-rls.sql"
+cp "$D/cat-rls.sql" "$D/cat-bob.sql"; cp "$D/cat-rls.sql" "$D/cat-alice.sql"
 restore() { # role db
-	"$PG_BIN/psql" -h "$D" -p "$P" -U "$1" -d "$2" -qX -v ON_ERROR_STOP=1 -f "$D/cat.sql" >/dev/null 2>"$D/$2.err"
+	"$PG_BIN/psql" -h "$D" -p "$P" -U "$1" -d "$2" -qX -v ON_ERROR_STOP=1 -f "$D/cat-$1.sql" >/dev/null 2>"$D/$2.err"
 }
 models() { "$PG_BIN/psql" -h "$D" -p "$P" -U postgres -d "$1" -qAtX -c "SELECT string_agg(name || ':' || owner, ',') FROM improv.model"; }
 for r in bob alice postgres; do

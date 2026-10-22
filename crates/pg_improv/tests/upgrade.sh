@@ -88,6 +88,13 @@ for from in "$@"; do
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
 	eq "$(q "SELECT owner::text FROM improv.model WHERE name = 'plan'")" alice "the update records the owner"
 	eq "$(q "SELECT string_agg(DISTINCT tableowner, ',') FROM pg_tables WHERE schemaname = 'improv_plan'")" alice "the owner owns the result tables"
+	# 0.11.0: row-level security on every catalog table keyed by model_id, and
+	# the owner trigger, as a fresh CREATE EXTENSION makes them.
+	eq "$(q "SELECT count(*) FROM pg_class c WHERE c.relnamespace = 'improv'::regnamespace AND c.relkind = 'r'
+	         AND (c.relname = 'model' OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'model_id'))
+	         AND NOT (c.relrowsecurity AND EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid AND p.polname = 'write'))")" 0 \
+		"every catalog table has row-level security after the update"
+	eq "$(q "SELECT count(*) FROM pg_trigger WHERE tgname = 'check_owner' AND tgrelid = 'improv.model'::regclass")" 1 "the owner trigger after the update"
 	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 3300 "the worker follows writes after the update"

@@ -676,21 +676,43 @@ that created them) at `ALTER EXTENSION pg_improv UPDATE`, which also hands
 it their result tables; a model without one gets the bootstrap superuser,
 with a NOTICE.
 
-**Who may set a model's owner.** A trigger on `improv.model`
-(`improv.check_owner`) applies the rule of `ALTER TABLE … OWNER TO`: a
-superuser may set any owner; anyone else must be a member of the new owner
-and, to change it, of the current one, with the right to `SET ROLE` to
-each on PG 16+ (any member on PG 15). Otherwise anyone who may write
-`improv.model` could make a model read as a role that sees what they
-cannot. A refusal is an ERROR: "only a superuser or a member of role X may
-make it a model's owner" (or "… may change the owner of model M").
-`create_model` makes the caller the owner, which always passes; a direct
-`INSERT` naming another role is checked the same way. Change a model's
-owner with `UPDATE improv.model SET owner = 'role' WHERE name = 'model'`,
-and its result tables' with `ALTER TABLE improv_<model>.<measure> OWNER TO
-role` (and `ALTER SCHEMA improv_<model> OWNER TO role`). A restore
-re-inserts each model, so it must run as a superuser or as a role that may
-own each model (`pg_restore` without `--disable-triggers`).
+**Who may change a model.** Only a role that may **act as its owner**: a
+superuser, or a member of the owner with the right to `SET ROLE` to it on
+PG 16+ (any member on PG 15), the rule `ALTER TABLE … OWNER TO` uses
+(`improv.may_act_as`). Otherwise anyone who may write the catalog could
+bind a table they cannot read into another role's model, or redefine a
+result its owner shared, and read the table through it. Row-level security
+on every `improv.*` table enforces it, through the API functions (all
+`SECURITY INVOKER`) and by direct DML alike:
+
+| | anyone with USAGE on `improv` | who may act as the owner |
+|---|---|---|
+| read a model's names, bindings, formulas, `status` | yes | yes |
+| read its input cells (`improv.cell`) and state (`improv.meta`) | no | yes |
+| `bind_*`, `define`, `drop_*`, `set_sync_mode`, `recalc`, `drop_model` | no ("permission denied for improv model") | yes |
+| `INSERT`, `UPDATE`, `DELETE` its catalog rows | no (refused, or 0 rows) | yes |
+| `what_if` | yes, reading its tables as the caller | yes |
+
+A writer needs none of this: a writer's trigger and commit read the
+catalog as the bootstrap superuser, and the sync worker is one, so any
+role that may write a bound table drives every sync mode, and the model
+reads the table as its owner.
+
+**Who may set a model's owner.** The same rule, for the current and the
+new owner (a trigger, `improv.check_owner`): "only a superuser or a member
+of role X may make it a model's owner" (or "… may change the owner of
+model M"). `create_model` makes the caller the owner, which always passes;
+a direct `INSERT` naming another role is checked the same way. Change a
+model's owner with `UPDATE improv.model SET owner = 'role' WHERE name =
+'model'`, and its result tables' with `ALTER TABLE
+improv_<model>.<measure> OWNER TO role` (and `ALTER SCHEMA improv_<model>
+OWNER TO role`).
+
+**Restores.** A restore re-inserts every catalog row with row-level
+security and the owner trigger on. Restore as a superuser (as usual). A
+role that may act as the owner of every model may restore them too, from
+a dump made with `pg_dump --enable-row-security --inserts` (`COPY FROM`
+does not support row-level security); a role that may not is refused.
 
 ## Catalog
 

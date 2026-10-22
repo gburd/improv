@@ -225,10 +225,28 @@ fn lock_model(name: &str) -> Res<(i64, String)> {
             None,
             &[name.into()],
         )?;
-        match t.into_iter().next() {
-            Some(r) => Ok((req::<i64>(&r, 1)?, req::<String>(&r, 2)?)),
-            None => Err(format!("improv model {name:?} does not exist").into()),
+        if let Some(r) = t.into_iter().next() {
+            return Ok((req::<i64>(&r, 1)?, req::<String>(&r, 2)?));
         }
+        // FOR UPDATE applies the catalog's write policy: a model the caller
+        // may read but not act as the owner of is not locked.
+        let owner = c
+            .select(
+                // A scalar subquery: always one row.
+                "SELECT (SELECT owner::text FROM improv.model WHERE name = $1)",
+                None,
+                &[name.into()],
+            )?
+            .first()
+            .get::<String>(1)?;
+        Err(match owner {
+            Some(owner) => format!(
+                "permission denied for improv model {name:?}: only a superuser or a member of \
+                 its owner, {owner}, may change it"
+            ),
+            None => format!("improv model {name:?} does not exist"),
+        }
+        .into())
     })
 }
 

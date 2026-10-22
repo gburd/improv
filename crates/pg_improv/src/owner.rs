@@ -6,7 +6,9 @@
 //! trigger or commit, a `define` or a `recalc`. Its catalog rows
 //! (`improv.*`) are read and written by whoever runs it, or, in a writer's
 //! trigger or commit, by the bootstrap superuser ([`as_catalog`]): a writer
-//! needs no privilege on `improv` to write a bound table.
+//! needs no privilege on `improv` to write a bound table. Row-level security
+//! on the catalog (below) lets only a role that may act as the owner change
+//! the model, so no one makes it read as the owner what they cannot.
 //!
 //! [`as_role`] switches with `SetUserIdAndSecContext`, as Postgres does for
 //! work run on a table owner's behalf (`REFRESH MATERIALIZED VIEW`,
@@ -108,25 +110,29 @@ pub(crate) fn as_role<R>(role: Option<pg_sys::Oid>, f: impl FnOnce() -> Res<R>) 
 
 extension_sql!(
     r#"
--- Who may set a model's owner, as which the model reads its tables: the
--- rule of ALTER TABLE ... OWNER TO. A superuser, or a role that could make
--- itself the new owner (SET ROLE; on PG 15 any member) and, to change it,
--- the current one. Otherwise anyone who may write improv.model could point
--- a model at a role that reads what they cannot. A pg_restore passes when
--- its role may own each model: a superuser, or the role owning them all.
+-- Who may act as a role: a superuser, or a member of it with the right to
+-- SET ROLE to it (any member on PG 15), the rule ALTER TABLE ... OWNER TO
+-- uses. A model reads its bound tables and writes its results as its
+-- owner, so only those who may act as the owner may set it or change the
+-- model: else anyone who may write the catalog could make a model read,
+-- as a role that sees more, what they cannot read themselves.
+CREATE FUNCTION improv.may_act_as(r pg_catalog.regrole) RETURNS boolean
+LANGUAGE sql STABLE STRICT SET search_path = pg_catalog, pg_temp AS $$
+SELECT pg_catalog.pg_has_role(CURRENT_USER, r::pg_catalog.oid,
+  CASE WHEN pg_catalog.current_setting('server_version_num')::pg_catalog.int4
+              OPERATOR(pg_catalog.>=) 160000 THEN 'SET' ELSE 'MEMBER' END)
+$$;
+-- A model's owner: set and changed only by those who may act as both the
+-- current and the new owner. A pg_restore passes when its role may act as
+-- each model's owner: a superuser, or the role owning them all.
 CREATE FUNCTION improv.check_owner() RETURNS trigger LANGUAGE plpgsql
 SET search_path = pg_catalog, pg_temp AS $$
-DECLARE
-  how text := CASE WHEN pg_catalog.current_setting('server_version_num')::pg_catalog.int4
-                          OPERATOR(pg_catalog.>=) 160000 THEN 'SET' ELSE 'MEMBER' END;
 BEGIN
-  -- (pg_has_role is true for a superuser.)
-  IF TG_OP OPERATOR(pg_catalog.=) 'UPDATE'
-     AND NOT pg_catalog.pg_has_role(CURRENT_USER, OLD.owner::pg_catalog.oid, how) THEN
+  IF TG_OP OPERATOR(pg_catalog.=) 'UPDATE' AND NOT improv.may_act_as(OLD.owner) THEN
     RAISE EXCEPTION 'only a superuser or a member of role % may change the owner of model %',
       OLD.owner, OLD.name USING ERRCODE = 'insufficient_privilege';
   END IF;
-  IF NOT pg_catalog.pg_has_role(CURRENT_USER, NEW.owner::pg_catalog.oid, how) THEN
+  IF NOT improv.may_act_as(NEW.owner) THEN
     RAISE EXCEPTION 'only a superuser or a member of role % may make it a model''s owner',
       NEW.owner USING ERRCODE = 'insufficient_privilege';
   END IF;
@@ -134,9 +140,63 @@ BEGIN
 END $$;
 CREATE TRIGGER check_owner BEFORE INSERT OR UPDATE OF owner ON improv.model
   FOR EACH ROW EXECUTE FUNCTION improv.check_owner();
+-- Row-level security on the catalog: a model's rows are read by anyone who
+-- may use schema improv (names and formulas: status, what_if and the GUI
+-- read them), and changed only by those who may act as its owner. Input
+-- cells (improv.cell) and a model's other state (improv.meta: scenario
+-- overrides, SQL sources) are data, read only by them too. A superuser, the
+-- sync worker and a writer's trigger or commit (which reads the catalog as
+-- the bootstrap superuser) bypass it.
+ALTER TABLE improv.model ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.model FOR SELECT USING (true);
+CREATE POLICY write ON improv.model USING (improv.may_act_as(owner));
+ALTER TABLE improv.category ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.category FOR SELECT USING (true);
+CREATE POLICY write ON improv.category USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.item ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.item FOR SELECT USING (true);
+CREATE POLICY write ON improv.item USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.measure ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.measure FOR SELECT USING (true);
+CREATE POLICY write ON improv.measure USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.binding ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.binding FOR SELECT USING (true);
+CREATE POLICY write ON improv.binding USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.cell ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.cell FOR SELECT USING (improv.may_act_as((SELECT m.owner FROM improv.model m WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+CREATE POLICY write ON improv.cell USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.view ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.view FOR SELECT USING (true);
+CREATE POLICY write ON improv.view USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.meta ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.meta FOR SELECT USING (improv.may_act_as((SELECT m.owner FROM improv.model m WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+CREATE POLICY write ON improv.meta USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.model_version ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.model_version FOR SELECT USING (true);
+CREATE POLICY write ON improv.model_version USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.category_binding ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.category_binding FOR SELECT USING (true);
+CREATE POLICY write ON improv.category_binding USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.lambda ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.lambda FOR SELECT USING (true);
+CREATE POLICY write ON improv.lambda USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
+ALTER TABLE improv.sync_state ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.sync_state FOR SELECT USING (true);
+CREATE POLICY write ON improv.sync_state USING (improv.may_act_as((SELECT m.owner FROM improv.model m
+  WHERE m.id OPERATOR(pg_catalog.=) model_id)));
 "#,
     name = "check_owner",
-    requires = ["catalog"]
+    requires = ["dump_catalog", "l2_logical"]
 );
 
 /// Whether row-level security filters what `role` reads from `rel` (a

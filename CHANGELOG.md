@@ -269,10 +269,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   ran as the writing role), in `define` and in `recalc` (which ran as the
   caller). A worker apply whose owner lost SELECT fails with a
   `last_error` naming the columns. `what_if` still reads as its caller.
-  Only a superuser, or a member of both the current and the new owner, may
-  set a model's owner (a trigger on `improv.model`, the rule of `ALTER TABLE
-  … OWNER TO`): before, anyone who could write `improv.model` could point a
-  model at a superuser and publish a table they could not read.
+  Only a role that may act as a model's owner (a superuser, or a member
+  with `SET`, the rule of `ALTER TABLE … OWNER TO`) may change the model or
+  its owner: row-level security on every `improv.*` table, and a trigger on
+  the owner. Before, anyone who could write the catalog could point a model
+  at a superuser, or bind a table into another role's model and redefine a
+  result it shared, and so publish a table they could not read. A model's
+  input cells (`improv.cell`, `improv.meta`) are now readable by those
+  roles only. A restore of the catalog runs as a superuser, as before, or
+  as a role that may act as every model's owner (`pg_dump
+  --enable-row-security --inserts`).
 - **Writers no longer need privileges on schema `improv`.** With the
   library preloaded, any write by a role without USAGE on `improv` failed
   ("permission denied for schema improv": the commit hook looked up the
