@@ -210,6 +210,17 @@ for from in "$@"; do
 		fi
 		eq "$(rev "$m")" 2750 "the $m model recomputes after the update"
 	done
+	# 0.11.0: the roles. The update makes them; a 0.10.0 model's owner keeps
+	# her model once she is an improv_user (the update grants no one).
+	eq "$(q "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE 'improv\_%'")" improv_admin,improv_user "the roles after the update"
+	eq "$(q "SELECT pg_has_role('alice', 'improv_user', 'MEMBER')")" f "the update enrolls no one"
+	q "ALTER ROLE alice LOGIN; GRANT improv_user TO alice"
+	qa() { "$PG_BIN/psql" -h "$W" -p "$P" -U alice -d t -qAtX -v ON_ERROR_STOP=1 -c "$1"; }
+	eq "$(qa "SELECT may_change FROM improv.models WHERE name = 'plan'")" t "alice may change her 0.10.0 model"
+	eq "$(qa "SELECT count(*) > 0 FROM improv.item i JOIN improv.model m ON m.id = i.model_id WHERE m.name = 'plan'")" t "alice reads her items"
+	qa "SELECT improv.define('plan','Alices = Revenue + 1')" >/dev/null
+	eq "$(qa "SELECT sync_mode FROM improv.status('plan')")" logical "alice's status"
+	qa "SELECT improv.drop_measure('plan','Alices')"
 	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 3300 "the worker follows writes after the update"
