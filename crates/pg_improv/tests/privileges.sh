@@ -26,6 +26,10 @@
 #      it; one by a role that may not own them is refused; DROP EXTENSION
 #      keeps the roles, and a new CREATE EXTENSION uses them
 #   6. improv.models: every model, with may_change for the caller
+#   7. the README's privilege matrix, cell by cell: each action on one model
+#      as a superuser, an improv_admin, the owner, a member of the owner with
+#      SET, an improv_user who is not the owner, a writer of a bound table,
+#      and a role with no grant (PUBLIC); improv_admin enrolls builders
 # The builders are members of improv_user (made by CREATE EXTENSION), not
 # granted the catalog by hand; they have no CREATE on the database.
 # Usage: tests/privileges.sh
@@ -361,7 +365,6 @@ echo "ok: DROP EXTENSION keeps improv_user and improv_admin; CREATE EXTENSION ag
 # Every model, and whether the caller may act on it; read access follows
 # improv.model's (a role with no grant on improv reads nothing).
 q "CREATE ROLE adm LOGIN; GRANT improv_admin TO adm; CREATE ROLE nob LOGIN"
-q "GRANT SELECT ON pub TO alice"
 for s in "create_model('x')" "set_sync_mode('x','manual')"; do U=alice q "SELECT improv.$s" >/dev/null; done
 M="SELECT string_agg(name || ':' || owner || ':' || sync_mode || ':' || may_change || ':' || result_schema, ',' ORDER BY name) FROM improv.models WHERE name IN ('x', 's')"
 eq "$(q "$M")" "s:bob:manual:true:improv_s,x:alice:manual:true:improv_x" "improv.models as a superuser"
@@ -372,4 +375,82 @@ eq "$(U=bob q "$M")" "s:bob:manual:true:improv_s,x:alice:manual:false:improv_x" 
 U=nob q "SELECT count(*) FROM improv.models" >/dev/null 2>&1 && fail "a role with no grant reads improv.models"
 echo "ok: improv.models lists every model and whether the caller may change it"
 
+# ---- 7. the privilege matrix ---------------------------------------------------
+# Model x (section 6), alice's, now over xs, in manual mode. Each action runs as each role:
+#   postgres  a superuser
+#   adm       a member of improv_admin
+#   alice     the owner
+#   carol     a member of alice with SET (INHERIT FALSE on PG 16+), an improv_user
+#   bob       an improv_user, not the owner
+#   wri       may write xs, no grant on improv
+#   nob       no grant at all: what PUBLIC may do
+# y = allowed; n = refused ("permission denied ...") or, for a read of the
+# catalog, no rows (row-level security).
+q "CREATE ROLE wri LOGIN"
+q "CREATE TABLE xs (k text PRIMARY KEY, v float8); INSERT INTO xs VALUES ('a', 1)"
+q "GRANT SELECT ON xs TO alice; GRANT SELECT, INSERT, UPDATE, DELETE ON xs TO wri"
+for s in "bind_category('x','K','xs','k')" "bind_measure('x','V','xs','v')" "define('x','W = V * 1')" "recalc('x')"; do
+	U=alice q "SELECT improv.$s" >/dev/null
+done
+ROLES="postgres adm alice carol bob wri nob"
+act() { # action role
+	case $1 in
+	create_model) echo "SELECT improv.create_model('c_$2')" ;;
+	bind) echo "SELECT improv.bind_measure('x','B_$2','xs','v')" ;;
+	define) echo "SELECT improv.define('x','D_$2 = V * 2')" ;;
+	recalc) echo "SELECT improv.recalc('x')" ;;
+	what_if) echo "SELECT count(*) FROM improv.what_if('x', $EDIT)" ;;
+	set_sync_mode) echo "SELECT improv.set_sync_mode('x','manual')" ;;
+	drop) echo "SELECT improv.drop_model('z_$2')" ;;
+	names) echo "SELECT count(*) FROM improv.measure m JOIN improv.model o ON o.id = m.model_id WHERE o.name = 'x'" ;;
+	items) echo "SELECT count(*) FROM improv.item i JOIN improv.model o ON o.id = i.model_id WHERE o.name = 'x'" ;;
+	results) echo "SELECT count(*) FROM improv_x.w" ;;
+	status) echo "SELECT sync_mode FROM improv.status('x')" ;;
+	esac
+}
+try() { # action role -> y or n
+	local out
+	if ! out=$(U=$2 q "$(act "$1" "$2")" 2>&1); then
+		case $out in *"permission denied"*|*"row-level security"*) echo n; return ;; esac
+		fail "$1 as $2: $out"
+	fi
+	case $1 in names|items) [ "$out" -gt 0 ] && echo y || echo n ;; *) echo y ;; esac
+}
+# Results: carol inherits nothing of alice on PG 16+ (she reads them after SET ROLE alice).
+if [ "$PG16" = t ]; then CAROL_READS=n; else CAROL_READS=y; fi
+#                  postgres adm alice carol bob wri nob
+want_create_model="y y y y y n n"
+want_bind="y n y y n n n"
+want_define="y n y y n n n"
+want_recalc="y n y y n n n"
+want_what_if="y n y y n n n"
+want_set_sync_mode="y n y y n n n"
+want_drop="y n y y n n n"
+want_names="y y y y y n n"
+want_items="y n y y n n n"
+want_results="y n y $CAROL_READS n n n"
+want_status="y y y y y n n"
+for a in create_model bind define recalc what_if set_sync_mode drop names items results status; do
+	got=""
+	for r in $ROLES; do
+		[ "$a" = drop ] && U=alice q "SELECT improv.create_model('z_$r')" >/dev/null
+		got="$got $(try $a $r)"
+		[ "$a" = drop ] && q "SELECT improv.drop_model(name) FROM improv.model WHERE name = 'z_$r'" >/dev/null
+	done
+	want=want_$a
+	eq "${got# }" "${!want}" "the matrix row $a ($ROLES)"
+	printf '   %-14s %s\n' "$a" "${got# }"
+done
+q "SELECT improv.drop_model(name) FROM improv.model WHERE name LIKE 'c\_%'" >/dev/null
+eq "$(U=carol q "SET ROLE alice; SELECT count(*) FROM improv_x.w")" 1 "carol reads the results after SET ROLE alice"
+U=alice q "GRANT USAGE ON SCHEMA improv_x TO bob; GRANT SELECT ON improv_x.w TO bob"
+eq "$(U=bob q "SELECT count(*) FROM improv_x.w")" 1 "bob reads the results once alice grants them"
+# improv_admin enrolls builders; an improv_user may not.
+q "CREATE ROLE newb LOGIN"
+U=bob q "GRANT improv_user TO newb" >/dev/null 2>&1 && fail "bob enrolled a builder"
+U=adm q "GRANT improv_user TO newb"
+U=newb q "SELECT improv.create_model('n1')" >/dev/null
+U=adm q "REVOKE improv_user FROM newb"
+U=newb q "SELECT improv.create_model('n2')" >/dev/null 2>&1 && fail "newb builds after the REVOKE"
+echo "ok: the privilege matrix, cell by cell; improv_admin enrolls builders"
 echo PASS

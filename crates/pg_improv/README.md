@@ -744,6 +744,52 @@ catalog as the bootstrap superuser, and the sync worker is one, so any
 role that may write a bound table drives every sync mode, and the model
 reads the table as its owner.
 
+**The privilege matrix.** What each role may do with one model, `x`, which
+`alice` owns. `tests/privileges.sh` checks every cell (its section 7)
+on each Postgres it runs on. The columns:
+
+- **superuser**: a superuser.
+- **improv_admin**: a member of `improv_admin`.
+- **owner**: `alice`.
+- **SET member**: a member of `alice` with `SET` (`GRANT alice TO carol
+  WITH INHERIT FALSE, SET TRUE`; any member on PG 15), who is an
+  `improv_user`.
+- **improv_user**: an `improv_user` who is not the owner.
+- **writer**: a role that may write a table `x` binds, with no grant on
+  `improv`.
+- **PUBLIC**: a role with no grants.
+
+"no" means refused ("permission denied …") or, for a read of the
+catalog, no rows.
+
+| | superuser | improv_admin | owner | SET member | improv_user | writer | PUBLIC |
+|---|---|---|---|---|---|---|---|
+| `create_model` (a model of one's own) | yes | yes | yes | yes | yes | no | no |
+| `bind_category`, `bind_measure` | yes | no | yes | yes | no | no | no |
+| `define` | yes | no | yes | yes | no | no | no |
+| `recalc` | yes | no | yes | yes | no | no | no |
+| `what_if` | yes | no | yes | yes | no¹ | no¹ | no¹ |
+| `set_sync_mode` | yes | no | yes | yes | no | no | no |
+| `drop_model` | yes | no | yes | yes | no | no | no |
+| read names and formulas (`improv.measure`, `improv.models`) | yes | yes | yes | yes | yes | no | no |
+| read items (`improv.item`) and input cells (`improv.cell`, the same policy) | yes | no | yes | yes | no | no | no |
+| read results (`improv_x.*`) | yes | no² | yes | no³ | no² | no² | no² |
+| `status` | yes | yes | yes | yes | yes | no | no |
+| drive sync (write a bound table) | ⁴ | ⁴ | ⁴ | ⁴ | ⁴ | yes | ⁴ |
+
+1. A `SECURITY DEFINER` wrapper the owner grants gives `what_if` on one
+   model to any role, with no grant on `improv` (see [Giving others
+   `what_if`](#giving-others-what_if)).
+2. Until the owner grants it: results are ordinary tables the owner owns,
+   so `GRANT USAGE ON SCHEMA improv_x` and `GRANT SELECT ON improv_x.w`
+   give them to any role.
+3. On PG 16+, a member with `INHERIT FALSE` reads them after `SET ROLE
+   alice`. On PG 15 a member inherits, so the answer is yes.
+4. By design, not a cell: it takes the privilege to write the table, which
+   is the table's grant, not pg_improv's. Every role that has it drives
+   every sync mode, and the model reads the table as its owner (sections 1
+   and 4 of the test).
+
 **Who may set a model's owner.** The same rule, for the current and the
 new owner (a trigger, `improv.check_owner`): "only a superuser or a member
 of role X may make it a model's owner" (or "… may change the owner of

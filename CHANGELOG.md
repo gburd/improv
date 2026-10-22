@@ -37,6 +37,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   `param_default`, `closest_param`, and `complete_named`; `call_at` maps a
   named argument to its parameter.
 
+- **pg_improv: the full privilege matrix**, in the README's Privileges
+  and summarized in the guide's Postgres page. It covers superuser,
+  `improv_admin`, owner, `SET` member, `improv_user`, writer and `PUBLIC`
+  against every API action and read, and `tests/privileges.sh` checks each
+  cell.
 - **pg_improv: `improv.models`**, a view listing every model with its
   owner, sync mode and result schema, plus `may_change`, which says
   whether the caller may act as its owner. It follows the catalog's read

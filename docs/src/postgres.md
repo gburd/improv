@@ -198,9 +198,20 @@ results reveal what the owner can read. Give it to an analyst with a
 `SECURITY DEFINER` wrapper the owner creates for one model, which grants
 `what_if` on that model and nothing else, or by `GRANT alice TO analyst
 WITH INHERIT FALSE, SET TRUE`, which also lets the analyst change alice's
-models. See the
+models.
+
+A non-superuser builds models as a member of **`improv_user`**, which the
+extension creates: `GRANT improv_user TO alice`, plus `SELECT` (and, for
+trigger and commit mode, `TRIGGER`) on the tables alice binds. No `CREATE`
+on the database is needed. **`improv_admin`** grants and revokes
+`improv_user` and acts on no one else's model. Acting on a model means
+acting as its owner, so only a superuser acts on every model.
+`improv.models` lists every model with its owner, sync mode, result
+schema, and `may_change` for the caller. See the
 [pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#privileges)
-for the mechanism and the wrapper's text.
+for the mechanism, the wrapper's text, and the full privilege matrix
+(superuser, `improv_admin`, owner, `SET` member, `improv_user`, writer,
+`PUBLIC`), which `tests/privileges.sh` checks cell by cell.
 
 ## Durability
 
