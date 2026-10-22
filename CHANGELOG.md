@@ -37,6 +37,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   `param_default`, `closest_param`, and `complete_named`; `call_at` maps a
   named argument to its parameter.
 
+- **pg_improv: the resource limits left in D7.** If `max_worker_processes`
+  leaves no room for the sync worker, `improv.status` says the worker is
+  not running and names the setting. `wal_keep_size` turns out not to
+  limit the slot. On disk full while writing results, logical mode reports
+  the error in `last_error`, leaves nothing half-written, and keeps the
+  worker and the other models going. The new `tests/limits.sh` checks all
+  three, and `ci/pg_improv.sh` runs it.
 - **pg_improv: the full privilege matrix**, in the README's Privileges
   and summarized in the guide's Postgres page. It covers superuser,
   `improv_admin`, owner, `SET` member, `improv_user`, writer and `PUBLIC`
@@ -306,6 +313,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   Gnumeric, which differ from Excel and each other at the switch points
   (LibreOffice writes `1E+021` and switches at 1E-15 and 1E+16; Gnumeric
   keeps 17 digits).
+- **pg_improv: a failed logical apply rolls back.** The sync worker
+  committed a model's transaction even when its apply failed, keeping the
+  result rows written before the error. Now the transaction aborts, so a
+  failed apply (disk full, a constraint on a result table) writes nothing,
+  and the abort releases everything the error left held.
 - **`-0 == 0` is TRUE.** `==` and `!=` compared numbers by bit pattern, so
   `ROUND(-0.4, 0) == 0` and `0 * -1 == 0` were FALSE while `<=` said TRUE.
   Numbers now compare numerically (NaN stays unequal to itself); other

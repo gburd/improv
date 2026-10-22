@@ -414,6 +414,21 @@ fn status(
 }
 
 fn status_row(model: &str) -> Res<StatusRow> {
+    // pg_stat_activity shows the worker's backend_type only to members of
+    // its role (the bootstrap superuser) and pg_read_all_stats: read it as
+    // the extension, so a builder's status does not report it missing.
+    // (Read-only SPI: `get_one` assigns an xid, which a standby refuses.)
+    let running = super::owner::as_catalog(|| {
+        Spi::connect(|c| -> Res<bool> {
+            let t = c.select(
+                "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                 WHERE backend_type = 'pg_improv sync')",
+                None,
+                &[],
+            )?;
+            Ok(t.first().get::<bool>(1)? == Some(true))
+        })
+    })?;
     let row = Spi::connect(|c| -> Res<_> {
         let t = c.select(
             "SELECT m.sync_mode, s.slot, \
@@ -427,6 +442,11 @@ fn status_row(model: &str) -> Res<StatusRow> {
                                current_database()::text THEN \
                       'no sync worker serves this database (improv.database = ' \
                       || coalesce($2, 'unset: pg_improv is not preloaded') || ')' END, \
+                    CASE WHEN m.sync_mode = 'logical' AND NOT $3 AND NOT pg_is_in_recovery() \
+                          AND pg_postmaster_start_time() < now() - interval '10 s' THEN \
+                      'the sync worker is not running: if the server log says \"too many \
+                       background workers\", raise max_worker_processes (now ' \
+                      || current_setting('max_worker_processes') || ') and restart' END, \
                     s.last_error), \
                     s.incremental_applies, s.rebuilds \
              FROM improv.model m \
@@ -435,7 +455,7 @@ fn status_row(model: &str) -> Res<StatusRow> {
                AND r.database = current_database() \
              WHERE m.name = $1",
             None,
-            &[model.into(), served_database().into()],
+            &[model.into(), served_database().into(), running.into()],
         )?;
         let r = t.first();
         if r.is_empty() {
@@ -526,38 +546,46 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
     unsafe { pg_sys::proc_exit(1) };
 }
 
-/// `f` in its own worker transaction, a Postgres ERROR as an `Err`.
+/// `f` in its own worker transaction, a Postgres ERROR as an `Err`. The
+/// transaction commits when `f` succeeds and aborts when it fails, so a
+/// failed apply leaves none of its result writes behind (a write that
+/// failed for want of disk would otherwise commit the rows before it). The
+/// abort also releases what the error left held: LWLocks
+/// (`ReplicationSlotAllocationLock`, when every slot is in use), buffer
+/// pins, the owner switch.
 fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
     let f = AssertUnwindSafe(f);
-    BackgroundWorker::transaction(move || {
-        PgTryBuilder::new(move || {
-            // The whole wrapper, not its field: closures capture disjointly.
-            let f = f;
-            (f.0)().map_err(|e| e.to_string())
-        })
-        .catch_others(|e| {
-            release_lwlocks();
-            Err(match e {
-                CaughtError::PostgresError(r)
-                | CaughtError::ErrorReport(r)
-                | CaughtError::RustPanic { ereport: r, .. } => r.message().to_string(),
-            })
-        })
-        .execute()
-    })
-}
-
-/// After a caught ERROR, release what `AbortTransaction` would: the
-/// transaction commits instead, and LWLocks are not resource-owned, so one
-/// held at the ERROR (`ReplicationSlotAllocationLock`, when every slot is in
-/// use) stays held and every slot creation or drop in the cluster waits.
-fn release_lwlocks() {
-    // SAFETY: what `AbortTransaction` does first; this backend holds no
-    // LWLock it still needs once the ERROR has unwound its holder.
+    // SAFETY: the worker's main loop calls this outside any transaction,
+    // as `BackgroundWorker::transaction` starts one.
     unsafe {
-        pg_sys::LWLockReleaseAll();
-        pg_sys::ConditionVariableCancelSleep();
+        pg_sys::SetCurrentStatementStartTimestamp();
+        pg_sys::StartTransactionCommand();
+        pg_sys::PushActiveSnapshot(pg_sys::GetTransactionSnapshot());
     }
+    let r = PgTryBuilder::new(move || {
+        // The whole wrapper, not its field: closures capture disjointly.
+        let f = f;
+        (f.0)().map_err(|e| e.to_string())
+    })
+    .catch_others(|e| {
+        Err(match e {
+            CaughtError::PostgresError(r)
+            | CaughtError::ErrorReport(r)
+            | CaughtError::RustPanic { ereport: r, .. } => r.message().to_string(),
+        })
+    })
+    .execute();
+    // SAFETY: ends the transaction started above; the error state (if any)
+    // was flushed by `execute`.
+    unsafe {
+        if r.is_ok() {
+            pg_sys::PopActiveSnapshot();
+            pg_sys::CommitTransactionCommand();
+        } else {
+            pg_sys::AbortCurrentTransaction();
+        }
+    }
+    r
 }
 
 /// WAL the slot may lag with nothing to apply before an idle advance.

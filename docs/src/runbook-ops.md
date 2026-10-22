@@ -44,6 +44,8 @@ grows for every logical model, and `pg_stat_activity` has no
   The server log then shows `FATAL: database "<name>" does not exist`
   every 5 s.
 - The worker crashes during each poll (a crash loop).
+- `max_worker_processes` had no room at the last start: see
+  [the worker never started](#the-worker-never-started-max_worker_processes).
 
 **Diagnosis.**
 
@@ -65,6 +67,74 @@ get the others going, and see the entries below.
 
 **Check.** One `pg_improv sync` row in `pg_stat_activity` with a stable
 `backend_start`, and `lag_bytes` falling.
+
+## The worker never started (max_worker_processes)
+
+**Symptom.** Logical-mode results stop following writes after a restart.
+`pg_stat_activity` has no `pg_improv sync` row, and every logical model's
+`last_error` reads `the sync worker is not running: if the server log
+says "too many background workers", raise max_worker_processes (now N)
+and restart`.
+
+**Cause.** The worker is a background worker registered at server start,
+and `max_worker_processes` had no slot left for it: other extensions'
+workers, parallel query, and the logical replication launcher share the
+same pool. The postmaster logs the failure once at start and does not
+retry, so there is no crash loop and no other log line.
+
+**Diagnosis.**
+
+```sql
+SHOW max_worker_processes;
+SELECT backend_type, count(*) FROM pg_stat_activity GROUP BY 1;
+```
+
+The server log from the last start has `LOG: too many background
+workers` with the hint `Consider increasing the configuration parameter
+"max_worker_processes"`.
+
+**Fix.** Raise `max_worker_processes` (it takes a restart) to cover every
+registered worker plus `max_parallel_workers`. Nothing is lost while the
+worker is away: the slot keeps the WAL, up to `max_slot_wal_keep_size`
+(see [the slot is lost](#the-slot-is-lost) if it ran past that).
+
+**Check.** One `pg_improv sync` row, `last_error` NULL, and the writes
+made meanwhile applied.
+
+## Disk full while writing results
+
+**Symptom.** A logical model's `last_error` reads `could not extend file
+"base/…": No space left on device`, and the server log repeats
+`pg_improv sync: model <m>: could not extend file …`, further and further
+apart. In trigger or commit mode, writers to the model's bound tables get
+the same error and their statements roll back.
+
+**Cause.** The tablespace holding the model's result tables
+(`improv_<m>.*`) is full.
+
+**What pg_improv does.** The failed apply rolls back: no result row is
+half-written, and the slot does not move past the batch. The worker keeps
+running and keeps the models that still fit in sync, and retries the
+failing model with backoff (0.5 s, doubling to 60 s). A full `pg_wal` is
+different: Postgres itself stops (PANIC) until there is room; then
+recovery runs, and the worker resumes from its slot.
+
+**Fix.** Free space or grow the volume. To move a model's results
+elsewhere, put its tables in another tablespace:
+`ALTER TABLE improv_<m>.<measure> SET TABLESPACE <ts>` as the model's
+owner. The next retry (at most 60 s later) rebuilds the model; restart
+the worker to retry at once.
+
+**Check.** `last_error` is NULL and `rebuilds` went up by one.
+
+## `wal_keep_size` and the slot
+
+`wal_keep_size` does not limit the slot. A slot keeps the WAL it needs
+whatever `wal_keep_size` says (0 included), so lowering it does not make
+a stopped worker lose changes, and it does not stop the slot from
+retaining WAL either. The caps are `max_slot_wal_keep_size` (while the
+worker is down) and `improv.max_slot_lag` (while it runs but lags); see
+[slot lag growing](#slot-lag-growing-and-the-disk-filling).
 
 ## A model is stuck with `last_error`
 

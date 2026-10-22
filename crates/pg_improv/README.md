@@ -441,6 +441,33 @@ caps the slot, so set both. When the worker cannot make its slot
 the reason. The worker logs it once and keeps polling, and it makes the slot
 as soon as one is free.
 
+Other limits (`tests/limits.sh` checks each, and `tests/logical.sh` the
+ones above):
+
+- **`max_worker_processes` exhausted.** The worker is registered at server
+  start. When no slot is free the postmaster logs "too many background
+  workers" once and never starts it, so there is no crash loop. More than
+  10 s after a start, `improv.status` then reports, in each logical
+  model's `last_error`, that the worker is not running and names the
+  setting. Raise it and restart: the worker catches up from the slot.
+- **`wal_keep_size`** does not limit the slot. A slot keeps the WAL it
+  needs whatever `wal_keep_size` is (0 included), so a stopped worker
+  loses nothing and applies the WAL when it is back. `lag_bytes` shows
+  what the slot holds. The caps are `max_slot_wal_keep_size` (while the
+  worker is down) and `improv.max_slot_lag`.
+- **`max_wal_senders`** is not a limit: the worker decodes through SQL,
+  not a walsender, and syncs with `max_wal_senders = 0`.
+- **Disk full while writing results.** In logical mode the apply runs in
+  one transaction that aborts on the error, so no result is half-written
+  and the slot does not move past the batch. The error ("could not extend
+  file …") is the model's `last_error`. The worker keeps running, retries
+  with backoff (0.5 s, doubling to 60 s), and keeps the other models in
+  sync. Once there is room, the next retry rebuilds the model. In
+  trigger and commit mode the writer's statement or commit fails with the
+  error and its rows roll back. A full `pg_wal` is different: Postgres
+  itself stops (PANIC), and the worker resumes from the slot after
+  recovery.
+
 Before 0.11.0 each model had its own slot and publication, `improv_<model>`,
 and every poll decoded the WAL once per model. `ALTER EXTENSION pg_improv
 UPDATE` to 0.11.0 drops those publications and queues their slots; the
