@@ -335,6 +335,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   result rows written before the error. Now the transaction aborts, so a
   failed apply (disk full, a constraint on a result table) writes nothing,
   and the abort releases everything the error left held.
+- **`SUM` and `AVERAGE` are compensated sums: the exact sum's nearest
+  double.** They now add with Neumaier compensation in every evaluation
+  path, flat and two-level. Before, a sum of fractions could miss by
+  tens of ulps in one pass and, over more than 1,024 items, a few ulps
+  in the two-level reduce (which differed from 0.10.0's one pass). Now
+  `SUM(0.1, 0.2, 0.3)` is `0.6` (was `0.6000000000000001`), and over
+  10,000 fractional values `SUM` is bit-exact against mpmath where the
+  old two-level sum missed by an ulp and a left fold by 14 to 18. A sum
+  that was already exact (integers) is unchanged, and no existing golden
+  moved. `PRODUCT` and `SUMSQ` are unchanged. The decision and its cost
+  (none measurable on the 1M-item edit) are in the guide's Formula
+  Language page.
+
 - **`-0 == 0` is TRUE.** `==` and `!=` compared numbers by bit pattern, so
   `ROUND(-0.4, 0) == 0` and `0 * -1 == 0` were FALSE while `<=` said TRUE.
   Numbers now compare numerically (NaN stays unequal to itself); other

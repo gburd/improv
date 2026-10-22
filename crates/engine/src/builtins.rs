@@ -171,6 +171,57 @@ pub(crate) fn count(x: f64) -> Result<u64, u8> {
     Ok(x.trunc() as u64)
 }
 
+/// A Neumaier (improved Kahan) compensated sum: the running sum and the
+/// rounding error its additions lost, so the result is the exact sum's
+/// nearest float unless the inputs cancel by more than about 2^53.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Neumaier {
+    /// The running sum (-0.0 at the start, as Rust's float `sum`).
+    pub(crate) s: f64,
+    /// The lost low-order part.
+    pub(crate) c: f64,
+}
+
+impl Default for Neumaier {
+    fn default() -> Self {
+        Neumaier { s: -0.0, c: 0.0 }
+    }
+}
+
+impl Neumaier {
+    pub(crate) fn add(&mut self, x: f64) {
+        let t = self.s + x;
+        self.c += if self.s.abs() >= x.abs() {
+            (self.s - t) + x
+        } else {
+            (x - t) + self.s
+        };
+        self.s = t;
+    }
+
+    /// The sum: the running sum when nothing was lost (so an exact sum,
+    /// of integers say, is bit for bit the plain fold's, -0.0 included) or
+    /// it is not finite.
+    pub(crate) fn value(&self) -> f64 {
+        if self.c == 0.0 || !self.s.is_finite() {
+            self.s
+        } else {
+            self.s + self.c
+        }
+    }
+}
+
+/// `xs` summed with [`Neumaier`] compensation (`SUM` and `AVERAGE`).
+// Measured on 1M values: 1.28 ms vs a left fold's 0.54 ms; under 3% of an
+// engine evaluation, invisible in an edit (docs/src/formulas.md).
+pub(crate) fn sum(xs: &[f64]) -> f64 {
+    let mut acc = Neumaier::default();
+    for x in xs {
+        acc.add(*x);
+    }
+    acc.value()
+}
+
 pub(crate) fn nums(args: &[CellValue]) -> Result<Vec<f64>, u8> {
     (0..args.len()).map(|i| n(args, i)).collect()
 }
@@ -199,10 +250,10 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
         // --- aggregation twins ---
         20 => num(nums(a)?.into_iter().fold(f64::INFINITY, f64::min)),
         21 => num(nums(a)?.into_iter().fold(f64::NEG_INFINITY, f64::max)),
-        22 => num(nums(a)?.iter().sum()),
+        22 => num(sum(&nums(a)?)),
         23 => {
             let v = nums(a)?;
-            num(v.iter().sum::<f64>() / v.len() as f64)
+            num(sum(&v) / v.len() as f64)
         }
         24 => num(nums(a)?.iter().product()),
         25 => num(nums(a)?.iter().map(|x| x * x).sum()),
@@ -1044,6 +1095,26 @@ fn text_before_after(before: bool, a: &[CellValue]) -> R {
 mod tests {
     use super::*;
     use improv_core_model::functions::{all, Kind};
+
+    #[test]
+    fn sums_are_compensated() {
+        // 0.1 + 0.2 + 0.3 is 0.6000000000000001 in a left fold; 0.6 exactly.
+        assert_eq!(sum(&[0.1, 0.2, 0.3]), 0.6);
+        // The larger operand second takes the other branch.
+        assert_eq!(sum(&[1.0, 1e100, 1.0, -1e100]), 2.0);
+        assert_eq!(sum(&[]).to_bits(), (-0.0f64).to_bits());
+        assert_eq!(sum(&[3.0, 4.0]), 7.0);
+        // Overflow stays infinite (and is #NUM! in SUM).
+        assert_eq!(sum(&[f64::MAX, f64::MAX]), f64::INFINITY);
+        assert_eq!(
+            eval(FuncId(22), &[f64::MAX, f64::MAX].map(CellValue::num)),
+            e(err::NUM)
+        );
+        assert_eq!(
+            eval(FuncId(23), &[0.1, 0.2, 0.3].map(CellValue::num)),
+            CellValue::num(0.6 / 3.0)
+        );
+    }
 
     /// Every evaluable registry entry has an implementation (unknown ids fall
     /// through to `#NAME?`).

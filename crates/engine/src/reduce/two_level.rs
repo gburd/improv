@@ -6,18 +6,21 @@
 //! re-reduces one block and the merge, not the whole group.
 //!
 //! The counts, `AND`/`OR`/`XOR`, `MIN`/`MAX` and integer-valued sums give
-//! what the flat fold gives. The floating-point folds (`SUM`, `AVERAGE`,
-//! `PRODUCT`, `SUMSQ`) are a fixed two-level summation: deterministic, the
-//! same in `evaluate`, the live engine and the FIXPOINT host step, but not
-//! bit-equal to one left-to-right fold. Over a category of up to
-//! [`FLAT_MAX`] items they reduce flat, as before.
+//! what the flat fold gives. `SUM` and `AVERAGE` are compensated
+//! ([`Neumaier`]) in each block and across the blocks, as the flat fold
+//! is, so both are the exact sum's nearest float but for extreme
+//! cancellation, and agree to within an ulp. `PRODUCT` and `SUMSQ` are a
+//! fixed two-level fold: deterministic, the same in `evaluate`, the live
+//! engine and the FIXPOINT host step, but not bit-equal to one
+//! left-to-right fold. Over a category of up to [`FLAT_MAX`] items they
+//! reduce flat, as before.
 //!
 //! Blocks are by item id, not position: an engine that takes a model's
 //! appended items as data ([`crate::session::Engine::serves`]) does not know
 //! their positions, but it blocks them as a fresh engine would.
 
 use super::Rows;
-use crate::builtins::{err, num};
+use crate::builtins::{err, num, Neumaier};
 use crate::CellValue;
 use improv_core_model::{CategoryId, FuncId, ItemId};
 use serde::{Deserialize, Serialize};
@@ -64,6 +67,8 @@ pub(crate) struct Part {
     k: u64,
     /// The floating-point accumulator, as bits.
     acc: u64,
+    /// `SUM`, `AVERAGE`: the accumulator's [`Neumaier`] compensation, as bits.
+    comp: u64,
 }
 
 /// The accumulator's start and step of `id`'s fold.
@@ -73,8 +78,8 @@ fn fold_of(id: u32) -> (f64, fn(f64, f64) -> f64) {
         4 => (f64::NEG_INFINITY, f64::max),
         5 => (1.0, |a, x| a * x),
         6 => (-0.0, |a, x| a + x * x),
-        // SUM, AVERAGE (Rust's float `sum` starts at -0.0).
-        _ => (-0.0, |a, x| a + x),
+        // SUM and AVERAGE add through a Neumaier; the rest do not fold.
+        _ => (-0.0, |a, _| a),
     }
 }
 
@@ -83,12 +88,18 @@ pub(crate) fn part(func: FuncId, rows: &Rows) -> Part {
     let id = func.0;
     let (start, step) = fold_of(id);
     let mut acc = start;
+    let mut sum = Neumaier::default();
+    let mut step = |x: f64| match id {
+        1 | 2 => sum.add(x),
+        _ => acc = step(acc, x),
+    };
     let mut p = Part {
         n: rows.len() as u64,
         err: None,
         bad: false,
         k: 0,
         acc: 0,
+        comp: 0,
     };
     for (pos, row) in rows.pos.iter().zip(&rows.vals) {
         match (id, &row[0]) {
@@ -98,12 +109,16 @@ pub(crate) fn part(func: FuncId, rows: &Rows) -> Part {
             (7..=9, CellValue::Bool(b)) => p.k += u64::from(*b),
             (7..=9, CellValue::Num(x)) => p.k += u64::from(f64::from_bits(*x) != 0.0),
             (7..=9, _) | (_, CellValue::Text(_)) => p.bad = true,
-            (_, CellValue::Num(x)) => acc = step(acc, f64::from_bits(*x)),
-            (_, CellValue::Bool(b)) => acc = step(acc, f64::from(u8::from(*b))),
-            (_, CellValue::Date(ms)) => acc = step(acc, *ms as f64),
+            (_, CellValue::Num(x)) => step(f64::from_bits(*x)),
+            (_, CellValue::Bool(b)) => step(f64::from(u8::from(*b))),
+            (_, CellValue::Date(ms)) => step(*ms as f64),
         }
     }
-    p.acc = acc.to_bits();
+    if matches!(id, 1 | 2) {
+        (p.acc, p.comp) = (sum.s.to_bits(), sum.c.to_bits());
+    } else {
+        p.acc = acc.to_bits();
+    }
     p
 }
 
@@ -117,12 +132,14 @@ pub(crate) fn merge<'a>(func: FuncId, parts: impl IntoIterator<Item = &'a Part>)
         _ => |a, x| a + x,
     };
     let mut acc = start;
+    let mut sum = Neumaier::default();
     let mut out = Part {
         n: 0,
         err: None,
         bad: false,
         k: 0,
         acc: 0,
+        comp: 0,
     };
     for p in parts {
         out.n += p.n;
@@ -132,9 +149,19 @@ pub(crate) fn merge<'a>(func: FuncId, parts: impl IntoIterator<Item = &'a Part>)
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
-        acc = combine(acc, f64::from_bits(p.acc));
+        if matches!(func.0, 1 | 2) {
+            // The blocks' sums compensated, and their lost parts added.
+            sum.add(f64::from_bits(p.acc));
+            sum.c += f64::from_bits(p.comp);
+        } else {
+            acc = combine(acc, f64::from_bits(p.acc));
+        }
     }
-    out.acc = acc.to_bits();
+    if matches!(func.0, 1 | 2) {
+        (out.acc, out.comp) = (sum.s.to_bits(), sum.c.to_bits());
+    } else {
+        out.acc = acc.to_bits();
+    }
     out
 }
 
@@ -151,7 +178,14 @@ pub(crate) fn finish(func: FuncId, p: &Part) -> CellValue {
     if p.bad {
         return CellValue::Err(err::VALUE);
     }
-    let acc = f64::from_bits(p.acc);
+    let acc = match func.0 {
+        1 | 2 => Neumaier {
+            s: f64::from_bits(p.acc),
+            c: f64::from_bits(p.comp),
+        }
+        .value(),
+        _ => f64::from_bits(p.acc),
+    };
     match func.0 {
         2 => num(acc / p.n as f64),
         7 => CellValue::Bool(p.k == p.n),
@@ -282,22 +316,39 @@ mod tests {
     }
 
     #[test]
-    fn floating_sums_are_two_level() {
+    fn floating_sums_are_compensated_in_and_across_blocks() {
         let n = CellValue::num;
-        // Block sums 1.0 + 1e-16 + 1e-16 + 1e-16 then 3e-16: two-level
-        // keeps the small terms that a flat left fold drops.
+        // 1 + 7e-16: a left fold drops every small term; the compensated
+        // sums, flat and two-level, keep them.
         let mut v = vec![n(1.0)];
         v.extend((0..7).map(|_| n(1e-16)));
         let (r, items) = rows(&v);
         let two = reduce(FuncId(1), &r, &items).as_num().unwrap();
         let flat = reduce::reduce(FuncId(1), &r, &[]).as_num().unwrap();
-        assert_eq!(flat, 1.0);
-        let b1 = 1.0 + 1e-16 + 1e-16 + 1e-16;
-        let b2 = -0.0 + 1e-16 + 1e-16 + 1e-16 + 1e-16;
-        assert_eq!(two, -0.0 + b1 + b2);
+        assert_eq!(v.iter().map(|c| c.as_num().unwrap()).sum::<f64>(), 1.0);
+        assert_eq!(flat, 1.0000000000000007);
+        assert_eq!(two, flat);
+        assert_eq!(reduce(FuncId(2), &r, &items).as_num(), Some(flat / 8.0));
+        // Cancellation across blocks: 1e16, 1, -1e16, 1 in four blocks.
+        let (r, items) = rows(&[n(1e16), n(1.0), n(-1e16), n(1.0)]);
+        assert_eq!(reduce(FuncId(1), &r, &items), n(2.0));
+        assert_eq!(reduce::reduce(FuncId(1), &r, &[]), n(2.0));
+        // An exact (integer) sum keeps the plain fold's bits, -0.0 included.
+        let (r, items) = rows(&[n(-0.0), n(-0.0)]);
+        let z = reduce(FuncId(1), &r, &items).as_num().unwrap();
+        assert!(z == 0.0 && z.is_sign_negative());
+        // SUMSQ stays a plain two-level fold: per block of four, then the
+        // blocks in order.
+        let sq: Vec<CellValue> = (0..8).map(|i| n(1.0 + f64::from(i) * 1e-8)).collect();
+        let (r, items) = rows(&sq);
+        let block = |b: &[CellValue]| {
+            b.iter()
+                .map(|c| c.as_num().unwrap())
+                .fold(-0.0, |a, x| a + x * x)
+        };
         assert_eq!(
-            reduce(FuncId(2), &r, &items).as_num(),
-            Some((-0.0 + b1 + b2) / 8.0)
+            reduce(FuncId(6), &r, &items),
+            n(-0.0 + block(&sq[..4]) + block(&sq[4..]))
         );
     }
 
