@@ -37,6 +37,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   `param_default`, `closest_param`, and `complete_named`; `call_at` maps a
   named argument to its parameter.
 
+- **pg_improv: `improv.models`**, a view listing every model with its
+  owner, sync mode and result schema, plus `may_change`, which says
+  whether the caller may act as its owner. It follows the catalog's read
+  policy.
 - **pg_improv: the `improv_user` and `improv_admin` roles.** `CREATE
   EXTENSION` (and the update to 0.11.0) makes them when missing.
   `improv_user` is what a non-superuser needs to build models: `USAGE` on

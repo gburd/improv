@@ -690,7 +690,8 @@ them once no database's extension uses them).
 - **`improv_user`** builds models. It has `USAGE` on schema `improv`,
   `EXECUTE` on the API, the catalog DML (`SELECT`, `INSERT`, `UPDATE`,
   `DELETE` on the per-model `improv.*` tables, which row-level security
-  then confines to the models it may act as the owner of). Its result schemas are made by the extension and owned
+  then confines to the models it may act as the owner of), and `SELECT` on
+  `improv.models`. Its result schemas are made by the extension and owned
   by it, so a builder needs no `CREATE` on the database. A builder still
   needs `SELECT` on each table it binds, and `TRIGGER` on it for trigger
   and commit mode.
@@ -707,6 +708,18 @@ them once no database's extension uses them).
 ```sql
 GRANT improv_user TO alice;                 -- as a superuser or an improv_admin
 GRANT SELECT, TRIGGER ON sales TO alice;    -- the tables alice binds
+```
+
+**`improv.models`** lists every model with its `owner`, `sync_mode`,
+`result_schema`, and `may_change`, which is true when the caller may act
+as the owner (change it, read its items and cells, `what_if` it). It
+follows the catalog's read policy: anyone who may read `improv.model` (an
+`improv_user`, or a role granted it) sees every model's name, as `status`
+does. Whether they may read the results depends on the result tables'
+grants.
+
+```sql
+SELECT name, owner, sync_mode, may_change, result_schema FROM improv.models;
 ```
 
 **Who may change a model.** Only a role that may **act as its owner**: a

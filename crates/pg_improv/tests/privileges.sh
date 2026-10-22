@@ -25,6 +25,7 @@
 #   5. a restore of the catalog by the models' owner or a superuser loads
 #      it; one by a role that may not own them is refused; DROP EXTENSION
 #      keeps the roles, and a new CREATE EXTENSION uses them
+#   6. improv.models: every model, with may_change for the caller
 # The builders are members of improv_user (made by CREATE EXTENSION), not
 # granted the catalog by hand; they have no CREATE on the database.
 # Usage: tests/privileges.sh
@@ -355,5 +356,20 @@ qr "CREATE EXTENSION pg_improv"
 U=bob qr "SELECT improv.create_model('again')" >/dev/null
 eq "$(qr "SELECT owner FROM improv.model WHERE name = 'again'")" bob "an improv_user builds after DROP and CREATE EXTENSION"
 echo "ok: DROP EXTENSION keeps improv_user and improv_admin; CREATE EXTENSION again grants improv_user its catalog"
+
+# ---- 6. improv.models ----------------------------------------------------------
+# Every model, and whether the caller may act on it; read access follows
+# improv.model's (a role with no grant on improv reads nothing).
+q "CREATE ROLE adm LOGIN; GRANT improv_admin TO adm; CREATE ROLE nob LOGIN"
+q "GRANT SELECT ON pub TO alice"
+for s in "create_model('x')" "set_sync_mode('x','manual')"; do U=alice q "SELECT improv.$s" >/dev/null; done
+M="SELECT string_agg(name || ':' || owner || ':' || sync_mode || ':' || may_change || ':' || result_schema, ',' ORDER BY name) FROM improv.models WHERE name IN ('x', 's')"
+eq "$(q "$M")" "s:bob:manual:true:improv_s,x:alice:manual:true:improv_x" "improv.models as a superuser"
+eq "$(U=adm q "$M")" "s:bob:manual:false:improv_s,x:alice:manual:false:improv_x" "improv.models as improv_admin"
+eq "$(U=alice q "$M")" "s:bob:manual:false:improv_s,x:alice:manual:true:improv_x" "improv.models as the owner"
+eq "$(U=carol q "$M")" "s:bob:manual:false:improv_s,x:alice:manual:true:improv_x" "improv.models as a member of the owner"
+eq "$(U=bob q "$M")" "s:bob:manual:true:improv_s,x:alice:manual:false:improv_x" "improv.models as bob"
+U=nob q "SELECT count(*) FROM improv.models" >/dev/null 2>&1 && fail "a role with no grant reads improv.models"
+echo "ok: improv.models lists every model and whether the caller may change it"
 
 echo PASS

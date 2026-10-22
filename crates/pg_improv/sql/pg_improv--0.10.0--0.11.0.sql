@@ -159,7 +159,7 @@ END $$;
 -- and kept by DROP EXTENSION. improv_user builds models: schema USAGE, the
 -- API (EXECUTE: PUBLIC has it too, unless the DBA revokes it), the catalog
 -- DML that row-level security confines to the models it may act as the
--- owner of. No UPDATE on improv.sync_state (the
+-- owner of, and improv.models. No UPDATE on improv.sync_state (the
 -- worker's progress) and nothing on improv.slot_to_drop (the worker drops
 -- the slots it names). improv_admin enrolls builders (ADMIN OPTION on
 -- improv_user) and acts on no one else's model: acting on a model is acting
@@ -175,10 +175,17 @@ BEGIN
     GRANT improv_user TO improv_admin WITH ADMIN OPTION;
   END IF;
 END $$;
+-- Every model, for anyone who may read improv.model (whose read policy is
+-- true): may_change says whether the caller may act as its owner.
+CREATE VIEW improv.models WITH (security_invoker = true) AS
+SELECT m.name, m.owner, m.sync_mode, improv.may_act_as(m.owner) AS may_change,
+       'improv_' OPERATOR(pg_catalog.||) pg_catalog.lower(m.name) AS result_schema
+FROM improv.model m;
 GRANT USAGE ON SCHEMA improv TO improv_user;
 GRANT SELECT, INSERT, UPDATE, DELETE ON improv.model, improv.category, improv.item,
   improv.measure, improv.binding, improv.category_binding, improv.cell, improv.view,
   improv.meta, improv.model_version, improv.lambda TO improv_user;
 GRANT SELECT, INSERT, DELETE ON improv.sync_state TO improv_user;
 GRANT USAGE ON SEQUENCE improv.model_id_seq TO improv_user;
+GRANT SELECT ON improv.models TO improv_user;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA improv TO improv_user;
