@@ -29,7 +29,7 @@ name: Scale gate
 # edit probe that jitters does not fail the gate. A probe that does not run
 # fails it too. The ratios also differ a little between CPU models (cache
 # sizes, memory latency): if GitHub's runners sit consistently off the
-# box-made baseline, rebuild the baseline from these jobs' uploaded results.
+# baseline, rebuild it from these jobs' uploaded results (README.md).
 #
 # Refresh the baseline after an intended change in speed: run
 # `scale-gate.py run --out rN.json` a few times on one machine, then

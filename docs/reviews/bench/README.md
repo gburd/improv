@@ -35,6 +35,15 @@ fails too. `scale-gate.py selftest` checks these rules on made-up runs.
 The reference measures CPU, cache and allocator speed. It does not see disk
 speed, so the import and pg_improv probes, which also write files, are only
 partly normalized, and ratios shift a little between CPU models. The
-baseline was made on the EC2 box (c7i, Sapphire Rapids); if GitHub's runners
-sit consistently off it, build the baseline from the workflow's uploaded
-`scale-gate.json` files instead (`scale-gate.py baseline a.json b.json ...`).
+baseline comes from three runs on GitHub's `ubuntu-latest` runners (the
+first runs, 2026-10-22). One made on the EC2 box (c7i, Sapphire Rapids)
+put pagerank's edit and the CSV import 1.3-1.6x off on those runners even
+after normalizing, so the gate failed on its first run. Rebuild it the
+same way when the runner image changes: dispatch the workflow a few
+times, download each run's `scale-gate` artifact, and run
+`scale-gate.py baseline a.json b.json ...`.
+
+The sub-millisecond probes (`wide.sum.edit_*`) are covered only by the
+1 ms absolute floor: a 40% slowdown of a 0.2 ms edit passes. They catch
+the edit losing its incrementality (milliseconds, not microseconds), not
+small regressions.
