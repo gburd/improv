@@ -8,6 +8,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`""` inside a text literal is one `"`**, as in Excel: `"say ""hi"""`
+  is the text `say "hi"`. It was a parse error, so no formula changes
+  meaning. The GUI formula bar prints such text the same way, so a formula
+  with a `"` in a literal shows as DSL instead of controlled English.
 - **Named arguments in formulas:** `PMT(0.05, 12, Loan, type => 1)`,
   `XLOOKUP(Id, Key OVER Row, Name, search_mode => -1)`,
   `FIXPOINT(0, LAMBDA(r, r / 2 + 1), max_iter => 50)`. After the positional

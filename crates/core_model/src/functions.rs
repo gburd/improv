@@ -1002,6 +1002,11 @@ mod tests {
             "dotted name, ; separator"
         );
         assert_eq!(at("PMT(1)"), None, "closed");
+        assert_eq!(
+            at(r#"ROUND(LEFT("a"",b", "#),
+            Some(("LEFT", 1)),
+            "a doubled quote stays in the string"
+        );
         assert_eq!(at("(1 + "), None, "not a call");
         assert_eq!(at("Nope("), None);
         assert!(call_at("PMT(", 99).is_none());

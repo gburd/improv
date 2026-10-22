@@ -131,7 +131,7 @@ German are the locales so far; another is a table of names
 | Literal | Example | Notes |
 |---------|---------|-------|
 | number | `42`, `1.07`, `1e-10`, `6.02E+23` | digits, an optional `.digits`, an optional exponent (`e` or `E`, a sign, digits); no leading `.` (`.5`) |
-| text | `"hello"` | double quotes; no escapes, so the text cannot contain `"` |
+| text | `"hello"`, `"say ""hi"""` | double quotes; `""` inside is one `"`, as in Excel (the only escape) |
 | boolean | `TRUE`, `FALSE` | |
 | date | `#2025-01-01#` | midnight UTC |
 | date and time | `#2025-01-01T09:30:00Z#` | RFC 3339 |
@@ -715,10 +715,6 @@ of the language.
 - **One comparison per level:** `a < b < c` is an error. Excel reads it as
   `(a < b) < c`, comparing a boolean with a number, which is never what was
   meant.
-- **Text literals have no escapes.** Excel writes a quote inside text as
-  `""`. Improv's string literal has no escapes: `"a""b"` is an error, and
-  `CHAR(34)` gives a `"`. **Follow-up:** add `""` inside a string (it is an
-  error today, so it is a compatible addition).
 - **No leading `.`:** `.5` is an error; write `0.5`.
 - **A number too large for a float is a parse error.** `1e999` is the error
   `number out of range` when the formula is entered; Excel accepts it and
@@ -884,9 +880,9 @@ a formula that is valid in 1.0 is valid in every 1.x, with the same meaning.
 - new functions, and new aliases of existing ones;
 - new optional trailing arguments to a function (an omitted argument keeps
   today's result);
-- new syntax, but only where today's text is a parse error (named arguments,
-  `""` inside a string, a leading `.` in a number): no valid formula changes
-  meaning;
+- new syntax, but only where today's text is a parse error (as named
+  arguments and `""` inside a string were, or a leading `.` in a number):
+  no valid formula changes meaning;
 - new error messages and better suggestions, and new locales;
 - results where today's are an error caused by a missing feature, for
   example a `TEXTSPLIT` row delimiter, which is `#VALUE!` today.

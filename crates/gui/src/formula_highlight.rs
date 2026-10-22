@@ -278,6 +278,12 @@ mod tests {
         assert_eq!(toks[0], (TokenKind::Ident, "Name"));
         assert_eq!(toks[1], (TokenKind::Operator, "=="));
         assert_eq!(toks[2], (TokenKind::String, "\"Widget A\""));
+        // `""` inside: two adjacent string tokens, both drawn as text.
+        let toks = kinds(r#""a""b" & 1"#);
+        assert_eq!(
+            toks[..2],
+            [(TokenKind::String, "\"a\""), (TokenKind::String, "\"b\"")]
+        );
 
         let toks = kinds("3.14 + 2");
         assert_eq!(toks[0], (TokenKind::Number, "3.14"));

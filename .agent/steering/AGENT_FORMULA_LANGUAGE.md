@@ -117,6 +117,7 @@ Postfix      = Primary { "%" } ;                  (* x% = x / 100 *)
 Primary      = Literal | Call | Special | MeasureRef | Local
              | "(" Expression ")" ;
 Literal      = Number | Text | "TRUE" | "FALSE" | DateLiteral ;  (* #2025-01-31# *)
+Text         = '"' { Char | '""' } '"' ;          (* "" inside is one ", as in Excel *)
 Number       = Digits [ "." Digits ] [ ( "e" | "E" ) [ "+" | "-" ] Digits ] ;
 MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
 Local        = Identifier ;                       (* bound by LET / LAMBDA *)

@@ -24,6 +24,7 @@
 //! Primary      = Literal | Call | Special | MeasureRef | Local
 //!              | "(" Expression ")" ;
 //! Literal      = Number | Text | "TRUE" | "FALSE" | DateLiteral ;  (* #2025-01-31# *)
+//! Text         = '"' { Char | '""' } '"' ;          (* "" inside is one ", as in Excel *)
 //! Number       = Digits [ "." Digits ] [ ( "e" | "E" ) [ "+" | "-" ] Digits ] ;
 //!                                                   (* 42, 1.07, 1e-10, 6.02E23 *)
 //! MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
@@ -279,17 +280,26 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
         match c {
             c if c.is_whitespace() => i += c.len_utf8(),
             '"' => {
-                // String literal: consume to the closing quote (no escapes in v1).
+                // String literal: to the closing quote; `""` inside is one
+                // `"` (Excel's escape, the only one).
                 i += 1;
-                let s0 = i;
-                while i < bytes.len() && bytes[i] != b'"' {
+                let mut s = String::new();
+                loop {
+                    let s0 = i;
+                    while i < bytes.len() && bytes[i] != b'"' {
+                        i += 1;
+                    }
+                    if i >= bytes.len() {
+                        return Err(ParseError::new("unterminated string literal", Some(start)));
+                    }
+                    s.push_str(&text[s0..i]);
+                    i += 1; // a quote: closing, or the first of `""`
+                    if bytes.get(i) != Some(&b'"') {
+                        break;
+                    }
+                    s.push('"');
                     i += 1;
                 }
-                if i >= bytes.len() {
-                    return Err(ParseError::new("unterminated string literal", Some(start)));
-                }
-                let s = text[s0..i].to_string();
-                i += 1; // closing quote
                 out.push(Spanned {
                     tok: Tok::Str(s),
                     pos: start,
@@ -3156,6 +3166,24 @@ mod tests {
         assert!(e.to_string().contains("unterminated quoted name"), "{e}");
         let e = parse_expr(&m, "'' + Price").unwrap_err();
         assert!(e.to_string().contains("empty quoted name"), "{e}");
+    }
+
+    /// `""` inside a string is one `"`, as in Excel.
+    #[test]
+    fn doubled_double_quote_in_text() {
+        let m = fixture();
+        let t = |s: &str| parse_expr(&m, s).map(|f| f.expr);
+        let lit = |s: &str| Ok(Expr::Literal(Value::Text(s.into())));
+        assert_eq!(t(r#""a""b""#), lit(r#"a"b"#));
+        assert_eq!(t(r#""""""#), lit(r#"""#));
+        assert_eq!(t(r#""""#), lit(""));
+        assert_eq!(t(r#""say ""hi"", é""#), lit(r#"say "hi", é"#));
+        assert!(matches!(
+            t(r#""a" & "b""#),
+            Ok(Expr::BinaryOp(BinaryOp::Concat, ..))
+        ));
+        assert!(t(r#""a"""#).is_err(), "unterminated after a doubled quote");
+        assert!(t(r#""a" "b""#).is_err(), "a space is no escape");
     }
 
     #[test]

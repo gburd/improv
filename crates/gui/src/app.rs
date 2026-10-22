@@ -3035,10 +3035,10 @@ fn literal_dsl(v: &Value) -> Option<String> {
         // No sign (`-5` is a negation) and no infinity in a literal.
         Value::Number(n) => parser::number_literal(*n),
         Value::Boolean(b) => Some(if *b { "TRUE".into() } else { "FALSE".into() }),
-        // The v1 string literal has no escapes, so only text that survives
-        // verbatim between quotes is expressible.
-        Value::Text(t) => (!t.contains('"') && !t.contains('\\') && !t.contains(char::is_control))
-            .then(|| format!("\"{t}\"")),
+        // `""` is the string literal's one escape (a `"`); a control
+        // character has none.
+        Value::Text(t) => (!t.contains('\\') && !t.contains(char::is_control))
+            .then(|| format!("\"{}\"", t.replace('"', "\"\""))),
         Value::DateTime(dt) => Some(format!("#{}#", dt.to_rfc3339())),
         Value::Enum(_) | Value::Error(_) => None,
     }
@@ -12290,7 +12290,13 @@ mod tests {
             literal_dsl(&Value::Boolean(false)).as_deref(),
             Some("FALSE")
         );
-        assert_eq!(literal_dsl(&Value::Text("a\"b".into())), None);
+        // A `"` is doubled, and parses back to itself.
+        let quoted = literal_dsl(&Value::Text("say \"hi\"".into())).unwrap();
+        assert_eq!(quoted, "\"say \"\"hi\"\"\"");
+        assert_eq!(
+            parser::parse_expr(&Model::new(), &quoted).unwrap().expr,
+            Expr::Literal(Value::Text("say \"hi\"".into()))
+        );
         assert_eq!(literal_dsl(&Value::Text("a\\b".into())), None);
         assert_eq!(
             literal_dsl(&Value::Text("ok".into())).as_deref(),
