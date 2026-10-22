@@ -1,0 +1,298 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "improv-server",
+    "version": "1",
+    "description": "JSON HTTP API over one Improv model. Every path is also served without the /v1 prefix (an alias kept for older clients). `x-improv-scope` names the token scope a route needs: public (no token), read, or write. A missing or unknown token gets 401, a read token on a write route 403, an over-limit body 413, a caller over its rate limit 429.",
+    "license": { "name": "Apache-2.0 OR MIT" }
+  },
+  "security": [{ "bearer": [] }],
+  "paths": {
+    "/v1/health": {
+      "get": {
+        "summary": "Liveness probe",
+        "x-improv-scope": "public",
+        "security": [],
+        "responses": {
+          "200": { "description": "The text `ok`.", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/v1/openapi.json": {
+      "get": {
+        "summary": "This document",
+        "x-improv-scope": "public",
+        "security": [],
+        "responses": {
+          "200": { "description": "The OpenAPI document.", "content": { "application/json": { "schema": { "type": "object" } } } }
+        }
+      }
+    },
+    "/v1/model": {
+      "get": {
+        "summary": "The whole model",
+        "x-improv-scope": "read",
+        "responses": {
+          "200": { "description": "The model, as the store serializes it.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/measures": {
+      "get": {
+        "summary": "List the measures",
+        "x-improv-scope": "read",
+        "responses": {
+          "200": {
+            "description": "Measures, sorted by id.",
+            "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/MeasureSummary" } } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/measures/{id}/values": {
+      "get": {
+        "summary": "A measure's values",
+        "description": "The stored cells of an input measure, or the computed cells of a derived one.",
+        "x-improv-scope": "read",
+        "parameters": [{ "$ref": "#/components/parameters/MeasureId" }],
+        "responses": {
+          "200": { "$ref": "#/components/responses/Cells" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/measures/{id}/eval": {
+      "post": {
+        "summary": "What-if evaluation",
+        "description": "Apply edits through the live engine and return derived measure `id`. A read token may evaluate; `\"persist\": true` writes the edits and needs a write token (403 otherwise). A persisting request is audited.",
+        "x-improv-scope": "read",
+        "parameters": [{ "$ref": "#/components/parameters/MeasureId" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EvalRequest" } } }
+        },
+        "responses": {
+          "200": { "$ref": "#/components/responses/Cells" },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/measures/{id}/cells": {
+      "post": {
+        "summary": "Set one input cell",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/MeasureId" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SetCellRequest" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Written.",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "ok": { "const": true } } } } }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Error" },
+          "404": { "$ref": "#/components/responses/Error" },
+          "409": { "$ref": "#/components/responses/Error" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/nl/parse": {
+      "post": {
+        "summary": "Controlled English to a formula",
+        "x-improv-scope": "read",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object", "required": ["text"], "properties": { "text": { "type": "string" } } },
+              "example": { "text": "revenue is price times quantity" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "The formula.", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/nl/describe": {
+      "post": {
+        "summary": "A formula to controlled English",
+        "x-improv-scope": "read",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["formula"],
+                "properties": { "formula": { "type": "object", "description": "A formula as /v1/nl/parse returns it." } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The text.",
+            "content": { "application/json": { "schema": { "type": "object", "properties": { "text": { "type": "string" } } } } }
+          },
+          "400": { "$ref": "#/components/responses/Error" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    },
+    "/v1/scheduler/status": {
+      "get": {
+        "summary": "Refresh scheduler state",
+        "x-improv-scope": "read",
+        "responses": {
+          "200": {
+            "description": "`enabled` false, or the tick period and the last tick's outcome.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["enabled"],
+                  "properties": {
+                    "enabled": { "type": "boolean" },
+                    "tick_secs": { "type": "integer" },
+                    "last_tick_refreshed": { "type": "array", "items": { "type": "integer" } },
+                    "last_error": { "type": ["string", "null"] }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": { "type": "http", "scheme": "bearer", "description": "A token from IMPROV_API_TOKEN, IMPROV_API_TOKENS, IMPROV_API_TOKENS_RO or IMPROV_API_TOKEN_FILE. Not needed in open mode." }
+    },
+    "parameters": {
+      "MeasureId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 0 } }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["error"],
+        "properties": { "error": { "type": "string" }, "request_id": { "type": "integer", "description": "On a 500: the id the server logged the detail under." } }
+      },
+      "MeasureSummary": {
+        "type": "object",
+        "required": ["id", "name", "kind", "categories"],
+        "properties": {
+          "id": { "type": "integer" },
+          "name": { "type": "string" },
+          "kind": { "enum": ["input", "derived"] },
+          "categories": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "Cell": {
+        "type": "object",
+        "required": ["coord", "value"],
+        "properties": {
+          "coord": {
+            "type": "array",
+            "description": "[category name, item name] pairs, sorted.",
+            "items": { "type": "array", "items": { "type": "string" }, "minItems": 2, "maxItems": 2 }
+          },
+          "value": { "type": "number" }
+        }
+      },
+      "EvalRequest": {
+        "type": "object",
+        "properties": {
+          "edits": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "type": "object",
+              "required": ["measure", "coord", "value"],
+              "properties": {
+                "measure": { "type": "integer" },
+                "coord": {
+                  "type": "array",
+                  "description": "[category id, item id] pairs.",
+                  "items": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 }
+                },
+                "value": { "type": ["number", "null"], "description": "null clears the cell." }
+              }
+            }
+          },
+          "persist": { "type": "boolean", "default": false }
+        },
+        "example": { "edits": [{ "measure": 101, "coord": [[1, 10], [2, 20]], "value": 90 }], "persist": false }
+      },
+      "SetCellRequest": {
+        "type": "object",
+        "required": ["coord", "value"],
+        "properties": {
+          "coord": {
+            "type": "object",
+            "required": ["dims"],
+            "properties": { "dims": { "type": "object", "description": "Category id to item id.", "additionalProperties": { "type": "integer" } } }
+          },
+          "value": { "type": "number" }
+        },
+        "example": { "coord": { "dims": { "1": 10, "2": 20 } }, "value": 90 }
+      }
+    },
+    "responses": {
+      "Cells": {
+        "description": "Cells, coordinates named by category and item.",
+        "content": { "application/json": { "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Cell" } } } }
+      },
+      "Error": {
+        "description": "The request was refused.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Unauthorized": {
+        "description": "No token, or an unknown one.",
+        "headers": { "WWW-Authenticate": { "schema": { "type": "string" } } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "TooLarge": { "description": "The body is over IMPROV_MAX_BODY_BYTES." },
+      "RateLimited": {
+        "description": "The caller is over IMPROV_RATE_LIMIT requests a minute.",
+        "headers": { "Retry-After": { "description": "Seconds to wait.", "schema": { "type": "integer" } } },
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Internal": {
+        "description": "Internal error; the detail is in the server log under request_id.",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      }
+    }
+  }
+}

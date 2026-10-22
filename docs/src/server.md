@@ -9,30 +9,61 @@ improv-server 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 
 ## Endpoints
 
-| Method | Path | Body | Notes |
-| --- | --- | --- | --- |
-| GET | `/health` | | Public liveness probe. |
-| GET | `/model` | | The whole model. |
-| GET | `/measures` | | Id, name, kind, categories. |
-| GET | `/measures/:id/values` | | Stored inputs, or computed values. |
-| POST | `/measures/:id/eval` | `{"edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 90}], "persist": false}` | What-if edits through the live engine; `"persist": true` writes them. Ids are numeric; `"value": null` clears a cell. The answer names coordinates by category and item name. |
-| POST | `/measures/:id/cells` | `{"coord": {"dims": {"1": 10, "2": 20}}, "value": 90}` | Set one input cell (category id → item id). |
-| POST | `/nl/parse` | `{"text": "revenue is price times quantity"}` | Controlled English to a formula. |
-| POST | `/nl/describe` | `{"formula": …}` | A formula (as `/nl/parse` returns it) to controlled English. |
-| GET | `/scheduler/status` | | Refresh scheduler state. |
+The API is versioned: every route is served under `/v1`, the path the 1.x
+releases keep stable. The same routes without the prefix are aliases kept
+for older clients. [`docs/openapi.json`](https://codeberg.org/gregburd/improv/src/branch/main/docs/openapi.json)
+is the OpenAPI 3.1 description, and the server serves it at
+`/v1/openapi.json`. A test fails when the document and the routes disagree.
+
+| Method | Path | Scope | Body | Notes |
+| --- | --- | --- | --- | --- |
+| GET | `/v1/health` | public | | Liveness probe. |
+| GET | `/v1/openapi.json` | public | | The OpenAPI document. |
+| GET | `/v1/model` | read | | The whole model. |
+| GET | `/v1/measures` | read | | Id, name, kind, categories. |
+| GET | `/v1/measures/:id/values` | read | | Stored inputs, or computed values. |
+| POST | `/v1/measures/:id/eval` | read; write to persist | `{"edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 90}], "persist": false}` | What-if edits through the live engine; `"persist": true` writes them. Ids are numeric; `"value": null` clears a cell. The answer names coordinates by category and item name. |
+| POST | `/v1/measures/:id/cells` | write | `{"coord": {"dims": {"1": 10, "2": 20}}, "value": 90}` | Set one input cell (category id → item id). |
+| POST | `/v1/nl/parse` | read | `{"text": "revenue is price times quantity"}` | Controlled English to a formula. |
+| POST | `/v1/nl/describe` | read | `{"formula": …}` | A formula (as `/nl/parse` returns it) to controlled English. |
+| GET | `/v1/scheduler/status` | read | | Refresh scheduler state. |
 
 Values written through the API are numbers.
 
 ## Authentication
 
-Every route except `/health` needs `Authorization: Bearer <token>` once a
-token is configured. Tokens are compared in constant time.
+Once any token is configured, every route except the public ones needs
+`Authorization: Bearer <secret>`. Each token has a name and a scope: a
+**read** token may call the read routes, a **write** token every route. A
+missing or unknown token gets **401**; a read token on a write route (or
+`"persist": true`) gets **403**. Secrets are compared in constant time and
+never logged; the audit log and the rate limiter use the token's name.
 
 | Variable | Meaning |
 | --- | --- |
-| `IMPROV_API_TOKEN`, `IMPROV_API_TOKENS` | Read-write tokens (one, or comma-separated). |
-| `IMPROV_API_TOKENS_RO` | Read-only tokens (comma-separated). GETs and what-if `/eval` work; `POST /cells` and `"persist": true` return 403. |
+| `IMPROV_API_TOKEN` | One write token, named `IMPROV_API_TOKEN`. |
+| `IMPROV_API_TOKENS` | Write tokens, comma-separated, named `IMPROV_API_TOKENS#1`, `#2`, … |
+| `IMPROV_API_TOKENS_RO` | Read tokens, comma-separated, named `IMPROV_API_TOKENS_RO#1`, … |
+| `IMPROV_API_TOKEN_FILE` | A file of tokens, so secrets stay out of the environment (below). |
 | `IMPROV_ALLOW_OPEN=1` | Allow open mode (no tokens) on a non-loopback address. Without it the server refuses to start. |
+
+The token file has one `name:scope:secret` per line, `scope` being `read`
+or `write`; the secret may contain `:`. Blank lines and `#` comments are
+skipped:
+
+```text
+# /etc/improv/tokens, mode 600
+dashboard:read:9f2c…
+loader:write:b71e…
+```
+
+The server refuses to start if the file is unreadable or malformed, or if two
+tokens share a name or a secret, and warns if the file is readable by other
+users. All the sources combine. Generate secrets with
+`openssl rand -hex 32`.
+
+In open mode (no tokens) every caller has write access and the audit log
+names it `anonymous`.
 
 ## Writes
 
@@ -47,18 +78,88 @@ cached model until then.
 
 ## Limits
 
-| Limit | Value |
-| --- | --- |
-| Request body | 1 MiB (413 above) |
-| Edits per `/eval` | 10,000 (400 above) |
-| Request time | 30 s (408), including time queued for a slot |
-| Requests in flight | 64; the rest queue |
-| Header read | 10 s; `IMPROV_HEADER_TIMEOUT_MS` overrides |
+| Limit | Default | Variable |
+| --- | --- | --- |
+| Request body | 1 MiB (413 above) | `IMPROV_MAX_BODY_BYTES` |
+| Requests a minute, per caller | 600 (429 above, with `Retry-After`) | `IMPROV_RATE_LIMIT` (0 turns it off) |
+| Edits per `/eval` | 10,000 (400 above) | |
+| Request time | 30 s (408), including time queued for a slot | |
+| Requests in flight | 64; the rest queue | |
+| Header read | 10 s | `IMPROV_HEADER_TIMEOUT_MS` |
+
+The rate limit is a token bucket per token name. A request without a valid
+token (and every request in open mode) is counted against the client's IP
+address instead. Behind a reverse proxy every client has the proxy's
+address, so in open mode set the limit in the proxy. Public routes are not
+limited.
 
 The server speaks HTTP/1.1 only.
 
 Internal errors return `{"error": "internal error", "request_id": N}`; the
 detail is logged to stderr under the same id.
+
+## Audit log
+
+Every write is logged as one JSON object per line: `POST /cells`, and
+`/eval` with `"persist": true`. Refused writes are logged too, with the
+status they got (401, 403, 400, 409, 408, …):
+
+```json
+{"ts":"2026-10-22T09:14:03.512Z","audit":"write","who":"loader","route":"POST /v1/measures/100/cells","model":"postgres://me@db/sales?model=plan","status":200}
+```
+
+`who` is the token's name (`unauthenticated` for a write without a valid
+token, `anonymous` in open mode); `model` is the model path or URL with any
+password removed. The log goes to stderr, or is appended to the file named
+by `IMPROV_AUDIT_LOG`. Scheduler refreshes are not API writes and are logged
+as plain lines.
+
+## Deployment
+
+`improv-server` speaks plain HTTP; it has no TLS of its own. To serve it
+beyond the machine, bind it to loopback and put a reverse proxy in front
+that terminates TLS:
+
+```sh
+IMPROV_API_TOKEN_FILE=/etc/improv/tokens IMPROV_AUDIT_LOG=/var/log/improv/audit.log \
+  improv-server /srv/improv/sales.db 127.0.0.1:3000
+```
+
+Caddy (it fetches and renews the certificate itself):
+
+```text
+improv.example.com {
+	reverse_proxy 127.0.0.1:3000
+	request_body {
+		max_size 1MB
+	}
+}
+```
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name improv.example.com;
+    ssl_certificate     /etc/letsencrypt/live/improv.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/improv.example.com/privkey.pem;
+    client_max_body_size 1m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_read_timeout 35s;
+    }
+}
+```
+
+Keep the proxy's body limit at or below `IMPROV_MAX_BODY_BYTES`, and its read
+timeout above the server's 30 s request time. Bearer tokens travel in a
+header, so never expose the plain-HTTP port itself: the server refuses to
+listen on a non-loopback address without tokens (unless `IMPROV_ALLOW_OPEN=1`),
+but with tokens set it will, and the tokens would then cross the network in
+clear text.
 
 ## Refresh scheduler
 

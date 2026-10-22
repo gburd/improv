@@ -23,6 +23,7 @@ tower = { workspace = true, features = ["limit", "timeout", "util"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server", "service", "tokio"] }
 sha2 = "0.11"
+chrono.workspace = true
 
 [dev-dependencies]
 improv_extfn = { path = "../extfn" }

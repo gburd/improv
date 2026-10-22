@@ -35,23 +35,51 @@ The model: a store file, or postgres://USER@HOST/DB?model=NAME
 [\fIaddr\fR] [default: 127.0.0.1:3000]
 The address to listen on
 .SH ROUTES
+Every route is served under
+.I /v1
+and, as an alias, without it.
+.I /v1/openapi.json
+describes them.
 .nf
-GET  /health                 liveness, no token needed
-GET  /model                  the whole model
-GET  /measures               id, name, kind, categories
-GET  /measures/:id/values    stored inputs or computed values
-POST /measures/:id/eval      what-if edits; "persist": true writes through
-POST /measures/:id/cells     set one input cell
-POST /nl/parse, /nl/describe controlled English to formula and back
-GET  /scheduler/status       refresh scheduler state
+GET  /v1/health                 liveness, no token needed
+GET  /v1/openapi.json           the OpenAPI document, no token needed
+GET  /v1/model                  the whole model
+GET  /v1/measures               id, name, kind, categories
+GET  /v1/measures/:id/values    stored inputs or computed values
+POST /v1/measures/:id/eval      what-if edits; "persist": true writes through
+POST /v1/measures/:id/cells     set one input cell (write scope)
+POST /v1/nl/parse, /v1/nl/describe
+                                controlled English to formula and back
+GET  /v1/scheduler/status       refresh scheduler state
 .fi
 .SH ENVIRONMENT
 .TP
 .BR IMPROV_API_TOKEN ", " IMPROV_API_TOKENS
-Read-write bearer tokens (one, or comma-separated).
+Write-scope bearer tokens (one, or comma-separated).
 .TP
 .B IMPROV_API_TOKENS_RO
-Read-only bearer tokens.
+Read-scope bearer tokens (comma-separated).
+.TP
+.B IMPROV_API_TOKEN_FILE
+A file of
+.IB name : scope : secret
+lines,
+.I scope
+being
+.B read
+or
+.BR write .
+.TP
+.B IMPROV_MAX_BODY_BYTES
+Request body limit (default 1048576).
+.TP
+.B IMPROV_RATE_LIMIT
+Requests a minute per token, or per client address without one (default
+600; 0 turns it off).
+.TP
+.B IMPROV_AUDIT_LOG
+Append the write audit log (one JSON object per line) to this file instead
+of standard error.
 .TP
 .B IMPROV_ALLOW_OPEN=1
 Allow running without a token on a non-loopback address (otherwise the
@@ -80,7 +108,7 @@ Header read timeout (default 10000).
 .SH EXAMPLES
 .nf
 IMPROV_API_TOKEN=secret improv-server sample.db
-curl -H 'Authorization: Bearer secret' localhost:3000/measures
+curl -H 'Authorization: Bearer secret' localhost:3000/v1/measures
 .fi
 .SH AUTHOR
 Greg Burd <greg@burd.me>

@@ -14,19 +14,20 @@
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod args;
 
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::io::Write as _;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use axum::{
     error_handling::HandleErrorLayer,
-    extract::{rejection::JsonRejection, DefaultBodyLimit, Path, Request, State},
-    http::StatusCode,
+    extract::{rejection::JsonRejection, ConnectInfo, DefaultBodyLimit, Path, Request, State},
+    http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, MethodRouter},
     Extension, Json, Router,
 };
 use improv_core_model::{Coordinate, MeasureId, MeasureKind, Model};
@@ -42,55 +43,149 @@ use tower::ServiceBuilder;
 mod scheduler;
 use scheduler::SharedStatus;
 
+/// What a route needs. A `Read` token may call `Read` routes, a `Write`
+/// token every route; `Public` routes need no token.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    Public,
+    Read,
+    Write,
+}
+
+/// One accepted bearer token. `name` identifies the caller in the audit log
+/// and the rate limiter; the secret is never logged.
+#[derive(Clone)]
+pub struct Token {
+    pub name: String,
+    pub scope: Scope,
+    pub secret: String,
+}
+
 /// Accepted bearer tokens, or open mode.
 ///
-/// `Disabled` = no auth (local dev / tests, preserves v1 behavior);
-/// `Tokens` = require `Authorization: Bearer <t>`: a `t` in `rw` may read and
-/// write, a `t` in `ro` may only read (S12).
+/// `Disabled` = no auth (local dev / tests); `Tokens` = every non-public
+/// route needs `Authorization: Bearer <secret>` naming one of them (S12).
 #[derive(Clone)]
 pub enum Auth {
     Disabled,
-    Tokens {
-        rw: HashSet<String>,
-        ro: HashSet<String>,
-    },
+    Tokens(Vec<Token>),
 }
 
 impl Auth {
-    /// Build from `IMPROV_API_TOKEN` (single) + `IMPROV_API_TOKENS` (comma-sep)
-    /// for read-write, and `IMPROV_API_TOKENS_RO` (comma-sep) for read-only.
-    /// Empty/whitespace tokens are ignored; no tokens => `Disabled`.
-    fn from_env() -> Self {
-        let list = |var: &str| -> HashSet<String> {
-            std::env::var(var)
-                .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .map(String::from)
-                .collect()
-        };
-        let mut rw = list("IMPROV_API_TOKENS");
-        if let Ok(t) = std::env::var("IMPROV_API_TOKEN") {
-            let t = t.trim();
-            if !t.is_empty() {
-                rw.insert(t.to_string());
+    /// Build from the environment (`get` reads a variable): `IMPROV_API_TOKEN`
+    /// and `IMPROV_API_TOKENS` (comma-separated) are write tokens,
+    /// `IMPROV_API_TOKENS_RO` read tokens, and `IMPROV_API_TOKEN_FILE` names a
+    /// file of `name:scope:secret` lines. Blank tokens are ignored; no tokens
+    /// => `Disabled`. An unreadable or malformed file, or a name or secret
+    /// given twice, is an error.
+    fn from_lookup(get: &impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let mut tokens = Vec::new();
+        if let Some(secret) = get("IMPROV_API_TOKEN").filter(|t| !t.trim().is_empty()) {
+            tokens.push(Token {
+                name: "IMPROV_API_TOKEN".into(),
+                scope: Scope::Write,
+                secret: secret.trim().into(),
+            });
+        }
+        for (var, scope) in [
+            ("IMPROV_API_TOKENS", Scope::Write),
+            ("IMPROV_API_TOKENS_RO", Scope::Read),
+        ] {
+            let value = get(var).unwrap_or_default();
+            let secrets = value.split(',').map(str::trim).filter(|t| !t.is_empty());
+            for (i, secret) in secrets.enumerate() {
+                tokens.push(Token {
+                    name: format!("{var}#{}", i + 1),
+                    scope,
+                    secret: secret.into(),
+                });
             }
         }
-        let ro = list("IMPROV_API_TOKENS_RO");
-        if rw.is_empty() && ro.is_empty() {
+        if let Some(path) = get("IMPROV_API_TOKEN_FILE") {
+            let err = |e: String| format!("IMPROV_API_TOKEN_FILE {path}: {e}");
+            let text = std::fs::read_to_string(&path).map_err(|e| err(e.to_string()))?;
+            tokens.extend(parse_token_file(&text).map_err(err)?);
+            #[cfg(unix)]
+            if let Ok(meta) = std::fs::metadata(&path) {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o077 != 0 {
+                    eprintln!("warning: {path} is readable by other users; chmod 600 it");
+                }
+            }
+        }
+        for (i, t) in tokens.iter().enumerate() {
+            if let Some(dup) = tokens[..i]
+                .iter()
+                .find(|u| u.name == t.name || u.secret == t.secret)
+            {
+                return Err(format!(
+                    "tokens {} and {} repeat a name or a secret",
+                    dup.name, t.name
+                ));
+            }
+        }
+        Ok(if tokens.is_empty() {
             Auth::Disabled
         } else {
-            Auth::Tokens { rw, ro }
-        }
+            Auth::Tokens(tokens)
+        })
     }
 }
 
-/// Request extension set by [`require_token`] for a read-only token.
-#[derive(Clone, Copy)]
-struct ReadOnly;
+/// Parse a token file: one `name:scope:secret` per line, `scope` being `read`
+/// or `write` (the secret may itself contain `:`); `#` comments and blank
+/// lines are skipped.
+fn parse_token_file(text: &str) -> Result<Vec<Token>, String> {
+    let lines = text.lines().enumerate().map(|(n, l)| (n + 1, l.trim()));
+    lines
+        .filter(|(_, l)| !l.is_empty() && !l.starts_with('#'))
+        .map(|(n, line)| {
+            let mut f = line.splitn(3, ':').map(str::trim);
+            let (name, scope, secret) = (f.next(), f.next(), f.next());
+            let scope = match scope {
+                Some("read") => Scope::Read,
+                Some("write") => Scope::Write,
+                _ => return Err(format!("line {n}: want name:read|write:secret")),
+            };
+            match (name, secret) {
+                (Some(name), Some(secret)) if !name.is_empty() && !secret.is_empty() => Ok(Token {
+                    name: name.into(),
+                    scope,
+                    secret: secret.into(),
+                }),
+                _ => Err(format!("line {n}: want name:read|write:secret")),
+            }
+        })
+        .collect()
+}
 
-/// Request body cap (S13). Over-limit bodies get 413.
+/// The authenticated caller, a request extension set by [`require_token`].
+#[derive(Clone)]
+struct Caller {
+    name: String,
+    scope: Scope,
+}
+
+/// Request extension set by [`audit`]: marking it (with the caller's name)
+/// makes the request a write the audit log records. Shared, so a mark made
+/// before a timeout drops the handler still counts.
+#[derive(Clone, Default)]
+struct Audited(Arc<std::sync::Mutex<Option<String>>>);
+
+impl Audited {
+    fn mark(&self, who: &str) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(who.to_string());
+    }
+
+    fn who(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Request body cap (S13), default. Over-limit bodies get 413.
 const MAX_BODY_BYTES: usize = 1 << 20;
 /// Edits accepted per `/eval` request (S13). More gets 400.
 const MAX_EDITS: usize = 10_000;
@@ -100,6 +195,128 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_IN_FLIGHT: usize = 64;
 /// Default deadline for a client to finish sending request headers (S10).
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+/// Default requests per minute per caller (token name, or client IP).
+const RATE_PER_MIN: u32 = 600;
+/// Callers the rate limiter tracks before it forgets idle ones.
+const MAX_BUCKETS: usize = 10_000;
+
+/// Per-caller token bucket: `per_min` requests a minute, refilled
+/// continuously, all of which may come at once. `per_min == 0` disables it.
+pub struct RateLimiter {
+    per_min: u32,
+    buckets: std::sync::Mutex<HashMap<String, (f64, tokio::time::Instant)>>,
+}
+
+impl RateLimiter {
+    pub fn new(per_min: u32) -> Self {
+        RateLimiter {
+            per_min,
+            buckets: Default::default(),
+        }
+    }
+
+    /// Take one request from `key`'s bucket, or return the wait until one is free.
+    fn check(&self, key: &str) -> Result<(), Duration> {
+        if self.per_min == 0 {
+            return Ok(());
+        }
+        let cap = f64::from(self.per_min);
+        let per_sec = cap / 60.0;
+        let now = tokio::time::Instant::now();
+        let mut buckets = self.buckets.lock().unwrap_or_else(PoisonError::into_inner);
+        if buckets.len() >= MAX_BUCKETS && !buckets.contains_key(key) {
+            // A bucket idle for a minute is full again: forgetting it is lossless.
+            buckets.retain(|_, (_, t)| now - *t < Duration::from_secs(60));
+            // shortcut: under a flood of distinct callers, start over; a
+            // proxy-side limit is the upgrade if that matters.
+            if buckets.len() >= MAX_BUCKETS {
+                buckets.clear();
+            }
+        }
+        let (tokens, last) = buckets.entry(key.to_string()).or_insert((cap, now));
+        *tokens = (*tokens + (now - *last).as_secs_f64() * per_sec).min(cap);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            Ok(())
+        } else {
+            Err(Duration::from_secs_f64((1.0 - *tokens) / per_sec))
+        }
+    }
+}
+
+/// Where the write audit log goes: stderr, or appended to a file. One JSON
+/// object per line.
+pub enum AuditLog {
+    Stderr,
+    File(std::sync::Mutex<std::fs::File>),
+}
+
+impl AuditLog {
+    /// Append to `path`, or stderr for `None`.
+    pub fn open(path: Option<&str>) -> Result<Self, String> {
+        let Some(path) = path else {
+            return Ok(AuditLog::Stderr);
+        };
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map(|f| AuditLog::File(std::sync::Mutex::new(f)))
+            .map_err(|e| format!("IMPROV_AUDIT_LOG {path}: {e}"))
+    }
+
+    fn record(&self, entry: &JsonValue) {
+        let line = format!("{entry}\n");
+        match self {
+            AuditLog::Stderr => eprint!("{line}"),
+            AuditLog::File(f) => {
+                let mut f = f.lock().unwrap_or_else(PoisonError::into_inner);
+                if let Err(e) = f.write_all(line.as_bytes()) {
+                    eprint!("audit log write failed ({e}): {line}");
+                }
+            }
+        }
+    }
+}
+
+/// The model as the audit log names it: the path, or the URL without a
+/// password (`user:pw@` or a `password=` parameter).
+fn model_label(db: &str) -> String {
+    let Some((scheme, rest)) = db.split_once("://") else {
+        return db.to_string();
+    };
+    let (rest, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let authority = match authority.rsplit_once('@') {
+        Some((user, host)) => format!("{}@{host}", user.split(':').next().unwrap_or("")),
+        None => authority.to_string(),
+    };
+    let query: Vec<&str> = query
+        .split('&')
+        .filter(|p| !p.is_empty() && !p.starts_with("password="))
+        .collect();
+    let query = match query.is_empty() {
+        true => String::new(),
+        false => format!("?{}", query.join("&")),
+    };
+    format!("{scheme}://{authority}{path}{query}")
+}
+
+/// Read a number from the environment, or `default` when unset.
+fn env_num<T: std::str::FromStr>(
+    get: &impl Fn(&str) -> Option<String>,
+    var: &str,
+    default: T,
+) -> Result<T, String> {
+    match get(var) {
+        None => Ok(default),
+        Some(v) => v
+            .trim()
+            .parse()
+            .map_err(|_| format!("{var}={v}: not a number")),
+    }
+}
 
 pub struct AppState {
     db_path: String,
@@ -114,6 +331,12 @@ pub struct AppState {
     /// The store high-water `cache` was loaded/saved at; a save from a stale
     /// cache (another process wrote since) is refused with 409.
     loaded_tx: std::sync::Mutex<Option<i64>>,
+    /// Request body cap in bytes.
+    max_body: usize,
+    rate: RateLimiter,
+    audit: AuditLog,
+    /// `db_path` without credentials, for the audit log.
+    model_label: String,
     /// Store loads performed, so tests can check the cache.
     #[cfg(test)]
     loads: AtomicU64,
@@ -122,20 +345,46 @@ pub struct AppState {
 impl AppState {
     pub fn new(db_path: String, auth: Auth, scheduler_status: Option<SharedStatus>) -> Self {
         AppState {
+            model_label: model_label(&db_path),
             db_path,
             auth,
             scheduler_status,
             write_lock: tokio::sync::Mutex::new(()),
             cache: tokio::sync::RwLock::new(None),
             loaded_tx: std::sync::Mutex::new(None),
+            max_body: MAX_BODY_BYTES,
+            rate: RateLimiter::new(RATE_PER_MIN),
+            audit: AuditLog::Stderr,
             #[cfg(test)]
             loads: AtomicU64::new(0),
         }
     }
+
+    /// Apply `IMPROV_MAX_BODY_BYTES`, `IMPROV_RATE_LIMIT` (requests a minute
+    /// per caller, 0 = off) and `IMPROV_AUDIT_LOG` (a file; default stderr).
+    pub fn configure(&mut self, get: &impl Fn(&str) -> Option<String>) -> Result<(), String> {
+        self.max_body = env_num(get, "IMPROV_MAX_BODY_BYTES", MAX_BODY_BYTES)?;
+        self.rate = RateLimiter::new(env_num(get, "IMPROV_RATE_LIMIT", RATE_PER_MIN)?);
+        self.audit = AuditLog::open(get("IMPROV_AUDIT_LOG").as_deref())?;
+        Ok(())
+    }
+
+    /// Log one write: who, the route (`METHOD path`), the model, the status.
+    fn audit_write(&self, who: &str, route: &str, status: u16) {
+        self.audit.record(&json!({
+            "ts": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "audit": "write",
+            "who": who,
+            "route": route,
+            "model": self.model_label,
+            "status": status,
+        }));
+    }
 }
 
 // Coverage exclusion: process entry point (argv, env, bind, `process::exit`);
-// its parts (`Auth::from_env`, `startup_check`, `serve`, `app`) are tested.
+// its parts (`Auth::from_lookup`, `configure`, `startup_check`, `serve`,
+// `app`) are tested.
 #[cfg_attr(coverage_nightly, coverage(off))]
 #[tokio::main]
 async fn main() {
@@ -146,7 +395,11 @@ async fn main() {
         addr,
     } = <args::Cli as clap::Parser>::parse();
 
-    let auth = Auth::from_env();
+    let get = |k: &str| std::env::var(k).ok();
+    let auth = Auth::from_lookup(&get).unwrap_or_else(|e| {
+        eprintln!("improv-server: {e}");
+        std::process::exit(2);
+    });
     if matches!(auth, Auth::Disabled) {
         eprintln!("auth disabled: set IMPROV_API_TOKEN to require a bearer token");
     }
@@ -173,7 +426,12 @@ async fn main() {
             ..Default::default()
         }))
     });
-    let state = Arc::new(AppState::new(db_path, auth, scheduler_status.clone()));
+    let mut state = AppState::new(db_path, auth, scheduler_status.clone());
+    if let Err(e) = state.configure(&get) {
+        eprintln!("improv-server: {e}");
+        std::process::exit(2);
+    }
+    let state = Arc::new(state);
     if let Some(status) = scheduler_status {
         let allow = match std::env::var("IMPROV_EXTFN_ALLOW") {
             Ok(file) => match std::fs::read_to_string(&file) {
@@ -230,8 +488,8 @@ pub fn startup_check(
 async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: Duration) {
     use hyper_util::rt::{TokioIo, TokioTimer};
     loop {
-        let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
+        let (stream, peer) = match listener.accept().await {
+            Ok(v) => v,
             Err(e) => {
                 // EMFILE etc.: back off instead of spinning.
                 eprintln!("accept: {e}");
@@ -239,7 +497,15 @@ async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: D
                 continue;
             }
         };
-        let svc = hyper_util::service::TowerToHyperService::new(app.clone());
+        // The peer address keys the rate limiter for callers without a token.
+        let svc = tower::ServiceExt::map_request(
+            app.clone(),
+            move |mut req: axum::http::Request<hyper::body::Incoming>| {
+                req.extensions_mut().insert(ConnectInfo(peer));
+                req
+            },
+        );
+        let svc = hyper_util::service::TowerToHyperService::new(svc);
         tokio::spawn(async move {
             let _ = hyper::server::conn::http1::Builder::new()
                 .timer(TokioTimer::new())
@@ -250,19 +516,63 @@ async fn serve(listener: tokio::net::TcpListener, app: Router, header_timeout: D
     }
 }
 
+/// The API: method, path, the scope it needs, and the handler. Each route is
+/// served at `/v1<path>` and, as an alias, at `<path>`. `docs/openapi.json`
+/// documents exactly these (a test checks).
+fn routes() -> Vec<(
+    &'static str,
+    &'static str,
+    Scope,
+    MethodRouter<Arc<AppState>>,
+)> {
+    vec![
+        ("get", "/health", Scope::Public, get(health)),
+        ("get", "/openapi.json", Scope::Public, get(openapi)),
+        ("get", "/model", Scope::Read, get(get_model)),
+        ("get", "/measures", Scope::Read, get(list_measures)),
+        (
+            "get",
+            "/measures/:id/values",
+            Scope::Read,
+            get(measure_values),
+        ),
+        // A what-if read; `"persist": true` needs a write token (checked in the handler).
+        (
+            "post",
+            "/measures/:id/eval",
+            Scope::Read,
+            post(eval_measure),
+        ),
+        ("post", "/measures/:id/cells", Scope::Write, post(set_cell)),
+        ("post", "/nl/parse", Scope::Read, post(nl_parse)),
+        ("post", "/nl/describe", Scope::Read, post(nl_describe)),
+        (
+            "get",
+            "/scheduler/status",
+            Scope::Read,
+            get(scheduler_status_handler),
+        ),
+    ]
+}
+
+/// The OpenAPI document for [`routes`].
+const OPENAPI: &str = include_str!("../../../docs/openapi.json");
+
 /// Build the router. Exposed so tests can drive it via `oneshot`.
 pub fn app(state: Arc<AppState>) -> Router {
-    // Protected routes: everything except `/health` (public for liveness probes).
-    let protected = Router::new()
-        .route("/model", get(get_model))
-        .route("/measures", get(list_measures))
-        .route("/measures/:id/values", get(measure_values))
-        .route("/measures/:id/eval", post(eval_measure))
-        .route("/measures/:id/cells", post(set_cell))
-        .route("/nl/parse", post(nl_parse))
-        .route("/nl/describe", post(nl_describe))
-        .route("/scheduler/status", get(scheduler_status_handler))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+    let mut router = Router::new();
+    for (_, path, scope, handler) in routes() {
+        let handler = match scope {
+            Scope::Public => handler,
+            _ => handler.route_layer(middleware::from_fn_with_state(
+                (state.clone(), scope),
+                require_token,
+            )),
+        };
+        router = router
+            .route(&format!("/v1{path}"), handler.clone())
+            .route(path, handler);
+    }
 
     // Global (not per-route) limit: `Router::layer` clones the layer per
     // route, and `GlobalConcurrencyLimitLayer` shares one semaphore.
@@ -279,53 +589,100 @@ pub fn app(state: Arc<AppState>) -> Router {
             MAX_IN_FLIGHT,
         ));
 
-    Router::new()
-        .route("/health", get(health))
-        .merge(protected)
+    router
         .layer(limits)
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+        // Outside the timeout, so a write that times out is audited too.
+        .layer(middleware::from_fn_with_state(state.clone(), audit))
+        .layer(DefaultBodyLimit::max(state.max_body))
         .with_state(state)
 }
 
-/// Bearer-token gate. In open mode every request passes. Otherwise:
-/// missing/blank `Authorization` -> 401; present but not an accepted token -> 403;
-/// a read-only token passes with a [`ReadOnly`] extension the write paths refuse.
-/// The token value is never logged.
+/// Write audit: a handler (or [`require_token`]) marks a request as a write
+/// with [`Audited::mark`]; this logs it with the final status.
+async fn audit(State(state): State<Arc<AppState>>, mut req: Request, next: Next) -> Response {
+    let audited = Audited::default();
+    req.extensions_mut().insert(audited.clone());
+    let route = format!("{} {}", req.method(), req.uri().path());
+    let resp = next.run(req).await;
+    if let Some(who) = audited.who() {
+        state.audit_write(&who, &route, resp.status().as_u16());
+    }
+    resp
+}
+
+/// Bearer-token gate for a route needing `scope`. A missing or unknown token
+/// gets 401; a read token on a write route 403. The caller (the token's name,
+/// or `anonymous` in open mode) is passed on as a [`Caller`] extension and
+/// is rate limited; a request without a valid token is limited by client
+/// address. The secret is never logged.
 async fn require_token(
-    State(state): State<Arc<AppState>>,
+    State((state, scope)): State<(Arc<AppState>, Scope)>,
     mut req: Request,
     next: Next,
 ) -> Response {
-    let (rw, ro) = match &state.auth {
-        Auth::Disabled => return next.run(req).await,
-        Auth::Tokens { rw, ro } => (rw, ro),
+    let caller = match &state.auth {
+        Auth::Disabled => Ok(Caller {
+            name: "anonymous".into(),
+            scope: Scope::Write,
+        }),
+        Auth::Tokens(tokens) => req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .ok_or("missing bearer token")
+            .and_then(|t| find_token(tokens, t).ok_or("invalid bearer token"))
+            .map(|t| Caller {
+                name: t.name.clone(),
+                scope: t.scope,
+            }),
     };
-    // Check both classes every time so timing does not reveal which matched.
-    let class = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| (token_matches(rw, t), token_matches(ro, t)));
-    match class {
-        None => (StatusCode::UNAUTHORIZED, "missing bearer token").into_response(),
-        Some((true, _)) => next.run(req).await,
-        Some((false, true)) => {
-            req.extensions_mut().insert(ReadOnly);
-            next.run(req).await
+    let key = match (&caller, &state.auth) {
+        (Ok(c), Auth::Tokens(_)) => format!("token:{}", c.name),
+        _ => match req.extensions().get::<ConnectInfo<SocketAddr>>() {
+            Some(ConnectInfo(a)) => format!("ip:{}", a.ip()),
+            None => "ip:unknown".into(),
+        },
+    };
+    if scope == Scope::Write {
+        // Refused attempts are audited too.
+        let who = caller.as_ref().map_or("unauthenticated", |c| &c.name);
+        if let Some(a) = req.extensions().get::<Audited>() {
+            a.mark(who);
         }
-        Some((false, false)) => (StatusCode::FORBIDDEN, "invalid bearer token").into_response(),
     }
+    if let Err(wait) = state.rate.check(&key) {
+        let secs = wait.as_secs() + 1;
+        let body = Json(json!({ "error": "rate limit exceeded" }));
+        let retry = [(header::RETRY_AFTER, secs.to_string())];
+        return (StatusCode::TOO_MANY_REQUESTS, retry, body).into_response();
+    }
+    let caller = match caller {
+        Ok(c) => c,
+        Err(msg) => {
+            let challenge = [(header::WWW_AUTHENTICATE, "Bearer")];
+            let body = Json(json!({ "error": msg }));
+            return (StatusCode::UNAUTHORIZED, challenge, body).into_response();
+        }
+    };
+    if scope == Scope::Write && caller.scope != Scope::Write {
+        return ApiError::Forbidden("this route needs a write token".into()).into_response();
+    }
+    req.extensions_mut().insert(caller);
+    next.run(req).await
 }
 
-/// Constant-time token check (S15): every accepted token is compared, and
-/// each comparison folds over all bytes, so timing reveals neither which token
-/// matched nor the length of a matching prefix.
-fn token_matches<'a>(tokens: impl IntoIterator<Item = &'a String>, presented: &str) -> bool {
-    tokens.into_iter().fold(false, |hit, t| {
-        hit | ct_eq(t.as_bytes(), presented.as_bytes())
+/// The token whose secret is `presented`. Constant-time (S15): every token is
+/// compared, and each comparison folds over all bytes, so timing reveals
+/// neither which token matched nor the length of a matching prefix.
+fn find_token<'a>(tokens: &'a [Token], presented: &str) -> Option<&'a Token> {
+    tokens.iter().fold(None, |hit, t| {
+        match ct_eq(t.secret.as_bytes(), presented.as_bytes()) {
+            true => Some(t),
+            false => hit,
+        }
     })
 }
 
@@ -481,13 +838,17 @@ async fn health() -> &'static str {
     "ok"
 }
 
+async fn openapi() -> Response {
+    ([(header::CONTENT_TYPE, "application/json")], OPENAPI).into_response()
+}
+
 /// Scheduler observability: enabled/tick/last-refreshed. Protected (not a
 /// liveness probe like `/health`) since it can reveal which measures exist.
 async fn scheduler_status_handler(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
     match &state.scheduler_status {
         None => Json(json!({ "enabled": false })),
         Some(status) => {
-            let s = status.lock().unwrap_or_else(|e| e.into_inner());
+            let s = status.lock().unwrap_or_else(PoisonError::into_inner);
             Json(json!({
                 "enabled": true,
                 "tick_secs": s.tick_secs,
@@ -599,13 +960,17 @@ struct EvalReq {
 /// which case each edit is also written to the model store.
 async fn eval_measure(
     State(state): State<Arc<AppState>>,
-    ro: Option<Extension<ReadOnly>>,
+    Extension(caller): Extension<Caller>,
+    Extension(audited): Extension<Audited>,
     Path(id): Path<u32>,
     body: Result<Json<EvalReq>, JsonRejection>,
 ) -> Result<Json<Vec<Cell>>, ApiError> {
     let Json(req) = body?;
-    if req.persist && ro.is_some() {
-        return Err(ApiError::Forbidden("read-only token cannot persist".into()));
+    if req.persist {
+        audited.mark(&caller.name);
+        if caller.scope != Scope::Write {
+            return Err(ApiError::Forbidden("a read token cannot persist".into()));
+        }
     }
     if req.edits.len() > MAX_EDITS {
         return Err(ApiError::BadRequest(format!(
@@ -746,13 +1111,9 @@ struct SetCellReq {
 
 async fn set_cell(
     State(state): State<Arc<AppState>>,
-    ro: Option<Extension<ReadOnly>>,
     Path(id): Path<u32>,
     body: Result<Json<SetCellReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    if ro.is_some() {
-        return Err(ApiError::Forbidden("read-only token cannot write".into()));
-    }
     let Json(req) = body?;
     let mid = MeasureId(id);
 
@@ -892,18 +1253,20 @@ mod tests {
         m
     }
 
-    // Seed a fresh on-disk store in a temp dir and return the router + path.
-    fn seeded_app() -> (Router, std::path::PathBuf) {
+    /// A fresh path in this process's temp dir. A counter, not the clock:
+    /// parallel tests could read the same nanosecond.
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!("improv-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!(
-            "model-{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = dir.join(format!("{tag}-{}", N.fetch_add(1, Ordering::Relaxed)));
         let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    // Seed a fresh on-disk store in a temp dir and return the router + path.
+    fn seeded_app() -> (Router, std::path::PathBuf) {
+        let path = temp_path("model.db");
         let mut store = Store::open(path.to_str().unwrap()).unwrap();
         store.save_model(&revenue_model()).unwrap();
         let state = Arc::new(AppState::new(
@@ -914,18 +1277,45 @@ mod tests {
         (app(state), path)
     }
 
-    // Same seeded store, but auth enabled with a single accepted token.
-    fn authed_app(token: &str) -> (Router, std::path::PathBuf) {
+    fn token(name: &str, scope: Scope, secret: &str) -> Token {
+        Token {
+            name: name.into(),
+            scope,
+            secret: secret.into(),
+        }
+    }
+
+    // Same seeded store, but auth enabled with a single write token.
+    fn authed_app(secret: &str) -> (Router, std::path::PathBuf) {
         let (_, path) = seeded_app();
         let state = Arc::new(AppState::new(
             path.to_str().unwrap().to_string(),
-            Auth::Tokens {
-                rw: HashSet::from([token.to_string()]),
-                ro: HashSet::new(),
-            },
+            Auth::Tokens(vec![token("t", Scope::Write, secret)]),
             None,
         ));
         (app(state), path)
+    }
+
+    /// A seeded store with a write token `w` (secret `ws`) and a read token
+    /// `r` (secret `rs`), state settings from `env`.
+    fn scoped_state(env: &[(&str, &str)]) -> Arc<AppState> {
+        let (_, path) = seeded_app();
+        let auth = Auth::Tokens(vec![
+            token("w", Scope::Write, "ws"),
+            token("r", Scope::Read, "rs"),
+        ]);
+        let mut state = AppState::new(path.to_str().unwrap().into(), auth, None);
+        state.configure(&lookup(env)).unwrap();
+        Arc::new(state)
+    }
+
+    /// An environment lookup over fixed pairs (tests never touch the real one).
+    fn lookup<'a>(env: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k| {
+            env.iter()
+                .find(|(n, _)| *n == k)
+                .map(|(_, v)| v.to_string())
+        }
     }
 
     fn get_with_bearer(uri: &str, token: Option<&str>) -> Request<Body> {
@@ -1355,13 +1745,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        // Wrong token -> 403.
+        assert_eq!(resp.headers()[header::WWW_AUTHENTICATE], "Bearer");
+        // Wrong token -> 401 too.
         let resp = app
             .clone()
             .oneshot(get_with_bearer("/measures", Some("nope")))
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         // Correct token -> 200.
         let resp = app
             .oneshot(get_with_bearer("/measures", Some("secret")))
@@ -1489,23 +1880,24 @@ mod tests {
     }
 
     #[test]
-    fn ct_eq_and_token_matches() {
+    fn ct_eq_and_find_token() {
         assert!(ct_eq(b"secret", b"secret"));
         assert!(!ct_eq(b"secret", b"secreT"));
         assert!(!ct_eq(b"secret", b"secret2"));
         assert!(!ct_eq(b"", b"x"));
-        let toks = HashSet::from(["a1".to_string(), "b2".to_string()]);
-        assert!(token_matches(&toks, "b2"));
-        assert!(!token_matches(&toks, "b"));
+        let toks = [
+            token("a", Scope::Read, "a1"),
+            token("b", Scope::Write, "b2"),
+        ];
+        assert_eq!(find_token(&toks, "b2").map(|t| t.name.as_str()), Some("b"));
+        assert_eq!(find_token(&toks, "a1").map(|t| t.name.as_str()), Some("a"));
+        assert!(find_token(&toks, "b").is_none());
     }
 
     #[test]
     fn startup_check_refuses_open_non_loopback() {
         let open = Auth::Disabled;
-        let toks = Auth::Tokens {
-            rw: HashSet::from(["t".to_string()]),
-            ro: HashSet::new(),
-        };
+        let toks = Auth::Tokens(vec![token("t", Scope::Write, "s")]);
         let lo: SocketAddr = "127.0.0.1:3000".parse().unwrap();
         let lo6: SocketAddr = "[::1]:3000".parse().unwrap();
         let any: SocketAddr = "0.0.0.0:3000".parse().unwrap();
@@ -1599,35 +1991,28 @@ mod tests {
 
     #[tokio::test]
     async fn read_only_token_can_read_not_write() {
-        let (_, path) = seeded_app();
-        let auth = Auth::Tokens {
-            rw: HashSet::from(["w".to_string()]),
-            ro: HashSet::from(["r".to_string()]),
-        };
-        let app = app(Arc::new(AppState::new(
-            path.to_str().unwrap().to_string(),
-            auth,
-            None,
-        )));
-        let resp = app.clone().oneshot(get_with_bearer("/measures", Some("r")));
+        let app = app(scoped_state(&[]));
+        let resp = app
+            .clone()
+            .oneshot(get_with_bearer("/measures", Some("rs")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
         let cell = json!({"coord": {"dims": {"2": 20}}, "value": 5.0});
         let resp = app
             .clone()
-            .oneshot(post_cell("/measures/100/cells", cell.clone(), Some("r")));
+            .oneshot(post_cell("/measures/100/cells", cell.clone(), Some("rs")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::FORBIDDEN);
         let edit = json!([{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 1.0}]);
         let persist = json!({"persist": true, "edits": edit});
         let resp = app
             .clone()
-            .oneshot(post_cell("/measures/102/eval", persist, Some("r")));
+            .oneshot(post_cell("/measures/102/eval", persist, Some("rs")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::FORBIDDEN);
         let what_if = json!({"edits": edit});
         let resp = app
             .clone()
-            .oneshot(post_cell("/measures/102/eval", what_if, Some("r")));
+            .oneshot(post_cell("/measures/102/eval", what_if, Some("rs")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
-        let resp = app.oneshot(post_cell("/measures/100/cells", cell, Some("w")));
+        let resp = app.oneshot(post_cell("/measures/100/cells", cell, Some("ws")));
         assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
     }
 
@@ -1693,30 +2078,421 @@ mod tests {
         assert_eq!(state.loads.load(Ordering::Relaxed), 1);
     }
 
+    fn names(auth: &Auth) -> Vec<(String, Scope)> {
+        match auth {
+            Auth::Disabled => vec![],
+            Auth::Tokens(t) => t.iter().map(|t| (t.name.clone(), t.scope)).collect(),
+        }
+    }
+
     #[test]
-    fn auth_from_env_reads_rw_and_ro_tokens() {
-        // The only test touching these vars (`main` is their only other reader).
-        std::env::set_var("IMPROV_API_TOKEN", " solo ");
-        std::env::set_var("IMPROV_API_TOKENS", "a, b,,");
-        std::env::set_var("IMPROV_API_TOKENS_RO", "r");
-        let Auth::Tokens { rw, ro } = Auth::from_env() else {
-            panic!("tokens are set");
-        };
-        assert_eq!(rw, HashSet::from(["solo", "a", "b"].map(String::from)));
-        assert_eq!(ro, HashSet::from(["r".to_string()]));
+    fn auth_from_lookup_reads_every_source() {
+        let file = temp_path("tokens");
+        std::fs::write(&file, "# ops\n\nci : read : c:i\n  admin:write:root \n").unwrap();
+        let f = file.to_str().unwrap();
+        let env = [
+            ("IMPROV_API_TOKEN", " solo "),
+            ("IMPROV_API_TOKENS", "a, b,,"),
+            ("IMPROV_API_TOKENS_RO", "r"),
+            ("IMPROV_API_TOKEN_FILE", f),
+        ];
+        let auth = Auth::from_lookup(&lookup(&env)).unwrap();
+        let (w, r) = (Scope::Write, Scope::Read);
+        let want = [
+            ("IMPROV_API_TOKEN", w),
+            ("IMPROV_API_TOKENS#1", w),
+            ("IMPROV_API_TOKENS#2", w),
+            ("IMPROV_API_TOKENS_RO#1", r),
+            ("ci", r),
+            ("admin", w),
+        ];
+        assert_eq!(names(&auth), want.map(|(n, s)| (n.to_string(), s)));
+        let Auth::Tokens(t) = &auth else { panic!() };
+        assert_eq!(t[0].secret, "solo");
+        assert_eq!(t[4].secret, "c:i", "a secret may contain ':'");
 
-        // A blank single token is ignored; read-only tokens alone still enable auth.
-        std::env::set_var("IMPROV_API_TOKEN", "  ");
-        std::env::remove_var("IMPROV_API_TOKENS");
-        let Auth::Tokens { rw, ro } = Auth::from_env() else {
-            panic!("a read-only token is set");
-        };
-        assert!(rw.is_empty());
-        assert_eq!(ro.len(), 1);
+        // A blank single token is ignored; read tokens alone still enable auth.
+        let env = [("IMPROV_API_TOKEN", "  "), ("IMPROV_API_TOKENS_RO", "r")];
+        let auth = Auth::from_lookup(&lookup(&env)).unwrap();
+        assert_eq!(names(&auth), [("IMPROV_API_TOKENS_RO#1".into(), r)]);
+        assert!(matches!(
+            Auth::from_lookup(&lookup(&[])),
+            Ok(Auth::Disabled)
+        ));
+    }
 
-        std::env::remove_var("IMPROV_API_TOKEN");
-        std::env::remove_var("IMPROV_API_TOKENS_RO");
-        assert!(matches!(Auth::from_env(), Auth::Disabled));
+    #[test]
+    fn auth_from_lookup_rejects_bad_sources() {
+        let err = |env: &[(&str, &str)]| Auth::from_lookup(&lookup(env)).err().unwrap();
+        let missing = temp_path("no-such-tokens");
+        let e = err(&[("IMPROV_API_TOKEN_FILE", missing.to_str().unwrap())]);
+        assert!(e.starts_with("IMPROV_API_TOKEN_FILE"), "{e}");
+        let bad = temp_path("bad-tokens");
+        std::fs::write(&bad, "ok:read:x\nnope\n").unwrap();
+        let e = err(&[("IMPROV_API_TOKEN_FILE", bad.to_str().unwrap())]);
+        assert!(e.contains("line 2"), "{e}");
+        // The same secret twice (a read and a write) would be ambiguous.
+        let e = err(&[("IMPROV_API_TOKEN", "s"), ("IMPROV_API_TOKENS_RO", "s")]);
+        assert!(e.contains("repeat"), "{e}");
+        let dup = temp_path("dup-tokens");
+        std::fs::write(&dup, "x:read:1\nx:write:2\n").unwrap();
+        let e = err(&[("IMPROV_API_TOKEN_FILE", dup.to_str().unwrap())]);
+        assert!(e.contains("x and x"), "{e}");
+    }
+
+    #[test]
+    fn token_file_lines() {
+        for bad in ["a:admin:s", "a:read", ":read:s", "a:write:", "a"] {
+            assert!(parse_token_file(bad).is_err(), "{bad}");
+        }
+        let t = parse_token_file("# c\n x:write:y \n").unwrap();
+        assert_eq!((t[0].name.as_str(), t[0].scope), ("x", Scope::Write));
+        assert_eq!(t[0].secret, "y");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_mode_is_checked_not_required() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in [0o600, 0o644] {
+            let f = temp_path("mode-tokens");
+            std::fs::write(&f, "m:read:s\n").unwrap();
+            std::fs::set_permissions(&f, std::fs::Permissions::from_mode(mode)).unwrap();
+            let env = [("IMPROV_API_TOKEN_FILE", f.to_str().unwrap())];
+            assert_eq!(names(&Auth::from_lookup(&lookup(&env)).unwrap()).len(), 1);
+        }
+    }
+
+    #[test]
+    fn configure_reads_limits_and_rejects_junk() {
+        let mut state = AppState::new("x.db".into(), Auth::Disabled, None);
+        let log = temp_path("audit.log");
+        let env = [
+            ("IMPROV_MAX_BODY_BYTES", "100"),
+            ("IMPROV_RATE_LIMIT", " 7 "),
+            ("IMPROV_AUDIT_LOG", log.to_str().unwrap()),
+        ];
+        state.configure(&lookup(&env)).unwrap();
+        assert_eq!((state.max_body, state.rate.per_min), (100, 7));
+        assert!(matches!(state.audit, AuditLog::File(_)));
+        for env in [
+            [("IMPROV_MAX_BODY_BYTES", "1M")],
+            [("IMPROV_RATE_LIMIT", "-1")],
+            [("IMPROV_AUDIT_LOG", "/nonexistent-improv-dir/a.log")],
+        ] {
+            assert!(state.configure(&lookup(&env)).is_err(), "{env:?}");
+        }
+    }
+
+    #[test]
+    fn model_label_hides_passwords() {
+        for (db, want) in [
+            ("model.db", "model.db"),
+            ("postgres://u:pw@h/d?model=m", "postgres://u@h/d?model=m"),
+            (
+                "postgres://u@h/d?password=pw&model=m",
+                "postgres://u@h/d?model=m",
+            ),
+            ("postgresql://h/d?password=pw", "postgresql://h/d"),
+            ("postgres://u:p@w@h", "postgres://u@h"),
+        ] {
+            assert_eq!(model_label(db), want, "{db}");
+        }
+    }
+
+    // Every route's scope, through both the /v1 path and the alias.
+    #[tokio::test]
+    async fn scopes_gate_every_route() {
+        let app = app(scoped_state(&[]));
+        let cell = json!({"coord": {"dims": {"2": 20}}, "value": 5.0});
+        let what_if = json!({"edits": []});
+        let parse = json!({"text": "revenue is price times quantity"});
+        let resp = app
+            .clone()
+            .oneshot(post_cell("/nl/parse", parse.clone(), Some("rs")));
+        let describe = json!({"formula": body_json(resp.await.unwrap()).await});
+        let req = |m: &str, uri: &str, t: Option<&str>| -> Request<Body> {
+            let body = match uri.rsplit('/').next().unwrap() {
+                "cells" => &cell,
+                "eval" => &what_if,
+                "parse" => &parse,
+                "describe" => &describe,
+                _ => &JsonValue::Null,
+            };
+            let mut b = Request::builder()
+                .method(m)
+                .uri(uri)
+                .header("content-type", "application/json");
+            if let Some(t) = t {
+                b = b.header("authorization", format!("Bearer {t}"));
+            }
+            match m {
+                "get" => b.body(Body::empty()),
+                _ => b.body(Body::from(body.to_string())),
+            }
+            .unwrap()
+        };
+        for (method, path, scope, _) in routes() {
+            let m = method.to_uppercase();
+            for prefix in ["", "/v1"] {
+                let uri = format!("{prefix}{}", path.replace(":id", "102"));
+                let uri = uri.replace("102/cells", "100/cells");
+                let status = |t| {
+                    let r = app.clone().oneshot(req(&m, &uri, t));
+                    async { r.await.unwrap().status() }
+                };
+                let (none, read, write) = (status(None), status(Some("rs")), status(Some("ws")));
+                let (none, read, write) = (none.await, read.await, write.await);
+                let want = match scope {
+                    Scope::Public => [StatusCode::OK; 3],
+                    Scope::Read => [StatusCode::UNAUTHORIZED, StatusCode::OK, StatusCode::OK],
+                    Scope::Write => [
+                        StatusCode::UNAUTHORIZED,
+                        StatusCode::FORBIDDEN,
+                        StatusCode::OK,
+                    ],
+                };
+                assert_eq!([none, read, write], want, "{m} {uri}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn body_limit_is_configurable() {
+        let app = app(scoped_state(&[("IMPROV_MAX_BODY_BYTES", "64")]));
+        let small = json!({"text": "x"}).to_string();
+        let big = json!({"text": "x".repeat(64)}).to_string();
+        for (body, want) in [(small, 400), (big, 413)] {
+            let req = Request::post("/v1/nl/parse")
+                .header("content-type", "application/json")
+                .header("authorization", "Bearer rs")
+                .body(Body::from(body))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(resp.status().as_u16(), want);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limit_is_per_token_and_refills() {
+        let app = app(scoped_state(&[("IMPROV_RATE_LIMIT", "2")]));
+        let status = |t: &'static str| {
+            let r = app
+                .clone()
+                .oneshot(get_with_bearer("/v1/measures", Some(t)));
+            async { r.await.unwrap() }
+        };
+        for _ in 0..2 {
+            assert_eq!(status("rs").await.status(), StatusCode::OK);
+        }
+        let resp = status("rs").await;
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(resp.headers()[header::RETRY_AFTER], "31");
+        // Another token has its own bucket.
+        assert_eq!(status("ws").await.status(), StatusCode::OK);
+        // Two a minute: one is back after 30 s.
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert_eq!(status("rs").await.status(), StatusCode::OK);
+        assert_eq!(status("rs").await.status(), StatusCode::TOO_MANY_REQUESTS);
+        // Bad tokens are limited by address (here: none known), not let through.
+        let bad = |_| {
+            app.clone()
+                .oneshot(get_with_bearer("/v1/measures", Some("x")))
+        };
+        assert_eq!(bad(()).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(bad(()).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            bad(()).await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[test]
+    fn rate_limiter_zero_is_off_and_buckets_are_bounded() {
+        let off = RateLimiter::new(0);
+        assert!((0..1000).all(|_| off.check("k").is_ok()));
+        let rl = RateLimiter::new(1);
+        for i in 0..MAX_BUCKETS {
+            rl.check(&i.to_string()).unwrap();
+        }
+        assert!(rl.check("0").is_err(), "a used bucket is remembered");
+        // Full of fresh buckets: the next caller starts the table over.
+        rl.check("new").unwrap();
+        assert_eq!(rl.buckets.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rate_limiter_forgets_idle_callers_first() {
+        let rl = RateLimiter::new(1);
+        for i in 0..MAX_BUCKETS - 1 {
+            rl.check(&i.to_string()).unwrap();
+        }
+        tokio::time::advance(Duration::from_secs(61)).await;
+        rl.check("recent").unwrap();
+        rl.check("new").unwrap();
+        let b = rl.buckets.lock().unwrap();
+        assert_eq!(b.len(), 2, "idle buckets dropped, recent one kept");
+        assert!(b.contains_key("recent"));
+    }
+
+    // Over a real socket the limiter keys unauthenticated callers by address.
+    #[tokio::test]
+    async fn rate_limit_by_client_address() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (_, path) = seeded_app();
+        let mut state = AppState::new(path.to_str().unwrap().into(), Auth::Disabled, None);
+        state
+            .configure(&lookup(&[("IMPROV_RATE_LIMIT", "1")]))
+            .unwrap();
+        let state = Arc::new(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(serve(listener, app(state), HEADER_READ_TIMEOUT));
+        let mut codes = Vec::new();
+        for _ in 0..2 {
+            let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let req = b"GET /v1/measures HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n";
+            c.write_all(req).await.unwrap();
+            let mut buf = String::new();
+            c.read_to_string(&mut buf).await.unwrap();
+            codes.push(buf[9..12].to_string());
+        }
+        server.abort();
+        assert_eq!(codes, ["200", "429"]);
+    }
+
+    fn audit_lines(path: &std::path::Path) -> Vec<JsonValue> {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        text.lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn audit_log_records_writes_not_reads() {
+        let log = temp_path("audit.log");
+        let state = scoped_state(&[("IMPROV_AUDIT_LOG", log.to_str().unwrap())]);
+        let app = app(state.clone());
+        let cell = json!({"coord": {"dims": {"2": 20}}, "value": 5.0});
+        let bad_cell = json!({"coord": {"dims": {}}, "value": 5.0});
+        let edit = json!([{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 1.0}]);
+        let persist = json!({"persist": true, "edits": edit});
+        let what_if = json!({"edits": edit});
+        for (uri, body, tok, want) in [
+            ("/v1/measures/100/cells", &cell, Some("ws"), 200),
+            ("/measures/100/cells", &bad_cell, Some("ws"), 400),
+            ("/v1/measures/100/cells", &cell, Some("rs"), 403),
+            ("/v1/measures/100/cells", &cell, None, 401),
+            ("/v1/measures/102/eval", &persist, Some("ws"), 200),
+            ("/v1/measures/102/eval", &persist, Some("rs"), 403),
+            ("/v1/measures/102/eval", &what_if, Some("rs"), 200),
+        ] {
+            let resp = app.clone().oneshot(post_cell(uri, body.clone(), tok));
+            assert_eq!(resp.await.unwrap().status().as_u16(), want, "{uri}");
+        }
+        let resp = app.oneshot(get_with_bearer("/v1/measures", Some("rs")));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
+
+        let lines = audit_lines(&log);
+        let got: Vec<(&str, &str, u64)> = lines
+            .iter()
+            .map(|l| {
+                assert_eq!(l["audit"], "write");
+                assert_eq!(l["model"], state.model_label.as_str());
+                assert!(l["ts"].as_str().unwrap().ends_with('Z'));
+                let s = |k: &str| l[k].as_str().unwrap();
+                (s("who"), s("route"), l["status"].as_u64().unwrap())
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("w", "POST /v1/measures/100/cells", 200),
+                ("w", "POST /measures/100/cells", 400),
+                ("r", "POST /v1/measures/100/cells", 403),
+                ("unauthenticated", "POST /v1/measures/100/cells", 401),
+                ("w", "POST /v1/measures/102/eval", 200),
+                ("r", "POST /v1/measures/102/eval", 403),
+            ]
+        );
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            !text.contains("ws") && !text.contains("rs"),
+            "a secret leaked"
+        );
+    }
+
+    // A write that times out is still audited, with its 408.
+    #[tokio::test(start_paused = true)]
+    async fn audit_log_records_a_timed_out_write() {
+        let log = temp_path("audit.log");
+        let mut state = AppState::new("unused.db".into(), Auth::Disabled, None);
+        let env = [("IMPROV_AUDIT_LOG", log.to_str().unwrap())];
+        state.configure(&lookup(&env)).unwrap();
+        let state = Arc::new(state);
+        let _held = state.write_lock.lock().await;
+        let body = json!({"coord": {"dims": {"2": 20}}, "value": 1.0});
+        let resp = app(state.clone())
+            .oneshot(post_cell("/v1/measures/100/cells", body, None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::REQUEST_TIMEOUT);
+        let lines = audit_lines(&log);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(
+            (&lines[0]["who"], &lines[0]["status"]),
+            (&json!("anonymous"), &json!(408))
+        );
+    }
+
+    #[test]
+    fn audit_log_sinks() {
+        let entry = json!({"audit": "write"});
+        AuditLog::Stderr.record(&entry);
+        AuditLog::open(None).unwrap().record(&entry);
+        // A failing write falls back to stderr instead of losing the entry.
+        #[cfg(target_os = "linux")]
+        AuditLog::open(Some("/dev/full")).unwrap().record(&entry);
+    }
+
+    /// `(method, path, scope)` for every operation in `docs/openapi.json`.
+    fn openapi_ops() -> Vec<(String, String, String)> {
+        let doc: JsonValue = serde_json::from_str(OPENAPI).unwrap();
+        let mut ops = Vec::new();
+        for (path, item) in doc["paths"].as_object().unwrap() {
+            for (method, op) in item.as_object().unwrap() {
+                let scope = op["x-improv-scope"].as_str().unwrap_or("?").to_string();
+                ops.push((method.clone(), path.clone(), scope));
+            }
+        }
+        ops.sort();
+        ops
+    }
+
+    // The document and the router agree on every method, path and scope.
+    #[test]
+    fn openapi_matches_routes() {
+        let mut want: Vec<(String, String, String)> = routes()
+            .into_iter()
+            .map(|(m, p, scope, _)| {
+                let p = format!("/v1{}", p.replace(":id", "{id}"));
+                (m.to_string(), p, format!("{scope:?}").to_lowercase())
+            })
+            .collect();
+        want.sort();
+        assert_eq!(openapi_ops(), want, "docs/openapi.json is out of date");
+    }
+
+    #[tokio::test]
+    async fn openapi_is_served() {
+        let (app, _p) = authed_app("secret");
+        for uri in ["/openapi.json", "/v1/openapi.json"] {
+            let resp = app.clone().oneshot(get_with_bearer(uri, None)).await;
+            let resp = resp.unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.headers()[header::CONTENT_TYPE], "application/json");
+            assert_eq!(body_json(resp).await["openapi"], "3.1.0");
+        }
     }
 
     // A request still waiting when REQUEST_TIMEOUT elapses gets 408 (S10).

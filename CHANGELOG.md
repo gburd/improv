@@ -8,6 +8,20 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **improv-server: token scopes, a token file, limits, an audit log, `/v1`
+  and OpenAPI.** Each token has a name and a read or write scope; the
+  read routes take either, `POST /cells` and `/eval` with
+  `"persist": true` need write. `IMPROV_API_TOKEN_FILE` reads
+  `name:scope:secret` lines, so secrets need not sit in the environment;
+  the existing variables still work (`IMPROV_API_TOKEN` is a write token).
+  `IMPROV_MAX_BODY_BYTES` sets the body limit (default 1 MiB), and
+  `IMPROV_RATE_LIMIT` a per-token (or per-address) limit, 600 a minute by
+  default, answering 429 with `Retry-After`. Every write, allowed or
+  refused, is logged as a JSON line (who, route, model, status) to stderr or
+  `IMPROV_AUDIT_LOG`. Routes are served under `/v1`, the old paths kept as
+  aliases; `/v1/openapi.json` serves `docs/openapi.json`, which a test
+  keeps in step with the router. The guide's server page gains Audit log
+  and Deployment (TLS through Caddy or nginx) sections.
 - **Concepts, operations and troubleshooting guides.** The guide gains
   Concepts (the ideas before the syntax), When to Use Improv (each wrong
   fit, what to use instead, and the measured limits), and an Operations
@@ -76,6 +90,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **improv-server: an unknown token gets 401, not 403.** 403 now means the
+  token is valid but its scope is too narrow. A 401 carries
+  `WWW-Authenticate: Bearer` and a JSON error body.
 - **pg_improv: `what_if` is for those who may act as the model's owner,
   and computes as the owner.** It read as its caller, so a caller who saw
   other rows than the owner got deltas that came from what they could see,
