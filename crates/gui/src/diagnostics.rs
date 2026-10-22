@@ -374,7 +374,7 @@ mod tests {
     fn arity_names_the_parameters_and_marks_the_call() {
         let t = "1 + PMT(0.05, 10)";
         let d = diag(t);
-        assert!(d.message.contains("PMT(rate, nper, pv, [fv], [type])"));
+        assert!(d.message.contains("PMT(rate, nper, pv, [fv=0], [type=0])"));
         assert_eq!(d.hint.as_deref(), Some("missing pv: 2 given"));
         assert_eq!(marked(t, &d), "PMT");
         // The innermost of two calls by that name; too many arguments.

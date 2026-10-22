@@ -463,7 +463,7 @@ pub struct FunctionRow {
     pub name: &'static str,
     /// Reference-page category: `math`, `financial`, `text`, ….
     pub category: &'static str,
-    /// `PMT(rate, nper, pv, [fv], [type])`.
+    /// `PMT(rate, nper, pv, [fv=0], [type=0])`.
     pub signature: String,
     /// `number | boolean | text | date | any`.
     pub returns: &'static str,

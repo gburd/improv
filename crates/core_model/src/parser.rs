@@ -29,8 +29,10 @@
 //! MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
 //! Local        = Identifier ;                       (* bound by LET / LAMBDA *)
 //!
-//! Call         = FuncName "(" [ Arg { Sep Arg } ] ")" ;  (* Sep: "," or ";" (de) *)
+//! Call         = FuncName "(" [ Args ] ")" ;           (* Sep: "," or ";" (de) *)
+//! Args         = Arg { Sep Arg } { Sep Named } | Named { Sep Named } ;
 //! Arg          = Expression [ OverClause ] [ IntoClause ] ;
+//! Named        = Identifier "=>" Arg ;              (* a parameter by name: type => 1 *)
 //! OverClause   = "OVER" ( Cats [ Window ] | "ALL" [ "EXCEPT" Cats ] )
 //!                [ "WHERE" Expression ] ;
 //! Window       = "[" Bound ".." Bound "]" ;          (* FIRST | LAST | THIS[+-n] *)
@@ -42,9 +44,9 @@
 //!              | "MAP" "(" Expression { "," Expression } "," Lambda ")"
 //!              | ("SCAN" | "REDUCE") "(" Expression "," MeasureRef "OVER" Name "," Lambda ")"
 //!              | ("BYROW" | "BYCOL") "(" MeasureRef "OVER" Name "," Lambda ")"
-//!              | "FIXPOINT" "(" Expression "," Lambda [ "," Expression [ "," Expression ] ] ")"
+//!              | "FIXPOINT" "(" Expression "," Lambda { "," ( Expression | Named ) } ")"
 //!              | "MAKEARRAY" "(" Name "," Name "," Lambda ")"
-//!              | "SEQUENCE" "(" Name [ "," Expression [ "," Expression ] ] ")"
+//!              | "SEQUENCE" "(" Name { "," ( Expression | Named ) } ")"
 //!              | NamedLambda "(" [ Expression { "," Expression } ] ")"
 //!                (* an argument for a category parameter is a category Name *) ;
 //! Lambda       = "LAMBDA" "(" Identifier { "," Identifier } "," Expression ")" ;
@@ -54,6 +56,17 @@
 //!              | Identifier "=" "CALL" "(" Name { "," Name } ")"  (* external fn *)
 //!              | Identifier "=" Lambda ;                   (* a named LAMBDA *)
 //! ```
+//!
+//! ## Named arguments (`PMT(0.05, 12, 1000, type => 1)`)
+//!
+//! After the positional arguments, `name => value` sets a parameter by the
+//! name [`crate::functions::FnDef::param_names`] gives it (case-insensitive).
+//! Each name once, never one a positional argument already set, and no
+//! positional argument after a named one. A function with a repeating
+//! parameter (`SUM`, `LINEST`) takes none. A skipped optional parameter gets
+//! its written default (`[type=0]`); one without a default cannot be
+//! skipped. The parser puts each value in its parameter's place, so the
+//! stored formula is the positional call and prints as one.
 //!
 //! ## Quoted identifiers (`'Unit Price'`)
 //!
@@ -433,7 +446,7 @@ fn tokenize(text: &str) -> Result<Vec<Spanned>, ParseError> {
             _ => {
                 let two = text.get(i..i + 2);
                 let op = match two {
-                    Some("<=") | Some(">=") | Some("<>") | Some("==") | Some("!=") => {
+                    Some("<=") | Some(">=") | Some("<>") | Some("==") | Some("!=") | Some("=>") => {
                         i += 2;
                         two.unwrap().to_string()
                     }
@@ -498,6 +511,12 @@ struct Parser<'a> {
 /// 10 KiB in a debug build, so 100 levels fit a 2 MiB test-thread stack with
 /// room to spare; lower it again if the grammar grows many more levels.
 const MAX_PARSE_DEPTH: usize = 100;
+
+/// A named argument as read: the name, where it starts, and its value.
+type Named = (String, Option<usize>, Expr);
+
+const POSITIONAL_AFTER_NAMED: &str =
+    "a positional argument cannot follow a named one (name => value)";
 
 impl<'a> Parser<'a> {
     fn peek(&self) -> Option<&Tok> {
@@ -835,6 +854,14 @@ impl<'a> Parser<'a> {
             Some(Tok::Ident(w)) => w.clone(),
             _ => return Err(self.err("expected identifier")),
         };
+        // `name =>` that no call of a built-in took (parse_call and the
+        // special forms consume their own).
+        if matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "=>") {
+            return Err(self.err(format!(
+                "unexpected {word} =>: a named argument goes in a call of a built-in \
+                 function with a fixed parameter list, after its positional arguments"
+            )));
+        }
         // `TRUE()` / `FALSE()` are the functions; bare `TRUE` the literal.
         let is_call =
             matches!(self.toks.get(self.pos + 1).map(|s| &s.tok), Some(Tok::Op(o)) if o == "(");
@@ -914,18 +941,32 @@ impl<'a> Parser<'a> {
         // (`POSITION(Time)`) as categories rather than measures.
         let callable = functions::callable(name);
         let mut args = Vec::new();
+        let mut named: Vec<Named> = Vec::new();
         let mut over: Option<OverClause> = None;
         let mut into: Vec<CategoryId> = Vec::new();
         if !matches!(self.toks.get(self.pos).map(|s| &s.tok), Some(Tok::Op(o)) if o == ")") {
             loop {
-                let i = args.len();
+                let label = self.named_arg()?;
+                if label.is_none() && !named.is_empty() {
+                    return Err(self.err(POSITIONAL_AFTER_NAMED));
+                }
+                let i = match &label {
+                    Some((n, _)) => callable.and_then(|d| d.param_index(n)),
+                    None => Some(args.len()),
+                };
                 let is_cat = over.is_none()
-                    && callable.is_some_and(|d| d.param(i) == functions::Arg::Category)
+                    && callable
+                        .zip(i)
+                        .is_some_and(|(d, i)| d.param(i) == functions::Arg::Category)
                     && functions::aggregation(name).is_none();
-                if is_cat {
-                    args.push(Expr::Category(self.parse_category_name()?));
+                let arg = if is_cat {
+                    Expr::Category(self.parse_category_name()?)
                 } else {
-                    args.push(self.parse_expr()?);
+                    self.parse_expr()?
+                };
+                match label {
+                    Some((n, at)) => named.push((n, at, arg)),
+                    None => args.push(arg),
                 }
                 if self.peek_kw("over") {
                     if over.is_some() {
@@ -968,13 +1009,14 @@ impl<'a> Parser<'a> {
         if over.is_some() || !into.is_empty() {
             let mut clause = over.unwrap_or_default();
             clause.into = into;
-            return self.finish_aggregation(name, args, clause);
+            return self.finish_aggregation(name, args, named, clause);
         }
         let def = callable.ok_or_else(|| {
             self.err(format!(
                 "{name} aggregates: write {name}(Measure OVER Category)"
             ))
         })?;
+        let args = Self::place_named(def, args, named)?;
         if !def.accepts(args.len()) {
             return Err(self.err(format!(
                 "{} takes {}, got {} argument(s)",
@@ -1085,11 +1127,13 @@ impl<'a> Parser<'a> {
     fn finish_aggregation(
         &mut self,
         name: &str,
-        mut args: Vec<Expr>,
+        args: Vec<Expr>,
+        named: Vec<Named>,
         clause: OverClause,
     ) -> Result<Expr, ParseError> {
         let def = functions::aggregation(name)
             .ok_or_else(|| self.err(format!("{name} does not aggregate OVER a category")))?;
+        let mut args = Self::place_named(def, args, named)?;
         if !def.accepts(args.len()) {
             return Err(self.err(format!(
                 "{} takes {}, got {} argument(s)",
@@ -1162,6 +1206,117 @@ impl<'a> Parser<'a> {
             ));
         }
         Ok(Expr::Call(def.id, args))
+    }
+
+    /// `name =>` ahead, the start of a named argument: consume it and
+    /// return the name and where it starts. A positional argument after a
+    /// named one is an error, so the caller checks only for `None`.
+    fn named_arg(&mut self) -> Result<Option<(String, Option<usize>)>, ParseError> {
+        let at = |k: usize| self.toks.get(self.pos + k).map(|s| &s.tok);
+        let name = match (at(0), at(1)) {
+            (Some(Tok::Ident(n)), Some(Tok::Op(o))) if o == "=>" => n.clone(),
+            _ => return Ok(None),
+        };
+        let pos = self.peek_pos();
+        self.pos += 2;
+        Ok(Some((name, pos)))
+    }
+
+    /// The arguments after a special form's leading ones (`args`, read
+    /// already): `, expr` positional ones, then `, name => expr` named
+    /// ones, at most `max` in all, placed by [`Self::place_named`]. Stops
+    /// before the `)`.
+    fn rest_args(
+        &mut self,
+        def: &functions::FnDef,
+        mut args: Vec<Expr>,
+        max: usize,
+    ) -> Result<Vec<Expr>, ParseError> {
+        let mut named: Vec<Named> = Vec::new();
+        while args.len() + named.len() < max && self.eat_op(",") {
+            match self.named_arg()? {
+                Some((n, at)) => named.push((n, at, self.parse_expr()?)),
+                None if !named.is_empty() => return Err(self.err(POSITIONAL_AFTER_NAMED)),
+                None => args.push(self.parse_expr()?),
+            }
+        }
+        Self::place_named(def, args, named)
+    }
+
+    /// `def`'s positional `args` with its `named` ones (`name => expr`) put
+    /// in their parameters' places. A name is one of `def`'s parameters
+    /// (case-insensitive), given once and not also by position; a function
+    /// with a repeating parameter takes none. An optional parameter a named
+    /// one skips gets its default (`[match_mode=0]`); a required one, or one
+    /// with no default, cannot be skipped.
+    fn place_named(
+        def: &functions::FnDef,
+        args: Vec<Expr>,
+        named: Vec<Named>,
+    ) -> Result<Vec<Expr>, ParseError> {
+        let Some(first) = named.first().map(|n| n.1) else {
+            return Ok(args);
+        };
+        let f = def.name;
+        if def.variadic {
+            return Err(ParseError::new(
+                format!("{f} takes its arguments by position (a parameter repeats), not by name"),
+                first,
+            ));
+        }
+        let n = args.len();
+        let mut slots: Vec<Option<Expr>> = args.into_iter().map(Some).collect();
+        for (name, at, e) in named {
+            let Some(i) = def.param_index(&name) else {
+                let near = def.closest_param(&name);
+                let hint = if near.is_empty() {
+                    let all: Vec<String> = (0..def.params.len())
+                        .filter_map(|i| def.param_name(i))
+                        .collect();
+                    format!("its parameters are {}", all.join(", "))
+                } else {
+                    format!("did you mean {}?", near.join(", "))
+                };
+                return Err(ParseError::new(
+                    format!("{f} has no parameter {name}; {hint}"),
+                    at,
+                ));
+            };
+            if slots.len() <= i {
+                slots.resize(i + 1, None);
+            }
+            if slots[i].is_some() {
+                let how = if i < n {
+                    format!("already given, as argument {}", i + 1)
+                } else {
+                    "named twice".to_string()
+                };
+                return Err(ParseError::new(format!("{f}: {name} is {how}"), at));
+            }
+            slots[i] = Some(e);
+        }
+        slots
+            .into_iter()
+            .enumerate()
+            .map(|(i, s)| {
+                let name = def.param_name(i).unwrap_or_default();
+                s.or_else(|| def.param_default(i)).ok_or_else(|| {
+                    let why = if i < def.required {
+                        "is required"
+                    } else {
+                        "has no default"
+                    };
+                    ParseError::new(
+                        format!(
+                            "{f}: {name} (argument {}) {why}, so a later named argument \
+                             cannot skip it: give it, by position or as {name} => …",
+                            i + 1
+                        ),
+                        first,
+                    )
+                })
+            })
+            .collect()
     }
 
     /// What a `LET`/`LAMBDA` name is bound to, innermost binding first.
@@ -1380,15 +1535,13 @@ impl<'a> Parser<'a> {
         self.bump(); // SEQUENCE
         self.expect("(", "'(' after SEQUENCE")?;
         let cat = self.parse_category_name()?;
-        let mut rest = Vec::new();
-        while self.eat_op(",") {
-            rest.push(self.parse_expr()?);
-        }
+        let def = functions::callable("SEQUENCE").expect("SEQUENCE is registered");
+        let rest = self.rest_args(def, vec![Expr::Category(cat)], usize::MAX)?;
         self.expect(")", "')' to close SEQUENCE")?;
-        if rest.len() > 2 {
+        if rest.len() > 3 {
             return Err(self.err("SEQUENCE takes (Category, [start], [step])"));
         }
-        let mut it = rest.into_iter();
+        let mut it = rest.into_iter().skip(1);
         let one = || Expr::Literal(Value::Number(1.0));
         let (start, step) = (it.next().unwrap_or_else(one), it.next().unwrap_or_else(one));
         let index = Expr::BinaryOp(
@@ -1549,10 +1702,7 @@ impl<'a> Parser<'a> {
         }
         let r = Expr::Ref(functions::lambda_slot(k, 0), DimensionSpec::default());
         let body = self.lambda_body(&params, vec![r], start, end)?;
-        let mut args = vec![init, body];
-        while args.len() < 4 && self.eat_op(",") {
-            args.push(self.parse_expr()?);
-        }
+        let args = self.rest_args(def, vec![init, body], 4)?;
         self.expect(")", "')' to close FIXPOINT")?;
         Ok(Expr::Call(def.id, args))
     }
@@ -2250,6 +2400,129 @@ mod tests {
         assert_eq!(e.position, Some(4));
         let e = parse_expr(&m, "Qqqqqqqqqq(1)").unwrap_err();
         assert_eq!(e.message, "unknown function: Qqqqqqqqqq");
+    }
+
+    /// `name => value` after the positional arguments: placed in its
+    /// parameter's slot, skipped optional ones filled with their defaults,
+    /// and every misuse a located error.
+    #[test]
+    fn named_arguments() {
+        let m = fixture();
+        let p = |s: &str| parse_expr(&m, s).map(|f| f.expr);
+        let same = |a: &str, b: &str| assert_eq!(p(a).unwrap(), p(b).unwrap(), "{a} vs {b}");
+        same("ROUND(Price, num_digits => 2)", "ROUND(Price, 2)");
+        same("ROUND(Price, NUM_DIGITS => 2)", "ROUND(Price, 2)");
+        same("ROUND(number => Price, num_digits => 2)", "ROUND(Price, 2)");
+        same("ROUND(num_digits => 2, number => Price)", "ROUND(Price, 2)");
+        // A skipped optional parameter gets its written default.
+        same("PMT(0.05, 12, 100, type => 1)", "PMT(0.05, 12, 100, 0, 1)");
+        same(
+            "XLOOKUP(Price, Quantity OVER Time, Cost, search_mode => -1)",
+            "XLOOKUP(Price, Quantity OVER Time, Cost, NA(), 0, -1)",
+        );
+        same(
+            "XLOOKUP(Price, Quantity OVER Time, Cost, match_mode => 2)",
+            "XLOOKUP(Price, Quantity OVER Time, Cost, NA(), 2)",
+        );
+        same(
+            "FIXPOINT(0, LAMBDA(r, r / 2 + 1), max_iter => 50)",
+            "FIXPOINT(0, LAMBDA(r, r / 2 + 1), 50)",
+        );
+        same(
+            "FIXPOINT(0, LAMBDA(r, r / 2 + 1), tolerance => 1e-6)",
+            "FIXPOINT(0, LAMBDA(r, r / 2 + 1), 100, 1e-6)",
+        );
+        same(
+            "FIXPOINT(0, LAMBDA(r, r), tolerance => 0, max_iter => 5)",
+            "FIXPOINT(0, LAMBDA(r, r), 5, 0)",
+        );
+        same("SEQUENCE(Time, step => 2)", "SEQUENCE(Time, 1, 2)");
+        same("PREV(Price, Time, default => 0)", "PREV(Price, Time, 1, 0)");
+        same("PREV(Price, category => Time)", "PREV(Price, Time)");
+        same(
+            "SUM(Price OVER Time WHERE Price > 1)",
+            "SUM(Price OVER Time WHERE Price > 1)",
+        );
+        same(
+            "LOGREG(Price, Quantity OVER Time, stats => TRUE INTO Time)",
+            "LOGREG(Price, Quantity OVER Time, TRUE, TRUE INTO Time)",
+        );
+        for (src, want, at) in [
+            (
+                "ROUND(num_digits => 2, Price)",
+                "positional argument cannot follow",
+                23,
+            ),
+            (
+                "ROUND(Price, num_digit => 2)",
+                "ROUND has no parameter num_digit; did you mean num_digits",
+                13,
+            ),
+            (
+                "ROUND(Price, zzzzzzzz => 2)",
+                "its parameters are number, num_digits",
+                13,
+            ),
+            (
+                "ROUND(Price, number => 2)",
+                "number is already given, as argument 1",
+                13,
+            ),
+            (
+                "ROUND(Price, num_digits => 2, num_digits => 3)",
+                "num_digits is named twice",
+                30,
+            ),
+            (
+                "ROUND(num_digits => 2)",
+                "number (argument 1) is required",
+                6,
+            ),
+            (
+                "SUM(Price, number1 => 2)",
+                "SUM takes its arguments by position",
+                11,
+            ),
+            (
+                "LINEST(Price, Quantity OVER Time, stats => TRUE INTO Time)",
+                "LINEST takes its arguments by position",
+                34,
+            ),
+            (
+                "TEXTSPLIT(\"a\", \",\", ignore_empty => TRUE INTO Time)",
+                "row_delimiter (argument 3) has no default",
+                20,
+            ),
+            (
+                "REGEX(\"a\", \"b\", flags => \"g\")",
+                "replacement (argument 3) has no default",
+                16,
+            ),
+            (
+                "FIXPOINT(0, LAMBDA(r, r), max_iter => 5, 1)",
+                "positional argument cannot follow",
+                41,
+            ),
+            (
+                "FIXPOINT(0, LAMBDA(r, r), tol => 1)",
+                "did you mean tolerance",
+                26,
+            ),
+            (
+                "SEQUENCE(Time, start => 1, 2)",
+                "positional argument cannot follow",
+                27,
+            ),
+            ("Price + x => 1", "unexpected x =>", 8),
+            ("LAMBDA(a, a)(a => 1)", "unexpected a =>", 13),
+        ] {
+            let e = p(src).unwrap_err();
+            assert!(e.message.contains(want), "{src}: {}", e.message);
+            assert_eq!(e.position, Some(at), "{src}: {}", e.message);
+        }
+        // `=>` is one token, never `=` then `>`.
+        assert!(p("Price => 1").is_err());
+        assert!(p("Price >= 1").is_ok());
     }
 
     #[test]

@@ -121,8 +121,10 @@ Number       = Digits [ "." Digits ] [ ( "e" | "E" ) [ "+" | "-" ] Digits ] ;
 MeasureRef   = Name [ "[" Name { "," Name } "]" ] ;
 Local        = Identifier ;                       (* bound by LET / LAMBDA *)
 
-Call         = FuncName "(" [ Arg { Sep Arg } ] ")" ;  (* Sep: "," or ";" (de) *)
+Call         = FuncName "(" [ Args ] ")" ;           (* Sep: "," or ";" (de) *)
+Args         = Arg { Sep Arg } { Sep Named } | Named { Sep Named } ;
 Arg          = Expression [ OverClause ] [ IntoClause ] ;
+Named        = Identifier "=>" Arg ;              (* a parameter by name: type => 1 *)
 OverClause   = "OVER" ( Cats [ Window ] | "ALL" [ "EXCEPT" Cats ] )
                [ "WHERE" Expression ] ;
 Window       = "[" Bound ".." Bound "]" ;          (* FIRST | LAST | THIS[+-n] *)
@@ -135,7 +137,8 @@ Special      = "LET" "(" { Identifier "," Expression "," } Expression ")"
              | ("SCAN" | "REDUCE") "(" Expression "," MeasureRef "OVER" Name "," Lambda ")"
              | ("BYROW" | "BYCOL") "(" MeasureRef "OVER" Name "," Lambda ")"
              | "MAKEARRAY" "(" Name "," Name "," Lambda ")"
-             | "SEQUENCE" "(" Name [ "," Expression [ "," Expression ] ] ")"
+             | "FIXPOINT" "(" Expression "," Lambda { "," ( Expression | Named ) } ")"
+             | "SEQUENCE" "(" Name { "," ( Expression | Named ) } ")"
              | NamedLambda "(" [ Expression { "," Expression } ] ")" ;
 Lambda       = "LAMBDA" "(" Identifier { "," Identifier } "," Expression ")" ;
 
@@ -145,6 +148,17 @@ Definition   = Formula
              | Identifier "=" Lambda ;                   (* a named LAMBDA *)
 ```
 
+> **Named arguments** (`XLOOKUP(k, Key OVER T, V, search_mode => -1)`): the
+> names are `FnDef::param_names`' (case-insensitive), only after the
+> positional arguments, each once and not also by position; a function with
+> a repeating parameter takes none (its names number a list). A skipped
+> optional parameter gets the default `functions/params.rs` writes
+> (`[type=0]`), and one without a default cannot be skipped (a parse error
+> naming it). The parser stores the positional call, so printers need no
+> change and parse(print(f)) is f. Properties in
+> `engine/tests/properties.rs` check that a named call means its positional
+> form and that each written default is what omitting the parameter does.
+>
 > The parser (`core_model::parser`, its module docs carry the same grammar)
 > is the source of truth. Which names are functions, which arguments an
 > aggregation reduces (`OVER` after any of them), and which return lists

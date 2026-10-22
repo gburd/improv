@@ -1141,6 +1141,152 @@ fn plain_list(tc: &TestCase) -> Vec<CellValue> {
     (0..len).map(|_| plain(tc)).collect()
 }
 
+// ---------------------------------------------------------------------------
+// Named arguments
+// ---------------------------------------------------------------------------
+
+/// A literal of kind `a` as formula text.
+fn literal_text(tc: &TestCase, a: Arg) -> String {
+    let pick = |v: Vec<&str>| tc.draw(gs::sampled_from(v)).to_string();
+    match a {
+        Arg::Number => pick(vec![
+            "0", "1", "2", "2.5", "-3", "0.05", "12", "100", "1e-3",
+        ]),
+        Arg::Text => pick(vec!["\"\"", "\"a\"", "\"ab,c\"", "\"10\"", "\"x y\""]),
+        Arg::Boolean => pick(vec!["TRUE", "FALSE"]),
+        Arg::Date => pick(vec!["#2025-01-31#", "#2024-02-29#"]),
+        Arg::DateLike | Arg::Any | Arg::Category => {
+            let k = tc.draw(gs::sampled_from(vec![
+                Arg::Number,
+                Arg::Text,
+                Arg::Boolean,
+                Arg::Date,
+            ]));
+            literal_text(tc, k)
+        }
+    }
+}
+
+/// A named call means its positional form: `F(a, c => z, b => y)` parses
+/// to `F(a, y, z)` and evaluates the same, for every scalar function with
+/// a fixed parameter list, any split into positional and named arguments,
+/// and any order of the named ones.
+#[hegel::test(test_cases = 2000, suppress_health_check = HealthCheck::all())]
+fn named_arguments_mean_their_positional_form(tc: TestCase) {
+    let defs: Vec<_> = scalar_defs()
+        .into_iter()
+        .filter(|d| !d.variadic && !CLOCK.contains(&d.id.0))
+        .collect();
+    let def = draw_def(&tc, &defs);
+    let n = arity(&tc, def);
+    let args: Vec<String> = (0..n).map(|i| literal_text(&tc, def.param(i))).collect();
+    let k = tc.draw(gs::integers::<usize>().max_value(n));
+    let mut named: Vec<usize> = (k..n).collect();
+    for i in (1..named.len()).rev() {
+        named.swap(i, tc.draw(gs::integers::<usize>().max_value(i)));
+    }
+    let mut parts: Vec<String> = args[..k].to_vec();
+    for &i in &named {
+        let name = def.param_name(i).expect("a named parameter");
+        parts.push(format!("{name} => {}", args[i]));
+    }
+    let model = improv_core_model::Model::new();
+    let parse = |t: &str| {
+        improv_core_model::parse_expr(&model, t)
+            .unwrap_or_else(|e| panic!("{t}: {e}"))
+            .expr
+    };
+    let positional = format!("{}({})", def.name, args.join(", "));
+    let by_name = format!("{}({})", def.name, parts.join(", "));
+    let (p, q) = (parse(&positional), parse(&by_name));
+    assert_eq!(q, p, "{by_name} vs {positional}");
+    let eval = |e: Expr| {
+        timed(
+            || by_name.clone(),
+            move || scalar::eval(&e, &HashMap::new()),
+        )
+    };
+    assert_eq!(eval(q), eval(p), "{by_name}");
+}
+
+/// The default the parameter table writes for an optional parameter
+/// (`[type=0]`, what a named argument fills in when it skips one) is what
+/// the function does when the parameter is left out.
+#[hegel::test(test_cases = 2000, suppress_health_check = HealthCheck::all())]
+fn written_defaults_are_the_omitted_behavior(tc: TestCase) {
+    // R.QTUKEY (1658) integrates numerically: two calls overrun the budget
+    // in a debug build.
+    let defs: Vec<_> = scalar_defs()
+        .into_iter()
+        .filter(|d| d.id.0 != 1658)
+        .filter(|d| (d.required..d.params.len()).any(|i| d.param_default(i).is_some()))
+        .collect();
+    let def = draw_def(&tc, &defs);
+    let with: Vec<usize> = (def.required..def.params.len())
+        .filter(|&i| def.param_default(i).is_some())
+        .collect();
+    let i = tc.draw(gs::sampled_from(with));
+    let model = improv_core_model::Model::new();
+    let args: Vec<Expr> = (0..i)
+        .map(|j| {
+            let t = literal_text(&tc, def.param(j));
+            improv_core_model::parse_expr(&model, &t).expect(&t).expr
+        })
+        .collect();
+    let mut given = args.clone();
+    given.push(def.param_default(i).expect("a default"));
+    let (id, name) = (def.id, def.param_name(i).unwrap_or_default());
+    let what = format!("{}({args:?}) with and without {name}", def.name);
+    let (left, written) = timed(
+        || what.clone(),
+        move || {
+            let e = HashMap::new();
+            let call = |a| scalar::eval(&Expr::Call(id, a), &e);
+            (call(args), call(given))
+        },
+    );
+    assert_eq!(written, left, "{what}");
+}
+
+/// The same for the reductions: a written default given as a parameter is
+/// what leaving it out does (`XLOOKUP`'s `[if_not_found=NA()]`, the
+/// `FORECAST.ETS` family's options).
+#[hegel::test(test_cases = 1000, suppress_health_check = HealthCheck::all())]
+fn written_defaults_are_the_omitted_behavior_of_reductions(tc: TestCase) {
+    let skippable = |d: &FnDef, i: usize| !d.over.contains(i) && d.param_default(i).is_some();
+    let defs: Vec<_> = reduction_defs()
+        .into_iter()
+        .filter(|d| !d.variadic && (d.required..d.params.len()).any(|i| skippable(d, i)))
+        .collect();
+    let def = draw_def(&tc, &defs);
+    let with: Vec<usize> = (def.required..def.params.len())
+        .filter(|&i| skippable(def, i))
+        .collect();
+    let i = tc.draw(gs::sampled_from(with));
+    let cols: Vec<Arg> = (0..i)
+        .filter(|&j| def.over.contains(j))
+        .map(|j| def.param(j))
+        .collect();
+    let rows = rows_of(&tc, &cols, 8, value_of);
+    let params: Vec<CellValue> = (0..i)
+        .filter(|&j| !def.over.contains(j))
+        .map(|j| value_of(&tc, def.param(j)))
+        .collect();
+    let default = scalar::eval(&def.param_default(i).expect("a default"), &HashMap::new());
+    let Ok(Some(default)) = default else {
+        panic!("{}: default {default:?}", def.name)
+    };
+    let mut given = params.clone();
+    given.push(default);
+    assert_eq!(
+        run_reduction(def, &rows, &given),
+        run_reduction(def, &rows, &params),
+        "{}({rows:?}, {params:?}) with and without {:?}",
+        def.name,
+        def.param_name(i)
+    );
+}
+
 /// SORT's output is sorted and a permutation of its input.
 #[hegel::test(test_cases = 400, suppress_health_check = HealthCheck::all())]
 fn sort_is_a_sorted_permutation(tc: TestCase) {

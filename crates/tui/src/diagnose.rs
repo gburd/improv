@@ -234,7 +234,7 @@ mod tests {
             spanned("1 + PMT(1) + 2"),
             (
                 "PMT",
-                Some("usage: PMT(rate, nper, pv, [fv], [type])".into())
+                Some("usage: PMT(rate, nper, pv, [fv=0], [type=0])".into())
             )
         );
         assert_eq!(spanned("abs(1, 2)").1, Some("usage: ABS(number)".into()));

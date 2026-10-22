@@ -99,7 +99,9 @@ pub fn tab(model: &Model, e: &mut LineEdit, cycle: &mut Option<Cycle>) -> Option
     if prefix.is_empty() {
         return None;
     }
-    let cands = candidates(model, prefix);
+    // A call's named arguments (`type => `) first, where an argument starts.
+    let mut cands = functions::complete_named(&e.text, start, prefix);
+    cands.extend(candidates(model, prefix));
     match cands.len() {
         0 => Some(format!("no completions for '{prefix}'")),
         1 => {
@@ -127,8 +129,8 @@ fn listing(cands: &[String]) -> String {
 }
 
 /// The parameters still to type, when the caret ends `text` inside a call:
-/// `PMT(1, ` gives `nper, pv, [fv], [type])`, `PMT(1, 2` gives
-/// `, pv, [fv], [type])`.
+/// `PMT(1, ` gives `nper, pv, [fv=0], [type=0])`, `PMT(1, 2` gives
+/// `, pv, [fv=0], [type=0])`.
 pub fn ghost(text: &str, caret: usize) -> Option<String> {
     if caret != text.len() {
         return None;
@@ -219,13 +221,26 @@ mod tests {
         assert_eq!(tab_in(&m, "pr", &mut cy).0, "Pr");
         assert_eq!(common_prefix(&["PMT(".into(), "pmtx".into()]), "PMT");
         assert_eq!(common_prefix(&["ab".into(), "abc".into()]), "ab");
+        // Where an argument starts, a call's named arguments come first.
+        let mut cy = None;
+        let (t, msg) = tab_in(&m, "PMT(1, 2, 3, ty", &mut cy);
+        assert_eq!(t, "PMT(1, 2, 3, type");
+        assert!(msg.unwrap().starts_with("Tab cycles: type => "));
+        let mut cy = None;
+        let (_, msg) = tab_in(&m, "ROUND(1, n", &mut cy);
+        assert!(msg.unwrap().starts_with("Tab cycles: num_digits => "));
     }
 
     #[test]
     fn ghost_text_is_the_parameters_left() {
-        assert_eq!(ghost("PMT(", 4).unwrap(), "rate, nper, pv, [fv], [type])");
-        assert_eq!(ghost("PMT(1, ", 7).unwrap(), "nper, pv, [fv], [type])");
-        assert_eq!(ghost("PMT(1, 2", 8).unwrap(), ", pv, [fv], [type])");
+        assert_eq!(
+            ghost("PMT(", 4).unwrap(),
+            "rate, nper, pv, [fv=0], [type=0])"
+        );
+        assert_eq!(ghost("PMT(1, ", 7).unwrap(), "nper, pv, [fv=0], [type=0])");
+        assert_eq!(ghost("PMT(1, 2", 8).unwrap(), ", pv, [fv=0], [type=0])");
+        // After a named argument, the parameters after its own.
+        assert_eq!(ghost("PMT(1, 2, 3, fv => 1, ", 22).unwrap(), "[type=0])");
         assert_eq!(ghost("PMT(1,2,3,4,5", 13).unwrap(), ")");
         assert_eq!(ghost("PI(", 3).unwrap(), ")");
         assert_eq!(ghost("PMT(1", 2), None, "caret not at the end");

@@ -538,6 +538,29 @@ Arguments are expressions and broadcast like a binary operator's operands:
 `ROUND(Revenue / Units, 2)` ranges over the union of the arguments'
 categories. A literal argument costs nothing extra.
 
+**Named arguments.** After the positional arguments, `name => value` gives
+a parameter by its name in the [Function Reference](./functions.md):
+`PMT(0.05, 12, Loan, type => 1)`, `XLOOKUP(Id, Key OVER Row, Name,
+search_mode => -1)`, `FIXPOINT(0, LAMBDA(r, r / 2 + 1), max_iter => 50)`.
+Names are case-insensitive. The rules:
+
+- named arguments come after every positional one;
+- each name once, and not for a parameter a positional argument already
+  gave;
+- an optional parameter a name skips takes its default, the `=` value in
+  the reference (`[fv=0]`): `PMT(0.05, 12, Loan, type => 1)` is
+  `PMT(0.05, 12, Loan, 0, 1)`. A parameter with no default (`[next]`,
+  `[replacement]`) cannot be skipped: give it, by position or by name;
+- a function whose last parameter repeats (`SUM(number1, …)`,
+  `LINEST(known_ys, known_xs1, … OVER T)`, `IFS`, `SWITCH`) takes its
+  arguments by position only.
+
+A misspelt name is an error that suggests the right one. The formula is
+stored as the positional call, so the formula bar shows `PMT(0.05, 12,
+Loan, 0, 1)` after you enter the named form; both mean the same. The
+editors offer the names of the call's remaining parameters (`type => `)
+where an argument starts.
+
 **R-style distributions.** `R.DNAME(x, params…, [give_log])` is the
 density or mass at x (or its logarithm); `R.PNAME(x, params…,
 [lower_tail], [log_p])` is P(X ≤ x), or P(X > x) when `lower_tail` is
@@ -712,7 +735,8 @@ of the language.
   `NPV(rate, cf OVER T)`, `SUMIFS(sum, crit1 OVER T, ">5")`. The argument
   order is Excel's. Only the `OVER` keyword is new.
 - **Missing arguments.** Excel allows `IF(x, , 1)` (an empty argument);
-  Improv does not. Leave trailing optional arguments out instead.
+  Improv does not. Leave trailing optional arguments out, or name the
+  later one (`PMT(r, n, pv, type => 1)`): Excel has no named arguments.
 
 **Values and types**
 

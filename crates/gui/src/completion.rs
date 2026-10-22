@@ -16,6 +16,8 @@ pub enum Kind {
     Function(&'static FnDef),
     Measure,
     Category,
+    /// A named argument of the call the caret is in (`match_mode => `).
+    Param,
 }
 
 /// One completion: the name shown, and what accepting it inserts.
@@ -38,7 +40,7 @@ impl Candidate {
         }
     }
 
-    /// `PMT(rate, nper, pv, [fv], [type])`, or a model name as it is.
+    /// `PMT(rate, nper, pv, [fv=0], [type=0])`, or a model name as it is.
     pub fn hint(&self) -> String {
         match self.kind {
             Kind::Function(d) => call_hint(&self.name, d),
@@ -52,6 +54,7 @@ impl Candidate {
             Kind::Function(d) => short_doc(d),
             Kind::Measure => "measure",
             Kind::Category => "category",
+            Kind::Param => "named argument",
         }
     }
 }
@@ -175,7 +178,16 @@ pub fn offer(model: &Model, text: &str, caret: usize) -> Vec<Candidate> {
     {
         return Vec::new();
     }
-    let mut c = candidates(model, word);
+    let start = caret - word.len();
+    let mut c: Vec<Candidate> = functions::complete_named(text, start, word)
+        .into_iter()
+        .map(|n| Candidate {
+            name: n.clone(),
+            insert: n,
+            kind: Kind::Param,
+        })
+        .collect();
+    c.extend(candidates(model, word));
     let whole = c
         .iter()
         .any(|c| !matches!(c.kind, Kind::Function(_)) && c.insert == word);
@@ -190,7 +202,7 @@ pub fn offer(model: &Model, text: &str, caret: usize) -> Vec<Candidate> {
 /// completing (`cand` is the selected candidate for the word there) it is
 /// the rest of that name, and a function's `(params)`; else, inside a call,
 /// the parameters from the current argument on: after `PMT(0.05, ` it is
-/// `nper, pv, [fv], [type])`, after `PMT(0.05` it is `, nper, …)`.
+/// `nper, pv, [fv=0], [type=0])`, after `PMT(0.05` it is `, nper, …)`.
 pub fn ghost(text: &str, caret: usize, cand: Option<&Candidate>) -> Option<String> {
     if caret != text.len() {
         return None;
@@ -408,13 +420,50 @@ mod tests {
         );
     }
 
+    /// Where an argument starts in a call, the call's named arguments are
+    /// offered first, from the current parameter on.
+    #[test]
+    fn named_arguments_are_offered_in_a_call() {
+        let m = model();
+        let o = |t: &str| names(&offer(&m, t, t.len())).join(" ");
+        assert!(
+            o("PMT(1, 2, 3, t").starts_with("type =>  Time"),
+            "{}",
+            o("PMT(1, 2, 3, t")
+        );
+        assert!(
+            o("ROUND(Price, n").starts_with("num_digits => "),
+            "{}",
+            o("ROUND(Price, n")
+        );
+        assert!(o("ROUND(nu").starts_with("number => "), "{}", o("ROUND(nu"));
+        assert!(!o("SUM(n").contains("=>"), "variadic: by position");
+        assert!(!o("1 + t").contains("=>"), "not in a call");
+        let c = &offer(&m, "PMT(1, 2, 3, t", 14)[0];
+        assert_eq!((c.hint().as_str(), c.doc()), ("type => ", "named argument"));
+        assert_eq!(
+            accept("PMT(1, 2, 3, t", 14, c),
+            ("PMT(1, 2, 3, type => ".to_string(), 21)
+        );
+        // Inside the named argument, the signature marks its parameter.
+        let g = |t: &str| ghost(t, t.len(), None);
+        assert_eq!(g("PMT(1, 2, 3, type => 1, ").as_deref(), Some(")"));
+        assert_eq!(g("PMT(1, 2, 3, fv => ").as_deref(), Some(", [type=0])"));
+    }
+
     #[test]
     fn ghost_while_completing() {
         let m = model();
         let top = |t: &str| offer(&m, t, t.len()).into_iter().next();
         let g = |t: &str| ghost(t, t.len(), top(t).as_ref());
-        assert_eq!(g("PM").as_deref(), Some("T(rate, nper, pv, [fv], [type])"));
-        assert_eq!(g("pm").as_deref(), Some("T(rate, nper, pv, [fv], [type])"));
+        assert_eq!(
+            g("PM").as_deref(),
+            Some("T(rate, nper, pv, [fv=0], [type=0])")
+        );
+        assert_eq!(
+            g("pm").as_deref(),
+            Some("T(rate, nper, pv, [fv=0], [type=0])")
+        );
         assert_eq!(g("Pri").as_deref(), Some("ce"));
         assert_eq!(g("1 + Qu").as_deref(), Some("antity"));
         assert_eq!(g("'Unit").as_deref(), Some(" Cost'"));
@@ -428,12 +477,24 @@ mod tests {
     #[test]
     fn ghost_inside_a_call() {
         let g = |t: &str| ghost(t, t.len(), None);
-        assert_eq!(g("PMT(").as_deref(), Some("rate, nper, pv, [fv], [type])"));
-        assert_eq!(g("PMT(0.05, ").as_deref(), Some("nper, pv, [fv], [type])"));
-        assert_eq!(g("PMT(0.05,").as_deref(), Some(" nper, pv, [fv], [type])"));
-        assert_eq!(g("PMT(0.05").as_deref(), Some(", nper, pv, [fv], [type])"));
+        assert_eq!(
+            g("PMT(").as_deref(),
+            Some("rate, nper, pv, [fv=0], [type=0])")
+        );
+        assert_eq!(
+            g("PMT(0.05, ").as_deref(),
+            Some("nper, pv, [fv=0], [type=0])")
+        );
+        assert_eq!(
+            g("PMT(0.05,").as_deref(),
+            Some(" nper, pv, [fv=0], [type=0])")
+        );
+        assert_eq!(
+            g("PMT(0.05").as_deref(),
+            Some(", nper, pv, [fv=0], [type=0])")
+        );
         // Into the optional ones, then past them all.
-        assert_eq!(g("PMT(1, 2, 3, ").as_deref(), Some("[fv], [type])"));
+        assert_eq!(g("PMT(1, 2, 3, ").as_deref(), Some("[fv=0], [type=0])"));
         assert_eq!(g("PMT(1, 2, 3, 4, 5").as_deref(), Some(")"));
         // A variadic tail repeats.
         assert_eq!(g("CONCAT(").as_deref(), Some("text1, …)"));
@@ -443,7 +504,7 @@ mod tests {
         assert_eq!(g("PMT(ABS(").as_deref(), Some("number)"));
         assert_eq!(
             g("PMT(ABS(1), ").as_deref(),
-            Some("nper, pv, [fv], [type])")
+            Some("nper, pv, [fv=0], [type=0])")
         );
         assert_eq!(g("Price + 1"), None);
         assert_eq!(ghost("PMT(", 2, None), None, "caret not at the end");
@@ -506,10 +567,22 @@ mod tests {
             let (b, c, e) = hint_parts(n, d(n), a);
             format!("{b}<{c}>{e}")
         };
-        assert_eq!(parts("PMT", Some(0)), "PMT(<rate>, nper, pv, [fv], [type])");
-        assert_eq!(parts("PMT", Some(3)), "PMT(rate, nper, pv, <[fv]>, [type])");
-        assert_eq!(parts("PMT", Some(9)), "PMT(rate, nper, pv, [fv], [type])<>");
-        assert_eq!(parts("PMT", None), "PMT(rate, nper, pv, [fv], [type])<>");
+        assert_eq!(
+            parts("PMT", Some(0)),
+            "PMT(<rate>, nper, pv, [fv=0], [type=0])"
+        );
+        assert_eq!(
+            parts("PMT", Some(3)),
+            "PMT(rate, nper, pv, <[fv=0]>, [type=0])"
+        );
+        assert_eq!(
+            parts("PMT", Some(9)),
+            "PMT(rate, nper, pv, [fv=0], [type=0])<>"
+        );
+        assert_eq!(
+            parts("PMT", None),
+            "PMT(rate, nper, pv, [fv=0], [type=0])<>"
+        );
         assert_eq!(parts("CONCAT", Some(4)), "CONCAT(text1, <…>)");
         assert_eq!(parts("PI", Some(0)), "PI()<>");
     }

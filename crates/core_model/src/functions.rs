@@ -192,6 +192,61 @@ impl FnDef {
         inner.split(", ").map(str::to_string).collect()
     }
 
+    /// The parameter a named argument `name` sets (case-insensitive, as
+    /// [`Self::param_names`] spells it without brackets, default or
+    /// categories: `match_mode` for `[match_mode=0]`). `None` for a
+    /// function with a repeating parameter: its arguments are positional.
+    pub fn param_index(&self, name: &str) -> Option<usize> {
+        if self.variadic {
+            return None;
+        }
+        self.param_names()
+            .iter()
+            .position(|p| bare_param(p).0.eq_ignore_ascii_case(name))
+    }
+
+    /// Parameter `i`'s name, as a named argument writes it (`match_mode`).
+    pub fn param_name(&self, i: usize) -> Option<String> {
+        let names = self.param_names();
+        names.get(i).map(|p| bare_param(p).0.to_string())
+    }
+
+    /// What omitting optional parameter `i` means, when the parameter table
+    /// says (`0` for `[match_mode=0]`), parsed as a formula would be: what
+    /// a named argument fills in for an earlier parameter it skips. `None`
+    /// for a required parameter or one without a written default.
+    pub fn param_default(&self, i: usize) -> Option<crate::formula::Expr> {
+        if i < self.required {
+            return None;
+        }
+        let names = self.param_names();
+        let d = bare_param(names.get(i)?).1?;
+        crate::parser::parse_expr(&crate::Model::new(), d)
+            .ok()
+            .map(|f| f.expr)
+    }
+
+    /// The parameter names `word` may mean (a misspelt or shortened named
+    /// argument): those it begins, else the nearest by edit distance.
+    pub fn closest_param(&self, word: &str) -> Vec<String> {
+        let w = word.to_ascii_lowercase();
+        let names: Vec<String> = (0..self.params.len())
+            .filter_map(|i| self.param_name(i))
+            .collect();
+        let longer: Vec<String> = names
+            .iter()
+            .filter(|n| n.starts_with(&w))
+            .cloned()
+            .collect();
+        if !longer.is_empty() {
+            return longer;
+        }
+        nearest(&w, names.iter().map(String::as_str), 2)
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
     /// `PMT(rate, nper, pv, [fv], [type])`: the name and [`Self::param_names`].
     pub fn hint(&self) -> String {
         format!("{}({})", self.name, self.param_names().join(", "))
@@ -670,6 +725,19 @@ fn split_params(list: &str) -> Vec<String> {
     out
 }
 
+/// A [`FnDef::param_names`] item's name and written default:
+/// `[match_mode=0]` is `("match_mode", Some("0"))`, `lookup_array OVER T`
+/// is `("lookup_array", None)`.
+fn bare_param(p: &str) -> (&str, Option<&str>) {
+    let p = p.split(" OVER ").next().unwrap_or(p);
+    let p = p.split(" INTO ").next().unwrap_or(p);
+    let p = p.trim_start_matches('[').trim_end_matches(']');
+    match p.split_once('=') {
+        Some((name, default)) => (name, Some(default)),
+        None => (p, None),
+    }
+}
+
 /// The parameter list a description spells as `NAME(a, b, [c])`, if it
 /// does (and the names look like names, not an example call).
 fn spelled_params(name: &str, doc: &str) -> Option<Vec<String>> {
@@ -747,11 +815,16 @@ pub fn search(query: &str) -> Vec<&'static FnDef> {
 /// likely meaning), nearest first; only those within a third of its
 /// length, at least 2.
 pub fn closest(word: &str, n: usize) -> Vec<&'static str> {
-    let w = word.to_ascii_uppercase();
+    let names = all().flat_map(|d| std::iter::once(d.name).chain(d.aliases.iter().copied()));
+    nearest(&word.to_ascii_uppercase(), names, n)
+}
+
+/// Up to `n` of `names` within a third of `w`'s length (at least 2) of
+/// it by edit distance, nearest first.
+fn nearest<'a>(w: &str, names: impl Iterator<Item = &'a str>, n: usize) -> Vec<&'a str> {
     let limit = (w.chars().count() / 3).max(2);
-    let mut scored: Vec<(usize, &'static str)> = all()
-        .flat_map(|d| std::iter::once(d.name).chain(d.aliases.iter().copied()))
-        .map(|name| (edit_distance(&w, name), name))
+    let mut scored: Vec<(usize, &'a str)> = names
+        .map(|name| (edit_distance(w, name), name))
         .filter(|(dist, _)| *dist <= limit)
         .collect();
     scored.sort();
@@ -795,30 +868,43 @@ pub fn complete(prefix: &str) -> Vec<(&'static str, &'static FnDef)> {
 }
 
 /// Where the caret sits in a call: the innermost unclosed `NAME(` before
-/// byte offset `caret` in `text`, and the 0-based argument it is in.
+/// byte offset `caret` in `text`, and the 0-based parameter it is in: the
+/// argument's position, or for a named argument (`match_mode => 1`) its
+/// parameter's, and for an argument after one, the parameter after that.
 /// Strings and nested parentheses are skipped. Signature help uses it.
 pub fn call_at(text: &str, caret: usize) -> Option<(&'static FnDef, usize)> {
     let before = text.get(..caret)?;
-    // (name end, argument index) per open parenthesis.
-    let mut stack: Vec<(usize, usize)> = Vec::new();
+    // Per open parenthesis: where the name ends, the argument index, where
+    // the argument starts, and the last named argument (name, its index).
+    type Open<'a> = (usize, usize, usize, Option<(&'a str, usize)>);
+    let mut stack: Vec<Open> = Vec::new();
     let mut in_str = false;
     for (i, c) in before.char_indices() {
         match c {
             '"' => in_str = !in_str,
             _ if in_str => {}
-            '(' => stack.push((i, 0)),
+            '(' => stack.push((i, 0, i + 1, None)),
             ')' => {
                 stack.pop();
             }
             ',' | ';' => {
                 if let Some(top) = stack.last_mut() {
                     top.1 += 1;
+                    top.2 = i + 1;
+                }
+            }
+            '=' if before[i..].starts_with("=>") => {
+                if let Some(top) = stack.last_mut() {
+                    let name = before[top.2..i].trim();
+                    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                        top.3 = Some((name, top.1));
+                    }
                 }
             }
             _ => {}
         }
     }
-    let (open, arg) = *stack.last()?;
+    let (open, arg, _, named) = *stack.last()?;
     let head = before[..open].trim_end();
     let start = head
         .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '@'))
@@ -827,7 +913,31 @@ pub fn call_at(text: &str, caret: usize) -> Option<(&'static FnDef, usize)> {
         });
     let name = &head[start..];
     let def = by_name(name).next()?;
-    Some((def, arg))
+    let at = named
+        .and_then(|(n, k)| Some(def.param_index(n)? + arg - k))
+        .unwrap_or(arg);
+    Some((def, at))
+}
+
+/// Named arguments that may complete `prefix`, an argument being typed at
+/// byte `start` of `text` (right after its call's `(` or a `,`): `name =>
+/// ` for each parameter of the call's function from the current one on
+/// whose name starts with `prefix` (case-insensitive). Empty outside a
+/// call, mid-argument, or for a function with a repeating parameter.
+pub fn complete_named(text: &str, start: usize, prefix: &str) -> Vec<String> {
+    let lead = text.get(..start).unwrap_or_default().trim_end();
+    if !lead.ends_with(['(', ',', ';']) {
+        return Vec::new();
+    }
+    let Some((def, at)) = call_at(text, start).filter(|(d, _)| !d.variadic) else {
+        return Vec::new();
+    };
+    let p = prefix.to_ascii_lowercase();
+    (at..def.params.len())
+        .filter_map(|i| def.param_name(i))
+        .filter(|n| n.to_ascii_lowercase().starts_with(&p))
+        .map(|n| format!("{n} => "))
+        .collect()
 }
 
 /// The aggregation (or per-item reduction) a name means, if any.
@@ -897,7 +1007,47 @@ mod tests {
         assert!(call_at("PMT(", 99).is_none());
         // Hints: spelled in the description, from the table, or the types.
         let hint = |n: &str| by_name(n).next().unwrap().hint();
-        assert_eq!(hint("PMT"), "PMT(rate, nper, pv, [fv], [type])");
+        assert_eq!(hint("PMT"), "PMT(rate, nper, pv, [fv=0], [type=0])");
+        // Named arguments: the parameter a name sets, and signature help
+        // inside one.
+        let pmt = callable("PMT").unwrap();
+        assert_eq!(pmt.param_index("TYPE"), Some(4));
+        assert_eq!(pmt.param_index("nope"), None);
+        assert_eq!(pmt.param_name(3).as_deref(), Some("fv"));
+        assert_eq!(pmt.param_name(9), None);
+        assert!(pmt.param_default(0).is_none(), "required");
+        assert!(
+            callable("REGEX").unwrap().param_default(2).is_none(),
+            "no default"
+        );
+        assert_eq!(callable("SUM").unwrap().param_index("number1"), None);
+        assert_eq!(
+            aggregation("XLOOKUP").unwrap().param_name(1).as_deref(),
+            Some("lookup_array"),
+            "OVER T dropped"
+        );
+        assert_eq!(pmt.closest_param("tyle"), ["type"]);
+        assert_eq!(pmt.closest_param("Ty"), ["type"]);
+        assert_eq!(at("PMT(1, type => "), Some(("PMT", 4)));
+        assert_eq!(at("PMT(1, type => 1, "), Some(("PMT", 5)));
+        assert_eq!(at("PMT(1, fv => 1, type => 0"), Some(("PMT", 4)));
+        assert_eq!(at("PMT(1, 2 => "), Some(("PMT", 1)), "not a name");
+        let named = |t: &str, start: usize, w: &str| complete_named(t, start, w);
+        assert_eq!(named("PMT(1, 2, 3, ", 13, ""), ["fv => ", "type => "]);
+        assert_eq!(named("PMT(1, 2, 3, t", 13, "t"), ["type => "]);
+        assert_eq!(named("PMT(r", 4, "r"), ["rate => "]);
+        assert!(named("PMT(1 + r", 8, "r").is_empty(), "mid-argument");
+        assert!(named("SUM(n", 4, "n").is_empty(), "variadic");
+        assert!(named("n", 0, "n").is_empty(), "not in a call");
+        // Every default the parameter table writes parses (a named argument
+        // fills it in for a skipped parameter).
+        for d in all() {
+            for (i, p) in d.param_names().iter().enumerate() {
+                if p.contains('=') && !d.variadic {
+                    assert!(d.param_default(i).is_some(), "{}: {p}", d.name);
+                }
+            }
+        }
         assert_eq!(
             hint("IF"),
             "IF(logical_test, value_if_true, [value_if_false])"

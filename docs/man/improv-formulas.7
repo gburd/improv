@@ -127,6 +127,26 @@ is called by name. A list result says where it lands:
 a category.
 .B FIXPOINT(init, LAMBDA(r, step), [max_iter], [tolerance])
 iterates to a fixed point and always terminates.
+.SH NAMED ARGUMENTS
+After the positional arguments,
+.I name
+.B =>
+.I value
+gives a parameter by its name in
+.BR improv-functions (7),
+case-insensitively:
+.B "PMT(0.05, 12, Loan, type => 1)"
+or
+.BR "FIXPOINT(0, LAMBDA(r, r / 2 + 1), max_iter => 50)" .
+Each name once, never after a positional argument gave it, and no
+positional argument after a named one. A skipped optional parameter takes
+its default (the
+.B =
+value in the reference); one without a default cannot be skipped. A
+function whose last parameter repeats
+.RB ( SUM ,
+.BR LINEST )
+takes no names. The formula is stored, and shown, as the positional call.
 .SH SOURCE FORMS
 Only as a whole right-hand side, through
 .BR "improv define" :

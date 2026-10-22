@@ -220,7 +220,7 @@ fn diagnostic_lines(e: &LineEdit, d: &Diagnostic, prompt: &str) -> Vec<Line<'sta
 
 /// The signature of the call the caret is in, the current argument marked
 /// `‹pv›` and reversed, then the description:
-/// `PMT(rate, nper, ‹pv›, [fv], [type]) — payment per period`.
+/// `PMT(rate, nper, ‹pv›, [fv=0], [type=0]) — payment per period`.
 fn signature_line(e: &LineEdit) -> Option<Line<'static>> {
     let (d, arg) = improv_core_model::functions::call_at(e, e.caret)?;
     let names = d.param_names();
@@ -554,10 +554,11 @@ mod tests {
         app.edit = Some("Price * PMT(0.05, 12, ".into());
         let buf = draw(&mut app, 120, 30);
         let lines = text(&buf);
-        let (x, y) = find(&lines, "pv, [fv], [type])");
+        let (x, y) = find(&lines, "pv, [fv=0], [type=0])");
         assert_eq!(row_of(&lines, "formula> Price * PMT(0.05, 12,"), y as usize);
         assert!(buf[(x, y)].modifier.contains(Modifier::DIM), "ghost is dim");
-        let sig = "PMT(rate, nper, \u{2039}pv\u{203a}, [fv], [type]) \u{2014} payment per period";
+        let sig =
+            "PMT(rate, nper, \u{2039}pv\u{203a}, [fv=0], [type=0]) \u{2014} payment per period";
         let (sx, sy) = find(&lines, sig);
         assert_eq!(sy, y + 1, "the hint is right under the edit line");
         let at = sx + "PMT(rate, nper, ".chars().count() as u16;
@@ -660,7 +661,7 @@ mod tests {
         let buf = draw(&mut app, 100, 30);
         let lines = text(&buf);
         // The selected row is the list's first, in the selection style.
-        let (x, y) = find(&lines, "PMT(rate, nper, pv, [fv], [type])");
+        let (x, y) = find(&lines, "PMT(rate, nper, pv, [fv=0], [type=0])");
         assert_eq!(buf[(x, y)].bg, Color::Blue);
         row_of(&lines, "category: Financial");
         row_of(&lines, "payment per period");

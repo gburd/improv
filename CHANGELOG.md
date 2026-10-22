@@ -8,6 +8,23 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Named arguments in formulas:** `PMT(0.05, 12, Loan, type => 1)`,
+  `XLOOKUP(Id, Key OVER Row, Name, search_mode => -1)`,
+  `FIXPOINT(0, LAMBDA(r, r / 2 + 1), max_iter => 50)`. After the positional
+  arguments, `name => value` sets a parameter by its Function Reference
+  name (case-insensitive), each once and not one already given by
+  position. A skipped optional parameter takes its documented default
+  (the reference now writes it: `[fv=0]`, `[if_not_found=NA()]`,
+  `[lower_tail=TRUE]`); one without a default cannot be skipped. Functions
+  with a repeating parameter (`SUM`, `LINEST`, `IFS`) take arguments by
+  position only. A misspelt name suggests the right one. The formula is
+  stored and shown as the positional call, so saved models are unchanged.
+  The GUI and TUI editors offer `name => ` for the call's remaining
+  parameters, and signature help follows a named argument. New in
+  `improv_core_model::functions`: `FnDef::param_index`, `param_name`,
+  `param_default`, `closest_param`, and `complete_named`; `call_at` maps a
+  named argument to its parameter.
+
 - **Release sums, signatures and SBOMs.** Every GitHub Release carries
   `SHA256SUMS` over all its files, `SHA256SUMS.sigstore.json` (a cosign
   keyless signature from the release workflow's GitHub OIDC identity,

@@ -363,7 +363,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `TAKE(array OVER T, rows INTO K)` | the branches' type | the first rows values in item order (the last -rows when rows is negative) |
 | `DROP(array OVER T, rows INTO K)` | the branches' type | the values TAKE leaves out: all but the first rows (the last -rows when rows is negative), in item order |
 | `SELECTS(values, tests OVER T, condition INTO K)` | the branches' type | Quantrix: the values whose test meets the condition (a criterion like ">5" or "a*", as in SUMIF), in item order |
-| `XLOOKUP(lookup_value, lookup_array OVER T, return_array, [if_not_found], [match_mode=0], [search_mode=1])` | the values' type | return_array at the item where lookup_array matches lookup_value (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
+| `XLOOKUP(lookup_value, lookup_array OVER T, return_array, [if_not_found=NA()], [match_mode=0], [search_mode=1])` | the values' type | return_array at the item where lookup_array matches lookup_value (match_mode 0 exact, -1 next smaller, 1 next larger, 2 wildcard; search_mode 1 first to last, -1 last to first, ±2 the same as ±1); if_not_found (else #N/A) when none does |
 | `XMATCH(lookup_value, lookup_array OVER T, [match_mode=0], [search_mode=1])` | number | the 1-based item position along the category where lookup_array matches lookup_value (XLOOKUP's modes); #N/A when none does |
 | `MATCH(lookup_value, lookup_array OVER T, [match_type=1])` | number | the 1-based item position of lookup_value: match_type 1 (default) the largest ≤ it, 0 the first equal (text with * and ? wildcards), -1 the smallest ≥ it; #N/A when none |
 | `LOOKUP(lookup_value, lookup_vector OVER T, result_vector)` | the values' type | result_vector at the largest lookup_vector ≤ lookup_value (ascending); #N/A when none |
@@ -509,67 +509,67 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `SNORM.DIST.RANGE(x1, x2)` | number | Φ(x2) − Φ(x1): the standard normal probability between x1 and x2 |
 | `OWENT(h, a)` | number | Owen's T function T(h, a) |
 | `CUM_BIV_NORM_DIST(a, b, rho)` | number | the standard bivariate normal P(X ≤ a, Y ≤ b) with correlation ρ, |ρ| < 1 |
-| `R.DBETA(x, shape1, shape2, [give_log])` | number | the density at x of the beta distribution of shapes shape1 and shape2, or its logarithm (give_log) |
-| `R.PBETA(x, shape1, shape2, [lower_tail], [log_p])` | number | P(X ≤ x) for the beta distribution of shapes shape1 and shape2, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QBETA(p, shape1, shape2, [lower_tail], [log_p])` | number | the quantile of the beta distribution of shapes shape1 and shape2: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DBINOM(x, size, prob, [give_log])` | number | the probability mass at x of the binomial distribution of size trials of success probability prob, or its logarithm (give_log) |
-| `R.PBINOM(x, size, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the binomial distribution of size trials of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QBINOM(p, size, prob, [lower_tail], [log_p])` | number | the quantile of the binomial distribution of size trials of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DCAUCHY(x, location, scale, [give_log])` | number | the density at x of the Cauchy distribution of location and scale, or its logarithm (give_log) |
-| `R.PCAUCHY(x, location, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the Cauchy distribution of location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QCAUCHY(p, location, scale, [lower_tail], [log_p])` | number | the quantile of the Cauchy distribution of location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DCHISQ(x, df, [give_log])` | number | the density at x of the chi-square distribution of df degrees of freedom, or its logarithm (give_log) |
-| `R.PCHISQ(x, df, [lower_tail], [log_p])` | number | P(X ≤ x) for the chi-square distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QCHISQ(p, df, [lower_tail], [log_p])` | number | the quantile of the chi-square distribution of df degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DEXP(x, scale, [give_log])` | number | the density at x of the exponential distribution of the given scale (mean), or its logarithm (give_log) |
-| `R.PEXP(x, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the exponential distribution of the given scale (mean), or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QEXP(p, scale, [lower_tail], [log_p])` | number | the quantile of the exponential distribution of the given scale (mean): the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DF(x, df1, df2, [give_log])` | number | the density at x of the F distribution of df1 and df2 degrees of freedom, or its logarithm (give_log) |
-| `R.PF(x, df1, df2, [lower_tail], [log_p])` | number | P(X ≤ x) for the F distribution of df1 and df2 degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QF(p, df1, df2, [lower_tail], [log_p])` | number | the quantile of the F distribution of df1 and df2 degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DGAMMA(x, shape, scale, [give_log])` | number | the density at x of the gamma distribution of shape and scale, or its logarithm (give_log) |
-| `R.PGAMMA(x, shape, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the gamma distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QGAMMA(p, shape, scale, [lower_tail], [log_p])` | number | the quantile of the gamma distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DGEOM(x, prob, [give_log])` | number | the probability mass at x of the geometric distribution (failures before the first success) of success probability prob, or its logarithm (give_log) |
-| `R.PGEOM(x, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the geometric distribution (failures before the first success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QGEOM(p, prob, [lower_tail], [log_p])` | number | the quantile of the geometric distribution (failures before the first success) of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DGUMBEL(x, mu, beta, [give_log])` | number | the density at x of the Gumbel distribution of location μ and scale β, or its logarithm (give_log) |
-| `R.PGUMBEL(x, mu, beta, [lower_tail], [log_p])` | number | P(X ≤ x) for the Gumbel distribution of location μ and scale β, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QGUMBEL(p, mu, beta, [lower_tail], [log_p])` | number | the quantile of the Gumbel distribution of location μ and scale β: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DHYPER(x, m, n, k, [give_log])` | number | the probability mass at x of the hypergeometric distribution of the white balls among k drawn from m white and n black, or its logarithm (give_log) |
-| `R.PHYPER(x, m, n, k, [lower_tail], [log_p])` | number | P(X ≤ x) for the hypergeometric distribution of the white balls among k drawn from m white and n black, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QHYPER(p, m, n, k, [lower_tail], [log_p])` | number | the quantile of the hypergeometric distribution of the white balls among k drawn from m white and n black: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DLNORM(x, meanlog, sdlog, [give_log])` | number | the density at x of the log-normal distribution of log-mean and log-sd, or its logarithm (give_log) |
-| `R.PLNORM(x, meanlog, sdlog, [lower_tail], [log_p])` | number | P(X ≤ x) for the log-normal distribution of log-mean and log-sd, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QLNORM(p, meanlog, sdlog, [lower_tail], [log_p])` | number | the quantile of the log-normal distribution of log-mean and log-sd: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DNBINOM(x, size, prob, [give_log])` | number | the probability mass at x of the negative binomial distribution (failures before the size-th success) of success probability prob, or its logarithm (give_log) |
-| `R.PNBINOM(x, size, prob, [lower_tail], [log_p])` | number | P(X ≤ x) for the negative binomial distribution (failures before the size-th success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QNBINOM(p, size, prob, [lower_tail], [log_p])` | number | the quantile of the negative binomial distribution (failures before the size-th success) of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DNORM(x, mean, sd, [give_log])` | number | the density at x of the normal distribution of mean μ and standard deviation σ, or its logarithm (give_log) |
-| `R.PNORM(x, mean, sd, [lower_tail], [log_p])` | number | P(X ≤ x) for the normal distribution of mean μ and standard deviation σ, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QNORM(p, mean, sd, [lower_tail], [log_p])` | number | the quantile of the normal distribution of mean μ and standard deviation σ: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DPOIS(x, lambda, [give_log])` | number | the probability mass at x of the Poisson distribution of mean λ, or its logarithm (give_log) |
-| `R.PPOIS(x, lambda, [lower_tail], [log_p])` | number | P(X ≤ x) for the Poisson distribution of mean λ, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QPOIS(p, lambda, [lower_tail], [log_p])` | number | the quantile of the Poisson distribution of mean λ: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DRAYLEIGH(x, scale, [give_log])` | number | the density at x of the Rayleigh distribution of the given scale, or its logarithm (give_log) |
-| `R.PRAYLEIGH(x, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the Rayleigh distribution of the given scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QRAYLEIGH(p, scale, [lower_tail], [log_p])` | number | the quantile of the Rayleigh distribution of the given scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DSNORM(x, shape, location, scale, [give_log])` | number | the density at x of the skew-normal distribution of shape, location and scale, or its logarithm (give_log) |
-| `R.PSNORM(x, shape, location, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the skew-normal distribution of shape, location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QSNORM(p, shape, location, scale, [lower_tail], [log_p])` | number | the quantile of the skew-normal distribution of shape, location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DST(x, df, shape, [give_log])` | number | the density at x of the skew-t distribution of df degrees of freedom and the given shape, or its logarithm (give_log) |
-| `R.PST(x, df, shape, [lower_tail], [log_p])` | number | P(X ≤ x) for the skew-t distribution of df degrees of freedom and the given shape, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QST(p, df, shape, [lower_tail], [log_p])` | number | the quantile of the skew-t distribution of df degrees of freedom and the given shape: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DT(x, df, [give_log])` | number | the density at x of the Student t distribution of df degrees of freedom, or its logarithm (give_log) |
-| `R.PT(x, df, [lower_tail], [log_p])` | number | P(X ≤ x) for the Student t distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QT(p, df, [lower_tail], [log_p])` | number | the quantile of the Student t distribution of df degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.DWEIBULL(x, shape, scale, [give_log])` | number | the density at x of the Weibull distribution of shape and scale, or its logarithm (give_log) |
-| `R.PWEIBULL(x, shape, scale, [lower_tail], [log_p])` | number | P(X ≤ x) for the Weibull distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QWEIBULL(p, shape, scale, [lower_tail], [log_p])` | number | the quantile of the Weibull distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
-| `R.PTUKEY(x, nmeans, df, [nranges=1], [lower_tail], [log_p])` | number | P(Q ≤ x) for the largest of nranges (default 1) studentized ranges of nmeans means with df degrees of freedom, or P(Q > x) (lower_tail = FALSE), or its logarithm (log_p) |
-| `R.QTUKEY(p, nmeans, df, [nranges=1], [lower_tail], [log_p])` | number | the quantile of the studentized range of nmeans means with df degrees of freedom, the largest of nranges (default 1): the x with P(Q ≤ x) = p, or of P(Q > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DBETA(x, shape1, shape2, [give_log=FALSE])` | number | the density at x of the beta distribution of shapes shape1 and shape2, or its logarithm (give_log) |
+| `R.PBETA(x, shape1, shape2, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the beta distribution of shapes shape1 and shape2, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QBETA(p, shape1, shape2, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the beta distribution of shapes shape1 and shape2: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DBINOM(x, size, prob, [give_log=FALSE])` | number | the probability mass at x of the binomial distribution of size trials of success probability prob, or its logarithm (give_log) |
+| `R.PBINOM(x, size, prob, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the binomial distribution of size trials of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QBINOM(p, size, prob, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the binomial distribution of size trials of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DCAUCHY(x, location, scale, [give_log=FALSE])` | number | the density at x of the Cauchy distribution of location and scale, or its logarithm (give_log) |
+| `R.PCAUCHY(x, location, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the Cauchy distribution of location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QCAUCHY(p, location, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the Cauchy distribution of location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DCHISQ(x, df, [give_log=FALSE])` | number | the density at x of the chi-square distribution of df degrees of freedom, or its logarithm (give_log) |
+| `R.PCHISQ(x, df, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the chi-square distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QCHISQ(p, df, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the chi-square distribution of df degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DEXP(x, scale, [give_log=FALSE])` | number | the density at x of the exponential distribution of the given scale (mean), or its logarithm (give_log) |
+| `R.PEXP(x, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the exponential distribution of the given scale (mean), or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QEXP(p, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the exponential distribution of the given scale (mean): the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DF(x, df1, df2, [give_log=FALSE])` | number | the density at x of the F distribution of df1 and df2 degrees of freedom, or its logarithm (give_log) |
+| `R.PF(x, df1, df2, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the F distribution of df1 and df2 degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QF(p, df1, df2, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the F distribution of df1 and df2 degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DGAMMA(x, shape, scale, [give_log=FALSE])` | number | the density at x of the gamma distribution of shape and scale, or its logarithm (give_log) |
+| `R.PGAMMA(x, shape, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the gamma distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QGAMMA(p, shape, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the gamma distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DGEOM(x, prob, [give_log=FALSE])` | number | the probability mass at x of the geometric distribution (failures before the first success) of success probability prob, or its logarithm (give_log) |
+| `R.PGEOM(x, prob, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the geometric distribution (failures before the first success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QGEOM(p, prob, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the geometric distribution (failures before the first success) of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DGUMBEL(x, mu, beta, [give_log=FALSE])` | number | the density at x of the Gumbel distribution of location μ and scale β, or its logarithm (give_log) |
+| `R.PGUMBEL(x, mu, beta, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the Gumbel distribution of location μ and scale β, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QGUMBEL(p, mu, beta, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the Gumbel distribution of location μ and scale β: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DHYPER(x, m, n, k, [give_log=FALSE])` | number | the probability mass at x of the hypergeometric distribution of the white balls among k drawn from m white and n black, or its logarithm (give_log) |
+| `R.PHYPER(x, m, n, k, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the hypergeometric distribution of the white balls among k drawn from m white and n black, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QHYPER(p, m, n, k, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the hypergeometric distribution of the white balls among k drawn from m white and n black: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DLNORM(x, meanlog, sdlog, [give_log=FALSE])` | number | the density at x of the log-normal distribution of log-mean and log-sd, or its logarithm (give_log) |
+| `R.PLNORM(x, meanlog, sdlog, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the log-normal distribution of log-mean and log-sd, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QLNORM(p, meanlog, sdlog, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the log-normal distribution of log-mean and log-sd: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DNBINOM(x, size, prob, [give_log=FALSE])` | number | the probability mass at x of the negative binomial distribution (failures before the size-th success) of success probability prob, or its logarithm (give_log) |
+| `R.PNBINOM(x, size, prob, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the negative binomial distribution (failures before the size-th success) of success probability prob, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QNBINOM(p, size, prob, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the negative binomial distribution (failures before the size-th success) of success probability prob: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DNORM(x, mean, sd, [give_log=FALSE])` | number | the density at x of the normal distribution of mean μ and standard deviation σ, or its logarithm (give_log) |
+| `R.PNORM(x, mean, sd, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the normal distribution of mean μ and standard deviation σ, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QNORM(p, mean, sd, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the normal distribution of mean μ and standard deviation σ: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DPOIS(x, lambda, [give_log=FALSE])` | number | the probability mass at x of the Poisson distribution of mean λ, or its logarithm (give_log) |
+| `R.PPOIS(x, lambda, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the Poisson distribution of mean λ, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QPOIS(p, lambda, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the Poisson distribution of mean λ: the smallest x with P(X ≤ x) ≥ p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DRAYLEIGH(x, scale, [give_log=FALSE])` | number | the density at x of the Rayleigh distribution of the given scale, or its logarithm (give_log) |
+| `R.PRAYLEIGH(x, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the Rayleigh distribution of the given scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QRAYLEIGH(p, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the Rayleigh distribution of the given scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DSNORM(x, shape, location, scale, [give_log=FALSE])` | number | the density at x of the skew-normal distribution of shape, location and scale, or its logarithm (give_log) |
+| `R.PSNORM(x, shape, location, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the skew-normal distribution of shape, location and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QSNORM(p, shape, location, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the skew-normal distribution of shape, location and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DST(x, df, shape, [give_log=FALSE])` | number | the density at x of the skew-t distribution of df degrees of freedom and the given shape, or its logarithm (give_log) |
+| `R.PST(x, df, shape, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the skew-t distribution of df degrees of freedom and the given shape, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QST(p, df, shape, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the skew-t distribution of df degrees of freedom and the given shape: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DT(x, df, [give_log=FALSE])` | number | the density at x of the Student t distribution of df degrees of freedom, or its logarithm (give_log) |
+| `R.PT(x, df, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the Student t distribution of df degrees of freedom, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QT(p, df, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the Student t distribution of df degrees of freedom: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.DWEIBULL(x, shape, scale, [give_log=FALSE])` | number | the density at x of the Weibull distribution of shape and scale, or its logarithm (give_log) |
+| `R.PWEIBULL(x, shape, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | P(X ≤ x) for the Weibull distribution of shape and scale, or P(X > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QWEIBULL(p, shape, scale, [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the Weibull distribution of shape and scale: the x with P(X ≤ x) = p, or of P(X > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
+| `R.PTUKEY(x, nmeans, df, [nranges=1], [lower_tail=TRUE], [log_p=FALSE])` | number | P(Q ≤ x) for the largest of nranges (default 1) studentized ranges of nmeans means with df degrees of freedom, or P(Q > x) (lower_tail = FALSE), or its logarithm (log_p) |
+| `R.QTUKEY(p, nmeans, df, [nranges=1], [lower_tail=TRUE], [log_p=FALSE])` | number | the quantile of the studentized range of nmeans means with df degrees of freedom, the largest of nranges (default 1): the x with P(Q ≤ x) = p, or of P(Q > x) (lower_tail = FALSE), p may be a logarithm (log_p) |
 | `SSMEDIAN(array OVER T, [interval=1])` | number | the median of grouped data (Gnumeric): each value the midpoint of an interval of width interval (default 1), interpolated within the median's interval |
-| `INTERPOLATION(xs, ys OVER T, target, [method], [next])` | number | INTERPOLATION(xs, ys OVER T, target, \[method\], \[next\]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over \[target, next\] |
+| `INTERPOLATION(xs, ys OVER T, target, [method=0], [next])` | number | INTERPOLATION(xs, ys OVER T, target, \[method\], \[next\]): ys interpolated at target (Gnumeric): method 0 linear, 2 staircase, 4 natural cubic spline; 1, 3, 5 the same averaged over \[target, next\] |
 | `HPFILTER(values OVER T, [lambda=1600])` | number | each item's trend under the Hodrick–Prescott filter with smoothing λ (default 1600); the cycle is y − trend; needs 6 values |
 | `ADTEST(values OVER T)` | number | the p-value of the Anderson–Darling test of normality (Gnumeric; 8 values or more) |
 | `CVMTEST(values OVER T)` | number | the p-value of the Cramér–von Mises test of normality (Gnumeric; 8 values or more) |
@@ -579,17 +579,17 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `CVMTEST.STAT(values OVER T)` | number | the Cramér–von Mises statistic W², Gnumeric's CVMTEST second value |
 | `LKSTEST.STAT(values OVER T)` | number | the Lilliefors statistic D, Gnumeric's LKSTEST second value |
 | `SFTEST.STAT(values OVER T)` | number | the Shapiro–Francia statistic W', Gnumeric's SFTEST second value |
-| `LOGREG(known_ys, known_xs OVER T, [affine], [stats] INTO K)` | number | LOGREG(known_ys, known_xs OVER T, \[affine\], \[stats\] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row |
+| `LOGREG(known_ys, known_xs OVER T, [affine=TRUE], [stats=FALSE] INTO K)` | number | LOGREG(known_ys, known_xs OVER T, \[affine\], \[stats\] INTO K): the least-squares fit y = m·ln x + b (Gnumeric): m, b (affine = FALSE: b = 0); with stats LINEST's 5×2 block for ln x, row by row |
 | `LOGFIT(known_ys, known_xs OVER T INTO K)` | number | LOGFIT(known_ys, known_xs OVER T INTO K): the fit y = a + b·ln(sign·(x − c)) by Gnumeric's trial-and-error search: sign, a, b, c and the sum of squared residuals; #NUM! if the points are not logarithmic enough |
 | `PERIODOGRAM(y OVER T, [filter] INTO K)` | number | PERIODOGRAM(y OVER T, \[filter\] INTO K): the magnitudes of the first half of the Fourier transform (Gnumeric), after a window: 0 none, 1 Bartlett, 2 Hann, 3 Welch |
 | `CRONBACH(x1, x2, … OVER T)` | number | CRONBACH(x1, x2, … OVER T): Cronbach's α of the items x1, x2, … (one row per respondent; population variances, as Gnumeric) |
-| `FORECAST.ETS(target_date, values, timeline OVER T, [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS(target_date, values, timeline OVER T, \[seasonality\], \[data_completion\], \[aggregation\]): the additive Holt–Winters (triple exponential smoothing) forecast at target_date, LibreOffice's algorithm; seasonality 1 detects the season, 0 none; a target_date before the timeline's end is #NUM! (also `FORECAST.ETS.ADD`) |
-| `FORECAST.ETS.MULT(target_date, values, timeline OVER T, [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS.MULT(target_date, values, timeline OVER T, …): FORECAST.ETS with multiplicative seasons (LibreOffice) |
-| `FORECAST.ETS.CONFINT(target_date, values, timeline OVER T, [confidence_level=0.95], [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS.CONFINT(target_date, values, timeline OVER T, \[confidence_level\], \[seasonality\], …): the half-width of the prediction interval (default confidence_level 0.95); only for seasonality 0 (LibreOffice simulates seasonal intervals randomly): otherwise #N/A (also `FORECAST.ETS.PI.ADD`) |
-| `FORECAST.ETS.PI.MULT(target_date, values, timeline OVER T, [confidence_level=0.95], [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS.PI.MULT(target_date, values, timeline OVER T, …): FORECAST.ETS.CONFINT for the multiplicative model (the same for seasonality 0, the only one supported) |
-| `FORECAST.ETS.STAT(values, timeline OVER T, statistic_type, [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS.STAT(values, timeline OVER T, statistic_type, …): a statistic of FORECAST.ETS's fit: 1 α, 2 β (trend), 3 γ (season), 4 MASE, 5 SMAPE, 6 MAE, 7 RMSE, 8 step, 9 seasonality (also `FORECAST.ETS.STAT.ADD`) |
-| `FORECAST.ETS.STAT.MULT(values, timeline OVER T, statistic_type, [seasonality], [data_completion], [aggregation])` | number | FORECAST.ETS.STAT.MULT(values, timeline OVER T, statistic_type, …): FORECAST.ETS.STAT of the multiplicative model |
-| `FORECAST.ETS.SEASONALITY(values, timeline OVER T, [data_completion], [aggregation])` | number | FORECAST.ETS.SEASONALITY(values, timeline OVER T, \[data_completion\], \[aggregation\]): the season length FORECAST.ETS detects (1: none) |
+| `FORECAST.ETS(target_date, values, timeline OVER T, [seasonality=1], [data_completion=1], [aggregation=1])` | number | FORECAST.ETS(target_date, values, timeline OVER T, \[seasonality\], \[data_completion\], \[aggregation\]): the additive Holt–Winters (triple exponential smoothing) forecast at target_date, LibreOffice's algorithm; seasonality 1 detects the season, 0 none; a target_date before the timeline's end is #NUM! (also `FORECAST.ETS.ADD`) |
+| `FORECAST.ETS.MULT(target_date, values, timeline OVER T, [seasonality=1], [data_completion=1], [aggregation=1])` | number | FORECAST.ETS.MULT(target_date, values, timeline OVER T, …): FORECAST.ETS with multiplicative seasons (LibreOffice) |
+| `FORECAST.ETS.CONFINT(target_date, values, timeline OVER T, [confidence_level=0.95], [seasonality=1], [data_completion=1], [aggregation=1])` | number | FORECAST.ETS.CONFINT(target_date, values, timeline OVER T, \[confidence_level\], \[seasonality\], …): the half-width of the prediction interval (default confidence_level 0.95); only for seasonality 0 (LibreOffice simulates seasonal intervals randomly): otherwise #N/A (also `FORECAST.ETS.PI.ADD`) |
+| `FORECAST.ETS.PI.MULT(target_date, values, timeline OVER T, [confidence_level=0.95], [seasonality=1], [data_completion=1], [aggregation=1])` | number | FORECAST.ETS.PI.MULT(target_date, values, timeline OVER T, …): FORECAST.ETS.CONFINT for the multiplicative model (the same for seasonality 0, the only one supported) |
+| `FORECAST.ETS.STAT(values, timeline OVER T, statistic_type, [seasonality=1], [data_completion=1], [aggregation=1])` | number | FORECAST.ETS.STAT(values, timeline OVER T, statistic_type, …): a statistic of FORECAST.ETS's fit: 1 α, 2 β (trend), 3 γ (season), 4 MASE, 5 SMAPE, 6 MAE, 7 RMSE, 8 step, 9 seasonality (also `FORECAST.ETS.STAT.ADD`) |
+| `FORECAST.ETS.STAT.MULT(values, timeline OVER T, statistic_type, [seasonality=1], [data_completion=1], [aggregation=1])` | number | FORECAST.ETS.STAT.MULT(values, timeline OVER T, statistic_type, …): FORECAST.ETS.STAT of the multiplicative model |
+| `FORECAST.ETS.SEASONALITY(values, timeline OVER T, [data_completion=1], [aggregation=1])` | number | FORECAST.ETS.SEASONALITY(values, timeline OVER T, \[data_completion\], \[aggregation\]): the season length FORECAST.ETS detects (1: none) |
 | `LEVERAGE(A OVER R, C INTO K)` | number | LEVERAGE(A OVER R, C INTO K): the regression leverages, the diagonal of A·(AᵀA)⁻¹·Aᵀ, one per row of A (Gnumeric); #NUM! if A's columns are dependent |
 
 ## Financial
@@ -598,13 +598,13 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 
 | Function | Returns | Description |
 |---|---|---|
-| `FV(rate, nper, pmt, [pv], [type])` | number | future value: FV(rate, nper, pmt, \[pv\], \[type\]) |
-| `PV(rate, nper, pmt, [fv], [type])` | number | present value: PV(rate, nper, pmt, \[fv\], \[type\]) |
-| `PMT(rate, nper, pv, [fv], [type])` | number | payment per period: PMT(rate, nper, pv, \[fv\], \[type\]) |
-| `IPMT(rate, per, nper, pv, [fv], [type])` | number | interest part of payment per: IPMT(rate, per, nper, pv, \[fv\], \[type\]) |
-| `PPMT(rate, per, nper, pv, [fv], [type])` | number | principal part of payment per: PPMT(rate, per, nper, pv, \[fv\], \[type\]) |
-| `NPER(rate, pmt, pv, [fv], [type])` | number | number of periods: NPER(rate, pmt, pv, \[fv\], \[type\]) |
-| `RATE(nper, pmt, pv, [fv], [type], [guess])` | number | rate per period (iterative): RATE(nper, pmt, pv, \[fv\], \[type\], \[guess\]) |
+| `FV(rate, nper, pmt, [pv=0], [type=0])` | number | future value: FV(rate, nper, pmt, \[pv\], \[type\]) |
+| `PV(rate, nper, pmt, [fv=0], [type=0])` | number | present value: PV(rate, nper, pmt, \[fv\], \[type\]) |
+| `PMT(rate, nper, pv, [fv=0], [type=0])` | number | payment per period: PMT(rate, nper, pv, \[fv\], \[type\]) |
+| `IPMT(rate, per, nper, pv, [fv=0], [type=0])` | number | interest part of payment per: IPMT(rate, per, nper, pv, \[fv\], \[type\]) |
+| `PPMT(rate, per, nper, pv, [fv=0], [type=0])` | number | principal part of payment per: PPMT(rate, per, nper, pv, \[fv\], \[type\]) |
+| `NPER(rate, pmt, pv, [fv=0], [type=0])` | number | number of periods: NPER(rate, pmt, pv, \[fv\], \[type\]) |
+| `RATE(nper, pmt, pv, [fv=0], [type=0], [guess=0.1])` | number | rate per period (iterative): RATE(nper, pmt, pv, \[fv\], \[type\], \[guess\]) |
 | `CUMIPMT(rate, nper, pv, start_period, end_period, type)` | number | interest paid from period start to end: CUMIPMT(rate, nper, pv, start_period, end_period, type) (also `CUMIPMT_ADD`) |
 | `CUMPRINC(rate, nper, pv, start_period, end_period, type)` | number | principal paid from period start to end: CUMPRINC(rate, nper, pv, start_period, end_period, type) (also `CUMPRINC_ADD`) |
 | `ISPMT(rate, per, nper, pv)` | number | interest of period per with straight-line principal: ISPMT(rate, per, nper, pv) |
@@ -621,7 +621,7 @@ Rates are per period; cash flows are in item order along their `OVER` category.
 | `VDB(cost, salvage, life, start_period, end_period, [factor=2], [no_switch])` | number | declining balance between two periods: VDB(cost, salvage, life, start_period, end_period, \[factor=2\], \[no_switch\]) |
 | `AMORDEGRC(cost, date_purchased, first_period, salvage, period, rate, [basis])` | number | French degressive depreciation: AMORDEGRC(cost, date_purchased, first_period, salvage, period, rate, \[basis\]) |
 | `AMORLINC(cost, date_purchased, first_period, salvage, period, rate, [basis])` | number | French linear depreciation: AMORLINC(cost, date_purchased, first_period, salvage, period, rate, \[basis\]) |
-| `ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis], [calc_method])` | number | accrued interest of a periodic-coupon security: ACCRINT(issue, first_interest, settlement, rate, par, frequency, \[basis\], \[calc_method\]) |
+| `ACCRINT(issue, first_interest, settlement, rate, par, frequency, [basis=0], [calc_method=TRUE])` | number | accrued interest of a periodic-coupon security: ACCRINT(issue, first_interest, settlement, rate, par, frequency, \[basis\], \[calc_method\]) |
 | `ACCRINTM(issue, settlement, rate, [par=1000], [basis])` | number | accrued interest paid at maturity: ACCRINTM(issue, settlement, rate, \[par=1000\], \[basis\]) |
 | `COUPDAYBS(settlement, maturity, frequency, [basis])` | number | days from the coupon period's start to settlement |
 | `COUPDAYS(settlement, maturity, frequency, [basis])` | number | days in the coupon period holding settlement |

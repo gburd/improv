@@ -7123,6 +7123,36 @@ mod tests {
         }
     }
 
+    /// A named argument is stored in its parameter's place, so the bar
+    /// shows the positional call (skipped optional ones with their
+    /// defaults), which commits back to the same formula.
+    #[test]
+    fn named_arguments_print_positionally() {
+        let model = revenue_model();
+        for (text, shown) in [
+            ("ROUND(Price, num_digits => 2)", "ROUND(Price, 2)"),
+            (
+                "PMT(0.05, 12, Price, type => 1)",
+                "PMT(0.05, 12, Price, 0, 1)",
+            ),
+            (
+                "PREV(Quantity, Time, default => 0)",
+                "PREV(Quantity, Time, 1, 0)",
+            ),
+            (
+                "FIXPOINT(Price, LAMBDA(r, r / 2), max_iter => 5)",
+                "FIXPOINT(Price, LAMBDA(acc0, acc0 / 2), 5)",
+            ),
+        ] {
+            let mut app = build_app(model.clone());
+            app.commit_formula(MeasureId(102), text)
+                .unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert_eq!(app.formula_source(MeasureId(102)).as_deref(), Some(shown));
+            let named = parser::parse_expr(&model, text).unwrap();
+            assert_eq!(parser::parse_expr(&model, shown).unwrap(), named, "{text}");
+        }
+    }
+
     /// COALESCE, FILL, RELABEL and SWAP (category arguments) and FIXPOINT
     /// (its iterate prints as the LAMBDA parameter acc0) print as DSL that
     /// commits back to the same formula.
@@ -11847,7 +11877,7 @@ mod tests {
         assert!(texts.iter().any(|t| t == "Financial"), "{texts:?}");
         assert!(texts
             .iter()
-            .any(|t| t == "PMT(rate, nper, pv, [fv], [type])"));
+            .any(|t| t == "PMT(rate, nper, pv, [fv=0], [type=0])"));
         let insert = painted(&out.shapes, "Insert")
             .expect("Insert shown")
             .center();
@@ -11926,8 +11956,8 @@ mod tests {
             let texts = texts_of(&out);
             assert_eq!(buf(&app), text);
             for want in [
-                "PMT(rate, nper, pv, [fv], [type])",
-                "T(rate, nper, pv, [fv], [type])",
+                "PMT(rate, nper, pv, [fv=0], [type=0])",
+                "T(rate, nper, pv, [fv=0], [type=0])",
             ] {
                 assert!(
                     texts.iter().any(|s| s == want),
@@ -11945,12 +11975,12 @@ mod tests {
             let out = edit_frame(&ctx, &mut app, id, &mut t, Vec::new());
             let texts = texts_of(&out);
             assert!(
-                texts.iter().any(|s| s == "nper, pv, [fv], [type])"),
+                texts.iter().any(|s| s == "nper, pv, [fv=0], [type=0])"),
                 "{texts:?}"
             );
             assert!(texts
                 .iter()
-                .any(|s| s == "PMT(rate, nper, pv, [fv], [type])"));
+                .any(|s| s == "PMT(rate, nper, pv, [fv=0], [type=0])"));
         }
 
         // Up/Down select, Esc closes and Enter then commits.
