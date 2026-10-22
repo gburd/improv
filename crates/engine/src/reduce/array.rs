@@ -198,31 +198,53 @@ fn mode_mult(vals: &[CellValue]) -> List {
         .collect())
 }
 
-/// TEXTSPLIT(t, col_delimiter, [row_delimiter], [ignore_empty = FALSE]):
-/// the parts between delimiters (case-sensitive), every value's in item
-/// order. A row_delimiter other than "" is not supported yet (#VALUE!).
+/// TEXTSPLIT(t, col_delimiter, [row_delimiter = ""], [ignore_empty =
+/// FALSE], [match_mode = 0], [pad_with]): the parts between delimiters,
+/// every value's in item order; match_mode 1 matches the delimiter
+/// ignoring case (0 exactly, anything else #VALUE!). A row_delimiter other
+/// than "" is #VALUE! (a 2-D split needs a landing shape a reduction does
+/// not get); pad_with pads a 2-D split's short rows, so a 1-D split ignores
+/// it, as Excel's does.
 fn textsplit(vals: &[CellValue], params: &[CellValue]) -> List {
     let delim = t(params, 0)?;
     if params.len() > 1 && !t(params, 1)?.is_empty() {
         return Err(err::VALUE);
     }
     let ignore = params.len() > 2 && b(params, 2)?;
+    let fold = match params.get(3).map(|_| n(params, 3)).transpose()? {
+        None => false,
+        Some(m) if m.trunc() == 0.0 => false,
+        Some(m) if m.trunc() == 1.0 => true,
+        Some(_) => return Err(err::VALUE),
+    };
+    let key = |c: char| if fold { fold_char(c) } else { c };
+    let d: Vec<char> = delim.chars().map(key).collect();
     let mut out = Vec::new();
     for v in vals {
         let s = text_of(v)?;
         if s.is_empty() {
             return Err(err::VALUE);
         }
-        let parts: Vec<&str> = if delim.is_empty() {
-            vec![&s]
-        } else {
-            s.split(delim.as_str()).collect()
-        };
+        // Matched on the (folded) chars, cut from the original ones.
+        let chars: Vec<char> = s.chars().collect();
+        let keys: Vec<char> = chars.iter().copied().map(key).collect();
+        let mut parts: Vec<String> = Vec::new();
+        let (mut from, mut i) = (0, 0);
+        while !d.is_empty() && i + d.len() <= keys.len() {
+            if keys[i..i + d.len()] == d[..] {
+                parts.push(chars[from..i].iter().collect());
+                i += d.len();
+                from = i;
+            } else {
+                i += 1;
+            }
+        }
+        parts.push(chars[from..].iter().collect());
         out.extend(
             parts
                 .into_iter()
                 .filter(|p| !ignore || !p.is_empty())
-                .map(|p| CellValue::Text(p.into())),
+                .map(CellValue::Text),
         );
     }
     if out.is_empty() {
@@ -426,6 +448,35 @@ mod tests {
         assert_eq!(split(&[text("")]), [text("a,b,,c"), text(",x")]);
         // Rows are deferred: a row delimiter is refused.
         assert_eq!(split(&[text(","), text(";")]), [CellValue::Err(err::VALUE)]);
+        // match_mode 1 ignores case (non-ASCII too), 0 is exact, others
+        // #VALUE!; the parts keep their own case. pad_with is accepted.
+        let (no, mm) = (CellValue::Bool(false), |m: f64| n(m));
+        let mixed = col(&[text("aXbxcÄd")]);
+        let ms = |p: &[CellValue]| array(1259, &mixed, p);
+        assert_eq!(
+            ms(&[text("x"), text(""), no.clone(), mm(1.0)]),
+            ["a", "b", "cÄd"].map(text)
+        );
+        assert_eq!(
+            ms(&[text("x"), text(""), no.clone(), mm(0.0)]),
+            ["aXb", "cÄd"].map(text)
+        );
+        assert_eq!(
+            ms(&[text("ä"), text(""), no.clone(), mm(1.9)]),
+            ["aXbxc", "d"].map(text)
+        );
+        assert_eq!(
+            ms(&[text("x"), text(""), no.clone(), mm(2.0)]),
+            [CellValue::Err(err::VALUE)]
+        );
+        assert_eq!(
+            ms(&[text("x"), text(""), no.clone(), mm(0.0), text("-")]),
+            ["aXb", "cÄd"].map(text)
+        );
+        assert_eq!(
+            ms(&[text("XB"), text(""), no, mm(1.0)]),
+            ["a", "xcÄd"].map(text)
+        );
         assert_eq!(
             array(1259, &col(&[text("")]), &[text(",")]),
             [CellValue::Err(err::VALUE)]

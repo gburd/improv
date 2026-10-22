@@ -2454,6 +2454,10 @@ mod tests {
             "SUM(Price OVER Time WHERE Price > 1)",
         );
         same(
+            "TEXTSPLIT(Price, \",\", match_mode => 1 INTO Time)",
+            "TEXTSPLIT(Price, \",\", \"\", FALSE, 1 INTO Time)",
+        );
+        same(
             "LOGREG(Price, Quantity OVER Time, stats => TRUE INTO Time)",
             "LOGREG(Price, Quantity OVER Time, TRUE, TRUE INTO Time)",
         );
@@ -2497,11 +2501,6 @@ mod tests {
                 "LINEST(Price, Quantity OVER Time, stats => TRUE INTO Time)",
                 "LINEST takes its arguments by position",
                 34,
-            ),
-            (
-                "TEXTSPLIT(\"a\", \",\", ignore_empty => TRUE INTO Time)",
-                "row_delimiter (argument 3) has no default",
-                20,
             ),
             (
                 "REGEX(\"a\", \"b\", flags => \"g\")",

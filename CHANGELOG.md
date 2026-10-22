@@ -8,6 +8,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
+  `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
+  (match_mode 0 is exact, the default; any other value is `#VALUE!`).
+  `pad_with` is accepted; it pads the short rows of a 2-D split, and a
+  row delimiter is still `#VALUE!` (now a documented difference from
+  Excel, with the reason), so it changes nothing yet. Both were argument
+  count errors before. Goldens from Excel's documentation; LibreOffice
+  25.2 and Gnumeric have no `TEXTSPLIT`.
 - **`""` inside a text literal is one `"`**, as in Excel: `"say ""hi"""`
   is the text `say "hi"`. It was a parse error, so no formula changes
   meaning. The GUI formula bar prints such text the same way, so a formula

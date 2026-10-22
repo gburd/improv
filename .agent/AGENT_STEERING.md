@@ -18,6 +18,15 @@ operations runbooks), G man pages for every tool from a clap parser, H TUI/GUI
 review, I a web-GUI decision, J release engineering. Its "1.0.0 exit criteria"
 section is the bar; mark tasks done there as they land.
 
+Language (E): E1 exponent literals, E2 named arguments (`name => value`
+after the positional ones; none for a repeating parameter; a skipped
+optional takes its written default, one with none cannot be skipped;
+stored positionally), E3 the Differences from Excel, E4 the stability
+policy, and E5 (number to text in General form, case-insensitive
+`UNIQUE`, `""` in strings, `TEXTSPLIT` match_mode/pad_with, `LINEST`
+dropping collinear x's) are DONE. Only `TEXTSPLIT`'s row delimiter stays
+a documented difference.
+
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
 DONE on `main` (unreleased; see CHANGELOG "Unreleased"):

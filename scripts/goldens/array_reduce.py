@@ -146,6 +146,10 @@ many("E",
 
 # "ignore_empty ... Defaults to FALSE, which creates an empty cell": a
 # trailing delimiter too (LibreOffice drops the last empty part).
+# match_mode and pad_with: LibreOffice 25.8 has them, the 25.2 this was last
+# run with has no TEXTSPLIT, and Gnumeric has none; those rows (Excel's
+# docs: match_mode 1 is case-insensitive, pad_with pads a 2-D result) are
+# kept in the TSV by hand.
 lo("S", "TEXTSPLIT(C, \",\" INTO K)", excel=[
     ["a", "b", ""], ["one", None, None], ["", "x", ""], ["aXbxc", None, None], ["p", " q", " r"],
     [{"error": "#VALUE!"}, None, None], ["", "", ""]])

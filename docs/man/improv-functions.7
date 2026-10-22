@@ -719,8 +719,8 @@ the first match (#N/A if none); only return mode 0, modes 1 and 2 (arrays) are #
 \fBREGEXREPLACE(text, pattern, replacement, [occurrence=0], [case_sensitivity=0])\fR \(-> text
 replace every match (or the occurrence\-th, negative from the end) with $n\-style replacement text. Rust regex syntax
 .TP
-\fBTEXTSPLIT(text OVER T, col_delimiter, [row_delimiter], [ignore_empty=FALSE] INTO K)\fR \(-> text
-the parts of the text between col_delimiter matches (case\-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; empty text is #VALUE!
+\fBTEXTSPLIT(text OVER T, col_delimiter, [row_delimiter=""], [ignore_empty=FALSE], [match_mode=0], [pad_with] INTO K)\fR \(-> text
+the parts of the text between col_delimiter matches (case\-sensitive), in order; written without OVER, each cell splits on its own: TEXTSPLIT(Text, "," INTO Part). row_delimiter must be "" (splitting into rows is not supported yet); ignore_empty drops empty parts; match_mode 1 matches the delimiter ignoring case; pad_with is accepted (it pads only a 2\-D split); empty text is #VALUE!
 .TP
 \fBARRAYTOTEXT(array OVER T, [format=0])\fR \(-> text
 the values as text in item order: format 0 "1, 2, a", format 1 {1,2,"a"}

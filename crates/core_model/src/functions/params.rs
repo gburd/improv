@@ -560,7 +560,7 @@ pub(super) static PARAM_NAMES: &[(&str, &str)] = &[
     ("TEXTBEFORE", "text, delimiter, [instance_num=1], [match_mode=0], [match_end=0], [if_not_found]"),
     ("TEXTBETWEEN", "text, start_delimiter, end_delimiter"),
     ("TEXTJOIN", "delimiter, ignore_empty, values OVER T"),
-    ("TEXTSPLIT", "text OVER T, col_delimiter, [row_delimiter], [ignore_empty=FALSE] INTO K"),
+    ("TEXTSPLIT", "text OVER T, col_delimiter, [row_delimiter=\"\"], [ignore_empty=FALSE], [match_mode=0], [pad_with] INTO K"),
     ("TIME", "hour, minute, second"),
     ("TIMEVALUE", "time_text"),
     ("TREND", "known_ys, known_xs OVER T, [const=TRUE]"),

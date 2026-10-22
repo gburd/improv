@@ -690,9 +690,10 @@ Neither may appear inside a larger expression.
 Improv uses Excel's function names and, where it can, Excel's results. The
 items below are where it does not, each decided for 1.0: what Excel
 does, what Improv does, and why. Most come from the model itself, which
-has categories instead of a grid. The ones marked **follow-up** look
-accidental; each is a row (E5) in the road-to-1.0 plan, and the behavior
-described here stays until that row lands. The
+has categories instead of a grid. Five that looked accidental (number to
+text, `UNIQUE`'s case, `""` in a string, `TEXTSPLIT`'s options, `LINEST`
+with collinear x's) were aligned with Excel before 1.0; only `TEXTSPLIT`'s
+row delimiter stays, below, with its reason. The
 [stability policy](#language-stability) covers these items like the rest
 of the language.
 
@@ -829,12 +830,17 @@ of the language.
   its own category; the bins are almost always a few constants, and
   numbers keep the call on one line. The counts are Excel's: ≤ b1,
   (b1, b2], …, > bn.
-- **`TEXTSPLIT` keeps Excel's argument order**, `TEXTSPLIT(text,
-  col_delimiter, [row_delimiter], [ignore_empty])`, with `INTO` added, and
-  stops after `ignore_empty`: Excel's `match_mode` and `pad_with` are not
-  accepted. A `row_delimiter` other than `""` is `#VALUE!`, since a 2-D split
-  needs two categories. **Follow-up:** `match_mode`, `pad_with`, and rows
-  as a second `INTO` category.
+- **`TEXTSPLIT` splits into one list.** It keeps Excel's arguments,
+  `TEXTSPLIT(text, col_delimiter, [row_delimiter], [ignore_empty],
+  [match_mode], [pad_with])`, with `INTO` added; `match_mode => 1` matches
+  the delimiter ignoring case, as in Excel. A `row_delimiter` other than
+  `""` is `#VALUE!`, and so `pad_with`, which pads the short rows of a 2-D
+  result, never applies. A 2-D split would land on two categories (`INTO
+  R, C`), and a list result is laid there row-major in a fixed grid, so
+  each row would need as many columns as the widest, known only after the
+  split; a text with several rows is better split twice, by rows into one
+  category and then each row by columns. Since `#VALUE!` is an error
+  caused by the missing feature, a 1.x release may still add it.
 - **`SORT` and `UNIQUE` take one option.** `SORT(x OVER T, [sort_order])`
   has no `sort_index` or `by_col`, and `UNIQUE(x OVER T, [exactly_once])`
   has no `by_col`: a list has one column. Use `SORTBY` to sort by another
@@ -1052,7 +1058,7 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
 - no `EXCEPT` on a plain reference (only `OVER ALL EXCEPT …` inside an
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
-- `TEXTSPLIT` takes no row delimiter;
+- `TEXTSPLIT` takes no row delimiter (see Differences from Excel);
 - named LAMBDAs are defined with `improv define` (no GUI editor yet);
 - no `MMULT` or `LINSOLVE` function: a matrix product is a join and a sum
   (see Matrices); `FORECAST.ETS.CONFINT` is #N/A for seasonal models
