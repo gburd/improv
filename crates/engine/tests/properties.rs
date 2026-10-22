@@ -1312,7 +1312,7 @@ fn sort_is_a_sorted_permutation(tc: TestCase) {
 }
 
 /// UNIQUE keeps each value once, and only values of the input (with
-/// exactly_once, only those it holds once).
+/// exactly_once, only those it holds once); text ignores case.
 #[hegel::test(test_cases = 400, suppress_health_check = HealthCheck::all())]
 fn unique_has_no_duplicates(tc: TestCase) {
     let vals = plain_list(&tc);
@@ -1321,6 +1321,14 @@ fn unique_has_no_duplicates(tc: TestCase) {
         reduction("UNIQUE"),
         &column(&vals),
         &[CellValue::Bool(once)],
+    );
+    let fold = |v: &CellValue| match v {
+        CellValue::Text(s) => CellValue::Text(s.to_lowercase()),
+        v => v.clone(),
+    };
+    let (vals, out): (Vec<_>, Vec<_>) = (
+        vals.iter().map(fold).collect(),
+        out.iter().map(fold).collect(),
     );
     let count = |v: &CellValue| vals.iter().filter(|w| *w == v).count();
     if out == [CellValue::Err(builtins::err::NA)] {

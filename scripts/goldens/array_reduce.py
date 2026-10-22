@@ -110,6 +110,9 @@ many("A",
      "FREQUENCY(X OVER T, 2, 5 INTO K)", "FREQUENCY(X OVER T, 5, 2 INTO K)",
      "FREQUENCY(X OVER T, 1, 1, 4 INTO K)", "FREQUENCY(Y OVER T, 100 INTO K)",
      "FREQUENCY(X OVER T, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5 INTO K)")
+# UNIQUE ignores case and keeps the first spelling (Excel's docs: "not case
+# sensitive"; LibreOffice and Gnumeric agree).
+many("A", "UNIQUE(C OVER T INTO K)", "UNIQUE(C OVER T, TRUE INTO K)")
 # "Excel returns a #CALC! error to indicate an empty array" (DROP);
 # LibreOffice drops nothing.
 for k in ("8", "-9"):
@@ -153,7 +156,8 @@ many("S",
 
 
 M = "COM.MICROSOFT."
-p1.LO_NAMES = {n: M + n for n in ("FILTER", "SORTBY", "TAKE", "DROP", "TEXTSPLIT", "MODE.MULT")}
+p1.LO_NAMES = {n: M + n for n in ("FILTER", "SORTBY", "TAKE", "DROP", "TEXTSPLIT", "MODE.MULT",
+                                   "UNIQUE")}
 
 
 def col_name(i):

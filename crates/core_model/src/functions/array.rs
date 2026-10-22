@@ -11,7 +11,7 @@ const NUM: Ret = Ret::Fixed(ValueType::Number);
 #[rustfmt::skip]
 pub(super) static ARRAY: &[FnDef] = &[
     over(f(1250, "SORT", Kind::Array, D, &[A, N], 1, false, Ret::Unify, "the values in ascending order (descending when sort_order is -1)"), Over::At(&[0])),
-    over(f(1251, "UNIQUE", Kind::Array, D, &[A, B], 1, false, Ret::Unify, "each distinct value once, in item order (only values that occur once when exactly_once is TRUE)"), Over::At(&[0])),
+    over(f(1251, "UNIQUE", Kind::Array, D, &[A, B], 1, false, Ret::Unify, "each distinct value once (text ignoring case, in its first spelling), in item order (only values that occur once when exactly_once is TRUE)"), Over::At(&[0])),
     over(f(1252, "FILTER", Kind::Array, D, &[A, B, A], 2, false, Ret::Unify, "the values of array whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!)"), Over::At(&[0, 1])),
     over(f(1253, "SORTBY", Kind::Array, D, &[A, A, A], 2, true, Ret::Unify, "SORTBY(array, by_array1 OVER T, [sort_order1], [by_array2, sort_order2], …): the values of array sorted by by_array1, ties by by_array2, … (stable; a key descends when its order is -1)"), Over::AtEvery(&[0, 1], 3, 2)),
     over(f(1254, "TAKE", Kind::Array, D, &[A, N], 2, false, Ret::Unify, "the first rows values in item order (the last -rows when rows is negative)"), Over::At(&[0])),

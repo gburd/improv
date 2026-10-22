@@ -12,7 +12,7 @@
 //! included; only an error in `FILTER`'s include is the result.
 
 use super::Rows;
-use crate::builtins::{b, err, n, nums, t, text_of};
+use crate::builtins::{b, err, fold_char, n, nums, t, text_of};
 use crate::CellValue;
 use std::collections::HashMap;
 
@@ -60,13 +60,21 @@ fn of_values(id: u32, rows: &Rows, params: &[CellValue]) -> List {
         // UNIQUE(x OVER T, [exactly_once = FALSE]): first occurrences in item
         // order (or only the values that occur once).
         1251 => {
+            // Text ignores case, as in Excel; the first spelling is kept.
+            let key = |v: &CellValue| match v {
+                CellValue::Text(s) => CellValue::Text(s.chars().map(fold_char).collect()),
+                v => v.clone(),
+            };
+            let keys: Vec<CellValue> = vals.iter().map(key).collect();
             let once = matches!(params.first(), Some(CellValue::Bool(true)));
             let mut out: Vec<CellValue> = Vec::new();
-            for v in &vals {
-                let n = vals.iter().filter(|w| *w == v).count();
-                if !out.contains(v) && (!once || n == 1) {
+            let mut seen: Vec<&CellValue> = Vec::new();
+            for (v, k) in vals.iter().zip(&keys) {
+                let n = keys.iter().filter(|w| *w == k).count();
+                if !seen.contains(&k) && (!once || n == 1) {
                     out.push(v.clone());
                 }
+                seen.push(k);
             }
             if out.is_empty() {
                 // Every value repeats (exactly_once): the empty list.
@@ -461,6 +469,11 @@ mod tests {
         assert_eq!(array(1251, &v, &[]), [n(3.0), text("b"), n(1.0)]);
         let once = [CellValue::Bool(true)];
         assert_eq!(array(1251, &v, &once), [text("b"), n(1.0)]);
+        // Text ignores case (Excel, LibreOffice, Gnumeric): the first
+        // spelling stays, and with exactly_once "a" and "A" are a repeat.
+        let v = col(&[text("Fig"), text("ä"), text("fig"), text("Ä"), text("x")]);
+        assert_eq!(array(1251, &v, &[]), [text("Fig"), text("ä"), text("x")]);
+        assert_eq!(array(1251, &v, &once), [text("x")]);
     }
 
     #[test]

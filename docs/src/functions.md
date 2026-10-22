@@ -357,7 +357,7 @@ Functions of a cell's position in a category, and the ordered (previous/next, ru
 | `FIXPOINT(init, lambda, [max_iter=100], [tolerance=1e-10])` | the branches' type | FIXPOINT(init, LAMBDA(r, body), \[max_iter=100\], \[tolerance=1e-10\]): r = init, then r = body(r) until the cells change by at most tolerance in total (Σ|Δ|), or max_iter times (then the last iterate); a measure's whole formula |
 | `FILL(x, default)` | the branches' type | a cell at every item combination of x's categories: x where it has a cell, else the default |
 | `SORT(array OVER T, [sort_order=1] INTO K)` | the branches' type | the values in ascending order (descending when sort_order is -1) |
-| `UNIQUE(array OVER T, [exactly_once=FALSE] INTO K)` | the branches' type | each distinct value once, in item order (only values that occur once when exactly_once is TRUE) |
+| `UNIQUE(array OVER T, [exactly_once=FALSE] INTO K)` | the branches' type | each distinct value once (text ignoring case, in its first spelling), in item order (only values that occur once when exactly_once is TRUE) |
 | `FILTER(array, include OVER T, [if_empty] INTO K)` | the branches' type | the values of array whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!) |
 | `SORTBY(array, by_array1 OVER T, [sort_order1], … INTO K)` | the branches' type | SORTBY(array, by_array1 OVER T, \[sort_order1\], \[by_array2, sort_order2\], …): the values of array sorted by by_array1, ties by by_array2, … (stable; a key descends when its order is -1) |
 | `TAKE(array OVER T, rows INTO K)` | the branches' type | the first rows values in item order (the last -rows when rows is negative) |

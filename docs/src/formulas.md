@@ -763,9 +763,9 @@ of the language.
   usually comes from, and `<` is code-point order, as under
   `COLLATE "C"`: a test in `WHERE` or `IF` never matches text that only
   looks alike. `EXACT` behaves the same in both products. To compare
-  without case, write `UPPER(a) == UPPER(b)`. **Follow-up:**
-  `UNIQUE` keeps `"a"` and `"A"` apart, where Excel's ignores case; align
-  it with Excel.
+  without case, write `UPPER(a) == UPPER(b)`. `UNIQUE` ignores case too,
+  as in Excel, and keeps the first spelling: `"Fig"` and `"fig"` are one
+  value.
 - **Numbers are 64-bit floats, with no integer type and no 15-digit
   truncation.** Excel stores 15 significant digits and treats a result
   within an ulp or so of a "round" value as equal; Improv keeps the full
@@ -933,7 +933,7 @@ such as a more accurate summation, are listed the same way.
 
 The [Differences from Excel](#differences-from-excel) are part of the 1.0
 language and covered by this policy. A follow-up there that changes a valid
-formula's result (for example `UNIQUE`'s case, or number-to-text formatting) is a
+formula's result (as `UNIQUE`'s case and number-to-text formatting did) is a
 bug fix in the sense above and lands in a 1.x release with a **Fixed**
 entry; one that only accepts more (string escapes, more `TEXTSPLIT`
 options) is an addition.

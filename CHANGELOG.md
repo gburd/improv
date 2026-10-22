@@ -245,6 +245,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`UNIQUE` ignores case**, as Excel's does (and LibreOffice's and
+  Gnumeric's): `"Fig"` and `"fig"` are one value, kept in its first
+  spelling, and with `exactly_once` they count as a repeat. Before, text
+  differing only in case stayed apart: `UNIQUE` of `pear, Apple, fig,
+  apple, kiwi, Fig` was all six, now `pear, Apple, fig, kiwi`. Numbers,
+  booleans and dates are unchanged. Goldens in
+  `array_reduce_goldens.tsv`.
 - **Number to text uses Excel's General form.** A number joined to text
   (`"x" & n`, `CONCAT`, `TEXT(n, "General")`), shown in the grid, or
   returned by DuckDB's `improv_calc_text` switches to an exponent below

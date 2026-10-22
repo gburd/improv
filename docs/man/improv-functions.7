@@ -964,7 +964,7 @@ a cell at every item combination of x's categories: x where it has a cell, else 
 the values in ascending order (descending when sort_order is \-1)
 .TP
 \fBUNIQUE(array OVER T, [exactly_once=FALSE] INTO K)\fR \(-> the branches' type
-each distinct value once, in item order (only values that occur once when exactly_once is TRUE)
+each distinct value once (text ignoring case, in its first spelling), in item order (only values that occur once when exactly_once is TRUE)
 .TP
 \fBFILTER(array, include OVER T, [if_empty] INTO K)\fR \(-> the branches' type
 the values of array whose include is TRUE, in item order; if none, if_empty (else #N/A: Excel's #CALC!)

@@ -31,6 +31,8 @@ A	FREQUENCY(X OVER T, 5, 2 INTO K)	[[3.0, 3.0, 2.0, null, null, null]]	LibreOffi
 A	FREQUENCY(X OVER T, 1, 1, 4 INTO K)	[[0.0, 2.0, 3.0, 3.0, null, null]]	LibreOffice
 A	FREQUENCY(Y OVER T, 100 INTO K)	[[8.0, 0.0, null, null, null, null]]	LibreOffice
 A	FREQUENCY(X OVER T, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5 INTO K)	[[0.0, 2.0, 1.0, 1.0, 1.0, 1.0]]	LibreOffice
+A	UNIQUE(C OVER T INTO K)	[["pear", "Apple", "fig", "kiwi", "date", "plum"]]	LibreOffice and Gnumeric
+A	UNIQUE(C OVER T, TRUE INTO K)	[["pear", "kiwi", "date", "plum", null, null]]	LibreOffice and Gnumeric
 A	DROP(X OVER T, 8 INTO K)	[[{"error": "#N/A"}, null, null, null, null, null]]	Excel docs
 A	DROP(X OVER T, -9 INTO K)	[[{"error": "#N/A"}, null, null, null, null, null]]	Excel docs
 A	LINEST(Y, U OVER T INTO K)	[[0, 4.6875, null, null, null, null]]	Excel docs
