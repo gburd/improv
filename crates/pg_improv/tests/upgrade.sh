@@ -94,6 +94,10 @@ for from in "$@"; do
 	         AND (c.relname = 'model' OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'model_id'))
 	         AND NOT (c.relrowsecurity AND EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid AND p.polname = 'write'))")" 0 \
 		"every catalog table has row-level security after the update"
+	# Items, input cells and state are data: readable only by those who may act as the owner.
+	eq "$(q "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+	         WHERE c.relnamespace = 'improv'::regnamespace AND p.polname = 'read' AND pg_get_expr(p.polqual, p.polrelid) <> 'true'")" \
+		cell,item,meta "the owner-only read policies after the update"
 	eq "$(q "SELECT count(*) FROM pg_trigger WHERE tgname = 'check_owner' AND tgrelid = 'improv.model'::regclass")" 1 "the owner trigger after the update"
 	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"

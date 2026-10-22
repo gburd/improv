@@ -76,6 +76,21 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **pg_improv: `what_if` is for those who may act as the model's owner,
+  and computes as the owner.** It read as its caller, so a caller who saw
+  other rows than the owner got deltas that came from what they could see,
+  not from their edits. Once items became owner-only it would have
+  returned nothing. Other roles now get `permission denied for improv
+  model "m": what_if needs to act as its owner, alice (see Privileges)`.
+  It then reads the bound and result tables as the owner, as `recalc`
+  does. To give a role `what_if`, the owner either grants membership
+  (`GRANT alice TO analyst WITH INHERIT FALSE, SET TRUE` on PG 16+, `GRANT
+  alice TO analyst` on 15), which also lets the role change the owner's
+  models, or creates a `SECURITY DEFINER` wrapper for one model and grants
+  `EXECUTE` on it, which gives `what_if` on that model and nothing else.
+  Either way the role sees results computed from what the owner can read.
+  The pg_improv README's Privileges section has the wrapper's text.
+
 - **`improv` parses its arguments with clap.** Every invocation that worked
   still works, with the same output (a test, `crates/cli/tests/compat.rs`,
   pins them). What changed: `--help` and `improv help <command>` are clap's,
@@ -268,8 +283,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   `search_path` pinned), in the worker, in trigger and commit mode (which
   ran as the writing role), in `define` and in `recalc` (which ran as the
   caller). A worker apply whose owner lost SELECT fails with a
-  `last_error` naming the columns. `what_if` still reads as its caller.
-  Only a role that may act as a model's owner (a superuser, or a member
+  `last_error` naming the columns. `what_if` reads as the owner too (see
+  Changed). Only a role that may act as a model's owner (a superuser, or a member
   with `SET`, the rule of `ALTER TABLE … OWNER TO`) may change the model or
   its owner: row-level security on every `improv.*` table, and a trigger on
   the owner. Before, anyone who could write the catalog could point a model
@@ -279,6 +294,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   roles only. A restore of the catalog runs as a superuser, as before, or
   as a role that may act as every model's owner (`pg_dump
   --enable-row-security --inserts`).
+- **A model's items are readable only by those who may act as its owner.**
+  `improv.item` holds the distinct values of every bound category column:
+  the bound tables' keys. Its read policy was `USING (true)`, so any role
+  with USAGE on schema `improv` could list the keys of a table it could
+  not read. It now has the same owner-only policy as `improv.cell` and
+  `improv.meta`, in a fresh install and in `ALTER EXTENSION pg_improv
+  UPDATE` alike.
 - **Writers no longer need privileges on schema `improv`.** With the
   library preloaded, any write by a role without USAGE on `improv` failed
   ("permission denied for schema improv": the commit hook looked up the

@@ -134,7 +134,7 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `recalc(model) → bigint` | Recomputes every derived measure in the caller's transaction and returns the number of result rows inserted, updated or deleted. |
 | `recalc(model, measures text[]) → bigint` | Recomputes only the named measures (input or derived, case-insensitive) and every derived measure that depends on them. `NULL` means all. |
 | `set_sync_mode(model, mode text)` | `trigger`: installs the sync triggers on every bound relation and recomputes once (re-run it after binding a new relation). `commit`: recomputes once, then once per writing transaction before it commits; needs the preload. `logical`/`manual`: removes the triggers. |
-| `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value jsonb)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. When every edit has the same categories and the measures they feed are element-wise, it loads and compares only the edited coordinates, as trigger mode does. |
+| `what_if(model, edits jsonb) → TABLE(measure text, coord jsonb, value jsonb)` | Evaluates the model with `edits` applied in memory and returns the derived cells that differ from the stored results (`value` NULL: the cell would vanish). Writes nothing. When every edit has the same categories and the measures they feed are element-wise, it loads and compares only the edited coordinates, as trigger mode does. Only a role that may act as the model's owner may call it, and it reads as the owner (see [Privileges](#privileges), which shows how to give it to other roles). |
 | `enable_logical(model)` | Adds the model's bound relations to the database's publication `improv_db` and gives PK-less ones `REPLICA IDENTITY FULL`. Called for you by `bind_measure` and `set_sync_mode(…, 'logical')`. The worker creates the slot. |
 | `sync_publication()` | Sets `improv_db` to the union of the relations every logical-mode model binds (creating it when missing). Called for you by every function that changes that set; run it by hand to repair a publication edited by hand. |
 | `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error, incremental_applies, rebuilds)` | How the model is kept current, how far the logical worker is behind, and how it applied its batches: `incremental_applies` to the live engine, `rebuilds` full loads (the first catch-up, structural changes, and what it could not apply incrementally). |
@@ -659,8 +659,12 @@ owner controls (a policy, a default) from changing the caller's session.
 In a writer's trigger or commit the catalog lookups (`improv.*`) run as
 the bootstrap superuser, so writers need no privilege on schema `improv`.
 
-`what_if` reads as its caller: it writes nothing, and returns only what the
-caller could compute from what it can read.
+`what_if` needs the caller to be able to **act as the owner** (below), and
+reads the bound and result tables as the owner, as `recalc` does: it
+computes what the owner would see, so its deltas come from the edits alone.
+Anyone else gets "permission denied for improv model "m": what_if needs to
+act as its owner, alice (see Privileges)". To give it to other roles, see
+[Giving others `what_if`](#giving-others-what_if).
 
 In logical mode the decoded WAL carries every row, so the worker checks
 the owner may still read each bound column before applying a batch; when
@@ -688,10 +692,10 @@ on every `improv.*` table enforces it, through the API functions (all
 | | anyone with USAGE on `improv` | who may act as the owner |
 |---|---|---|
 | read a model's names, bindings, formulas, `status` | yes | yes |
-| read its input cells (`improv.cell`) and state (`improv.meta`) | no | yes |
+| read its items (`improv.item`: the bound tables' keys), input cells (`improv.cell`) and state (`improv.meta`) | no (0 rows) | yes |
 | `bind_*`, `define`, `drop_*`, `set_sync_mode`, `recalc`, `drop_model` | no ("permission denied for improv model") | yes |
 | `INSERT`, `UPDATE`, `DELETE` its catalog rows | no (refused, or 0 rows) | yes |
-| `what_if` | yes, reading its tables as the caller | yes |
+| `what_if` | no ("permission denied … what_if needs to act as its owner"); a wrapper the owner grants (below) | yes, computing as the owner |
 
 A writer needs none of this: a writer's trigger and commit read the
 catalog as the bootstrap superuser, and the sync worker is one, so any
@@ -707,6 +711,47 @@ model's owner with `UPDATE improv.model SET owner = 'role' WHERE name =
 'model'`, and its result tables' with `ALTER TABLE
 improv_<model>.<measure> OWNER TO role` (and `ALTER SCHEMA improv_<model>
 OWNER TO role`).
+
+### Giving others `what_if`
+
+`what_if` reveals what its owner can read: the deltas are computed from
+the owner's rows, at the owner's items. Granting it is granting that.
+There are two ways to do it:
+
+**(a) Membership in the owner, with SET.** On PG 16+:
+
+```sql
+GRANT alice TO analyst WITH INHERIT FALSE, SET TRUE;   -- PG 15: GRANT alice TO analyst;
+```
+
+`analyst` may then call `improv.what_if` on every model `alice` owns. But
+anyone who may act as the owner may also **change** the owner's models
+(`define`, `bind_*`, `recalc`, `drop_model`) and `SET ROLE alice`, so
+this grants everything `alice` may do. Use it for co-owners.
+
+**(b) A wrapper the owner creates, for one model.** As `alice`:
+
+```sql
+CREATE SCHEMA alice_api;
+CREATE FUNCTION alice_api.what_if_plan(edits jsonb)
+RETURNS TABLE (measure text, coord jsonb, value jsonb)
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS $$ SELECT w.measure, w.coord, w.value FROM improv.what_if('plan', edits) AS w $$;
+REVOKE ALL ON FUNCTION alice_api.what_if_plan(jsonb) FROM PUBLIC;
+GRANT USAGE ON SCHEMA alice_api TO analyst;
+GRANT EXECUTE ON FUNCTION alice_api.what_if_plan(jsonb) TO analyst;
+```
+
+The function runs as `alice`, its owner, so it passes `what_if`'s check.
+`analyst` gets `what_if` on `plan` and nothing else: it cannot read
+`plan`'s items or cells, change it, or reach another model, and it needs
+no privilege on schema `improv`. The edits are the caller's input. The
+model name is fixed in the body, so the wrapper must not take the model
+as an argument. The pinned `search_path` keeps a caller's schemas out of
+the definer's call. `REVOKE … FROM PUBLIC` matters because functions are
+executable by PUBLIC by default. Revoke `EXECUTE` to take it back.
+Prefer (b) for read-only analysts. `tests/privileges.sh` runs this
+function as a role with `EXECUTE` alone.
 
 **Restores.** A restore re-inserts every catalog row with row-level
 security and the owner trigger on. Restore as a superuser (as usual). A

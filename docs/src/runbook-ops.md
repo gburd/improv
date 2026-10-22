@@ -318,6 +318,36 @@ slot. 0.11 refuses it (D12).
 **Fix.** Use `trigger`, `commit` or `manual` in that database, or move the
 model ([runbook](./runbook-backup.md#moving-a-model-to-another-database)).
 
+## Permission denied for an improv model
+
+**Symptom.** A role gets `permission denied for improv model "m": only a
+superuser or a member of its owner, alice, may change it` (from `define`,
+`bind_*`, `recalc`, `set_sync_mode`, `drop_*`), or `… what_if needs to
+act as its owner, alice (see Privileges)`. Or it reads 0 rows from
+`improv.item` or `improv.cell` for a model it can see in `improv.model`.
+
+**Cause.** Since 0.11.0 only a role that may act as a model's owner (a
+superuser, or a member of the owner with `SET`; any member on PG 15)
+changes the model, runs `what_if` on it, or reads its items and cells.
+Writers to bound tables are unaffected.
+
+**Diagnosis.**
+
+```sql
+SELECT owner, improv.may_act_as(owner) FROM improv.model WHERE name = '<m>';
+```
+
+**Fix.** The model's owner decides. To let a co-owner change the model,
+`GRANT alice TO <role> WITH INHERIT FALSE, SET TRUE` (PG 15: `GRANT alice
+TO <role>`). To give a read-only analyst `what_if` on one model and
+nothing else, the owner creates a `SECURITY DEFINER` wrapper and grants
+`EXECUTE` on it. The text is in the pg_improv README's
+[Privileges](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#giving-others-what_if).
+Either way the role sees results computed from what the owner can read.
+
+**Check.** The diagnosis query returns `t` for the role (option a), or
+the role's call to the wrapper returns rows (option b).
+
 ## An upgrade went wrong
 
 **Symptom.** After installing a new release: `ALTER EXTENSION pg_improv

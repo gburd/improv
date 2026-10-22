@@ -17,9 +17,11 @@
 #   4. only those who may act as a model's owner change the model: bob may
 #      not bind a table into alice's model, redefine a result she shared
 #      with him, recalc it, or change its catalog rows by hand (row-level
-#      security on improv.*), nor read its input cells; alice and a member
-#      of alice may; a writer who is not the owner still drives trigger,
-#      commit and logical sync
+#      security on improv.*), nor read its items or input cells, nor
+#      what_if it; alice and a member of alice with SET may; a SECURITY
+#      DEFINER wrapper alice owns gives bob what_if on her model and nothing
+#      else; a writer who is not the owner still drives trigger, commit and
+#      logical sync
 #   5. a restore of the catalog by the models' owner or a superuser loads
 #      it; one by a role that may not own them is refused
 # Usage: tests/privileges.sh
@@ -212,30 +214,75 @@ eq "$(q "SELECT count(*) FROM improv.binding b JOIN improv.model m ON m.id = b.m
 eq "$(U=bob q "SELECT formula FROM improv.measure m JOIN improv.model o ON o.id = m.model_id WHERE o.name = 'p' AND m.name = 'W'")" "W = V * 1" "bob reads alice's formulas"
 eq "$(U=bob q "SELECT sync_mode FROM improv.status('p')")" manual "bob reads alice's model status"
 q "INSERT INTO improv.cell (model_id, measure_id, coord, value) SELECT id, 1, '{}', '7' FROM improv.model WHERE name = 'p'"
-eq "$(U=alice q "SELECT count(*) FROM improv.cell c JOIN improv.model m ON m.id = c.model_id WHERE m.name = 'p'")" 1 "alice reads her cells"
-eq "$(U=bob q "SELECT count(*) FROM improv.cell c JOIN improv.model m ON m.id = c.model_id WHERE m.name = 'p'")" 0 "bob does not read alice's cells"
+CELLS="SELECT count(*) FROM improv.cell c JOIN improv.model m ON m.id = c.model_id WHERE m.name = 'p'"
+ITEMS="SELECT count(*) FROM improv.item i JOIN improv.model m ON m.id = i.model_id WHERE m.name = 'p'"
+eq "$(U=alice q "$CELLS")" 1 "alice reads her cells"
+eq "$(U=bob q "$CELLS")" 0 "bob does not read alice's cells"
 q "DELETE FROM improv.cell WHERE model_id = (SELECT id FROM improv.model WHERE name = 'p')"
-echo "ok: bob may not bind, define, recalc, re-mode or drop alice's model, nor change its catalog rows by hand or read its cells"
+# Items are the bound tables' keys: data too.
+eq "$(U=alice q "$ITEMS")" 1 "alice reads her items"
+eq "$(U=bob q "$ITEMS")" 0 "bob does not read alice's items"
+# Nor learns them through the minter: its insert is refused before any conflict check.
+denied bob "SELECT * FROM improv.mint_items((SELECT id FROM improv.model WHERE name = 'p'), ARRAY[1]::int8[], ARRAY['a'])" \
+	"bob mints into alice's model"
+# what_if evaluates the owner's data: only those who may act as the owner.
+WI="SELECT string_agg(measure || ' ' || coord::text || ' ' || value::text, '; ' ORDER BY measure) FROM"
+EDIT="'[{\"measure\": \"V\", \"coord\": {\"K\": \"a\"}, \"value\": 5}]'"
+eq "$(U=alice q "$WI improv.what_if('p', $EDIT)")" 'W {"K": "a"} 5' "alice's what_if"
+err=$(U=bob q "$WI improv.what_if('p', $EDIT)" 2>&1) && fail "bob's what_if on alice's model: allowed"
+case $err in *'permission denied for improv model "p": what_if needs to act as its owner, alice (see Privileges)'*) ;;
+	*) fail "bob's what_if on alice's model: $err" ;; esac
+echo "ok: bob may not bind, define, recalc, re-mode or drop alice's model, nor change its catalog rows by hand, read its items or cells, or what_if it"
 # alice herself, and carol, a member of alice (with SET), change it.
 U=alice q "SELECT improv.bind_category('p','K','priv','k')"
 U=alice q "SELECT improv.bind_measure('p','S','priv','v')"
 U=alice q "SELECT improv.define('p','T = S * 1')" >/dev/null
 U=alice q "SELECT improv.recalc('p')" >/dev/null
 eq "$(q "SELECT value FROM improv_p.t")" 42 "alice binds a table she reads into her model"
-q "CREATE ROLE carol LOGIN; GRANT alice TO carol; GRANT USAGE ON SCHEMA improv TO carol"
+PG16=$(q "SELECT current_setting('server_version_num')::int >= 160000")
+# carol is granted alice as Privileges' option (a) says: SET without INHERIT
+# on PG 16+, so she reads nothing of alice's herself.
+if [ "$PG16" = t ]; then q "CREATE ROLE carol LOGIN; GRANT alice TO carol WITH INHERIT FALSE, SET TRUE"
+else q "CREATE ROLE carol LOGIN; GRANT alice TO carol"; fi
+q "GRANT USAGE ON SCHEMA improv TO carol"
 q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO carol; GRANT USAGE ON ALL SEQUENCES IN SCHEMA improv TO carol"
+[ "$PG16" = t ] && { U=carol q "SELECT count(*) FROM pub" >/dev/null 2>&1 && fail "carol (INHERIT FALSE) reads pub"; }
+eq "$(U=carol q "$WI improv.what_if('p', $EDIT)")" 'W {"K": "a"} 5' "carol's what_if, as alice"
 U=carol q "SELECT improv.define('p','U = V * 2')" >/dev/null
 U=carol q "SELECT improv.recalc('p')" >/dev/null
 eq "$(q "SELECT value FROM improv_p.u")" 2 "carol, a member of alice, changes alice's model"
-if [ "$(q "SELECT current_setting('server_version_num')::int >= 160000")" = t ]; then
+if [ "$PG16" = t ]; then
 	# A member without SET may not act as alice (PG 16+, as ALTER ... OWNER TO).
 	q "CREATE ROLE dave LOGIN; GRANT alice TO dave WITH SET FALSE, INHERIT FALSE; GRANT USAGE ON SCHEMA improv TO dave"
 	q "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA improv TO dave"
 	denied dave "SELECT improv.define('p','X = V * 3')" "dave, a member of alice without SET"
-	echo "ok: alice and carol (a member of alice) change her model; dave (a member without SET) may not"
+	U=dave q "$WI improv.what_if('p', $EDIT)" >/dev/null 2>&1 && fail "dave, a member of alice without SET, runs what_if"
+	echo "ok: alice and carol (a member of alice with SET) change her model and what_if it; dave (a member without SET) may not"
 else
-	echo "ok: alice and carol (a member of alice) change her model"
+	echo "ok: alice and carol (a member of alice) change her model and what_if it"
 fi
+# Privileges' option (b): alice wraps what_if on p, and grants EXECUTE on it.
+# (The README's function text, for model p and analyst bob.)
+U=alice q "CREATE SCHEMA alice_api"
+U=alice q "CREATE FUNCTION alice_api.what_if_p(edits jsonb)
+RETURNS TABLE (measure text, coord jsonb, value jsonb)
+LANGUAGE sql SECURITY DEFINER SET search_path = pg_catalog, pg_temp
+AS \$\$ SELECT w.measure, w.coord, w.value FROM improv.what_if('p', edits) AS w \$\$;
+REVOKE ALL ON FUNCTION alice_api.what_if_p(jsonb) FROM PUBLIC;
+GRANT USAGE ON SCHEMA alice_api TO bob;
+GRANT EXECUTE ON FUNCTION alice_api.what_if_p(jsonb) TO bob"
+eq "$(U=bob q "$WI alice_api.what_if_p($EDIT)")" 'U {"K": "a"} 10; W {"K": "a"} 5' "bob's what_if through alice's wrapper"
+eq "$(U=bob q "$ITEMS")" 0 "bob still does not read alice's items"
+eq "$(U=bob q "$CELLS")" 0 "bob still does not read alice's cells"
+U=bob q "$WI improv.what_if('p', $EDIT)" >/dev/null 2>&1 && fail "bob's what_if on alice's model, past the wrapper"
+# erin has EXECUTE on the wrapper and nothing on schema improv at all.
+q "CREATE ROLE erin LOGIN"
+U=alice q "GRANT USAGE ON SCHEMA alice_api TO erin; GRANT EXECUTE ON FUNCTION alice_api.what_if_p(jsonb) TO erin"
+eq "$(U=erin q "$WI alice_api.what_if_p($EDIT)")" 'U {"K": "a"} 10; W {"K": "a"} 5' "erin's what_if through alice's wrapper"
+U=erin q "SELECT count(*) FROM improv.item" >/dev/null 2>&1 && fail "erin reads improv.item"
+U=alice q "REVOKE EXECUTE ON FUNCTION alice_api.what_if_p(jsonb) FROM bob"
+U=bob q "$WI alice_api.what_if_p($EDIT)" >/dev/null 2>&1 && fail "bob's what_if through the wrapper after REVOKE"
+echo "ok: a SECURITY DEFINER wrapper alice owns gives bob and erin what_if on her model p, and nothing else"
 # A writer who is not the owner (bob) still drives every sync mode: the
 # trigger and the commit hook read the catalog as the bootstrap superuser,
 # the worker is one, and the model reads pub as alice.

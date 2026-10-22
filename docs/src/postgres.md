@@ -192,9 +192,15 @@ member of the owner with `SET`) may change the model, or its owner:
 row-level security on the `improv.*` tables enforces it, by the API and
 by direct DML alike, so no one can make a model read, as a role that sees
 more than they do, what they cannot. Its names and formulas stay readable;
-its input cells are readable by the same roles only. `what_if` reads as its caller. See the
+its items (the bound tables' keys) and input cells are readable by the same
+roles only. `what_if` is theirs too: it computes as the owner, so its
+results reveal what the owner can read. Give it to an analyst with a
+`SECURITY DEFINER` wrapper the owner creates for one model, which grants
+`what_if` on that model and nothing else, or by `GRANT alice TO analyst
+WITH INHERIT FALSE, SET TRUE`, which also lets the analyst change alice's
+models. See the
 [pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#privileges)
-for the mechanism.
+for the mechanism and the wrapper's text.
 
 ## Durability
 

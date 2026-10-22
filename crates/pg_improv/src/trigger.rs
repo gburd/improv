@@ -65,9 +65,8 @@ type Touched<'a> = (&'a [CategoryId], &'a [Vec<Option<String>>]);
 /// [`load`] onto `model` (the catalog's), reading each binding only at the
 /// `touched` rows' coordinates when given ([`pm::scope_filter`]): an
 /// aggregated binding then loads only those coordinates' groups. Valid only
-/// when the recompute is restricted to them too ([`pm::scopable`]). A
-/// `persist` load (a sync or a recalc) reads the bound tables as the
-/// model's owner; `what_if`'s reads as its caller.
+/// when the recompute is restricted to them too ([`pm::scopable`]). Reads the bound
+/// tables as the model's owner.
 fn load_scoped(
     name: String,
     mut model: Model,
@@ -103,11 +102,7 @@ fn load_scoped(
         })
         .collect::<Res<_>>()
     })?;
-    let owner = if persist {
-        super::owner::owner_of(mid)?
-    } else {
-        None
-    };
+    let owner = super::owner::owner_of(mid)?;
     let bound = super::owner::as_role(owner, || read_bound(&model, bindings, touched))?;
     if persist {
         mint_items(mid, &mut model, &bound)?;
@@ -518,7 +513,9 @@ pub(crate) fn recompute_all(mid: i64, name: &str) -> Res<i64> {
 /// Evaluate `model` with `edits` applied to its input cells in memory and
 /// return the derived cells that differ from the stored results (`value`
 /// NULL: the cell would vanish; else JSON of the measure's type, a datetime
-/// as an RFC 3339 string). Writes nothing.
+/// as an RFC 3339 string). Writes nothing. Only a role that may act as the
+/// model's owner may call it; it reads the bound and result tables as the
+/// owner, as `recalc` does.
 #[pg_extern(security_invoker)]
 fn what_if(
     model: &str,
@@ -554,6 +551,24 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
         Ok((req(&r, 1)?, req(&r, 2)?))
     })?;
     pm::validate_name("model", &name)?;
+    // Its items, cells and tables are the owner's data: without this check a
+    // caller would see none of its items (row-level security) and get
+    // nothing, or a misleading delta, back.
+    let owner = super::owner::owner_of(mid)?;
+    if let Some(o) = owner {
+        let (role, may) = Spi::get_two_with_args::<String, bool>(
+            "SELECT r::text, improv.may_act_as(r) FROM (SELECT $1::regrole AS r) s",
+            &[o.into()],
+        )?;
+        if may != Some(true) {
+            return Err(format!(
+                "permission denied for improv model {name:?}: what_if needs to act as its \
+                 owner, {} (see Privileges)",
+                role.unwrap_or_default()
+            )
+            .into());
+        }
+    }
     let text = edits.0.to_string();
     let model = pm::build_model(&read_catalog(mid)?)?;
     // Edits of one category set, under an element-wise chain, reach only
@@ -602,11 +617,14 @@ fn what_if_rows(model: &str, edits: &JsonB) -> Res<Vec<WhatIfRow>> {
         let mname = l.model.measures[&target].name.0.clone();
         pm::validate_name("measure", &mname)?;
         let table = pm::result_table(&l.name, &mname);
-        let mut old = if exists(&table)? {
-            read_results(&table, &dims, l.model.measures[&target].value_type)?
-        } else {
-            Default::default()
-        };
+        let vt = l.model.measures[&target].value_type;
+        let mut old = super::owner::as_role(owner, || {
+            Ok(if exists(&table)? {
+                read_results(&table, &dims, vt)?
+            } else {
+                Default::default()
+            })
+        })?;
         if let Some(s) = &plan.scope {
             s.retain_rows(&l.model, target, &mut old)?;
             s.retain_rows(&l.model, target, &mut new)?;
@@ -1221,5 +1239,24 @@ mod tests {
         assert!(e.to_string().contains("array"), "{e}");
         let e = crate::trigger::what_if_rows("nope", &obj).unwrap_err();
         assert!(e.to_string().contains("does not exist"), "{e}");
+        // A role that may not act as the owner is refused, not shown nothing.
+        let owner = text("SELECT owner::text FROM improv.model WHERE name = 'plan'");
+        Spi::run(
+            "CREATE ROLE wi_other; GRANT USAGE ON SCHEMA improv TO wi_other; \
+             GRANT SELECT ON ALL TABLES IN SCHEMA improv TO wi_other; SET ROLE wi_other",
+        )
+        .unwrap();
+        let none = Spi::get_one::<pgrx::JsonB>("SELECT '[]'::jsonb")
+            .unwrap()
+            .unwrap();
+        let e = crate::trigger::what_if_rows("plan", &none).unwrap_err();
+        Spi::run("RESET ROLE").unwrap();
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "permission denied for improv model \"plan\": what_if needs to act as its \
+                 owner, {owner} (see Privileges)"
+            )
+        );
     }
 }

@@ -141,12 +141,12 @@ END $$;
 CREATE TRIGGER check_owner BEFORE INSERT OR UPDATE OF owner ON improv.model
   FOR EACH ROW EXECUTE FUNCTION improv.check_owner();
 -- Row-level security on the catalog: a model's rows are read by anyone who
--- may use schema improv (names and formulas: status, what_if and the GUI
--- read them), and changed only by those who may act as its owner. Input
--- cells (improv.cell) and a model's other state (improv.meta: scenario
--- overrides, SQL sources) are data, read only by them too. A superuser, the
--- sync worker and a writer's trigger or commit (which reads the catalog as
--- the bootstrap superuser) bypass it.
+-- may use schema improv (names and formulas: status reads them), and
+-- changed only by those who may act as its owner. Its items (improv.item:
+-- the bound tables' keys), input cells (improv.cell) and other state
+-- (improv.meta: scenario overrides, SQL sources) are data, read only by
+-- them too. A superuser, the sync worker and a writer's trigger or commit
+-- (which reads the catalog as the bootstrap superuser) bypass it.
 ALTER TABLE improv.model ENABLE ROW LEVEL SECURITY;
 CREATE POLICY read ON improv.model FOR SELECT USING (true);
 CREATE POLICY write ON improv.model USING (improv.may_act_as(owner));
@@ -155,7 +155,7 @@ CREATE POLICY read ON improv.category FOR SELECT USING (true);
 CREATE POLICY write ON improv.category USING (improv.may_act_as((SELECT m.owner FROM improv.model m
   WHERE m.id OPERATOR(pg_catalog.=) model_id)));
 ALTER TABLE improv.item ENABLE ROW LEVEL SECURITY;
-CREATE POLICY read ON improv.item FOR SELECT USING (true);
+CREATE POLICY read ON improv.item FOR SELECT USING (improv.may_act_as((SELECT m.owner FROM improv.model m WHERE m.id OPERATOR(pg_catalog.=) model_id)));
 CREATE POLICY write ON improv.item USING (improv.may_act_as((SELECT m.owner FROM improv.model m
   WHERE m.id OPERATOR(pg_catalog.=) model_id)));
 ALTER TABLE improv.measure ENABLE ROW LEVEL SECURITY;
