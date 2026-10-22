@@ -55,6 +55,17 @@ GUI on a headless Xvfb with a fixed demo model and writes
 `target/gui-shot/gui.png` and `compare.png` (beside the NeXT reference) for
 visual review. Missing X tools come from `nix shell`. See `--help`.
 
+### pg_improv's upgrade test
+
+`crates/pg_improv/tests/upgrade.sh` updates a database from every released
+version (the `v*` tags that ship pg_improv) to the tree's, on the major of
+`PG_CONFIG`. `ci/pg_improv.sh` runs it on each major. It builds each old
+release once into `PGI_OLD_CACHE` (default `~/.cache/pgi-old/<version>/<major>`:
+the `.so`, `.control` and `.sql` files; CI keeps it in `actions/cache`), so a
+cold cache costs about a minute per release and a warm run about 7 s each.
+A release adds its update script to `sql/`; the test fails if a released
+version has no chain of scripts to the new one.
+
 ## Coverage
 
 Every crate must keep **>= 90% of functions and >= 90% of branches**

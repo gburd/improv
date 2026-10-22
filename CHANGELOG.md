@@ -36,6 +36,21 @@ this project follows [Semantic Versioning](https://semver.org/).
   floor) it says what is stable, what a 1.x minor may add, and how a
   deprecation works. The pg_improv catalog tables are internal, and the
   Rust crates are not a stable API in 1.x (J2 first).
+- **pg_improv's upgrade test covers every release on every major.**
+  `tests/upgrade.sh` checks that each released version (0.8.0, 0.8.1,
+  0.9.0, 0.10.0) has a chain of update scripts to this one and that
+  `ALTER EXTENSION pg_improv UPDATE` finds a path from each. Then, on the
+  Postgres major it runs on (CI: 15, 16, 17 and 18; 0.8.x shipped for 17
+  only), it updates a database from each release, with one model in each
+  sync mode that release had (logical, trigger, manual, and commit from
+  0.10.0), and checks every model's results, the 0.11.0 owner and
+  row-level security, the worker, `define`, `pg_dump` and commit mode.
+  Each release's build is cached (`PGI_OLD_CACHE`, default
+  `~/.cache/pgi-old/<version>/<major>`, and an `actions/cache` in CI), so
+  the whole matrix takes under a minute per major once warm. The test now
+  runs Postgres from a private copy of the install, so it never writes the
+  system's extension directories.
+
 - **Concepts, operations and troubleshooting guides.** The guide gains
   Concepts (the ideas before the syntax), When to Use Improv (each wrong
   fit, what to use instead, and the measured limits), and an Operations

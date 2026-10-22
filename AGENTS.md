@@ -66,7 +66,8 @@ The full "tidy" gate — all must be error- AND warning-free:
    `scripts/coverage.sh` (≥ 90% functions and branches per crate)
 9. pg_improv, its own Cargo workspace: `ci/pg_improv.sh <PGMAJOR>` runs
    fmt, clippy, `cargo pgrx test`, pgspot, `tests/txn.sh`, `tests/logical.sh`,
-   and on 17 `tests/upgrade.sh` and the PGXN dist build (see CONTRIBUTING.md)
+   `tests/upgrade.sh` (from every release), and on 17 the PGXN dist build
+   (see CONTRIBUTING.md)
 10. duckdb_improv, its own Cargo workspace: in `crates/duckdb_improv`,
    `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`,
    `make configure release test_release`, and `test/smoke.sh` with BOTH a

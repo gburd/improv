@@ -13,10 +13,12 @@
 #   model acts as its owner: RLS in every sync mode), tests/logical.sh (the
 #   sync worker end to end), tests/scale.sh at its small default size
 #   (aggregated bindings under random batches), tests/failover.sh on PG 17+
-#   (a streaming standby promoted, with and without failover slots), and on
-#   PG 17 also tests/upgrade.sh (ALTER EXTENSION UPDATE from each earlier
-#   release), and the PGXN dist build. On PG 18, tests/pg_upgrade.sh
-#   (pg_upgrade from PG 17, which it installs too).
+#   (a streaming standby promoted, with and without failover slots),
+#   tests/upgrade.sh (ALTER EXTENSION UPDATE from every earlier release that
+#   builds for <PGMAJOR>; each release's build is cached in PGI_OLD_CACHE,
+#   default pgi's ~/.cache/pgi-old/<version>/<major>), on PG 17 the PGXN dist
+#   build, and on PG 18 tests/pg_upgrade.sh (pg_upgrade from PG 17, which it
+#   installs too).
 # Steps that need a non-root user (pgrx refuses initdb as root) run as `pgi`.
 set -euo pipefail
 pg=${1:?usage: ci/pg_improv.sh <PGMAJOR>}
@@ -100,6 +102,12 @@ if [ "$pg" -ge 17 ]; then
 	end
 fi
 
+step "tests/upgrade.sh: ALTER EXTENSION UPDATE from every release (pg$pg)"
+# (Before the PG 18 step below, which re-runs `cargo pgrx init` for PG 17.)
+if [ -n "${PGI_OLD_CACHE:-}" ]; then mkdir -p "$PGI_OLD_CACHE" && chown -R pgi "$PGI_OLD_CACHE"; fi
+run env PG_CONFIG="$PG_CONFIG" ${PGI_OLD_CACHE:+PGI_OLD_CACHE="$PGI_OLD_CACHE"} ./tests/upgrade.sh
+end
+
 if [ "$pg" = 18 ]; then
 	step "tests/pg_upgrade.sh: pg_upgrade 17 -> 18"
 	old=/usr/lib/postgresql/17/bin
@@ -114,9 +122,6 @@ if [ "$pg" = 18 ]; then
 fi
 
 if [ "$pg" = 17 ]; then
-	step "tests/upgrade.sh: ALTER EXTENSION UPDATE from earlier releases"
-	run env PG_CONFIG="$PG_CONFIG" ./tests/upgrade.sh
-	end
 	step "PGXN dist"
 	run "$root/ci/pgxn-dist.sh" "pg$pg"
 	end

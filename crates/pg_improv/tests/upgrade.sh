@@ -1,53 +1,139 @@
 #!/usr/bin/env bash
 # Upgrade test: a database on an older pg_improv release moves to this tree
 # with ALTER EXTENSION pg_improv UPDATE, and keeps working.
-#   tests/upgrade.sh [FROM_TAG ...]     (default: every v* tag that ships an
-#                                         update script to this version)
-# For each FROM tag: build and install that release, create a logical-mode
-# model with data, then install this tree over it (both versions' SQL side
-# by side; one .so, the new one), restart, ALTER EXTENSION ... UPDATE, and
-# check the version, the results, that the worker still follows writes, that
-# a define() still works, that pg_dump now keeps the model, and that the
-# model then moves to commit sync (0.10.0) and recomputes at COMMIT. From
-# before 0.11.0: the per-model slot and publication give way to the shared
+#   tests/upgrade.sh [FROM_TAG ...]   (default: every released version, the
+#                                       v* tags that ship pg_improv)
+# Every released version must have a chain of update scripts in sql/ to
+# this version, and ALTER EXTENSION UPDATE must find a path from each,
+# whichever tags run here. For each FROM tag that
+# builds for PG_CONFIG's major: take that release from the cache
+# ($PGI_OLD_CACHE/<version>/<major>: its .so, .control and .sql) or build
+# it into the cache, create one model in each of its sync modes with data,
+# install this tree over it (both versions' SQL side by side; one .so, the
+# new one), restart, ALTER EXTENSION ... UPDATE, and check: the update path
+# Postgres picks, the version, every model's results, mode and owner, the
+# 0.11.0 row-level security and owner trigger, that the worker still follows
+# writes and the trigger, commit and manual models still recompute, that
+# define() still works, that pg_dump now keeps the model, and that the model
+# then moves to commit sync (0.10.0) and recomputes at COMMIT. From before
+# 0.11.0: the per-model slot and publication give way to the shared
 # improv_db, and the model stays in sync through the switch.
+# Postgres runs from a private copy of PG_CONFIG's install, so the system's
+# extension directories are never written. PGRX_LOCK=<file> runs each cargo
+# pgrx under flock (a box shared with other pgrx users).
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 root=$(git -C "$here" rev-parse --show-toplevel)
 PG_CONFIG=${PG_CONFIG:-/usr/lib/postgresql/17/bin/pg_config}
-PG_BIN=$("$PG_CONFIG" --bindir)
 PGV=$("$PG_CONFIG" --version | sed -E 's/[^0-9]*([0-9]+).*/\1/')
+CACHE=${PGI_OLD_CACHE:-$HOME/.cache/pgi-old}
 to=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
-if [ $# -eq 0 ]; then
-	set -- $(for f in "$here"/sql/pg_improv--*--"$to".sql; do
-		v=${f##*/pg_improv--}; echo "v${v%%--*}"; done)
-fi
+version_of() { git -C "$root" show "$1:crates/pg_improv/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
+older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
+pgrx() { ${PGRX_LOCK:+flock -o "$PGRX_LOCK"} cargo pgrx "$@"; }
+# pgrx-pg-sys builds for a major `cargo pgrx init` named, or for PGRX_PG_CONFIG_PATH.
+# (Only when not named: a changed PGRX_PG_CONFIG_PATH rebuilds pgrx-pg-sys.)
+grep -qs "^pg$PGV = " "${PGRX_HOME:-$HOME/.pgrx}/config.toml" || export PGRX_PG_CONFIG_PATH=$PG_CONFIG
+
+released=$(for t in $(git -C "$root" tag -l 'v*' | sort -V); do
+	git -C "$root" cat-file -e "$t:crates/pg_improv/pg_improv.control" 2>/dev/null || continue
+	older "$(version_of "$t")" "$to" && echo "$t"
+done)
+[ -n "$released" ] || { echo "FAIL: no released pg_improv tag (a clone without tags?)"; exit 1; }
+# Every released version reaches this one through sql/'s update scripts.
+for t in $released; do
+	cur=$(version_of "$t") hops=$(version_of "$t")
+	for _ in $(seq 50); do
+		[ "$cur" = "$to" ] && break
+		cur=$(find "$here/sql" -name "pg_improv--$cur--*.sql" | sed -E 's/.*--(.*)\.sql$/\1/' | sort -V | tail -1)
+		[ -n "$cur" ] || { echo "FAIL: no update script from ${hops##*--} on the way from $t to $to"; exit 1; }
+		hops="$hops--$cur"
+	done
+	[ "$cur" = "$to" ] || { echo "FAIL: the update scripts from $t do not reach $to ($hops)"; exit 1; }
+	echo "update scripts: $t: $hops"
+done
+# shellcheck disable=SC2086
+[ $# -gt 0 ] || set -- $released
+
 P=${PGPORT_UP:-55480}
 W=$(mktemp -d /var/tmp/pgi-up.XXXX)
 stop() {
-	"$PG_BIN/pg_ctl" -D "$W/data" stop -m fast >/dev/null 2>&1 || true
-	git -C "$root" worktree remove --force "$W/src" >/dev/null 2>&1 || true
+	if [ -d "$W/data" ]; then "$PG_BIN/pg_ctl" -D "$W/data" stop -m fast >/dev/null 2>&1 || true; fi
 	find "$W" -delete 2>/dev/null || true
 }
 trap stop EXIT
+# The private install: bindir, pkglibdir and sharedir at their places under
+# $W/pg (Postgres finds its lib and share directories relative to its binary).
+mkdir "$W/pg"
+cp -a --parents "$("$PG_CONFIG" --bindir)" "$("$PG_CONFIG" --pkglibdir)" "$("$PG_CONFIG" --sharedir)" "$W/pg/"
+PG_BIN=$W/pg$("$PG_CONFIG" --bindir)
+LIB=$W/pg$("$PG_CONFIG" --pkglibdir)
+EXT=$W/pg$("$PG_CONFIG" --sharedir)/extension
+package() { # crate dir, output dir: the .so, .control and .sql files, flat
+	local out=$W/pkg
+	(cd "$1" && pgrx package --pg-config "$PG_CONFIG" --features "pg$PGV" --no-default-features --out-dir "$out" >/dev/null)
+	mkdir -p "$2"
+	find "$out" -type f -name 'pg_improv*' -exec cp {} "$2/" \;
+	find "$out" -delete
+}
+use() { # a package directory: it alone in the private install
+	find "$LIB" "$EXT" -maxdepth 1 -name 'pg_improv*' -delete
+	cp "$1/pg_improv.so" "$LIB/"
+	find "$1" -name 'pg_improv*' ! -name '*.so' -exec cp {} "$EXT/" \;
+}
+add() { # a package directory over the installed one (a new .so inode)
+	find "$LIB" -maxdepth 1 -name pg_improv.so -delete
+	cp "$1/pg_improv.so" "$LIB/"
+	find "$1" -name 'pg_improv*' ! -name '*.so' -exec cp {} "$EXT/" \;
+}
+t0=$SECONDS
+package "$here" "$W/new"
+echo "built $to for PG $PGV in $((SECONDS - t0)) s"
+
 q() { "$PG_BIN/psql" -h "$W" -p "$P" -U improv -d t -qAtX -v ON_ERROR_STOP=1 -c "$1"; }
-fail() { echo "FAIL ($from): $*"; tail -15 "$W/log"; exit 1; }
+fail() { echo "FAIL ($from, PG $PGV): $*"; tail -15 "$W/log"; exit 1; }
 eq() { [ "$1" = "$2" ] || fail "$3: got '$1', want '$2'"; }
 REV="SELECT value FROM improv_plan.revenue WHERE time='Q1' AND product='Widget'"
+rev() { q "SELECT value FROM improv_plan_$1.revenue WHERE time='Q1' AND product='Widget'"; }
 wait_rev() {
 	local v=""
 	for _ in $(seq 200); do v=$(q "$REV"); [ "$v" = "$1" ] && return 0; sleep 0.05; done
 	fail "$2: got '$v', want '$1'"
 }
-install() { # crate dir
-	(cd "$1" && cargo pgrx install --release --pg-config "$PG_CONFIG" --features "pg$PGV" --no-default-features >/dev/null)
+# The models besides the logical plan, one per sync mode, all over sales2.
+modes() { printf '%s\n' trigger manual; older "$1" 0.10.0 || echo commit; }
+model() { # name, relation
+	for s in "create_model('$1')" "bind_category('$1','Time','$2','quarter')" \
+		"bind_category('$1','Product','$2','product')" "bind_measure('$1','Price','$2','price')" \
+		"bind_measure('$1','Quantity','$2','qty')" "define('$1','Revenue = Price * Quantity')"; do
+		q "SELECT improv.$s" >/dev/null
+	done
 }
+results=()
 
 for from in "$@"; do
+	t0=$SECONDS
+	fv=$(version_of "$from")
+	if ! git -C "$root" show "$from:crates/pg_improv/Cargo.toml" | grep -q "^pg$PGV = "; then
+		echo "== $from -> $to (PG $PGV): skipped, $from does not build for PG $PGV"
+		results+=("$from: n/a (no PG $PGV build)")
+		continue
+	fi
 	echo "== $from -> $to (PG $PGV)"
-	git -C "$root" worktree add -q --detach "$W/src" "$from"
-	CARGO_TARGET_DIR="$W/target-old" install "$W/src/crates/pg_improv"
-	git -C "$root" worktree remove --force "$W/src"
+	old=$CACHE/$fv/$PGV
+	if [ ! -f "$old/pg_improv.so" ]; then
+		mkdir -p "$W/src"
+		git -C "$root" archive "$from" | tar -x -C "$W/src"
+		# A test fixture: no fat LTO, so a cold cache builds in minutes; and
+		# no -Dwarnings, which a newer compiler may turn on old code.
+		CARGO_TARGET_DIR="$W/target-old" CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+			RUSTFLAGS="" package "$W/src/crates/pg_improv" "$old.tmp"
+		find "$W/src" -delete
+		[ ! -d "$old" ] || find "$old" -delete
+		mv "$old.tmp" "$old"
+		echo "   built $from for PG $PGV into $old in $((SECONDS - t0)) s"
+	fi
+	use "$old"
 	"$PG_BIN/initdb" -D "$W/data" -A trust -U improv >/dev/null
 	cat >>"$W/data/postgresql.conf" <<-EOF
 		port = $P
@@ -61,17 +147,22 @@ for from in "$@"; do
 	"$PG_BIN/pg_ctl" -D "$W/data" -l "$W/log" -w start >/dev/null 3>&-
 	"$PG_BIN/createdb" -h "$W" -p "$P" -U improv t
 	q "CREATE EXTENSION pg_improv"
-	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "${from#v}" "old version installed"
-	q "CREATE TABLE sales (quarter text, product text, price float8, qty float8, PRIMARY KEY (quarter, product))"
-	q "INSERT INTO sales VALUES ('Q1','Widget',10,100), ('Q1','Gadget',20,30), ('Q2','Widget',10,200)"
-	for s in "create_model('plan')" "bind_category('plan','Time','sales','quarter')" \
-		"bind_category('plan','Product','sales','product')" "bind_measure('plan','Price','sales','price')" \
-		"bind_measure('plan','Quantity','sales','qty')" "define('plan','Revenue = Price * Quantity')" \
-		"define('plan','Total = SUM(Revenue OVER Time)')"; do
-		q "SELECT improv.$s" >/dev/null
+	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$fv" "old version installed"
+	for s in sales sales2; do
+		q "CREATE TABLE $s (quarter text, product text, price float8, qty float8, PRIMARY KEY (quarter, product))"
+		q "INSERT INTO $s VALUES ('Q1','Widget',10,100), ('Q1','Gadget',20,30), ('Q2','Widget',10,200)"
+	done
+	model plan sales
+	q "SELECT improv.define('plan','Total = SUM(Revenue OVER Time)')" >/dev/null
+	for m in $(modes "$fv"); do
+		model "plan_$m" sales2
+		q "SELECT improv.set_sync_mode('plan_$m','$m')"
 	done
 	q "UPDATE sales SET price = 11 WHERE quarter='Q1' AND product='Widget'"
+	q "UPDATE sales2 SET price = 11 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 1100 "old version computes"
+	q "SELECT improv.recalc('plan_manual')" >/dev/null
+	for m in $(modes "$fv"); do eq "$(rev "$m")" 1100 "old version: the $m model computes"; done
 	# As if alice, not a superuser, had made the model: from 0.11.0 the worker
 	# reads sales and writes the results as her. (sales is improv.sales: the
 	# superuser is named improv, and search_path starts with "\$user".)
@@ -79,14 +170,25 @@ for from in "$@"; do
 	q "ALTER SCHEMA improv_plan OWNER TO alice"
 
 	# The new release over the old: SQL scripts side by side, the new .so.
-	install "$here"
-	"$PG_BIN/pg_ctl" -D "$W/data" -l "$W/log" -w restart >/dev/null 3>&-
+	"$PG_BIN/pg_ctl" -D "$W/data" -w stop -m fast >/dev/null
+	add "$W/new"
+	"$PG_BIN/pg_ctl" -D "$W/data" -l "$W/log" -w start >/dev/null 3>&-
 	# A write the old worker may not have applied yet: the update must not lose it.
 	q "UPDATE sales SET qty = 250 WHERE quarter='Q1' AND product='Widget'"
+	path=$(q "SELECT path FROM pg_extension_update_paths('pg_improv') WHERE source = '$fv' AND target = '$to'")
+	[ -n "$path" ] || fail "ALTER EXTENSION UPDATE finds no path from $fv to $to"
+	echo "   update path: $path"
+	for t in $released; do
+		[ -n "$(q "SELECT path FROM pg_extension_update_paths('pg_improv') WHERE source = '$(version_of "$t")' AND target = '$to'")" ] ||
+			fail "ALTER EXTENSION UPDATE finds no path from $t to $to"
+	done
 	q "ALTER EXTENSION pg_improv UPDATE"
 	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$to" "updated version"
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
-	eq "$(q "SELECT owner::text FROM improv.model WHERE name = 'plan'")" alice "the update records the owner"
+	want=plan:alice:logical
+	for m in $(modes "$fv" | LC_ALL=C sort); do want="$want,plan_$m:improv:$m"; done
+	eq "$(q "SELECT string_agg(name || ':' || owner::text || ':' || sync_mode, ',' ORDER BY name COLLATE \"C\") FROM improv.model")" \
+		"$want" "the update records each model's owner and keeps its sync mode"
 	eq "$(q "SELECT string_agg(DISTINCT tableowner, ',') FROM pg_tables WHERE schemaname = 'improv_plan'")" alice "the owner owns the result tables"
 	# 0.11.0: row-level security on every catalog table keyed by model_id, and
 	# the owner trigger, as a fresh CREATE EXTENSION makes them.
@@ -99,6 +201,15 @@ for from in "$@"; do
 	         WHERE c.relnamespace = 'improv'::regnamespace AND p.polname = 'read' AND pg_get_expr(p.polqual, p.polrelid) <> 'true'")" \
 		cell,item,meta "the owner-only read policies after the update"
 	eq "$(q "SELECT count(*) FROM pg_trigger WHERE tgname = 'check_owner' AND tgrelid = 'improv.model'::regclass")" 1 "the owner trigger after the update"
+	for m in $(modes "$fv"); do eq "$(rev "$m")" 1100 "the $m model's results after the update"; done
+	q "UPDATE sales2 SET qty = 250 WHERE quarter='Q1' AND product='Widget'"
+	for m in $(modes "$fv"); do
+		if [ "$m" = manual ]; then
+			eq "$(rev "$m")" 1100 "the manual model waits for recalc after the update"
+			q "SELECT improv.recalc('plan_manual')" >/dev/null
+		fi
+		eq "$(rev "$m")" 2750 "the $m model recomputes after the update"
+	done
 	wait_rev 2750 "a write around the update is applied"
 	q "UPDATE sales SET qty = 300 WHERE quarter='Q1' AND product='Widget'"
 	wait_rev 3300 "the worker follows writes after the update"
@@ -144,8 +255,11 @@ for from in "$@"; do
 	q "BEGIN; UPDATE sales SET qty = 400 WHERE quarter='Q1' AND product='Widget'; UPDATE sales SET price = 12 WHERE quarter='Q1' AND product='Widget'; COMMIT;"
 	eq "$(q "$REV")" 4800 "commit mode recomputes at COMMIT after the update"
 	eq "$(q "SELECT value FROM improv_plan.double WHERE time='Q1' AND product='Widget'")" 9600 "commit mode: the dependents too"
-	echo "ok: $from -> $to: results kept, worker follows writes, define works, pg_dump keeps the model, commit mode works"
-	"$PG_BIN/pg_ctl" -D "$W/data" stop -m immediate >/dev/null  # discarded next
+	echo "ok: $from -> $to (PG $PGV, $((SECONDS - t0)) s): models in $(modes "$fv" | tr '\n' ' ')logical kept their" \
+		"results; owner and RLS migrated; the worker, define, pg_dump and commit mode work"
+	results+=("$from: ok ($path, $((SECONDS - t0)) s)")
+	"$PG_BIN/pg_ctl" -D "$W/data" stop -m immediate >/dev/null # discarded next
 	find "$W/data" -delete
 done
+for r in "${results[@]}"; do echo "PG $PGV: $r"; done
 echo PASS

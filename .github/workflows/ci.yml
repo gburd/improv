@@ -230,11 +230,19 @@ jobs:
         with:
           workspaces: improv/crates/pg_improv
           key: pg_improv-${{ matrix.pg }}
+      # tests/upgrade.sh's builds of the released versions (.so, .control and
+      # .sql per version and major). A tag never changes: a new release's
+      # update script changes the key, and the restore key brings the rest.
+      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: pgi-old
+          key: pgi-old-${{ matrix.pg }}-${{ hashFiles('improv/crates/pg_improv/sql/*.sql') }}
+          restore-keys: pgi-old-${{ matrix.pg }}-
       # One script for GitHub, Forgejo and a local run: fmt, clippy, pg_test,
-      # pgspot, tests/txn.sh, tests/logical.sh; on 17 also tests/upgrade.sh
-      # and the PGXN dist build.
+      # pgspot, tests/txn.sh, tests/logical.sh, tests/upgrade.sh (from every
+      # release); on 17 also the PGXN dist build.
       - name: pg_improv on PG ${{ matrix.pg }}
-        run: improv/ci/pg_improv.sh ${{ matrix.pg }}
+        run: PGI_OLD_CACHE="$GITHUB_WORKSPACE/pgi-old" improv/ci/pg_improv.sh ${{ matrix.pg }}
 
   # The DuckDB extension (crates/duckdb_improv: its own Cargo workspace).
   # One release binary must load into BOTH the DuckDB v1.5.6 floor and the

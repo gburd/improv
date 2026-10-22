@@ -38,7 +38,8 @@ cargo pgrx test pg17                                             # the extension
 **Upgrading:** install the new release, restart Postgres (the preloaded
 library is loaded at startup), then `ALTER EXTENSION pg_improv UPDATE`. The
 update scripts (`sql/pg_improv--<old>--<new>.sql`) ship with every release,
-and `tests/upgrade.sh` checks each one against a live model.
+and `tests/upgrade.sh` updates a live database from every earlier release,
+with a model in each sync mode, on each supported Postgres major.
 
 **Backups:** `pg_dump` keeps your models (the `improv.*` catalog is
 registered with `pg_extension_config_dump`) and their result tables, and
