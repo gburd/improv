@@ -219,6 +219,8 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         KeyCode::Char('E') => app.begin_export_csv(),
         // 'R' reverts to the saved model (e.g. after another writer saved).
         KeyCode::Char('R') => revert(app, path),
+        KeyCode::Char('u') => app.undo(),
+        KeyCode::Char('r') if k.modifiers.contains(KeyModifiers::CONTROL) => app.redo(),
         KeyCode::Char('?') => app.help = Some(fnhelp::FnHelp::new()),
         KeyCode::Esc => app.status = None,
         _ => {}
@@ -581,6 +583,26 @@ mod tests {
         assert!(save(&app, "/nonexistent/dir/x.db")
             .unwrap_err()
             .starts_with("autosave failed"));
+    }
+
+    #[test]
+    fn undo_and_redo_keys() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let mut ev = vec![key(KeyCode::Enter)];
+        ev.extend(chars("0"));
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
+        run_events(&mut app, "", chars("ur")).unwrap();
+        assert_eq!(
+            app.grid.value_at(0, 0),
+            Some(100.0),
+            "plain r redoes nothing"
+        );
+        let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        run_events(&mut app, "", vec![Ok(Event::Key(ctrl_r))]).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
     }
 
     /// Two sessions on one store: the second's autosave conflicts after the

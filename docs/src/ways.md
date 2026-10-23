@@ -85,6 +85,7 @@ improv-tui sample.db
 | `S` / `v` | save the layout as a view / cycle views |
 | `I` / `E` | import / export CSV |
 | `R` | revert to the saved model |
+| `u` / Ctrl+R | undo / redo |
 | Tab (in a formula) | complete a function, measure or category name; again to cycle |
 | `?` / F1 | search the functions; Enter inserts `NAME(` into the edit |
 | `q` | quit and save |
@@ -254,7 +255,7 @@ bold gaps are tracked as tasks for 1.0.
 | `SQL("…")` source | `define` refuses it; use `import-sql` | — | — | — | refused | — |
 | Export | `export` (JSON), `export-csv`, `export-sql` | `E` (CSV) | wizard (CSV) | `GET /model` (JSON) | the result tables | it is a query |
 | **Scenarios** | `scenario`, `eval --scenario` | — | — | — | — | — |
-| **Undo** | — | **—** | Edit ▸ Undo, Redo | — | — | — |
+| **Undo** | — | `u`, Ctrl+R to redo | Edit ▸ Undo, Redo | — | — | — |
 | Named LAMBDAs | `define` | **calls work; define them in the CLI** | **calls work; define them in the CLI** | computes them | `define` | — (refused; inline `LAMBDA` works) |
 | FIXPOINT | yes | yes (the same parser and engine) | yes | yes | yes | in `improv(…)`; not in `improv_calc` |
 | what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |

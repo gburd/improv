@@ -66,6 +66,15 @@ Import a CSV into a new measure / export the shown measure (a prompt opens).
 Revert to the saved model, dropping this session's edits. Use it after a
 save conflict, when another writer changed the model.
 .TP
+.B u
+Undo the last change to the model: a cell, a formula, an import. Up to
+50 changes are kept.
+.TP
+.B Ctrl+R
+Redo the last change
+.B u
+undid. A new change drops what was undone.
+.TP
 .BR ? ", " F1
 Open the function help: type to search the built-in functions, Up/Down and
 PgUp/PgDn move through the results, and the selected function's signature,

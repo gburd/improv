@@ -35,6 +35,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   `docs/openapi.json` with its scope, parameters, body, responses and
   schemas. `cargo test -p improv_cli` fails when either is stale, as for
   the man pages.
+- **TUI undo and redo.** `u` undoes the last change to the model (a
+  cell, a formula, an import) and Ctrl+R redoes it, up to 50 steps, as
+  the GUI's Edit ▸ Undo does: the history keeps whole-model snapshots.
+  Saved views are layout and stay.
+  A failed import is no longer half-applied: it leaves the model as it
+  was.
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).

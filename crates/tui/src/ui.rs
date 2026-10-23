@@ -30,6 +30,7 @@ const HELP: &[&str] = &[
     "I: import-csv",
     "E: export-csv",
     "R: revert",
+    "u/Ctrl+R: undo/redo",
     "?/F1: functions",
     "q: quit",
 ];

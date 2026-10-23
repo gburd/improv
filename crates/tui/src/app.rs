@@ -462,6 +462,37 @@ pub fn measure_order(model: &Model) -> Vec<MeasureId> {
     ids
 }
 
+/// A live engine over every derived measure of `model`; none when it has no
+/// derived measures. Fails with the engine's error when a formula does not
+/// build (a cycle, a type error).
+fn build_engine(model: &Model) -> Result<(Option<Engine>, Snapshot), String> {
+    let derived: Vec<MeasureId> = measure_order(model)
+        .into_iter()
+        .filter(|id| model.measures[id].is_derived())
+        .collect();
+    if derived.is_empty() {
+        return Ok(Default::default());
+    }
+    let (e, s) = Engine::new(model, &derived).map_err(|e| e.to_string())?;
+    Ok((Some(e), s))
+}
+
+/// How many changes `u` can undo.
+///
+/// shortcut: history is whole-`Model` clones (the GUI's approach), so memory
+/// is up to 50 × the model; switch to per-edit inverse operations behind
+/// `record_history`/`undo`/`redo` if big models make that hurt.
+const UNDO_DEPTH: usize = 50;
+
+/// Push `state` onto a bounded history stack, dropping the oldest entry once
+/// [`UNDO_DEPTH`] is reached.
+fn push_bounded(stack: &mut Vec<Model>, state: Model) {
+    if stack.len() >= UNDO_DEPTH {
+        stack.remove(0);
+    }
+    stack.push(state);
+}
+
 /// The whole application state.
 ///
 /// The live `Engine` tracks **all** derived measures in the model up front
@@ -518,6 +549,11 @@ pub struct App {
     /// Where the last formula commit failed to parse, while its text is
     /// unchanged: the edit line underlines the span and shows the message.
     pub diagnostic: Option<crate::diagnose::Diagnostic>,
+    /// Undo/redo history: whole-`Model` snapshots, oldest first, as the GUI
+    /// keeps them. `undo_stack` holds the model before each change,
+    /// `redo_stack` the models undone away. See [`App::undo`].
+    pub undo_stack: Vec<Model>,
+    pub redo_stack: Vec<Model>,
 }
 
 impl App {
@@ -528,23 +564,7 @@ impl App {
         }
 
         // Track every derived measure in one engine, built once.
-        let derived: Vec<MeasureId> = measures
-            .iter()
-            .copied()
-            .filter(|id| {
-                model
-                    .measures
-                    .get(id)
-                    .map(|m| m.is_derived())
-                    .unwrap_or(false)
-            })
-            .collect();
-        let (engine, snapshot) = if derived.is_empty() {
-            (None, Snapshot::default())
-        } else {
-            let (e, s) = Engine::new(&model, &derived).map_err(|e| e.to_string())?;
-            (Some(e), s)
-        };
+        let (engine, snapshot) = build_engine(&model)?;
 
         let selected = 0;
         let natural_axes = |mid: MeasureId| -> Vec<CategoryId> {
@@ -580,6 +600,8 @@ impl App {
             help: None,
             tab_cycle: None,
             diagnostic: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         })
     }
 
@@ -894,6 +916,7 @@ impl App {
             .measures
             .get(&measure)
             .and_then(|m| improv_engine::session::input_cell(m.value_type, &value));
+        self.record_history(self.model.clone());
         self.model.set_input(measure, coord, value);
 
         // Push the delta through the engine (if any derived measures exist) and
@@ -914,25 +937,26 @@ impl App {
     /// Replace the viewed derived measure's formula. Validated on a candidate
     /// model (a real engine build, which catches cycles and type errors) and
     /// only then published; on failure nothing changes and the error is
-    /// returned.
+    /// returned. The old model is an undo point.
     pub fn set_formula(&mut self, formula: Formula) -> Result<(), String> {
         let mut candidate = self.model.clone();
-        let m = candidate
+        candidate
             .measures
             .get_mut(&self.grid.measure)
-            .ok_or("the measure no longer exists")?;
-        m.kind = MeasureKind::Derived(formula);
-        let derived: Vec<MeasureId> = self
-            .measures
-            .iter()
-            .copied()
-            .filter(|id| candidate.measures.get(id).is_some_and(|m| m.is_derived()))
-            .collect();
-        let (engine, snapshot) = Engine::new(&candidate, &derived).map_err(|e| e.to_string())?;
-        self.model = candidate;
-        self.engine = Some(engine);
-        self.snapshot = snapshot;
+            .ok_or("the measure no longer exists")?
+            .kind = MeasureKind::Derived(formula);
+        self.commit_model(candidate)?;
         self.reselect();
+        Ok(())
+    }
+
+    /// Make `candidate` the model and the replaced one an undo point. It is
+    /// built into a fresh engine first, so on failure nothing changes. The
+    /// caller refreshes the grid.
+    fn commit_model(&mut self, candidate: Model) -> Result<(), String> {
+        (self.engine, self.snapshot) = build_engine(&candidate)?;
+        let prior = std::mem::replace(&mut self.model, candidate);
+        self.record_history(prior);
         Ok(())
     }
 
@@ -982,8 +1006,12 @@ impl App {
             Err(e) => return format!("import-csv: {e}"),
         };
         let measure_name = spec.measure_name.clone();
-        match import_csv(&mut self.model, &spec) {
+        // Into a copy: a failed import leaves the model as it was.
+        let mut model = self.model.clone();
+        match import_csv(&mut model, &spec) {
             Ok(n) => {
+                let prior = std::mem::replace(&mut self.model, model);
+                self.record_history(prior);
                 let msg = format!("imported {n} cell(s) into measure '{measure_name}'");
                 match self.rebuild_after_structural_change() {
                     Ok(()) => msg,
@@ -1011,49 +1039,87 @@ impl App {
 
     /// Rebuild `measures`/`engine`/`grid` from the current `self.model` after a
     /// structural change (a new measure/category/item), keeping the viewed
-    /// measure selected when it still exists. Mirrors the fresh-build logic in
-    /// `App::new`, since the live `Engine`'s tracked structure is fixed at
-    /// construction and a new measure needs a new engine. If the formulas no
-    /// longer build (an import changed a measure they use), the rest is still
-    /// rebuilt, with no engine, and the error is returned for the status.
+    /// measure selected when it still exists. The live `Engine`'s tracked
+    /// structure is fixed at construction, so a new measure needs a new
+    /// engine. If the formulas no longer build (an import changed a measure
+    /// they use), the rest is still rebuilt, with no engine, and the error is
+    /// returned for the status.
     fn rebuild_after_structural_change(&mut self) -> Result<(), String> {
-        let viewed = self.measures.get(self.selected).copied();
+        let built = build_engine(&self.model);
+        let err = built.as_ref().err().cloned();
+        (self.engine, self.snapshot) = built.unwrap_or_default();
+        self.relayout(None);
+        err.map_or(Ok(()), Err)
+    }
+
+    /// Re-list the measures and show `show`, else the viewed measure if it
+    /// still exists, else the first one, in its natural layout.
+    fn relayout(&mut self, show: Option<MeasureId>) {
+        let want = show.unwrap_or(self.viewed_measure());
         self.measures = measure_order(&self.model);
-        let derived: Vec<MeasureId> = self
-            .measures
-            .iter()
-            .copied()
-            .filter(|id| {
-                self.model
-                    .measures
-                    .get(id)
-                    .map(|m| m.is_derived())
-                    .unwrap_or(false)
-            })
-            .collect();
-        let mut built = Ok(());
-        let (engine, snapshot) = if derived.is_empty() {
-            (None, Snapshot::default())
-        } else {
-            match Engine::new(&self.model, &derived) {
-                Ok((e, s)) => (Some(e), s),
-                Err(e) => {
-                    built = Err(e.to_string());
-                    (None, Snapshot::default())
-                }
-            }
-        };
-        self.engine = engine;
-        self.snapshot = snapshot;
-        self.selected = viewed
-            .and_then(|v| self.measures.iter().position(|m| *m == v))
-            .unwrap_or(0);
+        self.selected = self.measures.iter().position(|m| *m == want).unwrap_or(0);
         self.axis_order = self.natural_axis_order();
         self.page_idx.clear();
         self.filters.clear();
         self.reselect();
         self.page_idx = self.grid.pages.iter().map(|p| p.item_index).collect();
-        built
+    }
+
+    // -- undo/redo ---------------------------------------------------------
+
+    /// Record `prior`, the model before a change, as an undo point. A new
+    /// change makes the undone future unreachable.
+    fn record_history(&mut self, prior: Model) {
+        push_bounded(&mut self.undo_stack, prior);
+        self.redo_stack.clear();
+    }
+
+    /// Undo the last change to the model: the model before it comes back,
+    /// rebuilt into a fresh engine.
+    pub fn undo(&mut self) {
+        self.travel(true);
+    }
+
+    /// Redo the last undone change.
+    pub fn redo(&mut self) {
+        self.travel(false);
+    }
+
+    /// Swap in the model from the undo (`back`) or the redo stack, moving
+    /// the current one onto the other. The layout stays while the viewed
+    /// measure still has the same categories.
+    fn travel(&mut self, back: bool) {
+        let (from, to, verb, done) = if back {
+            (&mut self.undo_stack, &mut self.redo_stack, "undo", "undone")
+        } else {
+            (&mut self.redo_stack, &mut self.undo_stack, "redo", "redone")
+        };
+        let Some(mut model) = from.pop() else {
+            self.status = Some(format!("nothing to {verb}"));
+            return;
+        };
+        // Views are layout, saved as they are made: undo leaves them.
+        model.views = self.model.views.clone();
+        push_bounded(to, std::mem::replace(&mut self.model, model));
+        let viewed = self.viewed_measure();
+        let layout = (
+            self.axis_order.clone(),
+            self.filters.clone(),
+            self.page_idx.clone(),
+        );
+        let built = self.rebuild_after_structural_change();
+        let natural = self.natural_axis_order();
+        if self.viewed_measure() == viewed
+            && natural.len() == layout.0.len()
+            && natural.iter().all(|c| layout.0.contains(c))
+        {
+            (self.axis_order, self.filters, self.page_idx) = layout;
+            self.reselect();
+        }
+        self.status = Some(match built {
+            Ok(()) => done.to_string(),
+            Err(e) => format!("{done}; formulas not recomputed: {e}"),
+        });
     }
 
     // -- views & filters (pure; terminal-free -> unit-testable) ------------
@@ -2284,6 +2350,102 @@ pub(crate) mod tests {
         assert_eq!(app.grid.measure, MeasureId(300));
         assert_eq!(app.grid.pages[0].item_name, "North");
         assert_eq!(app.page_idx, vec![0]);
+    }
+
+    #[test]
+    fn undo_and_redo_walk_cell_and_formula_changes() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let start = app.model.clone();
+        app.undo();
+        assert_eq!(app.status.as_deref(), Some("nothing to undo"));
+        app.redo();
+        assert_eq!(app.status.as_deref(), Some("nothing to redo"));
+        view(&mut app, MeasureId(102));
+        app.begin_edit();
+        app.edit = Some("Price * Quantity * 2".into());
+        app.commit_edit();
+        // A cell edit in a pivoted grid: the undo keeps the layout.
+        view(&mut app, MeasureId(101));
+        app.pivot();
+        app.apply_edit(0, 0, 7.0).unwrap();
+        let edited = app.model.clone();
+        app.undo();
+        assert_eq!(app.status.as_deref(), Some("undone"));
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Product");
+        assert_eq!(app.grid.value_at(0, 0), Some(100.0));
+        app.undo();
+        assert_eq!(app.model, start);
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.grid.display_at(0, 0), "1000", "the engine was rebuilt");
+        app.redo();
+        app.redo();
+        assert_eq!(app.status.as_deref(), Some("redone"));
+        assert_eq!(app.model, edited);
+        assert_eq!(app.grid.display_at(0, 0), "140", "Price * 7 * 2");
+        // A view saved after a change survives undoing it.
+        app.save_view("kept", None);
+        app.undo();
+        assert_eq!(app.model.views.len(), 1);
+        app.redo();
+        assert_eq!(app.model.views.len(), 1);
+        // A new change after an undo drops the undone future.
+        app.undo();
+        view(&mut app, MeasureId(101));
+        app.apply_edit(1, 1, 1.0).unwrap();
+        app.redo();
+        assert_eq!(app.status.as_deref(), Some("nothing to redo"));
+    }
+
+    #[test]
+    fn imports_undo_and_a_failed_one_changes_nothing() {
+        let csv_path = tmp_path(".csv");
+        let _guard = TmpFile(csv_path.clone());
+        std::fs::write(&csv_path, "region,v\nNorth,1\nSouth,2\n").unwrap();
+        let mut app = App::new(revenue_model()).unwrap();
+        let start = app.model.clone();
+        let import = |app: &mut App, line: String| {
+            app.begin_import_csv();
+            app.command.as_mut().unwrap().1 = line;
+            app.commit_command();
+        };
+        // Price becomes Price[Region]: the formulas no longer build.
+        import(
+            &mut app,
+            format!("{} 100 Price v region:7:Region", csv_path.display()),
+        );
+        assert!(app.engine.is_none());
+        app.undo();
+        assert_eq!(app.model, start);
+        assert!(app.engine.is_some());
+        app.redo();
+        let s = app.status.clone().unwrap();
+        assert!(s.starts_with("redone; formulas not recomputed: "), "{s}");
+        app.undo();
+        let missing = tmp_path(".csv");
+        import(
+            &mut app,
+            format!("{} 300 X v region:7:Region", missing.display()),
+        );
+        assert!(app.status.as_deref().unwrap().starts_with("import-csv:"));
+        assert_eq!(app.model, start);
+        assert_eq!(app.redo_stack.len(), 1, "a failed import is not a change");
+    }
+
+    #[test]
+    fn undo_history_is_bounded() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        for i in 0..UNDO_DEPTH + 5 {
+            app.apply_edit(0, 0, i as f64).unwrap();
+        }
+        assert_eq!(app.undo_stack.len(), UNDO_DEPTH);
+        // The five oldest points are gone: undoing it all stops at 4.
+        for _ in 0..UNDO_DEPTH {
+            app.undo();
+        }
+        assert_eq!(app.grid.value_at(0, 0), Some(4.0));
+        app.undo();
+        assert_eq!(app.status.as_deref(), Some("nothing to undo"));
     }
 
     #[test]
