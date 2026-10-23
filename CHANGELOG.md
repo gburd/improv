@@ -415,6 +415,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   first column past the right edge. The same grid draws in 7.4 ms (135
   fps) idle, 7.5 ms scrolling down and 9 ms scrolling right (release
   build, headless, tessellation included).
+- **A GUI cell edit no longer clones the model.** Every grid edit took
+  a whole-model copy for its undo step (170 ms at 1M cells), and undoing
+  it rebuilt the engine (2 s). An edit's undo step is now the cell's
+  previous value, put back through the live engine: at 1M cells an edit
+  takes 66 ms instead of 209, and its undo 52 ms instead of 2 s.
+  Structural changes still record the whole model.
 - **A failed GUI undo or redo can be retried.** When the save behind an
   undo failed, the undo stack got the current model back instead of the
   undo point, so the retry, once the store was writable again, changed

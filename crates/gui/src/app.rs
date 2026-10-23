@@ -229,8 +229,8 @@ pub struct ImprovApp {
     /// Undo/redo history: whole-`Model` snapshots, oldest first. `undo_stack`
     /// holds the states BEFORE each recorded mutation; `redo_stack` the states
     /// undone away. See [`ImprovApp::undo`] and `UNDO_DEPTH`.
-    undo_stack: Vec<Model>,
-    redo_stack: Vec<Model>,
+    undo_stack: Vec<Step>,
+    redo_stack: Vec<Step>,
 
     /// Where each formula-list row landed in the last laid-out frame, as
     /// `(measure, row rect)` in display order. Recorded by
@@ -375,17 +375,26 @@ const MATRIX_MIN_H: f32 = 180.0;
 /// grows (or defaults) no taller than what leaves this much above it.
 const GRID_MIN_H: f32 = 120.0;
 
-/// How many model states the undo (and redo) stack keeps; older entries are
+/// How many steps the undo (and redo) stack keeps; older entries are
 /// evicted.
 ///
-/// ponytail: history is a bounded stack of FULL `Model` clones — one clone per
-/// mutation, up to 50 resident copies. That is honest and obviously correct
-/// (the model already round-trips and compares by value), but the ceiling is
-/// memory: 50 × model size. If models get big enough for that to hurt, replace
-/// the snapshots with a command/delta log (per-edit inverse operations) behind
-/// the same `undo`/`redo`/`record_history` API — the call sites do not care
-/// which it is.
+/// shortcut: a structural step is a FULL `Model` clone, up to 50 resident
+/// copies, and undoing one rebuilds the engine (about 2 s at 1M cells).
+/// Grid edits record a [`Step::Cell`] instead. If structural edits on huge
+/// models need it, give them inverse operations too.
 const UNDO_DEPTH: usize = 50;
+
+/// One undo (or redo) step: what to put back.
+#[derive(Debug, Clone)]
+enum Step {
+    /// The whole model, before a structural change (a formula, an import,
+    /// a new category). Boxed: a `Model` is ten times a cell step.
+    Model(Box<Model>),
+    /// One input cell's value (`None`: empty), before a grid edit. Cloning
+    /// the model per keystroke cost 170 ms at 1M cells, and undoing it was
+    /// a full rebuild; this undoes incrementally.
+    Cell(MeasureId, CoordKey, Option<Value>),
+}
 
 /// Initial window inner size: room for the menu, a default matrix and the Info
 /// panel side by side on the workspace.
@@ -1298,6 +1307,20 @@ impl ImprovApp {
                 ));
             }
         }
+        let prior = self.put_cell(measure, coord.clone(), value)?;
+        self.record_step(Step::Cell(measure, coord, prior));
+        Ok(())
+    }
+
+    /// Set (or, with `None`, clear) one input cell in the model and the
+    /// engine, and save; on any failure put both back. Returns the cell's
+    /// prior value. Records no history (undo and redo use it too).
+    fn put_cell(
+        &mut self,
+        measure: MeasureId,
+        coord: CoordKey,
+        value: Option<Value>,
+    ) -> Result<Option<Value>, String> {
         // Precise rollback rather than publish()'s clone-and-swap: a single cell
         // edit goes through the INCREMENTAL engine (`engine.set`), so cloning the
         // whole model and rebuilding the graph per keystroke would throw away the
@@ -1307,9 +1330,6 @@ impl ImprovApp {
         let key = decode(&coord);
         let prior = self.model.input(measure, &key).cloned();
         let prior_snapshot = self.snapshot.clone();
-        // The undo point: a clone of the model as it is right now. Taken before
-        // the write, recorded only once the write (engine + save) succeeded.
-        let prior_model = self.model.clone();
 
         match &value {
             Some(v) => self.model.set_input(measure, key.clone(), v.clone()),
@@ -1336,8 +1356,7 @@ impl ImprovApp {
             }
             return Err(e);
         }
-        self.record_history(prior_model);
-        Ok(())
+        Ok(prior)
     }
 
     /// Push one input-cell edit through the live engine and adopt the recomputed
@@ -1967,21 +1986,26 @@ impl ImprovApp {
     /// (`engine::compiler::compile_formula` + `derived_build_order`) instead of
     /// a real `Engine::new`.
     fn publish(&mut self, candidate: Model) -> Result<(), String> {
-        let previous = self.swap_model(candidate)?;
+        let previous = self.swap_model(Box::new(candidate)).map_err(|(e, _)| e)?;
         self.record_history(previous);
         Ok(())
     }
 
     /// The atomic model swap behind [`Self::publish`] and undo/redo: build an
     /// engine for `candidate`, save it, and only then adopt it (model, engine,
-    /// snapshot together). Returns the model it replaced. Records no history —
-    /// callers decide (an undo must not become an undo point of its own).
-    fn swap_model(&mut self, candidate: Model) -> Result<Model, String> {
-        let (engine, snapshot) = try_build_engine(&candidate)?;
-        let previous = std::mem::replace(&mut self.model, candidate);
+    /// snapshot together). Returns the model it replaced; on failure, the
+    /// error and `candidate`, so a failed undo keeps its step without a
+    /// copy. Records no history — callers decide (an undo must not become
+    /// an undo point of its own).
+    fn swap_model(&mut self, candidate: Box<Model>) -> Result<Model, (String, Box<Model>)> {
+        let (engine, snapshot) = match try_build_engine(&candidate) {
+            Ok(built) => built,
+            Err(e) => return Err((e, candidate)),
+        };
+        let previous = std::mem::replace(&mut self.model, *candidate);
         if let Err(e) = self.save() {
-            self.model = previous;
-            return Err(e);
+            let candidate = std::mem::replace(&mut self.model, previous);
+            return Err((e, Box::new(candidate)));
         }
         self.engine = engine;
         self.snapshot = snapshot;
@@ -1994,8 +2018,30 @@ impl ImprovApp {
     /// succeeded) as an undo point, and drop the redo stack — a fresh mutation
     /// makes the undone future unreachable (standard semantics).
     fn record_history(&mut self, prior: Model) {
-        push_bounded(&mut self.undo_stack, prior);
+        self.record_step(Step::Model(Box::new(prior)));
+    }
+
+    /// Record an undo step (see [`Self::record_history`]).
+    fn record_step(&mut self, step: Step) {
+        push_bounded(&mut self.undo_stack, step);
         self.redo_stack.clear();
+    }
+
+    /// Put `step` back, returning the step that restores what it replaced,
+    /// or on failure the error and `step` itself (nothing changed).
+    fn apply_step(&mut self, step: Step) -> Result<Step, (String, Step)> {
+        match step {
+            Step::Model(m) => self
+                .swap_model(m)
+                .map(|m| Step::Model(Box::new(m)))
+                .map_err(|(e, m)| (e, Step::Model(m))),
+            Step::Cell(measure, coord, value) => {
+                match self.put_cell(measure, coord.clone(), value.clone()) {
+                    Ok(now) => Ok(Step::Cell(measure, coord, now)),
+                    Err(e) => Err((e, Step::Cell(measure, coord, value))),
+                }
+            }
+        }
     }
 
     /// True when there is a recorded state to undo (for enabling UI).
@@ -2016,21 +2062,18 @@ impl ImprovApp {
     /// write failure) leaves everything as it was and keeps the undo point, so
     /// the step is not lost; the error is returned for the caller to surface.
     pub fn undo(&mut self) -> Result<(), String> {
-        let Some(prior) = self.undo_stack.pop() else {
+        let Some(step) = self.undo_stack.pop() else {
             return Ok(());
         };
-        // On failure `swap_model` puts `prior` back as the model, then hands
-        // nothing back, so keep a copy to restore the step for a retry.
-        let current = self.model.clone();
-        match self.swap_model(prior.clone()) {
-            Ok(_) => {
-                push_bounded(&mut self.redo_stack, current);
+        match self.apply_step(step) {
+            Ok(inverse) => {
+                push_bounded(&mut self.redo_stack, inverse);
                 self.after_history_restore();
                 Ok(())
             }
-            Err(e) => {
-                // Nothing was swapped, so the undo point still applies.
-                self.undo_stack.push(prior);
+            Err((e, step)) => {
+                // Nothing changed, so the step still applies: keep it.
+                self.undo_stack.push(step);
                 Err(e)
             }
         }
@@ -2038,18 +2081,17 @@ impl ImprovApp {
 
     /// Redo the last undone mutation (the mirror of [`Self::undo`]).
     pub fn redo(&mut self) -> Result<(), String> {
-        let Some(next) = self.redo_stack.pop() else {
+        let Some(step) = self.redo_stack.pop() else {
             return Ok(());
         };
-        let current = self.model.clone();
-        match self.swap_model(next.clone()) {
-            Ok(_) => {
-                push_bounded(&mut self.undo_stack, current);
+        match self.apply_step(step) {
+            Ok(inverse) => {
+                push_bounded(&mut self.undo_stack, inverse);
                 self.after_history_restore();
                 Ok(())
             }
-            Err(e) => {
-                self.redo_stack.push(next);
+            Err((e, step)) => {
+                self.redo_stack.push(step);
                 Err(e)
             }
         }
@@ -2308,7 +2350,7 @@ impl ImprovApp {
 
 /// Push `state` onto a bounded history stack, evicting the oldest entry once
 /// [`UNDO_DEPTH`] is reached.
-fn push_bounded(stack: &mut Vec<Model>, state: Model) {
+fn push_bounded(stack: &mut Vec<Step>, state: Step) {
     if stack.len() >= UNDO_DEPTH {
         stack.remove(0);
     }
@@ -12676,7 +12718,8 @@ mod tests {
     fn quit_warns_once_only_for_an_edited_in_memory_model() {
         let mut app = build_app(revenue_model());
         assert!(app.quit_allowed(), "nothing to lose");
-        app.undo_stack.push(app.model.clone());
+        app.undo_stack
+            .push(Step::Model(Box::new(app.model.clone())));
         app.db = "/some/file.db".into();
         assert!(app.quit_allowed(), "a file-backed model is saved");
         app.db.clear();
@@ -12904,7 +12947,8 @@ mod tests {
 
         let mut app = build_app(revenue_model());
         app.db = "/nowhere/sales.db".into();
-        app.undo_stack.push(app.model.clone());
+        app.undo_stack
+            .push(Step::Model(Box::new(app.model.clone())));
         let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 1.0);
         assert!(!app.dirty, "a store-backed model is not dirtied by history");
         assert_eq!(app.last_title, "Improv \u{2014} sales");
@@ -14385,5 +14429,45 @@ mod tests {
         }
         assert!(!laid_out(&desk, &app, 0), "scrolled past the first column");
         assert!(laid_out(&desk, &app, 299), "the last column scrolls in");
+    }
+
+    /// A grid edit's undo step is the cell, not the model: undo and redo
+    /// put the value back through the live engine (no rebuild), clear a
+    /// cell that was empty, and mix with whole-model steps in order.
+    #[test]
+    fn a_grid_edit_undoes_as_a_cell_step() {
+        let mut app = build_app(grid_2x2_model());
+        let (q, rev) = q_and_rev_keys();
+        let empty: CoordKey = {
+            let mut k: CoordKey = improv_engine::smallvec::smallvec![(1u32, 11u32), (2, 20)];
+            k.sort();
+            k
+        };
+        app.clear_cell(MeasureId(101), empty.clone())
+            .expect("clear 2026/A");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(200.0))
+            .expect("edit");
+        assert!(matches!(app.undo_stack.last(), Some(Step::Cell(..))));
+        app.add_named(NewThing::Category, "Region")
+            .expect("a model step");
+        app.set_cell(MeasureId(101), empty.clone(), Value::Number(5.0))
+            .expect("fill the empty cell");
+        let revenue = |app: &ImprovApp| app.cell_text(MeasureId(102), &rev);
+        assert_eq!(revenue(&app).as_deref(), Some("2000"));
+
+        app.undo().expect("undo the fill");
+        assert_eq!(app.cell_text(MeasureId(101), &empty), None, "empty again");
+        app.undo().expect("undo Region");
+        assert!(app.model.category_by_name("Region").is_none());
+        app.undo().expect("undo the edit");
+        assert_eq!(app.cell_text(MeasureId(101), &q).as_deref(), Some("100"));
+        assert_eq!(revenue(&app).as_deref(), Some("1000"), "recomputed");
+        app.redo().expect("redo the edit");
+        assert_eq!(revenue(&app).as_deref(), Some("2000"));
+        app.redo().expect("redo Region");
+        app.redo().expect("redo the fill");
+        assert_eq!(app.cell_text(MeasureId(101), &empty).as_deref(), Some("5"));
+        assert!(app.model.category_by_name("Region").is_some());
+        assert!(!app.can_redo());
     }
 }
