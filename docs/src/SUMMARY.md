@@ -5,6 +5,10 @@
 - [Concepts](./concepts.md)
 - [When to Use Improv](./when-to-use.md)
 
+# Tutorials
+
+- [A Household Budget on the Desktop](./tutorial-budget.md)
+
 # Guides
 
 - [Ways to Use Improv](./ways.md)

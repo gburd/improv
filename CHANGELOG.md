@@ -8,6 +8,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Tutorials, tested in CI** (guide, new "Tutorials" section). "A
+  household budget on the desktop" builds a model with the CLI and opens
+  it in `improv-gui`. The page is the test: `docs/tutorials/mdtest.py`
+  runs its `sh` blocks in order and checks each `text` block against the
+  output (`crates/cli/tests/tutorials.rs`, part of `cargo test`).
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).
