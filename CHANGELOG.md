@@ -13,6 +13,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   it in `improv-gui`. The page is the test: `docs/tutorials/mdtest.py`
   runs its `sh` blocks in order and checks each `text` block against the
   output (`crates/cli/tests/tutorials.rs`, part of `cargo test`).
+  "A live sales model in Postgres" binds an orders table, defines four
+  formulas, switches to logical sync and watches inserts and deletes
+  arrive; `crates/pg_improv/tests/tutorial-sales.sh` runs its `sql`
+  blocks through `psql` on a scratch cluster configured from the page,
+  in `ci/pg_improv.sh` on every Postgres major.
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).

@@ -8,6 +8,7 @@
 # Tutorials
 
 - [A Household Budget on the Desktop](./tutorial-budget.md)
+- [A Live Sales Model in Postgres](./tutorial-postgres.md)
 
 # Guides
 
