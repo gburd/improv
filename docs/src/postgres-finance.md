@@ -6,7 +6,9 @@ models on top that reconcile the bank statements, track the budget, add up
 net worth, and project the savings goals. The files are in
 `crates/pg_improv/examples/family-finance/` and
 `crates/pg_improv/tests/finance.sh` runs them end to end and checks the
-numbers below.
+numbers below. The example's schema needs Postgres 17 or later (its ledger
+uses `MERGE … WHEN NOT MATCHED BY SOURCE`); pg_improv itself runs on 15 and
+16 too.
 
 ```sh
 crates/pg_improv/tests/finance.sh       # scratch cluster on port 55460, ~10 s

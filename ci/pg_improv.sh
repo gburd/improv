@@ -103,9 +103,12 @@ step "tests/tutorial-sales.sh: the guide's Postgres tutorial (pg$pg)"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/tutorial-sales.sh
 end
 
-step "tests/finance.sh: the guide's family-finance example (pg$pg)"
-run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/finance.sh
-end
+# The example's schema uses MERGE ... WHEN NOT MATCHED BY SOURCE (PG 17+).
+if [ "$pg" -ge 17 ]; then
+	step "tests/finance.sh: the guide's family-finance example (pg$pg)"
+	run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/finance.sh
+	end
+fi
 
 step "tests/limits.sh: resource limits (pg$pg)"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/limits.sh
