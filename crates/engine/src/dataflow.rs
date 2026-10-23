@@ -98,6 +98,15 @@ where
                         .as_collection())
                 }
                 (None, None) => {
+                    // The compiler's broadcast: `Join{a, b}` op `b`. One join
+                    // of a and b gives both values; re-joining the Join's
+                    // rows with b on the full key would arrange both again.
+                    if let Some((a, keys)) = broadcast_of(left, right) {
+                        let l = build_coll(a, scope, inputs, derived)?;
+                        let r = build_coll(right, scope, inputs, derived)?;
+                        return Ok(align(&l, &r, keys.to_vec())
+                            .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))));
+                    }
                     let l = build_coll(left, scope, inputs, derived)?;
                     let r = build_coll(right, scope, inputs, derived)?;
                     Ok(align(&l, &r, shared_cats(left, right))
@@ -850,6 +859,24 @@ where
         .map(|(_jk, ((lk, lv), (rk, rv)))| (union_keys(&lk, &rk), (lv, rv)))
 }
 
+/// `left` op `right` where `left` is `Join{a, right, keys}` (the compiler's
+/// `split_join`): `a` and the join keys. Each side holds one value per key,
+/// so the Join's row at a coordinate meets exactly one cell of `right`
+/// there, the one it was joined with: `a` joined with `right` is the same.
+pub(crate) fn broadcast_of<'p>(
+    left: &'p PlanNode,
+    right: &PlanNode,
+) -> Option<(&'p PlanNode, &'p [CategoryId])> {
+    match &left.kind {
+        PlanNodeKind::Join {
+            left: a,
+            right: b,
+            join_keys,
+        } if **b == *right => Some((a, join_keys)),
+        _ => None,
+    }
+}
+
 /// The categories both plan nodes range over: their broadcast join key.
 pub(crate) fn shared_cats(a: &PlanNode, b: &PlanNode) -> Vec<CategoryId> {
     a.ty.dim
@@ -972,14 +999,14 @@ fn truthy(v: &CellValue) -> bool {
 /// Project a coordinate key down to a subset of category ids (proven in
 /// [`improv_verified::keys::project`]).
 pub(crate) fn project(k: &CoordKey, keep: &[u32]) -> CoordKey {
-    improv_verified::keys::project(k, keep).into()
+    crate::inline_key(improv_verified::keys::project(k, keep))
 }
 
 /// Merge two sorted coordinate keys (right's extra dims added to left; shared
 /// dims agree, they were the join key). A proven merge:
 /// [`improv_verified::keys::union_keys`].
 pub(crate) fn union_keys(a: &CoordKey, b: &CoordKey) -> CoordKey {
-    improv_verified::keys::union_keys(a, b).into()
+    crate::inline_key(improv_verified::keys::union_keys(a, b))
 }
 
 /// Compute the derived measures transitively needed by `targets`, in
@@ -1081,8 +1108,10 @@ pub(crate) fn compile_plans(
 }
 
 /// Whether `p`'s collection has one value per key, each once, given that
-/// the measures in `f` do: a map (unary, or binary with a literal side) of
-/// such a measure. Its collection needs no collapse.
+/// the measures in `f` do: a map or a join of such measures, or a
+/// single-result reduction. Its collection needs no collapse. (A cell's
+/// coordinate names each of its measure's categories, so a join row's
+/// coordinate determines the two cells it joined.)
 pub(crate) fn functional(p: &PlanNode, f: &HashSet<MeasureId>) -> bool {
     match &p.kind {
         PlanNodeKind::InputMeasure(m) => f.contains(m),
@@ -1090,8 +1119,19 @@ pub(crate) fn functional(p: &PlanNode, f: &HashSet<MeasureId>) -> bool {
         PlanNodeKind::MapBinary(_, a, b) => match (literal_value(a), literal_value(b)) {
             (Some(_), None) => functional(b, f),
             (None, Some(_)) => functional(a, f),
-            _ => false,
+            (None, None) => functional(a, f) && functional(b, f),
+            (Some(_), Some(_)) => false,
         },
+        // A join's row is at the union of its sides' coordinates, which
+        // projects back onto each side's one cell: one value per key.
+        PlanNodeKind::Join { left, right, .. } => functional(left, f) && functional(right, f),
+        // A single-result reduction pushes one value per group.
+        PlanNodeKind::Aggregate {
+            window: None,
+            per_item: false,
+            into,
+            ..
+        } => into.is_empty(),
         _ => false,
     }
 }
@@ -1100,8 +1140,11 @@ pub(crate) fn functional(p: &PlanNode, f: &HashSet<MeasureId>) -> bool {
 /// a later plan can reference an earlier one). A plan that fails to build, such
 /// as a ref to an input measure with no collection, is left out. Input
 /// collections hold one value per key, so a [`functional`] plan's needs no
-/// collapse: skipping it saves an arrangement per measure, and a chain of
-/// such measures settles in one scheduling step rather than one per link.
+/// collapse: skipping it saves two arrangements per measure (the reduce's
+/// input and output: at 5M cells of `Price * Quantity`, 1.2 GB), and a chain
+/// of such measures settles in one scheduling step rather than one per link.
+/// Its deltas within a round are then in no set order (a join's `-old` may
+/// follow its `+new`); the live engine consolidates them per round.
 pub(crate) fn build_derived<G: Scope>(
     scope: &mut G,
     plans: &[(MeasureId, PlanNode)],
@@ -1173,7 +1216,11 @@ pub fn evaluate(
         }
     }
 
-    let results: Arc<Mutex<HashMap<MeasureId, HashMap<CoordKey, CellValue>>>> =
+    // Rows, not maps: a map grown while the dataflow's arrangements are
+    // alive peaks at both plus its old and new table (at 5M cells, 1.1 GB);
+    // built once the dataflow is gone, at its final size, it costs the rows.
+    #[allow(clippy::type_complexity)]
+    let results: Arc<Mutex<HashMap<MeasureId, Vec<(CoordKey, CellValue)>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let results2 = results.clone();
 
@@ -1209,7 +1256,7 @@ pub fn evaluate(
                             .unwrap()
                             .entry(mid)
                             .or_default()
-                            .insert(k.clone(), val.clone());
+                            .push((k.clone(), val.clone()));
                     }
                 });
             }
@@ -1230,8 +1277,12 @@ pub fn evaluate(
         }
     });
 
-    let out = std::mem::take(&mut *results.lock().unwrap());
-    Ok(out)
+    let rows = std::mem::take(&mut *results.lock().unwrap());
+    // A key seen twice keeps its last value, as a map's inserts did.
+    Ok(rows
+        .into_iter()
+        .map(|(m, r)| (m, r.into_iter().collect()))
+        .collect())
 }
 
 #[cfg(test)]

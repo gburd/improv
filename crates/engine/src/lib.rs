@@ -156,7 +156,17 @@ pub fn decode_coord(k: &CoordKey) -> Coordinate {
 /// Exactly the pairs whose category is kept, in order (proven in
 /// [`improv_verified::keys::project`]).
 pub fn project_key(k: &CoordKey, keep: &[u32]) -> CoordKey {
-    improv_verified::keys::project(k, keep).into()
+    inline_key(improv_verified::keys::project(k, keep))
+}
+
+/// A key from a `Vec`, inline when it fits. `SmallVec::from_vec` keeps a
+/// `Vec` whose capacity exceeds the inline size on the heap, even when its
+/// length fits: a 2+2 category union (capacity 4, length 2) spilled every
+/// key of a `Revenue = Price * Quantity` grid (32 B a cell, plus malloc's).
+pub(crate) fn inline_key(v: Vec<(u32, u32)>) -> CoordKey {
+    let mut k = CoordKey::from_vec(v);
+    k.shrink_to_fit();
+    k
 }
 
 #[cfg(test)]
@@ -315,6 +325,20 @@ mod tests {
         assert_eq!(d(f64::NAN), "NaN");
         assert_eq!(d(f64::INFINITY), "inf");
         assert_eq!(super::CellValue::num(1173.0 * 0.05).to_string(), "58.65");
+    }
+
+    /// A key that fits is inline whatever the `Vec`'s capacity; one that
+    /// does not stays on the heap.
+    #[test]
+    fn inline_key_spills_only_what_does_not_fit() {
+        let mut v = Vec::with_capacity(8);
+        v.extend([(1, 2), (3, 4)]);
+        let k = super::inline_key(v);
+        assert!(!k.spilled());
+        assert_eq!(k.as_slice(), [(1, 2), (3, 4)]);
+        let k = super::inline_key((0..5).map(|i| (i, i)).collect());
+        assert!(k.spilled());
+        assert_eq!(k.len(), 5);
     }
 
     use super::*;

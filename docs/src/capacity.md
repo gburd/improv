@@ -21,8 +21,8 @@ factor of about two, and measure your own model before you buy hardware.
 
 | Cost | Value | Source |
 | --- | --- | --- |
-| Engine memory per cell | about 0.7–0.8 kB (1M-cell grid: 0.81 GB peak; 5M: 3.38 GB; 20k measures × 100 items: 1.36 GB) | [changelog] (`CoordKey`, fewer operators) |
-| Engine evaluate | about 2.2–2.5 µs per cell (1M cells 2.25 s, 5M 12.7 s) | [changelog] (`CoordKey`) |
+| Engine memory per cell | about 0.3 kB in the live engine (5M-cell `Price * Quantity` grid: 269 B per cell); `evaluate` with its model about 0.5 kB (1M cells: 0.54 GB peak; 5M: 2.35 GB); 20k measures × 100 items: 1.17 GB | [changelog] (B7: no collapse after a join) |
+| Engine evaluate | about 0.9 µs per cell (1M cells 0.87 s, 5M 4.5 s) | [changelog] (B7) |
 | One-cell edit | 56 µs at 100k cells, independent of size; plus a per-measure round cost (fan of 20k measures: 129 ms per edit) | [changelog] |
 | Logical worker memory, fold state per fact row, `count` + `count_distinct` bindings | about 120 B (derived: 444 MB private for 2.5M rows, less the engine's 4 × 44,750 cells at 0.8 kB) | [bench] §1, [here] |
 | Logical worker memory per small model | about 0.6 MB (1,000 models of 1,000 rows: 575–602 MB) | [here] |
@@ -44,10 +44,10 @@ factor of about two, and measure your own model before you buy hardware.
 **A model in the GUI, TUI, CLI or server** holds every cell in the engine:
 
 ```text
-RAM ≈ cells × 0.8 kB + store overhead
+RAM ≈ cells × 0.5 kB + store overhead
 ```
 
-A 1M-cell model needs about 1 GB. "Cells" means input cells plus every
+A 1M-cell model needs about 0.5 GB. "Cells" means input cells plus every
 derived cell, so a model with ten derived measures over the same grid as
 its inputs has about eleven times the input count.
 

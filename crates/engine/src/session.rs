@@ -597,6 +597,43 @@ fn solve_fixpoints(
     }
 }
 
+/// A delta of a measure's output: (measure, cell, value, diff).
+type Delta = (MeasureId, CoordKey, CellValue, isize);
+
+/// Apply a round's deltas to the snapshot, consolidated: a value retracted
+/// and asserted again cancels, then every retraction runs before any
+/// assertion, so the order the dataflow sent them in does not matter. A
+/// measure with a change left is marked in `dirty`.
+fn settle(snapshot: &Mutex<Snapshot>, dirty: &Mutex<HashSet<MeasureId>>, mut d: Vec<Delta>) {
+    if d.is_empty() {
+        return;
+    }
+    d.sort_unstable_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+    let mut net: Vec<Delta> = Vec::with_capacity(d.len());
+    for x in d {
+        match net.last_mut() {
+            Some(y) if (y.0, &y.1, &y.2) == (x.0, &x.1, &x.2) => y.3 += x.3,
+            _ => net.push(x),
+        }
+    }
+    let mut s = snapshot.lock().unwrap();
+    let s = Arc::make_mut(&mut s);
+    for pass in [false, true] {
+        for (mid, k, v, n) in &net {
+            if *n == 0 || (*n > 0) != pass {
+                continue;
+            }
+            dirty.lock().unwrap().insert(*mid);
+            let m = Arc::make_mut(s.entry(*mid).or_default());
+            if pass {
+                m.insert(k.clone(), v.clone());
+            } else if m.get(k) == Some(v) {
+                m.remove(k);
+            }
+        }
+    }
+}
+
 /// The worker thread: builds the dataflow once, applies the seed, then serves
 /// edit rounds. Each round advances time by 1 and reports the changed outputs;
 /// we keep a running snapshot per measure so we can return a full picture.
@@ -616,6 +653,8 @@ fn worker_loop(
     let snapshot: Arc<Mutex<Snapshot>> = Arc::new(Mutex::new(Snapshot::default()));
     // The measures whose cells changed since the last edit round began.
     let dirty: Arc<Mutex<HashSet<MeasureId>>> = Arc::default();
+    // A round's deltas after the first, applied consolidated once it is done.
+    let pending: Arc<Mutex<Vec<Delta>>> = Arc::default();
     // The command receiver is `!Sync`; wrap it so the (Sync-bounded) timely
     // closure can hold it, and take it out once inside (single worker).
     let cmd_rx = Arc::new(Mutex::new(Some(cmd_rx)));
@@ -649,6 +688,7 @@ fn worker_loop(
         let mut plans = plans;
         plans.retain(|(m, _)| !fixes.iter().any(|f| f.body == *m && f.host.is_some()));
         let mark = dirty.clone();
+        let later = pending.clone();
 
         let built: HashSet<MeasureId> = worker.dataflow::<u64, _, _>(|scope| {
             let mut input_colls = HashMap::new();
@@ -665,12 +705,21 @@ fn worker_loop(
                 built.insert(mid);
                 let snap = snap.clone();
                 let mark = mark.clone();
-                let out = reduced.inspect(move |((k, val), _t, diff)| {
-                    // Maintain the running snapshot from the delta
-                    // stream: a +1 sets the value, a -1 removes it. A
-                    // changed cell's `+new` may arrive before its `-old`
-                    // (updates are ordered by value), so a retraction
-                    // only removes the value it retracts.
+                let later = later.clone();
+                let out = reduced.inspect(move |((k, val), t, diff)| {
+                    // Maintain the running snapshot from the delta stream.
+                    // Time 0 (the seed) only asserts: a +1 sets the value
+                    // as it arrives, so the seed is never buffered. Later
+                    // rounds may retract, and a collection that is not
+                    // collapsed may send a cell's `-v` after its `+v`:
+                    // those wait for the round's end ([`settle`]).
+                    if *t > 0 {
+                        later
+                            .lock()
+                            .unwrap()
+                            .push((mid, k.clone(), val.clone(), *diff));
+                        return;
+                    }
                     mark.lock().unwrap().insert(mid);
                     let mut s = snap.lock().unwrap();
                     let m = Arc::make_mut(Arc::make_mut(&mut s).entry(mid).or_default());
@@ -706,6 +755,8 @@ fn worker_loop(
             while probe.less_than(&t) {
                 worker.step();
             }
+            let d = std::mem::take(&mut *pending.lock().unwrap());
+            settle(&snapshot, &dirty, d);
         };
 
         // Apply the seed at time 0, then advance to 1 and run. We keep each
@@ -796,6 +847,7 @@ fn worker_loop(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::decode_coord;
     use improv_core_model::{
         BinaryOp, CategoryId, Coordinate, DimensionSpec, Expr, Formula, ItemId, Measure, Name,
         Value, ValueType,
@@ -984,6 +1036,45 @@ mod tests {
     /// Copy-on-write: an edit replaces only the changed measure's `Arc`;
     /// an untouched measure is the same allocation in both snapshots, and an
     /// old snapshot keeps its values.
+    /// A round's deltas apply in any order: a retraction sent after its
+    /// value's assertion, one that cancels against an assertion of the same
+    /// value, and one of a value the cell no longer holds.
+    #[test]
+    fn settle_applies_a_rounds_deltas_in_any_order() {
+        let m = MeasureId(7);
+        let (a, b) = (key(&[(1, 1)]), key(&[(1, 2)]));
+        let n = CellValue::num;
+        let snap: Mutex<Snapshot> = Mutex::default();
+        let dirty: Mutex<HashSet<MeasureId>> = Mutex::default();
+        settle(&snap, &dirty, Vec::new());
+        assert!(snap.lock().unwrap().is_empty());
+        let cancel = vec![(m, a.clone(), n(3.0), -1), (m, a.clone(), n(3.0), 1)];
+        settle(&snap, &dirty, cancel);
+        assert!(dirty.lock().unwrap().is_empty(), "a delta that cancels");
+        settle(
+            &snap,
+            &dirty,
+            vec![(m, a.clone(), n(1.0), 1), (m, b.clone(), n(5.0), 1)],
+        );
+        assert!(dirty.lock().unwrap().contains(&m));
+        // a: 1 -> 2 with the +2 first; b: -5 +5 (no change) and a stale -9.
+        settle(
+            &snap,
+            &dirty,
+            vec![
+                (m, a.clone(), n(2.0), 1),
+                (m, b.clone(), n(5.0), 1),
+                (m, a.clone(), n(1.0), -1),
+                (m, b.clone(), n(5.0), -1),
+                (m, b.clone(), n(9.0), -1),
+            ],
+        );
+        let s = snap.lock().unwrap();
+        let cells = &s[&m];
+        assert_eq!(cells.get(&a), Some(&n(2.0)));
+        assert_eq!(cells.get(&b), Some(&n(5.0)));
+    }
+
     #[test]
     fn snapshot_shares_unchanged_measures() {
         let mut model = revenue_model();
@@ -1414,12 +1505,94 @@ mod tests {
                 assert_eq!(*snap[&mid], cells, "{mid:?}");
             }
         }
-        // A map of a reduction's or a join's result is collapsed.
-        let sum = compile_plans(&m, &[MeasureId(102)]).unwrap();
+        // Nor is a join of such collections, or a single-result reduction;
+        // an IF is.
+        let rev = compile_plans(&m, &[MeasureId(102)]).unwrap();
+        assert!(crate::dataflow::functional(&rev.last().unwrap().1, &inputs));
+        define_text(&mut m, 204, "S = SUM(Price OVER Product)");
+        let sum = compile_plans(&m, &[MeasureId(204)]).unwrap();
+        assert!(crate::dataflow::functional(&sum.last().unwrap().1, &inputs));
+        define_text(&mut m, 205, "I = IF(Price > 1, Price, 0)");
+        let iff = compile_plans(&m, &[MeasureId(205)]).unwrap();
         assert!(!crate::dataflow::functional(
-            &sum.last().unwrap().1,
+            &iff.last().unwrap().1,
             &inputs
         ));
+    }
+
+    /// Joins and single-result reductions are not collapsed either: their
+    /// deltas within a round come in no set order, and the snapshot still
+    /// follows every edit (same value, a set twice, a clear and re-set in
+    /// one batch, a cell of either side of a join) as `evaluate` does.
+    #[test]
+    fn uncollapsed_joins_follow_every_edit() {
+        let mut m = revenue_model();
+        m.add_item(ItemId(11), CategoryId(1), "2026");
+        for (id, text) in [
+            (200, "T = SUM(Quantity OVER Time)"),
+            (201, "Share = Quantity / T"),
+            (202, "R2 = Revenue * Price"),
+            (203, "Neg = -Share"),
+        ] {
+            define_text(&mut m, id, text);
+        }
+        let mut ids: Vec<MeasureId> = (200..=203).map(MeasureId).collect();
+        ids.push(MeasureId(102));
+        let plans = compile_plans(&m, &ids).unwrap();
+        let mut flat: HashSet<MeasureId> = [MeasureId(100), MeasureId(101)].into();
+        for (mid, p) in &plans {
+            assert!(crate::dataflow::functional(p, &flat), "{mid:?}");
+            flat.insert(*mid);
+        }
+        let (mut e, _) = Engine::new(&m, &ids).unwrap();
+        let (price, qty) = (MeasureId(100), MeasureId(101));
+        let cell = |measure, coord: &[(u32, u32)], v: Option<f64>| Edit {
+            measure,
+            coord: CoordKey::from_slice(coord),
+            value: v.map(CellValue::num),
+        };
+        let q = |t, p| [(1, t), (2, p)];
+        let batches = [
+            vec![cell(qty, &q(10, 20), Some(100.0))],
+            vec![
+                cell(qty, &q(10, 20), Some(7.0)),
+                cell(price, &[(2, 20)], Some(3.0)),
+            ],
+            vec![
+                cell(qty, &q(11, 20), Some(1.0)),
+                cell(qty, &q(11, 20), Some(2.0)),
+            ],
+            vec![
+                cell(qty, &q(11, 21), Some(4.0)),
+                cell(qty, &q(11, 21), None),
+            ],
+            vec![
+                cell(price, &[(2, 21)], None),
+                cell(price, &[(2, 21)], Some(20.0)),
+            ],
+            vec![
+                cell(qty, &q(10, 21), None),
+                cell(price, &[(2, 20)], Some(-1.0)),
+            ],
+            vec![cell(qty, &q(10, 21), Some(0.0))],
+        ];
+        for b in batches {
+            for x in &b {
+                let c = decode_coord(&x.coord);
+                match x.value.as_ref().and_then(CellValue::as_num) {
+                    Some(v) => m.set_input(x.measure, c, Value::Number(v)),
+                    None => {
+                        m.inputs.remove(&(x.measure, c));
+                    }
+                }
+            }
+            let snap = e.apply(b).unwrap();
+            let want = crate::dataflow::evaluate(&m, &ids).unwrap();
+            for mid in &ids {
+                let got = snap.get(mid).map(|c| (**c).clone()).unwrap_or_default();
+                assert_eq!(got, want.get(mid).cloned().unwrap_or_default(), "{mid:?}");
+            }
+        }
     }
 
     /// A reduction over more items than reduce flat is two-level: the

@@ -286,6 +286,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   model instead of being copied, so they are never held twice. New in
   `improv_duckdb_model`: `cells` and `Cells` (a range at a time);
   `run` still returns every row.
+- **The engine holds 63% less memory per cell, and evaluates 3× faster
+  (B7).** A measure that joins measures of different categories
+  (`Revenue = Price * Quantity`) is no longer collapsed by a `reduce`
+  afterwards, nor is a single-result reduction, which saved two copies of
+  every cell; the broadcast joins once, not twice; and coordinate keys stay
+  inline. At 5M cells: the live engine 732 → 269 bytes per cell,
+  `evaluate`'s peak RSS 3.38 → 2.35 GB, `evaluate` 13.5 → 4.5 s,
+  `Engine::new` 14.2 → 6.0 s. Results are unchanged. The heap profile and
+  the out-of-core decision (deferred past 1.0) are in
+  `docs/reviews/2026-10-23-engine-heap-profile.md`.
 - **improv-server: an unknown token gets 401, not 403.** 403 now means the
   token is valid but its scope is too narrow. A 401 carries
   `WWW-Authenticate: Bearer` and a JSON error body.
