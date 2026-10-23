@@ -365,6 +365,26 @@ impl ModelStore {
         // :view/id + :view/json.
         transact_group(&mut ip, 2, views)?;
 
+        // Drop what the model no longer has (an undone add, a delete): only
+        // cells were diffed before, so a dropped measure, view, item or
+        // category came back on the next load. A partial load still loads
+        // all four in full, so absence here means deleted. Views and measures
+        // first, so nothing kept refers to a dropped item or category.
+        retract_dropped(&mut ip, "view", 2, |id| {
+            model.views.contains_key(&improv_core_model::ViewId(id))
+        })?;
+        // A measure is one indivisible entity of unknown stored width: one
+        // per transact (drops are rare: an undo or a delete).
+        retract_dropped(&mut ip, "measure", MAX_DATOMS_PER_TRANSACT, |id| {
+            model.measures.contains_key(&MeasureId(id))
+        })?;
+        retract_dropped(&mut ip, "item", 3, |id| {
+            model.items.contains_key(&improv_core_model::ItemId(id))
+        })?;
+        retract_dropped(&mut ip, "category", 2, |id| {
+            model.categories.contains_key(&CategoryId(id))
+        })?;
+
         // Singleton meta: external function defs + external-call measures +
         // what-if scenarios, each as a JSON blob on one entity (only if any
         // are non-empty).
@@ -770,6 +790,28 @@ impl ModelStore {
     fn rel(&self, query: &str) -> Result<Vec<Vec<TypedValue>>> {
         rel_on(&self.store, query)
     }
+}
+
+/// Retract every stored `kind` entity (`:<kind>/id`) whose id `keep`
+/// rejects, inside the caller's transaction. `datoms` bounds one entity's
+/// datoms, for chunking.
+fn retract_dropped(
+    ip: &mut InProgress<'_, '_>,
+    kind: &str,
+    datoms: usize,
+    keep: impl Fn(u32) -> bool,
+) -> Result<()> {
+    let rows = rel_on(ip, &format!("[:find ?e ?id :where [?e :{kind}/id ?id]]"))?;
+    let mut gone = Vec::new();
+    for row in rows {
+        if !keep(convert::as_u32(&row[1])?) {
+            gone.push(format!(
+                "[:db/retractEntity {}]",
+                convert::as_entid(&row[0])?
+            ));
+        }
+    }
+    transact_group(ip, datoms, gone)
 }
 
 /// A stored cell entity, as `save_model` needs it to diff or retract it.
@@ -1847,8 +1889,14 @@ mod tests {
         store
             .save_model(&measure_with_n_categories_from(3_000, 1))
             .expect("first save");
+        // The first set of categories stays in the model (a dropped
+        // category is retracted, refs and all); only the measure moves.
+        let mut churned = measure_with_n_categories_from(3_000, 10_000);
+        for i in 0..3_000 {
+            churned.add_category(CategoryId(1 + i), format!("cat{i}"));
+        }
         store
-            .save_model(&measure_with_n_categories_from(3_000, 10_000))
+            .save_model(&churned)
             .expect("churned re-save (both halves under the guard)");
 
         // Finding #8: the union accumulated, so the on-disk width now exceeds
@@ -2145,5 +2193,76 @@ mod tests {
         let err = store.save_model(&inf).expect_err("inf has no EDN form");
         assert!(matches!(err, StoreError::Mentat(_)), "got {err:?}");
         assert_eq!(store.load_model().expect("reload").inputs, m.inputs);
+    }
+
+    /// What a model drops is gone after a save: a removed measure, view,
+    /// item or category does not come back on the next load (only cells
+    /// used to be diffed), and the kept entities are untouched.
+    #[test]
+    fn save_retracts_dropped_measures_views_items_and_categories() {
+        use improv_core_model::{View, ViewId};
+        let path = temp_store_path("dropped");
+        let mut m = Model::new();
+        m.add_category(CategoryId(1), "Time");
+        m.add_category(CategoryId(2), "Region");
+        m.add_item(ItemId(10), CategoryId(1), "Q1");
+        m.add_item(ItemId(11), CategoryId(1), "Q2");
+        m.add_item(ItemId(20), CategoryId(2), "North");
+        for (id, name, cats) in [
+            (1, "Price", vec![CategoryId(1)]),
+            (2, "Cost", vec![CategoryId(1), CategoryId(2)]),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let at = |pairs: &[(u32, u32)]| {
+            Coordinate::from_pairs(pairs.iter().map(|&(c, i)| (CategoryId(c), ItemId(i))))
+        };
+        m.set_input(MeasureId(1), at(&[(1, 10)]), Value::Number(4.0));
+        m.set_input(MeasureId(2), at(&[(1, 10), (2, 20)]), Value::Number(9.0));
+        let view = |id: u32, name: &str| -> View {
+            serde_json::from_str(&format!(r#"{{"id":{id},"name":"{name}","measure":1}}"#))
+                .expect("a view")
+        };
+        m.add_view(view(1, "a"));
+        m.add_view(view(2, "b"));
+        let mut s = ModelStore::open(&path).expect("open");
+        s.save_model(&m).expect("save");
+
+        // Drop Cost (and its cell), Region (and North), Q2 and view b.
+        let mut smaller = s.load_model().expect("load");
+        smaller.measures.remove(&MeasureId(2));
+        smaller.inputs.retain(|(mid, _), _| *mid != MeasureId(2));
+        smaller.categories.remove(&CategoryId(2));
+        smaller.items.remove(&ItemId(20));
+        smaller.items.remove(&ItemId(11));
+        smaller
+            .categories
+            .get_mut(&CategoryId(1))
+            .expect("Time")
+            .items
+            .retain(|i| *i != ItemId(11));
+        smaller.views.remove(&ViewId(2));
+        s.save_model(&smaller).expect("save the smaller model");
+
+        let back = ModelStore::open(&path)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(back, smaller, "nothing dropped came back");
+        // Re-adding a dropped id afterwards is a clean new entity.
+        let mut again = back.clone();
+        again.add_item(ItemId(11), CategoryId(1), "Q2 again");
+        s.save_model(&again).expect("re-add");
+        let back = ModelStore::open(&path)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(back.items[&ItemId(11)].name.0, "Q2 again");
+        let _ = std::fs::remove_file(&path);
     }
 }

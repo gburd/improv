@@ -391,6 +391,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   kept connection) and reloads when it moved. A write that races another
   writer's save still gets 409.
 
+- **A Mentat store forgets what the model dropped.** `save_model` diffed
+  only cells, so a category, item, measure or view the model no longer had
+  stayed in the file and came back on the next load. An undone add in the
+  GUI (a new derived measure, say) reappeared after a reopen. The save now
+  retracts them in the same transaction, as the Postgres backend already
+  deleted them.
 - **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
   ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
   linear combination of the x's before it (or, with `const`, a constant x)
