@@ -382,6 +382,7 @@ fn pagerank() {
     let mut seed = 7u64;
     let dangling = n / 20;
     let mut seen = std::collections::HashSet::new();
+    let mut first = None;
     while seen.len() < edges {
         let s = dangling + (lcg(&mut seed) * (n - dangling) as f64) as usize;
         let d = (lcg(&mut seed) * n as f64) as usize;
@@ -391,6 +392,7 @@ fn pagerank() {
                 (src, ItemId(1_000_000 + s as u32)),
                 (dst, ItemId(100_000_000 + d as u32)),
             ]);
+            first.get_or_insert((s, d, x));
             m.set_input(w, at, Value::Number(x));
         }
     }
@@ -419,18 +421,31 @@ fn pagerank() {
         assert_eq!(snap[&target].len(), n);
     }
     drop(snap);
-    let at: CoordKey = [(1, 1_000_000 + dangling as u32), (2, 100_000_000)]
+    if std::env::var("PROBE_EXIT").is_ok() {
+        // Under heaptrack, everything live now is reported as leaked.
+        std::process::exit(0);
+    }
+    // An existing edge's weight (the graph keeps its shape), then a new
+    // edge out of a dangling node.
+    let (s0, d0, x0) = first.expect("an edge");
+    let at: CoordKey = [(1, 1_000_000 + s0 as u32), (2, 100_000_000 + d0 as u32)]
         .as_slice()
         .into();
     let t2 = Instant::now();
-    let s = eng.set(w, at, 25.0).expect("set");
+    drop(eng.set(w, at, x0 + 25.0).expect("set"));
     let edit = t2.elapsed();
-    drop(s);
+    let at: CoordKey = [(1, 1_000_000 + dangling as u32), (2, 100_000_000)]
+        .as_slice()
+        .into();
+    let t3 = Instant::now();
+    drop(eng.set(w, at, 25.0).expect("set"));
+    let add = t3.elapsed();
     let (r3, h3) = (rss_mb(), heap_mb());
     let per = |a: f64, b: f64| (b - a) * 1024.0 * 1024.0 / edges as f64;
     eprintln!(
         "[pagerank] n={n} edges={edges}: model {build:?} ({:.0} B/edge), \
-         Engine::new {new:?} ({:.0} B/edge), edit {edit:?} ({:.0} B/edge more); \
+         Engine::new {new:?} ({:.0} B/edge), edit {edit:?}, new edge {add:?} \
+         ({:.0} B/edge more); \
          RSS {r0:.0} -> {r1:.0} -> {r2:.0} -> {r3:.0} MB; \
          live heap {h0:.0} -> {h1:.0} -> {h2:.0} -> {h3:.0} MB \
          (model {:.0}, engine {:.0}, edit {:.0} B/edge)",
