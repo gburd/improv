@@ -51,6 +51,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   Saved views are layout and stay.
   A failed import is no longer half-applied: it leaves the model as it
   was.
+- **Build a model from scratch in the GUI.** **File ▸ New** (Ctrl+N)
+  starts an empty model at a new store file, a `postgres://` URL, or in
+  memory, and **File ▸ Open…** (Ctrl+O) opens one, both from a small
+  panel; neither was built before. **Worksheet ▸ Add Category**, **Add
+  Item** and **Add Input Measure** open the model browser at a new
+  "New category" / "New item" / "New input measure" line, which each of
+  its lists now ends with. A category's tile also takes a new item: its
+  right-click menu ends in a New item line. Each add autosaves and is one
+  undo step; a name already used by a category, measure or LAMBDA is
+  refused. A new input measure is a number over every category.
+
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).

@@ -238,6 +238,14 @@ pub struct ImprovApp {
     /// Layout output, not model state — the same role `gutters` plays for the
     /// grid, and what lets a headless test click a row where a user would.
     formula_row_rects: Vec<(MeasureId, egui::Rect)>,
+
+    /// File ▸ New or Open… is asking for a path (`NewModel`/`OpenModel`).
+    file_panel: Option<Command>,
+    /// The file panel's path field.
+    file_path: String,
+    /// Worksheet ▸ Add …: open the browser at this "new …" line and focus it
+    /// next frame.
+    reveal: Option<NewThing>,
 }
 
 /// The measured screen geometry of the grid's margin gutters and the table they
@@ -396,12 +404,61 @@ pub enum Axis {
 
 /// A filter change asked for from a category tile's menu, applied to that
 /// tile's matrix after the gutters are laid out (like a re-pivot move).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FilterReq {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TileReq {
     /// Show/hide one item of the category.
     Toggle(CategoryId, ItemId),
     /// Show every item of the category again.
     Clear(CategoryId),
+    /// The tile menu's New item line: add `name` to the category (`Id` is
+    /// the line, cleared on success).
+    AddItem(egui::Id, CategoryId, String),
+}
+
+/// What a "new …" line adds: the model browser's lines and a tile's menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NewThing {
+    Category,
+    /// An item of this category.
+    Item(CategoryId),
+    /// An input measure over every category.
+    Input,
+}
+
+impl NewThing {
+    /// The model browser's line for it (Worksheet ▸ Add … focuses it).
+    fn field(self) -> egui::Id {
+        match self {
+            NewThing::Category => egui::Id::new("new_category"),
+            NewThing::Item(c) => egui::Id::new(("new_item", c.0)),
+            NewThing::Input => egui::Id::new("new_input"),
+        }
+    }
+}
+
+/// The smallest unused id (>= 1) after `ids`.
+fn next_id(ids: impl Iterator<Item = u32>) -> u32 {
+    ids.max().map_or(1, |m| m + 1)
+}
+
+/// A one-line "new …" field, its text kept in egui memory under `id`, given
+/// the keyboard when `focus`. Returns the trimmed text when Enter is pressed
+/// in it.
+fn add_line(ui: &mut egui::Ui, id: egui::Id, hint: &str, focus: bool) -> Option<String> {
+    let mut buf: String = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+    let resp = ui.add(
+        egui::TextEdit::singleline(&mut buf)
+            .id(id)
+            .hint_text(hint)
+            .desired_width((ui.available_width() - 8.0).clamp(80.0, 220.0)),
+    );
+    if focus && !resp.has_focus() {
+        resp.request_focus();
+    }
+    let entered = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let name = buf.trim().to_owned();
+    ui.data_mut(|d| d.insert_temp(id, buf));
+    (entered && !name.is_empty()).then_some(name)
 }
 
 /// The resolved pivot for the chart: the ROW category stack, the COLUMN stack,
@@ -974,6 +1031,9 @@ impl ImprovApp {
             formula_row_rects: Vec::new(),
             new_formula_line: String::new(),
             new_formula_error: None,
+            file_panel: None,
+            file_path: String::new(),
+            reveal: None,
         })
     }
 
@@ -3124,6 +3184,7 @@ impl eframe::App for ImprovApp {
         self.model_browser(ctx, ws);
         self.info_panel(ctx, ws);
         self.function_help(ctx, ws);
+        self.file_panel(ctx, ws);
         // Last, so it floats over every panel.
         self.menu_bar(ctx, ws);
     }
@@ -3191,6 +3252,7 @@ impl ImprovApp {
             Command::RemoveMatrix => self.matrix_count() > 1,
             // In-memory models have no store: never claim "saved".
             Command::SaveModel | Command::RevertToSaved => !self.db.is_empty(),
+            Command::AddItem => self.add_item_target().is_some(),
             _ => true,
         }
     }
@@ -3202,6 +3264,17 @@ impl ImprovApp {
         }
         match c {
             Command::InfoPanel => self.show_inspector = !self.show_inspector,
+            Command::NewModel | Command::OpenModel => {
+                self.file_panel = Some(c);
+                ctx.memory_mut(|m| m.request_focus(egui::Id::new("file_path")));
+            }
+            Command::AddCategory => self.reveal_new(NewThing::Category),
+            Command::AddItem => {
+                if let Some(cat) = self.add_item_target() {
+                    self.reveal_new(NewThing::Item(cat));
+                }
+            }
+            Command::AddInputMeasure => self.reveal_new(NewThing::Input),
             Command::ModelBrowser => self.show_browser = !self.show_browser,
             Command::SaveModel => {
                 self.status = match self.save() {
@@ -3257,6 +3330,176 @@ impl ImprovApp {
         }
     }
 
+    /// Show the model browser at `what`'s "new …" line, focused.
+    fn reveal_new(&mut self, what: NewThing) {
+        self.show_browser = true;
+        self.reveal = Some(what);
+    }
+
+    /// The category Worksheet ▸ Add Item adds to: the focused worksheet's
+    /// first row category, else the model's first.
+    fn add_item_target(&self) -> Option<CategoryId> {
+        self.focused()
+            .row_cats(&self.model)
+            .first()
+            .copied()
+            .or_else(|| self.model.categories.keys().min_by_key(|c| c.0).copied())
+    }
+
+    /// Run a "new …" line's add. On success clear the line and keep it
+    /// focused for the next name, so a list of items is typed in a row.
+    fn run_add(&mut self, ctx: &egui::Context, field: egui::Id, what: NewThing, name: &str) {
+        self.status = match self.add_named(what, name) {
+            Ok(msg) => {
+                ctx.data_mut(|d| d.remove::<String>(field));
+                ctx.memory_mut(|m| m.request_focus(field));
+                msg
+            }
+            Err(e) => e,
+        };
+    }
+
+    /// File ▸ New and Open…: a NeXT panel asking for a store file or a
+    /// `postgres://` URL. Enter or the button switches models; an error
+    /// stays in the status line and the panel stays open.
+    fn file_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let Some(mode) = self.file_panel else {
+            return;
+        };
+        let new = mode == Command::NewModel;
+        let mut open = true;
+        let mut go = false;
+        let rect = egui::Rect::from_center_size(ws.center(), egui::vec2(380.0, 112.0));
+        let win = crate::nxwin::NxWindow::new("file_panel", if new { "New" } else { "Open" });
+        let rect = anchored_rect(ctx, win.id(), rect);
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(if new {
+                    "New model file or postgres:// URL (empty: in memory):"
+                } else {
+                    "Model file or postgres:// URL:"
+                });
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.file_path)
+                        .id(egui::Id::new("file_path"))
+                        .desired_width(f32::INFINITY),
+                );
+                go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.horizontal(|ui| {
+                    go |= ui.button(if new { "Create" } else { "Open" }).clicked();
+                    if self.db.is_empty() && self.can_undo() {
+                        ui.label("The in-memory model's edits will be lost.");
+                    }
+                });
+            });
+        if go {
+            let path = self.file_path.trim().to_owned();
+            match self.switch_model(&path, new) {
+                Ok(()) => {
+                    self.status = if path.is_empty() {
+                        "new in-memory model".into()
+                    } else {
+                        format!("opened {path}")
+                    };
+                }
+                Err(e) => self.status = e,
+            }
+        } else if !open {
+            self.file_panel = None;
+        }
+    }
+
+    /// Replace this window's model with the one at `path` (File ▸ Open…), or
+    /// with an empty one there (File ▸ New; `""` is in memory). Open refuses
+    /// a missing file rather than creating it; New refuses a store that
+    /// already holds a model. On failure nothing changes.
+    pub fn switch_model(&mut self, path: &str, new: bool) -> Result<(), String> {
+        let is_file = !path.is_empty() && !improv_store::is_postgres(path);
+        if !new && path.is_empty() {
+            return Err("type a model file or postgres:// URL".into());
+        }
+        if !new && is_file && !std::path::Path::new(path).exists() {
+            return Err(format!("no model at {path}"));
+        }
+        let mut next = ImprovApp::load(path)?;
+        if new && !(next.model.categories.is_empty() && next.model.measures.is_empty()) {
+            return Err(format!("{path} already holds a model; use File ▸ Open…"));
+        }
+        next.locale = self.locale.clone();
+        next.menu = self.menu;
+        *self = next;
+        Ok(())
+    }
+
+    /// Add a category, an item of one, or an input measure named `name`, as
+    /// one undoable, autosaved step. A new input measure ranges over every
+    /// category and is shown if the focused worksheet shows nothing.
+    /// Returns the status line; on failure nothing changes.
+    pub fn add_named(&mut self, what: NewThing, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("type a name".into());
+        }
+        // Formulas name categories and measures alike, so neither may clash.
+        let taken = self.model.category_by_name(name).is_some()
+            || self.model.measure_by_name(name).is_some()
+            || self.model.lambda_by_name(name).is_some();
+        let mut candidate = self.model.clone();
+        let mut shown = None;
+        let msg = match what {
+            NewThing::Category | NewThing::Input if taken => {
+                return Err(format!("{name:?} is already a category, measure or LAMBDA"));
+            }
+            NewThing::Category => {
+                let id = CategoryId(next_id(self.model.categories.keys().map(|c| c.0)));
+                candidate.add_category(id, name);
+                format!("added category {name}")
+            }
+            NewThing::Item(c) => {
+                let cat = self
+                    .model
+                    .categories
+                    .get(&c)
+                    .ok_or_else(|| format!("no category with id {}", c.0))?;
+                let model = &self.model;
+                if cat
+                    .items
+                    .iter()
+                    .any(|i| model.items.get(i).is_some_and(|it| it.name.0 == name))
+                {
+                    return Err(format!("{} already has an item {name:?}", cat.name.0));
+                }
+                let id = ItemId(next_id(self.model.items.keys().map(|i| i.0)));
+                candidate.add_item(id, c, name);
+                format!("added {name} to {}", cat.name.0)
+            }
+            NewThing::Input => {
+                let mut categories: Vec<CategoryId> =
+                    self.model.categories.keys().copied().collect();
+                categories.sort_by_key(|c| c.0);
+                let id = MeasureId(self.next_measure_id());
+                candidate.add_measure(Measure {
+                    id,
+                    name: Name(name.to_owned()),
+                    value_type: ValueType::Number,
+                    categories,
+                    kind: MeasureKind::Input,
+                    description: None,
+                });
+                shown = Some(id);
+                format!("added input measure {name}")
+            }
+        };
+        self.publish(candidate)?;
+        if self.selected().is_none() {
+            self.focused_mut().select(shown);
+        }
+        Ok(msg)
+    }
+
     /// Whether Quit may close now. Edits to an in-memory model can't be saved,
     /// so the first Quit only warns and arms; a second one closes.
     fn quit_allowed(&mut self) -> bool {
@@ -3280,6 +3523,17 @@ impl ImprovApp {
         );
         let win = crate::nxwin::NxWindow::new("browser", format!("{} - Model", self.file_name()));
         let rect = anchored_rect(ctx, win.id(), rect);
+        // Kept until the line holds the keyboard: a window's first frame
+        // is a sizing pass, whose disabled widgets give focus up.
+        let reveal = self.reveal;
+        let mut add: Option<NewThing> = None;
+        let mut add_name = String::new();
+        let mut pick = |what: NewThing, name: Option<String>| {
+            if let Some(n) = name {
+                add = Some(what);
+                add_name = n;
+            }
+        };
         let _ = win
             .closable(&mut open)
             .rect(rect)
@@ -3293,6 +3547,10 @@ impl ImprovApp {
 
                         egui::CollapsingHeader::new("Categories")
                             .default_open(false)
+                            .open(
+                                matches!(reveal, Some(NewThing::Category | NewThing::Item(_)))
+                                    .then_some(true),
+                            )
                             .show(ui, |ui| {
                                 let mut cats: Vec<CategoryId> =
                                     self.model.categories.keys().copied().collect();
@@ -3301,6 +3559,7 @@ impl ImprovApp {
                                     let cat = &self.model.categories[&cid];
                                     egui::CollapsingHeader::new(&cat.name.0)
                                         .id_salt(("cat", cid.0))
+                                        .open((reveal == Some(NewThing::Item(cid))).then_some(true))
                                         .show(ui, |ui| {
                                             let mut items = cat.items.clone();
                                             items.sort_by_key(|i| i.0);
@@ -3309,12 +3568,19 @@ impl ImprovApp {
                                                     ui.label(&it.name.0);
                                                 }
                                             }
+                                            let what = NewThing::Item(cid);
+                                            let f = reveal == Some(what);
+                                            pick(what, add_line(ui, what.field(), "New item", f));
                                         });
                                 }
+                                let what = NewThing::Category;
+                                let f = reveal == Some(what);
+                                pick(what, add_line(ui, what.field(), "New category", f));
                             });
 
                         egui::CollapsingHeader::new("Measures")
                             .default_open(true)
+                            .open((reveal == Some(NewThing::Input)).then_some(true))
                             .show(ui, |ui| {
                                 let mut ids: Vec<MeasureId> =
                                     self.model.measures.keys().copied().collect();
@@ -3346,11 +3612,27 @@ impl ImprovApp {
                                         });
                                     }
                                 });
+                                let what = NewThing::Input;
+                                let f = reveal == Some(what);
+                                pick(what, add_line(ui, what.field(), "New input measure", f));
                             });
+                        if !self.model.lambdas.is_empty() {
+                            egui::CollapsingHeader::new("LAMBDAs").show(ui, |ui| {
+                                for l in self.model.lambdas.values() {
+                                    ui.label(format!("{}({})", l.name.0, l.params.join(", ")));
+                                }
+                            });
+                        }
                     },
                 );
             });
         self.show_browser = open;
+        if reveal.is_some_and(|r| ctx.memory(|m| m.has_focus(r.field()))) {
+            self.reveal = None;
+        }
+        if let Some(what) = add {
+            self.run_add(ctx, what.field(), what, &add_name);
+        }
     }
 
     /// A saved view's description for the browser: its primary measure, the
@@ -4415,7 +4697,7 @@ impl ImprovApp {
         };
         let uid = m.uid;
         let mut moves: Vec<(CategoryId, Axis)> = Vec::new();
-        let mut freqs: Vec<FilterReq> = Vec::new();
+        let mut freqs: Vec<TileReq> = Vec::new();
         let col_stack = m.col_cats(&self.model);
         let row_stack = m.row_cats(&self.model);
         // Each page category with its item names and the current item's index.
@@ -4576,16 +4858,21 @@ impl ImprovApp {
         // A drop (or a tile-menu filter) changes THIS matrix, not the focused
         // one: a tile in one matrix must not touch another matrix.
         let model = &self.model;
+        let mut new_items = Vec::new();
         if let Some(m) = self.matrices.get_mut(mi) {
             for (c, axis) in moves {
                 m.set_axis(model, c, axis);
             }
             for r in freqs {
                 match r {
-                    FilterReq::Toggle(c, i) => m.toggle_filter_item(model, c, i),
-                    FilterReq::Clear(c) => m.clear_filter(model, c),
+                    TileReq::Toggle(c, i) => m.toggle_filter_item(model, c, i),
+                    TileReq::Clear(c) => m.clear_filter(model, c),
+                    TileReq::AddItem(field, c, name) => new_items.push((field, c, name)),
                 }
             }
+        }
+        for (field, c, name) in new_items {
+            self.run_add(ui.ctx(), field, NewThing::Item(c), &name);
         }
     }
 
@@ -4670,7 +4957,8 @@ impl ImprovApp {
     /// [`ImprovApp::gutter_drop_zone`]). Right-click opens a "Move to …" menu,
     /// the drag-free (and accessible) way to re-pivot, and below it a checkbox
     /// per item filtering `c` in matrix `m` (plus "Show all"). A filtered
-    /// category's tile reads `Name*`.
+    /// category's tile reads `Name*`. Last in that menu, a New item line adds
+    /// an item to `c`.
     fn tile(
         ui: &mut egui::Ui,
         model: &Model,
@@ -4678,7 +4966,7 @@ impl ImprovApp {
         c: CategoryId,
         from: Axis,
         moves: &mut Vec<(CategoryId, Axis)>,
-        freqs: &mut Vec<FilterReq>,
+        freqs: &mut Vec<TileReq>,
     ) {
         let uid = m.uid;
         let filter = m.filters.iter().find(|f| f.category == c);
@@ -4727,12 +5015,18 @@ impl ImprovApp {
             for (id, item) in &items {
                 let mut shown = filter.is_none_or(|f| f.items.contains(id));
                 if ui.checkbox(&mut shown, item).changed() {
-                    freqs.push(FilterReq::Toggle(c, *id));
+                    freqs.push(TileReq::Toggle(c, *id));
                 }
             }
             if ui.button("Show all").clicked() {
-                freqs.push(FilterReq::Clear(c));
+                freqs.push(TileReq::Clear(c));
                 ui.close_menu();
+            }
+            // Improv's way to add an item: type it in the category's tile.
+            ui.separator();
+            let field = egui::Id::new(("tile_new_item", uid, c.0));
+            if let Some(name) = add_line(ui, field, "New item", false) {
+                freqs.push(TileReq::AddItem(field, c, name));
             }
         });
     }
@@ -5956,6 +6250,9 @@ mod tests {
             formula_row_rects: Vec::new(),
             new_formula_line: String::new(),
             new_formula_error: None,
+            file_panel: None,
+            file_path: String::new(),
+            reveal: None,
         }
     }
 
@@ -8378,6 +8675,7 @@ mod tests {
             app.model_browser(ctx, ws);
             app.info_panel(ctx, ws);
             app.function_help(ctx, ws);
+            app.file_panel(ctx, ws);
             app.menu_bar(ctx, ws);
             inspect(ctx);
         })
@@ -12959,5 +13257,285 @@ mod tests {
             "DROP TABLE {table}; DELETE FROM improv.model WHERE name = '{model}'"
         ))
         .unwrap();
+    }
+
+    // -- H7: build a model from scratch (File ▸ New/Open, Worksheet ▸ Add …)
+
+    fn names_of(model: &Model) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v
+        };
+        (
+            sorted(
+                model
+                    .categories
+                    .values()
+                    .map(|c| c.name.0.clone())
+                    .collect(),
+            ),
+            sorted(model.items.values().map(|i| i.name.0.clone()).collect()),
+            sorted(model.measures.values().map(|m| m.name.0.clone()).collect()),
+        )
+    }
+
+    /// Tutorial 1 from an empty window: File ▸ New at a path, two
+    /// categories with items, an input measure, a value, a derived measure.
+    /// Every step autosaves (a reload sees it) and undoes one at a time.
+    #[test]
+    fn a_model_is_built_from_an_empty_gui_saved_and_undone() {
+        let db = temp_db("h7_build");
+        let _cleanup = Cleanup(db.clone());
+        let mut app = build_app(Model::new());
+        app.switch_model(&db, true).expect("File ▸ New");
+        assert_eq!(app.db, db);
+        assert!(!app.command_enabled(Command::AddItem), "no category yet");
+
+        let time = |app: &ImprovApp| app.model.category_by_name("Time").map(|c| c.id);
+        app.add_named(NewThing::Category, "Time").expect("Time");
+        let t = time(&app).expect("Time added");
+        assert!(app.command_enabled(Command::AddItem));
+        assert_eq!(app.add_item_target(), Some(t));
+        for q in ["Q1", "Q2"] {
+            assert_eq!(
+                app.add_named(NewThing::Item(t), q).as_deref(),
+                Ok(format!("added {q} to Time").as_str())
+            );
+        }
+        app.add_named(NewThing::Category, "Product")
+            .expect("Product");
+        let p = app.model.category_by_name("Product").expect("added").id;
+        app.add_named(NewThing::Item(p), "Widget").expect("Widget");
+        assert_eq!(app.selected(), None, "no measure yet");
+        app.add_named(NewThing::Input, "Price").expect("Price");
+        let price = app.model.measure_by_name("Price").expect("added");
+        assert_eq!(price.categories, vec![t, p], "over every category");
+        assert_eq!(price.kind, MeasureKind::Input);
+        let price = price.id;
+        assert_eq!(app.selected(), Some(price), "an empty worksheet shows it");
+
+        app.sync_axis_state();
+        let key = app.cursor_key().expect("a cell under the cursor");
+        app.commit_cell_text(price, key.clone(), "4")
+            .expect("type a value");
+        let twice = app
+            .add_derived_measure("Twice", "Price * 2")
+            .expect("Twice");
+        assert_eq!(app.values_for(twice).get(&key), Some(&8.0));
+
+        let reloaded = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(names_of(&reloaded), names_of(&app.model), "autosaved");
+        assert_eq!(
+            reloaded.input(price, &decode(&key)),
+            Some(&Value::Number(4.0))
+        );
+
+        // Undo walks back: Twice, the value, Price, Widget, Product, Q2 …
+        app.undo().expect("undo Twice");
+        app.undo().expect("undo the value");
+        app.undo().expect("undo Price");
+        assert!(app.model.measure_by_name("Price").is_none());
+        assert_eq!(app.selected(), None, "the worksheet lets go of Price");
+        app.undo().expect("undo Widget");
+        app.undo().expect("undo Product");
+        app.undo().expect("undo Q2");
+        assert_eq!(names_of(&app.model).1, vec!["Q1".to_string()]);
+        let reloaded = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(names_of(&reloaded), names_of(&app.model), "undo saved");
+        app.redo().expect("redo Q2");
+        assert_eq!(names_of(&app.model).1, vec!["Q1".to_string(), "Q2".into()]);
+    }
+
+    /// Bad names are refused with a reason and change nothing.
+    #[test]
+    fn adding_a_clashing_or_empty_name_is_refused() {
+        let mut app = build_app(grid_2x2_model());
+        let before = app.model.clone();
+        let t = CategoryId(1);
+        let refuse =
+            |app: &mut ImprovApp, what, name: &str| app.add_named(what, name).expect_err(name);
+        assert_eq!(refuse(&mut app, NewThing::Category, "  "), "type a name");
+        assert!(refuse(&mut app, NewThing::Category, "Time").contains("already"));
+        assert!(refuse(&mut app, NewThing::Category, "Price").contains("already"));
+        assert!(refuse(&mut app, NewThing::Input, "Product").contains("already"));
+        assert!(refuse(&mut app, NewThing::Item(t), "2025").contains("Time already has"));
+        assert!(refuse(&mut app, NewThing::Item(CategoryId(9)), "X").contains("no category"));
+        assert_eq!(app.model, before);
+        assert!(!app.can_undo());
+        // The same item name in another category is fine.
+        app.add_named(NewThing::Item(CategoryId(2)), "2025")
+            .expect("Product may have a 2025");
+    }
+
+    /// Worksheet ▸ Add Category opens the browser's Categories list at its
+    /// New category line, focused: type a name, press Enter, and the line
+    /// clears for the next one.
+    #[test]
+    fn worksheet_add_category_types_into_the_browser() {
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        app.show_browser = false;
+        app.run_command(&ctx, Command::AddCategory);
+        assert!(app.show_browser);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let field = NewThing::Category.field();
+        assert_eq!(ctx.memory(|m| m.focused()), Some(field), "focused");
+        assert_eq!(app.reveal, None, "revealed once");
+        focused_frame(
+            &ctx,
+            &mut app,
+            "new_category",
+            vec![egui::Event::Text("Region".into())],
+        );
+        focused_frame(&ctx, &mut app, "new_category", vec![enter()]);
+        assert_eq!(app.status, "added category Region");
+        assert!(app.model.category_by_name("Region").is_some());
+        let buf: Option<String> = ctx.data_mut(|d| d.get_temp(field));
+        assert_eq!(buf.unwrap_or_default(), "", "the line is cleared");
+        // Measures ends in a New input measure line.
+        app.run_command(&ctx, Command::AddInputMeasure);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        focused_frame(
+            &ctx,
+            &mut app,
+            "new_input",
+            vec![egui::Event::Text("Cost".into())],
+        );
+        focused_frame(&ctx, &mut app, "new_input", vec![enter()]);
+        assert!(
+            app.model.measure_by_name("Cost").is_some(),
+            "{}",
+            app.status
+        );
+        // A refused name stays in the line, with the reason in the status.
+        focused_frame(
+            &ctx,
+            &mut app,
+            "new_input",
+            vec![egui::Event::Text("Cost".into())],
+        );
+        focused_frame(&ctx, &mut app, "new_input", vec![enter()]);
+        assert!(app.status.contains("already"), "{}", app.status);
+        let buf: Option<String> = ctx.data_mut(|d| d.get_temp(NewThing::Input.field()));
+        assert_eq!(buf.as_deref(), Some("Cost"));
+        // And each category lists its own New item line.
+        app.run_command(&ctx, Command::AddItem);
+        // Its category's header animates open first.
+        for t in [1.0, 2.0, 3.0] {
+            let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), t);
+        }
+        let target = app.add_item_target().expect("a category");
+        assert_eq!(
+            ctx.memory(|m| m.focused()),
+            Some(NewThing::Item(target).field())
+        );
+    }
+
+    /// Improv's way to add an item: type it into the category's tile (its
+    /// right-click menu ends in a New item line).
+    #[test]
+    fn typing_in_a_tile_adds_an_item_to_its_category() {
+        let mut app = gutter_app();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let time = CategoryId(1);
+        open_tile_menu(&mut desk, &mut app, time);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(
+            text_at(&shapes, "New item").is_some(),
+            "the tile menu offers it"
+        );
+        let field = egui::Id::new(("tile_new_item", app.matrices[0].uid, time.0));
+        for ev in [egui::Event::Text("2027".into()), enter()] {
+            desk.ctx.memory_mut(|m| m.request_focus(field));
+            let _ = desk.frame(&mut app, vec![ev]);
+        }
+        let cat = &app.model.categories[&time];
+        let names: Vec<&str> = cat
+            .items
+            .iter()
+            .map(|i| app.model.items[i].name.0.as_str())
+            .collect();
+        assert!(names.contains(&"2027"), "{names:?}: {}", app.status);
+        assert!(app.can_undo());
+    }
+
+    /// File ▸ New and Open… switch the window's model; a bad target changes
+    /// nothing.
+    #[test]
+    fn file_new_and_open_switch_models_or_refuse() {
+        let seeded = temp_db("h7_open");
+        let _c1 = Cleanup(seeded.clone());
+        Store::open(&seeded)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let fresh = temp_db("h7_new");
+        let _c2 = Cleanup(fresh.clone());
+
+        let mut app = build_app(revenue_model());
+        let before = app.model.clone();
+        let missing = temp_db("h7_missing");
+        assert!(app
+            .switch_model(&missing, false)
+            .unwrap_err()
+            .starts_with("no model at"));
+        assert!(
+            !std::path::Path::new(&missing).exists(),
+            "Open never creates"
+        );
+        assert_eq!(
+            app.switch_model("", false).unwrap_err(),
+            "type a model file or postgres:// URL"
+        );
+        assert!(app
+            .switch_model(&seeded, true)
+            .unwrap_err()
+            .contains("already holds a model"));
+        assert_eq!(app.model, before);
+
+        app.switch_model(&seeded, false).expect("Open");
+        assert_eq!(app.model.measures.len(), 3);
+        assert_eq!(app.db, seeded);
+        app.switch_model(&fresh, true).expect("New");
+        assert!(app.model.categories.is_empty() && app.db == fresh);
+        app.switch_model("", true).expect("New in memory");
+        assert!(app.db.is_empty() && app.model.measures.is_empty());
+
+        // Through the panel: File ▸ Open…, type the path, Enter.
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        app.run_command(&ctx, Command::OpenModel);
+        assert_eq!(app.file_panel, Some(Command::OpenModel));
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        focused_frame(
+            &ctx,
+            &mut app,
+            "file_path",
+            vec![egui::Event::Text(seeded.clone())],
+        );
+        focused_frame(&ctx, &mut app, "file_path", vec![enter()]);
+        assert_eq!(app.db, seeded, "{}", app.status);
+        assert_eq!(app.file_panel, None, "the panel closes");
+        assert!(app.status.starts_with("opened "));
+
+        // A bad path keeps the panel up with the reason.
+        app.run_command(&ctx, Command::OpenModel);
+        app.file_path = missing.clone();
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        focused_frame(&ctx, &mut app, "file_path", vec![enter()]);
+        assert_eq!(app.file_panel, Some(Command::OpenModel));
+        assert!(app.status.starts_with("no model at"), "{}", app.status);
+        // Its close box dismisses it.
+        let shapes = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0).shapes;
+        assert!(text_at(&shapes, "Open").is_some());
+        app.file_panel = None;
+        let shapes = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0).shapes;
+        assert!(text_at(&shapes, "Model file or postgres:// URL:").is_none());
     }
 }

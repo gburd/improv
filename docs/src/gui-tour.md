@@ -32,18 +32,22 @@ The window has five regions:
   its black `Improv` title bar to move it. An item marked with a triangle opens
   a submenu to its right; click it again, press Escape or click elsewhere to
   close it. **Info ▸ Info Panel…** shows or hides the Info panel; **File ▸
-  Save** saves the model, **Revert to Saved** reloads it from the store (the
-  way out of a save conflict), and **Import/Export CSV…** opens the CSV wizard;
-  **Edit** has Undo and Redo; **Worksheet** has Pivot, Add Matrix, Remove
-  Matrix and Save View; **View** has **Model Browser**, which shows or hides the model browser,
+  New** starts an empty model (type a new file, a `postgres://` URL, or
+  nothing for an in-memory one) and **Open…** opens a store file or URL,
+  both in a small panel; **Save** saves the model, **Revert to Saved**
+  reloads it from the store (the way out of a save conflict), and
+  **Import/Export CSV…** opens the CSV wizard; **Edit** has Undo and Redo;
+  **Worksheet** has Pivot, Add Matrix, Remove Matrix, Save View, and **Add
+  Category**, **Add Item** and **Add Input Measure** (see [Building a model
+  from scratch](#building-a-model-from-scratch)); **View** has **Model Browser**, which shows or hides the model browser,
   then lists the saved views, with a check on the
   current one, and picking one switches the workspace to it; **Graph ▸ Show
   Chart** toggles the chart; **Help ▸ Functions…** (also F1) opens the
   [function help](#function-help); **Hide** minimizes and **Quit** closes the
-  window. Format, Print and Services, and New, Open, Save As and Close in the
-  File menu, are not built yet and draw grayed out. Key equivalents, shown at
-  the right of their item, take Ctrl (Cmd on macOS): `s` save, `z` undo,
-  `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
+  window. Format, Print and Services, and Save As and Close in the File
+  menu, are not built yet and draw grayed out. Key equivalents, shown at
+  the right of their item, take Ctrl (Cmd on macOS): `n` new, `o` open,
+  `s` save, `z` undo, `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
   field has focus.
 - **Model browser** (window, bottom left of the workspace) — titled
   `<file> - Model`. It leads with a white list of saved views, one
@@ -51,8 +55,9 @@ The window has five regions:
   and read its description below (measure, categories, pages); double-click
   to open it. Under that, a name field and **Save view** save the current
   canvas. Collapsed below are Categories (with their items) and Measures (each
-  labeled `input` or `formula` at the right; click one to select it). Its
-  close box hides it; **View ▸ Model Browser** brings it back.
+  labeled `input` or `formula` at the right; click one to select it), each
+  list ending in a line that adds one, and the named LAMBDAs, once there
+  are any. Its close box hides it; **View ▸ Model Browser** brings it back.
 - **Worksheet windows** (center) — the dark gray workspace holds one
   window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
   to move a window and its bottom bar to resize it (the left third drags the
@@ -72,7 +77,8 @@ The window has five regions:
   as drop targets only while you drag), or right-click it and choose
   **Move to Rows / Columns / Pages**. The same menu filters the category:
   uncheck an item to hide it from this worksheet, or choose **Show all**; a
-  filtered tile reads `Name*`.
+  filtered tile reads `Name*`. Its last line, **New item**, adds an item to
+  the category: type the name and press Enter.
   Cells are white with thin black rules; the selection and its row and column
   headers turn gray. Click a cell to select it; **double-click** it (or press
   Enter / F2) to edit, Enter to commit, Esc to cancel. Input cells carry a
@@ -97,6 +103,28 @@ The window has five regions:
 The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an
 in-memory model, or a model whose last autosave failed.
+
+## Building a model from scratch
+
+Start `improv-gui` with no model, or choose **File ▸ New** and type a path
+for the new store. Then, all undoable with Ctrl+Z and autosaved after
+each step:
+
+1. **Worksheet ▸ Add Category** opens the model browser's Categories list
+   at its **New category** line. Type `Time`, Enter; the line clears, so
+   type `Product` and Enter again.
+2. **Add Item**: open a category in the browser and type into its **New
+   item** line, or right-click the category's tile in a worksheet and type
+   into the tile's **New item** line. **Worksheet ▸ Add Item** jumps to the
+   line of the worksheet's first row category.
+3. **Worksheet ▸ Add Input Measure**: type `Price`. An input measure ranges
+   over every category, and an empty worksheet shows it. Double-click a
+   cell to type its value.
+4. Add formulas on the formula list's last line: `Revenue = Price *
+   Quantity`.
+
+A name already used by a category, a measure or a LAMBDA is refused, and
+the status line says why.
 
 ## Function help
 

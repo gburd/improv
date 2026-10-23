@@ -17,6 +17,10 @@ use crate::theme::{BLACK, BOLD, DARK_GRAY, LIGHT_GRAY, WHITE};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     InfoPanel,
+    /// File ▸ New: ask for a path and start an empty model there.
+    NewModel,
+    /// File ▸ Open…: ask for a store path or `postgres://` URL and open it.
+    OpenModel,
     /// Show or hide the model browser window.
     ModelBrowser,
     SaveModel,
@@ -29,6 +33,12 @@ pub enum Command {
     AddMatrix,
     RemoveMatrix,
     SaveView,
+    /// Type a new category's name (the model browser's add line).
+    AddCategory,
+    /// Type a new item into the focused worksheet's first category.
+    AddItem,
+    /// Type a new input measure's name (the model browser's add line).
+    AddInputMeasure,
     /// Open the n-th entry of the `views` list passed to [`show`].
     OpenView(usize),
     ToggleChart,
@@ -68,8 +78,8 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         "File",
         None,
         Top::Sub(&[
-            ("New", None, None),
-            ("Open…", None, None),
+            ("New", Some('n'), Some(C::NewModel)),
+            ("Open…", Some('o'), Some(C::OpenModel)),
             ("Save", Some('s'), Some(C::SaveModel)),
             ("Save As…", None, None),
             ("Revert to Saved", None, Some(C::RevertToSaved)),
@@ -94,6 +104,9 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Add Matrix", None, Some(C::AddMatrix)),
             ("Remove Matrix", None, Some(C::RemoveMatrix)),
             ("Save View", None, Some(C::SaveView)),
+            ("Add Category", None, Some(C::AddCategory)),
+            ("Add Item", None, Some(C::AddItem)),
+            ("Add Input Measure", None, Some(C::AddInputMeasure)),
         ]),
     ),
     ("View", None, Top::Views),
@@ -572,7 +585,11 @@ mod tests {
         assert_eq!(h.state.open, Some(ws), "a disabled click leaves it open");
         let file = top("File");
         h.click_row(menu_id(), file);
-        assert_eq!(h.click_row(sub_id(file), 0), None, "New isn't built yet");
+        assert_eq!(
+            h.click_row(sub_id(file), 3),
+            None,
+            "Save As isn't built yet"
+        );
     }
 
     #[test]
@@ -632,7 +649,7 @@ mod tests {
             assert_eq!(key_command(key, k.is_uppercase()), c, "{k:?}");
             n += 1;
         }
-        assert_eq!(n, 6, "s z Z p h q");
+        assert_eq!(n, 8, "n o s z Z p h q");
     }
 
     #[test]
@@ -643,6 +660,8 @@ mod tests {
         assert_eq!(key_command(Key::Y, false), Some(C::Redo));
         assert_eq!(key_command(Key::Q, false), Some(C::Quit));
         assert_eq!(key_command(Key::H, false), Some(C::Hide));
+        assert_eq!(key_command(Key::N, false), Some(C::NewModel));
+        assert_eq!(key_command(Key::O, false), Some(C::OpenModel));
         assert_eq!(key_command(Key::S, true), None);
         assert_eq!(key_command(Key::P, false), None, "Print is disabled");
         assert_eq!(key_command(Key::A, false), None);
