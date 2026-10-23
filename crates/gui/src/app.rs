@@ -436,6 +436,17 @@ impl NewThing {
     }
 }
 
+/// Whether formula-line text (canonical) is `Name = LAMBDA(…)`: a named
+/// LAMBDA's definition rather than a measure's formula.
+fn is_lambda_definition(text: &str) -> bool {
+    text.split_once('=').is_some_and(|(_, rhs)| {
+        let rhs = rhs.trim_start();
+        rhs.get(..6)
+            .is_some_and(|head| head.eq_ignore_ascii_case("lambda"))
+            && rhs[6..].trim_start().starts_with('(')
+    })
+}
+
 /// The smallest unused id (>= 1) after `ids`.
 fn next_id(ids: impl Iterator<Item = u32>) -> u32 {
     ids.max().map_or(1, |m| m + 1)
@@ -2114,6 +2125,45 @@ impl ImprovApp {
             self.new_formula_error = formula_fault(&self.model, text, e);
         })?;
         Ok(id)
+    }
+
+    /// Define (or redefine) the named LAMBDA `line` spells, `Name =
+    /// LAMBDA(p, …, body)`, as the CLI's `define` does: parsed by
+    /// `parse_definition`, a redefinition keeps its id (calls store it), and
+    /// a measure's or category's name is refused. Autosaved and undoable; a
+    /// redefinition that breaks a formula calling it is refused like any
+    /// formula that fails to build. A parse error is left in
+    /// `new_formula_error`, located in `line`.
+    pub fn define_lambda(&mut self, line: &str) -> Result<String, String> {
+        self.new_formula_error = None;
+        let canonical = self.locale.canonicalize(line);
+        let parsed = parser::parse_definition(&self.model, &canonical).map_err(|e| {
+            self.new_formula_error = Some(diagnostics::parse_error(&self.model, line, &e));
+            e.to_string()
+        })?;
+        let parser::Definition::Lambda(lt) = parsed else {
+            return Err("type Name = LAMBDA(parameters, body)".into());
+        };
+        let name = lt.name.0.clone();
+        if self.model.measure_by_name(&name).is_some()
+            || self.model.category_by_name(&name).is_some()
+        {
+            return Err(format!(
+                "{name:?} is a measure or category; name the LAMBDA differently"
+            ));
+        }
+        let old = self.model.lambda_by_name(&name).map(|(id, _)| id);
+        let id = old.unwrap_or_else(|| next_id(self.model.lambdas.keys().copied()));
+        let params = lt.lambda.params.join(", ");
+        let mut candidate = self.model.clone();
+        candidate.lambdas.insert(id, lt.lambda);
+        self.publish(candidate)?;
+        let verb = if old.is_some() {
+            "redefined"
+        } else {
+            "defined"
+        };
+        Ok(format!("{verb} LAMBDA {name}({params})"))
     }
 
     /// The smallest unused measure id (>= 1).
@@ -4277,9 +4327,25 @@ impl ImprovApp {
     }
 
     /// Add the measure the new-formula line spells (`Name = formula`),
-    /// selecting it; on failure keep the line and locate the error in it.
+    /// selecting it, or define the named LAMBDA it spells (`Name =
+    /// LAMBDA(…)`); on failure keep the line and locate the error in it.
     fn add_from_formula_line(&mut self) {
         let line = self.new_formula_line.clone();
+        if is_lambda_definition(&self.locale.canonicalize(&line)) {
+            match self.define_lambda(&line) {
+                Ok(msg) => {
+                    self.new_formula_line.clear();
+                    self.status = msg;
+                }
+                Err(e) => {
+                    if self.new_formula_error.is_none() {
+                        self.new_formula_error = Some(diagnostics::Diagnostic::plain(e.clone()));
+                    }
+                    self.status = format!("formula error: {e}");
+                }
+            }
+            return;
+        }
         let Some((name, expr)) = line.split_once('=') else {
             self.status = "type Name = formula".into();
             return;
@@ -13537,5 +13603,134 @@ mod tests {
         app.file_panel = None;
         let shapes = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0).shapes;
         assert!(text_at(&shapes, "Model file or postgres:// URL:").is_none());
+    }
+
+    // -- H8: named LAMBDAs from the formula list's last line
+
+    /// `Name = LAMBDA(…)` on the new-formula line defines a named LAMBDA,
+    /// stored exactly as the CLI's `define` stores it (`parse_definition`);
+    /// a formula then calls it, a redefinition keeps its id and recomputes
+    /// the caller, and undo takes it back out of the store too.
+    #[test]
+    fn the_formula_line_defines_a_named_lambda_like_cli_define() {
+        let db = temp_db("h8_lambda");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&revenue_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let line = "Margin = LAMBDA(p, c, p - c)";
+        focused_frame(
+            &ctx,
+            &mut app,
+            "formula_new",
+            vec![egui::Event::Text(line.into())],
+        );
+        focused_frame(&ctx, &mut app, "formula_new", vec![enter()]);
+        assert_eq!(app.status, "defined LAMBDA Margin(p, c)");
+        assert!(app.new_formula_line.is_empty());
+        let parser::Definition::Lambda(cli) =
+            parser::parse_definition(&revenue_model(), line).expect("what define parses")
+        else {
+            panic!("not a LAMBDA");
+        };
+        assert_eq!(
+            app.model.lambdas.get(&1),
+            Some(&cli.lambda),
+            "as define stores it"
+        );
+        assert!(
+            app.formula_rows()
+                .iter()
+                .all(|r| r.measure.0 != 1 || app.model.measures.contains_key(&r.measure)),
+            "a LAMBDA is no formula row"
+        );
+
+        // A formula calls it.
+        let id = app
+            .add_derived_measure("Net", "Margin(Revenue, 1)")
+            .expect("call the LAMBDA");
+        let at = [(1, 10), (2, 20)];
+        assert_eq!(app.values_for(id).get(at.as_slice()), Some(&69.0));
+        // Redefining keeps the id and recomputes the caller.
+        assert_eq!(
+            app.define_lambda("Margin = LAMBDA(p, c, p - 2 * c)")
+                .as_deref(),
+            Ok("redefined LAMBDA Margin(p, c)")
+        );
+        assert_eq!(
+            app.model.lambdas.keys().copied().collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(app.values_for(id).get(at.as_slice()), Some(&68.0));
+        // A redefinition that breaks its caller is refused, nothing changed.
+        let err = app
+            .define_lambda("Margin = LAMBDA(p, p)")
+            .expect_err("Net passes two arguments");
+        assert!(!err.is_empty());
+        assert_eq!(app.values_for(id).get(at.as_slice()), Some(&68.0));
+
+        let reloaded = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(reloaded.lambdas, app.model.lambdas, "saved");
+        // Undo: the redefinition, Net, then the definition.
+        app.undo().expect("undo the redefinition");
+        app.undo().expect("undo Net");
+        app.undo().expect("undo the LAMBDA");
+        assert!(app.model.lambdas.is_empty());
+        let reloaded = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert!(reloaded.lambdas.is_empty(), "the undone LAMBDA stays gone");
+    }
+
+    /// A bad LAMBDA line is located like a bad formula, and names already
+    /// taken are refused.
+    #[test]
+    fn a_bad_lambda_line_is_located_and_clashes_are_refused() {
+        let mut app = build_app(revenue_model());
+        app.new_formula_line = "Twice = LAMBDA(x, x * Nope)".into();
+        app.add_from_formula_line();
+        let d = app.new_formula_error.clone().expect("located");
+        let span = d.span.expect("a span");
+        assert_eq!(&app.new_formula_line[span], "Nope");
+        assert!(app.status.starts_with("formula error:"), "{}", app.status);
+        assert_eq!(app.new_formula_line, "Twice = LAMBDA(x, x * Nope)", "kept");
+
+        app.new_formula_line = "Revenue = lambda (x, x)".into();
+        app.add_from_formula_line();
+        assert!(
+            app.status.contains("is a measure or category"),
+            "{}",
+            app.status
+        );
+        assert!(app
+            .new_formula_error
+            .as_ref()
+            .is_some_and(|d| d.span.is_none()));
+        app.add_named(NewThing::Category, "Region")
+            .expect("a category");
+        assert!(app
+            .define_lambda("Region = LAMBDA(x, x)")
+            .unwrap_err()
+            .contains("category"));
+        // A built-in function's name is the parser's to refuse.
+        assert!(app
+            .define_lambda("Time = LAMBDA(x, x)")
+            .unwrap_err()
+            .contains("built-in"));
+        assert_eq!(
+            app.define_lambda("Twice = 2").unwrap_err(),
+            "type Name = LAMBDA(parameters, body)"
+        );
+        assert!(app.model.lambdas.is_empty());
+        // An ordinary formula still adds a measure.
+        assert!(!is_lambda_definition("Lambdas = Revenue"));
+        assert!(!is_lambda_definition("no equals"));
+        assert!(is_lambda_definition("F=LAMBDA (x, x)"));
     }
 }

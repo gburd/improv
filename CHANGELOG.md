@@ -61,6 +61,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   right-click menu ends in a New item line. Each add autosaves and is one
   undo step; a name already used by a category, measure or LAMBDA is
   refused. A new input measure is a number over every category.
+- **Named LAMBDAs from the GUI's formula list.** `Name = LAMBDA(p, …,
+  body)` on the last line defines a named LAMBDA, parsed by
+  `parse_definition` and stored as `improv define` stores it; an existing
+  name is redefined under its id, so its callers recompute. A redefinition
+  that breaks a caller is refused. Each is autosaved and one undo step, and
+  the model browser lists them.
 
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`

@@ -266,6 +266,8 @@ bold gaps are tracked as tasks for 1.0.
 | **Scenarios** | `scenario`, `eval --scenario` | — | — | — | — | — |
 | **Undo** | — | `u`, Ctrl+R to redo | Edit ▸ Undo, Redo | — | — | — |
 | Named LAMBDAs | `define` | `=` | **calls work; define them in the CLI** | computes them | `define` | — (refused; inline `LAMBDA` works) |
+| **Undo** | — | **—** | Edit ▸ Undo, Redo | — | — | — |
+| Named LAMBDAs | `define` | **calls work; define them in the CLI** | `Name = LAMBDA(…)` on the formula list's last line | computes them | `define` | — (refused; inline `LAMBDA` works) |
 | FIXPOINT | yes | yes (the same parser and engine) | yes | yes | yes | in `improv(…)`; not in `improv_calc` |
 | what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |
 | **Live sync** (see others' writes) | each command reloads | `R` to revert | File ▸ Revert to Saved | **no: serves its cached copy until its own write hits a conflict** | logical, trigger, commit sync | — |

@@ -90,7 +90,9 @@ The window has five regions:
   numbered, with a **Calc** button above and a checkbox that enables it.
   Click a row to select its measure; the selected row becomes an editor:
   Enter commits (re-typechecks and recomputes), Esc reverts. Type
-  `Name = formula` on the last line and press Enter to add a measure. A
+  `Name = formula` on the last line and press Enter to add a measure, or
+  `Name = LAMBDA(p, …, body)` to define a named LAMBDA (as `improv
+  define` does); typing an existing LAMBDA's name redefines it. A
   formula that fails, in either editor, stays as typed with the fault
   underlined (see [Formula errors](#formula-errors)).
 - **Info panel** (window, top right of the workspace, closed at start) —
@@ -121,7 +123,9 @@ each step:
    over every category, and an empty worksheet shows it. Double-click a
    cell to type its value.
 4. Add formulas on the formula list's last line: `Revenue = Price *
-   Quantity`.
+   Quantity`, or a named LAMBDA, `Margin = LAMBDA(p, c, p - c)`, which
+   the browser then lists under LAMBDAs and any formula can call:
+   `Net = Margin(Revenue, Cost)`.
 
 A name already used by a category, a measure or a LAMBDA is refused, and
 the status line says why.

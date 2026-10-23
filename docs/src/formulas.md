@@ -363,7 +363,8 @@ A call is stored as a call, not its expansion, so redefining `Margin`
 changes every formula that uses it. A named LAMBDA reads only its
 parameters (pass measures as arguments), may call LAMBDAs defined before
 it, and never itself. They persist with the model (Mentat and Postgres
-stores).
+stores). In the GUI, type the same `Margin = LAMBDA(…)` line on the formula
+list's last line.
 
 A parameter the body uses where a category goes (`OVER c`, `POSITION(c)`,
 `RELABEL`'s categories) is a **category parameter**: the call passes a
@@ -1090,8 +1091,8 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
 - `TEXTSPLIT` takes no row delimiter (see Differences from Excel);
-- named LAMBDAs are defined with `improv define` or the TUI's `=` line
-  (no GUI editor yet);
+- named LAMBDAs are defined with `improv define`, `improv.define`, the
+  TUI's `=` line or the GUI formula list's last line;
 - no `MMULT` or `LINSOLVE` function: a matrix product is a join and a sum
   (see Matrices); `FORECAST.ETS.CONFINT` is #N/A for seasonal models
   (LibreOffice's interval is a random simulation);
