@@ -6,31 +6,36 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — the road to 1.0.0 (2026-10-21; status 2026-10-23)
+## Active priority — the road to 1.0.0 (status 2026-10-23, kiwi box gone)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
-- **Done (39):** B2 B3 B11, C1 C2 C4 C5, D1–D13, E1–E5, F1–F7, G1–G4,
-  H5, I1, J1. Highlights: each model reads and writes as its owner, with
-  row security on the catalog, `improv_user`/`improv_admin` roles, the
-  `improv.models` view and a tested privilege matrix. One replication slot
-  per database, and failover slots. Upgrades are tested from every release
-  on PG 15–18. The server has `/v1`, token scopes, limits, an audit log and
-  OpenAPI (`/v1/model` stays outside the promise). Releases are signed with
-  cosign keyless, with SHA256SUMS and SBOMs. There are named arguments, and
-  SUM/AVERAGE use Neumaier summation. A weekly scale gate runs against a
-  baseline taken on GitHub runners. Man pages and completions come from
-  clap. The operations docs and `compatibility.md` are written.
-- **In flight:** A1 (Mentat `resolve_avs` fix on Mentat master 6a1b08de2;
-  ships in `mentatdb` 1.18.0; 1.17.2 is a pg_mentat-only security release).
-  0.11.0 waits on it.
-- **Open (25):** B1 B4–B10, C3 (external review), F8–F10, H1–H4 H6–H9,
-  J2–J6. **Not planned for 1.0:** I2/I3 (web GUI and multi-user editing).
-  The spike is on branch `work/web-spike`.
-- **Known gap:** B3's "10 one-row INSERT statements < 2× one" in trigger
-  mode is 3.3× with an index on the dimension columns. Deferring the work
-  to COMMIT would break read-your-writes; postgres.md documents the index.
+- **Done since the last status:** H7/H8 (TUI and GUI build models from
+  scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
+  storage_mentat save bugs fixed), H3 partly (frames 125 → 7 ms at 1M
+  cells; the 11 s Mentat autosave is left), H9 (the server sees other
+  writers), F8–F10 (tutorials run in CI, generated SQL/CLI/HTTP references,
+  docs review), D14 (fast shutdown), B9 (per-model memory in status, plus
+  `improv.max_model_memory`), B10 (DuckDB `improv()` 11 s → 4.6 s), and
+  cargo-deny advisories (ctutils, clipboard-win, tokio).
+- **On branch `wip/eng` (Codeberg), not merged:**
+  - `perf(engine): 63% less memory per cell` (B7: 732 → 269 B per cell at
+    5M; heap profile and out-of-core decision included). Gated.
+  - `fix(engine): R.QTUKEY inverts in a dozen integrals` (gated, except
+    coverage).
+  - `wip(engine): B8 in progress` (713 B/edge at 10M, short of 500). Not
+    gated.
+  - Rebase onto main and gate before merging. B8's last step needs a
+    decision: exact summation (correctly rounded) in place of Neumaier
+    would make flat and blocked SUM agree. That would let `Out` go flat
+    and also solve B4(b).
+- **Deferred with a design note:** B1 (parallel apply).
+- **C3:** no checklist yet. Two agent runs on it stopped on a provider
+  content filter. Brief it as a plain engineering checklist.
+- **In flight:** A1 (Mentat 1.18.x, imminent). 0.11.0 waits on it.
+- **Rescue copy:** `~/ws/improv-rescue/` on the maintainer's machine holds
+  the box's bench-out, bench-scratch, contracts and agent diffs.
 
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
