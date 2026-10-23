@@ -383,6 +383,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   a database's models share the one slot `improv_db`, so the guide's
   family-finance example failed its logical-sync check. It now waits for
   that slot, and `ci/pg_improv.sh` runs it on every major.
+- **`improv-server` sees other writers (H9).** It cached the model and
+  served that copy until one of its own writes was refused with 409, so a
+  CLI `set` stayed invisible to `GET /measures/:id/values`. Each request
+  now checks the store's high-water mark first (Mentat's newest
+  transaction, a Postgres model's `improv.model_version`: one query on a
+  kept connection) and reloads when it moved. A write that races another
+  writer's save still gets 409.
+
 - **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
   ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
   linear combination of the x's before it (or, with `const`, a constant x)

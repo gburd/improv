@@ -70,11 +70,14 @@ names it `anonymous`.
 A write must name an existing **input** measure and a coordinate with exactly
 one item for each of the measure's categories; values must be finite. Anything
 else is a 400. Writes are serialized, so concurrent writers do not lose
-updates. The server caches the loaded model. If another process (the GUI,
-the CLI, SQL on a Postgres model) saved since the server loaded it, the
-server's next write is refused with **409 Conflict**, writing nothing, and
-the cache is dropped, so a retry reloads and succeeds. Reads serve the
-cached model until then.
+updates. The server caches the loaded model, and before every request it
+checks the store's high-water mark (one cheap query: Mentat's newest
+transaction, or a Postgres model's `improv.model_version`). When another
+process (the GUI, the CLI, SQL on a Postgres model) has saved since, it
+reloads, so the next read shows that change and the next write builds on
+it. A write that races such a save (it lands between the server's load
+and its save) is refused with **409 Conflict**, writing nothing, and the
+cache is dropped, so a retry reloads and succeeds.
 
 ## Limits
 

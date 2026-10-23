@@ -2,9 +2,10 @@
 //!
 //! The (blocking SQLite-backed) Mentat store is opened inside `spawn_blocking`
 //! and never shared across tasks. The loaded model is cached in [`AppState`]
-//! and replaced on every write this process makes (API or scheduler), so reads
-//! cost one store load per write, not per request. The server assumes it owns
-//! the store: a write from another process is not seen until restart.
+//! and replaced on every write this process makes (API or scheduler). Each
+//! read first checks the store's high-water mark (one cheap query on a kept
+//! probe handle) and reloads when another process has written since, so reads
+//! cost one store load per write, from any writer, not per request.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // The attribute is only used inside #[cfg(test)] modules, so non-test
 // coverage builds would otherwise warn that the feature is unused.
@@ -329,8 +330,12 @@ pub struct AppState {
     /// The loaded model, `None` until first read or after invalidation (P4).
     cache: tokio::sync::RwLock<Option<Arc<Model>>>,
     /// The store high-water `cache` was loaded/saved at; a save from a stale
-    /// cache (another process wrote since) is refused with 409.
+    /// cache (another process wrote since) is refused with 409. Changed only
+    /// with the `cache` write lock held, so a `cache` reader sees a matching pair.
     loaded_tx: std::sync::Mutex<Option<i64>>,
+    /// A store handle kept open for the per-request high-water check (H9):
+    /// opened on first use, dropped after an error so the next check reconnects.
+    probe: std::sync::Mutex<Option<Store>>,
     /// Request body cap in bytes.
     max_body: usize,
     rate: RateLimiter,
@@ -352,6 +357,7 @@ impl AppState {
             write_lock: tokio::sync::Mutex::new(()),
             cache: tokio::sync::RwLock::new(None),
             loaded_tx: std::sync::Mutex::new(None),
+            probe: std::sync::Mutex::new(None),
             max_body: MAX_BODY_BYTES,
             rate: RateLimiter::new(RATE_PER_MIN),
             audit: AuditLog::Stderr,
@@ -740,16 +746,49 @@ impl IntoResponse for ApiError {
     }
 }
 
-/// The current model: the cached copy, or (on a miss) one load from the store
-/// on a blocking thread. The cache write lock is held across the load, so a
-/// concurrent writer's [`save_model`] replaces it only after a stale load lands.
+/// The store's high-water mark, read on the kept probe handle on a blocking
+/// thread: Mentat's newest transaction, Postgres's `improv.model_version`.
+// shortcut: one probe handle serializes the checks; pool them if reads contend.
+async fn store_high_water(state: &Arc<AppState>) -> Result<i64, ApiError> {
+    let st = state.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut probe = st.probe.lock().unwrap_or_else(PoisonError::into_inner);
+        if probe.is_none() {
+            *probe = Some(Store::open(&st.db_path)?);
+        }
+        let hw = probe.as_mut().map(Store::tx_high_water).unwrap_or(Ok(0));
+        if hw.is_err() {
+            *probe = None;
+        }
+        hw
+    })
+    .await
+    .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
+    .map_err(|e| ApiError::Internal(e.to_string()))
+}
+
+/// The current model: the cached copy while the store's high-water still
+/// matches it, else one load from the store on a blocking thread (H9: another
+/// process's write shows up on the next request). The cache write lock is held
+/// across the load, so a concurrent writer's [`save_model`] replaces it only
+/// after a stale load lands.
 async fn load_model(state: &Arc<AppState>) -> Result<Arc<Model>, ApiError> {
-    if let Some(m) = state.cache.read().await.as_ref() {
-        return Ok(m.clone());
+    // `None`: nothing was cached, so any copy cached since is new enough.
+    let cached = state.cache.read().await.is_some();
+    let hw = match cached {
+        true => Some(store_high_water(state).await?),
+        false => None,
+    };
+    let fresh = |cache: &Option<Arc<Model>>| {
+        let tx = *state.loaded_tx.lock().unwrap();
+        cache.clone().filter(|_| hw.is_none() || hw == tx)
+    };
+    if let Some(m) = fresh(&*state.cache.read().await) {
+        return Ok(m);
     }
     let mut cache = state.cache.write().await;
-    if let Some(m) = cache.as_ref() {
-        return Ok(m.clone());
+    if let Some(m) = fresh(&cache) {
+        return Ok(m);
     }
     #[cfg(test)]
     state.loads.fetch_add(1, Ordering::Relaxed);
@@ -791,8 +830,9 @@ async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, A
         Err(e) => return Err(ApiError::Internal(e.to_string())),
     };
     let model = Arc::new(model);
+    let mut cache = state.cache.write().await;
     *state.loaded_tx.lock().unwrap() = tx;
-    *state.cache.write().await = Some(model.clone());
+    *cache = Some(model.clone());
     Ok(model)
 }
 
@@ -1519,50 +1559,142 @@ mod tests {
         assert_eq!(v["text"], "Price times Quantity");
     }
 
-    /// Another process writes the store after the server cached its model: the
-    /// server's next write must 409 (not retract that write), and a retry,
-    /// which reloads, succeeds.
-    #[tokio::test]
-    async fn write_over_another_processes_change_is_409() {
-        let (app, p) = seeded_app();
-        let get = || Request::get("/measures").body(Body::empty()).unwrap();
-        assert_eq!(
-            app.clone().oneshot(get()).await.unwrap().status(),
-            StatusCode::OK
-        );
-
-        let mut other = Store::open(p.to_str().unwrap()).unwrap();
+    /// Another process (a second store handle) sets Price[WidgetB] = `v` in
+    /// the store at `target`.
+    fn other_process_sets_price_b(target: &str, v: f64) {
+        let mut other = Store::open(target).unwrap();
         let mut m = other.load_model().unwrap();
-        let c = Coordinate::from_pairs([(improv_core_model::CategoryId(2), ItemId(21))]);
-        m.set_input(
-            MeasureId(100),
-            c.clone(),
-            improv_core_model::Value::Number(77.0),
-        );
+        m.set_input(MeasureId(100), price_b(), Value::Number(v));
         other.save_model(&m).unwrap();
+    }
 
-        let post = || {
-            Request::post("/measures/100/cells")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    json!({"coord": {"dims": {"2": 20}}, "value": 42.0}).to_string(),
-                ))
-                .unwrap()
-        };
-        let resp = app.clone().oneshot(post()).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::CONFLICT);
-        assert!(body_json(resp).await["error"]
-            .as_str()
+    fn price_b() -> Coordinate {
+        Coordinate::from_pairs([(CategoryId(2), ItemId(21))])
+    }
+
+    async fn get_price_b(app: &Router) -> Option<f64> {
+        let req = Request::get("/measures/100/values").body(Body::empty());
+        let resp = app.clone().oneshot(req.unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let cells = body_json(resp).await;
+        let want = json!([["Product", "WidgetB"]]);
+        let cell = cells
+            .as_array()
             .unwrap()
-            .contains("reload"));
-        assert_eq!(app.oneshot(post()).await.unwrap().status(), StatusCode::OK);
+            .iter()
+            .find(|c| c["coord"] == want);
+        cell.and_then(|c| c["value"].as_f64())
+    }
+
+    /// H9: another process saves after the server cached its model; the
+    /// server's next GET shows the change, with one reload, and a GET after
+    /// that reuses the reloaded copy.
+    #[tokio::test]
+    async fn outside_write_shows_in_the_next_get() {
+        let (_, p) = seeded_app();
+        let state = Arc::new(AppState::new(
+            p.to_str().unwrap().into(),
+            Auth::Disabled,
+            None,
+        ));
+        let app = app(state.clone());
+        assert_eq!(get_price_b(&app).await, Some(20.0));
+        other_process_sets_price_b(p.to_str().unwrap(), 77.0);
+        assert_eq!(get_price_b(&app).await, Some(77.0));
+        assert_eq!(get_price_b(&app).await, Some(77.0));
+        assert_eq!(state.loads.load(Ordering::Relaxed), 2, "one reload");
+    }
+
+    /// The same against the Postgres store (live: needs `IMPROV_TEST_PG`).
+    /// A plain test with its own runtime: a `postgres::Client` owns a runtime
+    /// and must not be dropped inside an async context.
+    #[test]
+    fn outside_write_shows_in_the_next_get_postgres() {
+        let Some(url) = pg_url() else { return };
+        let url = format!("{url}?model=server_h9_{}", std::process::id());
+        Store::open(&url)
+            .unwrap()
+            .save_model(&revenue_model())
+            .unwrap();
+        let state = Arc::new(AppState::new(url.clone(), Auth::Disabled, None));
+        let app = app(state.clone());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert_eq!(rt.block_on(get_price_b(&app)), Some(20.0));
+        other_process_sets_price_b(&url, 77.0);
+        assert_eq!(rt.block_on(get_price_b(&app)), Some(77.0));
+        assert_eq!(rt.block_on(get_price_b(&app)), Some(77.0));
+        assert_eq!(state.loads.load(Ordering::Relaxed), 2, "one reload");
+    }
+
+    /// `IMPROV_TEST_PG` (a URL or a `key=value` DSN) as a `postgres://` URL.
+    fn pg_url() -> Option<String> {
+        let Ok(dsn) = std::env::var("IMPROV_TEST_PG") else {
+            println!("skipped: IMPROV_TEST_PG not set");
+            return None;
+        };
+        if improv_store::is_postgres(&dsn) {
+            return Some(dsn);
+        }
+        let kv: HashMap<_, _> = dsn
+            .split_whitespace()
+            .filter_map(|p| p.split_once('='))
+            .collect();
+        let get = |k| kv.get(k).copied().unwrap_or_default();
+        Some(format!(
+            "postgres://{}:{}@{}/{}",
+            get("user"),
+            get("password"),
+            get("host"),
+            get("dbname")
+        ))
+    }
+
+    /// A write after another process's change starts from that change (the
+    /// server reloads first), so it keeps it.
+    #[tokio::test]
+    async fn write_after_another_processes_change_keeps_it() {
+        let (app, p) = seeded_app();
+        assert_eq!(get_price_b(&app).await, Some(20.0));
+        other_process_sets_price_b(p.to_str().unwrap(), 77.0);
+        let body = json!({"coord": {"dims": {"2": 20}}, "value": 42.0});
+        let resp = app.oneshot(post_cell("/measures/100/cells", body, None));
+        assert_eq!(resp.await.unwrap().status(), StatusCode::OK);
         let after = Store::open(p.to_str().unwrap())
             .unwrap()
             .load_model()
             .unwrap();
         assert_eq!(
-            after.input(MeasureId(100), &c),
-            Some(&improv_core_model::Value::Number(77.0))
+            after.input(MeasureId(100), &price_b()),
+            Some(&Value::Number(77.0))
+        );
+        let a = Coordinate::from_pairs([(CategoryId(2), ItemId(20))]);
+        assert_eq!(after.input(MeasureId(100), &a), Some(&Value::Number(42.0)));
+    }
+
+    /// A save racing another process's commit (between the server's load and
+    /// its save) is refused with 409, not saved over it; the retry reloads.
+    #[tokio::test]
+    async fn save_over_a_racing_write_is_409() {
+        let (_, p) = seeded_app();
+        let state = Arc::new(AppState::new(
+            p.to_str().unwrap().into(),
+            Auth::Disabled,
+            None,
+        ));
+        let model = load_model(&state).await.ok().unwrap();
+        other_process_sets_price_b(p.to_str().unwrap(), 77.0);
+        let err = save_model(&state, (*model).clone()).await.err().unwrap();
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        assert!(body_json(resp).await["error"]
+            .as_str()
+            .unwrap()
+            .contains("reload"));
+        assert!(state.cache.read().await.is_none(), "stale cache dropped");
+        let m = load_model(&state).await.ok().unwrap();
+        assert_eq!(
+            m.input(MeasureId(100), &price_b()),
+            Some(&Value::Number(77.0))
         );
     }
 
