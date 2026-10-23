@@ -27,3 +27,6 @@ unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
 [dev-dependencies]
 postgres = "0.19"
+# The crash-safety tests check the store file with SQLite's integrity_check.
+mentat.workspace = true
+improv_storage_mentat = { path = "../storage_mentat" }

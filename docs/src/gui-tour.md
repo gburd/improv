@@ -106,6 +106,19 @@ The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an
 in-memory model, or a model whose last autosave failed.
 
+Every edit autosaves, in one transaction. If a save fails, the edit is
+undone in the window as well, so what you see is what the file holds,
+and the status line says why:
+
+- **The disk is full** (or the file can't be written): free some space and
+  make the edit again.
+- **Another program changed this model** since you opened it: nothing is
+  overwritten. Choose **File ▸ Revert to Saved** to load their changes,
+  then make yours again.
+
+A crash or a `kill -9` during a save loses only that save. The file reopens
+with every earlier edit and nothing half-written.
+
 ## Building a model from scratch
 
 Start `improv-gui` with no model, or choose **File ▸ New** and type a path

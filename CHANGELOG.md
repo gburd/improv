@@ -408,6 +408,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   kept connection) and reloads when it moved. A write that races another
   writer's save still gets 409.
 
+- **The GUI says why a save failed.** A save conflict now reads "another
+  program changed this model since it was opened, so the change was not
+  saved and nothing was overwritten. Choose File ▸ Revert to Saved…",
+  and a full disk (SQLite's "database or disk is full", or the "disk I/O
+  error" it reports when the disk fills as it grows a side file) says the
+  disk is full. Before, the backend's text was shown as is. New tests
+  kill -9 a process mid-save and reopen the store (every acknowledged
+  save there, nothing of the killed one, `integrity_check` ok), fill a
+  real disk during saves (a tmpfs in a user namespace), and run two
+  writers against one store.
 - **A Mentat store forgets what the model dropped.** `save_model` diffed
   only cells, so a category, item, measure or view the model no longer had
   stayed in the file and came back on the next load. An undone add in the

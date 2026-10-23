@@ -447,6 +447,30 @@ fn is_lambda_definition(text: &str) -> bool {
     })
 }
 
+/// What the status line says about a failed save. The edit was rolled back
+/// (see [`ImprovApp::publish`]), so each message says so.
+fn save_error(e: improv_store::StoreError) -> String {
+    match e {
+        improv_store::StoreError::Conflict(_) => "save conflict: another program changed this \
+            model since it was opened, so the change was not saved and nothing was \
+            overwritten. Choose File ▸ Revert to Saved to load their changes, then make \
+            it again."
+            .into(),
+        e if e.to_string().contains("disk is full") => {
+            "save failed: the disk is full, so the change was not saved. Free some space \
+             and make it again."
+                .into()
+        }
+        // What SQLite reports when the disk fills while it grows a side file.
+        e if e.to_string().contains("disk I/O error") => {
+            "save failed: the model's file could not be written (a disk I/O error: is the \
+             disk full?), so the change was not saved. Free some space and make it again."
+                .into()
+        }
+        e => format!("save failed: {e}"),
+    }
+}
+
 /// The smallest unused id (>= 1) after `ids`.
 fn next_id(ids: impl Iterator<Item = u32>) -> u32 {
     ids.max().map_or(1, |m| m + 1)
@@ -2192,7 +2216,7 @@ impl ImprovApp {
                 self.save_token = s.save_token();
                 Ok(())
             })
-            .map_err(|e| format!("save failed: {e}"));
+            .map_err(save_error);
         self.dirty = r.is_err();
         r
     }
@@ -13732,5 +13756,370 @@ mod tests {
         assert!(!is_lambda_definition("Lambdas = Revenue"));
         assert!(!is_lambda_definition("no equals"));
         assert!(is_lambda_definition("F=LAMBDA (x, x)"));
+    }
+
+    // -- H6: crash safety (kill -9 during a save, a full disk, two writers)
+
+    /// A model with one input measure over 100 x 50 items, every cell 0: a
+    /// save that rewrites them all takes long enough to be killed midway.
+    fn crash_model() -> Model {
+        let mut m = Model::new();
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        for i in 0..100 {
+            m.add_item(ItemId(100 + i), a, format!("a{i}"));
+        }
+        for j in 0..50 {
+            m.add_item(ItemId(1000 + j), b, format!("b{j}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![a, b],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        for i in 0..100 {
+            for j in 0..50 {
+                let at = improv_core_model::Coordinate::from_pairs([
+                    (a, ItemId(100 + i)),
+                    (b, ItemId(1000 + j)),
+                ]);
+                m.set_input(MeasureId(1), at, Value::Number(0.0));
+            }
+        }
+        m
+    }
+
+    /// The one value every cell of [`crash_model`]'s measure holds: a save is
+    /// atomic, so a store with two values in it is a half-applied save.
+    fn uniform_value(model: &Model) -> f64 {
+        let vals: std::collections::BTreeSet<u64> = model
+            .inputs
+            .values()
+            .map(|v| match v {
+                Value::Number(n) => n.to_bits(),
+                other => panic!("not a number: {other:?}"),
+            })
+            .collect();
+        assert_eq!(model.inputs.len(), 5000, "cells were lost");
+        assert_eq!(vals.len(), 1, "a save was half applied: {vals:?}");
+        f64::from_bits(*vals.first().expect("a value"))
+    }
+
+    /// SQLite's own check of the store file.
+    fn integrity(db: &str) -> String {
+        let store = mentat::Store::open(db).expect("open the store");
+        store
+            .sqlite_ref()
+            .pragma_query_value(None, "integrity_check", |r| r.get::<_, String>(0))
+            .expect("integrity_check")
+    }
+
+    /// Run this test binary's [`h6_child`] in `mode`, with `db`.
+    fn h6_child_command(mode: &str, db: &str) -> std::process::Command {
+        let mut c = std::process::Command::new(std::env::current_exe().expect("the test binary"));
+        c.args([
+            "--exact",
+            "app::tests::h6_child",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("IMPROV_GUI_H6_CHILD", mode)
+        .env("IMPROV_GUI_H6_DB", db);
+        c
+    }
+
+    /// The child process of the H6 tests; does nothing unless one runs it.
+    #[test]
+    #[ignore = "a child process of the H6 crash-safety tests"]
+    fn h6_child() {
+        let (Ok(mode), Ok(db)) = (
+            std::env::var("IMPROV_GUI_H6_CHILD"),
+            std::env::var("IMPROV_GUI_H6_DB"),
+        ) else {
+            return;
+        };
+        match mode.as_str() {
+            "saves" => h6_child_saves(&db),
+            "disk-full" => h6_child_disk_full(&db),
+            other => panic!("unknown mode {other}"),
+        }
+    }
+
+    /// Save k = 1, 2, … through the GUI's atomic path (`publish`: build,
+    /// save, adopt), every cell set to k, saying `saving k` and `saved k`.
+    /// Runs until killed.
+    fn h6_child_saves(db: &str) {
+        let mut app = ImprovApp::load(db).expect("load");
+        let cells: Vec<_> = app.model.inputs.keys().cloned().collect();
+        for k in 1..=u16::MAX {
+            let mut candidate = app.model.clone();
+            for (m, at) in &cells {
+                candidate.set_input(*m, at.clone(), Value::Number(f64::from(k)));
+            }
+            println!("saving {k}");
+            app.publish(candidate).expect("save");
+            println!("saved {k}");
+        }
+    }
+
+    /// kill -9 a process that is saving, then reopen: the store holds every
+    /// acknowledged save and nothing of the killed one (all cells hold one
+    /// value), SQLite finds no corruption, and the GUI opens and saves it.
+    #[test]
+    fn kill_9_during_a_save_loses_nothing_and_corrupts_nothing() {
+        use std::io::BufRead;
+        let db = temp_db("h6_kill");
+        let _cleanup = Cleanup(db.clone());
+        let _wal = Cleanup(format!("{db}-wal"));
+        let _shm = Cleanup(format!("{db}-shm"));
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&crash_model()))
+            .expect("seed");
+        let mut midway = 0;
+        for (round, fraction) in [0.2, 0.5, 0.8].into_iter().enumerate() {
+            let mut child = h6_child_command("saves", &db)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn the saving child");
+            let mut lines = std::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+            let mut next = |want: &str| loop {
+                let line = lines.next().expect("the child stopped").expect("read");
+                if let Some(k) = line.strip_prefix(want) {
+                    break (k.parse::<u32>().expect("k"), std::time::Instant::now());
+                }
+            };
+            let (_, t1) = next("saving ");
+            let (_, t2) = next("saved ");
+            let save = t2 - t1;
+            let (k, _) = next("saving ");
+            std::thread::sleep(save.mul_f64(fraction));
+            child.kill().expect("kill -9");
+            let _ = child.wait();
+            // Was that save still running? Then "saved k" never came.
+            let finished = lines
+                .map_while(Result::ok)
+                .any(|l| l == format!("saved {k}"));
+            let acked = if finished { k } else { k - 1 };
+            let reopened = Store::open(&db)
+                .and_then(|mut s| s.load_model())
+                .expect("the store reopens");
+            let v = uniform_value(&reopened);
+            assert!(
+                v == f64::from(acked) || v == f64::from(k),
+                "round {round}: store holds {v}, acknowledged {acked}, killed during {k}"
+            );
+            if !finished && v == f64::from(acked) {
+                midway += 1;
+            }
+            println!("H6 kill -9 round {round}: killed during save {k} (finished: {finished}), store holds {v}");
+            assert_eq!(integrity(&db), "ok");
+            // The GUI opens it and saves again (no stale lock, no damage);
+            // the next child starts again at 1, so this -1 is gone by then.
+            let mut app = ImprovApp::load(&db).expect("the GUI reopens it");
+            let mut next_round = app.model.clone();
+            for v in next_round.inputs.values_mut() {
+                *v = Value::Number(-1.0);
+            }
+            app.publish(next_round).expect("and saves");
+        }
+        assert!(midway > 0, "no kill landed inside a save");
+    }
+
+    /// Inside its own mount namespace, on a tiny tmpfs at `dir`: fill the
+    /// disk, edit until a save fails, check the failure, free the space,
+    /// and check the store.
+    fn h6_child_disk_full(dir: &str) {
+        let db = format!("{dir}/model.db");
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let filler = format!("{dir}/filler");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&filler).expect("filler");
+            let chunk = vec![0u8; 4096];
+            while f.write_all(&chunk).is_ok() {}
+        }
+        let (qkey, _) = q_and_rev_keys();
+        let mut failed = None;
+        for i in 0..2000 {
+            let before = app.model.clone();
+            let shown = app.cell_text(MeasureId(101), &qkey);
+            // Alternate a cell edit and a structural one: both paths save.
+            let r = if i % 2 == 0 {
+                app.set_cell(MeasureId(101), qkey.clone(), Value::Number(f64::from(i)))
+            } else {
+                app.add_named(NewThing::Item(CategoryId(1)), &format!("y{i}"))
+                    .map(|_| ())
+            };
+            if let Err(e) = r {
+                assert!(
+                    e.contains("the disk is full") || e.contains("is the disk full?"),
+                    "unclear: {e}"
+                );
+                assert!(e.contains("not saved"), "{e}");
+                println!("H6 disk-full message: {e}");
+                assert_eq!(app.model, before, "the in-memory model must be kept");
+                assert_eq!(app.cell_text(MeasureId(101), &qkey), shown);
+                assert!(app.dirty, "the title marks it unsaved");
+                failed = Some(i);
+                break;
+            }
+        }
+        let i = failed.expect("no save failed on a full disk");
+        std::fs::remove_file(&filler).expect("free the space");
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(-1.0))
+            .expect("with room again the edit saves");
+        assert!(!app.dirty);
+        let back = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reopen");
+        assert_eq!(back, app.model, "nothing lost, nothing half-saved");
+        assert_eq!(integrity(&db), "ok");
+        println!("H6 disk-full: save {i} failed cleanly");
+    }
+
+    /// A full disk during a save: a clear error, the model kept in memory,
+    /// the store intact. Runs the GUI's save on a small tmpfs mounted in a
+    /// user namespace (Linux; skipped where those are not allowed).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_full_disk_fails_the_save_clearly_and_keeps_the_model() {
+        let dir = temp_db("h6_full");
+        std::fs::create_dir(&dir).expect("mount point");
+        struct Rmdir(String);
+        impl Drop for Rmdir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let _rmdir = Rmdir(dir.clone());
+        let child = h6_child_command("disk-full", &dir);
+        let script = r#"mount -t tmpfs -o size=1m tmpfs "$IMPROV_GUI_H6_DB" || exit 77; exec "$@""#;
+        let mut c = std::process::Command::new("unshare");
+        c.args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "sh",
+            "-c",
+            script,
+            "sh",
+        ])
+        .arg(child.get_program())
+        .args(child.get_args())
+        .envs(child.get_envs().filter_map(|(k, v)| Some((k, v?))));
+        let out = match c.output() {
+            Ok(o) => o,
+            Err(e) => return eprintln!("skipped: no unshare ({e})"),
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.code() == Some(77) || stderr.starts_with("unshare:") {
+            return eprintln!("skipped: no user and mount namespaces: {stderr}");
+        }
+        assert!(
+            out.status.success() && stdout.contains("H6 disk-full: save"),
+            "the disk-full child failed:\n{stdout}\n{stderr}"
+        );
+        stdout
+            .lines()
+            .filter(|l| l.starts_with("H6"))
+            .for_each(|l| println!("{l}"));
+    }
+
+    /// Two programs on one store: the second save to land is refused with a
+    /// clear "changed by another program", never overwriting, and the
+    /// refused program keeps its model; Revert to Saved is the way on.
+    #[test]
+    fn two_writers_conflict_and_neither_overwrites_the_other() {
+        let db = temp_db("h6_two");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut a = ImprovApp::load(&db).expect("A");
+        let mut b = ImprovApp::load(&db).expect("B");
+        let q = MeasureId(101);
+        let k = |t: u32, p: u32| {
+            let mut k: CoordKey = improv_engine::smallvec::smallvec![(1u32, t), (2, p)];
+            k.sort();
+            k
+        };
+        b.set_cell(q, k(10, 20), Value::Number(7.0))
+            .expect("B saves first");
+
+        let before = a.model.clone();
+        let e = a
+            .set_cell(q, k(11, 21), Value::Number(9.0))
+            .expect_err("A's save is stale");
+        assert!(e.contains("another program changed this model"), "{e}");
+        assert!(e.contains("Revert to Saved"), "{e}");
+        assert_eq!(a.model, before, "A keeps its model");
+        assert_eq!(a.cell_text(q, &k(11, 21)).as_deref(), Some("80"));
+        let e = a
+            .add_named(NewThing::Category, "Region")
+            .expect_err("a structural edit is stale too");
+        assert!(e.contains("another program"), "{e}");
+        assert_eq!(a.model, before);
+        // The menu's Save says so too.
+        let ctx = egui::Context::default();
+        a.run_command(&ctx, Command::SaveModel);
+        assert!(a.status.contains("another program"), "{}", a.status);
+
+        let stored = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        let value = |m: &Model, key| m.input(q, &decode(&key)).cloned();
+        assert_eq!(
+            value(&stored, k(10, 20)),
+            Some(Value::Number(7.0)),
+            "B's edit kept"
+        );
+        assert_eq!(
+            value(&stored, k(11, 21)),
+            Some(Value::Number(80.0)),
+            "A wrote nothing"
+        );
+        assert!(stored.category_by_name("Region").is_none());
+
+        // Revert to Saved picks up B's edit; A's edit then saves on top.
+        a.revert_to_saved().expect("revert");
+        assert_eq!(a.cell_text(q, &k(10, 20)).as_deref(), Some("7"));
+        a.set_cell(q, k(11, 21), Value::Number(9.0))
+            .expect("A saves now");
+        let stored = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(value(&stored, k(10, 20)), Some(Value::Number(7.0)));
+        assert_eq!(value(&stored, k(11, 21)), Some(Value::Number(9.0)));
+        // Now B is the stale one, undo included.
+        let e = b.undo().expect_err("B's undo is stale");
+        assert!(e.contains("another program"), "{e}");
+        assert_eq!(b.cell_text(q, &k(10, 20)).as_deref(), Some("7"), "B kept");
+        assert!(b.can_undo(), "the undo step survives");
+    }
+
+    /// The status line's wording for each kind of failed save.
+    #[test]
+    fn save_errors_say_what_happened() {
+        use improv_store::StoreError;
+        let full = StoreError::Mentat(improv_storage_mentat::StoreError::Mentat(
+            "SQL error: database or disk is full".into(),
+        ));
+        assert!(save_error(full).starts_with("save failed: the disk is full"));
+        let io = StoreError::Mentat(improv_storage_mentat::StoreError::Mentat(
+            "SQL error: disk I/O error, cause: Error code 4874".into(),
+        ));
+        assert!(save_error(io).contains("is the disk full?"));
+        assert!(save_error(StoreError::Conflict("x".into())).starts_with("save conflict: another"));
+        let other = StoreError::Mentat(improv_storage_mentat::StoreError::Integrity("bad".into()));
+        assert_eq!(save_error(other), "save failed: data integrity: bad");
     }
 }
