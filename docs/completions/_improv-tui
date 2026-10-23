@@ -19,7 +19,7 @@ _improv-tui() {
 '--help[Print help (see more with '\''--help'\'')]' \
 '-V[Print version]' \
 '--version[Print version]' \
-':model -- The model\: a store file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':model -- The model\: a store file (a new one opens empty), or postgres\://USER@HOST/DB?model=NAME:_default' \
 && ret=0
 }
 

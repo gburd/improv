@@ -10,6 +10,10 @@ A model is a store file made by
 .BR improv (1),
 or a Postgres model URL,
 .BI postgres:// user @ host / db ?model= name\fR.
+A new file, or a model with nothing in it, opens empty: build it with
+.BR c ,
+.BR n " and"
+.BR = .
 .SH KEYS
 .TP
 .B arrows\fR, mouse click
@@ -62,6 +66,35 @@ Cycle through the saved views.
 .BR I " / " E
 Import a CSV into a new measure / export the shown measure (a prompt opens).
 .TP
+.B c
+Add a category and its items. Type
+.I Name
+or
+.IR Name ": " item ", " item ", .\|.\|.;"
+on an existing category it adds the items it does not have yet.
+.TP
+.B n
+Add a number input measure and show it. Type
+.I Name
+(a single value) or
+.IR Name ": " Category ", " Category ", .\|.\|.,"
+the categories it ranges over: the first two are the grid's rows and
+columns, the rest pages.
+.TP
+.B =
+Define: a line that takes what
+.B improv define
+takes.
+.B Revenue = Price * Quantity
+adds a derived measure, or gives an existing one a new formula;
+.B Margin = LAMBDA(p, q, p - q)
+defines a named LAMBDA that formulas then call as
+.BR Margin(Price,\ 1) .
+Tab completes, and errors are located, as in a formula edit.
+.TP
+.B w
+Save now, without quitting.
+.TP
 .B R
 Revert to the saved model, dropping this session's edits. Use it after a
 save conflict, when another writer changed the model.
@@ -76,7 +109,7 @@ Redo the last change
 undid. A new change drops what was undone.
 .TP
 .BR ? ", " F1
-Open the function help: type to search the built-in functions, Up/Down and
+Open the key list and the function help: type to search the built-in functions, Up/Down and
 PgUp/PgDn move through the results, and the selected function's signature,
 category, aliases and description show below them. Enter inserts
 .IB NAME (
@@ -87,6 +120,7 @@ Quit and save.
 .SH EXAMPLES
 .nf
 improv-tui sample.db
+improv-tui new.db   # empty: c, n, e and = build it, w saves
 improv-tui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 .fi
 .SH AUTHOR

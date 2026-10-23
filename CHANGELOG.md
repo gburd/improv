@@ -35,6 +35,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   `docs/openapi.json` with its scope, parameters, body, responses and
   schemas. `cargo test -p improv_cli` fails when either is stale, as for
   the man pages.
+- **Build a model from scratch in the TUI.** `improv-tui new.db` opens
+  a new (or empty) model instead of refusing it, and new keys build it:
+  `c` adds a category and its items (`Time: 2025, 2026`, again to add
+  more items), `n` a number input measure over the categories you list
+  (`Quantity: Time, Product`), and `w` saves without quitting. `=` opens
+  a `define>` line that takes what `improv define` takes: `Revenue =
+  Price * Quantity` adds a derived measure (or gives an existing one a
+  new formula), and `Margin = LAMBDA(p, q, p - q)` defines a named
+  LAMBDA. Its errors are located and completed like a formula edit's.
+  `?` now lists the keys above the function search. Every change undoes.
 - **TUI undo and redo.** `u` undoes the last change to the model (a
   cell, a formula, an import) and Ctrl+R redoes it, up to 50 steps, as
   the GUI's Edit ▸ Undo does: the history keeps whole-model snapshots.

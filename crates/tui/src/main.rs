@@ -219,6 +219,12 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         KeyCode::Char('E') => app.begin_export_csv(),
         // 'R' reverts to the saved model (e.g. after another writer saved).
         KeyCode::Char('R') => revert(app, path),
+        // Building a model: a category and its items, an input measure, a
+        // definition (formula or LAMBDA); 'w' saves now.
+        KeyCode::Char('c') => app.begin_command(app::CommandKind::Category),
+        KeyCode::Char('n') => app.begin_command(app::CommandKind::Input),
+        KeyCode::Char('=') => app.begin_define(),
+        KeyCode::Char('w') => app.write(path),
         KeyCode::Char('u') => app.undo(),
         KeyCode::Char('r') if k.modifiers.contains(KeyModifiers::CONTROL) => app.redo(),
         KeyCode::Char('?') => app.help = Some(fnhelp::FnHelp::new()),
@@ -258,6 +264,10 @@ fn filter_row_under_cursor(app: &mut App) {
 /// (Inline text entry is intentionally omitted; the view can be renamed via a
 /// future dialog. Documented simplification.)
 fn save_current_view(app: &mut App, path: &str) {
+    if app.measures.is_empty() {
+        app.status = Some(app::EMPTY.into());
+        return;
+    }
     let n = app.model.views.len() + 1;
     app.save_view(&format!("view {n}"), Some(path));
 }
@@ -572,7 +582,10 @@ mod tests {
     fn load_save_round_trip_and_save_view_key() {
         let path = tmp_path("tui-main.db");
         let p = path.to_str().unwrap();
-        assert!(load_err(p).contains("no measures"), "fresh store is empty");
+        assert!(
+            load(p).unwrap().model.measures.is_empty(),
+            "a new file opens empty"
+        );
         let mut app = App::new(revenue_model()).unwrap();
         save(&app, p).unwrap();
         run_events(&mut app, p, chars("S")).unwrap();
@@ -603,6 +616,68 @@ mod tests {
         let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
         run_events(&mut app, "", vec![Ok(Event::Key(ctrl_r))]).unwrap();
         assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
+    }
+
+    /// H7/H8: a Time × Product revenue model built from a new file with keys
+    /// only, saved with `w`, quit, reopened, and checked.
+    #[test]
+    fn builds_the_revenue_model_from_a_new_file() {
+        let path = tmp_path("tui-build.db");
+        let p = path.to_str().unwrap();
+        let mut app = load(p).unwrap();
+        // 'S' with nothing to show saves no view.
+        run_events(&mut app, p, chars("S")).unwrap();
+        assert_eq!(app.status.as_deref(), Some(app::EMPTY));
+        let enter = || key(KeyCode::Enter);
+        let mut ev = Vec::new();
+        let line = |ev: &mut Vec<_>, k: &str, text: &str| {
+            ev.extend(chars(k));
+            ev.extend(chars(text));
+            ev.push(enter());
+        };
+        line(&mut ev, "c", "Time: 2025, 2026");
+        line(&mut ev, "c", "Product: WidgetA, WidgetB");
+        // Price[Product]: rows are Product, one column.
+        line(&mut ev, "n", "Price: Product");
+        line(&mut ev, "e", "10");
+        ev.push(key(KeyCode::Down));
+        line(&mut ev, "e", "20");
+        // Quantity[Time, Product]: rows Time, columns Product. The cursor
+        // stays on row 1; Up takes it to the first cell.
+        line(&mut ev, "n", "Quantity: Time, Product");
+        for (step, q) in [
+            (KeyCode::Up, "100"),
+            (KeyCode::Right, "50"),
+            (KeyCode::Down, "80"),
+            (KeyCode::Left, "120"),
+        ] {
+            ev.push(key(step));
+            line(&mut ev, "e", q);
+        }
+        line(&mut ev, "=", "Revenue = Price * Quantity");
+        ev.extend(chars("wq"));
+        run_events(&mut app, p, ev).unwrap();
+        assert!(app.should_quit);
+        assert_eq!(app.status.as_deref(), Some("saved"));
+
+        let mut app = load(p).unwrap();
+        let id = app.model.measure_by_name("Revenue").unwrap().id;
+        view(&mut app, id);
+        let g = &app.grid;
+        assert_eq!(
+            (
+                g.row_cat.as_ref().unwrap().1.as_str(),
+                g.n_rows(),
+                g.n_cols()
+            ),
+            ("Time", 2, 2)
+        );
+        let cells: Vec<String> = (0..2)
+            .flat_map(|r| (0..2).map(move |c| (r, c)))
+            .map(|(r, c)| g.display_at(r, c))
+            .collect();
+        assert_eq!(cells, ["1000", "1000", "1200", "1600"]);
+        let _ = std::fs::remove_file(&path);
     }
 
     /// Two sessions on one store: the second's autosave conflicts after the

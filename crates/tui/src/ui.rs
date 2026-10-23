@@ -29,6 +29,10 @@ const HELP: &[&str] = &[
     "Tab/m: measure",
     "I: import-csv",
     "E: export-csv",
+    "c: category/items",
+    "n: input measure",
+    "=: define",
+    "w: save",
     "R: revert",
     "u/Ctrl+R: undo/redo",
     "?/F1: functions",
@@ -89,16 +93,21 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         g.display_at(app.cursor_row, app.cursor_col),
     );
 
-    let mut lines = vec![Line::from(format!(
-        "{} [{}]   {axes}   {coord}",
-        g.measure_name, kind
-    ))];
+    let mut lines = vec![Line::from(if app.measures.is_empty() {
+        crate::app::EMPTY.to_string()
+    } else {
+        format!("{} [{}]   {axes}   {coord}", g.measure_name, kind)
+    })];
     if let Some(f) = app.formula_text() {
         lines.push(Line::from(format!("{} = {f}", g.measure_name)));
     }
     if let Some(e) = &app.edit {
         let formula = app.editing_formula();
-        let prompt = if formula { "formula> " } else { "edit> " };
+        let prompt = match (app.defining, formula) {
+            (true, _) => "define> ",
+            (_, true) => "formula> ",
+            _ => "edit> ",
+        };
         let d = app.diagnostic.as_ref();
         lines.push(edit_line(e, prompt, formula, d));
         if let Some(d) = d {
@@ -110,6 +119,8 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
         let prompt = match kind {
             CommandKind::ImportCsv => "import-csv",
             CommandKind::ExportCsv => "export-csv",
+            CommandKind::Category => "category",
+            CommandKind::Input => "input",
         };
         lines.push(Line::from(format!("{prompt}> {buf}")));
     }
@@ -373,17 +384,25 @@ fn render_help(f: &mut Frame, h: &mut FnHelp, area: Rect) {
     f.render_widget(Clear, area);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Functions  (type to search, Enter inserts, Esc closes) ");
+        .title(" Keys and functions  (type to search, Enter inserts, Esc closes) ");
     let inner = block.inner(area);
     f.render_widget(block, area);
+    // The keys first, then the function search.
+    let keys = help_lines(inner.width as usize);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(keys.len() as u16 + 1),
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(6),
         ])
         .split(inner);
+    f.render_widget(
+        Paragraph::new(keys).block(Block::default().borders(Borders::BOTTOM)),
+        chunks[0],
+    );
+    let chunks = &chunks[1..];
 
     let found = format!("  ({} found)", h.results.len());
     f.render_widget(
@@ -482,7 +501,7 @@ mod tests {
         crate::app::tests::view(&mut app, improv_core_model::MeasureId(101));
         app.cursor_col = 1;
         // 32 cols: border + 14 label + 1 + one 12-wide column fits.
-        let lines = text(&draw(&mut app, 32, 20));
+        let lines = text(&draw(&mut app, 32, 24));
         assert!(
             !lines.iter().any(|l| l.contains("WidgetA")),
             "scrolled past col 0"
@@ -496,7 +515,7 @@ mod tests {
         app.click_at(x, y);
         assert_eq!((app.cursor_row, app.cursor_col), (1, 1));
         // The cursor cell is drawn in the selection style.
-        let buf = draw(&mut app, 32, 20);
+        let buf = draw(&mut app, 32, 24);
         assert_eq!(buf[(x, ry)].bg, Color::Blue);
         assert_ne!(buf[(rx, ry)].bg, Color::Blue);
     }
@@ -656,6 +675,8 @@ mod tests {
         let lines = text(&draw(&mut app, 100, 30));
         row_of(&lines, "search> ");
         row_of(&lines, "ABS(");
+        // The overlay lists the keys above the search.
+        assert!(row_of(&lines, "=: define") < row_of(&lines, "search> "));
         for c in "pmt".chars() {
             app.help.as_mut().unwrap().push(c);
         }
@@ -695,6 +716,27 @@ mod tests {
         for (w, h) in [(3, 3), (0, 0), (20, 6)] {
             draw(&mut app, w, h);
         }
+    }
+
+    #[test]
+    fn empty_model_and_build_prompts_render() {
+        let mut app = App::new(improv_core_model::Model::new()).unwrap();
+        let lines = text(&draw(&mut app, 100, 30));
+        row_of(&lines, "no measures yet: c adds a category");
+        app.begin_command(CommandKind::Category);
+        app.command.as_mut().unwrap().1 = "Time: Q1".into();
+        row_of(&text(&draw(&mut app, 100, 30)), "category> Time: Q1");
+        app.begin_command(CommandKind::Input);
+        row_of(&text(&draw(&mut app, 100, 30)), "input> ");
+        app.cancel_command();
+        app.begin_define();
+        app.edit = Some("X = PMT(".into());
+        let lines = text(&draw(&mut app, 100, 30));
+        let y = row_of(&lines, "define> X = PMT(");
+        assert!(
+            lines[y + 1].contains("PMT("),
+            "a definition shows the signature"
+        );
     }
 
     #[test]

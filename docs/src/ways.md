@@ -71,6 +71,7 @@ in a tmux pane next to your logs.
 
 ```sh
 improv-tui sample.db
+improv-tui new.db     # a new file opens empty: build it with c, n and =
 ```
 
 | Key | Does |
@@ -84,10 +85,14 @@ improv-tui sample.db
 | `f` / `F` | hide a row item / clear filters |
 | `S` / `v` | save the layout as a view / cycle views |
 | `I` / `E` | import / export CSV |
+| `c` | add a category and its items: `Time: 2025, 2026` |
+| `n` | add an input measure over categories: `Quantity: Time, Product` |
+| `=` | define: `Revenue = Price * Quantity` adds a derived measure, `Margin = LAMBDA(p, q, p - q)` a named LAMBDA |
+| `w` | save now |
 | `R` | revert to the saved model |
 | `u` / Ctrl+R | undo / redo |
 | Tab (in a formula) | complete a function, measure or category name; again to cycle |
-| `?` / F1 | search the functions; Enter inserts `NAME(` into the edit |
+| `?` / F1 | the keys, and a search over the functions; Enter inserts `NAME(` into the edit |
 | `q` | quit and save |
 
 ## The CLI (`improv`)
@@ -240,13 +245,13 @@ bold gaps are tracked as tasks for 1.0.
 | | CLI | TUI | GUI | server | pg_improv | DuckDB |
 | --- | --- | --- | --- | --- | --- | --- |
 | **Open a model** (file or `postgres://`) | yes | from the command line | from the command line (File ▸ Open is disabled) | one per process | its own catalog | — (computed per query) |
-| **Create a model** | `init` | — | — (File ▸ New is disabled) | — | `create_model` | inline `improv(source, model)` |
-| Add categories and items | `add-category`, `add-item` | via CSV import | via CSV import | — | `bind_category` (items from the column) | `category` lines |
-| Add an input measure | `add-measure` | via CSV import | via CSV import | — | `bind_measure` | `input` lines |
+| **Create a model** | `init` | open a new file | — (File ▸ New is disabled) | — | `create_model` | inline `improv(source, model)` |
+| Add categories and items | `add-category`, `add-item` | `c` | via CSV import | — | `bind_category` (items from the column) | `category` lines |
+| Add an input measure | `add-measure` | `n` | via CSV import | — | `bind_measure` | `input` lines |
 | **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
 | **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
 | Edit an input cell | `set` | yes | yes | `POST /measures/:id/cells` | write your table | — |
-| **Formulas: edit** | `define`, `add-derived` | the viewed measure's formula; **no new measure** | edit and add | — | `define` | `Name = formula` lines |
+| **Formulas: edit** | `define`, `add-derived` | `e` edits the viewed one, `=` adds one | edit and add | — | `define` | `Name = formula` lines |
 | Autocomplete | shell completion of commands only | Tab | as you type | — | — | — |
 | Located errors | `parse error at N` | marked under the token, with a hint | underlined, explained | — | `parse error at N` | `model line L: … at N` |
 | Function help | `man improv-functions` | `?` / F1 | Help ▸ Functions… | — | — | `improv_functions()` |
@@ -256,7 +261,7 @@ bold gaps are tracked as tasks for 1.0.
 | Export | `export` (JSON), `export-csv`, `export-sql` | `E` (CSV) | wizard (CSV) | `GET /model` (JSON) | the result tables | it is a query |
 | **Scenarios** | `scenario`, `eval --scenario` | — | — | — | — | — |
 | **Undo** | — | `u`, Ctrl+R to redo | Edit ▸ Undo, Redo | — | — | — |
-| Named LAMBDAs | `define` | **calls work; define them in the CLI** | **calls work; define them in the CLI** | computes them | `define` | — (refused; inline `LAMBDA` works) |
+| Named LAMBDAs | `define` | `=` | **calls work; define them in the CLI** | computes them | `define` | — (refused; inline `LAMBDA` works) |
 | FIXPOINT | yes | yes (the same parser and engine) | yes | yes | yes | in `improv(…)`; not in `improv_calc` |
 | what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |
 | **Live sync** (see others' writes) | each command reloads | `R` to revert | File ▸ Revert to Saved | **no: serves its cached copy until its own write hits a conflict** | logical, trigger, commit sync | — |

@@ -12,8 +12,8 @@ use crossterm::event::KeyCode;
 #[cfg(test)]
 use improv_core_model::Coordinate;
 use improv_core_model::{
-    parser, CategoryId, Filter, Formula, ItemId, MeasureId, MeasureKind, Model, Name, ParseError,
-    Value, ValueType, View, ViewId,
+    parser, parser::Definition, CategoryId, Filter, Formula, ItemId, Measure, MeasureId,
+    MeasureKind, Model, Name, ParseError, Value, ValueType, View, ViewId,
 };
 use improv_engine::session::Engine;
 use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
@@ -330,6 +330,35 @@ const NO_CELL: &str = "no cell here (an axis is empty or fully filtered)";
 pub enum CommandKind {
     ImportCsv,
     ExportCsv,
+    /// `c`: `Name` or `Name: item, item, …`, a category and its items.
+    Category,
+    /// `n`: `Name` or `Name: Category, …`, a number input measure.
+    Input,
+}
+
+/// Shown in place of the measure line while the model has no measures.
+pub const EMPTY: &str =
+    "no measures yet: c adds a category and its items, n an input measure, = a formula";
+
+/// Split a `Name: a, b, …` prompt line into the trimmed name and the
+/// non-empty trimmed entries after the colon.
+fn name_and_list(line: &str) -> (&str, Vec<&str>) {
+    let (name, rest) = line.split_once(':').unwrap_or((line, ""));
+    let list = rest.split(',').map(str::trim).filter(|s| !s.is_empty());
+    (name.trim(), list.collect())
+}
+
+/// The smallest id above every one of `ids` (1 for none).
+fn next_id(ids: impl Iterator<Item = u32>) -> u32 {
+    ids.max().map_or(1, |m| m + 1)
+}
+
+/// The name a definition line defines: the text before its `=` (or its
+/// target dimension list), unquoted. Parsing needs it before it parses, so
+/// the new measure can refer to itself.
+fn definition_target(text: &str) -> String {
+    let lhs = text.split(['=', '[']).next().unwrap_or_default();
+    lhs.trim().trim_matches('\'').to_string()
 }
 
 /// Parse an `import-csv>` prompt line into an [`ImportSpec`]. Mirrors the
@@ -554,14 +583,13 @@ pub struct App {
     /// `redo_stack` the models undone away. See [`App::undo`].
     pub undo_stack: Vec<Model>,
     pub redo_stack: Vec<Model>,
+    /// The edit line is a `define>` line (`=`), not the viewed cell or formula.
+    pub defining: bool,
 }
 
 impl App {
     pub fn new(model: Model) -> Result<App, String> {
         let measures = measure_order(&model);
-        if measures.is_empty() {
-            return Err("model has no measures to display".into());
-        }
 
         // Track every derived measure in one engine, built once.
         let (engine, snapshot) = build_engine(&model)?;
@@ -574,8 +602,10 @@ impl App {
                 .map(|m| m.categories.clone())
                 .unwrap_or_default()
         };
-        let axis_order = natural_axes(measures[selected]);
-        let grid = build_grid(&model, measures[selected], &snapshot);
+        // An empty model shows a placeholder grid for a measure that is not there.
+        let first = measures.first().copied().unwrap_or(MeasureId(0));
+        let axis_order = natural_axes(first);
+        let grid = build_grid(&model, first, &snapshot);
         let page_idx = vec![0; grid.pages.len()];
         Ok(App {
             model,
@@ -602,13 +632,14 @@ impl App {
             diagnostic: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            defining: false,
         })
     }
 
     fn reselect(&mut self) {
         self.grid = build_grid_pivoted(
             &self.model,
-            self.measures[self.selected],
+            self.viewed_measure(),
             &self.snapshot,
             &self.page_idx,
             Some(&self.axis_order),
@@ -623,7 +654,7 @@ impl App {
     fn natural_axis_order(&self) -> Vec<CategoryId> {
         self.model
             .measures
-            .get(&self.measures[self.selected])
+            .get(&self.viewed_measure())
             .map(|m| m.categories.clone())
             .unwrap_or_default()
     }
@@ -677,7 +708,7 @@ impl App {
 
     /// Cycle to the next measure (wraps).
     pub fn next_measure(&mut self) {
-        self.selected = (self.selected + 1) % self.measures.len();
+        self.selected = (self.selected + 1) % self.measures.len().max(1);
         // A new measure has its own dimensions; reset axis order, paging, filters.
         self.axis_order = self.natural_axis_order();
         self.page_idx.clear();
@@ -780,14 +811,28 @@ impl App {
             .unwrap_or(false)
     }
 
-    /// True while the edit line holds a formula (the viewed measure is derived).
+    /// True while the edit line holds a formula: a definition, or the viewed
+    /// measure is derived.
     pub fn editing_formula(&self) -> bool {
-        self.edit.is_some() && !self.viewed_is_input()
+        self.edit.is_some() && (self.defining || !self.viewed_is_input())
+    }
+
+    /// Open the `define>` line (`=`): `Name = formula` adds a derived
+    /// measure (or gives an existing one a new formula), `Name =
+    /// LAMBDA(p, …, body)` a named LAMBDA.
+    pub fn begin_define(&mut self) {
+        self.edit = Some(LineEdit::default());
+        self.defining = true;
+        self.status = None;
     }
 
     /// Enter edit mode: on the cell under the cursor for an input measure, on
     /// the formula (seeded with its controlled-English text) for a derived one.
     pub fn begin_edit(&mut self) {
+        if !self.model.measures.contains_key(&self.grid.measure) {
+            self.status = Some(EMPTY.into());
+            return;
+        }
         if !self.viewed_is_input() {
             self.edit = Some(self.formula_text().unwrap_or_default().into());
             self.status = None;
@@ -813,7 +858,7 @@ impl App {
     /// the caret ([`complete::tab`]); any other key edits, and a change
     /// clears the message about the old text.
     pub fn edit_key(&mut self, code: KeyCode) {
-        let formula = !self.viewed_is_input();
+        let formula = self.editing_formula();
         let Some(e) = &mut self.edit else { return };
         if code == KeyCode::Tab {
             if formula {
@@ -835,6 +880,7 @@ impl App {
     /// Cancel edit mode without committing.
     pub fn cancel_edit(&mut self) {
         self.edit = None;
+        self.defining = false;
         self.tab_cycle = None;
         self.diagnostic = None;
         self.status = None;
@@ -848,6 +894,10 @@ impl App {
         let Some(buf) = self.edit.as_ref().map(|e| e.text.clone()) else {
             return;
         };
+        if self.defining {
+            self.commit_definition(&buf);
+            return;
+        }
         if !self.viewed_is_input() {
             self.diagnostic = None;
             match parse_formula_text(&self.model, &buf) {
@@ -950,6 +1000,102 @@ impl App {
         Ok(())
     }
 
+    /// Commit the `define>` line, as `improv define` takes it. A parse error
+    /// is located like a formula edit's, any other failure goes to the
+    /// status line; either way the line stays open and nothing changes.
+    fn commit_definition(&mut self, text: &str) {
+        self.diagnostic = None;
+        let target = definition_target(text);
+        let existing = self
+            .model
+            .measure_by_name(&target)
+            .map(|m| (m.id, m.is_input()));
+        let id = existing.map_or_else(
+            || MeasureId(next_id(self.model.measures.keys().map(|m| m.0))),
+            |(id, _)| id,
+        );
+        let parsed = parser::parse_definition(&self.model.with_provisional(id, &target), text);
+        let done = match parsed {
+            Err(e) => {
+                self.status = None;
+                self.diagnostic = Some(crate::diagnose::diagnose(&self.model, text, &e));
+                return;
+            }
+            Ok(def) => self.define(def, id, existing.map(|(_, input)| input)),
+        };
+        match done {
+            Ok(msg) => {
+                self.cancel_edit();
+                self.status = Some(msg);
+            }
+            Err(e) => self.status = Some(e),
+        }
+    }
+
+    /// Add a parsed definition: a derived measure `id` (an existing one
+    /// keeps its id; `existing` says whether it is an input measure), or a
+    /// named LAMBDA. The model with it must build, and it is then shown.
+    fn define(
+        &mut self,
+        def: Definition,
+        id: MeasureId,
+        existing: Option<bool>,
+    ) -> Result<String, String> {
+        let mut model = self.model.clone();
+        let (show, msg) = match def {
+            Definition::Formula(ft) => {
+                if existing == Some(true) {
+                    return Err(format!("'{}' is an input measure", ft.target.0));
+                }
+                let (value_type, categories) = improv_engine::compiler::derived_shape(
+                    &self.model,
+                    id,
+                    &ft.target.0,
+                    &ft.formula,
+                )
+                .map_err(|e| e.to_string())?;
+                let msg = format!("defined {}", ft.target.0);
+                model.add_measure(Measure {
+                    id,
+                    name: ft.target,
+                    value_type,
+                    categories,
+                    kind: MeasureKind::Derived(ft.formula),
+                    description: None,
+                });
+                (Some(id), msg)
+            }
+            Definition::Lambda(lt) => {
+                if existing.is_some() {
+                    return Err(format!(
+                        "'{}' is a measure; name the LAMBDA differently",
+                        lt.name.0
+                    ));
+                }
+                // Calls store the id, so redefining a name keeps it.
+                let lid = model
+                    .lambda_by_name(&lt.name.0)
+                    .map_or_else(|| next_id(model.lambdas.keys().copied()), |(old, _)| old);
+                let msg = format!(
+                    "defined LAMBDA {}({})",
+                    lt.name.0,
+                    lt.lambda.params.join(", ")
+                );
+                model.lambdas.insert(lid, lt.lambda);
+                (None, msg)
+            }
+            Definition::Sql { .. } | Definition::Call { .. } => {
+                return Err(
+                    "SQL(…) and CALL(…) sources need the CLI: improv import-sql, improv define"
+                        .into(),
+                )
+            }
+        };
+        self.commit_model(model)?;
+        self.relayout(show);
+        Ok(msg)
+    }
+
     /// Make `candidate` the model and the replaced one an undo point. It is
     /// built into a fresh engine first, so on failure nothing changes. The
     /// caller refreshes the grid.
@@ -965,13 +1111,17 @@ impl App {
     /// Enter import-csv command-prompt mode (bound to `I`). Mirrors
     /// `begin_edit`: starts an empty typed-line buffer.
     pub fn begin_import_csv(&mut self) {
-        self.command = Some((CommandKind::ImportCsv, String::new()));
-        self.status = None;
+        self.begin_command(CommandKind::ImportCsv);
     }
 
     /// Enter export-csv command-prompt mode (bound to `E`).
     pub fn begin_export_csv(&mut self) {
-        self.command = Some((CommandKind::ExportCsv, String::new()));
+        self.begin_command(CommandKind::ExportCsv);
+    }
+
+    /// Open the command prompt for `kind`, empty.
+    pub fn begin_command(&mut self, kind: CommandKind) {
+        self.command = Some((kind, String::new()));
         self.status = None;
     }
 
@@ -993,7 +1143,86 @@ impl App {
         self.status = Some(match kind {
             CommandKind::ImportCsv => self.run_import_csv(&line),
             CommandKind::ExportCsv => self.run_export_csv(&line),
+            CommandKind::Category => self.run_add_category(&line),
+            CommandKind::Input => self.run_add_input(&line),
         });
+    }
+
+    /// `c`: add category `Name` if it is new, and the listed items it does
+    /// not have yet, each with the next free id.
+    fn run_add_category(&mut self, line: &str) -> String {
+        let (name, items) = name_and_list(line);
+        if name.is_empty() {
+            return "category: type Name, or Name: item, item, …".into();
+        }
+        let mut model = self.model.clone();
+        let cat = match model.category_by_name(name) {
+            Some(c) => c.id,
+            None => {
+                let id = CategoryId(next_id(model.categories.keys().map(|c| c.0)));
+                model.add_category(id, name);
+                id
+            }
+        };
+        for it in items {
+            let have = model.categories[&cat].items.iter();
+            if !have.clone().any(|i| model.items[i].name.0 == it) {
+                model.add_item(ItemId(next_id(model.items.keys().map(|i| i.0))), cat, it);
+            }
+        }
+        if model == self.model {
+            return format!("category: '{name}' has those items");
+        }
+        let n = model.categories[&cat].items.len();
+        self.adopt(model, None, format!("category {name}: {n} item(s)"))
+    }
+
+    /// `n`: add a number input measure `Name` over the listed categories,
+    /// with the next free id, and show it.
+    fn run_add_input(&mut self, line: &str) -> String {
+        let (name, cats) = name_and_list(line);
+        if name.is_empty() {
+            return "input: type Name, or Name: Category, Category, …".into();
+        }
+        if self.model.measure_by_name(name).is_some() || self.model.lambda_by_name(name).is_some() {
+            return format!("input: '{name}' is taken");
+        }
+        let categories: Result<Vec<CategoryId>, String> = cats
+            .iter()
+            .map(|c| {
+                self.model
+                    .category_by_name(c)
+                    .map(|c| c.id)
+                    .ok_or(format!("input: no category '{c}' (c adds one)"))
+            })
+            .collect();
+        let categories = match categories {
+            Ok(c) => c,
+            Err(e) => return e,
+        };
+        let id = MeasureId(next_id(self.model.measures.keys().map(|m| m.0)));
+        let mut model = self.model.clone();
+        model.add_measure(Measure {
+            id,
+            name: Name(name.into()),
+            value_type: ValueType::Number,
+            categories,
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        self.adopt(model, Some(id), format!("added input measure {name}"))
+    }
+
+    /// Make `model` current after a structural change, the old one an undo
+    /// point, and show `show` (else the viewed measure). Returns `done`, and
+    /// that the formulas no longer build if they do not.
+    fn adopt(&mut self, model: Model, show: Option<MeasureId>, done: String) -> String {
+        let prior = std::mem::replace(&mut self.model, model);
+        self.record_history(prior);
+        match self.rebuild(show) {
+            Ok(()) => done,
+            Err(e) => format!("{done}; formulas not recomputed: {e}"),
+        }
     }
 
     /// Parse and run an import-csv command line against `self.model`, and
@@ -1010,13 +1239,8 @@ impl App {
         let mut model = self.model.clone();
         match import_csv(&mut model, &spec) {
             Ok(n) => {
-                let prior = std::mem::replace(&mut self.model, model);
-                self.record_history(prior);
                 let msg = format!("imported {n} cell(s) into measure '{measure_name}'");
-                match self.rebuild_after_structural_change() {
-                    Ok(()) => msg,
-                    Err(e) => format!("{msg}; formulas not recomputed: {e}"),
-                }
+                self.adopt(model, None, msg)
             }
             Err(e) => format!("import-csv: {e}"),
         }
@@ -1038,17 +1262,17 @@ impl App {
     }
 
     /// Rebuild `measures`/`engine`/`grid` from the current `self.model` after a
-    /// structural change (a new measure/category/item), keeping the viewed
-    /// measure selected when it still exists. The live `Engine`'s tracked
+    /// structural change (a new measure/category/item), showing `show`, else
+    /// the viewed measure when it still exists. The live `Engine`'s tracked
     /// structure is fixed at construction, so a new measure needs a new
     /// engine. If the formulas no longer build (an import changed a measure
     /// they use), the rest is still rebuilt, with no engine, and the error is
     /// returned for the status.
-    fn rebuild_after_structural_change(&mut self) -> Result<(), String> {
+    fn rebuild(&mut self, show: Option<MeasureId>) -> Result<(), String> {
         let built = build_engine(&self.model);
         let err = built.as_ref().err().cloned();
         (self.engine, self.snapshot) = built.unwrap_or_default();
-        self.relayout(None);
+        self.relayout(show);
         err.map_or(Ok(()), Err)
     }
 
@@ -1107,7 +1331,7 @@ impl App {
             self.filters.clone(),
             self.page_idx.clone(),
         );
-        let built = self.rebuild_after_structural_change();
+        let built = self.rebuild(None);
         let natural = self.natural_axis_order();
         if self.viewed_measure() == viewed
             && natural.len() == layout.0.len()
@@ -1125,8 +1349,13 @@ impl App {
     // -- views & filters (pure; terminal-free -> unit-testable) ------------
 
     /// The viewed measure's id.
+    /// A model with no measures views `MeasureId(0)`, which is then not
+    /// there either.
     fn viewed_measure(&self) -> MeasureId {
-        self.measures[self.selected]
+        self.measures
+            .get(self.selected)
+            .copied()
+            .unwrap_or(MeasureId(0))
     }
 
     /// Build a `View` capturing the current layout: viewed measure, axis order,
@@ -1151,15 +1380,7 @@ impl App {
 
     /// The smallest unused view id (>= 1).
     fn next_view_id(&self) -> ViewId {
-        ViewId(
-            self.model
-                .views
-                .keys()
-                .map(|v| v.0)
-                .max()
-                .map(|m| m + 1)
-                .unwrap_or(1),
-        )
+        ViewId(next_id(self.model.views.keys().map(|v| v.0)))
     }
 
     /// Save the current layout as a named view: mint an id, add it to the
@@ -1168,20 +1389,32 @@ impl App {
         let id = self.next_view_id();
         let view = self.build_view(id, name);
         self.model.add_view(view);
-        if let Some(path) = path {
-            match improv_store::Store::open(path).and_then(|mut s| {
+        self.status = Some(match path.map(|p| self.save(p)) {
+            Some(Err(e)) => format!("save failed: {e}"),
+            _ => format!("saved view '{name}'"),
+        });
+        id
+    }
+
+    /// Save the model to the store at `path`, refusing to overwrite another
+    /// writer's changes; the next save diffs against this one.
+    pub fn save(&mut self, path: &str) -> Result<(), String> {
+        improv_store::Store::open(path)
+            .and_then(|mut s| {
                 s.set_save_token(&self.save_token);
                 s.save_model(&self.model)?;
                 self.save_token = s.save_token();
                 Ok(())
-            }) {
-                Ok(()) => self.status = Some(format!("saved view '{name}'")),
-                Err(e) => self.status = Some(format!("save failed: {e}")),
-            }
-        } else {
-            self.status = Some(format!("saved view '{name}'"));
-        }
-        id
+            })
+            .map_err(|e| e.to_string())
+    }
+
+    /// `w`: save now, as quitting does, and say how it went.
+    pub fn write(&mut self, path: &str) {
+        self.status = Some(match self.save(path) {
+            Ok(()) => "saved".into(),
+            Err(e) => format!("save failed: {e}"),
+        });
     }
 
     /// Apply a saved `View` to the live layout: select its measure, restore the
@@ -2397,6 +2630,207 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn categories_items_and_input_measures_from_nothing() {
+        let mut app = App::new(Model::new()).unwrap();
+        assert!(app.measures.is_empty());
+        app.begin_edit();
+        assert_eq!(app.status.as_deref(), Some(EMPTY));
+        app.next_measure();
+        app.pivot();
+        let run = |app: &mut App, kind, line: &str| {
+            app.begin_command(kind);
+            app.command.as_mut().unwrap().1 = line.into();
+            app.commit_command();
+            app.status.clone().unwrap()
+        };
+        assert!(run(&mut app, CommandKind::Category, " : x").starts_with("category: type Name"));
+        assert_eq!(
+            run(&mut app, CommandKind::Category, "Time: 2025, , 2026"),
+            "category Time: 2 item(s)"
+        );
+        assert_eq!(
+            run(&mut app, CommandKind::Category, "Time: 2026"),
+            "category: 'Time' has those items"
+        );
+        assert_eq!(
+            run(&mut app, CommandKind::Category, "Time: 2027"),
+            "category Time: 3 item(s)"
+        );
+        assert_eq!(
+            run(&mut app, CommandKind::Category, "Product"),
+            "category Product: 0 item(s)"
+        );
+        assert!(run(&mut app, CommandKind::Input, "").starts_with("input: type Name"));
+        assert_eq!(
+            run(&mut app, CommandKind::Input, "Units: Time, Region"),
+            "input: no category 'Region' (c adds one)"
+        );
+        assert_eq!(
+            run(&mut app, CommandKind::Input, "Units: Time"),
+            "added input measure Units"
+        );
+        assert_eq!(
+            run(&mut app, CommandKind::Input, "Units"),
+            "input: 'Units' is taken"
+        );
+        let time = app.model.category_by_name("Time").unwrap();
+        assert_eq!(time.id, CategoryId(1));
+        let names: Vec<&str> = time
+            .items
+            .iter()
+            .map(|i| app.model.items[i].name.0.as_str())
+            .collect();
+        assert_eq!(names, ["2025", "2026", "2027"]);
+        assert_eq!(app.model.items.len(), 3);
+        // The new measure is shown, and its cells take values.
+        assert_eq!(app.grid.measure_name, "Units");
+        assert_eq!(app.grid.n_rows(), 3);
+        app.apply_edit(2, 0, 9.0).unwrap();
+        // A scalar measure; ids continue above the others.
+        assert_eq!(
+            run(&mut app, CommandKind::Input, "Rate"),
+            "added input measure Rate"
+        );
+        assert_eq!(app.grid.measure, MeasureId(2));
+        assert!(app.model.measures[&MeasureId(2)].categories.is_empty());
+        // Every step undoes.
+        app.undo();
+        app.undo();
+        assert_eq!(app.grid.measure_name, "Units");
+        assert!(app.grid.display_at(2, 0).is_empty());
+        for _ in 0..4 {
+            app.undo();
+        }
+        assert!(app.measures.is_empty());
+        assert!(app.model.categories.is_empty());
+        // With formulas that no longer build, adding still works and says so.
+        let mut m = revenue_model();
+        m.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(Formula::new(
+            Expr::Ref(MeasureId(102), DimensionSpec::default()),
+        ));
+        let mut app = App::new(revenue_model()).unwrap();
+        app.model = m;
+        app.begin_command(CommandKind::Category);
+        app.command.as_mut().unwrap().1 = "Region".into();
+        app.commit_command();
+        let s = app.status.clone().unwrap();
+        assert!(
+            s.starts_with("category Region: 0 item(s); formulas not recomputed"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn define_line_adds_measures_and_lambdas() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let define = |app: &mut App, text: &str| {
+            app.begin_define();
+            app.edit = Some(text.into());
+            app.commit_edit();
+        };
+        define(&mut app, "Profit = Revenue - Price");
+        assert_eq!(app.status.as_deref(), Some("defined Profit"));
+        assert!(app.edit.is_none());
+        assert!(!app.defining);
+        assert_eq!(app.grid.measure_name, "Profit");
+        assert_eq!(app.grid.display_at(0, 0), "990");
+        let profit = app.grid.measure;
+        assert_eq!(profit, MeasureId(103));
+        // A new formula for an existing derived measure keeps its id.
+        define(&mut app, "Revenue = Price * Quantity * 2");
+        assert_eq!(app.grid.measure, MeasureId(102));
+        assert_eq!(app.grid.display_at(0, 0), "2000");
+        view(&mut app, profit);
+        assert_eq!(app.grid.display_at(0, 0), "1990", "dependents recompute");
+        // A recurrence names itself; the quoted name is unquoted.
+        define(
+            &mut app,
+            "'Run Total' = PREV('Run Total', Time, 1, 0) + Quantity",
+        );
+        assert_eq!(
+            app.status.as_deref(),
+            Some("defined Run Total"),
+            "{:?}",
+            app.diagnostic
+        );
+        // Named LAMBDAs: defined, called, redefined in place.
+        define(&mut app, "Margin = LAMBDA(p, q, p - q / 2)");
+        assert_eq!(app.status.as_deref(), Some("defined LAMBDA Margin(p, q)"));
+        assert_eq!(app.model.lambdas.keys().copied().collect::<Vec<_>>(), [1]);
+        define(&mut app, "Net = Margin(Price, 2)");
+        assert_eq!(app.grid.display_at(0, 0), "9");
+        let net = app.grid.measure;
+        define(&mut app, "Margin = LAMBDA(p, q, p - q)");
+        assert_eq!(app.model.lambdas.keys().copied().collect::<Vec<_>>(), [1]);
+        view(&mut app, net);
+        assert_eq!(app.grid.display_at(0, 0), "8");
+        // Each one undoes.
+        app.undo();
+        view(&mut app, net);
+        assert_eq!(app.grid.display_at(0, 0), "9");
+        // Refusals keep the line open and change nothing.
+        for (line, want) in [
+            ("Hours: Time", "added input measure Hours"),
+            ("Margin", "input: 'Margin' is taken"),
+        ] {
+            app.begin_command(CommandKind::Input);
+            app.command.as_mut().unwrap().1 = line.into();
+            app.commit_command();
+            assert_eq!(app.status.as_deref(), Some(want));
+        }
+        let before = app.model.clone();
+        for (text, want) in [
+            ("Price = 1", "'Price' is an input measure"),
+            (
+                "Quantity = LAMBDA(x, x)",
+                "'Quantity' is a measure; name the LAMBDA differently",
+            ),
+            (
+                "Feed = SQL(\"select 1\")",
+                "SQL(…) and CALL(…) sources need the CLI",
+            ),
+            ("Revenue = Profit", "cycle"),
+            ("Odd = Hours + Price", "neither operand dim"),
+        ] {
+            define(&mut app, text);
+            let s = app.status.clone().unwrap_or_default();
+            assert!(app.defining, "{text}");
+            assert!(s.contains(want), "{text}: {s} {:?}", app.diagnostic);
+            assert_eq!(app.model, before, "{text}");
+        }
+        // A parse error is located in the line, like a formula edit's.
+        define(&mut app, "Odd = Price * Quantty");
+        let d = app.diagnostic.clone().unwrap();
+        assert_eq!(d.span, Some(14..21));
+        assert!(app.status.is_none());
+        // The line completes names, and Esc leaves it.
+        app.edit = Some("Odd = Pri".into());
+        app.edit_key(KeyCode::Tab);
+        assert_eq!(app.edit.as_deref(), Some("Odd = Price"));
+        assert!(app.editing_formula());
+        app.cancel_edit();
+        assert!(!app.defining);
+    }
+
+    #[test]
+    fn write_saves_and_reports_failure() {
+        let path = tmp_path("tui-write.db");
+        let _guard = TmpFile(path.clone());
+        let p = path.to_str().unwrap();
+        let mut app = App::new(revenue_model()).unwrap();
+        app.write(p);
+        assert_eq!(app.status.as_deref(), Some("saved"));
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 5.0).unwrap();
+        app.write(p);
+        app.write("/nonexistent/dir/x.db");
+        assert!(app.status.as_deref().unwrap().starts_with("save failed: "));
+        let mut s = improv_store::Store::open(p).unwrap();
+        let m = s.load_model().unwrap();
+        assert_eq!(m.inputs, app.model.inputs, "a second save in one session");
+    }
+
+    #[test]
     fn imports_undo_and_a_failed_one_changes_nothing() {
         let csv_path = tmp_path(".csv");
         let _guard = TmpFile(csv_path.clone());
@@ -2409,14 +2843,18 @@ pub(crate) mod tests {
             app.commit_command();
         };
         // Price becomes Price[Region]: the formulas no longer build.
+        view(&mut app, MeasureId(100));
         import(
             &mut app,
             format!("{} 100 Price v region:7:Region", csv_path.display()),
         );
         assert!(app.engine.is_none());
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Region");
         app.undo();
         assert_eq!(app.model, start);
         assert!(app.engine.is_some());
+        // The undo changed Price's categories: its natural layout is back.
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Product");
         app.redo();
         let s = app.status.clone().unwrap();
         assert!(s.starts_with("redone; formulas not recomputed: "), "{s}");
@@ -2429,6 +2867,15 @@ pub(crate) mod tests {
         assert!(app.status.as_deref().unwrap().starts_with("import-csv:"));
         assert_eq!(app.model, start);
         assert_eq!(app.redo_stack.len(), 1, "a failed import is not a change");
+        // Quantity[Time, Product] becomes Quantity[Region], and back.
+        view(&mut app, MeasureId(101));
+        import(
+            &mut app,
+            format!("{} 101 Quantity v region:7:Region", csv_path.display()),
+        );
+        assert_eq!(app.axis_order, [CategoryId(7)]);
+        app.undo();
+        assert_eq!(app.axis_order, [CategoryId(1), CategoryId(2)]);
     }
 
     #[test]
