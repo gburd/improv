@@ -126,7 +126,8 @@ The worker logs at `LOG` level into the server log. Every line starts with
 | Line | Meaning | Action |
 | --- | --- | --- |
 | `pg_improv sync worker started on database "<db>"` | The worker connected. Once at server start, and after each restart. | none; frequent restarts mean a crash loop |
-| `pg_improv sync worker stopping` | It received SIGTERM (shutdown, or `pg_terminate_backend`). It exits with status 1, so the postmaster starts it again 5 s later. | none |
+| `FATAL: terminating background worker "pg_improv sync" due to administrator command` | It received SIGTERM (shutdown, or `pg_terminate_backend`) and stopped at its next interrupt check, mid-poll if need be. It exits with status 1, so the postmaster starts it again 5 s later and it resumes from the slot position. | none |
+| `pg_improv sync worker stopping` | The postmaster died. | see why the server went down |
 | `pg_improv sync: listing models: <error>` | It could not read the catalog this poll. | check the error; it retries next poll |
 | `pg_improv sync: dropping improv_db: <error>` | No logical model is left, and dropping the slot failed. | drop it by hand if it stays |
 | `pg_improv sync: creating the slot improv_db: <error>` | Slot creation failed, usually `max_replication_slots` reached or `wal_level` not `logical`. No logical model is updated until it succeeds. | fix the setting and restart |

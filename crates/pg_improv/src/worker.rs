@@ -476,11 +476,30 @@ fn status_row(model: &str) -> Res<StatusRow> {
     Ok(row)
 }
 
+unsafe extern "C-unwind" {
+    /// Postgres's SIGTERM handler (`tcop/postgres.c`). pgrx binds it as a
+    /// guarded Rust fn, which is no signal handler: the C symbol.
+    fn die(signal: std::ffi::c_int);
+}
+
 /// The sync worker's entry point.
 #[pg_guard]
 #[unsafe(no_mangle)]
 pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
-    BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP | SignalWakeFlags::SIGTERM);
+    BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGHUP);
+    // SIGTERM is Postgres's `die` (as in worker_spi): an interrupt, so the
+    // CHECK_FOR_INTERRUPTS in a long SPI call or in [`wait_latch`] ends the
+    // worker with a FATAL. pgrx's handler only set a flag the main loop read
+    // between polls, so a fast shutdown hung while a decode waited for WAL
+    // past the flush position (which, the walwriter gone, never came) or a
+    // poll ran on (D14).
+    // SAFETY: installs Postgres's own handler, before any work.
+    unsafe {
+        #[cfg(not(feature = "pg18"))]
+        pg_sys::pqsignal(pg_sys::SIGTERM as i32, Some(die));
+        #[cfg(feature = "pg18")]
+        pg_sys::pqsignal_be(pg_sys::SIGTERM as i32, Some(die));
+    }
     // pg_upgrade starts both clusters in binary-upgrade mode with their
     // configured preload, and checks (then copies) the slot: hold nothing.
     // Status 0, so the postmaster does not restart the worker.
@@ -504,7 +523,7 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
     loop {
         let poll = Duration::from_millis(POLL_MS.get().max(10) as u64);
         if !BackgroundWorker::wait_latch(Some(poll)) {
-            break; // SIGTERM
+            break; // the postmaster died (SIGTERM ends the worker in the wait)
         }
         if BackgroundWorker::sighup_received() {
             // pgrx's latch wait does not reload the configuration (its
@@ -537,11 +556,10 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         sweep();
     }
     log!("pg_improv sync worker stopping");
-    // A bgworker that exits with status 0 is never restarted. Exit 1 so a
-    // `pg_terminate_backend` (or SIGTERM) brings the worker back after
-    // `bgw_restart_time`; the slot position makes that restart lossless.
-    // During a server shutdown the postmaster starts no workers, so this is
-    // harmless then.
+    // A bgworker that exits with status 0 is never restarted; exit 1, as the
+    // FATAL of a SIGTERM (`pg_terminate_backend`) does, so the worker comes
+    // back after `bgw_restart_time`; the slot position makes that restart
+    // lossless. During a server shutdown the postmaster starts no workers.
     // SAFETY: `proc_exit` runs the backend's exit callbacks and never returns.
     unsafe { pg_sys::proc_exit(1) };
 }

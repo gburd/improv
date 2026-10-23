@@ -443,6 +443,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   deleted them. Likewise the last named LAMBDA, scenario or external
   function a model drops: the save skipped an empty meta blob, so the old
   one stayed.
+- **`pg_ctl stop -m fast` no longer hangs on the pg_improv sync worker.**
+  The worker saw SIGTERM only between polls, so a fast shutdown waited for
+  the poll in progress. A large apply (a 300k-row batch) ran past
+  `pg_ctl`'s timeout, and the stop failed with "server does not shut
+  down". SIGTERM is now Postgres's own `die` handler, so the worker stops
+  at its next interrupt check, in under a second, with `FATAL: terminating
+  background worker "pg_improv sync" due to administrator command`. It
+  restarts from the slot position, so no change is lost.
 - **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
   ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
   linear combination of the x's before it (or, with `const`, a constant x)

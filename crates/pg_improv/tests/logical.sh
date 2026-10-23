@@ -2,7 +2,8 @@
 # End-to-end test of pg_improv's logical-decoding sync (L2), with real
 # commits. Section 13 covers the shared slot: routing by table (two models
 # on one table, a model on two), models added, redefined and dropped while
-# a writer streams, and a failing model that holds no one back. Needs: cargo-pgrx installed and pg_improv installed into the PG
+# a writer streams, and a failing model that holds no one back. Section 20
+# stops the server with -m fast, idle and mid-batch. Needs: cargo-pgrx installed and pg_improv installed into the PG
 # found by PG_BIN (default: Debian's PG 17). Uses its own data dir and port.
 #
 #   crates/pg_improv/tests/logical.sh            # run, print latency table
@@ -683,4 +684,35 @@ for t in pr pl; do
 		|| { echo "FAIL: m_$t did not rebuild on ATTACH and DETACH"; exit 1; }
 done
 echo "ok: range- and list-partitioned tables follow row changes, cross-partition moves, ATTACH, DETACH and TRUNCATE of a partition"
+
+# 20. a fast shutdown stops the worker (D14): SIGTERM ended it only between
+#     polls, so `pg_ctl stop -m fast` hung while a poll ran on. It must stop
+#     within 10 s with the worker idle, and in the middle of a batch (a
+#     300k-cell model applying 300k changed rows); after each restart the
+#     results catch up.
+stop20() { # label
+	local t0; t0=$(date +%s%N)
+	"$PG_BIN/pg_ctl" -D "$D" stop -m fast -t 10 >/dev/null 2>&1 \
+		|| { echo "FAIL: pg_ctl stop -m fast with the worker $1 did not stop in 10 s"; tail -20 "$D/log"; exit 1; }
+	echo "ok: pg_ctl stop -m fast with the worker $1: stopped in $(( ($(date +%s%N) - t0) / 1000000 )) ms"
+	"$PG_BIN/pg_ctl" -D "$D" -l "$D/log" -w start >/dev/null 3>&-
+}
+q "CREATE TABLE sd (k text, v float8)"
+q "INSERT INTO sd VALUES ('a', 1)"
+q "SELECT improv.create_model('m_sd')" >/dev/null
+q "SELECT improv.bind_category('m_sd', 'K', 'sd', 'k')" >/dev/null
+q "SELECT improv.bind_measure('m_sd', 'V', 'sd', 'v')" >/dev/null
+q "SELECT improv.define('m_sd', 'W = V * 2')" >/dev/null
+SDQ="SELECT count(*) || ' ' || sum(value) FROM improv_m_sd.w"
+wait_for "$SDQ" "1 2" "m_sd caught up" >/dev/null
+sleep 0.5
+stop20 idle
+wait_for "$SDQ" "1 2" "m_sd after the idle stop" >/dev/null
+q "INSERT INTO sd SELECT 'k' || g, g FROM generate_series(1, 300000) g"
+sleep 0.3
+stop20 "mid-batch"
+want20=$(q "SELECT count(*) || ' ' || sum(v) * 2 FROM sd")
+for _ in $(seq 1 6); do [ "$(q "$SDQ")" = "$want20" ] && break; sleep 5; done
+wait_for "$SDQ" "$want20" "m_sd after the mid-batch stop" >/dev/null
+echo "ok: after both stops the worker caught up ($want20)"
 echo "PASS"
