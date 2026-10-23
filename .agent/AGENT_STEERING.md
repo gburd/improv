@@ -31,9 +31,26 @@ criteria" are the bar. Mark tasks done there as they land.
     would make flat and blocked SUM agree. That would let `Out` go flat
     and also solve B4(b).
 - **Deferred with a design note:** B1 (parallel apply).
-- **C3:** no checklist yet. Two agent runs on it stopped on a provider
-  content filter. Brief it as a plain engineering checklist.
-- **In flight:** A1 (Mentat 1.18.x, imminent). 0.11.0 waits on it.
+- **C3:** the checklist document isn't written. The third run's findings
+  before the box went away:
+  - **SQL construction is clean:** every `format!` quotes identifiers or
+    binds `$n`.
+  - **CSV export already guards** `= + - @`.
+  - **Audit lines are `json!`-escaped.**
+  - **The server sends no CORS headers.**
+  - **The token-file check only warns** on a group- or world-readable file.
+  - **One defect:** a long operator chain (about 63 `+` terms) is accepted
+    and saved, then makes the model unopenable (serde_json's recursion
+    limit), and deep nesting overflows a debug stack. Being fixed on
+    `fix/formula-depth`.
+  - **Still to do:** pgspot, the privileges table, the `unsafe` list, and
+    the document itself.
+- **A1 DONE:** `mentatdb` 1.18.0 (`4008f5c`). A 1M-row `import-csv` takes
+  about 105 s; on 1.16.0 it didn't finish in 15 minutes. See
+  `docs/reviews/2026-10-23-mentat-1.18-upgrade.md`. **0.11.0 is unblocked.**
+- **Burner account:** the `kiwi` profile is a new account that expires
+  **2026-10-30 19:14:53 UTC**. Terminate boxes and rescue data by 18:30 UTC
+  that day. Launch and provision scripts are in `~/ws/improv-rescue/ops/`.
 - **Rescue copy:** `~/ws/improv-rescue/` on the maintainer's machine holds
   the box's bench-out, bench-scratch, contracts and agent diffs.
 
@@ -120,7 +137,7 @@ items in logical mode (status counts applies/rebuilds; `tests/scale.sh`),
 scoped trigger loads. FIXPOINT steps run host-side
 (`engine/src/hosteval.rs`, DD fallback): 0.43 s at 1.5k/100k, 6.6 s at
 10k/1M. **Open:** FILL rebuilds on a new item; commit mode still
-recomputes in full. Mentat is `mentatdb` 1.16.0 from
+recomputes in full. Mentat is `mentatdb` 1.18.0 from
 crates.io (`6eb9023`).
 
 ## Released: v0.7.0 (2026-09-24)
