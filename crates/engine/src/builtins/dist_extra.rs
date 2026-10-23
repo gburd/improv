@@ -890,10 +890,87 @@ fn tukey(id: u32, a: &[CellValue]) -> R {
         tails(lower, log, below, 1.0 - below)
     } else {
         let t = Tail { p: v, lower, log };
-        q_ends(t, 0.0, INF)
-            .unwrap_or_else(|| split(t).map_or(NAN, |(below, _)| st::solve(p, below, 0.0, 1.0)))
+        q_ends(t, 0.0, INF).unwrap_or_else(|| split(t).map_or(NAN, |(below, _)| tukey_q(p, below)))
     })
 }
+
+/// The q at which the increasing `p` reaches `target` ∈ (0, 1]: regula
+/// falsi (Illinois) on ln p against ln q, along which the lower tail is
+/// close to a line (p falls as a power of q). Each p is a double integral,
+/// so it stops at 1e-13 relative, after about a dozen, where bisecting to
+/// adjacent floats took 65 and more (`R.QTUKEY(1e-10, 2, 2, 19)` took 8 s
+/// in a debug build). R's qtukey runs a secant to |Δq| < 1e-4.
+///
+/// At most [`TUKEY_STEPS`] refinements: where p is far below 1e-200 its
+/// quadrature is noise of a few percent (`R.PTUKEY(q, 2, 2, 19)` near
+/// q = 1e-16 jumps 2 % between neighbouring q), so no method narrows it
+/// quickly and no digit past the noise means anything.
+fn tukey_q(p: impl Fn(f64) -> f64, target: f64) -> f64 {
+    // The logs of the least positive and the largest float.
+    const LN_MIN: f64 = -744.44;
+    const LN_MAX: f64 = 709.78;
+    let lt = target.ln();
+    // A NaN counts as at or above the target, as bisection took it.
+    let g = |u: f64| {
+        let v = p(u.exp()).ln() - lt;
+        if v.is_nan() {
+            INF
+        } else {
+            v
+        }
+    };
+    // Step out from q = 1, doubling, until the target lies between a and b.
+    let (mut a, mut fa) = (0.0, g(0.0));
+    let up = fa < 0.0;
+    let (mut b, mut fb) = (a, fa);
+    let mut step = 1.0;
+    while (fb < 0.0) == up {
+        (a, fa) = (b, fb);
+        if b == LN_MIN || b == LN_MAX {
+            return if up { NAN } else { b.exp() };
+        }
+        b = if up { b + step } else { b - step }.clamp(LN_MIN, LN_MAX);
+        fb = g(b);
+        step *= 2.0;
+    }
+    let ((mut lo, mut flo), (mut hi, mut fhi)) = if up {
+        ((a, fa), (b, fb))
+    } else {
+        ((b, fb), (a, fa))
+    };
+    // The side the last two points replaced, to halve the other's value
+    // when one side keeps moving (Illinois); an infinite end bisects.
+    let mut side = 0i8;
+    for _ in 0..TUKEY_STEPS {
+        let mid = lo + (hi - lo) / 2.0;
+        if hi - lo <= 1e-13 || mid <= lo || mid >= hi {
+            break;
+        }
+        let x = hi - fhi * (hi - lo) / (fhi - flo);
+        let x = if x > lo && x < hi { x } else { mid };
+        let fx = g(x);
+        if fx == 0.0 {
+            return x.exp();
+        }
+        if fx < 0.0 {
+            (lo, flo) = (x, fx);
+            if side < 0 {
+                fhi /= 2.0;
+            }
+            side = -1;
+        } else {
+            (hi, fhi) = (x, fx);
+            if side > 0 {
+                flo /= 2.0;
+            }
+            side = 1;
+        }
+    }
+    hi.exp()
+}
+
+/// The most refinements [`tukey_q`] takes (smooth cases take 10 to 20).
+const TUKEY_STEPS: usize = 32;
 
 /// P(Q ≤ q): ∫₀^∞ f(s) W(qs)^r ds, s the ratio of the sample standard
 /// deviation to σ (a scaled chi of df degrees of freedom, density f) and W
@@ -2265,6 +2342,59 @@ mod tests {
         let mut a = nums(&[0.3, 1e9, 1e9, 1e9]);
         a.push(CellValue::Bool(false));
         assert_eq!(call(1629, &a), Ok(CellValue::num(500_005_863.0)));
+    }
+
+    /// R.QTUKEY over more than one range was 65 bisections of a double
+    /// integral, 8 s in a debug build for R.QTUKEY(1e-10, 2, 2, 19); the
+    /// property suite drew R.QTUKEY(1e-300, 2, 2, 19) and overran its
+    /// budget. It now takes about a dozen integrals, and still inverts
+    /// R.PTUKEY.
+    #[test]
+    fn qtukey_inverts_in_a_few_integrals() {
+        // Against the bisection's answers: to 1e-12 where R.PTUKEY is
+        // smooth, and within its noise at q near 1e-16, where it wobbles by
+        // a few percent (Φ(v) − Φ(v − q) cancels), so q by about 0.1 %.
+        let slow = [
+            (1e-10, 4598508513666424343, 1e-12),
+            (1e-300, 4369540375657534933, 1e-6),
+        ];
+        for (p, was, tol) in slow {
+            let t = std::time::Instant::now();
+            let q = val(1658, &[p, 2.0, 2.0, 19.0]);
+            assert!(t.elapsed() < std::time::Duration::from_secs(1), "{p}");
+            let was = f64::from_bits(was);
+            assert!((q - was).abs() <= tol * was, "{p}: {q} vs {was}");
+        }
+        let cases = [
+            (1e-10, 2.0, 2.0, 19.0),
+            (1e-300, 2.0, 2.0, 19.0),
+            (0.3, 3.0, 10.0, 1.0),
+            (0.99, 3.0, 10.0, 1.0),
+            (0.95, 4.0, 10.0, 2.0),
+            (0.999_999, 10.0, 5.0, 3.0),
+            (1.0, 3.0, 10.0, 1.0),
+        ];
+        for (target, k, df, r) in cases {
+            let calls = std::cell::Cell::new(0);
+            let q = tukey_q(
+                |x| {
+                    calls.set(calls.get() + 1);
+                    tukey_p(x, k, df, r)
+                },
+                target,
+            );
+            assert!(q > 0.0, "{target} {k} {df} {r}");
+            assert!(calls.get() <= 12 + TUKEY_STEPS, "{target}: {}", calls.get());
+            if target > 1e-200 {
+                let got = tukey_p(q, k, df, r);
+                assert!((got - target).abs() <= 1e-11 * target, "{target}: {got}");
+            }
+        }
+        // The ends: a p that never reaches the target, one at it from 0
+        // on, and a NaN taken as above it.
+        assert!(tukey_q(|_| 0.5, 0.9).is_nan());
+        assert_eq!(tukey_q(|_| 1.0, 0.9), f64::from_bits(1));
+        assert_eq!(tukey_q(|_| NAN, 0.9), f64::from_bits(1));
     }
 
     /// R.PTUKEY with nmeans near f64::MAX: the range CDF's 2k · piece was

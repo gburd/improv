@@ -571,6 +571,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   at its next interrupt check, in under a second, with `FATAL: terminating
   background worker "pg_improv sync" due to administrator command`. It
   restarts from the slot position, so no change is lost.
+- **`R.QTUKEY` no longer stalls on small probabilities with nranges > 1.**
+  It inverted `R.PTUKEY`, a double integral, by up to 65 bisections:
+  `R.QTUKEY(1E-10, 2, 2, 19)` took 8 s in a debug build, and the property
+  suite timed out on `R.QTUKEY(1E-300, 2, 2, 19)`. It now runs a regula
+  falsi on log p against log q, about a dozen integrals and at most 32
+  steps (R's qtukey uses a secant). Results agree with the bisection to
+  1e-12 where `R.PTUKEY` is smooth, and the goldens are unchanged.
 - **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
   ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
   linear combination of the x's before it (or, with `const`, a constant x)
