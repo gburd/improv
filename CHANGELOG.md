@@ -353,6 +353,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The guide's examples, checked against the product** (the pre-1.0
+  docs review, `docs/reviews/2026-10-23-docs-review.md`). Getting
+  Started's quick start now shows the line `add-derived` prints, and runs
+  as a test. In The Formula Language, the immediately-called LAMBDA
+  example is in parentheses (as written it parsed as a named LAMBDA and
+  failed), and the page says the `-- notes` are not formula syntax. Improv
+  in DuckDB gives the parse error's real position. Running Improv's
+  quality gate leaves out both extension crates, so its `cargo fmt` line
+  works.
 - **`crates/pg_improv/tests/finance.sh` passes again, and CI runs it.**
   It waited for four replication slots, one per model, but since 0.11.0
   a database's models share the one slot `improv_db`, so the guide's

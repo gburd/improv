@@ -30,6 +30,10 @@ against the model, so every measure and category it names must exist. The
 target need not exist yet. An unknown name, or anything the grammar does not
 allow, is a parse error with a byte position; the parser never panics.
 
+In the examples on this page, a `-- note` after a formula explains it; it
+is not part of the formula (the language has no comments), so leave it out
+when you type one.
+
 The target may carry a bracketed category list, as in
 `Revenue[Time, Product] = …`. The parser skips that list; it does not set the
 measure's categories.
@@ -264,7 +268,7 @@ Year     = @ITEM(Time)                             -- the item's name
 Growth   = Revenue - PREV(Revenue, Time, 1, 0)     -- change since last year
 Ahead    = NEXT(Revenue, Time)                     -- next year's value
 Running  = SUM(Revenue OVER Time[FIRST..THIS])     -- running total
-Trailing = AVERAGE(Revenue OVER Time[THIS-2..THIS])-- three-period average
+Trailing = AVERAGE(Revenue OVER Time[THIS-2..THIS]) -- three-period average
 ToGo     = SUM(Budget OVER Time[THIS..LAST])
 ```
 
@@ -304,7 +308,7 @@ Reciprocal = W > 0 AND SWAP(W, Src, Dst) > 0      -- W[a, b] > 0 and W[b, a] > 0
 ```text
 Margin = LET(rev, Price * Quantity, cost, Unit * Quantity, (rev - cost) / rev)
 Double = MAP(Quantity, LAMBDA(q, q * 2))
-Square = LAMBDA(x, x * x)(Price - 1)
+Square = (LAMBDA(x, x * x)(Price - 1))
 Running = SCAN(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
 Final   = REDUCE(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
 ```
@@ -313,7 +317,9 @@ Final   = REDUCE(0, Deposits OVER Time, LAMBDA(acc, d, acc * 1.01 + d))
   use an earlier name). A name shadows a measure with the same name.
 - `LAMBDA(p, …, body)` is a function of its parameters. Call it on the
   spot (`LAMBDA(x, x * x)(Price)`) or pass it to `MAP`, `REDUCE` or
-  `SCAN`.
+  `SCAN`. A definition whose whole right-hand side is a LAMBDA is a named
+  LAMBDA (below), so a measure that calls one on the spot puts it in
+  parentheses, as `Square` does.
 - `MAP(x, …, LAMBDA(p, …, body))` applies the body cell by cell.
 - `SCAN(init, x OVER T, LAMBDA(acc, v, body))` folds along `T` in item
   order: each item's result is the body with `acc` the previous item's

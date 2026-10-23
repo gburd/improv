@@ -5,6 +5,7 @@ A tutorial page is its own test script: the blocks a reader copies are the
 ones this runs, so the page and the test cannot drift.
 
     mdtest.py PAGE.md [--sql CMD] [--sql-prelude TEXT] [--dir DIR]
+              [--from HEADING --to HEADING]
 
 - A ```sh block runs in bash (`set -euo pipefail`) in DIR. Variables carry
   over to the next block (`set -a`, then the environment is kept).
@@ -18,7 +19,8 @@ ones this runs, so the page and the test cannot drift.
   output matches, for up to 30 s (results an asynchronous worker writes).
   `<!-- mdtest: sh ... -->`: a hidden shell step run at that point.
 
-Every block must succeed. Exits 1 on the first failure, after printing it.
+--from/--to run only the part of the page from the heading line --from
+(e.g. "## Quick start") up to the heading line --to. Every block must succeed. Exits 1 on the first failure, after printing it.
 """
 import argparse
 import json
@@ -71,8 +73,16 @@ def main():
     ap.add_argument("--sql")
     ap.add_argument("--sql-prelude", default="")
     ap.add_argument("--dir", default=os.getcwd())
+    ap.add_argument("--from", dest="start")
+    ap.add_argument("--to", dest="stop")
     a = ap.parse_args()
     page = open(a.page, encoding="utf-8").read()
+    for heading, keep_after in ((a.start, True), (a.stop, False)):
+        if heading:
+            at = page.find("\n" + heading + "\n")
+            if at < 0:
+                sys.exit(f"{a.page}: no heading line {heading!r}")
+            page = page[at:] if keep_after else page[:at]
     env = dict(os.environ)
     last = None  # (run function, line) of the previous run block
     ran = checked = 0

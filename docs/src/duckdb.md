@@ -177,7 +177,7 @@ PIVOT (SELECT * FROM improv('sales', '...') WHERE measure = 'Revenue')
 ```text
 improv: model line 2: Quantity: two source rows have the coordinate (2025, WidgetA); add an aggregation (sum, avg, min, max, count or count_distinct) to the input line
 improv: model line 1: the source has no column "yr" (it has: year, product, price, qty)
-improv: model line 7: definition: parse error at 12: unknown measure: Revnue
+improv: model line 7: definition: parse error at 9: unknown measure: Revnue
 ```
 
 ### Notes

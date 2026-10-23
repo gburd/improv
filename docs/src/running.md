@@ -170,7 +170,7 @@ carry code or SQL.
 ## Tests
 
 ```sh
-cargo test --workspace                          # ~750 tests, ~1 min
+cargo test --workspace                          # ~1,200 tests
 cargo test --workspace --release -- --ignored   # stress: 5M cells verified; the 10M case needs ~7 GB
 ```
 
@@ -200,7 +200,7 @@ library code. CI runs the same gate (`coverage` job).
 ## Full quality gate
 
 ```sh
-P=$(ls crates | grep -v '^pg_improv$' | sed 's/^/-p improv_/')   # pg_improv has its own workspace
+P=$(ls crates | grep -Ev '^(pg|duckdb)_improv$' | sed 's/^/-p improv_/')   # the two extensions are their own workspaces
 cargo fmt $P -- --check
 cargo clippy $P --all-targets --all-features -- -D warnings
 cargo test --workspace
@@ -212,4 +212,6 @@ scripts/coverage.sh             # coverage gate (nightly)
 (cd crates/pg_improv && cargo fmt --check \
   && cargo clippy --features pg17 --all-targets -- -D warnings \
   && cargo pgrx test pg17 && ./tests/logical.sh)   # the extension
+ci/pg_improv.sh 17                 # all of pg_improv's CI job (as root, in a Debian container)
+ci/duckdb_improv.sh ~/duckdb-cli   # the DuckDB extension, under both DuckDB CLIs
 ```

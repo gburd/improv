@@ -164,6 +164,7 @@ improv eval        "$DB" 102
 ```
 
 ```text
+added derived measure 102 'Revenue'
 eval 102 'Revenue' (4 cells):
   Revenue[Time=2025, Product=WidgetA] = 1000
   Revenue[Time=2025, Product=WidgetB] = 1000
@@ -180,6 +181,7 @@ improv eval        "$DB" 103
 ```
 
 ```text
+added derived measure 103 'RevByProduct'
 eval 103 'RevByProduct' (2 cells):
   RevByProduct[Product=WidgetA] = 2200
   RevByProduct[Product=WidgetB] = 2600
