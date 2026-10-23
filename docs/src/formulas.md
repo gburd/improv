@@ -357,6 +357,8 @@ improv define model.db 1 "Margin = LAMBDA(price, cost, (price - cost) / price)"
 improv define model.db 120 "Pct = Margin(Price, Cost) * 100"
 ```
 
+In the TUI, type the same lines after `=`.
+
 A call is stored as a call, not its expansion, so redefining `Margin`
 changes every formula that uses it. A named LAMBDA reads only its
 parameters (pass measures as arguments), may call LAMBDAs defined before
@@ -1088,7 +1090,8 @@ subprocess; Wasm runs in-process. SQL-sourced measures use `SQL("...")`.
   aggregation);
 - a window or per-item reduction takes one `OVER` category;
 - `TEXTSPLIT` takes no row delimiter (see Differences from Excel);
-- named LAMBDAs are defined with `improv define` (no GUI editor yet);
+- named LAMBDAs are defined with `improv define` or the TUI's `=` line
+  (no GUI editor yet);
 - no `MMULT` or `LINSOLVE` function: a matrix product is a join and a sum
   (see Matrices); `FORECAST.ETS.CONFINT` is #N/A for seasonal models
   (LibreOffice's interval is a random simulation);

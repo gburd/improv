@@ -307,7 +307,7 @@ first.
 the model: each cell edit, formula, import, undo or redo, and **Save View**
 (a pivot by itself changes the layout, not the model, and is kept only as
 a saved view). The TUI writes when
-you save a view and when you quit. The CLI writes once per command. An
+you save a view, press `w`, and quit. The CLI writes once per command. An
 autosave that fails is shown in the status line, and the GUI's title gets
 a trailing `•` until a save succeeds. Your backups are therefore current
 as of the last edit, not the last explicit save. If another program saved
