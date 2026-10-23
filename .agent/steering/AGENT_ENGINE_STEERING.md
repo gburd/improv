@@ -310,6 +310,19 @@ worker attaches one probe to the concatenation of every output rather than
 one per measure. At 20,000 `Mk = X + k` measures an edit went from 734 ms
 to 131 ms, and memory from 3.4 GB to 1.4 GB.
 
+**Per-cell memory (B7, `docs/reviews/2026-10-23-engine-heap-profile.md`).**
+`functional` also counts a join or a binary map of functional operands,
+and a single-result reduction, so neither is collapsed: at 5M cells of
+`Price * Quantity` the collapse was two more arrangements of every cell
+(1.2 GB). Uncollapsed deltas within a round come in no set order (a join
+may send `+new` before `-old`), so the worker buffers every round after
+the seed and applies it consolidated, retractions first
+(`session::settle`). `MapBinary(op, Join{a, b}, b)` builds one join
+(`dataflow::broadcast_of`), and keys go through `inline_key` (a `Vec`
+whose capacity exceeds 3 spills even at length 2). Engine heap per cell at
+5M: 732 → 269 B. The holders left are the snapshot, the worker's input
+map, the join's two input arrangements and the caller's `Model.inputs`.
+
 **FIXPOINT memory (PageRank, live heap via `mallinfo2`, `tests/probe.rs`
 `pagerank`).** At 10k nodes / 1M edges, the Model holds 250 B per edge
 (`Model.inputs`: a `BTreeMap` coordinate plus the hash entry), and the

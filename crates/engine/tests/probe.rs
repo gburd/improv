@@ -7,6 +7,8 @@
 //!   cargo test --release -p improv_engine --test probe wide -- --ignored --nocapture
 //! PROBE_N=20000 PROBE_SHAPE=fan \
 //!   cargo test --release -p improv_engine --test probe measures -- --ignored --nocapture
+//! PROBE_TIME=5000 PROBE_PRODUCT=1000 \
+//!   cargo test --release -p improv_engine --test probe grid -- --ignored --nocapture
 //! ```
 
 use improv_core_model::{
@@ -248,6 +250,72 @@ fn measures() {
          Engine::new {new:?}; root edit {}",
         shape_name,
         stats(lat)
+    );
+}
+
+/// The stress grid (`tests/stress.rs`): `Revenue = Price * Quantity` over
+/// `PROBE_TIME` x `PROBE_PRODUCT` cells (1000 x 1000), with the live heap
+/// after each phase: the model, `evaluate` (its result dropped), and
+/// `Engine::new` (snapshot held), to attribute bytes per cell.
+#[test]
+#[ignore = "probe; run with --ignored --nocapture"]
+fn grid() {
+    let (nt, np) = (env_or("PROBE_TIME", 1000), env_or("PROBE_PRODUCT", 1000));
+    let (time, product) = (CategoryId(1), CategoryId(2));
+    let (price, qty) = (MeasureId(100), MeasureId(101));
+    let rev = MeasureId(102);
+    let cells = nt * np;
+    let h0 = heap_mb();
+    let mut m = Model::new();
+    let ts = category(&mut m, 1, "Time", 1, nt);
+    let ps = category(&mut m, 2, "Product", 2_000_000, np);
+    input(&mut m, price.0, "Price", vec![product]);
+    input(&mut m, qty.0, "Quantity", vec![time, product]);
+    for (p, it) in ps.iter().enumerate() {
+        let at = Coordinate::from_pairs([(product, *it)]);
+        m.set_input(price, at, Value::Number((1 + p) as f64));
+    }
+    for (t, ti) in ts.iter().enumerate() {
+        for (p, pi) in ps.iter().enumerate() {
+            let at = Coordinate::from_pairs([(time, *ti), (product, *pi)]);
+            m.set_input(qty, at, Value::Number((1 + t + p) as f64));
+        }
+    }
+    define(&mut m, rev.0, "Revenue = Price * Quantity");
+    let h1 = heap_mb();
+    let t1 = Instant::now();
+    let fresh = evaluate(&m, &[rev]).expect("evaluate");
+    let eval = t1.elapsed();
+    assert_eq!(fresh[&rev].len(), cells);
+    let h2 = heap_mb();
+    drop(fresh);
+    let h3 = heap_mb();
+    let t2 = Instant::now();
+    let (mut eng, snap) = Engine::new(&m, &[rev]).expect("engine");
+    let new = t2.elapsed();
+    assert_eq!(snap[&rev].len(), cells);
+    let h4 = heap_mb();
+    drop(snap);
+    let h5 = heap_mb();
+    let mut lat = Vec::new();
+    for e in 0..env_or("PROBE_EDITS", 10) {
+        let at: CoordKey = [(1, ts[e % nt].0), (2, ps[e % np].0)].as_slice().into();
+        let t = Instant::now();
+        drop(eng.set(qty, at, 7.0 + e as f64).expect("set"));
+        lat.push(t.elapsed());
+    }
+    let per = |a: f64, b: f64| (b - a) * 1024.0 * 1024.0 / cells as f64;
+    eprintln!(
+        "[grid] {nt}x{np} = {cells} cells: evaluate {eval:?}, Engine::new {new:?}, edit {}; \
+         live heap {h0:.0} -> model {h1:.0} -> evaluate result {h2:.0} -> dropped {h3:.0} \
+         -> engine+snapshot {h4:.0} -> engine {h5:.0} MB; B/cell: model {:.0}, \
+         evaluate result {:.0}, engine {:.0}, snapshot {:.0}; RSS {:.0} MB",
+        stats(lat),
+        per(h0, h1),
+        per(h3, h2),
+        per(h3, h5),
+        per(h5, h4),
+        rss_mb()
     );
 }
 

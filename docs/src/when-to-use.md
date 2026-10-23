@@ -132,8 +132,8 @@ or put it in `manual` mode and refresh it on a schedule.
 
 | Limit | Value | Source |
 | --- | --- | --- |
-| Engine memory per cell | 0.7–0.9 GB per million cells (v0.10.0); 0.81 GB at 1M, 3.38 GB at 5M after the fixes | [§3a][bench], `CoordKey` entry in the [CHANGELOG][changelog] |
-| Engine evaluate | 2.2 s per million cells after the fixes (4.7–5.5 s at v0.10.0) | same |
+| Engine memory per cell | 0.7–0.9 GB per million cells (v0.10.0); 0.54 GB at 1M, 2.35 GB at 5M after the fixes | [§3a][bench], `CoordKey` and B7 entries in the [CHANGELOG][changelog] |
+| Engine evaluate | 0.9 s per million cells after the fixes (4.7–5.5 s at v0.10.0) | same |
 | Single-cell edit | 56 µs, independent of model size (64 µs at v0.10.0) | same |
 | Logical-mode apply, 1,000-row batch, 2.5M rows / 44,750 cells | 86–130 ms commit → visible | [§1][bench], re-measured on `main` |
 | Worker memory, same model | about 450 MB private (180 B per fact row, engine included) | [§1][bench], re-measured on `main` |
