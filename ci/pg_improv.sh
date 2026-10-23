@@ -12,8 +12,8 @@
 #   the installed extension), tests/txn.sh (no-preload CREATE EXTENSION, the schema
 #   check, transactional semantics, dump/restore), tests/privileges.sh (a
 #   model acts as its owner: RLS in every sync mode), tests/logical.sh (the
-#   sync worker end to end), tests/tutorial-sales.sh (the guide's Postgres
-#   tutorial, run as written), tests/limits.sh (resource limits: worker
+#   sync worker end to end), tests/tutorial-sales.sh and tests/finance.sh
+#   (the guide's Postgres tutorial and family-finance example), tests/limits.sh (resource limits: worker
 #   slots, wal_keep_size, disk full), tests/scale.sh at its small default size
 #   (aggregated bindings under random batches), tests/failover.sh on PG 17+
 #   (a streaming standby promoted, with and without failover slots),
@@ -101,6 +101,10 @@ end
 
 step "tests/tutorial-sales.sh: the guide's Postgres tutorial (pg$pg)"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/tutorial-sales.sh
+end
+
+step "tests/finance.sh: the guide's family-finance example (pg$pg)"
+run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/finance.sh
 end
 
 step "tests/limits.sh: resource limits (pg$pg)"

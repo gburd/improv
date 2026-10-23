@@ -18,7 +18,10 @@ ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 PAGE="$ROOT/docs/src/tutorial-postgres.md"
 
 cleanup() {
-	"$PG_BIN/pg_ctl" -D "$D" stop -m fast >/dev/null 2>&1 || true
+	# (-m immediate when a fast stop hangs: the sync worker can miss SIGTERM
+	# while it waits for WAL; see docs/reviews/2026-10-23-docs-review.md.)
+	"$PG_BIN/pg_ctl" -D "$D" stop -m fast -t 30 >/dev/null 2>&1 ||
+		"$PG_BIN/pg_ctl" -D "$D" stop -m immediate >/dev/null 2>&1 || true
 	if [ -d "$D" ]; then find "$D" -mindepth 1 -delete && rmdir "$D"; fi
 }
 trap '[ -n "${KEEP:-}" ] || cleanup' EXIT

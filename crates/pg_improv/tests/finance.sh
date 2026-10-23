@@ -19,7 +19,10 @@ EX="$(cd "$(dirname "$0")/../examples/family-finance" && pwd)"
 T0=$(date +%s)
 
 cleanup() {
-	"$PG_BIN/pg_ctl" -D "$D" stop -m fast >/dev/null 2>&1 || true
+	# (-m immediate when a fast stop hangs: the sync worker can miss SIGTERM
+	# while it waits for WAL; see docs/reviews/2026-10-23-docs-review.md.)
+	"$PG_BIN/pg_ctl" -D "$D" stop -m fast -t 30 >/dev/null 2>&1 ||
+		"$PG_BIN/pg_ctl" -D "$D" stop -m immediate >/dev/null 2>&1 || true
 	if [ -d "$D" ]; then find "$D" -mindepth 1 -delete && rmdir "$D"; fi
 }
 trap '[ -n "${KEEP:-}" ] || cleanup' EXIT
@@ -198,9 +201,10 @@ check "what_if wrote nothing"  "$(cents "plan.shortfall WHERE goal = 'vacation'"
 
 # ── 6. Logical sync: fix the books, watch the results follow ──────────────
 # The worker starts before createdb, exits, and retries every 5 s; wait
-# until it has created all four slots and loaded the models, so the fixes
-# below are applied as changes rather than picked up by a first load.
-wait_for "replication slots" "SELECT count(*) FROM pg_replication_slots WHERE slot_name LIKE 'improv_%'" 4
+# until it has created the database's one slot (shared by every model since
+# 0.11.0) and loaded the models, so the fixes below are applied as changes
+# rather than picked up by a first load.
+wait_for "replication slot" "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'improv_db'" 1
 wait_for "worker caught up" \
 	"SELECT count(*) FROM unnest(ARRAY['recon', 'budget', 'networth', 'plan']) m, improv.status(m) WHERE lag_bytes IS NOT NULL" 4
 q "BEGIN;

@@ -353,6 +353,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`crates/pg_improv/tests/finance.sh` passes again, and CI runs it.**
+  It waited for four replication slots, one per model, but since 0.11.0
+  a database's models share the one slot `improv_db`, so the guide's
+  family-finance example failed its logical-sync check. It now waits for
+  that slot, and `ci/pg_improv.sh` runs it on every major.
 - **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
   ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
   linear combination of the x's before it (or, with `const`, a constant x)
