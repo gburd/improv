@@ -538,6 +538,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **tokio 1.54.1** (was 1.53.1): RUSTSEC-2026-0386, `AsyncFd`'s safe
+  constructors break I/O safety. Improv never constructs an `AsyncFd`; the
+  bump clears `cargo deny`. pg_improv's lock has tokio only through its test
+  harness, bumped too.
+
 - **Dependencies: ctutils 0.4.5 and clipboard-win 5.4.3.** ctutils 0.4.2
   (pulled in through `postgres-protocol`'s `hmac`/`sha2`/`md-5`, so the
   server and the Postgres stores) could branch on secret values
