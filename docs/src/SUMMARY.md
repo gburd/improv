@@ -37,6 +37,8 @@
 
 - [Function Reference](./functions.md)
 - [pg_improv SQL Reference](./pg-reference.md)
+- [Command-line Reference](./cli-reference.md)
+- [HTTP API Reference](./http-reference.md)
 - [Compatibility](./compatibility.md)
 
 # Design

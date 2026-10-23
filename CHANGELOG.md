@@ -28,6 +28,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   `crates/pg_improv/tests/pg-reference.py`. `ci/pg_improv.sh` runs it on
   every major and fails when the page is stale, or when a function, GUC
   or column has no description (`UPDATE_DOCS=1` rewrites the page).
+- **Generated CLI and HTTP references** (`docs/src/cli-reference.md`,
+  `docs/src/http-reference.md`): every command, argument, flag, default
+  and environment variable of `improv`, `improv-gui`, `improv-tui` and
+  `improv-server` from their clap definitions, and every operation of
+  `docs/openapi.json` with its scope, parameters, body, responses and
+  schemas. `cargo test -p improv_cli` fails when either is stale, as for
+  the man pages.
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).

@@ -425,3 +425,266 @@ fn every_command_has_a_page() {
     assert_eq!(ascii('π'), "pi");
     assert_eq!(ascii('≤'), "<=");
 }
+
+/// `docs/src/cli-reference.md`: every binary, command, argument and flag,
+/// from the same clap definitions as the man pages.
+fn cli_reference() -> String {
+    let mut improv = crate::args::Cli::command().disable_help_subcommand(true);
+    improv.build();
+    let mut s = format!(
+        "# Command-line reference\n\n\
+         <!-- Generated from the clap definitions (crates/*/src/args.rs) by\n     \
+         `{REGEN}`. Do not edit. -->\n\n\
+         Every command and flag of the four binaries, as `--help` prints them.\n\
+         The same text is in the man pages: `man improv`, `man improv-set`, and\n\
+         so on. Every command also takes `-h` (a summary) and `--help`, and each\n\
+         binary `-V`/`--version`. [Running Improv](./running.md) shows which\n\
+         binary to use when.\n"
+    );
+    s += &md_command(&improv, "improv", 2);
+    for sub in improv.get_subcommands() {
+        s += &md_command(sub, &format!("improv {}", sub.get_name()), 3);
+    }
+    for mut cmd in [
+        gui_args::Cli::command(),
+        tui_args::Cli::command(),
+        server_args::Cli::command(),
+    ] {
+        cmd.build();
+        let name = cmd.get_name().to_string();
+        s += &md_command(&cmd, &name, 2);
+    }
+    s
+}
+
+/// One command's section: its long help, usage line, and a table of its
+/// arguments and options.
+fn md_command(cmd: &clap::Command, title: &str, level: usize) -> String {
+    let mut s = format!("\n{} `{title}`\n\n", "#".repeat(level));
+    if let Some(about) = cmd.get_long_about().or(cmd.get_about()) {
+        let about = about.to_string().replace('<', "&lt;");
+        s += &format!("{}\n\n", about.trim_end());
+    }
+    let usage = cmd.clone().render_usage().to_string();
+    s += &format!("```text\n{usage}\n```\n");
+    let args: Vec<_> = cmd
+        .get_arguments()
+        .filter(|a| !a.is_hide_set() && !["help", "version"].contains(&a.get_id().as_str()))
+        .collect();
+    if !args.is_empty() {
+        s += "\n| Argument | Description |\n| --- | --- |\n";
+    }
+    for a in args {
+        let names = match (a.get_short(), a.get_long()) {
+            (Some(c), Some(l)) => format!("`-{c}`, `--{l}`"),
+            (None, Some(l)) => format!("`--{l}`"),
+            (Some(c), None) => format!("`-{c}`"),
+            (None, None) => String::new(),
+        };
+        let value = a
+            .get_value_names()
+            .map(|v| v.iter().map(|n| format!("<{n}>")).collect::<Vec<_>>())
+            .unwrap_or_default()
+            .join(" ");
+        let names = match (names.is_empty(), value.is_empty()) {
+            (true, _) => format!("`{value}`"),
+            (false, true) => names,
+            (false, false) => format!("{names} `{value}`"),
+        };
+        let mut help = a
+            .get_long_help()
+            .or(a.get_help())
+            .map(|h| md_text(&h.to_string()))
+            .unwrap_or_default();
+        let defaults: Vec<_> = a
+            .get_default_values()
+            .iter()
+            .map(|d| d.to_string_lossy().into_owned())
+            .collect();
+        if !defaults.is_empty() && a.get_action().takes_values() {
+            help += &format!(" (default: `{}`)", defaults.join(","));
+        }
+        if let Some(env) = a.get_env() {
+            help += &format!(" (env: `{}`)", env.to_string_lossy());
+        }
+        s += &format!("| {names} | {} |\n", help.trim());
+    }
+    s
+}
+
+/// clap help text as one Markdown table cell or paragraph: `|` and `<`
+/// escaped, line breaks as spaces.
+fn md_text(t: &str) -> String {
+    t.replace('|', "\\|")
+        .replace('<', "&lt;")
+        .split('\n')
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
+}
+
+/// `docs/src/http-reference.md`: every operation of `docs/openapi.json`,
+/// with its scope, parameters, body and responses.
+fn http_reference() -> String {
+    let doc: serde_json::Value =
+        serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap();
+    let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
+    let mut s = format!(
+        "# HTTP API reference\n\n\
+         <!-- Generated from docs/openapi.json by `{REGEN}`. Do not edit. -->\n\n\
+         {}\n\n\
+         The server serves this document at `/v1/openapi.json`. Point any\n\
+         OpenAPI viewer at that URL, or at\n\
+         [`docs/openapi.json`]({REPO}/docs/openapi.json), for an interactive\n\
+         page. [The HTTP Server](./server.md) covers running, tokens and\n\
+         limits.\n\n\
+         | Method | Path | Scope | Summary |\n| --- | --- | --- | --- |\n",
+        text(&doc["info"]["description"]),
+    );
+    let paths = doc["paths"].as_object().unwrap();
+    let mut ops = Vec::new();
+    for (path, item) in paths {
+        for (method, op) in item.as_object().unwrap() {
+            ops.push((path.as_str(), method.to_uppercase(), op));
+        }
+    }
+    for (path, method, op) in &ops {
+        s += &format!(
+            "| {method} | [`{path}`](#{}) | {} | {} |\n",
+            anchor(&format!("{method} {path}")),
+            text(&op["x-improv-scope"]),
+            text(&op["summary"])
+        );
+    }
+    for (path, method, op) in &ops {
+        s += &format!("\n## {method} {path}\n\n**{}**", text(&op["summary"]));
+        s += &format!(" Scope: `{}`.", text(&op["x-improv-scope"]));
+        if op["x-improv-unstable"] == true {
+            s += " **Unstable:** not covered by the compatibility promise.";
+        }
+        s += "\n";
+        if let Some(d) = op["description"].as_str() {
+            s += &format!("\n{d}\n");
+        }
+        for p in op["parameters"].as_array().into_iter().flatten() {
+            let p = resolve(&doc, p);
+            s += &format!(
+                "\n- Path parameter `{}`: `{}`.\n",
+                text(&p["name"]),
+                compact(&p["schema"])
+            );
+        }
+        if let Some(body) = op["requestBody"]["content"]["application/json"].as_object() {
+            let schema = resolve(&doc, &body["schema"]);
+            let example = body.get("example").unwrap_or(&schema["example"]);
+            if body["schema"]["$ref"].is_string() {
+                s += &format!("\nRequest body: {}.\n", schema_md(&body["schema"]));
+            } else {
+                s += &format!(
+                    "\nRequest body:\n\n```json\n{}\n```\n",
+                    serde_json::to_string_pretty(schema).unwrap()
+                );
+            }
+            if !example.is_null() {
+                s += &format!("\nExample:\n\n```json\n{}\n```\n", compact(example));
+            }
+        }
+        s += "\n| Status | Response |\n| --- | --- |\n";
+        for (status, r) in op["responses"].as_object().unwrap() {
+            let r = resolve(&doc, r);
+            let mut cell = text(&r["description"]);
+            let schema = &r["content"]["application/json"]["schema"];
+            if !schema.is_null() {
+                cell = format!(
+                    "{}. Body: {}.",
+                    cell.trim_end_matches('.'),
+                    schema_md(schema)
+                );
+            }
+            s += &format!("| {status} | {} |\n", cell.replace('|', "\\|"));
+        }
+    }
+    s += "\n## Schemas\n";
+    for (name, schema) in doc["components"]["schemas"].as_object().unwrap() {
+        let mut schema = schema.clone();
+        schema.as_object_mut().unwrap().remove("example");
+        s += &format!(
+            "\n### {name}\n\n```json\n{}\n```\n",
+            serde_json::to_string_pretty(&schema).unwrap()
+        );
+    }
+    s
+}
+
+const REPO: &str = "https://codeberg.org/gregburd/improv/src/branch/main";
+
+/// The mdBook heading anchor of `text`.
+fn anchor(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .filter_map(|c| match c {
+            ' ' => Some('-'),
+            c if c.is_alphanumeric() || c == '-' || c == '_' => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `v`, or what its `$ref` points at.
+fn resolve<'a>(doc: &'a serde_json::Value, v: &'a serde_json::Value) -> &'a serde_json::Value {
+    match v["$ref"].as_str().and_then(|r| r.strip_prefix('#')) {
+        Some(ptr) => doc.pointer(ptr).unwrap(),
+        None => v,
+    }
+}
+
+/// A response schema in a table cell: a link to a named schema, an array
+/// of one, or the inline JSON.
+fn schema_md(v: &serde_json::Value) -> String {
+    let named = |v: &serde_json::Value| {
+        v["$ref"].as_str().map(|r| {
+            let name = r.rsplit('/').next().unwrap();
+            format!("[{name}](#{})", name.to_lowercase())
+        })
+    };
+    if let Some(link) = named(v) {
+        link
+    } else if let Some(link) = (v["type"] == "array").then(|| named(&v["items"])).flatten() {
+        format!("array of {link}")
+    } else {
+        format!("`{}`", compact(v))
+    }
+}
+
+fn compact(v: &serde_json::Value) -> String {
+    serde_json::to_string(v).unwrap()
+}
+
+/// The generated reference pages under `docs/src`.
+#[test]
+fn reference_pages_are_current() {
+    let pages = [
+        ("cli-reference.md".to_string(), cli_reference()),
+        ("http-reference.md".to_string(), http_reference()),
+    ];
+    check("docs/src", &pages, |n| {
+        n == "cli-reference.md" || n == "http-reference.md"
+    });
+    assert_eq!(
+        anchor("POST /v1/measures/{id}/eval"),
+        "post-v1measuresideval"
+    );
+    assert_eq!(md_text("a | b\n<c>"), "a \\| b &lt;c>");
+    let doc = serde_json::json!({"$ref": "#/components/schemas/Cell"});
+    assert_eq!(schema_md(&doc), "[Cell](#cell)");
+    assert_eq!(
+        schema_md(&serde_json::json!({"type": "array", "items": doc})),
+        "array of [Cell](#cell)"
+    );
+    assert_eq!(
+        schema_md(&serde_json::json!({"type": "object"})),
+        "`{\"type\":\"object\"}`"
+    );
+}

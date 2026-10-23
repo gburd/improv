@@ -269,6 +269,6 @@ In a terminal, `improv-tui budget.db` opens the same file.
 | `eval` | Computed a formula's cells. |
 | `save-view` | Saved a layout for the GUI and TUI. |
 
-Every command has a man page, `man improv-set` and so on. The formula
+Every command is in the [command-line reference](./cli-reference.md). The formula
 language, including `OVER` and the other reductions, is in
 [The Formula Language](./formulas.md).
