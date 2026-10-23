@@ -95,7 +95,7 @@ improv.set_sync_mode(model text, mode text) → void
 ### `status`
 
 ```sql
-improv.status(model text) → TABLE(sync_mode text, slot text, lag_bytes bigint, confirmed_lsn text, last_applied_at timestamp with time zone, rows_applied bigint, last_error text, incremental_applies bigint, rebuilds bigint)
+improv.status(model text) → TABLE(sync_mode text, slot text, lag_bytes bigint, confirmed_lsn text, last_applied_at timestamp with time zone, rows_applied bigint, last_error text, incremental_applies bigint, rebuilds bigint, fold_bytes bigint, engine_bytes bigint)
 ```
 
 How the model is kept current, how far the logical worker is behind, and how it applied its batches: `incremental_applies` to the live engine, `rebuilds` full loads (the first catch-up, structural changes, and what it could not apply incrementally).
@@ -142,6 +142,7 @@ handler, or from its row-level security policies). Do not call them.
 | `improv.database` | string | `postgres` |  | `postgresql.conf`, restart | Database the pg_improv sync worker connects to. The logical-decoding worker serves the Improv models of this one database. |
 | `improv.max_cells` | integer | `5000000` | 0–2147483647 | any session (`SET`) | Maximum bound input cells per Improv model. Every load of a model (recalc, define, a trigger-mode or commit-mode recompute, the sync worker's rebuild and apply) refuses a model with more bound input cells. |
 | `improv.max_changes` | integer | `10000` | 1–2147483647 | `postgresql.conf`, reload | Most decoded changes one poll of the sync worker reads. Bounds the work (and memory) of one poll. |
+| `improv.max_model_memory` | integer | `0` MB | 0–2147483647 MB | `postgresql.conf`, reload | Most memory (MB) one model's live state may hold in the sync worker. A model whose fold state plus engine (as improv.status estimates them) would exceed it is refused: the worker logs why, sets its last_error, and retries it with backoff instead of growing until the backend is killed; 0 is no cap. |
 | `improv.max_slot_lag` | integer | `4096` MB | 0–2147483647 MB | `postgresql.conf`, reload | WAL (MB) the sync worker's slot may lag before it is dropped and remade. Past it the worker drops the slot and rebuilds each model from its tables, rather than retain more WAL; 0 never drops it. A cap that also holds while the worker is down is max_slot_wal_keep_size. |
 | `improv.poll_ms` | integer | `200` | 10–60000 | `postgresql.conf`, reload | How often the pg_improv sync worker polls its slot, in ms. Lower is fresher results; higher is fewer idle wakeups. |
 | `improv.raise_errors` | bool | `off` |  | any session (`SET`) | Raise a LANGUAGE improv error value instead of returning NULL. When on, a LANGUAGE improv function whose result is an error value (#DIV/0!, #NUM!, #N/A, ...) raises an ERROR naming it; when off it returns NULL. |
@@ -165,6 +166,8 @@ looks like and which to alert on.
 | `last_error` | text | Why the worker's last attempt at this model failed; NULL after a success. While set, the model is retried with backoff (0.5 s, doubling, up to 60 s), and every retry is a full rebuild. |
 | `incremental_applies` | bigint | Batches the worker fed to the live engine (the cheap path). |
 | `rebuilds` | bigint | Full reloads and recomputes. The first catch-up counts one; so does each worker restart, structural change (`define`, a new binding), and batch that needs one ([Concepts](./concepts.md#incremental-recalculation) lists the triggers). |
+| `fold_bytes` | bigint | Estimated heap of the model's fold state in the worker: what its aggregated bindings (`agg => …`) keep per coordinate. A `count_distinct`, `min` or `max` binding keeps its values too, so it grows with their number. 0 without aggregated bindings. Measured after each rebuild, and at most once a second while the model applies batches; NULL while the worker holds no live state for the model (before its first change, or after it failed). |
+| `engine_bytes` | bigint | Estimated heap of the model's live engine and input cells in the worker, as of the same moment. `fold_bytes + engine_bytes` is what [`improv.max_model_memory`](./monitoring.md#capping-a-models-memory) caps. |
 
 ## `improv.models` columns
 

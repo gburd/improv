@@ -230,6 +230,47 @@ impl Engine {
                 .zip(&self.plans)
                 .all(|((a, p), (b, q))| a == b && item_blind(p) == item_blind(q)))
     }
+
+    /// A conservative estimate of the heap this engine holds, in bytes, fed
+    /// `inputs` input cells, with `snapshot` its latest result. Per cell:
+    /// 128 B for its copy and its dataflow records (176 B for a key over
+    /// more than three categories; a text result adds its length). Per row
+    /// an arranging plan (a join, a reduction, a conditional over two
+    /// collections) reads or writes: 160 B, every input cell counted as
+    /// read. Within 10 % of the measured heap for maps, joins and `SUM` at
+    /// 1M cells; it overstates a plan that reads few of many inputs.
+    pub fn estimated_bytes(&self, inputs: usize, snapshot: &Snapshot) -> usize {
+        use crate::plan::PlanNodeKind as K;
+        fn maps_only(p: &PlanNode) -> bool {
+            let lit = |n: &PlanNode| matches!(n.kind, K::Literal(_));
+            match &p.kind {
+                K::InputMeasure(_) | K::Literal(_) => true,
+                K::MapUnary(_, a) => maps_only(a),
+                K::MapBinary(_, a, b) => (lit(a) || lit(b)) && maps_only(a) && maps_only(b),
+                _ => false,
+            }
+        }
+        let cells = |m: &MeasureId| snapshot.get(m).map_or(0, |v| v.len());
+        // A key over more than three categories is a heap allocation.
+        let wide = snapshot
+            .values()
+            .any(|v| v.keys().next().is_some_and(|k| k.len() > 3));
+        let per = if wide { 176 } else { 128 };
+        let mut bytes = inputs * per;
+        for v in snapshot.values() {
+            let text = match v.values().next() {
+                Some(CellValue::Text(t)) => t.len().next_multiple_of(16) + 16,
+                _ => 0,
+            };
+            bytes += v.len() * (per + text);
+        }
+        for (m, p) in self.plans.iter().filter(|(_, p)| !maps_only(p)) {
+            let mut read = HashSet::new();
+            crate::hosteval::reads(p, &mut read);
+            bytes += 160 * (inputs + cells(m) + read.iter().map(cells).sum::<usize>());
+        }
+        bytes
+    }
 }
 
 /// `p` without the item order of the reductions that read only their rows'
@@ -1482,5 +1523,49 @@ mod tests {
         assert!(e.serves(&small).unwrap());
         small.add_item(ItemId(1024), w, "w1024");
         assert!(!e.serves(&small).unwrap());
+    }
+
+    /// The estimate counts each cell once, every arranging plan's rows, a
+    /// wide key's heap and a text's bytes.
+    #[test]
+    fn estimated_bytes_by_plan_shape() {
+        // Revenue = Price * Quantity: a broadcast join over 2 + 2 inputs.
+        let m = revenue_model();
+        let (e, snap) = Engine::new(&m, &[MeasureId(102)]).unwrap();
+        assert_eq!(snap[&MeasureId(102)].len(), 2);
+        // Its plan reads Price and Quantity, which are inputs: no derived
+        // cells read, so the join counts the inputs and its own result.
+        assert_eq!(e.estimated_bytes(4, &snap), 6 * 128 + 160 * (4 + 2));
+        // R = Quantity * 2: a map, no arrangement.
+        let mut m = revenue_model();
+        define_text(&mut m, 103, "R = Quantity * 2");
+        let (e, snap) = Engine::new(&m, &[MeasureId(103)]).unwrap();
+        assert_eq!(e.estimated_bytes(4, &snap), 6 * 128);
+        // A text result adds its bytes, rounded to the allocator's 16.
+        define_text(&mut m, 104, "L = \"x\" & Quantity");
+        let (e, snap) = Engine::new(&m, &[MeasureId(104)]).unwrap();
+        assert_eq!(snap[&MeasureId(104)].len(), 2);
+        assert_eq!(e.estimated_bytes(4, &snap), 4 * 128 + 2 * (128 + 32));
+        // A key over four categories spills to the heap.
+        let mut wide = Model::new();
+        for c in 1..=4 {
+            wide.add_category(CategoryId(c), format!("C{c}"));
+            wide.add_item(ItemId(c * 10), CategoryId(c), "i");
+        }
+        wide.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: (1..=4).map(CategoryId).collect(),
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let at = Coordinate::from_pairs((1..=4).map(|c| (CategoryId(c), ItemId(c * 10))));
+        wide.set_input(MeasureId(100), at, Value::Number(1.0));
+        define_text(&mut wide, 101, "Y = X + 1");
+        let (e, snap) = Engine::new(&wide, &[MeasureId(101)]).unwrap();
+        assert_eq!(e.estimated_bytes(1, &snap), 2 * 176);
+        // No cells: nothing.
+        assert_eq!(e.estimated_bytes(0, &Snapshot::default()), 0);
     }
 }

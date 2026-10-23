@@ -75,6 +75,16 @@ about 15 GB.
 `recalc`, trigger and commit recomputes and the worker's apply above it.
 Raise it only after sizing the memory.
 
+`improv.status` reports what each logical model holds in the worker, as
+`fold_bytes` and `engine_bytes`, and `improv.max_model_memory` caps their
+sum per model ([monitoring](./monitoring.md#capping-a-models-memory)).
+Measured on 0.11.0 (estimate = live heap): a fold state takes 533 B per
+coordinate for `count` or a numeric `sum`, 837 B for a float `sum`, and
+about 1 kB plus 40–60 B per kept value for `count_distinct`, `min` and
+`max`. A model's input cells take about 226 B each, and its engine
+120–450 B per cell (input plus derived): a map of an input is the low
+end, a join or a reduction the high end.
+
 ## CPU and time
 
 ```text

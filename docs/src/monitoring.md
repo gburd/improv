@@ -59,6 +59,8 @@ SELECT m.name, s.*
 | `last_error` | text | Why the worker's last attempt at this model failed; NULL after a success. While set, the model is retried with backoff (0.5 s, doubling, up to 60 s), and every retry is a full rebuild. | NULL |
 | `incremental_applies` | bigint | Batches the worker fed to the live engine (the cheap path). | rising with writes |
 | `rebuilds` | bigint | Full reloads and recomputes. The first catch-up counts one; so does each worker restart, structural change (`define`, a new binding), and batch that needs one ([Concepts](./concepts.md#incremental-recalculation) lists the triggers). | flat between deploys and restarts |
+| `fold_bytes` | bigint | Estimated heap of the model's fold state in the worker: what its aggregated bindings (`agg => …`) keep per coordinate. A `count_distinct`, `min` or `max` binding keeps its values too, so it grows with their number. 0 without aggregated bindings. Measured after each rebuild, and at most once a second while the model applies batches; NULL while the worker holds no live state for the model (before its first change, or after it failed). | stable for a stable model |
+| `engine_bytes` | bigint | Estimated heap of the model's live engine and input cells in the worker, as of the same moment. `fold_bytes + engine_bytes` is what [`improv.max_model_memory`](./monitoring.md#capping-a-models-memory) caps. | stable for a stable model; below the cap |
 
 `lag_bytes` is measured against the shared slot, so it does not tell you
 which model is slow. Compare `last_applied_at` and the counters across
@@ -68,6 +70,36 @@ models for that.
 below) leaves `last_error` NULL on 0.11.0 and earlier, so watch
 `pg_replication_slots` as well. D11 in the [road to 1.0][plan] makes the
 worker report and repair it.
+
+The memory columns are estimates of the worker's heap. They come from
+the sizes of the structures the worker holds, within about 10 % of the
+live heap measured on the shapes in the tests (maps, joins, `SUM`,
+`count`, `sum`, `count_distinct`, `min`). They do not count the shared
+buffers the worker reads through. To find the models that use the most
+memory:
+
+```sql
+SELECT m.name, pg_size_pretty(s.fold_bytes + s.engine_bytes) AS live
+  FROM improv.model m, improv.status(m.name) s
+ WHERE s.fold_bytes IS NOT NULL
+ ORDER BY s.fold_bytes + s.engine_bytes DESC;
+```
+
+### Capping a model's memory
+
+`improv.max_model_memory` (MB, default 0 = no cap, reloadable) caps each
+model's live state. The worker checks it whenever it measures the model
+(after each rebuild, and at most once a second as it applies), and checks
+the loaded inputs before it builds an engine. A model over
+the cap is refused: the worker drops its live state, logs `pg_improv
+sync: model <m>: the live state needs about N MB (fold state F MB,
+engine E MB), over improv.max_model_memory = C MB`, and sets that text as
+the model's `last_error`. It retries with backoff (each retry is a
+rebuild), and other models are not held back. The model's result tables
+keep their last values. Set the cap below what the server can spare for
+the worker divided by the number of large models, so one model that grows
+fails alone rather than getting the backend OOM-killed and taking every
+model down with it.
 
 ## `pg_replication_slots`
 

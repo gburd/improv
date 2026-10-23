@@ -73,6 +73,10 @@ pub(crate) static POLL_MS: GucSetting<i32> = GucSetting::<i32>::new(200);
 pub(crate) static MAX_SLOT_LAG: GucSetting<i32> = GucSetting::<i32>::new(4096);
 /// `improv.max_changes`: the most decoded changes one poll reads.
 pub(crate) static MAX_CHANGES: GucSetting<i32> = GucSetting::<i32>::new(10_000);
+/// `improv.max_model_memory`: the most memory (MB) one model's live state
+/// (fold state plus engine, as `improv.status` estimates it) may hold in
+/// the sync worker (0: no cap).
+pub(crate) static MAX_MODEL_MEMORY: GucSetting<i32> = GucSetting::<i32>::new(0);
 
 /// Whether this library was in `shared_preload_libraries`, so a sync worker
 /// runs (a backend inherits it from the postmaster's `_PG_init`).
@@ -132,6 +136,18 @@ pub(crate) fn init() {
         GucContext::Sighup,
         GucFlags::default(),
     );
+    GucRegistry::define_int_guc(
+        c"improv.max_model_memory",
+        c"Most memory (MB) one model's live state may hold in the sync worker.",
+        c"A model whose fold state plus engine (as improv.status estimates them) would \
+          exceed it is refused: the worker logs why, sets its last_error, and retries \
+          it with backoff instead of growing until the backend is killed; 0 is no cap.",
+        &MAX_MODEL_MEMORY,
+        0,
+        i32::MAX,
+        GucContext::Sighup,
+        GucFlags::UNIT_MB,
+    );
 
     if preload {
         WORKER.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -159,7 +175,11 @@ CREATE TABLE improv.sync_state (
     -- Batches applied incrementally, and full rebuilds, since the slot was
     -- made (the sync worker's work, for improv.status).
     incremental_applies bigint NOT NULL DEFAULT 0,
-    rebuilds        bigint NOT NULL DEFAULT 0
+    rebuilds        bigint NOT NULL DEFAULT 0,
+    -- The live state's estimated heap in the worker: the fold state
+    -- (aggregated bindings) and the engine plus the model's input cells.
+    fold_bytes      bigint,
+    engine_bytes    bigint
 );
 -- Slots no longer used (0.10.0's per-model slots): the worker drops them.
 CREATE TABLE improv.slot_to_drop (slot text PRIMARY KEY);
@@ -377,6 +397,8 @@ type StatusRow = (
     Option<String>,
     Option<i64>,
     Option<i64>,
+    Option<i64>,
+    Option<i64>,
 );
 
 /// How model `model`'s results are kept current, and (in logical mode) how
@@ -385,7 +407,10 @@ type StatusRow = (
 /// model does not hold the slot: see `last_error`). `incremental_applies`
 /// counts the batches the worker applied to its live engine, `rebuilds`
 /// the full loads (the first catch-up, structural changes, and batches it
-/// could not apply incrementally).
+/// could not apply incrementally). `fold_bytes` and `engine_bytes` estimate
+/// the memory the model's live state holds in the worker (its aggregated
+/// bindings' fold state; its engine and input cells), as of its last apply;
+/// NULL when it holds none.
 // The `name!` tuple must be spelled inline: pgrx cannot derive SQL through
 // a type alias, so clippy's type-complexity suggestion does not apply.
 #[allow(clippy::type_complexity)]
@@ -404,6 +429,8 @@ fn status(
         name!(last_error, Option<String>),
         name!(incremental_applies, Option<i64>),
         name!(rebuilds, Option<i64>),
+        name!(fold_bytes, Option<i64>),
+        name!(engine_bytes, Option<i64>),
     ),
 > {
     // pgrx 0.17 cannot generate SQL for a `Result<TableIterator>`.
@@ -448,7 +475,7 @@ fn status_row(model: &str) -> Res<StatusRow> {
                        background workers\", raise max_worker_processes (now ' \
                       || current_setting('max_worker_processes') || ') and restart' END, \
                     s.last_error), \
-                    s.incremental_applies, s.rebuilds \
+                    s.incremental_applies, s.rebuilds, s.fold_bytes, s.engine_bytes \
              FROM improv.model m \
              LEFT JOIN improv.sync_state s ON s.model_id = m.id \
              LEFT JOIN pg_replication_slots r ON r.slot_name = s.slot \
@@ -471,6 +498,8 @@ fn status_row(model: &str) -> Res<StatusRow> {
             r.get::<String>(7)?,
             r.get::<i64>(8)?,
             r.get::<i64>(9)?,
+            r.get::<i64>(10)?,
+            r.get::<i64>(11)?,
         ))
     })?;
     Ok(row)
@@ -760,7 +789,9 @@ fn sweep() {
         if let Err(e) = r {
             let _ = in_txn(|| {
                 Spi::run_with_args(
-                    "UPDATE improv.sync_state SET last_error = $2 WHERE model_id = $1",
+                    // It holds no live state now: no memory either.
+                    "UPDATE improv.sync_state SET last_error = $2, fold_bytes = NULL, \
+                       engine_bytes = NULL WHERE model_id = $1",
                     &[m.id.into(), e.clone().into()],
                 )?;
                 Ok(())
@@ -1214,6 +1245,8 @@ struct Live {
     /// Transactions that ended at or before this WAL position may already
     /// be in the load this was built from.
     replay_until: u64,
+    /// When [`memory`] last measured it (none yet: at once).
+    sized: Option<Instant>,
 }
 
 /// One model's share of a poll (`txns`, of relations `rels`), inside the
@@ -1274,6 +1307,7 @@ fn tick(
         state = l;
     }
     let Some(last) = txns.last().map(|t| t.end_lsn) else {
+        memory(mid, state.as_mut())?;
         keep(mid, state);
         return Ok(());
     };
@@ -1317,7 +1351,52 @@ fn tick(
         0
     };
     record(mid, changed, Some(last), how)?;
+    memory(mid, state.as_mut())?;
     keep(mid, state);
+    Ok(())
+}
+
+/// Refuse a live state of `fold` + `engine` estimated bytes (`about`, or
+/// `at least` before the engine is built) past `improv.max_model_memory`.
+fn within_cap(fold: usize, engine: usize, about: &str) -> Res<()> {
+    let cap = MAX_MODEL_MEMORY.get().max(0) as usize;
+    let mb = |b: usize| b.div_ceil(1 << 20);
+    if cap > 0 && mb(fold + engine) > cap {
+        return Err(format!(
+            "the live state needs {about} {} MB (fold state {} MB, engine {} MB), \
+             over improv.max_model_memory = {cap} MB: raise it, or split the model",
+            mb(fold + engine),
+            mb(fold),
+            mb(engine)
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// How often a model's live state is measured as it applies batches: a
+/// measurement walks its cells and folds.
+const SIZE_EVERY: Duration = Duration::from_secs(1);
+
+/// Record live state `l`'s estimated memory in `improv.sync_state` (after a
+/// rebuild, and at most every [`SIZE_EVERY`] as it applies), and refuse it
+/// past `improv.max_model_memory`: the caller's transaction aborts, so the
+/// model keeps no live state, and its `last_error` says why. Its retries
+/// back off, as for any failing model.
+fn memory(mid: i64, l: Option<&mut Live>) -> Res<()> {
+    let Some(l) = l.filter(|l| l.sized.is_none_or(|t| t.elapsed() >= SIZE_EVERY)) else {
+        return Ok(());
+    };
+    let fold = l.mapper.fold_bytes();
+    let engine =
+        live::inputs_bytes(&l.model) + l.engine.estimated_bytes(l.model.inputs.len(), &l.snapshot);
+    within_cap(fold, engine, "about")?;
+    l.sized = Some(Instant::now());
+    let as_i64 = |b: usize| i64::try_from(b).unwrap_or(i64::MAX);
+    Spi::run_with_args(
+        "UPDATE improv.sync_state SET fold_bytes = $2, engine_bytes = $3 WHERE model_id = $1",
+        &[mid.into(), as_i64(fold).into(), as_i64(engine).into()],
+    )?;
     Ok(())
 }
 
@@ -1501,6 +1580,9 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         .ok_or("cannot read the WAL insert position")?;
     let mut mapper = live::Mapper::new(&model, bindings(mid)?);
     super::owner::as_role(owner, || seed_folds(&mut model, &mut mapper))?;
+    // Before the engine: folds and input cells that alone fill the cap
+    // build none.
+    within_cap(mapper.fold_bytes(), live::inputs_bytes(&model), "at least")?;
     let version = model_version(mid)?;
     let targets = super::trigger::all_derived(&model);
     let (engine, snapshot) = start_engine(&model, &targets)?;
@@ -1518,6 +1600,7 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         snapshot,
         tables,
         replay_until,
+        sized: None,
     };
     Ok((Some(l), changed))
 }

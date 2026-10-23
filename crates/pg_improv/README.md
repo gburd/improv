@@ -67,6 +67,7 @@ improv.database = 'sales'       # the database the sync worker serves (default: 
 #improv.poll_ms = 200           # how often it polls its slot (reloadable)
 #improv.max_changes = 10000     # most decoded changes per poll (reloadable)
 #improv.max_slot_lag = 4GB      # past this the worker drops its slot and rebuilds (reloadable; 0 = never)
+#improv.max_model_memory = 0    # MB one model's live state may hold in the worker; over it the model is refused (reloadable; 0 = no cap)
 max_slot_wal_keep_size = 10GB   # recommended: caps WAL a stuck worker can retain
 ```
 

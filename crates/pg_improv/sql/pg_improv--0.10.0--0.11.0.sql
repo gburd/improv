@@ -159,6 +159,17 @@ END $$;
 CREATE FUNCTION improv.commit_capture() RETURNS trigger
   LANGUAGE c AS 'MODULE_PATHNAME', 'commit_capture_wrapper';
 
+-- improv.status gains each model's live memory in the sync worker (B9):
+-- the fold state and the engine, estimated in bytes.
+ALTER TABLE improv.sync_state ADD COLUMN fold_bytes bigint, ADD COLUMN engine_bytes bigint;
+DROP FUNCTION improv.status(text);
+CREATE FUNCTION improv.status(model text) RETURNS TABLE (
+    sync_mode text, slot text, lag_bytes bigint, confirmed_lsn text,
+    last_applied_at timestamp with time zone, rows_applied bigint, last_error text,
+    incremental_applies bigint, rebuilds bigint, fold_bytes bigint, engine_bytes bigint)
+  STRICT SECURITY INVOKER
+  LANGUAGE c AS 'MODULE_PATHNAME', 'status_wrapper';
+
 -- The roles (see the README's Privileges). Roles are cluster-wide: made here
 -- when missing (another database's install, or the DBA, may have made them),
 -- and kept by DROP EXTENSION. improv_user builds models: schema USAGE, the

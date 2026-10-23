@@ -79,6 +79,7 @@ as the model's owner; that privilege model (see
 | `improv.poll_ms` | integer, ms (10–60000) | 200 | `postgresql.conf`, reload |
 | `improv.max_slot_lag` | integer, MB (0 = never) | 4096 | `postgresql.conf`, reload |
 | `improv.max_changes` | integer | 10000 | `postgresql.conf`, reload |
+| `improv.max_model_memory` | integer, MB (0 = no cap) | 0 | `postgresql.conf`, reload |
 
 A minor may add GUCs. It does not change a default in a way that changes
 results; a default that only tunes performance (`poll_ms`, `max_changes`)
@@ -96,7 +97,8 @@ query these tables; the extension owns their rows.
 **Stable: `improv.status`.** Its columns, in this order, with these types:
 `sync_mode text`, `slot text`, `lag_bytes bigint`, `confirmed_lsn text`,
 `last_applied_at timestamptz`, `rows_applied bigint`, `last_error text`,
-`incremental_applies bigint`, `rebuilds bigint`.
+`incremental_applies bigint`, `rebuilds bigint`, `fold_bytes bigint`,
+`engine_bytes bigint` (the last two added in 0.11.0).
 [Monitoring](./monitoring.md) says what each means. A minor may append
 columns. The logical worker's slot and publication are named `improv_db`.
 

@@ -146,6 +146,9 @@ retry backs off from 0.5 s to 60 s). Other models are not affected.
 **Causes.** Whatever the error says. The common ones:
 - `… bound input cells exceed improv.max_cells = N`: the model grew past
   the cell budget.
+- `the live state needs about N MB …, over improv.max_model_memory = C MB`:
+  the model's fold state plus engine outgrew the memory cap. Raise the cap
+  (reload) if the server has the memory, or split the model.
 - A permission error on a result table or a bound table (the result table
   was altered or its grants changed by hand).
 - A result table changed by hand: a `CHECK` constraint, a dropped column,
@@ -326,7 +329,8 @@ commit recomputes and `recalc` load the model in the writer's backend, so
 those can run out of memory too.
 
 **Diagnosis.** `RssAnon` of the worker (`grep RssAnon /proc/<pid>/status`)
-against the server's memory, and the bound tables' row counts. In-backend
+against the server's memory, and each model's `fold_bytes + engine_bytes`
+in `improv.status` ([monitoring](./monitoring.md#improvstatusmodel)). In-backend
 recomputes show up as large `RssAnon` on writers' backends.
 
 **Fix.**
@@ -334,11 +338,12 @@ recomputes show up as large `RssAnon` on writers' backends.
    session: `SELECT improv.set_sync_mode('<m>', 'manual')`). If Postgres
    keeps restarting, temporarily set `improv.database` to a database with no
    models and restart.
-2. Lower `improv.max_cells` so an oversized model fails with a clear
-   `last_error` instead of exhausting memory. It counts bound input cells
-   (coordinates after aggregation), not fact rows, so it does not bound
-   the fold state of a heavily aggregated binding. A per-model memory cap
-   is B9 in the [plan][plan].
+2. Set `improv.max_model_memory` (MB) so an oversized model fails with a
+   clear `last_error` instead of exhausting memory. It caps each model's
+   fold state plus engine, which `improv.status` reports as `fold_bytes`
+   and `engine_bytes`, so it bounds a heavily aggregated binding too.
+   `improv.max_cells` counts bound input cells (coordinates after
+   aggregation), not fact rows.
 3. Add memory, or split the model, then return it to `logical`.
 
 **Check.** The worker's `RssAnon` is stable through a day of writes.

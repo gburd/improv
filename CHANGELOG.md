@@ -68,6 +68,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   that breaks a caller is refused. Each is autosaved and one undo step, and
   the model browser lists them.
 
+- **`improv.status` shows each logical model's memory, and
+  `improv.max_model_memory` caps it.** Two new columns, `fold_bytes` (the
+  fold state of the model's aggregated bindings) and `engine_bytes` (its
+  live engine and input cells), estimate the heap the model holds in the
+  sync worker, as of its last apply. They come from the sizes of what the
+  worker holds and match the live heap within about 10 %. The new GUC
+  `improv.max_model_memory` (MB, reloadable, 0 = no cap, the default) refuses
+  a model whose live state would exceed it: the worker logs why, sets the
+  model's `last_error`, drops its live state and retries it with backoff,
+  instead of growing until the backend is OOM-killed. New in
+  `improv_engine`: `Engine::estimated_bytes`; in `improv_pg_model::live`:
+  `Mapper::fold_bytes` and `inputs_bytes`. The 0.10.0 → 0.11.0 update adds
+  the columns.
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).
