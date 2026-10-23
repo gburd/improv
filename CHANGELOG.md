@@ -408,6 +408,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   kept connection) and reloads when it moved. A write that races another
   writer's save still gets 409.
 
+- **A wide GUI grid draws only its visible columns.** Rows were
+  virtualized, but every row laid out every column, off screen or not:
+  at 1,000 × 1,000 cells a frame took 125 ms (8 fps), idle or scrolling.
+  Cells past the window's edges are now skipped, and a row stops at the
+  first column past the right edge. The same grid draws in 7.4 ms (135
+  fps) idle, 7.5 ms scrolling down and 9 ms scrolling right (release
+  build, headless, tessellation included).
 - **A failed GUI undo or redo can be retried.** When the save behind an
   undo failed, the undo stack got the current model back instead of the
   undo point, so the retry, once the store was writable again, changed

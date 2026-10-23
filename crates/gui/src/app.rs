@@ -5457,17 +5457,31 @@ impl ImprovApp {
                                     });
                                 });
                             }
+                            // Columns are not virtualized like rows: egui lays out
+                            // every one. Draw only the cells on screen, and stop
+                            // at the first column past the right edge (the header
+                            // still spans them all, so widths and the scroll
+                            // extent hold). The sizing pass measures every cell.
+                            // At 1,000 columns this took a frame from 125 ms.
+                            let mut past_right = false;
                             for (ci, col_line) in col_lines.iter().enumerate() {
-                                let key = cell_key_multi(
-                                    &row_cats, &row_line, &col_cats, col_line, &pinned,
-                                );
+                                if past_right {
+                                    break;
+                                }
                                 let selected = sel_rows.contains(&ri) && sel_cols.contains(&ci);
-                                let editing_here =
-                                    editing.as_ref() == Some(&(measure, key.clone()));
                                 row.col(|ui| {
+                                    let r = ui.max_rect();
+                                    if !ui.is_sizing_pass() && !ui.is_rect_visible(r) {
+                                        past_right = r.left() > ui.clip_rect().right();
+                                        return;
+                                    }
+                                    let key = cell_key_multi(
+                                        &row_cats, &row_line, &col_cats, col_line, &pinned,
+                                    );
+                                    let editing_here =
+                                        editing.as_ref() == Some(&(measure, key.clone()));
                                     // NeXT cell: white (light gray when selected), ruled
                                     // right and bottom in black. No per-cell chrome.
-                                    let r = ui.max_rect();
                                     let fill = if selected {
                                         crate::theme::LIGHT_GRAY
                                     } else {
@@ -14149,5 +14163,227 @@ mod tests {
         app.db.clear();
         app.redo().expect("the retry");
         assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("200"));
+    }
+
+    // -- H3: the GUI at scale (a stress probe; run it in release)
+
+    /// Time × Product, 1000 × 1000 = 1M input cells, `Revenue = Qty * 2`
+    /// and `Total = SUM(Qty OVER Time)`: the CLI-built H3 store's shape.
+    fn million_cell_model() -> Model {
+        let mut m = Model::new();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        m.add_category(t, "Time");
+        m.add_category(p, "Product");
+        for i in 0..1000 {
+            m.add_item(ItemId(1 + i), t, format!("t{i}"));
+            m.add_item(ItemId(2001 + i), p, format!("p{i}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("Qty".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        for i in 0..1000 {
+            for j in 0..1000 {
+                let at = improv_core_model::Coordinate::from_pairs([
+                    (t, ItemId(1 + i)),
+                    (p, ItemId(2001 + j)),
+                ]);
+                m.set_input(
+                    MeasureId(100),
+                    at,
+                    Value::Number(f64::from((i * 7 + j * 13) % 101)),
+                );
+            }
+        }
+        for (id, name, f) in [
+            (101, "Revenue", "Qty * 2"),
+            (102, "Total", "SUM(Qty OVER Time)"),
+        ] {
+            let formula = parser::parse_expr(&m, f).expect("formula");
+            let (value_type, categories) =
+                improv_engine::compiler::derived_shape(&m, MeasureId(id), name, &formula)
+                    .expect("shape");
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type,
+                categories,
+                kind: MeasureKind::Derived(formula),
+                description: None,
+            });
+        }
+        m
+    }
+
+    /// Frame times in ms: (median, p95, max).
+    fn frame_stats(mut ms: Vec<f64>) -> (f64, f64, f64) {
+        ms.sort_by(f64::total_cmp);
+        let at = |q: f64| ms[((ms.len() - 1) as f64 * q).round() as usize];
+        (at(0.5), at(0.95), at(1.0))
+    }
+
+    /// H3's numbers: load, engine build, frame time idle / scrolling /
+    /// after a pivot, and a cell edit split into its parts. A 1M-cell model
+    /// built in memory, or the store at `IMPROV_GUI_H3_DB` (then the edit
+    /// includes the autosave). `cargo test --release -p improv_gui h3_ --
+    /// --ignored --nocapture`.
+    #[test]
+    #[ignore = "stress probe: a 1M-cell model, minutes in a debug build"]
+    fn h3_scale_probe() {
+        use std::time::Instant;
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        let db = std::env::var("IMPROV_GUI_H3_DB").unwrap_or_default();
+        let t = Instant::now();
+        let mut app = if db.is_empty() {
+            let m = million_cell_model();
+            println!("H3 build model in memory: {:.0} ms", ms(t));
+            let t = Instant::now();
+            let app = build_app(m);
+            println!("H3 engine build: {:.0} ms", ms(t));
+            app
+        } else {
+            let app = ImprovApp::load(&db).expect("load");
+            println!("H3 ImprovApp::load (store + engine): {:.0} ms", ms(t));
+            app
+        };
+        println!("H3 cells: {}", app.model.inputs.len());
+        select(&mut app, MeasureId(100));
+        app.sync_axis_state();
+
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        let mut time = 0.0;
+        let mut frame = |app: &mut ImprovApp, events: Vec<egui::Event>| -> f64 {
+            time += 1.0 / 60.0;
+            let t = Instant::now();
+            let out = full_frame_with(&ctx, app, size, time, events, |_| ());
+            let _ = ctx.tessellate(out.shapes, out.pixels_per_point);
+            ms(t)
+        };
+        let first = frame(&mut app, Vec::new());
+        for _ in 0..5 {
+            frame(&mut app, Vec::new());
+        }
+        let idle: Vec<f64> = (0..30).map(|_| frame(&mut app, Vec::new())).collect();
+        let table = app.matrices[0].gutters.expect("rendered").table;
+        let over = egui::Event::PointerMoved(table.center());
+        let wheel = |d: egui::Vec2| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: d,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![over.clone()]);
+        let down: Vec<f64> = (0..60)
+            .map(|_| frame(&mut app, vec![over.clone(), wheel(egui::vec2(0.0, -120.0))]))
+            .collect();
+        let right: Vec<f64> = (0..60)
+            .map(|_| frame(&mut app, vec![over.clone(), wheel(egui::vec2(-120.0, 0.0))]))
+            .collect();
+        // The wheel really scrolled: the first row and column are off screen.
+        let cell = |ctx: &egui::Context, app: &ImprovApp, ri: usize, ci: usize| {
+            let id = egui::Id::new(("cell", app.matrices[0].uid, ri, ci));
+            ctx.viewport(|v| v.prev_pass.widgets.get(id).is_some())
+        };
+        assert!(!cell(&ctx, &app, 0, 0), "the wheel did not scroll the grid");
+        let t = Instant::now();
+        app.pivot_rotate();
+        let pivot_call = ms(t);
+        let pivot_first = frame(&mut app, Vec::new());
+        let pivoted: Vec<f64> = (0..30).map(|_| frame(&mut app, Vec::new())).collect();
+        println!("H3 first frame: {first:.1} ms; pivot call {pivot_call:.1} ms, first frame after {pivot_first:.1} ms");
+        for (what, v) in [
+            ("idle", idle),
+            ("scroll down", down),
+            ("scroll right", right),
+            ("pivoted", pivoted),
+        ] {
+            let (med, p95, max) = frame_stats(v);
+            println!("H3 frame {what}: median {med:.1} ms, p95 {p95:.1}, max {max:.1} ({:.0} fps at the median)", 1e3 / med);
+        }
+
+        // One cell edit, as the grid commits it, and its parts.
+        let key = app.cursor_key().expect("a cell");
+        let t = Instant::now();
+        let clone = app.model.clone();
+        println!("H3 edit part: model clone (the undo point) {:.0} ms", ms(t));
+        drop(clone);
+        let t = Instant::now();
+        app.push_engine(MeasureId(100), &key, Some(&Value::Number(5.0)))
+            .expect("engine");
+        println!("H3 edit part: incremental recalc {:.1} ms", ms(t));
+        let t = Instant::now();
+        app.save().expect("save");
+        println!("H3 edit part: autosave {:.0} ms", ms(t));
+        let t = Instant::now();
+        app.commit_cell_text(MeasureId(100), key.clone(), "6")
+            .expect("edit");
+        println!("H3 cell edit, whole (commit_cell_text): {:.0} ms", ms(t));
+        let t = Instant::now();
+        app.undo().expect("undo");
+        println!("H3 undo: {:.0} ms", ms(t));
+        let t = Instant::now();
+        app.add_derived_measure("Twice", "Qty * 2")
+            .expect("a formula");
+        println!("H3 add a derived measure (engine rebuild): {:.0} ms", ms(t));
+    }
+
+    /// A grid wider than its window draws only the columns on screen: the
+    /// cells past the right edge are never laid out, and scrolling right
+    /// brings them in (H3: 1,000 columns cost 125 ms a frame).
+    #[test]
+    fn a_wide_grid_lays_out_only_the_columns_on_screen() {
+        let mut m = Model::new();
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        m.add_category(t, "Time");
+        m.add_category(p, "Product");
+        for i in 0..3 {
+            m.add_item(ItemId(1 + i), t, format!("t{i}"));
+        }
+        for j in 0..300 {
+            m.add_item(ItemId(1000 + j), p, format!("p{j}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Q".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let mut app = build_app(m);
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let laid_out = |desk: &Desk, app: &ImprovApp, ci: usize| {
+            let id = egui::Id::new(("cell", app.matrices[0].uid, 0, ci));
+            desk.ctx.viewport(|v| v.prev_pass.widgets.get(id).is_some())
+        };
+        assert!(laid_out(&desk, &app, 0));
+        assert!(
+            !laid_out(&desk, &app, 299),
+            "an off-screen column was laid out"
+        );
+        let shown = (0..300).filter(|&ci| laid_out(&desk, &app, ci)).count();
+        assert!((1..60).contains(&shown), "{shown} columns laid out");
+        let table = app.matrices[0].gutters.expect("rendered").table;
+        for _ in 0..200 {
+            let _ = desk.frame(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(table.center()),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: egui::vec2(-400.0, 0.0),
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(!laid_out(&desk, &app, 0), "scrolled past the first column");
+        assert!(laid_out(&desk, &app, 299), "the last column scrolls in");
     }
 }
