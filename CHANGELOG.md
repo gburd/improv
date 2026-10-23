@@ -408,6 +408,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   kept connection) and reloads when it moved. A write that races another
   writer's save still gets 409.
 
+- **A failed GUI undo or redo can be retried.** When the save behind an
+  undo failed, the undo stack got the current model back instead of the
+  undo point, so the retry, once the store was writable again, changed
+  nothing and the step was lost. Redo had the same fault.
 - **The GUI says why a save failed.** A save conflict now reads "another
   program changed this model since it was opened, so the change was not
   saved and nothing was overwritten. Choose File ▸ Revert to Saved…",

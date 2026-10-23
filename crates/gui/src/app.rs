@@ -2019,8 +2019,10 @@ impl ImprovApp {
         let Some(prior) = self.undo_stack.pop() else {
             return Ok(());
         };
+        // On failure `swap_model` puts `prior` back as the model, then hands
+        // nothing back, so keep a copy to restore the step for a retry.
         let current = self.model.clone();
-        match self.swap_model(prior) {
+        match self.swap_model(prior.clone()) {
             Ok(_) => {
                 push_bounded(&mut self.redo_stack, current);
                 self.after_history_restore();
@@ -2028,7 +2030,7 @@ impl ImprovApp {
             }
             Err(e) => {
                 // Nothing was swapped, so the undo point still applies.
-                self.undo_stack.push(current);
+                self.undo_stack.push(prior);
                 Err(e)
             }
         }
@@ -2040,14 +2042,14 @@ impl ImprovApp {
             return Ok(());
         };
         let current = self.model.clone();
-        match self.swap_model(next) {
+        match self.swap_model(next.clone()) {
             Ok(_) => {
                 push_bounded(&mut self.undo_stack, current);
                 self.after_history_restore();
                 Ok(())
             }
             Err(e) => {
-                self.redo_stack.push(current);
+                self.redo_stack.push(next);
                 Err(e)
             }
         }
@@ -14121,5 +14123,31 @@ mod tests {
         assert!(save_error(StoreError::Conflict("x".into())).starts_with("save conflict: another"));
         let other = StoreError::Mentat(improv_storage_mentat::StoreError::Integrity("bad".into()));
         assert_eq!(save_error(other), "save failed: data integrity: bad");
+    }
+
+    /// A failed undo keeps the step it failed to take: once the store is
+    /// writable again, the retry restores the state before the edit (it
+    /// used to push the current state back, so the retry did nothing).
+    #[test]
+    fn a_failed_undo_or_redo_can_be_retried() {
+        let mut app = build_app(grid_2x2_model());
+        let (qkey, _) = q_and_rev_keys();
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
+            .expect("edit");
+        let unwritable = std::env::temp_dir()
+            .join(format!("improv_gui_no_dir_{}", std::process::id()))
+            .join("m.db")
+            .to_string_lossy()
+            .into_owned();
+        app.db = unwritable.clone();
+        app.undo().expect_err("the store is unwritable");
+        app.db.clear();
+        app.undo().expect("the retry");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("100"));
+        app.db = unwritable;
+        app.redo().expect_err("the store is unwritable");
+        app.db.clear();
+        app.redo().expect("the retry");
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("200"));
     }
 }
