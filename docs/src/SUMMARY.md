@@ -36,6 +36,7 @@
 # Reference
 
 - [Function Reference](./functions.md)
+- [pg_improv SQL Reference](./pg-reference.md)
 - [Compatibility](./compatibility.md)
 
 # Design

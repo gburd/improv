@@ -8,7 +8,8 @@
 # already has the PGDG packages. It installs Postgres <PGMAJOR> from PGDG,
 # builds pg_improv for it with pgrx, and runs, in order:
 #   fmt + clippy -D warnings, the #[pg_test] suite, pgspot on the generated
-#   and update SQL, tests/txn.sh (no-preload CREATE EXTENSION, the schema
+#   and update SQL, tests/pg-reference.py (docs/src/pg-reference.md matches
+#   the installed extension), tests/txn.sh (no-preload CREATE EXTENSION, the schema
 #   check, transactional semantics, dump/restore), tests/privileges.sh (a
 #   model acts as its owner: RLS in every sync mode), tests/logical.sh (the
 #   sync worker end to end), tests/tutorial-sales.sh (the guide's Postgres
@@ -82,6 +83,10 @@ end
 step "install, tests/txn.sh (pg$pg)"
 run cargo pgrx install --release "${feat[@]}" --pg-config "$PG_CONFIG"
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/txn.sh
+end
+
+step "tests/pg-reference.py: the SQL reference matches the extension (pg$pg)"
+run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/pg-reference.py
 end
 
 step "tests/privileges.sh (pg$pg)"

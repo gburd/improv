@@ -21,6 +21,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   file in DuckDB" writes a Parquet file from DuckDB and models it with
   `improv(source, model)`; `crates/duckdb_improv/test/tutorial.sh` runs
   it under both DuckDB CLIs in `ci/duckdb_improv.sh`.
+- **A generated pg_improv SQL reference** (`docs/src/pg-reference.md`):
+  every function in schema `improv` with its signature, every `improv.*`
+  GUC with its type, default, range and context, and the columns of
+  `improv.status` and `improv.models`, read from a live extension by
+  `crates/pg_improv/tests/pg-reference.py`. `ci/pg_improv.sh` runs it on
+  every major and fails when the page is stale, or when a function, GUC
+  or column has no description (`UPDATE_DOCS=1` rewrites the page).
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).
