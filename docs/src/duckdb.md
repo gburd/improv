@@ -187,8 +187,9 @@ improv: model line 7: definition: parse error at 9: unknown measure: Revnue
   8). It sees committed data: not rows the calling transaction has written
   but not committed, and not the caller's `TEMP` tables. Materialize those
   into a regular table first.
-- The whole result is computed at bind time, so it suits models up to a few
-  million cells. For a model that stays live as its data changes, use
+- The whole result is computed at bind time and written out a chunk at a
+  time, so it suits models up to a few million cells: 2.5M distinct cells
+  take about 5 s and 1.5 GB. For a model that stays live as its data changes, use
   [pg_improv](./postgres.md) or [`improv stream`](./ways.md#streaming-improv-stream).
 - Enum and date inputs are not supported in models yet. A date column works
   as a category.

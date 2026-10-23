@@ -23,7 +23,7 @@
 pub mod live;
 pub mod pgoutput;
 
-use std::collections::btree_map::Entry;
+use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use improv_core_model::parser::{self, Definition};
@@ -813,7 +813,10 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
         }
     }
 
-    let mut cells: BTreeMap<(MeasureId, Coordinate), Value> = BTreeMap::new();
+    // A map of the model's own kind, sized once: moved in whole below, so
+    // the cells are never held twice (2.5M of them were ~1 GB at the peak).
+    let rows = bound.iter().map(|b| b.rows.len()).sum();
+    let mut cells: HashMap<(MeasureId, Coordinate), Value> = HashMap::with_capacity(rows);
     let mut null_dim_rows = 0;
     for (b, (mid, name, cats)) in bound.iter().zip(&shaped) {
         for (dims, value) in &b.rows {
@@ -860,8 +863,10 @@ pub fn load_inputs(model: &mut Model, bound: &[BoundRows]) -> Result<Loaded> {
         .collect();
     new_items.sort_by_key(|i| i.id);
     let n = cells.len();
-    for ((mid, coord), v) in cells {
-        model.set_input(mid, coord, v);
+    if model.inputs.is_empty() {
+        model.inputs = cells;
+    } else {
+        model.inputs.extend(cells);
     }
     Ok(Loaded {
         new_items,

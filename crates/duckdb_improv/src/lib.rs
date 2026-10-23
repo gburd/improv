@@ -17,6 +17,7 @@
 //! `Connection::open` here panics with "API not initialized".
 
 use std::error::Error;
+use std::fmt::Write as _;
 use std::sync::{Condvar, Mutex, OnceLock};
 
 use duckdb::core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId};
@@ -328,6 +329,8 @@ fn query<T>(
     while let Some(row) = rows.next()? {
         out.push(f(row)?);
     }
+    // Growth by doubling leaves up to half of a 2.5M-row read unused.
+    out.shrink_to_fit();
     Ok(out)
 }
 
@@ -349,12 +352,13 @@ fn value_at(row: &duckdb::Row<'_>, i: usize, vt: ValueType) -> Result<Option<Cel
 
 struct ModelBind {
     ncats: usize,
-    rows: Vec<dm::Row>,
+    cells: dm::Cells,
 }
 
-/// Read the source and evaluate the model (all at bind time: the columns
-/// depend on the spec, and the result is small next to the source).
-fn evaluate(source: &str, model: &str) -> Result<(dm::Spec, Vec<dm::Row>), BoxErr> {
+/// Read the source and evaluate the model at bind time (the columns depend
+/// on the spec). The cells stay in the engine's form; `func` writes each
+/// chunk's rows from them, so no row is materialized beyond its chunk.
+fn evaluate(source: &str, model: &str) -> Result<(dm::Spec, dm::Cells), BoxErr> {
     let spec = dm::parse_spec(model)?;
     let lease = conn()?;
     let c = lease.0 .0;
@@ -387,8 +391,8 @@ fn evaluate(source: &str, model: &str) -> Result<(dm::Spec, Vec<dm::Row>), BoxEr
         })?);
     }
     drop(lease);
-    let rows = dm::run(&spec, &bound, &items, facts)?;
-    Ok((spec, rows))
+    let cells = dm::cells(&spec, &bound, &items, facts)?;
+    Ok((spec, cells))
 }
 
 struct ImprovModel;
@@ -400,7 +404,7 @@ impl VTab for ImprovModel {
     fn bind(bind: &BindInfo) -> Result<ModelBind, BoxErr> {
         let source = param(bind, 0).ok_or("improv: source must not be NULL")?;
         let model = param(bind, 1).ok_or("improv: model must not be NULL")?;
-        let (spec, rows) = evaluate(&source, &model)?;
+        let (spec, cells) = evaluate(&source, &model)?;
         bind.add_result_column("measure", varchar());
         for c in &spec.categories {
             bind.add_result_column(&c.name, varchar());
@@ -409,7 +413,7 @@ impl VTab for ImprovModel {
         bind.add_result_column("value_text", varchar());
         Ok(ModelBind {
             ncats: spec.categories.len(),
-            rows,
+            cells,
         })
     }
 
@@ -419,19 +423,22 @@ impl VTab for ImprovModel {
 
     fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), BoxErr> {
         let b = func.get_bind_data();
-        let range = func.get_init_data().next(b.rows.len());
+        let range = func.get_init_data().next(b.cells.len());
         let mut values = output.flat_vector(b.ncats + 1);
-        for (r, row) in b.rows[range.clone()].iter().enumerate() {
-            put_str(output, 0, r, Some(&row.measure));
-            for (c, d) in row.dims.iter().enumerate() {
-                put_str(output, c + 1, r, d.as_deref());
+        let mut text = String::new();
+        for (r, row) in b.cells.range(range.clone()).enumerate() {
+            put_str(output, 0, r, Some(row.measure));
+            for c in 0..b.ncats {
+                put_str(output, c + 1, r, row.dim(c));
             }
-            match row.value {
+            match calc::number(row.value) {
                 // SAFETY: column ncats + 1 is DOUBLE, `r` < VECTOR_SIZE.
                 Some(v) => unsafe { values.as_mut_slice::<f64>()[r] = v },
                 None => values.set_null(r),
             }
-            put_str(output, b.ncats + 2, r, Some(&row.text));
+            text.clear();
+            write!(text, "{}", row.value)?;
+            put_str(output, b.ncats + 2, r, Some(&text));
         }
         output.set_len(range.len());
         Ok(())

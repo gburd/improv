@@ -6,9 +6,10 @@
 //! * [`calc`]: `improv_calc` / `improv_calc_text`, a scalar formula over
 //!   named JSON inputs (compiled once, cached);
 //! * [`function_rows`]: `improv_functions`, the built-in function registry;
-//! * [`parse_spec`], [`bind`], the `*_sql` builders and [`run`]:
+//! * [`parse_spec`], [`bind`], the `*_sql` builders and [`cells`]:
 //!   `improv(source, model)`, a small model spec over a table or query, the
-//!   SQL that reads it, and the engine's cells as result rows.
+//!   SQL that reads it, and the engine's cells in result order, which the
+//!   extension writes out a chunk at a time ([`run`] collects them as rows).
 //!
 //! The model spec has one item per line (blank lines and `#` / `--`
 //! comments are skipped):
@@ -353,17 +354,99 @@ pub struct Row {
     pub text: String,
 }
 
-/// Build the model from the spec, its categories' items (from
-/// [`items_sql`], per category) and its inputs' rows (from [`input_sql`],
-/// per input), evaluate every derived measure, and return one row per
-/// derived cell: measures in declaration order, each one's cells in item
-/// order.
+/// [`cells`], collected as one [`Row`] per derived cell.
 pub fn run(
     spec: &Spec,
     bound: &Bound,
     items: &[Vec<String>],
     facts: Vec<Vec<FactRow>>,
 ) -> Result<Vec<Row>> {
+    let c = cells(spec, bound, items, facts)?;
+    Ok(c.range(0..c.len())
+        .map(|r| Row {
+            measure: r.measure.to_string(),
+            dims: (0..spec.categories.len())
+                .map(|i| r.dim(i).map(str::to_string))
+                .collect(),
+            value: calc::number(r.value),
+            text: r.value.to_string(),
+        })
+        .collect())
+}
+
+/// The derived cells of a model, in result order: measures in declaration
+/// order, each one's cells in item order. Rows are read a range at a time
+/// ([`Cells::range`]), so a caller writes them out without holding a copy
+/// of every row.
+#[derive(Debug)]
+pub struct Cells {
+    /// Per derived measure: its name and its cells, sorted.
+    measures: Vec<(String, Vec<(CoordKey, CellValue)>)>,
+    /// Row number of each measure's first cell.
+    starts: Vec<usize>,
+    /// Item names by item id - 1.
+    names: Vec<String>,
+}
+
+/// One derived cell of [`Cells`].
+#[derive(Debug, Clone, Copy)]
+pub struct CellRow<'a> {
+    /// The derived measure.
+    pub measure: &'a str,
+    /// The value (its text is its `Display`).
+    pub value: &'a CellValue,
+    key: &'a CoordKey,
+    names: &'a [String],
+}
+
+impl CellRow<'_> {
+    /// The item of the `i`-th category (declaration order); `None` where the
+    /// measure does not range over it.
+    pub fn dim(&self, i: usize) -> Option<&str> {
+        item_of(self.key, i as u32 + 1).map(|id| self.names[id as usize - 1].as_str())
+    }
+}
+
+impl Cells {
+    /// The number of rows.
+    pub fn len(&self) -> usize {
+        self.starts.last().copied().unwrap_or(0)
+    }
+
+    /// Whether there are no rows.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Rows `r` (clamped to [`Cells::len`]).
+    pub fn range(&self, r: std::ops::Range<usize>) -> impl Iterator<Item = CellRow<'_>> + '_ {
+        let end = r.end.min(self.len());
+        let first = self.starts.partition_point(|s| *s <= r.start).max(1) - 1;
+        self.measures[first.min(self.measures.len())..]
+            .iter()
+            .zip(&self.starts[first.min(self.measures.len())..])
+            .flat_map(move |((name, cells), at)| {
+                let lo = r.start.saturating_sub(*at).min(cells.len());
+                let hi = end.saturating_sub(*at).min(cells.len());
+                cells[lo..hi].iter().map(move |(key, value)| CellRow {
+                    measure: name,
+                    value,
+                    key,
+                    names: &self.names,
+                })
+            })
+    }
+}
+
+/// Build the model from the spec, its categories' items (from
+/// [`items_sql`], per category) and its inputs' rows (from [`input_sql`],
+/// per input), and evaluate every derived measure.
+pub fn cells(
+    spec: &Spec,
+    bound: &Bound,
+    items: &[Vec<String>],
+    facts: Vec<Vec<FactRow>>,
+) -> Result<Cells> {
     let mut catalog = pm::Catalog::default();
     let mut next_item = 0;
     for (c, (cat, names)) in (1..).zip(spec.categories.iter().zip(items)) {
@@ -426,30 +509,34 @@ pub fn run(
         }
         other => model_err(other),
     })?;
-    let out = improv_engine::dataflow::evaluate(&model, &targets)
+    drop(bound_rows);
+    let mut out = improv_engine::dataflow::evaluate(&model, &targets)
         .map_err(|e| Error::Model(e.to_string()))?;
-    let empty = HashMap::new();
-    let mut rows = Vec::new();
-    for t in targets {
-        let name = &model.measures[&t].name.0;
-        let mut cells: Vec<(&CoordKey, &CellValue)> =
-            out.get(&t).unwrap_or(&empty).iter().collect();
+    let names: Vec<String> = targets
+        .iter()
+        .map(|t| model.measures[t].name.0.clone())
+        .collect();
+    drop(model);
+    let mut measures = Vec::with_capacity(targets.len());
+    let mut starts = vec![0];
+    for (t, name) in targets.into_iter().zip(names) {
+        let mut cells: Vec<(CoordKey, CellValue)> =
+            out.remove(&t).unwrap_or_default().into_iter().collect();
         // Items are numbered in each category's order, so ids sort by it.
-        cells.sort_by_key(|(k, _)| cats.iter().map(|c| item_of(k, *c)).collect::<Vec<_>>());
-        for (key, v) in cells {
-            let dims = cats
-                .iter()
-                .map(|c| item_of(key, *c).map(|i| catalog.items[i as usize - 1].name.clone()))
-                .collect();
-            rows.push(Row {
-                measure: name.clone(),
-                dims,
-                value: calc::number(v),
-                text: v.to_string(),
-            });
-        }
+        // (A key per comparison, not a Vec: 2.5M cells sort in a fraction of
+        // the time.)
+        cells.sort_unstable_by(|(a, _), (b, _)| {
+            let ids = |k| cats.iter().map(move |c| item_of(k, *c));
+            ids(a).cmp(ids(b))
+        });
+        starts.push(starts[starts.len() - 1] + cells.len());
+        measures.push((name, cells));
     }
-    Ok(rows)
+    Ok(Cells {
+        measures,
+        starts,
+        names: catalog.items.into_iter().map(|i| i.name).collect(),
+    })
 }
 
 fn item_of(key: &CoordKey, cat: u32) -> Option<u32> {

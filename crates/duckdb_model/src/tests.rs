@@ -286,6 +286,68 @@ fn time_by_product_oracle() {
 }
 
 #[test]
+fn cells_stream_in_any_chunks() {
+    let s = parse_spec(REVENUE).unwrap();
+    let b = bind(&s, &columns()).unwrap();
+    let items = vec![
+        vec!["2024".to_string(), "2025".to_string()],
+        vec!["WidgetA".to_string(), "WidgetB".to_string()],
+    ];
+    let row = |t: &str, p: &str, v: f64| {
+        (
+            vec![Some(t.to_string()), Some(p.to_string())],
+            Some(CellValue::num(v)),
+        )
+    };
+    let facts = || {
+        let f = |a, b, c, d| {
+            vec![
+                row("2024", "WidgetA", a),
+                row("2024", "WidgetB", b),
+                row("2025", "WidgetA", c),
+                row("2025", "WidgetB", d),
+            ]
+        };
+        vec![f(10.0, 20.0, 11.0, 20.0), f(100.0, 50.0, 120.0, 40.0)]
+    };
+    let c = cells(&s, &b, &items, facts()).unwrap();
+    assert_eq!((c.len(), c.is_empty()), (12, false));
+    let all = run(&s, &b, &items, facts()).unwrap();
+    let key = |r: CellRow<'_>| {
+        (
+            r.measure.to_string(),
+            r.dim(0).map(str::to_string),
+            r.value.to_string(),
+        )
+    };
+    // Every chunk size, across the measures' boundaries (rows 4 and 8).
+    for n in 1..=13 {
+        let mut got = Vec::new();
+        let mut at = 0;
+        while at < c.len() {
+            got.extend(c.range(at..at + n).map(key));
+            at += n;
+        }
+        let want: Vec<_> = all
+            .iter()
+            .map(|r| (r.measure.clone(), r.dims[0].clone(), r.text.clone()))
+            .collect();
+        assert_eq!(got, want, "chunks of {n}");
+    }
+    assert_eq!(c.range(12..20).count(), 0);
+    assert_eq!(
+        c.range(3..5).map(|r| r.measure).collect::<Vec<_>>(),
+        ["Revenue", "Share"]
+    );
+    // A model with no derived cells.
+    let s = parse_spec("category T = t\ninput X = x\nW = X").unwrap();
+    let b = bind(&s, &[col("t", "INTEGER"), col("x", "DOUBLE")]).unwrap();
+    let c = cells(&s, &b, &[vec!["1".to_string()]], vec![vec![]]).unwrap();
+    assert!(c.is_empty());
+    assert_eq!(c.range(0..10).count(), 0);
+}
+
+#[test]
 fn measures_over_fewer_categories_and_text_values() {
     let s = parse_spec(
         "category Time = t\ncategory Product = p\ninput Q = q\ninput Name = n\n\

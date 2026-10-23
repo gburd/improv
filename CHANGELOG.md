@@ -257,6 +257,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **DuckDB `improv()` over 2.5M distinct coordinates: 11 s and 2.34 GB is
+  now 4.6 s and 1.47 GB** (DuckDB v1.5.6; v2.0: 4.7 s, 1.49 GB). The
+  results are no longer turned into a row of owned strings per cell at
+  bind time: they stay in the engine's form, and each output chunk writes
+  its 2,048 rows from them. The cells are sorted with a key per
+  comparison, not one allocated per cell. The loaded inputs move into the
+  model instead of being copied, so they are never held twice. New in
+  `improv_duckdb_model`: `cells` and `Cells` (a range at a time);
+  `run` still returns every row.
 - **improv-server: an unknown token gets 401, not 403.** 403 now means the
   token is valid but its scope is too narrow. A 401 carries
   `WWW-Authenticate: Bearer` and a JSON error body.
