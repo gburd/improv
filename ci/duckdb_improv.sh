@@ -8,7 +8,8 @@
 # SQLLogicTest file under Python duckdb 1.5.6); the same file and the
 # concurrency test under the 2.0 dev wheel; test/smoke.sh under the DuckDB
 # v1.5.6 and v2.0.0-alpha46057 CLIs (ci/duckdb-clis.sh fetches or builds
-# them into <cli-dir>); and improv(...) against `improv eval` cell by cell.
+# them into <cli-dir>); the guide's DuckDB tutorial (test/tutorial.sh)
+# under both CLIs; and improv(...) against `improv eval` cell by cell.
 # One release binary must pass under both DuckDB versions (README "Pins").
 #
 # Needs: cargo, python3 with venv, curl, unzip, git; cmake + ninja the first
@@ -53,6 +54,12 @@ end
 for v in v1.5.6 v2.0.0-alpha46057; do
 	step "smoke.sh under the DuckDB $v CLI"
 	EXT="$ext" DUCKDB="$cli/$v/duckdb" bash test/smoke.sh
+	end
+done
+
+for v in v1.5.6 v2.0.0-alpha46057; do
+	step "tutorial.sh (the guide's DuckDB tutorial) under the DuckDB $v CLI"
+	EXT="$ext" DUCKDB="$cli/$v/duckdb" bash test/tutorial.sh
 	end
 done
 

@@ -17,7 +17,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   formulas, switches to logical sync and watches inserts and deletes
   arrive; `crates/pg_improv/tests/tutorial-sales.sh` runs its `sql`
   blocks through `psql` on a scratch cluster configured from the page,
-  in `ci/pg_improv.sh` on every Postgres major.
+  in `ci/pg_improv.sh` on every Postgres major. "Analyzing a Parquet
+  file in DuckDB" writes a Parquet file from DuckDB and models it with
+  `improv(source, model)`; `crates/duckdb_improv/test/tutorial.sh` runs
+  it under both DuckDB CLIs in `ci/duckdb_improv.sh`.
 - **`TEXTSPLIT` takes Excel's `match_mode` and `pad_with`:**
   `TEXTSPLIT(Code, "x", "", FALSE, 1 INTO Part)` splits on `x` or `X`
   (match_mode 0 is exact, the default; any other value is `#VALUE!`).

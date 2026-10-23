@@ -9,6 +9,7 @@
 
 - [A Household Budget on the Desktop](./tutorial-budget.md)
 - [A Live Sales Model in Postgres](./tutorial-postgres.md)
+- [Analyzing a Parquet File in DuckDB](./tutorial-duckdb.md)
 
 # Guides
 
