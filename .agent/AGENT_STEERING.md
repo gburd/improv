@@ -6,26 +6,31 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — the road to 1.0.0 (2026-10-21)
+## Active priority — the road to 1.0.0 (2026-10-21; status 2026-10-23)
 
-The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`: workstreams A
-(the Mentat `resolve_avs` fix, in flight with the Mentat team; 0.11.0 waits
-on it), B scalability, C security (C1: the logical worker reads bound tables
-as the bootstrap superuser, bypassing RLS), D Postgres operations (failover,
-pg_upgrade, partitions, resource limits), E language, F the operations docs
-(concepts, when-to-use, monitoring, capacity planning, backup/restore and
-operations runbooks), G man pages for every tool from a clap parser, H TUI/GUI
-review, I a web-GUI decision, J release engineering. Its "1.0.0 exit criteria"
-section is the bar; mark tasks done there as they land.
+The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
+criteria" are the bar. Mark tasks done there as they land.
 
-Language (E): E1 exponent literals, E2 named arguments (`name => value`
-after the positional ones; none for a repeating parameter; a skipped
-optional takes its written default, one with none cannot be skipped;
-stored positionally), E3 the Differences from Excel, E4 the stability
-policy, and E5 (number to text in General form, case-insensitive
-`UNIQUE`, `""` in strings, `TEXTSPLIT` match_mode/pad_with, `LINEST`
-dropping collinear x's) are DONE. Only `TEXTSPLIT`'s row delimiter stays
-a documented difference.
+- **Done (39):** B2 B3 B11, C1 C2 C4 C5, D1–D13, E1–E5, F1–F7, G1–G4,
+  H5, I1, J1. Highlights: each model reads and writes as its owner, with
+  row security on the catalog, `improv_user`/`improv_admin` roles, the
+  `improv.models` view and a tested privilege matrix. One replication slot
+  per database, and failover slots. Upgrades are tested from every release
+  on PG 15–18. The server has `/v1`, token scopes, limits, an audit log and
+  OpenAPI (`/v1/model` stays outside the promise). Releases are signed with
+  cosign keyless, with SHA256SUMS and SBOMs. There are named arguments, and
+  SUM/AVERAGE use Neumaier summation. A weekly scale gate runs against a
+  baseline taken on GitHub runners. Man pages and completions come from
+  clap. The operations docs and `compatibility.md` are written.
+- **In flight:** A1 (Mentat `resolve_avs` fix on Mentat master 6a1b08de2;
+  ships in `mentatdb` 1.18.0; 1.17.2 is a pg_mentat-only security release).
+  0.11.0 waits on it.
+- **Open (25):** B1 B4–B10, C3 (external review), F8–F10, H1–H4 H6–H9,
+  J2–J6. **Not planned for 1.0:** I2/I3 (web GUI and multi-user editing).
+  The spike is on branch `work/web-spike`.
+- **Known gap:** B3's "10 one-row INSERT statements < 2× one" in trigger
+  mode is 3.3× with an index on the dimension columns. Deferring the work
+  to COMMIT would break read-your-writes; postgres.md documents the index.
 
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
