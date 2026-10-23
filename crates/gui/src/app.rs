@@ -14470,4 +14470,35 @@ mod tests {
         assert!(app.model.category_by_name("Region").is_some());
         assert!(!app.can_redo());
     }
+
+    /// Worksheet ▸ Add Category, clicked the way a pointer does (the press
+    /// and the release a frame apart, the pointer staying on the menu),
+    /// then typed with no help: the text lands in the New category line.
+    #[test]
+    fn add_category_from_the_menu_then_typing_reaches_the_line() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let ws = text_at(&shapes, "Worksheet").expect("the menu");
+        desk.click(&mut app, ws.center());
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let item = text_at(&shapes, "Add Category").expect("the submenu");
+        let at = item.center();
+        let _ = desk.frame(&mut app, vec![egui::Event::PointerMoved(at)]);
+        let _ = desk.frame(&mut app, vec![press(at, true)]);
+        let _ = desk.frame(&mut app, vec![press(at, false)]);
+        for _ in 0..30 {
+            let _ = desk.frame(&mut app, Vec::new());
+        }
+        for ev in [egui::Event::Text("Region".into()), enter()] {
+            let _ = desk.frame(&mut app, vec![ev]);
+        }
+        assert!(
+            app.model.category_by_name("Region").is_some(),
+            "typing after the menu did not add: focus {:?}, status {:?}",
+            desk.ctx.memory(|m| m.focused()),
+            app.status
+        );
+    }
 }
