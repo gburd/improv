@@ -315,10 +315,9 @@ the same store in between, the save is refused with a conflict instead of
 overwriting it: use **File ▸ Revert to Saved** (GUI) or `R` (TUI), then
 redo the edit.
 
-**Large stores:** writing a store of hundreds of thousands of cells is slow
-on Mentat 1.16.0 (A1 in the [road to 1.0][plan]). Use `VACUUM INTO`, which
-copies at file speed, rather than `improv export` and re-import for
-backups.
+**Large stores:** a full save of a 1M-cell store takes about 18 s (Mentat
+1.18.0). Use `VACUUM INTO`, which copies at file speed, rather than
+`improv export` and re-import for backups.
 
 [plan]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-21-road-to-1.0.md
 [readme]: https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md

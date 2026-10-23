@@ -270,6 +270,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Mentat 1.18.0** (was 1.16.0). Saving a large model is linear again:
+  identity upserts and lookup-refs no longer scan the whole datom view per
+  value. `import-csv` of 1M rows takes about 105 s; under 1.16.0 it did not
+  finish in 15 min. At 200k rows it went from 99.5 s to 16.1 s, and a re-save
+  from 185 s to 21 s. Reads are unchanged, and stores written by 1.16.0 open
+  as they are (`docs/reviews/2026-10-23-mentat-1.18-upgrade.md`).
+
 - **DuckDB `improv()` over 2.5M distinct coordinates: 11 s and 2.34 GB is
   now 4.6 s and 1.47 GB** (DuckDB v1.5.6; v2.0: 4.7 s, 1.49 GB). The
   results are no longer turned into a row of owned strings per cell at

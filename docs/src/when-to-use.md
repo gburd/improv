@@ -141,7 +141,7 @@ or put it in `manual` mode and refresh it on a schedule.
 | Commit mode, same model | 2.1–2.4 s per transaction after the fixes | [CHANGELOG][changelog] |
 | Models per database (logical) | 1,000 small models: 54–146 ms per change, 0.6 MB each | re-measured on `main` with the §3f harness of the [benchmark][bench] |
 | FIXPOINT | about 1.0 kB per edge after the fixes | [§2][bench], [CHANGELOG][changelog] |
-| Store file import | quadratic in Mentat 1.16.0: 100k rows 18.7 s, 300k 171 s | [§3g][bench] (A1 in the [plan][plan]) |
+| Store file import | linear since Mentat 1.18.0: 100k rows 7 s, 1M about 105 s (1.16.0: 100k 21 s, 1M did not finish in 15 min) | [Mentat 1.18 upgrade](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-23-mentat-1.18-upgrade.md) |
 
 [bench]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-20-v0.10.0-benchmark.md
 [changelog]: https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md

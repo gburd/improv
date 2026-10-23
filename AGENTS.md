@@ -134,7 +134,7 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   `[workspace.dependencies]`:
   `mentat = { package = "mentatdb", version = "=<x.y.z>" }` (Mentat 1.12+
   publishes the embedded engine as `mentatdb`; the library is still
-  `mentat`, so `use mentat::…` is unchanged). Currently 1.16.0. Never a path
+  `mentat`, so `use mentat::…` is unchanged). Currently 1.18.0. Never a path
   dependency: `path = "../mentat"` made a fresh clone unbuildable. When
   Improv needs newer Mentat behavior: release it from Mentat `master` to
   crates.io, bump the version, commit the resulting `Cargo.lock`, and record

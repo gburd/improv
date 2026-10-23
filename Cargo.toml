@@ -54,7 +54,7 @@ timely = "=0.13.0"
 # Storage substrate: the embedded SQLite Mentat fork, from crates.io (Mentat
 # 1.12+ publishes it as `mentatdb`; the library is still `mentat`). Bump
 # procedure + benchmark: AGENTS.md "CI / storage-backend pin".
-mentat = { package = "mentatdb", version = "=1.16.0" }
+mentat = { package = "mentatdb", version = "=1.18.0" }
 # TUI (Phase 2).
 ratatui = "0.29"
 crossterm = "0.28"

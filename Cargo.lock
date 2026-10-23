@@ -1812,7 +1812,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3301,9 +3301,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_core"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf7cf1e1bf8efa2b0cb3751425a555639dc0500efa4449cd8ee73657f32155da"
+checksum = "131dade8d36bf0c44445894e2969d7d1452e136cdbf0acc24d3b8d52232d9c18"
 dependencies = [
  "chrono",
  "enumset",
@@ -3316,9 +3316,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_core_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de9e1478a64dd2fdc7b36aee0b9ca324ec5808e7b6244a3f4f2283275347e93c"
+checksum = "4a5d32078ba0a37a59f959ff714e5311e785c7ed0217d71595073dc8472b2a05"
 dependencies = [
  "bytes",
  "chrono",
@@ -3334,9 +3334,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_db"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7097ffc69c7d44e06a55017e1d484a60ec72cd4ce939c99007e2d440eb4a8ce"
+checksum = "c450e674c62ef85b6e4723119046da8d4952362ac507aa512ed4e8e48b2aaa5a"
 dependencies = [
  "indexmap",
  "itertools 0.15.0",
@@ -3356,9 +3356,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_db_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "42652963be968e7cc1e16c42628890b84bbb8768c27c9b5c10f5b5cacfe91a5b"
+checksum = "ecba74efeb8a1e3dcfee25db0a0b38b1d1f3ad3a0b3357619ab0404bfd81eb92"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -3369,9 +3369,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_edn"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d20b804703652d3d7911c34d5a37c231f56ab08695da6d240e865ad00fc22f8"
+checksum = "3fc7b7ae417bba2f6b3fc6dd90829091c2e133a4bc64062d7d0b6376809bbba0"
 dependencies = [
  "bytes",
  "chrono",
@@ -3388,9 +3388,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_public_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b866a410e469f6e3888af23de04fe4cdfeb05b19e74fb8bcf616608d98eb62f"
+checksum = "42179157eda14aafbd1d22e42e710150036219a84bb594d947690be3db59d821"
 dependencies = [
  "http",
  "mentat_core_traits",
@@ -3408,9 +3408,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccd7025d08f10ad8effe7f66f6f5bf2e6dd12aa6214b36c8e426987521ab326f"
+checksum = "ec7697a6b8ff6cad7db488835a8551d20f1716081a8b942a082f9385efc7483d"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -3420,9 +3420,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_algebrizer_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "28d38dbd1064abbd876eb24f73d54620d3ddcb6139f3a67a1672b372cb296ae3"
+checksum = "42a65ef48f46068a737f704942e8f923de276bfb07e39cb382d0eeb15fb6acb5"
 dependencies = [
  "mentat_core_traits",
  "mentat_edn",
@@ -3431,9 +3431,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0202fdb47e9d558d9b9aec88609a3d27d0173bd2a482375a18c032cd59b23a16"
+checksum = "615c330a0aac660dc8d7ebbc715ede86314736fa90f039a46e23e868a630c760"
 dependencies = [
  "indexmap",
  "mentat_core",
@@ -3452,9 +3452,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_projector_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7b9ca9ee06cd5e37e3f60d07222dd56b2d63014b4103a4c919fdc275c01b76f"
+checksum = "3763b3f2a7685e4c60158320d76a593051f3f63196fc48f13c4e3a979aaec6c6"
 dependencies = [
  "mentat_core_traits",
  "mentat_db_traits",
@@ -3469,15 +3469,16 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5ec8cec0451b3362e4605cb783e12fa855eee2f396a42a430f87d5bc14c8dd5"
+checksum = "734c44a359033bd970b94319c2f5e983e99230927aade8c45133df8762ea7df9"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
  "mentat_db",
  "mentat_db_traits",
  "mentat_edn",
+ "mentat_query_algebrizer",
  "mentat_query_pull_traits",
  "mentat_sql",
  "rusqlite",
@@ -3485,9 +3486,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_pull_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d3bba2af2a1c39db705c46f89cc3a5b201fcaf6095a560f6638892e40ca0571"
+checksum = "56fe73b7e83ad02d0a429715622cf3de753a7632098c80b8a102e8bbba44bdae"
 dependencies = [
  "mentat_core_traits",
  "mentat_db_traits",
@@ -3496,9 +3497,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_query_sql"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e971623d33d4b3ca3c6bf91846350d9a57c3ab61645d5cd83d5daf2ab5d46d5"
+checksum = "8f74abe940086ff2868a013329ffaf1f5bfd192a07bb93b77273f440628aaa36"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -3511,9 +3512,9 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a190007e3518470f4c783a78c3c0fbab80d7aec80e613911c7f03b431ed8a44d"
+checksum = "9ff0f715c8178a6522e368ad447da1998e4bbba2636d81496f57feb06dc95d0e"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -3524,18 +3525,18 @@ dependencies = [
 
 [[package]]
 name = "mentat_sql_traits"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20d62a2deae24c0e63f2acd614fdc76ebefd353a396d42eb67786f565a720321"
+checksum = "d38d564d2be8605d107d66a8517bc6878161e5577d654751c0501417cfe58124"
 dependencies = [
  "thiserror 2.0.20",
 ]
 
 [[package]]
 name = "mentat_transaction"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f044d6794a60c78dff4540c7c29f27f9909a9fb5d0cd53f533eb9abdc97c9e24"
+checksum = "114ee2634f4d8e10d88f0db8f27f5c94fd20bbb18608b04daab806d06bd12f3d"
 dependencies = [
  "mentat_core",
  "mentat_core_traits",
@@ -3554,9 +3555,9 @@ dependencies = [
 
 [[package]]
 name = "mentatdb"
-version = "1.16.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee79cf9f4f913451a62247e2fd291590b1d9bd805622ceb890160bc1aa31c1db"
+checksum = "b17f743d5ccb3405e33088a1427efb0eb3a9282016c9c8ce4129c4bd246f2301"
 dependencies = [
  "chrono",
  "lazy_static",
@@ -4885,7 +4886,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5493,7 +5494,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6639,7 +6640,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
