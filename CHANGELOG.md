@@ -407,7 +407,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   stayed in the file and came back on the next load. An undone add in the
   GUI (a new derived measure, say) reappeared after a reopen. The save now
   retracts them in the same transaction, as the Postgres backend already
-  deleted them.
+  deleted them. Likewise the last named LAMBDA, scenario or external
+  function a model drops: the save skipped an empty meta blob, so the old
+  one stayed.
 - **`LINEST` and `LOGEST` drop collinear x's**, as Excel documents
   ("removes any redundant X columns"), instead of `#NUM!`. An x that is a
   linear combination of the x's before it (or, with `const`, a constant x)

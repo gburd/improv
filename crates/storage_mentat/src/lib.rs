@@ -387,11 +387,14 @@ impl ModelStore {
 
         // Singleton meta: external function defs + external-call measures +
         // what-if scenarios, each as a JSON blob on one entity (only if any
-        // are non-empty).
+        // are non-empty, or one is stored that the model emptied: skipping
+        // that write brought an undone LAMBDA back).
+        let stored_meta = rel_on(&ip, "[:find ?e :where [?e :meta/singleton 1]]")?;
         if !model.external_fns.is_empty()
             || !model.external_calls.is_empty()
             || !model.scenarios.is_empty()
             || !model.lambdas.is_empty()
+            || !stored_meta.is_empty()
         {
             let fns_json = serde_json::to_string(&model.external_fns)?;
             let calls_json = serde_json::to_string(&model.external_calls)?;
@@ -2263,6 +2266,21 @@ mod tests {
             .and_then(|mut s| s.load_model())
             .expect("reload");
         assert_eq!(back.items[&ItemId(11)].name.0, "Q2 again");
+
+        // So does an emptied meta blob: a dropped LAMBDA stays dropped.
+        let mut with = back.clone();
+        let l = improv_core_model::NamedLambda {
+            name: Name("Twice".into()),
+            params: vec!["x".into()],
+            body: Expr::Literal(Value::Number(2.0)),
+        };
+        with.lambdas.insert(1, l);
+        s.save_model(&with).expect("define");
+        s.save_model(&back).expect("drop it");
+        let reread = ModelStore::open(&path)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert!(reread.lambdas.is_empty(), "the dropped LAMBDA came back");
         let _ = std::fs::remove_file(&path);
     }
 }
