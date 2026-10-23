@@ -118,19 +118,20 @@ fn preorder<'a>(n: &'a PlanNode, out: &mut Vec<&'a PlanNode>) {
     }
 }
 
-/// Where a reduction row's value comes from: cell `i` of the reduction's
-/// `j`-th collection (`Cell(j, i)`), or a value (a `WHERE` condition's
-/// error).
-#[derive(Clone, Debug)]
-enum Src {
-    Cell(u32, u32),
-    Val(CellValue),
-}
+/// Where a reduction row's value comes from: `Src(j, i)` is cell `i` of the
+/// reduction's `j`-th collection, or, for `j` = [`OWN`], value `i` of the
+/// reduction's own values (a `WHERE` condition's error). Eight bytes: a row
+/// value per edge of a graph is held for the solve.
+#[derive(Clone, Copy, Debug)]
+struct Src(u32, u32);
 
-fn value(kids: &[Rc<Cells>], s: &Src) -> CellValue {
-    match s {
-        Src::Cell(j, i) => kids[*j as usize][*i as usize].1.clone(),
-        Src::Val(v) => v.clone(),
+/// [`Src`]'s collection index for a reduction's own values.
+const OWN: u32 = u32::MAX;
+
+fn value(kids: &[Rc<Cells>], own: &[CellValue], s: &Src) -> CellValue {
+    match s.0 {
+        OWN => own[s.1 as usize].clone(),
+        j => kids[j as usize][s.1 as usize].1.clone(),
     }
 }
 
@@ -139,18 +140,35 @@ fn value(kids: &[Rc<Cells>], s: &Src) -> CellValue {
 struct Shape {
     /// The collections it was laid out on (or last refilled from).
     kids: Vec<Rc<Cells>>,
+    /// The values its [`OWN`] sources read.
+    own: Vec<CellValue>,
     groups: Vec<Group>,
+    /// One group's rows as the kernel takes them, refilled group by group
+    /// (its row vectors kept, so a round allocates nothing).
+    scratch: Rows,
 }
 
-/// One group of a [`Shape`]: its rows (values refilled each round), each
-/// row's item, and each row's value sources (the inputs', then the joined
-/// parameters', `width` in all).
+/// One group of a [`Shape`], flat: a `Rows` held per group had two
+/// vectors per row, 48 bytes of headers and two allocations per edge of a
+/// graph. Per row: its item positions (`dims` each), its item, its value
+/// sources (`width` each: the inputs', then the joined parameters') and its
+/// input values (`n_in` each, refilled from the collections that changed).
 struct Group {
     key: CoordKey,
-    rows: Rows,
+    pos: Vec<u32>,
     items: Vec<u32>,
     srcs: Vec<Src>,
+    vals: Vec<CellValue>,
     width: usize,
+}
+
+/// `rows` sized to `n`, keeping the row vectors it drops for later.
+fn resize<T>(rows: &mut Vec<Vec<T>>, n: usize) {
+    if rows.len() > n {
+        rows.truncate(n);
+    } else {
+        rows.resize_with(n, Vec::new);
+    }
 }
 
 impl Shape {
@@ -179,15 +197,27 @@ impl Shape {
         stale: &[bool],
         out: &mut Cells,
     ) {
-        let (n_in, cells) = (a.ins.len(), into_cells(a));
-        let kids = &self.kids;
+        let (n_in, dims, cells) = (a.ins.len(), a.order.len(), into_cells(a));
+        let (kids, own, rs) = (&self.kids, &self.own, &mut self.scratch);
         for g in &mut self.groups {
-            for (row, srcs) in g.rows.vals.iter_mut().zip(g.srcs.chunks(g.width)) {
+            let srcs = g.srcs.chunks(g.width);
+            for (row, srcs) in g.vals.chunks_mut(n_in.max(1)).zip(srcs) {
                 for (v, s) in row.iter_mut().zip(srcs) {
-                    if matches!(s, Src::Cell(j, _) if stale[*j as usize]) {
-                        *v = value(kids, s);
+                    if s.0 != OWN && stale[s.0 as usize] {
+                        *v = value(kids, own, s);
                     }
                 }
+            }
+            let n = g.items.len();
+            resize(&mut rs.pos, n);
+            resize(&mut rs.vals, n);
+            let pos = g.pos.chunks(dims.max(1));
+            let vals = g.vals.chunks(n_in.max(1));
+            for ((p, v), (gp, gv)) in rs.pos.iter_mut().zip(&mut rs.vals).zip(pos.zip(vals)) {
+                p.clear();
+                p.extend_from_slice(&gp[..dims]);
+                v.clear();
+                v.extend_from_slice(&gv[..n_in]);
             }
             // The joined parameters are the first row's (see `agg_rows`).
             let mut joined = g.srcs[n_in..g.width].iter();
@@ -197,10 +227,10 @@ impl Shape {
                     Some(v) => v.clone(),
                     None => joined
                         .next()
-                        .map_or(CellValue::Err(err::NA), |s| value(kids, s)),
+                        .map_or(CellValue::Err(err::NA), |s| value(kids, own, s)),
                 })
                 .collect();
-            emit(a, cells.as_deref(), &g.key, &g.rows, &params, &g.items, out);
+            emit(a, cells.as_deref(), &g.key, rs, &params, &g.items, out);
         }
     }
 }
@@ -287,6 +317,10 @@ pub(crate) struct Host {
     shapes: HashMap<Node, Shape>,
     /// r's coordinates, in the order a round reads them.
     r_keys: Vec<CoordKey>,
+    /// Each other measure's cells as last read, whose order a refresh
+    /// keeps while the coordinates stay: an edit then leaves the layouts
+    /// fitting (a map's iteration order moves when cells are re-set).
+    env_cells: HashMap<MeasureId, Rc<Cells>>,
 }
 
 impl Host {
@@ -314,7 +348,18 @@ impl Host {
             round: HashMap::new(),
             shapes: HashMap::new(),
             r_keys: Vec::new(),
+            env_cells: HashMap::new(),
         }
+    }
+
+    /// Let go of the measures [`Host::refresh`] read, keeping the cells
+    /// taken from them: while it holds a snapshot's map, the worker's next
+    /// change to that measure copies all of it (copy-on-write). The next
+    /// refresh then evaluates afresh.
+    pub(crate) fn release(&mut self) {
+        self.env.clear();
+        self.fixed.clear();
+        self.index.clear();
     }
 
     /// Read every measure but r from `env` (one it lacks has no cells).
@@ -362,6 +407,11 @@ impl Host {
             return Rc::clone(c);
         }
         let c = Rc::new(self.compute(n, x));
+        if let K::InputMeasure(m) = n.kind {
+            if m != self.r {
+                self.env_cells.insert(m, Rc::clone(&c));
+            }
+        }
         let memo = if live {
             &mut self.round
         } else {
@@ -386,9 +436,18 @@ impl Host {
                     .map(|k| (k.clone(), x[k].clone()))
                     .collect()
             }
-            K::InputMeasure(m) => self.env.get(m).map_or_else(Vec::new, |v| {
-                v.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-            }),
+            K::InputMeasure(m) => {
+                let Some(v) = self.env.get(m) else {
+                    return Vec::new();
+                };
+                let old = self.env_cells.get(m).filter(|o| o.len() == v.len());
+                let kept: Option<Cells> = old.and_then(|o| {
+                    o.iter()
+                        .map(|(k, _)| Some((k.clone(), v.get(k)?.clone())))
+                        .collect()
+                });
+                kept.unwrap_or_else(|| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            }
             K::Literal(v) => {
                 let v = CellValue::from_model_value(v).expect("covers checks literals");
                 vec![(CoordKey::new(), v)]
@@ -579,18 +638,20 @@ impl Host {
             s.fill(&a, &consts, &stale, &mut out);
             return out;
         }
-        let groups = group_rows(&a, self.tagged_rows(&a, &nodes, &kids));
+        let (rows, own) = self.tagged_rows(&a, &nodes, &kids);
+        let groups = group_rows(&a, rows);
         let ties = groups
             .iter()
             .any(|(_, rows)| rows.windows(2).any(|w| w[0].0 == w[1].0));
         let n_in = a.ins.len();
         let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
+        let dims = a.order.len();
         if ties {
             let cells = into_cells(&a);
             for (g, rows) in groups {
                 let mut vals: Vec<AggRow> = rows
                     .into_iter()
-                    .map(|(pi, srcs)| (pi, srcs.iter().map(|s| value(&kids, s)).collect()))
+                    .map(|(pi, srcs)| (pi, srcs.iter().map(|s| value(&kids, &own, s)).collect()))
                     .collect();
                 vals.sort();
                 let mut input: Vec<(&AggRow, isize)> = Vec::new();
@@ -611,27 +672,34 @@ impl Host {
                 let width = rows.first().map_or(n_in, |r| r.1.len());
                 let mut g = Group {
                     key,
-                    rows: Rows {
-                        pos: Vec::with_capacity(rows.len()),
-                        vals: Vec::with_capacity(rows.len()),
-                        capacity,
-                    },
+                    pos: Vec::with_capacity(rows.len() * dims),
                     items: Vec::with_capacity(rows.len()),
                     srcs: Vec::with_capacity(rows.len() * width),
+                    vals: Vec::with_capacity(rows.len() * n_in),
                     width,
                 };
                 for ((pos, item), srcs) in rows {
-                    g.rows.pos.push(pos);
-                    g.rows
-                        .vals
-                        .push(srcs[..n_in].iter().map(|s| value(&kids, s)).collect());
+                    debug_assert_eq!(pos.len(), dims);
+                    g.pos.extend(pos);
+                    g.vals
+                        .extend(srcs[..n_in].iter().map(|s| value(&kids, &own, s)));
                     g.items.push(item);
                     g.srcs.extend(srcs);
                 }
                 g
             })
             .collect();
-        let mut s = Shape { kids, groups };
+        let scratch = Rows {
+            pos: Vec::new(),
+            vals: Vec::new(),
+            capacity,
+        };
+        let mut s = Shape {
+            kids,
+            own,
+            groups,
+            scratch,
+        };
         let fresh = vec![false; s.kids.len()];
         s.fill(&a, &consts, &fresh, &mut out);
         self.shapes.insert(p, s);
@@ -640,13 +708,15 @@ impl Host {
 
     /// A reduction's rows, as the dataflow builds them, with each value as
     /// its source: `nodes` are the inputs, the condition and the joined
-    /// parameters, `kids` their cells.
+    /// parameters, `kids` their cells. Also the values its [`OWN`] sources
+    /// read.
+    #[allow(clippy::type_complexity)]
     fn tagged_rows(
         &mut self,
         a: &AggSpec<'_>,
         nodes: &[&PlanNode],
         kids: &[Rc<Cells>],
-    ) -> Vec<(CoordKey, Vec<Src>)> {
+    ) -> (Vec<(CoordKey, Vec<Src>)>, Vec<CellValue>) {
         let with_order = |n: &PlanNode| -> Vec<CategoryId> {
             let order = a.order.iter().map(|(c, _)| *c);
             n.ty.dim.categories.iter().copied().chain(order).collect()
@@ -656,12 +726,12 @@ impl Host {
         let mut rows: Vec<(CoordKey, Vec<Src>)> = kids[0]
             .iter()
             .enumerate()
-            .map(|(i, (k, _))| (k.clone(), vec![Src::Cell(0, i as u32)]))
+            .map(|(i, (k, _))| (k.clone(), vec![Src(0, i as u32)]))
             .collect();
         let push = |j: usize, rows: Vec<(CoordKey, (Vec<Src>, u32))>| {
             rows.into_iter()
                 .map(|(k, (mut vs, i))| {
-                    vs.push(Src::Cell(j as u32, i));
+                    vs.push(Src(j as u32, i));
                     (k, vs)
                 })
                 .collect()
@@ -675,15 +745,21 @@ impl Host {
             rows = push(j, self.align_idx(&rows, nodes[j], &kids[j], &shared));
         }
         let mut j = n_in;
+        let mut own = Vec::new();
         if let Some(p) = a.pred {
             let pc = &kids[j];
-            rows = self
-                .align_idx(&rows, p, pc, &p.ty.dim.categories)
-                .into_iter()
-                .filter_map(|(k, (vs, i))| {
-                    where_row(vs, pc[i as usize].1.clone(), Src::Val).map(|vs| (k, vs))
-                })
-                .collect();
+            let mut kept = Vec::new();
+            for (k, (vs, i)) in self.align_idx(&rows, p, pc, &p.ty.dim.categories) {
+                let t = pc[i as usize].1.clone();
+                let at = Src(OWN, own.len() as u32);
+                if let Some(vs) = where_row(vs, t.clone(), |_| at) {
+                    if matches!(t, CellValue::Err(_)) {
+                        own.push(t);
+                    }
+                    kept.push((k, vs));
+                }
+            }
+            rows = kept;
             j += 1;
         }
         let mut row_dim = full;
@@ -702,7 +778,7 @@ impl Host {
             rows = push(j, self.align_idx(&rows, q, c, &shared));
             j += 1;
         }
-        rows
+        (rows, own)
     }
 
     /// The dataflow's Coalesce: at each coordinate of the domain, the first

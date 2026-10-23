@@ -579,6 +579,9 @@ fn solve_fixpoints(
             out = Some(solve(start, st)).filter(|(_, ok)| *ok);
         }
         let (x, converged) = out.unwrap_or_else(|| solve((*init).clone(), st));
+        if let Some(h) = host.as_mut() {
+            h.release();
+        }
         st.host = host;
         if x != *st.result {
             world.dirty.lock().unwrap().insert(f.id);
