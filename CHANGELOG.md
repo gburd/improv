@@ -538,6 +538,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- **Dependencies: ctutils 0.4.5 and clipboard-win 5.4.3.** ctutils 0.4.2
+  (pulled in through `postgres-protocol`'s `hmac`/`sha2`/`md-5`, so the
+  server and the Postgres stores) could branch on secret values
+  (RUSTSEC-2026-0385); clipboard-win 5.4.1 (the GUI's clipboard, on
+  Windows) was yanked. `cargo deny check` fails on both.
+
 - **The GUI's Postgres store refuses a model its role may not act as.**
   Under pg_improv 0.11's row security such a role sees none of the model's
   items or cells, so `improv-gui postgres://…?model=` (and the CLI) opened
