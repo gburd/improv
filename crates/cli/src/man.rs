@@ -462,7 +462,7 @@ fn cli_reference() -> String {
 fn md_command(cmd: &clap::Command, title: &str, level: usize) -> String {
     let mut s = format!("\n{} `{title}`\n\n", "#".repeat(level));
     if let Some(about) = cmd.get_long_about().or(cmd.get_about()) {
-        let about = about.to_string().replace('<', "&lt;");
+        let about = about.to_string().replace('<', "&lt;").replace('[', "\\[");
         s += &format!("{}\n\n", about.trim_end());
     }
     let usage = cmd.clone().render_usage().to_string();
@@ -515,7 +515,9 @@ fn md_command(cmd: &clap::Command, title: &str, level: usize) -> String {
 /// clap help text as one Markdown table cell or paragraph: `|` and `<`
 /// escaped, line breaks as spaces.
 fn md_text(t: &str) -> String {
+    // `[` escaped: help text like `args[0]` or `[Cat=Item,...]` is not a link.
     t.replace('|', "\\|")
+        .replace('[', "\\[")
         .replace('<', "&lt;")
         .split('\n')
         .map(str::trim_end)
@@ -677,6 +679,7 @@ fn reference_pages_are_current() {
         "post-v1measuresideval"
     );
     assert_eq!(md_text("a | b\n<c>"), "a \\| b &lt;c>");
+    assert_eq!(md_text("args[0] [Cat=Item]"), "args\\[0] \\[Cat=Item]");
     let doc = serde_json::json!({"$ref": "#/components/schemas/Cell"});
     assert_eq!(schema_md(&doc), "[Cell](#cell)");
     assert_eq!(

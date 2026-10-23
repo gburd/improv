@@ -119,7 +119,7 @@ Usage: improv define [OPTIONS] <db> <id> <definition>
 
 Register a Python external function.
 
-Number arguments and a Number result: the body reads the list args and sets result, e.g. register-ext m.db hypot 2 "result = (args[0]**2 + args[1]**2) ** 0.5".
+Number arguments and a Number result: the body reads the list args and sets result, e.g. register-ext m.db hypot 2 "result = (args\[0]**2 + args\[1]**2) ** 0.5".
 
 ```text
 Usage: improv register-ext <db> <name> <arity> <python-body>
@@ -382,7 +382,7 @@ Usage: improv export-csv [OPTIONS] <db> <target.csv> <measure-id>
 
 Apply input edits from stdin and print the cells they change.
 
-One edit per line, MEASURE VALUE [Cat=Item,...] (the measure by id or name; no coordinate for a scalar measure). Each applies to a live incremental engine, and every changed cell of a target measure prints as MEASURE Cat=Item,... = VALUE. A malformed line is reported on stderr and skipped. At end of input the model is saved. Example: printf 'Price 12 Product=WidgetA\n' | improv stream m.db Revenue
+One edit per line, MEASURE VALUE \[Cat=Item,...] (the measure by id or name; no coordinate for a scalar measure). Each applies to a live incremental engine, and every changed cell of a target measure prints as MEASURE Cat=Item,... = VALUE. A malformed line is reported on stderr and skipped. At end of input the model is saved. Example: printf 'Price 12 Product=WidgetA\n' | improv stream m.db Revenue
 
 ```text
 Usage: improv stream <db> <target-measure>...
@@ -415,7 +415,7 @@ Usage: improv-tui <model>
 
 | Argument | Description |
 | --- | --- |
-| `<model>` | The model: a store file, or postgres://USER@HOST/DB?model=NAME |
+| `<model>` | The model: a store file (a new one opens empty), or postgres://USER@HOST/DB?model=NAME |
 
 ## `improv-server`
 
