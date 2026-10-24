@@ -145,8 +145,14 @@ fn split_definition(line: &str) -> Option<(&str, &str)> {
 
 /// Parse one formula as the DSL, else as controlled English; reject what a
 /// scalar evaluation cannot do.
-fn parse(model: &Model, text: &str) -> Result<Expr, String> {
-    let expr = match parser::parse_expr(model, text) {
+fn parse(model: &Model, text: &str, stored: bool) -> Result<Expr, String> {
+    // A body CREATEd before 0.11 is held to the load bound when called.
+    let dsl = if stored {
+        parser::parse_stored_expr(model, text)
+    } else {
+        parser::parse_expr(model, text)
+    };
+    let expr = match dsl {
         Ok(f) => f.expr,
         Err(dsl) => match parse_nl_formula(&NlContext::new(model), text) {
             Ok(f) => f.expr,
@@ -181,7 +187,7 @@ fn type_of(model: &Model, expr: &Expr) -> Result<ValueType, String> {
         .map_err(|e| e.to_string())
 }
 
-fn compile(sig: Sig, src: &str) -> Result<Compiled, String> {
+fn compile(sig: Sig, src: &str, stored: bool) -> Result<Compiled, String> {
     let mut model = Model::new();
     let add = |model: &mut Model, name: &str, value_type, kind| {
         let id = MeasureId(model.measures.len() as u32 + 1);
@@ -218,7 +224,7 @@ fn compile(sig: Sig, src: &str) -> Result<Compiled, String> {
                 if model.measure_by_name(name).is_some() {
                     return Err(at(format!("{name} is already defined")));
                 }
-                let expr = parse(&model, rhs).map_err(at)?;
+                let expr = parse(&model, rhs, stored).map_err(at)?;
                 let vt = type_of(&model, &expr).map_err(at)?;
                 let derived = MeasureKind::Derived(Formula::new(expr.clone()));
                 let id = add(&mut model, name, vt, derived);
@@ -228,7 +234,7 @@ fn compile(sig: Sig, src: &str) -> Result<Compiled, String> {
                 }
             }
             None if last => {
-                let expr = parse(&model, line).map_err(at)?;
+                let expr = parse(&model, line, stored).map_err(at)?;
                 result = Some((expr.clone(), type_of(&model, &expr).map_err(at)?));
             }
             None => {
@@ -387,7 +393,7 @@ fn compiled(oid: Oid) -> Result<Rc<Compiled>, String> {
         return Ok(f);
     }
     let proc = PgProc::new(oid).ok_or("function vanished")?;
-    let f = Rc::new(compile(signature(&proc)?, &proc.prosrc())?);
+    let f = Rc::new(compile(signature(&proc)?, &proc.prosrc(), true)?);
     CACHE.with_borrow_mut(|c| c.insert(oid, (version, f.clone())));
     Ok(f)
 }
@@ -477,7 +483,7 @@ pub unsafe extern "C-unwind" fn plimprov_validator(
     let check_body = unsafe { pg_sys::check_function_bodies };
     let checked = signature(&proc).and_then(|sig| {
         if check_body {
-            compile(sig, &proc.prosrc()).map(drop)
+            compile(sig, &proc.prosrc(), false).map(drop)
         } else {
             Ok(())
         }

@@ -26,9 +26,9 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 use improv_core_model::{
-    parse_definition, parse_expr, CategoryId, Coordinate, Definition, ExternalCall, ExternalFn,
-    Formula, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Scenario, ScenarioId, SqlSource,
-    Value, ValueType,
+    parse_stored_definition, parse_stored_expr, CategoryId, Coordinate, Definition, ExternalCall,
+    ExternalFn, Formula, ItemId, Measure, MeasureId, MeasureKind, Model, Name, Scenario,
+    ScenarioId, SqlSource, Value, ValueType,
 };
 use postgres::config::{Host, SslMode};
 use postgres::{Client, Config, GenericClient, IsolationLevel, NoTls};
@@ -334,9 +334,11 @@ fn parse_formula_text(
     model: &Model,
     text: &str,
 ) -> std::result::Result<Formula, improv_core_model::ParseError> {
-    match parse_definition(model, text) {
+    // Stored text: held to the load bound, not a new formula's limit.
+    match parse_stored_definition(model, text) {
         Ok(Definition::Formula(ft)) => Ok(ft.formula),
-        _ => parse_expr(model, text),
+        Err(e) if e.is_limit() => Err(e),
+        _ => parse_stored_expr(model, text),
     }
 }
 
@@ -982,7 +984,7 @@ impl PgModelStore {
             let (id, cat) = (ItemId(id32(r.get(0))?), CategoryId(id32(r.get(1))?));
             model.add_item(id, cat, r.get::<_, String>(2));
         }
-        let mut dsl = Vec::new();
+        let (mut dsl, mut unreadable) = (Vec::new(), Vec::new());
         for r in tx.query(
             "SELECT id, name, value_type, kind, formula, description, categories \
              FROM improv.measure WHERE model_id = $1 ORDER BY id",
@@ -995,8 +997,12 @@ impl PgModelStore {
                     let f = f.ok_or_else(|| {
                         StoreError::Integrity(format!("derived measure {} has no formula", id.0))
                     })?;
-                    match serde_json::from_str(&f) {
-                        Ok(f) => MeasureKind::Derived(f),
+                    match Formula::from_json(&f) {
+                        Ok(Some(f)) => MeasureKind::Derived(f),
+                        Ok(None) => {
+                            unreadable.push((id, "its stored formula nests too deeply to load"));
+                            MeasureKind::Input
+                        }
                         // DSL text (what `improv.define` writes): parsed once
                         // every measure name is known.
                         Err(_) => {
@@ -1052,11 +1058,27 @@ impl PgModelStore {
         }
         // Text formulas last: they may call any lambda.
         for (id, text) in dsl {
-            let f = parse_formula_text(&model, &text).map_err(|e| {
-                StoreError::Integrity(format!("measure {}: bad formula {text:?}: {e}", id.0))
-            })?;
+            let f = match parse_formula_text(&model, &text) {
+                Ok(f) => f,
+                Err(e) if e.is_limit() => {
+                    unreadable.push((id, "its stored formula is past the formula limits"));
+                    continue;
+                }
+                Err(e) => {
+                    return Err(StoreError::Integrity(format!(
+                        "measure {}: bad formula {text:?}: {e}",
+                        id.0
+                    )))
+                }
+            };
             if let Some(m) = model.measures.get_mut(&id) {
                 m.kind = MeasureKind::Derived(f);
+            }
+        }
+        // Saved before the formula limits: the model still opens.
+        for (id, why) in unreadable {
+            if let Some(m) = model.measures.get_mut(&id) {
+                m.mark_unreadable(why);
             }
         }
         for r in tx.query(

@@ -47,6 +47,9 @@ pub enum StoreError {
 const TX_HIGH_WATER_SQL: &str = "SELECT coalesce((SELECT tx FROM timelined_transactions \
      WHERE timeline = 0 AND a <> 3 ORDER BY rowid DESC LIMIT 1), 0)";
 
+/// Why a measure loads as `#REF!` (see `Measure::mark_unreadable`).
+const UNREADABLE: &str = "its stored formula nests too deeply to load";
+
 const CONFLICT_MSG: &str =
     "the store was changed by another writer since it was loaded; reload and retry";
 
@@ -604,6 +607,7 @@ impl ModelStore {
             let value_type = convert::value_type_from_kw(&convert::as_string(&row[2])?)?;
             let kind_kw = convert::as_string(&row[3])?;
 
+            let mut unreadable = false;
             let kind = match kind_kw.as_str() {
                 "input" => MeasureKind::Input,
                 "derived" => {
@@ -618,8 +622,13 @@ impl ModelStore {
                                 id.0
                             ))
                         })?;
-                    let f: Formula = serde_json::from_str(&formula_json)?;
-                    MeasureKind::Derived(f)
+                    match Formula::from_json(&formula_json)? {
+                        Some(f) => MeasureKind::Derived(f),
+                        None => {
+                            unreadable = true;
+                            MeasureKind::Input
+                        }
+                    }
                 }
                 other => {
                     return Err(StoreError::Integrity(format!(
@@ -644,17 +653,18 @@ impl ModelStore {
                 model.sql_sources.insert(id, src);
             }
 
-            model.measures.insert(
+            let mut measure = Measure {
                 id,
-                Measure {
-                    id,
-                    name: Name(name),
-                    value_type,
-                    categories,
-                    kind,
-                    description,
-                },
-            );
+                name: Name(name),
+                value_type,
+                categories,
+                kind,
+                description,
+            };
+            if unreadable {
+                measure.mark_unreadable(UNREADABLE);
+            }
+            model.measures.insert(id, measure);
         }
         Ok(())
     }
@@ -1162,6 +1172,107 @@ mod tests {
             .collect(),
         });
         m
+    }
+
+    /// `Q = Price + Price + …`, `terms` long, over Product.
+    fn chain_model(terms: usize) -> Model {
+        let mut m = sample_model();
+        let price = || Expr::Ref(MeasureId(100), DimensionSpec::default());
+        let mut e = price();
+        for _ in 1..terms {
+            e = Expr::BinaryOp(BinaryOp::Add, Box::new(e), Box::new(price()));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Q".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(2)],
+            kind: MeasureKind::Derived(Formula::new(e)),
+            description: None,
+        });
+        m
+    }
+
+    #[test]
+    fn a_formula_too_deep_to_read_back_loads_as_ref_errors() {
+        // What a store written before the formula limits can hold: 71 terms
+        // (the C3 repro). The model opens; Q alone is #REF!, and says why.
+        let mut store = ModelStore::open("").expect("open in-memory");
+        store.save_model(&chain_model(71)).expect("save");
+        for loaded in [
+            store.load_model().expect("load"),
+            store.load_partial(&[MeasureId(103)]).expect("partial"),
+        ] {
+            let q = &loaded.measures[&MeasureId(103)];
+            let d = q.description.as_deref().unwrap();
+            assert!(
+                d.contains("nests too deeply to load (measure 103 Q)"),
+                "{d}"
+            );
+            let out = improv_engine::dataflow::evaluate(&loaded, &[MeasureId(103)]).unwrap();
+            let cells = &out[&MeasureId(103)];
+            assert_eq!(cells.len(), 1, "one cell per Product item");
+            assert!(
+                cells.values().all(|v| v.to_string() == "#REF!"),
+                "{cells:?}"
+            );
+            // The rest of the model is as saved.
+            assert_eq!(
+                loaded.measures[&MeasureId(102)],
+                sample_model().measures[&MeasureId(102)]
+            );
+        }
+        // Redefining Q (here: dropping it) and saving clears it.
+        let mut m = store.load_model().unwrap();
+        m.measures.remove(&MeasureId(103));
+        store.save_model(&m).unwrap();
+        assert!(!store
+            .load_model()
+            .unwrap()
+            .measures
+            .contains_key(&MeasureId(103)));
+    }
+
+    #[test]
+    fn the_deepest_allowed_formula_saves_reloads_and_evaluates_on_a_small_stack() {
+        let r = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                let m = chain_model(improv_core_model::MAX_FORMULA_DEPTH);
+                let MeasureKind::Derived(f) = &m.measures[&MeasureId(103)].kind else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    f.expr.depth_and_nodes().0,
+                    improv_core_model::MAX_FORMULA_DEPTH
+                );
+                let mut store = ModelStore::open("").expect("open in-memory");
+                store.save_model(&m).expect("save");
+                let loaded = store.load_model().expect("load");
+                assert_eq!(
+                    loaded.measures[&MeasureId(103)],
+                    m.measures[&MeasureId(103)]
+                );
+                // The whole model as one JSON document (`improv export`) too.
+                let json = serde_json::to_string(&loaded).unwrap();
+                assert_eq!(serde_json::from_str::<Model>(&json).unwrap(), loaded);
+                let out = improv_engine::dataflow::evaluate(&loaded, &[MeasureId(103)]).unwrap();
+                let (engine, snap) =
+                    improv_engine::session::Engine::new(&loaded, &[MeasureId(103)]).unwrap();
+                drop(engine);
+                (
+                    out[&MeasureId(103)]
+                        .values()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>(),
+                    snap.len(),
+                )
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        // Price is 10 at Widget A: 40 of them.
+        assert_eq!(r, (vec!["400".to_string()], 1));
     }
 
     #[test]

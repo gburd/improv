@@ -1064,6 +1064,57 @@ fn block_writes(db: &str) {
         .unwrap();
 }
 
+/// C3: a 71-term chain was saved, and then no command could open the
+/// model ("recursion limit exceeded").
+#[test]
+fn a_formula_too_deep_is_refused_and_an_old_one_does_not_lock_the_model() {
+    let dir = scratch("depth");
+    let db = file(&dir, "m.db");
+    let d = db.as_str();
+    ok(&["init", d]);
+    ok(&["add-measure", d, "100", "Price", "number", "input"]);
+    let chain = |n: usize| vec!["Price"; n].join(" + ");
+    fails_with(
+        &["add-derived", d, "101", "Q", &chain(71)],
+        "formula nests too deeply (41 levels; the limit is 40)",
+    );
+    fails_with(
+        &["define", d, "101", &format!("Q = {}", chain(41))],
+        "formula nests too deeply (41 levels; the limit is 40)",
+    );
+    ok(&["add-derived", d, "101", "Q", &chain(40)]);
+    ok(&["set", d, "100", "2"]);
+    stdout_has(&ok(&["eval", d, "101"]), "Q[] = 80");
+    stdout_has(&ok(&["list", d]), "101 Q [derived]");
+
+    // A store written before the limit: Q's formula is a 71-term chain.
+    let mut e = r#"{"Ref":[100,{"by":[],"over":[],"except":[]}]}"#.to_string();
+    for _ in 1..71 {
+        e = format!(
+            r#"{{"BinaryOp":["Add",{e},{{"Ref":[100,{{"by":[],"over":[],"except":[]}}]}}]}}"#
+        );
+    }
+    let n = rusqlite::Connection::open(d)
+        .unwrap()
+        .execute(
+            "UPDATE datoms SET v = ?1 \
+             WHERE a = (SELECT e FROM idents WHERE v = ':measure/formula')",
+            [format!(r#"{{"expr":{e}}}"#)],
+        )
+        .unwrap();
+    assert_eq!(n, 1);
+    stdout_has(&ok(&["list", d]), "101 Q [derived]");
+    stdout_has(
+        &ok(&["show", d, "101"]),
+        "nests too deeply to load (measure 101 Q)",
+    );
+    stdout_has(&ok(&["eval", d, "101"]), "Q[] = #REF!");
+    // Redefining it fixes it.
+    ok(&["add-derived", d, "101", "Q", "Price * 2"]);
+    stdout_has(&ok(&["eval", d, "101"]), "Q[] = 4");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn every_command_reports_a_store_load_failure() {
     let (dir, db) = model("load-fail");

@@ -544,8 +544,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   tree may now be at most 40 levels deep (`MAX_FORMULA_DEPTH`) and 100,000
   nodes once `LET` and LAMBDAs are expanded (`MAX_FORMULA_NODES`); past
   either, the parser says "formula nests too deeply (N levels; the limit is
-  40)" or "formula is too large", at the expression's position. A `LET` chain
-  that doubles per binding fails at once instead of taking seconds.
+  40)" or "formula is too large", at the operator where a chain passes it or
+  the expression's start. Every entry point checks: the CLI, the GUI and TUI
+  editors, controlled English, `improv.define`, `LANGUAGE improv`, the DuckDB
+  model text, and named-LAMBDA expansion. A `LET` chain that doubles per
+  binding fails at once instead of taking seconds.
+- **Formulas saved before the limit keep working.** One stored as text (the
+  Postgres catalog, `LANGUAGE improv`) loads up to 256 levels, so a 45-term
+  sum defined in 0.10 still computes. Past that, the error names the measure,
+  and `drop_measure` or `define(…, replace => true)` of it still work. One
+  stored as JSON and too deep to read back loads as `#REF!` with a
+  description saying why, instead of making the model unopenable.
 - **The guide's examples, checked against the product** (the pre-1.0
   docs review, `docs/reviews/2026-10-23-docs-review.md`). Getting
   Started's quick start now shows the line `add-derived` prints, and runs

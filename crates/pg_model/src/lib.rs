@@ -231,7 +231,14 @@ pub struct LambdaRow {
 /// Parse a `Target = expr` definition, rejecting the `SQL(...)`/`CALL(...)`
 /// source forms (external code never runs inside Postgres in v1).
 fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
-    match parser::parse_definition(model, text).map_err(|e| Error::Definition(e.to_string()))? {
+    formula_of(parser::parse_definition(model, text))
+}
+
+/// [`parse_formula`]'s answer, from what the parser made of the text.
+fn formula_of(
+    parsed: std::result::Result<Definition, improv_core_model::ParseError>,
+) -> Result<(String, Formula)> {
+    match parsed.map_err(|e| Error::Definition(e.to_string()))? {
         Definition::Formula(ft) => Ok((ft.target.0, ft.formula)),
         Definition::Lambda(lt) => Err(Error::Definition(format!(
             "{} = LAMBDA(…) defines a named LAMBDA, not a measure",
@@ -248,6 +255,21 @@ fn parse_formula(model: &Model, text: &str) -> Result<(String, Formula)> {
 /// a text formula may reference any measure, whatever its id (a
 /// redefinition may read a measure defined after it), and call any lambda.
 pub fn build_model(catalog: &Catalog) -> Result<Model> {
+    build(catalog, None)
+}
+
+/// [`build_model`] for dropping or redefining the measure `name`: when its
+/// own stored formula is past the load bounds, it builds as `#REF!` instead
+/// of failing, so the measure can be fixed.
+pub fn build_model_to_fix(catalog: &Catalog, name: &str) -> Result<Model> {
+    build(catalog, Some(name))
+}
+
+/// A text formula stored before 0.11 loads up to
+/// [`improv_core_model::MAX_STORED_FORMULA_DEPTH`] (a new one is held to
+/// `MAX_FORMULA_DEPTH`); past that, `fixing` names the one measure that may
+/// build anyway.
+fn build(catalog: &Catalog, fixing: Option<&str>) -> Result<Model> {
     let mut model = Model::new();
     for c in &catalog.categories {
         model.add_category(CategoryId(c.id), c.name.clone());
@@ -301,24 +323,40 @@ pub fn build_model(catalog: &Catalog) -> Result<Model> {
         let Some(text) = r.formula.as_deref().filter(|_| r.is_derived()) else {
             continue;
         };
-        let formula = match serde_json::from_str::<Formula>(text) {
-            Ok(f) => f,
-            Err(_) => {
-                let (target, formula) = parse_formula(&model, text)?;
-                if target != r.name {
-                    return Err(Error::Catalog(format!(
-                        "measure {} has a formula for {target}",
-                        r.name
-                    )));
+        // `Err(why)`: past the load bounds.
+        let formula = match Formula::from_json(text) {
+            Ok(f) => f.ok_or_else(|| "its stored formula nests too deeply to load".to_string()),
+            Err(_) => match parser::parse_stored_definition(&model, text) {
+                Err(e) if e.is_limit() => Err(e.message),
+                parsed => {
+                    let (target, formula) = formula_of(parsed)?;
+                    if target != r.name {
+                        return Err(Error::Catalog(format!(
+                            "measure {} has a formula for {target}",
+                            r.name
+                        )));
+                    }
+                    Ok(formula)
                 }
-                formula
-            }
+            },
         };
+        let fix = fixing.is_some_and(|n| n.eq_ignore_ascii_case(&r.name));
         // Added above, as a placeholder.
-        model
-            .measures
-            .entry(MeasureId(r.id))
-            .and_modify(|m| m.kind = MeasureKind::Derived(formula));
+        if let Some(m) = model.measures.get_mut(&MeasureId(r.id)) {
+            match formula {
+                Ok(f) => m.kind = MeasureKind::Derived(f),
+                Err(why) if fix => m.mark_unreadable(&why),
+                Err(why) => {
+                    return Err(Error::Catalog(format!(
+                        "measure {}: {why}; drop it (improv.drop_measure) or redefine it \
+                         (improv.define(…, replace => true)) as intermediate measures, each \
+                         at most {} levels deep",
+                        r.name,
+                        improv_core_model::MAX_FORMULA_DEPTH
+                    )))
+                }
+            }
+        }
     }
     Ok(model)
 }
@@ -1368,6 +1406,55 @@ mod tests {
 
     /// P3-3: named LAMBDAs stored as rows, defined (with a category
     /// parameter), called by measures, and dropped once nothing calls them.
+    #[test]
+    fn text_formulas_from_before_the_limits_load_or_can_be_fixed() {
+        // improv.define accepted these before 0.11 (text has no JSON limit).
+        let with = |n: usize| {
+            let mut cat = catalog();
+            cat.measures.push(MeasureRow {
+                kind: "derived".into(),
+                formula: Some(format!("Q = {}", vec!["Price"; n].join(" + "))),
+                ..MeasureRow::input(3, "Q", vec![1, 2])
+            });
+            cat
+        };
+        // 45 terms: past the new limit (40), within the load bound (256).
+        let m = build_model(&with(45)).unwrap();
+        let MeasureKind::Derived(f) = &m.measures[&MeasureId(3)].kind else {
+            panic!()
+        };
+        assert_eq!(f.expr.depth_and_nodes().0, 45);
+        let e = define(&build_model(&catalog()).unwrap(), "Q = Price + Price", 3);
+        assert!(e.is_ok());
+        let long = format!("Q = {}", vec!["Price"; 45].join(" + "));
+        let e = define(&build_model(&catalog()).unwrap(), &long, 3).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("formula nests too deeply (41 levels; the limit is 40)"),
+            "{e}"
+        );
+        // Past the load bound: the error names the measure and the fix …
+        let e = build_model(&with(300)).unwrap_err().to_string();
+        assert!(
+            e.contains("measure Q: formula nests too deeply (257 levels; the limit is 256)")
+                && e.contains("drop_measure"),
+            "{e}"
+        );
+        // … and dropping or redefining Q builds it as #REF!.
+        let m = build_model_to_fix(&with(300), "q").unwrap();
+        let q = &m.measures[&MeasureId(3)];
+        assert!(q.description.as_deref().unwrap().contains("(measure 3 Q)"));
+        let MeasureKind::Derived(f) = &q.kind else {
+            panic!()
+        };
+        assert_eq!(f.referenced_measures(), vec![]);
+        assert!(build_model_to_fix(&with(300), "Price").is_err());
+        // Other errors are still errors.
+        let mut bad = with(2);
+        bad.measures[2].formula = Some("Q = Price +".into());
+        assert!(build_model_to_fix(&bad, "Q").is_err());
+    }
+
     #[test]
     fn named_lambdas_in_the_catalog() {
         let mut cat = catalog();

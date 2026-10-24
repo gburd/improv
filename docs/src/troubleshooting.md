@@ -42,8 +42,17 @@ The grammar itself is in [The Formula Language](./formulas.md).
 | `<NAME> does not aggregate OVER a category`, `<NAME> cannot take a window` | `OVER` given to a function that is not a reduction, or a window to one that cannot take one. | |
 | `expected FIRST, LAST or THIS in a window`, `expected '..' in a window: OVER T[FIRST..THIS]` | A malformed running window. | `OVER Time[FIRST..THIS]`. |
 | `FIXPOINT needs LAMBDA(r, body)`, `LAMBDA needs at least one parameter`, `<NAME> needs LAMBDA(row, body)` | A higher-order function without its LAMBDA. | |
-| `expression nested too deeply` | More than the parser's nesting limit. | Split it into intermediate measures, or `LET`. |
+| `expression nested too deeply` | More than the parser's nesting limit (64 nested parentheses, calls or unary operators). | Split it into intermediate measures, or `LET`. |
+| `formula nests too deeply (N levels; the limit is 40)` | The formula's tree is deeper than 40 levels: a chain of more than 40 `+` terms, say, or deep nesting. See [Limits](./formulas.md#limits). | Split it into intermediate measures, or use `SUM(...)` instead of a long `+` chain. |
+| `formula is too large (more than 100000 terms once LET and LAMBDA are expanded)` | `LET` and `LAMBDA` copy a value at each use, so bindings that each use the previous one twice double the formula. | Make the repeated part its own measure. |
 | `empty formula`, `empty expression` | Nothing to parse. | |
+
+A model saved before 0.11 can hold a formula past these limits:
+
+| Symptom | Means | Fix |
+| --- | --- | --- |
+| A measure shows `#REF!` everywhere; its description starts `[unreadable formula]` | Its stored formula is too deep to read back (embedded store). The rest of the model loads. | Redefine it: `improv add-derived` or `improv define` with the same id. |
+| `measure X: formula nests too deeply (N levels; the limit is 256); drop it …` | A Postgres model's text formula is deeper than the load bound. Nothing that builds the model works until it is fixed. | `SELECT improv.define('model', 'X = …', replace => true)` with a shallower formula, or `SELECT improv.drop_measure('model', 'X')`. |
 
 ### Compile errors
 

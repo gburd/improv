@@ -90,6 +90,43 @@ Type rules, checked when the formula compiles:
 | unary `-` | number | number |
 | `NOT` | boolean | boolean |
 
+### Limits
+
+A formula's tree may be at most **40 levels deep**, where a measure, number or
+other leaf is one level and every operator or call adds one: `Price + Price`
+is 2, and a chain of n `+` terms is n. A `SWITCH`, `IFS` or `CHOOSE` counts one
+level per case, since it compiles to nested `IF`s. Past 40 the formula is
+refused where it is written (the CLI, the GUI and TUI editors, `improv.define`,
+`LANGUAGE improv`, the DuckDB model text, controlled English):
+
+```text
+parse error at 322: formula nests too deeply (41 levels; the limit is 40)
+```
+
+The position is the operator where a chain passes the limit, or the start of
+the expression. Split such a formula into intermediate measures, or sum with
+`SUM(...)` rather than a long `+` chain. The limit holds after `LET`, `LAMBDA`
+and named LAMBDAs are expanded. A formula is also limited to 100,000 nodes once
+expanded, so a `LET` whose bindings each use the previous one twice fails at
+once rather than doubling its way to millions of terms.
+
+Why 40: every store keeps a formula as JSON, and JSON readers stop at 128
+levels of nesting; a formula 40 deep is at most 126 of them, so every new
+formula saves and opens again in any store. The engine evaluates it with room
+to spare, even in a debug build.
+
+Formulas saved **before 0.11**, which had no such limit, keep working:
+
+- **Stored as text** (Postgres `improv.measure`, `LANGUAGE improv` bodies, the
+  Postgres model store): they load up to **256 levels**. A 45-term sum defined
+  with `improv.define` in 0.10 still computes. Past 256, the model refuses to
+  load, and the error names the measure; `improv.drop_measure` or
+  `improv.define(…, replace => true)` of that measure still works, to fix it.
+- **Stored as JSON** (the embedded store, `improv` files): one too deep to read
+  back (about 63 `+` terms or more) no longer makes the whole model unopenable.
+  The measure loads as `#REF!` in every cell, and its description says why;
+  redefine it with `improv add-derived` or `improv define` to fix it.
+
 ### Errors
 
 An error is a value, shown as the spreadsheets show it:

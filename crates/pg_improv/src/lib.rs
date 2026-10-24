@@ -663,7 +663,14 @@ fn bind_measure(
 fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<i64> {
     let (mid, model_name) = lock_model(model)?;
     let mut cat = read_catalog(mid)?;
-    let built = pm::build_model(&cat)?;
+    // A replacement may fix a measure whose old formula is past the load
+    // bounds (see pm::build_model_to_fix); nothing else may skip them.
+    let built = if replace {
+        let name = definition.split('=').next().unwrap_or("").trim();
+        pm::build_model_to_fix(&cat, name)?
+    } else {
+        pm::build_model(&cat)?
+    };
     match pm::define_lambda(&built, definition, replace)? {
         None => {}
         Some(pm::Defined::Lambda { row, callers }) => {
@@ -787,7 +794,7 @@ fn recompute_from(mid: i64, model: &str, root: MeasureId) -> Res<i64> {
 #[pg_extern(security_invoker)]
 fn drop_measure(model: &str, measure: &str) -> Res<()> {
     let (mid, model_name) = lock_model(model)?;
-    let m = pm::build_model(&read_catalog(mid)?)?;
+    let m = pm::build_model_to_fix(&read_catalog(mid)?, measure)?;
     if let Some(id) = pm::drop_lambda(&m, measure)? {
         Spi::run_with_args(
             "DELETE FROM improv.lambda WHERE model_id = $1 AND id = $2",
@@ -1435,6 +1442,67 @@ mod tests {
         // The worker sees nothing of this uncommitted transaction;
         // tests/logical.sh checks it rewrites nothing after the commit.
         redefine_in("logical");
+    }
+
+    /// A new formula is limited to 40 levels; one stored as text before
+    /// 0.11 loads up to 256 (`MAX_STORED_FORMULA_DEPTH`), so a 45-term sum
+    /// keeps working. Past 256, every call that builds the model names the
+    /// measure, and dropping or redefining it (`replace => true`) fixes it.
+    /// The old formulas are written straight into the catalog, as a
+    /// superuser. pgrx tests are a debug build, whose engine overflows near
+    /// 56 levels: 45 is safe, and the 300-term one is never evaluated.
+    #[pg_test]
+    fn old_deep_formulas_keep_working_or_can_be_fixed() {
+        setup_plan();
+        let sum = |n: usize| vec!["Price"; n].join(" + ");
+        let e = crate::define("plan", &format!("Old = {}", sum(41)), false)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("formula nests too deeply (41 levels; the limit is 40)"),
+            "{e}"
+        );
+        let set = |name: &str, formula: String| {
+            Spi::run_with_args(
+                "UPDATE improv.measure SET formula = $2 WHERE name = $1",
+                &[name.into(), formula.into()],
+            )
+            .unwrap()
+        };
+        for m in ["Old = Price", "Deep = Price"] {
+            crate::define("plan", m, false).unwrap();
+        }
+        set("Old", format!("Old = {}", sum(45)));
+        recalc();
+        let old = Spi::get_one::<f64>(
+            "SELECT value FROM improv_plan.old WHERE \"time\" = 'Q1' AND product = 'Widget'",
+        );
+        assert_eq!(old, Ok(Some(450.0)), "45 × Price, as in 0.10");
+
+        set("Deep", format!("Deep = {}", sum(300)));
+        // The Rust calls, not SPI: an ERROR raised through SPI aborts the test.
+        let e = crate::recalc("plan").unwrap_err().to_string();
+        assert!(
+            e.contains("measure Deep: formula nests too deeply") && e.contains("drop_measure"),
+            "{e}"
+        );
+        let e = crate::define("plan", "Other = Price", false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("measure Deep"), "{e}");
+        // Redefining it fixes it.
+        crate::define("plan", "Deep = Price * 2", true).unwrap();
+        recalc();
+        let deep = Spi::get_one::<f64>(
+            "SELECT value FROM improv_plan.deep WHERE \"time\" = 'Q1' AND product = 'Widget'",
+        );
+        assert_eq!(deep, Ok(Some(20.0)));
+        // So does dropping it.
+        set("Deep", format!("Deep = {}", sum(300)));
+        crate::drop_measure("plan", "Deep").unwrap();
+        recalc();
+        assert_eq!(count("improv.measure WHERE name = 'Deep'"), 0);
+        assert_eq!(count("pg_tables WHERE tablename = 'deep'"), 0);
     }
 
     /// P1-1 refusals name the dependent; drop_measure removes a measure's
