@@ -275,7 +275,16 @@ impl<'open> NxWindow<'open> {
                     text,
                 );
                 // The drag is applied before layout, above; this registers it.
-                let _ = ui.interact(l.title, id.with("title"), Sense::drag());
+                ui.interact(l.title, id.with("title"), Sense::drag())
+                    .widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &title)
+                    });
+                // H2: egui's whole-window widget (it brings a clicked window
+                // to the front) is the window a screen reader announces.
+                ctx.accesskit_node_builder(id.with("move"), |b| {
+                    b.set_role(egui::accesskit::Role::Window);
+                    b.set_name(title.as_str());
+                });
 
                 // Registered after the title so it sits on top for hit-testing.
                 if let Some(close) = l.close {
@@ -284,9 +293,15 @@ impl<'open> NxWindow<'open> {
                     let stroke = Stroke::new(1.0_f32, BLACK);
                     p.line_segment([x.left_top(), x.right_bottom()], stroke);
                     p.line_segment([x.right_top(), x.left_bottom()], stroke);
-                    close_clicked = ui
-                        .interact(close, id.with("close"), Sense::click())
-                        .clicked();
+                    let r = ui.interact(close, id.with("close"), Sense::click());
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            format!("Close {title}"),
+                        )
+                    });
+                    close_clicked = r.clicked();
                 }
 
                 if let Some(bar) = l.resize {
@@ -304,7 +319,11 @@ impl<'open> NxWindow<'open> {
                             WHITE,
                         );
                     }
-                    let _ = ui.interact(bar, id.with("nx_resize"), Sense::drag());
+                    let pointer_only = Sense {
+                        focusable: false,
+                        ..Sense::drag()
+                    };
+                    let _ = ui.interact(bar, id.with("nx_resize"), pointer_only);
                 }
 
                 let mut body = ui.new_child(UiBuilder::new().max_rect(l.body));

@@ -548,6 +548,7 @@ fn rename_line(ui: &mut egui::Ui, buf: &mut String, focus: &mut bool) -> Option<
             )
         })
         .inner;
+    a11y_name(&resp, "Rename");
     if *focus {
         if resp.has_focus() {
             *focus = false;
@@ -568,6 +569,14 @@ fn rename_line(ui: &mut egui::Ui, buf: &mut String, focus: &mut bool) -> Option<
     })
 }
 
+/// Give `resp`'s widget the accessible name `name` (H2). egui 0.29 names a
+/// text field after its text only, so an empty field (or one whose hint is
+/// the only clue) is announced as nothing.
+fn a11y_name(resp: &egui::Response, name: &str) {
+    resp.ctx
+        .accesskit_node_builder(resp.id, |b| b.set_name(name));
+}
+
 /// The smallest unused id (>= 1) after `ids`.
 fn next_id(ids: impl Iterator<Item = u32>) -> u32 {
     ids.max().map_or(1, |m| m + 1)
@@ -584,6 +593,7 @@ fn add_line(ui: &mut egui::Ui, id: egui::Id, hint: &str, focus: bool) -> Option<
             .hint_text(hint)
             .desired_width((ui.available_width() - 8.0).clamp(80.0, 220.0)),
     );
+    a11y_name(&resp, hint);
     if focus && !resp.has_focus() {
         resp.request_focus();
     }
@@ -2934,13 +2944,18 @@ fn formula_text_edit(
         job.wrap.max_width = wrap_width;
         ui.fonts(|f| f.layout_job(job))
     };
-    egui::TextEdit::singleline(text)
+    let out = egui::TextEdit::singleline(text)
         .id(id)
         .lock_focus(keep_tab)
         .hint_text(hint)
         .desired_width(f32::INFINITY)
         .layouter(&mut layouter)
-        .show(ui)
+        .show(ui);
+    a11y_name(
+        &out.response,
+        if hint.is_empty() { "Formula" } else { hint },
+    );
+    out
 }
 
 /// A formula error under its row, indented past the checkbox and number:
@@ -3749,6 +3764,7 @@ impl ImprovApp {
                         .id(egui::Id::new("file_path"))
                         .desired_width(f32::INFINITY),
                 );
+                a11y_name(&resp, "Model file or postgres URL");
                 go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.horizontal(|ui| {
                     go |= ui.button(if new { "Create" } else { "Open" }).clicked();
@@ -4447,6 +4463,14 @@ impl ImprovApp {
                     egui::Sense::click(),
                 );
                 let v = &self.model.views[&id];
+                resp.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        true,
+                        self.browser_sel == Some(id),
+                        format!("{} - Worksheet", v.name.0),
+                    )
+                });
                 let p = ui.painter();
                 if self.browser_sel == Some(id) {
                     p.rect_filled(rect, 0.0, crate::theme::LIGHT_GRAY);
@@ -4492,7 +4516,8 @@ impl ImprovApp {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             // Leave the button room in the narrow browser window.
-            ui.add(egui::TextEdit::singleline(&mut self.view_name).desired_width(120.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut self.view_name).desired_width(120.0));
+            a11y_name(&r, "View name");
             if ui.button("Save view").clicked() {
                 let name = self.view_name.clone();
                 if self.save_view(&name).is_some() {
@@ -4594,12 +4619,14 @@ impl ImprovApp {
                     let search = ui
                         .horizontal(|ui| {
                             ui.label("Search:");
-                            ui.add(
+                            let r = ui.add(
                                 egui::TextEdit::singleline(&mut self.fn_help.query)
                                     .id(search_id)
                                     .hint_text("name or description")
                                     .desired_width(f32::INFINITY),
-                            )
+                            );
+                            a11y_name(&r, "Search functions");
+                            r
                         })
                         .inner;
                     if std::mem::take(&mut self.fn_help.focus_search) {
@@ -4667,6 +4694,14 @@ impl ImprovApp {
                                             egui::vec2(ui.available_width(), row_h),
                                             egui::Sense::click(),
                                         );
+                                        resp.widget_info(|| {
+                                            egui::WidgetInfo::selected(
+                                                egui::WidgetType::SelectableLabel,
+                                                true,
+                                                selected == Some(d.id),
+                                                d.hint(),
+                                            )
+                                        });
                                         let p = ui.painter();
                                         if selected == Some(d.id) {
                                             p.rect_filled(rect, 0.0, LIGHT_GRAY);
@@ -4804,13 +4839,18 @@ impl ImprovApp {
                     let selected = self.selected() == Some(row.measure);
                     ui.horizontal(|ui| {
                         let mut on = row.enabled;
-                        if ui
-                            .add(egui::Checkbox::without_text(&mut on))
-                            .on_hover_text(
-                                "Enabled. Uncheck to stop this formula \
+                        let r = ui.add(egui::Checkbox::without_text(&mut on));
+                        let name = self
+                            .model
+                            .measures
+                            .get(&row.measure)
+                            .map_or("", |m| &m.name.0);
+                        a11y_name(&r, &format!("Enable formula {name}"));
+                        if r.on_hover_text(
+                            "Enabled. Uncheck to stop this formula \
                                          computing (dependents recompute without it).",
-                            )
-                            .changed()
+                        )
+                        .changed()
                         {
                             toggle = Some((row.measure, on));
                         }
@@ -5109,7 +5149,10 @@ impl ImprovApp {
         ui.heading("Import");
         ui.horizontal(|ui| {
             ui.label("file");
-            ui.text_edit_singleline(&mut self.import_form.path);
+            a11y_name(
+                &ui.text_edit_singleline(&mut self.import_form.path),
+                "Import file",
+            );
         });
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.import_form.tsv, "TSV");
@@ -5117,24 +5160,38 @@ impl ImprovApp {
         });
         ui.horizontal(|ui| {
             ui.label("measure id");
-            ui.add(
+            let r = ui.add(
                 egui::TextEdit::singleline(&mut self.import_form.measure_id).desired_width(60.0),
             );
+            a11y_name(&r, "Measure id");
             ui.label("name");
-            ui.text_edit_singleline(&mut self.import_form.measure_name);
+            a11y_name(
+                &ui.text_edit_singleline(&mut self.import_form.measure_name),
+                "Measure name",
+            );
         });
         ui.horizontal(|ui| {
             ui.label("value column");
-            ui.text_edit_singleline(&mut self.import_form.value_column);
+            a11y_name(
+                &ui.text_edit_singleline(&mut self.import_form.value_column),
+                "Value column",
+            );
         });
         ui.separator();
         ui.label("dimensions (column, category id, category name):");
         let mut remove: Option<usize> = None;
         for (i, row) in self.import_form.dimensions.iter_mut().enumerate() {
             ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut row.column);
-                ui.add(egui::TextEdit::singleline(&mut row.category_id).desired_width(40.0));
-                ui.text_edit_singleline(&mut row.category_name);
+                let n = i + 1;
+                a11y_name(
+                    &ui.text_edit_singleline(&mut row.column),
+                    &format!("Dimension {n} column"),
+                );
+                let r =
+                    ui.add(egui::TextEdit::singleline(&mut row.category_id).desired_width(40.0));
+                a11y_name(&r, &format!("Dimension {n} category id"));
+                let r = ui.text_edit_singleline(&mut row.category_name);
+                a11y_name(&r, &format!("Dimension {n} category name"));
                 if ui.small_button("-").clicked() {
                     remove = Some(i);
                 }
@@ -5177,7 +5234,10 @@ impl ImprovApp {
             });
         ui.horizontal(|ui| {
             ui.label("file");
-            ui.text_edit_singleline(&mut self.export_form.path);
+            a11y_name(
+                &ui.text_edit_singleline(&mut self.export_form.path),
+                "Export file",
+            );
         });
         ui.checkbox(&mut self.export_form.tsv, "TSV");
         ui.separator();
@@ -5759,6 +5819,13 @@ impl ImprovApp {
                     });
             })
             .response;
+        resp.widget_info(|| {
+            egui::WidgetInfo::labeled(
+                egui::WidgetType::Button,
+                true,
+                format!("{name} tile, on {from:?}: drag or open its menu"),
+            )
+        });
         resp.context_menu(|ui| {
             for to in [Axis::Rows, Axis::Columns, Axis::Pages] {
                 if to != from && ui.button(format!("Move to {to:?}")).clicked() {
@@ -5800,7 +5867,7 @@ impl ImprovApp {
     /// matrix being rendered, and a matrix that does not have the keyboard
     /// returns immediately — otherwise one arrow key would move every matrix's
     /// cursor at once.
-    fn handle_grid_keys(&mut self, ui: &egui::Ui, mi: usize) {
+    fn handle_grid_keys(&mut self, ui: &mut egui::Ui, mi: usize) {
         if mi != self.focus_index() {
             return;
         }
@@ -5816,6 +5883,13 @@ impl ImprovApp {
         use egui::Key;
         let k = |key: Key| ui.input(|i| i.key_pressed(key));
         let modifiers = ui.input(|i| i.modifiers);
+        // The Enter (or F2) that opens the cell editor is used up here: the
+        // editor is drawn later this frame and would take it as its commit.
+        let open = !modifiers.command
+            && ui.input_mut(|i| {
+                i.consume_key(egui::Modifiers::NONE, Key::Enter)
+                    | i.consume_key(egui::Modifiers::NONE, Key::F2)
+            });
 
         // Undo/redo (Ctrl/Cmd chords) are handled app-wide in
         // `handle_command_keys`, not here — the grid is not rendered at all when
@@ -5838,7 +5912,7 @@ impl ImprovApp {
         if k(Key::ArrowRight) || k(Key::L) {
             self.with_focused(|m, model| m.step(model, 0, 1, modifiers.shift));
         }
-        if k(Key::Enter) || k(Key::F2) {
+        if open {
             self.begin_edit_cursor();
         }
         // Page the first page dimension, if any.
@@ -6155,9 +6229,28 @@ impl ImprovApp {
                                     ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
                                     cell_rects.push(((ri, ci), r));
                                     let cell_id = egui::Id::new(("cell", uid, ri, ci));
+                                    // H2: a screen reader hears the cell's place and value.
+                                    let cell_label = {
+                                        let place: Vec<&str> = row_line
+                                            .iter()
+                                            .chain(col_line.iter())
+                                            .map(|(_, n)| n.as_str())
+                                            .collect();
+                                        let v = self
+                                            .cell_value(measure, &key)
+                                            .map_or_else(|| "empty".to_owned(), |v| v.to_string());
+                                        format!("{}: {v}", place.join(", "))
+                                    };
                                     let mut sense_cell = |ui: &mut egui::Ui| {
                                         let resp =
                                             ui.interact(r, cell_id, egui::Sense::click_and_drag());
+                                        resp.widget_info(|| {
+                                            egui::WidgetInfo::labeled(
+                                                egui::WidgetType::Other,
+                                                true,
+                                                &cell_label,
+                                            )
+                                        });
                                         if resp.drag_started() {
                                             drag_from = Some((ri, ci));
                                         }
@@ -6209,6 +6302,7 @@ impl ImprovApp {
                                                             })
                                                             .desired_width(f32::INFINITY),
                                                     );
+                                                    a11y_name(&resp, &cell_label);
                                                     resp.request_focus();
                                                     let enter = ui
                                                         .input(|i| i.key_pressed(egui::Key::Enter));
@@ -9443,6 +9537,7 @@ mod tests {
         ctx.run(raw, |ctx| {
             app.sync_axis_state();
             app.sync_native_title(ctx);
+            app.handle_command_keys(ctx);
             app.status_bar(ctx);
             app.chart_panel(ctx);
             app.csv_wizard_panel(ctx);
@@ -14719,6 +14814,215 @@ mod tests {
             app.delete_question(Thing::Item(ItemId(99))).unwrap_err(),
             "it no longer exists"
         );
+    }
+
+    // -- H2: accessibility (what can be checked without a screen reader)
+
+    /// The AccessKit nodes of one frame of `app` with every window open,
+    /// as egui hands them to the platform's screen reader.
+    fn accesskit_nodes(
+        app: &mut ImprovApp,
+        desk: &mut Desk,
+    ) -> Vec<(egui::accesskit::NodeId, egui::accesskit::Node)> {
+        desk.ctx.enable_accesskit();
+        desk.settle(app);
+        desk.frame(app, Vec::new())
+            .platform_output
+            .accesskit_update
+            .expect("AccessKit is on")
+            .nodes
+    }
+
+    /// Every widget a keyboard or a screen reader can reach (an AccessKit
+    /// node that takes focus) is labeled: a name, or a text field's value
+    /// or placeholder. Checked with the browser, the Info panel, the
+    /// function help, the CSV wizard, a submenu and a tile menu open.
+    #[test]
+    fn every_interactive_widget_has_an_accesskit_label() {
+        use egui::accesskit::{Action, Role};
+        let (mut app, mut desk) = grid_desk();
+        app.show_inspector = true;
+        app.fn_help.toggle();
+        app.show_csv_wizard = true;
+        app.show_chart = true;
+        app.run_command(&desk.ctx, Command::AddCategory);
+        let mut checked = 0;
+        let mut unlabeled = Vec::new();
+        // egui's own drag handles (scroll bars, window and panel resize
+        // grips) are focusable nodes too, but Tab never stops on them; what
+        // a keyboard user reaches is what Tab visits, so that is the set.
+        let tab_stops = |app: &mut ImprovApp, desk: &mut Desk| {
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..300 {
+                let tab = egui::Event::Key {
+                    key: egui::Key::Tab,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                let _ = desk.frame(app, vec![tab]);
+                if let Some(f) = desk.ctx.memory(|m| m.focused()) {
+                    if !seen.insert(egui::accesskit::NodeId::from(f.value())) {
+                        break;
+                    }
+                }
+            }
+            seen
+        };
+        let mut check =
+            |nodes: Vec<(egui::accesskit::NodeId, egui::accesskit::Node)>,
+             stops: &std::collections::HashSet<egui::accesskit::NodeId>| {
+                for (id, n) in nodes {
+                    // egui's own drag handles (a scroll area's content and
+                    // bars, table column and panel resize grips) are
+                    // drag-only and unnamed; the rest must be named.
+                    let egui_handle =
+                        n.role() == Role::Unknown && !n.supports_action(Action::Default);
+                    if !n.supports_action(Action::Focus) || !stops.contains(&id) || egui_handle {
+                        continue;
+                    }
+                    checked += 1;
+                    let named = n.name().is_some_and(|s| !s.trim().is_empty())
+                        || n.value().is_some_and(|s| !s.trim().is_empty())
+                        || n.placeholder().is_some_and(|s| !s.trim().is_empty());
+                    if !named {
+                        let b = n.bounds().map(|r| {
+                            (
+                                r.x0 as i32,
+                                r.y0 as i32,
+                                (r.x1 - r.x0) as i32,
+                                (r.y1 - r.y0) as i32,
+                            )
+                        });
+                        unlabeled.push(format!("{:?} {b:?}", n.role()));
+                    }
+                }
+            };
+        let nodes = accesskit_nodes(&mut app, &mut desk);
+        let stops = tab_stops(&mut app, &mut desk);
+        check(nodes, &stops);
+        // A submenu open.
+        app.menu = menu::MenuState::default();
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let ws = text_at(&shapes, "Worksheet").expect("the menu").center();
+        desk.click(&mut app, ws);
+        let nodes = accesskit_nodes(&mut app, &mut desk);
+        let stops = tab_stops(&mut app, &mut desk);
+        check(nodes, &stops);
+        assert!(checked > 40, "only {checked} Tab stops: is AccessKit on?");
+        println!("H2: {checked} Tab stops checked, all named");
+        assert!(unlabeled.is_empty(), "unlabeled: {unlabeled:#?}");
+    }
+
+    /// Keyboard only: every menu command is reachable by its key equivalent
+    /// or by Tab to the menu row and Enter, and the grid moves, edits,
+    /// commits, pages and pivots from the keyboard. No pointer events.
+    #[test]
+    fn the_menus_and_the_grid_work_from_the_keyboard_alone() {
+        let (mut app, mut desk) = grid_desk();
+        let key = |desk: &mut Desk, app: &mut ImprovApp, k: egui::Key, m: egui::Modifiers| {
+            let ev = egui::Event::Key {
+                key: k,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: m,
+            };
+            let _ = desk.frame(app, vec![ev]);
+        };
+        let none = egui::Modifiers::NONE;
+        // The grid: arrows move, Enter edits, typing and Enter commit.
+        assert_eq!(app.cursor_key(), Some(q_and_rev_keys().0));
+        key(&mut desk, &mut app, egui::Key::ArrowRight, none);
+        key(&mut desk, &mut app, egui::Key::ArrowLeft, none);
+        key(&mut desk, &mut app, egui::Key::Enter, none);
+        assert!(
+            app.matrices[0].editing.is_some(),
+            "Enter edits: {}",
+            app.status
+        );
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("5".into())]);
+        key(&mut desk, &mut app, egui::Key::Enter, none);
+        desk.settle(&mut app);
+        assert!(app.matrices[0].editing.is_none(), "{}", app.status);
+        assert!(app.can_undo(), "the edit was committed");
+        // Key equivalents: undo, redo.
+        key(&mut desk, &mut app, egui::Key::Z, egui::Modifiers::COMMAND);
+        assert!(app.can_redo(), "Ctrl+Z undoes");
+        key(&mut desk, &mut app, egui::Key::Y, egui::Modifiers::COMMAND);
+        assert!(!app.can_redo(), "Ctrl+Y redoes");
+        // Every menu row takes the keyboard: Tab reaches it, Enter runs it.
+        let rows = menu::focusable_rows();
+        assert!(rows > 10, "{rows}");
+        let mut reached = std::collections::HashSet::new();
+        desk.ctx.memory_mut(|m| m.surrender_focus(egui::Id::NULL));
+        for _ in 0..400 {
+            key(&mut desk, &mut app, egui::Key::Tab, none);
+            if let Some(f) = desk.ctx.memory(|m| m.focused()) {
+                reached.insert(f);
+            }
+        }
+        let menu_rows = (0..rows)
+            .filter(|i| reached.contains(&menu::menu_id().with(*i)))
+            .count();
+        assert_eq!(menu_rows, rows, "Tab reaches every top-level menu row");
+        // Focus Worksheet with Tab and open it with Enter, then run Add
+        // Matrix the same way.
+        let ws = menu::top_index("Worksheet");
+        desk.ctx
+            .memory_mut(|m| m.request_focus(menu::menu_id().with(ws)));
+        let _ = desk.frame(&mut app, Vec::new());
+        key(&mut desk, &mut app, egui::Key::Enter, none);
+        assert_eq!(menu::open_submenu(&app.menu), Some(ws), "Enter opens it");
+        let before = app.matrix_count();
+        let add = menu::sub_row("Worksheet", "Add Matrix");
+        desk.ctx
+            .memory_mut(|m| m.request_focus(menu::sub_id_pub(ws).with(add)));
+        let _ = desk.frame(&mut app, Vec::new());
+        key(&mut desk, &mut app, egui::Key::Enter, none);
+        assert_eq!(app.matrix_count(), before + 1, "Enter on Add Matrix");
+    }
+
+    /// The theme's text and fills meet WCAG 2.1 contrast: 4.5:1 for body
+    /// text, 3:1 for disabled text (WCAG exempts it, but it should read) and
+    /// for the 1 px rules and tiles that carry meaning.
+    #[test]
+    fn theme_colors_meet_wcag_contrast() {
+        use crate::theme::{BLACK, DARK_GRAY, LIGHT_GRAY, TROUGH, WHITE};
+        fn lum(c: egui::Color32) -> f64 {
+            let ch = |v: u8| {
+                let s = f64::from(v) / 255.0;
+                if s <= 0.04045 {
+                    s / 12.92
+                } else {
+                    ((s + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
+        }
+        let ratio = |a, b| {
+            let (x, y) = (lum(a), lum(b));
+            (x.max(y) + 0.05) / (x.min(y) + 0.05)
+        };
+        let pairs = [
+            ("text on cells", BLACK, WHITE, 4.5),
+            ("text on panels and menus", BLACK, LIGHT_GRAY, 4.5),
+            ("tile text", WHITE, DARK_GRAY, 4.5),
+            ("title text", WHITE, BLACK, 4.5),
+            ("disabled text on menus", DARK_GRAY, LIGHT_GRAY, 3.0),
+            ("selection against cells", LIGHT_GRAY, WHITE, 1.0),
+            ("rules on cells", BLACK, WHITE, 3.0),
+            ("knob against trough", LIGHT_GRAY, TROUGH, 1.0),
+        ];
+        let mut report = Vec::new();
+        for (what, fg, bg, need) in pairs {
+            let r = ratio(fg, bg);
+            report.push(format!("{what}: {r:.2}:1 (need {need}:1)"));
+            assert!(r >= need, "{what}: {r:.2}:1 < {need}:1");
+        }
+        println!("{}", report.join("\n"));
     }
 
     // -- H9: offer Reload when another writer saved

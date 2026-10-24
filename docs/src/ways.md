@@ -276,6 +276,7 @@ bold gaps are tracked as tasks for 1.0.
 | what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |
 | **Live sync** (see others' writes) | each command reloads | says so on the next key; `R` reloads | offers Reload within 2 s | each request checks the high-water and reloads | logical, trigger, commit sync | — |
 | Controlled English | — | accepts it as a formula | shows and accepts it | `/nl/parse`, `/nl/describe` | — | — |
+| Keyboard only, screen readers | yes | yes; works under `NO_COLOR` | yes; every control named for AccessKit | — | — | — |
 
 Every front end that saves refuses to overwrite another writer: the save
 fails with a conflict, and you reload and redo the change.

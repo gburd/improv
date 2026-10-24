@@ -75,6 +75,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   right-click menu ends in a New item line. Each add autosaves and is one
   undo step; a name already used by a category, measure or LAMBDA is
   refused. A new input measure is a number over every category.
+- **Accessibility checks (H2).** Tests dump the GUI's AccessKit tree and
+  require a name on every Tab stop (573, with every window open); drive
+  the grid and the menus with key events only; compute the theme's WCAG
+  contrast ratios; and check that the TUI shows nothing by color alone.
+  Fixed on the way: menu rows, window title bars and close boxes, grid
+  cells, tiles, view and function rows and 15 text fields had no
+  accessible name (a cell now reads "2025, WidgetA: 100"); scroller
+  arrows and resize bars were empty Tab stops; Enter on a grid cell
+  opened its editor and committed it at once, so a cell could not be
+  edited from the keyboard; and the TUI's cursor and range were shown by
+  color only (now reversed and underlined too), which `NO_COLOR` hid.
 - **The TUI keeps your edits when a save fails (H6).** `q` saves first;
   when that fails, from a full disk or because another program saved
   the model, the TUI stays open with the reason, and a second `q` quits

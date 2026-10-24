@@ -317,6 +317,41 @@ fn sub_id(i: usize) -> Id {
     menu_id().with(("sub", i))
 }
 
+/// The area id of top-level item `i`'s submenu (a row is `.with(n)`).
+#[cfg(test)]
+pub fn sub_id_pub(i: usize) -> Id {
+    sub_id(i)
+}
+
+/// How many rows the top level has (each takes the keyboard).
+#[cfg(test)]
+pub fn focusable_rows() -> usize {
+    MENU.len()
+}
+
+/// The top-level index of `label`.
+#[cfg(test)]
+pub fn top_index(label: &str) -> usize {
+    MENU.iter()
+        .position(|m| m.0 == label)
+        .expect("a top-level item")
+}
+
+/// The row of `item` in top-level `menu`'s submenu.
+#[cfg(test)]
+pub fn sub_row(menu: &str, item: &str) -> usize {
+    match MENU[top_index(menu)].2 {
+        Top::Sub(l) => l.iter().position(|r| r.0 == item).expect("a submenu row"),
+        _ => panic!("{menu} has no submenu"),
+    }
+}
+
+/// The open submenu's top-level index.
+#[cfg(test)]
+pub fn open_submenu(s: &MenuState) -> Option<usize> {
+    s.open
+}
+
 /// One row of a menu panel, as drawn.
 struct Row<'a> {
     label: &'a str,
@@ -382,7 +417,8 @@ fn panel(
                 bold(),
                 WHITE,
             );
-            let _ = ui.interact(title_rect, id.with("title"), title_sense);
+            ui.interact(title_rect, id.with("title"), title_sense)
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title));
 
             let responses = rows
                 .iter()
@@ -394,6 +430,18 @@ fn panel(
                         vec2(inner.width(), ITEM_HEIGHT),
                     );
                     let resp = ui.interact(r, id.with(i), Sense::click());
+                    // H2: painted rows tell AccessKit what they are.
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            if row.sub {
+                                egui::WidgetType::ComboBox
+                            } else {
+                                egui::WidgetType::Button
+                            },
+                            row.enabled,
+                            row.label,
+                        )
+                    });
                     let lit = row.open || (row.enabled && resp.is_pointer_button_down_on());
                     paint_row(p, r, row, if lit { WHITE } else { LIGHT_GRAY });
                     resp

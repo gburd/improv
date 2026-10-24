@@ -142,6 +142,16 @@ fn knob_span(
 /// Drag `knob` (it senses clicks too, so the egui bar under it never jumps):
 /// the scroll offset change for this frame's drag, mapping the knob's free
 /// travel (`track_len` minus the knob) onto the `max` scrollable points.
+/// `sense` for a scroller part: pointer only, never a Tab stop. The keyboard
+/// scrolls the area itself (arrows, PageUp/PageDown), so the arrows and knob
+/// would only add focus stops a screen reader announces with no meaning (H2).
+fn pointer_only(sense: egui::Sense) -> egui::Sense {
+    egui::Sense {
+        focusable: false,
+        ..sense
+    }
+}
+
 fn knob_drag(
     ui: &egui::Ui,
     id: egui::Id,
@@ -150,7 +160,7 @@ fn knob_drag(
     track_len: f32,
     max: f32,
 ) -> f32 {
-    let r = ui.interact(knob, id, egui::Sense::click_and_drag());
+    let r = ui.interact(knob, id, pointer_only(egui::Sense::click_and_drag()));
     if !r.dragged() {
         return 0.0;
     }
@@ -219,7 +229,7 @@ pub fn scroller_chrome<R>(
             .interact(
                 rect,
                 out.id.with(("arrow", sign as i8)),
-                egui::Sense::click(),
+                pointer_only(egui::Sense::click()),
             )
             .clicked()
         {
@@ -268,7 +278,11 @@ pub fn hscroller_chrome<R>(
     );
     let knob = p.round_rect_to_pixels(Rect::from_x_y_ranges(x0..=x1, bar.y_range()));
     let mut offset = out.state.offset.x;
-    let trough = ui.interact(track, out.id.with("htrough"), egui::Sense::click());
+    let trough = ui.interact(
+        track,
+        out.id.with("htrough"),
+        pointer_only(egui::Sense::click()),
+    );
     if let Some(at) = trough
         .clicked()
         .then(|| trough.interact_pointer_pos().or(trough.hover_pos()))
@@ -294,7 +308,7 @@ pub fn hscroller_chrome<R>(
             .interact(
                 rect,
                 out.id.with(("harrow", sign as i8)),
-                egui::Sense::click(),
+                pointer_only(egui::Sense::click()),
             )
             .clicked()
         {

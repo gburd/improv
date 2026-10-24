@@ -172,6 +172,22 @@ focused worksheet's measure when nothing is picked.
 
 Each rename and delete autosaves and is one undo step.
 
+## Keyboard and screen readers
+
+Everything works from the keyboard. In a worksheet the arrows move, Enter
+or F2 edits, Enter commits and Esc cancels; `[` and `]` page. Tab moves
+through the menu, the windows' fields and buttons, and Enter or Space
+presses the focused one, so **Tab** to a menu item and **Enter** opens
+its submenu or runs it. The key equivalents (Ctrl or Cmd: `n o s z Z y h
+q`) work anywhere outside a text field.
+
+Every control has an accessible name (through AccessKit, which egui feeds
+to Orca, VoiceOver and Narrator): menu items by their label, a cell by
+its row and column items and its value (`2025, WidgetA: 100`), a tile by
+its category and axis, and text fields by what they ask for. The four
+grays meet WCAG contrast: black text is 21:1 on cells and 9:1 on panels,
+white tile text 7.5:1.
+
 ## Function help
 
 **Help ▸ Functions…**, or F1 from anywhere (a formula edit included), opens

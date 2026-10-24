@@ -298,13 +298,18 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
         .style(Style::default().add_modifier(Modifier::BOLD))
         .bottom_margin(0);
 
+    // H2: each also has a modifier, so NO_COLOR (or a monochrome terminal)
+    // still shows the cursor (reversed) and the range (underlined).
     let sel = Style::default()
         .bg(Color::Blue)
         .fg(Color::White)
-        .add_modifier(Modifier::BOLD);
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED);
 
     let cols_r = cols.clone();
-    let range = Style::default().bg(Color::Cyan).fg(Color::Black);
+    let range = Style::default()
+        .bg(Color::Cyan)
+        .fg(Color::Black)
+        .add_modifier(Modifier::UNDERLINED);
     let rows = rows.map(move |r| {
         let rname = g.rows[r].1.clone();
         let mut cells =
@@ -421,7 +426,7 @@ fn render_help(f: &mut Frame, h: &mut FnHelp, area: Rect) {
             Style::default()
                 .bg(Color::Blue)
                 .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
         );
     let mut state = ListState::default()
         .with_selected(h.current().map(|_| h.selected))
@@ -453,6 +458,64 @@ mod tests {
     use super::*;
     use crate::app::tests::revenue_model;
     use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+
+    /// H2: with every color stripped (NO_COLOR, a monochrome terminal),
+    /// what color marks still shows: the cursor cell, the range, the error
+    /// token and the help selection each keep a modifier, and the error
+    /// lines say "error:".
+    #[test]
+    fn nothing_is_shown_by_color_alone() {
+        let mut app = App::new(revenue_model()).unwrap();
+        app.step(1, 0, true);
+        let buf = draw(&mut app, 100, 30);
+        let marked = |x, y| -> Modifier { buf[(x, y)].modifier };
+        let lines = text(&buf);
+        let (x, y) = find(&lines, "2025");
+        let data_x = x + LABEL_W + SPACING;
+        assert!(marked(data_x, y).contains(Modifier::UNDERLINED), "range");
+        assert!(marked(data_x, y + 1).contains(Modifier::REVERSED), "cursor");
+        assert!(!marked(data_x + COL_W + SPACING, y)
+            .intersects(Modifier::UNDERLINED | Modifier::REVERSED));
+        // Every cell with a background color carries a modifier too, in the
+        // grid and the help overlay's selection.
+        for help in [false, true] {
+            app.help = help.then(crate::fnhelp::FnHelp::new);
+            let buf = draw(&mut app, 100, 30);
+            for (i, c) in buf.content.iter().enumerate() {
+                if c.bg != Color::Reset {
+                    assert!(
+                        !c.modifier.is_empty(),
+                        "cell {i} ({:?}) is marked by color only",
+                        c.symbol()
+                    );
+                }
+            }
+        }
+        // A formula error: the bad token underlined, the lines say error.
+        let mut app = App::new(revenue_model()).unwrap();
+        app.begin_define();
+        for c in "Bad = Prise * 2".chars() {
+            app.edit_key(crossterm::event::KeyCode::Char(c));
+        }
+        app.commit_edit();
+        let buf = draw(&mut app, 100, 30);
+        let lines = text(&buf);
+        assert!(lines.iter().any(|l| l.contains("error: ")), "{lines:?}");
+        // Red text is either marked (the ^~~ marker, the token) or on a
+        // line that says "error:".
+        let w = buf.area.width as usize;
+        for (i, c) in buf.content.iter().enumerate() {
+            if c.fg == Color::Red && c.modifier.is_empty() {
+                assert!(lines[i / w].contains("error: "), "red only at {i}");
+            }
+        }
+        let (bx, by) = find(&lines, "Prise");
+        assert!(marked_in(&buf, bx, by).contains(Modifier::UNDERLINED));
+    }
+
+    fn marked_in(buf: &Buffer, x: u16, y: u16) -> Modifier {
+        buf[(x, y)].modifier
+    }
 
     /// Render `app` into a `w`x`h` test terminal and return the buffer.
     fn draw(app: &mut App, w: u16, h: u16) -> Buffer {
