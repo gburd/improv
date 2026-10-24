@@ -179,7 +179,14 @@ impl ModelStore {
     /// Open (or create) a store at `path`. Use `""` for an in-memory database.
     pub fn open(path: &str) -> Result<Self> {
         let mut store = Store::open(path)?;
-        store.transact(schema::SCHEMA_EDN)?;
+        // Re-transacting an installed schema changes nothing, but Mentat
+        // still scans the log for metadata changes: 0.2 s per open of a
+        // 1M-cell store, paid by every GUI and TUI save.
+        // shortcut: checks that each attribute exists, not its definition;
+        // an attribute changed in place (never done yet) needs the transact.
+        if !schema_installed(&store) {
+            store.transact(schema::SCHEMA_EDN)?;
+        }
         Ok(ModelStore {
             store,
             loaded_tx: None,
@@ -843,6 +850,20 @@ fn retract_dropped(
         }
     }
     transact_group(ip, datoms, gone)
+}
+
+/// Whether every attribute `SCHEMA_EDN` defines is in `store`'s schema.
+fn schema_installed(store: &Store) -> bool {
+    use mentat::HasSchema;
+    let installed = store.conn().current_schema();
+    schema::SCHEMA_EDN.split(":db/ident :").skip(1).all(|rest| {
+        let ident = rest.split_whitespace().next().unwrap_or_default();
+        ident.split_once('/').is_some_and(|(ns, name)| {
+            installed
+                .get_entid(&mentat::Keyword::namespaced(ns, name))
+                .is_some()
+        })
+    })
 }
 
 /// Retract the cells of every stored measure `model` dropped: one index
@@ -1577,6 +1598,29 @@ mod tests {
             Value::Number(11.0),
         );
         a.save_model(&m).expect("second save");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Opening a store that has the schema transacts nothing; one that lacks
+    /// an attribute gets it.
+    #[test]
+    fn open_installs_the_schema_only_when_missing() {
+        let path = temp_store_path("schema-once");
+        let txs = |p: &str| -> i64 {
+            Store::open(p)
+                .unwrap()
+                .sqlite_ref()
+                .query_row("SELECT count(*) FROM timelined_transactions", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        drop(ModelStore::open(&path).expect("create"));
+        let n = txs(&path);
+        drop(ModelStore::open(&path).expect("reopen"));
+        assert_eq!(txs(&path), n, "a reopen transacted");
+        assert!(schema_installed(&Store::open(&path).unwrap()));
+        assert!(!schema_installed(&Store::open("").unwrap()));
         let _ = std::fs::remove_file(&path);
     }
 
