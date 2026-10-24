@@ -7,7 +7,7 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
-use improv_core_model::{MeasureId, Model};
+use improv_core_model::{Coordinate, MeasureId, Model};
 use improv_storage_mentat::ModelStore;
 use improv_storage_pg::PgModelStore;
 
@@ -88,6 +88,17 @@ impl Store {
         delegate!(self, s => s.save_model(model))
     }
 
+    /// Persist only `cells` (measure, coordinate) of `model`: each is set to
+    /// its value in `model.inputs`, or removed if it has none. O(cells), not
+    /// O(model). The caller names every cell it changed since this handle's
+    /// last load or save and changed nothing else; any other edit (a
+    /// category, an item, a measure, a view, a LAMBDA, meta) needs
+    /// [`Store::save_model`]. The same conflict check as `save_model`: a
+    /// concurrent writer is refused with [`StoreError::Conflict`].
+    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
+        delegate!(self, s => s.save_cells(model, cells))
+    }
+
     pub fn reload_model(&mut self) -> Result<Model> {
         delegate!(self, s => s.reload_model())
     }
@@ -124,6 +135,34 @@ impl Store {
                 tx: s.loaded_tx(),
                 pg: s.snapshot().cloned(),
             },
+        }
+    }
+
+    /// [`Store::save_token`] without the copy: moves the Postgres snapshot
+    /// out, so the handle then saves as if it had loaded nothing. For callers
+    /// that reopen the store per save (the GUI, the TUI), with
+    /// [`Store::adopt_save_token`].
+    pub fn take_save_token(&mut self) -> SaveToken {
+        match self {
+            Store::Mentat(s) => SaveToken {
+                tx: s.loaded_tx(),
+                pg: None,
+            },
+            Store::Pg(s) => SaveToken {
+                tx: s.loaded_tx(),
+                pg: s.take_snapshot(),
+            },
+        }
+    }
+
+    /// [`Store::set_save_token`] by value, without copying the snapshot.
+    pub fn adopt_save_token(&mut self, token: SaveToken) {
+        match self {
+            Store::Mentat(s) => s.set_loaded_tx(token.tx),
+            Store::Pg(s) => {
+                s.set_loaded_tx(token.tx);
+                s.set_snapshot(token.pg);
+            }
         }
     }
 
@@ -195,6 +234,19 @@ mod tests {
         let e = b.save_model(&m).unwrap_err();
         assert!(matches!(e, StoreError::Conflict(_)), "{e}");
         assert!(e.to_string().starts_with("conflict:"));
+
+        // An incremental save, carried across handles by a moved token.
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10))]);
+        let mut m2 = m.clone();
+        m2.set_input(MeasureId(100), at.clone(), Value::Number(4.0));
+        let mut c = Store::open(target).unwrap();
+        c.adopt_save_token(a.take_save_token());
+        c.save_cells(&m2, &[(MeasureId(100), at.clone())]).unwrap();
+        let token = c.take_save_token();
+        assert_eq!(token.tx(), Some(c.tx_high_water().unwrap()));
+        assert_eq!(Store::open(target).unwrap().load_model().unwrap(), m2);
+        let e = b.save_cells(&m, &[(MeasureId(100), at)]).unwrap_err();
+        assert!(matches!(e, StoreError::Conflict(_)), "{e}");
     }
 
     #[test]

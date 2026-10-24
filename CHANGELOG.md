@@ -13,6 +13,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   cell the model no longer has), reading each by an index seek on its
   `:cell/key`, under the same high-water conflict check as `save_model`.
   A one-cell save no longer re-reads every stored cell.
+  `improv_storage_pg::PgModelStore::save_cells` does the same in Postgres
+  (bound cells under the per-cell guard), and `improv_store::Store::save_cells`
+  serves both. `Store::take_save_token` / `adopt_save_token` move a save
+  token without copying its Postgres snapshot.
 
 - **Tutorials, tested in CI** (guide, new "Tutorials" section). "A
   household budget on the desktop" builds a model with the CLI and opens
