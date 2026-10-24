@@ -104,8 +104,13 @@ impl Store {
     /// pass over every stored cell (Mentat) or every cell in memory
     /// (Postgres cell edits). The same conflict check as `save_model`.
     /// `changes` must name everything that changed since this handle's last
-    /// load or save ([`ChangeSet::between`] does, for two models).
+    /// load or save ([`ChangeSet::between`] does, for two models). A handle
+    /// that has loaded or saved nothing (no [`SaveToken`]) has no base to
+    /// change from, so it saves the whole model, as `save_model` does.
     pub fn save_changes(&mut self, model: &Model, changes: &ChangeSet) -> Result<()> {
+        if self.loaded_tx().is_none() {
+            return self.save_model(model);
+        }
         match self {
             Store::Mentat(s) => Ok(s.save_changes(model, &changes.cells, changes.structure)?),
             // shortcut: a structural Postgres save is the full one (a diff
@@ -368,6 +373,10 @@ mod tests {
             .save_changes(&m, &ChangeSet::cell(MeasureId(100), at))
             .unwrap_err();
         assert!(matches!(e, StoreError::Conflict(_)), "{e}");
+        // No token: the change set is ignored and the whole model saved.
+        let mut fresh = Store::open(target).unwrap();
+        fresh.save_changes(&m, &ChangeSet::default()).unwrap();
+        assert_eq!(Store::open(target).unwrap().load_model().unwrap(), m);
     }
 
     #[test]
