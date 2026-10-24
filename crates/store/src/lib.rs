@@ -99,6 +99,22 @@ impl Store {
         delegate!(self, s => s.save_cells(model, cells))
     }
 
+    /// Persist `changes` of `model`: its cells, and with
+    /// [`ChangeSet::structure`] everything else, without the full save's
+    /// pass over every stored cell (Mentat) or every cell in memory
+    /// (Postgres cell edits). The same conflict check as `save_model`.
+    /// `changes` must name everything that changed since this handle's last
+    /// load or save ([`ChangeSet::between`] does, for two models).
+    pub fn save_changes(&mut self, model: &Model, changes: &ChangeSet) -> Result<()> {
+        match self {
+            Store::Mentat(s) => Ok(s.save_changes(model, &changes.cells, changes.structure)?),
+            // shortcut: a structural Postgres save is the full one (a diff
+            // against the snapshot, O(model) in memory); split it if it shows.
+            Store::Pg(s) if changes.structure => Ok(s.save_model(model)?),
+            Store::Pg(s) => Ok(s.save_cells(model, &changes.cells)?),
+        }
+    }
+
     pub fn reload_model(&mut self) -> Result<Model> {
         delegate!(self, s => s.reload_model())
     }
@@ -178,6 +194,67 @@ impl Store {
     }
 }
 
+/// What changed in a model since it was last loaded or saved, for
+/// [`Store::save_changes`]. Front ends say what they edited, so `Model`
+/// carries no change tracking.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChangeSet {
+    /// Input cells set or cleared (repeats are harmless).
+    pub cells: Vec<(MeasureId, Coordinate)>,
+    /// Anything else changed: a category, item, measure, view, LAMBDA,
+    /// scenario, external function or SQL source.
+    pub structure: bool,
+}
+
+impl ChangeSet {
+    /// One cell edit.
+    pub fn cell(measure: MeasureId, at: Coordinate) -> Self {
+        ChangeSet {
+            cells: vec![(measure, at)],
+            structure: false,
+        }
+    }
+
+    /// What differs from `old` to `new`: O(cells) in memory, with no store
+    /// access.
+    pub fn between(old: &Model, new: &Model) -> Self {
+        let mut cells: Vec<_> = new
+            .inputs
+            .iter()
+            .filter(|(k, v)| old.inputs.get(*k) != Some(*v))
+            .map(|(k, _)| k.clone())
+            .collect();
+        cells.extend(
+            old.inputs
+                .keys()
+                .filter(|k| !new.inputs.contains_key(*k))
+                .cloned(),
+        );
+        // Every saved field of `Model` but `inputs`: a new one goes here.
+        let structure = old.categories != new.categories
+            || old.items != new.items
+            || old.measures != new.measures
+            || old.sql_sources != new.sql_sources
+            || old.views != new.views
+            || old.external_fns != new.external_fns
+            || old.external_calls != new.external_calls
+            || old.scenarios != new.scenarios
+            || old.lambdas != new.lambdas;
+        ChangeSet { cells, structure }
+    }
+
+    /// Add `other`'s changes to these.
+    pub fn add(&mut self, other: ChangeSet) {
+        self.cells.extend(other.cells);
+        self.structure |= other.structure;
+    }
+
+    /// Nothing changed.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty() && !self.structure
+    }
+}
+
 /// What a store handle last loaded or saved, carried to the next handle (see
 /// [`Store::save_token`]). `Default` is "nothing loaded": the save writes the
 /// whole model unchecked.
@@ -220,6 +297,32 @@ mod tests {
         m
     }
 
+    #[test]
+    fn change_sets_name_what_differs() {
+        let old = model();
+        assert!(ChangeSet::between(&old, &old).is_empty());
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10))]);
+        let mut new = old.clone();
+        new.inputs.remove(&(MeasureId(100), at.clone()));
+        let other = Coordinate::from_pairs([(CategoryId(1), ItemId(11))]);
+        new.set_input(MeasureId(100), other.clone(), Value::Number(1.0));
+        let mut c = ChangeSet::between(&old, &new);
+        c.cells.sort();
+        assert_eq!(
+            c,
+            ChangeSet {
+                cells: vec![(MeasureId(100), at.clone()), (MeasureId(100), other)],
+                structure: false
+            }
+        );
+        let mut renamed = old.clone();
+        renamed.categories.get_mut(&CategoryId(1)).unwrap().name = Name("T".into());
+        let mut d = ChangeSet::cell(MeasureId(100), at);
+        assert!(!d.is_empty());
+        d.add(ChangeSet::between(&old, &renamed));
+        assert!(d.structure && d.cells.len() == 1);
+    }
+
     /// Every delegating method, plus Conflict mapping, on one open store.
     fn exercise(target: &str) {
         let m = model();
@@ -245,7 +348,25 @@ mod tests {
         let token = c.take_save_token();
         assert_eq!(token.tx(), Some(c.tx_high_water().unwrap()));
         assert_eq!(Store::open(target).unwrap().load_model().unwrap(), m2);
-        let e = b.save_cells(&m, &[(MeasureId(100), at)]).unwrap_err();
+        let e = b
+            .save_cells(&m, &[(MeasureId(100), at.clone())])
+            .unwrap_err();
+        assert!(matches!(e, StoreError::Conflict(_)), "{e}");
+
+        // Change sets, cells only and with structure, either backend.
+        let mut m3 = m2.clone();
+        m3.inputs.remove(&(MeasureId(100), at.clone()));
+        let mut d = Store::open(target).unwrap();
+        d.adopt_save_token(token);
+        d.save_changes(&m3, &ChangeSet::between(&m2, &m3)).unwrap();
+        let mut m4 = m3.clone();
+        m4.add_item(ItemId(11), CategoryId(1), "Q2");
+        m4.set_input(MeasureId(100), at.clone(), Value::Number(2.0));
+        d.save_changes(&m4, &ChangeSet::between(&m3, &m4)).unwrap();
+        assert_eq!(Store::open(target).unwrap().load_model().unwrap(), m4);
+        let e = b
+            .save_changes(&m, &ChangeSet::cell(MeasureId(100), at))
+            .unwrap_err();
         assert!(matches!(e, StoreError::Conflict(_)), "{e}");
     }
 
