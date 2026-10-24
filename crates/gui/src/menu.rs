@@ -205,7 +205,7 @@ pub fn show(
     if let Some(r) = ctx.read_response(id.with("title")) {
         pos += r.drag_delta();
     }
-    let screen = ctx.screen_rect();
+    let screen = ctx.content_rect();
     let pos = pos.clamp(
         screen.min,
         (screen.max - vec2(MIN_WIDTH, TITLE_HEIGHT)).max(screen.min),
@@ -310,7 +310,7 @@ pub fn show(
 
 /// The menu panel's area id.
 pub fn menu_id() -> Id {
-    Id::new("improv_menu")
+    Id::unique("improv_menu")
 }
 
 fn sub_id(i: usize) -> Id {
@@ -376,7 +376,7 @@ fn bold() -> FontId {
 /// Outer size of a menu panel titled `title` holding `rows`.
 fn panel_size(ctx: &Context, title: &str, rows: &[Row]) -> Vec2 {
     let text_width = |s: &str, f: FontId| {
-        ctx.fonts(|fonts| fonts.layout_no_wrap(s.to_owned(), f, BLACK).size().x)
+        ctx.fonts_mut(|fonts| fonts.layout_no_wrap(s.to_owned(), f, BLACK).size().x)
     };
     let width = rows
         .iter()
@@ -418,7 +418,7 @@ fn panel(
                 WHITE,
             );
             ui.interact(title_rect, id.with("title"), title_sense)
-                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title));
+                .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title));
 
             let responses = rows
                 .iter()
@@ -434,9 +434,9 @@ fn panel(
                     resp.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             if row.sub {
-                                egui::WidgetType::ComboBox
+                                egui::Role::ComboBox
                             } else {
-                                egui::WidgetType::Button
+                                egui::Role::Button
                             },
                             row.enabled,
                             row.label,
@@ -448,7 +448,12 @@ fn panel(
                 })
                 .collect();
 
-            p.rect_stroke(outer.shrink(BORDER / 2.0), 0.0, Stroke::new(BORDER, BLACK));
+            p.rect_stroke(
+                outer.shrink(BORDER / 2.0),
+                0.0,
+                Stroke::new(BORDER, BLACK),
+                egui::StrokeKind::Middle,
+            );
             ui.advance_cursor_after_rect(outer);
             (outer, responses)
         })
@@ -502,6 +507,8 @@ fn paint_row(p: &Painter, r: Rect, row: &Row, face: Color32) {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::TestFrames as _;
     use egui::{Event, Modifiers, PointerButton, RawInput};
 
     /// Headless frames of just the menu, with three views ("b" current) and
@@ -538,7 +545,7 @@ mod tests {
             let views = ["a", "b", "c"].map(|v| (v.to_owned(), v == "b"));
             let mut picked = None;
             let state = &mut self.state;
-            let _ = self.ctx.run(raw, |ctx| {
+            let _ = self.ctx.test_pass(raw, |ctx| {
                 picked = show(ctx, state, pos2(4.0, 4.0), &views, |c| c != C::RemoveMatrix);
             });
             picked
@@ -737,7 +744,7 @@ mod tests {
                 }
             }
         }
-        h.ctx.fonts(|f| {
+        h.ctx.fonts_mut(|f| {
             assert!(f.has_glyphs(&bold(), TITLE));
             for t in &texts {
                 assert!(f.has_glyphs(&font(), t), "missing glyph in {t:?}");
@@ -762,7 +769,7 @@ mod tests {
                 screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
                 ..Default::default()
             };
-            let out = ctx.run(raw, |ctx| {
+            let out = ctx.test_pass(raw, |ctx| {
                 assert_eq!(show(ctx, &mut state, pos2(4.0, 4.0), &[], |_| true), None);
             });
             texts = out

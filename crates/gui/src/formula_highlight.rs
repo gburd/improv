@@ -408,17 +408,19 @@ mod tests {
         let bad = job
             .sections
             .iter()
-            .find(|s| &job.text[s.byte_range.clone()] == "Widgets")
+            .find(|s| &job.text[s.byte_range.start.0..s.byte_range.end.0] == "Widgets")
             .expect("Widgets token present");
         assert_eq!(bad.format.color, ERROR_COLOR);
         assert_eq!(bad.format.underline, ERROR_UNDERLINE);
         // Other tokens are unaffected. (The palette has no error hue, so the
-        // underline, not the color, is what marks the error.)
+        // underline, not the color, is what marks the error.) egui merges
+        // neighbours that look alike into one section, so look up by byte.
         let price = job
             .sections
             .iter()
-            .find(|s| &job.text[s.byte_range.clone()] == "Price")
-            .expect("Price token present");
+            .find(|s| s.byte_range.start.0 == 0)
+            .expect("a section at Price");
+        assert!(job.text[price.byte_range.start.0..price.byte_range.end.0].starts_with("Price"));
         assert_eq!(price.format.underline, Stroke::NONE);
     }
 
@@ -432,7 +434,7 @@ mod tests {
             job.sections
                 .iter()
                 .filter(|s| s.format.underline == ERROR_UNDERLINE)
-                .map(|s| &text[s.byte_range.clone()])
+                .map(|s| &text[s.byte_range.start.0..s.byte_range.end.0])
                 .collect::<String>()
         };
         assert_eq!(marked("Price * Widgets", 0..7), "Price *");

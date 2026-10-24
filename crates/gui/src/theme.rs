@@ -7,8 +7,9 @@
 //! the bundled Arimo (§2), a Helvetica-metric face, installed by
 //! [`install_fonts`]. It is purely cosmetic: no behavior depends on it.
 
+use egui::emath::GuiRounding as _;
 use egui::{
-    pos2, vec2, Color32, FontData, FontDefinitions, FontFamily, FontId, Rect, Rounding, Shadow,
+    pos2, vec2, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Rect, Shadow,
     Stroke, Style, TextStyle, Visuals,
 };
 
@@ -45,7 +46,10 @@ const TEXT_SIZE: f32 = 12.0;
 /// set [`next_style`] into that slot and [`install_fonts`].
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(egui::Theme::Light);
-    ctx.set_style(next_style());
+    // egui 0.31+ closes the window on Ctrl/Cmd+Q by itself, which would skip
+    // the menu's Quit and its check for an unsaved in-memory model.
+    ctx.options_mut(|o| o.quit_shortcuts.clear());
+    ctx.set_global_style(next_style());
     install_fonts(ctx);
 }
 
@@ -59,11 +63,11 @@ pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "Arimo".into(),
-        FontData::from_static(include_bytes!("../assets/fonts/Arimo-Regular.ttf")),
+        FontData::from_static(include_bytes!("../assets/fonts/Arimo-Regular.ttf")).into(),
     );
     fonts.font_data.insert(
         BOLD.into(),
-        FontData::from_static(include_bytes!("../assets/fonts/Arimo-Bold.ttf")),
+        FontData::from_static(include_bytes!("../assets/fonts/Arimo-Bold.ttf")).into(),
     );
     let fallback = fonts.families[&FontFamily::Proportional].clone();
     fonts
@@ -93,14 +97,21 @@ pub fn next_scroll<R>(
     area: egui::ScrollArea,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::scroll_area::ScrollAreaOutput<R> {
+    // The scope's id is stable per call site, so it keys the area.
+    let key = ui.next_auto_id().with("next_scroll");
     let scoped = ui.scope(|ui| {
         ui.visuals_mut().extreme_bg_color = TROUGH;
+        let mut area = area;
+        if let Some(y) = pending_offset(ui.ctx(), key, 1) {
+            area = area.vertical_scroll_offset(y);
+        }
         area.scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
             .show(ui, |ui| {
                 content(ui);
                 add(ui)
             })
     });
+    remember_area(ui.ctx(), key, scoped.inner.id);
     let line = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
     // The scope holds just the area, so its rect is the area plus its bar.
     scroller_chrome(ui, &scoped.inner, scoped.response.rect, line);
@@ -146,10 +157,7 @@ fn knob_span(
 /// scrolls the area itself (arrows, PageUp/PageDown), so the arrows and knob
 /// would only add focus stops a screen reader announces with no meaning (H2).
 fn pointer_only(sense: egui::Sense) -> egui::Sense {
-    egui::Sense {
-        focusable: false,
-        ..sense
-    }
+    sense - egui::Sense::FOCUSABLE
 }
 
 fn knob_drag(
@@ -178,12 +186,27 @@ fn scroll_to<R>(
     max: f32,
 ) {
     let offset = offset.clamp(0.0, max);
-    if offset != out.state.offset[axis] {
-        let mut state = out.state;
-        state.offset[axis] = offset;
-        state.store(ui.ctx(), out.id);
+    if offset != out.state.clamped_offset()[axis] {
+        // egui keeps the offset private: leave it for the area's next
+        // layout, which takes it with [`pending_offset`].
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(out.id.with(("next_offset", axis)), offset));
         ui.ctx().request_repaint();
     }
+}
+
+/// The offset [`scroll_to`] left on `axis` (0 = x, 1 = y) for the area
+/// `key` names, taken. `key` is any id stable across frames for that area:
+/// its last [`egui::scroll_area::ScrollAreaOutput::id`] is remembered under
+/// it by [`remember_area`].
+pub fn pending_offset(ctx: &egui::Context, key: egui::Id, axis: usize) -> Option<f32> {
+    let id = ctx.data(|d| d.get_temp::<egui::Id>(key.with("area_id")))?;
+    ctx.data_mut(|d| d.remove_temp::<f32>(id.with(("next_offset", axis))))
+}
+
+/// Remember area `id` under `key`, for [`pending_offset`].
+pub fn remember_area(ctx: &egui::Context, key: egui::Id, id: egui::Id) {
+    ctx.data_mut(|d| d.insert_temp(key.with("area_id"), id));
 }
 
 /// Repaint a shown vertical scroller NeXT-style: a knob with a 1 px bevel
@@ -202,20 +225,21 @@ pub fn scroller_chrome<R>(
     let scroll = &ui.spacing().scroll;
     let [trough, up, down] = scroller_rects(outer, scroll.bar_width);
     let p = ui.painter();
-    p.rect_filled(trough, Rounding::ZERO, TROUGH);
+    p.rect_filled(trough, CornerRadius::ZERO, TROUGH);
     let track = trough.min.y..=up.min.y.max(trough.min.y);
     let view = trough.height();
     let (y0, y1) = knob_span(
-        out.state.offset.y,
+        out.state.clamped_offset().y,
         view,
         out.content_size.y,
         track.clone(),
         scroll.handle_min_length,
     );
-    let knob = p.round_rect_to_pixels(Rect::from_x_y_ranges(trough.x_range(), y0..=y1));
+    let knob =
+        Rect::from_x_y_ranges(trough.x_range(), y0..=y1).round_to_pixels(p.pixels_per_point());
     raised(p, knob);
     let max = (out.content_size.y - view).max(0.0);
-    let mut offset = out.state.offset.y;
+    let mut offset = out.state.clamped_offset().y;
     for (rect, sign) in [(up, -1.0), (down, 1.0)] {
         raised(p, rect);
         let c = rect.center();
@@ -266,18 +290,18 @@ pub fn hscroller_chrome<R>(
 ) {
     let [left, right, track] = hscroller_rects(bar);
     let p = ui.painter();
-    p.rect_filled(bar, Rounding::ZERO, TROUGH);
+    p.rect_filled(bar, CornerRadius::ZERO, TROUGH);
     let view = out.inner_rect.width();
     let max = (out.content_size.x - view).max(0.0);
     let (x0, x1) = knob_span(
-        out.state.offset.x,
+        out.state.clamped_offset().x,
         view,
         out.content_size.x,
         track.min.x..=track.max.x,
         ui.spacing().scroll.handle_min_length,
     );
-    let knob = p.round_rect_to_pixels(Rect::from_x_y_ranges(x0..=x1, bar.y_range()));
-    let mut offset = out.state.offset.x;
+    let knob = Rect::from_x_y_ranges(x0..=x1, bar.y_range()).round_to_pixels(p.pixels_per_point());
+    let mut offset = out.state.clamped_offset().x;
     let trough = ui.interact(
         track,
         out.id.with("htrough"),
@@ -322,7 +346,7 @@ pub fn hscroller_chrome<R>(
 /// A raised NeXT face: [`LIGHT_GRAY`] with a white top-left, black
 /// bottom-right 1 px bevel.
 fn raised(p: &egui::Painter, r: Rect) {
-    let fill = |min, max, c| p.rect_filled(Rect::from_min_max(min, max), Rounding::ZERO, c);
+    let fill = |min, max, c| p.rect_filled(Rect::from_min_max(min, max), CornerRadius::ZERO, c);
     fill(r.min, r.max, LIGHT_GRAY);
     fill(r.min, pos2(r.max.x, r.min.y + 1.0), WHITE);
     fill(r.min, pos2(r.min.x + 1.0, r.max.y), WHITE);
@@ -351,6 +375,8 @@ pub fn next_style() -> Style {
     let line = |c| Stroke::new(1.0_f32, c);
 
     v.override_text_color = Some(BLACK);
+    // egui 0.30+ fades weak text to 60% alpha; NeXT's is the dark gray.
+    v.weak_text_color = Some(DARK_GRAY);
     v.window_fill = LIGHT_GRAY;
     v.panel_fill = LIGHT_GRAY;
     v.extreme_bg_color = WHITE; // text edits, scroll bar background
@@ -359,8 +385,8 @@ pub fn next_style() -> Style {
     v.hyperlink_color = BLACK;
     v.warn_fg_color = BLACK;
     v.error_fg_color = BLACK;
-    v.window_rounding = Rounding::ZERO;
-    v.menu_rounding = Rounding::ZERO;
+    v.window_corner_radius = CornerRadius::ZERO;
+    v.menu_corner_radius = CornerRadius::ZERO;
     v.window_shadow = Shadow::NONE;
     v.popup_shadow = Shadow::NONE;
     v.window_stroke = line(BLACK);
@@ -369,6 +395,8 @@ pub fn next_style() -> Style {
     v.selection.bg_fill = LIGHT_GRAY;
     v.selection.stroke = line(BLACK);
     v.text_cursor.stroke = line(BLACK);
+    v.ime_composition.active_underline_stroke = line(BLACK);
+    v.ime_composition.inactive_underline_stroke = line(DARK_GRAY);
 
     // Idle and hovered controls are the same raised gray face: NeXT
     // highlights only on press, when the face turns white.
@@ -377,7 +405,7 @@ pub fn next_style() -> Style {
         weak_bg_fill: fill,
         bg_stroke: line(BLACK),
         fg_stroke: line(BLACK),
-        rounding: Rounding::ZERO,
+        corner_radius: CornerRadius::ZERO,
         expansion: 0.0,
     };
     let w = &mut v.widgets;
@@ -416,6 +444,8 @@ pub fn next_style() -> Style {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::TestFrames as _;
 
     /// Every `Color32` in `visuals`, found through its `Debug` form
     /// (`#RR_GG_BB_AA`), so a field added in a future egui is still checked.
@@ -451,24 +481,23 @@ mod tests {
     #[test]
     fn install_fonts_puts_arimo_first_and_registers_bold() {
         let ctx = egui::Context::default();
-        ctx.set_style(next_style());
+        ctx.set_global_style(next_style());
         install_fonts(&ctx);
         // Fonts are swapped in at the start of a pass; laying out a heading
         // proves the bold family is bound (an unbound one panics).
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| ui.heading("Improv"));
+        let _ = ctx.test_ui(egui::RawInput::default(), |ctx_ui| {
+            egui::CentralPanel::default().show(ctx_ui, |ui| ui.heading("Improv"));
         });
-        ctx.fonts(|f| {
-            let fonts = f.lock();
-            let defs = fonts.fonts.definitions();
+        ctx.fonts_mut(|f| {
+            let defs = f.definitions();
             let prop = &defs.families[&FontFamily::Proportional];
             assert_eq!(prop[0], "Arimo");
             assert!(prop.len() > 1, "egui's fonts must stay as fallback");
             assert_eq!(defs.families[&FontFamily::Name(BOLD.into())][0], BOLD);
         });
-        let heading = &ctx.style().text_styles[&TextStyle::Heading];
+        let heading = &ctx.global_style().text_styles[&TextStyle::Heading];
         assert_eq!(*heading, FontId::new(12.0, FontFamily::Name(BOLD.into())));
-        assert_eq!(ctx.style().text_styles[&TextStyle::Body].size, 12.0);
+        assert_eq!(ctx.global_style().text_styles[&TextStyle::Body].size, 12.0);
     }
 
     #[test]
@@ -477,17 +506,17 @@ mod tests {
         apply(&ctx);
         // What a system ThemeChanged to light does.
         ctx.set_theme(egui::Theme::Light);
-        assert_eq!(ctx.style().visuals.selection.bg_fill, LIGHT_GRAY);
+        assert_eq!(ctx.global_style().visuals.selection.bg_fill, LIGHT_GRAY);
     }
 
     #[test]
     fn corners_are_square_and_strokes_one_pixel() {
         let v = next_style().visuals;
-        assert_eq!(v.window_rounding, Rounding::ZERO);
-        assert_eq!(v.menu_rounding, Rounding::ZERO);
+        assert_eq!(v.window_corner_radius, CornerRadius::ZERO);
+        assert_eq!(v.menu_corner_radius, CornerRadius::ZERO);
         let w = &v.widgets;
         for s in [w.noninteractive, w.inactive, w.hovered, w.active, w.open] {
-            assert_eq!(s.rounding, Rounding::ZERO);
+            assert_eq!(s.corner_radius, CornerRadius::ZERO);
             assert_eq!(s.bg_stroke.width, 1.0);
             assert_eq!(s.expansion, 0.0);
         }
@@ -496,7 +525,7 @@ mod tests {
     #[test]
     fn grouped_arrows_sit_at_the_trough_bottom_and_scroll() {
         let ctx = egui::Context::default();
-        ctx.set_style(next_style());
+        ctx.set_global_style(next_style());
         let frame = |events: Vec<egui::Event>| {
             let mut shown = None;
             let raw = egui::RawInput {
@@ -504,8 +533,8 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let full = ctx.run(raw, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
+            let full = ctx.test_ui(raw, |ctx_ui| {
+                egui::CentralPanel::default().show(ctx_ui, |ui| {
                     let area = egui::ScrollArea::vertical().max_height(200.0);
                     let s = ui.scope(|ui| {
                         next_scroll(ui, area, |ui| {
@@ -567,7 +596,7 @@ mod tests {
         let _ = frame(Vec::new());
         let offset = egui::scroll_area::State::load(&ctx, id)
             .expect("state")
-            .offset
+            .clamped_offset()
             .y;
         // Exactly one line (17 px row + 4 px spacing), not a trough jump.
         assert_eq!(offset, 21.0, "down arrow scrolled one line");
@@ -579,7 +608,7 @@ mod tests {
     #[test]
     fn horizontal_scroller_groups_arrows_left_and_scrolls() {
         let ctx = egui::Context::default();
-        ctx.set_style(next_style());
+        ctx.set_global_style(next_style());
         let bar = Rect::from_min_size(pos2(10.0, 260.0), vec2(300.0, 19.0));
         let frame = |events: Vec<egui::Event>| {
             let mut out = None;
@@ -588,16 +617,23 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let full = ctx.run(raw, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let o = egui::ScrollArea::horizontal()
+            let full = ctx.test_ui(raw, |ctx_ui| {
+                egui::CentralPanel::default().show(ctx_ui, |ui| {
+                    // As the grid does: take the offset the scroller left.
+                    let key = egui::Id::unique("hscroll_test");
+                    let mut area = egui::ScrollArea::horizontal();
+                    if let Some(x) = pending_offset(ui.ctx(), key, 0) {
+                        area = area.horizontal_scroll_offset(x);
+                    }
+                    let o = area
                         .max_width(200.0)
                         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .show(ui, |ui| {
                             ui.allocate_exact_size(vec2(1000.0, 20.0), egui::Sense::hover())
                         });
+                    remember_area(ui.ctx(), key, o.id);
                     hscroller_chrome(ui, &o, bar, 20.0);
-                    out = Some((o.state.offset.x, o.inner_rect.width()));
+                    out = Some((o.state.clamped_offset().x, o.inner_rect.width()));
                 });
             });
             (full, out.unwrap())

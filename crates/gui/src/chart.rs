@@ -233,7 +233,7 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
                 Pos2::new(x0, yv.min(zero_y)),
                 Pos2::new(x0 + bar_w - 1.0, yv.max(zero_y)),
             );
-            painter.rect(bar, 0.0, color, outline);
+            painter.rect(bar, 0.0, color, outline, egui::StrokeKind::Middle);
         }
         // Optional line overlay through the bar centers, skipping gaps.
         if line {
@@ -289,6 +289,7 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
                 0.0,
                 color,
                 outline,
+                egui::StrokeKind::Middle,
             );
             let galley = painter.layout_no_wrap(s.name.clone(), font.clone(), text_color);
             let w = galley.rect.width();
@@ -302,6 +303,8 @@ pub fn render_chart(ui: &mut egui::Ui, data: &ChartData, line: bool) {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::TestFrames as _;
     use egui::epaint::Shape;
 
     /// Paint `data` in one headless 600x400 frame; return every shape drawn.
@@ -314,8 +317,8 @@ mod tests {
             )),
             ..Default::default()
         };
-        let out = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| render_chart(ui, data, line));
+        let out = ctx.test_ui(raw, |ctx_ui| {
+            egui::CentralPanel::default().show(ctx_ui, |ui| render_chart(ui, data, line));
         });
         fn flat(s: Shape, acc: &mut Vec<Shape>) {
             match s {

@@ -327,6 +327,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The GUI runs on egui and eframe 0.37** (was 0.29), the newest release
+  (H4). The NeXTSTEP look is kept; text renders a little differently, the
+  formula enable boxes draw filled, and the empty formula line's hint is
+  gray. Ctrl+Q again goes through Quit's check for an unsaved in-memory
+  model (egui 0.37 would close the window by itself). `cargo deny` allows
+  egui's Ubuntu font licence and no longer needs three advisory ignores.
 - **Saves write what changed** (B12). `improv set` and `stream` save only
   their cells; `add-*`, `define`, `register-ext`, `scenario` and
   `save-view` save structure without re-reading the cells. On the 1M-cell

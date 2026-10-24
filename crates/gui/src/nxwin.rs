@@ -51,7 +51,7 @@ pub fn make_key(ctx: &Context, id: Id) {
 
 /// Memory slot holding the [`Id`] of the key window.
 fn key_slot() -> Id {
-    Id::new("nxwin::key")
+    Id::unique("nxwin::key")
 }
 
 /// The outer rect the window with this id ([`NxWindow::id`]) ended its last
@@ -83,9 +83,12 @@ pub struct NxWindow<'open> {
 impl<'open> NxWindow<'open> {
     /// A window identified by `id_source` (salted, see [`Self::id`]), showing
     /// `title` centred in its title bar. Resizable by default, not closable.
-    pub fn new(id_source: impl std::hash::Hash, title: impl Into<String>) -> Self {
+    pub fn new(
+        id_source: impl std::hash::Hash + std::fmt::Debug,
+        title: impl Into<String>,
+    ) -> Self {
         Self {
-            id: Id::new(("nxwin", id_source)),
+            id: Id::unique(("nxwin", id_source)),
             title: title.into(),
             open: None,
             default_rect: DEFAULT_RECT,
@@ -134,7 +137,7 @@ impl<'open> NxWindow<'open> {
     }
 
     /// Rect the window is kept inside, both when moved and when resized.
-    /// Defaults to [`Context::screen_rect`].
+    /// Defaults to [`Context::content_rect`].
     pub fn bounds(mut self, bounds: Rect) -> Self {
         self.bounds = Some(bounds);
         self
@@ -177,7 +180,7 @@ impl<'open> NxWindow<'open> {
         if let Some(r) = ctx.read_response(id.with("title")) {
             rect = rect.translate(r.drag_delta());
         }
-        let screen = bounds.unwrap_or_else(|| ctx.screen_rect());
+        let screen = bounds.unwrap_or_else(|| ctx.content_rect());
         if let Some(r) = ctx
             .read_response(id.with("nx_resize"))
             .filter(|r| r.dragged())
@@ -248,7 +251,7 @@ impl<'open> NxWindow<'open> {
         let shown = egui::Window::new(title.as_str())
             .id(id)
             .title_bar(false)
-            .frame(Frame::none())
+            .frame(Frame::NONE)
             .movable(false)
             .constrain(false)
             .resizable(false)
@@ -276,14 +279,12 @@ impl<'open> NxWindow<'open> {
                 );
                 // The drag is applied before layout, above; this registers it.
                 ui.interact(l.title, id.with("title"), Sense::drag())
-                    .widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &title)
-                    });
+                    .widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, &title));
                 // H2: egui's whole-window widget (it brings a clicked window
                 // to the front) is the window a screen reader announces.
                 ctx.accesskit_node_builder(id.with("move"), |b| {
                     b.set_role(egui::accesskit::Role::Window);
-                    b.set_name(title.as_str());
+                    b.set_label(title.as_str());
                 });
 
                 // Registered after the title so it sits on top for hit-testing.
@@ -296,7 +297,7 @@ impl<'open> NxWindow<'open> {
                     let r = ui.interact(close, id.with("close"), Sense::click());
                     r.widget_info(|| {
                         egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             true,
                             format!("Close {title}"),
                         )
@@ -319,10 +320,7 @@ impl<'open> NxWindow<'open> {
                             WHITE,
                         );
                     }
-                    let pointer_only = Sense {
-                        focusable: false,
-                        ..Sense::drag()
-                    };
+                    let pointer_only = Sense::DRAG;
                     let _ = ui.interact(bar, id.with("nx_resize"), pointer_only);
                 }
 
@@ -330,7 +328,12 @@ impl<'open> NxWindow<'open> {
                 body.set_clip_rect(l.body.intersect(ui.clip_rect()));
                 let inner = add_contents(&mut body);
 
-                p.rect_stroke(outer.shrink(BORDER / 2.0), 0.0, Stroke::new(BORDER, BLACK));
+                p.rect_stroke(
+                    outer.shrink(BORDER / 2.0),
+                    0.0,
+                    Stroke::new(BORDER, BLACK),
+                    egui::StrokeKind::Middle,
+                );
                 // Size the window to the chrome, not to whatever the body holds.
                 ui.advance_cursor_after_rect(outer);
                 inner
@@ -415,6 +418,8 @@ fn bevel(p: &Painter, r: Rect) {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    #[allow(unused_imports)]
+    use crate::TestFrames as _;
     use egui::epaint::ClippedShape;
     use egui::{Event, Modifiers, PointerButton, RawInput, Shape};
 
@@ -449,7 +454,7 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            self.ctx.run(raw, ui).shapes
+            self.ctx.test_pass(raw, ui).shapes
         }
     }
 

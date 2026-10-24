@@ -23,6 +23,30 @@ mod menu;
 mod nxwin;
 mod theme;
 
+/// Tests run egui frames by hand and never paint them; egui 0.37 asserts
+/// (in debug builds) that a frame's texture deltas were handled. These run a
+/// frame and drop its deltas, so a test may drop or keep the output.
+#[cfg(test)]
+pub(crate) trait TestFrames {
+    fn test_pass(&self, raw: egui::RawInput, f: impl FnMut(&egui::Context)) -> egui::FullOutput;
+    fn test_ui(&self, raw: egui::RawInput, f: impl FnMut(&mut egui::Ui)) -> egui::FullOutput;
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+impl TestFrames for egui::Context {
+    fn test_pass(&self, raw: egui::RawInput, f: impl FnMut(&egui::Context)) -> egui::FullOutput {
+        let mut out = self.run_pass(raw, f);
+        out.textures_delta.clear();
+        out
+    }
+    fn test_ui(&self, raw: egui::RawInput, f: impl FnMut(&mut egui::Ui)) -> egui::FullOutput {
+        let mut out = self.run_ui(raw, f);
+        out.textures_delta.clear();
+        out
+    }
+}
+
 use app::ImprovApp;
 use clap::Parser;
 

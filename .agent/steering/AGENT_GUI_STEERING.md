@@ -322,7 +322,10 @@ one deliberately and record the decision here.
 - It is the first candidate the source design names (IMPROV.txt: "egui, iced,
   druid, or similar").
 
-Pinned at `eframe`/`egui`/`egui_extras` `0.29` in `[workspace.dependencies]`.
+Pinned at `eframe`/`egui`/`egui_extras` `=0.37.0` in `[workspace.dependencies]`
+(H4 moved it from 0.29; eframe runs the glow renderer, see the comment there).
+The app implements `eframe::App::ui`; its panels are `egui::Panel`s on the
+root `Ui` (`ImprovApp::frame`), its NeXT windows float on the context.
 The GUI crate (`improv_gui`, binary `improv-gui`) is a thin view over
 `improv_engine` (live `session::Engine`) and `improv_storage_mentat`; it adds no
 modeling semantics.
