@@ -228,6 +228,46 @@ impl ModelStore {
     /// rejected up front with `StoreError::Integrity` — a recoverable error
     /// instead of a killed process.
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
+        self.save(model, None, true)
+    }
+
+    /// [`ModelStore::save_changes`] of cells alone: only `cells` are read
+    /// and written. A cell of a measure the store does not hold is an
+    /// error, writing nothing.
+    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
+        self.save(model, Some(cells), false)
+    }
+
+    /// Persist what changed since this handle's last load or save: each of
+    /// `cells` is upserted to its value in `model.inputs` (an index seek on
+    /// its `:cell/key`), or retracted if the model has none; with
+    /// `structure`, every category, item, measure and view and the meta
+    /// blob are written as `save_model` writes them, and those the model
+    /// dropped are retracted, with a dropped measure's cells. No other cell
+    /// is read, so the cost is O(cells + structure), never O(all cells).
+    ///
+    /// The caller names every cell it changed and sets `structure` if it
+    /// changed anything else; naming an unchanged cell is harmless. Same
+    /// atomicity and optimistic concurrency as `save_model`: one
+    /// transaction, refused with [`StoreError::Conflict`] (writing nothing)
+    /// if another writer committed since this handle loaded or saved.
+    pub fn save_changes(
+        &mut self,
+        model: &Model,
+        cells: &[(MeasureId, Coordinate)],
+        structure: bool,
+    ) -> Result<()> {
+        self.save(model, Some(cells), structure)
+    }
+
+    /// The one save path: every cell (`cells` = `None`) or just `cells`,
+    /// and the structure if `structure`.
+    fn save(
+        &mut self,
+        model: &Model,
+        cells: Option<&[(MeasureId, Coordinate)]>,
+        structure: bool,
+    ) -> Result<()> {
         // IMMEDIATE: no other writer can commit between this check and ours.
         let mut ip = self.store.begin_transaction()?;
         if let Some(loaded) = self.loaded_tx {
@@ -236,187 +276,170 @@ impl ModelStore {
             }
         }
 
-        // `datoms_per_entity` arguments below are upper bounds on the
-        // attributes each `convert::*_edn` helper can emit for one entity.
-        // :category/id + :category/name.
-        transact_group(
-            &mut ip,
-            2,
-            model.categories.values().map(convert::category_edn),
-        )?;
-        // :item/id + :item/name + :item/category.
-        transact_group(&mut ip, 3, model.items.values().map(convert::item_edn))?;
+        if structure {
+            // `datoms_per_entity` arguments below are upper bounds on the
+            // attributes each `convert::*_edn` helper can emit for one entity.
+            // :category/id + :category/name.
+            transact_group(
+                &mut ip,
+                2,
+                model.categories.values().map(convert::category_edn),
+            )?;
+            // :item/id + :item/name + :item/category.
+            transact_group(&mut ip, 3, model.items.values().map(convert::item_edn))?;
 
-        let mut measures = Vec::new();
-        for m in model.measures.values() {
-            measures.push(convert::measure_edn(m, model.sql_sources.get(&m.id))?);
-        }
-        // A measure is one indivisible entity, and `:measure/categories` is
-        // cardinality-many, so its width is the only model-data-dependent width
-        // in the schema. Chunking cannot split it: past the per-queue ceiling
-        // Mentat aborts the process, so refuse the save with a recoverable error
-        // instead (`ip` is dropped un-committed here, so nothing persists).
-        //
-        // NOTE (interacts with the missing-retraction bug): `save_model` never
-        // retracts stale `:measure/categories` refs, so re-saving a measure whose
-        // category set *changed* leaves the union on disk. A later `load_model`
-        // hands back that union, which is how a model can grow past this limit
-        // without any single in-memory save ever being that wide. The guard is
-        // still sound, because Mentat's `assert!` counts only the datoms in the
-        // transact being applied — on-disk accumulation for a cardinality-many
-        // attribute adds no rows to the search tables (proven by
-        // `churned_resave_reports_error_not_abort`). The consequence of the
-        // retraction bug is that the *error* can appear on a re-save of a loaded
-        // model whose author never built a measure that wide; fixing retraction
-        // removes that surprise, not this guard.
-        let widest_categories = model
-            .measures
-            .values()
-            .map(|m| m.categories.len())
-            .max()
-            .unwrap_or(0);
-        if widest_categories > MAX_CATEGORIES_PER_MEASURE {
-            let worst = model
+            let mut measures = Vec::new();
+            for m in model.measures.values() {
+                measures.push(convert::measure_edn(m, model.sql_sources.get(&m.id))?);
+            }
+            // A measure is one indivisible entity, and `:measure/categories` is
+            // cardinality-many, so its width is the only model-data-dependent width
+            // in the schema. Chunking cannot split it: past the per-queue ceiling
+            // Mentat aborts the process, so refuse the save with a recoverable error
+            // instead (`ip` is dropped un-committed here, so nothing persists).
+            //
+            // NOTE (interacts with the missing-retraction bug): `save_model` never
+            // retracts stale `:measure/categories` refs, so re-saving a measure whose
+            // category set *changed* leaves the union on disk. A later `load_model`
+            // hands back that union, which is how a model can grow past this limit
+            // without any single in-memory save ever being that wide. The guard is
+            // still sound, because Mentat's `assert!` counts only the datoms in the
+            // transact being applied — on-disk accumulation for a cardinality-many
+            // attribute adds no rows to the search tables (proven by
+            // `churned_resave_reports_error_not_abort`). The consequence of the
+            // retraction bug is that the *error* can appear on a re-save of a loaded
+            // model whose author never built a measure that wide; fixing retraction
+            // removes that surprise, not this guard.
+            let widest_categories = model
                 .measures
                 .values()
-                .max_by_key(|m| m.categories.len())
-                .expect("non-empty: widest_categories > 0");
-            return Err(StoreError::Integrity(format!(
-                "measure {} (\"{}\") has {} categories; a measure is a single \
+                .map(|m| m.categories.len())
+                .max()
+                .unwrap_or(0);
+            if widest_categories > MAX_CATEGORIES_PER_MEASURE {
+                let worst = model
+                    .measures
+                    .values()
+                    .max_by_key(|m| m.categories.len())
+                    .expect("non-empty: widest_categories > 0");
+                return Err(StoreError::Integrity(format!(
+                    "measure {} (\"{}\") has {} categories; a measure is a single \
                  indivisible entity and the store aborts on a transact carrying \
                  {} or more datoms for one attribute, so at most {} categories \
                  per measure can be saved",
-                worst.id.0,
-                worst.name.0,
-                widest_categories,
-                MAX_DATOMS_PER_TRANSACT_QUEUE,
-                MAX_CATEGORIES_PER_MEASURE,
-            )));
+                    worst.id.0,
+                    worst.name.0,
+                    widest_categories,
+                    MAX_DATOMS_PER_TRANSACT_QUEUE,
+                    MAX_CATEGORIES_PER_MEASURE,
+                )));
+            }
+            // id, name, value-type, kind, formula, description, sql-source, plus
+            // one :measure/categories datom per category (cardinality-many); take
+            // the widest measure in this model rather than guessing.
+            transact_group(&mut ip, 7 + widest_categories, measures)?;
         }
-        // id, name, value-type, kind, formula, description, sql-source, plus
-        // one :measure/categories datom per category (cardinality-many); take
-        // the widest measure in this model rather than guessing.
-        transact_group(&mut ip, 7 + widest_categories, measures)?;
 
         // Diff the cells against what is stored, so the store's cells end up
         // exactly `model.inputs`: an unchanged cell is not re-asserted, a value
         // left under another type's attribute is retracted, and a stored cell
         // the model no longer has is retracted whole (it used to linger on
         // disk and come back on the next load).
-        let mut stored = stored_cells(&ip)?;
         let mut diff = CellDiff::default();
-        for ((mid, coord), val) in model.inputs.iter() {
-            let coord_json = serde_json::to_string(coord)?;
-            let key = convert::cell_key(*mid, &coord_json);
-            diff.cell(*mid, &coord_json, &key, stored.remove(&key), Some(val))?;
-        }
-        for (key, old) in stored {
-            // A partial load never saw this measure's cells: not ours to drop.
-            if let Some(scope) = &self.loaded_scope {
-                let mid = key.split_once("::").and_then(|(m, _)| m.parse().ok());
-                if !mid.is_some_and(|m| scope.contains(&MeasureId(m))) {
-                    continue;
-                }
+        if let Some(cells) = cells {
+            // Each cell once: a second diff would read the store before the first.
+            let cells: std::collections::BTreeSet<_> = cells.iter().collect();
+            for key @ (mid, coord) in cells {
+                let coord_json = serde_json::to_string(coord)?;
+                let ck = convert::cell_key(*mid, &coord_json);
+                let old = stored_cell(&ip, &ck)?;
+                diff.cell(*mid, &coord_json, &ck, old, model.inputs.get(key))?;
             }
-            diff.cell(MeasureId(0), "", &key, Some(old), None)?;
+        } else {
+            let mut stored = stored_cells(&ip)?;
+            for ((mid, coord), val) in model.inputs.iter() {
+                let coord_json = serde_json::to_string(coord)?;
+                let key = convert::cell_key(*mid, &coord_json);
+                diff.cell(*mid, &coord_json, &key, stored.remove(&key), Some(val))?;
+            }
+            for (key, old) in stored {
+                // A partial load never saw this measure's cells: not ours to drop.
+                if let Some(scope) = &self.loaded_scope {
+                    let mid = key.split_once("::").and_then(|(m, _)| m.parse().ok());
+                    if !mid.is_some_and(|m| scope.contains(&MeasureId(m))) {
+                        continue;
+                    }
+                }
+                diff.cell(MeasureId(0), "", &key, Some(old), None)?;
+            }
         }
         diff.transact(&mut ip)?;
 
-        let mut views = Vec::new();
-        for v in model.views.values() {
-            let json = serde_json::to_string(v)?;
-            views.push(format!(
-                "{{:view/id {} :view/json {}}}",
-                v.id.0,
-                convert::edn_str_pub(&json)
-            ));
-        }
-        // :view/id + :view/json.
-        transact_group(&mut ip, 2, views)?;
+        if structure {
+            let mut views = Vec::new();
+            for v in model.views.values() {
+                let json = serde_json::to_string(v)?;
+                views.push(format!(
+                    "{{:view/id {} :view/json {}}}",
+                    v.id.0,
+                    convert::edn_str_pub(&json)
+                ));
+            }
+            // :view/id + :view/json.
+            transact_group(&mut ip, 2, views)?;
 
-        // Drop what the model no longer has (an undone add, a delete): only
-        // cells were diffed before, so a dropped measure, view, item or
-        // category came back on the next load. A partial load still loads
-        // all four in full, so absence here means deleted. Views and measures
-        // first, so nothing kept refers to a dropped item or category.
-        retract_dropped(&mut ip, "view", 2, |id| {
-            model.views.contains_key(&improv_core_model::ViewId(id))
-        })?;
-        // A measure is one indivisible entity of unknown stored width: one
-        // per transact (drops are rare: an undo or a delete).
-        retract_dropped(&mut ip, "measure", MAX_DATOMS_PER_TRANSACT, |id| {
-            model.measures.contains_key(&MeasureId(id))
-        })?;
-        retract_dropped(&mut ip, "item", 3, |id| {
-            model.items.contains_key(&improv_core_model::ItemId(id))
-        })?;
-        retract_dropped(&mut ip, "category", 2, |id| {
-            model.categories.contains_key(&CategoryId(id))
-        })?;
+            // Drop what the model no longer has (an undone add, a delete): only
+            // cells were diffed before, so a dropped measure, view, item or
+            // category came back on the next load. A partial load still loads
+            // all four in full, so absence here means deleted. Views and measures
+            // first, so nothing kept refers to a dropped item or category.
+            if cells.is_some() {
+                // Only a full save diffs every cell, which drops these.
+                retract_cells_of_dropped_measures(&mut ip, model)?;
+            }
+            retract_dropped(&mut ip, "view", 2, |id| {
+                model.views.contains_key(&improv_core_model::ViewId(id))
+            })?;
+            // A measure is one indivisible entity of unknown stored width: one
+            // per transact (drops are rare: an undo or a delete).
+            retract_dropped(&mut ip, "measure", MAX_DATOMS_PER_TRANSACT, |id| {
+                model.measures.contains_key(&MeasureId(id))
+            })?;
+            retract_dropped(&mut ip, "item", 3, |id| {
+                model.items.contains_key(&improv_core_model::ItemId(id))
+            })?;
+            retract_dropped(&mut ip, "category", 2, |id| {
+                model.categories.contains_key(&CategoryId(id))
+            })?;
 
-        // Singleton meta: external function defs + external-call measures +
-        // what-if scenarios, each as a JSON blob on one entity (only if any
-        // are non-empty, or one is stored that the model emptied: skipping
-        // that write brought an undone LAMBDA back).
-        let stored_meta = rel_on(&ip, "[:find ?e :where [?e :meta/singleton 1]]")?;
-        if !model.external_fns.is_empty()
-            || !model.external_calls.is_empty()
-            || !model.scenarios.is_empty()
-            || !model.lambdas.is_empty()
-            || !stored_meta.is_empty()
-        {
-            let fns_json = serde_json::to_string(&model.external_fns)?;
-            let calls_json = serde_json::to_string(&model.external_calls)?;
-            let scen_json = serde_json::to_string(&model.scenarios)?;
-            let lambdas_json = serde_json::to_string(&model.lambdas)?;
-            let edn = format!(
+            // Singleton meta: external function defs + external-call measures +
+            // what-if scenarios, each as a JSON blob on one entity (only if any
+            // are non-empty, or one is stored that the model emptied: skipping
+            // that write brought an undone LAMBDA back).
+            let stored_meta = rel_on(&ip, "[:find ?e :where [?e :meta/singleton 1]]")?;
+            if !model.external_fns.is_empty()
+                || !model.external_calls.is_empty()
+                || !model.scenarios.is_empty()
+                || !model.lambdas.is_empty()
+                || !stored_meta.is_empty()
+            {
+                let fns_json = serde_json::to_string(&model.external_fns)?;
+                let calls_json = serde_json::to_string(&model.external_calls)?;
+                let scen_json = serde_json::to_string(&model.scenarios)?;
+                let lambdas_json = serde_json::to_string(&model.lambdas)?;
+                let edn = format!(
                 "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {} :meta/scenarios {} :meta/lambdas {}}}]",
                 convert::edn_str_pub(&fns_json),
                 convert::edn_str_pub(&calls_json),
                 convert::edn_str_pub(&scen_json),
                 convert::edn_str_pub(&lambdas_json),
             );
-            ip.transact(edn)?;
+                ip.transact(edn)?;
+            }
         }
 
         // Read before commit, under our write lock, so a writer racing in right
         // after the commit is never mistaken for our own transaction.
-        let new_tx = high_water(&ip)?;
-        ip.commit()?;
-        self.loaded_tx = Some(new_tx);
-        Ok(())
-    }
-
-    /// Persist only `cells` of `model`: each named cell is upserted to its
-    /// value in `model.inputs`, or retracted if the model has none. Nothing
-    /// else is read or written, so the cost is O(cells), not O(model): one
-    /// index seek per cell to read what is stored.
-    ///
-    /// The caller names every cell it changed since this handle's last load
-    /// or save, and must not have changed anything else (structure, views,
-    /// meta): those need [`ModelStore::save_model`]. A cell of a measure the
-    /// store does not hold is an error, writing nothing.
-    ///
-    /// Same atomicity and optimistic concurrency as `save_model`: one
-    /// transaction, refused with [`StoreError::Conflict`] (writing nothing)
-    /// if another writer committed since this handle loaded or saved.
-    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
-        let mut ip = self.store.begin_transaction()?;
-        if let Some(loaded) = self.loaded_tx {
-            if high_water(&ip)? != loaded {
-                return Err(StoreError::Conflict(CONFLICT_MSG.into()));
-            }
-        }
-        // Each cell once: a second diff would read the store before the first.
-        let cells: std::collections::BTreeSet<&(MeasureId, Coordinate)> = cells.iter().collect();
-        let mut diff = CellDiff::default();
-        for key @ (mid, coord) in cells {
-            let coord_json = serde_json::to_string(coord)?;
-            let ck = convert::cell_key(*mid, &coord_json);
-            let old = stored_cell(&ip, &ck)?;
-            diff.cell(*mid, &coord_json, &ck, old, model.inputs.get(key))?;
-        }
-        diff.transact(&mut ip)?;
         let new_tx = high_water(&ip)?;
         ip.commit()?;
         self.loaded_tx = Some(new_tx);
@@ -820,6 +843,26 @@ fn retract_dropped(
         }
     }
     transact_group(ip, datoms, gone)
+}
+
+/// Retract the cells of every stored measure `model` dropped: one index
+/// seek per measure on the `:cell/measure` ref, then each cell whole.
+fn retract_cells_of_dropped_measures(ip: &mut InProgress<'_, '_>, model: &Model) -> Result<()> {
+    let mut gone = Vec::new();
+    for row in rel_on(ip, "[:find ?e ?id :where [?e :measure/id ?id]]")? {
+        if model
+            .measures
+            .contains_key(&MeasureId(convert::as_u32(&row[1])?))
+        {
+            continue;
+        }
+        let m = convert::as_entid(&row[0])?;
+        for c in rel_on(ip, &format!("[:find ?c :where [?c :cell/measure {m}]]"))? {
+            gone.push(format!("[:db/retractEntity {}]", convert::as_entid(&c[0])?));
+        }
+    }
+    // Key, measure, coord and a value or two (an old store may hold several).
+    transact_group(ip, 6, gone)
 }
 
 /// A stored cell entity, as `save_model` needs it to diff or retract it.
@@ -1590,7 +1633,8 @@ mod tests {
     fn random_edit(m: &mut Model, rng: &mut Rng) -> (MeasureId, Coordinate) {
         let (a, b) = (CategoryId(1), CategoryId(2));
         let i = ItemId(10 + rng.below(4) as u32);
-        let (mid, at) = if rng.below(3) == 0 {
+        let text = m.measures.contains_key(&MeasureId(101));
+        let (mid, at) = if text && rng.below(3) == 0 {
             (MeasureId(101), Coordinate::from_pairs([(a, i)]))
         } else {
             let j = ItemId(20 + rng.below(4) as u32);
@@ -1605,6 +1649,27 @@ mod tests {
             _ => m.set_input(mid, at.clone(), Value::Number(rng.below(4) as f64)),
         }
         (mid, at)
+    }
+
+    /// One random structural edit: a new item, a renamed category, a new
+    /// view, or the text measure dropped (with its cells, which the change
+    /// set does not name) or added back.
+    fn random_structure_edit(m: &mut Model, rng: &mut Rng, round: u32) {
+        match rng.below(4) {
+            0 => m.add_item(ItemId(1000 + round), CategoryId(2), format!("n{round}")),
+            1 => m.categories.get_mut(&CategoryId(1)).unwrap().name = Name(format!("A{round}")),
+            2 => m.add_view(
+                serde_json::from_value(serde_json::json!({
+                    "id": round, "name": format!("v{round}"), "measure": 100
+                }))
+                .expect("a view"),
+            ),
+            _ if m.measures.contains_key(&MeasureId(101)) => {
+                m.measures.remove(&MeasureId(101));
+                m.inputs.retain(|k, _| k.0 != MeasureId(101));
+            }
+            _ => m.add_measure(edit_model().measures[&MeasureId(101)].clone()),
+        }
     }
 
     /// Random edits saved through `save_cells` leave the store exactly as
@@ -1623,10 +1688,18 @@ mod tests {
             b.save_model(&m).expect("seed b");
             let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
             for round in 0..30 {
+                let structure = round % 4 == 3;
+                if structure {
+                    random_structure_edit(&mut m, &mut rng, round);
+                }
                 let changed: Vec<_> = (0..1 + rng.below(4))
                     .map(|_| random_edit(&mut m, &mut rng))
                     .collect();
-                a.save_cells(&m, &changed).expect("save_cells");
+                if structure {
+                    a.save_changes(&m, &changed, true).expect("save_changes");
+                } else {
+                    a.save_cells(&m, &changed).expect("save_cells");
+                }
                 b.save_model(&m).expect("save_model");
                 if round % 10 == 9 {
                     let la = ModelStore::open(&pa).unwrap().load_model().unwrap();
