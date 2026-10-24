@@ -248,6 +248,14 @@ pub struct ImprovApp {
     /// Worksheet ▸ Add …: open the browser at this "new …" line and focus it
     /// next frame.
     reveal: Option<NewThing>,
+    /// The browser row Worksheet ▸ Rename and Delete… act on (a click picks
+    /// it); `None`, or a deleted one, falls back to the worksheet's measure.
+    browser_pick: Option<Thing>,
+    /// The browser row being renamed in place: what, the line's text, and
+    /// whether the line still has to take the keyboard.
+    renaming: Option<(Thing, String, bool)>,
+    /// Worksheet ▸ Delete… is asking to confirm this, with its question.
+    confirm_delete: Option<(Thing, String)>,
 }
 
 /// The measured screen geometry of the grid's margin gutters and the table they
@@ -480,6 +488,76 @@ fn save_error(e: improv_store::StoreError) -> String {
         }
         e => format!("save failed: {e}"),
     }
+}
+
+/// A category, item or measure: what Worksheet ▸ Rename and Delete… act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Thing {
+    Category(CategoryId),
+    Item(ItemId),
+    Measure(MeasureId),
+}
+
+/// Whether `e` names category `c`: `POSITION(c)`, `x OVER c`, `BY`, `EXCEPT`.
+fn expr_names_category(e: &Expr, c: CategoryId) -> bool {
+    match e {
+        Expr::Category(x) => *x == c,
+        Expr::Ref(_, d) => d.by.contains(&c) || d.over.contains(&c) || d.except.contains(&c),
+        Expr::UnaryOp(_, a) => expr_names_category(a, c),
+        Expr::BinaryOp(_, a, b) => expr_names_category(a, c) || expr_names_category(b, c),
+        Expr::Call(_, a) => a.iter().any(|x| expr_names_category(x, c)),
+        Expr::Literal(_) => false,
+    }
+}
+
+/// Drop item `i` from a view's filters and page pins.
+fn scrub_item(filters: &mut [Filter], pages: &mut Vec<(CategoryId, ItemId)>, i: ItemId) {
+    for f in filters {
+        f.items.retain(|j| *j != i);
+    }
+    pages.retain(|(_, j)| *j != i);
+}
+
+/// `n word`, with an `s` unless `n` is 1.
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The model browser's rename line, drawn in place of the row being
+/// renamed, its text selected when it takes the keyboard. Returns
+/// `Some(Some(name))` on Enter and `Some(None)` when it ends otherwise (Esc,
+/// a click elsewhere).
+fn rename_line(ui: &mut egui::Ui, buf: &mut String, focus: &mut bool) -> Option<Option<String>> {
+    let id = egui::Id::new("rename_line");
+    let resp = ui
+        .scope(|ui| {
+            // The theme's gray, not the list's white: the selection shows.
+            ui.visuals_mut().selection.bg_fill = crate::theme::LIGHT_GRAY;
+            ui.add(
+                egui::TextEdit::singleline(buf)
+                    .id(id)
+                    .desired_width((ui.available_width() - 8.0).clamp(80.0, 220.0)),
+            )
+        })
+        .inner;
+    if *focus {
+        if resp.has_focus() {
+            *focus = false;
+        } else {
+            resp.request_focus();
+            let mut s = egui::TextEdit::load_state(ui.ctx(), id).unwrap_or_default();
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(buf.chars().count()),
+            );
+            s.cursor.set_char_range(Some(all));
+            s.store(ui.ctx(), id);
+        }
+    }
+    resp.lost_focus().then(|| {
+        ui.input(|i| i.key_pressed(egui::Key::Enter))
+            .then(|| buf.trim().to_owned())
+    })
 }
 
 /// The smallest unused id (>= 1) after `ids`.
@@ -1081,6 +1159,9 @@ impl ImprovApp {
             file_panel: None,
             file_path: String::new(),
             reveal: None,
+            browser_pick: None,
+            renaming: None,
+            confirm_delete: None,
         })
     }
 
@@ -3357,6 +3438,7 @@ impl eframe::App for ImprovApp {
         self.info_panel(ctx, ws);
         self.function_help(ctx, ws);
         self.file_panel(ctx, ws);
+        self.delete_panel(ctx, ws);
         // Last, so it floats over every panel.
         self.menu_bar(ctx, ws);
     }
@@ -3425,6 +3507,7 @@ impl ImprovApp {
             // In-memory models have no store: never claim "saved".
             Command::SaveModel | Command::RevertToSaved => !self.db.is_empty(),
             Command::AddItem => self.add_item_target().is_some(),
+            Command::Rename | Command::Delete => self.edit_target().is_some(),
             _ => true,
         }
     }
@@ -3447,6 +3530,19 @@ impl ImprovApp {
                 }
             }
             Command::AddInputMeasure => self.reveal_new(NewThing::Input),
+            Command::Rename => {
+                if let Some(t) = self.edit_target() {
+                    self.start_rename(t);
+                }
+            }
+            Command::Delete => {
+                if let Some(t) = self.edit_target() {
+                    match self.delete_question(t) {
+                        Ok(q) => self.confirm_delete = Some((t, q)),
+                        Err(e) => self.status = e,
+                    }
+                }
+            }
             Command::ModelBrowser => self.show_browser = !self.show_browser,
             Command::SaveModel => {
                 // Every category, item, measure, view and the meta, plus
@@ -3678,6 +3774,292 @@ impl ImprovApp {
         Ok(msg)
     }
 
+    /// `t`'s kind and name; `None` when the model has no such thing.
+    fn thing_name(&self, t: Thing) -> Option<(&'static str, &str)> {
+        let m = &self.model;
+        match t {
+            Thing::Category(c) => m
+                .categories
+                .get(&c)
+                .map(|x| ("category", x.name.0.as_str())),
+            Thing::Item(i) => m.items.get(&i).map(|x| ("item", x.name.0.as_str())),
+            Thing::Measure(id) => m.measures.get(&id).map(|x| ("measure", x.name.0.as_str())),
+        }
+    }
+
+    /// What Worksheet ▸ Rename and Delete… act on: the browser's pick while
+    /// it exists, else the focused worksheet's measure.
+    fn edit_target(&self) -> Option<Thing> {
+        self.browser_pick
+            .filter(|t| self.thing_name(*t).is_some())
+            .or_else(|| self.selected().map(Thing::Measure))
+    }
+
+    /// Open `t`'s rename line in the model browser.
+    fn start_rename(&mut self, t: Thing) {
+        if let Some((_, name)) = self.thing_name(t) {
+            self.renaming = Some((t, name.to_owned(), true));
+            self.browser_pick = Some(t);
+            self.show_browser = true;
+        }
+    }
+
+    /// Rename a category, item or measure, as one undoable, autosaved step.
+    /// Formulas hold ids, so they follow the new name. The clash rules are
+    /// [`Self::add_named`]'s. Returns the status line; on failure nothing
+    /// changes.
+    pub fn rename(&mut self, t: Thing, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        let Some((kind, old)) = self.thing_name(t) else {
+            return Err("it no longer exists".into());
+        };
+        let old = old.to_owned();
+        if name.is_empty() {
+            return Err("type a name".into());
+        }
+        if name == old {
+            return Ok(format!("{old} is unchanged"));
+        }
+        let m = &self.model;
+        let taken = |me: Thing| {
+            m.category_by_name(name)
+                .is_some_and(|c| me != Thing::Category(c.id))
+                || m.measure_by_name(name)
+                    .is_some_and(|x| me != Thing::Measure(x.id))
+                || m.lambda_by_name(name).is_some()
+        };
+        if let Thing::Item(i) = t {
+            let cat = m
+                .items
+                .get(&i)
+                .and_then(|it| m.categories.get(&it.category));
+            let dup = cat.is_some_and(|cat| {
+                cat.items
+                    .iter()
+                    .any(|j| *j != i && m.items.get(j).is_some_and(|it| it.name.0 == name))
+            });
+            if let (true, Some(cat)) = (dup, cat) {
+                return Err(format!("{} already has an item {name:?}", cat.name.0));
+            }
+        } else if taken(t) {
+            return Err(format!("{name:?} is already a category, measure or LAMBDA"));
+        }
+        let mut candidate = self.model.clone();
+        let slot = match t {
+            Thing::Category(c) => candidate.categories.get_mut(&c).map(|x| &mut x.name),
+            Thing::Item(i) => candidate.items.get_mut(&i).map(|x| &mut x.name),
+            Thing::Measure(id) => candidate.measures.get_mut(&id).map(|x| &mut x.name),
+        };
+        if let Some(n) = slot {
+            *n = Name(name.to_owned());
+        }
+        self.publish(candidate)?;
+        Ok(format!("renamed {kind} {old} to {name}"))
+    }
+
+    /// Why `t` cannot be deleted, naming what still needs it: the formulas
+    /// that read a measure, the measures that range over or name a category.
+    /// `None` when nothing does (an item never blocks: its cells go with it).
+    fn delete_blockers(&self, t: Thing) -> Option<String> {
+        let m = &self.model;
+        let (_, name) = self.thing_name(t)?;
+        let reads = |x: &Measure, id: MeasureId| {
+            matches!(&x.kind, MeasureKind::Derived(f) if f.referenced_measures().contains(&id))
+                || m.external_calls
+                    .get(&x.id)
+                    .is_some_and(|c| c.arg_measures.contains(&id))
+        };
+        let uses = |x: &Measure, c: CategoryId| {
+            x.categories.contains(&c)
+                || matches!(&x.kind, MeasureKind::Derived(f) if expr_names_category(&f.expr, c))
+        };
+        let (mut users, verb): (Vec<&str>, [&str; 2]) = match t {
+            Thing::Item(_) => return None,
+            Thing::Measure(id) => (
+                m.measures
+                    .values()
+                    .filter(|x| x.id != id && reads(x, id))
+                    .map(|x| x.name.0.as_str())
+                    .collect(),
+                ["references", "reference"],
+            ),
+            Thing::Category(c) => (
+                m.measures
+                    .values()
+                    .filter(|x| uses(x, c))
+                    .map(|x| x.name.0.as_str())
+                    .collect(),
+                ["uses", "use"],
+            ),
+        };
+        if users.is_empty() {
+            return None;
+        }
+        users.sort_unstable();
+        let one = users.len() == 1;
+        Some(format!(
+            "cannot delete {name}: {} still {} it (delete or redefine {} first)",
+            users.join(", "),
+            verb[usize::from(!one)],
+            if one { "it" } else { "them" }
+        ))
+    }
+
+    /// Worksheet ▸ Delete…'s question for `t`, saying what goes with it, or
+    /// why it cannot be deleted.
+    fn delete_question(&self, t: Thing) -> Result<String, String> {
+        if self.thing_name(t).is_none() {
+            return Err("it no longer exists".into());
+        }
+        if let Some(why) = self.delete_blockers(t) {
+            return Err(why);
+        }
+        let m = &self.model;
+        let cells = |hit: &dyn Fn(&(MeasureId, improv_core_model::Coordinate)) -> bool| {
+            plural(m.inputs.keys().filter(|k| hit(k)).count(), "cell")
+        };
+        Ok(match t {
+            Thing::Measure(id) if m.measures[&id].is_derived() => {
+                format!("Delete the formula {}?", m.measures[&id].name.0)
+            }
+            Thing::Measure(id) => format!(
+                "Delete the input measure {} and its {}?",
+                m.measures[&id].name.0,
+                cells(&|(k, _)| *k == id)
+            ),
+            Thing::Item(i) => format!(
+                "Delete the item {} of {} and its {}?",
+                m.items[&i].name.0,
+                m.categories
+                    .get(&m.items[&i].category)
+                    .map_or("?", |c| c.name.0.as_str()),
+                cells(&|(_, at)| at.dims.values().any(|j| *j == i))
+            ),
+            Thing::Category(c) => format!(
+                "Delete the category {} and its {}?",
+                m.categories[&c].name.0,
+                plural(m.categories[&c].items.len(), "item")
+            ),
+        })
+    }
+
+    /// Delete a category (once no measure uses it) with its items, an item
+    /// with its cells, or a measure (once no formula reads it) with its
+    /// cells, as one undoable, autosaved step. Saved views lose a deleted
+    /// measure's matrices (a view left with none goes) and a deleted item's
+    /// filter and page entries. Returns the status line; on failure nothing
+    /// changes.
+    pub fn delete(&mut self, t: Thing) -> Result<String, String> {
+        let Some((kind, name)) = self.thing_name(t) else {
+            return Err("it no longer exists".into());
+        };
+        let msg = format!("deleted {kind} {name}");
+        if let Some(why) = self.delete_blockers(t) {
+            return Err(why);
+        }
+        let mut c = self.model.clone();
+        match t {
+            Thing::Measure(id) => {
+                c.measures.remove(&id);
+                c.inputs.retain(|(m, _), _| *m != id);
+                c.sql_sources.remove(&id);
+                c.external_calls.remove(&id);
+                for s in c.scenarios.values_mut() {
+                    s.overrides.retain(|(m, _), _| *m != id);
+                }
+                c.views = std::mem::take(&mut c.views)
+                    .into_iter()
+                    .filter_map(|(vid, v)| {
+                        let left: Vec<MatrixPlacement> = v
+                            .matrices()
+                            .into_iter()
+                            .filter(|p| p.measure != id)
+                            .collect();
+                        let mut left = left.into_iter();
+                        let primary = left.next()?;
+                        Some((
+                            vid,
+                            View::from_matrices(vid, v.name, primary, left.collect()),
+                        ))
+                    })
+                    .collect();
+            }
+            Thing::Item(i) => {
+                let cat = c.items.remove(&i).map(|x| x.category);
+                if let Some(cat) = cat.and_then(|k| c.categories.get_mut(&k)) {
+                    cat.items.retain(|j| *j != i);
+                }
+                let gone = |at: &improv_core_model::Coordinate| at.dims.values().any(|j| *j == i);
+                c.inputs.retain(|(_, at), _| !gone(at));
+                for s in c.scenarios.values_mut() {
+                    s.overrides.retain(|(_, at), _| !gone(at));
+                }
+                for v in c.views.values_mut() {
+                    scrub_item(&mut v.filters, &mut v.page_items, i);
+                    for p in &mut v.placements {
+                        scrub_item(&mut p.filters, &mut p.page_items, i);
+                    }
+                }
+            }
+            Thing::Category(cat) => {
+                for i in c
+                    .categories
+                    .remove(&cat)
+                    .map(|x| x.items)
+                    .unwrap_or_default()
+                {
+                    c.items.remove(&i);
+                }
+            }
+        }
+        self.publish(c)?;
+        self.browser_pick = None;
+        for m in &mut self.matrices {
+            for f in &mut m.filters {
+                f.items.retain(|j| self.model.items.contains_key(j));
+            }
+        }
+        self.after_history_restore();
+        Ok(msg)
+    }
+
+    /// Worksheet ▸ Delete…'s confirmation: a NeXT panel asking the question,
+    /// with Delete (it takes the keyboard, so Enter or Space confirms) and
+    /// Cancel (also Esc or the close box).
+    fn delete_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let Some((t, question)) = self.confirm_delete.clone() else {
+            return;
+        };
+        let mut open = true;
+        let (mut yes, mut no) = (false, false);
+        let rect = egui::Rect::from_center_size(ws.center(), egui::vec2(360.0, 104.0));
+        let win = crate::nxwin::NxWindow::new("delete_panel", "Delete");
+        let rect = anchored_rect(ctx, win.id(), rect);
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label(&question);
+                ui.label("Edit ▸ Undo brings it back.");
+                ui.horizontal(|ui| {
+                    let del = ui.button("Delete");
+                    if ctx.memory(|m| m.focused().is_none()) {
+                        del.request_focus();
+                    }
+                    yes = del.clicked();
+                    no = ui.button("Cancel").clicked();
+                });
+            });
+        no |= !open || ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        if yes {
+            self.confirm_delete = None;
+            self.status = self.delete(t).unwrap_or_else(|e| e);
+        } else if no {
+            self.confirm_delete = None;
+        }
+    }
+
     /// Whether Quit may close now. Edits to an in-memory model can't be saved,
     /// so the first Quit only warns and arms; a second one closes.
     fn quit_allowed(&mut self) -> bool {
@@ -3704,6 +4086,16 @@ impl ImprovApp {
         // Kept until the line holds the keyboard: a window's first frame
         // is a sizing pass, whose disabled widgets give focus up.
         let reveal = self.reveal;
+        let mut rename = self.renaming.take();
+        let renaming = rename.as_ref().map(|r| r.0);
+        let rename_cat = match renaming {
+            Some(Thing::Item(i)) => self.model.items.get(&i).map(|it| it.category),
+            _ => None,
+        };
+        let pick_now = self.browser_pick;
+        // This frame's clicks: a row picked, a row double-clicked to rename,
+        // and the rename line's outcome.
+        let (mut picked, mut start, mut done) = (None, None, None);
         let mut add: Option<NewThing> = None;
         let mut add_name = String::new();
         let mut pick = |what: NewThing, name: Option<String>| {
@@ -3726,8 +4118,12 @@ impl ImprovApp {
                         egui::CollapsingHeader::new("Categories")
                             .default_open(false)
                             .open(
-                                matches!(reveal, Some(NewThing::Category | NewThing::Item(_)))
-                                    .then_some(true),
+                                (matches!(reveal, Some(NewThing::Category | NewThing::Item(_)))
+                                    || matches!(
+                                        renaming,
+                                        Some(Thing::Category(_) | Thing::Item(_))
+                                    ))
+                                .then_some(true),
                             )
                             .show(ui, |ui| {
                                 let mut cats: Vec<CategoryId> =
@@ -3735,21 +4131,60 @@ impl ImprovApp {
                                 cats.sort_by_key(|c| c.0);
                                 for cid in cats {
                                     let cat = &self.model.categories[&cid];
-                                    egui::CollapsingHeader::new(&cat.name.0)
+                                    let me = Thing::Category(cid);
+                                    if let Some((_, buf, focus)) =
+                                        rename.as_mut().filter(|r| r.0 == me)
+                                    {
+                                        done = rename_line(ui, buf, focus).map(|r| (me, r));
+                                        continue;
+                                    }
+                                    let open = reveal == Some(NewThing::Item(cid))
+                                        || rename_cat == Some(cid);
+                                    let header = egui::CollapsingHeader::new(&cat.name.0)
                                         .id_salt(("cat", cid.0))
-                                        .open((reveal == Some(NewThing::Item(cid))).then_some(true))
+                                        .open(open.then_some(true))
                                         .show(ui, |ui| {
                                             let mut items = cat.items.clone();
                                             items.sort_by_key(|i| i.0);
-                                            for iid in items {
-                                                if let Some(it) = self.model.items.get(&iid) {
-                                                    ui.label(&it.name.0);
+                                            ui.scope(|ui| {
+                                                white_selection(ui);
+                                                for iid in items {
+                                                    let Some(it) = self.model.items.get(&iid)
+                                                    else {
+                                                        continue;
+                                                    };
+                                                    let me = Thing::Item(iid);
+                                                    if let Some((_, buf, focus)) =
+                                                        rename.as_mut().filter(|r| r.0 == me)
+                                                    {
+                                                        done = rename_line(ui, buf, focus)
+                                                            .map(|r| (me, r));
+                                                        continue;
+                                                    }
+                                                    let r = ui.selectable_label(
+                                                        pick_now == Some(me),
+                                                        &it.name.0,
+                                                    );
+                                                    // The first click picked it: two
+                                                    // quick clicks on two rows are no
+                                                    // double-click.
+                                                    if r.double_clicked() && pick_now == Some(me) {
+                                                        start = Some(me);
+                                                    } else if r.clicked() {
+                                                        picked = Some(me);
+                                                    }
                                                 }
-                                            }
+                                            });
                                             let what = NewThing::Item(cid);
                                             let f = reveal == Some(what);
                                             pick(what, add_line(ui, what.field(), "New item", f));
-                                        });
+                                        })
+                                        .header_response;
+                                    // A double-click toggles a header twice, so a
+                                    // category renames through Worksheet ▸ Rename.
+                                    if header.clicked() {
+                                        picked = Some(me);
+                                    }
                                 }
                                 let what = NewThing::Category;
                                 let f = reveal == Some(what);
@@ -3758,7 +4193,11 @@ impl ImprovApp {
 
                         egui::CollapsingHeader::new("Measures")
                             .default_open(true)
-                            .open((reveal == Some(NewThing::Input)).then_some(true))
+                            .open(
+                                (reveal == Some(NewThing::Input)
+                                    || matches!(renaming, Some(Thing::Measure(_))))
+                                .then_some(true),
+                            )
                             .show(ui, |ui| {
                                 let mut ids: Vec<MeasureId> =
                                     self.model.measures.keys().copied().collect();
@@ -3770,9 +4209,20 @@ impl ImprovApp {
                                         let kind = if m.is_derived() { "formula" } else { "input" };
                                         let name = m.name.0.clone();
                                         let sel = self.selected() == Some(id);
+                                        let me = Thing::Measure(id);
+                                        if let Some((_, buf, focus)) =
+                                            rename.as_mut().filter(|r| r.0 == me)
+                                        {
+                                            done = rename_line(ui, buf, focus).map(|r| (me, r));
+                                            continue;
+                                        }
                                         ui.horizontal(|ui| {
-                                            if ui.selectable_label(sel, name).clicked() {
+                                            let r = ui.selectable_label(sel, name);
+                                            if r.double_clicked() && pick_now == Some(me) {
+                                                start = Some(me);
+                                            } else if r.clicked() {
                                                 self.focused_mut().select(Some(id));
+                                                picked = Some(me);
                                             }
                                             ui.with_layout(
                                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -3810,6 +4260,29 @@ impl ImprovApp {
         }
         if let Some(what) = add {
             self.run_add(ctx, what.field(), what, &add_name);
+        }
+        // A closed browser ends a rename: its line is gone.
+        self.renaming = rename.filter(|_| open);
+        if let Some(t) = picked {
+            self.browser_pick = Some(t);
+        }
+        match done {
+            Some((t, Some(name))) => match self.rename(t, &name) {
+                Ok(msg) => {
+                    self.renaming = None;
+                    self.status = msg;
+                }
+                // Refused: the line stays, with the reason in the status.
+                Err(e) => {
+                    self.renaming = Some((t, name, true));
+                    self.status = e;
+                }
+            },
+            Some((_, None)) => self.renaming = None,
+            None => {}
+        }
+        if let Some(t) = start {
+            self.start_rename(t);
         }
     }
 
@@ -6462,6 +6935,9 @@ mod tests {
             file_panel: None,
             file_path: String::new(),
             reveal: None,
+            browser_pick: None,
+            renaming: None,
+            confirm_delete: None,
         }
     }
 
@@ -8885,6 +9361,7 @@ mod tests {
             app.info_panel(ctx, ws);
             app.function_help(ctx, ws);
             app.file_panel(ctx, ws);
+            app.delete_panel(ctx, ws);
             app.menu_bar(ctx, ws);
             inspect(ctx);
         })
@@ -13748,6 +14225,409 @@ mod tests {
         app.file_panel = None;
         let shapes = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0).shapes;
         assert!(text_at(&shapes, "Model file or postgres:// URL:").is_none());
+    }
+
+    // -- H7: rename and delete categories, items and measures
+
+    /// Rename each kind: formulas follow (they hold ids), the store has the
+    /// new names after each autosave, and undo walks every rename back.
+    #[test]
+    fn renames_autosave_follow_into_formulas_and_undo() {
+        let db = temp_db("h7_rename");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let price = Thing::Measure(MeasureId(100));
+        assert_eq!(
+            app.rename(price, " Cost ").as_deref(),
+            Ok("renamed measure Price to Cost")
+        );
+        assert_eq!(
+            app.rename(Thing::Category(CategoryId(1)), "Year")
+                .as_deref(),
+            Ok("renamed category Time to Year")
+        );
+        assert_eq!(
+            app.rename(Thing::Item(ItemId(20)), "Gizmo").as_deref(),
+            Ok("renamed item WidgetA to Gizmo")
+        );
+        assert_eq!(
+            app.rename(price, "Cost").as_deref(),
+            Ok("Cost is unchanged")
+        );
+        assert_eq!(
+            app.formula_source(MeasureId(102)).as_deref(),
+            Some("Cost * Quantity")
+        );
+        assert_eq!(app.values_for(MeasureId(102)).len(), 4, "still computes");
+        let stored = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(names_of(&stored), names_of(&app.model), "autosaved");
+        assert!(stored.category_by_name("Year").is_some());
+        for _ in 0..3 {
+            app.undo().expect("undo a rename");
+        }
+        assert_eq!(names_of(&app.model), names_of(&grid_2x2_model()));
+        let stored = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(names_of(&stored), names_of(&grid_2x2_model()), "undo saved");
+    }
+
+    /// A rename to a taken or empty name, or of something gone, changes
+    /// nothing.
+    #[test]
+    fn a_clashing_rename_is_refused() {
+        let mut app = build_app(grid_2x2_model());
+        let before = app.model.clone();
+        let refuse = |app: &mut ImprovApp, t, name: &str| app.rename(t, name).expect_err(name);
+        let price = Thing::Measure(MeasureId(100));
+        assert!(refuse(&mut app, price, "Quantity").contains("already"));
+        assert!(refuse(&mut app, price, "Time").contains("already"));
+        assert!(refuse(&mut app, Thing::Category(CategoryId(1)), "Revenue").contains("already"));
+        assert!(refuse(&mut app, Thing::Item(ItemId(10)), "2026").contains("Time already has"));
+        assert_eq!(refuse(&mut app, price, "  "), "type a name");
+        assert_eq!(
+            refuse(&mut app, Thing::Item(ItemId(99)), "x"),
+            "it no longer exists"
+        );
+        app.define_lambda("Twice = LAMBDA(x, 2 * x)")
+            .expect("a LAMBDA");
+        let before_lambda = app.model.clone();
+        assert!(refuse(&mut app, price, "twice").contains("already"));
+        assert_eq!(app.model, before_lambda);
+        // The same item name in another category is fine.
+        app.rename(Thing::Item(ItemId(20)), "2025")
+            .expect("Product may have a 2025");
+        assert_ne!(app.model, before);
+    }
+
+    /// Deleting a measure that a formula reads, or a category a measure
+    /// ranges over, is refused with the names of what still needs it, as
+    /// `improv.drop_measure` refuses.
+    #[test]
+    fn deleting_what_others_read_is_refused_naming_them() {
+        let mut app = build_app(grid_2x2_model());
+        app.add_derived_measure("Twice", "Revenue * 2")
+            .expect("Twice");
+        app.add_derived_measure("Half", "Revenue / 2")
+            .expect("Half");
+        app.add_named(NewThing::Category, "Region").expect("Region");
+        let region = app.model.category_by_name("Region").expect("added").id;
+        app.add_derived_measure("Share", "Quantity / SUM(Quantity OVER Time)")
+            .expect("Share");
+        let before = app.model.clone();
+        assert_eq!(
+            app.delete(Thing::Measure(MeasureId(102))).unwrap_err(),
+            "cannot delete Revenue: Half, Twice still reference it (delete or redefine them first)"
+        );
+        assert_eq!(
+            app.delete(Thing::Measure(MeasureId(100))).unwrap_err(),
+            "cannot delete Price: Revenue still references it (delete or redefine it first)"
+        );
+        let e = app.delete(Thing::Category(CategoryId(1))).unwrap_err();
+        assert!(e.starts_with("cannot delete Time: "), "{e}");
+        assert!(e.contains("Quantity") && e.contains("Share"), "{e}");
+        assert_eq!(app.model, before, "nothing changed");
+        // The same reason comes from Worksheet ▸ Delete…, with no panel.
+        app.browser_pick = Some(Thing::Measure(MeasureId(102)));
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::Delete);
+        assert!(app.confirm_delete.is_none());
+        assert!(
+            app.status.starts_with("cannot delete Revenue"),
+            "{}",
+            app.status
+        );
+        // Nothing uses Region yet; a measure that names it in OVER does.
+        app.add_named(NewThing::Item(region), "North")
+            .expect("North");
+        assert!(app.delete_blockers(Thing::Category(region)).is_none());
+        let mut named = app.model.clone();
+        let f = parser::parse_expr(&named, "SUM(Quantity OVER Region)").expect("parse");
+        named.add_measure(Measure {
+            id: MeasureId(200),
+            name: Name("Odd".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Derived(f),
+            description: None,
+        });
+        app.model = named;
+        assert!(app
+            .delete_blockers(Thing::Category(region))
+            .is_some_and(|e| e.contains("Odd still uses it")));
+    }
+
+    /// Deletes autosave and undo: a formula, then an input measure with
+    /// its cells (views lose its matrix), an item with its cells, and a
+    /// category with its items. Each undo puts it back, in the store too.
+    #[test]
+    fn deletes_autosave_take_what_goes_with_them_and_undo() {
+        let db = temp_db("h7_delete");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        select(&mut app, MeasureId(101));
+        let both = app.save_view("both").expect("a view of Quantity");
+        select(&mut app, MeasureId(102));
+        let rev_view = app.save_view("rev").expect("a view of Revenue");
+        app.add_named(NewThing::Category, "Region").expect("Region");
+        let region = app.model.category_by_name("Region").expect("added").id;
+        for r in ["North", "South"] {
+            app.add_named(NewThing::Item(region), r).expect("item");
+        }
+        let start = app.model.clone();
+        let reload = || {
+            Store::open(&db)
+                .and_then(|mut s| s.load_model())
+                .expect("reload")
+        };
+
+        assert_eq!(
+            app.delete_question(Thing::Measure(MeasureId(102)))
+                .as_deref(),
+            Ok("Delete the formula Revenue?")
+        );
+        assert_eq!(
+            app.delete(Thing::Measure(MeasureId(102))).as_deref(),
+            Ok("deleted measure Revenue")
+        );
+        assert!(
+            !app.model.views.contains_key(&rev_view),
+            "its only matrix went"
+        );
+        assert!(app.model.views.contains_key(&both));
+        assert!(app
+            .matrices
+            .iter()
+            .all(|m| m.measure != Some(MeasureId(102))));
+        assert_eq!(
+            app.delete_question(Thing::Measure(MeasureId(101)))
+                .as_deref(),
+            Ok("Delete the input measure Quantity and its 4 cells?")
+        );
+        app.delete(Thing::Measure(MeasureId(101)))
+            .expect("Quantity");
+        assert!(app.model.inputs.keys().all(|(m, _)| *m != MeasureId(101)));
+        assert!(app.model.views.is_empty(), "the Quantity view went");
+        assert_eq!(
+            app.delete_question(Thing::Item(ItemId(20))).as_deref(),
+            Ok("Delete the item WidgetA of Product and its 1 cell?")
+        );
+        app.delete(Thing::Item(ItemId(20))).expect("WidgetA");
+        assert!(!app.model.categories[&CategoryId(2)]
+            .items
+            .contains(&ItemId(20)));
+        assert_eq!(app.model.inputs.len(), 1, "Price's WidgetA cell went");
+        assert_eq!(
+            app.delete_question(Thing::Category(region)).as_deref(),
+            Ok("Delete the category Region and its 2 items?")
+        );
+        app.delete(Thing::Category(region)).expect("Region");
+        assert!(app.model.category_by_name("Region").is_none());
+        assert!(app.model.items.values().all(|i| i.category != region));
+        let stored = reload();
+        assert_eq!(names_of(&stored), names_of(&app.model), "autosaved");
+        assert_eq!(stored.inputs, app.model.inputs);
+        assert_eq!(
+            app.delete(Thing::Category(region)).unwrap_err(),
+            "it no longer exists"
+        );
+
+        for _ in 0..4 {
+            app.undo().expect("undo a delete");
+        }
+        assert_eq!(app.model, start, "every delete undone");
+        assert_eq!(reload(), start, "and saved");
+        app.redo().expect("redo the formula delete");
+        assert!(!app.model.measures.contains_key(&MeasureId(102)));
+    }
+
+    /// An item's delete drops it from saved views' filters and page pins.
+    #[test]
+    fn deleting_an_item_scrubs_it_from_views() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        app.toggle_filter_item(CategoryId(2), ItemId(21));
+        let v = app.save_view("filtered").expect("view");
+        let mut view = app.model.views[&v].clone();
+        view.page_items = vec![(CategoryId(2), ItemId(20))];
+        view.placements = vec![view.primary()];
+        app.model.add_view(view);
+        app.delete(Thing::Item(ItemId(20))).expect("delete");
+        let view = &app.model.views[&v];
+        for p in view.matrices() {
+            assert!(p.filters.iter().all(|f| !f.items.contains(&ItemId(20))));
+            assert!(p.page_items.is_empty());
+        }
+        assert!(app.matrices[0]
+            .filters
+            .iter()
+            .all(|f| !f.items.contains(&ItemId(20))));
+    }
+
+    /// The browser's rename line: double-click a measure, its name comes up
+    /// selected in a line; type and Enter renames. A refused name keeps the
+    /// line; Esc ends it. Worksheet ▸ Rename opens the same line.
+    #[test]
+    fn double_clicking_a_browser_row_renames_it_in_place() {
+        let (mut app, mut desk) = grid_desk();
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let at = painted(&shapes, "Price").expect("Price listed").center();
+        desk.click(&mut app, at);
+        assert_eq!(app.browser_pick, Some(Thing::Measure(MeasureId(100))));
+        desk.click(&mut app, at);
+        assert!(
+            matches!(app.renaming, Some((Thing::Measure(MeasureId(100)), _, _))),
+            "a double-click starts the rename"
+        );
+        desk.settle(&mut app);
+        let line = egui::Id::new("rename_line");
+        assert_eq!(
+            desk.ctx.memory(|m| m.focused()),
+            Some(line),
+            "it has the keys"
+        );
+        let sel = egui::TextEdit::load_state(&desk.ctx, line)
+            .and_then(|s| s.cursor.char_range())
+            .expect("a selection");
+        assert_eq!(
+            (sel.primary.index, sel.secondary.index),
+            (5, 0),
+            "all selected"
+        );
+        // Typing replaces the selection.
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Quantity".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert!(app.status.contains("already"), "{}", app.status);
+        assert!(app.renaming.is_some(), "a refused name keeps the line");
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Unit Price".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert_eq!(app.status, "renamed measure Price to Unit Price");
+        assert!(app.renaming.is_none());
+        assert!(app.can_undo());
+
+        // Worksheet ▸ Rename, then Esc: nothing changes.
+        app.run_command(&desk.ctx, Command::Rename);
+        desk.settle(&mut app);
+        let before = app.model.clone();
+        let esc = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("x".into()), esc]);
+        desk.settle(&mut app);
+        assert!(app.renaming.is_none(), "Esc ends it");
+        assert_eq!(app.model, before);
+        // Rename and Delete… act on the worksheet's measure with no pick.
+        app.browser_pick = None;
+        assert_eq!(app.edit_target(), app.selected().map(Thing::Measure));
+        app.matrices[0].measure = None;
+        assert!(!app.command_enabled(Command::Rename));
+        assert!(!app.command_enabled(Command::Delete));
+    }
+
+    /// Category and item rows rename the same way.
+    #[test]
+    fn categories_and_items_rename_from_the_browser() {
+        let (mut app, mut desk) = grid_desk();
+        app.start_rename(Thing::Item(ItemId(21)));
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Gizmo".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert_eq!(app.status, "renamed item WidgetB to Gizmo");
+        app.start_rename(Thing::Category(CategoryId(2)));
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Kind".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert_eq!(app.status, "renamed category Product to Kind");
+        // Clicking an item picks it for Worksheet ▸ Delete….
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let at = last_text_at(&shapes, "Gizmo")
+            .expect("Gizmo listed")
+            .center();
+        desk.click(&mut app, at);
+        assert_eq!(app.browser_pick, Some(Thing::Item(ItemId(21))));
+        // Closing the browser ends a rename.
+        app.start_rename(Thing::Item(ItemId(21)));
+        app.show_browser = false;
+        desk.settle(&mut app);
+        assert!(app.renaming.is_none());
+    }
+
+    /// Worksheet ▸ Delete… asks first: Cancel (or Esc) keeps it, Enter on
+    /// the focused Delete button deletes, autosaved and undoable.
+    #[test]
+    fn worksheet_delete_asks_before_deleting() {
+        let (mut app, mut desk) = grid_desk();
+        app.add_derived_measure("Twice", "Revenue * 2")
+            .expect("Twice");
+        let twice = app.model.measure_by_name("Twice").expect("added").id;
+        app.browser_pick = Some(Thing::Measure(twice));
+        app.run_command(&desk.ctx, Command::Delete);
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(painted(&shapes, "Delete the formula Twice?").is_some());
+        let cancel = painted(&shapes, "Cancel").expect("Cancel").center();
+        desk.click(&mut app, cancel);
+        assert!(app.confirm_delete.is_none());
+        assert!(app.model.measures.contains_key(&twice), "kept");
+
+        app.run_command(&desk.ctx, Command::Delete);
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        desk.settle(&mut app);
+        assert_eq!(app.status, "deleted measure Twice");
+        assert!(!app.model.measures.contains_key(&twice));
+        assert!(app.confirm_delete.is_none());
+        app.undo().expect("undo");
+        assert!(app.model.measures.contains_key(&twice));
+
+        // Esc cancels, and so does the close box.
+        app.browser_pick = Some(Thing::Measure(twice));
+        app.run_command(&desk.ctx, Command::Delete);
+        desk.settle(&mut app);
+        let esc = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = desk.frame(&mut app, vec![esc]);
+        assert!(app.confirm_delete.is_none());
+        app.run_command(&desk.ctx, Command::Delete);
+        desk.settle(&mut app);
+        let close = close_box_of(&desk.ctx, panel_win("delete_panel")).expect("close box");
+        desk.click(&mut app, close.center());
+        assert!(app.confirm_delete.is_none());
+        assert!(app.model.measures.contains_key(&twice));
+        // A delete that was fine when asked but is refused by Enter time
+        // reports why.
+        app.confirm_delete = Some((Thing::Measure(MeasureId(100)), "Delete?".into()));
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert!(
+            app.status.starts_with("cannot delete Price"),
+            "{}",
+            app.status
+        );
+        assert_eq!(
+            app.delete_question(Thing::Item(ItemId(99))).unwrap_err(),
+            "it no longer exists"
+        );
     }
 
     // -- H8: named LAMBDAs from the formula list's last line

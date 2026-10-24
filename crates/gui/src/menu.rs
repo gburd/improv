@@ -39,6 +39,10 @@ pub enum Command {
     AddItem,
     /// Type a new input measure's name (the model browser's add line).
     AddInputMeasure,
+    /// Rename the model browser's picked category, item or measure, in place.
+    Rename,
+    /// Ask to delete the picked category, item or measure.
+    Delete,
     /// Open the n-th entry of the `views` list passed to [`show`].
     OpenView(usize),
     ToggleChart,
@@ -107,6 +111,8 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Add Category", None, Some(C::AddCategory)),
             ("Add Item", None, Some(C::AddItem)),
             ("Add Input Measure", None, Some(C::AddInputMeasure)),
+            ("Rename", None, Some(C::Rename)),
+            ("Delete…", None, Some(C::Delete)),
         ]),
     ),
     ("View", None, Top::Views),

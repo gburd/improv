@@ -75,6 +75,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   right-click menu ends in a New item line. Each add autosaves and is one
   undo step; a name already used by a category, measure or LAMBDA is
   refused. A new input measure is a number over every category.
+- **Rename and delete in the GUI.** Click a category, item or measure in
+  the model browser to pick it. **Worksheet ▸ Rename** turns its row into
+  a line with the name selected (double-clicking an item or a measure
+  does the same), and Enter renames it. Formulas follow the new name, and
+  the clash rules are the ones adding uses. **Worksheet ▸ Delete…** asks
+  in a panel what goes with it (an input measure's or an item's cells, a
+  category's items), then deletes. A measure a formula reads, or a
+  category a measure ranges over or names, is refused with a message
+  naming them, as `improv.drop_measure` refuses. Saved views lose a
+  deleted measure's worksheets and a deleted item's filters and pages.
+  Each autosaves and is one undo step.
 - **Named LAMBDAs from the GUI's formula list.** `Name = LAMBDA(p, …,
   body)` on the last line defines a named LAMBDA, parsed by
   `parse_definition` and stored as `improv define` stores it; an existing

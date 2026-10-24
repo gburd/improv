@@ -39,7 +39,8 @@ The window has five regions:
   **Import/Export CSV…** opens the CSV wizard; **Edit** has Undo and Redo;
   **Worksheet** has Pivot, Add Matrix, Remove Matrix, Save View, and **Add
   Category**, **Add Item** and **Add Input Measure** (see [Building a model
-  from scratch](#building-a-model-from-scratch)); **View** has **Model Browser**, which shows or hides the model browser,
+  from scratch](#building-a-model-from-scratch)), **Rename** and **Delete…**
+  (see [Renaming and deleting](#renaming-and-deleting)); **View** has **Model Browser**, which shows or hides the model browser,
   then lists the saved views, with a check on the
   current one, and picking one switches the workspace to it; **Graph ▸ Show
   Chart** toggles the chart; **Help ▸ Functions…** (also F1) opens the
@@ -142,6 +143,28 @@ each step:
 
 A name already used by a category, a measure or a LAMBDA is refused, and
 the status line says why.
+
+## Renaming and deleting
+
+Click a category, an item or a measure in the model browser to pick it.
+**Worksheet ▸ Rename** and **Delete…** act on the pick, or on the
+focused worksheet's measure when nothing is picked.
+
+- **Rename:** the row turns into a line holding the name, selected. Type
+  the new name and press Enter; Esc keeps the old one. Double-clicking an
+  item or a measure does the same. Formulas follow the new name. A name
+  already used is refused, and the line stays open with the reason in the
+  status line.
+- **Delete…** asks first, in a small panel that says what goes with it: an
+  input measure's cells, an item's cells, a category's items. Delete (or
+  Enter) deletes, Cancel (or Esc) keeps it. A saved view loses a deleted
+  measure's worksheets, and is deleted if none is left. A measure that a
+  formula reads cannot be deleted, nor can a category that a measure ranges
+  over or names. The status line names what still needs it, as
+  `improv.drop_measure` does: `cannot delete Revenue: Margin still
+  references it (delete or redefine it first)`.
+
+Each rename and delete autosaves and is one undo step.
 
 ## Function help
 
