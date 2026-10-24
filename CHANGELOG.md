@@ -8,15 +8,19 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Incremental cell saves** (B12). `improv_storage_mentat::ModelStore::save_cells(model,
-  cells)` writes only the named cells (an upsert, or a retraction for a
-  cell the model no longer has), reading each by an index seek on its
-  `:cell/key`, under the same high-water conflict check as `save_model`.
-  A one-cell save no longer re-reads every stored cell.
-  `improv_storage_pg::PgModelStore::save_cells` does the same in Postgres
-  (bound cells under the per-cell guard), and `improv_store::Store::save_cells`
-  serves both. `Store::take_save_token` / `adopt_save_token` move a save
-  token without copying its Postgres snapshot.
+- **Incremental saves** (B12). `improv_store::Store::save_changes(model,
+  &ChangeSet)` writes only what an edit changed: the cells it names (each
+  read by an index seek and upserted, or removed), and, if
+  `ChangeSet::structure` is set, the categories, items, measures, views,
+  LAMBDAs and meta, without a pass over every stored cell. It runs under
+  the same high-water conflict check as `save_model`, so a concurrent
+  writer is still refused, never overwritten. `ChangeSet::between(old,
+  new)` derives the set in memory. The same API is in both backends
+  (`ModelStore` / `PgModelStore::save_changes` and `save_cells`).
+  `Store::take_save_token` / `adopt_save_token` move a save token
+  without copying its Postgres snapshot. On a 1M-cell Mentat store a
+  one-cell save takes 4–8 ms (it took 8.1 s), and on a 1M-cell Postgres
+  model 2–11 ms (1.9 s).
 
 - **Tutorials, tested in CI** (guide, new "Tutorials" section). "A
   household budget on the desktop" builds a model with the CLI and opens
@@ -279,6 +283,20 @@ this project follows [Semantic Versioning](https://semver.org/).
   manual + `recalc` modes, whoever writes the table.
 
 ### Changed
+
+- **Saves write what changed** (B12). `improv set` and `stream` save only
+  their cells; `add-*`, `define`, `register-ext`, `scenario` and
+  `save-view` save structure without re-reading the cells. On the 1M-cell
+  store `improv set` takes 5.3 s, all of it the load (it took 13.4 s; the
+  save is now milliseconds). The GUI's autosave after a cell edit, an
+  undo, a formula or a new category writes only what the edit changed: a
+  cell edit on the 1M-cell store takes 64 ms in total, of which the save is
+  16 ms (it took 8.0 s on the UI thread). A failed autosave's changes are
+  kept and written by the next save. The TUI's saves (`w`, saving a view,
+  the quit autosave) write the difference from the last save. Opening a
+  Mentat store no longer re-transacts an installed schema: 0.21 s and
+  490 MB less per open of a 1M-cell store, which every GUI and TUI save
+  paid. Imports and refreshes still do the full save.
 
 - **Mentat 1.18.0** (was 1.16.0). Saving a large model is linear again:
   identity upserts and lookup-refs no longer scan the whole datom view per

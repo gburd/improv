@@ -112,6 +112,21 @@ calls `commit` once at the end. Later steps can use lookup-refs (for example
 earlier steps wrote but have not committed yet. If any step fails, the
 transaction is dropped without a commit and nothing is written.
 
+`save_changes(model, cells, structure)` is the incremental save, with the
+same transaction and conflict check. It writes only the named `cells`, each
+read by an index seek on its `:cell/key` and then upserted, or retracted if
+the model no longer holds it. With `structure` it also runs steps 1–3 and
+5–6, and it retracts a dropped measure's cells by seeking on their
+`:cell/measure`. It never runs the pass over every stored cell (step 4 below)
+unless more than 4,096 cells are named, where one pass is cheaper. The caller
+names everything it changed. `save_cells` is `save_changes` without
+`structure`. On a 1M-cell store one cell saves in 4–8 ms, against about 8 s
+for `save_model`.
+
+`open` transacts the schema only when an attribute is missing. Re-transacting
+an installed schema writes nothing, but Mentat still scans the log for
+metadata changes: 0.2 s per open of a 1M-cell store.
+
 The steps run in this order:
 
 | Step | What is transacted |
@@ -207,8 +222,18 @@ measures it never loaded stay as they are. A full load lifts the limit again.
 | anything else (a path; `""` for in-memory) | `improv_storage_mentat::ModelStore` |
 
 Both backends have the same methods: `load_model`, `load_partial`,
-`save_model`, `reload_model`, `tx_high_water`, `loaded_tx`, `set_loaded_tx`.
-A conflict from either backend becomes `improv_store::StoreError::Conflict`.
+`save_model`, `save_changes`, `save_cells`, `reload_model`, `tx_high_water`,
+`loaded_tx`, `set_loaded_tx`. A conflict from either backend becomes
+`improv_store::StoreError::Conflict`.
+
+`Store::save_changes(model, &ChangeSet)` is the incremental save every front
+end uses for edits. A `ChangeSet` lists the cells (measure, coordinate) that
+were set or cleared, and whether anything else changed (`structure`). The
+front ends say what they edited. `ChangeSet::between(old, new)` computes the
+set from two models in memory, for callers that hold the model as it was. A
+handle with no save token (it has loaded or saved nothing) falls back to
+`save_model`. `take_save_token` and `adopt_save_token` carry the token from
+one handle to the next without copying the Postgres snapshot.
 
 A Postgres target names one model: `postgres://me@db/sales?model=plan`.
 `split_model_url` removes the `model` parameter and passes the rest to the
@@ -278,6 +303,11 @@ returns `Conflict` if `tx` moved since this handle loaded. Then it writes the
   `Conflict`. The save never runs DDL and never deletes a fact-table row;
 - an aggregated measure is read-only: a save that changes one of its cells
   fails with `Integrity`;
+- `save_changes(model, cells, structure)` writes only the named cells and,
+  with `structure`, the catalog rows, and updates the snapshot in place. It
+  never walks every cell or rebuilds the snapshot. On a 1M-cell model one
+  cell saves in 2–11 ms and a structural change in 40 ms, against 1.6–1.9 s
+  for `save_model`;
 - unbound cells that changed are upserted into `improv.cell`, and removed
   ones are deleted;
 - the meta blob is replaced, and `model_version.tx` is incremented.

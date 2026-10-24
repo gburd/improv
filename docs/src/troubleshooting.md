@@ -125,7 +125,7 @@ commands and their arguments.
 
 | Symptom | Likely cause | What to do |
 | --- | --- | --- |
-| Importing a large CSV (`import-csv`) or saving a large store file takes minutes | Before Improv 0.11 (Mentat 1.16.0), writing a store file was quadratic: 100k rows 21 s, 200k 91 s. Mentat 1.18.0 made it linear: 100k 7 s, 1M about 105 s. A one-cell save still rewrites the whole store (17 s at 1M cells; B12 in the [road to 1.0][plan]) | Upgrade to 0.11. For models of millions of cells that change often, keep the data in Postgres or DuckDB, bound with `agg`. |
+| Importing a large CSV (`import-csv`) or saving a large store file takes minutes | Before Improv 0.11 (Mentat 1.16.0), writing a store file was quadratic: 100k rows 21 s, 200k 91 s. Mentat 1.18.0 made it linear: 100k 7 s, 1M about 105 s. In 0.11 a cell edit saves only that cell (milliseconds at 1M cells), but opening a 1M-cell store still loads it all (about 5 s), and an import or refresh still rewrites the whole store (about 8 s at 1M cells) | Upgrade to 0.11. For models of millions of cells that change often, keep the data in Postgres or DuckDB, bound with `agg`. |
 | Opening a model is slow | Every open loads and evaluates the whole model (about 2–2.5 µs per cell to evaluate, plus the load) | Normal for millions of cells; see [capacity](./capacity.md). |
 | Every edit takes 100 ms or more on a model with thousands of measures | Each edit is one dataflow round that visits every tracked measure (129 ms at 20k simple measures) | Split the model, or remove unused measures. |
 | One edit takes seconds | A `RANK`/`SORT`/per-item reduction over a very large category, or an edit that changes a `FIXPOINT`'s input (it re-solves) | Move it to a smaller category or a separate model. |

@@ -14,7 +14,9 @@ criteria" are the bar. Mark tasks done there as they land.
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
   storage_mentat save bugs fixed), H3 partly (frames 125 → 7 ms at 1M
-  cells; the 11 s Mentat autosave is left), H9 (the server sees other
+  cells; the 11 s Mentat autosave fixed by B12), B12 (incremental saves:
+  one cell 4–8 ms at 1M on Mentat, 2–11 ms on Postgres; `improv set` is
+  now all load), H9 (the server sees other
   writers), F8–F10 (tutorials run in CI, generated SQL/CLI/HTTP references,
   docs review), D14 (fast shutdown), B9 (per-model memory in status, plus
   `improv.max_model_memory`), B10 (DuckDB `improv()` 11 s → 4.6 s), and
