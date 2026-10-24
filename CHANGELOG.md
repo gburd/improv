@@ -337,6 +337,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   gray. Ctrl+Q again goes through Quit's check for an unsaved in-memory
   model (egui 0.37 would close the window by itself). `cargo deny` allows
   egui's Ubuntu font licence and no longer needs three advisory ignores.
+- **`SUM` and `AVERAGE` are exactly rounded.** They add every value
+  with no rounding (a fixed-point superaccumulator) and round the total
+  once to the nearest double, in every evaluation path: the flat reduce,
+  the two-level reduce of a category of more than 1,024 items, the live
+  engine and the FIXPOINT host step. A flat and a blocked sum of the same
+  values are now bit-identical whatever the grouping; before, Neumaier
+  compensation was the exact sum's nearest double except under extreme
+  cancellation. No golden moved (the 10,000-value goldens were already
+  exact). `PRODUCT` and `SUMSQ` are unchanged. The cost (none
+  measurable on the 1M-item `SUM` probe) is in the guide's Formula
+  Language page.
 - **Saves write what changed** (B12). `improv set` and `stream` save only
   their cells; `add-*`, `define`, `register-ext`, `scenario` and
   `save-view` save structure without re-reading the cells. On the 1M-cell

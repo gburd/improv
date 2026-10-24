@@ -24,6 +24,7 @@
 pub mod builtins;
 pub mod compiler;
 pub mod dataflow;
+mod exact;
 pub mod external;
 mod hosteval;
 pub mod plan;

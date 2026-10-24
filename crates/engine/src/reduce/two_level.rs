@@ -5,12 +5,11 @@
 //! [`Part`] in item order, and the parts merge in block order. An edit then
 //! re-reduces one block and the merge, not the whole group.
 //!
-//! The counts, `AND`/`OR`/`XOR`, `MIN`/`MAX` and integer-valued sums give
-//! what the flat fold gives. `SUM` and `AVERAGE` are compensated
-//! ([`Neumaier`]) in each block and across the blocks, as the flat fold
-//! is, so both are the exact sum's nearest float but for extreme
-//! cancellation, and agree to within an ulp. `PRODUCT` and `SUMSQ` are a
-//! fixed two-level fold: deterministic, the same in `evaluate`, the live
+//! The counts, `AND`/`OR`/`XOR`, `MIN`/`MAX` give what the flat fold
+//! gives. `SUM` and `AVERAGE` are exact ([`crate::exact`]): a block keeps
+//! its rows' exact sum, the merge adds those, and the result is rounded
+//! once, so it is the flat sum's bits, whatever the blocks. `PRODUCT` and
+//! `SUMSQ` are a fixed two-level fold: deterministic, the same in `evaluate`, the live
 //! engine and the FIXPOINT host step, but not bit-equal to one
 //! left-to-right fold. Over a category of up to [`FLAT_MAX`] items they
 //! reduce flat, as before.
@@ -20,7 +19,8 @@
 //! their positions, but it blocks them as a fresh engine would.
 
 use super::Rows;
-use crate::builtins::{err, num, Neumaier};
+use crate::builtins::{err, num};
+use crate::exact::{Exact, ExactSum};
 use crate::CellValue;
 use improv_core_model::{CategoryId, FuncId, ItemId};
 use serde::{Deserialize, Serialize};
@@ -65,10 +65,10 @@ pub(crate) struct Part {
     bad: bool,
     /// The numbers (`COUNT`), or the true values (`AND`, `OR`, `XOR`).
     k: u64,
-    /// The floating-point accumulator, as bits.
+    /// `MIN`, `MAX`, `PRODUCT`, `SUMSQ`: the accumulator, as bits.
     acc: u64,
-    /// `SUM`, `AVERAGE`: the accumulator's [`Neumaier`] compensation, as bits.
-    comp: u64,
+    /// `SUM`, `AVERAGE`: the rows' exact sum.
+    sum: Exact,
 }
 
 /// The accumulator's start and step of `id`'s fold.
@@ -78,7 +78,7 @@ fn fold_of(id: u32) -> (f64, fn(f64, f64) -> f64) {
         4 => (f64::NEG_INFINITY, f64::max),
         5 => (1.0, |a, x| a * x),
         6 => (-0.0, |a, x| a + x * x),
-        // SUM and AVERAGE add through a Neumaier; the rest do not fold.
+        // SUM and AVERAGE add exactly; the rest do not fold.
         _ => (-0.0, |a, _| a),
     }
 }
@@ -88,7 +88,7 @@ pub(crate) fn part(func: FuncId, rows: &Rows) -> Part {
     let id = func.0;
     let (start, step) = fold_of(id);
     let mut acc = start;
-    let mut sum = Neumaier::default();
+    let mut sum = ExactSum::default();
     let mut step = |x: f64| match id {
         1 | 2 => sum.add(x),
         _ => acc = step(acc, x),
@@ -99,7 +99,7 @@ pub(crate) fn part(func: FuncId, rows: &Rows) -> Part {
         bad: false,
         k: 0,
         acc: 0,
-        comp: 0,
+        sum: Exact::default(),
     };
     for (pos, row) in rows.pos.iter().zip(&rows.vals) {
         match (id, &row[0]) {
@@ -115,7 +115,7 @@ pub(crate) fn part(func: FuncId, rows: &Rows) -> Part {
         }
     }
     if matches!(id, 1 | 2) {
-        (p.acc, p.comp) = (sum.s.to_bits(), sum.c.to_bits());
+        p.sum = sum.exact();
     } else {
         p.acc = acc.to_bits();
     }
@@ -132,14 +132,14 @@ pub(crate) fn merge<'a>(func: FuncId, parts: impl IntoIterator<Item = &'a Part>)
         _ => |a, x| a + x,
     };
     let mut acc = start;
-    let mut sum = Neumaier::default();
+    let mut sum = ExactSum::default();
     let mut out = Part {
         n: 0,
         err: None,
         bad: false,
         k: 0,
         acc: 0,
-        comp: 0,
+        sum: Exact::default(),
     };
     for p in parts {
         out.n += p.n;
@@ -150,15 +150,13 @@ pub(crate) fn merge<'a>(func: FuncId, parts: impl IntoIterator<Item = &'a Part>)
             (a, b) => a.or(b),
         };
         if matches!(func.0, 1 | 2) {
-            // The blocks' sums compensated, and their lost parts added.
-            sum.add(f64::from_bits(p.acc));
-            sum.c += f64::from_bits(p.comp);
+            sum.add_exact(&p.sum);
         } else {
             acc = combine(acc, f64::from_bits(p.acc));
         }
     }
     if matches!(func.0, 1 | 2) {
-        (out.acc, out.comp) = (sum.s.to_bits(), sum.c.to_bits());
+        out.sum = sum.exact();
     } else {
         out.acc = acc.to_bits();
     }
@@ -179,11 +177,7 @@ pub(crate) fn finish(func: FuncId, p: &Part) -> CellValue {
         return CellValue::Err(err::VALUE);
     }
     let acc = match func.0 {
-        1 | 2 => Neumaier {
-            s: f64::from_bits(p.acc),
-            c: f64::from_bits(p.comp),
-        }
-        .value(),
+        1 | 2 => p.sum.value(),
         _ => f64::from_bits(p.acc),
     };
     match func.0 {
@@ -316,10 +310,10 @@ mod tests {
     }
 
     #[test]
-    fn floating_sums_are_compensated_in_and_across_blocks() {
+    fn floating_sums_are_exact_in_and_across_blocks() {
         let n = CellValue::num;
-        // 1 + 7e-16: a left fold drops every small term; the compensated
-        // sums, flat and two-level, keep them.
+        // 1 + 7e-16: a left fold drops every small term; the exact sums,
+        // flat and two-level, keep them.
         let mut v = vec![n(1.0)];
         v.extend((0..7).map(|_| n(1e-16)));
         let (r, items) = rows(&v);

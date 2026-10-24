@@ -241,10 +241,11 @@ and the parts merge per group in block order. An edit re-reduces one block
 (≤ 1,024 rows) and the group's parts (≤ |W|/1,024). Blocks are by item
 *id*, not position, so an engine fed appended items (`Engine::serves`)
 blocks them as a fresh engine would; whether a reduction is two-level
-depends on the item count, so `serves` keeps that bit. The float folds
-(SUM, AVERAGE, PRODUCT, SUMSQ) are a fixed two-level summation, not
-bit-equal to one left fold; at ≤ 1,024 items nothing changes, so every
-golden stays bit-identical. The FIXPOINT host evaluator calls the same
+depends on the item count, so `serves` keeps that bit. SUM and AVERAGE
+are exact (`exact.rs`: a fixed-point superaccumulator; a block's `Part`
+keeps its exact sum, the merge adds them and rounds once), so flat and
+two-level agree bit for bit. PRODUCT and SUMSQ are a fixed two-level
+fold, not bit-equal to one left fold; at ≤ 1,024 items nothing changes. The FIXPOINT host evaluator calls the same
 `two_level::reduce`, so host and dataflow steps agree bit for bit.
 
 ---

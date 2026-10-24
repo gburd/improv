@@ -1018,39 +1018,45 @@ categories (`Product`), with `func = FuncId(1)`.
 take the extremum. An aggregation's argument must be numeric, except `AND`,
 `OR` and `XOR`, which take booleans.
 
-**Summation.** `SUM` and `AVERAGE` add with Neumaier (improved Kahan)
-compensation: the result is the exact sum's nearest double, unless the
-values cancel by more than about 16 digits (1e16 + 1 − 1e16 is still 1),
-and `AVERAGE` is that sum divided by the count. So `SUM(0.1, 0.2, 0.3)`
-is `0.6`, where a left-to-right fold gives `0.6000000000000001`, and the
-result does not depend on how the cells are grouped. A sum that is exact
-anyway, of integers say, has the same bits either way. LibreOffice 25.2
-also compensates (its `SUM` of 250 such values matched the exact sum's
-nearest double), but it rounds a near-total cancellation to zero:
-`SUM(1E16, 1, -1E16)` is 0 there and 1 here. Improv promises this for
-1.x.
+**Summation.** `SUM` and `AVERAGE` are exactly rounded: the engine adds
+the values with no rounding at all (a fixed-point accumulator wide enough
+for any sum of doubles) and rounds the total once, to the nearest double,
+ties to even. `AVERAGE` is that sum divided by the count. So
+`SUM(0.1, 0.2, 0.3)` is `0.6`, where a left-to-right fold gives
+`0.6000000000000001`; `SUM(1E16, 1, -1E16)` is `1`; and the result does
+not depend on the order of the cells or how they are grouped. A sum that
+is exact anyway, of integers say, has the same bits as a plain fold. An
+infinity or NaN among the values gives what IEEE addition gives, and a
+total beyond the largest double is `#NUM!`. LibreOffice 25.2 compensates
+its sums (its `SUM` of 250 such values matched the exact sum's nearest
+double), but it rounds a near-total cancellation to zero:
+`SUM(1E16, 1, -1E16)` is 0 there and 1 here. Improv promises exact
+rounding for 1.x.
 
 **Large categories.** Over a single category of more than 1,024 items, the
 aggregations above and `COUNT` and `COUNTA` reduce in two levels, so that
 an edit to one cell costs a block of the group rather than all of it: the
 cells split into blocks of 1,024 item ids, each block folds in item order,
 and the block results combine in block order. The counts, `MIN`, `MAX`,
-`AND`, `OR`, `XOR` and sums of integers give the same result as one pass.
-`SUM` and `AVERAGE` are compensated in each block and across the blocks,
-so they are the exact sum's nearest double as above, and agree with a
-flat sum. `PRODUCT` and `SUMSQ` of fractional values are a fixed
-two-level fold: deterministic, identical in every evaluation path, but
-they can differ from one left-to-right pass in the last bits. Over up to
-1,024 items nothing changes.
+`AND`, `OR` and `XOR` give the same result as one pass. `SUM` and
+`AVERAGE` keep each block's exact sum and round once at the end, so they
+are bit for bit the flat sum. `PRODUCT` and `SUMSQ` of fractional values
+are a fixed two-level fold: deterministic, identical in every evaluation
+path, but they can differ from one left-to-right pass in the last bits.
+Over up to 1,024 items nothing changes.
 
-The compensation costs about 0.7 ns per value (1.3 ms against 0.5 ms for
-1,000,000 values), which no benchmark showed: on the 1,000,000-item
-`SUM(X OVER W)` an edit takes 0.30 to 0.33 ms (p50) and a full
-evaluation 1.5 to 1.6 s, as before. The goldens in
-`crates/engine/tests/sum_10k.rs` pin it: three sets of 10,000 fractional
-values, whose `SUM` and `AVERAGE` must equal the bits mpmath gives for
-the exact sum (`scripts/goldens/sum_10k.py`), in `evaluate`, the live
-engine before and after an edit, and over two categories.
+The exact sum costs about 1.5 ns per value more than the Neumaier
+compensation it replaced (`SUM` of 1,000,000 values through the scalar
+path: 4.8 ms against 3.3 ms, and 0.5 ms for a plain fold), which no
+engine benchmark shows: on the 1,000,000-item `SUM(X OVER W)` a full
+`evaluate` takes 1.31 to 1.33 s (1.30 to 1.32 s before) and an edit
+0.15 to 0.66 ms (p50), as before.
+
+The goldens in `crates/engine/tests/sum_10k.rs` pin it: three sets of
+10,000 fractional values, whose `SUM` and `AVERAGE` must equal the bits
+mpmath gives for the exact sum (`scripts/goldens/sum_10k.py`), in
+`evaluate`, the live engine before and after an edit, and over two
+categories.
 
 ## Type and dimension checking
 
