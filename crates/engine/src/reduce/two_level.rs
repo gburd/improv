@@ -16,10 +16,12 @@
 //!
 //! Blocks are by item id, not position: an engine that takes a model's
 //! appended items as data ([`crate::session::Engine::serves`]) does not know
-//! their positions, but it blocks them as a fresh engine would.
+//! their positions, but it blocks them as a fresh engine would. And but for
+//! `PRODUCT` and `SUMSQ`, a two-level reduction gives the flat one's bits,
+//! so a category that grows past [`FLAT_MAX`] keeps an engine serving.
 
 use super::Rows;
-use crate::builtins::{err, num};
+use crate::builtins::{err, max, min, num};
 use crate::exact::{Exact, ExactSum};
 use crate::CellValue;
 use improv_core_model::{CategoryId, FuncId, ItemId};
@@ -74,8 +76,8 @@ pub(crate) struct Part {
 /// The accumulator's start and step of `id`'s fold.
 fn fold_of(id: u32) -> (f64, fn(f64, f64) -> f64) {
     match id {
-        3 => (f64::INFINITY, f64::min),
-        4 => (f64::NEG_INFINITY, f64::max),
+        3 => (f64::INFINITY, min),
+        4 => (f64::NEG_INFINITY, max),
         5 => (1.0, |a, x| a * x),
         6 => (-0.0, |a, x| a + x * x),
         // SUM and AVERAGE add exactly; the rest do not fold.
@@ -126,8 +128,8 @@ pub(crate) fn part(func: FuncId, rows: &Rows) -> Part {
 pub(crate) fn merge<'a>(func: FuncId, parts: impl IntoIterator<Item = &'a Part>) -> Part {
     let (start, _) = fold_of(func.0);
     let combine: fn(f64, f64) -> f64 = match func.0 {
-        3 => f64::min,
-        4 => f64::max,
+        3 => min,
+        4 => max,
         5 => |a, x| a * x,
         _ => |a, x| a + x,
     };

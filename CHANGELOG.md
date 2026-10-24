@@ -337,6 +337,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   gray. Ctrl+Q again goes through Quit's check for an unsaved in-memory
   model (egui 0.37 would close the window by itself). `cargo deny` allows
   egui's Ubuntu font licence and no longer needs three advisory ignores.
+- **A category growing past 1,024 items no longer rebuilds** (B4(b)).
+  Over more than 1,024 items the simple reductions reduce in blocks, and
+  the live engine (`Engine::serves`, so also pg_improv's logical worker)
+  treated the crossing as a change of plan and rebuilt the model. With
+  exact sums, the blocked `SUM`, `AVERAGE`, `MIN`, `MAX`, the counts and
+  `AND`/`OR`/`XOR` give the flat results bit for bit, so new items keep
+  arriving as data. `PRODUCT` and `SUMSQ`, whose blocked rounding
+  differs, still rebuild once at the crossing. `MIN` and `MAX` now order
+  `-0` below `0` (they took either, by position).
 - **`SUM` and `AVERAGE` are exactly rounded.** They add every value
   with no rounding (a fixed-point superaccumulator) and round the total
   once to the nearest double, in every evaluation path: the flat reduce,

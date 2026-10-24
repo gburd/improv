@@ -3105,6 +3105,75 @@ mod tests {
         );
     }
 
+    /// B4(b): Time grows from 1,000 to 1,100 quarters through the mapper,
+    /// past the engine's flat-reduce limit (1,024 items), and the engine
+    /// keeps serving: no batch needs a rebuild, and the totals are a fresh
+    /// evaluation's.
+    #[test]
+    fn a_category_growing_past_1024_items_needs_no_rebuild() {
+        use improv_engine::session::Engine;
+        let mut cat = catalog();
+        cat.items = (0..1000)
+            .map(|i| item(1000 + i, 1, &format!("Q{i}")))
+            .chain([item(21, 2, "P1")])
+            .collect();
+        cat.measures.push(MeasureRow {
+            id: 6,
+            name: "Total".into(),
+            value_type: "number".into(),
+            kind: "derived".into(),
+            formula: Some("Total = SUM(Price OVER Time)".into()),
+            description: None,
+            categories: vec![2],
+        });
+        cat.measures.push(MeasureRow {
+            id: 7,
+            name: "Mean".into(),
+            value_type: "number".into(),
+            kind: "derived".into(),
+            formula: Some("Mean = AVERAGE(Price OVER Time)".into()),
+            description: None,
+            categories: vec![2],
+        });
+        let mut m = build_model(&cat).unwrap();
+        let price = |i: u32| format!("{}.{:02}", i % 37, i % 100);
+        for i in 0..1000 {
+            let v: f64 = price(i).parse().unwrap();
+            m.set_input(MeasureId(5), coordinate(1000 + i, 21), Value::Number(v));
+        }
+        let ids = [MeasureId(6), MeasureId(7)];
+        let (mut e, _) = Engine::new(&m, &ids).unwrap();
+        let mut mp = mapper(&m, None);
+        let r = rels(b'f', &[]);
+        let mut snap = None;
+        for chunk in (1000..1100u32).collect::<Vec<_>>().chunks(10) {
+            let batch = txn(chunk
+                .iter()
+                .map(|i| ins(full(&format!("Q{i}"), &price(*i))))
+                .collect());
+            for (c, name) in mp.unknown(&r, &batch) {
+                let id = 1000 + name[1..].parse::<u32>().unwrap();
+                mp.add_item(c, &name, ItemId(id));
+                m.add_item(ItemId(id), c, name);
+            }
+            assert!(
+                e.serves(&m).unwrap(),
+                "at {} items",
+                m.categories[&CategoryId(1)].items.len()
+            );
+            snap = Some(e.apply(mp.map(&mut m, &r, &batch, 0).unwrap()).unwrap());
+        }
+        assert_eq!(m.categories[&CategoryId(1)].items.len(), 1100);
+        let snap = snap.unwrap();
+        let fresh = improv_engine::dataflow::evaluate(&m, &ids).unwrap();
+        for id in ids {
+            assert_eq!(*snap[&id], fresh[&id], "{id:?}");
+        }
+        let want: f64 = (0..1100).map(|i| price(i).parse::<f64>().unwrap()).sum();
+        let got = fresh[&MeasureId(6)][[(2, 21)].as_slice()].as_num().unwrap();
+        assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+    }
+
     /// The estimates count what the state holds: nothing before a seed, a
     /// coordinate's map entry and B-tree after, each kept value, and a
     /// float sum's accumulator.

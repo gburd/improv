@@ -171,6 +171,26 @@ pub(crate) fn count(x: f64) -> Result<u64, u8> {
     Ok(x.trunc() as u64)
 }
 
+/// The lesser of two numbers (not NaN), -0.0 below 0.0, so a `MIN` is
+/// the same whatever the order or grouping (`f64::min` leaves the sign of
+/// a zero to the platform).
+pub(crate) fn min(a: f64, x: f64) -> f64 {
+    if x < a || (x == a && x.is_sign_negative()) {
+        x
+    } else {
+        a
+    }
+}
+
+/// The greater of two numbers, 0.0 above -0.0 (see [`min`]).
+pub(crate) fn max(a: f64, x: f64) -> f64 {
+    if x > a || (x == a && x.is_sign_positive()) {
+        x
+    } else {
+        a
+    }
+}
+
 /// `xs` summed exactly and rounded once ([`crate::exact`]): `SUM` and
 /// `AVERAGE`. The exact sum's nearest float, in any order.
 pub(crate) fn sum(xs: &[f64]) -> f64 {
@@ -205,8 +225,8 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
     use std::f64::consts::PI;
     Ok(match id {
         // --- aggregation twins ---
-        20 => num(nums(a)?.into_iter().fold(f64::INFINITY, f64::min)),
-        21 => num(nums(a)?.into_iter().fold(f64::NEG_INFINITY, f64::max)),
+        20 => num(nums(a)?.into_iter().fold(f64::INFINITY, min)),
+        21 => num(nums(a)?.into_iter().fold(f64::NEG_INFINITY, max)),
         22 => num(sum(&nums(a)?)),
         23 => {
             let v = nums(a)?;
@@ -1059,6 +1079,12 @@ mod tests {
         assert_eq!(sum(&[0.1, 0.2, 0.3]), 0.6);
         assert_eq!(sum(&[1.0, 1e100, 1.0, -1e100]), 2.0);
         assert_eq!(sum(&[1e16, 1.0, -1e16]), 1.0);
+        // MIN and MAX order zeros by sign, in either order.
+        for (a, b) in [(0.0, -0.0), (-0.0, 0.0)] {
+            assert_eq!(min(a, b).to_bits(), (-0.0f64).to_bits());
+            assert_eq!(max(a, b).to_bits(), 0);
+        }
+        assert_eq!((min(1.0, 2.0), max(1.0, 2.0)), (1.0, 2.0));
         assert_eq!(sum(&[]).to_bits(), (-0.0f64).to_bits());
         assert_eq!(sum(&[3.0, 4.0]), 7.0);
         // Overflow stays infinite (and is #NUM! in SUM).

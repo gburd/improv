@@ -311,11 +311,13 @@ fn blind(p: &mut PlanNode) {
             // positions or capacity.
             let values_only = matches!(func.0, 1..=9 | 1005 | 1006 | 1100);
             if values_only && window.is_none() && !*per_item && into.is_empty() {
-                // A two-level reduction blocks by item id, but whether it is
-                // two-level depends on the item count.
-                let two = two_level::applies(*func, inputs.len(), params.len(), order);
+                // A two-level reduction blocks by item id, and only PRODUCT
+                // and SUMSQ round differently flat and in two levels: a
+                // category that crosses the flat limit changes their plan.
+                let rounds = matches!(func.0, 5 | 6)
+                    && two_level::applies(*func, inputs.len(), params.len(), order);
                 order.clear();
-                if two {
+                if rounds {
                     order.push((CategoryId(0), Vec::new()));
                 }
             }
@@ -1687,7 +1689,9 @@ mod tests {
         for (mid, cells) in want {
             assert_eq!(*snap[&mid], cells, "{mid:?} with an appended item");
         }
-        // A category that grows past the flat limit no longer serves.
+        // A category that grows past the flat limit: an exact sum or a
+        // count still serves; PRODUCT, whose rounding is two-level past
+        // it, does not.
         let mut small = Model::new();
         small.add_category(w, "W");
         for i in 0..1024 {
@@ -1695,10 +1699,68 @@ mod tests {
         }
         small.add_measure(m.measures[&MeasureId(10)].clone());
         define_text(&mut small, 20, texts[0]);
+        define_text(&mut small, 21, "P = PRODUCT(X OVER W)");
         let (e, _) = Engine::new(&small, &[MeasureId(20)]).unwrap();
-        assert!(e.serves(&small).unwrap());
+        let (p, _) = Engine::new(&small, &[MeasureId(21)]).unwrap();
+        assert!(e.serves(&small).unwrap() && p.serves(&small).unwrap());
         small.add_item(ItemId(1024), w, "w1024");
-        assert!(!e.serves(&small).unwrap());
+        assert!(e.serves(&small).unwrap());
+        assert!(!p.serves(&small).unwrap());
+    }
+
+    /// B4(b): a category growing from 1,000 to 1,100 items, one new item at
+    /// a time through the live engine, crosses the flat limit without a
+    /// rebuild: every step serves, and every result is a fresh
+    /// evaluation's, bit for bit.
+    #[test]
+    fn growing_past_the_flat_limit_needs_no_rebuild() {
+        let w = CategoryId(1);
+        let x = MeasureId(10);
+        let mut m = Model::new();
+        m.add_category(w, "W");
+        m.add_measure(Measure {
+            id: x,
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![w],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let value = |i: u32| f64::from(i % 89) / 7.0 - 5.3 + f64::from(i) * 1e-9;
+        for i in 0..1000 {
+            m.add_item(ItemId(i), w, format!("w{i}"));
+            let at = Coordinate::from_pairs([(w, ItemId(i))]);
+            m.set_input(x, at, Value::Number(value(i)));
+        }
+        let texts = [
+            "S = SUM(X OVER W)",
+            "A = AVERAGE(X OVER W)",
+            "Lo = MIN(X OVER W)",
+            "C = COUNT(X OVER W)",
+            "Neg = X < 0",
+            "Any = OR(Neg OVER W)",
+        ];
+        for (j, t) in texts.iter().enumerate() {
+            define_text(&mut m, 20 + j as u32, t);
+        }
+        let ids: Vec<MeasureId> = (20..20 + texts.len() as u32).map(MeasureId).collect();
+        let (mut e, _) = Engine::new(&m, &ids).unwrap();
+        for i in 1000..1100 {
+            m.add_item(ItemId(i), w, format!("w{i}"));
+            assert!(e.serves(&m).unwrap(), "item {i}");
+            m.set_input(
+                x,
+                Coordinate::from_pairs([(w, ItemId(i))]),
+                Value::Number(value(i)),
+            );
+            let snap = e.set(x, CoordKey::from_slice(&[(1, i)]), value(i)).unwrap();
+            if i % 25 == 24 || i == 1024 {
+                let want = crate::dataflow::evaluate(&m, &ids).unwrap();
+                for (mid, cells) in want {
+                    assert_eq!(*snap[&mid], cells, "{mid:?} at item {i}");
+                }
+            }
+        }
     }
 
     /// The estimate counts each cell once, every arranging plan's rows, a

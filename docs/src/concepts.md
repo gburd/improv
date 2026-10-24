@@ -151,7 +151,8 @@ every derived cell recomputed.
   windows), per-item and list reductions (`RANK`, `SORT`, `INTO`), `FILL`,
   `RELABEL`/`SWAP`, and reductions other than the simple ones above. A new
   item under `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT` and the like arrives as
-  data and does not rebuild.
+  data and does not rebuild, also when the category grows past 1,024 items
+  (`PRODUCT` and `SUMSQ` rebuild once then: their blocked rounding differs).
 - **In Postgres**, also: two rows landing on one coordinate of a measure
   bound without an aggregate, a change to a text `min`/`max` binding, and
   any error. The full list is in
