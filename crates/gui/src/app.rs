@@ -216,6 +216,8 @@ pub struct ImprovApp {
     /// The store high-water this model was loaded/last saved at, so a save
     /// refuses to clobber another process's writes (`StoreError::Conflict`).
     save_token: improv_store::SaveToken,
+    /// What failed autosaves left unwritten; the next save writes it too.
+    unsaved: improv_store::ChangeSet,
     /// The native title last sent, so `update` only sends a change.
     last_title: String,
     /// The `status` the status bar last drew, and when (egui time) it first
@@ -1038,6 +1040,7 @@ impl ImprovApp {
         Ok(ImprovApp {
             db: db.to_string(),
             save_token,
+            unsaved: Default::default(),
             model,
             engine,
             snapshot,
@@ -1339,7 +1342,7 @@ impl ImprovApp {
         }
         let outcome = (|| -> Result<(), String> {
             self.push_engine(measure, &coord, value.as_ref())?;
-            self.save()
+            self.save_changes(&improv_store::ChangeSet::cell(measure, key.clone()))
         })();
 
         if let Err(e) = outcome {
@@ -1566,7 +1569,11 @@ impl ImprovApp {
         let view = self.build_view(id, name)?;
         let prior_model = self.model.clone();
         self.model.add_view(view);
-        if let Err(e) = self.save() {
+        let structure = improv_store::ChangeSet {
+            structure: true,
+            ..Default::default()
+        };
+        if let Err(e) = self.save_changes(&structure) {
             self.model.views.remove(&id);
             self.status = e;
             return None;
@@ -1685,7 +1692,11 @@ impl ImprovApp {
                 self.record_history(prior_model);
                 // A failed autosave is reported as the failure it is; the
                 // imported cells are already in the live model.
-                self.status = match self.save() {
+                let changes = improv_store::ChangeSet::between(
+                    self.undo_model().expect("just recorded"),
+                    &self.model,
+                );
+                self.status = match self.save_changes(&changes) {
                     Ok(()) => format!(
                         "imported {n} cell(s) into measure {} '{}'",
                         spec.measure_id.0, spec.measure_name
@@ -2003,7 +2014,8 @@ impl ImprovApp {
             Err(e) => return Err((e, candidate)),
         };
         let previous = std::mem::replace(&mut self.model, *candidate);
-        if let Err(e) = self.save() {
+        let changes = improv_store::ChangeSet::between(&previous, &self.model);
+        if let Err(e) = self.save_changes(&changes) {
             let candidate = std::mem::replace(&mut self.model, previous);
             return Err((e, Box::new(candidate)));
         }
@@ -2025,6 +2037,14 @@ impl ImprovApp {
     fn record_step(&mut self, step: Step) {
         push_bounded(&mut self.undo_stack, step);
         self.redo_stack.clear();
+    }
+
+    /// The model the last undo step restores, if it is a whole-model step.
+    fn undo_model(&self) -> Option<&Model> {
+        match self.undo_stack.last()? {
+            Step::Model(m) => Some(m),
+            Step::Cell(..) => None,
+        }
     }
 
     /// Put `step` back, returning the step that restores what it replaced,
@@ -2248,19 +2268,52 @@ impl ImprovApp {
     /// Autosave the model to the store when `db` is set. In-memory (`""`)
     /// models skip saving. Returns the failure message so callers can report
     /// it — never overwrite a save failure with a success message.
+    ///
+    /// Test-only: the app saves through [`Self::save_changes`]; tests that
+    /// edit `model` directly save it whole.
+    #[cfg(test)]
     #[must_use = "a failed save must be surfaced, not reported as success"]
     fn save(&mut self) -> Result<(), String> {
+        let r = self.store_with(|s, m| s.save_model(m));
+        if r.is_ok() {
+            self.unsaved = Default::default();
+        }
+        r
+    }
+
+    /// Autosave `changes` (everything changed since the last load or save),
+    /// plus whatever a failed save left unwritten, when `db` is set: a cell
+    /// edit writes that cell alone, not the whole model. In-memory (`""`)
+    /// models skip saving. Returns the failure message so callers can report
+    /// it — never overwrite a save failure with a success message.
+    #[must_use = "a failed save must be surfaced, not reported as success"]
+    fn save_changes(&mut self, changes: &improv_store::ChangeSet) -> Result<(), String> {
+        let mut all = std::mem::take(&mut self.unsaved);
+        all.add(changes.clone());
+        let r = self.store_with(|s, m| s.save_changes(m, &all));
+        if r.is_err() {
+            self.unsaved = all;
+        }
+        r
+    }
+
+    /// Open the store, adopt the save token, run `save`, keep the new token.
+    /// A failed save keeps the old token (nothing was written) and marks
+    /// the model dirty.
+    fn store_with(
+        &mut self,
+        save: impl FnOnce(&mut Store, &Model) -> improv_store::Result<()>,
+    ) -> Result<(), String> {
         if self.db.is_empty() {
             return Ok(());
         }
-        let r = Store::open(&self.db)
-            .and_then(|mut s| {
-                s.set_save_token(&self.save_token);
-                s.save_model(&self.model)?;
-                self.save_token = s.save_token();
-                Ok(())
-            })
-            .map_err(save_error);
+        let r = Store::open(&self.db).map_err(save_error).and_then(|mut s| {
+            s.adopt_save_token(std::mem::take(&mut self.save_token));
+            let r = save(&mut s, &self.model).map_err(save_error);
+            // On failure this is the adopted token back, unchanged.
+            self.save_token = s.take_save_token();
+            r
+        });
         self.dirty = r.is_err();
         r
     }
@@ -2283,7 +2336,8 @@ impl ImprovApp {
         self.model = model;
         self.engine = engine;
         self.snapshot = snapshot;
-        self.save_token = store.save_token();
+        self.save_token = store.take_save_token();
+        self.unsaved = Default::default();
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.dirty = false;
@@ -3395,7 +3449,13 @@ impl ImprovApp {
             Command::AddInputMeasure => self.reveal_new(NewThing::Input),
             Command::ModelBrowser => self.show_browser = !self.show_browser,
             Command::SaveModel => {
-                self.status = match self.save() {
+                // Every category, item, measure, view and the meta, plus
+                // what a failed autosave left: not a pass over every cell.
+                let structure = improv_store::ChangeSet {
+                    structure: true,
+                    ..Default::default()
+                };
+                self.status = match self.save_changes(&structure) {
                     Ok(()) => "saved model".into(),
                     Err(e) => e,
                 };
@@ -6361,6 +6421,7 @@ mod tests {
         ImprovApp {
             db: String::new(),
             save_token: improv_store::SaveToken::default(),
+            unsaved: Default::default(),
             model,
             engine,
             snapshot,
@@ -14183,6 +14244,50 @@ mod tests {
         assert_eq!(save_error(other), "save failed: data integrity: bad");
     }
 
+    /// Autosaves write only what changed, and lose nothing: a cell edit, a
+    /// structural edit, an import whose save failed (kept in memory, so the
+    /// next save writes it all) and Save all end with the store equal to
+    /// the model.
+    #[test]
+    fn incremental_autosaves_keep_the_store_equal_to_the_model() {
+        let db = temp_db("b12_autosave");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let stored = |db: &str| Store::open(db).and_then(|mut s| s.load_model()).unwrap();
+        let mut app = ImprovApp::load(&db).expect("load");
+        let (q, _) = q_and_rev_keys();
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(5.0))
+            .expect("a cell");
+        app.clear_cell(MeasureId(101), q.clone()).expect("cleared");
+        assert_eq!(stored(&db), app.model);
+        app.add_named(NewThing::Item(CategoryId(1)), "2027")
+            .expect("an item");
+        app.undo().expect("undo the item");
+        app.undo().expect("undo the clear");
+        assert_eq!(stored(&db), app.model);
+
+        // An import whose save fails keeps its cells in memory; the next
+        // autosave writes them.
+        let good = std::mem::replace(&mut app.db, "/nonexistent-dir-improv/x.db".into());
+        let mut imported = app.model.clone();
+        imported.set_input(MeasureId(101), decode(&q), Value::Number(42.0));
+        imported.add_item(ItemId(99), CategoryId(1), "2030");
+        let changes = improv_store::ChangeSet::between(&app.model, &imported);
+        app.model = imported;
+        assert!(app.save_changes(&changes).is_err() && app.dirty);
+        app.db = good;
+        app.add_named(NewThing::Category, "Region")
+            .expect("saves all");
+        assert!(!app.dirty);
+        assert_eq!(stored(&db), app.model, "the kept change was written");
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::SaveModel);
+        assert_eq!(app.status, "saved model");
+        assert_eq!(stored(&db), app.model);
+    }
+
     /// A failed undo keeps the step it failed to take: once the store is
     /// writable again, the retry restores the state before the edit (it
     /// used to push the current state back, so the retry did nothing).
@@ -14361,8 +14466,15 @@ mod tests {
             .expect("engine");
         println!("H3 edit part: incremental recalc {:.1} ms", ms(t));
         let t = Instant::now();
+        app.save_changes(&improv_store::ChangeSet::cell(MeasureId(100), decode(&key)))
+            .expect("save");
+        println!(
+            "H3 edit part: autosave, the cell (save_changes) {:.0} ms",
+            ms(t)
+        );
+        let t = Instant::now();
         app.save().expect("save");
-        println!("H3 edit part: autosave {:.0} ms", ms(t));
+        println!("H3 full save (save_model, unchanged model) {:.0} ms", ms(t));
         let t = Instant::now();
         app.commit_cell_text(MeasureId(100), key.clone(), "6")
             .expect("edit");
@@ -14371,7 +14483,8 @@ mod tests {
         app.undo().expect("undo");
         println!("H3 undo: {:.0} ms", ms(t));
         let t = Instant::now();
-        app.add_derived_measure("Twice", "Qty * 2")
+        let input = app.model.measures[&MeasureId(100)].name.0.clone();
+        app.add_derived_measure("Twice", &format!("{input} * 2"))
             .expect("a formula");
         println!("H3 add a derived measure (engine rebuild): {:.0} ms", ms(t));
     }
