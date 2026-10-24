@@ -386,6 +386,78 @@ mod tests {
         );
     }
 
+    /// A change to any saved field but the cells is structure.
+    #[test]
+    fn every_saved_field_is_structure() {
+        use improv_core_model::*;
+        let old = model();
+        let edits: [fn(&mut Model); 9] = [
+            |m| m.categories.get_mut(&CategoryId(1)).unwrap().name = Name("T".into()),
+            |m| m.items.get_mut(&ItemId(10)).unwrap().name = Name("Q9".into()),
+            |m| m.measures.get_mut(&MeasureId(100)).unwrap().description = Some("d".into()),
+            |m| {
+                let src = SqlSource {
+                    query: "SELECT 1".into(),
+                    dimension_columns: vec![],
+                    value_column: "v".into(),
+                    refresh_policy: RefreshPolicy::Manual,
+                };
+                m.sql_sources.insert(MeasureId(100), src);
+            },
+            |m| {
+                let v = View::from_matrices(
+                    ViewId(1),
+                    Name("v".into()),
+                    MatrixPlacement::new(MeasureId(100)),
+                    vec![],
+                );
+                m.add_view(v);
+            },
+            |m| {
+                let f = ExternalFn {
+                    name: "f".into(),
+                    language: Language::Python,
+                    body: "1".into(),
+                    arg_types: vec![],
+                    return_type: ValueType::Number,
+                    pure: true,
+                };
+                m.external_fns.insert("f".into(), f);
+            },
+            |m| {
+                let c = ExternalCall {
+                    func: "f".into(),
+                    arg_measures: vec![],
+                    refresh_policy: RefreshPolicy::Manual,
+                };
+                m.external_calls.insert(MeasureId(100), c);
+            },
+            |m| {
+                let s = Scenario {
+                    id: ScenarioId(1),
+                    name: Name("s".into()),
+                    overrides: Default::default(),
+                };
+                m.scenarios.insert(ScenarioId(1), s);
+            },
+            |m| {
+                let l = NamedLambda {
+                    name: Name("L".into()),
+                    params: vec!["x".into()],
+                    body: Expr::Literal(Value::Number(1.0)),
+                };
+                m.lambdas.insert(1, l);
+            },
+        ];
+        for (i, edit) in edits.iter().enumerate() {
+            let mut new = old.clone();
+            edit(&mut new);
+            assert_ne!(new, old, "edit {i} changed nothing");
+            let c = ChangeSet::between(&old, &new);
+            assert!(c.structure && c.cells.is_empty(), "edit {i}: {c:?}");
+        }
+    }
+
     /// Every delegating method, plus Conflict mapping, on one open store.
     fn exercise(target: &str) {
         let m = model();
