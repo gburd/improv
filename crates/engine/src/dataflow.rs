@@ -1309,6 +1309,28 @@ pub fn evaluate(
     model: &Model,
     targets: &[MeasureId],
 ) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
+    // On a thread with a known stack: the plan builders recurse on the
+    // formula tree, and a caller's main thread may be 1 MiB (Windows).
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .name("improv-evaluate".into())
+            .stack_size(ENGINE_STACK)
+            .spawn_scoped(s, || evaluate_here(model, targets))
+            .expect("spawn the evaluate thread")
+            .join()
+            .unwrap_or_else(|p| std::panic::resume_unwind(p))
+    })
+}
+
+/// The stack of every engine thread (`evaluate`'s and the live engine's
+/// worker). The formula depth limit (40 for a new formula, 256 for one
+/// stored as text) is sized against it.
+pub const ENGINE_STACK: usize = 8 << 20;
+
+fn evaluate_here(
+    model: &Model,
+    targets: &[MeasureId],
+) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
     // Compile every derived measure transitively needed by `targets`, in
     // dependency (topological) order.
     let mut plans = compile_plans(model, targets)?;

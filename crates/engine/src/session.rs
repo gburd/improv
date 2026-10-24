@@ -144,9 +144,13 @@ impl Engine {
         let plans_owned = plans.clone();
         let seed_owned = seed;
 
-        let worker = std::thread::spawn(move || {
-            worker_loop(input_ids, plans_owned, fixes, seed_owned, cmd_rx, ready_tx);
-        });
+        let worker = std::thread::Builder::new()
+            .name("improv-engine".into())
+            .stack_size(crate::dataflow::ENGINE_STACK)
+            .spawn(move || {
+                worker_loop(input_ids, plans_owned, fixes, seed_owned, cmd_rx, ready_tx);
+            })
+            .expect("spawn the engine worker");
 
         // Wait for the worker to build the graph and apply the seed.
         ready_rx

@@ -538,6 +538,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Evaluating a deep formula no longer overflows on Windows.** `evaluate`
+  ran on the caller's thread, 1 MiB on Windows, where a formula at the
+  depth limit (40) overflowed; the live engine's worker had the platform
+  default too. Both now run on an 8 MiB engine thread.
+
 - **A formula nested too deeply no longer makes a model unopenable.** A long
   operator chain (about 63 `+` terms) or deep nesting was accepted and saved,
   then every `list`/`show` failed with "recursion limit exceeded". A formula's
