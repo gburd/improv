@@ -83,6 +83,17 @@ pub enum Expr {
 ///   evaluates at depth 54 and overflows at 56: 14 levels of margin.
 pub const MAX_FORMULA_DEPTH: usize = 40;
 
+/// How deep a formula that a store kept as **text** may nest when it is
+/// loaded (Postgres `improv.measure`, `LANGUAGE improv` bodies): text has no
+/// JSON limit, so a formula saved before [`MAX_FORMULA_DEPTH`] existed, up to
+/// this deep, keeps working. Named-LAMBDA expansion is held to it too. It is a
+/// bound for **release** builds: on the engine's 2 MiB worker thread a
+/// release build evaluates `+`, `*` and `-` chains to 800 levels and `ABS`,
+/// `IF` and `SWITCH` nesting to 600 (each fails 50 later), more than twice
+/// this. A debug build's worker overflows at 56, so debug tests stay under
+/// that.
+pub const MAX_STORED_FORMULA_DEPTH: usize = 256;
+
 /// How many nodes a formula's tree may have once `LET`, `LAMBDA` and named
 /// LAMBDAs are expanded: each copies its value at every use, so a chain of
 /// `LET` bindings that each use the previous one twice doubles per binding.
@@ -131,14 +142,20 @@ impl Expr {
     }
 
     /// An error when the tree is deeper than [`MAX_FORMULA_DEPTH`] or larger
-    /// than [`MAX_FORMULA_NODES`].
+    /// than [`MAX_FORMULA_NODES`]: the limits on a new formula.
     pub fn check_limits(&self) -> Result<(), String> {
+        self.check_depth(MAX_FORMULA_DEPTH)
+    }
+
+    /// An error when the tree is deeper than `max` or larger than
+    /// [`MAX_FORMULA_NODES`].
+    pub fn check_depth(&self, max: usize) -> Result<(), String> {
         let (depth, nodes) = self.depth_and_nodes();
         if nodes > MAX_FORMULA_NODES {
             return Err(too_large());
         }
-        if depth > MAX_FORMULA_DEPTH {
-            return Err(too_deep(depth));
+        if depth > max {
+            return Err(too_deep(depth, max));
         }
         Ok(())
     }
@@ -169,17 +186,18 @@ impl Expr {
     }
 }
 
-/// The error for a tree `depth` levels deep, past [`MAX_FORMULA_DEPTH`].
-pub(crate) fn too_deep(depth: usize) -> String {
-    format!("formula nests too deeply ({depth} levels; the limit is {MAX_FORMULA_DEPTH})")
+/// How the two limit errors start (see [`crate::ParseError::is_limit`]).
+pub(crate) const TOO_DEEP: &str = "formula nests too deeply";
+pub(crate) const TOO_LARGE: &str = "formula is too large";
+
+/// The error for a tree `depth` levels deep, past `max`.
+pub(crate) fn too_deep(depth: usize, max: usize) -> String {
+    format!("{TOO_DEEP} ({depth} levels; the limit is {max})")
 }
 
 /// The error for a tree past [`MAX_FORMULA_NODES`].
 pub(crate) fn too_large() -> String {
-    format!(
-        "formula is too large (more than {MAX_FORMULA_NODES} terms once LET and LAMBDA \
-         are expanded)"
-    )
+    format!("{TOO_LARGE} (more than {MAX_FORMULA_NODES} terms once LET and LAMBDA are expanded)")
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,6 +208,17 @@ pub struct Formula {
 impl Formula {
     pub fn new(expr: Expr) -> Self {
         Formula { expr }
+    }
+
+    /// A formula as a store reads it back from its JSON: `None` when the
+    /// JSON nests too deeply for serde_json, as a formula saved before
+    /// [`MAX_FORMULA_DEPTH`] existed can (see [`crate::Measure::mark_unreadable`]).
+    pub fn from_json(json: &str) -> Result<Option<Formula>, serde_json::Error> {
+        match serde_json::from_str(json) {
+            Ok(f) => Ok(Some(f)),
+            Err(e) if e.to_string().starts_with("recursion limit exceeded") => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn referenced_measures(&self) -> Vec<MeasureId> {
@@ -213,5 +242,23 @@ mod tests {
         let mut deps = f.referenced_measures();
         deps.sort();
         assert_eq!(deps, vec![MeasureId(100), MeasureId(101)]);
+    }
+
+    #[test]
+    fn from_json_tells_a_too_deep_formula_from_a_bad_one() {
+        let f = Formula::new(Expr::UnaryOp(
+            UnaryOp::Neg,
+            Box::new(Expr::Literal(Value::Number(1.0))),
+        ));
+        let json = serde_json::to_string(&f).unwrap();
+        assert_eq!(Formula::from_json(&json).unwrap(), Some(f));
+        // 70 nested negations: 141 levels of JSON.
+        let deep = format!(
+            "{{\"expr\":{}{{\"Literal\":{{\"Number\":1.0}}}}{}}}",
+            "{\"UnaryOp\":[\"Neg\",".repeat(70),
+            "]}".repeat(70)
+        );
+        assert_eq!(Formula::from_json(&deep).unwrap(), None);
+        assert!(Formula::from_json("not json").is_err());
     }
 }

@@ -123,6 +123,7 @@
 
 use crate::formula::{
     BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_DEPTH, MAX_FORMULA_NODES,
+    MAX_STORED_FORMULA_DEPTH,
 };
 use crate::functions;
 use crate::ids::{CategoryId, MeasureId, Name};
@@ -155,6 +156,13 @@ impl ParseError {
             message: message.into(),
             position,
         }
+    }
+
+    /// Whether this is [`MAX_FORMULA_DEPTH`] or [`MAX_FORMULA_NODES`]
+    /// refusing a formula, not a syntax or name error.
+    pub fn is_limit(&self) -> bool {
+        self.message.starts_with(crate::formula::TOO_DEEP)
+            || self.message.starts_with(crate::formula::TOO_LARGE)
     }
 }
 
@@ -519,6 +527,10 @@ struct Parser<'a> {
     /// Nodes copied in so far by `LET`/`LAMBDA` names, bounded by
     /// [`MAX_FORMULA_NODES`] so a binding chain that doubles fails fast.
     expanded: usize,
+    /// Reading a formula a store kept as text: held to the load bounds
+    /// ([`MAX_STORED_FORMULA_DEPTH`], [`MAX_STORED_PARSE_DEPTH`]) instead of
+    /// a new formula's.
+    stored: bool,
 }
 
 /// Maximum recursive-descent nesting depth for a single formula (Excel allows
@@ -527,6 +539,11 @@ struct Parser<'a> {
 /// parse and 85 overflow (measured 2026-10-24). Past [`MAX_FORMULA_DEPTH`] a
 /// tree is refused anyway; the extra levels are for redundant parentheses.
 const MAX_PARSE_DEPTH: usize = 64;
+
+/// [`MAX_PARSE_DEPTH`] for a formula a store kept as text: 0.10's limit, so
+/// what parsed then still loads (a release build, or a Postgres backend's
+/// 8 MiB stack, has room for it).
+const MAX_STORED_PARSE_DEPTH: usize = 100;
 
 /// A named argument as read: the name, where it starts, and its value.
 type Named = (String, Option<usize>, Expr);
@@ -640,12 +657,54 @@ impl<'a> Parser<'a> {
 
     // --- grammar ---
 
+    /// The deepest tree this parse accepts.
+    fn max_depth(&self) -> usize {
+        if self.stored {
+            MAX_STORED_FORMULA_DEPTH
+        } else {
+            MAX_FORMULA_DEPTH
+        }
+    }
+
+    /// The deepest recursion this parse allows.
+    fn max_nest(&self) -> usize {
+        if self.stored {
+            MAX_STORED_PARSE_DEPTH
+        } else {
+            MAX_PARSE_DEPTH
+        }
+    }
+
+    /// Refuse a tree past [`Parser::max_depth`] or [`MAX_FORMULA_NODES`];
+    /// `pos` is where it starts.
+    fn check(&self, expr: &Expr, pos: Option<usize>) -> Result<(), ParseError> {
+        expr.check_depth(self.max_depth())
+            .map_err(|m| ParseError::new(m, pos))
+    }
+
+    /// [`Parser::check`] a whole formula. A named-LAMBDA call is kept as a
+    /// call and expanded when compiled, so a new formula's expansion is
+    /// held to the same limit.
+    fn check_formula(&self, expr: &Expr, pos: Option<usize>) -> Result<(), ParseError> {
+        self.check(expr, pos)?;
+        if self.stored || self.model.lambdas.is_empty() {
+            return Ok(());
+        }
+        match self.model.expand_lambdas(expr) {
+            Ok(full) => self.check(&full, pos),
+            Err(m) if ParseError::new(m.as_str(), None).is_limit() => Err(ParseError::new(m, pos)),
+            // Anything else the compiler reports, with its own context.
+            Err(_) => Ok(()),
+        }
+    }
+
     /// `lhs op rhs`: one more link of an operator chain, at `at`. A chain
     /// grows its tree without recursing, so its depth is checked as it grows
     /// (`depth` is lhs's, 0 before the first link): a long chain stops at the
     /// operator that passes [`MAX_FORMULA_DEPTH`], before it builds a tree too
     /// deep even to drop.
     fn link(
+        &self,
         at: Option<usize>,
         depth: &mut usize,
         op: BinaryOp,
@@ -656,8 +715,11 @@ impl<'a> Parser<'a> {
             *depth = lhs.depth_and_nodes().0;
         }
         *depth = 1 + (*depth).max(rhs.depth_and_nodes().0);
-        if *depth > MAX_FORMULA_DEPTH {
-            return Err(ParseError::new(crate::formula::too_deep(*depth), at));
+        if *depth > self.max_depth() {
+            return Err(ParseError::new(
+                crate::formula::too_deep(*depth, self.max_depth()),
+                at,
+            ));
         }
         Ok(Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs)))
     }
@@ -674,7 +736,7 @@ impl<'a> Parser<'a> {
             let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_and()?;
-            lhs = Self::link(at, &mut depth, BinaryOp::Or, lhs, rhs)?;
+            lhs = self.link(at, &mut depth, BinaryOp::Or, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -686,7 +748,7 @@ impl<'a> Parser<'a> {
             let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_not()?;
-            lhs = Self::link(at, &mut depth, BinaryOp::And, lhs, rhs)?;
+            lhs = self.link(at, &mut depth, BinaryOp::And, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -700,7 +762,7 @@ impl<'a> Parser<'a> {
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
         let mut nots = 0usize;
         while self.peek_kw("not") {
-            if self.depth + nots >= MAX_PARSE_DEPTH {
+            if self.depth + nots >= self.max_nest() {
                 return Err(self.err("expression nested too deeply"));
             }
             self.bump();
@@ -750,7 +812,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             let rhs = self.parse_additive()?;
-            lhs = Self::link(at, &mut depth, BinaryOp::Concat, lhs, rhs)?;
+            lhs = self.link(at, &mut depth, BinaryOp::Concat, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -767,7 +829,7 @@ impl<'a> Parser<'a> {
             let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_term()?;
-            lhs = Self::link(at, &mut depth, op, lhs, rhs)?;
+            lhs = self.link(at, &mut depth, op, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -784,7 +846,7 @@ impl<'a> Parser<'a> {
             let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_unary()?;
-            lhs = Self::link(at, &mut depth, op, lhs, rhs)?;
+            lhs = self.link(at, &mut depth, op, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -795,7 +857,7 @@ impl<'a> Parser<'a> {
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
         let mut negs = 0usize;
         while matches!(self.peek(), Some(Tok::Op(o)) if o == "-") {
-            if self.depth + negs >= MAX_PARSE_DEPTH {
+            if self.depth + negs >= self.max_nest() {
                 return Err(self.err("expression nested too deeply"));
             }
             self.bump();
@@ -819,7 +881,7 @@ impl<'a> Parser<'a> {
             return Ok(base);
         }
         self.depth += 1;
-        if self.depth > MAX_PARSE_DEPTH {
+        if self.depth > self.max_nest() {
             self.depth -= 1;
             return Err(self.err("expression nested too deeply"));
         }
@@ -842,7 +904,7 @@ impl<'a> Parser<'a> {
             }
             e = match e {
                 Expr::Literal(Value::Number(n)) => Expr::Literal(Value::Number(n / 100.0)),
-                other => Self::link(
+                other => self.link(
                     at,
                     &mut depth,
                     BinaryOp::Div,
@@ -857,7 +919,7 @@ impl<'a> Parser<'a> {
     /// Primary = Literal | Call | MeasureRef | "(" Expression ")"
     fn parse_primary(&mut self) -> Result<Expr, ParseError> {
         self.depth += 1;
-        if self.depth > MAX_PARSE_DEPTH {
+        if self.depth > self.max_nest() {
             self.depth -= 1;
             return Err(self.err("expression nested too deeply"));
         }
@@ -1425,7 +1487,7 @@ impl<'a> Parser<'a> {
             let value = self.parse_expr()?;
             // Checked here too, so bindings cannot compound into a tree too
             // deep to drop before the whole formula is checked.
-            check_limits(&value, at)?;
+            self.check(&value, at)?;
             self.scope.push((name, value));
             self.expect(",", "',' then the LET body")?;
         }
@@ -1499,7 +1561,7 @@ impl<'a> Parser<'a> {
                 self.toks.get(stopped).map(|s| s.pos),
             ));
         }
-        check_limits(&body, self.toks.get(start).map(|s| s.pos))?;
+        self.check(&body, self.toks.get(start).map(|s| s.pos))?;
         Ok(body)
     }
 
@@ -1801,30 +1863,31 @@ impl<'a> Parser<'a> {
 pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseError> {
     let toks = tokenize(text)?;
     let (target, rhs_start) = parse_lhs(&toks)?;
-    let mut p = Parser {
-        toks: &toks[rhs_start..],
-        pos: 0,
-        model,
-        depth: 0,
-        scope: Vec::new(),
-        lambdas: 0,
-        expanded: 0,
-    };
+    let mut p = Parser::new(&toks[rhs_start..], model, false);
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
-    check_limits(&expr, p.toks.first().map(|s| s.pos))?;
+    p.check_formula(&expr, p.toks.first().map(|s| s.pos))?;
     Ok(FormulaText {
         target,
         formula: Formula::new(expr),
     })
 }
 
-/// Refuse a tree deeper than [`MAX_FORMULA_DEPTH`] or larger than
-/// [`MAX_FORMULA_NODES`]; `pos` is where its expression starts.
-fn check_limits(expr: &Expr, pos: Option<usize>) -> Result<(), ParseError> {
-    expr.check_limits().map_err(|m| ParseError::new(m, pos))
+impl<'a> Parser<'a> {
+    fn new(toks: &'a [Spanned], model: &'a Model, stored: bool) -> Self {
+        Parser {
+            toks,
+            pos: 0,
+            model,
+            depth: 0,
+            scope: Vec::new(),
+            lambdas: 0,
+            expanded: 0,
+            stored,
+        }
+    }
 }
 
 /// Locate the target name (LHS) and the index of the first RHS token (past
@@ -1873,6 +1936,17 @@ fn parse_lhs(toks: &[Spanned]) -> Result<(Name, usize), ParseError> {
 /// sources, not sub-expressions), keeping them out of the engine's expression
 /// grammar and thus off the deterministic hot path.
 pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseError> {
+    definition(model, text, false)
+}
+
+/// [`parse_definition`] for a definition a store kept as text, loaded:
+/// held to [`MAX_STORED_FORMULA_DEPTH`] rather than [`MAX_FORMULA_DEPTH`], so
+/// a formula saved before that limit, which worked, still loads.
+pub fn parse_stored_definition(model: &Model, text: &str) -> Result<Definition, ParseError> {
+    definition(model, text, true)
+}
+
+fn definition(model: &Model, text: &str, stored: bool) -> Result<Definition, ParseError> {
     let toks = tokenize(text)?;
     let (target, rhs) = parse_lhs(&toks)?;
     // Is the RHS exactly `IDENT ( ... )` where IDENT is SQL/CALL?
@@ -1885,24 +1959,16 @@ pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseEr
             return parse_call_form(&toks, rhs, target);
         }
         if is_open && head.eq_ignore_ascii_case("lambda") {
-            return parse_lambda_form(model, &toks, rhs, target);
+            return parse_lambda_form(model, &toks, rhs, target, stored);
         }
     }
     // Fall through to an ordinary formula expression.
-    let mut p = Parser {
-        toks: &toks[rhs..],
-        pos: 0,
-        model,
-        depth: 0,
-        scope: Vec::new(),
-        lambdas: 0,
-        expanded: 0,
-    };
+    let mut p = Parser::new(&toks[rhs..], model, stored);
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
-    check_limits(&expr, p.toks.first().map(|s| s.pos))?;
+    p.check_formula(&expr, p.toks.first().map(|s| s.pos))?;
     Ok(Definition::Formula(FormulaText {
         target,
         formula: Formula::new(expr),
@@ -1917,6 +1983,7 @@ fn parse_lambda_form(
     toks: &[Spanned],
     rhs: usize,
     target: Name,
+    stored: bool,
 ) -> Result<Definition, ParseError> {
     if functions::callable(&target.0).is_some() {
         return Err(ParseError::new(
@@ -1933,15 +2000,7 @@ fn parse_lambda_form(
     if let Some(id) = own {
         m.lambdas.remove(&id);
     }
-    let mut p = Parser {
-        toks: &toks[rhs..],
-        pos: 0,
-        model: &m,
-        depth: 0,
-        scope: Vec::new(),
-        lambdas: 0,
-        expanded: 0,
-    };
+    let mut p = Parser::new(&toks[rhs..], &m, stored);
     let (params, start, end) = p.parse_lambda_params()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected input after the LAMBDA (a named LAMBDA is not called here)"));
@@ -2067,24 +2126,26 @@ fn parse_call_form(toks: &[Spanned], rhs: usize, target: Name) -> Result<Definit
 
 /// Parse just an expression (the RHS), with no target/assignment.
 pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
+    expr(model, text, false)
+}
+
+/// [`parse_expr`] for an expression a store kept as text, loaded (see
+/// [`parse_stored_definition`]).
+pub fn parse_stored_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
+    expr(model, text, true)
+}
+
+fn expr(model: &Model, text: &str, stored: bool) -> Result<Formula, ParseError> {
     let toks = tokenize(text)?;
     if toks.is_empty() {
         return Err(ParseError::new("empty expression", None));
     }
-    let mut p = Parser {
-        toks: &toks,
-        pos: 0,
-        model,
-        depth: 0,
-        scope: Vec::new(),
-        lambdas: 0,
-        expanded: 0,
-    };
+    let mut p = Parser::new(&toks, model, stored);
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
-    check_limits(&expr, p.toks.first().map(|s| s.pos))?;
+    p.check_formula(&expr, p.toks.first().map(|s| s.pos))?;
     Ok(Formula::new(expr))
 }
 
@@ -3471,6 +3532,7 @@ mod tests {
                 (parse_definition(&m, &def).map(drop), at + 4),
             ] {
                 let e = e.unwrap_err();
+                assert!(e.is_limit(), "{shape}");
                 assert_eq!(e.message, want, "{shape}");
                 assert_eq!(e.position, Some(at), "{shape}");
             }
@@ -3518,12 +3580,79 @@ mod tests {
                     vec![group.as_str(); 1_000].join(" + "),
                     format!("{}Price{}", "ABS(".repeat(99), ")".repeat(99)),
                 ];
+                let chains = &texts[..3];
                 texts.iter().all(|t| parse_expr(&m, t).is_err())
+                    && chains.iter().all(|t| parse_stored_expr(&m, t).is_err())
             })
             .unwrap()
             .join()
             .unwrap();
         assert!(r);
+    }
+
+    #[test]
+    fn stored_text_formulas_load_up_to_the_stored_bound() {
+        let m = fixture();
+        // A 45-term sum worked before the limits; as stored text it loads.
+        let sum = vec!["Price"; 45].join(" + ");
+        assert!(parse_expr(&m, &sum).unwrap_err().is_limit());
+        let f = parse_stored_expr(&m, &sum).unwrap();
+        assert_eq!(f.expr.depth_and_nodes().0, 45);
+        let def = format!("Q = {sum}");
+        assert!(parse_definition(&m, &def).is_err());
+        assert!(matches!(
+            parse_stored_definition(&m, &def),
+            Ok(Definition::Formula(_))
+        ));
+        // 0.10's recursion limit (100), not the new one (64).
+        let nested = format!("{}Price{}", "ABS(".repeat(70), ")".repeat(70));
+        assert!(parse_expr(&m, &nested).is_err());
+        assert!(parse_stored_expr(&m, &nested).is_ok());
+        // Past the stored bound, it is refused too, naming that bound.
+        let over = vec!["Price"; MAX_STORED_FORMULA_DEPTH + 1].join(" + ");
+        let e = parse_stored_expr(&m, &over).unwrap_err();
+        assert!(e.is_limit());
+        assert_eq!(
+            e.message,
+            format!(
+                "formula nests too deeply ({} levels; the limit is {MAX_STORED_FORMULA_DEPTH})",
+                MAX_STORED_FORMULA_DEPTH + 1
+            )
+        );
+        // A stored named LAMBDA too.
+        let body = format!("{}x{}", "ABS(".repeat(45), ")".repeat(45));
+        let text = format!("F = LAMBDA(x, {body})");
+        assert!(parse_definition(&m, &text).is_err());
+        assert!(matches!(
+            parse_stored_definition(&m, &text),
+            Ok(Definition::Lambda(_))
+        ));
+    }
+
+    #[test]
+    fn a_new_formula_is_limited_after_named_lambdas_expand() {
+        let mut m = fixture();
+        let body = format!("{}x{}", "ABS(".repeat(29), ")".repeat(29));
+        let Ok(Definition::Lambda(l)) = parse_definition(&m, &format!("F = LAMBDA(x, {body})"))
+        else {
+            panic!()
+        };
+        m.lambdas.insert(1, l.lambda);
+        // F(Price) expands to 30 levels; F(F(Price)) to 59.
+        assert!(parse_expr(&m, "F(Price)").is_ok());
+        let e = parse_expr(&m, "F(F(Price))").unwrap_err();
+        assert_eq!(
+            e.message,
+            "formula nests too deeply (59 levels; the limit is 40)"
+        );
+        assert_eq!(e.position, Some(0));
+        // A stored one, expanded when compiled, is held to the stored bound.
+        assert!(parse_stored_expr(&m, "F(F(Price))").is_ok());
+        let deep = format!("{}Price{}", "F(".repeat(9), ")".repeat(9));
+        let e = m
+            .expand_lambdas(&parse_stored_expr(&m, &deep).unwrap().expr)
+            .unwrap_err();
+        assert!(e.contains("the limit is 256"), "{e}");
     }
 
     #[test]
@@ -3543,6 +3672,8 @@ mod tests {
             t.elapsed()
         );
         assert!(e.message.starts_with("formula is too large"), "{e}");
+        assert!(e.is_limit());
+        assert!(!parse_expr(&m, "1 +").unwrap_err().is_limit());
         assert!(e.position.is_some());
         // The same chain, short enough, is fine.
         assert!(parse_expr(&m, "LET(a0, Price, a1, a0 + a0, a2, a1 + a1, a2)").is_ok());

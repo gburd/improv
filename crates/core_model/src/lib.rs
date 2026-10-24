@@ -21,11 +21,13 @@ pub mod value;
 pub use extfn_def::{ExternalFn, Language};
 pub use formula::{
     BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_DEPTH, MAX_FORMULA_NODES,
+    MAX_STORED_FORMULA_DEPTH,
 };
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
 pub use locale::Locale;
 pub use parser::{
-    parse_definition, parse_expr, parse_formula, Definition, FormulaText, LambdaText, ParseError,
+    parse_definition, parse_expr, parse_formula, parse_stored_definition, parse_stored_expr,
+    Definition, FormulaText, LambdaText, ParseError,
 };
 pub use value::{Value, ValueError, ValueErrorKind, ValueType};
 
@@ -111,6 +113,34 @@ pub struct Measure {
 }
 
 impl Measure {
+    /// Load a derived measure whose stored formula cannot be used (`why`):
+    /// one saved before [`MAX_FORMULA_DEPTH`] existed, too deep to read back
+    /// or past the limits. Rather than refuse the whole model, the measure
+    /// becomes `#REF!` at each of its cells, so its dependents compute as
+    /// errors, and its description says why and how to fix it: redefine it
+    /// (the store keeps the placeholder at the next save).
+    pub fn mark_unreadable(&mut self, why: &str) {
+        let ref_error = Expr::Call(
+            FuncId(54), // ERROR("#REF!")
+            vec![Expr::Literal(Value::Text("#REF!".into()))],
+        );
+        // `+ POSITION(c)` gives the error a cell at each item of c.
+        let expr = self.categories.iter().fold(ref_error, |e, c| {
+            let at = Expr::Call(functions::POSITION, vec![Expr::Category(*c)]);
+            Expr::BinaryOp(BinaryOp::Add, Box::new(e), Box::new(at))
+        });
+        self.kind = MeasureKind::Derived(Formula::new(expr));
+        let note = format!(
+            "[unreadable formula] {} (measure {} {}); it is #REF! until redefined: \
+             split it into intermediate measures, at most {MAX_FORMULA_DEPTH} levels deep.",
+            why, self.id.0, self.name.0
+        );
+        self.description = Some(match self.description.take() {
+            Some(d) => format!("{note} {d}"),
+            None => note,
+        });
+    }
+
     pub fn is_input(&self) -> bool {
         matches!(self.kind, MeasureKind::Input)
     }
@@ -724,8 +754,10 @@ impl Model {
     /// parameters bound to the call's arguments (nested calls too). Errors
     /// name an unknown lambda or a wrong argument count.
     pub fn expand_lambdas(&self, e: &Expr) -> Result<Expr, String> {
+        // The compiler expands stored formulas too, so this is the load
+        // bound; the parser holds a new formula's expansion to the new one.
         let e = self.expand_at(e, 0)?;
-        e.check_limits()?;
+        e.check_depth(MAX_STORED_FORMULA_DEPTH)?;
         Ok(e)
     }
 
@@ -759,7 +791,7 @@ impl Model {
                         let body = substitute_params(&l.body, &args)
                             .map_err(|e| format!("{}: {e}", l.name.0))?;
                         // Lambdas calling lambdas can double per level: stop early.
-                        body.check_limits()
+                        body.check_depth(MAX_STORED_FORMULA_DEPTH)
                             .map_err(|e| format!("{}: {e}", l.name.0))?;
                         self.expand_at(&body, depth + 1)?
                     }
@@ -793,7 +825,7 @@ impl Model {
         while !todo.is_empty() {
             let before = todo.len();
             let mut err = None;
-            todo.retain(|(id, text)| match parse_definition(self, text) {
+            todo.retain(|(id, text)| match parse_stored_definition(self, text) {
                 Ok(Definition::Lambda(lt)) => {
                     self.lambdas.insert(*id, lt.lambda);
                     false
@@ -963,6 +995,41 @@ impl Model {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreadable_formula_becomes_ref_errors_over_its_categories() {
+        let mut m = Measure {
+            id: MeasureId(7),
+            name: Name("Q".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Input,
+            description: Some("mine".into()),
+        };
+        m.mark_unreadable("its stored formula nests too deeply to load");
+        let MeasureKind::Derived(f) = &m.kind else {
+            panic!("{m:?}")
+        };
+        let model = Model::new();
+        let mut want = parse_expr(&model, "ERROR(\"#REF!\")").unwrap().expr;
+        for c in [1, 2] {
+            let at = Expr::Call(functions::POSITION, vec![Expr::Category(CategoryId(c))]);
+            want = Expr::BinaryOp(BinaryOp::Add, Box::new(want), Box::new(at));
+        }
+        assert_eq!(f.expr, want);
+        let d = m.description.as_deref().unwrap();
+        assert!(
+            d.starts_with(
+                "[unreadable formula] its stored formula nests too deeply to load (measure 7 Q)"
+            ),
+            "{d}"
+        );
+        assert!(d.ends_with(" mine"), "{d}");
+        // Without a description of its own, the note is all of it.
+        m.description = None;
+        m.mark_unreadable("x");
+        assert!(m.description.unwrap().ends_with("levels deep."));
+    }
 
     // A tiny Time x Product revenue model, matching the steering doc's example.
     fn time_product_model() -> Model {
