@@ -591,6 +591,25 @@ pub struct App {
     /// H9: the outside high-water already reported, so the status line says
     /// it once per outside save.
     pub outside_seen: Option<i64>,
+    /// `q` was pressed and its save failed: the next `q` quits anyway.
+    pub quit_armed: bool,
+}
+
+/// What a failed save says (H6). The edits stay in the session either way.
+pub fn save_error(e: improv_store::StoreError) -> String {
+    let text = e.to_string();
+    match e {
+        improv_store::StoreError::Conflict(_) => "conflict: another program changed this \
+            model since it was opened, so nothing was saved or overwritten. Press R to load \
+            their changes, then make yours again"
+            .into(),
+        // SQLite's words; the second is a full disk while it grows a side file.
+        _ if text.contains("disk is full") || text.contains("disk I/O error") => format!(
+            "the disk is full or the file cannot be written ({text}). Nothing was saved; \
+             the edits are still here: free some space and press w"
+        ),
+        _ => text,
+    }
 }
 
 impl App {
@@ -641,6 +660,7 @@ impl App {
             redo_stack: Vec::new(),
             defining: false,
             outside_seen: None,
+            quit_armed: false,
         })
     }
 
@@ -1415,7 +1435,7 @@ impl App {
                 ..Default::default()
             },
         };
-        let mut s = improv_store::Store::open(path).map_err(|e| e.to_string())?;
+        let mut s = improv_store::Store::open(path).map_err(save_error)?;
         s.adopt_save_token(std::mem::take(&mut self.save_token));
         let r = if self.saved.is_some() {
             s.save_changes(&self.model, &changes)
@@ -1424,7 +1444,7 @@ impl App {
         };
         // On failure this is the adopted token back, unchanged.
         self.save_token = s.take_save_token();
-        r.map_err(|e| e.to_string())?;
+        r.map_err(save_error)?;
         self.saved = Some(self.model.clone());
         Ok(())
     }
@@ -2437,7 +2457,7 @@ pub(crate) mod tests {
         ))
     }
 
-    struct TmpFile(PathBuf);
+    pub(crate) struct TmpFile(pub(crate) PathBuf);
     impl Drop for TmpFile {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);

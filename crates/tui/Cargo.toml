@@ -19,6 +19,11 @@ thiserror.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 
+[dev-dependencies]
+# The crash-safety tests check the store file with SQLite's integrity_check.
+mentat.workspace = true
+improv_storage_mentat = { path = "../storage_mentat" }
+
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; it gates the
 # `coverage(off)` exclusions on the real-terminal shell in main.rs.
 [lints.rust]

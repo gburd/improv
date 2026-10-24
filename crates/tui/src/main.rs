@@ -216,8 +216,10 @@ fn help_key(app: &mut App, code: KeyCode) {
 /// Key handling in normal (navigation) mode.
 fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
+    // Any other key disarms a quit whose save failed.
+    let armed = std::mem::take(&mut app.quit_armed);
     match k.code {
-        KeyCode::Char('q') => app.should_quit = true,
+        KeyCode::Char('q') => quit(app, path, armed),
         KeyCode::Char('e') | KeyCode::Enter => app.begin_edit(),
         KeyCode::Tab | KeyCode::Char('m') => app.next_measure(),
         // Shift+arrow grows a range selection (its Sum shows in the status).
@@ -250,6 +252,23 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         KeyCode::Char('?') => app.help = Some(fnhelp::FnHelp::new()),
         KeyCode::Esc => app.status = None,
         _ => {}
+    }
+}
+
+/// `q`: save, then quit (H6). A failed save (a full disk, another writer)
+/// keeps the session open with the reason, so the edits are not lost; a
+/// second `q` (`armed`) quits anyway.
+fn quit(app: &mut App, path: &str, armed: bool) {
+    if armed {
+        app.should_quit = true;
+        return;
+    }
+    match app.save(path) {
+        Ok(()) => app.should_quit = true,
+        Err(e) => {
+            app.quit_armed = true;
+            app.status = Some(format!("save failed: {e}. q again quits without saving"));
+        }
     }
 }
 
@@ -722,6 +741,351 @@ mod tests {
         run_events(&mut b, "/nonexistent/dir/x.db", chars("R")).unwrap();
         assert!(b.status.as_deref().unwrap().starts_with("revert failed"));
         assert_eq!(b.model.views.len(), 1, "a failed revert keeps the session");
+    }
+
+    // -- H6: crash safety (kill -9 during a save, a full disk, two writers)
+
+    /// One input measure over 100 x 50 items, every cell 0: a save that
+    /// rewrites them all takes long enough to be killed midway.
+    fn crash_model() -> improv_core_model::Model {
+        use improv_core_model::{Measure, MeasureKind, Model, Name, ValueType};
+        let mut m = Model::new();
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        (0..100).for_each(|i| m.add_item(ItemId(100 + i), a, format!("a{i}")));
+        (0..50).for_each(|j| m.add_item(ItemId(1000 + j), b, format!("b{j}")));
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![a, b],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        for i in 0..100 {
+            for j in 0..50 {
+                let at = Coordinate::from_pairs([(a, ItemId(100 + i)), (b, ItemId(1000 + j))]);
+                m.set_input(MeasureId(1), at, Value::Number(0.0));
+            }
+        }
+        m
+    }
+
+    /// The one value every cell holds: two values mean a half-applied save.
+    fn uniform_value(model: &improv_core_model::Model) -> f64 {
+        let vals: std::collections::BTreeSet<u64> = model
+            .inputs
+            .values()
+            .map(|v| match v {
+                Value::Number(n) => n.to_bits(),
+                other => panic!("not a number: {other:?}"),
+            })
+            .collect();
+        assert_eq!(model.inputs.len(), 5000, "cells were lost");
+        assert_eq!(vals.len(), 1, "a save was half applied: {vals:?}");
+        f64::from_bits(*vals.first().expect("a value"))
+    }
+
+    /// SQLite's own check of the store file.
+    fn integrity(db: &str) -> String {
+        mentat::Store::open(db)
+            .expect("open the store")
+            .sqlite_ref()
+            .pragma_query_value(None, "integrity_check", |r| r.get::<_, String>(0))
+            .expect("integrity_check")
+    }
+
+    /// This test binary's [`h6_child`] in `mode`, with `db`.
+    fn h6_child_command(mode: &str, db: &str) -> std::process::Command {
+        let mut c = std::process::Command::new(std::env::current_exe().expect("the test binary"));
+        c.args(["--exact", "tests::h6_child", "--ignored", "--nocapture"])
+            .env("IMPROV_TUI_H6_CHILD", mode)
+            .env("IMPROV_TUI_H6_DB", db);
+        c
+    }
+
+    /// The child process of the H6 tests; does nothing unless one runs it.
+    #[test]
+    #[ignore = "a child process of the H6 crash-safety tests"]
+    fn h6_child() {
+        let (Ok(mode), Ok(db)) = (
+            std::env::var("IMPROV_TUI_H6_CHILD"),
+            std::env::var("IMPROV_TUI_H6_DB"),
+        ) else {
+            return;
+        };
+        match mode.as_str() {
+            "saves" => h6_child_saves(&db),
+            "disk-full" => h6_child_disk_full(&db),
+            other => panic!("unknown mode {other}"),
+        }
+    }
+
+    /// Save k = 1, 2, … through the TUI's save (`w`), every cell set to k,
+    /// saying `saving k` and `saved k`. Runs until killed.
+    fn h6_child_saves(db: &str) {
+        let mut app = load(db).expect("load");
+        let cells: Vec<_> = app.model.inputs.keys().cloned().collect();
+        for k in 1..=u16::MAX {
+            for (m, at) in &cells {
+                app.model
+                    .set_input(*m, at.clone(), Value::Number(f64::from(k)));
+            }
+            println!("saving {k}");
+            app.write(db);
+            assert_eq!(app.status.as_deref(), Some("saved"));
+            println!("saved {k}");
+        }
+    }
+
+    /// kill -9 a TUI that is saving, then reopen: the store holds every
+    /// acknowledged save and nothing of the killed one, SQLite finds no
+    /// corruption, and the TUI opens and saves it again.
+    #[test]
+    fn kill_9_during_a_save_loses_nothing_and_corrupts_nothing() {
+        use std::io::BufRead;
+        let path = tmp_path("tui-h6-kill.db");
+        let db = path.to_str().unwrap().to_owned();
+        let _files: Vec<_> = ["", "-wal", "-shm"]
+            .iter()
+            .map(|s| crate::app::tests::TmpFile(format!("{db}{s}").into()))
+            .collect();
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&crash_model()))
+            .expect("seed");
+        let mut midway = 0;
+        for (round, fraction) in [0.2, 0.5, 0.8].into_iter().enumerate() {
+            let mut child = h6_child_command("saves", &db)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("spawn the saving child");
+            let mut lines = std::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+            let mut next = |want: &str| loop {
+                let line = lines.next().expect("the child stopped").expect("read");
+                if let Some(k) = line.strip_prefix(want) {
+                    break (k.parse::<u32>().expect("k"), std::time::Instant::now());
+                }
+            };
+            let (_, t1) = next("saving ");
+            let (_, t2) = next("saved ");
+            let (k, _) = next("saving ");
+            std::thread::sleep((t2 - t1).mul_f64(fraction));
+            child.kill().expect("kill -9");
+            let _ = child.wait();
+            let finished = lines
+                .map_while(Result::ok)
+                .any(|l| l == format!("saved {k}"));
+            let acked = if finished { k } else { k - 1 };
+            let reopened = Store::open(&db)
+                .and_then(|mut s| s.load_model())
+                .expect("the store reopens");
+            let v = uniform_value(&reopened);
+            assert!(
+                v == f64::from(acked) || v == f64::from(k),
+                "round {round}: store holds {v}, acknowledged {acked}, killed during {k}"
+            );
+            if !finished && v == f64::from(acked) {
+                midway += 1;
+            }
+            println!("H6 kill -9 round {round}: killed during save {k} (finished: {finished}), store holds {v}");
+            assert_eq!(integrity(&db), "ok");
+            let mut app = load(&db).expect("the TUI reopens it");
+            for v in app.model.inputs.values_mut() {
+                *v = Value::Number(-1.0);
+            }
+            app.write(&db);
+            assert_eq!(app.status.as_deref(), Some("saved"), "and saves");
+        }
+        assert!(midway > 0, "no kill landed inside a save");
+    }
+
+    /// In its own mount namespace, on a tiny tmpfs at `dir`: fill the disk,
+    /// edit and save until a save fails, check the failure and that `q`
+    /// stays, free the space, save, and check the store.
+    fn h6_child_disk_full(dir: &str) {
+        let db = format!("{dir}/model.db");
+        save(&mut App::new(revenue_model()).unwrap(), &db).expect("seed");
+        let mut app = load(&db).expect("load");
+        view(&mut app, MeasureId(101));
+        let filler = format!("{dir}/filler");
+        {
+            use std::io::Write;
+            let mut f = std::fs::File::create(&filler).expect("filler");
+            let chunk = vec![0u8; 4096];
+            while f.write_all(&chunk).is_ok() {}
+        }
+        let mut failed = None;
+        for i in 0..2000 {
+            // Alternate a cell and a new item: both are saved by `w`.
+            let mut ev = if i % 2 == 0 {
+                let mut ev = chars("e");
+                ev.extend(chars(&i.to_string()));
+                ev.push(key(KeyCode::Enter));
+                ev
+            } else {
+                let mut ev = chars("c");
+                ev.extend(chars(&format!("Time: y{i}")));
+                ev.push(key(KeyCode::Enter));
+                ev
+            };
+            ev.extend(chars("w"));
+            run_events(&mut app, &db, ev).unwrap();
+            let status = app.status.clone().unwrap_or_default();
+            if status != "saved" {
+                assert!(status.contains("the disk is full"), "unclear: {status}");
+                assert!(status.contains("edits are still here"), "{status}");
+                println!("H6 disk-full message: {status}");
+                failed = Some(i);
+                break;
+            }
+        }
+        let i = failed.expect("no save failed on a full disk");
+        let kept = app.model.clone();
+        run_events(&mut app, &db, chars("q")).unwrap();
+        assert!(!app.should_quit, "q keeps a session whose save failed");
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .ends_with("q again quits without saving"));
+        assert_eq!(app.model, kept, "the in-memory model is kept");
+        std::fs::remove_file(&filler).expect("free the space");
+        // With room again, w saves (and disarms the quit); q then quits.
+        run_events(&mut app, &db, chars("w")).unwrap();
+        assert_eq!(app.status.as_deref(), Some("saved"));
+        run_events(&mut app, &db, chars("q")).unwrap();
+        assert!(app.should_quit);
+        let back = load(&db).expect("reopen");
+        assert_eq!(back.model, kept, "nothing lost, nothing half-saved");
+        assert_eq!(integrity(&db), "ok");
+        println!("H6 disk-full: save {i} failed cleanly");
+    }
+
+    /// A full disk during a save: a clear error, the session (and `q`)
+    /// kept, the store intact. Runs on a small tmpfs in a user namespace
+    /// (Linux; skipped where those are not allowed).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_full_disk_fails_the_save_clearly_and_keeps_the_model() {
+        let dir = tmp_path("tui-h6-full");
+        std::fs::create_dir(&dir).expect("mount point");
+        struct Rmdir(std::path::PathBuf);
+        impl Drop for Rmdir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let _rmdir = Rmdir(dir.clone());
+        let child = h6_child_command("disk-full", dir.to_str().unwrap());
+        let script = r#"mount -t tmpfs -o size=1m tmpfs "$IMPROV_TUI_H6_DB" || exit 77; exec "$@""#;
+        let mut c = std::process::Command::new("unshare");
+        c.args([
+            "--user",
+            "--map-root-user",
+            "--mount",
+            "sh",
+            "-c",
+            script,
+            "sh",
+        ])
+        .arg(child.get_program())
+        .args(child.get_args())
+        .envs(child.get_envs().filter_map(|(k, v)| Some((k, v?))));
+        let out = match c.output() {
+            Ok(o) => o,
+            Err(e) => return eprintln!("skipped: no unshare ({e})"),
+        };
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if out.status.code() == Some(77) || stderr.starts_with("unshare:") {
+            return eprintln!("skipped: no user and mount namespaces: {stderr}");
+        }
+        assert!(
+            out.status.success() && stdout.contains("H6 disk-full: save"),
+            "the disk-full child failed:\n{stdout}\n{stderr}"
+        );
+        stdout
+            .lines()
+            .filter(|l| l.starts_with("H6"))
+            .for_each(|l| println!("{l}"));
+    }
+
+    /// Two sessions on one store: the second to save is refused with a
+    /// message naming `R`, overwriting nothing, and `q` does not throw its
+    /// edits away; `R` then picks up the other writer's change.
+    #[test]
+    fn two_writers_conflict_and_neither_overwrites_the_other() {
+        let path = tmp_path("tui-h6-two.db");
+        let _guard = crate::app::tests::TmpFile(path.clone());
+        let p = path.to_str().unwrap();
+        save(&mut App::new(revenue_model()).unwrap(), p).unwrap();
+        let mut a = load(p).unwrap();
+        let mut b = load(p).unwrap();
+        for app in [&mut a, &mut b] {
+            view(app, MeasureId(101));
+        }
+        let edit = |app: &mut App, v: &str| {
+            let mut ev = vec![key(KeyCode::Enter)];
+            ev.extend((0..8).map(|_| key(KeyCode::Backspace)));
+            ev.extend(chars(v));
+            ev.push(key(KeyCode::Enter));
+            run_events(app, p, ev).unwrap();
+        };
+        edit(&mut b, "7");
+        run_events(&mut b, p, chars("w")).unwrap();
+        assert_eq!(b.status.as_deref(), Some("saved"));
+        edit(&mut a, "9");
+        run_events(&mut a, p, chars("w")).unwrap();
+        let e = a.status.clone().unwrap();
+        assert!(e.contains("another program changed this model"), "{e}");
+        assert!(e.contains("Press R"), "{e}");
+        assert_eq!(a.grid.value_at(0, 0), Some(9.0), "A keeps its edit");
+        run_events(&mut a, p, chars("q")).unwrap();
+        assert!(!a.should_quit, "q does not drop A's edit");
+        run_events(&mut a, p, vec![key(KeyCode::Down)]).unwrap();
+        run_events(&mut a, p, chars("q")).unwrap();
+        assert!(!a.should_quit, "another key disarmed the quit");
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        let stored = Store::open(p).and_then(|mut s| s.load_model()).unwrap();
+        assert_eq!(
+            stored.input(MeasureId(101), &at),
+            Some(&Value::Number(7.0)),
+            "B's edit kept"
+        );
+        run_events(&mut a, p, chars("R")).unwrap();
+        assert_eq!(
+            a.model.input(MeasureId(101), &at),
+            Some(&Value::Number(7.0))
+        );
+        view(&mut a, MeasureId(101));
+        edit(&mut a, "9");
+        run_events(&mut a, p, chars("q")).unwrap();
+        assert!(a.should_quit, "after R, A's edit saves and q quits");
+        // An armed q quits even when the save would fail.
+        edit(&mut b, "8");
+        run_events(&mut b, p, chars("qq")).unwrap();
+        assert!(b.should_quit);
+        let e = save(&mut b, p).unwrap_err();
+        assert!(
+            e.starts_with("autosave failed: conflict: another program"),
+            "{e}"
+        );
+    }
+
+    /// The wording for each kind of failed save.
+    #[test]
+    fn save_errors_say_what_happened() {
+        use improv_storage_mentat::StoreError as M;
+        use improv_store::StoreError;
+        let full = StoreError::Mentat(M::Mentat("SQL error: database or disk is full".into()));
+        assert!(app::save_error(full).starts_with("the disk is full"));
+        let io = StoreError::Mentat(M::Mentat("SQL error: disk I/O error".into()));
+        assert!(app::save_error(io).contains("free some space"));
+        assert!(app::save_error(StoreError::Conflict("x".into())).starts_with("conflict: another"));
+        let other = StoreError::Mentat(M::Integrity("bad".into()));
+        assert_eq!(app::save_error(other), "data integrity: bad");
     }
 
     /// H9: another store handle saves; the next key says so once, `R`

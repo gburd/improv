@@ -96,7 +96,7 @@ improv-tui new.db     # a new file opens empty: build it with c, n and =
 | `u` / Ctrl+R | undo / redo |
 | Tab (in a formula) | complete a function, measure or category name; again to cycle |
 | `?` / F1 | the keys, and a search over the functions; Enter inserts `NAME(` into the edit |
-| `q` | quit and save |
+| `q` | save and quit; if the save fails (a full disk, another program saved), the TUI stays open with the reason, and `q` again quits without saving |
 
 ## The CLI (`improv`)
 

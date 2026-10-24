@@ -75,6 +75,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   right-click menu ends in a New item line. Each add autosaves and is one
   undo step; a name already used by a category, measure or LAMBDA is
   refused. A new input measure is a number over every category.
+- **The TUI keeps your edits when a save fails (H6).** `q` saves first;
+  when that fails, from a full disk or because another program saved
+  the model, the TUI stays open with the reason, and a second `q` quits
+  without saving. A full disk now says so and that the edits are still
+  there, and a conflict says to press `R`. Tests kill a TUI mid-save
+  (`kill -9`) and reopen without loss or corruption, fill a 1 MB tmpfs
+  under a save, and run two writers on one store.
 - **The GUI and TUI notice other writers (H9).** The GUI checks the
   store's high-water every two seconds; when another program has saved,
   a **Changed** panel offers **Reload** (Revert to Saved) or **Not Now**,
