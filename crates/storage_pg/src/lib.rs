@@ -512,11 +512,15 @@ fn delete_dropped(
 /// cell changed in the database since the load: [`StoreError::Conflict`].
 /// Without a snapshot every cell is written, unchecked.
 /// `jsonb_populate_record` casts each JSON value to its column's type.
+///
+/// `only`: write just these cells (see [`PgModelStore::save_cells`]), not
+/// every cell of the measure.
 fn write_bound(
     tx: &mut impl GenericClient,
     model: &Model,
     b: &Binding,
     base: Option<&PgSnapshot>,
+    only: Option<&BTreeSet<&(MeasureId, Coordinate)>>,
 ) -> Result<()> {
     // Deleting a measure must not wipe its column.
     let Some(measure) = model.measures.get(&b.measure) else {
@@ -530,18 +534,27 @@ fn write_bound(
     }
     // (coordinate, value now, value as loaded); `None`: no cell.
     let mut diff = Vec::new();
-    for (k, v) in &model.inputs {
-        if k.0 != b.measure {
-            continue;
+    if let Some(keys) = only {
+        for k in keys.iter().filter(|k| k.0 == b.measure) {
+            let (new, old) = (model.inputs.get(*k), snap.and_then(|s| s.get(*k)));
+            if snap.is_none() || new != old {
+                diff.push((&k.1, new, old));
+            }
         }
-        let old = snap.and_then(|s| s.get(k));
-        if snap.is_none() || old != Some(v) {
-            diff.push((&k.1, Some(v), old));
+    } else {
+        for (k, v) in &model.inputs {
+            if k.0 != b.measure {
+                continue;
+            }
+            let old = snap.and_then(|s| s.get(k));
+            if snap.is_none() || old != Some(v) {
+                diff.push((&k.1, Some(v), old));
+            }
         }
-    }
-    for (k, v) in snap.into_iter().flatten() {
-        if k.0 == b.measure && !model.inputs.contains_key(k) {
-            diff.push((&k.1, None, Some(v)));
+        for (k, v) in snap.into_iter().flatten() {
+            if k.0 == b.measure && !model.inputs.contains_key(k) {
+                diff.push((&k.1, None, Some(v)));
+            }
         }
     }
     if diff.is_empty() {
@@ -615,7 +628,7 @@ fn write_bound(
     // dimensions. The data-modifying CTE runs once and the outer SELECT sees
     // the table as before it: the added cells whose row already existed.
     let added: Vec<usize> = (0..diff.len())
-        .filter(|&i| hits[i] == 0 && (base.is_none() || diff[i].2.is_none()))
+        .filter(|&i| hits[i] == 0 && diff[i].1.is_some() && (base.is_none() || diff[i].2.is_none()))
         .collect();
     let mut taken = vec![false; diff.len()];
     if !added.is_empty() {
@@ -771,6 +784,12 @@ impl PgModelStore {
     /// `None` makes `save_model` write the whole model, unchecked.
     pub fn set_snapshot(&mut self, snapshot: Option<PgSnapshot>) {
         self.loaded = snapshot;
+    }
+
+    /// Move this handle's snapshot out (leaving it with none), so a caller
+    /// carrying it across handles need not copy it.
+    pub fn take_snapshot(&mut self) -> Option<PgSnapshot> {
+        self.loaded.take()
     }
 
     /// Re-read the model after a [`StoreError::Conflict`].
@@ -1133,7 +1152,7 @@ impl PgModelStore {
         // Bound cells: values only, never DDL (see `write_bound`).
         let bound = bindings(&mut tx, model, mid)?;
         for b in &bound {
-            write_bound(&mut tx, model, b, base)?;
+            write_bound(&mut tx, model, b, base, None)?;
         }
 
         // Unbound cells: with a snapshot, upsert those added or changed since
@@ -1245,6 +1264,113 @@ impl PgModelStore {
         tx.commit()?;
         self.loaded_tx = Some(new_tx);
         self.loaded = Some(PgSnapshot::new(model, cells));
+        Ok(())
+    }
+
+    /// Persist only `cells` of `model`: each named cell gets its value in
+    /// `model.inputs`, or is removed if the model has none. O(cells), not
+    /// O(model): nothing else is read or written, and the snapshot is
+    /// updated in place.
+    ///
+    /// The caller names every cell it changed since this handle's last load
+    /// or save, and must not have changed anything else (structure, views,
+    /// meta): those need [`Self::save_model`]. A cell of a measure the
+    /// database does not hold is a [`StoreError::Integrity`] error.
+    ///
+    /// Same transaction, conflict checks and cell encoding as `save_model`:
+    /// refused with [`StoreError::Conflict`], writing nothing, if the version
+    /// moved since this handle loaded or saved, or a bound cell it writes was
+    /// changed in the database since.
+    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
+        let mid = self.model_id;
+        let mut tx = self.client.transaction()?;
+        let cur = version(&mut tx, mid, true)?;
+        if self.loaded_tx.is_some_and(|l| l != cur) {
+            return Err(StoreError::Conflict(CONFLICT_MSG.into()));
+        }
+        let cells: BTreeSet<&(MeasureId, Coordinate)> = cells.iter().collect();
+        let measures: Vec<i64> = cells
+            .iter()
+            .map(|k| i64::from(k.0 .0))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        let known: HashSet<i64> = tx
+            .query(
+                "SELECT id FROM improv.measure WHERE model_id = $1 AND id = ANY($2)",
+                &[&mid, &measures],
+            )?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        if let Some(m) = measures.iter().find(|m| !known.contains(m)) {
+            return Err(StoreError::Integrity(format!(
+                "a cell of measure {m}, which is not saved; save the model first"
+            )));
+        }
+
+        let base = self.loaded.as_ref();
+        let bound = bindings(&mut tx, model, mid)?;
+        for b in bound
+            .iter()
+            .filter(|b| cells.iter().any(|k| k.0 == b.measure))
+        {
+            write_bound(&mut tx, model, b, base, Some(&cells))?;
+        }
+        let bound: HashSet<MeasureId> = bound.iter().map(|b| b.measure).collect();
+        let (mut ms, mut coords, mut vals) = (Vec::new(), Vec::new(), Vec::new());
+        let (mut gm, mut gk) = (Vec::new(), Vec::new());
+        for k @ (m, coord) in cells.iter().copied().filter(|k| !bound.contains(&k.0)) {
+            match model.inputs.get(k) {
+                Some(v) if base.is_some_and(|s| s.cells.get(k) == Some(v)) => {}
+                Some(v) => {
+                    ms.push(i64::from(m.0));
+                    coords.push(serde_json::to_string(&coord.dims)?);
+                    vals.push(value_to_json(v)?.to_string());
+                }
+                None => {
+                    gm.push(i64::from(m.0));
+                    gk.push(serde_json::to_string(&coord.dims)?);
+                }
+            }
+        }
+        if !gm.is_empty() {
+            tx.execute(
+                "DELETE FROM improv.cell c USING unnest($2::int8[], $3::text[]) u(m, k) \
+                 WHERE c.model_id = $1 AND c.measure_id = u.m AND c.coord = u.k::jsonb",
+                &[&mid, &gm, &gk],
+            )?;
+        }
+        if !ms.is_empty() {
+            tx.execute(
+                "INSERT INTO improv.cell(model_id, measure_id, coord, value) \
+                 SELECT $1, m, k::jsonb, v::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(m, k, v) \
+                 ON CONFLICT (model_id, measure_id, coord) DO UPDATE SET value = EXCLUDED.value \
+                 WHERE improv.cell.value IS DISTINCT FROM EXCLUDED.value",
+                &[&mid, &ms, &coords, &vals],
+            )?;
+        }
+        let new_tx: i64 = tx
+            .query_one(
+                "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $1 RETURNING tx",
+                &[&mid],
+            )?
+            .get(0);
+        tx.commit()?;
+        self.loaded_tx = Some(new_tx);
+        if let Some(s) = &mut self.loaded {
+            for k in cells {
+                let held = if bound.contains(&k.0) {
+                    &mut s.bound
+                } else {
+                    &mut s.cells
+                };
+                match model.inputs.get(k) {
+                    Some(v) => held.insert(k.clone(), v.clone()),
+                    None => held.remove(k),
+                };
+            }
+        }
         Ok(())
     }
 }

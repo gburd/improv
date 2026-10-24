@@ -1203,3 +1203,142 @@ fn agg_call_spells_each_aggregate() {
     );
     assert!(agg_call("median", "v", ValueType::Number).is_err());
 }
+
+/// A small deterministic PRNG (xorshift), so the test needs no crate.
+struct Rng(u64);
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n
+    }
+}
+
+/// Random cell edits (set, change, clear) on `m`'s unbound measure 100
+/// (Time x Product) and, in a bound model, the fact table's Qty: the
+/// changed cells.
+fn random_edits(m: &mut Model, rng: &mut Rng, measures: &[u32]) -> Vec<(MeasureId, Coordinate)> {
+    let cats: Vec<CategoryId> = {
+        let mut c: Vec<_> = m.categories.keys().copied().collect();
+        c.sort();
+        c
+    };
+    let mut out = Vec::new();
+    for _ in 0..1 + rng.below(4) {
+        let mid = MeasureId(measures[rng.below(measures.len() as u64) as usize]);
+        let mcats = m.measures[&mid].categories.clone();
+        let mut pairs = Vec::new();
+        for c in mcats.iter().filter(|c| cats.contains(c)) {
+            let items = &m.categories[c].items;
+            pairs.push((*c, items[rng.below(items.len() as u64) as usize]));
+        }
+        let at = Coordinate::from_pairs(pairs);
+        if rng.below(4) == 0 {
+            m.inputs.remove(&(mid, at.clone()));
+        } else {
+            m.set_input(mid, at.clone(), Value::Number(rng.below(5) as f64));
+        }
+        out.push((mid, at));
+    }
+    out
+}
+
+/// Random edits saved through `save_cells` leave the database as
+/// `save_model` of the same edits does: both reload to the model.
+#[test]
+fn save_cells_matches_save_model_after_random_edits() {
+    let (Some(ua), Some(ub)) = (live("cells_a"), live("cells_b")) else {
+        return;
+    };
+    let mut m = sample();
+    let mut a = PgModelStore::open(&ua).unwrap();
+    let mut b = PgModelStore::open(&ub).unwrap();
+    a.save_model(&m).unwrap();
+    b.save_model(&m).unwrap();
+    let inputs: Vec<u32> = {
+        let mut v: Vec<u32> = m
+            .measures
+            .values()
+            .filter(|x| !x.is_derived() && x.value_type == ValueType::Number)
+            .filter(|x| !m.external_calls.contains_key(&x.id))
+            .map(|x| x.id.0)
+            .collect();
+        v.sort();
+        v
+    };
+    let mut rng = Rng(0x2545_F491_4F6C_DD1D);
+    for round in 0..40 {
+        let changed = random_edits(&mut m, &mut rng, &inputs);
+        a.save_cells(&m, &changed).unwrap();
+        b.save_model(&m).unwrap();
+        if round % 10 == 9 {
+            let la = PgModelStore::open(&ua).unwrap().load_model().unwrap();
+            let lb = PgModelStore::open(&ub).unwrap().load_model().unwrap();
+            assert_eq!(la.inputs, lb.inputs, "round {round}");
+            assert_eq!(la.inputs, m.inputs, "round {round}");
+            // The handle's snapshot followed the cells it wrote.
+            assert_eq!(a.snapshot().unwrap().cells, m.inputs);
+        }
+    }
+    a.save_model(&m).unwrap();
+    assert_eq!(PgModelStore::open(&ua).unwrap().load_model().unwrap(), m);
+}
+
+/// Bound cells: written to the fact table under the per-cell guard, a
+/// cleared one nulls its column, and a stale handle is refused.
+#[test]
+fn save_cells_writes_bound_cells_and_refuses_stale_handles() {
+    let Some(url) = live("cells_bound") else {
+        return;
+    };
+    let table = format!("public.fact_cells_{}", std::process::id());
+    let mut s = bound_model(&url, &table);
+    let mut m = s.load_model().unwrap();
+    let mut other = PgModelStore::open(&url).unwrap();
+    other.load_model().unwrap();
+    let mut rng = Rng(7);
+    for _ in 0..10 {
+        let changed = random_edits(&mut m, &mut rng, &[100, 101]);
+        s.save_cells(&m, &changed).unwrap();
+    }
+    let back = PgModelStore::open(&url).unwrap().load_model().unwrap();
+    assert_eq!(back.inputs, m.inputs);
+
+    // `other` loaded before those saves: refused, nothing written.
+    let mut mo = m.clone();
+    let k = mo.inputs.keys().next().unwrap().clone();
+    mo.set_input(k.0, k.1.clone(), Value::Number(99.0));
+    let e = other.save_cells(&mo, std::slice::from_ref(&k)).unwrap_err();
+    assert!(matches!(e, StoreError::Conflict(_)), "{e}");
+    assert_eq!(
+        PgModelStore::open(&url)
+            .unwrap()
+            .load_model()
+            .unwrap()
+            .inputs,
+        m.inputs
+    );
+
+    // A cell of a measure never saved writes nothing.
+    let mut m2 = m.clone();
+    m2.add_measure(measure(4242, "Unsaved", &[], MeasureKind::Input));
+    m2.set_input(MeasureId(4242), Coordinate::new(), Value::Number(1.0));
+    let e = s
+        .save_cells(&m2, &[(MeasureId(4242), Coordinate::new())])
+        .unwrap_err();
+    assert!(matches!(e, StoreError::Integrity(_)), "{e}");
+
+    // Without a snapshot the cells are written unchecked.
+    let mut fresh = PgModelStore::open(&url).unwrap();
+    m.set_input(k.0, k.1.clone(), Value::Number(5.0));
+    fresh.save_cells(&m, std::slice::from_ref(&k)).unwrap();
+    m.inputs.remove(&k);
+    fresh.save_cells(&m, std::slice::from_ref(&k)).unwrap();
+    let back = PgModelStore::open(&url).unwrap().load_model().unwrap();
+    assert_eq!(back.inputs, m.inputs);
+    assert!(fresh.take_snapshot().is_none());
+    client()
+        .batch_execute(&format!("DROP TABLE IF EXISTS {table}"))
+        .unwrap();
+}
