@@ -451,6 +451,7 @@ fn compile_fold(ctx: &CompileContext, last: bool, args: &[Expr]) -> Result<PlanN
             window: None,
             per_item: false,
             into: Vec::new(),
+            flat: false,
         },
         ty: TypeInfo {
             value_type: ty.value_type,
@@ -1783,6 +1784,7 @@ pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
                 window: *window,
                 per_item,
                 into: into.iter().map(|k| (*k, ctx.items_of(*k))).collect(),
+                flat: false,
             }
         }
         TypedExprKind::Items(c, vals) => PlanNodeKind::Items(*c, vals.clone()),

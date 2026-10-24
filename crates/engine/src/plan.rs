@@ -44,6 +44,11 @@ pub enum PlanNodeKind {
         /// fill them row-major (the last category varies fastest); results
         /// past the last cell are dropped. Empty: not a list.
         into: Vec<(CategoryId, Vec<ItemId>)>,
+        /// Reduce flat over a category of any size: set where its groups are
+        /// sparse (the engine decides, at build time), so blocks would hold
+        /// a row or two each. Never set for `PRODUCT` and `SUMSQ`, whose
+        /// blocked rounding differs.
+        flat: bool,
     },
     /// A static per-item collection of a category: one cell per item.
     Items(CategoryId, Vec<(ItemId, Value)>),

@@ -258,7 +258,7 @@ fn emit(
             out.push((k, v));
         }
     } else if a.window.is_none() && !a.per_item {
-        let v = if two_level::applies(a.func, a.ins.len(), a.params.len(), a.order) {
+        let v = if a.two_level() {
             two_level::reduce(a.func, rs, items)
         } else {
             reduce::reduce(a.func, rs, params)
@@ -501,6 +501,7 @@ impl Host {
                 window,
                 per_item,
                 into,
+                flat,
             } => self.aggregate(
                 n,
                 AggSpec {
@@ -513,6 +514,7 @@ impl Host {
                     window: *window,
                     per_item: *per_item,
                     into,
+                    flat: *flat,
                 },
                 x,
             ),
@@ -1287,6 +1289,7 @@ mod tests {
                     window: None,
                     per_item: false,
                     into: vec![],
+                    flat: false,
                 },
                 ty: ty(vec![]),
             };

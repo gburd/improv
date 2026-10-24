@@ -107,7 +107,8 @@ impl Engine {
     ) -> Result<(Engine, Snapshot), EngineError> {
         // Compile plans up front (outside the worker), so a compile error is
         // reported synchronously rather than on the worker thread.
-        let plans = compile_plans(model, targets)?;
+        let mut plans = compile_plans(model, targets)?;
+        crate::dataflow::mark_sparse(model, &mut plans);
         let (plans, mut fixes) = split_fixpoints(model, plans)?;
         if !host_steps {
             fixes.iter_mut().for_each(|f| f.host = None);
@@ -301,8 +302,11 @@ fn blind(p: &mut PlanNode) {
             window,
             per_item,
             into,
+            flat,
             ..
         } => {
+            // Sparse groups reduce flat, which only moves cost.
+            *flat = false;
             inputs.iter_mut().chain(params.iter_mut()).for_each(blind);
             if let Some(x) = pred {
                 blind(x);
@@ -1706,6 +1710,76 @@ mod tests {
         small.add_item(ItemId(1024), w, "w1024");
         assert!(e.serves(&small).unwrap());
         assert!(!p.serves(&small).unwrap());
+    }
+
+    /// B8: a reduction over a large category whose groups are sparse (an
+    /// edge list's `SUM(W OVER Dst)`, a few cells per `Src`) reduces flat;
+    /// a dense one, and PRODUCT always, stay two-level. Either way the
+    /// results are the other path's, before and after edits.
+    #[test]
+    fn sparse_groups_reduce_flat() {
+        let (src, dst) = (CategoryId(1), CategoryId(2));
+        let w = MeasureId(10);
+        let mut m = Model::new();
+        m.add_category(src, "Src");
+        m.add_category(dst, "Dst");
+        for i in 0..1500 {
+            m.add_item(ItemId(i), src, format!("s{i}"));
+            m.add_item(ItemId(10_000 + i), dst, format!("d{i}"));
+        }
+        m.add_measure(Measure {
+            id: w,
+            name: Name("W".into()),
+            value_type: ValueType::Number,
+            categories: vec![src, dst],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        let at =
+            |s: u32, d: u32| Coordinate::from_pairs([(src, ItemId(s)), (dst, ItemId(10_000 + d))]);
+        for s in 0..1500u32 {
+            for k in 0..3u32 {
+                let d = (s * 7 + k * 491) % 1500;
+                m.set_input(
+                    w,
+                    at(s, d),
+                    Value::Number(0.1 * f64::from(k + 1) + f64::from(s) * 1e-7),
+                );
+            }
+        }
+        define_text(&mut m, 20, "Out = SUM(W OVER Dst)");
+        define_text(&mut m, 21, "In = SUM(W OVER Src)");
+        define_text(&mut m, 22, "P = PRODUCT(W OVER Dst)");
+        define_text(&mut m, 23, "Hi = MAX(W OVER Dst)");
+        define_text(&mut m, 24, "Tot = SUM(Out OVER Src)");
+        let ids: Vec<MeasureId> = (20..25).map(MeasureId).collect();
+        let mut plans = compile_plans(&m, &ids).unwrap();
+        crate::dataflow::mark_sparse(&m, &mut plans);
+        let flat = |id: u32| match &plans.iter().find(|(m, _)| m.0 == id).unwrap().1.kind {
+            PlanNodeKind::Aggregate { flat, .. } => *flat,
+            k => panic!("{k:?}"),
+        };
+        // 4,500 cells in 1,500 groups: sparse. PRODUCT never; Tot reads
+        // 1,500 cells into one group, past the flat limit: dense.
+        assert!(flat(20) && flat(21) && flat(23));
+        assert!(!flat(22) && !flat(24));
+        // The live engine and evaluate (both marked) agree, before and
+        // after edits; flat and two-level sums agree by exactness
+        // (two_level's tests and properties).
+        let (mut e, a) = Engine::new(&m, &ids).unwrap();
+        let fresh = crate::dataflow::evaluate(&m, &ids).unwrap();
+        for (mid, cells) in &fresh {
+            assert_eq!(*a[mid], *cells, "{mid:?}");
+        }
+        for (s, d, x) in [(3u32, 21, 9.5), (700, 1, 0.3)] {
+            m.set_input(w, at(s, d), Value::Number(x));
+            let key = CoordKey::from_slice(&[(1, s), (2, 10_000 + d)]);
+            let snap = e.set(w, key, x).unwrap();
+            for (mid, cells) in crate::dataflow::evaluate(&m, &ids).unwrap() {
+                assert_eq!(*snap[&mid], cells, "{mid:?} after an edit");
+            }
+        }
+        assert!(e.serves(&m).unwrap());
     }
 
     /// B4(b): a category growing from 1,000 to 1,100 items, one new item at

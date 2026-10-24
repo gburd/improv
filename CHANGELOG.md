@@ -337,6 +337,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   gray. Ctrl+Q again goes through Quit's check for an unsaved in-memory
   model (egui 0.37 would close the window by itself). `cargo deny` allows
   egui's Ubuntu font licence and no longer needs three advisory ignores.
+- **FIXPOINT holds 34% less memory per edge, and a warm re-solve is
+  31% faster** (B8, in part). At 10M edges (PageRank, 100k nodes) the
+  live engine went from 845 to 556 bytes per edge, peak RSS from 13.3 to
+  10.1 GB, and the re-solve after one edge's weight changes from 9.7 to
+  6.6 s. The FIXPOINT host evaluator keeps a reduction's rows in flat
+  vectors (it held two vectors per row), and a measure's cell order
+  stays put across an edit, so the row layouts still fit. A sum over a
+  large category whose groups are sparse (`SUM(W OVER Dst)` of an edge
+  list, a few cells per node) reduces in one level: its blocks held a
+  row or two each and cost two arrangements. With exact sums the result
+  is the same bits either way. The 500 bytes per edge and 2× re-solve
+  targets are not met yet; what is left is in the road-to-1.0 plan, B8.
 - **A category growing past 1,024 items no longer rebuilds** (B4(b)).
   Over more than 1,024 items the simple reductions reduce in blocks, and
   the live engine (`Engine::serves`, so also pg_improv's logical worker)

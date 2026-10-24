@@ -250,6 +250,11 @@ plan took: a category that grows past 1,024 items keeps the engine
 one left fold, so for them `serves` keeps the bit; at ≤ 1,024 items
 nothing changes. The FIXPOINT host evaluator calls the same
 `two_level::reduce`, so host and dataflow steps agree bit for bit.
+`dataflow::mark_sparse` (called by `evaluate` and `Engine::build`) sets
+an `Aggregate`'s `flat` bit where its input has at most `FLAT_MAX` cells
+per group on average: an edge list's `SUM(W OVER Dst)` would otherwise
+keep two arrangements of near-empty blocks (B8). PRODUCT and SUMSQ are
+never marked; `serves` ignores the bit, since it only moves cost.
 
 ---
 

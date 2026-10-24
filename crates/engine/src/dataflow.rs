@@ -138,6 +138,7 @@ where
             window,
             per_item,
             into,
+            flat,
         } => build_aggregate(
             scope,
             inputs,
@@ -152,6 +153,7 @@ where
                 window: *window,
                 per_item: *per_item,
                 into,
+                flat: *flat,
             },
         ),
 
@@ -446,6 +448,18 @@ pub(crate) struct AggSpec<'p> {
     pub(crate) window: Option<crate::typed::Window>,
     pub(crate) per_item: bool,
     pub(crate) into: &'p [(CategoryId, Vec<ItemId>)],
+    pub(crate) flat: bool,
+}
+
+impl AggSpec<'_> {
+    /// Whether it reduces in two levels ([`two_level::applies`], unless
+    /// marked flat).
+    pub(crate) fn two_level(&self) -> bool {
+        !self.flat
+            && self.window.is_none()
+            && !self.per_item
+            && two_level::applies(self.func, self.ins.len(), self.params.len(), self.order)
+    }
 }
 
 /// Each reduced category's item positions, for [`agg_key`].
@@ -723,8 +737,7 @@ where
             (key, v)
         }));
     }
-    if a.window.is_none() && !a.per_item && two_level::applies(func, n_in, a.params.len(), a.order)
-    {
+    if a.two_level() {
         // Each block of a group reduces to a part, the parts to the result:
         // an edit re-reduces its block and the group's parts.
         let parts = keyed
@@ -1107,6 +1120,112 @@ pub(crate) fn compile_plans(
         .collect()
 }
 
+/// Mark the two-level reductions of `plans` whose groups are sparse as
+/// flat: where the measures they read have at most [`two_level::FLAT_MAX`]
+/// cells per group on average, blocks would hold a row or two each, and
+/// their parts' two arrangements cost more per row than they save (in
+/// PageRank's `SUM(W OVER Dst)`, 160 B per edge). Exact sums, the counts
+/// and MIN/MAX give the same bits either way; PRODUCT and SUMSQ are never
+/// marked. A guess from the cells at build time: it only moves cost.
+pub(crate) fn mark_sparse(model: &Model, plans: &mut [(MeasureId, PlanNode)]) {
+    let mut cells: HashMap<MeasureId, usize> = HashMap::new();
+    for (m, _) in model.inputs.keys() {
+        *cells.entry(*m).or_default() += 1;
+    }
+    let items = |c: &CategoryId| model.categories.get(c).map_or(1, |c| c.items.len().max(1));
+    fn walk(p: &mut PlanNode, f: &mut dyn FnMut(&mut PlanNode)) {
+        f(p);
+        match &mut p.kind {
+            PlanNodeKind::MapUnary(_, a) | PlanNodeKind::Remap { input: a, .. } => walk(a, f),
+            PlanNodeKind::MapBinary(_, a, b)
+            | PlanNodeKind::Join {
+                left: a, right: b, ..
+            } => {
+                walk(a, f);
+                walk(b, f);
+            }
+            PlanNodeKind::If {
+                test,
+                then,
+                otherwise,
+                ..
+            } => {
+                walk(test, f);
+                walk(then, f);
+                if let Some(o) = otherwise {
+                    walk(o, f);
+                }
+            }
+            PlanNodeKind::FuncCall { args, .. } | PlanNodeKind::Coalesce { args, .. } => {
+                args.iter_mut().for_each(|a| walk(a, f));
+            }
+            PlanNodeKind::Aggregate {
+                inputs,
+                params,
+                pred,
+                ..
+            } => {
+                inputs
+                    .iter_mut()
+                    .chain(params.iter_mut())
+                    .for_each(|a| walk(a, f));
+                if let Some(x) = pred {
+                    walk(x, f);
+                }
+            }
+            _ => {}
+        }
+    }
+    // A derived measure's cells: at most its inputs' (an estimate).
+    let mut est: HashMap<MeasureId, usize> = cells.clone();
+    for (mid, plan) in plans.iter_mut() {
+        let mut reads = HashSet::new();
+        crate::hosteval::reads(plan, &mut reads);
+        let n = reads
+            .iter()
+            .filter_map(|m| est.get(m))
+            .max()
+            .copied()
+            .unwrap_or(0);
+        walk(plan, &mut |p| {
+            let PlanNodeKind::Aggregate {
+                inputs,
+                params,
+                group_by,
+                func,
+                order,
+                window: None,
+                per_item: false,
+                into,
+                flat,
+                ..
+            } = &mut p.kind
+            else {
+                return;
+            };
+            if !into.is_empty() || matches!(func.0, 5 | 6) {
+                return;
+            }
+            if !two_level::applies(*func, inputs.len(), params.len(), order) {
+                return;
+            }
+            let mut read = HashSet::new();
+            inputs
+                .iter()
+                .for_each(|i| crate::hosteval::reads(i, &mut read));
+            let rows = read
+                .iter()
+                .filter_map(|m| est.get(m))
+                .max()
+                .copied()
+                .unwrap_or(0);
+            let groups: usize = group_by.iter().map(&items).product();
+            *flat = rows <= groups.saturating_mul(two_level::FLAT_MAX);
+        });
+        est.insert(*mid, n);
+    }
+}
+
 /// Whether `p`'s collection has one value per key, each once, given that
 /// the measures in `f` do: a map or a join of such measures, or a
 /// single-result reduction. Its collection needs no collapse. (A cell's
@@ -1192,7 +1311,8 @@ pub fn evaluate(
 ) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
     // Compile every derived measure transitively needed by `targets`, in
     // dependency (topological) order.
-    let plans = compile_plans(model, targets)?;
+    let mut plans = compile_plans(model, targets)?;
+    mark_sparse(model, &mut plans);
     // A FIXPOINT is solved host-side, round by round, by the live engine.
     // (It feeds only the inputs of their measure's type, as edits do.)
     if plans
