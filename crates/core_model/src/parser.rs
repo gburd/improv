@@ -121,7 +121,7 @@
 //!   the whole-RHS source forms `CALL(...)` / `SQL("...")` (via
 //!   `parse_definition`) are supported.
 
-use crate::formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
+use crate::formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_NODES};
 use crate::functions;
 use crate::ids::{CategoryId, MeasureId, Name};
 use crate::value::Value;
@@ -514,6 +514,9 @@ struct Parser<'a> {
     /// How many `REDUCE`/`SCAN` lambdas this formula has (each gets its own
     /// placeholder ids).
     lambdas: u32,
+    /// Nodes copied in so far by `LET`/`LAMBDA` names, bounded by
+    /// [`MAX_FORMULA_NODES`] so a binding chain that doubles fails fast.
+    expanded: usize,
 }
 
 /// Maximum recursive-descent nesting depth for a single formula (Excel allows
@@ -878,6 +881,10 @@ impl<'a> Parser<'a> {
         // A name bound by LET or LAMBDA.
         if !is_call {
             if let Some(e) = self.local(&word) {
+                self.expanded += e.depth_and_nodes().1;
+                if self.expanded > MAX_FORMULA_NODES {
+                    return Err(self.err(crate::formula::too_large()));
+                }
                 self.bump();
                 return Ok(e);
             }
@@ -1757,15 +1764,23 @@ pub fn parse_formula(model: &Model, text: &str) -> Result<FormulaText, ParseErro
         depth: 0,
         scope: Vec::new(),
         lambdas: 0,
+        expanded: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
+    check_limits(&expr, p.toks.first().map(|s| s.pos))?;
     Ok(FormulaText {
         target,
         formula: Formula::new(expr),
     })
+}
+
+/// Refuse a tree deeper than [`MAX_FORMULA_DEPTH`] or larger than
+/// [`MAX_FORMULA_NODES`]; `pos` is where its expression starts.
+fn check_limits(expr: &Expr, pos: Option<usize>) -> Result<(), ParseError> {
+    expr.check_limits().map_err(|m| ParseError::new(m, pos))
 }
 
 /// Locate the target name (LHS) and the index of the first RHS token (past
@@ -1837,11 +1852,13 @@ pub fn parse_definition(model: &Model, text: &str) -> Result<Definition, ParseEr
         depth: 0,
         scope: Vec::new(),
         lambdas: 0,
+        expanded: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
+    check_limits(&expr, p.toks.first().map(|s| s.pos))?;
     Ok(Definition::Formula(FormulaText {
         target,
         formula: Formula::new(expr),
@@ -1879,6 +1896,7 @@ fn parse_lambda_form(
         depth: 0,
         scope: Vec::new(),
         lambdas: 0,
+        expanded: 0,
     };
     let (params, start, end) = p.parse_lambda_params()?;
     if p.peek().is_some() {
@@ -1888,6 +1906,7 @@ fn parse_lambda_form(
         .map(|i| Expr::Ref(functions::lambda_param(i), DimensionSpec::default()))
         .collect();
     let body = p.lambda_body(&params, args, start, end)?;
+    check_limits(&body, p.toks.get(start).map(|s| s.pos))?;
     let refs = body.referenced_measures();
     if refs
         .iter()
@@ -2016,11 +2035,13 @@ pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
         depth: 0,
         scope: Vec::new(),
         lambdas: 0,
+        expanded: 0,
     };
     let expr = p.parse_expr()?;
     if p.peek().is_some() {
         return Err(p.err("unexpected trailing input"));
     }
+    check_limits(&expr, p.toks.first().map(|s| s.pos))?;
     Ok(Formula::new(expr))
 }
 
@@ -2032,7 +2053,7 @@ pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::{Measure, MeasureKind, Name, ValueType};
+    use crate::{Measure, MeasureKind, Name, ValueType, MAX_FORMULA_DEPTH};
 
     const TIME: CategoryId = CategoryId(1);
     const PRODUCT: CategoryId = CategoryId(2);
@@ -2687,7 +2708,8 @@ mod tests {
         // NOT chains count toward the depth limit (the compiler recurses).
         let deep = format!("{}Price > 1", "NOT ".repeat(10_000));
         assert!(parse_expr(&m, &deep).is_err());
-        let ok = format!("{}Price > 1", "NOT ".repeat(50));
+        // NOT^n (Price > 1) is n + 2 levels.
+        let ok = format!("{}Price > 1", "NOT ".repeat(MAX_FORMULA_DEPTH - 2));
         assert!(parse_expr(&m, &ok).is_ok());
     }
 
@@ -3353,5 +3375,82 @@ mod tests {
         // A reasonable nesting depth still works fine.
         let reasonable = format!("{}Price{}", "(".repeat(50), ")".repeat(50));
         assert!(parse_expr(&m, &reasonable).is_ok());
+    }
+
+    /// A formula over Price whose tree is `depth` levels deep, in each shape
+    /// the depth limit has to catch.
+    fn deep(shape: &str, depth: usize) -> String {
+        match shape {
+            "+" | "*" => vec!["Price"; depth].join(&format!(" {shape} ")),
+            "ABS" => format!("{}Price{}", "ABS(".repeat(depth - 1), ")".repeat(depth - 1)),
+            "-" => format!("{}Price", "- ".repeat(depth - 1)),
+            // Each IF's test (Price > 1) is two levels below it.
+            "IF" => format!(
+                "{}Price{}",
+                "IF(Price > 1, ".repeat(depth - 2),
+                ", Price)".repeat(depth - 2)
+            ),
+            // IF(Price == 1, 1, IF(…, 0)): one level per case, plus the test.
+            "SWITCH" => {
+                let cases: String = (1..=depth - 2).map(|k| format!(", {k}, {k}")).collect();
+                format!("SWITCH(Price{cases}, 0)")
+            }
+            _ => unreachable!("{shape}"),
+        }
+    }
+
+    #[test]
+    fn formulas_deeper_than_the_limit_are_refused() {
+        let m = fixture();
+        let want = format!(
+            "formula nests too deeply ({} levels; the limit is {MAX_FORMULA_DEPTH})",
+            MAX_FORMULA_DEPTH + 1
+        );
+        for shape in ["+", "*", "ABS", "-", "IF", "SWITCH"] {
+            let ok = deep(shape, MAX_FORMULA_DEPTH);
+            let f = parse_expr(&m, &ok).unwrap_or_else(|e| panic!("{shape}: {e}"));
+            assert_eq!(f.expr.depth_and_nodes().0, MAX_FORMULA_DEPTH, "{shape}");
+            let def = format!("Q = {ok}");
+            assert!(parse_formula(&m, &def).is_ok(), "{shape}");
+            assert!(parse_definition(&m, &def).is_ok(), "{shape}");
+
+            let over = deep(shape, MAX_FORMULA_DEPTH + 1);
+            let def = format!("Q = {over}");
+            for (e, at) in [
+                (parse_expr(&m, &over).map(drop), 0),
+                (parse_formula(&m, &def).map(drop), 4),
+                (parse_definition(&m, &def).map(drop), 4),
+            ] {
+                let e = e.unwrap_err();
+                assert_eq!(e.message, want, "{shape}");
+                assert_eq!(e.position, Some(at), "{shape}: where the expression starts");
+            }
+        }
+        // A named LAMBDA's body is checked too.
+        let body = deep("ABS", MAX_FORMULA_DEPTH + 1).replace("Price", "x");
+        let e = parse_definition(&m, &format!("F = LAMBDA(x, {body})")).unwrap_err();
+        assert_eq!(e.message, want);
+    }
+
+    #[test]
+    fn a_let_that_doubles_fails_fast() {
+        // a1 = a0 + a0, a2 = a1 + a1, …: 2^24 nodes took 13 s to build.
+        let m = fixture();
+        let mut text = String::from("LET(a0, Price");
+        for k in 1..=24 {
+            text += &format!(", a{k}, a{0} + a{0}", k - 1);
+        }
+        text += ", a24)";
+        let t = std::time::Instant::now();
+        let e = parse_expr(&m, &text).unwrap_err();
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(e.message.starts_with("formula is too large"), "{e}");
+        assert!(e.position.is_some());
+        // The same chain, short enough, is fine.
+        assert!(parse_expr(&m, "LET(a0, Price, a1, a0 + a0, a2, a1 + a1, a2)").is_ok());
     }
 }

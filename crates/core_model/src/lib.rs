@@ -19,7 +19,9 @@ pub mod schedule;
 pub mod value;
 
 pub use extfn_def::{ExternalFn, Language};
-pub use formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp};
+pub use formula::{
+    BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_DEPTH, MAX_FORMULA_NODES,
+};
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
 pub use locale::Locale;
 pub use parser::{
@@ -722,7 +724,9 @@ impl Model {
     /// parameters bound to the call's arguments (nested calls too). Errors
     /// name an unknown lambda or a wrong argument count.
     pub fn expand_lambdas(&self, e: &Expr) -> Result<Expr, String> {
-        self.expand_at(e, 0)
+        let e = self.expand_at(e, 0)?;
+        e.check_limits()?;
+        Ok(e)
     }
 
     fn expand_at(&self, e: &Expr, depth: usize) -> Result<Expr, String> {
@@ -753,6 +757,9 @@ impl Model {
                             ));
                         }
                         let body = substitute_params(&l.body, &args)
+                            .map_err(|e| format!("{}: {e}", l.name.0))?;
+                        // Lambdas calling lambdas can double per level: stop early.
+                        body.check_limits()
                             .map_err(|e| format!("{}: {e}", l.name.0))?;
                         self.expand_at(&body, depth + 1)?
                     }

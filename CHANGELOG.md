@@ -538,6 +538,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A formula nested too deeply no longer makes a model unopenable.** A long
+  operator chain (about 63 `+` terms) or deep nesting was accepted and saved,
+  then every `list`/`show` failed with "recursion limit exceeded". A formula's
+  tree may now be at most 40 levels deep (`MAX_FORMULA_DEPTH`) and 100,000
+  nodes once `LET` and LAMBDAs are expanded (`MAX_FORMULA_NODES`); past
+  either, the parser says "formula nests too deeply (N levels; the limit is
+  40)" or "formula is too large", at the expression's position. A `LET` chain
+  that doubles per binding fails at once instead of taking seconds.
 - **The guide's examples, checked against the product** (the pre-1.0
   docs review, `docs/reviews/2026-10-23-docs-review.md`). Getting
   Started's quick start now shows the line `add-derived` prints, and runs
