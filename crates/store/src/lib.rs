@@ -102,7 +102,7 @@ impl Store {
     /// Persist `changes` of `model`: its cells, and with
     /// [`ChangeSet::structure`] everything else, without the full save's
     /// pass over every stored cell (Mentat) or every cell in memory
-    /// (Postgres cell edits). The same conflict check as `save_model`.
+    /// (Postgres). The same conflict check as `save_model`.
     /// `changes` must name everything that changed since this handle's last
     /// load or save ([`ChangeSet::between`] does, for two models). A handle
     /// that has loaded or saved nothing (no [`SaveToken`]) has no base to
@@ -111,13 +111,7 @@ impl Store {
         if self.loaded_tx().is_none() {
             return self.save_model(model);
         }
-        match self {
-            Store::Mentat(s) => Ok(s.save_changes(model, &changes.cells, changes.structure)?),
-            // shortcut: a structural Postgres save is the full one (a diff
-            // against the snapshot, O(model) in memory); split it if it shows.
-            Store::Pg(s) if changes.structure => Ok(s.save_model(model)?),
-            Store::Pg(s) => Ok(s.save_cells(model, &changes.cells)?),
-        }
+        delegate!(self, s => s.save_changes(model, &changes.cells, changes.structure))
     }
 
     pub fn reload_model(&mut self) -> Result<Model> {

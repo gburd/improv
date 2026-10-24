@@ -1224,6 +1224,11 @@ fn random_edits(m: &mut Model, rng: &mut Rng, measures: &[u32]) -> Vec<(MeasureI
         c.sort();
         c
     };
+    let measures: Vec<u32> = measures
+        .iter()
+        .copied()
+        .filter(|i| m.measures.contains_key(&MeasureId(*i)))
+        .collect();
     let mut out = Vec::new();
     for _ in 0..1 + rng.below(4) {
         let mid = MeasureId(measures[rng.below(measures.len() as u64) as usize]);
@@ -1268,14 +1273,37 @@ fn save_cells_matches_save_model_after_random_edits() {
         v
     };
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
-    for round in 0..40 {
+    let quantity = m.measures[&MeasureId(101)].clone();
+    for round in 0..40u32 {
+        let structure = round % 4 == 3;
+        if structure {
+            match rng.below(4) {
+                0 => m.add_item(ItemId(500 + round), P, format!("p{round}")),
+                1 => m.categories.get_mut(&T).unwrap().name = Name(format!("Time{round}")),
+                2 => m.add_view(
+                    serde_json::from_value(serde_json::json!({
+                        "id": 900 + round, "name": format!("v{round}"), "measure": 100
+                    }))
+                    .unwrap(),
+                ),
+                _ if m.measures.contains_key(&MeasureId(101)) => {
+                    m.measures.remove(&MeasureId(101));
+                    m.inputs.retain(|k, _| k.0 != MeasureId(101));
+                }
+                _ => m.add_measure(quantity.clone()),
+            }
+        }
         let changed = random_edits(&mut m, &mut rng, &inputs);
-        a.save_cells(&m, &changed).unwrap();
+        if structure {
+            a.save_changes(&m, &changed, true).unwrap();
+        } else {
+            a.save_cells(&m, &changed).unwrap();
+        }
         b.save_model(&m).unwrap();
         if round % 10 == 9 {
             let la = PgModelStore::open(&ua).unwrap().load_model().unwrap();
             let lb = PgModelStore::open(&ub).unwrap().load_model().unwrap();
-            assert_eq!(la.inputs, lb.inputs, "round {round}");
+            assert_eq!(la, lb, "round {round}");
             assert_eq!(la.inputs, m.inputs, "round {round}");
             // The handle's snapshot followed the cells it wrote.
             assert_eq!(a.snapshot().unwrap().cells, m.inputs);

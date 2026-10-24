@@ -438,7 +438,54 @@ impl PgSnapshot {
             .filter(|(k, _)| !cells.contains_key(*k))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let ids = HashMap::from([
+        let mut s = PgSnapshot {
+            bound,
+            cells,
+            ids: HashMap::new(),
+            lambdas: BTreeMap::new(),
+            names: HashMap::new(),
+        };
+        s.set_structure(model);
+        s
+    }
+
+    /// Follow a save of `keys` (and, with `structure`, of everything but
+    /// the cells) in place. `bound`: the measures bound to fact tables.
+    fn update(
+        &mut self,
+        model: &Model,
+        keys: &BTreeSet<&(MeasureId, Coordinate)>,
+        bound: &HashSet<MeasureId>,
+        structure: bool,
+    ) {
+        for k in keys {
+            let held = if bound.contains(&k.0) {
+                &mut self.bound
+            } else {
+                &mut self.cells
+            };
+            match model.inputs.get(*k) {
+                Some(v) => held.insert((*k).clone(), v.clone()),
+                None => held.remove(*k),
+            };
+        }
+        if !structure {
+            return;
+        }
+        let kept = |k: &(MeasureId, Coordinate)| model.measures.contains_key(&k.0);
+        if self.ids["measure"]
+            .iter()
+            .any(|m| !model.measures.contains_key(&MeasureId(*m as u32)))
+        {
+            self.cells.retain(|k, _| kept(k));
+            self.bound.retain(|k, _| kept(k));
+        }
+        self.set_structure(model);
+    }
+
+    /// The row ids, LAMBDAs and item names of `model`.
+    fn set_structure(&mut self, model: &Model) {
+        self.ids = HashMap::from([
             (
                 "category",
                 model.categories.keys().map(|i| i64::from(i.0)).collect(),
@@ -454,20 +501,121 @@ impl PgSnapshot {
                 model.lambdas.keys().map(|i| i64::from(*i)).collect(),
             ),
         ]);
-        let names = model
+        self.names = model
             .items
             .values()
             .map(|i| (i.id, i.name.0.clone()))
             .collect();
-        PgSnapshot {
-            bound,
-            cells,
-            ids,
-            lambdas: model.lambdas.clone(),
-            names,
-        }
+        self.lambdas = model.lambdas.clone();
     }
 }
+
+/// Refuse cells of a measure the database does not hold (a new measure
+/// needs a structural save first, or with them).
+fn check_measures_saved(
+    tx: &mut impl GenericClient,
+    mid: i64,
+    keys: &BTreeSet<&(MeasureId, Coordinate)>,
+) -> Result<()> {
+    let measures: Vec<i64> = keys
+        .iter()
+        .map(|k| i64::from(k.0 .0))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let known: HashSet<i64> = tx
+        .query(
+            "SELECT id FROM improv.measure WHERE model_id = $1 AND id = ANY($2)",
+            &[&mid, &measures],
+        )?
+        .iter()
+        .map(|r| r.get(0))
+        .collect();
+    match measures.iter().find(|m| !known.contains(m)) {
+        Some(m) => Err(StoreError::Integrity(format!(
+            "a cell of measure {m}, which is not saved; save the model first"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Write the unbound cells among `keys`: upsert those the model holds
+/// (unless the snapshot has the same value), delete the others.
+fn write_named_cells(
+    tx: &mut impl GenericClient,
+    mid: i64,
+    model: &Model,
+    keys: &BTreeSet<&(MeasureId, Coordinate)>,
+    bound: &HashSet<MeasureId>,
+    base: Option<&PgSnapshot>,
+) -> Result<()> {
+    let (mut ms, mut coords, mut vals) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut gm, mut gk) = (Vec::new(), Vec::new());
+    for k @ (m, coord) in keys.iter().copied().filter(|k| !bound.contains(&k.0)) {
+        match model.inputs.get(k) {
+            Some(v) if base.is_some_and(|s| s.cells.get(k) == Some(v)) => {}
+            Some(v) => {
+                ms.push(i64::from(m.0));
+                coords.push(serde_json::to_string(&coord.dims)?);
+                vals.push(value_to_json(v)?.to_string());
+            }
+            None => {
+                gm.push(i64::from(m.0));
+                gk.push(serde_json::to_string(&coord.dims)?);
+            }
+        }
+    }
+    if !gm.is_empty() {
+        tx.execute(DELETE_CELLS_SQL, &[&mid, &gm, &gk])?;
+    }
+    if !ms.is_empty() {
+        tx.execute(UPSERT_CELLS_SQL, &[&mid, &ms, &coords, &vals])?;
+    }
+    Ok(())
+}
+
+/// Delete the unbound cells of every measure the model dropped: those the
+/// snapshot held, or without one every measure the model lacks.
+fn delete_cells_of_dropped(
+    tx: &mut impl GenericClient,
+    mid: i64,
+    model: &Model,
+    base: Option<&PgSnapshot>,
+) -> Result<()> {
+    let keep: HashSet<i64> = model.measures.keys().map(|m| i64::from(m.0)).collect();
+    let Some(s) = base else {
+        let keep: Vec<i64> = keep.into_iter().collect();
+        tx.execute(
+            "DELETE FROM improv.cell WHERE model_id = $1 AND measure_id <> ALL($2)",
+            &[&mid, &keep],
+        )?;
+        return Ok(());
+    };
+    let gone: Vec<i64> = s.ids["measure"]
+        .iter()
+        .filter(|m| !keep.contains(m))
+        .copied()
+        .collect();
+    if !gone.is_empty() {
+        tx.execute(
+            "DELETE FROM improv.cell WHERE model_id = $1 AND measure_id = ANY($2)",
+            &[&mid, &gone],
+        )?;
+    }
+    Ok(())
+}
+
+/// Delete `improv.cell` rows by (measure ids, coord JSON texts).
+const DELETE_CELLS_SQL: &str =
+    "DELETE FROM improv.cell c USING unnest($2::int8[], $3::text[]) u(m, k) \
+     WHERE c.model_id = $1 AND c.measure_id = u.m AND c.coord = u.k::jsonb";
+
+/// Upsert `improv.cell` rows by (measure ids, coord JSON texts, value JSON
+/// texts), leaving an unchanged value's row alone.
+const UPSERT_CELLS_SQL: &str = "INSERT INTO improv.cell(model_id, measure_id, coord, value) \
+     SELECT $1, m, k::jsonb, v::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(m, k, v) \
+     ON CONFLICT (model_id, measure_id, coord) DO UPDATE SET value = EXCLUDED.value \
+     WHERE improv.cell.value IS DISTINCT FROM EXCLUDED.value";
 
 /// Delete the `improv.<table>` rows the model dropped: with a snapshot
 /// (`loaded`), only those it held, so rows another client added since
@@ -1070,286 +1218,240 @@ impl PgModelStore {
     /// nothing, if the version moved since this handle loaded or saved, or a
     /// bound cell it writes was changed in the database since.
     pub fn save_model(&mut self, model: &Model) -> Result<()> {
+        self.save(model, None, true)
+    }
+
+    /// [`Self::save_changes`] of cells alone: only `cells` are written. A
+    /// cell of a measure the database does not hold is a
+    /// [`StoreError::Integrity`] error.
+    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
+        self.save(model, Some(cells), false)
+    }
+
+    /// Persist what changed since this handle's last load or save: each of
+    /// `cells` gets its value in `model.inputs`, or is removed if the model
+    /// has none; with `structure`, every category, item, measure, view,
+    /// LAMBDA and the meta blob are written as `save_model` writes them,
+    /// dropped ones deleted, with a dropped measure's unbound cells. No
+    /// other cell is read or written, and the snapshot is updated in place,
+    /// so the cost is O(cells + structure), not O(model).
+    ///
+    /// The caller names every cell it changed and sets `structure` if it
+    /// changed anything else; naming an unchanged cell is harmless. Same
+    /// transaction, conflict checks and encoding as `save_model`: refused
+    /// with [`StoreError::Conflict`], writing nothing, if the version moved
+    /// since this handle loaded or saved, or a bound cell it writes was
+    /// changed in the database since.
+    pub fn save_changes(
+        &mut self,
+        model: &Model,
+        cells: &[(MeasureId, Coordinate)],
+        structure: bool,
+    ) -> Result<()> {
+        self.save(model, Some(cells), structure)
+    }
+
+    /// The one save path: every cell (`only` = `None`) or just `only`, and
+    /// the structure if `structure`.
+    fn save(
+        &mut self,
+        model: &Model,
+        only: Option<&[(MeasureId, Coordinate)]>,
+        structure: bool,
+    ) -> Result<()> {
         let mid = self.model_id;
         let mut tx = self.client.transaction()?;
         let cur = version(&mut tx, mid, true)?;
         if self.loaded_tx.is_some_and(|l| l != cur) {
             return Err(StoreError::Conflict(CONFLICT_MSG.into()));
         }
-
-        let (ids, names): (Vec<i64>, Vec<&str>) = model
-            .categories
-            .values()
-            .map(|c| (i64::from(c.id.0), c.name.0.as_str()))
-            .unzip();
-        tx.execute(
-            "INSERT INTO improv.category(model_id, id, name) \
+        let base = self.loaded.as_ref();
+        if structure {
+            let (ids, names): (Vec<i64>, Vec<&str>) = model
+                .categories
+                .values()
+                .map(|c| (i64::from(c.id.0), c.name.0.as_str()))
+                .unzip();
+            tx.execute(
+                "INSERT INTO improv.category(model_id, id, name) \
              SELECT $1, * FROM unnest($2::int8[], $3::text[]) \
              ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name",
-            &[&mid, &ids, &names],
-        )?;
-        let cat_ids = ids;
+                &[&mid, &ids, &names],
+            )?;
+            let cat_ids = ids;
 
-        let mut ids = Vec::new();
-        let mut cats = Vec::new();
-        let mut names = Vec::new();
-        for i in model.items.values() {
-            ids.push(i64::from(i.id.0));
-            cats.push(i64::from(i.category.0));
-            names.push(i.name.0.as_str());
-        }
-        tx.execute(
-            "INSERT INTO improv.item(model_id, id, category_id, name) \
+            let mut ids = Vec::new();
+            let mut cats = Vec::new();
+            let mut names = Vec::new();
+            for i in model.items.values() {
+                ids.push(i64::from(i.id.0));
+                cats.push(i64::from(i.category.0));
+                names.push(i.name.0.as_str());
+            }
+            tx.execute(
+                "INSERT INTO improv.item(model_id, id, category_id, name) \
              SELECT $1, * FROM unnest($2::int8[], $3::int8[], $4::text[]) \
              ON CONFLICT (model_id, id) \
              DO UPDATE SET category_id = EXCLUDED.category_id, name = EXCLUDED.name",
-            &[&mid, &ids, &cats, &names],
-        )?;
-        let item_ids = ids;
+                &[&mid, &ids, &cats, &names],
+            )?;
+            let item_ids = ids;
 
-        let upsert = tx.prepare(
-            "INSERT INTO improv.measure \
+            let upsert = tx.prepare(
+                "INSERT INTO improv.measure \
              (model_id, id, name, value_type, kind, formula, description, categories) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, \
              value_type = EXCLUDED.value_type, kind = EXCLUDED.kind, \
              formula = EXCLUDED.formula, description = EXCLUDED.description, \
              categories = EXCLUDED.categories",
-        )?;
-        let mut measure_ids = Vec::new();
-        for m in model.measures.values() {
-            let (kind, formula) = match &m.kind {
-                MeasureKind::Input => ("input", None),
-                MeasureKind::Derived(f) => ("derived", Some(serde_json::to_string(f)?)),
-            };
-            let cats: Vec<i64> = m.categories.iter().map(|c| i64::from(c.0)).collect();
-            let id = i64::from(m.id.0);
-            tx.execute(
-                &upsert,
-                &[
-                    &mid,
-                    &id,
-                    &m.name.0,
-                    &vt_name(m.value_type),
-                    &kind,
-                    &formula,
-                    &m.description,
-                    &cats,
-                ],
             )?;
-            measure_ids.push(id);
-        }
-        // Children before parents, should the catalog grow foreign keys.
-        let base = self.loaded.as_ref();
-        for (table, keep) in [
-            ("measure", &measure_ids),
-            ("item", &item_ids),
-            ("category", &cat_ids),
-        ] {
-            delete_dropped(&mut tx, mid, table, keep, base.map(|s| &s.ids[table]))?;
-        }
-
-        // Bound cells: values only, never DDL (see `write_bound`).
-        let bound = bindings(&mut tx, model, mid)?;
-        for b in &bound {
-            write_bound(&mut tx, model, b, base, None)?;
-        }
-
-        // Unbound cells: with a snapshot, upsert those added or changed since
-        // and delete those removed; without, improv.cell ends up holding
-        // exactly the model's.
-        let bound: HashSet<MeasureId> = bound.iter().map(|b| b.measure).collect();
-        let cells: HashMap<(MeasureId, Coordinate), Value> = model
-            .inputs
-            .iter()
-            .filter(|((m, _), _)| !bound.contains(m))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        let (mut ms, mut coords, mut vals) = (Vec::new(), Vec::new(), Vec::new());
-        for (k @ (m, coord), v) in &cells {
-            if base.is_some_and(|s| s.cells.get(k) == Some(v)) {
-                continue;
-            }
-            ms.push(i64::from(m.0));
-            coords.push(serde_json::to_string(&coord.dims)?);
-            vals.push(value_to_json(v)?.to_string());
-        }
-        if let Some(s) = base {
-            let (mut gm, mut gk) = (Vec::new(), Vec::new());
-            for (m, coord) in s.cells.keys().filter(|k| !cells.contains_key(*k)) {
-                gm.push(i64::from(m.0));
-                gk.push(serde_json::to_string(&coord.dims)?);
-            }
-            if !gm.is_empty() {
+            let mut measure_ids = Vec::new();
+            for m in model.measures.values() {
+                let (kind, formula) = match &m.kind {
+                    MeasureKind::Input => ("input", None),
+                    MeasureKind::Derived(f) => ("derived", Some(serde_json::to_string(f)?)),
+                };
+                let cats: Vec<i64> = m.categories.iter().map(|c| i64::from(c.0)).collect();
+                let id = i64::from(m.id.0);
                 tx.execute(
-                    "DELETE FROM improv.cell c USING unnest($2::int8[], $3::text[]) u(m, k) \
-                     WHERE c.model_id = $1 AND c.measure_id = u.m AND c.coord = u.k::jsonb",
-                    &[&mid, &gm, &gk],
+                    &upsert,
+                    &[
+                        &mid,
+                        &id,
+                        &m.name.0,
+                        &vt_name(m.value_type),
+                        &kind,
+                        &formula,
+                        &m.description,
+                        &cats,
+                    ],
                 )?;
+                measure_ids.push(id);
             }
-        } else {
-            tx.execute(
-                "DELETE FROM improv.cell c WHERE c.model_id = $1 AND NOT EXISTS \
-                 (SELECT 1 FROM unnest($2::int8[], $3::text[]) u(m, k) \
-                  WHERE c.measure_id = u.m AND c.coord = u.k::jsonb)",
-                &[&mid, &ms, &coords],
-            )?;
-        }
-        if !ms.is_empty() {
-            tx.execute(
-                "INSERT INTO improv.cell(model_id, measure_id, coord, value) \
-                 SELECT $1, m, k::jsonb, v::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(m, k, v) \
-                 ON CONFLICT (model_id, measure_id, coord) DO UPDATE SET value = EXCLUDED.value \
-                 WHERE improv.cell.value IS DISTINCT FROM EXCLUDED.value",
-                &[&mid, &ms, &coords, &vals],
-            )?;
-        }
+            // Children before parents, should the catalog grow foreign keys.
+            for (table, keep) in [
+                ("measure", &measure_ids),
+                ("item", &item_ids),
+                ("category", &cat_ids),
+            ] {
+                delete_dropped(&mut tx, mid, table, keep, base.map(|s| &s.ids[table]))?;
+            }
 
-        let (mut ids, mut names, mut layouts) = (Vec::new(), Vec::new(), Vec::new());
-        for v in model.views.values() {
-            ids.push(i64::from(v.id.0));
-            names.push(v.name.0.as_str());
-            layouts.push(serde_json::to_string(v)?);
-        }
-        tx.execute(
+            let (mut ids, mut names, mut layouts) = (Vec::new(), Vec::new(), Vec::new());
+            for v in model.views.values() {
+                ids.push(i64::from(v.id.0));
+                names.push(v.name.0.as_str());
+                layouts.push(serde_json::to_string(v)?);
+            }
+            tx.execute(
             "INSERT INTO improv.view(model_id, id, name, layout) \
              SELECT $1, i, n, l::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(i, n, l) \
              ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, layout = EXCLUDED.layout",
             &[&mid, &ids, &names, &layouts],
         )?;
-        delete_dropped(&mut tx, mid, "view", &ids, base.map(|s| &s.ids["view"]))?;
+            delete_dropped(&mut tx, mid, "view", &ids, base.map(|s| &s.ids["view"]))?;
 
-        // Lambdas: one improv.lambda row each, as JSON. Only those this
-        // client changed are written, so a row improv.define wrote as text
-        // keeps its text.
-        let stored = base.map(|s| &s.lambdas);
-        let ids: Vec<i64> = model.lambdas.keys().map(|i| i64::from(*i)).collect();
-        let (mut up, mut names, mut defs) = (Vec::new(), Vec::new(), Vec::new());
-        for (id, l) in &model.lambdas {
-            if stored.is_some_and(|s| s.get(id) == Some(l)) {
-                continue;
+            // Lambdas: one improv.lambda row each, as JSON. Only those this
+            // client changed are written, so a row improv.define wrote as text
+            // keeps its text.
+            let stored = base.map(|s| &s.lambdas);
+            let ids: Vec<i64> = model.lambdas.keys().map(|i| i64::from(*i)).collect();
+            let (mut up, mut names, mut defs) = (Vec::new(), Vec::new(), Vec::new());
+            for (id, l) in &model.lambdas {
+                if stored.is_some_and(|s| s.get(id) == Some(l)) {
+                    continue;
+                }
+                up.push(i64::from(*id));
+                names.push(l.name.0.as_str());
+                defs.push(serde_json::to_string(l)?);
             }
-            up.push(i64::from(*id));
-            names.push(l.name.0.as_str());
-            defs.push(serde_json::to_string(l)?);
-        }
-        tx.execute(
-            "INSERT INTO improv.lambda(model_id, id, name, definition) \
+            tx.execute(
+                "INSERT INTO improv.lambda(model_id, id, name, definition) \
              SELECT $1, i, n, d FROM unnest($2::int8[], $3::text[], $4::text[]) u(i, n, d) \
              ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, \
              definition = EXCLUDED.definition",
-            &[&mid, &up, &names, &defs],
-        )?;
-        delete_dropped(&mut tx, mid, "lambda", &ids, base.map(|s| &s.ids["lambda"]))?;
+                &[&mid, &up, &names, &defs],
+            )?;
+            delete_dropped(&mut tx, mid, "lambda", &ids, base.map(|s| &s.ids["lambda"]))?;
 
-        let blob = serde_json::json!({
-            "external_fns": model.external_fns,
-            "external_calls": model.external_calls,
-            "scenarios": model.scenarios,
-            "sql_sources": model.sql_sources,
-        })
-        .to_string();
-        tx.execute(
-            "INSERT INTO improv.meta(model_id, blob) VALUES ($1, $2::text::jsonb) \
+            let blob = serde_json::json!({
+                "external_fns": model.external_fns,
+                "external_calls": model.external_calls,
+                "scenarios": model.scenarios,
+                "sql_sources": model.sql_sources,
+            })
+            .to_string();
+            tx.execute(
+                "INSERT INTO improv.meta(model_id, blob) VALUES ($1, $2::text::jsonb) \
              ON CONFLICT (model_id) DO UPDATE SET blob = EXCLUDED.blob",
-            &[&mid, &blob],
-        )?;
-
-        let new_tx: i64 = tx
-            .query_one(
-                "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $1 RETURNING tx",
-                &[&mid],
-            )?
-            .get(0);
-        tx.commit()?;
-        self.loaded_tx = Some(new_tx);
-        self.loaded = Some(PgSnapshot::new(model, cells));
-        Ok(())
-    }
-
-    /// Persist only `cells` of `model`: each named cell gets its value in
-    /// `model.inputs`, or is removed if the model has none. O(cells), not
-    /// O(model): nothing else is read or written, and the snapshot is
-    /// updated in place.
-    ///
-    /// The caller names every cell it changed since this handle's last load
-    /// or save, and must not have changed anything else (structure, views,
-    /// meta): those need [`Self::save_model`]. A cell of a measure the
-    /// database does not hold is a [`StoreError::Integrity`] error.
-    ///
-    /// Same transaction, conflict checks and cell encoding as `save_model`:
-    /// refused with [`StoreError::Conflict`], writing nothing, if the version
-    /// moved since this handle loaded or saved, or a bound cell it writes was
-    /// changed in the database since.
-    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
-        let mid = self.model_id;
-        let mut tx = self.client.transaction()?;
-        let cur = version(&mut tx, mid, true)?;
-        if self.loaded_tx.is_some_and(|l| l != cur) {
-            return Err(StoreError::Conflict(CONFLICT_MSG.into()));
-        }
-        let cells: BTreeSet<&(MeasureId, Coordinate)> = cells.iter().collect();
-        let measures: Vec<i64> = cells
-            .iter()
-            .map(|k| i64::from(k.0 .0))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let known: HashSet<i64> = tx
-            .query(
-                "SELECT id FROM improv.measure WHERE model_id = $1 AND id = ANY($2)",
-                &[&mid, &measures],
-            )?
-            .iter()
-            .map(|r| r.get(0))
-            .collect();
-        if let Some(m) = measures.iter().find(|m| !known.contains(m)) {
-            return Err(StoreError::Integrity(format!(
-                "a cell of measure {m}, which is not saved; save the model first"
-            )));
+                &[&mid, &blob],
+            )?;
         }
 
-        let base = self.loaded.as_ref();
+        // Bound cells: values only, never DDL (see `write_bound`).
         let bound = bindings(&mut tx, model, mid)?;
-        for b in bound
-            .iter()
-            .filter(|b| cells.iter().any(|k| k.0 == b.measure))
-        {
-            write_bound(&mut tx, model, b, base, Some(&cells))?;
-        }
-        let bound: HashSet<MeasureId> = bound.iter().map(|b| b.measure).collect();
-        let (mut ms, mut coords, mut vals) = (Vec::new(), Vec::new(), Vec::new());
-        let (mut gm, mut gk) = (Vec::new(), Vec::new());
-        for k @ (m, coord) in cells.iter().copied().filter(|k| !bound.contains(&k.0)) {
-            match model.inputs.get(k) {
-                Some(v) if base.is_some_and(|s| s.cells.get(k) == Some(v)) => {}
-                Some(v) => {
-                    ms.push(i64::from(m.0));
-                    coords.push(serde_json::to_string(&coord.dims)?);
-                    vals.push(value_to_json(v)?.to_string());
+        let bound_set: HashSet<MeasureId> = bound.iter().map(|b| b.measure).collect();
+        let only: Option<BTreeSet<&(MeasureId, Coordinate)>> = only.map(|c| c.iter().collect());
+        let full_cells = if let Some(keys) = &only {
+            check_measures_saved(&mut tx, mid, keys)?;
+            for b in bound
+                .iter()
+                .filter(|b| keys.iter().any(|k| k.0 == b.measure))
+            {
+                write_bound(&mut tx, model, b, base, Some(keys))?;
+            }
+            write_named_cells(&mut tx, mid, model, keys, &bound_set, base)?;
+            if structure {
+                delete_cells_of_dropped(&mut tx, mid, model, base)?;
+            }
+            None
+        } else {
+            for b in &bound {
+                write_bound(&mut tx, model, b, base, None)?;
+            }
+            // Unbound cells: with a snapshot, upsert those added or changed since
+            // and delete those removed; without, improv.cell ends up holding
+            // exactly the model's.
+            let cells: HashMap<(MeasureId, Coordinate), Value> = model
+                .inputs
+                .iter()
+                .filter(|((m, _), _)| !bound_set.contains(m))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let (mut ms, mut coords, mut vals) = (Vec::new(), Vec::new(), Vec::new());
+            for (k @ (m, coord), v) in &cells {
+                if base.is_some_and(|s| s.cells.get(k) == Some(v)) {
+                    continue;
                 }
-                None => {
+                ms.push(i64::from(m.0));
+                coords.push(serde_json::to_string(&coord.dims)?);
+                vals.push(value_to_json(v)?.to_string());
+            }
+            if let Some(s) = base {
+                let (mut gm, mut gk) = (Vec::new(), Vec::new());
+                for (m, coord) in s.cells.keys().filter(|k| !cells.contains_key(*k)) {
                     gm.push(i64::from(m.0));
                     gk.push(serde_json::to_string(&coord.dims)?);
                 }
+                if !gm.is_empty() {
+                    tx.execute(DELETE_CELLS_SQL, &[&mid, &gm, &gk])?;
+                }
+            } else {
+                tx.execute(
+                    "DELETE FROM improv.cell c WHERE c.model_id = $1 AND NOT EXISTS \
+                 (SELECT 1 FROM unnest($2::int8[], $3::text[]) u(m, k) \
+                  WHERE c.measure_id = u.m AND c.coord = u.k::jsonb)",
+                    &[&mid, &ms, &coords],
+                )?;
             }
-        }
-        if !gm.is_empty() {
-            tx.execute(
-                "DELETE FROM improv.cell c USING unnest($2::int8[], $3::text[]) u(m, k) \
-                 WHERE c.model_id = $1 AND c.measure_id = u.m AND c.coord = u.k::jsonb",
-                &[&mid, &gm, &gk],
-            )?;
-        }
-        if !ms.is_empty() {
-            tx.execute(
-                "INSERT INTO improv.cell(model_id, measure_id, coord, value) \
-                 SELECT $1, m, k::jsonb, v::jsonb FROM unnest($2::int8[], $3::text[], $4::text[]) u(m, k, v) \
-                 ON CONFLICT (model_id, measure_id, coord) DO UPDATE SET value = EXCLUDED.value \
-                 WHERE improv.cell.value IS DISTINCT FROM EXCLUDED.value",
-                &[&mid, &ms, &coords, &vals],
-            )?;
-        }
+            if !ms.is_empty() {
+                tx.execute(UPSERT_CELLS_SQL, &[&mid, &ms, &coords, &vals])?;
+            }
+
+            Some(cells)
+        };
+
         let new_tx: i64 = tx
             .query_one(
                 "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = $1 RETURNING tx",
@@ -1358,18 +1460,10 @@ impl PgModelStore {
             .get(0);
         tx.commit()?;
         self.loaded_tx = Some(new_tx);
-        if let Some(s) = &mut self.loaded {
-            for k in cells {
-                let held = if bound.contains(&k.0) {
-                    &mut s.bound
-                } else {
-                    &mut s.cells
-                };
-                match model.inputs.get(k) {
-                    Some(v) => held.insert(k.clone(), v.clone()),
-                    None => held.remove(k),
-                };
-            }
+        if let Some(cells) = full_cells {
+            self.loaded = Some(PgSnapshot::new(model, cells));
+        } else if let (Some(keys), Some(s)) = (&only, &mut self.loaded) {
+            s.update(model, keys, &bound_set, structure);
         }
         Ok(())
     }
