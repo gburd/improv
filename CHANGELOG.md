@@ -8,6 +8,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Incremental cell saves** (B12). `improv_storage_mentat::ModelStore::save_cells(model,
+  cells)` writes only the named cells (an upsert, or a retraction for a
+  cell the model no longer has), reading each by an index seek on its
+  `:cell/key`, under the same high-water conflict check as `save_model`.
+  A one-cell save no longer re-reads every stored cell.
+
 - **Tutorials, tested in CI** (guide, new "Tutorials" section). "A
   household budget on the desktop" builds a model with the CLI and opens
   it in `improv-gui`. The page is the test: `docs/tutorials/mdtest.py`

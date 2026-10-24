@@ -304,27 +304,11 @@ impl ModelStore {
         // the model no longer has is retracted whole (it used to linger on
         // disk and come back on the next load).
         let mut stored = stored_cells(&ip)?;
-        let mut cells = Vec::new();
-        let mut retracts = Vec::new();
+        let mut diff = CellDiff::default();
         for ((mid, coord), val) in model.inputs.iter() {
             let coord_json = serde_json::to_string(coord)?;
             let key = convert::cell_key(*mid, &coord_json);
-            let (attr, v) = convert::cell_value_edn(val)?;
-            if let Some(old) = stored.remove(&key) {
-                let mut unchanged = false;
-                for (a, ov) in &old.values {
-                    if *a == attr {
-                        // Cardinality-one: asserting the new value replaces it.
-                        unchanged = *ov == v;
-                    } else {
-                        retracts.push(format!("[:db/retract {} :cell/{a} {ov}]", old.e));
-                    }
-                }
-                if unchanged {
-                    continue;
-                }
-            }
-            cells.push(convert::cell_edn(*mid, &coord_json, &key, attr, &v));
+            diff.cell(*mid, &coord_json, &key, stored.remove(&key), Some(val))?;
         }
         for (key, old) in stored {
             // A partial load never saw this measure's cells: not ours to drop.
@@ -334,24 +318,9 @@ impl ModelStore {
                     continue;
                 }
             }
-            let e = old.e;
-            retracts.push(format!(
-                "[:db/retract {e} :cell/key {}]",
-                convert::edn_str_pub(&key)
-            ));
-            retracts.push(format!("[:db/retract {e} :cell/measure {}]", old.measure));
-            retracts.push(format!(
-                "[:db/retract {e} :cell/coord {}]",
-                convert::edn_str_pub(&old.coord)
-            ));
-            for (a, ov) in &old.values {
-                retracts.push(format!("[:db/retract {e} :cell/{a} {ov}]"));
-            }
+            diff.cell(MeasureId(0), "", &key, Some(old), None)?;
         }
-        // One datom per retraction.
-        transact_group(&mut ip, 1, retracts)?;
-        // :cell/key + :cell/measure + :cell/coord + one typed value attribute.
-        transact_group(&mut ip, 4, cells)?;
+        diff.transact(&mut ip)?;
 
         let mut views = Vec::new();
         for v in model.views.values() {
@@ -412,6 +381,42 @@ impl ModelStore {
 
         // Read before commit, under our write lock, so a writer racing in right
         // after the commit is never mistaken for our own transaction.
+        let new_tx = high_water(&ip)?;
+        ip.commit()?;
+        self.loaded_tx = Some(new_tx);
+        Ok(())
+    }
+
+    /// Persist only `cells` of `model`: each named cell is upserted to its
+    /// value in `model.inputs`, or retracted if the model has none. Nothing
+    /// else is read or written, so the cost is O(cells), not O(model): one
+    /// index seek per cell to read what is stored.
+    ///
+    /// The caller names every cell it changed since this handle's last load
+    /// or save, and must not have changed anything else (structure, views,
+    /// meta): those need [`ModelStore::save_model`]. A cell of a measure the
+    /// store does not hold is an error, writing nothing.
+    ///
+    /// Same atomicity and optimistic concurrency as `save_model`: one
+    /// transaction, refused with [`StoreError::Conflict`] (writing nothing)
+    /// if another writer committed since this handle loaded or saved.
+    pub fn save_cells(&mut self, model: &Model, cells: &[(MeasureId, Coordinate)]) -> Result<()> {
+        let mut ip = self.store.begin_transaction()?;
+        if let Some(loaded) = self.loaded_tx {
+            if high_water(&ip)? != loaded {
+                return Err(StoreError::Conflict(CONFLICT_MSG.into()));
+            }
+        }
+        // Each cell once: a second diff would read the store before the first.
+        let cells: std::collections::BTreeSet<&(MeasureId, Coordinate)> = cells.iter().collect();
+        let mut diff = CellDiff::default();
+        for key @ (mid, coord) in cells {
+            let coord_json = serde_json::to_string(coord)?;
+            let ck = convert::cell_key(*mid, &coord_json);
+            let old = stored_cell(&ip, &ck)?;
+            diff.cell(*mid, &coord_json, &ck, old, model.inputs.get(key))?;
+        }
+        diff.transact(&mut ip)?;
         let new_tx = high_water(&ip)?;
         ip.commit()?;
         self.loaded_tx = Some(new_tx);
@@ -825,6 +830,103 @@ struct StoredCell {
     coord: String,
     /// (value attribute, EDN literal) for each typed value the entity holds.
     values: Vec<(&'static str, String)>,
+}
+
+/// The cell datoms one save transacts: what makes each stored cell hold the
+/// model's value (or nothing).
+#[derive(Default)]
+struct CellDiff {
+    asserts: Vec<String>,
+    retracts: Vec<String>,
+}
+
+impl CellDiff {
+    /// Make cell `key` (`old` as stored, if it is) hold `new`, or retract it
+    /// whole for `None`. `mid` and `coord_json` are only read to assert.
+    fn cell(
+        &mut self,
+        mid: MeasureId,
+        coord_json: &str,
+        key: &str,
+        old: Option<StoredCell>,
+        new: Option<&Value>,
+    ) -> Result<()> {
+        let Some(val) = new else {
+            if let Some(old) = old {
+                let e = old.e;
+                self.retracts.push(format!(
+                    "[:db/retract {e} :cell/key {}]",
+                    convert::edn_str_pub(key)
+                ));
+                self.retracts
+                    .push(format!("[:db/retract {e} :cell/measure {}]", old.measure));
+                self.retracts.push(format!(
+                    "[:db/retract {e} :cell/coord {}]",
+                    convert::edn_str_pub(&old.coord)
+                ));
+                for (a, ov) in &old.values {
+                    self.retracts
+                        .push(format!("[:db/retract {e} :cell/{a} {ov}]"));
+                }
+            }
+            return Ok(());
+        };
+        let (attr, v) = convert::cell_value_edn(val)?;
+        if let Some(old) = old {
+            let mut unchanged = false;
+            for (a, ov) in &old.values {
+                if *a == attr {
+                    // Cardinality-one: asserting the new value replaces it.
+                    unchanged = *ov == v;
+                } else {
+                    self.retracts
+                        .push(format!("[:db/retract {} :cell/{a} {ov}]", old.e));
+                }
+            }
+            if unchanged {
+                return Ok(());
+            }
+        }
+        self.asserts
+            .push(convert::cell_edn(mid, coord_json, key, attr, &v));
+        Ok(())
+    }
+
+    fn transact(self, ip: &mut InProgress<'_, '_>) -> Result<()> {
+        // One datom per retraction.
+        transact_group(ip, 1, self.retracts)?;
+        // :cell/key + :cell/measure + :cell/coord + one typed value attribute.
+        transact_group(ip, 4, self.asserts)
+    }
+}
+
+/// The stored cell `key`, if any: an index seek on the unique `:cell/key`.
+fn stored_cell(q: &impl mentat::Queryable, key: &str) -> Result<Option<StoredCell>> {
+    let k = convert::edn_str_pub(key);
+    let rows = rel_on(
+        q,
+        &format!(
+            "[:find ?e ?m ?coord :where [?e :cell/key {k}] \
+             [?e :cell/measure ?m] [?e :cell/coord ?coord]]"
+        ),
+    )?;
+    let Some(row) = rows.first() else {
+        return Ok(None);
+    };
+    let e = convert::as_entid(&row[0])?;
+    let mut cell = StoredCell {
+        e,
+        measure: convert::as_entid(&row[1])?,
+        coord: convert::as_string(&row[2])?,
+        values: Vec::new(),
+    };
+    for attr in [VALUE_NUMBER, VALUE_BOOLEAN, VALUE_TEXT] {
+        for row in rel_on(q, &format!("[:find ?v :where [{e} :cell/{attr} ?v]]"))? {
+            cell.values
+                .push((attr, convert::stored_value_edn(&row[0])?));
+        }
+    }
+    Ok(Some(cell))
 }
 
 /// Every stored cell, by `:cell/key`. Four queries, whatever the cell count.
@@ -1442,6 +1544,155 @@ mod tests {
         assert_eq!(s.loaded_tx(), None);
         s.save_model(&sample_model()).expect("unconditional save");
         assert_eq!(s.loaded_tx(), Some(s.tx_high_water().expect("high water")));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Two categories of 4 items, a number measure over both and a text one
+    /// over the first: the cells random edits pick from.
+    fn edit_model() -> Model {
+        let mut m = Model::new();
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        for i in 0..4 {
+            m.add_item(ItemId(10 + i), a, format!("a{i}"));
+            m.add_item(ItemId(20 + i), b, format!("b{i}"));
+        }
+        for (id, name, vt, cats) in [
+            (100, "N", ValueType::Number, vec![a, b]),
+            (101, "T", ValueType::Text, vec![a]),
+        ] {
+            m.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: vt,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        m
+    }
+
+    /// A small deterministic PRNG (xorshift), so the test needs no crate.
+    struct Rng(u64);
+    impl Rng {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0 % n
+        }
+    }
+
+    /// One random cell edit on `m`: set (a number, a text, a boolean, so a
+    /// cell changes attribute too) or clear. Returns the cell.
+    fn random_edit(m: &mut Model, rng: &mut Rng) -> (MeasureId, Coordinate) {
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        let i = ItemId(10 + rng.below(4) as u32);
+        let (mid, at) = if rng.below(3) == 0 {
+            (MeasureId(101), Coordinate::from_pairs([(a, i)]))
+        } else {
+            let j = ItemId(20 + rng.below(4) as u32);
+            (MeasureId(100), Coordinate::from_pairs([(a, i), (b, j)]))
+        };
+        match rng.below(5) {
+            0 => {
+                m.inputs.remove(&(mid, at.clone()));
+            }
+            1 => m.set_input(mid, at.clone(), Value::Text(format!("t{}", rng.below(3)))),
+            2 => m.set_input(mid, at.clone(), Value::Boolean(rng.below(2) == 0)),
+            _ => m.set_input(mid, at.clone(), Value::Number(rng.below(4) as f64)),
+        }
+        (mid, at)
+    }
+
+    /// Random edits saved through `save_cells` leave the store exactly as
+    /// `save_model` of the same edits does: both reload to the model.
+    #[test]
+    fn save_cells_matches_save_model_after_random_edits() {
+        for seed in 1..=8u64 {
+            let (pa, pb) = (
+                temp_store_path(&format!("cells-a{seed}")),
+                temp_store_path(&format!("cells-b{seed}")),
+            );
+            let mut m = edit_model();
+            let mut a = ModelStore::open(&pa).expect("open a");
+            let mut b = ModelStore::open(&pb).expect("open b");
+            a.save_model(&m).expect("seed a");
+            b.save_model(&m).expect("seed b");
+            let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            for round in 0..30 {
+                let changed: Vec<_> = (0..1 + rng.below(4))
+                    .map(|_| random_edit(&mut m, &mut rng))
+                    .collect();
+                a.save_cells(&m, &changed).expect("save_cells");
+                b.save_model(&m).expect("save_model");
+                if round % 10 == 9 {
+                    let la = ModelStore::open(&pa).unwrap().load_model().unwrap();
+                    let lb = ModelStore::open(&pb).unwrap().load_model().unwrap();
+                    assert_eq!(la, lb, "seed {seed} round {round}");
+                    assert_eq!(sort_vecs(la), sort_vecs(m.clone()));
+                    assert_eq!(cell_datom_counts(&a), cell_datom_counts(&b));
+                }
+            }
+            let _ = std::fs::remove_file(&pa);
+            let _ = std::fs::remove_file(&pb);
+        }
+    }
+
+    /// `save_cells` keeps `save_model`'s high-water check: a stale handle is
+    /// refused and writes nothing; its own saves (either kind) chain.
+    #[test]
+    fn save_cells_refuses_a_stale_handle() {
+        let path = temp_store_path("cells-stale");
+        let m = edit_model();
+        ModelStore::open(&path)
+            .and_then(|mut s| s.save_model(&m))
+            .expect("seed");
+        let mut a = ModelStore::open(&path).expect("a");
+        let mut b = ModelStore::open(&path).expect("b");
+        let mut ma = a.load_model().expect("a loads");
+        let mut mb = b.load_model().expect("b loads");
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        mb.set_input(MeasureId(100), at.clone(), Value::Number(7.0));
+        b.save_cells(&mb, &[(MeasureId(100), at.clone())])
+            .expect("b saves");
+        mb.set_input(MeasureId(100), at.clone(), Value::Number(8.0));
+        b.save_model(&mb).expect("b chains a full save");
+        b.save_cells(&mb, &[(MeasureId(100), at.clone())])
+            .expect("and an unchanged cell");
+
+        ma.set_input(MeasureId(100), at.clone(), Value::Number(9.0));
+        let e = a
+            .save_cells(&ma, &[(MeasureId(100), at.clone())])
+            .expect_err("a is stale");
+        assert!(matches!(e, StoreError::Conflict(_)), "{e:?}");
+        let stored = ModelStore::open(&path).unwrap().load_model().unwrap();
+        assert_eq!(stored.input(MeasureId(100), &at), Some(&Value::Number(8.0)));
+
+        // A cell of a measure the store lacks fails whole, writing nothing.
+        let mut fresh = ModelStore::open(&path).expect("unchecked");
+        ma.add_measure(Measure {
+            id: MeasureId(999),
+            name: Name("New".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+        });
+        ma.set_input(MeasureId(999), Coordinate::new(), Value::Number(1.0));
+        assert!(fresh
+            .save_cells(
+                &ma,
+                &[
+                    (MeasureId(100), at.clone()),
+                    (MeasureId(999), Coordinate::new())
+                ]
+            )
+            .is_err());
+        let stored = ModelStore::open(&path).unwrap().load_model().unwrap();
+        assert_eq!(stored.input(MeasureId(100), &at), Some(&Value::Number(8.0)));
         let _ = std::fs::remove_file(&path);
     }
 
