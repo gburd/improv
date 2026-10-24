@@ -20,7 +20,7 @@ use improv_core_model::{
 use improv_storage_sql::{
     add_sql_measure, export_measure, refresh_sql_measure, DimensionMapping, ImportSpec,
 };
-use improv_store::Store;
+use improv_store::{ChangeSet, Store};
 use std::collections::HashMap;
 
 // Declarations only (the clap derives); the value parsers below are tested.
@@ -277,6 +277,18 @@ fn open(db: &str) -> Result<Store, String> {
     Store::open(db).map_err(|e| e.to_string())
 }
 
+/// Save a command's edit that changed no cell: every category, item,
+/// measure, view and the meta, without a pass over the stored cells.
+fn save_structure(store: &mut Store, model: &Model) -> Result<(), String> {
+    let structure = ChangeSet {
+        structure: true,
+        ..Default::default()
+    };
+    store
+        .save_changes(model, &structure)
+        .map_err(|e| e.to_string())
+}
+
 // --- commands ---
 
 fn cmd_init(db: &str) -> Result<(), String> {
@@ -293,7 +305,7 @@ fn cmd_add_category(db: &str, id: u32, name: &str) -> Result<(), String> {
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
     model.add_category(id, name);
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("added category {} '{name}'", id.0);
     Ok(())
 }
@@ -306,7 +318,7 @@ fn cmd_add_item(db: &str, id: u32, cat: u32, name: &str) -> Result<(), String> {
         return Err(format!("no category with id {}", cat.0));
     }
     model.add_item(id, cat, name);
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("added item {} '{name}' in category {}", id.0, cat.0);
     Ok(())
 }
@@ -344,7 +356,7 @@ fn cmd_add_measure(
         kind: MeasureKind::Input,
         description: None,
     });
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("added input measure {} '{name}'", id.0);
     Ok(())
 }
@@ -373,7 +385,7 @@ fn cmd_add_derived(db: &str, id: u32, name: &str, formula_text: &str) -> Result<
         description: None,
     });
     check_acyclic(&model)?;
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("added derived measure {} '{name}'", id.0);
     Ok(())
 }
@@ -489,7 +501,7 @@ fn cmd_define(db: &str, id: u32, text: &str, refresh_policy: RefreshPolicy) -> R
         }
     }
     check_acyclic(&model)?;
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     Ok(())
 }
 
@@ -528,7 +540,7 @@ fn cmd_register_ext(db: &str, name: &str, arity: u32, body: &str) -> Result<(), 
             pure: true,
         },
     );
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("registered external function '{name}' (arity {arity})");
     Ok(())
 }
@@ -723,7 +735,7 @@ fn cmd_scenario(
         overrides: std::collections::HashMap::new(),
     });
     scenario.overrides.insert((mid, coord), value);
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("scenario '{sname}': override on measure {} recorded", mid.0);
     Ok(())
 }
@@ -742,8 +754,10 @@ fn cmd_set(db: &str, mid: u32, value_arg: &str, at: &[(String, String)]) -> Resu
     let value = parse_value(value_arg, vt)?;
     let coord = resolve_coord(&model, mid, at)?;
 
-    model.set_input(mid, coord, value);
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    model.set_input(mid, coord.clone(), value);
+    store
+        .save_changes(&model, &ChangeSet::cell(mid, coord))
+        .map_err(|e| e.to_string())?;
     println!("set measure {}", mid.0);
     Ok(())
 }
@@ -856,7 +870,7 @@ fn cmd_save_view(
         primary,
         Vec::new(),
     ));
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    save_structure(&mut store, &model)?;
     println!("saved view {} '{name}'", id.0);
     Ok(())
 }
@@ -947,6 +961,8 @@ fn cmd_stream(db: &str, target_names: &[String]) -> Result<(), String> {
 
     let (mut engine, mut snapshot) =
         improv_engine::session::Engine::new(&model, &targets).map_err(|e| e.to_string())?;
+    // What the save at the end diffs against: it writes only the edited cells.
+    let loaded = model.clone();
 
     let stdin = std::io::stdin();
     for (lineno, line) in stdin.lock().lines().enumerate() {
@@ -964,7 +980,9 @@ fn cmd_stream(db: &str, target_names: &[String]) -> Result<(), String> {
         }
     }
 
-    store.save_model(&model).map_err(|e| e.to_string())?;
+    store
+        .save_changes(&model, &ChangeSet::between(&loaded, &model))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 

@@ -328,6 +328,70 @@ mod tests {
         assert!(d.structure && d.cells.len() == 1);
     }
 
+    /// B12's numbers: on the store at `IMPROV_B12_STORE` (a path or a
+    /// `postgres://…?model=` URL) with an input measure 100, the load, one
+    /// cell's incremental save (three times), a structural save, and a
+    /// full save. `cargo test --release -p improv_store b12_ -- --ignored
+    /// --nocapture`.
+    #[test]
+    #[ignore = "a probe: needs a large store at IMPROV_B12_STORE"]
+    fn b12_save_probe() {
+        use std::time::Instant;
+        let Ok(target) = std::env::var("IMPROV_B12_STORE") else {
+            return;
+        };
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        let t = Instant::now();
+        let mut s = Store::open(&target).unwrap();
+        println!("B12 open: {:.0} ms", ms(t));
+        let t = Instant::now();
+        let mut m = s.load_model().unwrap();
+        println!("B12 load ({} cells): {:.0} ms", m.inputs.len(), ms(t));
+        let at = m
+            .inputs
+            .keys()
+            .find(|k| k.0 == MeasureId(100))
+            .expect("a cell of measure 100")
+            .1
+            .clone();
+        for v in [5.0, 6.0, 7.0] {
+            m.set_input(MeasureId(100), at.clone(), Value::Number(v));
+            let t = Instant::now();
+            s.save_changes(&m, &ChangeSet::cell(MeasureId(100), at.clone()))
+                .unwrap();
+            println!("B12 save one cell (save_changes): {:.1} ms", ms(t));
+        }
+        // Reopened per save, as the GUI does.
+        let token = s.take_save_token();
+        m.set_input(MeasureId(100), at.clone(), Value::Number(8.0));
+        let t = Instant::now();
+        let mut g = Store::open(&target).unwrap();
+        g.adopt_save_token(token);
+        g.save_changes(&m, &ChangeSet::cell(MeasureId(100), at.clone()))
+            .unwrap();
+        let _token = g.take_save_token();
+        println!("B12 open + save one cell + token: {:.1} ms", ms(t));
+        let structure = ChangeSet {
+            structure: true,
+            ..Default::default()
+        };
+        let t = Instant::now();
+        g.adopt_save_token(_token);
+        g.save_changes(&m, &structure).unwrap();
+        println!("B12 structural save (save_changes): {:.0} ms", ms(t));
+        let t = Instant::now();
+        g.save_model(&m).unwrap();
+        println!("B12 full save (save_model, unchanged): {:.0} ms", ms(t));
+        assert_eq!(
+            Store::open(&target)
+                .unwrap()
+                .load_model()
+                .unwrap()
+                .input(MeasureId(100), &at),
+            Some(&Value::Number(8.0))
+        );
+    }
+
     /// Every delegating method, plus Conflict mapping, on one open store.
     fn exercise(target: &str) {
         let m = model();
