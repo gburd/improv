@@ -107,6 +107,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   press and says once per outside save that `R` reloads. Nothing is
   overwritten meanwhile: a save from the stale window is refused as a
   conflict, as before.
+- **The GUI says it is importing.** A CSV import and its save block the
+  window (8 s at 1M cells); the status line now reads "importing and
+  saving…" with a wait cursor before the work starts, instead of the
+  window freezing with no sign.
 - **Rename and delete in the GUI.** Click a category, item or measure in
   the model browser to pick it. **Worksheet ▸ Rename** turns its row into
   a line with the name selected (double-clicking an item or a measure

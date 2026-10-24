@@ -261,6 +261,10 @@ pub struct ImprovApp {
     /// at, `.1`): it shows again only when the mark moves on.
     probed_at: f64,
     outside: Option<(i64, bool)>,
+    /// A CSV import waiting for its "Importing…" status to be painted (the
+    /// count of frames shown since it was asked for): the import and its
+    /// full save block the UI thread for seconds on a large model.
+    queued_import: Option<u8>,
 }
 
 /// Seconds between the checks for another writer's save (H9).
@@ -1182,6 +1186,7 @@ impl ImprovApp {
             confirm_delete: None,
             probed_at: f64::NEG_INFINITY,
             outside: None,
+            queued_import: None,
         })
     }
 
@@ -1773,6 +1778,38 @@ impl ImprovApp {
     /// autosave, and report the cell count (or the error) in `self.status`.
     /// Never panics — every failure path (bad form, bad file, `CsvError`)
     /// lands in `self.status` as a clear message.
+    // shortcut: only the import is staged; File ▸ Save (a full save) still
+    // blocks unannounced. Move saves off the UI thread if that shows at scale.
+    /// The Import button: a bad form is reported at once; a good one shows
+    /// "Importing and saving…" (and a wait cursor) for a painted frame
+    /// before [`Self::run_csv_import`] blocks the UI thread, so a large
+    /// import (8 s at 1M cells, B12) does not look like a hang.
+    pub fn queue_csv_import(&mut self) {
+        match csv_wizard::build_import_spec(&self.import_form) {
+            Err(e) => self.status = format!("import error: {e}"),
+            Ok(_) => {
+                self.status = "importing and saving… (the window waits until it is done)".into();
+                self.queued_import = Some(0);
+            }
+        }
+    }
+
+    /// Run a queued import once its status has been on screen for a frame.
+    fn run_queued_import(&mut self, ctx: &egui::Context) {
+        match self.queued_import {
+            None => {}
+            Some(0) => {
+                self.queued_import = Some(1);
+                ctx.set_cursor_icon(egui::CursorIcon::Wait);
+                ctx.request_repaint();
+            }
+            Some(_) => {
+                self.queued_import = None;
+                self.run_csv_import();
+            }
+        }
+    }
+
     pub fn run_csv_import(&mut self) {
         let spec = match csv_wizard::build_import_spec(&self.import_form) {
             Ok(s) => s,
@@ -3539,6 +3576,7 @@ impl ImprovApp {
     /// windows (which float on the context).
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
+        self.run_queued_import(ctx);
         self.sync_axis_state();
         self.sync_native_title(ctx);
         self.handle_command_keys(ctx);
@@ -5225,7 +5263,7 @@ impl ImprovApp {
         }
         ui.separator();
         if ui.button("Import").clicked() {
-            self.run_csv_import();
+            self.queue_csv_import();
         }
     }
 
@@ -7181,6 +7219,7 @@ mod tests {
             confirm_delete: None,
             probed_at: f64::NEG_INFINITY,
             outside: None,
+            queued_import: None,
         }
     }
 
@@ -15112,6 +15151,57 @@ mod tests {
             assert!(r >= need, "{what}: {r:.2}:1 < {need}:1");
         }
         println!("{}", report.join("\n"));
+    }
+
+    /// Import shows its status for a painted frame before it runs (it
+    /// blocks the UI thread), and a bad form is still refused at once.
+    #[test]
+    fn import_shows_importing_before_it_blocks() {
+        let path =
+            std::env::temp_dir().join(format!("improv_gui_queued_{}.csv", std::process::id()));
+        std::fs::write(&path, "region,amount\nNorth,5\n").expect("write csv");
+        let mut app = build_app(inputs_only_model());
+        app.queue_csv_import();
+        assert!(app.status.starts_with("import error"), "{}", app.status);
+        assert_eq!(app.queued_import, None);
+        app.import_form = ImportForm {
+            path: path.to_string_lossy().into_owned(),
+            tsv: false,
+            has_header: true,
+            measure_id: "500".into(),
+            measure_name: "Imported".into(),
+            value_column: "amount".into(),
+            dimensions: vec![csv_wizard::DimRow {
+                column: "region".into(),
+                category_id: "9".into(),
+                category_name: "Region".into(),
+            }],
+        };
+        app.queue_csv_import();
+        assert!(app.status.starts_with("importing and saving"));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let out = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        assert!(
+            texts_of(&out)
+                .iter()
+                .any(|t| t.starts_with("importing and saving")),
+            "the status is painted first"
+        );
+        assert!(!app.model.measures.contains_key(&MeasureId(500)), "not yet");
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.1);
+        assert!(
+            app.model.measures.contains_key(&MeasureId(500)),
+            "{}",
+            app.status
+        );
+        assert!(
+            app.status.starts_with("imported 1 cell(s)"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.queued_import, None);
+        let _ = std::fs::remove_file(&path);
     }
 
     // -- H9: offer Reload when another writer saved
