@@ -588,6 +588,9 @@ pub struct App {
     pub redo_stack: Vec<Model>,
     /// The edit line is a `define>` line (`=`), not the viewed cell or formula.
     pub defining: bool,
+    /// H9: the outside high-water already reported, so the status line says
+    /// it once per outside save.
+    pub outside_seen: Option<i64>,
 }
 
 impl App {
@@ -637,6 +640,7 @@ impl App {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             defining: false,
+            outside_seen: None,
         })
     }
 

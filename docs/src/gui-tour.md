@@ -117,6 +117,12 @@ and the status line says why:
   overwritten. Choose **File ▸ Revert to Saved** to load their changes,
   then make yours again.
 
+Every two seconds the GUI checks whether another program saved the
+model. When one has, a **Changed** panel offers **Reload** (File ▸ Revert
+to Saved: their changes come in and the undo history is dropped) or
+**Not Now**, which hides it until they save again. Until you reload, a
+save from this window is refused as above, so nothing is overwritten.
+
 A crash or a `kill -9` during a save loses only that save. The file reopens
 with every earlier edit and nothing half-written.
 

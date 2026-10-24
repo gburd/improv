@@ -125,8 +125,31 @@ fn event_loop<B: Backend>(
     Ok(())
 }
 
+/// H9: the store's high-water when another writer saved since this session
+/// loaded or saved (`None` too when unknown or unreadable).
+fn outside_save(app: &App, path: &str) -> Option<i64> {
+    let mine = app.save_token.tx()?;
+    let hw = Store::open(path).and_then(|mut s| s.tx_high_water()).ok()?;
+    (hw != mine).then_some(hw)
+}
+
+/// H9: on each key, say once per outside save that another program saved,
+/// and that `R` loads it. Saving from here is refused until then.
+fn check_outside(app: &mut App, path: &str) {
+    let Some(hw) = outside_save(app, path) else {
+        return;
+    };
+    if app.outside_seen != Some(hw) {
+        app.outside_seen = Some(hw);
+        app.status = Some("another program saved this model: press R to reload it".into());
+    }
+}
+
 /// Dispatch one terminal event by mode (edit / command prompt / normal).
 fn handle_event(app: &mut App, ev: Event, path: &str) {
+    if matches!(ev, Event::Key(_)) {
+        check_outside(app, path);
+    }
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
             help_key(app, k.code)
@@ -699,5 +722,42 @@ mod tests {
         run_events(&mut b, "/nonexistent/dir/x.db", chars("R")).unwrap();
         assert!(b.status.as_deref().unwrap().starts_with("revert failed"));
         assert_eq!(b.model.views.len(), 1, "a failed revert keeps the session");
+    }
+
+    /// H9: another store handle saves; the next key says so once, `R`
+    /// reloads, and this session's own saves never trigger it.
+    #[test]
+    fn a_key_after_another_writers_save_offers_reload() {
+        let path = tmp_path("tui-h9.db");
+        let p = path.to_str().unwrap();
+        save(&mut App::new(revenue_model()).unwrap(), p).unwrap();
+        let mut a = load(p).unwrap();
+        run_events(&mut a, p, chars("w")).unwrap();
+        run_events(&mut a, p, vec![key(KeyCode::Down)]).unwrap();
+        assert_eq!(a.status.as_deref(), Some("saved"), "its own save");
+
+        let mut other = Store::open(p).unwrap();
+        let mut m = other.load_model().unwrap();
+        m.add_view(a.build_view(improv_core_model::ViewId(9), "theirs"));
+        other.save_model(&m).unwrap();
+        run_events(&mut a, p, vec![key(KeyCode::Down)]).unwrap();
+        let said = "another program saved this model: press R to reload it";
+        assert_eq!(a.status.as_deref(), Some(said));
+        run_events(&mut a, p, vec![key(KeyCode::Esc), key(KeyCode::Down)]).unwrap();
+        assert_eq!(a.status, None, "said once per outside save");
+        run_events(&mut a, p, chars("w")).unwrap();
+        assert!(
+            a.status.as_deref().unwrap().contains("conflict"),
+            "never overwrites"
+        );
+        run_events(&mut a, p, chars("R")).unwrap();
+        assert_eq!(a.status.as_deref(), Some("reverted to the saved model"));
+        assert!(a.model.view_by_name("theirs").is_some());
+        run_events(&mut a, p, vec![key(KeyCode::Down)]).unwrap();
+        assert_eq!(a.status.as_deref(), Some("reverted to the saved model"));
+        // An unreadable store or an unsaved model offers nothing.
+        assert_eq!(outside_save(&a, "/nonexistent/dir/x.db"), None);
+        assert_eq!(outside_save(&App::new(revenue_model()).unwrap(), p), None);
+        let _ = std::fs::remove_file(&path);
     }
 }

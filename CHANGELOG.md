@@ -75,6 +75,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   right-click menu ends in a New item line. Each add autosaves and is one
   undo step; a name already used by a category, measure or LAMBDA is
   refused. A new input measure is a number over every category.
+- **The GUI and TUI notice other writers (H9).** The GUI checks the
+  store's high-water every two seconds; when another program has saved,
+  a **Changed** panel offers **Reload** (Revert to Saved) or **Not Now**,
+  which hides it until the next outside save. The TUI checks on each key
+  press and says once per outside save that `R` reloads. Nothing is
+  overwritten meanwhile: a save from the stale window is refused as a
+  conflict, as before.
 - **Rename and delete in the GUI.** Click a category, item or measure in
   the model browser to pick it. **Worksheet ▸ Rename** turns its row into
   a line with the name selected (double-clicking an item or a measure

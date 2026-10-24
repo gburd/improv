@@ -256,7 +256,15 @@ pub struct ImprovApp {
     renaming: Option<(Thing, String, bool)>,
     /// Worksheet ▸ Delete… is asking to confirm this, with its question.
     confirm_delete: Option<(Thing, String)>,
+    /// H9: when (egui time) the store's high-water was last checked, and
+    /// the outside high-water the Reload panel offers (or was dismissed
+    /// at, `.1`): it shows again only when the mark moves on.
+    probed_at: f64,
+    outside: Option<(i64, bool)>,
 }
+
+/// Seconds between the checks for another writer's save (H9).
+const PROBE_SECS: f64 = 2.0;
 
 /// The measured screen geometry of the grid's margin gutters and the table they
 /// frame, as laid out in the last frame.
@@ -1162,6 +1170,8 @@ impl ImprovApp {
             browser_pick: None,
             renaming: None,
             confirm_delete: None,
+            probed_at: f64::NEG_INFINITY,
+            outside: None,
         })
     }
 
@@ -2419,11 +2429,88 @@ impl ImprovApp {
         self.snapshot = snapshot;
         self.save_token = store.take_save_token();
         self.unsaved = Default::default();
+        self.outside = None;
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.dirty = false;
         self.after_history_restore();
         Ok(())
+    }
+
+    /// The store's high-water when another writer has saved since this
+    /// window loaded or saved, else `None` (also for an in-memory model, a
+    /// model never saved, and a store that cannot be read now).
+    // shortcut: opens the store per check (a new connection for Postgres),
+    // on the UI thread; keep a probe handle, as the server does, if it lags.
+    pub fn outside_save(&self) -> Option<i64> {
+        let mine = self.save_token.tx()?;
+        let hw = Store::open(&self.db)
+            .and_then(|mut s| s.tx_high_water())
+            .ok()?;
+        (hw != mine).then_some(hw)
+    }
+
+    /// H9: every [`PROBE_SECS`] (egui time `now`), look for another
+    /// writer's save, and offer Reload when there is a new one.
+    fn probe_store(&mut self, now: f64) {
+        if self.db.is_empty() || now - self.probed_at < PROBE_SECS {
+            return;
+        }
+        self.probed_at = now;
+        match (self.outside_save(), self.outside) {
+            (None, _) => self.outside = None,
+            (Some(hw), Some((seen, _))) if hw == seen => {}
+            (Some(hw), _) => self.outside = Some((hw, true)),
+        }
+    }
+
+    /// The Reload panel (H9): another program saved this model. Reload is
+    /// File ▸ Revert to Saved; Not Now hides it until they save again.
+    /// Nothing is overwritten either way: a save from this window would be
+    /// refused as a conflict.
+    fn reload_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let now = ctx.input(|i| i.time);
+        self.probe_store(now);
+        if !self.db.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(PROBE_SECS));
+        }
+        let Some((hw, true)) = self.outside else {
+            return;
+        };
+        let mut open = true;
+        let (mut reload, mut later) = (false, false);
+        let rect = egui::Rect::from_center_size(
+            egui::pos2(ws.center().x, ws.top() + 60.0),
+            egui::vec2(380.0, 104.0),
+        );
+        let win = crate::nxwin::NxWindow::new("reload_panel", "Changed");
+        let rect = anchored_rect(ctx, win.id(), rect);
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                ui.label("Another program saved this model.");
+                ui.label(if self.can_undo() {
+                    "Reload shows their changes and drops this window's undo history."
+                } else {
+                    "Reload shows their changes."
+                });
+                ui.horizontal(|ui| {
+                    reload = ui.button("Reload").clicked();
+                    later = ui.button("Not Now").clicked();
+                });
+            });
+        if reload {
+            self.status = match self.revert_to_saved() {
+                Ok(()) => "reloaded: another program had saved this model".into(),
+                Err(e) => e,
+            };
+            self.outside = None;
+        } else if later || !open {
+            self.outside = Some((hw, false));
+            self.status = "not reloaded: edits here will be refused until you reload".into();
+        }
     }
 
     /// Read-only inspector facts for `measure` (see `inspector` panel).
@@ -3439,6 +3526,7 @@ impl eframe::App for ImprovApp {
         self.function_help(ctx, ws);
         self.file_panel(ctx, ws);
         self.delete_panel(ctx, ws);
+        self.reload_panel(ctx, ws);
         // Last, so it floats over every panel.
         self.menu_bar(ctx, ws);
     }
@@ -6938,6 +7026,8 @@ mod tests {
             browser_pick: None,
             renaming: None,
             confirm_delete: None,
+            probed_at: f64::NEG_INFINITY,
+            outside: None,
         }
     }
 
@@ -9362,6 +9452,7 @@ mod tests {
             app.function_help(ctx, ws);
             app.file_panel(ctx, ws);
             app.delete_panel(ctx, ws);
+            app.reload_panel(ctx, ws);
             app.menu_bar(ctx, ws);
             inspect(ctx);
         })
@@ -14628,6 +14719,90 @@ mod tests {
             app.delete_question(Thing::Item(ItemId(99))).unwrap_err(),
             "it no longer exists"
         );
+    }
+
+    // -- H9: offer Reload when another writer saved
+
+    /// A second store handle saves while the window is open: the next
+    /// check offers Reload, Not Now hides it until the next outside save,
+    /// and Reload shows the other writer's edit. The window's own saves
+    /// never raise it.
+    #[test]
+    fn another_writers_save_offers_reload() {
+        let db = temp_db("h9_reload");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let (qkey, _) = q_and_rev_keys();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert_eq!(app.outside, None);
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(5.0))
+            .expect("its own save");
+        desk.time += PROBE_SECS;
+        desk.settle(&mut app);
+        assert_eq!(app.outside, None, "its own save is no outside save");
+
+        // Another writer: a second handle, loaded now, saves an edit.
+        let other = |v: f64| {
+            let mut s = Store::open(&db).expect("open");
+            let mut m = s.load_model().expect("load");
+            m.set_input(MeasureId(101), decode(&qkey), Value::Number(v));
+            s.save_model(&m).expect("the other writer saves");
+        };
+        other(42.0);
+        let _ = desk.frame(&mut app, Vec::new());
+        assert_eq!(app.outside, None, "not checked again yet");
+        desk.time += PROBE_SECS;
+        desk.settle(&mut app);
+        assert!(matches!(app.outside, Some((_, true))), "{:?}", app.outside);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(painted(&shapes, "Another program saved this model.").is_some());
+        // A save from here is still refused, never overwriting.
+        let e = app
+            .set_cell(MeasureId(101), qkey.clone(), Value::Number(6.0))
+            .expect_err("stale");
+        assert!(e.contains("another program"), "{e}");
+
+        let later = painted(&shapes, "Not Now").expect("Not Now").center();
+        desk.click(&mut app, later);
+        assert!(matches!(app.outside, Some((_, false))));
+        assert!(app.status.starts_with("not reloaded"), "{}", app.status);
+        desk.time += PROBE_SECS;
+        desk.settle(&mut app);
+        assert!(matches!(app.outside, Some((_, false))), "stays hidden");
+        other(43.0);
+        desk.time += PROBE_SECS;
+        desk.settle(&mut app);
+        assert!(
+            matches!(app.outside, Some((_, true))),
+            "a new save shows it"
+        );
+
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let reload = painted(&shapes, "Reload").expect("Reload").center();
+        desk.click(&mut app, reload);
+        assert_eq!(app.outside, None);
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("43"));
+        assert!(app.status.starts_with("reloaded"), "{}", app.status);
+        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(7.0))
+            .expect("saves after the reload");
+        // In memory, nothing to check; an unreadable store offers nothing.
+        let mut mem = build_app(grid_2x2_model());
+        mem.probe_store(100.0);
+        assert_eq!(mem.outside, None);
+        mem.db = "/nonexistent/dir/m.db".into();
+        mem.save_token = app.save_token.clone();
+        assert_eq!(mem.outside_save(), None);
+        // The close box is Not Now too.
+        other(44.0);
+        desk.time += PROBE_SECS;
+        desk.settle(&mut app);
+        let close = close_box_of(&desk.ctx, panel_win("reload_panel")).expect("close box");
+        desk.click(&mut app, close.center());
+        assert!(matches!(app.outside, Some((_, false))));
     }
 
     // -- H8: named LAMBDAs from the formula list's last line

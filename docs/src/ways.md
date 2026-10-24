@@ -36,6 +36,9 @@ the GUI's edits to a bound measure update your table's rows. See
 Two writers never silently overwrite each other. If someone else saved after
 you loaded, your save is refused with a conflict; choose **File ▸ Revert to
 Saved** (GUI) or press `R` (TUI) to pick up their changes, then redo yours.
+Both notice another program's save without waiting for a conflict: the GUI
+checks every two seconds and offers **Reload**, and the TUI says so on the
+next key press.
 
 ## The desktop GUI (`improv-gui`)
 
@@ -89,7 +92,7 @@ improv-tui new.db     # a new file opens empty: build it with c, n and =
 | `n` | add an input measure over categories: `Quantity: Time, Product` |
 | `=` | define: `Revenue = Price * Quantity` adds a derived measure, `Margin = LAMBDA(p, q, p - q)` a named LAMBDA |
 | `w` | save now |
-| `R` | revert to the saved model |
+| `R` | revert to the saved model (the status line says when another program saved it) |
 | `u` / Ctrl+R | undo / redo |
 | Tab (in a formula) | complete a function, measure or category name; again to cycle |
 | `?` / F1 | the keys, and a search over the functions; Enter inserts `NAME(` into the edit |
@@ -271,7 +274,7 @@ bold gaps are tracked as tasks for 1.0.
 | Named LAMBDAs | `define` | **calls work; define them in the CLI** | `Name = LAMBDA(…)` on the formula list's last line | computes them | `define` | — (refused; inline `LAMBDA` works) |
 | FIXPOINT | yes | yes (the same parser and engine) | yes | yes | yes | in `improv(…)`; not in `improv_calc` |
 | what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |
-| **Live sync** (see others' writes) | each command reloads | `R` to revert | File ▸ Revert to Saved | **no: serves its cached copy until its own write hits a conflict** | logical, trigger, commit sync | — |
+| **Live sync** (see others' writes) | each command reloads | says so on the next key; `R` reloads | offers Reload within 2 s | each request checks the high-water and reloads | logical, trigger, commit sync | — |
 | Controlled English | — | accepts it as a formula | shows and accepts it | `/nl/parse`, `/nl/describe` | — | — |
 
 Every front end that saves refuses to overwrite another writer: the save
