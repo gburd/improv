@@ -107,6 +107,10 @@ pub enum NlError {
     Empty,
     #[error("formula nested too deeply (limit {MAX_PARSE_DEPTH})")]
     TooDeep,
+    /// Past the formula limits every entry point shares
+    /// ([`improv_core_model::MAX_FORMULA_DEPTH`] and `MAX_FORMULA_NODES`).
+    #[error("{0}")]
+    Limit(String),
 }
 
 /// Bound on parser recursion (paren nesting) plus binary-operator nodes, so
@@ -416,7 +420,9 @@ pub fn parse_nl_formula(ctx: &NlContext, text: &str) -> Result<Formula, NlError>
         ctx,
         depth: 0,
     };
-    Ok(Formula::new(p.parse_sentence()?))
+    let expr = p.parse_sentence()?;
+    expr.check_limits().map_err(NlError::Limit)?;
+    Ok(Formula::new(expr))
 }
 
 // ---------------------------------------------------------------------------
@@ -789,7 +795,21 @@ mod tests {
         let ctx = NlContext::new(&m);
         let text = format!("{}price{}", "(".repeat(150), ")".repeat(150));
         assert_eq!(parse_nl_formula(&ctx, &text).unwrap().expr, refr(PRICE));
-        let chain = vec!["price"; 150].join(" plus ");
+        let chain = vec!["price"; improv_core_model::MAX_FORMULA_DEPTH].join(" plus ");
         assert!(parse_nl_formula(&ctx, &chain).is_ok());
+    }
+
+    #[test]
+    fn a_tree_past_the_formula_depth_limit_is_refused() {
+        // Under the CNL's own node cap, but deeper than a store can read back.
+        let m = fixture();
+        let ctx = NlContext::new(&m);
+        let chain = vec!["price"; improv_core_model::MAX_FORMULA_DEPTH + 1].join(" plus ");
+        let want = format!(
+            "formula nests too deeply ({} levels; the limit is {})",
+            improv_core_model::MAX_FORMULA_DEPTH + 1,
+            improv_core_model::MAX_FORMULA_DEPTH
+        );
+        assert_eq!(parse_nl_formula(&ctx, &chain), Err(NlError::Limit(want)));
     }
 }

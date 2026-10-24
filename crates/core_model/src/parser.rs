@@ -121,7 +121,9 @@
 //!   the whole-RHS source forms `CALL(...)` / `SQL("...")` (via
 //!   `parse_definition`) are supported.
 
-use crate::formula::{BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_NODES};
+use crate::formula::{
+    BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_DEPTH, MAX_FORMULA_NODES,
+};
 use crate::functions;
 use crate::ids::{CategoryId, MeasureId, Name};
 use crate::value::Value;
@@ -520,10 +522,11 @@ struct Parser<'a> {
 }
 
 /// Maximum recursive-descent nesting depth for a single formula (Excel allows
-/// 64 nested levels). Each level costs one frame per grammar level, about
-/// 10 KiB in a debug build, so 100 levels fit a 2 MiB test-thread stack with
-/// room to spare; lower it again if the grammar grows many more levels.
-const MAX_PARSE_DEPTH: usize = 100;
+/// 64 nested levels). Each level costs one frame per grammar level: in a
+/// debug build on a 2 MiB thread, 80 nested calls (`ABS(`, `IF(`, `SUM(`)
+/// parse and 85 overflow (measured 2026-10-24). Past [`MAX_FORMULA_DEPTH`] a
+/// tree is refused anyway; the extra levels are for redundant parentheses.
+const MAX_PARSE_DEPTH: usize = 64;
 
 /// A named argument as read: the name, where it starts, and its value.
 type Named = (String, Option<usize>, Expr);
@@ -637,6 +640,28 @@ impl<'a> Parser<'a> {
 
     // --- grammar ---
 
+    /// `lhs op rhs`: one more link of an operator chain, at `at`. A chain
+    /// grows its tree without recursing, so its depth is checked as it grows
+    /// (`depth` is lhs's, 0 before the first link): a long chain stops at the
+    /// operator that passes [`MAX_FORMULA_DEPTH`], before it builds a tree too
+    /// deep even to drop.
+    fn link(
+        at: Option<usize>,
+        depth: &mut usize,
+        op: BinaryOp,
+        lhs: Expr,
+        rhs: Expr,
+    ) -> Result<Expr, ParseError> {
+        if *depth == 0 {
+            *depth = lhs.depth_and_nodes().0;
+        }
+        *depth = 1 + (*depth).max(rhs.depth_and_nodes().0);
+        if *depth > MAX_FORMULA_DEPTH {
+            return Err(ParseError::new(crate::formula::too_deep(*depth), at));
+        }
+        Ok(Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs)))
+    }
+
     /// Expression = OrExpr
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
         self.parse_or()
@@ -644,22 +669,24 @@ impl<'a> Parser<'a> {
 
     /// OrExpr = AndExpr { "OR" AndExpr }
     fn parse_or(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_and()?;
+        let (mut lhs, mut depth) = (self.parse_and()?, 0);
         while self.peek_kw("or") {
+            let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_and()?;
-            lhs = Expr::BinaryOp(BinaryOp::Or, Box::new(lhs), Box::new(rhs));
+            lhs = Self::link(at, &mut depth, BinaryOp::Or, lhs, rhs)?;
         }
         Ok(lhs)
     }
 
     /// AndExpr = NotExpr { "AND" NotExpr }
     fn parse_and(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_not()?;
+        let (mut lhs, mut depth) = (self.parse_not()?, 0);
         while self.peek_kw("and") {
+            let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_not()?;
-            lhs = Expr::BinaryOp(BinaryOp::And, Box::new(lhs), Box::new(rhs));
+            lhs = Self::link(at, &mut depth, BinaryOp::And, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -716,42 +743,48 @@ impl<'a> Parser<'a> {
 
     /// Concat = Additive { "&" Additive }
     fn parse_concat(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_additive()?;
-        while self.eat_op("&") {
+        let (mut lhs, mut depth) = (self.parse_additive()?, 0);
+        loop {
+            let at = self.peek_pos();
+            if !self.eat_op("&") {
+                break;
+            }
             let rhs = self.parse_additive()?;
-            lhs = Expr::BinaryOp(BinaryOp::Concat, Box::new(lhs), Box::new(rhs));
+            lhs = Self::link(at, &mut depth, BinaryOp::Concat, lhs, rhs)?;
         }
         Ok(lhs)
     }
 
     /// Additive = Term { ("+"|"-") Term }
     fn parse_additive(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_term()?;
+        let (mut lhs, mut depth) = (self.parse_term()?, 0);
         loop {
             let op = match self.peek() {
                 Some(Tok::Op(o)) if o == "+" => BinaryOp::Add,
                 Some(Tok::Op(o)) if o == "-" => BinaryOp::Sub,
                 _ => break,
             };
+            let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_term()?;
-            lhs = Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs));
+            lhs = Self::link(at, &mut depth, op, lhs, rhs)?;
         }
         Ok(lhs)
     }
 
     /// Term = Unary { ("*"|"/") Unary }
     fn parse_term(&mut self) -> Result<Expr, ParseError> {
-        let mut lhs = self.parse_unary()?;
+        let (mut lhs, mut depth) = (self.parse_unary()?, 0);
         loop {
             let op = match self.peek() {
                 Some(Tok::Op(o)) if o == "*" => BinaryOp::Mul,
                 Some(Tok::Op(o)) if o == "/" => BinaryOp::Div,
                 _ => break,
             };
+            let at = self.peek_pos();
             self.bump();
             let rhs = self.parse_unary()?;
-            lhs = Expr::BinaryOp(op, Box::new(lhs), Box::new(rhs));
+            lhs = Self::link(at, &mut depth, op, lhs, rhs)?;
         }
         Ok(lhs)
     }
@@ -801,15 +834,21 @@ impl<'a> Parser<'a> {
 
     /// Postfix = Primary { "%" }: `x%` is `x / 100` (`50%` folds to `0.5`).
     fn parse_postfix(&mut self) -> Result<Expr, ParseError> {
-        let mut e = self.parse_primary()?;
-        while self.eat_op("%") {
+        let (mut e, mut depth) = (self.parse_primary()?, 0);
+        loop {
+            let at = self.peek_pos();
+            if !self.eat_op("%") {
+                break;
+            }
             e = match e {
                 Expr::Literal(Value::Number(n)) => Expr::Literal(Value::Number(n / 100.0)),
-                other => Expr::BinaryOp(
+                other => Self::link(
+                    at,
+                    &mut depth,
                     BinaryOp::Div,
-                    Box::new(other),
-                    Box::new(Expr::Literal(Value::Number(100.0))),
-                ),
+                    other,
+                    Expr::Literal(Value::Number(100.0)),
+                )?,
             };
         }
         Ok(e)
@@ -1382,7 +1421,11 @@ impl<'a> Parser<'a> {
             }
             let name = self.binding_name()?;
             self.expect(",", "',' after a LET name")?;
+            let at = self.peek_pos();
             let value = self.parse_expr()?;
+            // Checked here too, so bindings cannot compound into a tree too
+            // deep to drop before the whole formula is checked.
+            check_limits(&value, at)?;
             self.scope.push((name, value));
             self.expect(",", "',' then the LET body")?;
         }
@@ -1456,6 +1499,7 @@ impl<'a> Parser<'a> {
                 self.toks.get(stopped).map(|s| s.pos),
             ));
         }
+        check_limits(&body, self.toks.get(start).map(|s| s.pos))?;
         Ok(body)
     }
 
@@ -1906,7 +1950,6 @@ fn parse_lambda_form(
         .map(|i| Expr::Ref(functions::lambda_param(i), DimensionSpec::default()))
         .collect();
     let body = p.lambda_body(&params, args, start, end)?;
-    check_limits(&body, p.toks.get(start).map(|s| s.pos))?;
     let refs = body.referenced_measures();
     if refs
         .iter()
@@ -2053,7 +2096,7 @@ pub fn parse_expr(model: &Model, text: &str) -> Result<Formula, ParseError> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::{Measure, MeasureKind, Name, ValueType, MAX_FORMULA_DEPTH};
+    use crate::{Measure, MeasureKind, Name, ValueType};
 
     const TIME: CategoryId = CategoryId(1);
     const PRODUCT: CategoryId = CategoryId(2);
@@ -3416,20 +3459,71 @@ mod tests {
 
             let over = deep(shape, MAX_FORMULA_DEPTH + 1);
             let def = format!("Q = {over}");
+            // A chain stops at the operator that passes the limit; any other
+            // shape is refused once parsed, at the start of the expression.
+            let at = match shape {
+                "+" | "*" => over.rfind(shape).unwrap(),
+                _ => 0,
+            };
             for (e, at) in [
-                (parse_expr(&m, &over).map(drop), 0),
-                (parse_formula(&m, &def).map(drop), 4),
-                (parse_definition(&m, &def).map(drop), 4),
+                (parse_expr(&m, &over).map(drop), at),
+                (parse_formula(&m, &def).map(drop), at + 4),
+                (parse_definition(&m, &def).map(drop), at + 4),
             ] {
                 let e = e.unwrap_err();
                 assert_eq!(e.message, want, "{shape}");
-                assert_eq!(e.position, Some(at), "{shape}: where the expression starts");
+                assert_eq!(e.position, Some(at), "{shape}");
             }
+        }
+        // Each chain operator, `%`, LET values and inline LAMBDA bodies.
+        for (op, text) in [
+            ("or", vec!["TRUE"; MAX_FORMULA_DEPTH + 1].join(" OR ")),
+            ("and", vec!["TRUE"; MAX_FORMULA_DEPTH + 1].join(" AND ")),
+            ("&", vec!["\"a\""; MAX_FORMULA_DEPTH + 1].join(" & ")),
+            ("/", vec!["Price"; MAX_FORMULA_DEPTH + 1].join(" / ")),
+            ("%", format!("Price{}", "%".repeat(MAX_FORMULA_DEPTH))),
+            (
+                "LET",
+                format!("LET(x, {}, 1)", deep("ABS", MAX_FORMULA_DEPTH + 1)),
+            ),
+            (
+                "LAMBDA",
+                format!("LAMBDA(x, {})(1)", deep("ABS", MAX_FORMULA_DEPTH + 1)),
+            ),
+        ] {
+            let e = parse_expr(&m, &text).unwrap_err();
+            assert_eq!(e.message, want, "{op}");
+            assert!(e.position.is_some(), "{op}");
         }
         // A named LAMBDA's body is checked too.
         let body = deep("ABS", MAX_FORMULA_DEPTH + 1).replace("Price", "x");
         let e = parse_definition(&m, &format!("F = LAMBDA(x, {body})")).unwrap_err();
         assert_eq!(e.message, want);
+    }
+
+    #[test]
+    fn huge_formulas_error_on_a_small_stack() {
+        // The tree is checked as it is built, so none of these builds one too
+        // deep to drop (dropping a 200k-term chain overflowed 2 MiB).
+        let r = std::thread::Builder::new()
+            .stack_size(2 << 20)
+            .spawn(|| {
+                let m = fixture();
+                let group = format!("({})", vec!["Price"; 39].join(" + "));
+                let texts = [
+                    vec!["Price"; 200_000].join(" + "),
+                    vec!["Price"; 200_000].join(" * "),
+                    format!("Price{}", "%".repeat(200_000)),
+                    format!("{}Price{}", "(Price + ".repeat(99), ")".repeat(99)),
+                    vec![group.as_str(); 1_000].join(" + "),
+                    format!("{}Price{}", "ABS(".repeat(99), ")".repeat(99)),
+                ];
+                texts.iter().all(|t| parse_expr(&m, t).is_err())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(r);
     }
 
     #[test]

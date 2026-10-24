@@ -68,15 +68,19 @@ pub enum Expr {
 /// How deep a formula's expression tree may nest, a leaf counting as one
 /// level (`Price + Price` is 2). Every way a formula enters checks it: the
 /// parser (after `LET` and `LAMBDA` expansion), named-LAMBDA expansion, and
-/// the CNL parser. Two things bound it:
+/// the CNL parser. Two things bound it (measured 2026-10-24, rustc 1.98):
 ///
-/// * The store keeps a formula as serde_json, which refuses input nested past
-///   128 arrays and objects. A call level costs 3 of them (`{"Call":[id,[…]]}`),
-///   an operator level 2, the `Formula` wrapper 1 and a measure reference 4,
-///   so a store row takes 3 × 41 + 2 = 125 levels at 41 nested calls. A
-///   model exported whole (`improv export`) adds 4 more wrappers.
-/// * The engine walks the tree recursively; a debug build overflows a
-///   2 MiB thread at about 54 nested calls.
+/// * **JSON.** Stores keep a formula as serde_json, which refuses input
+///   nested 128 arrays and objects deep. A call level costs 3 of them
+///   (`{"Call":[id,[…]]}`), an operator level 2, and a leaf at most 4 (a
+///   measure reference, `{"Ref":[id,{"by":[]…}]}`), so a tree d deep is at
+///   most 3d + 1 levels. A stored formula adds 1 (`{"expr":…}`) and a model
+///   written whole (`improv export`) 5: 3d + 6 ≤ 127 holds to d = 40. Nested
+///   `ABS` reads back at 40 and fails at 42 (128 levels); a `+` chain fails
+///   at 62.
+/// * **Stack.** The engine walks the tree recursively. In a debug build on a
+///   2 MiB thread, every shape (`+`, `*`, `-`, `ABS`, `IF`, `SWITCH`)
+///   evaluates at depth 54 and overflows at 56: 14 levels of margin.
 pub const MAX_FORMULA_DEPTH: usize = 40;
 
 /// How many nodes a formula's tree may have once `LET`, `LAMBDA` and named
@@ -134,9 +138,7 @@ impl Expr {
             return Err(too_large());
         }
         if depth > MAX_FORMULA_DEPTH {
-            return Err(format!(
-                "formula nests too deeply ({depth} levels; the limit is {MAX_FORMULA_DEPTH})"
-            ));
+            return Err(too_deep(depth));
         }
         Ok(())
     }
@@ -165,6 +167,11 @@ impl Expr {
             }
         }
     }
+}
+
+/// The error for a tree `depth` levels deep, past [`MAX_FORMULA_DEPTH`].
+pub(crate) fn too_deep(depth: usize) -> String {
+    format!("formula nests too deeply ({depth} levels; the limit is {MAX_FORMULA_DEPTH})")
 }
 
 /// The error for a tree past [`MAX_FORMULA_NODES`].
