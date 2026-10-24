@@ -85,6 +85,16 @@ The scheduler's tick period (default 5).
 .TP
 .B IMPROV_HEADER_TIMEOUT_MS
 Header read timeout (default 10000).
+.TP
+.B IMPROV_CORS_ORIGINS
+Comma-separated browser origins
+.RI ( https://host[:port] )
+allowed to call the API from another origin. Unset (the default): no CORS
+headers, so browsers allow only same-origin pages, such as files served
+with
+.BR \-\-static .
+.B *
+is refused.
 .SH EXAMPLES
 .nf
 IMPROV_API_TOKEN=secret improv-server sample.db

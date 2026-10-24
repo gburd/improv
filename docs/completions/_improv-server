@@ -15,6 +15,7 @@ _improv-server() {
 
     local context curcontext="$curcontext" state line
     _arguments "${_arguments_options[@]}" : \
+'--static=[Also serve the files in DIR (a web front end'\''s build) at /, beside the API; off by default]:DIR:_files' \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 '-V[Print version]' \

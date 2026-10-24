@@ -5,7 +5,7 @@
 .SH NAME
 improv\-server \- JSON HTTP API over an Improv model
 .SH SYNOPSIS
-\fBimprov\-server\fR [model] [addr]
+\fBimprov\-server\fR [OPTIONS] [model] [addr]
 .SH DESCRIPTION
 .B improv-server
 serves one model over HTTP/1.1 as JSON: read the model and measures, compute
@@ -22,6 +22,9 @@ A model is a store file made by
 or a Postgres model URL,
 .BI postgres:// user @ host / db ?model= name\fR.
 .SH OPTIONS
+.TP
+\fB\-\-static\fR \fI<DIR>\fR
+Also serve the files in DIR (a web front end\*(Aqs build) at /, beside the API; off by default
 .TP
 \fB\-h\fR, \fB\-\-help\fR
 Print help (see a summary with \*(Aq\-h\*(Aq)
@@ -105,6 +108,16 @@ The scheduler's tick period (default 5).
 .TP
 .B IMPROV_HEADER_TIMEOUT_MS
 Header read timeout (default 10000).
+.TP
+.B IMPROV_CORS_ORIGINS
+Comma-separated browser origins
+.RI ( https://host[:port] )
+allowed to call the API from another origin. Unset (the default): no CORS
+headers, so browsers allow only same-origin pages, such as files served
+with
+.BR \-\-static .
+.B *
+is refused.
 .SH EXAMPLES
 .nf
 IMPROV_API_TOKEN=secret improv-server sample.db

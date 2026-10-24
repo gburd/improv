@@ -75,6 +75,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   right-click menu ends in a New item line. Each add autosaves and is one
   undo step; a name already used by a category, measure or LAMBDA is
   refused. A new input measure is a number over every category.
+- **`improv-server --static DIR` and `IMPROV_CORS_ORIGINS`.** For a web
+  front end on the API: `--static` serves a directory's files at `/`
+  beside the API (an `index.html` for `/`, `.wasm` typed, nothing outside
+  the directory); `IMPROV_CORS_ORIGINS` lists the browser origins allowed
+  to call it cross-origin (off by default; `*` is refused). The HTTP
+  Server page documents both, and polling `/v1/measures` as the way to see
+  other writers until a change feed exists.
 - **Accessibility checks (H2).** Tests dump the GUI's AccessKit tree and
   require a name on every Tab stop (573, with every window open); drive
   the grid and the menus with key events only; compute the theme's WCAG

@@ -23,4 +23,8 @@ pub struct Cli {
         default_value = "127.0.0.1:3000"
     )]
     pub addr: String,
+    /// Also serve the files in DIR (a web front end's build) at /, beside
+    /// the API; off by default
+    #[arg(long = "static", value_name = "DIR")]
+    pub static_dir: Option<std::path::PathBuf>,
 }

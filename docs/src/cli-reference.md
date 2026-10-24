@@ -422,10 +422,11 @@ Usage: improv-tui <model>
 Serve one model over HTTP/1.1 as JSON.
 
 ```text
-Usage: improv-server [model] [addr]
+Usage: improv-server [OPTIONS] [model] [addr]
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<model>` | The model: a store file, or postgres://USER@HOST/DB?model=NAME (default: `improv.db`) |
 | `<addr>` | The address to listen on (default: `127.0.0.1:3000`) (env: `IMPROV_ADDR`) |
+| `--static` `<DIR>` | Also serve the files in DIR (a web front end's build) at /, beside the API; off by default |

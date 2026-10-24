@@ -23,12 +23,16 @@ _improv__server() {
 
     case "${cmd}" in
         improv__server)
-            opts="-h -V --help --version"
+            opts="-h -V --static --help --version"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --static)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;

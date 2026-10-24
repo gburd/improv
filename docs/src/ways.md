@@ -236,7 +236,8 @@ curl -H 'Authorization: Bearer secret' -X POST localhost:3000/measures/102/eval 
 
 An edit names its measure and coordinate by id (`[[category, item], …]`);
 the answer comes back by name. `/eval` computes through the live engine and
-writes nothing unless you ask it to (`"persist": true`). [The HTTP Server](./server.md) lists the routes,
+writes nothing unless you ask it to (`"persist": true`). `--static DIR`
+serves a web front end's files beside the API. [The HTTP Server](./server.md) lists the routes,
 tokens and limits.
 
 ## What each front end can do

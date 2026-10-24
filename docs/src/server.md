@@ -164,6 +164,45 @@ listen on a non-loopback address without tokens (unless `IMPROV_ALLOW_OPEN=1`),
 but with tokens set it will, and the tokens would then cross the network in
 clear text.
 
+## A web front end
+
+Improv has no web GUI for 1.0 ([the decision](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-22-web-gui.md)),
+but the server has what one needs, for anyone building on the API.
+
+**Static files.** `--static DIR` serves the files under `DIR` at `/`,
+beside the API: `/` and a directory are their `index.html`, `.wasm` is
+`application/wasm`, and a path outside `DIR` (`..`, a symlink out) is a
+404. The files are public, like `/health`; the API calls the page makes
+still need their tokens. Same-origin, the page needs no CORS.
+
+```sh
+IMPROV_API_TOKEN_FILE=/etc/improv/tokens improv-server sales.db 127.0.0.1:3000 --static ./web/dist
+```
+
+**CORS** is off by default: without it a browser lets only same-origin
+pages call the API. To serve the page from elsewhere (a development
+server, another host), list its origins, matched exactly:
+
+```sh
+IMPROV_CORS_ORIGINS=http://localhost:8080,https://ui.example.com improv-server sales.db
+```
+
+An allowed origin's preflight (`OPTIONS`) gets 204 with `GET, POST` and
+the `authorization` and `content-type` headers; its responses carry
+`Access-Control-Allow-Origin`. Other origins get no CORS headers, so the
+browser blocks them. `*` is refused, because a page from any site could
+then use a visitor's token.
+
+**Seeing other writers.** There is no push feed yet. Each request checks
+the store's high-water mark and reloads when another writer saved (see
+[Writes](#writes)), so a page that polls sees their change on its next
+request: poll `GET /v1/measures` or the values it shows, every few
+seconds, and redraw what changed. A save that races another writer's is
+refused with 409; reload and retry. A change feed (`GET
+/v1/changes?since=…` or Server-Sent Events, carrying the high-water) is
+planned for the web GUI after 1.0, with per-user undo and presence (plan
+rows I2, I3).
+
 ## Refresh scheduler
 
 The scheduler refreshes `CALL` (external-function) measures in the

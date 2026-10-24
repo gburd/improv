@@ -342,6 +342,11 @@ pub struct AppState {
     audit: AuditLog,
     /// `db_path` without credentials, for the audit log.
     model_label: String,
+    /// `--static DIR`, canonical: files served at `/` beside the API.
+    static_dir: Option<std::path::PathBuf>,
+    /// `IMPROV_CORS_ORIGINS`: browser origins allowed to call the API from
+    /// another origin. Empty (the default): no CORS headers at all.
+    cors_origins: Vec<String>,
     /// Store loads performed, so tests can check the cache.
     #[cfg(test)]
     loads: AtomicU64,
@@ -361,17 +366,34 @@ impl AppState {
             max_body: MAX_BODY_BYTES,
             rate: RateLimiter::new(RATE_PER_MIN),
             audit: AuditLog::Stderr,
+            static_dir: None,
+            cors_origins: Vec::new(),
             #[cfg(test)]
             loads: AtomicU64::new(0),
         }
     }
 
+    /// Serve the files under `dir` at `/` (`--static`). Refused unless it is
+    /// a readable directory.
+    pub fn serve_static(&mut self, dir: &std::path::Path) -> Result<(), String> {
+        let dir = dir
+            .canonicalize()
+            .map_err(|e| format!("--static {}: {e}", dir.display()))?;
+        if !dir.is_dir() {
+            return Err(format!("--static {}: not a directory", dir.display()));
+        }
+        self.static_dir = Some(dir);
+        Ok(())
+    }
+
     /// Apply `IMPROV_MAX_BODY_BYTES`, `IMPROV_RATE_LIMIT` (requests a minute
-    /// per caller, 0 = off) and `IMPROV_AUDIT_LOG` (a file; default stderr).
+    /// per caller, 0 = off), `IMPROV_AUDIT_LOG` (a file; default stderr) and
+    /// `IMPROV_CORS_ORIGINS` (comma-separated origins; default none).
     pub fn configure(&mut self, get: &impl Fn(&str) -> Option<String>) -> Result<(), String> {
         self.max_body = env_num(get, "IMPROV_MAX_BODY_BYTES", MAX_BODY_BYTES)?;
         self.rate = RateLimiter::new(env_num(get, "IMPROV_RATE_LIMIT", RATE_PER_MIN)?);
         self.audit = AuditLog::open(get("IMPROV_AUDIT_LOG").as_deref())?;
+        self.cors_origins = cors_origins(get("IMPROV_CORS_ORIGINS").as_deref())?;
         Ok(())
     }
 
@@ -399,6 +421,7 @@ async fn main() {
     let args::Cli {
         model: db_path,
         addr,
+        static_dir,
     } = <args::Cli as clap::Parser>::parse();
 
     let get = |k: &str| std::env::var(k).ok();
@@ -433,7 +456,10 @@ async fn main() {
         }))
     });
     let mut state = AppState::new(db_path, auth, scheduler_status.clone());
-    if let Err(e) = state.configure(&get) {
+    if let Err(e) = state
+        .configure(&get)
+        .and_then(|()| static_dir.map_or(Ok(()), |d| state.serve_static(&d)))
+    {
         eprintln!("improv-server: {e}");
         std::process::exit(2);
     }
@@ -595,12 +621,140 @@ pub fn app(state: Arc<AppState>) -> Router {
             MAX_IN_FLIGHT,
         ));
 
-    router
+    if state.static_dir.is_some() {
+        router = router.fallback(get(static_file));
+    }
+    let router = router
         .layer(limits)
         // Outside the timeout, so a write that times out is audited too.
         .layer(middleware::from_fn_with_state(state.clone(), audit))
-        .layer(DefaultBodyLimit::max(state.max_body))
-        .with_state(state)
+        .layer(DefaultBodyLimit::max(state.max_body));
+    // Outermost, so a preflight is answered before auth and limits.
+    let router = if state.cors_origins.is_empty() {
+        router
+    } else {
+        router.layer(middleware::from_fn_with_state(state.clone(), cors))
+    };
+    router.with_state(state)
+}
+
+/// `IMPROV_CORS_ORIGINS`: comma-separated origins (`https://host[:port]`),
+/// matched exactly. `*` is refused: tokens ride in headers, so a wildcard
+/// would let any page call the API with a visitor's token.
+fn cors_origins(v: Option<&str>) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for o in v
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|o| !o.is_empty())
+    {
+        let o = o.trim_end_matches('/');
+        let ok = (o.starts_with("http://") || o.starts_with("https://"))
+            && !o["https://".len().min(o.len())..].contains('/');
+        if o == "*" || !ok {
+            return Err(format!(
+                "IMPROV_CORS_ORIGINS: {o:?} is not an origin (https://host[:port]); \
+                 \"*\" is not allowed"
+            ));
+        }
+        out.push(o.to_owned());
+    }
+    Ok(out)
+}
+
+/// CORS for the origins in `IMPROV_CORS_ORIGINS` (only installed when there
+/// are some). A preflight (`OPTIONS` with `Access-Control-Request-Method`)
+/// from an allowed origin is answered here with 204; any other request
+/// from one gets `Access-Control-Allow-Origin` on its response. Requests
+/// from other origins get no CORS headers, so the browser blocks them.
+async fn cors(State(state): State<Arc<AppState>>, req: Request, next: Next) -> Response {
+    let origin = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .filter(|o| state.cors_origins.iter().any(|a| a == o))
+        .map(str::to_owned);
+    let preflight = req.method() == axum::http::Method::OPTIONS
+        && req
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD);
+    let mut resp = match (&origin, preflight) {
+        (Some(_), true) => {
+            let mut r = StatusCode::NO_CONTENT.into_response();
+            let h = r.headers_mut();
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                header::HeaderValue::from_static("GET, POST, OPTIONS"),
+            );
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                header::HeaderValue::from_static("authorization, content-type"),
+            );
+            h.insert(
+                header::ACCESS_CONTROL_MAX_AGE,
+                header::HeaderValue::from_static("600"),
+            );
+            r
+        }
+        _ => next.run(req).await,
+    };
+    let h = resp.headers_mut();
+    h.append(header::VARY, header::HeaderValue::from_static("origin"));
+    if let Some(o) = origin.and_then(|o| header::HeaderValue::from_str(&o).ok()) {
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+    }
+    resp
+}
+
+/// `--static`: a GET for a path the API does not route reads the file under
+/// the static directory (`/` and directories are their `index.html`).
+/// Paths that leave the directory (`..`, symlinks out) are 404, as are
+/// missing files. Public, like `/health`: a web front end's files hold no
+/// model data; the API calls it makes still need their tokens.
+async fn static_file(State(state): State<Arc<AppState>>, req: Request) -> Response {
+    let not_found = || (StatusCode::NOT_FOUND, "not found").into_response();
+    let Some(root) = state.static_dir.clone() else {
+        return not_found();
+    };
+    let rel = req.uri().path().trim_start_matches('/').to_owned();
+    let file = tokio::task::spawn_blocking(move || {
+        // Percent-encoded names are not decoded: a front end's build has
+        // plain ASCII file names, and a decoded `%2e%2e` cannot sneak in.
+        let mut p = root.join(&rel);
+        if p.is_dir() {
+            p = p.join("index.html");
+        }
+        let p = p.canonicalize().ok().filter(|p| p.starts_with(&root))?;
+        std::fs::read(&p).ok().map(|bytes| (p, bytes))
+    })
+    .await
+    .ok()
+    .flatten();
+    let Some((path, bytes)) = file else {
+        return not_found();
+    };
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    ([(header::CONTENT_TYPE, content_type(ext))], bytes).into_response()
+}
+
+/// The content type for a file extension, for what a web build holds.
+fn content_type(ext: &str) -> &'static str {
+    match ext.to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" | "map" => "application/json",
+        "wasm" => "application/wasm",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "txt" => "text/plain; charset=utf-8",
+        "woff2" => "font/woff2",
+        "ttf" => "font/ttf",
+        _ => "application/octet-stream",
+    }
 }
 
 /// Write audit: a handler (or [`require_token`]) marks a request as a write
@@ -1369,6 +1523,182 @@ mod tests {
     async fn body_json(resp: Response) -> JsonValue {
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    // -- the web front end's needs (I1): static files and CORS
+
+    /// An app over the seeded model with `state` adjusted by `f`.
+    fn app_with(f: impl FnOnce(&mut AppState)) -> (Router, std::path::PathBuf) {
+        let path = temp_path("model.db");
+        Store::open(path.to_str().unwrap())
+            .unwrap()
+            .save_model(&revenue_model())
+            .unwrap();
+        let mut state = AppState::new(
+            path.to_str().unwrap().to_string(),
+            Auth::Tokens(vec![token("w", Scope::Write, "s3cret")]),
+            None,
+        );
+        f(&mut state);
+        (app(Arc::new(state)), path)
+    }
+
+    async fn body_bytes(resp: Response) -> Vec<u8> {
+        to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec()
+    }
+
+    /// `--static DIR` serves its files (index.html for `/` and a directory)
+    /// with their types, public, beside the API; nothing outside DIR, and
+    /// without the flag nothing at all.
+    #[tokio::test]
+    async fn static_files_are_served_beside_the_api() {
+        let dir = temp_path("web");
+        std::fs::create_dir_all(dir.join("pkg")).unwrap();
+        std::fs::write(dir.join("index.html"), "<p>improv</p>").unwrap();
+        std::fs::write(dir.join("pkg/app.wasm"), b"\0asm").unwrap();
+        std::fs::write(dir.join("pkg/index.html"), "pkg").unwrap();
+        let outside = temp_path("secret.txt");
+        std::fs::write(&outside, "no").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, dir.join("link.txt")).unwrap();
+        let (app, _p) = app_with(|s| s.serve_static(&dir).unwrap());
+        let get = |uri: &str| {
+            app.clone()
+                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        };
+
+        let r = get("/").await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            r.headers()[header::CONTENT_TYPE],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(body_bytes(r).await, b"<p>improv</p>");
+        let r = get("/pkg/app.wasm").await.unwrap();
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "application/wasm");
+        assert_eq!(body_bytes(r).await, b"\0asm");
+        assert_eq!(body_bytes(get("/pkg/").await.unwrap()).await, b"pkg");
+        for bad in [
+            "/nope.js",
+            "/../secret.txt",
+            "/pkg/../../secret.txt",
+            "/link.txt",
+        ] {
+            let r = get(bad).await.unwrap();
+            assert_eq!(r.status(), StatusCode::NOT_FOUND, "{bad}");
+        }
+        // The API still routes, and still wants its token.
+        assert_eq!(get("/health").await.unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            get("/v1/measures").await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+        // No flag: no files.
+        let (plain, _p) = app_with(|_| ());
+        let r = plain
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+        // A bad directory is refused at startup.
+        let mut s = AppState::new(String::new(), Auth::Disabled, None);
+        assert!(s
+            .serve_static(&outside)
+            .unwrap_err()
+            .contains("not a directory"));
+        assert!(s.serve_static(&dir.join("missing")).is_err());
+        assert_eq!(content_type("CSS"), "text/css; charset=utf-8");
+        assert_eq!(content_type("bin"), "application/octet-stream");
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    /// CORS is off by default (no headers); with IMPROV_CORS_ORIGINS an
+    /// allowed origin's preflight is answered and its responses carry
+    /// Access-Control-Allow-Origin, and any other origin gets nothing.
+    #[tokio::test]
+    async fn cors_is_off_by_default_and_exact_when_configured() {
+        let from = |origin: &str, method: &str, preflight: bool| {
+            let mut b = Request::builder()
+                .method(method)
+                .uri("/v1/measures")
+                .header(header::ORIGIN, origin);
+            if preflight {
+                b = b
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "GET")
+                    .header(header::ACCESS_CONTROL_REQUEST_HEADERS, "authorization");
+            } else {
+                b = b.header(header::AUTHORIZATION, "Bearer s3cret");
+            }
+            b.body(Body::empty()).unwrap()
+        };
+        let (off, _p) = app_with(|_| ());
+        let r = off
+            .oneshot(from("https://ui.example", "GET", false))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(!r
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+
+        let get = |k: &str| {
+            (k == "IMPROV_CORS_ORIGINS")
+                .then(|| "https://ui.example, http://localhost:8080/".to_owned())
+        };
+        let (on, _p) = app_with(|s| s.configure(&get).unwrap());
+        let r = on
+            .clone()
+            .oneshot(from("https://ui.example", "OPTIONS", true))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::NO_CONTENT, "preflight before auth");
+        assert_eq!(
+            r.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "https://ui.example"
+        );
+        assert!(r.headers()[header::ACCESS_CONTROL_ALLOW_HEADERS]
+            .to_str()
+            .unwrap()
+            .contains("authorization"));
+        let r = on
+            .clone()
+            .oneshot(from("http://localhost:8080", "GET", false))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert_eq!(
+            r.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "http://localhost:8080"
+        );
+        assert_eq!(r.headers()[header::VARY], "origin");
+        for other in [
+            from("https://evil.example", "GET", false),
+            from("https://evil.example", "OPTIONS", true),
+        ] {
+            let r = on.clone().oneshot(other).await.unwrap();
+            assert!(!r
+                .headers()
+                .contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN));
+            assert_ne!(r.status(), StatusCode::NO_CONTENT);
+        }
+        // Without the token the API still refuses an allowed origin.
+        let mut req = from("https://ui.example", "GET", false);
+        req.headers_mut().remove(header::AUTHORIZATION);
+        let r = on.oneshot(req).await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            r.headers()[header::ACCESS_CONTROL_ALLOW_ORIGIN],
+            "https://ui.example"
+        );
+        // Bad values are refused.
+        for bad in ["*", "ui.example", "https://ui.example/app", "ftp://x"] {
+            assert!(cors_origins(Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(cors_origins(None).unwrap(), Vec::<String>::new());
+        assert_eq!(cors_origins(Some(" , ")).unwrap(), Vec::<String>::new());
     }
 
     #[tokio::test]
