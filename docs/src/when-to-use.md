@@ -82,9 +82,11 @@ becomes a staleness complaint, or several views repeat the same logic.
 ## Large graphs: use a graph engine
 
 `FIXPOINT` runs PageRank-style iterations correctly, and incrementally after
-an edit, but it holds every edge in memory several times: about 1.0 kB per
-edge after the fixes (15.0 GB at 10M edges). A 20M-edge solve took 3.4 min
-and 31.8 GB at v0.10.0 ([benchmark §2][bench]).
+an edit, but it holds every edge in memory several times: about 780 bytes
+per edge with the model (10.1 GB peak at 10M edges, of which the engine is
+556 bytes per edge), and a warm re-solve after one edge edit takes 6.6 s
+at 10M edges. A 20M-edge solve took 3.4 min and 31.8 GB at v0.10.0
+([benchmark §2][bench]).
 
 **Instead:** a graph engine or library (NetworkX or igraph for analysis,
 Apache AGE in Postgres, a dedicated graph database) for anything past a few
