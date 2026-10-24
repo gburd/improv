@@ -141,6 +141,9 @@ fn transact_group(
     Ok(())
 }
 
+/// Most cells [`ModelStore::save_changes`] reads one seek at a time.
+const SEEK_SAVE_LIMIT: usize = 4096;
+
 const VALUE_NUMBER: &str = "value-number";
 const VALUE_BOOLEAN: &str = "value-boolean";
 const VALUE_TEXT: &str = "value-text";
@@ -264,6 +267,13 @@ impl ModelStore {
         cells: &[(MeasureId, Coordinate)],
         structure: bool,
     ) -> Result<()> {
+        // A seek per cell costs about four small queries; past a few
+        // thousand cells one pass over every stored cell is cheaper (an
+        // import, a refresh), and the full save writes the same result.
+        // shortcut: a fixed count, not one measured against the store's size.
+        if cells.len() > SEEK_SAVE_LIMIT {
+            return self.save(model, None, true);
+        }
         self.save(model, Some(cells), structure)
     }
 
@@ -1756,6 +1766,22 @@ mod tests {
             let _ = std::fs::remove_file(&pa);
             let _ = std::fs::remove_file(&pb);
         }
+    }
+
+    /// A change set past the seek limit takes the full save, same result.
+    #[test]
+    fn a_bulk_change_set_saves_in_full() {
+        let path = temp_store_path("cells-bulk");
+        let mut m = edit_model();
+        let mut s = ModelStore::open(&path).expect("open");
+        s.save_model(&m).expect("seed");
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        m.set_input(MeasureId(100), at.clone(), Value::Number(3.0));
+        let many = vec![(MeasureId(100), at); SEEK_SAVE_LIMIT + 1];
+        s.save_changes(&m, &many, false).expect("bulk");
+        let back = ModelStore::open(&path).unwrap().load_model().unwrap();
+        assert_eq!(sort_vecs(back), sort_vecs(m));
+        let _ = std::fs::remove_file(&path);
     }
 
     /// `save_cells` keeps `save_model`'s high-water check: a stale handle is
