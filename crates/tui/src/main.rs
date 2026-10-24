@@ -53,22 +53,19 @@ fn main() {
 /// Open the model at `path` and build the app state.
 fn load(path: &str) -> Result<App, String> {
     let (model, save_token) = Store::open(path)
-        .and_then(|mut s| Ok((s.load_model()?, s.save_token())))
+        .and_then(|mut s| Ok((s.load_model()?, s.take_save_token())))
         .map_err(|e| format!("cannot open model '{path}': {e}"))?;
+    let saved = model.clone();
     let mut app = App::new(model)?;
     app.save_token = save_token;
+    app.saved = Some(saved);
     Ok(app)
 }
 
 /// Autosave the (possibly edited) model back to `path` on clean exit; edits
-/// are held in memory during the session.
-fn save(app: &App, path: &str) -> Result<(), String> {
-    Store::open(path)
-        .and_then(|mut s| {
-            s.set_save_token(&app.save_token);
-            s.save_model(&app.model)
-        })
-        .map_err(|e| format!("autosave failed: {e}"))
+/// are held in memory during the session. Writes only what changed.
+fn save(app: &mut App, path: &str) -> Result<(), String> {
+    app.save(path).map_err(|e| format!("autosave failed: {e}"))
 }
 
 /// Enter the alt screen, run the loop, and always restore the terminal — even
@@ -101,7 +98,7 @@ fn run(mut app: App, path: &str) -> Result<(), String> {
     // Always restore on the normal path too.
     let _ = restore();
     result?;
-    save(&app, path)
+    save(&mut app, path)
 }
 
 /// Undo terminal setup. Safe to call multiple times.
@@ -587,13 +584,13 @@ mod tests {
             "a new file opens empty"
         );
         let mut app = App::new(revenue_model()).unwrap();
-        save(&app, p).unwrap();
+        save(&mut app, p).unwrap();
         run_events(&mut app, p, chars("S")).unwrap();
         assert_eq!(app.status.as_deref(), Some("saved view 'view 1'"));
         let loaded = load(p).unwrap();
         assert_eq!(loaded.model.views.len(), 1);
         assert!(load_err("/nonexistent/dir/x.db").starts_with("cannot open model"));
-        assert!(save(&app, "/nonexistent/dir/x.db")
+        assert!(save(&mut app, "/nonexistent/dir/x.db")
             .unwrap_err()
             .starts_with("autosave failed"));
     }
@@ -686,19 +683,19 @@ mod tests {
     fn revert_key_recovers_from_a_save_conflict() {
         let path = tmp_path("tui-revert.db");
         let p = path.to_str().unwrap();
-        save(&App::new(revenue_model()).unwrap(), p).unwrap();
+        save(&mut App::new(revenue_model()).unwrap(), p).unwrap();
         let mut a = load(p).unwrap();
         let mut b = load(p).unwrap();
         run_events(&mut a, p, chars("S")).unwrap();
         b.model.views.clear();
         b.model
             .add_view(b.build_view(improv_core_model::ViewId(77), "mine"));
-        let e = save(&b, p).unwrap_err();
+        let e = save(&mut b, p).unwrap_err();
         assert!(e.contains("conflict"), "{e}");
         run_events(&mut b, p, chars("R")).unwrap();
         assert_eq!(b.status.as_deref(), Some("reverted to the saved model"));
         assert_eq!(b.model.views.len(), 1, "picked up the other session's view");
-        save(&b, p).expect("saves after the revert");
+        save(&mut b, p).expect("saves after the revert");
         run_events(&mut b, "/nonexistent/dir/x.db", chars("R")).unwrap();
         assert!(b.status.as_deref().unwrap().starts_with("revert failed"));
         assert_eq!(b.model.views.len(), 1, "a failed revert keeps the session");

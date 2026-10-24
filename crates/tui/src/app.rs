@@ -552,6 +552,9 @@ pub struct App {
     /// The store high-water the model was loaded/last saved at; saves refuse
     /// to clobber another process's writes (`StoreError::Conflict`).
     pub save_token: improv_store::SaveToken,
+    /// The model as last loaded or saved (`None`: never), so a save writes
+    /// only what differs from it ([`improv_store::ChangeSet::between`]).
+    pub saved: Option<Model>,
     /// Selected item index for each extra (page) dimension of the viewed
     /// measure; `[` / `]` cycle the first one. Reset when the measure changes.
     pub page_idx: Vec<usize>,
@@ -621,6 +624,7 @@ impl App {
             edit: None,
             status: None,
             save_token: improv_store::SaveToken::default(),
+            saved: None,
             page_idx,
             axis_order,
             filters: Vec::new(),
@@ -1397,16 +1401,28 @@ impl App {
     }
 
     /// Save the model to the store at `path`, refusing to overwrite another
-    /// writer's changes; the next save diffs against this one.
+    /// writer's changes. Only what changed since the last load or save is
+    /// written; the next save diffs against this one.
     pub fn save(&mut self, path: &str) -> Result<(), String> {
-        improv_store::Store::open(path)
-            .and_then(|mut s| {
-                s.set_save_token(&self.save_token);
-                s.save_model(&self.model)?;
-                self.save_token = s.save_token();
-                Ok(())
-            })
-            .map_err(|e| e.to_string())
+        let changes = match &self.saved {
+            Some(saved) => improv_store::ChangeSet::between(saved, &self.model),
+            None => improv_store::ChangeSet {
+                structure: true,
+                ..Default::default()
+            },
+        };
+        let mut s = improv_store::Store::open(path).map_err(|e| e.to_string())?;
+        s.adopt_save_token(std::mem::take(&mut self.save_token));
+        let r = if self.saved.is_some() {
+            s.save_changes(&self.model, &changes)
+        } else {
+            s.save_model(&self.model)
+        };
+        // On failure this is the adopted token back, unchanged.
+        self.save_token = s.take_save_token();
+        r.map_err(|e| e.to_string())?;
+        self.saved = Some(self.model.clone());
+        Ok(())
     }
 
     /// `w`: save now, as quitting does, and say how it went.
@@ -2810,6 +2826,30 @@ pub(crate) mod tests {
         assert!(app.editing_formula());
         app.cancel_edit();
         assert!(!app.defining);
+    }
+
+    /// A save writes what changed since the last one; a failed save keeps
+    /// its changes for the next, so the store ends equal to the model.
+    #[test]
+    fn saves_write_what_changed_and_a_failed_one_loses_nothing() {
+        let path = tmp_path("tui-incr.db");
+        let _guard = TmpFile(path.clone());
+        let p = path.to_str().unwrap();
+        let mut app = App::new(revenue_model()).unwrap();
+        app.save(p).unwrap();
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 5.0).unwrap();
+        assert!(app.save("/nonexistent/dir/x.db").is_err());
+        app.save_view("kept", None);
+        app.apply_edit(0, 0, 7.0).unwrap();
+        app.undo();
+        app.save(p).unwrap();
+        let stored = || improv_store::Store::open(p).unwrap().load_model().unwrap();
+        assert_eq!(stored(), app.model);
+        app.redo();
+        app.save(p).unwrap();
+        assert_eq!(stored(), app.model);
+        assert_eq!(app.saved.as_ref(), Some(&app.model));
     }
 
     #[test]
