@@ -6,7 +6,7 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-10-24
+## [0.11.0] - 2026-10-25
 
 The release that makes Improv safe to share and fast at scale. In
 Postgres, every model now reads and writes as its owner, under
@@ -19,7 +19,9 @@ offer a reload when another program saves; the GUI moves to egui 0.37
 and passes keyboard-only and AccessKit checks. SUM and AVERAGE are
 exactly rounded. Formulas have named arguments, exponent literals and a
 depth limit that keeps every saved model loadable. Releases are signed,
-with checksums and SBOMs.
+with checksums and SBOMs. The release qualification, against 0.10.0 on
+the same benchmark, is in
+[docs/reviews/2026-10-25-v0.11.0-qualification.md](docs/reviews/2026-10-25-v0.11.0-qualification.md).
 
 ### Added
 
