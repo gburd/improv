@@ -20,8 +20,30 @@ criteria" are the bar. Mark tasks done there as they land.
   the way: `evaluate` on a 1 MiB caller stack (Windows), FORECAST.ETS
   overflow past 2^64 steps, and the fourth lockfile (`fuzz/`) in the
   release steps.
-- **NEXT:** C3's checklist document; B8's remaining targets; a ~5% RANK
-  edit slowdown since `9e74dda` (unexplained; see the qualification).
+- **Released 2026-10-25:** tag `v0.11.0` = `19211d7` (re-signed: the first
+  tag's Windows qualify failed a timing test; nothing had been published).
+  GitHub Release with 32 assets (cosign `verify-blob` OK), PGXN 0.11.0,
+  DuckDB registry bump PR duckdb/community-extensions#3380 (opened by
+  hand: `COMMUNITY_EXT_PAT` is unset, so the release job fails at that
+  step; #3139, the first registration, merged 2026-10-20). The
+  postgresql.org news draft is in the release run's Announce log
+  (`PGORG_*` unset).
+- **C3 done** (`docs: the C3 security review of pg_improv and
+  improv-server`): no high; one medium fixed (text results unbounded
+  through `LANGUAGE improv`: now Excel's 32,767-character cap).
+- **J4 soak running** on the kiwi box since 2026-10-25 15:34 UTC, 72 h
+  (to 10-28 15:34; the account expires 10-30 19:14): harness
+  `~/ws/improv-rescue/ops/soak.sh` (not yet in the repo), log
+  `~/soak72/soak.log` on the box, a check every hour.
+- **DD review** (`~/ws/improv-rescue/dd-review/REPORT.md`): the engine
+  uses DD as a map/join/reduce executor but shares no arrangements,
+  returns whole snapshots, advances every input per edit, and is
+  single-worker. Its items 3 (O(n) windows), 1 (deltas, not snapshots)
+  and 4 (slim AggRow, B8) are being implemented on the box in `~/w-dd`
+  (`work/dd`); 2 (B6), 5 (B5), 6 (multi-worker evaluate), 7 (B1) follow.
+- **NEXT:** merge `work/dd`; the soak result into the plan (J4); C3b; a
+  ~5% RANK edit slowdown since `9e74dda` (unexplained; see the
+  qualification).
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
