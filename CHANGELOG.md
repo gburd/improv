@@ -538,6 +538,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **FORECAST.ETS no longer panics on a target past 2⁶⁴ steps.** A target
+  far beyond the series (1E300 on a series of dates milliseconds apart)
+  saturated the step count, and the next step overflowed; it now
+  saturates too. Found by the reduction contract property test.
+
 - **Evaluating a deep formula no longer overflows on Windows.** `evaluate`
   ran on the caller's thread, 1 MiB on Windows, where a formula at the
   depth limit (40) overflowed; the live engine's worker had the platform

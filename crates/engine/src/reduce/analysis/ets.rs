@@ -487,7 +487,8 @@ impl Model {
         };
         let r = ahead(k);
         if frac >= RES {
-            return r + frac / self.step * (ahead(k + 1) - r);
+            // `k` saturates for a target past usize::MAX steps (1e300).
+            return r + frac / self.step * (ahead(k.saturating_add(1)) - r);
         }
         r
     }
@@ -498,7 +499,7 @@ impl Model {
         let ahead = self.axis(t)? - self.x[self.x.len() - 1];
         let mut size = (ahead / self.step) as usize;
         if ahead % self.step != 0.0 {
-            size += 1;
+            size = size.saturating_add(1);
         }
         if size == 0 {
             return Err(err::NUM);
@@ -521,7 +522,7 @@ impl Model {
         let frac = ahead % self.step;
         let mut pi = z * self.rmse * c(steps) / c(0);
         if frac != 0.0 {
-            let pi1 = z * self.rmse * c(steps + 1) / c(0);
+            let pi1 = z * self.rmse * c(steps.saturating_add(1)) / c(0);
             pi += frac * (pi1 - pi);
         }
         Ok(pi)
@@ -808,6 +809,20 @@ mod tests {
         assert_eq!(ets(Kind::PiAdd, &r, &num(&[8.0, 0.9, 0.0])), Err(err::NUM));
         assert_eq!(ets(Kind::Add, &r, &num(&[7.5])), Err(err::NUM));
         assert_eq!(ets(Kind::Add, &r, &num(&[8.0])), Ok(11.0));
+        // A target past usize::MAX steps, off the step grid: no overflow
+        // (the property test's case: two dates 262,135 ms apart).
+        let far = Rows {
+            pos: vec![vec![0], vec![1]],
+            vals: vec![
+                vec![CellValue::num(0.0), CellValue::Date(0)],
+                vec![CellValue::num(0.0), CellValue::Date(-262_135)],
+            ],
+            capacity: 2,
+        };
+        for kind in [Kind::Add, Kind::Mult] {
+            let _ = ets(kind, &far, &num(&[1e300, 0.0]));
+        }
+        let _ = ets(Kind::PiAdd, &far, &num(&[1e300, 0.95, 0.0]));
         assert_eq!(ets(Kind::StatAdd, &r, &num(&[0.0])), Err(err::NUM));
         // Less than a step ahead on a step of 2: c(1)/c(0), the half-width
         // two steps ahead (LibreOffice reads past its array here).
