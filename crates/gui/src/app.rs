@@ -15572,10 +15572,20 @@ mod tests {
             std::thread::sleep(save.mul_f64(fraction));
             child.kill().expect("kill -9");
             let _ = child.wait();
-            // Was that save still running? Then "saved k" never came.
-            let finished = lines
-                .map_while(Result::ok)
-                .any(|l| l == format!("saved {k}"));
+            // Where the child really stopped: on Windows TerminateProcess
+            // returns before the child does, so it can start more saves
+            // after save k. The last "saving" it printed is the one that
+            // may have been cut off; every earlier one finished.
+            let mut k = k;
+            let mut finished = false;
+            for l in lines.map_while(Result::ok) {
+                if let Some(n) = l.strip_prefix("saving ") {
+                    k = n.parse().expect("k");
+                    finished = false;
+                } else if l == format!("saved {k}") {
+                    finished = true;
+                }
+            }
             let acked = if finished { k } else { k - 1 };
             let reopened = Store::open(&db)
                 .and_then(|mut s| s.load_model())
