@@ -1,7 +1,7 @@
 [package]
 name = "duckdb_improv"
 description = "DuckDB loadable extension: Improv formulas and multidimensional models over DuckDB tables"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2021"
 rust-version = "1.97"
 license = "Apache-2.0 OR MIT"

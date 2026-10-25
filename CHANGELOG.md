@@ -6,6 +6,21 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-24
+
+The release that makes Improv safe to share and fast at scale. In
+Postgres, every model now reads and writes as its owner, under
+row-level security on its catalog; one replication slot serves a whole
+database. Mentat 1.18.0 makes saving a large model linear (a 1M-row
+import takes about 105 s; it did not finish in 15 minutes before), and a
+one-cell save writes one cell (8 s → 4–8 ms at 1M cells). The desktop
+GUI and the TUI build models from scratch, rename and delete, undo, and
+offer a reload when another program saves; the GUI moves to egui 0.37
+and passes keyboard-only and AccessKit checks. SUM and AVERAGE are
+exactly rounded. Formulas have named arguments, exponent literals and a
+depth limit that keeps every saved model loadable. Releases are signed,
+with checksums and SBOMs.
+
 ### Added
 
 - **Incremental saves** (B12). `improv_store::Store::save_changes(model,
@@ -2244,7 +2259,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.10.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.11.0...main
+[0.11.0]: https://codeberg.org/gregburd/improv/compare/v0.10.0...v0.11.0
 [0.10.0]: https://codeberg.org/gregburd/improv/compare/v0.9.0...v0.10.0
 [0.9.0]: https://codeberg.org/gregburd/improv/compare/v0.8.1...v0.9.0
 [0.8.1]: https://codeberg.org/gregburd/improv/compare/v0.8.0...v0.8.1

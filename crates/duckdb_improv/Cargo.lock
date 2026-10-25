@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "duckdb_improv"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "duckdb",
  "improv_duckdb_model",
@@ -790,7 +790,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
 name = "improv_core_model"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "serde",
@@ -800,14 +800,14 @@ dependencies = [
 
 [[package]]
 name = "improv_data_source"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "improv_core_model",
 ]
 
 [[package]]
 name = "improv_duckdb_model"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "improv_core_model",
  "improv_engine",
@@ -818,7 +818,7 @@ dependencies = [
 
 [[package]]
 name = "improv_engine"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "differential-dataflow",
@@ -836,7 +836,7 @@ dependencies = [
 
 [[package]]
 name = "improv_extfn"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -850,7 +850,7 @@ dependencies = [
 
 [[package]]
 name = "improv_pg_model"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "chrono",
  "improv_core_model",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "improv_verified"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "vstd",
 ]
