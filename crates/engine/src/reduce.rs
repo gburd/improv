@@ -21,6 +21,7 @@ mod financial;
 mod lookup;
 mod statistical;
 pub(crate) mod two_level;
+pub(crate) mod window;
 
 /// One group's rows, in item order.
 #[derive(Debug, Clone, PartialEq)]

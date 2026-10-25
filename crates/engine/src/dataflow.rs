@@ -771,7 +771,7 @@ where
             let (rs, params, items) = to_rows(input);
             let outs = match window {
                 None => reduce::per_item(func, &rs, &params),
-                Some(w) => windows(func, &rs, &params, w),
+                Some(w) => reduce::window::windows(func, &rs, &params, w),
             };
             for (item, v) in items.into_iter().zip(outs) {
                 output.push(((item, v), 1isize));
@@ -785,44 +785,6 @@ where
         k.sort_unstable();
         (k, v)
     }))
-}
-
-/// One result per row: the reduction over the rows whose position lies in
-/// the row's window (positions along the single reduced category).
-pub(crate) fn windows(
-    func: FuncId,
-    rs: &Rows,
-    params: &[CellValue],
-    w: crate::typed::Window,
-) -> Vec<CellValue> {
-    use crate::typed::Bound;
-    let positions: Vec<i64> = rs.pos.iter().map(|p| i64::from(p[0])).collect();
-    // FIRST and LAST are the group's first and last items with a cell.
-    let first = positions.iter().copied().min().unwrap_or(0);
-    let last = positions.iter().copied().max().unwrap_or(0);
-    (0..rs.len())
-        .map(|i| {
-            let me = positions[i];
-            let at = |b: Bound| match b {
-                Bound::First => first,
-                Bound::Last => last,
-                Bound::Offset(o) => me + o,
-            };
-            let (lo, hi) = (at(w.0), at(w.1));
-            let pick: Vec<usize> = (0..rs.len())
-                .filter(|j| (lo..=hi).contains(&positions[*j]))
-                .collect();
-            if pick.is_empty() {
-                return CellValue::Err(err::NA);
-            }
-            let sub = Rows {
-                pos: pick.iter().map(|j| rs.pos[*j].clone()).collect(),
-                vals: pick.iter().map(|j| rs.vals[*j].clone()).collect(),
-                capacity: rs.capacity,
-            };
-            reduce::reduce(func, &sub, params)
-        })
-        .collect()
 }
 
 /// A constant at the empty coordinate (broadcasts into any join).

@@ -158,6 +158,59 @@ impl ExactSum {
     }
 }
 
+/// An exact sum over a sliding window: terms leave as well as join, and
+/// its value is the window's terms' [`ExactSum`] value, bit for bit (the
+/// digits are exact integers, and the flags are counted, not or-ed).
+#[derive(Default)]
+pub(crate) struct WindowSum {
+    /// The finite terms' digits; a term leaves by adding its negation.
+    sum: ExactSum,
+    /// The terms other than -0.0, the +∞s, the -∞s, the NaNs.
+    n: [usize; 4],
+}
+
+impl WindowSum {
+    /// `x` joins the window.
+    pub(crate) fn add(&mut self, x: f64) {
+        self.step(x, true);
+    }
+
+    /// `x`, an earlier term, leaves the window.
+    pub(crate) fn remove(&mut self, x: f64) {
+        self.step(x, false);
+    }
+
+    fn step(&mut self, x: f64, join: bool) {
+        let kinds = [
+            x.to_bits() != (-0.0f64).to_bits(),
+            x == f64::INFINITY,
+            x == f64::NEG_INFINITY,
+            x.is_nan(),
+        ];
+        for (n, k) in self.n.iter_mut().zip(kinds) {
+            if k && join {
+                *n += 1;
+            } else if k {
+                *n -= 1;
+            }
+        }
+        if x.is_finite() {
+            self.sum.add(if join { x } else { -x });
+        }
+    }
+
+    /// The window's sum, rounded once.
+    pub(crate) fn value(&mut self) -> f64 {
+        let mut e = self.sum.exact();
+        e.flags = [NOT_NEG_ZERO, POS_INF, NEG_INF, NAN]
+            .into_iter()
+            .zip(self.n)
+            .filter(|(_, n)| *n > 0)
+            .fold(0, |f, (bit, _)| f | bit);
+        e.value()
+    }
+}
+
 /// An exact sum, compact and canonical (equal sums are equal values): its
 /// balanced digits from the lowest nonzero one up. A sum of floats of
 /// similar size needs two to four.
@@ -350,6 +403,30 @@ mod tests {
         #[test]
         fn the_sum_is_the_exact_sums_nearest_float(xs in prop::collection::vec(scaled(), 1..200)) {
             prop_assert_eq!(sum(&xs).to_bits(), reference(&xs).to_bits());
+        }
+
+        /// A window slid over the terms sums what a fresh sum of the
+        /// window's terms does, bit for bit.
+        #[test]
+        fn a_sliding_sum_is_a_fresh_sum(
+            xs in prop::collection::vec(prop_oneof![
+                scaled(),
+                wide(),
+                prop::sample::select(vec![
+                    0.0, -0.0, f64::INFINITY, f64::NEG_INFINITY, f64::NAN, f64::MAX,
+                ]),
+            ], 0..60),
+            width in 1usize..8,
+        ) {
+            let mut w = WindowSum::default();
+            for (i, x) in xs.iter().enumerate() {
+                w.add(*x);
+                if i >= width {
+                    w.remove(xs[i - width]);
+                }
+                let lo = (i + 1).saturating_sub(width);
+                prop_assert_eq!(w.value().to_bits(), sum(&xs[lo..=i]).to_bits());
+            }
         }
 
         #[test]

@@ -18,6 +18,19 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **`improv-server` stops on SIGTERM.** It had no handler: run as a
   container's PID 1, where SIGTERM's default is to ignore it, `docker stop`
   waited its 10 s and then killed it. SIGTERM and Ctrl-C now end it at once.
+### Changed
+
+- **Windowed reductions cost O(n) per group, not O(n²).**
+  `SUM(X OVER W[FIRST..THIS])` at 5,000 items went from 1.12 s to 6 ms
+  per edit, and at 20,000 items from 18.1 s to 25 ms (evaluate 17.9 s to
+  32 ms); `SUM(X OVER W[THIS-1..THIS])` at 20,000 items from 228 to 8 ms
+  (release build, `tests/probe.rs` `wide`). Each row's window is found
+  with two pointers, and `SUM` … `XOR` slide a running state over the
+  rows: an exact sum that terms leave as well as join, a monotone deque
+  for `MIN` and `MAX`, counts for `AND`/`OR`/`XOR`. Results are the old
+  kernel's bit for bit (a property test holds them to it). A window
+  bound past the largest offset now reaches the last item instead of
+  overflowing.
 
 ### Security
 

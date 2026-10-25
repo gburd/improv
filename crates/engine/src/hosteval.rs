@@ -23,10 +23,10 @@
 use crate::builtins::err;
 use crate::dataflow::{
     agg_key, agg_order, agg_rows, apply_binary, apply_unary, call_with, grid_keys, literal_value,
-    project, remap_key, remap_table, shared_cats, union_keys, where_row, windows, AggRow, AggSpec,
+    project, remap_key, remap_table, shared_cats, union_keys, where_row, AggRow, AggSpec,
 };
 use crate::plan::{PlanNode, PlanNodeKind as K};
-use crate::reduce::{self, two_level, Rows};
+use crate::reduce::{self, two_level, window::windows, Rows};
 use crate::session::MeasureValues;
 use crate::{CellValue, CoordKey};
 use improv_core_model::{CategoryId, FuncId, ItemId, MeasureId};

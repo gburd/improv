@@ -256,6 +256,18 @@ per group on average: an edge list's `SUM(W OVER Dst)` would otherwise
 keep two arrangements of near-empty blocks (B8). PRODUCT and SUMSQ are
 never marked; `serves` ignores the bit, since it only moves cost.
 
+**Windows** (`reduce/window.rs`, `OVER T[from..to]`). A group's rows come
+sorted by position, so each row's window is a run of rows whose two ends
+only move forward: two pointers find them all in O(n). SUM … XOR slide a
+running state over the run (`exact::WindowSum`, an exact sum that terms
+leave as well as join; a monotone deque for MIN/MAX; true counts);
+PRODUCT and SUMSQ, left folds, slide only when the window starts at
+FIRST. Any other reduction is called on each window's rows. `scan`, the
+per-row definition, is the reference a property test holds the kernel to,
+bit for bit. The whole group still re-runs on an edit (O(n), 1.9 s at 1M
+items); blocking the window category as the two-level reduce does is the
+next step.
+
 ---
 
 ## 9. Scenarios (design target)
