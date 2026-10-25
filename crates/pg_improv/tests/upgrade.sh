@@ -37,7 +37,9 @@ grep -qs "^pg$PGV = " "${PGRX_HOME:-$HOME/.pgrx}/config.toml" || export PGRX_PG_
 
 released=$(for t in $(git -C "$root" tag -l 'v*' | sort -V); do
 	git -C "$root" cat-file -e "$t:crates/pg_improv/pg_improv.control" 2>/dev/null || continue
-	older "$(version_of "$t")" "$to" && echo "$t"
+	# (not `older … && echo`: when the newest tag is this version, the loop's
+	# last status is 1 and set -e fails the assignment.)
+	if older "$(version_of "$t")" "$to"; then echo "$t"; fi
 done)
 [ -n "$released" ] || { echo "FAIL: no released pg_improv tag (a clone without tags?)"; exit 1; }
 # Every released version reaches this one through sql/'s update scripts.
