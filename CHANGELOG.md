@@ -55,6 +55,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   one-cell edit under `SUM(X OVER W)` at 1M items 0.65 -> 0.49 ms
   (release build, `tests/probe.rs` `pagerank` and `wide`; RANK's edits
   vary 2x run to run on a shared box). Every result is unchanged.
+- **An edit costs what it reaches, not the number of measures** (B6). The
+  live engine groups measures into components by what they read and
+  advances only the input sessions of the components an edit feeds; the
+  rest of the dataflow sees no progress. An edit that reaches 1 of 20,000
+  measures went from 44.7 to 0.18 ms (at 5,000: 8.5 to 0.03 ms; release
+  build, `tests/probe.rs` `measures`, split). A model that is one big
+  component (20,000 measures off one input) is unchanged, about 130 ms.
 
 ### Security
 

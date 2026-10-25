@@ -103,7 +103,10 @@ pub struct Edit {
 
 `apply(edits)` sends a batch over a channel. The worker retracts each cell's
 old value, inserts the new one, advances time by one, and steps the dataflow
-until the probe passes that time. Only the deltas flow, so only the affected
+until the probe passes that time. Measures fall into components by what they
+read; a round advances only the input sessions of the components its edits
+reach and waits only for their outputs, so an edit costs what it touches,
+not the size of the model. Only the deltas flow, so only the affected
 cells recompute. `set` and `clear` are one-edit shortcuts. The reply is the
 new `Snapshot`. `apply_delta(edits)` applies a batch the same way but replies
 with what the round changed: per measure, each changed cell's coordinate, old

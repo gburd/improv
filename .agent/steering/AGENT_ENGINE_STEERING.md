@@ -339,9 +339,21 @@ even where no data moves. Two things keep the operator count down:
 measure whose plan is a map of an input or of another such measure
 (`dataflow::functional`: inputs hold one value per key, and maps keep the
 order the session sent, so the snapshot's +1/-1 rule still holds), and the
-worker attaches one probe to the concatenation of every output rather than
-one per measure. At 20,000 `Mk = X + k` measures an edit went from 734 ms
-to 131 ms, and memory from 3.4 GB to 1.4 GB.
+worker attaches one probe to the concatenation of a component's outputs
+rather than one per measure. At 20,000 `Mk = X + k` measures an edit went
+from 734 ms to 131 ms, and memory from 3.4 GB to 1.4 GB.
+
+**Components (B6).** The worker union-finds the measures by reads (a
+plan and every collection it is built from, `session::plan_reads`; a
+FIXPOINT's parts and what its body reads) into components. No operator
+spans two, so a round advances and flushes only the sessions of the
+components its edits fed, and steps until their probes pass the round's
+time; every other operator sees no progress. A component left behind
+keeps its last time, which its probe has not passed, so its next data is
+still at a time its operators accept. An edit that reaches 1 of 20,000
+measures went from 45 to 0.18 ms. One big component (a fan or chain off
+one input) gains nothing: there the cost is the operators themselves
+(fusing map-only plans that read the same input is the next step).
 
 **Per-cell memory (B7, `docs/reviews/2026-10-23-engine-heap-profile.md`).**
 `functional` also counts a join or a binary map of functional operands,

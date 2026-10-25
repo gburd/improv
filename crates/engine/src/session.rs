@@ -21,7 +21,7 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::reduce::two_level;
 use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{CategoryId, MeasureId, MeasureKind, Model, Value, ValueType};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -501,6 +501,9 @@ fn split_fixpoints(model: &Model, plans: Plans) -> Result<(Plans, Vec<Fix>), Eng
 }
 
 type Sessions = HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>>;
+/// A round run to a time: the sessions fed (of which the components
+/// advance; `None`, all).
+type Run<'r> = dyn FnMut(u64, &mut Sessions, Option<&[MeasureId]>) + 'r;
 type Plans = Vec<(MeasureId, PlanNode)>;
 
 /// What a FIXPOINT's sessions hold: the iterate last fed to `r`, and the
@@ -584,7 +587,7 @@ fn solve_fixpoints(
     warm: bool,
     sessions: &mut Sessions,
     t: &mut u64,
-    run: &mut dyn FnMut(u64, &mut Sessions),
+    run: &mut Run<'_>,
     snapshot: &Mutex<Snapshot>,
     first: &mut HashMap<MeasureId, Arc<MeasureValues>>,
     world: &World<'_>,
@@ -633,7 +636,7 @@ fn solve_fixpoints(
                         replace(s, &st.r, &x);
                         st.r.clone_from(&x);
                         *t += 1;
-                        run(*t, sessions);
+                        run(*t, sessions, Some(&[f.r]));
                         (*get(f.body)).clone()
                     }
                 };
@@ -672,7 +675,7 @@ fn solve_fixpoints(
         st.converged = converged;
         first.insert(f.id, init);
         *t += 1;
-        run(*t, sessions);
+        run(*t, sessions, Some(&[f.id]));
         let mut snap = snapshot.lock().unwrap();
         Arc::make_mut(&mut snap).insert(f.id, Arc::clone(&st.result));
     }
@@ -710,6 +713,71 @@ fn changes(snapshot: &Snapshot, before: Before, hidden: &HashSet<MeasureId>) -> 
         cells.sort_unstable_by(|a, b| a.coord.cmp(&b.coord));
     }
     out
+}
+
+/// The measures connected by reads (union-find): a measure, what its plan
+/// reads, and a FIXPOINT's parts are one component. No operator spans two
+/// components, so a round advances only the sessions of the components its
+/// edits reach, and waits only for their outputs (B6): the rest of the
+/// dataflow sees no progress at all.
+#[derive(Default)]
+struct Components(HashMap<MeasureId, MeasureId>);
+
+impl Components {
+    /// `m`'s component, as its root measure.
+    fn find(&mut self, m: MeasureId) -> MeasureId {
+        let mut r = m;
+        while let Some(&p) = self.0.get(&r).filter(|p| **p != r) {
+            r = p;
+        }
+        let mut x = m;
+        while x != r {
+            x = self.0.insert(x, r).unwrap_or(r);
+        }
+        r
+    }
+
+    fn union(&mut self, a: MeasureId, b: MeasureId) {
+        let (a, b) = (self.find(a), self.find(b));
+        if a != b {
+            self.0.insert(a, b);
+        }
+    }
+}
+
+/// Add every measure `p` reads to `out`: each collection the dataflow
+/// builds `p` from.
+fn plan_reads(p: &PlanNode, out: &mut Vec<MeasureId>) {
+    use crate::plan::PlanNodeKind as K;
+    let mut all = |ns: &mut dyn Iterator<Item = &PlanNode>| ns.for_each(|n| plan_reads(n, out));
+    match &p.kind {
+        K::InputMeasure(m) => out.push(*m),
+        // A FIXPOINT is split into its parts (`split_fixpoints`) before
+        // the build, so its plan is never built.
+        K::Literal(_) | K::Items(..) | K::Fixpoint { .. } => {}
+        K::MapUnary(_, a) | K::Remap { input: a, .. } => plan_reads(a, out),
+        K::MapBinary(_, a, b)
+        | K::Join {
+            left: a, right: b, ..
+        } => all(&mut [&**a, &**b].into_iter()),
+        K::Aggregate {
+            inputs,
+            params,
+            pred,
+            ..
+        } => all(&mut inputs.iter().chain(params).chain(pred.as_deref())),
+        K::Recurrence { refs, .. } => all(&mut refs.iter().map(|(_, n)| n)),
+        K::Coalesce { args, .. } | K::FuncCall { args, .. } => all(&mut args.iter()),
+        K::Shift { input, default, .. } => {
+            all(&mut std::iter::once(&**input).chain(default.as_deref()));
+        }
+        K::If {
+            test,
+            then,
+            otherwise,
+            ..
+        } => all(&mut [&**test, &**then].into_iter().chain(otherwise.as_deref())),
+    }
 }
 
 /// A delta of a measure's output: (measure, cell, value, diff).
@@ -804,7 +872,6 @@ fn worker_loop(
             .expect("worker_loop runs a single timely worker");
         let mut sessions: Sessions = HashMap::new();
         let snap = snapshot.clone();
-        let probe = ProbeHandle::new();
         // A FIXPOINT's parts are the engine's own: not edited, not reported.
         let internal: HashSet<MeasureId> = fixes
             .iter()
@@ -818,6 +885,24 @@ fn worker_loop(
         plans.retain(|(m, _)| !fixes.iter().any(|f| f.body == *m && f.host.is_some()));
         let mark = dirty.clone();
         let later = pending.clone();
+        let mut comps = Components::default();
+        for (mid, p) in &plans {
+            let mut reads = Vec::new();
+            plan_reads(p, &mut reads);
+            reads.into_iter().for_each(|r| comps.union(*mid, r));
+        }
+        for f in &fixes {
+            let parts = [f.r, f.init, f.body]
+                .into_iter()
+                .chain(f.reads.iter().copied());
+            parts.for_each(|m| comps.union(f.id, m));
+        }
+        // Each component's input sessions, and a probe on its outputs.
+        let mut members: BTreeMap<MeasureId, Vec<MeasureId>> = BTreeMap::new();
+        for id in &input_ids {
+            members.entry(comps.find(*id)).or_default().push(*id);
+        }
+        let mut probes: BTreeMap<MeasureId, ProbeHandle<u64>> = BTreeMap::new();
 
         let built: HashSet<MeasureId> = worker.dataflow::<u64, _, _>(|scope| {
             let mut input_colls = HashMap::new();
@@ -829,7 +914,7 @@ fn worker_loop(
             }
 
             let mut built = HashSet::new();
-            let mut outs = Vec::new();
+            let mut outs: BTreeMap<MeasureId, Vec<_>> = BTreeMap::new();
             for (mid, reduced) in build_derived(scope, &plans, &input_colls) {
                 built.insert(mid);
                 let snap = snap.clone();
@@ -858,10 +943,15 @@ fn worker_loop(
                         m.remove(k);
                     }
                 });
-                outs.push(out.inner);
+                outs.entry(comps.find(mid)).or_default().push(out.inner);
             }
-            // One probe over every output, not an operator per measure.
-            scope.concatenate(outs).probe_with(&probe);
+            // One probe per component over its outputs, not an operator
+            // per measure.
+            for (c, outs) in outs {
+                let probe = ProbeHandle::new();
+                scope.concatenate(outs).probe_with(&probe);
+                probes.insert(c, probe);
+            }
             built
         });
         // A body reading a measure with no collection would not build as a
@@ -873,15 +963,29 @@ fn worker_loop(
             }
         }
 
-        // Step the worker until the output frontier has passed `t`. (Advancing
-        // an InputSession sets its time synchronously, so we cannot gate on the
-        // session time; we gate on the dataflow probe instead.)
-        let mut run_to = |t: u64, sessions: &mut Sessions| {
-            for s in sessions.values_mut() {
-                s.advance_to(t);
-                s.flush();
+        // Advance the sessions of the components `fed` names (the sessions
+        // fed since the last round; `None`: every component) to `t`, and
+        // step the worker until their outputs' frontiers have passed it.
+        // (Advancing an InputSession sets its time synchronously, so we
+        // cannot gate on the session time; we gate on the probes instead.)
+        // A component left alone keeps its time: its next data carries the
+        // time it was last advanced to, which its probe has not passed.
+        let mut run_to = |t: u64, sessions: &mut Sessions, fed: Option<&[MeasureId]>| {
+            let roots: BTreeSet<MeasureId> = match fed {
+                Some(ms) => ms.iter().map(|m| comps.find(*m)).collect(),
+                None => members.keys().chain(probes.keys()).copied().collect(),
+            };
+            let mut wait = Vec::new();
+            for c in &roots {
+                for m in members.get(c).into_iter().flatten() {
+                    if let Some(s) = sessions.get_mut(m) {
+                        s.advance_to(t);
+                        s.flush();
+                    }
+                }
+                wait.extend(probes.get(c));
             }
-            while probe.less_than(&t) {
+            while wait.iter().any(|p| p.less_than(&t)) {
                 worker.step();
             }
             let d = std::mem::take(&mut *pending.lock().unwrap());
@@ -899,7 +1003,7 @@ fn worker_loop(
             }
         }
         let mut t: u64 = 1;
-        run_to(t, &mut sessions);
+        run_to(t, &mut sessions, None);
         solve_fixpoints(
             &fixes,
             &mut fix_state,
@@ -940,8 +1044,10 @@ fn worker_loop(
                     if matches!(reply, Reply::Changes(_)) {
                         *log.lock().unwrap() = Some(Before::new());
                     }
+                    let mut fed = Vec::new();
                     for e in edits.iter().filter(|e| !internal.contains(&e.measure)) {
                         if let Some(session) = sessions.get_mut(&e.measure) {
+                            fed.push(e.measure);
                             let cells = Arc::make_mut(inputs.entry(e.measure).or_default());
                             if let Some(old_val) = cells.remove(&e.coord) {
                                 session.remove((e.coord.clone(), old_val));
@@ -954,7 +1060,7 @@ fn worker_loop(
                         }
                     }
                     t += 1;
-                    run_to(t, &mut sessions);
+                    run_to(t, &mut sessions, Some(&fed));
                     solve_fixpoints(
                         &fixes,
                         &mut fix_state,
@@ -1595,6 +1701,105 @@ mod tests {
                 proptest::prop_assert_eq!(&view, &owned(&want));
             }
             proptest::prop_assert_eq!(&owned(&b.snapshot().unwrap()), &view);
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(40))]
+
+        /// B6: a round advances only the components its edits reach. On a
+        /// model of several (W's, X's, one reading no input, and an input
+        /// Z that nothing reads), random edits to any of them leave the
+        /// engine's snapshot what `evaluate` gives the edited model.
+        #[test]
+        fn components_follow_every_edit(
+            batches in proptest::collection::vec(
+                proptest::collection::vec(
+                    (0u32..3, 0u32..4, 0u32..4, proptest::option::of(-3i32..6)),
+                    1..4,
+                ),
+                1..8,
+            ),
+        ) {
+            let mut m = graph_model(4);
+            m.add_measure(Measure {
+                id: MeasureId(12),
+                name: Name("Z".into()),
+                value_type: ValueType::Number,
+                categories: vec![CategoryId(1)],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+            for (id, text) in [
+                (300, "Out = SUM(W OVER Dst)"),
+                (301, "M = W / Out"),
+                (302, "Run = SUM(X OVER Src[FIRST..THIS])"),
+                (303, "Back = PREV(X, Src, 1, 0) + COALESCE(X, 9)"),
+                (304, "Big = IF(X > 2, X, 0 - X)"),
+                (305, "N = @ITEMCOUNT(Src) * 2"),
+            ] {
+                define_text(&mut m, id, text);
+            }
+            let ids: Vec<MeasureId> = (300..=305).map(MeasureId).collect();
+            let (mut e, _) = Engine::new(&m, &ids).unwrap();
+            for batch in batches {
+                let mut edits = Vec::new();
+                for (which, i, j, v) in batch {
+                    let (mid, coord): (u32, CoordKey) = match which {
+                        0 => (11, [(1, 100 + i), (2, 200 + j)].as_slice().into()),
+                        1 => (10, [(1, 100 + i)].as_slice().into()),
+                        _ => (12, [(1, 100 + i)].as_slice().into()),
+                    };
+                    let at = (MeasureId(mid), decode_coord(&coord));
+                    match v {
+                        Some(v) => m.set_input(at.0, at.1, Value::Number(f64::from(v))),
+                        None => {
+                            m.inputs.remove(&at);
+                        }
+                    }
+                    edits.push(Edit {
+                        measure: MeasureId(mid),
+                        coord,
+                        value: v.map(|v| CellValue::num(f64::from(v))),
+                    });
+                }
+                let got = owned(&e.apply(edits).unwrap());
+                let mut want = crate::dataflow::evaluate(&m, &ids).unwrap();
+                want.retain(|_, v| !v.is_empty());
+                proptest::prop_assert_eq!(got, want);
+            }
+        }
+    }
+
+    /// Components: union-find over reads, and every measure a plan reads
+    /// (a shift's default, a recurrence's references).
+    #[test]
+    fn components_join_what_reads_what() {
+        let mut c = Components::default();
+        let id = MeasureId;
+        assert_eq!(c.find(id(9)), id(9));
+        c.union(id(1), id(2));
+        c.union(id(3), id(4));
+        c.union(id(1), id(2));
+        assert_eq!(c.find(id(1)), c.find(id(2)));
+        assert_ne!(c.find(id(1)), c.find(id(3)));
+        c.union(id(2), id(4));
+        assert_eq!(c.find(id(1)), c.find(id(3)));
+        let mut m = graph_model(3);
+        define_text(&mut m, 300, "S = PREV(W, Src, 1, X)");
+        // A recurrence reads its own measure: it must exist to parse.
+        define_text(&mut m, 301, "Bal = X");
+        define_text(&mut m, 301, "Bal = PREV(Bal, Src, 1, 0) + X");
+        let plans = compile_plans(&m, &[id(300), id(301)]).unwrap();
+        for (p, want) in [
+            (&plans[0].1, vec![id(10), id(11)]),
+            (&plans[1].1, vec![id(10)]),
+        ] {
+            let mut reads = Vec::new();
+            plan_reads(p, &mut reads);
+            reads.sort_unstable();
+            reads.dedup();
+            assert_eq!(reads, want);
         }
     }
 
