@@ -230,6 +230,52 @@ jobs:
           files: dist/*
           fail_on_unmatched_files: true
 
+  # The container image (Containerfile): improv-server and the improv CLI on
+  # Debian trixie-slim, pushed to ghcr.io/gburd/improv as :X.Y.Z and :latest
+  # (amd64). podman is on the runner; the push uses the job's GITHUB_TOKEN.
+  # Before the push, the image must refuse to start without a token and
+  # answer /health with one.
+  container:
+    name: Container image (ghcr.io/gburd/improv)
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [qualify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Build, check, push
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          ver="${REF_NAME#v}"
+          img=ghcr.io/gburd/improv
+          podman build --label "org.opencontainers.image.version=$ver" \
+            --label org.opencontainers.image.source=https://github.com/gburd/improv \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label "org.opencontainers.image.licenses=MIT OR Apache-2.0" \
+            -t "$img:$ver" -t "$img:latest" -f Containerfile .
+          test "$(podman run --rm --entrypoint improv "$img:$ver" --version)" = "improv $ver"
+          if podman run --rm "$img:$ver" 2>err.txt; then
+            echo "the image started without a token" >&2; exit 1
+          fi
+          grep -q "refusing to serve 0.0.0.0:3000 without auth" err.txt
+          podman run -d --name t -p 3000:3000 -e IMPROV_API_TOKEN=ci "$img:$ver" >/dev/null
+          for _ in $(seq 50); do curl -sf localhost:3000/health >/dev/null && break; sleep 0.2; done
+          curl -sf localhost:3000/health >/dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:3000/v1/measures)" = 401
+          podman stop -t 5 t >/dev/null
+          echo "$GHCR_TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
+          podman push "$img:$ver"
+          podman push "$img:latest"
+
   # PGXN: every release is published (pgxn.yml builds ci/pgxn-dist.sh's
   # zip, uploads it, and waits until api.pgxn.org lists the version). It
   # fails, rather than skipping, when the PGXN secrets are missing.

@@ -1,0 +1,13 @@
+target/
+**/target/
+.git/
+.zvec-grep/
+docs/book/
+fuzz/target/
+crates/pg_improv/target/
+crates/duckdb_improv/target/
+crates/duckdb_improv/build/
+crates/duckdb_improv/extension-ci-tools/
+sample.db
+.envrc
+.mcp.json

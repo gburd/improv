@@ -119,6 +119,20 @@ as plain lines.
 
 ## Deployment
 
+**In a container.** Each release from 0.12 publishes
+`ghcr.io/gburd/improv:<version>` (and `:latest`, amd64): `improv-server` and
+the `improv` CLI on Debian trixie-slim, running as uid 10001 in `/data`,
+listening on port 3000. It refuses to start without a token:
+
+```sh
+podman run -d -p 127.0.0.1:3000:3000 -v "$PWD:/data" \
+  -e IMPROV_API_TOKEN_FILE=/data/tokens ghcr.io/gburd/improv /data/sales.db
+podman run --rm -v "$PWD:/data" --entrypoint improv ghcr.io/gburd/improv list /data/sales.db
+```
+
+The directory must be writable by uid 10001. Build it yourself with
+`podman build -f Containerfile .` from the repository.
+
 The server stops on SIGTERM or Ctrl-C, at once: `docker stop`, `systemctl
 stop` and a terminal's Ctrl-C need no kill timeout. A request still running
 is cut off; a write in it is one store transaction, so it is saved whole or

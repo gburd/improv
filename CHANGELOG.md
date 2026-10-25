@@ -6,6 +6,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **A container image**, `ghcr.io/gburd/improv`, from the next release on:
+  `improv-server` and the `improv` CLI (`Containerfile`), as an
+  unprivileged user, refusing to start without a token. The release job
+  checks that, `/health` and a 401 without a token, before it pushes.
+
 ### Fixed
 
 - **`improv-server` stops on SIGTERM.** It had no handler: run as a
