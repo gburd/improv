@@ -256,6 +256,11 @@ type RlimitResource = libc::c_int;
 #[cfg(unix)]
 fn with_rlimits(mut cmd: Command) -> Command {
     use std::os::unix::process::CommandExt;
+    // SAFETY: the hook runs in the forked child before exec, where only
+    // async-signal-safe calls are allowed: it makes four `set_rlimit`
+    // calls (getrlimit/setrlimit syscalls, no allocation, no locks) and
+    // returns an io::Error, which std reports to the parent without
+    // allocating in the child.
     unsafe {
         cmd.pre_exec(|| {
             set_rlimit(libc::RLIMIT_CPU, limits::CPU_SECONDS)?;
@@ -283,6 +288,8 @@ fn set_rlimit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
         rlim_cur: 0,
         rlim_max: 0,
     };
+    // SAFETY: `limit` is a valid, writable rlimit; `resource` is a libc
+    // RLIMIT_* constant of the target.
     if unsafe { libc::getrlimit(resource, &mut limit) } != 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -291,6 +298,8 @@ fn set_rlimit(resource: RlimitResource, value: u64) -> std::io::Result<()> {
         rlim_cur: value,
         rlim_max: value,
     };
+    // SAFETY: `limit` is a valid rlimit no higher than the hard limit read
+    // above (so the call cannot need privilege).
     if unsafe { libc::setrlimit(resource, &limit) } != 0 {
         return Err(std::io::Error::last_os_error());
     }

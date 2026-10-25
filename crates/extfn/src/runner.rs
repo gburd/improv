@@ -148,6 +148,9 @@ fn spawn_reader(
 /// this cannot hit a recycled pid.
 #[cfg(unix)]
 fn kill(child: &mut Child) {
+    // SAFETY: kill(2) takes plain integers. The child was spawned with
+    // `process_group(0)`, so -pid is its own group, and the child is not
+    // reaped yet (wait comes after), so that group id cannot be reused.
     unsafe {
         libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
     }
