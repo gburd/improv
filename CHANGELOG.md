@@ -44,6 +44,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   applies batches through `apply_delta` and writes the changed rows
   straight from it, instead of holding the last snapshot and re-diffing
   every changed measure.
+- **Reduction rows are stored inline** (B8). A reduction's row (its item
+  positions and values, as the dataflow's `reduce` arranges it) held two
+  `Vec`s; it now holds them inline for up to four reduced categories and
+  one value, the common shape, with no allocation. PageRank at 100k
+  nodes / 10M edges: engine heap 556 -> 501 bytes per edge, peak RSS
+  8.8 -> 7.9 GB, `Engine::new` 43 -> 34 s; at 10k / 1M, 611 -> 555
+  (`Out = SUM(W OVER Dst)` alone 264 -> 208). `RANK(X OVER W)` at 1M items
+  evaluates in 1.8 s (was 2.5) and its edits take about 20% less; a
+  one-cell edit under `SUM(X OVER W)` at 1M items 0.65 -> 0.49 ms
+  (release build, `tests/probe.rs` `pagerank` and `wide`; RANK's edits
+  vary 2x run to run on a shared box). Every result is unchanged.
 
 ### Security
 

@@ -433,9 +433,20 @@ where
     }
 }
 
+/// A reduction row's item positions, one per reduced category (inline up
+/// to four).
+pub(crate) type Pos = smallvec::SmallVec<[u32; 4]>;
+/// A reduction row's values: the reduced measures', then the joined
+/// parameters' (inline for one, the one-input reduction).
+pub(crate) type Vals<V = CellValue> = smallvec::SmallVec<[V; 1]>;
+
 /// A reduction row as the `reduce` sees it: (item positions along the
 /// reduced categories, the first reduced category's item), then the values.
-pub(crate) type AggRow<V = CellValue> = ((Vec<u32>, u32), Vec<V>);
+/// Inline for the common shape (up to four reduced categories, one value):
+/// 64 bytes and no allocation, where two `Vec`s took 56 and two more. Its
+/// order is the `Vec`s' (`SmallVec` compares as a slice), so the kernels
+/// see rows in the same order.
+pub(crate) type AggRow<V = CellValue> = ((Pos, u32), Vals<V>);
 
 /// The pieces of an `Aggregate` plan node, for [`build_aggregate`].
 pub(crate) struct AggSpec<'p> {
@@ -485,11 +496,11 @@ pub(crate) fn agg_order(order: &[(CategoryId, Vec<ItemId>)]) -> AggOrder {
 /// of the first reduced category, the values).
 pub(crate) fn agg_key<V>(
     k: &CoordKey,
-    vs: Vec<V>,
+    vs: Vals<V>,
     order: &AggOrder,
     gb: &[u32],
 ) -> (CoordKey, AggRow<V>) {
-    let pos: Vec<u32> = order
+    let pos: Pos = order
         .iter()
         .map(|(c, m)| {
             let item = k.iter().find(|(cc, _)| cc == c).map_or(0, |(_, i)| *i);
@@ -522,7 +533,7 @@ pub(crate) fn agg_rows(
     let mut items = Vec::new();
     for ((pk, vs), mult) in input {
         for _ in 0..(*mult).max(0) {
-            rs.pos.push(pk.0.clone());
+            rs.pos.push(pk.0.to_vec());
             rs.vals.push(vs[..n_in].to_vec());
             items.push(pk.1);
             if params.is_empty() {
@@ -551,13 +562,13 @@ pub(crate) fn agg_rows(
 /// every value the error (as `err` makes it a value) where it is an error,
 /// else dropped.
 pub(crate) fn where_row<V: Clone>(
-    vs: Vec<V>,
+    vs: Vals<V>,
     t: CellValue,
     err: impl Fn(CellValue) -> V,
-) -> Option<Vec<V>> {
+) -> Option<Vals<V>> {
     match t {
         CellValue::Bool(true) => Some(vs),
-        CellValue::Err(_) => Some(vec![err(t); vs.len()]),
+        CellValue::Err(_) => Some(smallvec::smallvec![err(t); vs.len()]),
         _ => None,
     }
 }
@@ -648,7 +659,8 @@ where
         .chain(a.order.iter().map(|(c, _)| c))
         .copied()
         .collect();
-    let mut rows = build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+    let mut rows =
+        build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, Vals::from_buf([v])));
     // The reduced measures join on the categories they share; a category
     // only some of them range over broadcasts (the rows gain it).
     let mut full = full;

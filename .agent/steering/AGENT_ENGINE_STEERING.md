@@ -371,7 +371,10 @@ each reduce input), so the next step is structural: share one arrangement
 of `W` between `Out`'s reduce and `M`'s join (`arrange` once, `join_core` /
 `reduce_core` on it), and let the host step read `M` from that arrangement
 instead of its own `Vec` + index. Neither is a few-line change; it is not
-done.
+done. A reduction's row (`dataflow::AggRow`, what the reduce arranges) is
+inline (`SmallVec` positions and values: four categories, one value) for
+the common one-input reduction: 556 → 501 B per edge at 10M edges, and the
+same order as the `Vec`s it replaced, so results are bit for bit as before.
 
 ---
 

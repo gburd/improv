@@ -23,7 +23,7 @@
 use crate::builtins::err;
 use crate::dataflow::{
     agg_key, agg_order, agg_rows, apply_binary, apply_unary, call_with, grid_keys, literal_value,
-    project, remap_key, remap_table, shared_cats, union_keys, where_row, AggRow, AggSpec,
+    project, remap_key, remap_table, shared_cats, union_keys, where_row, AggRow, AggSpec, Vals,
 };
 use crate::plan::{PlanNode, PlanNodeKind as K};
 use crate::reduce::{self, two_level, window::windows, Rows};
@@ -281,7 +281,7 @@ fn emit(
 
 /// A reduction's rows by group, groups in key order, each group's rows in
 /// item order.
-fn group_rows(a: &AggSpec<'_>, rows: Vec<(CoordKey, Vec<Src>)>) -> Vec<(CoordKey, Vec<SrcRow>)> {
+fn group_rows(a: &AggSpec<'_>, rows: Vec<(CoordKey, Vals<Src>)>) -> Vec<(CoordKey, Vec<SrcRow>)> {
     let order = agg_order(a.order);
     let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
     let mut groups: HashMap<CoordKey, Vec<SrcRow>> = HashMap::new();
@@ -718,19 +718,19 @@ impl Host {
         a: &AggSpec<'_>,
         nodes: &[&PlanNode],
         kids: &[Rc<Cells>],
-    ) -> (Vec<(CoordKey, Vec<Src>)>, Vec<CellValue>) {
+    ) -> (Vec<(CoordKey, Vals<Src>)>, Vec<CellValue>) {
         let with_order = |n: &PlanNode| -> Vec<CategoryId> {
             let order = a.order.iter().map(|(c, _)| *c);
             n.ty.dim.categories.iter().copied().chain(order).collect()
         };
         let n_in = a.ins.len();
         let mut full = with_order(nodes[0]);
-        let mut rows: Vec<(CoordKey, Vec<Src>)> = kids[0]
+        let mut rows: Vec<(CoordKey, Vals<Src>)> = kids[0]
             .iter()
             .enumerate()
-            .map(|(i, (k, _))| (k.clone(), vec![Src(0, i as u32)]))
+            .map(|(i, (k, _))| (k.clone(), Vals::from_buf([Src(0, i as u32)])))
             .collect();
-        let push = |j: usize, rows: Vec<(CoordKey, (Vec<Src>, u32))>| {
+        let push = |j: usize, rows: Vec<(CoordKey, (Vals<Src>, u32))>| {
             rows.into_iter()
                 .map(|(k, (mut vs, i))| {
                     vs.push(Src(j as u32, i));
