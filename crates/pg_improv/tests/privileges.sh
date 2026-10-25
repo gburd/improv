@@ -244,8 +244,11 @@ if [ -n "${IMPROV:-}" ]; then
 	url="postgres:///t?host=$D&port=$P&user=bob&model=p"
 	err=$("$IMPROV" list "$url" 2>&1) && fail "bob opened alice's model through the store"
 	case $err in *"permission denied for improv model \"p\""*) ;; *) fail "the store, as bob: $err" ;; esac
-	"$IMPROV" list "postgres:///t?host=$D&port=$P&user=alice&model=p" | grep -q "W" ||
+	# (not `| grep -q`: it exits at the match, and under pipefail the
+	# writer's broken pipe fails the test.)
+	out=$("$IMPROV" list "postgres:///t?host=$D&port=$P&user=alice&model=p") ||
 		fail "alice opens her model through the store"
+	case $out in *W*) ;; *) fail "alice's model, through the store: $out" ;; esac
 	echo "ok: the Postgres model store opens a model only for those who may act as its owner"
 fi
 q "INSERT INTO improv.cell (model_id, measure_id, coord, value) SELECT id, 1, '{}', '7' FROM improv.model WHERE name = 'p'"
