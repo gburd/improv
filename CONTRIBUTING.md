@@ -29,6 +29,7 @@ cargo fmt --check && cargo clippy --features pg17 --all-targets -- -D warnings
 cargo pgrx test pg17
 cargo pgrx install --release && ./tests/logical.sh && ./tests/scale.sh
 ROWS=2500000 BATCHES=1000 ./tests/scale.sh   # the full-size acceptance run
+SOAK_HOURS=72 ./tests/soak.sh                # the J4 soak (a short check: SOAK_HOURS=0.25 CHECK_MIN=2 EVENT_MIN=1)
 ```
 
 A warning is a failure (`RUSTFLAGS=-Dwarnings` in CI).
