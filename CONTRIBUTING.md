@@ -142,8 +142,11 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
 
 ## Releasing
 
-1. Bump the version (`Cargo.toml`'s workspace version and
-   `crates/pg_improv/Cargo.toml`), add the update script
+1. Bump the version (`Cargo.toml`'s workspace version,
+   `crates/pg_improv/Cargo.toml` and `crates/duckdb_improv/Cargo.toml`),
+   run `cargo update -w` in each of the four workspaces (the root,
+   `crates/pg_improv`, `crates/duckdb_improv` and `fuzz`; CI builds each
+   with `--locked`), add the update script
    `crates/pg_improv/sql/pg_improv--<old>--<new>.sql`, and move the
    CHANGELOG's `[Unreleased]` section under the new version.
 2. Push to `main`, wait for CI, then push a signed annotated tag `vX.Y.Z`.
