@@ -3,9 +3,12 @@
 //!
 //! This connects the formula compiler (`compiler`) to the DD substrate proven
 //! by the spike in `lib.rs`. Encoding is the same the spike validated:
-//!   * DD key   = serialized coordinate `CoordKey` = `Vec<(u32,u32)>`
-//!   * DD value = `f64::to_bits()` as `u64` (numeric measures only, v1)
-//!   * diff `R` = `isize`; a final `reduce` collapses to one value per key.
+//!   * DD key   = coordinate `CoordKey` = `SmallVec<[(u32,u32); 3]>` (inline
+//!     up to three categories)
+//!   * DD value = `CellValue` (a number as `f64::to_bits()`, or a boolean,
+//!     text, date or error)
+//!   * diff `R` = `isize`; a `reduce` collapses a measure to one value per
+//!     key unless its plan already gives one (`functional`).
 //!
 //! Scope (v1, numeric): InputMeasure, Literal, MapUnary(Neg), MapBinary
 //! (arithmetic + comparison/logical encoded as 1.0/0.0), Join (dimension

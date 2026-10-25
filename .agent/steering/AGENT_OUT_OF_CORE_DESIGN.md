@@ -176,10 +176,11 @@ proposition is "recompute only deltas fast," not "handle data bigger than
 RAM." Later DD/timely versions (see the "columnar" `timely_communication`
 0.18 line mentioned in `AGENT_ENGINE_STEERING.md` §2) trend toward more
 memory-efficient in-RAM representations (columnar layouts), which would help
-the constant factor (today: `Vec<(CoordKey, CellValue)>`, `CoordKey` is a
-`Vec<(u32,u32)>` — one heap allocation per cell, which is why RSS is ~0.66GB
+the constant factor (when this was written, `CoordKey` was a
+`Vec<(u32,u32)>`, one heap allocation per cell, which is why RSS was ~0.66GB
 per million *simple 2D* cells rather than the ~24 bytes/cell the raw data
-would need) but not the fundamental "must fit in RAM" constraint. **Also
+would need; it is now a `SmallVec<[(u32,u32); 3]>`, inline up to three
+categories) but not the fundamental "must fit in RAM" constraint. **Also
 worth noting:** `evaluate()` currently runs via
 `timely::execute::execute_directly` (single-threaded, one worker) rather
 than a multi-worker `timely::execute::execute` — so today's numbers don't

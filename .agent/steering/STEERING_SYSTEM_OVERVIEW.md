@@ -90,8 +90,8 @@ subsystem.
 The engine is deterministic (bit-for-bit, insertion-order-independent), verified
 by the canonical Time×Product revenue oracle. Performance targets: sub-ms (small
 models), sub-100ms (medium), sub-500ms (large), achieved via incremental
-recalculation, topological scheduling, DD operator parallelism, and cached
-slices.
+recalculation, topological scheduling, and cached slices (on one timely
+worker: operators do not run in parallel).
 
 ---
 

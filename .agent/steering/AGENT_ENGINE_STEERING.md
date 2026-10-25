@@ -300,10 +300,15 @@ Interfaces request a slice for a `View` and render it.
 
 ## 11. Concurrency and Determinism
 
-The engine uses timely/DD's dataflow execution, which parallelizes operators.
-Regardless of parallelism, results must be **deterministic**: identical inputs
-yield identical outputs, bit-for-bit, independent of insertion order. This is a
-tested invariant (see §14), not an aspiration.
+The engine runs on one timely worker: `evaluate` and the live `Engine`
+both use `execute_directly`, so operators run one at a time on that
+worker's thread (the live engine's own thread, apart from its caller's).
+More workers would speed up batch `evaluate` (3.1× at 8 workers on a 1M-cell
+join + SUM, in the 2026-10-25 DD review's prototype) and slow single edits
+(0.15 → 1.96 ms), so the live engine stays single. Whatever the worker
+count, results must be **deterministic**: identical inputs yield identical
+outputs, bit-for-bit, independent of insertion order. This is a tested
+invariant (see §14), not an aspiration.
 
 ---
 
@@ -324,7 +329,7 @@ Goals:
 - Sub-500ms for large models
 
 Techniques: incremental recalculation (only deltas), topological scheduling,
-DD operator parallelism, and cached view slices.
+and cached view slices (one timely worker; see §11).
 
 **Per-measure cost.** Every operator of every tracked measure is a timely
 operator, and an edit round moves every frontier, so a round costs
