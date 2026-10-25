@@ -545,8 +545,12 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
     BackgroundWorker::connect_worker_to_spi(Some(&db), None);
     // The slot sends values as text in this session's style; `live` reads
     // dates as ISO and a zoneless `timestamp` as UTC, as the docs promise.
+    // No JIT: once autovacuum has analyzed a catalog of ~1,000 models, the
+    // per-poll queries pass jit_above_cost and were compiled on every
+    // poll, 2.5x the idle worker's CPU (0.11 to 0.27 of a core).
     BackgroundWorker::transaction(|| {
-        Spi::run("SET TimeZone = 'UTC'; SET DateStyle = 'ISO'").expect("set the session style")
+        Spi::run("SET TimeZone = 'UTC'; SET DateStyle = 'ISO'; SET jit = off")
+            .expect("set the session style")
     });
     log!("pg_improv sync worker started on database {db:?}");
     loop {
