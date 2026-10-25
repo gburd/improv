@@ -165,11 +165,12 @@ fn ordered(id: u32, rows: &Rows, params: &[CellValue]) -> CellValue {
                     Err(c) => return CellValue::Err(c),
                 }
             }
-            let joined = parts.join(&sep);
-            if joined.chars().count() > 32_767 {
+            let sep_len = sep.chars().count() * parts.len().saturating_sub(1);
+            let len = parts.iter().map(|p| p.chars().count()).sum::<usize>() + sep_len;
+            if len > builtins::MAX_TEXT {
                 return CellValue::Err(err::VALUE);
             }
-            CellValue::Text(joined)
+            builtins::ok_text(parts.join(&sep)).unwrap_or_else(CellValue::Err)
         }
     }
 }

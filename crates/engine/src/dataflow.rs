@@ -930,7 +930,7 @@ pub(crate) fn apply_binary(op: BinaryOp, a: &CellValue, b: &CellValue) -> CellVa
         BinaryOp::Or => return CellValue::Bool(truthy(a) || truthy(b)),
         BinaryOp::Concat => {
             return match (builtins::text_of(a), builtins::text_of(b)) {
-                (Ok(x), Ok(y)) => CellValue::Text(x + &y),
+                (Ok(x), Ok(y)) => builtins::ok_text(x + &y).unwrap_or_else(CellValue::Err),
                 (Err(c), _) | (_, Err(c)) => CellValue::Err(c),
             }
         }

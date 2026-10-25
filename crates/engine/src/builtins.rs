@@ -153,7 +153,17 @@ pub(crate) fn ok_num(x: f64) -> R {
     Ok(num(x))
 }
 
+/// The longest text a formula makes, Excel's cell limit (32,767
+/// characters): a longer result is `#VALUE!`. Without it, `SUBSTITUTE` and
+/// `&` could multiply a string's length at each step until memory ran out.
+pub const MAX_TEXT: usize = 32_767;
+
+/// A text result, `#VALUE!` past [`MAX_TEXT`] characters.
 pub(crate) fn ok_text(s: String) -> R {
+    // The byte length bounds the char count from above: count only when it may be over.
+    if s.len() > MAX_TEXT && s.chars().count() > MAX_TEXT {
+        return Err(err::VALUE);
+    }
     Ok(CellValue::Text(s))
 }
 
@@ -646,7 +656,7 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
         }
         318 => {
             let (s, k) = (t(a, 0)?, n(a, 1)?);
-            if k < 0.0 || (s.chars().count() as f64) * k.trunc() > 32_767.0 {
+            if k < 0.0 || (s.chars().count() as f64) * k.trunc() > MAX_TEXT as f64 {
                 return Err(err::VALUE);
             }
             ok_text(s.repeat(k.trunc() as usize))?
@@ -666,6 +676,13 @@ fn eval_core(id: u32, a: &[CellValue]) -> R {
                     None => ok_text(s)?,
                 }
             } else {
+                // Sized before it is built: 30k replacements of 30k
+                // characters would be 900M characters, then #VALUE!.
+                let grow = new.chars().count().saturating_sub(old.chars().count());
+                let hits = s.matches(&old).count();
+                if s.chars().count().saturating_add(hits.saturating_mul(grow)) > MAX_TEXT {
+                    return Err(err::VALUE);
+                }
                 ok_text(s.replace(&old, &new))?
             }
         }
@@ -1388,6 +1405,22 @@ mod tests {
         // A serial or day count that overflows milliseconds.
         assert_eq!(d(&[x(f64::NAN)], 0), Err(err::NUM));
         assert_eq!(date_plus_days(0, f64::NAN), e(err::NUM));
+    }
+
+    #[test]
+    fn no_text_result_passes_excels_32767_characters() {
+        // Each of these doubled or squared its input before (SUBSTITUTE of a
+        // 30k string by a 30k string is 900M characters): #VALUE! at the cap.
+        let s = |x: &str| CellValue::Text(x.into());
+        let big = "x".repeat(30_000);
+        let sub = eval(FuncId(319), &[s(&big), s("x"), s("yy")]);
+        assert_eq!(sub, CellValue::Err(err::VALUE));
+        let at = "x".repeat(MAX_TEXT);
+        assert_eq!(eval(FuncId(319), &[s(&at), s("y"), s("z")]), s(&at));
+        assert_eq!(
+            eval(FuncId(318), &[s("ab"), CellValue::num(16_384.0)]),
+            CellValue::Err(err::VALUE)
+        );
     }
 
     #[test]

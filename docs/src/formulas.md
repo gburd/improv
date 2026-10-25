@@ -135,7 +135,7 @@ An error is a value, shown as the spreadsheets show it:
 |-------|-------------|
 | `#DIV/0!` | division by zero (`x / 0`, including `0 / 0`) |
 | `#NUM!` | a numeric domain error (`SQRT(-1)`, `LN(0)`) or a result too large for a number |
-| `#VALUE!` | a value of the wrong kind (`VALUE("abc")`, `CHOOSE` out of range) |
+| `#VALUE!` | a value of the wrong kind (`VALUE("abc")`, `CHOOSE` out of range), or text longer than 32,767 characters (Excel's limit, for `&`, `REPT`, `SUBSTITUTE`, `TEXTJOIN` and every other text result) |
 | `#N/A` | no value available (`NA()`, `IFS` with no true test) |
 | `#NAME?`, `#REF!`, `#NULL!` | `ERROR("#NAME?")` etc.; Improv itself does not produce them |
 

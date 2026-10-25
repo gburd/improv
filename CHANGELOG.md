@@ -6,6 +6,17 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- **No text result is longer than 32,767 characters** (Excel's cell
+  limit): longer is `#VALUE!`. `REPT` and `TEXTJOIN` had the limit;
+  `SUBSTITUTE`, `&` and the other text functions did not, so a short
+  formula could square a string's length per step:
+  `SUBSTITUTE(REPT("x", 30000), "x", REPT("y", 30000))` is 900 million
+  characters. Through `LANGUAGE improv`, any role that may create a
+  function could exhaust a Postgres backend's memory with it (C3 review,
+  `docs/reviews/2026-10-25-security-review.md`).
+
 ## [0.11.0] - 2026-10-25
 
 The release that makes Improv safe to share and fast at scale. In
