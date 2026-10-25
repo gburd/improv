@@ -26,7 +26,7 @@ factor of about two, and measure your own model before you buy hardware.
 | One-cell edit | 56 µs at 100k cells, independent of size; plus a per-measure round cost (fan of 20k measures: 129 ms per edit) | [changelog] |
 | Logical worker memory, fold state per fact row, `count` + `count_distinct` bindings | about 120 B (derived: 444 MB private for 2.5M rows, less the engine's 4 × 44,750 cells at 0.8 kB) | [bench] §1, [here] |
 | Logical worker memory per small model | about 0.6 MB (1,000 models of 1,000 rows: 575–602 MB) | [here] |
-| FIXPOINT memory per edge | about 1.0 kB in the engine (1M edges 1.57 GB peak; 10M 15.0 GB) | [changelog] (two fewer copies) |
+| FIXPOINT memory per edge | about 0.6 kB in the live engine (10M edges: 556 B per edge, 10.1 GB peak); the tagged 1.5k and 10k-node tests together peak at 2.0 GB | [changelog] (B8), [qual] |
 | Worker CPU per 1,000-row batch | about 20–25 ms above idle | [here] |
 | Worker idle CPU | 0.08 core at `poll_ms = 50` with one large model; 0.06 core at 200 models, 0.11 at 1,000 | [here] |
 | Initial build (or rebuild) per million fact rows | about 2.1–2.6 s (2.5M rows: 5.3–6.5 s) | [here] |
@@ -36,8 +36,9 @@ factor of about two, and measure your own model before you buy hardware.
 | Commit mode, per transaction, 2.5M-row model | 2.2 s | [changelog], [here] |
 | `improv.what_if`, one cell, element-wise chain | 0.28 s on 2.5M rows | [changelog], [here] |
 | WAL per bound-table row (2.5M-row table, `REPLICA IDENTITY FULL`) | INSERT 190–230 B, UPDATE 240–700 B, DELETE about 360 B | [here] |
-| Store file (Mentat) on disk | about 1.2 kB per input cell (100k cells: 120 MB) | [bench] §3g |
-| DuckDB `improv()` | 2.5M fact rows folded to 44,750 cells: 0.65 s, 430–490 MB; 2.5M *distinct* cells: 16.5 s, 2.3 GB | [bench] §3h |
+| Store file (Mentat) on disk | about 1.2 kB per input cell (100k cells: 120 MB; 1M: 1.2 GB) | [bench] §3g, [qual] |
+| Store file import (`import-csv`) | linear: 1M rows in 74 s, 573 MB peak | [qual] |
+| DuckDB `improv()` | 2.5M fact rows folded to 44,750 cells: 0.4 s, 410–630 MB (more with more DuckDB threads); 2.5M *distinct* cells: 4.5 s, 1.7 GB | [qual] |
 
 ## Memory
 
@@ -68,8 +69,8 @@ cost less (not measured separately). The worker also reads the tables
 through shared buffers. That shows up in its RSS as shared memory (about
 300 MB in the example) but is not extra memory.
 
-**FIXPOINT** models need `edges × 1.0 kB` on top. Ten million edges need
-about 15 GB.
+**FIXPOINT** models need about `edges × 0.6 kB` on top, and more at
+peak while they build: ten million edges peaked at 10.1 GB.
 
 `improv.max_cells` (default 5,000,000 bound input cells per model) refuses
 `recalc`, trigger and commit recomputes and the worker's apply above it.
@@ -243,8 +244,15 @@ the box.
   0.56 s, worker 121–128 MB private. 1,000: built 0.8 s after the last
   switch, 54–146 ms, all 1,000 in 2.6 s, 575–602 MB private, 1.13 s CPU per
   10 s idle.
+- **Re-measured for the 0.11.0 release** (the [qualification][qual]):
+  `scale.sh` at 2.5M rows on PG 17 and 18 (`recalc` 2.3–2.5 s, initial
+  build 5.4–5.6 s, batches visible in 83–145 ms in four runs of five),
+  1,000 models (all built 21 s after the last switch, a one-row change in
+  52–182 ms, 426 MB private), FIXPOINT, the engine probes, the 1M-row
+  import and DuckDB.
 
 [bench]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-20-v0.10.0-benchmark.md
 [changelog]: https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md
 [here]: #measurements-for-this-page
+[qual]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-25-v0.11.0-qualification.md
 [plan]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-21-road-to-1.0.md

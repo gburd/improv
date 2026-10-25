@@ -33,8 +33,8 @@ planning](./capacity.md) turns them into sizing formulas.
 A question you ask once ("revenue by region last quarter") is a query, not
 a model. Plain SQL answers it in one statement, with no model to define,
 bind or keep. DuckDB's `GROUP BY ALL` of the benchmark's 2.5M rows takes
-0.045 s; Improv's `improv(source, model)` over the same rows takes 0.65 s,
-most of it building the model ([benchmark §3h][bench]).
+0.03–0.06 s; Improv's `improv(source, model)` over the same rows takes
+0.4 s, most of it building the model ([0.11.0 qualification][qual]).
 
 **Instead:** SQL in Postgres, or DuckDB over Parquet and CSV. For a single
 formula inside such a query, `improv_calc` in DuckDB or a
@@ -142,9 +142,10 @@ or put it in `manual` mode and refresh it on a schedule.
 | Trigger mode, same model | about 290 ms per statement | [§3e][bench] |
 | Commit mode, same model | 2.1–2.4 s per transaction after the fixes | [CHANGELOG][changelog] |
 | Models per database (logical) | 1,000 small models: 54–146 ms per change, 0.6 MB each | re-measured on `main` with the §3f harness of the [benchmark][bench] |
-| FIXPOINT | about 1.0 kB per edge after the fixes | [§2][bench], [CHANGELOG][changelog] |
-| Store file import | linear since Mentat 1.18.0: 100k rows 7 s, 1M about 105 s (1.16.0: 100k 21 s, 1M did not finish in 15 min) | [Mentat 1.18 upgrade](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-23-mentat-1.18-upgrade.md) |
+| FIXPOINT | about 0.6 kB per edge (556 B at 10M edges) | [§2][bench], [CHANGELOG][changelog] |
+| Store file import | linear since Mentat 1.18.0: 100k rows 7 s, 1M 74–110 s (1.16.0: 100k 21 s, 1M did not finish in 15 min) | [Mentat 1.18 upgrade](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-23-mentat-1.18-upgrade.md), [qualification][qual] |
 
 [bench]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-20-v0.10.0-benchmark.md
 [changelog]: https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md
 [plan]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-21-road-to-1.0.md
+[qual]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-25-v0.11.0-qualification.md

@@ -142,6 +142,6 @@ commands and their arguments.
 | Postgres: writes got slower after `set_sync_mode` | `trigger` or `commit` mode makes the writer pay for the recompute (0.4 s per statement / 2.2 s per transaction on 2.5M rows) | Use `logical` ([When to use](./when-to-use.md#high-write-tables-in-trigger-or-commit-mode-use-logical-mode)). |
 | Postgres: logical results lag by seconds | One worker applies every model in turn; a slow model or a rebuild delays all | [Operations runbook](./runbook-ops.md#a-slow-apply). |
 | Postgres: `recalc` or a commit-mode commit is slow | Both reload the bound tables in full (about 1 s per million fact rows) | Expected; use logical mode for large tables. |
-| DuckDB: `improv()` is slow on many distinct coordinates | It builds one engine cell per distinct coordinate (2.5M distinct cells: 16.5 s) | Bind with an aggregate so DuckDB folds rows first (2.5M rows into 44,750 cells: 0.65 s). |
+| DuckDB: `improv()` is slow on many distinct coordinates | It builds one engine cell per distinct coordinate (2.5M distinct cells: 4.5 s) | Bind with an aggregate so DuckDB folds rows first (2.5M rows into 44,750 cells: 0.4 s). |
 
 [plan]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-21-road-to-1.0.md

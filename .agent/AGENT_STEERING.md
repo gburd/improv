@@ -6,10 +6,22 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — the road to 1.0.0 (status 2026-10-23, kiwi box gone)
+## Active priority — the road to 1.0.0 (status 2026-10-25, v0.11.0)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
+
+- **v0.11.0 (2026-10-25):** B7, B8 (part: 556 B/edge, 1.47x re-solve;
+  targets 500 B and 2x not met), B4(b), exact SUM/AVERAGE, R.QTUKEY,
+  B12, the formula depth limit (40 new, 256 stored), H2, H4 (egui 0.37),
+  H6, H7, H9, the server's `--static`/CORS. J3 qualification:
+  `docs/reviews/2026-10-25-v0.11.0-qualification.md` (all gates green;
+  it found the worker's per-poll JIT at 1,000 models, fixed). Found on
+  the way: `evaluate` on a 1 MiB caller stack (Windows), FORECAST.ETS
+  overflow past 2^64 steps, and the fourth lockfile (`fuzz/`) in the
+  release steps.
+- **NEXT:** C3's checklist document; B8's remaining targets; a ~5% RANK
+  edit slowdown since `9e74dda` (unexplained; see the qualification).
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
