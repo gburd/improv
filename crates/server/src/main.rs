@@ -488,6 +488,8 @@ async fn main() {
         eprintln!("scheduler disabled (set IMPROV_SCHEDULER=1 to enable)");
     }
 
+    // Before "listening": a supervisor may signal as soon as it sees it.
+    let stop = shutdown_signal();
     eprintln!("improv-server listening on {addr}");
     let header_timeout = std::env::var("IMPROV_HEADER_TIMEOUT_MS")
         .ok()
@@ -499,23 +501,32 @@ async fn main() {
     // it lands whole or not at all.
     tokio::select! {
         () = serve(listener, app(state), header_timeout) => {}
-        () = shutdown_signal() => eprintln!("improv-server: shutting down"),
+        () = stop => eprintln!("improv-server: shutting down"),
     }
 }
 
-/// SIGTERM or SIGINT (Ctrl-C; Ctrl-Break on Windows).
-async fn shutdown_signal() {
+/// Resolves on SIGTERM or SIGINT (Ctrl-C; Ctrl-Break on Windows). The
+/// handlers are installed when this is called, not when it is first polled.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
         let mut term = signal(SignalKind::terminate()).expect("install a SIGTERM handler");
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
+        let mut int = signal(SignalKind::interrupt()).expect("install a SIGINT handler");
+        async move {
+            tokio::select! {
+                _ = term.recv() => {}
+                _ = int.recv() => {}
+            }
         }
     }
     #[cfg(not(unix))]
-    let _ = tokio::signal::ctrl_c().await;
+    {
+        let mut c = tokio::signal::windows::ctrl_c().expect("install a Ctrl-C handler");
+        async move {
+            c.recv().await;
+        }
+    }
 }
 
 /// Refuse open mode (no tokens) on a non-loopback address unless the
