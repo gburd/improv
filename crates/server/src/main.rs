@@ -494,7 +494,28 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .map(Duration::from_millis)
         .unwrap_or(HEADER_READ_TIMEOUT);
-    serve(listener, app(state), header_timeout).await;
+    // SIGTERM (docker stop, systemd) and Ctrl-C end the server at once. A
+    // request in flight is cut off; its save is one store transaction, so
+    // it lands whole or not at all.
+    tokio::select! {
+        () = serve(listener, app(state), header_timeout) => {}
+        () = shutdown_signal() => eprintln!("improv-server: shutting down"),
+    }
+}
+
+/// SIGTERM or SIGINT (Ctrl-C; Ctrl-Break on Windows).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).expect("install a SIGTERM handler");
+        tokio::select! {
+            _ = term.recv() => {}
+            _ = tokio::signal::ctrl_c() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// Refuse open mode (no tokens) on a non-loopback address unless the

@@ -18,7 +18,7 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "signal"] }
 tower = { workspace = true, features = ["limit", "timeout", "util"] }
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["http1", "server", "service", "tokio"] }

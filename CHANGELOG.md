@@ -6,6 +6,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`improv-server` stops on SIGTERM.** It had no handler: run as a
+  container's PID 1, where SIGTERM's default is to ignore it, `docker stop`
+  waited its 10 s and then killed it. SIGTERM and Ctrl-C now end it at once.
+
 ### Security
 
 - **No text result is longer than 32,767 characters** (Excel's cell

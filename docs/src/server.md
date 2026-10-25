@@ -119,6 +119,11 @@ as plain lines.
 
 ## Deployment
 
+The server stops on SIGTERM or Ctrl-C, at once: `docker stop`, `systemctl
+stop` and a terminal's Ctrl-C need no kill timeout. A request still running
+is cut off; a write in it is one store transaction, so it is saved whole or
+not at all.
+
 `improv-server` speaks plain HTTP; it has no TLS of its own. To serve it
 beyond the machine, bind it to loopback and put a reverse proxy in front
 that terminates TLS:
