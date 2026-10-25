@@ -629,9 +629,16 @@ pub fn slot_name(model: &str) -> Result<String> {
     Ok(name)
 }
 
-/// A SQL string literal.
+/// A SQL string literal, as Postgres's `quote_literal()` writes it: a
+/// backslash makes it an `E'...'` literal with the backslashes doubled, so
+/// it reads the same whatever `standard_conforming_strings` is.
 pub fn quote_literal(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+    let q = s.replace('\'', "''");
+    if s.contains('\\') {
+        format!("E'{}'", q.replace('\\', "\\\\"))
+    } else {
+        format!("'{q}'")
+    }
 }
 
 /// `SELECT` of the distinct dimension values (as text) in a statement's
@@ -1194,6 +1201,7 @@ mod tests {
         let e = sync_trigger_name(&"m".repeat(48), "ins").unwrap_err();
         assert!(e.to_string().contains("at most 47 bytes"), "{e}");
         assert_eq!(quote_literal("it's"), "'it''s'");
+        assert_eq!(quote_literal(r"a\'b"), r"E'a\\''b'");
         let cols = ["quarter".to_string(), "pro\"duct".to_string()];
         assert_eq!(
             touched_sql(Some("improv_old"), Some("improv_new"), &cols).unwrap(),
