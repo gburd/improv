@@ -28,11 +28,11 @@
 //! start of its own fresh transaction.
 //!
 //! Apply strategy (G1): incremental. The worker keeps, per model, a [`Live`]
-//! state: the loaded model, a live [`Engine`] (its own compute thread, which
-//! never calls Postgres) and its last [`Snapshot`]. Each batch's row changes
-//! become input-cell edits ([`live::Mapper`]); the engine recomputes only
-//! what they affect, and only the measures whose snapshot changed are diffed
-//! and written. The worker rebuilds (a full load + compute + diff against
+//! state: the loaded model and a live [`Engine`] (its own compute thread,
+//! which never calls Postgres). Each batch's row changes become input-cell
+//! edits ([`live::Mapper`]); the engine recomputes only what they affect and
+//! returns the cells that changed ([`Engine::apply_delta`]), and only their
+//! rows are written. The worker rebuilds (a full load + compute + diff against
 //! the result tables) when there is no live state or the model's
 //! `model_version` moved (a structural change such as `define`, checked on
 //! every poll, data change or not), and when a batch cannot be applied cell
@@ -49,7 +49,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use improv_core_model::{MeasureId, Model};
-use improv_engine::session::{Engine, MeasureValues, Snapshot};
+use improv_engine::session::{Changes, Engine, MeasureValues, Snapshot};
 use improv_pg_model as pm;
 use improv_pg_model::live::{self, Rebuild};
 use improv_pg_model::pgoutput::{self, Message};
@@ -1242,8 +1242,6 @@ struct Live {
     model: Model,
     mapper: live::Mapper,
     engine: Engine,
-    /// The engine's output as last written to the result tables.
-    snapshot: Snapshot,
     /// Per derived measure: its result table and dimension columns.
     tables: Vec<(MeasureId, String, Vec<String>)>,
     /// Transactions that ended at or before this WAL position may already
@@ -1392,8 +1390,10 @@ fn memory(mid: i64, l: Option<&mut Live>) -> Res<()> {
         return Ok(());
     };
     let fold = l.mapper.fold_bytes();
+    // Dropped before the next apply, so that apply copies nothing.
+    let snapshot = l.engine.snapshot()?;
     let engine =
-        live::inputs_bytes(&l.model) + l.engine.estimated_bytes(l.model.inputs.len(), &l.snapshot);
+        live::inputs_bytes(&l.model) + l.engine.estimated_bytes(l.model.inputs.len(), &snapshot);
     within_cap(fold, engine, "about")?;
     l.sized = Some(Instant::now());
     let as_i64 = |b: usize| i64::try_from(b).unwrap_or(i64::MAX);
@@ -1518,44 +1518,27 @@ fn apply(
         return Ok(Ok(0));
     }
     check_for_interrupts!();
-    let snapshot = l.engine.apply(edits)?;
+    let changes = l.engine.apply_delta(edits)?;
     let mut changed = 0;
-    super::owner::as_role(owner, || write_changed(l, &snapshot, &mut changed))?;
-    l.snapshot = snapshot;
+    super::owner::as_role(owner, || write_changed(l, &changes, &mut changed))?;
     Ok(Ok(changed))
 }
 
-/// Write the result rows that moved from `l.snapshot` to `snapshot`,
-/// adding the rows changed to `changed`.
-fn write_changed(l: &Live, snapshot: &Snapshot, changed: &mut i64) -> Res<()> {
+/// Write the result rows of the cells in `changes` (each from its old value
+/// to its new one), adding the rows changed to `changed`.
+fn write_changed(l: &Live, changes: &Changes, changed: &mut i64) -> Res<()> {
     for (target, table, dims) in &l.tables {
-        let (old, new) = (l.snapshot.get(target), snapshot.get(target));
-        // Copy-on-write: a measure the edits did not reach is the same Arc.
-        let same = match (old, new) {
-            (Some(o), Some(n)) => Arc::ptr_eq(o, n),
-            (o, n) => o.is_none() && n.is_none(),
-        };
-        if same {
+        let Some(cells) = changes.get(target) else {
             continue;
-        }
-        let empty = MeasureValues::new();
-        let (old, new) = (old.map_or(&empty, |m| m), new.map_or(&empty, |m| m));
-        // ponytail: O(cells of each changed measure) per batch (and the engine
-        // copies a changed measure whole while `l.snapshot` holds it); an
-        // engine API returning the output delta lifts both.
+        };
         let mut was = MeasureValues::new();
         let mut now = MeasureValues::new();
-        for (k, v) in new {
-            if old.get(k) != Some(v) {
-                now.insert(k.clone(), v.clone());
-                if let Some(o) = old.get(k) {
-                    was.insert(k.clone(), o.clone());
-                }
+        for c in cells {
+            if let Some(v) = &c.old {
+                was.insert(c.coord.clone(), v.clone());
             }
-        }
-        for (k, v) in old {
-            if !new.contains_key(k) {
-                was.insert(k.clone(), v.clone());
+            if let Some(v) = &c.new {
+                now.insert(c.coord.clone(), v.clone());
             }
         }
         *changed += write_results(
@@ -1601,7 +1584,6 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
         model,
         mapper,
         engine,
-        snapshot,
         tables,
         replay_until,
         sized: None,

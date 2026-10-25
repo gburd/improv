@@ -21,7 +21,7 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::reduce::two_level;
 use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{CategoryId, MeasureId, MeasureKind, Model, Value, ValueType};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -67,13 +67,41 @@ pub type MeasureValues = HashMap<CoordKey, CellValue>;
 /// snapshot; drop the old one first and an edit costs just its delta.
 // ponytail: a changed measure is copied whole while the previous snapshot is
 // alive, so one huge measure still costs O(its cells) per edit for callers
-// that keep the old snapshot; a persistent map (`im`) per measure lifts that.
+// that keep the old snapshot; they drop it first or use `apply_delta`.
 pub type Snapshot = Arc<HashMap<MeasureId, Arc<MeasureValues>>>;
 
+/// One derived cell an edit round changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CellChange {
+    pub coord: CoordKey,
+    /// Its value before the round (`None`: no cell).
+    pub old: Option<CellValue>,
+    /// Its value after the round (`None`: the cell is gone).
+    pub new: Option<CellValue>,
+}
+
+/// What an edit round changed ([`Engine::apply_delta`]): per measure, the
+/// cells whose value differs from before the round, in key order. Measures
+/// with no change are absent. Setting each cell's `new` (removing it for
+/// `None`) in the snapshot before the round gives the snapshot after it.
+pub type Changes = BTreeMap<MeasureId, Vec<CellChange>>;
+
+/// Each changed cell's value before the round, while a round records them.
+type Before = HashMap<(MeasureId, CoordKey), Option<CellValue>>;
+
+/// What an edit round replies with.
+enum Reply {
+    /// The new full snapshot of every tracked derived measure.
+    Snapshot(Sender<Snapshot>),
+    /// What the round changed.
+    Changes(Sender<Changes>),
+}
+
 enum Cmd {
-    /// Apply a batch of edits, advance time, and return the new full snapshot
-    /// of every tracked derived measure.
-    Edit(Vec<Edit>, Sender<Snapshot>),
+    /// Apply a batch of edits, advance time, and reply.
+    Edit(Vec<Edit>, Reply),
+    /// Reply with the current snapshot.
+    Snapshot(Sender<Snapshot>),
     Shutdown,
 }
 
@@ -197,17 +225,40 @@ impl Engine {
     /// snapshot of all tracked derived measures. An edit's coordinate may list
     /// its categories in any order: it is sorted into the engine's key form,
     /// which the key kernels (`improv_verified::keys`) require.
-    pub fn apply(&mut self, mut edits: Vec<Edit>) -> Result<Snapshot, EngineError> {
-        for e in &mut edits {
-            e.coord.sort_unstable();
-        }
-        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    ///
+    /// The engine updates its own snapshot in place, and copies a changed
+    /// measure whole while a caller still holds an earlier snapshot sharing
+    /// it: drop the previous snapshot before the next edit, or use
+    /// [`Engine::apply_delta`].
+    pub fn apply(&mut self, edits: Vec<Edit>) -> Result<Snapshot, EngineError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.send(Cmd::Edit(sorted(edits), Reply::Snapshot(tx)))?;
+        recv(&rx)
+    }
+
+    /// [`Engine::apply`], replying with what the round changed instead of a
+    /// snapshot: O(the change), however large the measures, for a caller
+    /// that keeps its own view (or writes the changed rows out) rather than
+    /// holding snapshots.
+    pub fn apply_delta(&mut self, edits: Vec<Edit>) -> Result<Changes, EngineError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.send(Cmd::Edit(sorted(edits), Reply::Changes(tx)))?;
+        recv(&rx)
+    }
+
+    /// The current snapshot of every tracked derived measure, as the last
+    /// [`Engine::apply`] returned it. Holding it across an edit makes the
+    /// edit copy what it changes (see [`Engine::apply`]).
+    pub fn snapshot(&self) -> Result<Snapshot, EngineError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.send(Cmd::Snapshot(tx))?;
+        recv(&rx)
+    }
+
+    fn send(&self, cmd: Cmd) -> Result<(), EngineError> {
         self.tx
-            .send(Cmd::Edit(edits, reply_tx))
-            .map_err(|_| EngineError::Unsupported("engine worker is gone".into()))?;
-        reply_rx
-            .recv()
-            .map_err(|_| EngineError::Unsupported("engine worker dropped the reply".into()))
+            .send(cmd)
+            .map_err(|_| EngineError::Unsupported("engine worker is gone".into()))
     }
 
     /// The derived measures this engine tracks.
@@ -276,6 +327,19 @@ impl Engine {
         }
         bytes
     }
+}
+
+/// `edits` with each coordinate in the engine's key form.
+fn sorted(mut edits: Vec<Edit>) -> Vec<Edit> {
+    for e in &mut edits {
+        e.coord.sort_unstable();
+    }
+    edits
+}
+
+fn recv<T>(rx: &Receiver<T>) -> Result<T, EngineError> {
+    rx.recv()
+        .map_err(|_| EngineError::Unsupported("engine worker dropped the reply".into()))
 }
 
 /// `p` without the item order of the reductions that read only their rows'
@@ -496,6 +560,7 @@ fn distance(a: &MeasureValues, b: &MeasureValues) -> f64 {
 struct World<'w> {
     inputs: &'w HashMap<MeasureId, Arc<MeasureValues>>,
     dirty: &'w Mutex<HashSet<MeasureId>>,
+    log: &'w Mutex<Option<Before>>,
 }
 
 /// Solve every FIXPOINT, in build order (one may read another), and publish
@@ -595,6 +660,9 @@ fn solve_fixpoints(
         st.host = host;
         if x != *st.result {
             world.dirty.lock().unwrap().insert(f.id);
+            if let Some(b) = world.log.lock().unwrap().as_mut() {
+                note(b, f.id, &st.result, &x);
+            }
         }
         let s = sessions
             .get_mut(&f.id)
@@ -610,14 +678,54 @@ fn solve_fixpoints(
     }
 }
 
+/// Record in `b` the cells of measure `mid` that differ from `old` in
+/// `new`, at their `old` value (unless an earlier step of the round did).
+fn note(b: &mut Before, mid: MeasureId, old: &MeasureValues, new: &MeasureValues) {
+    for (k, v) in old {
+        if new.get(k) != Some(v) {
+            b.entry((mid, k.clone())).or_insert_with(|| Some(v.clone()));
+        }
+    }
+    for k in new.keys().filter(|k| !old.contains_key(*k)) {
+        b.entry((mid, k.clone())).or_insert(None);
+    }
+}
+
+/// A round's [`Changes`]: each recorded cell whose value in `snapshot`
+/// differs from the one before, but those of the `hidden` measures.
+fn changes(snapshot: &Snapshot, before: Before, hidden: &HashSet<MeasureId>) -> Changes {
+    let mut out = Changes::new();
+    for ((mid, coord), old) in before {
+        if hidden.contains(&mid) {
+            continue;
+        }
+        let new = snapshot.get(&mid).and_then(|m| m.get(&coord)).cloned();
+        if old != new {
+            out.entry(mid)
+                .or_default()
+                .push(CellChange { coord, old, new });
+        }
+    }
+    for cells in out.values_mut() {
+        cells.sort_unstable_by(|a, b| a.coord.cmp(&b.coord));
+    }
+    out
+}
+
 /// A delta of a measure's output: (measure, cell, value, diff).
 type Delta = (MeasureId, CoordKey, CellValue, isize);
 
 /// Apply a round's deltas to the snapshot, consolidated: a value retracted
 /// and asserted again cancels, then every retraction runs before any
 /// assertion, so the order the dataflow sent them in does not matter. A
-/// measure with a change left is marked in `dirty`.
-fn settle(snapshot: &Mutex<Snapshot>, dirty: &Mutex<HashSet<MeasureId>>, mut d: Vec<Delta>) {
+/// measure with a change left is marked in `dirty`, and while `log` records
+/// a round, each cell's value before its first change lands in it.
+fn settle(
+    snapshot: &Mutex<Snapshot>,
+    dirty: &Mutex<HashSet<MeasureId>>,
+    log: &Mutex<Option<Before>>,
+    mut d: Vec<Delta>,
+) {
     if d.is_empty() {
         return;
     }
@@ -631,6 +739,7 @@ fn settle(snapshot: &Mutex<Snapshot>, dirty: &Mutex<HashSet<MeasureId>>, mut d: 
     }
     let mut s = snapshot.lock().unwrap();
     let s = Arc::make_mut(&mut s);
+    let mut log = log.lock().unwrap();
     for pass in [false, true] {
         for (mid, k, v, n) in &net {
             if *n == 0 || (*n > 0) != pass {
@@ -638,6 +747,10 @@ fn settle(snapshot: &Mutex<Snapshot>, dirty: &Mutex<HashSet<MeasureId>>, mut d: 
             }
             dirty.lock().unwrap().insert(*mid);
             let m = Arc::make_mut(s.entry(*mid).or_default());
+            if let Some(b) = log.as_mut() {
+                b.entry((*mid, k.clone()))
+                    .or_insert_with(|| m.get(k).cloned());
+            }
             if pass {
                 m.insert(k.clone(), v.clone());
             } else if m.get(k) == Some(v) {
@@ -668,6 +781,9 @@ fn worker_loop(
     let dirty: Arc<Mutex<HashSet<MeasureId>>> = Arc::default();
     // A round's deltas after the first, applied consolidated once it is done.
     let pending: Arc<Mutex<Vec<Delta>>> = Arc::default();
+    // Each changed cell's prior value, during a round that replies with
+    // its changes.
+    let log: Arc<Mutex<Option<Before>>> = Arc::default();
     // The command receiver is `!Sync`; wrap it so the (Sync-bounded) timely
     // closure can hold it, and take it out once inside (single worker).
     let cmd_rx = Arc::new(Mutex::new(Some(cmd_rx)));
@@ -769,7 +885,7 @@ fn worker_loop(
                 worker.step();
             }
             let d = std::mem::take(&mut *pending.lock().unwrap());
-            settle(&snapshot, &dirty, d);
+            settle(&snapshot, &dirty, &log, d);
         };
 
         // Apply the seed at time 0, then advance to 1 and run. We keep each
@@ -796,9 +912,11 @@ fn worker_loop(
             &World {
                 inputs: &inputs,
                 dirty: &dirty,
+                log: &log,
             },
         );
         // What a reply shows: every measure but a FIXPOINT's parts.
+        let hidden: HashSet<MeasureId> = fixes.iter().flat_map(|f| [f.init, f.body]).collect();
         let reply_snapshot = |snapshot: &Mutex<Snapshot>| {
             let s = snapshot.lock().unwrap();
             if fixes.is_empty() {
@@ -819,6 +937,9 @@ fn worker_loop(
             match cmd {
                 Cmd::Edit(edits, reply) => {
                     dirty.lock().unwrap().clear();
+                    if matches!(reply, Reply::Changes(_)) {
+                        *log.lock().unwrap() = Some(Before::new());
+                    }
                     for e in edits.iter().filter(|e| !internal.contains(&e.measure)) {
                         if let Some(session) = sessions.get_mut(&e.measure) {
                             let cells = Arc::make_mut(inputs.entry(e.measure).or_default());
@@ -846,9 +967,21 @@ fn worker_loop(
                         &World {
                             inputs: &inputs,
                             dirty: &dirty,
+                            log: &log,
                         },
                     );
-                    let _ = reply.send(reply_snapshot(&snapshot));
+                    match reply {
+                        Reply::Snapshot(tx) => {
+                            let _ = tx.send(reply_snapshot(&snapshot));
+                        }
+                        Reply::Changes(tx) => {
+                            let before = log.lock().unwrap().take().unwrap_or_default();
+                            let _ = tx.send(changes(&snapshot.lock().unwrap(), before, &hidden));
+                        }
+                    }
+                }
+                Cmd::Snapshot(tx) => {
+                    let _ = tx.send(reply_snapshot(&snapshot));
                 }
                 Cmd::Shutdown => break,
             }
@@ -1059,14 +1192,16 @@ mod tests {
         let n = CellValue::num;
         let snap: Mutex<Snapshot> = Mutex::default();
         let dirty: Mutex<HashSet<MeasureId>> = Mutex::default();
-        settle(&snap, &dirty, Vec::new());
+        let log = Mutex::new(None);
+        settle(&snap, &dirty, &log, Vec::new());
         assert!(snap.lock().unwrap().is_empty());
         let cancel = vec![(m, a.clone(), n(3.0), -1), (m, a.clone(), n(3.0), 1)];
-        settle(&snap, &dirty, cancel);
+        settle(&snap, &dirty, &log, cancel);
         assert!(dirty.lock().unwrap().is_empty(), "a delta that cancels");
         settle(
             &snap,
             &dirty,
+            &log,
             vec![(m, a.clone(), n(1.0), 1), (m, b.clone(), n(5.0), 1)],
         );
         assert!(dirty.lock().unwrap().contains(&m));
@@ -1074,6 +1209,7 @@ mod tests {
         settle(
             &snap,
             &dirty,
+            &log,
             vec![
                 (m, a.clone(), n(2.0), 1),
                 (m, b.clone(), n(5.0), 1),
@@ -1383,6 +1519,101 @@ mod tests {
             }
         }
         m
+    }
+
+    /// A snapshot as owned maps, without empty measures.
+    fn owned(s: &Snapshot) -> HashMap<MeasureId, MeasureValues> {
+        s.iter()
+            .filter(|(_, v)| !v.is_empty())
+            .map(|(m, v)| (*m, (**v).clone()))
+            .collect()
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+
+        /// `apply_delta`'s changes, replayed onto the view before the
+        /// round, give the snapshot `apply` returns for the same edits, on
+        /// random edit sequences: maps, a join, reductions, a window, a
+        /// per-item reduction and FIXPOINTs (host and dataflow steps). Every
+        /// change is a real one, and its old value is the view's.
+        #[test]
+        fn replayed_changes_are_the_snapshot(
+            batches in proptest::collection::vec(
+                proptest::collection::vec(
+                    (proptest::bool::ANY, 0u32..4, 0u32..4, proptest::option::of(-3i32..6)),
+                    1..4,
+                ),
+                1..7,
+            ),
+            host in proptest::bool::ANY,
+        ) {
+            let mut m = graph_model(4);
+            for (id, text) in [
+                (300, "Out = SUM(W OVER Dst)"),
+                (301, "M = W / Out"),
+                (302, "Run = SUM(X OVER Src[FIRST..THIS])"),
+                (303, "Rk = RANK(X OVER Src)"),
+                (304, "Two = FIXPOINT(X, LAMBDA(r, r / 2 + X))"),
+                (305, "Half = Two / 2"),
+                (306, "Back = FIXPOINT(X, LAMBDA(r, PREV(r, Src, 1, 0) / 2 + X))"),
+                (307, "Big = IF(X > 2, X, 0 - X)"),
+            ] {
+                define_text(&mut m, id, text);
+            }
+            let ids: Vec<MeasureId> = (300..=307).map(MeasureId).collect();
+            let (mut a, _) = Engine::build(&m, &ids, host).unwrap();
+            let (mut b, first) = Engine::build(&m, &ids, host).unwrap();
+            let mut view = owned(&first);
+            drop(first);
+            for batch in batches {
+                let edits: Vec<Edit> = batch
+                    .iter()
+                    .map(|&(w, i, j, v)| Edit {
+                        measure: MeasureId(if w { 11 } else { 10 }),
+                        coord: if w {
+                            [(2, 200 + j), (1, 100 + i)].as_slice().into()
+                        } else {
+                            [(1, 100 + i)].as_slice().into()
+                        },
+                        value: v.map(|v| CellValue::num(f64::from(v))),
+                    })
+                    .collect();
+                let want = a.apply(edits.clone()).unwrap();
+                for (mid, cells) in b.apply_delta(edits).unwrap() {
+                    let at = view.entry(mid).or_default();
+                    for c in cells {
+                        proptest::prop_assert_ne!(&c.old, &c.new);
+                        proptest::prop_assert_eq!(at.get(&c.coord), c.old.as_ref());
+                        match c.new {
+                            Some(v) => at.insert(c.coord, v),
+                            None => at.remove(&c.coord),
+                        };
+                    }
+                }
+                view.retain(|_, v| !v.is_empty());
+                proptest::prop_assert_eq!(&view, &owned(&want));
+            }
+            proptest::prop_assert_eq!(&owned(&b.snapshot().unwrap()), &view);
+        }
+    }
+
+    /// An edit that changes nothing has no changes, and a snapshot taken
+    /// after `apply_delta` is the engine's current one.
+    #[test]
+    fn a_round_that_changes_nothing_has_no_changes() {
+        let mut m = graph_model(3);
+        define_text(&mut m, 300, "Out = SUM(W OVER Dst)");
+        let (mut e, s) = Engine::new(&m, &[MeasureId(300)]).unwrap();
+        let x = |v: f64| Edit {
+            measure: MeasureId(10),
+            coord: [(1, 101)].as_slice().into(),
+            value: Some(CellValue::num(v)),
+        };
+        // X[p1] is 2 already, and Out does not read X.
+        assert!(e.apply_delta(vec![x(2.0)]).unwrap().is_empty());
+        assert!(e.apply_delta(vec![x(7.0)]).unwrap().is_empty());
+        assert_eq!(e.snapshot().unwrap(), s);
     }
 
     /// The fixpoint suite's FIXPOINTs, solved with host steps and with

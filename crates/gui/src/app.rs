@@ -1438,7 +1438,6 @@ impl ImprovApp {
         // a reported failure never leaves memory diverged from the store.
         let key = decode(&coord);
         let prior = self.model.input(measure, &key).cloned();
-        let prior_snapshot = self.snapshot.clone();
 
         match &value {
             Some(v) => self.model.set_input(measure, key.clone(), v.clone()),
@@ -1461,7 +1460,8 @@ impl ImprovApp {
                 }
             }
             if self.push_engine(measure, &coord, prior.as_ref()).is_err() {
-                self.snapshot = prior_snapshot;
+                // The engine is gone: a fresh one agrees with the model.
+                self.rebuild_engine();
             }
             return Err(e);
         }
@@ -1490,6 +1490,10 @@ impl ImprovApp {
         let cell = ty
             .zip(value)
             .and_then(|(t, v)| improv_engine::session::input_cell(t, v));
+        // Let go of the old snapshot first: the engine then updates its
+        // results in place, O(the change), where one still held is copied
+        // whole (52 ms an edit at 1M cells).
+        self.snapshot = Snapshot::default();
         let snapshot = engine
             .apply(vec![improv_engine::session::Edit {
                 measure,

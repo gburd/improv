@@ -16,8 +16,8 @@ use improv_core_model::{
     Model, Name, Value, ValueType,
 };
 use improv_engine::dataflow::evaluate;
-use improv_engine::session::Engine;
-use improv_engine::CoordKey;
+use improv_engine::session::{Edit, Engine};
+use improv_engine::{CellValue, CoordKey};
 use std::time::{Duration, Instant};
 
 fn env_or(name: &str, default: usize) -> usize {
@@ -256,7 +256,9 @@ fn measures() {
 /// The stress grid (`tests/stress.rs`): `Revenue = Price * Quantity` over
 /// `PROBE_TIME` x `PROBE_PRODUCT` cells (1000 x 1000), with the live heap
 /// after each phase: the model, `evaluate` (its result dropped), and
-/// `Engine::new` (snapshot held), to attribute bytes per cell.
+/// `Engine::new` (snapshot held), to attribute bytes per cell. Edits are
+/// timed three ways: the snapshot dropped before each, the previous one
+/// held across it (each edit then copies `Revenue`), and `apply_delta`.
 #[test]
 #[ignore = "probe; run with --ignored --nocapture"]
 fn grid() {
@@ -297,20 +299,44 @@ fn grid() {
     let h4 = heap_mb();
     drop(snap);
     let h5 = heap_mb();
+    let edits = env_or("PROBE_EDITS", 10);
+    let at = |e: usize| -> CoordKey { [(1, ts[e % nt].0), (2, ps[e % np].0)].as_slice().into() };
     let mut lat = Vec::new();
-    for e in 0..env_or("PROBE_EDITS", 10) {
-        let at: CoordKey = [(1, ts[e % nt].0), (2, ps[e % np].0)].as_slice().into();
+    for e in 0..edits {
         let t = Instant::now();
-        drop(eng.set(qty, at, 7.0 + e as f64).expect("set"));
+        drop(eng.set(qty, at(e), 7.0 + e as f64).expect("set"));
         lat.push(t.elapsed());
+    }
+    let mut held = eng.snapshot().expect("snapshot");
+    let mut lat_held = Vec::new();
+    for e in 0..edits {
+        let t = Instant::now();
+        let s = eng.set(qty, at(e), 1e6 + e as f64).expect("set");
+        lat_held.push(t.elapsed());
+        held = s;
+    }
+    drop(held);
+    let mut lat_delta = Vec::new();
+    for e in 0..edits {
+        let edit = Edit {
+            measure: qty,
+            coord: at(e),
+            value: Some(CellValue::num(2e6 + e as f64)),
+        };
+        let t = Instant::now();
+        let changes = eng.apply_delta(vec![edit]).expect("apply_delta");
+        lat_delta.push(t.elapsed());
+        assert_eq!(changes[&rev].len(), 1);
     }
     let per = |a: f64, b: f64| (b - a) * 1024.0 * 1024.0 / cells as f64;
     eprintln!(
-        "[grid] {nt}x{np} = {cells} cells: evaluate {eval:?}, Engine::new {new:?}, edit {}; \
-         live heap {h0:.0} -> model {h1:.0} -> evaluate result {h2:.0} -> dropped {h3:.0} \
+        "[grid] {nt}x{np} = {cells} cells: evaluate {eval:?}, Engine::new {new:?}, edit {} \
+         (old snapshot held: {}; apply_delta: {}); live heap {h0:.0} -> model {h1:.0} -> evaluate result {h2:.0} -> dropped {h3:.0} \
          -> engine+snapshot {h4:.0} -> engine {h5:.0} MB; B/cell: model {:.0}, \
          evaluate result {:.0}, engine {:.0}, snapshot {:.0}; RSS {:.0} MB",
         stats(lat),
+        stats(lat_held),
+        stats(lat_delta),
         per(h0, h1),
         per(h3, h2),
         per(h3, h5),

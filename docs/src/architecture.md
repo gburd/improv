@@ -105,13 +105,18 @@ pub struct Edit {
 old value, inserts the new one, advances time by one, and steps the dataflow
 until the probe passes that time. Only the deltas flow, so only the affected
 cells recompute. `set` and `clear` are one-edit shortcuts. The reply is the
-new `Snapshot`.
+new `Snapshot`. `apply_delta(edits)` applies a batch the same way but replies
+with what the round changed: per measure, each changed cell's coordinate, old
+value and new value (`Changes`). `snapshot()` returns the current snapshot.
 
 A `Snapshot` is `Arc<HashMap<MeasureId, Arc<MeasureValues>>>`, where
 `MeasureValues` is `HashMap<CoordKey, CellValue>`. It is copy-on-write:
 cloning one is a reference-count bump, and measures an edit did not change are
 shared with the previous snapshot. A changed measure is copied whole only
-while a caller still holds the old snapshot.
+while a caller still holds the old snapshot (52 ms for one edit at 1M cells,
+against 0.1 ms without), so a caller that keeps a view drops its snapshot
+before the next edit, or keeps its own view and applies `apply_delta`'s
+changes to it.
 
 The structure is fixed when the engine is built. Changing a formula or adding
 a measure means building a new `Engine`. Dropping the handle stops the
@@ -129,10 +134,10 @@ Users of the live engine:
 | User | How |
 |------|-----|
 | TUI (`improv-tui`) | one engine per session; a numeric edit is `Engine::set`, any other value rebuilds the engine |
-| GUI (`improv-gui`) | one engine per session; edits go through `input_cell` and `apply`; rebuilt on structural changes |
+| GUI (`improv-gui`) | one engine per session; edits go through `input_cell` and `apply`, its snapshot dropped first; rebuilt on structural changes |
 | `improv stream` | edits read from stdin, changed cells written to stdout |
 | server `POST /measures/:id/eval` | a short-lived engine per request, for what-if edits |
-| pg_improv's logical worker | one engine per model in `logical` mode, fed the row changes of each batch |
+| pg_improv's logical worker | one engine per model in `logical` mode, fed the row changes of each batch through `apply_delta`; it writes the changed rows |
 
 ## The coordinate / value encoding for dataflow
 

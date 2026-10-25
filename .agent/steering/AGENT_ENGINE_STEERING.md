@@ -187,6 +187,13 @@ On an input change, only the delta propagates: operators recompute only affected
 coordinates, and downstream measures update incrementally. The spike's delta
 round proved unaffected cells are not recomputed.
 
+The live engine hands the round's consolidated change back
+(`Engine::apply_delta`: per measure, each changed cell's old and new value,
+recorded as `settle` applies the round), so a caller never needs to hold or
+re-diff whole snapshots. `apply` still returns the snapshot; a caller that
+keeps one across an edit makes the engine copy each changed measure (the
+snapshot is copy-on-write), so callers drop it first or use `apply_delta`.
+
 ### 6.3 Operators
 
 `Map` (unary/binary), `Join` (broadcast/alignment), `Reduce`/`Aggregate`

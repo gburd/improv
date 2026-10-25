@@ -31,6 +31,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   kernel's bit for bit (a property test holds them to it). A window
   bound past the largest offset now reaches the last item instead of
   overflowing.
+- **`Engine::apply_delta` returns what an edit round changed**: per
+  measure, each changed cell's coordinate, old and new value, consolidated
+  (`session::Changes`). `Engine::snapshot` returns the current snapshot.
+  A caller that held the previous `Snapshot` across an edit made the
+  engine copy each changed measure whole: at 1M cells of
+  `Revenue = Price * Quantity` an edit took 40 ms with the old snapshot
+  held and 0.06 ms through `apply_delta` (release build, `tests/probe.rs`
+  `grid`). The GUI drops its snapshot before each cell edit: its
+  incremental recalc went from 52 to 0.8 ms per edit and an undo from 67
+  to 15 ms at 1M cells (`h3_scale_probe`). pg_improv's logical worker
+  applies batches through `apply_delta` and writes the changed rows
+  straight from it, instead of holding the last snapshot and re-diffing
+  every changed measure.
 
 ### Security
 
