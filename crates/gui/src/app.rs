@@ -15539,7 +15539,12 @@ mod tests {
             .and_then(|mut s| s.save_model(&crash_model()))
             .expect("seed");
         let mut midway = 0;
-        for (round, fraction) in [0.2, 0.5, 0.8].into_iter().enumerate() {
+        // Three rounds, and more (to nine) until one kill lands mid-save.
+        let fractions = [0.2, 0.5, 0.8, 0.35, 0.65, 0.1, 0.9, 0.45, 0.55];
+        for (round, fraction) in fractions.into_iter().enumerate() {
+            if round >= 3 && midway > 0 {
+                break;
+            }
             let mut child = h6_child_command("saves", &db)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
@@ -15552,6 +15557,10 @@ mod tests {
                     break (k.parse::<u32>().expect("k"), std::time::Instant::now());
                 }
             };
+            // Time the second save: the first is a full save, the rest
+            // write the changed cells (B12), much faster.
+            next("saving ");
+            next("saved ");
             let (_, t1) = next("saving ");
             let (_, t2) = next("saved ");
             let save = t2 - t1;
