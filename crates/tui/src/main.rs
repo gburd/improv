@@ -17,6 +17,7 @@ mod app;
 mod args;
 mod complete;
 mod diagnose;
+mod dsl;
 mod edit;
 mod fnhelp;
 mod ui;

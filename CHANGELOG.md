@@ -176,6 +176,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   3 of 32 rows at 110 columns and 5 of 24 at 80. It now shows the common
   keys on one line, ending "?: all keys"; `?` and F1 still list them all
   (H1-32).
+- **TUI formulas show and edit as typed.** `Left = Budget - Spent`, typed
+  with `=`, came back on the status line and in `e`'s edit as `Left =
+  Budget minus Spent`. The TUI now prints the symbolic form, as the GUI and
+  CLI do, and shows controlled English only for a formula that form cannot
+  spell. Text is shown only if it parses back to the same formula, so
+  Enter on an unchanged edit changes nothing (H1-17).
 ### Changed
 
 - **A formula may be 256 levels deep** (was 40; C3b). The limit

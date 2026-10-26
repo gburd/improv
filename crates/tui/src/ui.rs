@@ -770,6 +770,8 @@ mod tests {
         let mut m = revenue_model();
         let mut q = m.measures[&improv_core_model::MeasureId(101)].clone();
         q.id = improv_core_model::MeasureId(300);
+        // Its own name: a second "Quantity" would make the formula ambiguous.
+        q.name = improv_core_model::Name("Units".into());
         m.add_category(improv_core_model::CategoryId(3), "Region");
         m.add_item(
             improv_core_model::ItemId(30),
@@ -780,7 +782,7 @@ mod tests {
         m.add_measure(q);
         let mut app = App::new(m).unwrap();
         let lines = text(&draw(&mut app, 100, 30));
-        row_of(&lines, "Revenue = Price times Quantity");
+        row_of(&lines, "Revenue = Price * Quantity");
         row_of(&lines, "Sum 1000");
         crate::app::tests::view(&mut app, improv_core_model::MeasureId(300));
         let lines = text(&draw(&mut app, 100, 30));
@@ -1082,10 +1084,7 @@ mod tests {
         // A derived measure's edit is its formula.
         crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
         app.begin_edit();
-        row_of(
-            &text(&draw(&mut app, 60, 30)),
-            "formula> Price times Quantity",
-        );
+        row_of(&text(&draw(&mut app, 60, 30)), "formula> Price * Quantity");
         assert!(prompt < row_of(&lines, "filters: Time: 1 shown"));
         assert!(row_of(&lines, "?: all keys") > prompt);
     }

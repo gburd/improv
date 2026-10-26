@@ -252,7 +252,7 @@ recovery.* `1,500` closes the editor with "edit error: not a number"
 **Files:** `crates/gui/src/app.rs` (the commit after `commit_cell_text` in
 `render_grid`).
 
-**H1-17 TUI: formulas show and edit as controlled English.**
+**[fixed: `fix(tui): formulas show and edit as typed, not in English (H1-17)`] H1-17 TUI: formulas show and edit as controlled English.**
 *Consistency.* `Left = Budget - Spent`, typed with `=`, comes back as
 `Left = Budget minus Spent`, and `e` edits that text. The GUI and CLI show
 the symbolic form. **Fix:** show and seed the symbolic text whenever it

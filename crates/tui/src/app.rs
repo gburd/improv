@@ -483,8 +483,8 @@ pub fn parse_typed(text: &str, vt: ValueType) -> Result<Value, String> {
     }
 }
 
-/// Parse formula text as the symbolic DSL (`Price * Quantity`), else as
-/// controlled English (`Price times Quantity`, what the status line shows).
+/// Parse formula text as the symbolic DSL (`Price * Quantity`, what the
+/// status line shows), else as controlled English (`Price times Quantity`).
 /// If both fail, the DSL's error: it carries the position.
 pub fn parse_formula_text(model: &Model, text: &str) -> Result<Formula, ParseError> {
     parser::parse_expr(model, text).or_else(|e| {
@@ -803,18 +803,23 @@ impl App {
         (!nums.is_empty()).then(|| nums.iter().sum())
     }
 
-    /// The viewed derived measure's formula as controlled English
-    /// (`Price times Quantity`); `None` for input measures.
+    /// The viewed derived measure's formula as typed (H1-17), the symbolic
+    /// DSL (`Price * Quantity`), or as controlled English (`Price times
+    /// Quantity`) when the DSL cannot spell it. Only text that parses back
+    /// to the same formula is shown, so committing it unchanged changes
+    /// nothing. `None` for input measures.
     pub fn formula_text(&self) -> Option<String> {
-        match &self.model.measures.get(&self.grid.measure)?.kind {
-            improv_core_model::MeasureKind::Derived(f) => {
-                Some(improv_nl_formula::describe_formula(
-                    &improv_nl_formula::NlContext::new(&self.model),
-                    f,
-                ))
-            }
-            _ => None,
-        }
+        let MeasureKind::Derived(f) = &self.model.measures.get(&self.grid.measure)?.kind else {
+            return None;
+        };
+        let english = || {
+            improv_nl_formula::describe_formula(&improv_nl_formula::NlContext::new(&self.model), f)
+        };
+        let same = |text: &String| parse_formula_text(&self.model, text).ok().as_ref() == Some(f);
+        crate::dsl::formula(&self.model, f)
+            .filter(same)
+            .unwrap_or_else(english)
+            .into()
     }
 
     /// Cursor movement, clamped to the grid (never goes out of range).
@@ -891,7 +896,7 @@ impl App {
     }
 
     /// Enter edit mode: on the cell under the cursor for an input measure, on
-    /// the formula (seeded with its controlled-English text) for a derived one.
+    /// the formula (seeded with [`App::formula_text`]) for a derived one.
     /// A cell's old value is replaced by the first character typed, unless
     /// the caret moves first ([`LineEdit::fresh`]).
     pub fn begin_edit(&mut self) {
@@ -2051,7 +2056,69 @@ pub(crate) mod tests {
         // begin_edit opens the formula instead, seeded with its text.
         app.begin_edit();
         assert!(app.editing_formula());
-        assert_eq!(app.edit.as_deref(), Some("Price times Quantity"));
+        assert_eq!(app.edit.as_deref(), Some("Price * Quantity"));
+    }
+
+    /// H1-17: a formula shows and edits as typed; one the DSL cannot spell
+    /// shows as controlled English, which also commits.
+    #[test]
+    fn formulas_show_as_typed_else_in_english() {
+        let mut m = revenue_model();
+        m.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Left".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Derived(parse_formula_text(&m, "(Price - Quantity) / 2").unwrap()),
+            description: None,
+        });
+        let mut app = App::new(m).unwrap();
+        view(&mut app, MeasureId(103));
+        assert_eq!(
+            app.formula_text().as_deref(),
+            Some("(Price - Quantity) / 2")
+        );
+        app.begin_edit();
+        assert_eq!(app.edit.as_deref(), Some("(Price - Quantity) / 2"));
+        let before = app.model.clone();
+        app.commit_edit();
+        assert_eq!(app.model.measures, before.measures, "unchanged");
+        // A reference with OVER outside an aggregation has no DSL spelling.
+        let over = Expr::Ref(
+            MeasureId(101),
+            DimensionSpec {
+                over: vec![CategoryId(1)],
+                ..Default::default()
+            },
+        );
+        // FIXPOINT with no body: printable, but it does not read back.
+        let fixpoint = improv_core_model::functions::by_name("FIXPOINT")
+            .next()
+            .unwrap()
+            .id;
+        let f = Formula::new(Expr::Call(
+            fixpoint,
+            vec![Expr::Literal(Value::Number(1.0))],
+        ));
+        assert_eq!(
+            crate::dsl::formula(&app.model, &Formula::new(over.clone())),
+            None
+        );
+        let m = app.model.measures.get_mut(&MeasureId(103)).unwrap();
+        m.kind = MeasureKind::Derived(Formula::new(over));
+        let english = app.formula_text().unwrap();
+        assert!(english.contains("Quantity"), "{english}");
+        assert!(!english.contains(" OVER "), "{english}");
+        // A shape that prints but does not read back the same shows English.
+        let m = app.model.measures.get_mut(&MeasureId(103)).unwrap();
+        m.kind = MeasureKind::Derived(f.clone());
+        assert_eq!(
+            crate::dsl::formula(&app.model, &f).as_deref(),
+            Some("FIXPOINT(1)")
+        );
+        let english =
+            improv_nl_formula::describe_formula(&improv_nl_formula::NlContext::new(&app.model), &f);
+        assert_eq!(app.formula_text(), Some(english));
     }
 
     #[test]
@@ -2069,10 +2136,7 @@ pub(crate) mod tests {
         app.commit_edit();
         assert!(app.edit.is_none());
         assert_eq!(app.grid.display_at(0, 0), "2000");
-        assert_eq!(
-            app.formula_text().as_deref(),
-            Some("Price times Quantity times 2")
-        );
+        assert_eq!(app.formula_text().as_deref(), Some("Price * Quantity * 2"));
         // A parse error keeps the edit open, located, and changes nothing.
         let before = app.model.clone();
         app.begin_edit();
@@ -2540,7 +2604,7 @@ pub(crate) mod tests {
         // Formula text for derived measures only; blank cells sum to None.
         assert_eq!(app.formula_text(), None);
         view(&mut app, MeasureId(102));
-        assert_eq!(app.formula_text().as_deref(), Some("Price times Quantity"));
+        assert_eq!(app.formula_text().as_deref(), Some("Price * Quantity"));
         let mut m = revenue_model();
         m.inputs.clear();
         assert_eq!(App::new(m).unwrap().selection_sum(), None);

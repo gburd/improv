@@ -46,9 +46,11 @@ Select a range; its sum shows in the status line.
 .BR e ", " Enter
 Edit the selected input cell. On a derived measure,
 .B e
-edits its formula (it accepts the symbolic form, \fBPrice * Quantity\fR, or
-the controlled English the status line shows), and Enter only says the
-cell is computed. A formula that would leave the measure one value over no
+edits its formula, shown as it was typed
+.RB ( "Price * Quantity" ;
+a formula the symbolic form cannot spell shows in controlled English,
+.BR "Price times Quantity" ),
+and takes either form. Enter only says the cell is computed. A formula that would leave the measure one value over no
 categories, such as
 .BR 5 ,
 needs a second Enter. A cell's old value shows selected: the first key
