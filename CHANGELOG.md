@@ -8,6 +8,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Linux packages and a Homebrew formula** on every release, from the next
+  one on (`ci/packages.sh`, nfpm; `ci/homebrew-formula.sh`): `improv` as a
+  `.deb` and `.rpm`, pg_improv per PostgreSQL major under PGDG's names and
+  paths (`postgresql-17-improv`, `postgresql17-improv`), and `improv.rb`.
+  The release installs each `.deb`/`.rpm` in a clean Debian and Fedora
+  container and runs it before attaching it.
 - **A container image**, `ghcr.io/gburd/improv`, from the next release on:
   `improv-server` and the `improv` CLI (`Containerfile`), as an
   unprivileged user, refusing to start without a token. The release job

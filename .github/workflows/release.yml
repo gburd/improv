@@ -182,10 +182,61 @@ jobs:
           path: improv/dist/*
           if-no-files-found: error
 
+  # .deb and .rpm (ci/packages.sh, nfpm): improv (the four binaries, man
+  # pages, completions) from the Linux tarball, and pg_improv per PG major
+  # under PGDG's names and paths. Each is installed in a clean container
+  # and run before it is attached.
+  packages:
+    name: Linux packages (.deb, .rpm)
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [qualify, extension]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: nfpm
+        run: |
+          set -euo pipefail
+          v=2.48.0 sum=6d7f9a28b2f397934403950fcbba83f598b08d02edbe79a0815b3b4897341750
+          curl -sSfL -o nfpm.tgz "https://github.com/goreleaser/nfpm/releases/download/v$v/nfpm_${v}_Linux_x86_64.tar.gz"
+          echo "$sum  nfpm.tgz" | sha256sum -c
+          mkdir -p "$RUNNER_TEMP/bin" && tar xzf nfpm.tgz -C "$RUNNER_TEMP/bin" nfpm
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build and install-test
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="${REF_NAME#v}" t=x86_64-unknown-linux-gnu
+          mkdir -p stage pkg
+          tar xzf "dist/improv-$REF_NAME-$t.tar.gz" -C stage
+          ci/packages.sh bin "$ver" "stage/improv-$REF_NAME-$t" pkg
+          for pg in 15 16 17 18; do
+            ci/packages.sh pg "$ver" "$pg" "dist/pg_improv-$ver-pg$pg-x86_64-linux.tar.gz" pkg
+          done
+          podman run --rm -v "$PWD/pkg:/pkg:ro" docker.io/library/debian:trixie-slim bash -c "
+            set -e; apt-get update -qq; apt-get install -y -qq --no-install-recommends /pkg/improv_${ver}-1_amd64.deb
+            test \"\$(improv --version)\" = 'improv $ver'; improv-server --help >/dev/null"
+          podman run --rm -v "$PWD/pkg:/pkg:ro" registry.fedoraproject.org/fedora:latest bash -c "
+            set -e; dnf -q -y install /pkg/improv-${ver}-1.x86_64.rpm
+            test \"\$(improv --version)\" = 'improv $ver'"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist-packages
+          path: pkg/*
+          if-no-files-found: error
+
   release:
     name: GitHub Release
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [qualify, extension, build-duckdb-ext]
+    needs: [qualify, extension, build-duckdb-ext, packages]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -212,6 +263,12 @@ jobs:
         run: |
           cargo install cargo-cyclonedx --version =0.5.9 --locked
           ci/release-attest.sh "$REF_NAME" dist
+      # After the sums: the formula pins the macOS tarballs by their SHA-256
+      # (it is not in SHA256SUMS itself; it is generated from it).
+      - name: Homebrew formula
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: ci/homebrew-formula.sh "$REF_NAME" dist/SHA256SUMS > dist/improv.rb
       - name: Release notes from CHANGELOG
         env:
           REF_NAME: ${{ github.ref_name }}

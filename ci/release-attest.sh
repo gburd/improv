@@ -77,6 +77,19 @@ for f in "$dist"/*; do
 			take "$root/crates/${crate_bin%%:*}/${bin}_bin_$target.cdx.json" "$bin-$tag-$target.cdx.json"
 		done
 		;;
+	# The .deb and .rpm repackage a tarball above (ci/packages.sh): the same
+	# binaries, so the tarball's SBOMs describe them; SHA256SUMS covers them.
+	"improv_${ver}-1_amd64.deb" | "improv-${ver}-1.x86_64.rpm")
+		[ -e "$dist/improv-$tag-$linux.tar.gz" ] || die "$name without improv-$tag-$linux.tar.gz"
+		continue
+		;;
+	postgresql-*-improv_"${ver}"-1_amd64.deb | postgresql*-improv-"${ver}"-1.x86_64.rpm)
+		pg=${name#postgresql}
+		pg=${pg#-}
+		pg=${pg%%-*}
+		[ -e "$dist/pg_improv-$ver-pg$pg-x86_64-linux.tar.gz" ] || die "$name without its pg_improv tarball"
+		continue
+		;;
 	*) die "$name: not a release artifact this script knows (add an SBOM rule)" ;;
 	esac
 	tidy "${target:-$linux}"

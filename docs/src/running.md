@@ -4,6 +4,23 @@ This page is the operator's quick reference: build, run each front end, run
 the tests, check coverage, and the security knobs. The [getting-started
 guide](./getting-started.md) walks through modeling itself.
 
+## Install a release
+
+From 0.12, each GitHub Release also carries packages (all x86_64 Linux,
+except the formula):
+
+| Package | Install |
+| --- | --- |
+| `improv_X.Y.Z-1_amd64.deb`, `improv-X.Y.Z-1.x86_64.rpm` | `sudo apt install ./improv_*.deb` or `sudo dnf install ./improv-*.rpm`: the four binaries in `/usr/bin`, man pages, bash/zsh/fish completions |
+| `postgresql-N-improv_X.Y.Z-1_amd64.deb` | pg_improv for PostgreSQL N (15–18) from apt.postgresql.org, in its paths |
+| `postgresqlN-improv-X.Y.Z-1.x86_64.rpm` | the same for yum.postgresql.org's `postgresqlN-server` (`/usr/pgsql-N`) |
+| `improv.rb` | a Homebrew formula for macOS (arm64 and Intel): `brew install ./improv.rb` |
+| `ghcr.io/gburd/improv:X.Y.Z` | the server and CLI in a container (see [The HTTP server](./server.md#deployment)) |
+
+pg_improv is also on [PGXN](https://pgxn.org/dist/pg_improv/), and the
+DuckDB extension in the community repository (`INSTALL improv FROM
+community`).
+
 ## Build
 
 ```sh
@@ -31,6 +48,7 @@ Each GitHub Release carries, besides the archives:
 | `SHA256SUMS.sigstore.json` | A [cosign](https://docs.sigstore.dev/) keyless signature of `SHA256SUMS`: the certificate names the release workflow and the tag, and the signing is logged in Rekor, the public transparency log. |
 | `<binary>-vX.Y.Z-<target>.cdx.json` | A CycloneDX SBOM per binary (`improv`, `improv-tui`, `improv-server`, `improv-gui`) and target, from `cargo cyclonedx`. |
 | `pg_improv-X.Y.Z-pgN-x86_64-linux.cdx.json`, `improv-X.Y.Z-duckdb-linux_amd64.cdx.json` | The extensions' SBOMs. |
+| `*.deb`, `*.rpm`, `improv.rb` | The packages above: the `.deb`/`.rpm` repackage the Linux tarballs (same binaries, same SBOMs) and are in `SHA256SUMS`; the formula is made from `SHA256SUMS` and pins the macOS tarballs by their hash. |
 
 Check the signature on the sums, then the files against the sums (cosign
 2.4 or later):
