@@ -342,7 +342,7 @@ Broken pipe". Exit quietly on EPIPE. `crates/cli/src/main.rs` (`main`).
 "only 'input' measures are supported, got 'Line'". Say "expected
 `input` before the categories". `crates/cli/src/main.rs:336`.
 
-**H1-32 TUI:** the key list takes 3 of 32 rows at 110 columns and 5 of 24
+**[fixed: `fix(tui): the status box lists the keys on one line (H1-32)`] H1-32 TUI:** the key list takes 3 of 32 rows at 110 columns and 5 of 24
 at 80. Show it on `?` and keep one line ("? keys") in the status block.
 `crates/tui/src/ui.rs`.
 

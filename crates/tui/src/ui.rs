@@ -1,5 +1,5 @@
-//! Rendering: a status box (title, prompt/message, pages, filters, key help)
-//! sized to its content, over the pivot grid as a table.
+//! Rendering: a status box (title, prompt/message, pages, filters, one line
+//! of keys) sized to its content, over the pivot grid as a table.
 
 use crate::app::{App, CommandKind, Grid, GridGeom};
 use crate::diagnose::Diagnostic;
@@ -16,7 +16,7 @@ use ratatui::{
     Frame,
 };
 
-/// Key help entries, packed greedily into lines that fit the status box.
+/// Key help entries, packed greedily into lines that fit the `?` overlay.
 const HELP: &[&str] = &[
     "arrows/click: move",
     "Shift+arrows: range",
@@ -39,6 +39,33 @@ const HELP: &[&str] = &[
     "?/F1: functions",
     "q: quit",
 ];
+
+/// The status box's keys (H1-32): the common ones, as many as fit on one
+/// line, then [`MORE`]. The `?` overlay lists them all ([`HELP`]).
+const KEYS: &[&str] = &[
+    "e: edit",
+    "=: define",
+    "c/n: add",
+    "Tab: measure",
+    "p: pivot",
+    "u: undo",
+    "q: quit",
+];
+const MORE: &str = "?: all keys";
+
+/// The one key line of the status box, dimmed, fitted to `width`.
+fn key_line(width: usize) -> Line<'static> {
+    let mut line = String::new();
+    for k in KEYS {
+        if line.len() + k.len() + 2 + MORE.len() > width {
+            break;
+        }
+        line.push_str(k);
+        line.push_str("  ");
+    }
+    line.push_str(MORE);
+    Line::styled(line, Style::default().add_modifier(Modifier::DIM))
+}
 
 fn help_lines(width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
@@ -176,7 +203,7 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             .join(", ");
         lines.push(Line::from(format!("filters: {f}   (F to clear)")));
     }
-    lines.extend(help_lines(width));
+    lines.push(key_line(width));
     lines
 }
 
@@ -976,6 +1003,34 @@ mod tests {
         );
     }
 
+    /// H1-32: the status box lists the keys on one line, at any width; `?`
+    /// shows them all.
+    #[test]
+    fn the_status_box_has_one_line_of_keys() {
+        let mut app = App::new(revenue_model()).unwrap();
+        for (w, h) in [(80, 24), (110, 32), (30, 24)] {
+            let lines = text(&draw(&mut app, w, h));
+            // Title, formula, keys, between the box's borders.
+            let keys = row_of(&lines, "?: all keys");
+            assert_eq!(keys, 3, "{w}x{h}: {lines:#?}");
+            assert!(
+                lines[keys + 1].starts_with('\u{2514}'),
+                "{w}x{h}: {lines:#?}"
+            );
+            assert!(!lines.iter().any(|l| l.contains("arrows/click")));
+        }
+        let lines = text(&draw(&mut app, 80, 24));
+        row_of(
+            &lines,
+            "e: edit  =: define  c/n: add  Tab: measure  p: pivot  u: undo",
+        );
+        assert_eq!(key_line(0).to_string(), MORE);
+        app.help = Some(crate::fnhelp::FnHelp::new());
+        let lines = text(&draw(&mut app, 110, 32));
+        row_of(&lines, "arrows/click: move");
+        row_of(&lines, "q: quit");
+    }
+
     #[test]
     fn help_packs_to_width() {
         assert_eq!(help_lines(1000).len(), 1);
@@ -1032,7 +1087,6 @@ mod tests {
             "formula> Price times Quantity",
         );
         assert!(prompt < row_of(&lines, "filters: Time: 1 shown"));
-        assert!(row_of(&lines, "arrows/click: move") > prompt);
-        row_of(&lines, "q: quit");
+        assert!(row_of(&lines, "?: all keys") > prompt);
     }
 }

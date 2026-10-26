@@ -172,6 +172,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   supported, got 'Line'". It now says "expected the word 'input' after the
   type, before the categories" and prints the command with it in place
   (H1-31).
+- **The TUI's key list takes one line.** The status box listed every key,
+  3 of 32 rows at 110 columns and 5 of 24 at 80. It now shows the common
+  keys on one line, ending "?: all keys"; `?` and F1 still list them all
+  (H1-32).
 ### Changed
 
 - **A formula may be 256 levels deep** (was 40; C3b). The limit
