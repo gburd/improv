@@ -83,6 +83,10 @@ pub(crate) struct Matrix {
     /// The cell currently being edited in THIS matrix, and its text buffer.
     editing: Option<(MeasureId, CoordKey)>,
     edit_buf: String,
+    /// The bytes of `edit_buf` to select when its editor first shows: all
+    /// of an old value, or a caret after a typed key (H1-1). Dropped once
+    /// the editor has the keyboard.
+    edit_select: Option<std::ops::Range<usize>>,
     /// Its worksheet window's outer rect, relative to the workspace's top-left
     /// (persisted in the view).
     rect: CanvasRect,
@@ -133,13 +137,48 @@ fn caret_byte(ctx: &egui::Context, id: egui::Id, text: &str) -> usize {
 
 /// Put the caret of text edit `id` over `text` at byte `at`.
 fn set_caret(ctx: &egui::Context, id: egui::Id, text: &str, at: usize) {
+    select_bytes(ctx, id, text, at..at);
+}
+
+/// Select bytes `r` of `text` in text edit `id` (an empty range is a caret).
+/// Call it after the edit is drawn: an edit without the keyboard drops a
+/// selection to its caret.
+fn select_bytes(ctx: &egui::Context, id: egui::Id, text: &str, r: std::ops::Range<usize>) {
     let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
-    let ci = text[..at.min(text.len())].chars().count();
-    let c = egui::text::CCursor::new(ci);
+    let c = |at: usize| egui::text::CCursor::new(text[..at.min(text.len())].chars().count());
     state
         .cursor
-        .set_char_range(Some(egui::text::CCursorRange::one(c)));
+        .set_char_range(Some(egui::text::CCursorRange::two(c(r.start), c(r.end))));
     state.store(ctx, id);
+}
+
+/// What was typed this frame from its first key that is not one of the
+/// grid's own (`h j k l n [ ]`, any case) or a space, taken out of the
+/// input so nothing else reads it; `None` when nothing was.
+fn take_typed(ui: &egui::Ui) -> Option<String> {
+    let starts = |t: &str| {
+        !t.chars()
+            .all(|c| c.is_whitespace() || "hjklHJKLnN[]".contains(c))
+    };
+    ui.input_mut(|i| {
+        let start = i
+            .events
+            .iter()
+            .position(|e| matches!(e, egui::Event::Text(t) if starts(t)))?;
+        let mut typed = String::new();
+        let mut at = 0;
+        i.events.retain(|e| {
+            at += 1;
+            match e {
+                egui::Event::Text(t) if at > start => {
+                    typed.push_str(t);
+                    false
+                }
+                _ => true,
+            }
+        });
+        Some(typed)
+    })
 }
 
 /// The running GUI application.
@@ -735,6 +774,14 @@ impl Matrix {
             filters: self.filters.clone(),
             rect: self.rect,
         })
+    }
+
+    /// Open the cell editor on `key` holding `text`, all of it selected, so
+    /// that what is typed next replaces it (H1-1).
+    fn open_editor(&mut self, measure: MeasureId, key: CoordKey, text: String) {
+        self.edit_select = Some(0..text.len());
+        self.editing = Some((measure, key));
+        self.edit_buf = text;
     }
 
     /// Show `measure` in this matrix, dropping any open cell editor. The pivot
@@ -2102,9 +2149,19 @@ impl ImprovApp {
             return;
         }
         let seed = self.cell_text(measure, &key).unwrap_or_default();
+        self.focused_mut().open_editor(measure, key, seed);
+    }
+
+    /// Start editing the cursor cell with `typed` as its whole text and the
+    /// caret after it: typing on a cell replaces its value, as in every
+    /// spreadsheet (H1-1). A cell that is not editable says why.
+    fn begin_edit_typed(&mut self, typed: String) {
+        self.begin_edit_cursor();
         let m = self.focused_mut();
-        m.editing = Some((measure, key));
-        m.edit_buf = seed;
+        if m.editing.is_some() {
+            m.edit_select = Some(typed.len()..typed.len());
+            m.edit_buf = typed;
+        }
     }
 
     /// The editable source text the formula editor shows for `measure`: symbolic
@@ -6223,6 +6280,14 @@ impl ImprovApp {
         use egui::Key;
         let k = |key: Key| ui.input(|i| i.key_pressed(key));
         let modifiers = ui.input(|i| i.modifiers);
+        // A typed key opens the editor holding just that key. An Enter in the
+        // same frame is left for the editor, drawn later, to commit it.
+        if !modifiers.command {
+            if let Some(typed) = take_typed(ui) {
+                self.begin_edit_typed(typed);
+                return;
+            }
+        }
         // The Enter (or F2) that opens the cell editor is used up here: the
         // editor is drawn later this frame and would take it as its commit.
         let open = !modifiers.command
@@ -6309,6 +6374,7 @@ impl ImprovApp {
         let shift = ui.input(|i| i.modifiers.shift);
         let editing = m.editing.clone();
         let mut edit_buf = m.edit_buf.clone();
+        let mut edit_select = m.edit_select.clone();
         let uid = m.uid;
         let is_derived = self
             .model
@@ -6648,8 +6714,13 @@ impl ImprovApp {
                                                     }
                                                 } else if editing_here {
                                                     crate::theme::content(ui);
+                                                    let edit_id =
+                                                        egui::Id::unique(("cell_editor", uid));
+                                                    let had_keys =
+                                                        ui.memory(|m| m.has_focus(edit_id));
                                                     let resp = ui.add(
                                                         egui::TextEdit::singleline(&mut edit_buf)
+                                                            .id(edit_id)
                                                             .align(if is_number {
                                                                 egui::Align2::RIGHT_CENTER
                                                             } else {
@@ -6659,6 +6730,18 @@ impl ImprovApp {
                                                     );
                                                     a11y_name(&resp, &cell_label);
                                                     resp.request_focus();
+                                                    // Until it has the keyboard, which
+                                                    // keeps the selection from then on.
+                                                    if had_keys {
+                                                        edit_select = None;
+                                                    } else if let Some(r) = &edit_select {
+                                                        select_bytes(
+                                                            ui.ctx(),
+                                                            edit_id,
+                                                            &edit_buf,
+                                                            r.clone(),
+                                                        );
+                                                    }
                                                     let enter = ui
                                                         .input(|i| i.key_pressed(egui::Key::Enter));
                                                     let esc = ui.input(|i| {
@@ -6726,6 +6809,7 @@ impl ImprovApp {
         // the keyboard.
         if let Some(m) = self.matrices.get_mut(mi) {
             m.edit_buf = edit_buf;
+            m.edit_select = edit_select;
             if let Some((ri, ci)) = clicked_cell {
                 // Shift+click extends from the anchor (or the old cursor).
                 m.anchor = shift.then(|| m.anchor.unwrap_or((m.cursor_row, m.cursor_col)));
@@ -6746,11 +6830,14 @@ impl ImprovApp {
                 }
             }
             if let Some((key, text)) = begin_edit {
-                m.editing = Some((measure, key));
-                m.edit_buf = text;
+                m.open_editor(measure, key, text);
             }
             if cancel || commit.is_some() {
                 m.editing = None;
+                // It asked for the keyboard this frame; the grid takes it back
+                // now, not a frame later.
+                let id = egui::Id::unique(("cell_editor", uid));
+                ui.memory_mut(|mem| mem.surrender_focus(id));
             }
         }
         if clicked_cell.is_some() {
@@ -13963,6 +14050,162 @@ mod tests {
         assert_eq!(page(&app), 0);
         grid_key(&mut app, Key::OpenBracket, M::NONE);
         assert_eq!(page(&app), 1, "paging wraps");
+    }
+
+    /// What a user types, as one frame of text events.
+    fn type_text(desk: &mut Desk, app: &mut ImprovApp, text: &str) {
+        let _ = desk.frame(app, vec![egui::Event::Text(text.into())]);
+    }
+
+    /// H1-1: Enter, F2 and a double-click open the editor with the old value
+    /// selected, so the next key replaces it (was: 80 then 9 stored 809).
+    #[test]
+    fn opening_a_cell_editor_selects_the_old_value() {
+        use egui::{Key, Modifiers as M};
+        let (mut app, mut desk) = grid_desk();
+        let at = cell_rect(&desk, &app, 1, 1).center();
+        let k: CoordKey = improv_engine::smallvec::smallvec![(1, 11), (2, 21)];
+        desk.click(&mut app, at);
+        for (open, typed) in [(Key::Enter, "9"), (Key::F2, "7")] {
+            key(&mut desk, &mut app, open, M::NONE);
+            assert_eq!(
+                app.matrices[0].edit_buf,
+                app.cell_text(MeasureId(101), &k).unwrap()
+            );
+            type_text(&mut desk, &mut app, typed);
+            key(&mut desk, &mut app, Key::Enter, M::NONE);
+            assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some(typed));
+        }
+        desk.time += 1.0;
+        desk.click(&mut app, at);
+        desk.click(&mut app, at);
+        assert!(app.matrices[0].editing.is_some(), "a double-click edits");
+        type_text(&mut desk, &mut app, "42");
+        key(&mut desk, &mut app, Key::Enter, M::NONE);
+        assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some("42"));
+    }
+
+    /// H1-1: a printable key on a selected input cell opens its editor
+    /// holding just that key; the grid's own keys still drive the grid, and
+    /// a derived cell says it is computed.
+    #[test]
+    fn typing_on_a_cell_replaces_its_value() {
+        use egui::{Key, Modifiers as M};
+        let (mut app, mut desk) = grid_desk();
+        let at = cell_rect(&desk, &app, 0, 0).center();
+        desk.click(&mut app, at);
+        let j = vec![key_event(Key::J), egui::Event::Text("j".into())];
+        let _ = desk.frame(&mut app, j);
+        assert_eq!(app.matrices[0].cursor_row, 1, "j moves the cursor");
+        assert!(app.matrices[0].editing.is_none(), "and edits nothing");
+        type_text(&mut desk, &mut app, "-");
+        assert_eq!(app.matrices[0].edit_buf, "-");
+        type_text(&mut desk, &mut app, "2.5");
+        key(&mut desk, &mut app, Key::Enter, M::NONE);
+        let k: CoordKey = improv_engine::smallvec::smallvec![(1, 11), (2, 20)];
+        assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some("-2.5"));
+        // A key and Enter in one frame commit at once.
+        let _ = desk.frame(
+            &mut app,
+            vec![egui::Event::Text("3".into()), key_event(Key::Enter)],
+        );
+        assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some("3"));
+
+        app.matrices[0].measure = Some(MeasureId(102));
+        desk.settle(&mut app);
+        type_text(&mut desk, &mut app, "5");
+        assert!(app.matrices[0].editing.is_none());
+        assert_eq!(app.status, "derived cells are computed, not editable");
+    }
+
+    /// The budget tutorial's GUI step, as written (docs/src/tutorial-budget.md
+    /// §7): click a Spent cell, type a new number and press Enter. The value
+    /// is stored, Left follows, and the file has it without File ▸ Save.
+    #[test]
+    fn the_budget_tutorial_edit_works_as_written() {
+        use egui::{Key, Modifiers as M};
+        let db = temp_db("tutorial7");
+        let _cleanup = Cleanup(db.clone());
+        let (month, line) = (CategoryId(1), CategoryId(2));
+        let mut model = Model::new();
+        model.add_category(month, "Month");
+        model.add_category(line, "Line");
+        for (id, name) in [(10, "Jan"), (11, "Feb"), (12, "Mar")] {
+            model.add_item(ItemId(id), month, name);
+        }
+        for (id, name) in [
+            (20, "Rent"),
+            (21, "Groceries"),
+            (22, "Utilities"),
+            (23, "Fun"),
+        ] {
+            model.add_item(ItemId(id), line, name);
+        }
+        for (id, name, cats) in [
+            (100, "Budget", vec![line]),
+            (101, "Spent", vec![month, line]),
+        ] {
+            model.add_measure(Measure {
+                id: MeasureId(id),
+                name: Name(name.into()),
+                value_type: ValueType::Number,
+                categories: cats,
+                kind: MeasureKind::Input,
+                description: None,
+            });
+        }
+        let at = |m: u32, l: u32| {
+            improv_core_model::Coordinate::from_pairs([(month, ItemId(m)), (line, ItemId(l))])
+        };
+        let fun = improv_core_model::Coordinate::from_pairs([(line, ItemId(23))]);
+        model.set_input(MeasureId(100), fun, Value::Number(300.0));
+        model.set_input(MeasureId(101), at(11, 23), Value::Number(300.0));
+        let placement = MatrixPlacement {
+            measure: MeasureId(101),
+            axis_order: vec![line, month],
+            n_rows: 1,
+            n_cols: 1,
+            page_items: Vec::new(),
+            filters: Vec::new(),
+            rect: CanvasRect {
+                x: MENU_CLEAR,
+                ..CanvasRect::default()
+            },
+        };
+        let view = View::from_matrices(ViewId(1), Name("Spending".into()), placement, Vec::new());
+        model.views.insert(ViewId(1), view);
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&model))
+            .expect("seed the store");
+        let mut app = ImprovApp::load(&db).expect("load");
+        let left = app
+            .add_derived_measure("Left", "Budget - Spent")
+            .expect("Left");
+        app.open_view(ViewId(1));
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+
+        // Feb (column 1) of Fun (row 3): 300.
+        let cell = cell_rect(&desk, &app, 3, 1).center();
+        desk.click(&mut app, cell);
+        for c in ["3", "5", "0"] {
+            type_text(&mut desk, &mut app, c);
+        }
+        key(&mut desk, &mut app, Key::Enter, M::NONE);
+        assert_eq!(app.status, "cell updated");
+        let feb_fun: CoordKey = improv_engine::smallvec::smallvec![(1, 11), (2, 23)];
+        assert_eq!(
+            app.cell_text(MeasureId(101), &feb_fun).as_deref(),
+            Some("350")
+        );
+        assert_eq!(app.values_for(left).get(&feb_fun), Some(&-50.0));
+        let stored = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(
+            stored.input(MeasureId(101), &at(11, 23)),
+            Some(&Value::Number(350.0))
+        );
     }
 
     #[test]

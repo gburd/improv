@@ -92,7 +92,7 @@ criterion 5.
 
 ### 4: catastrophe
 
-**H1-1 GUI: typing into a cell does not replace its value.** *Heuristics:
+**[fixed: `fix(gui): typing on a cell replaces its value (H1-1, H1-29)`] H1-1 GUI: typing into a cell does not replace its value.** *Heuristics:
 match with the real world; error prevention.* Typing on a selected cell
 does nothing, with no feedback. Enter, F2 or a double-click opens the
 editor holding the old value with nothing selected. The caret sits at the
@@ -323,7 +323,7 @@ currency sign for number measures, in each crate's `parse_typed`.
 the same measure, which reads as one window. Place it beside the old
 window if it fits. `crates/gui/src/app.rs` (`add_matrix`, `CASCADE`).
 
-**H1-29 Docs:** tutorial §7 asks for File ▸ Save after an edit. The GUI
+**[fixed: `fix(gui): typing on a cell replaces its value (H1-1, H1-29)`] H1-29 Docs:** tutorial §7 asks for File ▸ Save after an edit. The GUI
 has already autosaved, so say so. §7 also needs the H1-1 fix, or should
 say "double-click, select all, type". `docs/src/tutorial-budget.md`.
 

@@ -251,9 +251,9 @@ The model browser at the bottom left lists the two views, **Spending -
 Worksheet** and **Left over - Worksheet**. Double-click one to open it: the
 lines run down the rows and the months across. Click a `Spent` cell, type a
 new number and press Enter; the `Left over` worksheet and the savings
-update at once. **File ▸ Save** (Ctrl+S) writes the change back to
-`budget.db`, where `improv eval` sees it. [The Desktop GUI](./gui-tour.md)
-describes every window.
+update at once. The GUI saves each edit to `budget.db` as you make it, so
+`improv eval` sees it straight away; Ctrl+Z undoes it. [The Desktop
+GUI](./gui-tour.md) describes every window.
 
 In a terminal, `improv-tui budget.db` opens the same file.
 

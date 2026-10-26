@@ -81,8 +81,9 @@ The window has five regions:
   filtered tile reads `Name*`. Its last line, **New item**, adds an item to
   the category: type the name and press Enter.
   Cells are white with thin black rules; the selection and its row and column
-  headers turn gray. Click a cell to select it; **double-click** it (or press
-  Enter / F2) to edit, Enter to commit, Esc to cancel. Input cells carry a
+  headers turn gray. Click a cell to select it and type to replace its
+  value; **double-click** it (or press Enter / F2) to edit it with its value
+  selected. Enter commits, Esc cancels. Input cells carry a
   faint underline; hover a derived cell to see its formula. Arrows (or
   `h` `j` `k` `l`) move the cursor, and `n` / Shift+`n` show the next or
   previous measure. **Shift+arrows**, Shift+click or a drag select a range,
@@ -145,8 +146,8 @@ each step:
    into the tile's **New item** line. **Worksheet ▸ Add Item** jumps to the
    line of the worksheet's first row category.
 3. **Worksheet ▸ Add Input Measure**: type `Price`. An input measure ranges
-   over every category, and an empty worksheet shows it. Double-click a
-   cell to type its value.
+   over every category, and an empty worksheet shows it. Click a cell and
+   type its value.
 4. Add formulas on the formula list's last line: `Revenue = Price *
    Quantity`, or a named LAMBDA, `Margin = LAMBDA(p, c, p - c)`, which
    the browser then lists under LAMBDAs and any formula can call:
@@ -179,8 +180,10 @@ Each rename and delete autosaves and is one undo step.
 
 ## Keyboard and screen readers
 
-Everything works from the keyboard. In a worksheet the arrows move, Enter
-or F2 edits, Enter commits and Esc cancels; `[` and `]` page. Tab moves
+Everything works from the keyboard. In a worksheet the arrows move, typing
+replaces the cell's value, Enter or F2 edits it, Enter commits and Esc
+cancels; `[` and `]` page. The grid's own keys (`h j k l n [ ]`) keep
+their jobs, so a text value that starts with one is typed after Enter. Tab moves
 through the menu, the windows' fields and buttons, and Enter or Space
 presses the focused one, so **Tab** to a menu item and **Enter** opens
 its submenu or runs it. The key equivalents (Ctrl or Cmd: `n o s z Z y h
