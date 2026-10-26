@@ -319,7 +319,7 @@ Keep the cursor cell. `crates/tui/src/app.rs` (`travel`, `relayout`).
 (not tried in the GUI). Accept the locale's group separator and a leading
 currency sign for number measures, in each crate's `parse_typed`.
 
-**H1-28 GUI:** Add Matrix opens the new window 28 px from the old one, on
+**[fixed: `fix(gui): Add Matrix opens beside the last window, not over it (H1-28)`] H1-28 GUI:** Add Matrix opens the new window 28 px from the old one, on
 the same measure, which reads as one window. Place it beside the old
 window if it fits. `crates/gui/src/app.rs` (`add_matrix`, `CASCADE`).
 

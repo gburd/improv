@@ -115,6 +115,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   CLI saves no window position (the origin), which the GUI restored as
   it was, so the menu covered the row labels and the first column. A
   window at the origin now opens where a fresh one does (H1-14).
+- **Worksheet ▸ Add Matrix opens the new window beside the last one**,
+  or below it, where the desk has room and no window is covered; it
+  opened 28 px from the last one, over it, which read as one window.
+  With no room it cascades past the last one's title bar, on the desk
+  (H1-28).
 - **The GUI opens a model on its first saved view**, else on its first
   measure in id order, input or derived; it opened on the first formula
   (H1-34, the GUI part). A view saved by `improv save-view` opens sized to

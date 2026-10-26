@@ -315,6 +315,8 @@ pub struct ImprovApp {
     /// count of frames shown since it was asked for): the import and its
     /// full save block the UI thread for seconds on a large model.
     queued_import: Option<u8>,
+    /// The workspace's size in the last frame: where Add Matrix has room.
+    desk: egui::Vec2,
 }
 
 /// Engine builds run in the background, except in tests (see
@@ -429,10 +431,14 @@ type GridScroll =
 /// A category tile's height (the NeXT tiles are 17 px tall).
 const TILE_H: f32 = 17.0;
 
-/// How far a newly added matrix is offset from the last one, in points, so a
-/// fresh matrix never lands exactly on top of its predecessor (the classic
-/// cascade). See [`ImprovApp::add_matrix`].
-const CASCADE: f32 = 28.0;
+/// The room Add Matrix leaves between a new window and the last one.
+const WINDOW_GAP: f32 = 8.0;
+
+/// How far Add Matrix cascades a new window from the last one when neither
+/// beside nor below it has room: past its title bar (nxwin's 23 px and
+/// border) plus [`WINDOW_GAP`], so the old title stays readable (H1-28).
+/// See [`ImprovApp::add_matrix`].
+const CASCADE: f32 = 24.0 + WINDOW_GAP;
 
 /// Seconds a status message stays up before the status bar clears it.
 const STATUS_TTL: f64 = 5.0;
@@ -1307,6 +1313,7 @@ impl ImprovApp {
             probed_at: f64::NEG_INFINITY,
             outside: None,
             queued_import: None,
+            desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         };
         app.open_first_view();
         // The window opens on the inputs; the formulas follow (H3).
@@ -1362,21 +1369,36 @@ impl ImprovApp {
         self.matrices.len()
     }
 
-    /// Add a matrix showing `measure` to the canvas, cascaded down-right from
-    /// the last one so it does not land exactly on top of it, and focus it.
-    /// Returns its index.
+    /// Add a matrix showing `measure` to the canvas, the size of the last
+    /// one, and focus it. Returns its index. It goes beside the last window,
+    /// else below it, where that is on the desk and clear of every window;
+    /// else it cascades from it by a title bar plus a gap, kept on the desk
+    /// (H1-28).
     ///
     /// Canvas layout only — the model is untouched, so this is deliberately NOT
     /// an undo point; see [`Self::undo`].
     pub fn add_matrix(&mut self, measure: Option<MeasureId>) -> usize {
         let mut m = Matrix::new(&self.model, measure);
         let last = self.matrices.last().map(|m| m.rect).unwrap_or_default();
-        m.rect = CanvasRect {
-            x: last.x + CASCADE,
-            y: last.y + CASCADE,
-            w: last.w,
-            h: last.h,
+        let at = |x: f32, y: f32| CanvasRect { x, y, ..last };
+        let on_desk = |r: &CanvasRect| r.x + r.w <= self.desk.x && r.y + r.h <= self.desk.y;
+        let area =
+            |r: &CanvasRect| egui::Rect::from_min_size(egui::pos2(r.x, r.y), egui::vec2(r.w, r.h));
+        let clear = |r: &CanvasRect| {
+            self.matrices
+                .iter()
+                .all(|m| !area(&m.rect).intersects(area(r)))
         };
+        let (right, below) = (last.x + last.w + WINDOW_GAP, last.y + last.h + WINDOW_GAP);
+        m.rect = [at(right, last.y), at(last.x, below)]
+            .into_iter()
+            .find(|r| on_desk(r) && clear(r))
+            .unwrap_or_else(|| {
+                at(
+                    (last.x + CASCADE).min(self.desk.x - last.w).max(0.0),
+                    (last.y + CASCADE).min(self.desk.y - last.h).max(0.0),
+                )
+            });
         self.matrices.push(m);
         self.focus = self.matrices.len() - 1;
         self.focus
@@ -6025,6 +6047,7 @@ impl ImprovApp {
                 })
                 .inner
         };
+        self.desk = ws.size();
         if self.model.measures.is_empty() {
             return ws;
         }
@@ -7916,6 +7939,7 @@ mod tests {
             probed_at: f64::NEG_INFINITY,
             outside: None,
             queued_import: None,
+            desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         }
     }
 
@@ -12349,6 +12373,64 @@ mod tests {
             win.translate(egui::vec2(60.0, 40.0)),
             "and the window follows the view"
         );
+    }
+
+    /// H1-28: Add Matrix puts the new window beside the last one, then below
+    /// it, on the desk and covering no window; with no room it cascades
+    /// past the last one's title bar, still on the desk.
+    #[test]
+    fn add_matrix_places_the_new_window_clear_of_the_old() {
+        let (mut app, mut desk) = grid_desk();
+        let area =
+            |r: CanvasRect| egui::Rect::from_min_size(egui::pos2(r.x, r.y), egui::vec2(r.w, r.h));
+        let first = app.matrices[0].rect;
+        app.run_command(&desk.ctx, Command::AddMatrix);
+        let beside = app.matrices[1].rect;
+        assert_eq!(
+            (beside.x, beside.y),
+            (first.x + first.w + WINDOW_GAP, first.y)
+        );
+        assert_eq!((beside.w, beside.h), (first.w, first.h), "the same size");
+        app.add_matrix(Some(MeasureId(101)));
+        let below = app.matrices[2].rect;
+        assert_eq!(
+            (below.x, below.y),
+            (beside.x, beside.y + beside.h + WINDOW_GAP)
+        );
+        for (i, a) in app.matrices.iter().enumerate() {
+            for b in &app.matrices[i + 1..] {
+                assert!(!area(a.rect).intersects(area(b.rect)), "{a:?} {b:?}");
+            }
+        }
+        // No room beside or below: a cascade past the title bar...
+        app.add_matrix(Some(MeasureId(101)));
+        let cascade = app.matrices[3].rect;
+        assert_eq!(
+            (cascade.x, cascade.y),
+            (below.x + CASCADE, below.y + CASCADE)
+        );
+        // ...kept on the desk at its bottom-right corner.
+        app.matrices[3].rect.x = app.desk.x - cascade.w;
+        app.matrices[3].rect.y = app.desk.y - cascade.h;
+        app.add_matrix(Some(MeasureId(101)));
+        let corner = app.matrices[4].rect;
+        assert_eq!(
+            (corner.x + corner.w, corner.y + corner.h),
+            (app.desk.x, app.desk.y)
+        );
+        desk.settle(&mut app);
+        let ws = egui::Rect::from_min_size(egui::Pos2::ZERO, app.desk);
+        for m in &app.matrices {
+            assert!(
+                ws.contains_rect(area(m.rect)),
+                "{:?} on {:?}",
+                m.rect,
+                app.desk
+            );
+        }
+        // Shown where placed: the first two windows do not overlap on screen.
+        let (w0, w1) = (win_rect(&desk.ctx, &app, 0), win_rect(&desk.ctx, &app, 1));
+        assert!(!w0.intersects(w1), "{w0:?} {w1:?}");
     }
 
     /// (c) Clicking window 2 focuses matrix 1.

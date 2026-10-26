@@ -72,9 +72,11 @@ The window has five regions:
   bottom-left corner, the right third the bottom-right). Clicking a window
   makes it key (black title bar) and gives its matrix the keyboard. With more
   than one matrix open, each window's close box removes its matrix.
-  **Worksheet ▸ Add Matrix** opens another window, and **Save View** records
-  every window's place and size. A fresh window opens right of the menu,
-  sized to its grid.
+  **Worksheet ▸ Add Matrix** opens another window the size of the last
+  one, beside it, or below it, where the workspace has room and no window
+  is covered; else it cascades from the last one, its title bar showing.
+  **Save View** records every window's place and size. A fresh window
+  opens right of the menu, sized to its grid.
 - **Pivot grid** (in each worksheet window) — the measure projected onto the
   current axes. Here Revenue is shown with **Product** on columns, **Time** on rows,
   and **Region** paged. The **category tiles** are dark-gray chips, placed as in
