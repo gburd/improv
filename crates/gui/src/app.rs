@@ -4019,8 +4019,9 @@ fn literal_dsl(v: &Value) -> Option<String> {
 ///
 /// Dates and booleans reuse the formula grammar's own literal forms (via
 /// `parser::parse_expr` on `#...#` / `TRUE`|`FALSE`), so a date a formula
-/// accepts is a date a cell accepts. Numbers are [`parse_number`]'s: a cell
-/// must accept `-3.5`, which a formula reads as a negation, and `$1,500`.
+/// accepts is a date a cell accepts. Numbers are
+/// [`improv_core_model::Locale::parse_number`]'s: a cell must accept `-3.5`,
+/// which a formula reads as a negation, and `$1,500`.
 fn parse_typed(
     model: &Model,
     locale: &improv_core_model::Locale,
@@ -4035,13 +4036,10 @@ fn parse_typed(
         Err(_) => None,
     };
     match declared {
-        ValueType::Number => parse_number(locale, text)
+        ValueType::Number => locale
+            .parse_number(text)
             .map(Value::Number)
-            .ok_or_else(|| {
-                let (g, d) = locale_separators(locale);
-                let cur = if locale.tag == "de" { '€' } else { '$' };
-                format!("not a number: {text:?} (type 1500, 1{g}500{d}25 or {cur}1{g}500)")
-            }),
+            .ok_or_else(|| format!("not a number: {text:?} ({})", locale.number_hint())),
         // Text takes the buffer verbatim (trimmed by the caller) — no parsing,
         // so nothing a user can type is rejected.
         ValueType::Text => Ok(Value::Text(text.to_string())),
@@ -4054,58 +4052,6 @@ fn parse_typed(
             .map(Value::Enum)
             .map_err(|_| format!("not an enum index: {text:?}")),
     }
-}
-
-/// A locale's `(group, decimal)` separators: `1,500.25` in English,
-/// `1.500,25` in German.
-fn locale_separators(locale: &improv_core_model::Locale) -> (char, char) {
-    let group = if locale.decimal == ',' { '.' } else { ',' };
-    (group, locale.decimal)
-}
-
-/// A number typed into a cell (H1-27). The grid's own form first (`-3.5`,
-/// `1500`, `1e3`), so a value edited unchanged reads back as it was; then
-/// the locale's: an optional sign and leading currency sign (`$ € £ ¥`),
-/// the group separator between thousands, the locale's decimal separator.
-/// `-$1,500.25` and `$-1,500` in English, `€1.500,25` in German. Groups must
-/// be three digits, so `1,50` (a decimal comma?) is refused, not guessed.
-/// In German `1.500` is the grid's `1.5`, as the grid shows it.
-fn parse_number(locale: &improv_core_model::Locale, text: &str) -> Option<f64> {
-    if let Ok(x) = text.parse::<f64>() {
-        return Some(x);
-    }
-    let (group, decimal) = locale_separators(locale);
-    fn sign(t: &str) -> (bool, &str) {
-        t.strip_prefix('-').map_or((false, t), |r| (true, r))
-    }
-    let (minus, t) = sign(text);
-    let t = t
-        .strip_prefix(['$', '€', '£', '¥'])
-        .unwrap_or(t)
-        .trim_start();
-    let (minus2, t) = sign(t);
-    if minus && minus2 {
-        return None;
-    }
-    let (int, frac) = t.split_once(decimal).unwrap_or((t, ""));
-    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    let mut groups = int.split(group);
-    let lead = groups.next()?;
-    let grouped = int.contains(group);
-    let ok = digits(lead)
-        && (!grouped || lead.len() <= 3)
-        && groups.all(|g| g.len() == 3 && digits(g))
-        && (frac.is_empty() || digits(frac));
-    if !ok {
-        return None;
-    }
-    let s = format!(
-        "{}{}.{}",
-        if minus || minus2 { "-" } else { "" },
-        int.replace(group, ""),
-        if frac.is_empty() { "0" } else { frac }
-    );
-    s.parse().ok()
 }
 
 fn decode(k: &CoordKey) -> improv_core_model::Coordinate {
@@ -15284,46 +15230,10 @@ mod tests {
     }
 
     /// H1-27: a number cell takes the locale's group separator and a
-    /// leading currency sign; the grid's own form always reads as before.
+    /// leading currency sign (`Locale::parse_number`, tested in core_model).
     #[test]
     fn number_entry_takes_group_separators_and_a_currency_sign() {
-        use improv_core_model::Locale;
-        let (en, de) = (Locale::en(), Locale::de());
-        for (text, want) in [
-            ("1500", Some(1500.0)),
-            ("-3.5", Some(-3.5)),
-            ("1,500", Some(1500.0)),
-            ("$1,500", Some(1500.0)),
-            ("$ 1500", Some(1500.0)),
-            ("€1,500", Some(1500.0)),
-            ("-$1,500.25", Some(-1500.25)),
-            ("$-1,500", Some(-1500.0)),
-            ("1,234,567", Some(1_234_567.0)),
-            ("1,500.", Some(1500.0)),
-            ("1,50", None),
-            ("1,5000", None),
-            ("1234,567", None),
-            (",500", None),
-            ("1,,500", None),
-            ("1,500.2.5", None),
-            ("1,500.x", None),
-            ("$", None),
-            ("-$-1", None),
-            ("abc", None),
-        ] {
-            assert_eq!(parse_number(&en, text), want, "en {text:?}");
-        }
-        for (text, want) in [
-            ("1.500,25", Some(1500.25)),
-            ("1500,5", Some(1500.5)),
-            ("€1.500", Some(1500.0)),
-            ("1,500", Some(1.5)),
-            ("1.5", Some(1.5)),
-            ("1.500", Some(1.5)),
-            ("1.50,0", None),
-        ] {
-            assert_eq!(parse_number(&de, text), want, "de {text:?}");
-        }
+        let de = improv_core_model::Locale::de();
         // Through the grid: $1,500 is stored as 1500.
         let (mut app, mut desk) = grid_desk();
         let at = cell_rect(&desk, &app, 0, 0).center();

@@ -519,12 +519,14 @@ pub fn parse_export_line(line: &str) -> Result<(String, MeasureId, u8), String> 
 }
 
 /// Parse an edit buffer as a `vt`-typed value (mirrors the CLI's `set`).
-pub fn parse_typed(text: &str, vt: ValueType) -> Result<Value, String> {
+/// A number may be typed as `locale` writes it, `1,500` or `$1,500`
+/// (H1-27, the GUI's [`Locale::parse_number`]).
+pub fn parse_typed(text: &str, vt: ValueType, locale: &Locale) -> Result<Value, String> {
     match vt {
-        ValueType::Number => text
-            .parse()
+        ValueType::Number => locale
+            .parse_number(text)
             .map(Value::Number)
-            .map_err(|_| format!("not a number: '{text}'")),
+            .ok_or_else(|| format!("not a number: '{text}' ({})", locale.number_hint())),
         ValueType::Boolean => match text {
             "true" => Ok(Value::Boolean(true)),
             "false" => Ok(Value::Boolean(false)),
@@ -1105,7 +1107,7 @@ impl App {
         // cell too: there is no other way to empty one).
         let value = match buf.trim() {
             "" => None,
-            text => match parse_typed(text, vt) {
+            text => match parse_typed(text, vt, &self.grid.locale) {
                 Ok(v) => Some(v),
                 Err(e) => {
                     self.status = Some(e);
@@ -2411,6 +2413,42 @@ pub(crate) mod tests {
         assert_eq!(empty.status.as_deref(), Some(EMPTY));
     }
 
+    /// H1-27: the cell editor takes `1,500` and `$1,500`, as the GUI's does
+    /// (one parser, `Locale::parse_number`), and in German `1.500,25`.
+    #[test]
+    fn a_number_cell_takes_1_500_and_a_currency_sign() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        for (typed, want) in [
+            ("1,500", "1500"),
+            ("$1,500.25", "1500.25"),
+            ("-$2,000", "-2000"),
+        ] {
+            app.begin_edit();
+            app.edit = Some(typed.into());
+            app.commit_edit();
+            assert_eq!(app.edit, None, "{typed}: {:?}", app.status);
+            assert_eq!(app.grid.display_at(0, 0), want, "{typed}");
+        }
+        app.begin_edit();
+        app.edit = Some("1,50".into());
+        app.commit_edit();
+        assert!(app.edit.is_some(), "a refused edit stays open");
+        assert_eq!(
+            app.status.as_deref(),
+            Some("not a number: '1,50' (type 1500, 1,500.25 or $1,500)")
+        );
+        let de = Locale::de();
+        assert_eq!(
+            parse_typed("€1.500,25", ValueType::Number, &de),
+            Ok(Value::Number(1500.25))
+        );
+        assert_eq!(
+            parse_typed("1,50,0", ValueType::Number, &de),
+            Err("not a number: '1,50,0' (type 1500, 1.500,25 or €1.500)".into())
+        );
+    }
+
     #[test]
     fn editing_input_recomputes_derived_via_engine() {
         let mut app = App::new(revenue_model()).unwrap();
@@ -2870,7 +2908,7 @@ pub(crate) mod tests {
         // Derived values survive a non-number edit.
         view(&mut app, MeasureId(102));
         assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
-        assert!(parse_typed("x", ValueType::DateTime).is_err());
+        assert!(parse_typed("x", ValueType::DateTime, &Locale::en()).is_err());
     }
 
     /// A boolean edit flows through the live engine as one delta (no rebuild):
@@ -2991,10 +3029,13 @@ pub(crate) mod tests {
         assert_eq!(app.edit.as_deref(), Some("2.5"));
         app.edit = Some("abc".into());
         app.commit_edit();
-        assert_eq!(app.status.as_deref(), Some("not a number: 'abc'"));
+        assert_eq!(
+            app.status.as_deref(),
+            Some("not a number: 'abc' (type 1500, 1,500.25 or $1,500)")
+        );
         app.edit = Some("false".into());
         assert_eq!(
-            parse_typed("false", ValueType::Boolean),
+            parse_typed("false", ValueType::Boolean, &Locale::en()),
             Ok(Value::Boolean(false))
         );
         // Commits with no active buffer do nothing.

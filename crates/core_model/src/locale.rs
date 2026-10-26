@@ -58,6 +58,60 @@ impl Locale {
         }
     }
 
+    /// A number as typed into a cell (H1-27). The canonical form first
+    /// (`-3.5`, `1500`, `1e3`), so a value edited unchanged reads back as
+    /// it was; then this locale's: an optional sign and leading currency
+    /// sign (`$ € £ ¥`), the [group](Self::group) separator between
+    /// thousands, the locale's decimal separator. `-$1,500.25` and
+    /// `$-1,500` in English, `€1.500,25` in German. Groups must be three
+    /// digits, so `1,50` (a decimal comma?) is refused, not guessed. In
+    /// German `1.500` is the canonical `1.5`, as the grid shows it.
+    pub fn parse_number(&self, text: &str) -> Option<f64> {
+        if let Ok(x) = text.parse::<f64>() {
+            return Some(x);
+        }
+        let (group, decimal) = (self.group(), self.decimal);
+        fn sign(t: &str) -> (bool, &str) {
+            t.strip_prefix('-').map_or((false, t), |r| (true, r))
+        }
+        let (minus, t) = sign(text);
+        let t = t
+            .strip_prefix(['$', '€', '£', '¥'])
+            .unwrap_or(t)
+            .trim_start();
+        let (minus2, t) = sign(t);
+        if minus && minus2 {
+            return None;
+        }
+        let (int, frac) = t.split_once(decimal).unwrap_or((t, ""));
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        let mut groups = int.split(group);
+        let lead = groups.next()?;
+        let grouped = int.contains(group);
+        let ok = digits(lead)
+            && (!grouped || lead.len() <= 3)
+            && groups.all(|g| g.len() == 3 && digits(g))
+            && (frac.is_empty() || digits(frac));
+        if !ok {
+            return None;
+        }
+        let s = format!(
+            "{}{}.{}",
+            if minus || minus2 { "-" } else { "" },
+            int.replace(group, ""),
+            if frac.is_empty() { "0" } else { frac }
+        );
+        s.parse().ok()
+    }
+
+    /// What [`Self::parse_number`] takes, for a refusal: `type 1500,
+    /// 1,500.25 or $1,500` (German: `1.500,25 or €1.500`).
+    pub fn number_hint(&self) -> String {
+        let (g, d) = (self.group(), self.decimal);
+        let cur = if self.tag == "de" { '€' } else { '$' };
+        format!("type 1500, 1{g}500{d}25 or {cur}1{g}500")
+    }
+
     /// The locale for a tag such as `de`, `de_DE.UTF-8` or `en-US`; English
     /// for anything unknown.
     pub fn from_tag(tag: &str) -> Locale {
@@ -258,6 +312,50 @@ mod tests {
         assert_eq!(Locale::from_tag("fr_FR").tag, "en");
         assert_eq!(Locale::from_tag("").tag, "en");
         assert_eq!((en.group(), Locale::de().group()), (',', '.'));
+    }
+
+    /// H1-27: a number cell takes the locale's group separator and a
+    /// leading currency sign; the canonical form always reads as before.
+    #[test]
+    fn numbers_take_group_separators_and_a_currency_sign() {
+        let (en, de) = (Locale::en(), Locale::de());
+        for (text, want) in [
+            ("1500", Some(1500.0)),
+            ("-3.5", Some(-3.5)),
+            ("1,500", Some(1500.0)),
+            ("$1,500", Some(1500.0)),
+            ("$ 1500", Some(1500.0)),
+            ("€1,500", Some(1500.0)),
+            ("-$1,500.25", Some(-1500.25)),
+            ("$-1,500", Some(-1500.0)),
+            ("1,234,567", Some(1_234_567.0)),
+            ("1,500.", Some(1500.0)),
+            ("1,50", None),
+            ("1,5000", None),
+            ("1234,567", None),
+            (",500", None),
+            ("1,,500", None),
+            ("1,500.2.5", None),
+            ("1,500.x", None),
+            ("$", None),
+            ("-$-1", None),
+            ("abc", None),
+        ] {
+            assert_eq!(en.parse_number(text), want, "en {text:?}");
+        }
+        for (text, want) in [
+            ("1.500,25", Some(1500.25)),
+            ("1500,5", Some(1500.5)),
+            ("€1.500", Some(1500.0)),
+            ("1,500", Some(1.5)),
+            ("1.5", Some(1.5)),
+            ("1.500", Some(1.5)),
+            ("1.50,0", None),
+        ] {
+            assert_eq!(de.parse_number(text), want, "de {text:?}");
+        }
+        assert_eq!(en.number_hint(), "type 1500, 1,500.25 or $1,500");
+        assert_eq!(de.number_hint(), "type 1500, 1.500,25 or €1.500");
     }
 
     #[test]

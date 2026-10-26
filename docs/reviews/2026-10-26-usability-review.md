@@ -323,7 +323,7 @@ name (one lookup, `measure_by_name`). **Files:** `crates/cli/src/main.rs`
 **[fixed: `fix(tui): undo keeps the cursor on its cell (H1-26)`] H1-26 TUI:** after `u`, the cursor moves one row up (Fun → Utilities).
 Keep the cursor cell. `crates/tui/src/app.rs` (`travel`, `relayout`).
 
-**[fixed (GUI): `fix(gui): a number cell takes 1,500 and $1,500 (H1-27)`] H1-27 GUI, TUI:** both refuse `1,500`, and the TUI refuses `$1500`
+**[fixed: `fix(gui): a number cell takes 1,500 and $1,500 (H1-27)`, `fix(tui): a number cell takes 1,500 and $1,500 (H1-27)`] H1-27 GUI, TUI:** both refuse `1,500`, and the TUI refuses `$1500`
 (not tried in the GUI). Accept the locale's group separator and a leading
 currency sign for number measures, in each crate's `parse_typed`.
 

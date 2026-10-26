@@ -182,6 +182,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   be three digits, so `1,50` is refused rather than guessed, and a
   refusal now names the forms taken: `not a number: "1,50" (type 1500,
   1,500.25 or $1,500)`.
+- **A TUI number cell takes `1,500` and `$1,500`** too (H1-27, the TUI
+  part), and `1.500,25` and `€1.500` with `IMPROV_LOCALE=de`: the TUI
+  now uses the GUI's parser, which moved to core_model
+  (`Locale::parse_number`). It refused both, saying only "not a
+  number"; a refusal names the forms taken, as in the GUI.
 - **Worksheet ▸ Add Matrix opens the new window beside the last one**,
   or below it, where the desk has room and no window is covered; it
   opened 28 px from the last one, over it, which read as one window.

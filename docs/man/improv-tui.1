@@ -55,7 +55,19 @@ categories, such as
 .BR 5 ,
 needs a second Enter. A cell's old value shows selected: the first key
 typed replaces it, and Left, Right, Home, End or Backspace first edit it in
-place. Enter commits (an empty edit clears the cell), Esc cancels; on an
+place. A number cell takes
+.BR 1500 ,
+.BR \-3.5 ,
+.B 1,500.25
+and
+.B $1,500
+(a leading dollar, euro, pound or yen sign; with
+.BR IMPROV_LOCALE=de ,
+.B 1.500,25
+and
+.BR \(Eu1.500 );
+.B 1,50
+is refused, not guessed. Enter commits (an empty edit clears the cell), Esc cancels; on an
 error the edit
 stays open with the message under it. A formula that does not parse has
 the offending token underlined in red, a
@@ -205,8 +217,8 @@ Quit and save.
 .SH ENVIRONMENT
 .TP
 .B IMPROV_LOCALE
-The locale (else the OS locale): a number format's decimal and thousands
-separators,
+The locale (else the OS locale): the decimal and thousands separators a
+number cell takes and a number format writes,
 .B 1,234.50
 in English and
 .B 1.234,50
