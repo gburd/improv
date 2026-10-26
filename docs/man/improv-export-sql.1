@@ -5,7 +5,7 @@
 .SH NAME
 improv\-export\-sql \- Write a measure\*(Aqs input cells to a SQLite table
 .SH SYNOPSIS
-\fBimprov export\-sql\fR <db> <target.sqlite> <measure\-id> <table> <value\-col>
+\fBimprov export\-sql\fR <db> <target.sqlite> <measure> <table> <value\-col>
 .SH DESCRIPTION
 Write a measure\*(Aqs input cells to a SQLite table.
 .PP
@@ -21,8 +21,8 @@ The model store: a file, or postgres://USER@HOST/DB?model=NAME
 <\fItarget.sqlite\fR>
 The SQLite database to write
 .TP
-<\fImeasure\-id\fR>
-A measure\*(Aqs numeric id
+<\fImeasure\fR>
+A measure: its numeric id, or its name (all digits is an id)
 .TP
 <\fItable\fR>
 The table

@@ -139,13 +139,13 @@ Run a CALL(...) measure's function and store its cells.
 The function runs host-side, over its argument measures; external calls stay off the dataflow engine.
 
 ```text
-Usage: improv refresh-ext <db> <measure-id>
+Usage: improv refresh-ext <db> <measure>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 
 ### `improv set`
 
@@ -154,13 +154,13 @@ Set an input cell.
 The value is parsed by the measure's type: a number, true or false, or verbatim text. --at maps category names to item names; omit it for a scalar cell. Pairs may be comma-joined (--at Time=Q1,Product=A), space-separated (--at Time=Q1 Product=A) or in repeated flags; they are merged, and a category may appear only once.
 
 ```text
-Usage: improv set [OPTIONS] <db> <measure-id> <value>
+Usage: improv set [OPTIONS] <db> <measure> <value>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<value>` | The cell's value |
 | `--at` `<Cat=Item>` | The cell's coordinate: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags |
 
@@ -200,13 +200,13 @@ Usage: improv save-view [OPTIONS] <db> <view-id> <name> <measure>
 Print one measure and its input cells
 
 ```text
-Usage: improv show <db> <measure-id>
+Usage: improv show <db> <measure>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 
 ### `improv eval`
 
@@ -215,13 +215,13 @@ Compute a derived measure and print its cells.
 With --scenario, under that what-if scenario's overrides.
 
 ```text
-Usage: improv eval [OPTIONS] <db> <measure-id>
+Usage: improv eval [OPTIONS] <db> <measure>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `--scenario` `<name>` | The scenario to evaluate under |
 
 ### `improv scenario`
@@ -231,14 +231,14 @@ Add an input-cell override to a what-if scenario.
 The scenario is created if it is new. The base model is untouched; evaluate under it with eval ... --scenario NAME. --at takes the same forms as for set.
 
 ```text
-Usage: improv scenario [OPTIONS] <db> <scenario-name> <measure-id> <value>
+Usage: improv scenario [OPTIONS] <db> <scenario-name> <measure> <value>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
 | `<scenario-name>` | The scenario's name |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<value>` | The overriding value |
 | `--at` `<Cat=Item>` | The cell's coordinate: Category=Item pairs, comma-joined, space-separated, or in repeated --at flags |
 
@@ -282,14 +282,14 @@ Re-run an SQL-backed measure's query and replace its cells.
 New dimension values become new items.
 
 ```text
-Usage: improv refresh-sql <db> <source.sqlite> <measure-id>
+Usage: improv refresh-sql <db> <source.sqlite> <measure>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
 | `<source.sqlite>` | The SQLite database to query |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 
 ### `improv refresh-all`
 
@@ -329,14 +329,14 @@ Write a measure's input cells to a SQLite table.
 One column per dimension category, then the value column; the table is created if absent. Identifiers are validated and values bound as parameters.
 
 ```text
-Usage: improv export-sql <db> <target.sqlite> <measure-id> <table> <value-col>
+Usage: improv export-sql <db> <target.sqlite> <measure> <table> <value-col>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
 | `<target.sqlite>` | The SQLite database to write |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `<table>` | The table |
 | `<value-col>` | The value column's name |
 
@@ -368,14 +368,14 @@ Write a measure's cells to a CSV or TSV file.
 An input measure's stored cells or a derived measure's computed ones: one column per dimension category, then the value; header row first. Text a spreadsheet would run as a formula is prefixed with a quote.
 
 ```text
-Usage: improv export-csv [OPTIONS] <db> <target.csv> <measure-id>
+Usage: improv export-csv [OPTIONS] <db> <target.csv> <measure>
 ```
 
 | Argument | Description |
 | --- | --- |
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
 | `<target.csv>` | The file to write (tab-separated if it ends in .tsv) |
-| `<measure-id>` | A measure's numeric id |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
 | `--tsv` `<TSV>` | Tab-separated |
 
 ### `improv stream`

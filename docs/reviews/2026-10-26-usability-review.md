@@ -312,7 +312,7 @@ are only in the man page. **Fix:** a dim example after an empty prompt
 (`category> Name: item, item, …`). **Files:** `crates/tui/src/ui.rs`
 (prompt strings).
 
-**H1-25 CLI: measures are named by id only.** *Recognition rather than
+**[fixed: `feat(cli): commands take a measure by name as well as by id (H1-25)`] H1-25 CLI: measures are named by id only.** *Recognition rather than
 recall.* `improv eval budget.db Left` fails with "must be a number", so
 you need `improv list` to find 200. **Fix:** `<measure>` takes an id or a
 name (one lookup, `measure_by_name`). **Files:** `crates/cli/src/main.rs`

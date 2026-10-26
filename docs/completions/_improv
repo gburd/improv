@@ -101,7 +101,7 @@ _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
 (set)
@@ -110,7 +110,7 @@ _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 ':value -- The cell'\''s value:_default' \
 '*::stray -- A coordinate given without --at (refused, with a hint):_default' \
 && ret=0
@@ -139,7 +139,7 @@ _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
 (eval)
@@ -148,7 +148,7 @@ _arguments "${_arguments_options[@]}" : \
 '-h[Print help (see more with '\''--help'\'')]' \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
 (scenario)
@@ -158,7 +158,7 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
 ':scenario -- The scenario'\''s name:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 ':value -- The overriding value:_default' \
 '*::stray -- A coordinate given without --at (refused, with a hint):_default' \
 && ret=0
@@ -190,7 +190,7 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
 ':source -- The SQLite database to query:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
 (refresh-all)
@@ -216,7 +216,7 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
 ':target -- The SQLite database to write:_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 ':table -- The table:_default' \
 ':value_col -- The value column'\''s name:_default' \
 && ret=0
@@ -242,7 +242,7 @@ _arguments "${_arguments_options[@]}" : \
 '--help[Print help (see more with '\''--help'\'')]' \
 ':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
 ':target -- The file to write (tab-separated if it ends in .tsv):_default' \
-':measure -- A measure'\''s numeric id:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
 && ret=0
 ;;
 (stream)

@@ -49,6 +49,8 @@ const CASES: &[Case] = &[
     (EN, &["set", "{d}/m.db", "101", "80", "--at", "Time=2026,Product=WidgetB"], None, Some("set measure 101\n")),
     (EN, &["set", "{d}/m.db", "103", "true"], None, Some("set measure 103\n")),
     (EN, &["set", "{d}/m.db", "104", "hello world"], None, Some("set measure 104\n")),
+    // H1-25: a measure by name.
+    (EN, &["set", "{d}/m.db", "Price", "10", "--at", "Product=WidgetA"], None, Some("set measure 100\n")),
     (EN, &["list", "{d}/m.db"], None, Some("categories:\n  1 Time\n  2 Product\nitems:\n  10 2025 (category 1)\n  11 2026 (category 1)\n  20 WidgetA (category 2)\n  21 WidgetB (category 2)\nmeasures:\n  100 Price [input] Number\n  101 Quantity [input] Number\n  103 Flag [input] Boolean\n  104 Note [input] Text\nviews:\ninputs:\n  100::{Product=WidgetA} = 10\n  100::{Product=WidgetB} = 20\n  101::{Time=2025,Product=WidgetA} = 100\n  101::{Time=2025,Product=WidgetB} = 50\n  101::{Time=2026,Product=WidgetA} = 120\n  101::{Time=2026,Product=WidgetB} = 80\n  103::{} = true\n  104::{} = \"hello world\"\n")),
     (EN, &["save-view", "{d}/m.db", "1", "Quantity by year", "Quantity", "--rows", "Time", "--cols", "Product"], None, Some("saved view 1 'Quantity by year'\n")),
     (EN, &["save-view", "{d}/m.db", "2", "Prices", "100", "--rows", "Product"], None, Some("saved view 2 'Prices'\n")),
@@ -145,10 +147,10 @@ const FAILS: &[(&[&str], i32, &str)] = &[
     ),
     (
         &["show", "{d}/m.db", "x"],
-        2,
-        "<measure-id> must be a number",
+        1,
+        "no measure named 'x'; the measures are",
     ),
-    (&["eval", "{d}/m.db"], 2, "missing argument <measure-id>"),
+    (&["eval", "{d}/m.db"], 2, "missing argument <measure>"),
     (
         &["eval", "{d}/m.db", "102", "--scenario", "nope"],
         1,

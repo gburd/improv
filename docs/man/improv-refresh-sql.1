@@ -5,7 +5,7 @@
 .SH NAME
 improv\-refresh\-sql \- Re\-run an SQL\-backed measure\*(Aqs query and replace its cells
 .SH SYNOPSIS
-\fBimprov refresh\-sql\fR <db> <source.sqlite> <measure\-id>
+\fBimprov refresh\-sql\fR <db> <source.sqlite> <measure>
 .SH DESCRIPTION
 Re\-run an SQL\-backed measure\*(Aqs query and replace its cells.
 .PP
@@ -21,7 +21,7 @@ The model store: a file, or postgres://USER@HOST/DB?model=NAME
 <\fIsource.sqlite\fR>
 The SQLite database to query
 .TP
-<\fImeasure\-id\fR>
-A measure\*(Aqs numeric id
+<\fImeasure\fR>
+A measure: its numeric id, or its name (all digits is an id)
 .SH SEE ALSO
 .BR improv (1).

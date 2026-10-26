@@ -5,7 +5,7 @@
 .SH NAME
 improv\-eval \- Compute a derived measure and print its cells
 .SH SYNOPSIS
-\fBimprov eval\fR [OPTIONS] <db> <measure\-id>
+\fBimprov eval\fR [OPTIONS] <db> <measure>
 .SH DESCRIPTION
 Compute a derived measure and print its cells.
 .PP
@@ -21,7 +21,7 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 <\fIdb\fR>
 The model store: a file, or postgres://USER@HOST/DB?model=NAME
 .TP
-<\fImeasure\-id\fR>
-A measure\*(Aqs numeric id
+<\fImeasure\fR>
+A measure: its numeric id, or its name (all digits is an id)
 .SH SEE ALSO
 .BR improv (1).

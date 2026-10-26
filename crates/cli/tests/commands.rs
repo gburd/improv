@@ -174,10 +174,7 @@ fn help_prints_usage_for_every_spelling_and_no_args() {
     for args in [&["help", "set"][..], &["set", "--help"], &["set", "-h"]] {
         let out = ok(args);
         stdout_has(&out, "Set an input cell");
-        stdout_has(
-            &out,
-            "Usage: improv set [OPTIONS] <db> <measure-id> <value>",
-        );
+        stdout_has(&out, "Usage: improv set [OPTIONS] <db> <measure> <value>");
     }
 }
 
@@ -329,7 +326,10 @@ fn show_prints_one_measure_and_only_its_cells() {
         "measure 102 Revenue [derived] Number",
     );
     fails_with(&["show", &db, "999"], "no measure with id 999");
-    fails_with(&["show", &db, "x"], "<measure-id> must be a number");
+    fails_with(
+        &["show", &db, "x"],
+        "no measure named 'x'; the measures are",
+    );
 }
 
 #[test]
@@ -385,7 +385,64 @@ fn add_derived_then_eval_prints_every_cell() {
     );
     fails_with(&["eval", &db, "100"], "is an input measure");
     fails_with(&["eval", &db, "999"], "no measure with id 999");
-    fails_with(&["eval", &db], "missing argument <measure-id>");
+    fails_with(&["eval", &db], "missing argument <measure>");
+}
+
+/// H1-25: every command that takes a measure takes its name too. All
+/// digits is an id; an unknown name lists the measures, nearest first.
+#[test]
+fn measures_are_named_by_id_or_name() {
+    let (dir, db) = model("by-name");
+    let d = db.as_str();
+    assert_eq!(ok(&["eval", d, "Revenue"]), ok(&["eval", d, "102"]));
+    assert_eq!(ok(&["show", d, "Quantity"]), ok(&["show", d, "101"]));
+    assert_eq!(
+        ok(&["set", d, "Price", "12", "--at", "Product=WidgetA"]),
+        "set measure 100\n"
+    );
+    stdout_has(&ok(&["show", d, "Price"]), "100::{Product=WidgetA} = 12");
+    ok(&[
+        "scenario",
+        d,
+        "hi",
+        "Price",
+        "20",
+        "--at",
+        "Product=WidgetA",
+    ]);
+    stdout_has(
+        &ok(&["eval", d, "Revenue", "--scenario", "hi"]),
+        "Revenue[Time=Q1, Product=WidgetA] = 140",
+    );
+    let csv = file(&dir, "q.csv");
+    ok(&["export-csv", d, &csv, "Quantity"]);
+    assert_eq!(
+        std::fs::read_to_string(&csv).unwrap(),
+        "Time,Product,Quantity\nQ1,WidgetA,7\nQ2,WidgetA,3\n"
+    );
+    let out = file(&dir, "q.sqlite");
+    assert_eq!(
+        ok(&["export-sql", d, &out, "Quantity", "q", "v"]),
+        "exported 2 cells from measure 101 to table 'q'\n"
+    );
+    // refresh-sql and refresh-ext reach the measure by name, then refuse
+    // one that is neither SQL-backed nor CALL(...).
+    fails_with(&["refresh-sql", d, &out, "Price"], "error:");
+    fails_with(&["refresh-ext", d, "Price"], "error:");
+
+    fails_with(
+        &["eval", d, "Revnue"],
+        "no measure named 'Revnue'; the measures are Revenue (102), Price (100), Quantity (101)",
+    );
+    for cmd in ["show", "refresh-ext"] {
+        fails_with(&[cmd, d, "Nope"], "no measure named 'Nope'");
+    }
+    fails_with(&["set", d, "Nope", "1"], "no measure named 'Nope'");
+    fails_with(&["eval", d, "999"], "no measure with id 999");
+    fails_with(
+        &["eval", d, "99999999999"],
+        "measure id 99999999999 is too large",
+    );
 }
 
 #[test]
@@ -525,7 +582,7 @@ fn register_ext_define_call_and_refresh_ext() {
         "unknown refresh policy 'hourly'",
     );
     fails_with(&["refresh-ext", &db, "100"], "error:");
-    fails_with(&["refresh-ext", &db], "missing argument <measure-id>");
+    fails_with(&["refresh-ext", &db], "missing argument <measure>");
     fails_with(
         &["register-ext", &db, "f", "two", "result = 1"],
         "<arity> must be a number",
@@ -650,7 +707,7 @@ fn save_view_success_and_errors() {
     );
     fails_with(
         &["save-view", &db, "2", "V", "Zzz"],
-        "no measure named or numbered 'Zzz'",
+        "no measure named 'Zzz'; the measures are",
     );
     assert_eq!(load(&db).views.len(), 1);
 }
@@ -775,7 +832,7 @@ fn import_csv_and_export_csv_errors() {
         &["export-csv", &db, "/nonexistent-improv-dir/o.csv", "100"],
         "error:",
     );
-    fails_with(&["export-csv", &db, &csv], "missing argument <measure-id>");
+    fails_with(&["export-csv", &db, &csv], "missing argument <measure>");
     assert!(load(&db).measure_by_name("S").is_none());
 }
 
@@ -925,7 +982,7 @@ fn sql_commands_report_their_errors() {
         &["refresh-sql", &db, "/nonexistent-improv-dir/s.db", "100"],
         "error:",
     );
-    fails_with(&["refresh-sql", &db, &src], "missing argument <measure-id>");
+    fails_with(&["refresh-sql", &db, &src], "missing argument <measure>");
     let target = file(&dir, "out.sqlite");
     fails_with(
         &["export-sql", &db, &target, "100", "bad name", "val"],
@@ -1027,7 +1084,7 @@ fn stream_errors() {
     fails_with(&["stream", &db], "stream needs at least one target measure");
     fails_with(
         &["stream", &db, "Nope"],
-        "no measure named or numbered 'Nope'",
+        "no measure named 'Nope'; the measures are",
     );
     fails_with(&["stream"], "missing argument <db>");
     let o = improv_stdin(&["stream", &db, "Revenue"], b"Price \xff\xfe 1\n");

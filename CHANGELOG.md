@@ -39,7 +39,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv-server` and the `improv` CLI (`Containerfile`), as an
   unprivileged user, refusing to start without a token. The release job
   checks that, `/health` and a 401 without a token, before it pushes.
-
+- **CLI commands take a measure by name as well as by id** (H1-25):
+  `improv eval budget.db Left`, `improv set budget.db Spent 300 --at …`.
+  This covers `set`, `show`, `eval`, `scenario`, `refresh-ext`,
+  `refresh-sql`, `export-sql` and `export-csv`, as `save-view` and `stream`
+  already did. An argument of all digits is an id. An unknown name is an
+  error that lists the measures, nearest first; a name two measures share
+  (possible only in a file from before H1-9) gives their ids. `--at`
+  already named categories and items by name.
 ### Fixed
 
 - **Typing on a TUI cell replaces its value.** `e` or Enter showed the old

@@ -5,7 +5,7 @@
 .SH NAME
 improv\-export\-csv \- Write a measure\*(Aqs cells to a CSV or TSV file
 .SH SYNOPSIS
-\fBimprov export\-csv\fR [OPTIONS] <db> <target.csv> <measure\-id>
+\fBimprov export\-csv\fR [OPTIONS] <db> <target.csv> <measure>
 .SH DESCRIPTION
 Write a measure\*(Aqs cells to a CSV or TSV file.
 .PP
@@ -24,8 +24,8 @@ The model store: a file, or postgres://USER@HOST/DB?model=NAME
 <\fItarget.csv\fR>
 The file to write (tab\-separated if it ends in .tsv)
 .TP
-<\fImeasure\-id\fR>
-A measure\*(Aqs numeric id
+<\fImeasure\fR>
+A measure: its numeric id, or its name (all digits is an id)
 .SH SEE ALSO
 .BR improv (1),
 .BR improv-files (5).

@@ -5,7 +5,7 @@
 .SH NAME
 improv\-set \- Set an input cell
 .SH SYNOPSIS
-\fBimprov set\fR [OPTIONS] <db> <measure\-id> <value>
+\fBimprov set\fR [OPTIONS] <db> <measure> <value>
 .SH DESCRIPTION
 Set an input cell.
 .PP
@@ -21,8 +21,8 @@ Print help (see a summary with \*(Aq\-h\*(Aq)
 <\fIdb\fR>
 The model store: a file, or postgres://USER@HOST/DB?model=NAME
 .TP
-<\fImeasure\-id\fR>
-A measure\*(Aqs numeric id
+<\fImeasure\fR>
+A measure: its numeric id, or its name (all digits is an id)
 .TP
 <\fIvalue\fR>
 The cell\*(Aqs value

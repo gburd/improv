@@ -167,7 +167,7 @@ fn run(cli: Cli) -> Result<(), String> {
             value,
             at,
             stray,
-        } => cmd_scenario(&db, &scenario, measure, &value, &coordinate(&at, &stray)?),
+        } => cmd_scenario(&db, &scenario, &measure, &value, &coordinate(&at, &stray)?),
         Cmd::Define {
             db,
             id,
@@ -180,14 +180,14 @@ fn run(cli: Cli) -> Result<(), String> {
             arity,
             body,
         } => cmd_register_ext(&db, &name, arity, &body),
-        Cmd::RefreshExt { db, measure } => cmd_refresh_ext(&db, measure),
+        Cmd::RefreshExt { db, measure } => cmd_refresh_ext(&db, &measure),
         Cmd::Set {
             db,
             measure,
             value,
             at,
             stray,
-        } => cmd_set(&db, measure, &value, &coordinate(&at, &stray)?),
+        } => cmd_set(&db, &measure, &value, &coordinate(&at, &stray)?),
         Cmd::List { db } => cmd_list(&db),
         Cmd::SaveView {
             db,
@@ -197,19 +197,19 @@ fn run(cli: Cli) -> Result<(), String> {
             rows,
             cols,
         } => cmd_save_view(&db, id, &name, &measure, rows.as_deref(), cols.as_deref()),
-        Cmd::Show { db, measure } => cmd_show(&db, measure),
+        Cmd::Show { db, measure } => cmd_show(&db, &measure),
         Cmd::Eval {
             db,
             measure,
             scenario,
-        } => cmd_eval(&db, measure, scenario.as_deref()),
+        } => cmd_eval(&db, &measure, scenario.as_deref()),
         Cmd::Export { db } => cmd_export(&db),
         Cmd::ImportSql(a) => cmd_import_sql(a),
         Cmd::RefreshSql {
             db,
             source,
             measure,
-        } => cmd_refresh_sql(&db, &source, measure),
+        } => cmd_refresh_sql(&db, &source, &measure),
         Cmd::RefreshAll { db, source } => cmd_refresh_all(&db, source.as_deref()),
         Cmd::ServeRefresh { db, source, tick } => cmd_serve_refresh(&db, source.as_deref(), tick),
         Cmd::ExportSql {
@@ -218,14 +218,14 @@ fn run(cli: Cli) -> Result<(), String> {
             measure,
             table,
             value_col,
-        } => cmd_export_sql(&db, &target, measure, &table, &value_col),
+        } => cmd_export_sql(&db, &target, &measure, &table, &value_col),
         Cmd::ImportCsv(a) => cmd_import_csv(a),
         Cmd::ExportCsv {
             db,
             target,
             measure,
             tsv,
-        } => cmd_export_csv(&db, &target, measure, tsv),
+        } => cmd_export_csv(&db, &target, &measure, tsv),
         Cmd::Stream { db, targets } => cmd_stream(&db, &targets),
     }
 }
@@ -774,11 +774,10 @@ fn serve_refresh_tick(
 
 /// `refresh-ext <db> <measure-id>` — (re)populate an external-call measure by
 /// running its function over its argument measures, host-side.
-fn cmd_refresh_ext(db: &str, mid: u32) -> Result<(), String> {
-    let mid = MeasureId(mid);
-
+fn cmd_refresh_ext(db: &str, measure: &str) -> Result<(), String> {
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let mid = resolve_measure(&model, measure)?;
     let n = improv_engine::external::refresh_external_measure(
         &mut model,
         improv_engine::external::DEFAULT_TIMEOUT,
@@ -796,19 +795,16 @@ fn cmd_refresh_ext(db: &str, mid: u32) -> Result<(), String> {
 fn cmd_scenario(
     db: &str,
     sname: &str,
-    mid: u32,
+    measure: &str,
     value_arg: &str,
     at: &[(String, String)],
 ) -> Result<(), String> {
-    let (sname, mid) = (sname.to_string(), MeasureId(mid));
+    let sname = sname.to_string();
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
-    let vt = model
-        .measures
-        .get(&mid)
-        .ok_or_else(|| format!("no measure with id {}", mid.0))?
-        .value_type;
+    let mid = resolve_measure(&model, measure)?;
+    let vt = model.measures[&mid].value_type;
     let value = parse_value(value_arg, vt)?;
     let coord = resolve_coord(&model, mid, at)?;
 
@@ -840,16 +836,17 @@ fn cmd_scenario(
     Ok(())
 }
 
-fn cmd_set(db: &str, mid: u32, value_arg: &str, at: &[(String, String)]) -> Result<(), String> {
-    let mid = MeasureId(mid);
-
+fn cmd_set(
+    db: &str,
+    measure: &str,
+    value_arg: &str,
+    at: &[(String, String)],
+) -> Result<(), String> {
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
-    let measure = model
-        .measures
-        .get(&mid)
-        .ok_or_else(|| format!("no measure with id {}", mid.0))?;
+    let mid = resolve_measure(&model, measure)?;
+    let measure = &model.measures[&mid];
     if !measure.is_input() {
         return Err(format!(
             "measure {} {} is computed by its formula, not set: set one of its inputs",
@@ -981,9 +978,9 @@ fn cmd_save_view(
     Ok(())
 }
 
-fn cmd_show(db: &str, mid: u32) -> Result<(), String> {
-    let mid = MeasureId(mid);
+fn cmd_show(db: &str, measure: &str) -> Result<(), String> {
     let mut store = open(db)?;
+    let mid = measure_of(&mut store, measure)?;
     let model = store.load_partial(&[mid]).map_err(|e| e.to_string())?;
     let m = model
         .measures
@@ -1015,18 +1012,80 @@ fn cmd_export(db: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve a measure argument that may be a numeric id or a measure name.
+/// A measure argument as an id, if it is one (H1-25): all digits. A
+/// measure whose name is all digits is named by its id.
+fn id_arg(s: &str) -> Option<Result<MeasureId, String>> {
+    (!s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())).then(|| {
+        s.parse()
+            .map(MeasureId)
+            .map_err(|_| format!("measure id {s} is too large"))
+    })
+}
+
+/// The measure an argument names, by id or by name, which must exist.
 fn resolve_measure(model: &Model, s: &str) -> Result<MeasureId, String> {
-    if let Ok(n) = s.parse::<u32>() {
-        let mid = MeasureId(n);
-        if model.measures.contains_key(&mid) {
-            return Ok(mid);
+    match id_arg(s) {
+        Some(Ok(id)) if !model.measures.contains_key(&id) => {
+            Err(format!("no measure with id {}", id.0))
         }
+        Some(id) => id,
+        None => measure_named(model, s),
     }
-    model
-        .measure_by_name(s)
-        .map(|m| m.id)
-        .ok_or_else(|| format!("no measure named or numbered '{s}'"))
+}
+
+/// The id a measure argument names, read before a load of its closure
+/// (`show`, `eval`): a name is looked up in the structure alone. An id
+/// need not exist; the caller says so.
+fn measure_of(store: &mut Store, s: &str) -> Result<MeasureId, String> {
+    match id_arg(s) {
+        Some(id) => id,
+        None => measure_named(&store.load_partial(&[]).map_err(|e| e.to_string())?, s),
+    }
+}
+
+/// The one measure called `name`. An unknown name lists the measures,
+/// nearest first; a name two measures share (a file from before H1-9)
+/// gives their ids.
+fn measure_named(model: &Model, name: &str) -> Result<MeasureId, String> {
+    const SHOWN: usize = 8;
+    let mut hits: Vec<u32> = (model.measures.values())
+        .filter(|m| m.name.0 == name)
+        .map(|m| m.id.0)
+        .collect();
+    hits.sort_unstable();
+    match hits[..] {
+        [id] => return Ok(MeasureId(id)),
+        [_, _, ..] => {
+            let ids: Vec<String> = hits.iter().map(u32::to_string).collect();
+            return Err(format!(
+                "{} measures are named '{name}' (ids {}): give the id",
+                hits.len(),
+                ids.join(", ")
+            ));
+        }
+        [] => {}
+    }
+    let lower = name.to_lowercase();
+    let mut all: Vec<(usize, u32, &str)> = (model.measures.values())
+        .map(|m| {
+            let d = improv_core_model::functions::edit_distance(&m.name.0.to_lowercase(), &lower);
+            (d, m.id.0, m.name.0.as_str())
+        })
+        .collect();
+    if all.is_empty() {
+        return Err(format!(
+            "no measure named '{name}': the model has no measures"
+        ));
+    }
+    all.sort_unstable();
+    let shown: Vec<String> = (all.iter().take(SHOWN))
+        .map(|(_, id, n)| format!("{n} ({id})"))
+        .collect();
+    let more = if all.len() > SHOWN { ", …" } else { "" };
+    Err(format!(
+        "no measure named '{name}'; the measures are {}{more}",
+        shown.join(", ")
+    ))
 }
 
 /// `stream <db> <target-measure> [<target-measure> ...]`
@@ -1158,9 +1217,9 @@ fn print_stream_diff(
     }
 }
 
-fn cmd_eval(db: &str, mid: u32, scenario: Option<&str>) -> Result<(), String> {
-    let mid = MeasureId(mid);
+fn cmd_eval(db: &str, measure: &str, scenario: Option<&str>) -> Result<(), String> {
     let mut store = open(db)?;
+    let mid = measure_of(&mut store, measure)?;
     // load_partial loads only mid's dependency closure (its formula chain /
     // external-call args), not every cell of every measure in the store --
     // see .agent/steering/AGENT_OUT_OF_CORE_DESIGN.md §4.
@@ -1269,12 +1328,11 @@ fn cmd_import_sql(a: args::ImportSql) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_refresh_sql(db: &str, source: &str, measure_id: u32) -> Result<(), String> {
-    let measure_id = MeasureId(measure_id);
-
+fn cmd_refresh_sql(db: &str, source: &str, measure: &str) -> Result<(), String> {
     let conn = rusqlite::Connection::open(source).map_err(|e| e.to_string())?;
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let measure_id = resolve_measure(&model, measure)?;
     let n = refresh_sql_measure(&conn, &mut model, measure_id).map_err(|e| e.to_string())?;
     store.save_model(&model).map_err(|e| e.to_string())?;
     println!("refreshed measure {} from SQL: {n} cells", measure_id.0);
@@ -1284,14 +1342,13 @@ fn cmd_refresh_sql(db: &str, source: &str, measure_id: u32) -> Result<(), String
 fn cmd_export_sql(
     db: &str,
     target: &str,
-    measure_id: u32,
+    measure: &str,
     table: &str,
     value_column: &str,
 ) -> Result<(), String> {
-    let measure_id = MeasureId(measure_id);
-
     let mut store = open(db)?;
     let model = store.load_model().map_err(|e| e.to_string())?;
+    let measure_id = resolve_measure(&model, measure)?;
     let conn = rusqlite::Connection::open(target).map_err(|e| e.to_string())?;
     let n = export_measure(&conn, &model, measure_id, table, value_column)
         .map_err(|e| e.to_string())?;
@@ -1359,14 +1416,14 @@ fn cmd_import_csv(a: args::ImportCsv) -> Result<(), String> {
     Ok(())
 }
 
-/// `export-csv <db> <target.csv> <measure-id> [--tsv]`
-fn cmd_export_csv(db: &str, target: &str, measure_id: u32, tsv: bool) -> Result<(), String> {
-    let measure_id = MeasureId(measure_id);
+/// `export-csv <db> <target.csv> <measure> [--tsv]`
+fn cmd_export_csv(db: &str, target: &str, measure: &str, tsv: bool) -> Result<(), String> {
     let tsv = tsv || target.ends_with(".tsv");
     let delimiter = if tsv { b'\t' } else { b',' };
 
     let mut store = open(db)?;
     let model = store.load_model().map_err(|e| e.to_string())?;
+    let measure_id = resolve_measure(&model, measure)?;
     let n = improv_storage_csv::export_measure_csv(
         &model,
         measure_id,
@@ -1635,8 +1692,8 @@ mod tests {
                 "--rows needs a value",
             ),
             (
-                &["show", "m", "x"],
-                "<measure-id> must be a number, got 'x'",
+                &["add-item", "m", "1", "x", "I"],
+                "<category-id> must be a number, got 'x'",
             ),
             (
                 &["serve-refresh", "m", "--tick", "x"],
@@ -1941,11 +1998,48 @@ mod tests {
 
     #[test]
     fn resolve_measure_by_id_or_name() {
-        let m = stream_test_model();
+        let mut m = stream_test_model();
         assert_eq!(resolve_measure(&m, "100").unwrap(), MeasureId(100));
         assert_eq!(resolve_measure(&m, "Price").unwrap(), MeasureId(100));
-        assert!(resolve_measure(&m, "nope").is_err());
-        assert!(resolve_measure(&m, "9999").is_err()); // numeric but unknown
+        assert_eq!(
+            resolve_measure(&m, "Prise").unwrap_err(),
+            "no measure named 'Prise'; the measures are Price (100), Revenue (102), \
+             Quantity (101)"
+        );
+        assert_eq!(
+            resolve_measure(&m, "9999").unwrap_err(),
+            "no measure with id 9999"
+        );
+        assert_eq!(
+            resolve_measure(&m, "99999999999").unwrap_err(),
+            "measure id 99999999999 is too large"
+        );
+        // H1-25: all digits is an id, even when a measure has that name.
+        let mut dup = m.measures[&MeasureId(100)].clone();
+        (dup.id, dup.name) = (MeasureId(7), Name("2025".into()));
+        m.add_measure(dup.clone());
+        assert_eq!(
+            resolve_measure(&m, "2025").unwrap_err(),
+            "no measure with id 2025"
+        );
+        // A name two measures share (only an old file can have one).
+        dup.id = MeasureId(8);
+        dup.name = Name("Price".into());
+        m.measures.insert(dup.id, dup.clone());
+        assert_eq!(
+            resolve_measure(&m, "Price").unwrap_err(),
+            "2 measures are named 'Price' (ids 8, 100): give the id"
+        );
+        for id in 20..30 {
+            dup.id = MeasureId(id);
+            dup.name = Name(format!("M{id}"));
+            m.add_measure(dup.clone());
+        }
+        assert!(resolve_measure(&m, "Zzz").unwrap_err().ends_with(", …"));
+        assert_eq!(
+            resolve_measure(&Model::new(), "Price").unwrap_err(),
+            "no measure named 'Price': the model has no measures"
+        );
     }
 
     #[test]

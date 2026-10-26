@@ -42,11 +42,11 @@ by the binary, are:
 | `add-measure` | `<db> <id> <name> <number\|boolean\|text> input [Category ...]` |
 | `add-derived` | `<db> <id> <name> <formula>` |
 | `define` | `<db> <id> "<Name> = <formula>"` or `"<Name> = CALL(fn, Arg, ...)"` |
-| `set` | `<db> <measure-id> <value> [--at Cat=Item,Cat=Item ...]` |
-| `scenario` | `<db> <scenario> <measure-id> <value> [--at Cat=Item,...]` |
+| `set` | `<db> <measure> <value> [--at Cat=Item,Cat=Item ...]` |
+| `scenario` | `<db> <scenario> <measure> <value> [--at Cat=Item,...]` |
 | `list` | `<db>` |
-| `show` | `<db> <measure-id>` |
-| `eval` | `<db> <measure-id> [--scenario <name>]` |
+| `show` | `<db> <measure>` |
+| `eval` | `<db> <measure> [--scenario <name>]` |
 | `save-view` | `<db> <view-id> <name> <measure> [--rows Cat,Cat] [--cols Cat,...]` |
 | `export` | `<db>` (JSON) |
 | `stream` | `<db> <target-measure> ...` (edits on stdin, changed cells on stdout) |
@@ -58,7 +58,9 @@ by the binary, are:
 
 Notes:
 
-- Ids (`<id>`, `<category-id>`, `<measure-id>`) are plain numbers.
+- Ids (`<id>`, `<category-id>`) are plain numbers. A `<measure>` is its id
+  or its name: `improv eval m.db Revenue` (an argument of all digits is an
+  id). An unknown name lists the measures.
 - `add-measure` adds an **input** measure; the trailing `input` keyword is
   required, and any further arguments are category **names** declaring the
   measure's dimensions (e.g. `... input Time Product`). The type (`number`,

@@ -41,7 +41,22 @@ or spread over repeated flags
 all are merged. Naming a category twice is an error, as is any argument that
 is not a pair after
 .BR \-\-at .
-Numeric ids are given directly on the command line.
+.PP
+A command that takes a measure
+.RB ( set ,
+.BR show ,
+.BR eval ,
+.BR scenario ,
+.BR save\-view ,
+the refresh and export commands,
+.BR stream )
+takes its numeric id or its name:
+.B improv eval model.db Revenue
+is
+.BR "improv eval model.db 102" .
+An argument of all digits is an id. An unknown name is an error that lists
+the measures, nearest first. The ids of new categories, items and measures
+are given as numbers.
 .SH FORMULAS
 A derived measure's formula is an expression over measures, written
 .BR "Target = expression" :
@@ -87,7 +102,7 @@ improv set           model.db 100 10 --at Product=WidgetA
 improv set           model.db 101 100 --at Time=2025,Product=WidgetA
 improv save-view     model.db 1 Prices 100 --rows Product --cols Time
 improv list          model.db
-improv show          model.db 100
+improv show          model.db Price
 improv export        model.db
 .fi
 .RE

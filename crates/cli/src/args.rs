@@ -7,7 +7,7 @@ use clap::{Args, Parser, Subcommand};
 use improv_core_model::{CategoryId, RefreshPolicy, ValueType};
 
 const DB: &str = "The model store: a file, or postgres://USER@HOST/DB?model=NAME";
-const MEASURE_ID: &str = "A measure's numeric id";
+const MEASURE: &str = "A measure: its numeric id, or its name (all digits is an id)";
 const AT: &str = "The cell's coordinate: Category=Item pairs, comma-joined, \
                   space-separated, or in repeated --at flags";
 const DIMS: &str = "COLUMN:CATEGORY-ID:CATEGORY-NAME: a column, and the category \
@@ -157,9 +157,8 @@ pub enum Cmd {
     RefreshExt {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
         db: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
     },
     /// Set an input cell.
     ///
@@ -171,9 +170,8 @@ pub enum Cmd {
     Set {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
         db: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
         /// The cell's value
         #[arg(value_name = "value", allow_hyphen_values = true)]
         value: String,
@@ -216,9 +214,8 @@ pub enum Cmd {
     Show {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
         db: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
     },
     /// Compute a derived measure and print its cells.
     ///
@@ -226,9 +223,8 @@ pub enum Cmd {
     Eval {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
         db: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
         /// The scenario to evaluate under
         #[arg(long, value_name = "name", allow_hyphen_values = true)]
         scenario: Option<String>,
@@ -244,9 +240,8 @@ pub enum Cmd {
         /// The scenario's name
         #[arg(allow_hyphen_values = true, value_name = "scenario-name")]
         scenario: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
         /// The overriding value
         #[arg(value_name = "value", allow_hyphen_values = true)]
         value: String,
@@ -277,9 +272,8 @@ pub enum Cmd {
         /// The SQLite database to query
         #[arg(allow_hyphen_values = true, value_name = "source.sqlite")]
         source: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
     },
     /// Refresh every external measure now.
     ///
@@ -318,9 +312,8 @@ pub enum Cmd {
         /// The SQLite database to write
         #[arg(allow_hyphen_values = true, value_name = "target.sqlite")]
         target: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
         /// The table
         #[arg(allow_hyphen_values = true, value_name = "table")]
         table: String,
@@ -346,9 +339,8 @@ pub enum Cmd {
         /// The file to write (tab-separated if it ends in .tsv)
         #[arg(allow_hyphen_values = true, value_name = "target.csv")]
         target: String,
-        #[arg(value_name = "measure-id", help = MEASURE_ID,
-              value_parser = number::<u32>("<measure-id>"))]
-        measure: u32,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
         /// Tab-separated
         #[arg(long)]
         tsv: bool,
