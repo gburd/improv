@@ -885,7 +885,7 @@ impl<'a> Parser<'a> {
             self.depth -= 1;
             return Err(self.err("expression nested too deeply"));
         }
-        let exp = self.parse_unary();
+        let exp = crate::grow_stack(|| self.parse_unary());
         self.depth -= 1;
         Ok(Expr::BinaryOp(
             BinaryOp::Pow,
@@ -923,7 +923,7 @@ impl<'a> Parser<'a> {
             self.depth -= 1;
             return Err(self.err("expression nested too deeply"));
         }
-        let result = self.parse_primary_inner();
+        let result = crate::grow_stack(|| self.parse_primary_inner());
         self.depth -= 1;
         result
     }

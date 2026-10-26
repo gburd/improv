@@ -1031,7 +1031,7 @@ impl PgModelStore {
             "SELECT blob::text FROM improv.meta WHERE model_id = $1",
             &[&mid],
         )? {
-            let meta: Meta = serde_json::from_str(r.get(0))?;
+            let meta: Meta = improv_core_model::json::from_str(r.get(0))?;
             model.external_fns = meta.external_fns;
             model.external_calls = meta.external_calls;
             model.scenarios = meta.scenarios;
@@ -1332,7 +1332,9 @@ impl PgModelStore {
             for m in model.measures.values() {
                 let (kind, formula) = match &m.kind {
                     MeasureKind::Input => ("input", None),
-                    MeasureKind::Derived(f) => ("derived", Some(serde_json::to_string(f)?)),
+                    MeasureKind::Derived(f) => {
+                        ("derived", Some(improv_core_model::json::to_string(f)?))
+                    }
                 };
                 let cats: Vec<i64> = m.categories.iter().map(|c| i64::from(c.0)).collect();
                 let id = i64::from(m.id.0);
@@ -1386,7 +1388,7 @@ impl PgModelStore {
                 }
                 up.push(i64::from(*id));
                 names.push(l.name.0.as_str());
-                defs.push(serde_json::to_string(l)?);
+                defs.push(improv_core_model::json::to_string(l)?);
             }
             tx.execute(
                 "INSERT INTO improv.lambda(model_id, id, name, definition) \

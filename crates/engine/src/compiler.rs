@@ -654,6 +654,11 @@ pub(crate) mod lazy {
     reason = "`target` is threaded for future error context and recursive calls"
 )]
 pub fn infer(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<TypedExpr> {
+    // On the caller's thread, once a tree level: grow the stack as needed.
+    improv_core_model::grow_stack(|| infer_here(ctx, target, expr))
+}
+
+fn infer_here(ctx: &CompileContext, target: MeasureId, expr: &Expr) -> Result<TypedExpr> {
     // A named LAMBDA call types as its expansion.
     if let Expr::Call(f, _) = expr {
         if functions::named_lambda_of(*f).is_some() {
@@ -1662,6 +1667,10 @@ fn require(ok: bool, op: BinaryOp, want: &str) -> Result<()> {
     reason = "`ctx` kept in the signature for symmetry and future func-registry lookups"
 )]
 pub fn build_plan(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
+    improv_core_model::grow_stack(|| build_plan_here(ctx, typed))
+}
+
+fn build_plan_here(ctx: &CompileContext, typed: &TypedExpr) -> Result<PlanNode> {
     let ty = typed.ty.clone();
     let kind = match &typed.kind {
         TypedExprKind::Literal(v) => PlanNodeKind::Literal(v.clone()),

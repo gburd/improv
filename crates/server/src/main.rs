@@ -23,8 +23,12 @@ use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use axum::{
+    body::Bytes,
     error_handling::HandleErrorLayer,
-    extract::{rejection::JsonRejection, ConnectInfo, DefaultBodyLimit, Path, Request, State},
+    extract::{
+        rejection::{BytesRejection, JsonRejection},
+        ConnectInfo, DefaultBodyLimit, Path, Request, State,
+    },
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -1314,19 +1318,22 @@ async fn nl_parse(
 
 #[derive(Deserialize)]
 struct NlDescribeReq {
-    formula: JsonValue,
+    formula: improv_core_model::Formula,
 }
 
 async fn nl_describe(
     State(state): State<Arc<AppState>>,
-    body: Result<Json<NlDescribeReq>, JsonRejection>,
+    body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
-    let Json(req) = body?;
-    let formula = serde_json::from_value(req.formula)
+    let body = body.map_err(|e| ApiError::Rejected(e.status(), e.body_text()))?;
+    // Not `Json`: a formula at the depth limit is past serde_json's 128 levels.
+    let req: NlDescribeReq = improv_core_model::json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid formula: {e}")))?;
     let model = load_model(&state).await?;
     let ctx = NlContext::new(&model);
-    Ok(Json(json!({ "text": describe_formula(&ctx, &formula) })))
+    Ok(Json(
+        json!({ "text": describe_formula(&ctx, &req.formula) }),
+    ))
 }
 
 #[derive(Deserialize)]

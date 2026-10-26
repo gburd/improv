@@ -298,7 +298,7 @@ impl<'a, 'm> Parser<'a, 'm> {
             Some("(") => {
                 self.bump();
                 self.deeper()?;
-                let e = self.parse_expr()?;
+                let e = improv_core_model::grow_stack(|| self.parse_expr())?;
                 self.depth -= 1; // parens add recursion, not AST depth
                 if !self.eat(")") {
                     return Err(NlError::Unexpected(
@@ -435,6 +435,10 @@ pub fn describe_formula(ctx: &NlContext, formula: &Formula) -> String {
 }
 
 fn describe_expr(ctx: &NlContext, e: &Expr) -> String {
+    improv_core_model::grow_stack(|| describe_here(ctx, e))
+}
+
+fn describe_here(ctx: &NlContext, e: &Expr) -> String {
     match e {
         Expr::Literal(Value::Number(n)) => fmt_num(*n),
         Expr::Literal(v) => format!("{v:?}"),

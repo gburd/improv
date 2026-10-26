@@ -904,7 +904,7 @@ fn cmd_show(db: &str, mid: u32) -> Result<(), String> {
 fn cmd_export(db: &str) -> Result<(), String> {
     let mut store = open(db)?;
     let model = store.load_model().map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?;
+    let json = improv_core_model::json::to_string_pretty(&model).map_err(|e| e.to_string())?;
     println!("{json}");
     Ok(())
 }

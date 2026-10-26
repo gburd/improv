@@ -13,6 +13,7 @@ pub mod extfn_def;
 pub mod formula;
 pub mod functions;
 pub mod ids;
+pub mod json;
 pub mod locale;
 pub mod parser;
 pub mod schedule;
@@ -20,8 +21,8 @@ pub mod value;
 
 pub use extfn_def::{ExternalFn, Language};
 pub use formula::{
-    BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_DEPTH, MAX_FORMULA_NODES,
-    MAX_STORED_FORMULA_DEPTH,
+    grow_stack, BinaryOp, DimensionSpec, Expr, Formula, FuncId, UnaryOp, MAX_FORMULA_DEPTH,
+    MAX_FORMULA_NODES, MAX_STORED_FORMULA_DEPTH,
 };
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
 pub use locale::Locale;
@@ -610,6 +611,10 @@ pub enum RefreshPolicy {
 /// carrying the body's `OVER`; a category placeholder by the argument's
 /// category.
 fn substitute_params(body: &Expr, args: &[Expr]) -> Result<Expr, String> {
+    grow_stack(|| substitute_here(body, args))
+}
+
+fn substitute_here(body: &Expr, args: &[Expr]) -> Result<Expr, String> {
     let cat = |c: &CategoryId| match functions::lambda_category_of(*c) {
         None => Ok(*c),
         Some(i) => match args.get(i) {
@@ -762,6 +767,10 @@ impl Model {
     }
 
     fn expand_at(&self, e: &Expr, depth: usize) -> Result<Expr, String> {
+        grow_stack(|| self.expand_here(e, depth))
+    }
+
+    fn expand_here(&self, e: &Expr, depth: usize) -> Result<Expr, String> {
         // Lambdas only call earlier ones, so depth is bounded by their
         // number; the guard catches a hand-edited cycle.
         if depth > self.lambdas.len() + 1 {
@@ -815,7 +824,7 @@ impl Model {
     pub fn load_lambdas(&mut self, rows: &[(u32, String)]) -> Result<(), String> {
         let mut todo = Vec::new();
         for (id, text) in rows {
-            match serde_json::from_str::<NamedLambda>(text) {
+            match json::from_str::<NamedLambda>(text) {
                 Ok(l) => {
                     self.lambdas.insert(*id, l);
                 }

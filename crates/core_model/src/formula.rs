@@ -186,6 +186,15 @@ impl Expr {
     }
 }
 
+/// Run `f`, one level of a recursion over a formula's tree, on a new stack
+/// segment when this thread's stack is nearly used up (`stacker`). The
+/// parser, the compiler and named-LAMBDA expansion recurse once a level (up
+/// to 25 KB a level in a debug build) on their callers' threads, which can
+/// be as small as 1 MiB (a Windows main thread).
+pub fn grow_stack<R>(f: impl FnOnce() -> R) -> R {
+    stacker::maybe_grow(256 << 10, 4 << 20, f)
+}
+
 /// How the two limit errors start (see [`crate::ParseError::is_limit`]).
 pub(crate) const TOO_DEEP: &str = "formula nests too deeply";
 pub(crate) const TOO_LARGE: &str = "formula is too large";
@@ -210,13 +219,16 @@ impl Formula {
         Formula { expr }
     }
 
-    /// A formula as a store reads it back from its JSON: `None` when the
-    /// JSON nests too deeply for serde_json, as a formula saved before
-    /// [`MAX_FORMULA_DEPTH`] existed can (see [`crate::Measure::mark_unreadable`]).
+    /// A formula as a store reads it back from its JSON ([`crate::json`]):
+    /// `None` when it is deeper than [`MAX_STORED_FORMULA_DEPTH`], as one
+    /// saved before [`MAX_FORMULA_DEPTH`] existed can be (see
+    /// [`crate::Measure::mark_unreadable`]).
     pub fn from_json(json: &str) -> Result<Option<Formula>, serde_json::Error> {
-        match serde_json::from_str(json) {
+        match crate::json::from_str::<Formula>(json) {
+            // Past the load bound, as text-stored formulas are.
+            Ok(f) if f.expr.check_depth(MAX_STORED_FORMULA_DEPTH).is_err() => Ok(None),
             Ok(f) => Ok(Some(f)),
-            Err(e) if e.to_string().starts_with("recursion limit exceeded") => Ok(None),
+            Err(e) if e.to_string().starts_with(crate::json::TOO_DEEP) => Ok(None),
             Err(e) => Err(e),
         }
     }
@@ -252,13 +264,23 @@ mod tests {
         ));
         let json = serde_json::to_string(&f).unwrap();
         assert_eq!(Formula::from_json(&json).unwrap(), Some(f));
-        // 70 nested negations: 141 levels of JSON.
-        let deep = format!(
-            "{{\"expr\":{}{{\"Literal\":{{\"Number\":1.0}}}}{}}}",
-            "{\"UnaryOp\":[\"Neg\",".repeat(70),
-            "]}".repeat(70)
+        // n nested negations: 2n + 3 levels of JSON, n + 1 of tree.
+        let deep = |n: usize| {
+            format!(
+                "{{\"expr\":{}{{\"Literal\":{{\"Number\":1.0}}}}{}}}",
+                "{\"UnaryOp\":[\"Neg\",".repeat(n),
+                "]}".repeat(n)
+            )
+        };
+        // Past serde_json's own limit (128), within ours.
+        let f = Formula::from_json(&deep(70)).unwrap().unwrap();
+        assert_eq!(f.expr.depth_and_nodes().0, 71);
+        // Past the load bound, and past the JSON bound.
+        assert_eq!(
+            Formula::from_json(&deep(MAX_STORED_FORMULA_DEPTH)).unwrap(),
+            None
         );
-        assert_eq!(Formula::from_json(&deep).unwrap(), None);
+        assert_eq!(Formula::from_json(&deep(400)).unwrap(), None);
         assert!(Formula::from_json("not json").is_err());
     }
 }

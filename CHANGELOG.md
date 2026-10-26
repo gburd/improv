@@ -20,6 +20,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   waited its 10 s and then killed it. SIGTERM and Ctrl-C now end it at once.
 ### Changed
 
+- **Model and formula JSON reads past serde_json's 128 levels** (C3b).
+  `improv_core_model::json` reads up to 784 levels (a whole model holding a
+  formula 256 deep) and writes at any depth, on a stack that grows
+  (`serde_stacker`); the Mentat and Postgres stores, `improv export` and the
+  server's `/nl/describe` use it. A stored formula past the load bound (256
+  levels) still loads as `#REF!`. The parser, the compiler, named-LAMBDA
+  expansion, the scalar evaluator and the controlled-English parser and
+  describer grow the stack where the caller's thread is nearly used up
+  (`stacker`), and engine threads have 16 MiB (was 8).
 - **Windowed reductions cost O(n) per group, not O(n²).**
   `SUM(X OVER W[FIRST..THIS])` at 5,000 items went from 1.12 s to 6 ms
   per edit, and at 20,000 items from 18.1 s to 25 ms (evaluate 17.9 s to

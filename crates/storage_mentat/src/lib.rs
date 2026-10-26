@@ -446,7 +446,7 @@ impl ModelStore {
                 let fns_json = serde_json::to_string(&model.external_fns)?;
                 let calls_json = serde_json::to_string(&model.external_calls)?;
                 let scen_json = serde_json::to_string(&model.scenarios)?;
-                let lambdas_json = serde_json::to_string(&model.lambdas)?;
+                let lambdas_json = improv_core_model::json::to_string(&model.lambdas)?;
                 let edn = format!(
                 "[{{:meta/singleton 1 :meta/external-fns {} :meta/external-calls {} :meta/scenarios {} :meta/lambdas {}}}]",
                 convert::edn_str_pub(&fns_json),
@@ -823,7 +823,7 @@ impl ModelStore {
         if let Some(json) =
             self.scalar_string("[:find ?j . :where [?e :meta/singleton 1] [?e :meta/lambdas ?j]]")?
         {
-            model.lambdas = serde_json::from_str(&json)?;
+            model.lambdas = improv_core_model::json::from_str(&json)?;
         }
         Ok(())
     }
@@ -1195,10 +1195,11 @@ mod tests {
 
     #[test]
     fn a_formula_too_deep_to_read_back_loads_as_ref_errors() {
-        // What a store written before the formula limits can hold: 71 terms
-        // (the C3 repro). The model opens; Q alone is #REF!, and says why.
+        // What a store written before the formula limits can hold: a chain
+        // past the load bound (256). The model opens; Q alone is #REF!, and
+        // says why. (The C3 repro, 71 terms, now reads back.)
         let mut store = ModelStore::open("").expect("open in-memory");
-        store.save_model(&chain_model(71)).expect("save");
+        store.save_model(&chain_model(300)).expect("save");
         for loaded in [
             store.load_model().expect("load"),
             store.load_partial(&[MeasureId(103)]).expect("partial"),

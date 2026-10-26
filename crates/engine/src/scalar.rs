@@ -55,6 +55,10 @@ pub fn eval(
 /// Reject what a scalar evaluation cannot do, before evaluating anything, so
 /// the error does not depend on which inputs happen to be NULL.
 pub fn check(expr: &Expr) -> Result<(), ScalarError> {
+    improv_core_model::grow_stack(|| check_here(expr))
+}
+
+fn check_here(expr: &Expr) -> Result<(), ScalarError> {
     match expr {
         Expr::Literal(_) => Ok(()),
         Expr::Category(_) => Err(ScalarError::NeedsDimensions("a category argument".into())),
@@ -95,6 +99,11 @@ pub fn check(expr: &Expr) -> Result<(), ScalarError> {
 }
 
 fn eval_checked(expr: &Expr, env: &HashMap<MeasureId, CellValue>) -> Option<CellValue> {
+    // On the caller's thread (a Postgres backend, a DuckDB worker).
+    improv_core_model::grow_stack(|| eval_here(expr, env))
+}
+
+fn eval_here(expr: &Expr, env: &HashMap<MeasureId, CellValue>) -> Option<CellValue> {
     match expr {
         Expr::Literal(v) => CellValue::from_model_value(v),
         Expr::Category(_) => None,

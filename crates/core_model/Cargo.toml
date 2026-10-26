@@ -11,7 +11,9 @@ path = "src/lib.rs"
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["unbounded_depth"] }
+serde_stacker.workspace = true
+stacker.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]

@@ -1087,9 +1087,10 @@ fn a_formula_too_deep_is_refused_and_an_old_one_does_not_lock_the_model() {
     stdout_has(&ok(&["eval", d, "101"]), "Q[] = 80");
     stdout_has(&ok(&["list", d]), "101 Q [derived]");
 
-    // A store written before the limit: Q's formula is a 71-term chain.
+    // A store written before the limit: Q's formula is a 300-term chain,
+    // past the load bound (256).
     let mut e = r#"{"Ref":[100,{"by":[],"over":[],"except":[]}]}"#.to_string();
-    for _ in 1..71 {
+    for _ in 1..300 {
         e = format!(
             r#"{{"BinaryOp":["Add",{e},{{"Ref":[100,{{"by":[],"over":[],"except":[]}}]}}]}}"#
         );

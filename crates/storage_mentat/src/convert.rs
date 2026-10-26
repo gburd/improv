@@ -86,7 +86,7 @@ pub fn measure_edn(
         MeasureKind::Input => fields.push(format!(":measure/kind {}", edn_str("input"))),
         MeasureKind::Derived(f) => {
             fields.push(format!(":measure/kind {}", edn_str("derived")));
-            let json = serde_json::to_string(f)?;
+            let json = improv_core_model::json::to_string(f)?;
             fields.push(format!(":measure/formula {}", edn_str(&json)));
         }
     }

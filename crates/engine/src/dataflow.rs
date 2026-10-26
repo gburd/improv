@@ -1300,9 +1300,10 @@ pub fn evaluate(
 }
 
 /// The stack of every engine thread (`evaluate`'s and the live engine's
-/// worker). The formula depth limit (40 for a new formula, 256 for one
-/// stored as text) is sized against it.
-pub const ENGINE_STACK: usize = 8 << 20;
+/// worker). Building a formula's dataflow recurses on its tree: a debug
+/// build takes up to 40 KB a level, 10 MiB for a formula at the depth limit
+/// (`MAX_FORMULA_DEPTH`, 256); a release build 3.3 KB a level.
+pub const ENGINE_STACK: usize = 16 << 20;
 
 fn evaluate_here(
     model: &Model,
