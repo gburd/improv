@@ -612,6 +612,11 @@ pub struct App {
     /// The formula text whose commit was held because it is a constant
     /// (H1-4): Enter again on the same text replaces the formula.
     pub confirm_constant: Option<String>,
+    /// The model has changes the store does not (H1-5): set by each
+    /// change, cleared by a save. The status box's title says so.
+    pub unsaved: bool,
+    /// A change since the last autosave attempt ([`App::autosave`]).
+    pub autosave_due: bool,
 }
 
 /// What a failed save says (H6). The edits stay in the session either way.
@@ -681,6 +686,8 @@ impl App {
             outside_seen: None,
             quit_armed: false,
             confirm_constant: None,
+            unsaved: false,
+            autosave_due: false,
         })
     }
 
@@ -1424,6 +1431,27 @@ impl App {
     fn record_history(&mut self, prior: Model) {
         push_bounded(&mut self.undo_stack, prior);
         self.redo_stack.clear();
+        self.changed();
+    }
+
+    /// The model changed: it is unsaved, and the next autosave writes it.
+    fn changed(&mut self) {
+        self.unsaved = true;
+        self.autosave_due = true;
+    }
+
+    /// H1-5: save after each change, as the GUI does, so closing the
+    /// terminal loses nothing. Only what changed is written ([`App::save`]).
+    /// A failed save says why and leaves the model unsaved; `w` or `q`
+    /// tries again (a key that changes nothing does not). A model never
+    /// loaded from a store (`saved` is `None`) has nowhere to go.
+    pub fn autosave(&mut self, path: &str) {
+        if !std::mem::take(&mut self.autosave_due) || self.saved.is_none() {
+            return;
+        }
+        if let Err(e) = self.save(path) {
+            self.status = Some(format!("save failed: {e}"));
+        }
     }
 
     /// Undo the last change to the model: the model before it comes back,
@@ -1453,6 +1481,7 @@ impl App {
         // Views are layout, saved as they are made: undo leaves them.
         model.views = self.model.views.clone();
         push_bounded(to, std::mem::replace(&mut self.model, model));
+        self.changed();
         let viewed = self.viewed_measure();
         let layout = (
             self.axis_order.clone(),
@@ -1517,6 +1546,7 @@ impl App {
         let id = self.next_view_id();
         let view = self.build_view(id, name);
         self.model.add_view(view);
+        self.unsaved = true;
         self.status = Some(match path.map(|p| self.save(p)) {
             Some(Err(e)) => format!("save failed: {e}"),
             _ => format!("saved view '{name}'"),
@@ -1546,6 +1576,7 @@ impl App {
         self.save_token = s.take_save_token();
         r.map_err(save_error)?;
         self.saved = Some(self.model.clone());
+        self.unsaved = false;
         Ok(())
     }
 

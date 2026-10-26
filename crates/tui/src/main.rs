@@ -62,8 +62,8 @@ fn load(path: &str) -> Result<App, String> {
     Ok(app)
 }
 
-/// Autosave the (possibly edited) model back to `path` on clean exit; edits
-/// are held in memory during the session. Writes only what changed.
+/// Save the model back to `path` on clean exit (each change is saved as it
+/// is made: [`App::autosave`]). Writes only what changed.
 fn save(app: &mut App, path: &str) -> Result<(), String> {
     app.save(path).map_err(|e| format!("autosave failed: {e}"))
 }
@@ -145,11 +145,17 @@ fn check_outside(app: &mut App, path: &str) {
     }
 }
 
-/// Dispatch one terminal event by mode (edit / command prompt / normal).
+/// Dispatch one terminal event by mode (edit / command prompt / normal),
+/// then save what it changed (H1-5).
 fn handle_event(app: &mut App, ev: Event, path: &str) {
     if matches!(ev, Event::Key(_)) {
         check_outside(app, path);
     }
+    dispatch(app, ev, path);
+    app.autosave(path);
+}
+
+fn dispatch(app: &mut App, ev: Event, path: &str) {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release && app.help.is_some() => {
             help_key(app, k.code)
@@ -770,6 +776,80 @@ mod tests {
             .collect();
         assert_eq!(cells, ["1000", "1000", "1200", "1600"]);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// H1-5: each change is in the store as soon as it is made, with no
+    /// `w` or `q` (closing the terminal loses nothing); a failed autosave
+    /// marks the session "not saved" and says why, and `w` clears it.
+    #[test]
+    fn every_change_is_saved_as_it_is_made() {
+        let path = tmp_path("tui-h1-5.db");
+        let _guard = crate::app::tests::TmpFile(path.clone());
+        let p = path.to_str().unwrap();
+        save(&mut App::new(revenue_model()).unwrap(), p).unwrap();
+        let mut app = load(p).unwrap();
+        view(&mut app, MeasureId(101));
+        let stored = |m: MeasureId, at: &Coordinate| {
+            let model = Store::open(p).and_then(|mut s| s.load_model()).unwrap();
+            model.input(m, at).cloned()
+        };
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        let mut ev = chars("7");
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, p, ev).unwrap();
+        assert_eq!(stored(MeasureId(101), &at), Some(Value::Number(7.0)));
+        assert!(!app.unsaved);
+        assert_eq!(app.status, None, "a good autosave says nothing");
+        let mut ev = chars("c");
+        ev.extend(chars("Time: 2027"));
+        ev.extend([key(KeyCode::Enter), key(KeyCode::Char('u'))]);
+        run_events(&mut app, p, ev).unwrap();
+        assert_eq!(stored(MeasureId(101), &at), Some(Value::Number(7.0)));
+        let back = Store::open(p).and_then(|mut s| s.load_model()).unwrap();
+        assert_eq!(back, app.model, "the undo is saved too");
+        assert!(!lines(&mut app).iter().any(|l| l.contains("not saved")));
+        // Another program saves: the next change is refused, and marked.
+        let mut other = Store::open(p).unwrap();
+        let mut m = other.load_model().unwrap();
+        m.add_view(app.build_view(improv_core_model::ViewId(9), "theirs"));
+        other.save_model(&m).unwrap();
+        let mut ev = vec![key(KeyCode::Esc)];
+        ev.extend(chars("8"));
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, p, ev).unwrap();
+        assert!(app.unsaved);
+        assert!(
+            app.status.as_deref().unwrap().contains("conflict"),
+            "{:?}",
+            app.status
+        );
+        assert!(
+            lines(&mut app)[0].contains("not saved"),
+            "{:?}",
+            lines(&mut app)[0]
+        );
+        assert_eq!(stored(MeasureId(101), &at), Some(Value::Number(7.0)));
+        // A key that changes nothing does not retry; R then w saves.
+        run_events(&mut app, p, vec![key(KeyCode::Down)]).unwrap();
+        assert!(app.status.as_deref().unwrap().contains("conflict"));
+        run_events(&mut app, p, chars("R")).unwrap();
+        assert!(!app.unsaved);
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 9.0).unwrap();
+        assert!(app.unsaved, "a change outside the loop waits for w");
+        run_events(&mut app, p, chars("w")).unwrap();
+        assert!(!app.unsaved);
+        assert_eq!(stored(MeasureId(101), &at), Some(Value::Number(9.0)));
+    }
+
+    /// The screen of `app` at 100x30, one string per row.
+    fn lines(app: &mut App) -> Vec<String> {
+        let mut term = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        term.draw(|f| ui::render(f, app)).unwrap();
+        let buf = term.backend().buffer();
+        (0..buf.area.height)
+            .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
+            .collect()
     }
 
     /// Two sessions on one store: the second's autosave conflicts after the

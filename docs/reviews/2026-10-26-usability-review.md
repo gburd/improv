@@ -138,7 +138,7 @@ formula. When an edit would drop all of a formula's categories (a
 constant), ask for a second Enter. **Files:** `crates/tui/src/app.rs`
 (`begin_edit`, `commit_edit`).
 
-**H1-5 TUI: edits are held in memory until `w` or `q`, with no unsaved
+**[fixed: `fix(tui): save each change as it is made (H1-5)`] H1-5 TUI: edits are held in memory until `w` or `q`, with no unsaved
 marker.** *Visibility of system status; error prevention.* An edit
 followed by closing the terminal (tmux `kill-server`, which sends SIGHUP)
 was lost. Ctrl+C and Ctrl+Q do nothing, and nothing on screen says the

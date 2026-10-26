@@ -11,7 +11,11 @@ improv\-tui \- terminal pivot viewer and editor for Improv models
 shows one measure of a model as a pivot grid in the terminal: one category
 down the rows, one across the columns, the rest as pages. Input cells are
 edited in place; derived measures recompute incrementally as you type.
-The model is saved when you quit.
+Each change is saved as it is made, writing only what changed, so closing
+the terminal loses nothing. If a save fails (a full disk, another program
+saved the model), the status box's title says
+.B not saved
+and the status line says why; the edits stay in the session.
 .PP
 A model is a store file made by
 .BR improv (1),
@@ -120,7 +124,7 @@ defines a named LAMBDA that formulas then call as
 Tab completes, and errors are located, as in a formula edit.
 .TP
 .B w
-Save now, without quitting.
+Save now: retry a save that failed.
 .TP
 .B R
 Revert to the saved model, dropping this session's edits. Use it after a

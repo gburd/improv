@@ -51,6 +51,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   measure one value over no categories asks for a second Enter, and when
   one is accepted the measure takes the formula's shape, so the grid shows
   the value instead of blank cells (H1-4).
+- **The TUI saves each change as it is made.** Edits were held in memory
+  until `w` or `q`, with nothing on screen to say so, and closing the
+  terminal lost them. Each change (a cell, a formula, a category, an
+  undo) is now written at once with the incremental save `w` uses, as the
+  GUI does. A failed save puts "not saved" in the status box's title and
+  the reason on the status line; `w` retries and `q` still refuses to drop
+  the edits (H1-5).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

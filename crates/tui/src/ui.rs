@@ -392,8 +392,15 @@ pub fn render(f: &mut Frame, app: &mut App) {
         ])
         .split(f.area());
 
-    let status = ratatui::widgets::Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(" Status "));
+    let status = ratatui::widgets::Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(if app.unsaved {
+                " Status \u{2022} not saved "
+            } else {
+                " Status "
+            }),
+    );
     f.render_widget(status, chunks[0]);
 
     // Window the grid to what fits inside the border (minus the header row
