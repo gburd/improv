@@ -59,6 +59,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   frame is now 15–26 ms. A change that leaves the cells alone no longer
   copies or diffs them for its undo step and its save (0.6 s at 1M).
   An engine that fails to build now says so in the status bar.
+  A cell edit in the first moments of a rebuild no longer waits for the
+  build to copy the model (up to 160 ms at 1M cells).
 - **A container image**, `ghcr.io/gburd/improv`, from the next release on:
   `improv-server` and the `improv` CLI (`Containerfile`), as an
   unprivileged user, refusing to start without a token. The release job

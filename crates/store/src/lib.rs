@@ -9,6 +9,10 @@
 
 use improv_core_model::{Coordinate, MeasureId, Model};
 use improv_storage_mentat::ModelStore;
+/// The most cells [`Store::save_changes`] writes from the named cells alone:
+/// past it a Mentat save reads every cell of the model, so a caller that
+/// saves a model holding only the changed cells stays at or under it.
+pub use improv_storage_mentat::SEEK_SAVE_LIMIT;
 use improv_storage_pg::PgModelStore;
 
 /// Either backend's error. Callers match [`StoreError::Conflict`] for the

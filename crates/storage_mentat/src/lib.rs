@@ -144,8 +144,9 @@ fn transact_group(
     Ok(())
 }
 
-/// Most cells [`ModelStore::save_changes`] reads one seek at a time.
-const SEEK_SAVE_LIMIT: usize = 4096;
+/// Most cells [`ModelStore::save_changes`] reads one seek at a time; past
+/// it the save passes over every stored cell, so it needs the whole model.
+pub const SEEK_SAVE_LIMIT: usize = 4096;
 
 const VALUE_NUMBER: &str = "value-number";
 const VALUE_BOOLEAN: &str = "value-boolean";

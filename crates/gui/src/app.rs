@@ -188,6 +188,10 @@ pub struct ImprovApp {
     /// Shared with an engine build in flight, which copies it and lets go
     /// (see [`Self::rebuild_engine`]).
     model: Arc<Model>,
+    /// Input-cell edits made while a build was still copying `model`:
+    /// written to it once the build lets go, and read before it until then,
+    /// so the edit need not wait for the copy (H3).
+    held: Vec<(MeasureId, improv_core_model::Coordinate, Option<Value>)>,
     /// Live incremental engine over all derived measures, plus its snapshot.
     engine: Option<Engine>,
     snapshot: Snapshot,
@@ -1292,6 +1296,7 @@ impl ImprovApp {
             save_token,
             unsaved: Default::default(),
             model: Arc::new(model),
+            held: Vec::new(),
             engine: None,
             snapshot: Snapshot::default(),
             building: None,
@@ -1511,16 +1516,65 @@ impl ImprovApp {
                         .collect()
                 })
                 .unwrap_or_default(),
-            _ => self
-                .model
-                .inputs
-                .iter()
-                .filter(|((mid, _), _)| *mid == measure)
-                .filter_map(|((_, coord), v)| match v {
-                    Value::Number(n) => Some((encode_coord(coord), *n)),
-                    _ => None,
-                })
-                .collect(),
+            _ => {
+                let mut out: HashMap<CoordKey, f64> = self
+                    .model
+                    .inputs
+                    .iter()
+                    .filter(|((mid, _), _)| *mid == measure)
+                    .filter_map(|((_, coord), v)| match v {
+                        Value::Number(n) => Some((encode_coord(coord), *n)),
+                        _ => None,
+                    })
+                    .collect();
+                for (_, at, v) in self.held.iter().filter(|h| h.0 == measure) {
+                    match v {
+                        Some(Value::Number(n)) => out.insert(encode_coord(at), *n),
+                        _ => out.remove(&encode_coord(at)),
+                    };
+                }
+                out
+            }
+        }
+    }
+
+    /// An input cell's value, counting the edits [`Self::held`] back.
+    fn input(&self, measure: MeasureId, at: &improv_core_model::Coordinate) -> Option<&Value> {
+        match self
+            .held
+            .iter()
+            .rev()
+            .find(|h| h.0 == measure && h.1 == *at)
+        {
+            Some((_, _, v)) => v.as_ref(),
+            None => self.model.input(measure, at),
+        }
+    }
+
+    /// Set (`Some`) or clear one input cell: in the model, or in
+    /// [`Self::held`] while a build still shares it.
+    fn write_input(
+        &mut self,
+        measure: MeasureId,
+        at: improv_core_model::Coordinate,
+        value: Option<Value>,
+    ) {
+        self.write_held();
+        match Arc::get_mut(&mut self.model) {
+            Some(model) => put_input(model, measure, at, value),
+            None => self.held.push((measure, at, value)),
+        }
+    }
+
+    /// Write the [`Self::held`] edits to the model once nothing shares it.
+    fn write_held(&mut self) {
+        if self.held.is_empty() {
+            return;
+        }
+        if let Some(model) = Arc::get_mut(&mut self.model) {
+            for (m, at, v) in self.held.drain(..) {
+                put_input(model, m, at, v);
+            }
         }
     }
 
@@ -1540,8 +1594,7 @@ impl ImprovApp {
                 .and_then(|m| m.get(key))
                 .cloned();
         }
-        self.model
-            .input(measure, &decode(key))
+        self.input(measure, &decode(key))
             .and_then(CellValue::from_model_value)
     }
 
@@ -1671,15 +1724,8 @@ impl ImprovApp {
         // and undo both the model and the engine if anything downstream fails, so
         // a reported failure never leaves memory diverged from the store.
         let key = decode(&coord);
-        let prior = self.model.input(measure, &key).cloned();
-
-        let model = self.model_mut();
-        match &value {
-            Some(v) => model.set_input(measure, key.clone(), v.clone()),
-            None => {
-                model.inputs.remove(&(measure, key.clone()));
-            }
-        }
+        let prior = self.input(measure, &key).cloned();
+        self.write_input(measure, key.clone(), value.clone());
         let outcome = (|| -> Result<(), String> {
             self.push_engine(measure, &coord, value.as_ref())?;
             self.save_changes(&improv_store::ChangeSet::cell(measure, key.clone()))
@@ -1688,13 +1734,7 @@ impl ImprovApp {
         if let Err(e) = outcome {
             // Restore the model, then push the restored value back through the
             // engine so its graph and our snapshot agree with the model again.
-            let model = self.model_mut();
-            match &prior {
-                Some(v) => model.set_input(measure, key, v.clone()),
-                None => {
-                    model.inputs.remove(&(measure, key));
-                }
-            }
+            self.write_input(measure, key, prior.clone());
             if self.push_engine(measure, &coord, prior.as_ref()).is_err() {
                 // The engine is gone: a fresh one agrees with the model.
                 self.rebuild_engine();
@@ -2067,7 +2107,7 @@ impl ImprovApp {
         };
         // `import_csv` is read-only on the model until it commits, so a failed
         // import leaves nothing to undo; the snapshot is kept only on success.
-        let prior_model = (*self.model).clone();
+        let prior_model = self.model_mut().clone();
         match improv_storage_csv::import_csv(self.model_mut(), &spec) {
             Ok(n) => {
                 self.rebuild_engine();
@@ -2104,7 +2144,7 @@ impl ImprovApp {
                 return;
             }
         };
-        match improv_storage_csv::export_measure_csv(&self.model, measure, &path, delimiter) {
+        match improv_storage_csv::export_measure_csv(self.model_mut(), measure, &path, delimiter) {
             Ok(n) => {
                 self.status = format!("exported {n} row(s) to {}", path.display());
             }
@@ -2132,20 +2172,29 @@ impl ImprovApp {
         }
     }
 
-    /// The model, to change. A build thread holds it only while it copies
-    /// it (see [`Self::spawn_build`]): wait for that copy rather than make a
-    /// second one here, which at 1M cells is as slow and doubles the memory.
+    /// The model, to change, with the [`Self::held`] cell edits in it. A
+    /// build thread holds it only while it copies it (see
+    /// [`Self::spawn_build`]): wait for that copy rather than make a second
+    /// one here, which at 1M cells is as slow and doubles the memory. A cell
+    /// edit does not come here ([`Self::write_input`]); a structural change
+    /// in a build's first ~150 ms (at 1M cells) still waits.
     fn model_mut(&mut self) -> &mut Model {
         // Only a build thread shares the model; it lets go before building.
         while self.building.is_some() && Arc::strong_count(&self.model) > 1 {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
-        Arc::make_mut(&mut self.model)
+        let model = Arc::make_mut(&mut self.model);
+        for (m, at, v) in self.held.drain(..) {
+            put_input(model, m, at, v);
+        }
+        model
     }
 
     /// Start building an engine for the model as it is now, on a thread
     /// with the engine's stack (a formula compiles recursively).
     fn spawn_build(&mut self) {
+        // A build that went stale lets go of the model before it lands.
+        let _ = self.model_mut();
         let model = Arc::clone(&self.model);
         // What the old engine computed for a measure the model no longer
         // computes would show under a new measure that reuses its id.
@@ -2168,9 +2217,6 @@ impl ImprovApp {
                 // Copy the model and let go of it first, so an edit meanwhile
                 // need not copy it on the UI thread; free the old engine
                 // here, not there.
-                // shortcut: a change in the copy's first ~150 ms (at 1M
-                // cells) waits for it on the UI thread (`model_mut`); share
-                // the cells persistently if that shows.
                 let owned = engine_model(&model).into_owned();
                 drop(model);
                 drop(old);
@@ -2187,6 +2233,8 @@ impl ImprovApp {
     /// when the structure moved on meanwhile, build again. A failed build
     /// leaves no engine (inputs still show) and says why.
     fn land(&mut self, b: Build, built: Result<(Option<Engine>, Snapshot), String>) {
+        // The build let go of the model before it answered.
+        self.write_held();
         if b.stale {
             drop_off_thread(built);
             self.spawn_build();
@@ -2219,6 +2267,7 @@ impl ImprovApp {
     /// Each frame: land the build if it is done, and keep frames coming
     /// while one runs.
     fn poll_build(&mut self, ctx: &egui::Context) {
+        self.write_held();
         let Some(b) = &self.building else {
             return;
         };
@@ -2529,6 +2578,7 @@ impl ImprovApp {
         if let Err(e) = check_engine(&mut candidate) {
             return Err((e, candidate));
         }
+        let _ = self.model_mut();
         let previous = std::mem::replace(&mut self.model, Arc::new(*candidate));
         let changes = improv_store::ChangeSet::between(&previous, &self.model);
         if let Err(e) = self.save_changes(&changes) {
@@ -2833,7 +2883,9 @@ impl ImprovApp {
     #[cfg(test)]
     #[must_use = "a failed save must be surfaced, not reported as success"]
     fn save(&mut self) -> Result<(), String> {
-        let r = self.store_with(|s, m| s.save_model(m));
+        let _ = self.model_mut();
+        let model = Arc::clone(&self.model);
+        let r = self.store_with(&model, |s, m| s.save_model(m));
         if r.is_ok() {
             self.unsaved = Default::default();
         }
@@ -2849,11 +2901,33 @@ impl ImprovApp {
     fn save_changes(&mut self, changes: &improv_store::ChangeSet) -> Result<(), String> {
         let mut all = std::mem::take(&mut self.unsaved);
         all.add(changes.clone());
-        let r = self.store_with(|s, m| s.save_changes(m, &all));
+        if self.db.is_empty() {
+            return Ok(());
+        }
+        let model = self.save_model_for(&all);
+        let r = self.store_with(&model, |s, m| s.save_changes(m, &all));
         if r.is_err() {
             self.unsaved = all;
         }
         r
+    }
+
+    /// What a save of `changes` reads: the structure and the named cells,
+    /// copied in microseconds without waiting for a build that still shares
+    /// the model (H3). A change too big to save cell by cell, or a store
+    /// handle with nothing loaded, saves the whole model: shared, not copied.
+    fn save_model_for(&mut self, changes: &improv_store::ChangeSet) -> Arc<Model> {
+        if changes.cells.len() > improv_store::SEEK_SAVE_LIMIT || self.save_token.tx().is_none() {
+            let _ = self.model_mut();
+            return Arc::clone(&self.model);
+        }
+        let mut m = structure_copy(&self.model);
+        for (id, at) in &changes.cells {
+            if let Some(v) = self.input(*id, at) {
+                m.set_input(*id, at.clone(), v.clone());
+            }
+        }
+        Arc::new(m)
     }
 
     /// Open the store, adopt the save token, run `save`, keep the new token.
@@ -2861,6 +2935,7 @@ impl ImprovApp {
     /// the model dirty.
     fn store_with(
         &mut self,
+        model: &Model,
         save: impl FnOnce(&mut Store, &Model) -> improv_store::Result<()>,
     ) -> Result<(), String> {
         if self.db.is_empty() {
@@ -2868,7 +2943,7 @@ impl ImprovApp {
         }
         let r = Store::open(&self.db).map_err(save_error).and_then(|mut s| {
             s.adopt_save_token(std::mem::take(&mut self.save_token));
-            let r = save(&mut s, &self.model).map_err(save_error);
+            let r = save(&mut s, model).map_err(save_error);
             // On failure this is the adopted token back, unchanged.
             self.save_token = s.take_save_token();
             r
@@ -2892,6 +2967,7 @@ impl ImprovApp {
             .load_model()
             .map_err(|e| format!("revert failed: {e}"))?;
         check_engine(&mut model)?;
+        self.held.clear();
         self.model = Arc::new(model);
         self.rebuild_engine();
         self.save_token = store.take_save_token();
@@ -3633,6 +3709,36 @@ fn structure_of(model: &mut Model) -> Model {
     let s = model.clone();
     model.inputs = inputs;
     s
+}
+
+/// [`structure_of`] for a model that cannot lend its cells out (a build
+/// shares it): every field but `inputs`, as [`improv_store::ChangeSet::between`]
+/// lists them. A new `Model` field goes in both.
+fn structure_copy(model: &Model) -> Model {
+    let mut s = Model::new();
+    s.categories.clone_from(&model.categories);
+    s.items.clone_from(&model.items);
+    s.measures.clone_from(&model.measures);
+    s.sql_sources.clone_from(&model.sql_sources);
+    s.views.clone_from(&model.views);
+    s.external_fns.clone_from(&model.external_fns);
+    s.external_calls.clone_from(&model.external_calls);
+    s.scenarios.clone_from(&model.scenarios);
+    s.lambdas.clone_from(&model.lambdas);
+    s
+}
+
+/// Set (`Some`) or clear the input cell `measure` at `at` in `model`.
+fn put_input(
+    model: &mut Model,
+    measure: MeasureId,
+    at: improv_core_model::Coordinate,
+    value: Option<Value>,
+) {
+    match value {
+        Some(v) => model.set_input(measure, at, v),
+        None => drop(model.inputs.remove(&(measure, at))),
+    }
 }
 
 /// The model in `m`, copied only when a build still holds it.
@@ -4454,6 +4560,7 @@ impl ImprovApp {
             };
             return self.save_changes(&all);
         }
+        let _ = self.model_mut();
         let mut store = Store::open(path).map_err(save_error)?;
         let there = store.load_model().map_err(save_error)?;
         if !(there.categories.is_empty() && there.measures.is_empty()) {
@@ -4568,7 +4675,7 @@ impl ImprovApp {
         id: MeasureId,
         cats: Vec<CategoryId>,
     ) -> Result<String, String> {
-        let model = &self.model;
+        let model = &*self.model_mut();
         let m = model
             .measures
             .get(&id)
@@ -4615,7 +4722,7 @@ impl ImprovApp {
             at.dims.extend(pins.iter().copied());
             Some(at)
         };
-        let mut c = (*self.model).clone();
+        let mut c = model.clone();
         let mut dropped = 0;
         let mine: Vec<_> = c.inputs.extract_if(|(m, _), _| *m == id).collect();
         for ((m, at), v) in mine {
@@ -4869,7 +4976,7 @@ impl ImprovApp {
             self.current_view = self.current_view.filter(|c| *c != v);
             return Ok(msg);
         }
-        let mut c = (*self.model).clone();
+        let mut c = self.model_mut().clone();
         match t {
             Thing::Measure(id) => {
                 c.measures.remove(&id);
@@ -8125,6 +8232,7 @@ mod tests {
             save_token: improv_store::SaveToken::default(),
             unsaved: Default::default(),
             model: Arc::new(model),
+            held: Vec::new(),
             engine,
             snapshot,
             building: None,
@@ -17951,33 +18059,24 @@ mod tests {
                 .expect("a formula");
         });
         let twice = app.model.measure_by_name("Twice").expect("Twice").id;
-        stalls(
-            &mut app,
-            "edit a formula, then a cell during the build",
-            &mut |app| {
-                app.commit_formula(revenue, &format!("{input} * 4"))
+        // A cell edit `delay` ms into a rebuild: the call is the UI
+        // thread's stall (the build used to copy the model first, and an
+        // edit meanwhile waited for the copy).
+        for (n, delay) in [0u64, 50, 100, 200, 500].into_iter().enumerate() {
+            let (k, v) = (4 + n, 10 + n);
+            let what = format!("edit a formula, then a cell {delay} ms into the build");
+            stalls(&mut app, &what, &mut |app| {
+                app.commit_formula(revenue, &format!("{input} * {k}"))
                     .expect("a formula");
+                std::thread::sleep(std::time::Duration::from_millis(delay));
                 let t = Instant::now();
-                app.commit_cell_text(MeasureId(100), key.clone(), "9")
+                app.commit_cell_text(MeasureId(100), key.clone(), &v.to_string())
                     .expect("edit");
-                println!("H3 cell edit at once during the build: {:.0} ms", ms(t));
-            },
-        );
-        assert_eq!(app.cell_text(twice, &key).as_deref(), Some("18"));
-        stalls(
-            &mut app,
-            "edit a formula, then a cell 0.5 s into the build",
-            &mut |app| {
-                app.commit_formula(revenue, &format!("{input} * 5"))
-                    .expect("a formula");
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                let t = Instant::now();
-                app.commit_cell_text(MeasureId(100), key.clone(), "8")
-                    .expect("edit");
-                println!("H3 cell edit 0.5 s into the build: {:.0} ms", ms(t));
-            },
-        );
-        assert_eq!(app.cell_text(revenue, &key).as_deref(), Some("40"));
+                println!("H3 cell edit {delay} ms into the build: {:.1} ms", ms(t));
+            });
+            assert_eq!(app.cell_text(revenue, &key), Some((k * v).to_string()));
+            assert_eq!(app.cell_text(twice, &key), Some((2 * v).to_string()));
+        }
         stalls(&mut app, "undo the cell edit", &mut |app| {
             app.undo().expect("undo");
         });
@@ -18105,6 +18204,71 @@ mod tests {
         app.finish_build();
         assert_eq!(revenue(&app).as_deref(), Some("1000"));
         assert_eq!(*app.model, grid_2x2_model());
+    }
+
+    /// H3: a cell edit made while a build still holds the model (it copies
+    /// it first) does not wait for it: it is held beside the model, shown,
+    /// undone and saved like any edit, and written to the model once the
+    /// build lets go. Here the "build" is a clone of the model held by hand.
+    #[test]
+    fn a_cell_edit_while_a_build_holds_the_model_does_not_wait() {
+        let db = temp_db("h3_held");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        app.finish_build();
+        let (q, rev) = q_and_rev_keys();
+        let (tx, rx) = mpsc::channel();
+        app.building = Some(Build {
+            done: rx,
+            edits: Vec::new(),
+            stale: false,
+        });
+        let holder = Arc::clone(&app.model);
+        let t = std::time::Instant::now();
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(200.0))
+            .expect("edit");
+        app.clear_cell(MeasureId(100), decode_key(&[(2, 21)]))
+            .expect("clear");
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "it waited");
+        assert_eq!(app.held.len(), 2, "held beside the shared model");
+        assert_eq!(app.cell_text(MeasureId(101), &q).as_deref(), Some("200"));
+        assert_eq!(app.cell_text(MeasureId(100), &decode_key(&[(2, 21)])), None);
+        assert_eq!(app.values_for(MeasureId(101)).get(&q), Some(&200.0));
+        assert!(!app
+            .values_for(MeasureId(100))
+            .contains_key(&decode_key(&[(2, 21)])));
+        let stored = || Store::open(&db).and_then(|mut s| s.load_model()).unwrap();
+        assert_eq!(
+            stored().input(MeasureId(101), &decode(&q)),
+            Some(&Value::Number(200.0)),
+            "saved at once"
+        );
+        app.undo().expect("undo the clear");
+        assert_eq!(
+            app.cell_text(MeasureId(100), &decode_key(&[(2, 21)]))
+                .as_deref(),
+            Some("20")
+        );
+        // The build lets go and lands: the edits move into the model.
+        drop(holder);
+        tx.send(try_build_engine(&app.model)).expect("send");
+        app.finish_build();
+        assert!(app.held.is_empty());
+        assert_eq!(
+            app.model.input(MeasureId(101), &decode(&q)),
+            Some(&Value::Number(200.0))
+        );
+        assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("2000"));
+        assert_eq!(stored(), *app.model);
+    }
+
+    fn decode_key(pairs: &[(u32, u32)]) -> CoordKey {
+        let mut k: CoordKey = pairs.iter().copied().collect();
+        k.sort();
+        k
     }
 
     /// H3: a structural change made while a build runs makes that build
