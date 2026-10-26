@@ -245,7 +245,7 @@ and Delete… act on the selected view. Add a TUI command for both.
 **Files:** `crates/tui/src/main.rs` (`save_current_view`),
 `crates/gui/src/app.rs` (`Thing`, `edit_target`, `Command::SaveView`).
 
-**H1-16 GUI: a refused entry throws away what was typed.** *Error
+**[fixed: `fix(gui): a refused cell entry stays in the editor (H1-16)`] H1-16 GUI: a refused entry throws away what was typed.** *Error
 recovery.* `1,500` closes the editor with "edit error: not a number"
 (gui-10), and the text is gone. The TUI keeps it open for correction.
 **Fix:** keep the editor open with the text and show the message.

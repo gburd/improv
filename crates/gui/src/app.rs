@@ -7134,9 +7134,17 @@ impl ImprovApp {
             self.status = "derived cells are computed, not editable".into();
         }
         if let Some((key, text)) = commit {
-            self.status = match self.commit_cell_text(measure, key, &text) {
+            self.status = match self.commit_cell_text(measure, key.clone(), &text) {
                 Ok(msg) => msg,
-                Err(e) => format!("edit error: {e}"),
+                Err(e) => {
+                    // Refused: the editor stays open with what was typed (H1-16).
+                    if let Some(m) = self.matrices.get_mut(mi) {
+                        m.edit_select = Some(text.len()..text.len());
+                        m.editing = Some((measure, key));
+                        m.edit_buf = text;
+                    }
+                    format!("edit error: {e}")
+                }
             };
         }
         Some(hscroll)
@@ -14625,6 +14633,28 @@ mod tests {
             stored.input(MeasureId(101), &at(11, 23)),
             Some(&Value::Number(350.0))
         );
+    }
+
+    /// H1-16: a refused entry keeps the editor open with the text, the caret
+    /// at its end, and says why; Esc then leaves the cell as it was.
+    #[test]
+    fn a_refused_entry_keeps_the_editor_and_its_text() {
+        use egui::{Key, Modifiers as M};
+        let (mut app, mut desk) = grid_desk();
+        let at = cell_rect(&desk, &app, 0, 0).center();
+        desk.click(&mut app, at);
+        type_text(&mut desk, &mut app, "1,500");
+        key(&mut desk, &mut app, Key::Enter, M::NONE);
+        assert_eq!(app.status, "edit error: not a number: \"1,500\"");
+        desk.settle(&mut app);
+        assert_eq!(app.matrices[0].edit_buf, "1,500");
+        assert!(app.matrices[0].editing.is_some(), "still open");
+        type_text(&mut desk, &mut app, "0");
+        assert_eq!(app.matrices[0].edit_buf, "1,5000", "typed at the end");
+        key(&mut desk, &mut app, Key::Escape, M::NONE);
+        assert!(app.matrices[0].editing.is_none());
+        let k: CoordKey = improv_engine::smallvec::smallvec![(1, 10), (2, 20)];
+        assert_eq!(app.cell_text(MeasureId(101), &k).as_deref(), Some("100"));
     }
 
     #[test]
