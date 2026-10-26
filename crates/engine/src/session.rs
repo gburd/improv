@@ -22,7 +22,7 @@ use crate::reduce::two_level;
 use crate::{encode_coord, CellValue, CoordKey};
 use improv_core_model::{CategoryId, MeasureId, MeasureKind, Model, Value, ValueType};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -247,9 +247,20 @@ impl Engine {
     /// that keeps its own view (or writes the changed rows out) rather than
     /// holding snapshots.
     pub fn apply_delta(&mut self, edits: Vec<Edit>) -> Result<Changes, EngineError> {
+        self.submit(edits)?.reply()
+    }
+
+    /// [`Engine::apply_delta`] without the wait: start the round on the
+    /// engine's thread and return at once. The round's changes come from
+    /// the returned [`Pending`], so a caller can keep several engines
+    /// computing at once and take each reply as it arrives.
+    ///
+    /// Rounds run in the order they were submitted; a later call on this
+    /// engine (another round, [`Engine::snapshot`]) waits behind them.
+    pub fn submit(&mut self, edits: Vec<Edit>) -> Result<Pending, EngineError> {
         let (tx, rx) = std::sync::mpsc::channel();
         self.send(Cmd::Edit(sorted(edits), Reply::Changes(tx)))?;
-        recv(&rx)
+        Ok(Pending(rx))
     }
 
     /// The current snapshot of every tracked derived measure, as the last
@@ -344,8 +355,34 @@ fn sorted(mut edits: Vec<Edit>) -> Vec<Edit> {
 }
 
 fn recv<T>(rx: &Receiver<T>) -> Result<T, EngineError> {
-    rx.recv()
-        .map_err(|_| EngineError::Unsupported("engine worker dropped the reply".into()))
+    rx.recv().map_err(|_| dropped())
+}
+
+fn dropped() -> EngineError {
+    EngineError::Unsupported("engine worker dropped the reply".into())
+}
+
+/// An edit round [`Engine::submit`] started, and the changes it will reply
+/// with. Dropping it drops the reply, not the round: the engine has applied
+/// the edits all the same, so a caller that writes the changes out must
+/// then rebuild what it derives from them.
+pub struct Pending(Receiver<Changes>);
+
+impl Pending {
+    /// What the round changed, once the engine has computed it: `None`
+    /// while it still runs. Gives the reply once; take it and drop this.
+    pub fn try_reply(&self) -> Option<Result<Changes, EngineError>> {
+        match self.0.try_recv() {
+            Ok(changes) => Some(Ok(changes)),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => Some(Err(dropped())),
+        }
+    }
+
+    /// Wait for what the round changed.
+    pub fn reply(self) -> Result<Changes, EngineError> {
+        recv(&self.0)
+    }
 }
 
 /// `p` without the item order of the reductions that read only their rows'
@@ -1448,6 +1485,52 @@ mod tests {
         let mut k: Vec<(u32, u32)> = pairs.to_vec();
         k.sort();
         k.into()
+    }
+
+    /// Submitted rounds reply in order with what `apply_delta` returns, and
+    /// a dropped reply's round still applies.
+    #[test]
+    fn submitted_rounds_reply_as_apply_delta_does() {
+        let model = revenue_model();
+        let (mut a, _) = Engine::new(&model, &[MeasureId(102)]).expect("engine");
+        let (mut b, _) = Engine::new(&model, &[MeasureId(102)]).expect("engine");
+        let qty = |v: f64| Edit {
+            measure: MeasureId(101),
+            coord: key(&[(2, 20), (1, 10)]),
+            value: Some(CellValue::num(v)),
+        };
+        let first = a.submit(vec![qty(3.0)]).expect("submit");
+        let second = a.submit(vec![qty(4.0)]).expect("submit");
+        let first = loop {
+            if let Some(r) = first.try_reply() {
+                break r.expect("first reply");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert_eq!(first, b.apply_delta(vec![qty(3.0)]).expect("apply"));
+        assert_eq!(
+            second.reply().expect("second reply"),
+            b.apply_delta(vec![qty(4.0)]).expect("apply")
+        );
+        drop(a.submit(vec![qty(5.0)]).expect("submit"));
+        b.apply_delta(vec![qty(5.0)]).expect("apply");
+        assert_eq!(
+            owned(&a.snapshot().expect("snapshot")),
+            owned(&b.snapshot().expect("snapshot"))
+        );
+    }
+
+    /// A reply not yet sent is `None`; one whose engine went away, an error.
+    #[test]
+    fn a_pending_reply_waits_or_reports_a_lost_engine() {
+        let (tx, rx) = std::sync::mpsc::channel::<Changes>();
+        let pending = Pending(rx);
+        assert!(pending.try_reply().is_none());
+        drop(tx);
+        assert!(matches!(pending.try_reply(), Some(Err(_))));
+        let (tx, rx) = std::sync::mpsc::channel::<Changes>();
+        drop(tx);
+        assert!(Pending(rx).reply().is_err());
     }
 
     #[test]

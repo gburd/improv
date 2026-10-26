@@ -97,6 +97,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   name in use is refused. `V` takes `Old = New` to rename a view and
   `-Name` to delete one. Saving, renaming and deleting a view are now undo
   steps, as in the GUI; before, undo left views alone.
+- **`Engine::submit` starts an edit round without waiting for it** (B1).
+  It returns a `Pending`, whose `try_reply` gives the round's changes once
+  the engine's thread has computed them (`None` before) and whose `reply`
+  waits for them; `apply_delta` is `submit` then `reply`. A caller can
+  keep several engines computing at once and take each reply as it
+  arrives.
 ### Fixed
 
 - **`SORT` and `SORTBY` no longer panic on a NaN.** Their comparison
