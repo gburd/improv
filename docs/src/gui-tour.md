@@ -94,9 +94,12 @@ The window has five regions:
   Cells are white with thin black rules; the selection and its row and column
   headers turn gray. Click a cell to select it and type to replace its
   value; **double-click** it (or press Enter / F2) to edit it with its value
-  selected. Enter commits, Esc cancels. An entry the cell refuses (`1,500`
-  in a number cell) stays in the editor, with the reason in the status
-  line, to correct or cancel. Input cells carry a dark-gray hairline
+  selected. Enter commits, Esc cancels. A number cell takes `1500`,
+  `-3.5`, `1,500.25` and `$1,500` (a leading `$`, `€`, `£` or `¥`; in a
+  German locale, `IMPROV_LOCALE=de`, `1.500,25` and `€1.500`). An entry
+  the cell refuses (`1,50` in a number cell) stays in the editor, with
+  the reason and the forms it takes in the status line, to correct or
+  cancel. Input cells carry a dark-gray hairline
   under the value; derived cells have none (hover one to see its
   formula). Arrows (or
   `h` `j` `k` `l`) move the cursor, and `n` / Shift+`n` show the next or

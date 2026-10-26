@@ -125,6 +125,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   CLI saves no window position (the origin), which the GUI restored as
   it was, so the menu covered the row labels and the first column. A
   window at the origin now opens where a fresh one does (H1-14).
+- **A GUI number cell takes `1,500` and `$1,500`** (H1-27, the GUI
+  part): the locale's group separator between thousands and a leading
+  `$`, `€`, `£` or `¥` (`1.500,25` and `€1.500` in German). Groups must
+  be three digits, so `1,50` is refused rather than guessed, and a
+  refusal now names the forms taken: `not a number: "1,50" (type 1500,
+  1,500.25 or $1,500)`.
 - **The GUI's input cells are marked so they can be told from derived
   ones**: a dark-gray hairline under the value, inset from the cell's
   rule. The old mark, a light-gray line on the black rule, could not be
