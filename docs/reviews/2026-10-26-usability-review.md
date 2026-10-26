@@ -284,7 +284,7 @@ port the GUI's rename and delete, with the same blockers and undo.
 **Files:** `crates/tui/src/app.rs`; `crates/gui/src/app.rs` (`delete`,
 `delete_blockers`, `rename`), to share through `core_model`.
 
-**H1-22 GUI, TUI: no number format.** *Match with the real world.* A
+**[fixed: `feat(core_model,engine): a per-measure number format (H1-22, the model)`, with the stores, `feat(gui): the Format menu sets a measure's number format (H1-22)`, `feat(tui): # sets the shown measure's number format (H1-22)` and `feat(cli): improv format sets a measure's number format (H1-22)`] H1-22 GUI, TUI: no number format.** *Match with the real world.* A
 derived cell shows `299.666666666667`, and the Format menu is grayed
 out (gui-14). A budget wants two decimals or none. **Fix:** a
 per-measure decimal places setting, stored with the measure and used by
