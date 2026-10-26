@@ -1435,16 +1435,41 @@ pub const CELLS_PER_WORKER: usize = 10_000;
 /// The most workers [`workers_for`] picks by itself.
 pub const MAX_WORKERS: usize = 8;
 
-/// The timely workers [`evaluate`] runs a model of `cells` input cells on:
+/// The process's cap on [`workers_for`] (0: none): see [`set_max_workers`].
+static WORKER_CAP: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Cap every later [`workers_for`] at `n` threads (0 lifts the cap), for a
+/// host that must not take every core: pg_improv's sync worker sets it to
+/// the parallel workers one query may use. `IMPROV_ENGINE_WORKERS` is capped
+/// too.
+pub fn set_max_workers(n: usize) {
+    WORKER_CAP.store(n, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The timely workers [`evaluate`] runs a model of `cells` input cells on
+/// (and the threads a large FIXPOINT step splits over):
 /// `IMPROV_ENGINE_WORKERS` when set to a count (1 to 64), else one per
-/// [`CELLS_PER_WORKER`] cells, at most the cores and [`MAX_WORKERS`].
+/// [`CELLS_PER_WORKER`] cells, at most the cores and [`MAX_WORKERS`]; and at
+/// most [`set_max_workers`]' cap.
 pub fn workers_for(cells: usize) -> usize {
     let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    pick_workers(
-        cells,
-        std::env::var("IMPROV_ENGINE_WORKERS").ok().as_deref(),
-        cores,
+    capped(
+        pick_workers(
+            cells,
+            std::env::var("IMPROV_ENGINE_WORKERS").ok().as_deref(),
+            cores,
+        ),
+        WORKER_CAP.load(std::sync::atomic::Ordering::Relaxed),
     )
+}
+
+/// `n` at most `cap` (0: no cap).
+fn capped(n: usize, cap: usize) -> usize {
+    if cap == 0 {
+        n
+    } else {
+        n.min(cap)
+    }
 }
 
 /// [`workers_for`] given the variable's value and the core count.
@@ -1659,6 +1684,10 @@ mod tests {
         assert_eq!(pick_workers(2 * CELLS_PER_WORKER - 1, None, 16), 1);
         assert_eq!(pick_workers(2 * CELLS_PER_WORKER, None, 16), 2);
         assert_eq!(pick_workers(usize::MAX, None, 16), MAX_WORKERS);
+        // The process cap (set_max_workers) bounds the pick; 0 is none.
+        assert_eq!(capped(8, 3), 3);
+        assert_eq!(capped(2, 3), 2);
+        assert_eq!(capped(8, 0), 8);
         assert_eq!(pick_workers(usize::MAX, None, 3), 3);
         assert_eq!(pick_workers(usize::MAX, None, 0), 1);
         assert_eq!(pick_workers(0, Some(" 4 "), 1), 4);

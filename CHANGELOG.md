@@ -64,6 +64,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   steps, as in the GUI; before, undo left views alone.
 ### Fixed
 
+- **pg_improv's sync worker caps the engine's threads** at
+  `max_parallel_workers_per_gather` + 1, as trigger and commit mode
+  already cap `evaluate`: the live engine's FIXPOINT step (B8) would
+  otherwise take up to 8 cores in one backend.
+
 - **Typing on a TUI cell replaces its value.** `e` or Enter showed the old
   value with the caret at its end, so typing `350` over `300` stored
   `300350`. The old value now shows selected and the first key typed

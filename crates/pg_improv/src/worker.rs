@@ -543,6 +543,12 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         .and_then(|c| c.into_string().ok())
         .unwrap_or_else(|| "postgres".into());
     BackgroundWorker::connect_worker_to_spi(Some(&db), None);
+    // The live engine's FIXPOINT step splits large layouts over threads:
+    // in a Postgres backend, at most the parallel workers one query may use,
+    // as trigger and commit mode cap `evaluate`.
+    // SAFETY: reading a GUC variable on the backend thread.
+    let gather = unsafe { pg_sys::max_parallel_workers_per_gather };
+    improv_engine::dataflow::set_max_workers(usize::try_from(gather).unwrap_or(0) + 1);
     // The slot sends values as text in this session's style; `live` reads
     // dates as ISO and a zoneless `timestamp` as UTC, as the docs promise.
     // No JIT: once autovacuum has analyzed a catalog of ~1,000 models, the
