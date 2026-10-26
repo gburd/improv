@@ -43,6 +43,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   Each column now widens to its widest value, up to 20 characters; past
   that a number drops decimals to fit, and one that still cannot fit shows
   `###` (H1-3).
+- **Enter on a TUI formula cell no longer turns the formula into a
+  number.** Enter opened the formula, so Enter, `5`, Enter stored
+  `Left = 5` and blanked the grid without a word. Enter on a derived cell
+  now says "derived cells are computed, not editable; press e to edit the
+  formula", as the GUI does; `e` edits it. A formula edit that leaves the
+  measure one value over no categories asks for a second Enter, and when
+  one is accepted the measure takes the formula's shape, so the grid shows
+  the value instead of blank cells (H1-4).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

@@ -220,7 +220,8 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
     let armed = std::mem::take(&mut app.quit_armed);
     match k.code {
         KeyCode::Char('q') => quit(app, path, armed),
-        KeyCode::Char('e') | KeyCode::Enter => app.begin_edit(),
+        KeyCode::Char('e') => app.begin_edit(),
+        KeyCode::Enter => app.enter_cell(),
         // H1-2: typing a number on a cell starts its edit.
         KeyCode::Char(c @ ('0'..='9' | '-' | '.')) => app.type_into_cell(c),
         KeyCode::Tab | KeyCode::Char('m') => app.next_measure(),
@@ -395,6 +396,24 @@ mod tests {
         ev.push(key(KeyCode::Enter));
         run_events(&mut app, "", ev).unwrap();
         assert_eq!(app.grid.value_at(0, 1), Some(0.5));
+    }
+
+    /// H1-4: Enter then 5 on a derived cell no longer replaces its
+    /// formula: Enter says why and names `e`.
+    #[test]
+    fn enter_on_a_derived_cell_keeps_its_formula() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(102));
+        let formula = app.model.measures[&MeasureId(102)].kind.clone();
+        let ev = vec![
+            key(KeyCode::Enter),
+            key(KeyCode::Char('5')),
+            key(KeyCode::Enter),
+        ];
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.model.measures[&MeasureId(102)].kind, formula);
+        assert_eq!(app.status.as_deref(), Some(app::DERIVED));
+        assert!(app.edit.is_none());
     }
 
     #[test]

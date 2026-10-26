@@ -609,6 +609,9 @@ pub struct App {
     pub outside_seen: Option<i64>,
     /// `q` was pressed and its save failed: the next `q` quits anyway.
     pub quit_armed: bool,
+    /// The formula text whose commit was held because it is a constant
+    /// (H1-4): Enter again on the same text replaces the formula.
+    pub confirm_constant: Option<String>,
 }
 
 /// What a failed save says (H6). The edits stay in the session either way.
@@ -677,6 +680,7 @@ impl App {
             defining: false,
             outside_seen: None,
             quit_armed: false,
+            confirm_constant: None,
         })
     }
 
@@ -909,17 +913,50 @@ impl App {
     /// holding only that key, as a spreadsheet starts one. A derived cell
     /// says it is computed and that `e` edits its formula.
     pub fn type_into_cell(&mut self, c: char) {
-        if self
-            .model
-            .measures
-            .get(&self.grid.measure)
-            .is_some_and(|m| m.is_derived())
-        {
-            self.status = Some(DERIVED.into());
+        if self.refuse_derived() {
             return;
         }
         self.begin_edit();
         self.edit_key(KeyCode::Char(c));
+    }
+
+    /// Enter in the grid (H1-4): edit an input cell. A derived cell is
+    /// computed, so Enter says so and names `e`, which edits its formula.
+    pub fn enter_cell(&mut self) {
+        if !self.refuse_derived() {
+            self.begin_edit();
+        }
+    }
+
+    /// True, with [`DERIVED`] on the status line, if the viewed measure
+    /// is derived.
+    fn refuse_derived(&mut self) -> bool {
+        let derived = (self.model.measures.get(&self.grid.measure)).is_some_and(|m| m.is_derived());
+        if derived {
+            self.status = Some(DERIVED.into());
+        }
+        derived
+    }
+
+    /// H1-4: the hold message if `f`, as the viewed derived measure's new
+    /// formula, would drop every one of its categories (a constant, such as
+    /// `5`), unless `text` was held already, so this Enter confirms it.
+    fn hold_constant(&mut self, f: &Formula, text: &str) -> Option<String> {
+        let m = self.model.measures.get(&self.grid.measure)?;
+        let (_, cats) =
+            improv_engine::compiler::derived_shape(&self.model, m.id, &m.name.0, f).ok()?;
+        if m.categories.is_empty() || !cats.is_empty() {
+            return None;
+        }
+        if self.confirm_constant.take().as_deref() == Some(text) {
+            return None;
+        }
+        self.confirm_constant = Some(text.into());
+        Some(format!(
+            "'{text}' is one value over no categories: it replaces {}'s formula. \
+             Enter again to replace it, Esc to keep the formula",
+            m.name.0
+        ))
     }
 
     /// A key in the edit line. In a formula, Tab completes the name before
@@ -948,6 +985,7 @@ impl App {
     /// Cancel edit mode without committing.
     pub fn cancel_edit(&mut self) {
         self.edit = None;
+        self.confirm_constant = None;
         self.defining = false;
         self.tab_cycle = None;
         self.diagnostic = None;
@@ -973,14 +1011,20 @@ impl App {
                     self.status = None;
                     self.diagnostic = Some(crate::diagnose::diagnose(&self.model, &buf, &e));
                 }
-                Ok(f) => match self.set_formula(f) {
-                    Ok(()) => {
-                        self.edit = None;
-                        self.tab_cycle = None;
-                        self.status = None;
+                Ok(f) => {
+                    if let Some(hold) = self.hold_constant(&f, &buf) {
+                        self.status = Some(hold);
+                        return;
                     }
-                    Err(e) => self.status = Some(e),
-                },
+                    match self.set_formula(f) {
+                        Ok(()) => {
+                            self.edit = None;
+                            self.tab_cycle = None;
+                            self.status = None;
+                        }
+                        Err(e) => self.status = Some(e),
+                    }
+                }
             }
             return;
         }
@@ -1052,19 +1096,35 @@ impl App {
         Ok(())
     }
 
-    /// Replace the viewed derived measure's formula. Validated on a candidate
-    /// model (a real engine build, which catches cycles and type errors) and
-    /// only then published; on failure nothing changes and the error is
-    /// returned. The old model is an undo point.
+    /// Replace the viewed derived measure's formula. Its type and categories
+    /// follow the formula, as `=` defines them (a constant has none: H1-4).
+    /// Validated on a candidate model (a real engine build, which catches
+    /// cycles and type errors) and only then published; on failure nothing
+    /// changes and the error is returned. The old model is an undo point.
     pub fn set_formula(&mut self, formula: Formula) -> Result<(), String> {
+        let id = self.grid.measure;
         let mut candidate = self.model.clone();
-        candidate
+        let m = candidate
             .measures
-            .get_mut(&self.grid.measure)
-            .ok_or("the measure no longer exists")?
-            .kind = MeasureKind::Derived(formula);
+            .get_mut(&id)
+            .ok_or("the measure no longer exists")?;
+        let (value_type, categories) =
+            improv_engine::compiler::derived_shape(&self.model, id, &m.name.0, &formula)
+                .map_err(|e| e.to_string())?;
+        // The same categories keep their order (the default axes).
+        let reshaped = m.categories.len() != categories.len()
+            || !categories.iter().all(|c| m.categories.contains(c));
+        if reshaped {
+            m.categories = categories;
+        }
+        m.value_type = value_type;
+        m.kind = MeasureKind::Derived(formula);
         self.commit_model(candidate)?;
-        self.reselect();
+        if reshaped {
+            self.relayout(Some(id));
+        } else {
+            self.reselect();
+        }
         Ok(())
     }
 
@@ -1840,6 +1900,54 @@ pub(crate) mod tests {
         assert_eq!(empty.status.as_deref(), Some(EMPTY));
     }
 
+    /// H1-4: Enter on a derived cell explains and opens nothing; `e` edits
+    /// the formula, and a constant in place of it is held until a second
+    /// Enter on the same text. Esc, or a changed text, starts over.
+    #[test]
+    fn a_formula_does_not_become_a_constant_by_accident() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(102));
+        let formula = app.model.measures[&MeasureId(102)].kind.clone();
+        app.enter_cell();
+        assert!(app.edit.is_none());
+        assert_eq!(app.status.as_deref(), Some(DERIVED));
+        app.begin_edit();
+        app.edit = Some("5".into());
+        app.commit_edit();
+        let held = app.status.clone().unwrap();
+        assert!(held.contains("replaces Revenue's formula"), "{held}");
+        assert!(app.edit.is_some(), "the edit stays open");
+        assert_eq!(app.model.measures[&MeasureId(102)].kind, formula);
+        app.edit = Some("6".into());
+        app.commit_edit();
+        assert_eq!(
+            app.status.as_deref(),
+            Some(held.replace("'5'", "'6'").as_str())
+        );
+        app.cancel_edit();
+        assert_eq!(app.confirm_constant, None);
+        app.begin_edit();
+        app.edit = Some("6".into());
+        app.commit_edit();
+        assert!(app.edit.is_some(), "Esc dropped the confirmation");
+        app.commit_edit();
+        assert!(app.edit.is_none());
+        assert_eq!(app.formula_text().as_deref(), Some("6"));
+        // A formula that keeps a category commits at once; on an input
+        // measure, Enter edits.
+        assert_eq!(app.grid.display_at(0, 0), "6", "a scalar, not blank cells");
+        assert_eq!(app.grid.row_cat, None);
+        app.begin_edit();
+        app.edit = Some("Price * 2".into());
+        app.commit_edit();
+        assert!(app.edit.is_none());
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Product");
+        assert_eq!(app.grid.display_at(1, 0), "40");
+        view(&mut app, MeasureId(101));
+        app.enter_cell();
+        assert_eq!(app.edit.as_deref(), Some("100"));
+    }
+
     #[test]
     fn editing_derived_cell_is_rejected() {
         let mut app = App::new(revenue_model()).unwrap();
@@ -2232,9 +2340,12 @@ pub(crate) mod tests {
         app.commit_edit();
         app.commit_command();
         assert_eq!(app.status, None);
-        // A derived measure's edit line is its formula.
+        // A derived measure's edit line is its formula; a constant there
+        // takes a second Enter (H1-4).
         view(&mut app, MeasureId(102));
         app.edit = Some("1".into());
+        app.commit_edit();
+        assert!(app.status.as_deref().unwrap().contains("Enter again"));
         app.commit_edit();
         assert_eq!(app.status, None);
         assert_eq!(app.formula_text().as_deref(), Some("1"));

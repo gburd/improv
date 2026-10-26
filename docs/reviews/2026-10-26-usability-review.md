@@ -127,7 +127,7 @@ cap, show `###` or round the decimals to fit; never drop leading digits.
 **Files:** `crates/tui/src/ui.rs` (`COL_W`, the grid widths),
 `crates/tui/src/app.rs` (`Grid::display_at`).
 
-**H1-4 TUI: Enter on a derived cell edits the formula, and a number
+**[fixed: `fix(tui): Enter on a formula cell does not make it a constant (H1-4)`] H1-4 TUI: Enter on a derived cell edits the formula, and a number
 replaces it.** *Error prevention; consistency.* A user who wants to
 override one `Left` cell presses Enter and types `5`. `Left = 5` is
 stored, a scalar, and every cell of the grid goes blank with no message.
