@@ -286,6 +286,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   weight changes: 6.4-6.6 -> 5.85-5.95 s; engine heap 414 -> 390 bytes per
   edge, peak RSS 8.4 -> 8.2 GB (release build, `tests/probe.rs`
   `pagerank`, three runs each). Results are bit for bit as before.
+- **A large FIXPOINT step reduces on several threads** (B8). The host step
+  splits a reduction's laid-out groups (from 20,000 rows) into runs, one
+  per thread, as many as `evaluate` would take for that many input cells
+  (`IMPROV_ENGINE_WORKERS`, or one per 10,000, at most 8 and the cores),
+  and joins their results in order, so they are one pass's, bit for bit.
+  PageRank at 100k nodes / 10M edges on 8 threads: warm re-solve after
+  one edge's weight changes 5.85-5.95 -> 2.75-2.79 s (v0.10.0: 9.66 s),
+  after a new edge 12.6-13.2 -> 10.4-10.5 s, `Engine::new` 28.4-29.3 ->
+  25.3-25.7 s (release build, `tests/probe.rs` `pagerank`, three runs
+  each). With `IMPROV_ENGINE_WORKERS=1` the step runs on the engine's
+  thread, as before.
 - **An edit costs what it reaches, not the number of measures** (B6). The
   live engine groups measures into components by what they read and
   advances only the input sessions of the components an edit feeds; the

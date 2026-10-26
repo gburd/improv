@@ -128,7 +128,7 @@ struct Src(u32, u32);
 /// [`Src`]'s collection index for a reduction's own values.
 const OWN: u32 = u32::MAX;
 
-fn value(kids: &[Rc<Cells>], own: &[CellValue], s: &Src) -> CellValue {
+fn value<C: std::ops::Deref<Target = Cells>>(kids: &[C], own: &[CellValue], s: &Src) -> CellValue {
     match s.0 {
         OWN => own[s.1 as usize].clone(),
         j => kids[j as usize][s.1 as usize].1.clone(),
@@ -219,22 +219,95 @@ impl Shape {
                 })
     }
 
+    /// The rows laid out.
+    fn rows(&self) -> usize {
+        self.groups.iter().map(|g| g.items.len()).sum()
+    }
+
     /// Refill every group's rows from `kids` (a kept value only where
-    /// `stale` says its collection changed) and reduce it into `out`.
+    /// `stale` says its collection changed) and reduce it into `out`, on
+    /// `workers` threads: each reduces a run of the groups, in order, and
+    /// the runs' cells are joined in order, so they are one pass's, bit for
+    /// bit.
     fn fill(
         &mut self,
         a: &AggSpec<'_>,
         consts: &[Option<CellValue>],
         stale: &[Stale],
+        workers: usize,
         out: &mut Cells,
     ) {
-        let (n_in, dims, cells) = (a.ins.len(), a.order.len(), into_cells(a));
-        let (kids, own, keep, rs) = (&self.kids, &self.own, &self.keep, &mut self.scratch);
-        let refill = keep
+        let cells = into_cells(a);
+        let kids: Vec<&Cells> = self.kids.iter().map(|k| &**k).collect();
+        let refill = self
+            .keep
             .iter()
             .zip(stale)
             .any(|(k, s)| *k && !matches!(s, Stale::No));
-        for g in &mut self.groups {
+        let f = Fill {
+            a,
+            consts,
+            stale,
+            refill,
+            kids: &kids,
+            own: &self.own,
+            keep: &self.keep,
+            cells: cells.as_deref(),
+        };
+        if workers <= 1 {
+            f.groups(&mut self.groups, &mut self.scratch, out);
+            return;
+        }
+        let (f, capacity) = (&f, self.scratch.capacity);
+        let per = self.groups.len().div_ceil(workers).max(1);
+        let runs: Vec<Cells> = std::thread::scope(|s| {
+            let runs: Vec<_> = self
+                .groups
+                .chunks_mut(per)
+                .map(|gs| {
+                    s.spawn(move || {
+                        let mut rs = Rows {
+                            pos: Vec::new(),
+                            vals: Vec::new(),
+                            capacity,
+                        };
+                        let mut out = Vec::new();
+                        f.groups(gs, &mut rs, &mut out);
+                        out
+                    })
+                })
+                .collect();
+            runs.into_iter()
+                .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+                .collect()
+        });
+        out.extend(runs.into_iter().flatten());
+    }
+}
+
+/// What filling a layout's groups reads ([`Shape::fill`]): the reduction,
+/// its constant parameters, its collections and how each changed, the
+/// layout's own and kept values, an array reduction's landing cells.
+struct Fill<'f> {
+    a: &'f AggSpec<'f>,
+    consts: &'f [Option<CellValue>],
+    stale: &'f [Stale],
+    /// Whether a kept input changed (its values are refilled).
+    refill: bool,
+    kids: &'f [&'f Cells],
+    own: &'f [CellValue],
+    keep: &'f [bool],
+    cells: Option<&'f [CoordKey]>,
+}
+
+impl Fill<'_> {
+    /// Refill and reduce `groups`, in order, into `out` (`rs` the rows
+    /// handed to the kernel, refilled group by group).
+    fn groups(&self, groups: &mut [Group], rs: &mut Rows, out: &mut Cells) {
+        let (a, consts, stale, refill) = (self.a, self.consts, self.stale, self.refill);
+        let (kids, own, keep) = (self.kids, self.own, self.keep);
+        let (n_in, dims) = (a.ins.len(), a.order.len());
+        for g in groups {
             if refill {
                 let mut at = g.vals.iter_mut();
                 for srcs in g.srcs.chunks(g.width) {
@@ -271,7 +344,7 @@ impl Shape {
                         .map_or(CellValue::Err(err::NA), |s| value(kids, own, s)),
                 })
                 .collect();
-            emit(a, cells.as_deref(), &g.key, rs, &params, &g.items, out);
+            emit(a, self.cells, &g.key, rs, &params, &g.items, out);
         }
     }
 }
@@ -366,7 +439,14 @@ pub(crate) struct Host {
     /// node: the cells they replace and the positions whose values moved,
     /// so a layout on the old cells refills only those ([`Host::stale`]).
     patched: HashMap<Node, (Rc<Cells>, Vec<u32>)>,
+    /// The threads every layout is filled on (tests); `None`:
+    /// [`Host::workers`]' choice.
+    threads: Option<usize>,
 }
+
+/// The fewest rows a layout splits over threads: below, one thread (a
+/// round of a few thousand rows takes well under a millisecond).
+const SPLIT_ROWS: usize = 2 * crate::dataflow::CELLS_PER_WORKER;
 
 impl Host {
     /// `plan` (covered: [`covers`]) reading the iterate as `r`, and no other
@@ -395,7 +475,22 @@ impl Host {
             r_keys: Vec::new(),
             env_cells: HashMap::new(),
             patched: HashMap::new(),
+            threads: None,
         }
+    }
+
+    /// The threads a layout of `rows` rows is filled on: one below
+    /// [`SPLIT_ROWS`], else as many as `evaluate` would take for that many
+    /// input cells ([`crate::dataflow::workers_for`]: `IMPROV_ENGINE_WORKERS`,
+    /// or one per 10,000, at most 8 and the cores).
+    fn workers(&self, rows: usize) -> usize {
+        self.threads.unwrap_or_else(|| {
+            if rows < SPLIT_ROWS {
+                1
+            } else {
+                crate::dataflow::workers_for(rows)
+            }
+        })
     }
 
     /// Let go of the measures [`Host::refresh`] read, keeping the cells
@@ -730,9 +825,10 @@ impl Host {
                 .map(|((was, now), q)| self.stale(was, now, q))
                 .collect();
             if s.fits(&kids, pred, &stale) {
+                let workers = self.workers(s.rows());
                 let s = self.shapes.get_mut(&p).expect("the shape just read");
                 s.kids = kids;
-                s.fill(&a, &consts, &stale, &mut out);
+                s.fill(&a, &consts, &stale, workers, &mut out);
                 return out;
             }
         }
@@ -805,7 +901,8 @@ impl Host {
             scratch,
         };
         let fresh: Vec<Stale> = s.kids.iter().map(|_| Stale::No).collect();
-        s.fill(&a, &consts, &fresh, &mut out);
+        let workers = self.workers(s.rows());
+        s.fill(&a, &consts, &fresh, workers, &mut out);
         self.shapes.insert(p, s);
         out
     }
@@ -1308,8 +1405,9 @@ mod tests {
     /// B8: a host that read the measures before an edit and is refreshed
     /// after it (refilling only the moved cells of a layout, or laying it
     /// out again where coordinates came or went) steps exactly as a host
-    /// that never saw the old cells, on random bodies, models and edits to
-    /// the measures they read but r, round after round.
+    /// that never saw the old cells, filling its layouts on one to four
+    /// threads, on random bodies, models and edits to the measures they
+    /// read but r, round after round.
     #[hegel::test(test_cases = 200, suppress_health_check = HealthCheck::all())]
     fn a_refreshed_host_steps_as_a_fresh_one(tc: TestCase) {
         let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
@@ -1355,6 +1453,7 @@ mod tests {
         r = warm.step(&r);
         warm.release();
         let edits = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        let threads = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
         for _ in 0..edits {
             // Mostly a value moves (the layouts keep their coordinates);
             // sometimes a cell comes or goes.
@@ -1380,6 +1479,7 @@ mod tests {
             let env = env_of(&m);
             warm.refresh(env.clone());
             let mut fresh = Host::new(plan.clone(), R);
+            fresh.threads = Some(threads);
             fresh.refresh(env);
             for _ in 0..2 {
                 let (a, b) = (warm.step(&r), fresh.step(&r));
@@ -1388,6 +1488,23 @@ mod tests {
             }
             warm.release();
         }
+    }
+
+    /// A layout splits over threads only from [`SPLIT_ROWS`] rows, then
+    /// as `evaluate` would for as many cells.
+    #[test]
+    fn large_layouts_fill_on_several_threads() {
+        let one = PlanNode {
+            kind: K::Literal(Value::Number(1.0)),
+            ty: crate::typed::TypeInfo {
+                value_type: ValueType::Number,
+                dim: crate::typed::Dim::of(vec![]),
+            },
+        };
+        let h = Host::new(one, R);
+        assert_eq!(h.workers(SPLIT_ROWS - 1), 1);
+        let many = 100 * SPLIT_ROWS;
+        assert_eq!(h.workers(many), crate::dataflow::workers_for(many));
     }
 
     /// What the host does not take: PREV (a Shift), a recurrence, a

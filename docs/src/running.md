@@ -189,7 +189,7 @@ carry code or SQL.
 
 | Variable | Effect |
 | --- | --- |
-| `IMPROV_ENGINE_WORKERS=n` | Threads (timely workers, 1–64) one batch evaluation uses: `improv eval`, the server's reads of a derived measure, DuckDB's `improv()`, pg_improv's trigger and commit modes. Default: one per 10,000 input cells, at most 8 and the cores (in Postgres also at most `max_parallel_workers_per_gather` + 1). Results are the same on any count. Interactive editing (GUI, TUI, `improv stream`, the sync worker) always uses one. |
+| `IMPROV_ENGINE_WORKERS=n` | Threads (timely workers, 1–64) one batch evaluation uses: `improv eval`, the server's reads of a derived measure, DuckDB's `improv()`, pg_improv's trigger and commit modes. Default: one per 10,000 input cells, at most 8 and the cores (in Postgres also at most `max_parallel_workers_per_gather` + 1). Results are the same on any count. Interactive editing (GUI, TUI, `improv stream`, the sync worker) always uses one, except that a FIXPOINT's step over at least 20,000 rows (a PageRank's edges) reduces on this many threads (default as above, by rows). |
 
 ## Tests
 

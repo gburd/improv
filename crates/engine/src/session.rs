@@ -585,8 +585,8 @@ struct World<'w> {
 // shortcut: a host round still reads every edge: after an edit only the moved
 // cells of what the step reads are refilled, but every PageRank rank moves
 // every round (measured at 10M edges: all 100,000 by more than 1e-14 in rounds
-// 2 to 9), so a delta step would touch them all anyway. Splitting a large
-// layout's groups over threads is what is left for a faster round.
+// 2 to 9), so a delta step would touch them all anyway. A large layout's
+// groups are split over threads instead (`hosteval::Host::workers`).
 #[allow(clippy::too_many_arguments, reason = "the worker's state, passed down")]
 fn solve_fixpoints(
     fixes: &[Fix],

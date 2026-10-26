@@ -323,6 +323,12 @@ order and of the worker count (a reduction sees a whole group, sorted,
 on one worker; `tests/determinism.rs` compares 1 to 5 workers). This is a
 tested invariant (see §14), not an aspiration.
 
+The live engine's dataflow stays on one worker, but a FIXPOINT's host
+step fills a large layout on `workers_for(rows)` scoped threads (§13,
+"Warm FIXPOINT re-solve"); they run only the reduce kernels on
+borrowed cells, and join in group order, so the result is the same on
+any count.
+
 ---
 
 ## 12. Error Model
@@ -429,6 +435,12 @@ every round (measured at 10M edges: all 100,000 by more than 1e-14 in
 rounds 2 to 9, after a one-edge edit), so a delta-PageRank step that
 skips cells below a threshold would skip nothing until the last round or
 two: rounds stay full. 10M edges: 6.5 → 5.9 s, 414 → 390 B per edge.
+Instead a layout of at least `SPLIT_ROWS` (20,000) rows fills on
+`Host::workers` threads (`dataflow::workers_for(rows)`: one per 10,000,
+at most 8 and the cores, or `IMPROV_ENGINE_WORKERS`), each a run of its
+groups in order (`Fill::groups`, scoped threads); the runs' cells are
+joined in order, so a round is one thread's, bit for bit. 10M edges, 8
+threads: 5.9 → 2.8 s.
 
 ---
 
