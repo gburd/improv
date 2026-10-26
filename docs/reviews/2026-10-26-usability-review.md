@@ -225,7 +225,7 @@ and Worksheet ▸ Add Category exist. **Fix:** draw it right of the menu,
 and say "Empty model: Worksheet ▸ Add Category to begin, or File ▸
 Open…". **Files:** `crates/gui/src/app.rs` (`canvas_panel`).
 
-**H1-14 GUI: a view saved by `improv save-view` opens under the menu.**
+**[fixed: `fix(gui): a view saved by improv save-view opens beside the menu (H1-14)`] H1-14 GUI: a view saved by `improv save-view` opens under the menu.**
 *Aesthetic; flexibility.* The CLI writes `CanvasRect::default()` (x 0,
 y 0), which the GUI restores as it is, so the menu covers the row labels
 and the first column (gui-02). **Fix:** `save-view` writes the GUI's

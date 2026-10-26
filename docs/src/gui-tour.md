@@ -57,7 +57,8 @@ The window has five regions:
   `<file> - Model`. It leads with a white list of saved views, one
   `Name - Worksheet` row each with a worksheet icon: click a row to select it
   and read its description below (measure, categories, pages); double-click
-  to open it. Under that, a name field and **Save view** save the current
+  to open it (a view saved by `improv save-view`, which has no window
+  position, opens right of the menu). Under that, a name field and **Save view** save the current
   canvas. Collapsed below are Categories (with their items) and Measures (each
   labeled `input` or `formula` at the right; click one to select it), each
   list ending in a line that adds one, and the named LAMBDAs, once there

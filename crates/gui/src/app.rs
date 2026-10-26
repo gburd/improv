@@ -741,7 +741,17 @@ impl Matrix {
             },
             axis_for: Some(p.measure),
             filters: p.filters.clone(),
-            rect: p.rect,
+            // `improv save-view` and pre-canvas views put the window at the
+            // origin, under the menu: it opens beside the menu, as a fresh one
+            // does (H1-14). A place the user dragged it to is kept.
+            rect: if p.rect.x == 0.0 && p.rect.y == 0.0 {
+                CanvasRect {
+                    x: MENU_CLEAR,
+                    ..p.rect
+                }
+            } else {
+                p.rect
+            },
             ..Matrix::default()
         };
         // Clamp the axis split to the restored order's length.
@@ -11879,9 +11889,14 @@ mod tests {
         );
         assert_eq!(m.col_cats(&app.model), vec![time]);
         assert_eq!(m.filters, legacy.filters, "saved filter restored");
+        // H1-14: no geometry saved -> the default rectangle, moved right of
+        // the menu so the menu does not cover its row labels.
         assert_eq!(
             m.rect,
-            CanvasRect::default(),
+            CanvasRect {
+                x: MENU_CLEAR,
+                ..CanvasRect::default()
+            },
             "no geometry saved -> the default rectangle, visible on the canvas"
         );
         // The filter really is in effect on the restored matrix.

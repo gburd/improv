@@ -111,6 +111,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **The GUI's empty-model hint is drawn right of the menu**, not under
   it, and says "Empty model: Worksheet ▸ Add Category to begin, or File ▸
   Open…" instead of naming the command line (H1-13).
+- **A view saved by `improv save-view` opens beside the GUI's menu.** The
+  CLI saves no window position (the origin), which the GUI restored as
+  it was, so the menu covered the row labels and the first column. A
+  window at the origin now opens where a fresh one does (H1-14).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input
