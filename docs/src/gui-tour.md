@@ -151,16 +151,17 @@ each step:
    item** line, or right-click the category's tile in a worksheet and type
    into the tile's **New item** line. **Worksheet ▸ Add Item** jumps to the
    line of the worksheet's first row category.
-3. **Worksheet ▸ Add Input Measure**: type `Price`. An input measure ranges
-   over every category, and an empty worksheet shows it. Click a cell and
-   type its value.
+3. **Worksheet ▸ Add Input Measure**: type `Price` for a measure over
+   every category, or name its categories after a colon, `Price:
+   Product`, as the TUI's `n` takes them (`Price:` alone is a single
+   cell). An empty worksheet shows it. Click a cell and type its value.
 4. Add formulas on the formula list's last line: `Revenue = Price *
    Quantity`, or a named LAMBDA, `Margin = LAMBDA(p, c, p - c)`, which
    the browser then lists under LAMBDAs and any formula can call:
    `Net = Margin(Revenue, Cost)`.
 
 A name already used by a category, a measure or a LAMBDA is refused, and
-the status line says why.
+the status line says why; so is a measure name with a comma.
 
 ## Renaming and deleting
 

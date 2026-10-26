@@ -529,7 +529,8 @@ pub enum NewThing {
     Category,
     /// An item of this category.
     Item(CategoryId),
-    /// An input measure over every category.
+    /// An input measure: `Name` over every category, or `Name: Category,
+    /// Category, …` over those (`Name:` alone, a scalar).
     Input,
 }
 
@@ -4239,12 +4240,28 @@ impl ImprovApp {
 
     /// Add a category, an item of one, or an input measure named `name`, as
     /// one undoable, autosaved step. A new input measure ranges over every
-    /// category and is shown if the focused worksheet shows nothing.
-    /// Returns the status line; on failure nothing changes.
+    /// category, or over the ones listed as `Name: Category, Category` (the
+    /// TUI's form, H1-6), and is shown if the focused worksheet shows
+    /// nothing. Returns the status line; on failure nothing changes.
     pub fn add_named(&mut self, what: NewThing, name: &str) -> Result<String, String> {
-        let name = name.trim();
+        let (name, listed) = match what {
+            NewThing::Input => match name.split_once(':') {
+                Some((n, list)) => (n.trim(), Some(list)),
+                None => (name.trim(), None),
+            },
+            _ => (name.trim(), None),
+        };
         if name.is_empty() {
-            return Err("type a name".into());
+            return Err(match what {
+                NewThing::Input => "type Name, or Name: Category, Category".into(),
+                _ => "type a name".into(),
+            });
+        }
+        if what == NewThing::Input && name.contains(',') {
+            return Err(format!(
+                "{name:?}: a measure's name cannot hold a comma (type Name: Category, \
+                 Category to choose its categories)"
+            ));
         }
         // Formulas name categories and measures alike, so neither may clash.
         let taken = self.model.category_by_name(name).is_some()
@@ -4280,9 +4297,15 @@ impl ImprovApp {
                 format!("added {name} to {}", cat.name.0)
             }
             NewThing::Input => {
-                let mut categories: Vec<CategoryId> =
-                    self.model.categories.keys().copied().collect();
-                categories.sort_by_key(|c| c.0);
+                let categories = match listed {
+                    Some(list) => self.categories_named(list)?,
+                    None => {
+                        let mut all: Vec<CategoryId> =
+                            self.model.categories.keys().copied().collect();
+                        all.sort_by_key(|c| c.0);
+                        all
+                    }
+                };
                 let id = MeasureId(self.next_measure_id());
                 candidate.add_measure(Measure {
                     id,
@@ -4301,6 +4324,24 @@ impl ImprovApp {
             self.focused_mut().select(shown);
         }
         Ok(msg)
+    }
+
+    /// The categories `list` names, comma-separated, in its order: an
+    /// unknown or repeated name is an error.
+    fn categories_named(&self, list: &str) -> Result<Vec<CategoryId>, String> {
+        let mut ids = Vec::new();
+        for c in list.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+            let id = self
+                .model
+                .category_by_name(c)
+                .ok_or_else(|| format!("no category {c:?} (Worksheet ▸ Add Category adds one)"))?
+                .id;
+            if ids.contains(&id) {
+                return Err(format!("{c} is listed twice"));
+            }
+            ids.push(id);
+        }
+        Ok(ids)
     }
 
     /// `t`'s kind and name; `None` when the model has no such thing.
@@ -15076,6 +15117,40 @@ mod tests {
         assert_eq!(names_of(&reloaded), names_of(&app.model), "undo saved");
         app.redo().expect("redo Q2");
         assert_eq!(names_of(&app.model).1, vec!["Q1".to_string(), "Q2".into()]);
+    }
+
+    /// H1-6: `Name: Category, Category` makes an input measure over those
+    /// categories, in that order (the TUI's form); `Name:` a scalar. A name
+    /// with a comma, an unknown or repeated category is refused.
+    #[test]
+    fn an_input_measure_takes_its_categories_after_a_colon() {
+        let mut app = build_app(grid_2x2_model());
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        let cats =
+            |app: &ImprovApp, n: &str| app.model.measure_by_name(n).map(|m| m.categories.clone());
+        app.add_named(NewThing::Input, " Cost : Product, Time ")
+            .expect("Cost");
+        assert_eq!(cats(&app, "Cost"), Some(vec![p, t]));
+        app.add_named(NewThing::Input, "Tax:").expect("a scalar");
+        assert_eq!(cats(&app, "Tax"), Some(vec![]));
+        app.add_named(NewThing::Input, "Units")
+            .expect("every category");
+        assert_eq!(cats(&app, "Units"), Some(vec![t, p]));
+        let before = (*app.model).clone();
+        let refuse =
+            |app: &mut ImprovApp, line: &str| app.add_named(NewThing::Input, line).expect_err(line);
+        assert!(refuse(&mut app, "Spent, Time").contains("cannot hold a comma"));
+        assert!(refuse(&mut app, "Spent: Region").contains("no category \"Region\""));
+        assert_eq!(
+            refuse(&mut app, "Spent: Time, Time"),
+            "Time is listed twice"
+        );
+        assert_eq!(
+            refuse(&mut app, ": Time"),
+            "type Name, or Name: Category, Category"
+        );
+        assert!(refuse(&mut app, "Cost: Time").contains("already"));
+        assert_eq!(*app.model, before);
     }
 
     /// Bad names are refused with a reason and change nothing.

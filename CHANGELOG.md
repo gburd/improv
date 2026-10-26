@@ -92,6 +92,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   and refuses a store that already holds one. Save was grayed out on an
   `Untitled` model, and Save As was not built, so an hour's work could
   only be discarded (H1-7).
+- **The GUI's Add Input Measure takes the measure's categories**, as the
+  TUI does: `Spent: Month, Line` makes `Spent` over Month and Line, and
+  `Tax:` a single cell. Every input measure ranged over every category,
+  so the budget tutorial's `Budget` (per line) could not be built, and
+  `Spent: Month, Line` made a measure of that name. A name with a comma,
+  an unknown or a repeated category is refused (H1-6).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input
