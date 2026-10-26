@@ -46,6 +46,7 @@ The schema is defined as an EDN transaction in
 | `:measure/description` | `string` | one | optional |
 | `:measure/formula` | `string` | one | JSON-serialized `Formula`, on derived measures |
 | `:measure/sql-source` | `string` | one | JSON `SqlSource` (query, dimension columns, value column, refresh policy), on SQL-backed measures |
+| `:measure/format` | `string` | one | JSON `NumberFormat` (`{"decimals":2,"grouping":true}`): how its numbers are shown. Absent for the General form, and in older stores, which load as General. |
 
 ### Cell (an input value)
 
@@ -85,6 +86,8 @@ Maps with no natural per-entity shape are stored as JSON on a singleton.
   `:cell/coord`. This is why a derived measure's formula survives a round trip
   even though the datom layer has no notion of an expression tree. Views, the
   SQL source of a measure, and the meta maps are JSON too.
+- **Number format.** A measure set back to General has no format, and the
+  save retracts its stored `:measure/format`.
 - **Category order.** `:measure/categories` is a set, so the store loses its
   order. `:measure/category-order` keeps it. On load the categories are sorted
   by that list. A category the list does not name sorts after those it does.
@@ -197,7 +200,8 @@ writer's changes are picked up.
 - categories, then items (each relinked to its category);
 - measures: one query for the required fields, then per measure one query each
   for the formula (derived measures only), description, categories, category
-  order, and SQL source;
+  order, number format, and SQL source. A format this release cannot read
+  (one a later release wrote) loads as General;
 - cells: **one query per typed value attribute** (three in all), each
   returning `(measure id, coord, value)` rows. The value is decoded by the
   owning measure's declared type. If an old store holds a cell under more than

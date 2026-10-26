@@ -59,6 +59,11 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :measure/sql-source
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+ ;; How the measure's numbers are shown, a JSON NumberFormat (H1-22).
+ ;; Absent for the General form, and in stores written before it existed.
+ {:db/ident :measure/format
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 
  ;; CELL (input value). Keyed by a synthetic unique string measure+coord.
  {:db/ident :cell/key

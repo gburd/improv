@@ -392,8 +392,15 @@ mod tests {
     fn every_saved_field_is_structure() {
         use improv_core_model::*;
         let old = model();
-        let edits: [fn(&mut Model); 9] = [
+        let edits: [fn(&mut Model); 10] = [
             |m| m.categories.get_mut(&CategoryId(1)).unwrap().name = Name("T".into()),
+            |m| {
+                let f = NumberFormat {
+                    decimals: Some(2),
+                    grouping: true,
+                };
+                m.measures.get_mut(&MeasureId(100)).unwrap().format = Some(f);
+            },
             |m| m.items.get_mut(&ItemId(10)).unwrap().name = Name("Q9".into()),
             |m| m.measures.get_mut(&MeasureId(100)).unwrap().description = Some("d".into()),
             |m| {

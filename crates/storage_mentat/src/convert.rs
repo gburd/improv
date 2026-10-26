@@ -95,6 +95,12 @@ pub fn measure_edn(
         fields.push(format!(":measure/description {}", edn_str(desc)));
     }
 
+    // Absent for General; a cleared format is retracted by the save.
+    if let Some(f) = &m.format {
+        let json = serde_json::to_string(f)?;
+        fields.push(format!(":measure/format {}", edn_str(&json)));
+    }
+
     // SQL-source metadata (Phase 7 live-query measures), as a JSON blob.
     if let Some(src) = sql_source {
         let json = serde_json::to_string(src)?;

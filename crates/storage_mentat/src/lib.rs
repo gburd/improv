@@ -354,10 +354,12 @@ impl ModelStore {
                     MAX_CATEGORIES_PER_MEASURE,
                 )));
             }
-            // id, name, value-type, kind, formula, description, sql-source, plus
-            // one :measure/categories datom per category (cardinality-many); take
-            // the widest measure in this model rather than guessing.
-            transact_group(&mut ip, 7 + widest_categories, measures)?;
+            // id, name, value-type, kind, formula, description, sql-source,
+            // category-order, format, plus one :measure/categories datom per
+            // category (cardinality-many); take the widest measure in this
+            // model rather than guessing.
+            transact_group(&mut ip, 9 + widest_categories, measures)?;
+            retract_cleared_formats(&mut ip, model)?;
         }
 
         // Diff the cells against what is stored, so the store's cells end up
@@ -644,6 +646,15 @@ impl ModelStore {
 
             let categories = self.load_measure_categories(id)?;
 
+            // A format this release cannot read (a later one's) is shown as
+            // General rather than refusing the model: it is presentation only.
+            let format = self
+                .scalar_string(&format!(
+                    "[:find ?f . :where [?e :measure/id {}] [?e :measure/format ?f]]",
+                    id.0
+                ))?
+                .and_then(|json| serde_json::from_str(&json).ok());
+
             // SQL-source metadata (Phase 7), if this measure is SQL-backed.
             if let Some(json) = self.scalar_string(&format!(
                 "[:find ?s . :where [?e :measure/id {}] [?e :measure/sql-source ?s]]",
@@ -660,7 +671,7 @@ impl ModelStore {
                 categories,
                 kind,
                 description,
-                format: None,
+                format,
             };
             if unreadable {
                 measure.mark_unreadable(UNREADABLE);
@@ -871,6 +882,27 @@ fn retract_dropped(
         }
     }
     transact_group(ip, datoms, gone)
+}
+
+/// Retract the stored `:measure/format` of every measure the model shows in
+/// the General form again (no format): writing a measure only asserts the
+/// attributes it has. One query, over the measures that have a format.
+fn retract_cleared_formats(ip: &mut InProgress<'_, '_>, model: &Model) -> Result<()> {
+    let mut gone = Vec::new();
+    for row in rel_on(
+        ip,
+        "[:find ?e ?id ?f :where [?e :measure/id ?id] [?e :measure/format ?f]]",
+    )? {
+        let id = MeasureId(convert::as_u32(&row[1])?);
+        if model.measures.get(&id).is_some_and(|m| m.format.is_none()) {
+            gone.push(format!(
+                "[:db/retract {} :measure/format {}]",
+                convert::as_entid(&row[0])?,
+                convert::stored_value_edn(&row[2])?
+            ));
+        }
+    }
+    transact_group(ip, 1, gone)
 }
 
 /// Whether every attribute `SCHEMA_EDN` defines is in `store`'s schema.
@@ -1462,6 +1494,105 @@ mod tests {
             store.load_model().expect("load").measures[&MeasureId(400)].categories,
             vec![CategoryId(3), CategoryId(1), CategoryId(2)]
         );
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// H1-22: a measure's number format round-trips through save_model, the
+    /// incremental save_changes and load_partial; going back to General
+    /// retracts it. A store written before `:measure/format` existed opens
+    /// (the schema is installed over it) and its measures are General.
+    #[test]
+    fn measure_format_round_trips_and_old_stores_load() {
+        use improv_core_model::NumberFormat;
+        let dir = std::env::temp_dir().join(format!("improv-format-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.db");
+        let path = path.to_str().unwrap();
+
+        let start = schema::SCHEMA_EDN
+            .find(" ;; How the measure's numbers are shown")
+            .expect("format block");
+        let tail = ":db.cardinality/one}";
+        let end = start + schema::SCHEMA_EDN[start..].find(tail).unwrap() + tail.len();
+        let old_schema = format!(
+            "{}{}",
+            &schema::SCHEMA_EDN[..start],
+            &schema::SCHEMA_EDN[end..]
+        );
+        assert!(!old_schema.contains(":measure/format"));
+        {
+            let mut old = Store::open(path).expect("open old");
+            old.transact(&old_schema).expect("old schema");
+            old.transact(
+                r#"[{:measure/id 100 :measure/name "Price"
+                     :measure/value-type "number" :measure/kind "input"}]"#,
+            )
+            .expect("old measure");
+        }
+        let mut store = ModelStore::open(path).expect("open old store with new schema");
+        let mut m = store.load_model().expect("load old store");
+        assert_eq!(m.measures[&MeasureId(100)].format, None);
+
+        let two = NumberFormat {
+            decimals: Some(2),
+            grouping: true,
+        };
+        let price = MeasureId(100);
+        let set = |m: &mut Model, f| m.measures.get_mut(&price).unwrap().format = f;
+        set(&mut m, Some(two));
+        store.save_model(&m).expect("save a format");
+        assert_eq!(
+            store.load_model().unwrap().measures[&price].format,
+            Some(two)
+        );
+        assert_eq!(
+            store.load_partial(&[price]).unwrap().measures[&price].format,
+            Some(two)
+        );
+
+        // The incremental save writes it with the structure.
+        let zero = NumberFormat {
+            decimals: Some(0),
+            grouping: false,
+        };
+        set(&mut m, Some(zero));
+        store.save_changes(&m, &[], true).expect("save_changes");
+        assert_eq!(
+            store.load_model().unwrap().measures[&price].format,
+            Some(zero)
+        );
+
+        // Back to General: the attribute is retracted, not left behind.
+        set(&mut m, None);
+        store.save_changes(&m, &[], true).expect("clear");
+        let back = store.load_model().unwrap();
+        assert_eq!(back.measures[&price].format, None);
+        let stored = store
+            .rel("[:find ?f :where [?e :measure/format ?f]]")
+            .unwrap();
+        assert!(stored.is_empty(), "{stored:?}");
+
+        // A format written by a later release: unknown fields are ignored,
+        // and one this release cannot read at all shows as General.
+        let mut ip = store.store.begin_transaction().unwrap();
+        ip.transact(r#"[{:measure/id 100 :measure/format "{\"decimals\":1,\"percent\":true}"}]"#)
+            .unwrap();
+        ip.commit().unwrap();
+        let one = NumberFormat {
+            decimals: Some(1),
+            grouping: false,
+        };
+        assert_eq!(
+            store.load_model().unwrap().measures[&price].format,
+            Some(one)
+        );
+        let mut ip = store.store.begin_transaction().unwrap();
+        ip.transact(r#"[{:measure/id 100 :measure/format "percent"}]"#)
+            .unwrap();
+        ip.commit().unwrap();
+        assert_eq!(store.load_model().unwrap().measures[&price].format, None);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
