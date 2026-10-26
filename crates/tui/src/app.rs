@@ -12,8 +12,8 @@ use crossterm::event::KeyCode;
 #[cfg(test)]
 use improv_core_model::Coordinate;
 use improv_core_model::{
-    parser, parser::Definition, CategoryId, Filter, Formula, ItemId, Measure, MeasureId,
-    MeasureKind, Model, Name, ParseError, Value, ValueType, View, ViewId,
+    parser, parser::Definition, CategoryId, Expr, Filter, Formula, ItemId, MatrixPlacement,
+    Measure, MeasureId, MeasureKind, Model, Name, ParseError, Value, ValueType, View, ViewId,
 };
 use improv_engine::session::Engine;
 use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
@@ -350,6 +350,36 @@ pub enum CommandKind {
     Category,
     /// `n`: `Name` or `Name: Category, …`, a number input measure.
     Input,
+    /// `r`: `Old = New`, rename a category, item or measure (H1-21).
+    Rename,
+    /// `D`: `Name`, delete a category, item or measure (H1-21).
+    Delete,
+}
+
+/// A category, item or measure named on the `r` or `D` line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Thing {
+    Category(CategoryId),
+    Item(ItemId),
+    Measure(MeasureId),
+}
+
+/// `n word`, with an `s` unless `n` is 1.
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
+/// Whether `e` names category `c`: `[c]`, `OVER c`, `EXCEPT c`, or as an
+/// argument (`POSITION(c)`).
+fn names_category(e: &Expr, c: CategoryId) -> bool {
+    improv_core_model::grow_stack(|| match e {
+        Expr::Category(x) => *x == c,
+        Expr::Ref(_, d) => d.by.contains(&c) || d.over.contains(&c) || d.except.contains(&c),
+        Expr::UnaryOp(_, a) => names_category(a, c),
+        Expr::BinaryOp(_, a, b) => names_category(a, c) || names_category(b, c),
+        Expr::Call(_, a) => a.iter().any(|x| names_category(x, c)),
+        Expr::Literal(_) => false,
+    })
 }
 
 /// Shown in place of the measure line while the model has no measures.
@@ -1301,7 +1331,253 @@ impl App {
             CommandKind::ExportCsv => self.run_export_csv(&line),
             CommandKind::Category => self.run_add_category(&line),
             CommandKind::Input => self.run_add_input(&line),
+            CommandKind::Rename => self.run_rename(&line),
+            CommandKind::Delete => self.run_delete(&line),
         });
+    }
+
+    /// What `name` names: a measure, a category, or an item, written
+    /// `Category.Item` or, when only one category has it, just `Item`.
+    fn thing_named(&self, name: &str) -> Result<Thing, String> {
+        let m = &self.model;
+        if let Some(x) = m.measure_by_name(name) {
+            return Ok(Thing::Measure(x.id));
+        }
+        if let Some(c) = m.category_by_name(name) {
+            return Ok(Thing::Category(c.id));
+        }
+        let item_of = |cat: CategoryId, item: &str| {
+            m.categories[&cat]
+                .items
+                .iter()
+                .find(|i| m.items.get(i).is_some_and(|it| it.name.0 == item))
+                .copied()
+        };
+        if let Some((c, i)) = name.split_once('.') {
+            if let Some(cat) = m.category_by_name(c.trim()) {
+                return item_of(cat.id, i.trim()).map(Thing::Item).ok_or(format!(
+                    "{} has no item '{}'",
+                    cat.name.0,
+                    i.trim()
+                ));
+            }
+        }
+        let mut cats: Vec<&improv_core_model::Category> = m.categories.values().collect();
+        cats.sort_by_key(|c| c.id);
+        let hits: Vec<(&str, ItemId)> = (cats.iter())
+            .filter_map(|c| item_of(c.id, name).map(|i| (c.name.0.as_str(), i)))
+            .collect();
+        match hits[..] {
+            [(_, i)] => Ok(Thing::Item(i)),
+            [] => Err(format!("no measure, category or item '{name}'")),
+            _ => {
+                let names: Vec<String> = hits.iter().map(|(c, _)| format!("{c}.{name}")).collect();
+                Err(format!(
+                    "'{name}' is an item of more than one category: write {}",
+                    names.join(" or ")
+                ))
+            }
+        }
+    }
+
+    /// `t`'s kind and name.
+    fn thing_name(&self, t: Thing) -> (&'static str, String) {
+        let m = &self.model;
+        match t {
+            Thing::Category(c) => ("category", m.categories[&c].name.0.clone()),
+            Thing::Item(i) => ("item", m.items[&i].name.0.clone()),
+            Thing::Measure(id) => ("measure", m.measures[&id].name.0.clone()),
+        }
+    }
+
+    /// `r`: `Old = New` renames a category, item or measure, as one undo
+    /// step. Formulas hold ids, so they follow the new name. The GUI's clash
+    /// rules: a category, measure and LAMBDA may not share a name, nor two
+    /// items of a category.
+    fn run_rename(&mut self, line: &str) -> String {
+        let Some((old, new)) = line.split_once('=').map(|(a, b)| (a.trim(), b.trim())) else {
+            return "rename: type Old = New".into();
+        };
+        if old.is_empty() || new.is_empty() {
+            return "rename: type Old = New".into();
+        }
+        let t = match self.thing_named(old) {
+            Ok(t) => t,
+            Err(e) => return format!("rename: {e}"),
+        };
+        let (kind, old) = self.thing_name(t);
+        if new == old {
+            return format!("rename: {old} is unchanged");
+        }
+        let m = &self.model;
+        if let Thing::Item(i) = t {
+            let cat = &m.categories[&m.items[&i].category];
+            if cat
+                .items
+                .iter()
+                .any(|j| m.items.get(j).is_some_and(|it| it.name.0 == new))
+            {
+                return format!("rename: {} already has an item '{new}'", cat.name.0);
+            }
+        } else {
+            let category = m.category_by_name(new).map(|c| Thing::Category(c.id));
+            let measure = m.measure_by_name(new).map(|x| Thing::Measure(x.id));
+            let taken = [category, measure].into_iter().flatten().any(|x| x != t);
+            if taken || m.lambda_by_name(new).is_some() {
+                return format!("rename: '{new}' is already a category, measure or LAMBDA");
+            }
+        }
+        let mut model = self.model.clone();
+        let name = match t {
+            Thing::Category(c) => &mut model.categories.get_mut(&c).expect("named").name,
+            Thing::Item(i) => &mut model.items.get_mut(&i).expect("named").name,
+            Thing::Measure(id) => &mut model.measures.get_mut(&id).expect("named").name,
+        };
+        *name = Name(new.into());
+        self.restructure(model, format!("renamed {kind} {old} to {new}"))
+    }
+
+    /// Why `t` cannot be deleted, naming what needs it (the GUI's rule):
+    /// the formulas that read a measure, the measures over or naming a
+    /// category. An item never blocks: its cells go with it.
+    fn delete_blockers(&self, t: Thing) -> Option<String> {
+        let m = &self.model;
+        let reads = |x: &Measure, id: MeasureId| {
+            matches!(&x.kind, MeasureKind::Derived(f) if f.referenced_measures().contains(&id))
+                || m.external_calls
+                    .get(&x.id)
+                    .is_some_and(|c| c.arg_measures.contains(&id))
+        };
+        let uses = |x: &Measure, c: CategoryId| {
+            x.categories.contains(&c)
+                || matches!(&x.kind, MeasureKind::Derived(f) if names_category(&f.expr, c))
+        };
+        let (mut users, verb): (Vec<&str>, [&str; 2]) = match t {
+            Thing::Item(_) => return None,
+            Thing::Measure(id) => (
+                (m.measures.values())
+                    .filter(|x| x.id != id && reads(x, id))
+                    .map(|x| x.name.0.as_str())
+                    .collect(),
+                ["reads", "read"],
+            ),
+            Thing::Category(c) => (
+                (m.measures.values())
+                    .filter(|x| uses(x, c))
+                    .map(|x| x.name.0.as_str())
+                    .collect(),
+                ["uses", "use"],
+            ),
+        };
+        if users.is_empty() {
+            return None;
+        }
+        users.sort_unstable();
+        let one = users.len() == 1;
+        Some(format!(
+            "delete: {} still {} {} (delete or redefine {} first)",
+            users.join(", "),
+            verb[usize::from(!one)],
+            self.thing_name(t).1,
+            if one { "it" } else { "them" }
+        ))
+    }
+
+    /// `D`: delete a category (once no measure uses it) with its items, an
+    /// item with its cells, or a measure (once no formula reads it) with
+    /// its cells, as one undo step. Saved views lose a deleted measure's
+    /// matrices (a view left with none goes) and a deleted item's filter
+    /// and page entries, as the GUI's delete does.
+    fn run_delete(&mut self, line: &str) -> String {
+        let name = line.trim();
+        if name.is_empty() {
+            return "delete: type the name of a category, item or measure".into();
+        }
+        let t = match self.thing_named(name) {
+            Ok(t) => t,
+            Err(e) => return format!("delete: {e}"),
+        };
+        if let Some(why) = self.delete_blockers(t) {
+            return why;
+        }
+        let (kind, name) = self.thing_name(t);
+        let mut c = self.model.clone();
+        let cells = c.inputs.len();
+        match t {
+            Thing::Measure(id) => {
+                c.measures.remove(&id);
+                c.inputs.retain(|(m, _), _| *m != id);
+                c.sql_sources.remove(&id);
+                c.external_calls.remove(&id);
+                for s in c.scenarios.values_mut() {
+                    s.overrides.retain(|(m, _), _| *m != id);
+                }
+                c.views = std::mem::take(&mut c.views)
+                    .into_iter()
+                    .filter_map(|(vid, v)| {
+                        let mut left = (v.matrices().into_iter()).filter(|p| p.measure != id);
+                        let primary = left.next()?;
+                        let rest: Vec<MatrixPlacement> = left.collect();
+                        Some((vid, View::from_matrices(vid, v.name, primary, rest)))
+                    })
+                    .collect();
+            }
+            Thing::Item(i) => {
+                let cat = c.items.remove(&i).map(|x| x.category);
+                if let Some(cat) = cat.and_then(|k| c.categories.get_mut(&k)) {
+                    cat.items.retain(|j| *j != i);
+                }
+                let gone = |at: &improv_core_model::Coordinate| at.dims.values().any(|j| *j == i);
+                c.inputs.retain(|(_, at), _| !gone(at));
+                for s in c.scenarios.values_mut() {
+                    s.overrides.retain(|(_, at), _| !gone(at));
+                }
+                let scrub = |filters: &mut Vec<Filter>, pages: &mut Vec<(CategoryId, ItemId)>| {
+                    filters.iter_mut().for_each(|f| f.items.retain(|j| *j != i));
+                    pages.retain(|(_, j)| *j != i);
+                };
+                for v in c.views.values_mut() {
+                    scrub(&mut v.filters, &mut v.page_items);
+                    for p in &mut v.placements {
+                        scrub(&mut p.filters, &mut p.page_items);
+                    }
+                }
+                for f in &mut self.filters {
+                    f.items.retain(|j| *j != i);
+                }
+            }
+            Thing::Category(cat) => {
+                for i in c
+                    .categories
+                    .remove(&cat)
+                    .map(|x| x.items)
+                    .unwrap_or_default()
+                {
+                    c.items.remove(&i);
+                }
+            }
+        }
+        let dropped = cells - c.inputs.len();
+        let with = match dropped {
+            0 => String::new(),
+            n => format!(" and {}", plural(n, "cell")),
+        };
+        self.restructure(c, format!("deleted {kind} {name}{with}"))
+    }
+
+    /// Adopt a renamed or reduced model as one undo step and keep the
+    /// layout where the viewed measure still has it, as undo does.
+    fn restructure(&mut self, model: Model, done: String) -> String {
+        let prior = std::mem::replace(&mut self.model, model);
+        self.record_history(prior);
+        let status = match self.rebuild_keeping_layout() {
+            Ok(()) => done,
+            Err(e) => format!("{done}; formulas not recomputed: {e}"),
+        };
+        self.applied_view = self
+            .applied_view
+            .filter(|v| self.model.views.contains_key(v));
+        status
     }
 
     /// True if a measure or a named LAMBDA is called `name`: formulas
@@ -1509,10 +1785,32 @@ impl App {
             self.status = Some(format!("nothing to {verb}"));
             return;
         };
-        // Views are layout, saved as they are made: undo leaves them.
-        model.views = self.model.views.clone();
+        // Views are layout, saved as they are made: undo leaves them, but a
+        // view goes and comes back with its measure (a delete, H1-21).
+        let over = |m: &Model, v: &View| {
+            (v.matrices().iter()).all(|p| m.measures.contains_key(&p.measure))
+        };
+        let mut views = self.model.views.clone();
+        views.retain(|_, v| over(&model, v));
+        for (id, v) in &model.views {
+            if !over(&self.model, v) {
+                views.entry(*id).or_insert_with(|| v.clone());
+            }
+        }
+        model.views = views;
         push_bounded(to, std::mem::replace(&mut self.model, model));
         self.changed();
+        let built = self.rebuild_keeping_layout();
+        self.status = Some(match built {
+            Ok(()) => done.to_string(),
+            Err(e) => format!("{done}; formulas not recomputed: {e}"),
+        });
+    }
+
+    /// [`App::rebuild`] after the model was swapped, keeping the layout and
+    /// the cursor while the viewed measure still has the same categories
+    /// (H1-26).
+    fn rebuild_keeping_layout(&mut self) -> Result<(), String> {
         let viewed = self.viewed_measure();
         let layout = (
             self.axis_order.clone(),
@@ -1532,10 +1830,7 @@ impl App {
             (self.cursor_row, self.cursor_col) = cursor;
             self.reselect();
         }
-        self.status = Some(match built {
-            Ok(()) => done.to_string(),
-            Err(e) => format!("{done}; formulas not recomputed: {e}"),
-        });
+        built
     }
 
     // -- views & filters (pure; terminal-free -> unit-testable) ------------
@@ -3113,6 +3408,230 @@ pub(crate) mod tests {
         assert!(
             s.starts_with("category Region: 0 item(s); formulas not recomputed"),
             "{s}"
+        );
+    }
+
+    /// Run one `r`/`D`/`c`/`n` line; its status.
+    fn line(app: &mut App, kind: CommandKind, text: &str) -> String {
+        app.begin_command(kind);
+        app.command.as_mut().unwrap().1 = text.into();
+        app.commit_command();
+        app.status.clone().unwrap()
+    }
+
+    /// H1-21: rename a category, item or measure; formulas follow, the
+    /// GUI's clash rules hold, and each rename undoes.
+    #[test]
+    fn renames_follow_into_formulas_and_undo() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let start = app.model.clone();
+        let r = |app: &mut App, text: &str| line(app, CommandKind::Rename, text);
+        assert_eq!(r(&mut app, "Price"), "rename: type Old = New");
+        assert_eq!(r(&mut app, "Price = "), "rename: type Old = New");
+        assert_eq!(
+            r(&mut app, "Nope = X"),
+            "rename: no measure, category or item 'Nope'"
+        );
+        assert_eq!(r(&mut app, "Price = Price"), "rename: Price is unchanged");
+        assert_eq!(
+            r(&mut app, "Price = Quantity"),
+            "rename: 'Quantity' is already a category, measure or LAMBDA"
+        );
+        assert_eq!(
+            r(&mut app, "Price = Time"),
+            "rename: 'Time' is already a category, measure or LAMBDA"
+        );
+        assert_eq!(
+            r(&mut app, "Time = Revenue"),
+            "rename: 'Time' is already a category, measure or LAMBDA".replace("Time", "Revenue")
+        );
+        assert_eq!(
+            r(&mut app, "WidgetA = WidgetB"),
+            "rename: Product already has an item 'WidgetB'"
+        );
+        assert_eq!(app.model, start, "a refused rename changes nothing");
+        assert!(app.undo_stack.is_empty());
+
+        assert_eq!(
+            r(&mut app, "Price = Unit Price"),
+            "renamed measure Price to Unit Price"
+        );
+        assert_eq!(r(&mut app, "Time = Year"), "renamed category Time to Year");
+        assert_eq!(
+            r(&mut app, "Product.WidgetA = Gadget"),
+            "renamed item WidgetA to Gadget"
+        );
+        // The formula still reads the same measures, now by their new names.
+        view(&mut app, MeasureId(102));
+        assert_eq!(
+            app.formula_text().as_deref(),
+            Some("'Unit Price' * Quantity")
+        );
+        assert_eq!(app.grid.row_cat.as_ref().unwrap().1, "Year");
+        assert_eq!(app.grid.cols[0].1, "Gadget");
+        assert_eq!(app.grid.display_at(0, 0), "1000", "values unchanged");
+        // A measure renamed to a case variant of itself is a rename.
+        assert_eq!(
+            r(&mut app, "Quantity = quantity"),
+            "renamed measure Quantity to quantity"
+        );
+        for _ in 0..4 {
+            app.undo();
+        }
+        assert_eq!(app.model, start);
+    }
+
+    /// H1-21: delete refuses what a formula or measure still needs, naming
+    /// it, and otherwise takes what goes with the thing deleted, in one
+    /// undo step that brings it all back.
+    #[test]
+    fn deletes_name_their_blockers_and_undo() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        app.save_view("Quantities", None);
+        let start = app.model.clone();
+        let d = |app: &mut App, text: &str| line(app, CommandKind::Delete, text);
+        assert_eq!(
+            d(&mut app, " "),
+            "delete: type the name of a category, item or measure"
+        );
+        assert_eq!(
+            d(&mut app, "Nope"),
+            "delete: no measure, category or item 'Nope'"
+        );
+        assert_eq!(
+            d(&mut app, "Price"),
+            "delete: Revenue still reads Price (delete or redefine it first)"
+        );
+        assert_eq!(
+            d(&mut app, "Time"),
+            "delete: Quantity, Revenue still use Time (delete or redefine them first)"
+        );
+        assert_eq!(app.model, start);
+
+        // An item goes with its cells and its place in view filters.
+        app.toggle_filter_item(CategoryId(2), ItemId(21));
+        assert_eq!(d(&mut app, "WidgetA"), "deleted item WidgetA and 3 cells");
+        assert!(app.filters.iter().all(|f| !f.items.contains(&ItemId(20))));
+        assert_eq!(
+            app.grid.n_cols(),
+            0,
+            "the filter left only WidgetB, now gone too"
+        );
+        app.clear_filters();
+        assert_eq!(app.grid.cols[0].1, "WidgetB");
+        app.undo();
+        assert_eq!(app.model, start);
+
+        // The formula, then the inputs it read, then a category no measure uses.
+        assert_eq!(d(&mut app, "Revenue"), "deleted measure Revenue");
+        assert_eq!(
+            d(&mut app, "Quantity"),
+            "deleted measure Quantity and 4 cells"
+        );
+        assert!(app.model.views.is_empty(), "its view went with it");
+        assert_eq!(d(&mut app, "Time"), "deleted category Time");
+        assert!(app.model.items.keys().all(|i| i.0 >= 20), "with its items");
+        assert_eq!(app.grid.measure, MeasureId(100));
+        app.undo();
+        app.undo();
+        assert_eq!(app.model.views.len(), 1, "the view came back with Quantity");
+        app.redo();
+        assert!(app.model.views.is_empty(), "and goes again on redo");
+        app.undo();
+        app.undo();
+        assert_eq!(app.model, start);
+        // A view keeps a matrix whose measure stays; one of a deleted measure goes.
+        let mut v = app.model.views.values().next().unwrap().clone();
+        v.placements = vec![MatrixPlacement {
+            measure: MeasureId(100),
+            ..v.primary()
+        }];
+        app.model.add_view(v);
+        app.applied_view = Some(ViewId(1));
+        d(&mut app, "Revenue");
+        d(&mut app, "Quantity");
+        let left = &app.model.views[&ViewId(1)];
+        assert_eq!(left.measure, MeasureId(100));
+        assert!(left.placements.is_empty());
+        assert_eq!(app.applied_view, Some(ViewId(1)));
+    }
+
+    /// An item is named alone when one category has it, else as
+    /// `Category.Item`; a delete reaches scenario overrides too.
+    #[test]
+    fn items_are_named_with_their_category_when_shared() {
+        let mut m = revenue_model();
+        m.add_category(CategoryId(3), "Year");
+        m.add_item(ItemId(30), CategoryId(3), "2025");
+        m.add_scenario(improv_core_model::Scenario {
+            id: improv_core_model::ScenarioId(1),
+            name: Name("hi".into()),
+            overrides: [(
+                (
+                    MeasureId(101),
+                    Coordinate::from_pairs([
+                        (CategoryId(1), ItemId(10)),
+                        (CategoryId(2), ItemId(20)),
+                    ]),
+                ),
+                Value::Number(1.0),
+            )]
+            .into(),
+        });
+        let mut app = App::new(m).unwrap();
+        let d = |app: &mut App, text: &str| line(app, CommandKind::Delete, text);
+        assert_eq!(
+            d(&mut app, "2025"),
+            "delete: '2025' is an item of more than one category: write Time.2025 or Year.2025"
+        );
+        assert_eq!(d(&mut app, "Year.2024"), "delete: Year has no item '2024'");
+        assert_eq!(d(&mut app, "Year.2025"), "deleted item 2025");
+        assert_eq!(d(&mut app, "2025"), "deleted item 2025 and 2 cells");
+        assert!(app.model.scenarios[&improv_core_model::ScenarioId(1)]
+            .overrides
+            .is_empty());
+        // A measure, else a category, before an item of the same name.
+        assert_eq!(
+            line(&mut app, CommandKind::Rename, "WidgetB = Price"),
+            "renamed item WidgetB to Price"
+        );
+        assert_eq!(
+            d(&mut app, "Price"),
+            "delete: Revenue still reads Price (delete or redefine it first)"
+        );
+        // Deleting with formulas that no longer build still deletes, and says so.
+        let mut app = App::new(revenue_model()).unwrap();
+        app.model.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(
+            Formula::new(Expr::Ref(MeasureId(102), DimensionSpec::default())),
+        );
+        assert!(d(&mut app, "WidgetA")
+            .starts_with("deleted item WidgetA and 3 cells; formulas not recomputed"),);
+        // A category a formula names (not one of its measures') is in use.
+        let mut m = revenue_model();
+        m.add_category(CategoryId(3), "Year");
+        let pos = parse_formula_text(&m, "Price * POSITION(Year)").unwrap();
+        m.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(pos);
+        let mut app = App::new(m).unwrap();
+        assert_eq!(
+            d(&mut app, "Year"),
+            "delete: Revenue still uses Year (delete or redefine it first)"
+        );
+        // A CALL measure's arguments are in use too.
+        let mut m = revenue_model();
+        m.external_calls.insert(
+            MeasureId(101),
+            improv_core_model::ExternalCall {
+                func: "f".into(),
+                arg_measures: vec![MeasureId(100)],
+                refresh_policy: Default::default(),
+            },
+        );
+        m.measures.remove(&MeasureId(102));
+        let mut app = App::new(m).unwrap();
+        assert_eq!(
+            d(&mut app, "Price"),
+            "delete: Quantity still reads Price (delete or redefine it first)"
         );
     }
 

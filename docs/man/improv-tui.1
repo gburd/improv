@@ -118,6 +118,24 @@ Add a number input measure and show it. Type
 the categories it ranges over: the first two are the grid's rows and
 columns, the rest pages.
 .TP
+.B r
+Rename a category, item or measure: type
+.IR Old " = " New .
+An item is
+.I Item
+when one category has it, else
+.IR Category . Item .
+Formulas hold what they read, not its name, so they follow. A category,
+a measure and a LAMBDA may not share a name, nor two items of a category.
+.TP
+.B D
+Delete a category, item or measure: type its name. A measure a formula
+reads, or a category a measure ranges over or a formula names, is refused
+with the formulas named. An item takes its cells, and a measure its cells
+and its saved views. One
+.B u
+brings it all back.
+.TP
 .B =
 Define: a line that takes what
 .B improv define

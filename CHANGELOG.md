@@ -47,6 +47,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   error that lists the measures, nearest first; a name two measures share
   (possible only in a file from before H1-9) gives their ids. `--at`
   already named categories and items by name.
+- **The TUI renames and deletes categories, items and measures** (H1-21).
+  `r` opens `rename>`: `Time = Year`, `Product.WidgetA = Gadget` (an item
+  is named alone when one category has it). Formulas follow the new name.
+  `D` opens `delete>`. The GUI's rules apply: a category, measure and
+  LAMBDA may not share a name; a measure a formula reads, or a category a
+  measure uses, is refused with the formulas named; an item goes with its
+  cells, a measure with its cells and the matrices of saved views. Each is
+  one undo step, and undo brings back a deleted measure's views.
 ### Fixed
 
 - **Typing on a TUI cell replaces its value.** `e` or Enter showed the old

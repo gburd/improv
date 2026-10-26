@@ -91,6 +91,7 @@ improv-tui new.db     # a new file opens empty: build it with c, n and =
 | `I` / `E` | import / export CSV |
 | `c` | add a category and its items: `Time: 2025, 2026` |
 | `n` | add an input measure over categories: `Quantity: Time, Product` |
+| `r` / `D` | rename / delete a category, item or measure: `Time = Year`, `Product.WidgetA`; formulas follow a rename, and a delete names the formulas that still need the thing first |
 | `=` | define: `Revenue = Price * Quantity` adds a derived measure, `Margin = LAMBDA(p, q, p - q)` a named LAMBDA |
 | `w` | save now (each change is already saved as it is made; `w` retries one that failed, marked "not saved") |
 | `R` | revert to the saved model (the status line says when another program saved it); with edits or undo history to lose, press it twice |
@@ -257,7 +258,7 @@ bold gaps are tracked as tasks for 1.0.
 | **Create a model** | `init` | — | File ▸ New | — | `create_model` | inline `improv(source, model)` |
 | Add categories and items | `add-category`, `add-item` | via CSV import | Worksheet ▸ Add Category / Add Item, or type in a tile | — | `bind_category` (items from the column) | `category` lines |
 | Add an input measure | `add-measure` | via CSV import | Worksheet ▸ Add Input Measure | — | `bind_measure` | `input` lines |
-| Rename, delete | — | — | Worksheet ▸ Rename, Delete… | — | `drop_measure` | — |
+| Rename, delete | — | `r`, `D` | Worksheet ▸ Rename, Delete… | — | `drop_measure` | — |
 | **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
 | **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
 | Edit an input cell | `set` | yes | yes | `POST /measures/:id/cells` | write your table | — |

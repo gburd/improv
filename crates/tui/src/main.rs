@@ -256,6 +256,11 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         // definition (formula or LAMBDA); 'w' saves now.
         KeyCode::Char('c') => app.begin_command(app::CommandKind::Category),
         KeyCode::Char('n') => app.begin_command(app::CommandKind::Input),
+        // Rename or delete a category, item or measure (H1-21).
+        KeyCode::Char('r') if !k.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.begin_command(app::CommandKind::Rename)
+        }
+        KeyCode::Char('D') => app.begin_command(app::CommandKind::Delete),
         KeyCode::Char('=') => app.begin_define(),
         KeyCode::Char('w') => app.write(path),
         KeyCode::Char('u') => app.undo(),
@@ -726,8 +731,20 @@ mod tests {
             Some(100.0),
             "plain r redoes nothing"
         );
+        // It opens the rename line (H1-21), as D opens the delete line.
+        assert_eq!(app.command.as_ref().unwrap().0, app::CommandKind::Rename);
+        run_events(&mut app, "", vec![key(KeyCode::Esc)]).unwrap();
         let ctrl_r = KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
         run_events(&mut app, "", vec![Ok(Event::Key(ctrl_r))]).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
+        let mut ev = chars("DWidgetA");
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("deleted item WidgetA and 3 cells")
+        );
+        run_events(&mut app, "", chars("u")).unwrap();
         assert_eq!(app.grid.value_at(0, 0), Some(1000.0));
     }
 

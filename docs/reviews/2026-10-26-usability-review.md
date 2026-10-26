@@ -278,7 +278,7 @@ asking.** *User control.* One key, no confirmation, and afterwards
 second `R`, as `q` does after a failed save. **Files:**
 `crates/tui/src/main.rs` (`revert`).
 
-**H1-21 TUI: no rename or delete of categories, items or measures.**
+**[fixed: `feat(tui): rename and delete categories, items and measures (H1-21)`] H1-21 TUI: no rename or delete of categories, items or measures.**
 *User control.* A misspelled item can only be fixed in the GUI. **Fix:**
 port the GUI's rename and delete, with the same blockers and undo.
 **Files:** `crates/tui/src/app.rs`; `crates/gui/src/app.rs` (`delete`,

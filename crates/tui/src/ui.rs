@@ -32,6 +32,7 @@ const HELP: &[&str] = &[
     "E: export-csv",
     "c: category/items",
     "n: input measure",
+    "r/D: rename/delete",
     "=: define",
     "w: save",
     "R: revert",
@@ -158,6 +159,8 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             CommandKind::ExportCsv => ("export-csv", "file.csv measure-id [--tsv]"),
             CommandKind::Category => ("category", "Name: item, item, \u{2026}"),
             CommandKind::Input => ("input", "Name: Category, Category, \u{2026}"),
+            CommandKind::Rename => ("rename", "Old = New (an item: Category.Item = New)"),
+            CommandKind::Delete => ("delete", "Name (an item: Category.Item)"),
         };
         let mut line = Line::from(format!("{prompt}> {buf}"));
         if buf.is_empty() {
