@@ -261,17 +261,23 @@ fn evaluate(m: &Model, targets: &[MeasureId]) -> Res<Cells> {
     let gather = unsafe { pg_sys::max_parallel_workers_per_gather };
     let cap = usize::try_from(gather).unwrap_or(0) + 1;
     let workers = improv_engine::dataflow::workers_for(m.inputs.len()).min(cap);
-    // SAFETY: sets this thread's signal mask to Postgres' BlockSig; restored
-    // to UnBlockSig below, panic or not, before any interrupt check. (The
-    // engine's threads are spawned in between; the backend's own handlers
-    // stay installed, and a signal that arrives meanwhile is delivered once
-    // the mask is restored.)
-    unsafe { pg_sys::BackgroundWorkerBlockSignals() };
+    // Every signal blocked while the engine's threads are spawned (they
+    // inherit the mask and call no Postgres API), then this thread's own
+    // mask back exactly, panic or not, before any interrupt check. A signal
+    // that arrives meanwhile is delivered once the mask is restored.
+    // SAFETY: pthread_sigmask on this thread with valid sigset_t pointers.
+    let saved = unsafe {
+        let mut all = std::mem::zeroed::<libc::sigset_t>();
+        let mut old = std::mem::zeroed::<libc::sigset_t>();
+        libc::sigfillset(&mut all);
+        libc::pthread_sigmask(libc::SIG_SETMASK, &all, &mut old);
+        old
+    };
     let r = catch_unwind(AssertUnwindSafe(|| {
         improv_engine::dataflow::evaluate_with_workers(m, targets, workers)
     }));
-    // SAFETY: as above.
-    unsafe { pg_sys::BackgroundWorkerUnblockSignals() };
+    // SAFETY: restores the mask saved above.
+    unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &saved, std::ptr::null_mut()) };
     match r {
         Ok(r) => Ok(r?),
         Err(p) => {
