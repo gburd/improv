@@ -3213,6 +3213,11 @@ fn child_dsl(model: &Model, e: &Expr, min_prec: u8) -> Option<String> {
 }
 
 fn expr_dsl(model: &Model, e: &Expr) -> Option<String> {
+    // 1.4 MiB at depth 256 in a debug build: past Windows' 1 MiB main thread.
+    improv_core_model::grow_stack(|| expr_dsl_here(model, e))
+}
+
+fn expr_dsl_here(model: &Model, e: &Expr) -> Option<String> {
     match e {
         Expr::Literal(v) => literal_dsl(v),
         // A fold's LAMBDA parameters (see `call_dsl`).
@@ -6988,6 +6993,25 @@ mod tests {
         // Input measures have no formula text.
         assert_eq!(app.formula_source(MeasureId(100)), None);
         assert_eq!(app.formula_source(MeasureId(999)), None);
+    }
+
+    #[test]
+    fn the_deepest_formula_prints_on_a_windows_sized_main_thread() {
+        // MAX_FORMULA_DEPTH nested ABS(...) prints back to its source on
+        // 1 MiB, the main thread Windows gives the GUI.
+        let m = revenue_model();
+        let depth = improv_core_model::MAX_FORMULA_DEPTH;
+        let src = format!("{}Price{}", "ABS(".repeat(depth - 1), ")".repeat(depth - 1));
+        let f = improv_core_model::parse_formula(&m, &format!("R = {src}"))
+            .expect("parses at the limit")
+            .formula;
+        let printed = std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || formula_dsl(&m, &f))
+            .unwrap()
+            .join()
+            .expect("no overflow");
+        assert_eq!(printed.as_deref(), Some(src.as_str()));
     }
 
     #[test]
