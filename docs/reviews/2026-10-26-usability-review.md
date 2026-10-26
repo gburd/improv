@@ -291,7 +291,7 @@ per-measure decimal places setting, stored with the measure and used by
 the GUI, TUI and `eval`. **Files:** `crates/core_model/src/lib.rs`,
 `crates/gui/src/menu.rs`, `crates/tui/src/ui.rs`.
 
-**H1-23 GUI: Help has only Functions….** *Help and documentation.* Help
+**[fixed: `feat(gui): Help > Keys... and Help > User Guide (H1-23)`] H1-23 GUI: Help has only Functions….** *Help and documentation.* Help
 has no way to the guide, the tutorial or the keyboard list. **Fix:**
 Help ▸ Keys (the tour's "Keyboard" section) and Help ▸ User Guide (open
 the published URL). **Files:** `crates/gui/src/menu.rs`,

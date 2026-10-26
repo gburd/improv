@@ -8,6 +8,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The GUI's Help menu has Keys… and User Guide**, beside Functions…
+  (H1-23). Keys… lists the key equivalents, read from the menu, and the
+  grid and editor keys; User Guide opens the published guide,
+  https://gburd.github.io/improv/, in the browser.
 - **Saved views can be renamed and deleted in the GUI** (H1-15, the GUI
   part). A click on a view row in the model browser picks it, and
   Worksheet ▸ Rename and Delete… act on it; with a view picked, Delete…

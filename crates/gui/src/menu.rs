@@ -52,6 +52,10 @@ pub enum Command {
     ToggleCsv,
     /// Show or hide the function help browser (also F1).
     FunctionHelp,
+    /// Show or hide the list of keyboard shortcuts.
+    Keys,
+    /// Open the published user guide in the browser.
+    UserGuide,
     Hide,
     Quit,
 }
@@ -129,7 +133,11 @@ const MENU: &[(&str, Option<char>, Top)] = &[
     (
         "Help",
         None,
-        Top::Sub(&[("Functions…", None, Some(C::FunctionHelp))]),
+        Top::Sub(&[
+            ("Functions…", None, Some(C::FunctionHelp)),
+            ("Keys…", None, Some(C::Keys)),
+            ("User Guide", None, Some(C::UserGuide)),
+        ]),
     ),
     ("Hide", Some('h'), Top::Leaf(Some(C::Hide))),
     ("Quit", Some('q'), Top::Leaf(Some(C::Quit))),
@@ -176,17 +184,27 @@ pub fn key_command(key: Key, shift: bool) -> Option<Command> {
 
 /// Every menu item with a key equivalent, top level and submenus.
 fn keyed_items() -> impl Iterator<Item = (char, Option<Command>)> {
-    MENU.iter().flat_map(|(_, key, top)| {
+    key_equivalents().map(|(k, _, c)| (k, c))
+}
+
+/// Every menu item with a key equivalent, as `(key, "Menu: Item", command)`
+/// (a top-level item is just its label): what Help ▸ Keys… lists. (The
+/// docs' `▸` is not in the GUI's fonts.)
+pub fn key_equivalents() -> impl Iterator<Item = (char, String, Option<Command>)> {
+    MENU.iter().flat_map(|&(menu, key, ref top)| {
         let leaves: &[Leaf] = match top {
             Top::Sub(l) => l,
             _ => &[],
         };
         let top = match top {
-            Top::Leaf(c) => key.map(|k| (k, *c)),
+            Top::Leaf(c) => key.map(|k| (k, menu.to_owned(), *c)),
             _ => None,
         };
-        top.into_iter()
-            .chain(leaves.iter().filter_map(|&(_, k, c)| k.map(|k| (k, c))))
+        top.into_iter().chain(
+            leaves
+                .iter()
+                .filter_map(move |&(item, k, c)| k.map(|k| (k, format!("{menu}: {item}"), c))),
+        )
     })
 }
 

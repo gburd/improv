@@ -246,6 +246,8 @@ pub struct ImprovApp {
     import_form: ImportForm,
     /// Whether the Info panel window is shown (off until Info ▸ Info Panel…).
     show_inspector: bool,
+    /// Whether Help ▸ Keys…'s window is shown.
+    show_keys: bool,
     /// The function help browser (Help ▸ Functions…, F1).
     fn_help: crate::function_help::Browser,
     /// The formula editor last focused: where the help browser inserts.
@@ -442,6 +444,29 @@ const CASCADE: f32 = 24.0 + WINDOW_GAP;
 
 /// Seconds a status message stays up before the status bar clears it.
 const STATUS_TTL: f64 = 5.0;
+
+/// The published user guide Help ▸ User Guide opens.
+const USER_GUIDE: &str = "https://gburd.github.io/improv/";
+
+/// Help ▸ Keys…'s keys beyond the menu's key equivalents (which it reads
+/// from the menu): `(keys, what they do)`.
+const GRID_KEYS: &[(&str, &str)] = &[
+    ("Arrows, h j k l", "move the cursor"),
+    (
+        "Shift+arrows",
+        "select a range (the status bar shows its Sum)",
+    ),
+    ("Type", "replace the cell's value"),
+    ("Enter, F2", "edit the cell, its value selected"),
+    ("Enter", "commit an edit"),
+    ("Esc", "cancel an edit, close a panel or a menu"),
+    ("[ ], PageUp PageDown", "page"),
+    ("n, Shift+n", "next, previous measure"),
+    ("Tab", "move between fields and buttons"),
+    ("Enter, Space", "press the focused button or menu item"),
+    ("F1", "function help, anywhere"),
+    ("Up Down, Tab", "pick from a formula's completion list"),
+];
 
 /// What an empty workspace says, right of the menu.
 const EMPTY_HINT: &str = "Empty model: Worksheet ▸ Add Category to begin, or File ▸ Open…";
@@ -1290,6 +1315,7 @@ impl ImprovApp {
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             show_inspector: false,
+            show_keys: false,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -4031,6 +4057,7 @@ impl ImprovApp {
         self.model_browser(ctx, ws);
         self.info_panel(ctx, ws);
         self.function_help(ctx, ws);
+        self.keys_panel(ctx, ws);
         self.file_panel(ctx, ws);
         self.delete_panel(ctx, ws);
         self.reload_panel(ctx, ws);
@@ -4197,6 +4224,11 @@ impl ImprovApp {
             Command::ToggleChart => self.show_chart = !self.show_chart,
             Command::ToggleCsv => self.toggle_csv_wizard(),
             Command::FunctionHelp => self.fn_help.toggle(),
+            Command::Keys => self.show_keys = !self.show_keys,
+            Command::UserGuide => {
+                ctx.open_url(egui::OpenUrl::new_tab(USER_GUIDE));
+                self.status = format!("opening the user guide, {USER_GUIDE}");
+            }
             Command::Hide => ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true)),
             Command::Quit => {
                 if self.quit_allowed() {
@@ -5328,6 +5360,66 @@ impl ImprovApp {
             }
             self.status = self.set_input_categories(id, cats).unwrap_or_else(|e| e);
         }
+    }
+
+    /// Help ▸ Keys…: a NeXT window at the workspace's right listing the
+    /// menu's key equivalents (read from the menu, Ctrl or Cmd) and the grid
+    /// and editor keys ([`GRID_KEYS`]). Its close box or Help ▸ Keys… again
+    /// closes it.
+    fn keys_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        if !self.show_keys {
+            return;
+        }
+        let size = egui::vec2(440.0, 480.0);
+        let home =
+            egui::Rect::from_min_size(egui::pos2(ws.right() - size.x - 8.0, ws.top() + 48.0), size);
+        let win = crate::nxwin::NxWindow::new("keys", "Keys");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let mut open = true;
+        let chord = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        };
+        // A key the menu draws disabled (Print…) is not listed.
+        let rows: Vec<(String, String)> = menu::key_equivalents()
+            .filter(|(_, _, c)| c.is_some())
+            .map(|(k, item, _)| {
+                let k = if k.is_uppercase() {
+                    format!("{chord}+Shift+{}", k.to_ascii_lowercase())
+                } else {
+                    format!("{chord}+{k}")
+                };
+                (k, item)
+            })
+            .chain([(format!("{chord}+y"), "Edit: Redo".to_owned())])
+            .chain(
+                GRID_KEYS
+                    .iter()
+                    .map(|(k, w)| ((*k).to_owned(), (*w).to_owned())),
+            )
+            .collect();
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+                    egui::Grid::new("keys_grid")
+                        .num_columns(2)
+                        .spacing(egui::vec2(16.0, 2.0))
+                        .show(ui, |ui| {
+                            for (k, what) in &rows {
+                                ui.label(k);
+                                ui.label(what);
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(6.0);
+                    ui.label("Key equivalents do not fire while a text field has the keyboard.");
+                });
+            });
+        self.show_keys &= open;
     }
 
     /// Help ▸ Functions… (F1): a NeXT window at the workspace's right
@@ -7963,6 +8055,7 @@ mod tests {
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             show_inspector: false,
+            show_keys: false,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -13444,6 +13537,73 @@ mod tests {
         desk.settle(&mut app);
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
         assert!(painted(&shapes, "(no saved views)").is_some());
+    }
+
+    /// H1-23: Help ▸ Keys… shows the key equivalents (read from the menu)
+    /// and the grid keys, and closes from its box; Help ▸ User Guide asks
+    /// the platform to open the published guide.
+    #[test]
+    fn help_lists_the_keys_and_opens_the_user_guide() {
+        let mut app = build_app(grid_2x2_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let keys = panel_win("keys");
+        assert!(close_box_of(&desk.ctx, keys).is_none(), "closed at start");
+        app.run_command(&desk.ctx, Command::Keys);
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let chord = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        };
+        for text in [
+            format!("{chord}+z"),
+            "Edit: Undo".into(),
+            format!("{chord}+Shift+z"),
+            format!("{chord}+y"),
+            "Quit".into(),
+            "Arrows, h j k l".into(),
+            "n, Shift+n".into(),
+            "function help, anywhere".into(),
+        ] {
+            assert!(painted(&shapes, &text).is_some(), "{text} listed");
+        }
+        assert!(
+            painted(&shapes, &format!("{chord}+p")).is_none(),
+            "Print… is not built"
+        );
+        // Every row is inside the window, the last one included.
+        let win = crate::nxwin::stored_rect(&desk.ctx, keys).expect("shown");
+        let last = painted(&shapes, "pick from a formula's completion list").expect("last row");
+        assert!(win.contains_rect(last), "{last:?} in {win:?}");
+        let font = egui::TextStyle::Body.resolve(&desk.ctx.global_style());
+        desk.ctx.fonts_mut(|f| {
+            for (_, item, _) in menu::key_equivalents() {
+                assert!(f.has_glyphs(&font, &item), "missing glyph in {item:?}");
+            }
+        });
+        let close = close_box_of(&desk.ctx, keys).expect("the Keys window is shown");
+        desk.click(&mut app, close.center());
+        assert!(!app.show_keys);
+        app.run_command(&desk.ctx, Command::Keys);
+        app.run_command(&desk.ctx, Command::Keys);
+        assert!(!app.show_keys, "Help ▸ Keys… toggles it");
+
+        let out = desk.ctx.test_pass(egui::RawInput::default(), |ctx| {
+            app.run_command(ctx, Command::UserGuide);
+        });
+        let urls: Vec<&str> = out
+            .platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::OpenUrl(u) => Some(u.url.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(urls, ["https://gburd.github.io/improv/"]);
+        assert!(app.status.contains(USER_GUIDE), "{}", app.status);
     }
 
     /// (c) Info ▸ Info Panel… opens the Info window; its close box closes it.

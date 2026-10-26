@@ -50,7 +50,9 @@ The window has five regions:
   then lists the saved views, with a check on the
   current one, and picking one switches the workspace to it; **Graph ▸ Show
   Chart** toggles the chart; **Help ▸ Functions…** (also F1) opens the
-  [function help](#function-help); **Hide** minimizes and **Quit** closes the
+  [function help](#function-help), **Help ▸ Keys…** a window listing the
+  [keys](#keyboard-and-screen-readers), and **Help ▸ User Guide** this
+  guide, online, in the browser; **Hide** minimizes and **Quit** closes the
   window. Format, Print and Services, and Close in the File
   menu, are not built yet and draw grayed out. Key equivalents, shown at
   the right of their item, take Ctrl (Cmd on macOS): `n` new, `o` open,
@@ -214,7 +216,7 @@ their jobs, so a text value that starts with one is typed after Enter. Tab moves
 through the menu, the windows' fields and buttons, and Enter or Space
 presses the focused one, so **Tab** to a menu item and **Enter** opens
 its submenu or runs it. The key equivalents (Ctrl or Cmd: `n o s z Z y h
-q`) work anywhere outside a text field.
+q`) work anywhere outside a text field. **Help ▸ Keys…** lists them all.
 
 Every control has an accessible name (through AccessKit, which egui feeds
 to Orca, VoiceOver and Narrator): menu items by their label, a cell by
