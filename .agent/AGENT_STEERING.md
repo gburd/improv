@@ -41,7 +41,10 @@ criteria" are the bar. Mark tasks done there as they land.
   single-worker. Its items 3 (O(n) windows), 1 (deltas, not snapshots)
   and 4 (slim AggRow, B8) are being implemented on the box in `~/w-dd`
   (`work/dd`); 2 (B6), 5 (B5), 6 (multi-worker evaluate), 7 (B1) follow.
-- **NEXT:** merge `work/dd`; the soak result into the plan (J4); C3b; a
+- **DONE (0.12):** C3b, a formula may be 256 levels deep (new = stored
+  bound; JSON via serde_stacker, stacker at the recursions, 16 MiB engine
+  threads).
+- **NEXT:** merge `work/dd`; the soak result into the plan (J4); a
   ~5% RANK edit slowdown since `9e74dda` (unexplained; see the
   qualification).
 

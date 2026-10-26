@@ -1444,24 +1444,38 @@ mod tests {
         redefine_in("logical");
     }
 
-    /// A new formula is limited to 40 levels; one stored as text before
-    /// 0.11 loads up to 256 (`MAX_STORED_FORMULA_DEPTH`), so a 45-term sum
-    /// keeps working. Past 256, every call that builds the model names the
-    /// measure, and dropping or redefining it (`replace => true`) fixes it.
-    /// The old formulas are written straight into the catalog, as a
-    /// superuser. pgrx tests are a debug build, whose engine overflows near
-    /// 56 levels: 45 is safe, and the 300-term one is never evaluated.
+    /// A new formula is limited to 256 levels (`MAX_FORMULA_DEPTH`), and
+    /// one stored as text loads up to 256 too (`MAX_STORED_FORMULA_DEPTH`),
+    /// so a 45-term sum from 0.10 keeps working. Past 256, every call that
+    /// builds the model names the measure, and dropping or redefining it
+    /// (`replace => true`) fixes it. The old formulas are written straight
+    /// into the catalog, as a superuser. pgrx tests are a debug build: the
+    /// deepest allowed formula is defined and evaluated, on the backend's
+    /// stack and the engine's thread.
     #[pg_test]
     fn old_deep_formulas_keep_working_or_can_be_fixed() {
         setup_plan();
         let sum = |n: usize| vec!["Price"; n].join(" + ");
-        let e = crate::define("plan", &format!("Old = {}", sum(41)), false)
+        let limit = improv_core_model::MAX_FORMULA_DEPTH;
+        let e = crate::define("plan", &format!("Old = {}", sum(limit + 1)), false)
             .unwrap_err()
             .to_string();
         assert!(
-            e.contains("formula nests too deeply (41 levels; the limit is 40)"),
+            e.contains("formula nests too deeply (257 levels; the limit is 256)"),
             "{e}"
         );
+        let abs = format!("{}Price{}", "ABS(".repeat(limit - 1), ")".repeat(limit - 1));
+        for f in [sum(limit), abs] {
+            crate::define("plan", &format!("Top = {f}"), true).unwrap();
+            recalc();
+            let top = Spi::get_one::<f64>(
+                "SELECT value FROM improv_plan.top WHERE \"time\" = 'Q1' AND product = 'Widget'",
+            )
+            .unwrap()
+            .unwrap();
+            assert!(top == 2560.0 || top == 10.0, "{top}");
+        }
+        crate::drop_measure("plan", "Top").unwrap();
         let set = |name: &str, formula: String| {
             Spi::run_with_args(
                 "UPDATE improv.measure SET formula = $2 WHERE name = $1",

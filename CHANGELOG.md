@@ -20,6 +20,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   waited its 10 s and then killed it. SIGTERM and Ctrl-C now end it at once.
 ### Changed
 
+- **A formula may be 256 levels deep** (was 40; C3b). The limit
+  (`MAX_FORMULA_DEPTH`) is now the load bound (`MAX_STORED_FORMULA_DEPTH`),
+  so a 45-term sum is fine as a new formula too, and a formula at the limit
+  saves, exports, reloads and evaluates in every store and on every thread
+  Improv runs on, a 1 MiB Windows main thread included. The parser's nesting
+  bound is 320 (was 64, and 100 for stored text), the controlled-English
+  parser's too (was 200). Past 256: "formula nests too deeply (257 levels;
+  the limit is 256)", and a stored formula past it still loads as `#REF!`
+  (JSON) or names its measure (Postgres text).
 - **Model and formula JSON reads past serde_json's 128 levels** (C3b).
   `improv_core_model::json` reads up to 784 levels (a whole model holding a
   formula 256 deep) and writes at any depth, on a stack that grows

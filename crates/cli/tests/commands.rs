@@ -7,8 +7,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn improv(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_improv"))
-        .env("IMPROV_LOCALE", "en")
+    // `IMPROV_TEST_STACK_KB`: run under that main-thread stack (`ulimit -s`).
+    let mut cmd = match std::env::var("IMPROV_TEST_STACK_KB") {
+        Ok(kb) if cfg!(unix) => {
+            let mut c = Command::new("sh");
+            c.arg("-c")
+                .arg(format!("ulimit -s {kb} && exec \"$0\" \"$@\""))
+                .arg(env!("CARGO_BIN_EXE_improv"));
+            c
+        }
+        _ => Command::new(env!("CARGO_BIN_EXE_improv")),
+    };
+    cmd.env("IMPROV_LOCALE", "en")
         .args(args)
         .output()
         .expect("run improv")
@@ -1065,7 +1075,9 @@ fn block_writes(db: &str) {
 }
 
 /// C3: a 71-term chain was saved, and then no command could open the
-/// model ("recursion limit exceeded").
+/// model ("recursion limit exceeded"). C3b: the limit is 256, for every
+/// shape; `IMPROV_TEST_STACK_KB` runs the commands under `ulimit -s` (CI's
+/// Windows main thread is 1 MiB: `IMPROV_TEST_STACK_KB=1024`).
 #[test]
 fn a_formula_too_deep_is_refused_and_an_old_one_does_not_lock_the_model() {
     let dir = scratch("depth");
@@ -1074,18 +1086,38 @@ fn a_formula_too_deep_is_refused_and_an_old_one_does_not_lock_the_model() {
     ok(&["init", d]);
     ok(&["add-measure", d, "100", "Price", "number", "input"]);
     let chain = |n: usize| vec!["Price"; n].join(" + ");
-    fails_with(
-        &["add-derived", d, "101", "Q", &chain(71)],
-        "formula nests too deeply (41 levels; the limit is 40)",
-    );
-    fails_with(
-        &["define", d, "101", &format!("Q = {}", chain(41))],
-        "formula nests too deeply (41 levels; the limit is 40)",
-    );
-    ok(&["add-derived", d, "101", "Q", &chain(40)]);
+    let abs = |n: usize| format!("{}Price{}", "ABS(".repeat(n - 1), ")".repeat(n - 1));
+    let if_ = |n: usize| {
+        format!(
+            "{}Price{}",
+            "IF(Price > 1, ".repeat(n - 2),
+            ", Price)".repeat(n - 2)
+        )
+    };
+    let over = "formula nests too deeply (257 levels; the limit is 256)";
+    fails_with(&["add-derived", d, "101", "Q", &chain(300)], over);
+    for f in [chain(257), abs(257), if_(257)] {
+        fails_with(&["add-derived", d, "101", "Q", &f], over);
+        fails_with(&["define", d, "101", &format!("Q = {f}")], over);
+    }
+    // At the limit: each shape saves, exports, imports into a new store and
+    // evaluates (Price = 2).
     ok(&["set", d, "100", "2"]);
-    stdout_has(&ok(&["eval", d, "101"]), "Q[] = 80");
+    for (id, name, f) in [("102", "R", abs(256)), ("103", "S", if_(256))] {
+        ok(&["define", d, id, &format!("{name} = {f}")]);
+        stdout_has(&ok(&["eval", d, id]), &format!("{name}[] = 2"));
+    }
+    ok(&["add-derived", d, "101", "Q", &chain(256)]);
+    stdout_has(&ok(&["eval", d, "101"]), "Q[] = 512");
     stdout_has(&ok(&["list", d]), "101 Q [derived]");
+    let json = ok(&["export", d]);
+    let model: improv_core_model::Model = improv_core_model::json::from_str(&json).unwrap();
+    let copy = file(&dir, "copy.db");
+    improv_store::Store::open(&copy)
+        .unwrap()
+        .save_model(&model)
+        .unwrap();
+    stdout_has(&ok(&["eval", &copy, "101"]), "Q[] = 512");
 
     // A store written before the limit: Q's formula is a 300-term chain,
     // past the load bound (256).
@@ -1095,11 +1127,14 @@ fn a_formula_too_deep_is_refused_and_an_old_one_does_not_lock_the_model() {
             r#"{{"BinaryOp":["Add",{e},{{"Ref":[100,{{"by":[],"over":[],"except":[]}}]}}]}}"#
         );
     }
+    // Q is the measure with id 101 (`:measure/id`).
     let n = rusqlite::Connection::open(d)
         .unwrap()
         .execute(
             "UPDATE datoms SET v = ?1 \
-             WHERE a = (SELECT e FROM idents WHERE v = ':measure/formula')",
+             WHERE a = (SELECT e FROM idents WHERE v = ':measure/formula') \
+               AND e = (SELECT e FROM datoms WHERE v = 101 \
+                 AND a = (SELECT e FROM idents WHERE v = ':measure/id'))",
             [format!(r#"{{"expr":{e}}}"#)],
         )
         .unwrap();

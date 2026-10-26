@@ -1234,10 +1234,12 @@ mod tests {
             .contains_key(&MeasureId(103)));
     }
 
+    /// On 1 MiB, a Windows main thread (what `improv` runs on), the smallest
+    /// thread that saves and loads a model; the engine runs on its own.
     #[test]
     fn the_deepest_allowed_formula_saves_reloads_and_evaluates_on_a_small_stack() {
         let r = std::thread::Builder::new()
-            .stack_size(2 << 20)
+            .stack_size(1 << 20)
             .spawn(|| {
                 let m = chain_model(improv_core_model::MAX_FORMULA_DEPTH);
                 let MeasureKind::Derived(f) = &m.measures[&MeasureId(103)].kind else {
@@ -1255,8 +1257,21 @@ mod tests {
                     m.measures[&MeasureId(103)]
                 );
                 // The whole model as one JSON document (`improv export`) too.
-                let json = serde_json::to_string(&loaded).unwrap();
-                assert_eq!(serde_json::from_str::<Model>(&json).unwrap(), loaded);
+                let json = improv_core_model::json::to_string_pretty(&loaded).unwrap();
+                assert_eq!(
+                    improv_core_model::json::from_str::<Model>(&json).unwrap(),
+                    loaded
+                );
+                // One level more is past the load bound: it loads as #REF!.
+                let mut store = ModelStore::open("").expect("open in-memory");
+                store
+                    .save_model(&chain_model(improv_core_model::MAX_FORMULA_DEPTH + 1))
+                    .expect("save");
+                let over = store.load_model().expect("load");
+                assert!(over.measures[&MeasureId(103)]
+                    .description
+                    .as_deref()
+                    .is_some_and(|d| d.contains("nests too deeply to load")));
                 let out = improv_engine::dataflow::evaluate(&loaded, &[MeasureId(103)]).unwrap();
                 let (engine, snap) =
                     improv_engine::session::Engine::new(&loaded, &[MeasureId(103)]).unwrap();
@@ -1272,8 +1287,8 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
-        // Price is 10 at Widget A: 40 of them.
-        assert_eq!(r, (vec!["400".to_string()], 1));
+        // Price is 10 at Widget A: 256 of them.
+        assert_eq!(r, (vec!["2560".to_string()], 1));
     }
 
     #[test]

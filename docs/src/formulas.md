@@ -92,15 +92,15 @@ Type rules, checked when the formula compiles:
 
 ### Limits
 
-A formula's tree may be at most **40 levels deep**, where a measure, number or
-other leaf is one level and every operator or call adds one: `Price + Price`
+A formula's tree may be at most **256 levels deep**, where a measure, number
+or other leaf is one level and every operator or call adds one: `Price + Price`
 is 2, and a chain of n `+` terms is n. A `SWITCH`, `IFS` or `CHOOSE` counts one
-level per case, since it compiles to nested `IF`s. Past 40 the formula is
+level per case, since it compiles to nested `IF`s. Past 256 the formula is
 refused where it is written (the CLI, the GUI and TUI editors, `improv.define`,
-`LANGUAGE improv`, the DuckDB model text, controlled English):
+`LANGUAGE improv`, the DuckDB model text, controlled English, the server):
 
 ```text
-parse error at 322: formula nests too deeply (41 levels; the limit is 40)
+parse error at 2046: formula nests too deeply (257 levels; the limit is 256)
 ```
 
 The position is the operator where a chain passes the limit, or the start of
@@ -110,22 +110,23 @@ and named LAMBDAs are expanded. A formula is also limited to 100,000 nodes once
 expanded, so a `LET` whose bindings each use the previous one twice fails at
 once rather than doubling its way to millions of terms.
 
-Why 40: every store keeps a formula as JSON, and JSON readers stop at 128
-levels of nesting; a formula 40 deep is at most 126 of them, so every new
-formula saves and opens again in any store. The engine evaluates it with room
-to spare, even in a debug build.
+Every formula at the limit saves and opens again in any store, `improv export`
+writes it, and the engine evaluates it, on any thread Improv runs on (a
+1 MiB Windows main thread, a server's 2 MiB worker, a Postgres backend).
+(0.11 allowed 40 levels: its JSON reader stopped at 128 levels of nesting.)
 
-Formulas saved **before 0.11**, which had no such limit, keep working:
+Formulas saved **before 0.11**, which had no limit, keep working up to 256
+levels; a 45-term sum defined with `improv.define` in 0.10 still computes.
+Past 256:
 
 - **Stored as text** (Postgres `improv.measure`, `LANGUAGE improv` bodies, the
-  Postgres model store): they load up to **256 levels**. A 45-term sum defined
-  with `improv.define` in 0.10 still computes. Past 256, the model refuses to
-  load, and the error names the measure; `improv.drop_measure` or
-  `improv.define(…, replace => true)` of that measure still works, to fix it.
-- **Stored as JSON** (the embedded store, `improv` files): one too deep to read
-  back (about 63 `+` terms or more) no longer makes the whole model unopenable.
-  The measure loads as `#REF!` in every cell, and its description says why;
-  redefine it with `improv add-derived` or `improv define` to fix it.
+  Postgres model store): the model refuses to load, and the error names the
+  measure; `improv.drop_measure` or `improv.define(…, replace => true)` of
+  that measure still works, to fix it.
+- **Stored as JSON** (the embedded store, `improv` files): the measure loads
+  as `#REF!` in every cell, and its description says why; the rest of the
+  model opens. Redefine it with `improv add-derived` or `improv define` to fix
+  it.
 
 ### Errors
 

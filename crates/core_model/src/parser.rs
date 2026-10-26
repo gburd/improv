@@ -533,17 +533,17 @@ struct Parser<'a> {
     stored: bool,
 }
 
-/// Maximum recursive-descent nesting depth for a single formula (Excel allows
-/// 64 nested levels). Each level costs one frame per grammar level: in a
-/// debug build on a 2 MiB thread, 80 nested calls (`ABS(`, `IF(`, `SUM(`)
-/// parse and 85 overflow (measured 2026-10-24). Past [`MAX_FORMULA_DEPTH`] a
-/// tree is refused anyway; the extra levels are for redundant parentheses.
-const MAX_PARSE_DEPTH: usize = 64;
+/// Maximum recursive-descent nesting depth for a single formula: nested
+/// parentheses, calls and unary operators. Each level costs one frame per
+/// grammar level (24.5 KB in a debug build, 5.7 KB in a release one,
+/// measured 2026-10-25) on a stack that grows ([`crate::grow_stack`]). Past
+/// [`MAX_FORMULA_DEPTH`] a tree is refused anyway; the extra levels are for
+/// redundant parentheses.
+const MAX_PARSE_DEPTH: usize = MAX_FORMULA_DEPTH + 64;
 
-/// [`MAX_PARSE_DEPTH`] for a formula a store kept as text: 0.10's limit, so
-/// what parsed then still loads (a release build, or a Postgres backend's
-/// 8 MiB stack, has room for it).
-const MAX_STORED_PARSE_DEPTH: usize = 100;
+/// [`MAX_PARSE_DEPTH`] for a formula a store kept as text: the same, now
+/// that the two depth bounds are one (0.11 loaded to 100, past its new 64).
+const MAX_STORED_PARSE_DEPTH: usize = MAX_PARSE_DEPTH;
 
 /// A named argument as read: the name, where it starts, and its value.
 type Named = (String, Option<usize>, Expr);
@@ -692,9 +692,18 @@ impl<'a> Parser<'a> {
         }
         match self.model.expand_lambdas(expr) {
             Ok(full) => self.check(&full, pos),
-            Err(m) if ParseError::new(m.as_str(), None).is_limit() => Err(ParseError::new(m, pos)),
-            // Anything else the compiler reports, with its own context.
-            Err(_) => Ok(()),
+            Err(m) => {
+                // Expansion stops at the load bound, naming the lambda
+                // (`F: formula nests too deeply …`): report the limit.
+                let limit = [crate::formula::TOO_DEEP, crate::formula::TOO_LARGE]
+                    .iter()
+                    .find_map(|t| m.find(t));
+                match limit {
+                    Some(i) => Err(ParseError::new(&m[i..], pos)),
+                    // Anything else the compiler reports, with its own context.
+                    None => Ok(()),
+                }
+            }
         }
     }
 
@@ -3486,6 +3495,9 @@ mod tests {
     fn deep(shape: &str, depth: usize) -> String {
         match shape {
             "+" | "*" => vec!["Price"; depth].join(&format!(" {shape} ")),
+            // NOT^n (Price > 1) is n + 2 levels; Price%^n is n + 1.
+            "NOT" => format!("{}Price > 1", "NOT ".repeat(depth - 2)),
+            "%" => format!("Price{}", "%".repeat(depth - 1)),
             "ABS" => format!("{}Price{}", "ABS(".repeat(depth - 1), ")".repeat(depth - 1)),
             "-" => format!("{}Price", "- ".repeat(depth - 1)),
             // Each IF's test (Price > 1) is two levels below it.
@@ -3510,7 +3522,7 @@ mod tests {
             "formula nests too deeply ({} levels; the limit is {MAX_FORMULA_DEPTH})",
             MAX_FORMULA_DEPTH + 1
         );
-        for shape in ["+", "*", "ABS", "-", "IF", "SWITCH"] {
+        for shape in ["+", "*", "ABS", "-", "IF", "SWITCH", "NOT", "%"] {
             let ok = deep(shape, MAX_FORMULA_DEPTH);
             let f = parse_expr(&m, &ok).unwrap_or_else(|e| panic!("{shape}: {e}"));
             assert_eq!(f.expr.depth_and_nodes().0, MAX_FORMULA_DEPTH, "{shape}");
@@ -3523,7 +3535,7 @@ mod tests {
             // A chain stops at the operator that passes the limit; any other
             // shape is refused once parsed, at the start of the expression.
             let at = match shape {
-                "+" | "*" => over.rfind(shape).unwrap(),
+                "+" | "*" | "%" => over.rfind(shape).unwrap(),
                 _ => 0,
             };
             for (e, at) in [
@@ -3566,19 +3578,22 @@ mod tests {
     #[test]
     fn huge_formulas_error_on_a_small_stack() {
         // The tree is checked as it is built, so none of these builds one too
-        // deep to drop (dropping a 200k-term chain overflowed 2 MiB).
+        // deep to drop (dropping a 200k-term chain overflowed 2 MiB). 1 MiB:
+        // a Windows main thread.
         let r = std::thread::Builder::new()
-            .stack_size(2 << 20)
+            .stack_size(1 << 20)
             .spawn(|| {
                 let m = fixture();
-                let group = format!("({})", vec!["Price"; 39].join(" + "));
+                let group = format!("({})", vec!["Price"; MAX_FORMULA_DEPTH - 1].join(" + "));
+                let n = MAX_PARSE_DEPTH + 1;
                 let texts = [
                     vec!["Price"; 200_000].join(" + "),
                     vec!["Price"; 200_000].join(" * "),
                     format!("Price{}", "%".repeat(200_000)),
-                    format!("{}Price{}", "(Price + ".repeat(99), ")".repeat(99)),
+                    format!("{}Price{}", "(Price + ".repeat(n), ")".repeat(n)),
                     vec![group.as_str(); 1_000].join(" + "),
-                    format!("{}Price{}", "ABS(".repeat(99), ")".repeat(99)),
+                    format!("{}Price{}", "ABS(".repeat(n), ")".repeat(n)),
+                    format!("{}Price{}", "(".repeat(100_000), ")".repeat(100_000)),
                 ];
                 let chains = &texts[..3];
                 texts.iter().all(|t| parse_expr(&m, t).is_err())
@@ -3593,20 +3608,20 @@ mod tests {
     #[test]
     fn stored_text_formulas_load_up_to_the_stored_bound() {
         let m = fixture();
-        // A 45-term sum worked before the limits; as stored text it loads.
+        // A 45-term sum (refused by 0.11, which allowed 40) and 0.10's
+        // nesting (100) load as stored text, and are fine as new ones too.
         let sum = vec!["Price"; 45].join(" + ");
-        assert!(parse_expr(&m, &sum).unwrap_err().is_limit());
         let f = parse_stored_expr(&m, &sum).unwrap();
         assert_eq!(f.expr.depth_and_nodes().0, 45);
+        assert_eq!(parse_expr(&m, &sum).unwrap(), f);
         let def = format!("Q = {sum}");
-        assert!(parse_definition(&m, &def).is_err());
+        assert!(parse_definition(&m, &def).is_ok());
         assert!(matches!(
             parse_stored_definition(&m, &def),
             Ok(Definition::Formula(_))
         ));
-        // 0.10's recursion limit (100), not the new one (64).
-        let nested = format!("{}Price{}", "ABS(".repeat(70), ")".repeat(70));
-        assert!(parse_expr(&m, &nested).is_err());
+        let nested = format!("{}Price{}", "ABS(".repeat(100), ")".repeat(100));
+        assert!(parse_expr(&m, &nested).is_ok());
         assert!(parse_stored_expr(&m, &nested).is_ok());
         // Past the stored bound, it is refused too, naming that bound.
         let over = vec!["Price"; MAX_STORED_FORMULA_DEPTH + 1].join(" + ");
@@ -3620,35 +3635,40 @@ mod tests {
             )
         );
         // A stored named LAMBDA too.
-        let body = format!("{}x{}", "ABS(".repeat(45), ")".repeat(45));
-        let text = format!("F = LAMBDA(x, {body})");
-        assert!(parse_definition(&m, &text).is_err());
+        let at = |n: usize| {
+            let body = format!("{}x{}", "ABS(".repeat(n), ")".repeat(n));
+            format!("F = LAMBDA(x, {body})")
+        };
+        let n = MAX_STORED_FORMULA_DEPTH - 1;
         assert!(matches!(
-            parse_stored_definition(&m, &text),
+            parse_stored_definition(&m, &at(n)),
             Ok(Definition::Lambda(_))
         ));
+        assert!(parse_stored_definition(&m, &at(n + 1))
+            .unwrap_err()
+            .is_limit());
     }
 
     #[test]
     fn a_new_formula_is_limited_after_named_lambdas_expand() {
         let mut m = fixture();
-        let body = format!("{}x{}", "ABS(".repeat(29), ")".repeat(29));
+        let body = format!("{}x{}", "ABS(".repeat(129), ")".repeat(129));
         let Ok(Definition::Lambda(l)) = parse_definition(&m, &format!("F = LAMBDA(x, {body})"))
         else {
             panic!()
         };
         m.lambdas.insert(1, l.lambda);
-        // F(Price) expands to 30 levels; F(F(Price)) to 59.
+        // F(Price) expands to 130 levels; F(F(Price)) to 259.
         assert!(parse_expr(&m, "F(Price)").is_ok());
         let e = parse_expr(&m, "F(F(Price))").unwrap_err();
         assert_eq!(
             e.message,
-            "formula nests too deeply (59 levels; the limit is 40)"
+            "formula nests too deeply (259 levels; the limit is 256)"
         );
         assert_eq!(e.position, Some(0));
         // A stored one, expanded when compiled, is held to the stored bound.
         assert!(parse_stored_expr(&m, "F(F(Price))").is_ok());
-        let deep = format!("{}Price{}", "F(".repeat(9), ")".repeat(9));
+        let deep = format!("{}Price{}", "F(".repeat(3), ")".repeat(3));
         let e = m
             .expand_lambdas(&parse_stored_expr(&m, &deep).unwrap().expr)
             .unwrap_err();

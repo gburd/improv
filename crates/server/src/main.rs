@@ -1897,6 +1897,48 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 
+    /// C3b: the deepest allowed formula, as JSON bodies (past serde_json's
+    /// 128 levels), parses and describes; one level more is refused. On
+    /// worker threads of 2 MiB, tokio's default.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn formulas_at_the_depth_limit_go_through_the_json_bodies() {
+        let (app, _p) = seeded_app();
+        let limit = improv_core_model::MAX_FORMULA_DEPTH;
+        let parse = |n: usize| {
+            let text = vec!["price"; n].join(" plus ");
+            post_json("/nl/parse", json!({ "text": text }).to_string())
+        };
+        let resp = app.clone().oneshot(parse(limit + 1)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            String::from_utf8_lossy(&to_bytes(resp.into_body(), usize::MAX).await.unwrap())
+                .contains("(257 levels; the limit is 256)")
+        );
+        let resp = app.clone().oneshot(parse(limit)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let formula = String::from_utf8(bytes.to_vec()).unwrap();
+        let describe = |f: &str| post_json("/nl/describe", format!("{{\"formula\":{f}}}"));
+        let resp = app.clone().oneshot(describe(&formula)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let text = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&text).into_owned();
+        assert_eq!(text.matches(" plus ").count(), limit - 1, "{text:.80}");
+        // Nested calls: 3 JSON levels each, 770 in all.
+        let abs = |n: usize| {
+            let mut e = r#"{"Ref":[100,{"by":[],"over":[],"except":[]}]}"#.to_string();
+            for _ in 1..n {
+                e = format!(r#"{{"Call":[10,[{e}]]}}"#);
+            }
+            format!(r#"{{"expr":{e}}}"#)
+        };
+        let resp = app.clone().oneshot(describe(&abs(limit))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        // Past the JSON bound: refused before it is parsed.
+        let resp = app.oneshot(describe(&abs(400))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
     #[tokio::test]
     async fn nl_describe_round_trips() {
         let (app, _p) = seeded_app();

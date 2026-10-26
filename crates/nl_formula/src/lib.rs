@@ -116,8 +116,9 @@ pub enum NlError {
 /// Bound on parser recursion (paren nesting) plus binary-operator nodes, so
 /// both the parser and anything that later walks the AST recursively
 /// (describe, serialize, drop) stay far from the stack limit on hostile input.
-/// Matches `improv_core_model`'s formula-parser limit.
-pub const MAX_PARSE_DEPTH: usize = 200;
+/// Above `improv_core_model::MAX_FORMULA_DEPTH` (256), which then refuses a
+/// tree too deep, so redundant parentheses still parse.
+pub const MAX_PARSE_DEPTH: usize = improv_core_model::MAX_FORMULA_DEPTH + 64;
 
 // ---------------------------------------------------------------------------
 // Tokenizer
@@ -759,11 +760,11 @@ mod tests {
         assert_eq!(err, NlError::UnknownCategory("region".into()));
     }
 
-    /// Run `f` on a thread with the default 2 MiB stack (what tokio workers
-    /// get), so an unbounded recursion would abort the test process.
+    /// Run `f` on a 1 MiB thread (a Windows main thread; tokio workers get
+    /// 2 MiB), so an unbounded recursion would abort the test process.
     fn on_small_stack<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
         std::thread::Builder::new()
-            .stack_size(2 * 1024 * 1024)
+            .stack_size(1 << 20)
             .spawn(f)
             .unwrap()
             .join()
@@ -795,12 +796,24 @@ mod tests {
 
     #[test]
     fn moderate_nesting_still_parses() {
-        let m = fixture();
-        let ctx = NlContext::new(&m);
-        let text = format!("{}price{}", "(".repeat(150), ")".repeat(150));
-        assert_eq!(parse_nl_formula(&ctx, &text).unwrap().expr, refr(PRICE));
-        let chain = vec!["price"; improv_core_model::MAX_FORMULA_DEPTH].join(" plus ");
-        assert!(parse_nl_formula(&ctx, &chain).is_ok());
+        let (text, chain, f) = on_small_stack(|| {
+            let m = fixture();
+            let ctx = NlContext::new(&m);
+            let n = MAX_PARSE_DEPTH - 1;
+            let text = format!("{}price{}", "(".repeat(n), ")".repeat(n));
+            let text = parse_nl_formula(&ctx, &text).map(|f| f.expr);
+            let chain = vec!["price"; improv_core_model::MAX_FORMULA_DEPTH].join(" plus ");
+            let f = parse_nl_formula(&ctx, &chain).unwrap();
+            // The deepest allowed formula describes back to itself.
+            let back = parse_nl_formula(&ctx, &describe_formula(&ctx, &f)).unwrap();
+            (text, back == f, f)
+        });
+        assert_eq!(text, Ok(refr(PRICE)));
+        assert!(chain);
+        assert_eq!(
+            f.expr.depth_and_nodes().0,
+            improv_core_model::MAX_FORMULA_DEPTH
+        );
     }
 
     #[test]

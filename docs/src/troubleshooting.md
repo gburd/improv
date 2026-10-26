@@ -42,8 +42,8 @@ The grammar itself is in [The Formula Language](./formulas.md).
 | `<NAME> does not aggregate OVER a category`, `<NAME> cannot take a window` | `OVER` given to a function that is not a reduction, or a window to one that cannot take one. | |
 | `expected FIRST, LAST or THIS in a window`, `expected '..' in a window: OVER T[FIRST..THIS]` | A malformed running window. | `OVER Time[FIRST..THIS]`. |
 | `FIXPOINT needs LAMBDA(r, body)`, `LAMBDA needs at least one parameter`, `<NAME> needs LAMBDA(row, body)` | A higher-order function without its LAMBDA. | |
-| `expression nested too deeply` | More than the parser's nesting limit (64 nested parentheses, calls or unary operators). | Split it into intermediate measures, or `LET`. |
-| `formula nests too deeply (N levels; the limit is 40)` | The formula's tree is deeper than 40 levels: a chain of more than 40 `+` terms, say, or deep nesting. See [Limits](./formulas.md#limits). | Split it into intermediate measures, or use `SUM(...)` instead of a long `+` chain. |
+| `expression nested too deeply` | More than the parser's nesting limit (320 nested parentheses, calls or unary operators). | Split it into intermediate measures, or `LET`. |
+| `formula nests too deeply (N levels; the limit is 256)` | The formula's tree is deeper than 256 levels: a chain of more than 256 `+` terms, say, or deep nesting. See [Limits](./formulas.md#limits). | Split it into intermediate measures, or use `SUM(...)` instead of a long `+` chain. |
 | `formula is too large (more than 100000 terms once LET and LAMBDA are expanded)` | `LET` and `LAMBDA` copy a value at each use, so bindings that each use the previous one twice double the formula. | Make the repeated part its own measure. |
 | `empty formula`, `empty expression` | Nothing to parse. | |
 

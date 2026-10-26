@@ -68,31 +68,33 @@ pub enum Expr {
 /// How deep a formula's expression tree may nest, a leaf counting as one
 /// level (`Price + Price` is 2). Every way a formula enters checks it: the
 /// parser (after `LET` and `LAMBDA` expansion), named-LAMBDA expansion, and
-/// the CNL parser. Two things bound it (measured 2026-10-24, rustc 1.98):
+/// the CNL parser. (0.11 allowed 40: serde_json's 128-level limit.) What a
+/// formula 256 deep costs, per level (measured 2026-10-25, rustc 1.98,
+/// debug / release build):
 ///
-/// * **JSON.** Stores keep a formula as serde_json, which refuses input
-///   nested 128 arrays and objects deep. A call level costs 3 of them
-///   (`{"Call":[id,[…]]}`), an operator level 2, and a leaf at most 4 (a
-///   measure reference, `{"Ref":[id,{"by":[]…}]}`), so a tree d deep is at
-///   most 3d + 1 levels. A stored formula adds 1 (`{"expr":…}`) and a model
-///   written whole (`improv export`) 5: 3d + 6 ≤ 127 holds to d = 40. Nested
-///   `ABS` reads back at 40 and fails at 42 (128 levels); a `+` chain fails
-///   at 62.
-/// * **Stack.** The engine walks the tree recursively. In a debug build on a
-///   2 MiB thread, every shape (`+`, `*`, `-`, `ABS`, `IF`, `SWITCH`)
-///   evaluates at depth 54 and overflows at 56: 14 levels of margin.
-pub const MAX_FORMULA_DEPTH: usize = 40;
+/// * **JSON.** A call level is 3 JSON levels, an operator 2, a leaf at most
+///   4, so a model written whole holds a formula d deep in 3d + 6 levels:
+///   774 at 256. [`crate::json`] reads to [`crate::json::MAX_DEPTH`] (784),
+///   on a stack that grows (2.4–3.7 / 0.5–0.8 KB a level).
+/// * **Callers' threads.** Parsing nested calls (24.5 / 5.7 KB a level; an
+///   operator chain is a loop), typing and compiling (`derived_shape`,
+///   `Engine::new`: 13–18 / 2.3–3.3 KB), named-LAMBDA expansion and the
+///   scalar evaluator run on the caller's thread, as small as 1 MiB (a
+///   Windows main thread). Each grows its stack as needed
+///   ([`crate::grow_stack`]).
+/// * **Engine threads.** Building the dataflow takes 40 / 3.3 KB a level,
+///   10 MiB at 256 in a debug build, on `ENGINE_STACK` (16 MiB).
+pub const MAX_FORMULA_DEPTH: usize = 256;
 
-/// How deep a formula that a store kept as **text** may nest when it is
-/// loaded (Postgres `improv.measure`, `LANGUAGE improv` bodies): text has no
-/// JSON limit, so a formula saved before [`MAX_FORMULA_DEPTH`] existed, up to
-/// this deep, keeps working. Named-LAMBDA expansion is held to it too. It is a
-/// bound for **release** builds: on the engine's 2 MiB worker thread a
-/// release build evaluates `+`, `*` and `-` chains to 800 levels and `ABS`,
-/// `IF` and `SWITCH` nesting to 600 (each fails 50 later), more than twice
-/// this. A debug build's worker overflows at 56, so debug tests stay under
-/// that.
-pub const MAX_STORED_FORMULA_DEPTH: usize = 256;
+/// How deep a formula that a store kept may nest when it is loaded (Postgres
+/// `improv.measure` text, `LANGUAGE improv` bodies, JSON in any store), and
+/// how deep a named-LAMBDA expansion may get. Since 0.12 it equals
+/// [`MAX_FORMULA_DEPTH`]; it stays a constant of its own because the two
+/// mean different things: a new formula past the limit is refused where it
+/// is written, while a stored one past the load bound, saved before 0.11
+/// had any limit, does not stop its model opening (it loads as `#REF!`, or
+/// names the measure to drop or redefine).
+pub const MAX_STORED_FORMULA_DEPTH: usize = MAX_FORMULA_DEPTH;
 
 /// How many nodes a formula's tree may have once `LET`, `LAMBDA` and named
 /// LAMBDAs are expanded: each copies its value at every use, so a chain of

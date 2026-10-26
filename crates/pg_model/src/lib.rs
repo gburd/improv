@@ -1418,19 +1418,30 @@ mod tests {
             });
             cat
         };
-        // 45 terms: past the new limit (40), within the load bound (256).
-        let m = build_model(&with(45)).unwrap();
-        let MeasureKind::Derived(f) = &m.measures[&MeasureId(3)].kind else {
-            panic!()
-        };
-        assert_eq!(f.expr.depth_and_nodes().0, 45);
-        let e = define(&build_model(&catalog()).unwrap(), "Q = Price + Price", 3);
+        // 45 terms: past 0.11's limit (40); 256: the load bound.
+        for n in [45, improv_core_model::MAX_STORED_FORMULA_DEPTH] {
+            let m = build_model(&with(n)).unwrap();
+            let MeasureKind::Derived(f) = &m.measures[&MeasureId(3)].kind else {
+                panic!()
+            };
+            assert_eq!(f.expr.depth_and_nodes().0, n);
+        }
+        let chain = |n: usize| format!("Q = {}", vec!["Price"; n].join(" + "));
+        let e = define(
+            &build_model(&catalog()).unwrap(),
+            &chain(improv_core_model::MAX_FORMULA_DEPTH),
+            3,
+        );
         assert!(e.is_ok());
-        let long = format!("Q = {}", vec!["Price"; 45].join(" + "));
-        let e = define(&build_model(&catalog()).unwrap(), &long, 3).unwrap_err();
+        let e = define(
+            &build_model(&catalog()).unwrap(),
+            &chain(improv_core_model::MAX_FORMULA_DEPTH + 1),
+            3,
+        )
+        .unwrap_err();
         assert!(
             e.to_string()
-                .contains("formula nests too deeply (41 levels; the limit is 40)"),
+                .contains("formula nests too deeply (257 levels; the limit is 256)"),
             "{e}"
         );
         // Past the load bound: the error names the measure and the fix …
