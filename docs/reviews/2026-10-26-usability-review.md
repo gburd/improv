@@ -289,7 +289,15 @@ derived cell shows `299.666666666667`, and the Format menu is grayed
 out (gui-14). A budget wants two decimals or none. **Fix:** a
 per-measure decimal places setting, stored with the measure and used by
 the GUI, TUI and `eval`. **Files:** `crates/core_model/src/lib.rs`,
-`crates/gui/src/menu.rs`, `crates/tui/src/ui.rs`.
+`crates/gui/src/menu.rs`, `crates/tui/src/ui.rs`. *Open: it needs a
+model change first. `Measure` and `View` have no format field, and
+`View` has none that could carry one, so neither a stored per-measure
+format nor a per-view one is possible in the GUI alone. The smallest
+step is `#[serde(default)] format: Option<NumberFormat { decimals: u8,
+grouping: bool }>` on `View` and `MatrixPlacement`: both stores keep a
+view as JSON (`:view/json`, `improv.view.layout`), so no schema change.
+A per-measure format, as asked, also needs a `:measure/format`
+attribute and a Postgres column.*
 
 **[fixed: `feat(gui): Help > Keys... and Help > User Guide (H1-23)`] H1-23 GUI: Help has only Functions….** *Help and documentation.* Help
 has no way to the guide, the tutorial or the keyboard list. **Fix:**
