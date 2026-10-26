@@ -1299,12 +1299,22 @@ impl App {
         });
     }
 
+    /// True if a measure or a named LAMBDA is called `name`: formulas
+    /// name categories and measures alike, so neither may take the other's
+    /// name (H1-19, the GUI's rule).
+    fn formula_name_taken(&self, name: &str) -> bool {
+        self.model.measure_by_name(name).is_some() || self.model.lambda_by_name(name).is_some()
+    }
+
     /// `c`: add category `Name` if it is new, and the listed items it does
     /// not have yet, each with the next free id.
     fn run_add_category(&mut self, line: &str) -> String {
         let (name, items) = name_and_list(line);
         if name.is_empty() {
             return "category: type Name, or Name: item, item, …".into();
+        }
+        if self.formula_name_taken(name) {
+            return format!("category: '{name}' is already a measure or LAMBDA");
         }
         let mut model = self.model.clone();
         let cat = match model.category_by_name(name) {
@@ -1335,8 +1345,8 @@ impl App {
         if name.is_empty() {
             return "input: type Name, or Name: Category, Category, …".into();
         }
-        if self.model.measure_by_name(name).is_some() || self.model.lambda_by_name(name).is_some() {
-            return format!("input: '{name}' is taken");
+        if self.formula_name_taken(name) || self.model.category_by_name(name).is_some() {
+            return format!("input: '{name}' is already a category, measure or LAMBDA");
         }
         let categories: Result<Vec<CategoryId>, String> = cats
             .iter()
@@ -2956,8 +2966,19 @@ pub(crate) mod tests {
         );
         assert_eq!(
             run(&mut app, CommandKind::Input, "Units"),
-            "input: 'Units' is taken"
+            "input: 'Units' is already a category, measure or LAMBDA"
         );
+        // H1-19: a category and a measure may not share a name.
+        let before = app.model.clone();
+        assert_eq!(
+            run(&mut app, CommandKind::Category, "Units: a"),
+            "category: 'Units' is already a measure or LAMBDA"
+        );
+        assert_eq!(
+            run(&mut app, CommandKind::Input, "Time"),
+            "input: 'Time' is already a category, measure or LAMBDA"
+        );
+        assert_eq!(app.model, before);
         let time = app.model.category_by_name("Time").unwrap();
         assert_eq!(time.id, CategoryId(1));
         let names: Vec<&str> = time
@@ -3056,7 +3077,10 @@ pub(crate) mod tests {
         // Refusals keep the line open and change nothing.
         for (line, want) in [
             ("Hours: Time", "added input measure Hours"),
-            ("Margin", "input: 'Margin' is taken"),
+            (
+                "Margin",
+                "input: 'Margin' is already a category, measure or LAMBDA",
+            ),
         ] {
             app.begin_command(CommandKind::Input);
             app.command.as_mut().unwrap().1 = line.into();

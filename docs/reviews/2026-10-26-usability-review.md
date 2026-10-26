@@ -266,7 +266,7 @@ gives `not a number: ''`. The GUI clears the cell. **Fix:** an empty
 commit clears it, as the GUI's `commit_cell_text` does. **Files:**
 `crates/tui/src/app.rs` (`commit_edit`).
 
-**H1-19 TUI: a category may take a measure's name.** *Error prevention.*
+**[fixed: `fix(tui): a category and a measure may not share a name (H1-19)`] H1-19 TUI: a category may take a measure's name.** *Error prevention.*
 `c Spent: a` created a category `Spent` next to the measure. The GUI
 refuses the same ("already a category, measure or LAMBDA"). **Fix:** the
 GUI's check, in `run_add_category` and `run_add_input`. **Files:**

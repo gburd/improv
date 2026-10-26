@@ -67,6 +67,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   key reloaded the saved model and left "nothing to undo". With unsaved
   edits or undo history it now says what would go, and a second `R`
   reverts (H1-20).
+- **A TUI category may not take a measure's name**, nor an input measure
+  a category's: `c Spent: a` made a category `Spent` beside the measure.
+  Both prompts now refuse a name a category, measure or LAMBDA has, as the
+  GUI does (H1-19).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input
