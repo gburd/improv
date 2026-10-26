@@ -1,0 +1,27 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-FORMAT 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-format \- Set how a measure\*(Aqs numbers are shown
+.SH SYNOPSIS
+\fBimprov format\fR <db> <measure> <format>...
+.SH DESCRIPTION
+Set how a measure\*(Aqs numbers are shown.
+.PP
+The format is general (as many digits as the value needs) or a count of decimals, 0 to 15, then grouped for thousands separators: format m.db Revenue 2 grouped. Decimals round half away from zero; the separators follow IMPROV_LOCALE. show, eval and stream print the measure\*(Aqs cells in it, and the GUI and TUI show it; the values, list and the exports are untouched.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIdb\fR>
+The model store: a file, or postgres://USER@HOST/DB?model=NAME
+.TP
+<\fImeasure\fR>
+A measure: its numeric id, or its name (all digits is an id)
+.TP
+<\fIformat\fR>
+general, or 0 to 15 decimals, then grouped
+.SH SEE ALSO
+.BR improv (1).

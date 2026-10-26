@@ -197,6 +197,11 @@ fn run(cli: Cli) -> Result<(), String> {
             rows,
             cols,
         } => cmd_save_view(&db, id, &name, &measure, rows.as_deref(), cols.as_deref()),
+        Cmd::Format {
+            db,
+            measure,
+            format,
+        } => cmd_format(&db, &measure, &format.join(" ")),
         Cmd::Show { db, measure } => cmd_show(&db, &measure),
         Cmd::Eval {
             db,
@@ -982,6 +987,40 @@ fn cmd_save_view(
     Ok(())
 }
 
+/// `format <db> <measure> <format>` (H1-22): set how a measure's numbers
+/// are shown; `general` clears it.
+fn cmd_format(db: &str, measure: &str, text: &str) -> Result<(), String> {
+    let mut store = open(db)?;
+    let mut model = store.load_model().map_err(|e| e.to_string())?;
+    let mid = resolve_measure(&model, measure)?;
+    let format = improv_core_model::NumberFormat::parse(text)?;
+    let m = model.measures.get_mut(&mid).expect("resolved");
+    if m.value_type != ValueType::Number {
+        return Err(format!(
+            "measure {} {} holds {:?} values, not numbers: it has no number format",
+            mid.0, m.name.0, m.value_type
+        ));
+    }
+    m.format = format;
+    let name = m.name.0.clone();
+    save_structure(&mut store, &model)?;
+    println!(
+        "measure {} '{name}' shows as {}",
+        mid.0,
+        format.unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// A cell of `mid` as `show`, `eval` and `stream` print it: in the measure's
+/// number format when it has one (H1-22), else `Display`'s General form.
+fn shown(model: &Model, mid: MeasureId, v: &improv_engine::CellValue) -> String {
+    match model.measures.get(&mid).and_then(|m| m.format) {
+        Some(f) => v.formatted(Some(&f), &improv_core_model::Locale::from_env()),
+        None => v.to_string(),
+    }
+}
+
 fn cmd_show(db: &str, measure: &str) -> Result<(), String> {
     let mut store = open(db)?;
     let mid = measure_of(&mut store, measure)?;
@@ -999,7 +1038,27 @@ fn cmd_show(db: &str, measure: &str) -> Result<(), String> {
     if let Some(d) = &m.description {
         println!("  description: {d}");
     }
+    if let Some(f) = &m.format {
+        println!("  format: {f}");
+    }
     println!("  cells:");
+    if m.format.is_some() {
+        let mut lines: Vec<String> = (model.inputs.iter())
+            .filter(|((m, _), _)| *m == mid)
+            .map(|((_, coord), v)| {
+                let text = match improv_engine::CellValue::from_model_value(v) {
+                    Some(c @ improv_engine::CellValue::Num(_)) => shown(&model, mid, &c),
+                    _ => fmt_value(v),
+                };
+                format!("{}::{{{}}} = {text}", mid.0, fmt_coord(&model, coord))
+            })
+            .collect();
+        lines.sort();
+        for line in lines {
+            println!("    {line}");
+        }
+        return Ok(());
+    }
     for line in input_lines(&model) {
         if line.starts_with(&format!("{}::", mid.0)) {
             println!("    {line}");
@@ -1216,6 +1275,7 @@ fn print_stream_diff(
             .map(|m| m.name.0.clone())
             .unwrap_or_else(|| mid.0.to_string());
         for (key, val) in rows {
+            let val = shown(model, *mid, val);
             println!("{name} {} = {val}", render_coord_key(model, key));
         }
     }
@@ -1262,7 +1322,7 @@ fn cmd_eval(db: &str, measure: &str, scenario: Option<&str>) -> Result<(), Strin
     // and each value via CellValue's Display (number / bool / text / #ERR).
     let mut rows: Vec<(String, String)> = cells
         .iter()
-        .map(|(k, v)| (render_coord_key(&model, k), v.to_string()))
+        .map(|(k, v)| (render_coord_key(&model, k), shown(&model, mid, v)))
         .collect();
     rows.sort_by(|a, b| a.0.cmp(&b.0));
 

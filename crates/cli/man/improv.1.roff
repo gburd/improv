@@ -44,6 +44,7 @@ is not a pair after
 .PP
 A command that takes a measure
 .RB ( set ,
+.BR format ,
 .BR show ,
 .BR eval ,
 .BR scenario ,
@@ -101,6 +102,7 @@ improv add-measure   model.db 101 Quantity number input
 improv set           model.db 100 10 --at Product=WidgetA
 improv set           model.db 101 100 --at Time=2025,Product=WidgetA
 improv save-view     model.db 1 Prices 100 --rows Product --cols Time
+improv format        model.db Price 2 grouped
 improv list          model.db
 improv show          model.db Price
 improv export        model.db

@@ -24,7 +24,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   thousands separators, with a check on the format in effect; cells, the
   Sum and the Info panel show it, and each change is one undo step.
   In the TUI, `#` sets the shown measure's format (`2`, `0 grouped`,
-  `general`); the grid, its column widths and the Sum use it.
+  `general`); the grid, its column widths and the Sum use it. The new
+  `improv format <db> <measure> <format>` sets it from the shell (`2
+  grouped`, `general`), and `show`, `eval` and `stream` print that
+  measure's cells in it; a measure without a format prints as before, and
+  `list` and the exports keep the values. `improv export` gains the
+  measure's `format` field.
   Older releases open a file or database with formats: 0.11 shows those
   measures in the General form and keeps their formats when it saves.
 - **The GUI's Help menu has Keys… and User Guide**, beside Functions…

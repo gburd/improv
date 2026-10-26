@@ -313,6 +313,73 @@ fn set_parses_by_declared_type_and_validates_the_coordinate() {
     fails_with(&["set", &db, "100"], "missing argument <value>");
 }
 
+/// H1-22: `format` sets how a measure's numbers print in show, eval and
+/// stream; `general` clears it; list and export-csv keep the values;
+/// export gains the field; a text measure and a bad format are refused.
+#[test]
+fn format_sets_how_show_eval_and_stream_print_a_measure() {
+    let (dir, db) = model("format");
+    let d = db.as_str();
+    ok(&["set", d, "100", "1234.5", "--at", "Product=WidgetA"]);
+    assert_eq!(
+        ok(&["format", d, "Price", "2", "grouped"]),
+        "measure 100 'Price' shows as 2 decimals grouped\n"
+    );
+    let show = ok(&["show", d, "Price"]);
+    stdout_has(&show, "  format: 2 decimals grouped\n  cells:\n");
+    stdout_has(&show, "    100::{Product=WidgetA} = 1,234.50\n");
+    // list prints the values as stored, for scripts.
+    stdout_has(&ok(&["list", d]), "100::{Product=WidgetA} = 1234.5\n");
+    ok(&["format", d, "Revenue", "0 grouped"]);
+    stdout_has(
+        &ok(&["eval", d, "Revenue"]),
+        "  Revenue[Time=Q1, Product=WidgetA] = 8,642\n",
+    );
+    let out = improv_stdin(&["stream", d, "Revenue"], b"Price 1500 Product=WidgetA\n");
+    let text = String::from_utf8_lossy(&out.stdout);
+    stdout_has(&text, "Revenue Time=Q1, Product=WidgetA = 10,500\n");
+    // German separators.
+    let de = Command::new(env!("CARGO_BIN_EXE_improv"))
+        .env("IMPROV_LOCALE", "de")
+        .args(["show", d, "Price"])
+        .output()
+        .unwrap();
+    stdout_has(&String::from_utf8_lossy(&de.stdout), "= 1.500,00\n");
+    // export gains the field; export-csv keeps every digit.
+    stdout_has(
+        &ok(&["export", d]),
+        "\"format\": {\n        \"decimals\": 0,\n        \"grouping\": true\n      }",
+    );
+    let csv = file(&dir, "r.csv");
+    ok(&["export-csv", d, &csv, "Revenue"]);
+    let csv = std::fs::read_to_string(&csv).unwrap();
+    assert!(csv.contains(",10500\n") && !csv.contains("10,500"), "{csv}");
+    // general clears it: show prints as before.
+    assert_eq!(
+        ok(&["format", d, "100", "general"]),
+        "measure 100 'Price' shows as general\n"
+    );
+    let show = ok(&["show", d, "Price"]);
+    assert!(!show.contains("format:"), "{show}");
+    stdout_has(&show, "    100::{Product=WidgetA} = 1500\n");
+    assert_eq!(
+        load(d).measures[&improv_core_model::MeasureId(100)].format,
+        None
+    );
+    // Refusals.
+    ok(&["add-measure", d, "103", "Note", "text", "input"]);
+    fails_with(
+        &["format", d, "Note", "2"],
+        "holds Text values, not numbers",
+    );
+    fails_with(
+        &["format", d, "Price", "16"],
+        "expected general or 0 to 15 decimals",
+    );
+    fails_with(&["format", d, "Price"], "missing argument <format>");
+    fails_with(&["format", d, "Nope", "2"], "no measure named 'Nope'");
+}
+
 #[test]
 fn show_prints_one_measure_and_only_its_cells() {
     let (_dir, db) = model("show");

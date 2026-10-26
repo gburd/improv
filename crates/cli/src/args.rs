@@ -210,6 +210,23 @@ pub enum Cmd {
         #[arg(long, value_name = "Cat,...", allow_hyphen_values = true)]
         cols: Option<String>,
     },
+    /// Set how a measure's numbers are shown.
+    ///
+    /// The format is general (as many digits as the value needs) or a count
+    /// of decimals, 0 to 15, then grouped for thousands separators: format
+    /// m.db Revenue 2 grouped. Decimals round half away from zero; the
+    /// separators follow IMPROV_LOCALE. show, eval and stream print the
+    /// measure's cells in it, and the GUI and TUI show it; the values, list
+    /// and the exports are untouched.
+    Format {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        #[arg(value_name = "measure", help = MEASURE)]
+        measure: String,
+        /// general, or 0 to 15 decimals, then grouped
+        #[arg(value_name = "format", required = true, num_args = 1..)]
+        format: Vec<String>,
+    },
     /// Print one measure and its input cells.
     Show {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]

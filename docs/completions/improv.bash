@@ -43,6 +43,9 @@ _improv() {
             improv,export-sql)
                 cmd="improv__subcmd__export__subcmd__sql"
                 ;;
+            improv,format)
+                cmd="improv__subcmd__format"
+                ;;
             improv,help)
                 cmd="improv__subcmd__help"
                 ;;
@@ -115,6 +118,9 @@ _improv() {
             improv__subcmd__help,export-sql)
                 cmd="improv__subcmd__help__subcmd__export__subcmd__sql"
                 ;;
+            improv__subcmd__help,format)
+                cmd="improv__subcmd__help__subcmd__format"
+                ;;
             improv__subcmd__help,help)
                 cmd="improv__subcmd__help__subcmd__help"
                 ;;
@@ -167,7 +173,7 @@ _improv() {
 
     case "${cmd}" in
         improv)
-            opts="-h -V --help --version init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream help"
+            opts="-h -V --help --version init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view format show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -314,8 +320,22 @@ _improv() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        improv__subcmd__format)
+            opts="-h --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         improv__subcmd__help)
-            opts="init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream help"
+            opts="init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view format show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -441,6 +461,20 @@ _improv() {
             return 0
             ;;
         improv__subcmd__help__subcmd__export__subcmd__sql)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__format)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )

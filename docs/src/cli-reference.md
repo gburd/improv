@@ -195,6 +195,22 @@ Usage: improv save-view [OPTIONS] <db> <view-id> <name> <measure>
 | `--rows` `<Cat,...>` | The row categories, comma-separated, outer first |
 | `--cols` `<Cat,...>` | The column categories, comma-separated, outer first |
 
+### `improv format`
+
+Set how a measure's numbers are shown.
+
+The format is general (as many digits as the value needs) or a count of decimals, 0 to 15, then grouped for thousands separators: format m.db Revenue 2 grouped. Decimals round half away from zero; the separators follow IMPROV_LOCALE. show, eval and stream print the measure's cells in it, and the GUI and TUI show it; the values, list and the exports are untouched.
+
+```text
+Usage: improv format <db> <measure> <format>...
+```
+
+| Argument | Description |
+| --- | --- |
+| `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
+| `<measure>` | A measure: its numeric id, or its name (all digits is an id) |
+| `<format>` | general, or 0 to 15 decimals, then grouped |
+
 ### `improv show`
 
 Print one measure and its input cells

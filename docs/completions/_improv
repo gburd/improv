@@ -134,6 +134,15 @@ _arguments "${_arguments_options[@]}" : \
 ':measure -- The measure, by id or name:_default' \
 && ret=0
 ;;
+(format)
+_arguments "${_arguments_options[@]}" : \
+'-h[Print help (see more with '\''--help'\'')]' \
+'--help[Print help (see more with '\''--help'\'')]' \
+':db -- The model store\: a file, or postgres\://USER@HOST/DB?model=NAME:_default' \
+':measure -- A measure\: its numeric id, or its name (all digits is an id):_default' \
+'*::format -- general, or 0 to 15 decimals, then grouped:_default' \
+&& ret=0
+;;
 (show)
 _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
@@ -309,6 +318,10 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 && ret=0
 ;;
+(format)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
 (show)
 _arguments "${_arguments_options[@]}" : \
 && ret=0
@@ -384,6 +397,7 @@ _improv_commands() {
 'set:Set an input cell' \
 'list:Print the categories, items, measures, views and input cells' \
 'save-view:Save a named view of a measure, as the GUI does' \
+'format:Set how a measure'\''s numbers are shown' \
 'show:Print one measure and its input cells' \
 'eval:Compute a derived measure and print its cells' \
 'scenario:Add an input-cell override to a what-if scenario' \
@@ -445,6 +459,11 @@ _improv__subcmd__export-sql_commands() {
     local commands; commands=()
     _describe -t commands 'improv export-sql commands' commands "$@"
 }
+(( $+functions[_improv__subcmd__format_commands] )) ||
+_improv__subcmd__format_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv format commands' commands "$@"
+}
 (( $+functions[_improv__subcmd__help_commands] )) ||
 _improv__subcmd__help_commands() {
     local commands; commands=(
@@ -459,6 +478,7 @@ _improv__subcmd__help_commands() {
 'set:Set an input cell' \
 'list:Print the categories, items, measures, views and input cells' \
 'save-view:Save a named view of a measure, as the GUI does' \
+'format:Set how a measure'\''s numbers are shown' \
 'show:Print one measure and its input cells' \
 'eval:Compute a derived measure and print its cells' \
 'scenario:Add an input-cell override to a what-if scenario' \
@@ -519,6 +539,11 @@ _improv__subcmd__help__subcmd__export-csv_commands() {
 _improv__subcmd__help__subcmd__export-sql_commands() {
     local commands; commands=()
     _describe -t commands 'improv help export-sql commands' commands "$@"
+}
+(( $+functions[_improv__subcmd__help__subcmd__format_commands] )) ||
+_improv__subcmd__help__subcmd__format_commands() {
+    local commands; commands=()
+    _describe -t commands 'improv help format commands' commands "$@"
 }
 (( $+functions[_improv__subcmd__help__subcmd__help_commands] )) ||
 _improv__subcmd__help__subcmd__help_commands() {

@@ -262,6 +262,7 @@ bold gaps are tracked as tasks for 1.0.
 | Rename, delete | — | `r`, `D` | Worksheet ▸ Rename, Delete… | — | `drop_measure` | — |
 | **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle, `V` rename or delete | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
 | **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
+| Number formats (decimals, thousands separators) | `format`; `show`, `eval`, `stream` print in it | `#` | Format menu | — (values as numbers) | kept in `improv.measure.format`; results are numbers | — |
 | Edit an input cell | `set` | yes | yes | `POST /measures/:id/cells` | write your table | — |
 | **Formulas: edit** | `define`, `add-derived` | `e` edits the viewed one, `=` adds one | edit and add | — | `define` | `Name = formula` lines |
 | Autocomplete | shell completion of commands only | Tab | as you type | — | — | — |
