@@ -142,6 +142,10 @@ struct Shape {
     kids: Vec<Rc<Cells>>,
     /// The values its [`OWN`] sources read.
     own: Vec<CellValue>,
+    /// Per input, whether the rows keep its values between rounds (it
+    /// does not read r); the others change every round and are read from
+    /// their collection as the rows are filled.
+    keep: Vec<bool>,
     groups: Vec<Group>,
     /// One group's rows as the kernel takes them, refilled group by group
     /// (its row vectors kept, so a round allocates nothing).
@@ -152,7 +156,8 @@ struct Shape {
 /// vectors per row, 48 bytes of headers and two allocations per edge of a
 /// graph. Per row: its item positions (`dims` each), its item, its value
 /// sources (`width` each: the inputs', then the joined parameters') and its
-/// input values (`n_in` each, refilled from the collections that changed).
+/// kept inputs' values (one per input [`Shape::keep`] marks, refilled where
+/// their collection changed).
 struct Group {
     key: CoordKey,
     pos: Vec<u32>,
@@ -171,53 +176,89 @@ fn resize<T>(rows: &mut Vec<Vec<T>>, n: usize) {
     }
 }
 
+/// How a collection differs from the one a layout last read.
+enum Stale {
+    /// Not at all (the same cells).
+    No,
+    /// At these positions (a bit per cell): the same coordinates, in order.
+    At(Vec<u64>),
+    /// Anywhere.
+    All,
+}
+
+impl Stale {
+    /// Whether the value at position `i` may have changed.
+    fn at(&self, i: u32) -> bool {
+        match self {
+            Stale::No => false,
+            Stale::At(bits) => bits[i as usize / 64] >> (i % 64) & 1 == 1,
+            Stale::All => true,
+        }
+    }
+}
+
 impl Shape {
     /// Whether `kids` have the coordinates, in order, it was laid out on
-    /// (and the `WHERE` condition, at `pred`, its values too).
-    fn fits(&self, kids: &[Rc<Cells>], pred: Option<usize>) -> bool {
+    /// (and the `WHERE` condition, at `pred`, its values too), `stale`
+    /// saying how each differs from the one laid out on.
+    fn fits(&self, kids: &[Rc<Cells>], pred: Option<usize>, stale: &[Stale]) -> bool {
         let same_keys =
             |a: &Cells, b: &Cells| a.len() == b.len() && a.iter().zip(b).all(|(c, d)| c.0 == d.0);
         self.kids.len() == kids.len()
-            && self.kids.iter().zip(kids).enumerate().all(|(j, (a, b))| {
-                Rc::ptr_eq(a, b)
-                    || if pred == Some(j) {
-                        a == b
-                    } else {
-                        same_keys(a, b)
-                    }
-            })
+            && self
+                .kids
+                .iter()
+                .zip(kids)
+                .zip(stale)
+                .enumerate()
+                .all(|(j, ((a, b), st))| match st {
+                    Stale::No => true,
+                    _ if pred == Some(j) => a == b,
+                    Stale::At(_) => true,
+                    Stale::All => same_keys(a, b),
+                })
     }
 
-    /// Refill every group's rows from `kids` (only the values read from a
-    /// collection `stale` marks) and reduce it into `out`.
+    /// Refill every group's rows from `kids` (a kept value only where
+    /// `stale` says its collection changed) and reduce it into `out`.
     fn fill(
         &mut self,
         a: &AggSpec<'_>,
         consts: &[Option<CellValue>],
-        stale: &[bool],
+        stale: &[Stale],
         out: &mut Cells,
     ) {
         let (n_in, dims, cells) = (a.ins.len(), a.order.len(), into_cells(a));
-        let (kids, own, rs) = (&self.kids, &self.own, &mut self.scratch);
+        let (kids, own, keep, rs) = (&self.kids, &self.own, &self.keep, &mut self.scratch);
+        let refill = keep
+            .iter()
+            .zip(stale)
+            .any(|(k, s)| *k && !matches!(s, Stale::No));
         for g in &mut self.groups {
-            let srcs = g.srcs.chunks(g.width);
-            for (row, srcs) in g.vals.chunks_mut(n_in.max(1)).zip(srcs) {
-                for (v, s) in row.iter_mut().zip(srcs) {
-                    if s.0 != OWN && stale[s.0 as usize] {
-                        *v = value(kids, own, s);
+            if refill {
+                let mut at = g.vals.iter_mut();
+                for srcs in g.srcs.chunks(g.width) {
+                    let kept = srcs[..n_in].iter().zip(keep).filter(|(_, k)| **k);
+                    for ((s, _), v) in kept.zip(&mut at) {
+                        if s.0 != OWN && stale[s.0 as usize].at(s.1) {
+                            *v = value(kids, own, s);
+                        }
                     }
                 }
             }
             let n = g.items.len();
             resize(&mut rs.pos, n);
             resize(&mut rs.vals, n);
-            let pos = g.pos.chunks(dims.max(1));
-            let vals = g.vals.chunks(n_in.max(1));
-            for ((p, v), (gp, gv)) in rs.pos.iter_mut().zip(&mut rs.vals).zip(pos.zip(vals)) {
+            let mut at = g.vals.iter();
+            let rows = rs.pos.iter_mut().zip(&mut rs.vals);
+            for (i, ((p, v), srcs)) in rows.zip(g.srcs.chunks(g.width)).enumerate() {
                 p.clear();
-                p.extend_from_slice(&gp[..dims]);
+                p.extend_from_slice(&g.pos[i * dims..(i + 1) * dims]);
                 v.clear();
-                v.extend_from_slice(&gv[..n_in]);
+                for (s, k) in srcs[..n_in].iter().zip(keep) {
+                    let kept = if *k { at.next() } else { None };
+                    v.push(kept.map_or_else(|| value(kids, own, s), Clone::clone));
+                }
             }
             // The joined parameters are the first row's (see `agg_rows`).
             let mut joined = g.srcs[n_in..g.width].iter();
@@ -321,6 +362,10 @@ pub(crate) struct Host {
     /// keeps while the coordinates stay: an edit then leaves the layouts
     /// fitting (a map's iteration order moves when cells are re-set).
     env_cells: HashMap<MeasureId, Rc<Cells>>,
+    /// This round's measures read again with the coordinates they had, by
+    /// node: the cells they replace and the positions whose values moved,
+    /// so a layout on the old cells refills only those ([`Host::stale`]).
+    patched: HashMap<Node, (Rc<Cells>, Vec<u32>)>,
 }
 
 impl Host {
@@ -349,6 +394,7 @@ impl Host {
             shapes: HashMap::new(),
             r_keys: Vec::new(),
             env_cells: HashMap::new(),
+            patched: HashMap::new(),
         }
     }
 
@@ -360,6 +406,7 @@ impl Host {
         self.env.clear();
         self.fixed.clear();
         self.index.clear();
+        self.patched.clear();
     }
 
     /// Read every measure but r from `env` (one it lacks has no cells).
@@ -383,6 +430,7 @@ impl Host {
         let plan = Rc::clone(&self.plan);
         let cells = self.eval(&plan, x);
         self.round.clear();
+        self.patched.clear();
         let mut out = MeasureValues::with_capacity(cells.len());
         for (k, v) in cells.iter() {
             match out.get(k) {
@@ -406,12 +454,10 @@ impl Host {
         if let Some(c) = memo.get(&p) {
             return Rc::clone(c);
         }
-        let c = Rc::new(self.compute(n, x));
-        if let K::InputMeasure(m) = n.kind {
-            if m != self.r {
-                self.env_cells.insert(m, Rc::clone(&c));
-            }
-        }
+        let c = match n.kind {
+            K::InputMeasure(m) if m != self.r => self.read(p, m),
+            _ => Rc::new(self.compute(n, x)),
+        };
         let memo = if live {
             &mut self.round
         } else {
@@ -435,18 +481,6 @@ impl Host {
                     .iter()
                     .map(|k| (k.clone(), x[k].clone()))
                     .collect()
-            }
-            K::InputMeasure(m) => {
-                let Some(v) = self.env.get(m) else {
-                    return Vec::new();
-                };
-                let old = self.env_cells.get(m).filter(|o| o.len() == v.len());
-                let kept: Option<Cells> = old.and_then(|o| {
-                    o.iter()
-                        .map(|(k, _)| Some((k.clone(), v.get(k)?.clone())))
-                        .collect()
-                });
-                kept.unwrap_or_else(|| v.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             }
             K::Literal(v) => {
                 let v = CellValue::from_model_value(v).expect("covers checks literals");
@@ -569,9 +603,67 @@ impl Host {
                 );
                 out
             }
-            K::Recurrence { .. } | K::Shift { .. } | K::Fixpoint { .. } => {
-                unreachable!("covers keeps these on the dataflow")
+            K::InputMeasure(_) | K::Recurrence { .. } | K::Shift { .. } | K::Fixpoint { .. } => {
+                unreachable!("eval reads measures; covers keeps the rest on the dataflow")
             }
+        }
+    }
+
+    /// Measure `m`'s cells (`p` its node). While its coordinates stay, in
+    /// the order last read, which keeps the layouts on them fitting (a
+    /// map's iteration order moves when cells are re-set): the very cells
+    /// last read if no value moved, else a copy with the moved values, the
+    /// positions noted for the layouts ([`Host::patched`]).
+    fn read(&mut self, p: Node, m: MeasureId) -> Rc<Cells> {
+        let Some(v) = self.env.get(&m).cloned() else {
+            return Rc::default();
+        };
+        if let Some(old) = self.env_cells.get(&m).filter(|o| o.len() == v.len()) {
+            let old = Rc::clone(old);
+            let mut moved = Vec::new();
+            let same = old.iter().enumerate().all(|(i, (k, was))| {
+                v.get(k).is_some_and(|now| {
+                    if now != was {
+                        moved.push(i as u32);
+                    }
+                    true
+                })
+            });
+            if same && moved.is_empty() {
+                return old;
+            }
+            if same {
+                let mut c = (*old).clone();
+                for &i in &moved {
+                    let (k, val) = &mut c[i as usize];
+                    *val = v[k].clone();
+                }
+                let c = Rc::new(c);
+                self.patched.insert(p, (old, moved));
+                self.env_cells.insert(m, Rc::clone(&c));
+                return c;
+            }
+        }
+        let c: Rc<Cells> = Rc::new(v.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        self.env_cells.insert(m, Rc::clone(&c));
+        c
+    }
+
+    /// How `now`, node `q`'s cells this round, differs from `was`, the
+    /// cells a layout last read.
+    fn stale(&self, was: &Rc<Cells>, now: &Rc<Cells>, q: &PlanNode) -> Stale {
+        if Rc::ptr_eq(was, now) {
+            return Stale::No;
+        }
+        match self.patched.get(&self.node(q)) {
+            Some((old, moved)) if Rc::ptr_eq(old, was) => {
+                let mut bits = vec![0u64; now.len().div_ceil(64)];
+                for &i in moved {
+                    bits[i as usize / 64] |= 1 << (i % 64);
+                }
+                Stale::At(bits)
+            }
+            _ => Stale::All,
         }
     }
 
@@ -629,16 +721,20 @@ impl Host {
         let consts: Vec<Option<CellValue>> = a.params.iter().map(literal_value).collect();
         let (p, pred) = (self.node(n), a.pred.map(|_| a.ins.len()));
         let mut out = Vec::new();
-        if let Some(s) = self.shapes.get_mut(&p).filter(|s| s.fits(&kids, pred)) {
-            let stale: Vec<bool> = s
+        if let Some(s) = self.shapes.get(&p) {
+            let stale: Vec<Stale> = s
                 .kids
                 .iter()
                 .zip(&kids)
-                .map(|(a, b)| !Rc::ptr_eq(a, b))
+                .zip(&nodes)
+                .map(|((was, now), q)| self.stale(was, now, q))
                 .collect();
-            s.kids = kids;
-            s.fill(&a, &consts, &stale, &mut out);
-            return out;
+            if s.fits(&kids, pred, &stale) {
+                let s = self.shapes.get_mut(&p).expect("the shape just read");
+                s.kids = kids;
+                s.fill(&a, &consts, &stale, &mut out);
+                return out;
+            }
         }
         let (rows, own) = self.tagged_rows(&a, &nodes, &kids);
         let groups = group_rows(&a, rows);
@@ -648,6 +744,10 @@ impl Host {
         let n_in = a.ins.len();
         let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
         let dims = a.order.len();
+        let keep: Vec<bool> = nodes[..n_in]
+            .iter()
+            .map(|q| !self.live.contains(&self.node(q)))
+            .collect();
         if ties {
             let cells = into_cells(&a);
             for (g, rows) in groups {
@@ -672,19 +772,20 @@ impl Host {
             .into_iter()
             .map(|(key, rows)| {
                 let width = rows.first().map_or(n_in, |r| r.1.len());
+                let kept = keep.iter().filter(|k| **k).count();
                 let mut g = Group {
                     key,
                     pos: Vec::with_capacity(rows.len() * dims),
                     items: Vec::with_capacity(rows.len()),
                     srcs: Vec::with_capacity(rows.len() * width),
-                    vals: Vec::with_capacity(rows.len() * n_in),
+                    vals: Vec::with_capacity(rows.len() * kept),
                     width,
                 };
                 for ((pos, item), srcs) in rows {
                     debug_assert_eq!(pos.len(), dims);
                     g.pos.extend(pos);
-                    g.vals
-                        .extend(srcs[..n_in].iter().map(|s| value(&kids, &own, s)));
+                    let kept = srcs[..n_in].iter().zip(&keep).filter(|(_, k)| **k);
+                    g.vals.extend(kept.map(|(s, _)| value(&kids, &own, s)));
                     g.items.push(item);
                     g.srcs.extend(srcs);
                 }
@@ -699,10 +800,11 @@ impl Host {
         let mut s = Shape {
             kids,
             own,
+            keep,
             groups,
             scratch,
         };
-        let fresh = vec![false; s.kids.len()];
+        let fresh: Vec<Stale> = s.kids.iter().map(|_| Stale::No).collect();
         s.fill(&a, &consts, &fresh, &mut out);
         self.shapes.insert(p, s);
         out
@@ -1201,6 +1303,91 @@ mod tests {
             one,
             "{text} on {w}"
         );
+    }
+
+    /// B8: a host that read the measures before an edit and is refreshed
+    /// after it (refilling only the moved cells of a layout, or laying it
+    /// out again where coordinates came or went) steps exactly as a host
+    /// that never saw the old cells, on random bodies, models and edits to
+    /// the measures they read but r, round after round.
+    #[hegel::test(test_cases = 200, suppress_health_check = HealthCheck::all())]
+    fn a_refreshed_host_steps_as_a_fresh_one(tc: TestCase) {
+        let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+        let vals: Vec<Option<i32>> = tc.draw(
+            gs::vecs(gs::optional(
+                gs::integers::<i32>().min_value(-4).max_value(8),
+            ))
+            .min_size(64)
+            .max_size(64),
+        );
+        let mut it = vals.into_iter().cycle();
+        let mut cell = move || it.next().flatten().map(|v| f64::from(v) / 2.0);
+        let mut m = model(n, 1, &mut cell);
+        let text = expr(&tc, 3);
+        tc.assume(define(&mut m, T.0, &format!("T = {text}")));
+        let plans = compile_plans(&m, &[T]).unwrap();
+        let ids: Vec<MeasureId> = plans.iter().map(|(id, _)| *id).collect();
+        let (_, plan) = plans.last().unwrap();
+        let has = |id: MeasureId| ids.contains(&id) || id.0 < 200;
+        tc.assume(covers(plan, R, &has));
+        let env_of = |m: &Model| {
+            let mut env: HashMap<MeasureId, Arc<MeasureValues>> = HashMap::new();
+            for ((mid, c), v) in &m.inputs {
+                if let Some(cv) = crate::session::input_cell(ValueType::Number, v) {
+                    Arc::make_mut(env.entry(*mid).or_default()).insert(crate::encode_coord(c), cv);
+                }
+            }
+            let dd = evaluate(m, &ids).unwrap();
+            for (id, vals) in dd {
+                if id != T {
+                    env.insert(id, Arc::new(vals));
+                }
+            }
+            env
+        };
+        let x = |env: &HashMap<MeasureId, Arc<MeasureValues>>| {
+            env.get(&R).map(|a| (**a).clone()).unwrap_or_default()
+        };
+        let mut warm = Host::new(plan.clone(), R);
+        let env = env_of(&m);
+        warm.refresh(env.clone());
+        let mut r = x(&env);
+        r = warm.step(&r);
+        warm.release();
+        let edits = tc.draw(gs::integers::<usize>().min_value(1).max_value(3));
+        for _ in 0..edits {
+            // Mostly a value moves (the layouts keep their coordinates);
+            // sometimes a cell comes or goes.
+            let at = tc.draw(gs::integers::<usize>().min_value(0).max_value(n - 1));
+            let to = tc.draw(gs::optional(
+                gs::integers::<i32>().min_value(-4).max_value(8),
+            ));
+            let (id, coord) = match tc.draw(gs::integers::<u32>().min_value(0).max_value(3)) {
+                0 => (101, vec![(A, ItemId(10 + at as u32))]),
+                1 => (103, vec![(B, ItemId(30 + at as u32))]),
+                _ => (
+                    102,
+                    vec![(A, ItemId(10 + at as u32)), (B, ItemId(30 + at as u32))],
+                ),
+            };
+            let coord = Coordinate::from_pairs(coord);
+            match to {
+                Some(v) => m.set_input(MeasureId(id), coord, Value::Number(f64::from(v) / 2.0)),
+                None => {
+                    m.inputs.remove(&(MeasureId(id), coord));
+                }
+            }
+            let env = env_of(&m);
+            warm.refresh(env.clone());
+            let mut fresh = Host::new(plan.clone(), R);
+            fresh.refresh(env);
+            for _ in 0..2 {
+                let (a, b) = (warm.step(&r), fresh.step(&r));
+                assert_eq!(a, b, "{text}");
+                r = a;
+            }
+            warm.release();
+        }
     }
 
     /// What the host does not take: PREV (a Shift), a recurrence, a

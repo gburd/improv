@@ -276,6 +276,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   10M edges: engine heap 501 -> 414 bytes per edge, peak RSS 9.2 -> 8.4
   GB, `Engine::new` 34.6 -> 28.4 s (release build, `tests/probe.rs`
   `pagerank`, three runs each). Every result is unchanged.
+- **A FIXPOINT re-solve after an edit refills only what moved** (B8). The
+  host step read every cell of each measure its body reads again after an
+  edit and refilled every row of its layouts from them; it now keeps the
+  cells it read and refills only the positions whose values moved (laying
+  out again only where a cell came or went), and its layouts no longer
+  keep a per-row copy of the iterate, which changes every round anyway.
+  PageRank at 100k nodes / 10M edges, warm re-solve after one edge's
+  weight changes: 6.4-6.6 -> 5.85-5.95 s; engine heap 414 -> 390 bytes per
+  edge, peak RSS 8.4 -> 8.2 GB (release build, `tests/probe.rs`
+  `pagerank`, three runs each). Results are bit for bit as before.
 - **An edit costs what it reaches, not the number of measures** (B6). The
   live engine groups measures into components by what they read and
   advances only the input sessions of the components an edit feeds; the

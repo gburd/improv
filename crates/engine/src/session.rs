@@ -582,10 +582,11 @@ struct World<'w> {
 /// from the first iterate, so a result cut off at max_iter is always a full
 /// recompute's. An edit that leaves a FIXPOINT's first iterate and what its
 /// step reads as they were leaves its result as it was, unsolved.
-// shortcut: a host round still reads every edge (every PageRank cell moves
-// every round, so a delta step would touch them all anyway), though only to
-// refill laid-out rows: about 4 ms at 100,000 edges, 75 ms at 1,000,000. A
-// sparse step (delta-PageRank) would pay only once few cells still move.
+// shortcut: a host round still reads every edge: after an edit only the moved
+// cells of what the step reads are refilled, but every PageRank rank moves
+// every round (measured at 10M edges: all 100,000 by more than 1e-14 in rounds
+// 2 to 9), so a delta step would touch them all anyway. Splitting a large
+// layout's groups over threads is what is left for a faster round.
 #[allow(clippy::too_many_arguments, reason = "the worker's state, passed down")]
 fn solve_fixpoints(
     fixes: &[Fix],
@@ -1918,6 +1919,77 @@ mod tests {
             }];
             let (a, b) = (host.apply(edit.clone()).unwrap(), dd.apply(edit).unwrap());
             assert_eq!(a, b, "after {e:?}");
+        }
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(24))]
+
+        /// B8: PageRank through random edge edits (a weight moves, an edge
+        /// comes or goes, a node starts or stops dangling). The host step,
+        /// which after an edit refills only the moved cells of its layouts
+        /// (or lays them out again where edges came or went), gives the
+        /// dataflow step's ranks bit for bit after every batch, and both
+        /// stay within the tolerance of a fresh evaluation.
+        #[test]
+        fn pagerank_follows_random_edge_edits(
+            batches in proptest::collection::vec(
+                proptest::collection::vec(
+                    (0u32..6, 0u32..6, proptest::option::of(1u32..10)),
+                    1..4,
+                ),
+                1..5,
+            ),
+        ) {
+            let mut m = graph_model(6);
+            for (id, text) in [
+                (300, "Out = SUM(W OVER Dst)"),
+                (301, "M = W / Out"),
+                (302, "Dangling = FILL(0 * Out, 1)"),
+                (
+                    303,
+                    "PR = FIXPOINT(SEQUENCE(Src, 1 / @ITEMCOUNT(Src), 0), \
+                     LAMBDA(r, RELABEL((1 - 0.85) / @ITEMCOUNT(Src) \
+                     + 0.85 * (FILL(SUMPRODUCT(r, M OVER Src), 0) \
+                     + SUMPRODUCT(r, Dangling OVER Src) / @ITEMCOUNT(Src)), Dst, Src)), \
+                     200, 0.0000000000001)",
+                ),
+            ] {
+                define_text(&mut m, id, text);
+            }
+            let (pr, w) = (MeasureId(303), MeasureId(11));
+            let (mut host, _) = Engine::build(&m, &[pr], true).unwrap();
+            let (mut dd, _) = Engine::build(&m, &[pr], false).unwrap();
+            let (s, d) = (CategoryId(1), CategoryId(2));
+            for batch in batches {
+                let edits: Vec<Edit> = batch
+                    .iter()
+                    .map(|&(i, j, x)| {
+                        let at =
+                            Coordinate::from_pairs([(s, ItemId(100 + i)), (d, ItemId(200 + j))]);
+                        match x {
+                            Some(x) => m.set_input(w, at, Value::Number(f64::from(x))),
+                            None => {
+                                m.inputs.remove(&(w, at));
+                            }
+                        }
+                        Edit {
+                            measure: w,
+                            coord: [(1, 100 + i), (2, 200 + j)].as_slice().into(),
+                            value: x.map(|x| CellValue::num(f64::from(x))),
+                        }
+                    })
+                    .collect();
+                let a = host.apply(edits.clone()).unwrap();
+                let b = dd.apply(edits).unwrap();
+                proptest::prop_assert_eq!(&a[&pr], &b[&pr]);
+                let fresh = crate::dataflow::evaluate(&m, &[pr]).unwrap();
+                let l1: f64 = fresh[&pr]
+                    .iter()
+                    .map(|(k, v)| (v.as_num().unwrap() - a[&pr][k].as_num().unwrap()).abs())
+                    .sum();
+                proptest::prop_assert!(l1 < 1e-11, "L1 {} to a fresh evaluation", l1);
+            }
         }
     }
 

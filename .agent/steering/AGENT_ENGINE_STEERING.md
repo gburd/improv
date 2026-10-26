@@ -417,6 +417,19 @@ arrangement (sorting a large group on every edit would cost more than
 the copy). 501 → 414 B per edge at 10M edges. What is left: the worker's
 input map, the snapshot, the host step's copy of `M` and its layout.
 
+**Warm FIXPOINT re-solve (B8).** After an edit the host step reads each
+measure but r again (`Host::read`): while its coordinates stay, in the
+order last read, it is the very cells last read if no value moved, else a
+copy with the moved values, their positions noted (`Host::patched`), so
+a layout on the old cells refills only those (`Stale::At`); a cell that
+came or went lays the layout out again. A layout keeps the values only
+of its inputs that do not read r (`Shape::keep`); the iterate's are read
+from its cells as the rows are filled. Every rank of a PageRank moves
+every round (measured at 10M edges: all 100,000 by more than 1e-14 in
+rounds 2 to 9, after a one-edge edit), so a delta-PageRank step that
+skips cells below a threshold would skip nothing until the last round or
+two: rounds stay full. 10M edges: 6.5 → 5.9 s, 414 → 390 B per edge.
+
 ---
 
 ## 14. Testing Strategy
