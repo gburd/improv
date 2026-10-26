@@ -909,7 +909,7 @@ mod tests {
     //! as the iterate, evaluated both ways on random small models, must
     //! agree bit for bit.
     use super::*;
-    use crate::dataflow::{compile_plans, evaluate};
+    use crate::dataflow::{compile_plans, evaluate, evaluate_with_workers};
     use hegel::generators as gs;
     use hegel::{HealthCheck, TestCase};
     use improv_core_model::{
@@ -1170,6 +1170,37 @@ mod tests {
         let m = model(n, extra, &mut cell);
         let text = expr(&tc, 3);
         tc.assume(agree(m, &text));
+    }
+
+    /// Random bodies on random models: whatever compiles gives the same
+    /// cells, bit for bit, on one timely worker as on two to four.
+    #[hegel::test(test_cases = 100, suppress_health_check = HealthCheck::all())]
+    fn random_bodies_are_the_same_on_any_worker_count(tc: TestCase) {
+        let n = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
+        let vals: Vec<Option<i32>> = tc.draw(
+            gs::vecs(gs::optional(
+                gs::integers::<i32>().min_value(-4).max_value(8),
+            ))
+            .min_size(64)
+            .max_size(64),
+        );
+        let mut it = vals.into_iter().cycle();
+        let mut cell = move || it.next().flatten().map(|v| f64::from(v) / 2.0);
+        let mut m = model(n, 1, &mut cell);
+        let text = expr(&tc, 3);
+        tc.assume(define(&mut m, T.0, &format!("T = {text}")));
+        let ids: Vec<MeasureId> = compile_plans(&m, &[T])
+            .unwrap()
+            .iter()
+            .map(|p| p.0)
+            .collect();
+        let one = evaluate_with_workers(&m, &ids, 1).unwrap();
+        let w = tc.draw(gs::integers::<usize>().min_value(2).max_value(4));
+        assert_eq!(
+            evaluate_with_workers(&m, &ids, w).unwrap(),
+            one,
+            "{text} on {w}"
+        );
     }
 
     /// What the host does not take: PREV (a Shift), a recurrence, a

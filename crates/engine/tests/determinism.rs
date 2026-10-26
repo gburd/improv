@@ -11,7 +11,7 @@ use improv_core_model::{
     BinaryOp, CategoryId, Coordinate, DimensionSpec, Expr, Formula, ItemId, Measure, MeasureId,
     MeasureKind, Model, Name, Value, ValueType,
 };
-use improv_engine::dataflow::evaluate;
+use improv_engine::dataflow::{evaluate, evaluate_with_workers};
 use improv_engine::CoordKey;
 use proptest::prelude::*;
 use std::collections::HashMap;
@@ -264,5 +264,98 @@ proptest! {
         for (k, e) in &expected {
             prop_assert_eq!(rev.get(k).and_then(|v| v.as_num()), Some(*e));
         }
+    }
+}
+
+/// `name = text` as derived measure `id` of `m` (declared first, so the
+/// formula may read itself: a recurrence).
+fn define(m: &mut Model, id: u32, text: &str) {
+    let name = text.split(" = ").next().unwrap();
+    m.add_measure(Measure {
+        id: MeasureId(id),
+        name: Name(name.into()),
+        value_type: ValueType::Number,
+        categories: vec![TIME, PRODUCT],
+        kind: MeasureKind::Input,
+        description: None,
+    });
+    let f = improv_core_model::parse_formula(m, text).unwrap_or_else(|e| panic!("{text}: {e}"));
+    let (vt, cats) =
+        improv_engine::compiler::derived_shape(m, MeasureId(id), &f.target.0, &f.formula)
+            .unwrap_or_else(|e| panic!("{text}: {e}"));
+    m.add_measure(Measure {
+        id: MeasureId(id),
+        name: f.target,
+        value_type: vt,
+        categories: cats,
+        kind: MeasureKind::Derived(f.formula),
+        description: None,
+    });
+}
+
+/// The same cells, bit for bit, on one to five timely workers, across the
+/// plan kinds: maps and broadcast joins, flat and two-level reductions
+/// (Time has more than 1,024 items), per-item and windowed ones, PREV and
+/// a recurrence, SCAN, COALESCE and FILL, POSITION, IF over text,
+/// literals, and error values.
+#[test]
+fn evaluate_is_the_same_on_any_worker_count() {
+    let (n_time, m_product) = (1100, 3);
+    let mut m = build_schema(n_time, m_product);
+    for p in 0..m_product {
+        let at = Coordinate::from_pairs([(PRODUCT, product_item(p))]);
+        m.set_input(PRICE, at, Value::Number(f64::from(1 + p)));
+    }
+    for t in 0..n_time {
+        for p in 0..m_product {
+            if (t + p) % 7 == 3 {
+                continue;
+            }
+            let at = Coordinate::from_pairs([(TIME, time_item(t)), (PRODUCT, product_item(p))]);
+            m.set_input(
+                QUANTITY,
+                at,
+                Value::Number(f64::from((t * 31 + p * 17) % 101)),
+            );
+        }
+    }
+    let formulas = [
+        "Total = SUM(Quantity OVER Time)",
+        "Mean = AVERAGE(Revenue OVER Product)",
+        "Rk = RANK(Quantity OVER Time)",
+        "Run = SUM(Quantity OVER Time[FIRST..THIS])",
+        "Third = LARGE(Quantity OVER Time, 3)",
+        "Before = PREV(Quantity, Time)",
+        "Bal = PREV(Bal, Time, 1, Price) + Quantity",
+        "Acc = SCAN(0, Quantity OVER Time, LAMBDA(acc, v, acc + v))",
+        "Full = FILL(Quantity, 0)",
+        "Either = COALESCE(Quantity, Price)",
+        "Pos = POSITION(Time) + Quantity",
+        "Five = 2 + 3",
+        "Seven = 7",
+        "Ratio = Quantity / (Price - 2)",
+        "Label = IF(Quantity > 50, \"hi\", \"lo\")",
+        // Item lists and constants in a predicate: a copy per worker would
+        // count a row twice (a measure's own collapse would hide it).
+        "PosSum = SUM(Quantity OVER Time WHERE POSITION(Time) > 3)",
+        "FiveSum = SUM(Quantity OVER Time WHERE Quantity > 2 + 3)",
+        "PiSum = SUM(Quantity OVER Time WHERE Quantity > PI())",
+    ];
+    let mut ids = vec![REVENUE];
+    for (k, text) in formulas.iter().enumerate() {
+        let id = 200 + k as u32;
+        define(&mut m, id, text);
+        ids.push(MeasureId(id));
+    }
+    let one = evaluate_with_workers(&m, &ids, 1).expect("one worker");
+    for id in &ids {
+        assert!(
+            one.get(id).is_some_and(|c| !c.is_empty()),
+            "{id:?} has cells"
+        );
+    }
+    for w in 2..=5 {
+        let many = evaluate_with_workers(&m, &ids, w).expect("workers");
+        assert_maps_bit_identical(&one, &many);
     }
 }

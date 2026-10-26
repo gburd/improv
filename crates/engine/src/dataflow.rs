@@ -29,12 +29,18 @@ use differential_dataflow::Collection;
 use improv_core_model::{
     BinaryOp, CategoryId, Formula, FuncId, ItemId, MeasureId, MeasureKind, Model, UnaryOp,
 };
+use std::cell::RefCell;
 #[cfg(test)]
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use timely::communication::allocator::process::ProcessBuilder;
+use timely::communication::allocator::{Allocate, AllocateBuilder, Process, Thread};
 use timely::dataflow::operators::ToStream;
 use timely::dataflow::Scope;
+use timely::worker::Worker;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -91,15 +97,8 @@ where
                     let l = build_coll(left, scope, inputs, derived)?;
                     Ok(l.map(move |(k, a)| (k, apply_binary(op, &a, &lit))))
                 }
-                (Some(a), Some(b)) => {
-                    // Both literals: a scalar result at the empty coordinate.
-                    let v = apply_binary(op, &a, &b);
-                    let empty = CoordKey::new();
-                    let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-                    Ok(vec![((empty, v), t, 1isize)]
-                        .to_stream(scope)
-                        .as_collection())
-                }
+                // Both literals: a scalar result at the empty coordinate.
+                (Some(a), Some(b)) => Ok(constant(scope, apply_binary(op, &a, &b))),
                 (None, None) => {
                     // The compiler's broadcast: `Join{a, b}` op `b`. One join
                     // of a and b gives both values; re-joining the Join's
@@ -160,10 +159,9 @@ where
             },
         ),
 
-        PlanNodeKind::Items(cat, vals) => {
+        PlanNodeKind::Items(cat, vals) => Ok(on_first(scope, || {
             let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-            let rows: Vec<_> = vals
-                .iter()
+            vals.iter()
                 .filter_map(|(item, v)| {
                     let cv = CellValue::from_model_value(v)?;
                     Some((
@@ -172,9 +170,8 @@ where
                         1isize,
                     ))
                 })
-                .collect();
-            Ok(rows.to_stream(scope).as_collection())
-        }
+                .collect()
+        })),
 
         PlanNodeKind::Coalesce { args, grid } => {
             let colls = args
@@ -185,15 +182,13 @@ where
             // The domain: every item combination of the grid, or the cells of
             // the arguments over all the result's categories.
             let domain = match grid {
-                Some(g) => {
+                Some(g) => on_first(scope, || {
                     let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
                     grid_keys(g)
                         .into_iter()
                         .map(|k| (k, t.clone(), 1isize))
-                        .collect::<Vec<_>>()
-                        .to_stream(scope)
-                        .as_collection()
-                }
+                        .collect()
+                }),
                 None => {
                     let mut keys = None::<Collection<G, CoordKey, isize>>;
                     for (_, c) in args.iter().zip(&colls).filter(|(a, _)| spans(a)) {
@@ -354,11 +349,7 @@ where
             // references it. Build a constant single-cell collection.
             let cv = CellValue::from_model_value(v)
                 .ok_or_else(|| EngineError::Unsupported("literal has no cell value".into()))?;
-            let empty = CoordKey::new();
-            let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-            Ok(vec![((empty, cv), t, 1isize)]
-                .to_stream(scope)
-                .as_collection())
+            Ok(constant(scope, cv))
         }
         PlanNodeKind::FuncCall { func, args } => {
             let func = *func;
@@ -807,11 +798,22 @@ fn constant<G: Scope>(scope: &mut G, v: CellValue) -> Coll<G>
 where
     G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
 {
-    let empty = CoordKey::new();
     let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-    vec![((empty, v), t, 1isize)]
-        .to_stream(scope)
-        .as_collection()
+    on_first(scope, || vec![((CoordKey::new(), v), t, 1isize)])
+}
+
+/// `rows()` as a collection, made and sent by worker 0 only: every worker
+/// builds the same dataflow, and each copy would add the rows again.
+fn on_first<G: Scope, D: timely::Data>(
+    scope: &mut G,
+    rows: impl FnOnce() -> Vec<(D, G::Timestamp, isize)>,
+) -> Collection<G, D, isize> {
+    let rows = if scope.index() == 0 {
+        rows()
+    } else {
+        Vec::new()
+    };
+    rows.to_stream(scope).as_collection()
 }
 
 /// Broadcast-join two collections on `keys`, the categories both range over.
@@ -1275,6 +1277,9 @@ where
     built
 }
 
+/// A derived measure's computed cells: `measure -> (coordinate -> value)`.
+pub type Evaluated = HashMap<MeasureId, HashMap<CoordKey, CellValue>>;
+
 /// Run `model` to completion and return computed values for the requested
 /// derived measures: `measure -> (coordinate-key -> value)`.
 ///
@@ -1282,17 +1287,30 @@ where
 /// derived measure may reference other derived measures; they are built in
 /// topological order so each layer feeds the next. Cyclic dependencies are
 /// rejected.
-pub fn evaluate(
+///
+/// Runs on [`workers_for`] the model's input cells timely workers (one for
+/// a small model); [`evaluate_with_workers`] picks the count.
+pub fn evaluate(model: &Model, targets: &[MeasureId]) -> Result<Evaluated, EngineError> {
+    evaluate_with_workers(model, targets, workers_for(model.inputs.len()))
+}
+
+/// [`evaluate`] on `workers` timely workers (at least one), each on a
+/// thread of its own with [`ENGINE_STACK`]. The input cells are split
+/// between them; every reduction still sees a whole group, in the same
+/// order, on one worker, so the result is the same, bit for bit, for any
+/// count. A model with a FIXPOINT runs on one worker (the live engine).
+pub fn evaluate_with_workers(
     model: &Model,
     targets: &[MeasureId],
-) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
+    workers: usize,
+) -> Result<Evaluated, EngineError> {
     // On a thread with a known stack: the plan builders recurse on the
     // formula tree, and a caller's main thread may be 1 MiB (Windows).
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .name("improv-evaluate".into())
             .stack_size(ENGINE_STACK)
-            .spawn_scoped(s, || evaluate_here(model, targets))
+            .spawn_scoped(s, || evaluate_here(model, targets, workers.max(1)))
             .expect("spawn the evaluate thread")
             .join()
             .unwrap_or_else(|p| std::panic::resume_unwind(p))
@@ -1305,10 +1323,38 @@ pub fn evaluate(
 /// (`MAX_FORMULA_DEPTH`, 256); a release build 3.3 KB a level.
 pub const ENGINE_STACK: usize = 16 << 20;
 
+/// Input cells per timely worker [`evaluate`] adds: below twice this, one.
+/// (A 20k-cell grid evaluates in 14 ms on one worker, 9 ms on two.)
+pub const CELLS_PER_WORKER: usize = 10_000;
+
+/// The most workers [`workers_for`] picks by itself.
+pub const MAX_WORKERS: usize = 8;
+
+/// The timely workers [`evaluate`] runs a model of `cells` input cells on:
+/// `IMPROV_ENGINE_WORKERS` when set to a count (1 to 64), else one per
+/// [`CELLS_PER_WORKER`] cells, at most the cores and [`MAX_WORKERS`].
+pub fn workers_for(cells: usize) -> usize {
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    pick_workers(
+        cells,
+        std::env::var("IMPROV_ENGINE_WORKERS").ok().as_deref(),
+        cores,
+    )
+}
+
+/// [`workers_for`] given the variable's value and the core count.
+fn pick_workers(cells: usize, set: Option<&str>, cores: usize) -> usize {
+    match set.and_then(|v| v.trim().parse::<usize>().ok()) {
+        Some(n) if n > 0 => n.min(64),
+        _ => (cells / CELLS_PER_WORKER).clamp(1, MAX_WORKERS.min(cores).max(1)),
+    }
+}
+
 fn evaluate_here(
     model: &Model,
     targets: &[MeasureId],
-) -> Result<HashMap<MeasureId, HashMap<CoordKey, CellValue>>, EngineError> {
+    workers: usize,
+) -> Result<Evaluated, EngineError> {
     // Compile every derived measure transitively needed by `targets`, in
     // dependency (topological) order.
     let mut plans = compile_plans(model, targets)?;
@@ -1361,57 +1407,160 @@ fn evaluate_here(
         .filter(|m| matches!(m.kind, MeasureKind::Input))
         .map(|m| m.id)
         .collect();
-    let plans_arc = plans.clone();
-
-    timely::execute::execute_directly(move |worker| {
-        let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>> =
-            HashMap::new();
-        let res = results2.clone();
-
-        worker.dataflow::<u64, _, _>(|scope| {
-            let mut input_colls: HashMap<MeasureId, Coll<_>> = HashMap::new();
-            for id in &input_ids {
-                let mut session = InputSession::new();
-                let coll = session.to_collection(scope);
-                sessions.insert(*id, session);
-                input_colls.insert(*id, coll);
-            }
-
-            for (mid, reduced) in build_derived(scope, &plans_arc, &input_colls) {
-                let res = res.clone();
-                reduced.inspect(move |((k, val), _t, diff)| {
-                    if *diff > 0 {
-                        res.lock()
-                            .unwrap()
-                            .entry(mid)
-                            .or_default()
-                            .push((k.clone(), val.clone()));
-                    }
-                });
-            }
+    let job = Job {
+        model,
+        plans: &plans,
+        input_ids: &input_ids,
+    };
+    // One worker, or too few threads to start them all: this thread alone.
+    let shares = (workers > 1)
+        .then(|| run_workers(workers, |w, stop| run_worker(w, &job, stop)))
+        .flatten()
+        .unwrap_or_else(|| {
+            let mut worker = Worker::new(timely::WorkerConfig::default(), Thread::new());
+            vec![run_worker(&mut worker, &job, &AtomicBool::new(false))]
         });
 
-        // Feed all input cells at time 0, advance, and run to completion.
-        for (id, cells) in &input_cells {
-            let session = sessions.get_mut(id).expect("a session per input measure");
-            for (k, v) in cells {
-                session.insert((k.clone(), v.clone()));
-            }
+    // Rows, not maps: a map grown while the dataflow's arrangements are
+    // alive peaks at both plus its old and new table (at 5M cells, 1.1 GB);
+    // built once the dataflow is gone, at its final size, it costs the rows.
+    let mut rows: HashMap<MeasureId, Vec<Vec<(CoordKey, CellValue)>>> = HashMap::new();
+    for share in shares {
+        for (mid, r) in share {
+            rows.entry(mid).or_default().push(r);
         }
-        // Closing the sessions (on return) lets `execute_directly` run the
-        // dataflow to completion before it returns.
-        for session in sessions.values_mut() {
-            session.advance_to(1);
-            session.flush();
-        }
-    });
-
-    let rows = std::mem::take(&mut *results.lock().unwrap());
-    // A key seen twice keeps its last value, as a map's inserts did.
+    }
+    // A key seen twice keeps its last value (worker by worker), as a map's
+    // inserts did; a measure with no cell is left out.
     Ok(rows
         .into_iter()
-        .map(|(m, r)| (m, r.into_iter().collect()))
+        .filter(|(_, parts)| parts.iter().any(|p| !p.is_empty()))
+        .map(|(m, parts)| {
+            let mut cells = HashMap::with_capacity(parts.iter().map(Vec::len).sum());
+            parts.into_iter().for_each(|p| cells.extend(p));
+            (m, cells)
+        })
         .collect())
+}
+
+/// What every `evaluate` worker builds its dataflow from.
+struct Job<'a> {
+    model: &'a Model,
+    plans: &'a [(MeasureId, PlanNode)],
+    input_ids: &'a [MeasureId],
+}
+
+/// One worker's computed rows, per measure.
+type Share = Vec<(MeasureId, Vec<(CoordKey, CellValue)>)>;
+
+/// How long a waiting worker sleeps before it checks whether a peer failed.
+const POLL: Duration = Duration::from_millis(50);
+
+/// Build `job`'s dataflow on `worker`, feed it the worker's share of the
+/// input cells (every `peers`-th), and run it to completion, or until
+/// `stop` (a peer panicked).
+fn run_worker<A: Allocate>(worker: &mut Worker<A>, job: &Job, stop: &AtomicBool) -> Share {
+    let (me, peers) = (worker.index(), worker.peers());
+    let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>> =
+        HashMap::new();
+    #[allow(clippy::type_complexity)]
+    let outs: Vec<(MeasureId, Rc<RefCell<Vec<(CoordKey, CellValue)>>>)> = worker
+        .dataflow::<u64, _, _>(|scope| {
+            let mut input_colls: HashMap<MeasureId, Coll<_>> = HashMap::new();
+            for id in job.input_ids {
+                let mut session = InputSession::new();
+                input_colls.insert(*id, session.to_collection(scope));
+                sessions.insert(*id, session);
+            }
+            build_derived(scope, job.plans, &input_colls)
+                .into_iter()
+                .map(|(mid, coll)| {
+                    let rows = Rc::new(RefCell::new(Vec::new()));
+                    let sink = Rc::clone(&rows);
+                    coll.inspect_batch(move |_t, batch| {
+                        let added = batch.iter().filter(|(_, _, d)| *d > 0);
+                        sink.borrow_mut()
+                            .extend(added.map(|((k, v), _, _)| (k.clone(), v.clone())));
+                    });
+                    (mid, rows)
+                })
+                .collect()
+        });
+    // Every model value type maps into the DD lane: Number, Boolean, Text,
+    // Enum, DateTime (as CellValue::Date millis), and Error.
+    for (i, ((mid, coord), val)) in job.model.inputs.iter().enumerate() {
+        if i % peers != me {
+            continue;
+        }
+        if let Some(cv) = CellValue::from_model_value(val) {
+            let session = sessions.get_mut(mid).expect("a session per input measure");
+            session.insert((encode_coord(coord), cv));
+        }
+    }
+    // Closed inputs (the sessions dropped) let the dataflow run to the end.
+    for session in sessions.values_mut() {
+        session.advance_to(1);
+        session.flush();
+    }
+    drop(sessions);
+    while !stop.load(Ordering::Relaxed) && worker.has_dataflows() {
+        worker.step_or_park(Some(POLL));
+    }
+    outs.into_iter()
+        .map(|(mid, rows)| (mid, rows.take()))
+        .collect()
+}
+
+/// `work` on `n` connected timely workers: worker 0 on this thread, the
+/// others on threads of their own with [`ENGINE_STACK`] (timely's own
+/// `execute` gives them the default stack). `None` if a thread would not
+/// start. A worker that panics sets the flag the others poll, so none
+/// waits for it forever; its panic resumes here.
+fn run_workers<T: Send>(
+    n: usize,
+    work: impl Fn(&mut Worker<Process>, &AtomicBool) -> T + Sync,
+) -> Option<Vec<T>> {
+    /// Sets the stop flag if its worker unwinds.
+    struct Stop<'a>(&'a AtomicBool);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.0.store(true, Ordering::Relaxed);
+            }
+        }
+    }
+    let stop = AtomicBool::new(false);
+    let run = |b: ProcessBuilder| {
+        let _stop = Stop(&stop);
+        let mut worker = Worker::new(timely::WorkerConfig::default(), b.build());
+        work(&mut worker, &stop)
+    };
+    let run = &run;
+    std::thread::scope(|s| {
+        // Threads first, then their builders: a built worker waits for all
+        // its peers, so one whose thread never starts would hang the rest.
+        let mut peers = Vec::with_capacity(n - 1);
+        for i in 1..n {
+            let (tx, rx) = std::sync::mpsc::channel::<ProcessBuilder>();
+            let h = std::thread::Builder::new()
+                .name(format!("improv-evaluate-{i}"))
+                .stack_size(ENGINE_STACK)
+                .spawn_scoped(s, move || rx.recv().ok().map(run));
+            // (Dropping the senders lets the started ones return.)
+            peers.push((tx, h.ok()?));
+        }
+        let mut builders = Process::new_vector(n).into_iter();
+        let first = builders.next().expect("n > 1 builders");
+        for ((tx, _), b) in peers.iter().zip(builders) {
+            tx.send(b)
+                .expect("each started thread waits for its builder");
+        }
+        let mut out = vec![run(first)];
+        for (_, h) in peers {
+            out.extend(h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)));
+        }
+        Some(out)
+    })
 }
 
 #[cfg(test)]
@@ -1423,6 +1572,46 @@ mod tests {
     use improv_core_model::{
         Coordinate, DimensionSpec, Expr, ItemId, Measure, MeasureKind, Name, Value, ValueType,
     };
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn worker_count_follows_the_cells_the_cores_and_the_variable() {
+        assert_eq!(pick_workers(0, None, 16), 1);
+        assert_eq!(pick_workers(2 * CELLS_PER_WORKER - 1, None, 16), 1);
+        assert_eq!(pick_workers(2 * CELLS_PER_WORKER, None, 16), 2);
+        assert_eq!(pick_workers(usize::MAX, None, 16), MAX_WORKERS);
+        assert_eq!(pick_workers(usize::MAX, None, 3), 3);
+        assert_eq!(pick_workers(usize::MAX, None, 0), 1);
+        assert_eq!(pick_workers(0, Some(" 4 "), 1), 4);
+        assert_eq!(pick_workers(usize::MAX, Some("1"), 16), 1);
+        assert_eq!(pick_workers(0, Some("1000"), 16), 64);
+        assert_eq!(pick_workers(0, Some("0"), 16), 1);
+        assert_eq!(pick_workers(0, Some("many"), 16), 1);
+        assert!(workers_for(0) >= 1);
+    }
+
+    #[test]
+    fn workers_return_in_index_order() {
+        let out = run_workers(4, |w, _| (w.index(), w.peers()));
+        assert_eq!(out, Some((0..4).map(|i| (i, 4)).collect()));
+    }
+
+    /// A worker that panics stops its peers, and its panic reaches the
+    /// caller: none waits for it forever.
+    #[test]
+    fn a_panicking_worker_stops_its_peers() {
+        let r = std::panic::catch_unwind(|| {
+            run_workers(3, |w, stop| {
+                assert_ne!(w.index(), 1, "worker 1 fails");
+                while !stop.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        });
+        let p = r.expect_err("the panic resumes");
+        let msg = p.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(msg.contains("worker 1 fails"), "{msg}");
+    }
 
     /// Two numeric inputs A (`MeasureId(100)`) and B (`MeasureId(101)`) and a
     /// derived `R = A op B` (or `B op A` when `!a_left`) at `MeasureId(102)`.

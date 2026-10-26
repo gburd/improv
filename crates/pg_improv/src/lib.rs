@@ -3,8 +3,8 @@
 //! A thin shell: SPI reads the catalog and the bound fact tables, the
 //! Postgres-free [`improv_pg_model`] crate turns them into an Improv model and
 //! the engine's results into SQL, and SPI writes the result tables. The engine
-//! runs on the backend thread (`timely::execute_directly`); no Postgres API is
-//! ever called from another thread.
+//! runs on threads of its own, spawned with every Postgres-handled signal
+//! blocked; no Postgres API is ever called from them.
 
 use std::error::Error;
 

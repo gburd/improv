@@ -251,12 +251,28 @@ pub(crate) fn all_derived(m: &Model) -> Vec<MeasureId> {
 /// Engine output: cells per derived measure.
 type Cells = HashMap<MeasureId, HashMap<CoordKey, CellValue>>;
 
-/// `dataflow::evaluate` on the backend thread, an engine panic as an error.
+/// `dataflow::evaluate`, an engine panic as an error. Its threads start
+/// with every Postgres-handled signal blocked (they inherit the mask, and
+/// call no Postgres API), at most `max_parallel_workers_per_gather` + 1
+/// of them.
 fn evaluate(m: &Model, targets: &[MeasureId]) -> Res<Cells> {
     check_for_interrupts!();
-    match catch_unwind(AssertUnwindSafe(|| {
-        improv_engine::dataflow::evaluate(m, targets)
-    })) {
+    // SAFETY: reading a GUC variable on the backend thread.
+    let gather = unsafe { pg_sys::max_parallel_workers_per_gather };
+    let cap = usize::try_from(gather).unwrap_or(0) + 1;
+    let workers = improv_engine::dataflow::workers_for(m.inputs.len()).min(cap);
+    // SAFETY: sets this thread's signal mask to Postgres' BlockSig; restored
+    // to UnBlockSig below, panic or not, before any interrupt check. (The
+    // engine's threads are spawned in between; the backend's own handlers
+    // stay installed, and a signal that arrives meanwhile is delivered once
+    // the mask is restored.)
+    unsafe { pg_sys::BackgroundWorkerBlockSignals() };
+    let r = catch_unwind(AssertUnwindSafe(|| {
+        improv_engine::dataflow::evaluate_with_workers(m, targets, workers)
+    }));
+    // SAFETY: as above.
+    unsafe { pg_sys::BackgroundWorkerUnblockSignals() };
+    match r {
         Ok(r) => Ok(r?),
         Err(p) => {
             let msg = p

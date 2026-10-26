@@ -87,7 +87,9 @@ one cell and see what it affects, without a rebuild. That is
 
 `Engine::new(model, targets)` compiles the plans for the target derived
 measures, then starts a dataflow on its own thread (timely's
-`execute_directly`, one worker). Every input measure gets an `InputSession`.
+`execute_directly`, one worker; a batch `evaluate` uses several, see
+[Running Improv](./running.md#environment)). Every input measure gets an
+`InputSession`.
 The model's input cells are fed in at time 0. `new` returns the handle and
 the first `Snapshot`.
 

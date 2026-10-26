@@ -181,12 +181,10 @@ the constant factor (when this was written, `CoordKey` was a
 per million *simple 2D* cells rather than the ~24 bytes/cell the raw data
 would need; it is now a `SmallVec<[(u32,u32); 3]>`, inline up to three
 categories) but not the fundamental "must fit in RAM" constraint. **Also
-worth noting:** `evaluate()` currently runs via
-`timely::execute::execute_directly` (single-threaded, one worker) rather
-than a multi-worker `timely::execute::execute` — so today's numbers don't
-even reflect DD's own intra-machine parallelism, which is a separate,
-easier, and orthogonal win (more cores, not more RAM) worth chasing before
-or alongside anything below.
+worth noting:** `evaluate()` then ran on one timely worker; it now runs
+on up to 8 (1M cells 0.88 → 0.22 s; see `AGENT_ENGINE_STEERING.md` §11),
+an orthogonal win (more cores, not more RAM) that does not change the
+"must fit in RAM" constraint.
 
 **Verdict:** no help from upstream at the pinned version; do not expect a
 disk-spilling DD operator to appear and solve this — if DD grows one

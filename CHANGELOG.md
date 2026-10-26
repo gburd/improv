@@ -59,6 +59,19 @@ this project follows [Semantic Versioning](https://semver.org/).
   expansion, the scalar evaluator and the controlled-English parser and
   describer grow the stack where the caller's thread is nearly used up
   (`stacker`), and engine threads have 16 MiB (was 8).
+- **`evaluate` runs on several timely workers** for `improv eval`, the
+  server's derived-measure reads, DuckDB's `improv()` and pg_improv's
+  trigger and commit modes: one per 10,000 input cells, at most 8 and the
+  cores (`IMPROV_ENGINE_WORKERS` overrides it; in Postgres, at most
+  `max_parallel_workers_per_gather` + 1). Release build, 48-core box,
+  before → after (8 workers): `tests/stress.rs` 1M cells 0.88 → 0.22 s,
+  2M 1.80 → 0.45 s, `SUM` over 1M cells 1.30 → 0.28 s; DuckDB `improv()`
+  over 2.5M distinct cells 4.55 → 4.0 s (its `evaluate` 0.75 → 0.35 s;
+  the rest is building the model). Peak memory rises 15–20 % (each worker
+  arranges its share and buffers exchanges). Results are the same, bit for
+  bit, on any count (a reduction still sees a whole group, sorted, on one
+  worker); a FIXPOINT model and the live `Engine` stay on one worker,
+  since workers make single edits slower.
 - **Windowed reductions cost O(n) per group, not O(n²).**
   `SUM(X OVER W[FIRST..THIS])` at 5,000 items went from 1.12 s to 6 ms
   per edit, and at 20,000 items from 18.1 s to 25 ms (evaluate 17.9 s to

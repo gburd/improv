@@ -185,6 +185,12 @@ carry code or SQL.
 | CSV export of text starting `= + - @ \t \r` | prefixed with `'` (formula-injection safe) | `ExportSpec { neutralize_formulas: false }` (API) |
 | Two processes saving one store | the second save is refused with "reload and retry" (no clobbering) | none |
 
+## Environment
+
+| Variable | Effect |
+| --- | --- |
+| `IMPROV_ENGINE_WORKERS=n` | Threads (timely workers, 1–64) one batch evaluation uses: `improv eval`, the server's reads of a derived measure, DuckDB's `improv()`, pg_improv's trigger and commit modes. Default: one per 10,000 input cells, at most 8 and the cores (in Postgres also at most `max_parallel_workers_per_gather` + 1). Results are the same on any count. Interactive editing (GUI, TUI, `improv stream`, the sync worker) always uses one. |
+
 ## Tests
 
 ```sh

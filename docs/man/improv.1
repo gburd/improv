@@ -225,6 +225,13 @@ Run external functions without the sandbox.
 Without bubblewrap, run external functions under resource limits only
 (otherwise they are refused).
 .TP
+.B IMPROV_ENGINE_WORKERS
+Threads one
+.B eval
+uses (1 to 64); by default one per 10,000 input cells, at most 8 and
+the number of cores.
+The result is the same on any count.
+.TP
 .B MENTAT_MMAP_SIZE
 Bytes of the store file SQLite may memory-map;
 .B 0

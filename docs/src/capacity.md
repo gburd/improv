@@ -22,7 +22,7 @@ factor of about two, and measure your own model before you buy hardware.
 | Cost | Value | Source |
 | --- | --- | --- |
 | Engine memory per cell | about 0.3 kB in the live engine (5M-cell `Price * Quantity` grid: 269 B per cell); `evaluate` with its model about 0.5 kB (1M cells: 0.54 GB peak; 5M: 2.35 GB); 20k measures × 100 items: 1.17 GB | [changelog] (B7: no collapse after a join) |
-| Engine evaluate | about 0.9 µs per cell (1M cells 0.87 s, 5M 4.5 s) | [changelog] (B7) |
+| Engine evaluate | about 0.9 µs per cell on one worker (1M cells 0.87 s, 5M 4.5 s); 0.22 µs on 8 (1M cells 0.22 s, 2M 0.45 s), using 15–20 % more memory | [changelog] (B7, `evaluate` on several workers) |
 | One-cell edit | 56 µs at 100k cells, independent of size; plus a per-measure round cost (fan of 20k measures: 129 ms per edit) | [changelog] |
 | Logical worker memory, fold state per fact row, `count` + `count_distinct` bindings | about 120 B (derived: 444 MB private for 2.5M rows, less the engine's 4 × 44,750 cells at 0.8 kB) | [bench] §1, [here] |
 | Logical worker memory per small model | about 0.6 MB (1,000 models of 1,000 rows: 575–602 MB) | [here] |

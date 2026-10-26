@@ -300,15 +300,28 @@ Interfaces request a slice for a `View` and render it.
 
 ## 11. Concurrency and Determinism
 
-The engine runs on one timely worker: `evaluate` and the live `Engine`
-both use `execute_directly`, so operators run one at a time on that
-worker's thread (the live engine's own thread, apart from its caller's).
-More workers would speed up batch `evaluate` (3.1× at 8 workers on a 1M-cell
-join + SUM, in the 2026-10-25 DD review's prototype) and slow single edits
-(0.15 → 1.96 ms), so the live engine stays single. Whatever the worker
-count, results must be **deterministic**: identical inputs yield identical
-outputs, bit-for-bit, independent of insertion order. This is a tested
-invariant (see §14), not an aspiration.
+The live `Engine` runs on one timely worker (`execute_directly`, on its
+own thread): more workers make a single edit slower (0.15 → 1.96 ms at 8
+in the 2026-10-25 DD review's prototype). Batch `evaluate` runs on
+`workers_for(cells)` workers (`dataflow.rs`): one per `CELLS_PER_WORKER`
+(10,000) input cells, at most `MAX_WORKERS` (8) and the cores, or
+`IMPROV_ENGINE_WORKERS`; `evaluate_with_workers` takes a count. It
+spawns the workers itself (`Process::new_vector`, `Worker::new`), each
+with `ENGINE_STACK`, because timely's `execute` uses the default stack.
+Worker *i* feeds every *n*-th input cell; rows a plan makes from nothing
+(literals, `constant`, `Items`, a FILL grid) come from worker 0 only
+(`on_first`), or each worker would add a copy. A panicking worker sets a
+flag its peers poll, so none waits for it. A FIXPOINT model stays on one
+worker (it runs the live engine). 1M-cell grid: 0.88 → 0.22 s at 8. In a
+Postgres backend the caller blocks signals around the call, so the
+threads inherit a mask that runs no Postgres handler, and caps the count
+at `max_parallel_workers_per_gather` + 1.
+
+Whatever the worker count, results must be **deterministic**: identical
+inputs yield identical outputs, bit-for-bit, independent of insertion
+order and of the worker count (a reduction sees a whole group, sorted,
+on one worker; `tests/determinism.rs` compares 1 to 5 workers). This is a
+tested invariant (see §14), not an aspiration.
 
 ---
 
@@ -329,7 +342,7 @@ Goals:
 - Sub-500ms for large models
 
 Techniques: incremental recalculation (only deltas), topological scheduling,
-and cached view slices (one timely worker; see §11).
+and cached view slices (the live engine on one timely worker; see §11).
 
 **Per-measure cost.** Every operator of every tracked measure is a timely
 operator, and an edit round moves every frontier, so a round costs
