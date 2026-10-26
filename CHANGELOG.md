@@ -46,7 +46,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   already did. An argument of all digits is an id. An unknown name is an
   error that lists the measures, nearest first; a name two measures share
   (possible only in a file from before H1-9) gives their ids. `--at`
-  already named categories and items by name.
+  already named categories and items by name. An argument that is not a
+  number, which was a usage error (exit status 2), is now looked up, so a
+  name not in the model exits 1, like any other model error.
 - **The TUI renames and deletes categories, items and measures** (H1-21).
   `r` opens `rename>`: `Time = Year`, `Product.WidgetA = Gadget` (an item
   is named alone when one category has it). Formulas follow the new name.
