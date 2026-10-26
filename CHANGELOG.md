@@ -32,6 +32,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Typing on a TUI cell replaces its value.** `e` or Enter showed the old
+  value with the caret at its end, so typing `350` over `300` stored
+  `300350`. The old value now shows selected and the first key typed
+  replaces it; an arrow, Home, End or Backspace first edits it in place. A
+  digit, `-` or `.` in the grid starts an edit holding just that key
+  (usability review H1-2).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

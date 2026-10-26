@@ -80,7 +80,8 @@ improv-tui new.db     # a new file opens empty: build it with c, n and =
 | Key | Does |
 | --- | --- |
 | arrows, click | move |
-| `e` / Enter | edit the input cell (derived cells recompute live), or a derived measure's formula; a parse error is marked under the bad token, with a hint |
+| `e` / Enter | edit the input cell (derived cells recompute live), or a derived measure's formula; a parse error is marked under the bad token, with a hint. Typing replaces the old value; an arrow first edits it in place |
+| a digit, `-`, `.` | start editing the cell with that key |
 | Tab / `m` | next measure |
 | `p` | pivot |
 | `[` `]` | page |

@@ -323,6 +323,9 @@ fn cell_key(
 /// Status shown when the cursor is not on a real cell (empty/filtered axis).
 const NO_CELL: &str = "no cell here (an axis is empty or fully filtered)";
 
+/// Status for typing on a derived cell (the GUI's words, and the way in).
+pub const DERIVED: &str = "derived cells are computed, not editable; press e to edit the formula";
+
 /// Which CSV command is active in the command-prompt (`self.command`).
 /// Mirrors the cell-edit buffer (`self.edit`) but for a full command line
 /// instead of a single value, and covers the two storage_csv entry points.
@@ -856,6 +859,8 @@ impl App {
 
     /// Enter edit mode: on the cell under the cursor for an input measure, on
     /// the formula (seeded with its controlled-English text) for a derived one.
+    /// A cell's old value is replaced by the first character typed, unless
+    /// the caret moves first ([`LineEdit::fresh`]).
     pub fn begin_edit(&mut self) {
         if !self.model.measures.contains_key(&self.grid.measure) {
             self.status = Some(EMPTY.into());
@@ -870,16 +875,33 @@ impl App {
             self.status = Some(NO_CELL.into());
             return;
         }
-        // Seed the buffer with the current value so editing is a tweak, not a
-        // retype. Blank cell -> empty buffer.
+        // Seed the buffer with the current value: typing replaces it, an
+        // arrow first makes it a tweak. Blank cell -> empty buffer.
         let seed = match self.grid.value_at(self.cursor_row, self.cursor_col) {
             Some(n) if n.fract() == 0.0 => format!("{n:.0}"),
             Some(n) => format!("{n}"),
             // Text/boolean cells seed with their display text.
             None => self.grid.display_at(self.cursor_row, self.cursor_col),
         };
-        self.edit = Some(seed.into());
+        self.edit = Some(LineEdit::replacing(seed));
         self.status = None;
+    }
+
+    /// A digit, `-` or `.` in normal mode (H1-2): an edit of the cell
+    /// holding only that key, as a spreadsheet starts one. A derived cell
+    /// says it is computed and that `e` edits its formula.
+    pub fn type_into_cell(&mut self, c: char) {
+        if self
+            .model
+            .measures
+            .get(&self.grid.measure)
+            .is_some_and(|m| m.is_derived())
+        {
+            self.status = Some(DERIVED.into());
+            return;
+        }
+        self.begin_edit();
+        self.edit_key(KeyCode::Char(c));
     }
 
     /// A key in the edit line. In a formula, Tab completes the name before
@@ -1779,6 +1801,27 @@ pub(crate) mod tests {
         );
     }
 
+    /// H1-2: a digit, `-` or `.` starts an edit holding only that key; on a
+    /// derived cell it explains; on no cell it says so.
+    #[test]
+    fn typing_on_a_cell_starts_an_edit_with_that_key() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        app.type_into_cell('-');
+        assert_eq!(app.edit.as_deref(), Some("-"));
+        app.edit_key(KeyCode::Char('5'));
+        app.commit_edit();
+        assert_eq!(app.grid.value_at(0, 0), Some(-5.0));
+        view(&mut app, MeasureId(102));
+        app.type_into_cell('7');
+        assert!(app.edit.is_none());
+        assert_eq!(app.status.as_deref(), Some(DERIVED));
+        let mut empty = App::new(Model::new()).unwrap();
+        empty.type_into_cell('1');
+        assert!(empty.edit.is_none());
+        assert_eq!(empty.status.as_deref(), Some(EMPTY));
+    }
+
     #[test]
     fn editing_derived_cell_is_rejected() {
         let mut app = App::new(revenue_model()).unwrap();
@@ -2024,6 +2067,8 @@ pub(crate) mod tests {
         );
         app.begin_edit(); // seeds with the text, not blank
         assert_eq!(app.edit.as_deref(), Some("hi there"));
+        app.edit_key(KeyCode::Char('x'));
+        assert_eq!(app.edit.as_deref(), Some("x"), "typing replaces it");
 
         view(&mut app, MeasureId(201));
         app.edit = Some("maybe".into());

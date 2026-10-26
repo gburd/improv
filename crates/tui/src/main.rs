@@ -221,6 +221,8 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
     match k.code {
         KeyCode::Char('q') => quit(app, path, armed),
         KeyCode::Char('e') | KeyCode::Enter => app.begin_edit(),
+        // H1-2: typing a number on a cell starts its edit.
+        KeyCode::Char(c @ ('0'..='9' | '-' | '.')) => app.type_into_cell(c),
         KeyCode::Tab | KeyCode::Char('m') => app.next_measure(),
         // Shift+arrow grows a range selection (its Sum shows in the status).
         KeyCode::Up => app.step(-1, 0, shift),
@@ -365,6 +367,34 @@ mod tests {
         )
         .unwrap();
         assert!(app.edit.is_none());
+    }
+
+    /// H1-2: `e` then typing replaces the old value (300 -> 350, not
+    /// 300350); an arrow first edits in place; a digit in normal mode
+    /// starts an edit holding just that digit.
+    #[test]
+    fn typing_replaces_a_cell_and_a_digit_starts_an_edit() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        let mut ev = chars("e350");
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(350.0));
+        let mut ev = vec![key(KeyCode::Enter), key(KeyCode::Left)];
+        ev.extend(chars("1"));
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(3510.0), "35|0 -> 3510");
+        let mut ev = vec![key(KeyCode::Right)];
+        ev.extend(chars("42"));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.edit.as_deref(), Some("42"));
+        run_events(&mut app, "", vec![key(KeyCode::Enter)]).unwrap();
+        assert_eq!(app.grid.value_at(0, 1), Some(42.0));
+        let mut ev = chars(".5");
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, "", ev).unwrap();
+        assert_eq!(app.grid.value_at(0, 1), Some(0.5));
     }
 
     #[test]
@@ -544,7 +574,7 @@ mod tests {
         run_events(&mut app, "", vec![key(KeyCode::Esc)]).unwrap();
         // In a value edit Tab does nothing.
         view(&mut app, MeasureId(101));
-        let mut ev = vec![key(KeyCode::Char('e'))];
+        let mut ev = vec![key(KeyCode::Char('e')), key(KeyCode::End)];
         ev.extend(chars("pm"));
         ev.push(key(KeyCode::Tab));
         run_events(&mut app, "", ev).unwrap();
@@ -577,7 +607,11 @@ mod tests {
         run_events(&mut app, "", vec![key(KeyCode::F(1)), key(KeyCode::Esc)]).unwrap();
         assert!(app.help.is_none());
         // F1 mid-edit: Enter inserts the selected function's `NAME(`.
-        let mut ev = vec![key(KeyCode::Char('e')), key(KeyCode::F(1))];
+        let mut ev = vec![
+            key(KeyCode::Char('e')),
+            key(KeyCode::End),
+            key(KeyCode::F(1)),
+        ];
         ev.extend(chars("pmt"));
         ev.push(key(KeyCode::Enter));
         run_events(&mut app, "", ev).unwrap();
@@ -642,7 +676,7 @@ mod tests {
         let mut app = App::new(revenue_model()).unwrap();
         view(&mut app, MeasureId(101));
         let mut ev = vec![key(KeyCode::Enter)];
-        ev.extend(chars("0"));
+        ev.extend(chars("1000"));
         ev.push(key(KeyCode::Enter));
         run_events(&mut app, "", ev).unwrap();
         assert_eq!(app.grid.value_at(0, 0), Some(1000.0));

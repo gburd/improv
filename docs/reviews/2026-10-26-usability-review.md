@@ -110,7 +110,7 @@ already uses. **Files:** `crates/gui/src/app.rs` (`handle_grid_keys`,
 
 ### 3: major
 
-**H1-2 TUI: `e` on a cell appends to the old value.** *Match with the
+**[fixed: `fix(tui): typing on a cell replaces its value (H1-2)`] H1-2 TUI: `e` on a cell appends to the old value.** *Match with the
 real world; error prevention.* `edit> 300` with the caret at the end, so
 typing `350` gives `300350`. **Fix:** a digit, `-` or `.` in normal mode
 starts an edit holding only that key. `e`/Enter keep the old text, but the

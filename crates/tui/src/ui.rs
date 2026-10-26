@@ -19,7 +19,7 @@ use ratatui::{
 const HELP: &[&str] = &[
     "arrows/click: move",
     "Shift+arrows: range",
-    "e/Enter: edit",
+    "e/Enter/0-9: edit",
     "Tab (formula): complete",
     "[ ]: page",
     "p: pivot",
@@ -168,7 +168,8 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
 
 /// The `prompt` (`edit> `, or `formula> ` for a formula) and the text,
 /// the cell under the caret reversed and a diagnostic's span red and
-/// underlined. In a formula with the caret at the end inside a call, the
+/// underlined. A fresh edit's text is reversed too, as selected: typing
+/// replaces it. In a formula with the caret at the end inside a call, the
 /// parameters still to type follow, dimmed.
 fn edit_line(
     e: &LineEdit,
@@ -189,7 +190,7 @@ fn edit_line(
         } else {
             Style::default()
         };
-        if i == e.caret {
+        if i == e.caret || e.fresh {
             style = style.add_modifier(Modifier::REVERSED);
         } else if i == e.text.len() {
             continue;
@@ -836,6 +837,16 @@ mod tests {
         assert!(buf[(x + 7, prompt as u16)]
             .modifier
             .contains(Modifier::REVERSED));
+        assert!(!buf[(x + 6, prompt as u16)]
+            .modifier
+            .contains(Modifier::REVERSED));
+        // A fresh edit shows its old value selected: typing replaces it.
+        app.edit.as_mut().unwrap().fresh = true;
+        let buf = draw(&mut app, 60, 30);
+        assert!(buf[(x + 6, prompt as u16)]
+            .modifier
+            .contains(Modifier::REVERSED));
+        app.edit.as_mut().unwrap().fresh = false;
         // An error shows under the open edit.
         app.status = Some("not a number: 'x'".into());
         let lines = text(&draw(&mut app, 60, 30));
