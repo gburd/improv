@@ -86,6 +86,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   lost focus and the next keys drove the grid: `n` switched the worksheet's
   measure. It now keeps the keyboard, the caret at the start of the
   underlined error (H1-8).
+- **An in-memory model can be kept: File ▸ Save asks for a path**, writes
+  the model there and switches the window to it, which then autosaves
+  there; Undo still works. **File ▸ Save As…** does the same for any model,
+  and refuses a store that already holds one. Save was grayed out on an
+  `Untitled` model, and Save As was not built, so an hour's work could
+  only be discarded (H1-7).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

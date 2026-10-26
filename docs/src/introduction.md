@@ -39,7 +39,7 @@ Postgres extension supports Postgres 15 to 18. External functions in Python, R,
 Julia or Pure run under a bubblewrap sandbox on Linux; WebAssembly functions
 run in-process with fuel and memory limits. On other systems they are
 refused unless the operator sets `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1`. The
-GUI has no Save As, Open or Print yet, and the Postgres connection has no
+GUI has no Print yet, and the Postgres connection has no
 TLS (use a loopback port or an SSH tunnel). See the
 [changelog](https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md)
 for what changed in each release.

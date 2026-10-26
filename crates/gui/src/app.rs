@@ -288,7 +288,8 @@ pub struct ImprovApp {
     /// grid, and what lets a headless test click a row where a user would.
     formula_row_rects: Vec<(MeasureId, egui::Rect)>,
 
-    /// File ▸ New or Open… is asking for a path (`NewModel`/`OpenModel`).
+    /// File ▸ New, Open… or Save As… is asking for a path (`NewModel`,
+    /// `OpenModel`, `SaveAs`).
     file_panel: Option<Command>,
     /// The file panel's path field.
     file_path: String,
@@ -3982,8 +3983,8 @@ impl ImprovApp {
             Command::Undo => self.can_undo(),
             Command::Redo => self.can_redo(),
             Command::RemoveMatrix => self.matrix_count() > 1,
-            // In-memory models have no store: never claim "saved".
-            Command::SaveModel | Command::RevertToSaved => !self.db.is_empty(),
+            // In-memory models have no store to revert to (Save asks for one).
+            Command::RevertToSaved => !self.db.is_empty(),
             Command::AddItem => self.add_item_target().is_some(),
             Command::Rename | Command::Delete => self.edit_target().is_some(),
             _ => true,
@@ -3997,7 +3998,9 @@ impl ImprovApp {
         }
         match c {
             Command::InfoPanel => self.show_inspector = !self.show_inspector,
-            Command::NewModel | Command::OpenModel => {
+            // In memory there is no store yet: Save asks for one (H1-7).
+            Command::SaveModel if self.db.is_empty() => self.run_command(ctx, Command::SaveAs),
+            Command::NewModel | Command::OpenModel | Command::SaveAs => {
                 self.file_panel = Some(c);
                 ctx.memory_mut(|m| m.request_focus(egui::Id::unique("file_path")));
             }
@@ -4111,29 +4114,40 @@ impl ImprovApp {
         };
     }
 
-    /// File ▸ New and Open…: a NeXT panel asking for a store file or a
-    /// `postgres://` URL. Enter or the button switches models; an error
-    /// stays in the status line and the panel stays open.
+    /// File ▸ New, Open… and Save As…: a NeXT panel asking for a store file
+    /// or a `postgres://` URL. Enter or the button switches models (or saves
+    /// this one there); an error stays in the status line and the panel
+    /// stays open.
     fn file_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
         let Some(mode) = self.file_panel else {
             return;
         };
         let new = mode == Command::NewModel;
+        let save = mode == Command::SaveAs;
+        let (title, prompt, button) = match mode {
+            Command::NewModel => (
+                "New",
+                "New model file or postgres:// URL (empty: in memory):",
+                "Create",
+            ),
+            Command::SaveAs => (
+                "Save As",
+                "Save the model to a new file or postgres:// URL:",
+                "Save",
+            ),
+            _ => ("Open", "Model file or postgres:// URL:", "Open"),
+        };
         let mut open = true;
         let mut go = false;
         let rect = egui::Rect::from_center_size(ws.center(), egui::vec2(380.0, 112.0));
-        let win = crate::nxwin::NxWindow::new("file_panel", if new { "New" } else { "Open" });
+        let win = crate::nxwin::NxWindow::new("file_panel", title);
         let rect = anchored_rect(ctx, win.id(), rect);
         let _ = win
             .closable(&mut open)
             .rect(rect)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label(if new {
-                    "New model file or postgres:// URL (empty: in memory):"
-                } else {
-                    "Model file or postgres:// URL:"
-                });
+                ui.label(prompt);
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.file_path)
                         .id(egui::Id::unique("file_path"))
@@ -4142,24 +4156,30 @@ impl ImprovApp {
                 a11y_name(&resp, "Model file or postgres URL");
                 go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.horizontal(|ui| {
-                    go |= ui.button(if new { "Create" } else { "Open" }).clicked();
-                    if self.db.is_empty() && self.can_undo() {
+                    go |= ui.button(button).clicked();
+                    if !save && self.db.is_empty() && self.can_undo() {
                         ui.label("The in-memory model's edits will be lost.");
                     }
                 });
             });
         if go {
             let path = self.file_path.trim().to_owned();
-            match self.switch_model(&path, new) {
-                Ok(()) => {
-                    self.status = if path.is_empty() {
+            let done = if save {
+                self.save_as(&path).map(|()| {
+                    self.file_panel = None;
+                    format!("saved to {path}")
+                })
+            } else {
+                // A new app: its panel is closed.
+                self.switch_model(&path, new).map(|()| {
+                    if path.is_empty() {
                         "new in-memory model".into()
                     } else {
                         format!("opened {path}")
-                    };
-                }
-                Err(e) => self.status = e,
-            }
+                    }
+                })
+            };
+            self.status = done.unwrap_or_else(|e| e);
         } else if !open {
             self.file_panel = None;
         }
@@ -4184,6 +4204,36 @@ impl ImprovApp {
         next.locale = self.locale.clone();
         next.menu = self.menu;
         *self = next;
+        Ok(())
+    }
+
+    /// File ▸ Save As… (and Save on an in-memory model): write the whole
+    /// model to `path`, a store file or `postgres://` URL, and make it this
+    /// window's store; the undo history stays, and later edits autosave
+    /// there. Refuses a store that already holds a model; `path` naming the
+    /// current store saves it. On failure nothing changes.
+    pub fn save_as(&mut self, path: &str) -> Result<(), String> {
+        if path.is_empty() {
+            return Err("type a model file or postgres:// URL".into());
+        }
+        if path == self.db {
+            let all = improv_store::ChangeSet {
+                structure: true,
+                ..Default::default()
+            };
+            return self.save_changes(&all);
+        }
+        let mut store = Store::open(path).map_err(save_error)?;
+        let there = store.load_model().map_err(save_error)?;
+        if !(there.categories.is_empty() && there.measures.is_empty()) {
+            return Err(format!("{path} already holds a model; choose another path"));
+        }
+        store.save_model(&self.model).map_err(save_error)?;
+        self.db = path.to_owned();
+        self.save_token = store.take_save_token();
+        self.unsaved = Default::default();
+        self.outside = None;
+        self.dirty = false;
         Ok(())
     }
 
@@ -13257,12 +13307,100 @@ mod tests {
     }
 
     /// An in-memory model has no store: Ctrl+S must not report "saved model".
+    /// It asks for a path instead (H1-7).
     #[test]
     fn ctrl_s_on_an_in_memory_model_does_not_claim_saved() {
         let mut app = build_app(grid_2x2_model());
         assert!(app.db.is_empty());
+        assert!(app.command_enabled(Command::SaveModel));
+        assert!(!app.command_enabled(Command::RevertToSaved));
         let _ = press_command_key(&mut app, egui::Key::S, None);
         assert_ne!(app.status, "saved model");
+        assert_eq!(app.file_panel, Some(Command::SaveAs));
+    }
+
+    /// H1-7: File ▸ Save on an in-memory model asks for a path, writes the
+    /// model there and switches to it: the title names the file, later edits
+    /// autosave to it, undo still works, and Quit no longer warns. Save As
+    /// does the same from a stored model, and refuses a store that holds one.
+    #[test]
+    fn save_writes_an_in_memory_model_to_a_new_file() {
+        let (db, other) = (temp_db("h1_7_saved"), temp_db("h1_7_other"));
+        let _cleanup = (Cleanup(db.clone()), Cleanup(other.clone()));
+        let mut app = build_app(grid_2x2_model());
+        let k: CoordKey = improv_engine::smallvec::smallvec![(1, 10), (2, 20)];
+        app.set_cell(MeasureId(101), k.clone(), Value::Number(7.0))
+            .expect("an in-memory edit");
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        app.run_command(&ctx, Command::SaveModel);
+        assert_eq!(app.file_panel, Some(Command::SaveAs));
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        let shapes = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0).shapes;
+        assert!(text_at(&shapes, "Save As").is_some(), "the panel's title");
+        assert!(text_at(&shapes, "The in-memory model's edits will be lost.").is_none());
+        focused_frame(
+            &ctx,
+            &mut app,
+            "file_path",
+            vec![egui::Event::Text(db.clone())],
+        );
+        focused_frame(&ctx, &mut app, "file_path", vec![enter()]);
+        assert_eq!(app.status, format!("saved to {db}"));
+        assert_eq!((app.db.as_str(), app.file_panel), (db.as_str(), None));
+        assert!(!app.dirty && app.can_undo());
+        assert!(app.native_title().ends_with(&app.file_name().to_owned()));
+        let stored = || {
+            Store::open(&db)
+                .and_then(|mut s| s.load_model())
+                .expect("reload")
+        };
+        assert_eq!(stored(), *app.model, "the whole model, cells and all");
+        app.set_cell(MeasureId(101), k.clone(), Value::Number(8.0))
+            .expect("an autosaved edit");
+        assert_eq!(
+            stored().input(MeasureId(101), &decode(&k)),
+            Some(&Value::Number(8.0))
+        );
+        app.undo().expect("undo");
+        assert_eq!(
+            stored().input(MeasureId(101), &decode(&k)),
+            Some(&Value::Number(7.0))
+        );
+        assert!(app.quit_allowed(), "nothing to lose now");
+
+        // Save As onto a store holding a model is refused; the panel stays.
+        app.run_command(&ctx, Command::SaveAs);
+        app.file_path = db.clone();
+        let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
+        app.db = other.clone();
+        focused_frame(&ctx, &mut app, "file_path", vec![enter()]);
+        assert!(
+            app.status.contains("already holds a model"),
+            "{}",
+            app.status
+        );
+        assert_eq!(app.file_panel, Some(Command::SaveAs));
+        app.db = db.clone();
+        assert_eq!(
+            app.save_as(""),
+            Err("type a model file or postgres:// URL".into())
+        );
+        assert_eq!(app.save_as(&db), Ok(()), "the current store just saves");
+        assert_eq!(app.save_as(&other), Ok(()));
+        assert_eq!(app.db, other);
+        assert_eq!(
+            Store::open(&other)
+                .and_then(|mut s| s.load_model())
+                .expect("reload"),
+            *app.model
+        );
+        let dir = std::env::temp_dir().join("improv-no-such-dir").join("m.db");
+        let err = app
+            .save_as(&dir.to_string_lossy())
+            .expect_err("no such directory");
+        assert!(err.starts_with("save failed"), "{err}");
+        assert_eq!(app.db, other, "a failed Save As changes nothing");
     }
 
     /// Quitting an edited in-memory model takes two Quits; any other command

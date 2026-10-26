@@ -23,7 +23,10 @@ pub enum Command {
     OpenModel,
     /// Show or hide the model browser window.
     ModelBrowser,
+    /// File ▸ Save; on an in-memory model it asks for a path, as Save As.
     SaveModel,
+    /// File ▸ Save As…: ask for a path, write the model there, switch to it.
+    SaveAs,
     /// Reload the model from the store, dropping in-memory state (the way
     /// out of a save conflict: another writer changed the model).
     RevertToSaved,
@@ -85,7 +88,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("New", Some('n'), Some(C::NewModel)),
             ("Open…", Some('o'), Some(C::OpenModel)),
             ("Save", Some('s'), Some(C::SaveModel)),
-            ("Save As…", None, None),
+            ("Save As…", None, Some(C::SaveAs)),
             ("Revert to Saved", None, Some(C::RevertToSaved)),
             ("Import/Export CSV…", None, Some(C::ToggleCsv)),
             ("Close", None, None),
@@ -646,11 +649,8 @@ mod tests {
         assert_eq!(h.state.open, Some(ws), "a disabled click leaves it open");
         let file = top("File");
         h.click_row(menu_id(), file);
-        assert_eq!(
-            h.click_row(sub_id(file), 3),
-            None,
-            "Save As isn't built yet"
-        );
+        assert_eq!(h.click_row(sub_id(file), 6), None, "Close isn't built yet");
+        assert_eq!(h.click_row(sub_id(file), 3), Some(C::SaveAs));
     }
 
     #[test]

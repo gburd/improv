@@ -34,7 +34,9 @@ The window has five regions:
   close it. **Info ▸ Info Panel…** shows or hides the Info panel; **File ▸
   New** starts an empty model (type a new file, a `postgres://` URL, or
   nothing for an in-memory one) and **Open…** opens a store file or URL,
-  both in a small panel; **Save** saves the model, **Revert to Saved**
+  both in a small panel; **Save** saves the model, **Save As…** writes it
+  to a new file or URL and carries on there (Save does that too for an
+  in-memory model), **Revert to Saved**
   reloads it from the store (the way out of a save conflict), and
   **Import/Export CSV…** opens the CSV wizard; **Edit** has Undo and Redo;
   **Worksheet** has Pivot, Add Matrix, Remove Matrix, Save View, and **Add
@@ -45,7 +47,7 @@ The window has five regions:
   current one, and picking one switches the workspace to it; **Graph ▸ Show
   Chart** toggles the chart; **Help ▸ Functions…** (also F1) opens the
   [function help](#function-help); **Hide** minimizes and **Quit** closes the
-  window. Format, Print and Services, and Save As and Close in the File
+  window. Format, Print and Services, and Close in the File
   menu, are not built yet and draw grayed out. Key equivalents, shown at
   the right of their item, take Ctrl (Cmd on macOS): `n` new, `o` open,
   `s` save, `z` undo, `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
@@ -111,7 +113,11 @@ The window has five regions:
 
 The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an
-in-memory model, or a model whose last autosave failed.
+in-memory model, or a model whose last autosave failed. To keep an
+in-memory model, choose **File ▸ Save** and type a path: the model is
+written there, the window switches to it and autosaves to it from then on,
+and Undo still works. Quitting an edited in-memory model asks for a second
+Quit.
 
 Every edit autosaves, in one transaction. If a save fails, the edit is
 undone in the window as well, so what you see is what the file holds,

@@ -159,7 +159,7 @@ Info panel change an input measure's categories. **Files:**
 `crates/gui/src/app.rs` (`add_named`, `NewThing::Input`),
 `crates/tui/src/app.rs` (`run_add_input`, to share), `docs/src/gui-tour.md`.
 
-**H1-7 GUI: a model built in memory cannot be saved.** *User control and
+**[fixed: `fix(gui): File > Save asks where to save an in-memory model; Save As (H1-7)`] H1-7 GUI: a model built in memory cannot be saved.** *User control and
 freedom; error prevention.* Started with no file (or File ▸ New with an
 empty path), the title reads `Untitled •`. File ▸ Save is disabled and
 Save As is not built, so an hour's work can only be discarded. Quit does
