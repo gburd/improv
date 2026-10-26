@@ -547,17 +547,12 @@ pub fn parse_formula_text(model: &Model, text: &str) -> Result<Formula, ParseErr
     })
 }
 
-/// Measures sorted for stable cycling: derived first, then by id.
+/// Measures in id order, input or derived, as the model was built: the
+/// order Tab cycles them in, and the first is the one a model opens on
+/// when it has no saved view (H1-34, as the GUI does).
 pub fn measure_order(model: &Model) -> Vec<MeasureId> {
     let mut ids: Vec<MeasureId> = model.measures.keys().copied().collect();
-    ids.sort_by_key(|id| {
-        let derived = model
-            .measures
-            .get(id)
-            .map(|m| m.is_derived())
-            .unwrap_or(false);
-        (!derived, id.0) // derived (false sorts first) then ascending id
-    });
+    ids.sort_by_key(|id| id.0);
     ids
 }
 
@@ -2098,6 +2093,18 @@ impl App {
         self.reselect();
     }
 
+    /// Show the first saved view in id order, if there is one (H1-34, as
+    /// the GUI opens a model). Opening is not news: the status line stays
+    /// empty unless the view's measure is gone.
+    pub fn open_first_view(&mut self) {
+        let Some(id) = self.model.views.keys().min_by_key(|v| v.0).copied() else {
+            return;
+        };
+        let view = self.model.views[&id].clone();
+        self.apply_view(&view);
+        self.applied_view = Some(id);
+    }
+
     /// Cycle to the next saved view (by id order) and apply it. No-op if there
     /// are no saved views.
     pub fn cycle_view(&mut self) {
@@ -2307,24 +2314,58 @@ pub(crate) mod tests {
         assert_eq!(grid.value_at(1, 0), Some(20.0)); // WidgetB
     }
 
+    /// H1-34: measures in id order, input or derived; a model opens on the
+    /// first (Price), and Tab wraps.
     #[test]
-    fn measure_cycling_wraps_and_derived_first() {
+    fn measure_cycling_wraps_in_id_order() {
         let model = revenue_model();
         let mut app = App::new(model).unwrap();
-        // Derived (Revenue, 102) sorts first.
-        assert_eq!(app.grid.measure, MeasureId(102));
-        app.next_measure();
-        assert_eq!(app.grid.measure, MeasureId(100)); // then Price (id 100)
+        assert_eq!(app.grid.measure, MeasureId(100), "Price, not Revenue");
         app.next_measure();
         assert_eq!(app.grid.measure, MeasureId(101)); // then Quantity (id 101)
         app.next_measure();
-        assert_eq!(app.grid.measure, MeasureId(102)); // wraps back
+        assert_eq!(app.grid.measure, MeasureId(102)); // then Revenue (id 102)
+        app.next_measure();
+        assert_eq!(app.grid.measure, MeasureId(100)); // wraps back
+    }
+
+    /// H1-34: a model opens on its first saved view in id order, quietly;
+    /// with none it stays on its first measure.
+    #[test]
+    fn a_model_opens_on_its_first_view_else_its_first_measure() {
+        let mut app = App::new(revenue_model()).unwrap();
+        app.open_first_view();
+        assert_eq!((app.grid.measure, app.applied_view), (MeasureId(100), None));
+        let mut m = revenue_model();
+        for (id, name, measure) in [(5, "Later", 101), (2, "First", 102)] {
+            let mut p = MatrixPlacement::new(MeasureId(measure));
+            p.axis_order = vec![CategoryId(2), CategoryId(1)];
+            m.add_view(View::from_matrices(
+                ViewId(id),
+                Name(name.into()),
+                p,
+                vec![],
+            ));
+        }
+        let mut app = App::new(m).unwrap();
+        app.open_first_view();
+        assert_eq!(app.grid.measure, MeasureId(102));
+        assert_eq!(app.applied_view, Some(ViewId(2)));
+        assert_eq!(
+            app.grid.row_cat.as_ref().unwrap().1,
+            "Product",
+            "its layout"
+        );
+        assert_eq!(app.status, None, "opening is not news");
+        app.cycle_view();
+        assert_eq!(app.applied_view, Some(ViewId(5)), "v goes on to the next");
     }
 
     #[test]
     fn cursor_stays_in_bounds() {
         let model = revenue_model();
         let mut app = App::new(model).unwrap();
+        view(&mut app, MeasureId(102));
         // Revenue grid is 2x2. Push cursor past every edge.
         app.move_cursor(-5, -5);
         assert_eq!((app.cursor_row, app.cursor_col), (0, 0));
@@ -2343,9 +2384,14 @@ pub(crate) mod tests {
     }
 
     // Position the app on a specific measure by id.
+    /// Show `measure` in its natural layout, as Tab does.
     pub(crate) fn view(app: &mut App, measure: MeasureId) {
         app.selected = app.measures.iter().position(|m| *m == measure).unwrap();
+        app.axis_order = app.natural_axis_order();
+        app.page_idx.clear();
+        app.filters.clear();
         app.reselect();
+        app.page_idx = app.grid.pages.iter().map(|p| p.item_index).collect();
     }
 
     /// H1-22: `#` sets the viewed measure's number format: the grid, its
@@ -3256,7 +3302,7 @@ pub(crate) mod tests {
         let v = src.build_view(ViewId(1), "L1");
 
         let mut dst = App::new(revenue_model()).unwrap();
-        assert_ne!(dst.grid.measure, MeasureId(101)); // starts on derived Revenue
+        assert_ne!(dst.grid.measure, MeasureId(101)); // starts on Price
         dst.apply_view(&v);
 
         assert_eq!(dst.grid.measure, MeasureId(101));

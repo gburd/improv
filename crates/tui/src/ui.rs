@@ -599,6 +599,7 @@ mod tests {
     #[test]
     fn nothing_is_shown_by_color_alone() {
         let mut app = App::new(revenue_model()).unwrap();
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
         app.step(1, 0, true);
         let buf = draw(&mut app, 100, 30);
         let marked = |x, y| -> Modifier { buf[(x, y)].modifier };
@@ -836,6 +837,7 @@ mod tests {
         q.categories.push(improv_core_model::CategoryId(3));
         m.add_measure(q);
         let mut app = App::new(m).unwrap();
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
         let lines = text(&draw(&mut app, 100, 30));
         row_of(&lines, "Revenue = Price * Quantity");
         row_of(&lines, "Sum 1000");
@@ -1074,6 +1076,8 @@ mod tests {
     #[test]
     fn the_status_box_has_one_line_of_keys() {
         let mut app = App::new(revenue_model()).unwrap();
+        // A formula's line above the keys.
+        crate::app::tests::view(&mut app, improv_core_model::MeasureId(102));
         for (w, h) in [(80, 24), (110, 32), (30, 24)] {
             let lines = text(&draw(&mut app, w, h));
             // Title, formula, keys, between the box's borders.

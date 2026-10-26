@@ -60,6 +60,8 @@ fn load(path: &str) -> Result<App, String> {
     let mut app = App::new(model)?;
     app.save_token = save_token;
     app.saved = Some(saved);
+    // On its first saved view, else its first measure (H1-34).
+    app.open_first_view();
     Ok(app)
 }
 
@@ -724,6 +726,8 @@ mod tests {
             .collect();
         names.sort();
         assert_eq!(names, ["By product", "Totals"], "each saved as it was made");
+        // H1-34: a model with views opens on the first (Totals, id 1).
+        assert_eq!(loaded.applied_view, Some(improv_core_model::ViewId(1)));
         let mut ev = chars("V-Totals");
         ev.push(key(KeyCode::Enter));
         run_events(&mut app, p, ev).unwrap();

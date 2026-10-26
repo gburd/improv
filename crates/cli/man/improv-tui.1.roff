@@ -14,6 +14,10 @@ A model is a store file made by
 .BR improv (1),
 or a Postgres model URL,
 .BI postgres:// user @ host / db ?model= name\fR.
+A model opens on its first saved view, or, with none, on its first
+measure;
+.B Tab
+goes through the measures in the order they were made.
 A new file, or a model with nothing in it, opens empty: build it with
 .BR c ,
 .BR n " and"

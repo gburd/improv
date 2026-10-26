@@ -255,7 +255,8 @@ update at once. The GUI saves each edit to `budget.db` as you make it, so
 `improv eval` sees it straight away; Ctrl+Z undoes it. [The Desktop
 GUI](./gui-tour.md) describes every window.
 
-In a terminal, `improv-tui budget.db` opens the same file.
+In a terminal, `improv-tui budget.db` opens the same file, on the
+Spending view, as the GUI does.
 
 ## What you used
 
