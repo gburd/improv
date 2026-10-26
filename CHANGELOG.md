@@ -115,6 +115,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   CLI saves no window position (the origin), which the GUI restored as
   it was, so the menu covered the row labels and the first column. A
   window at the origin now opens where a fresh one does (H1-14).
+- **The GUI's input cells are marked so they can be told from derived
+  ones**: a dark-gray hairline under the value, inset from the cell's
+  rule. The old mark, a light-gray line on the black rule, could not be
+  seen at 1:1 (H1-33).
 - **Worksheet ▸ Add Matrix opens the new window beside the last one**,
   or below it, where the desk has room and no window is covered; it
   opened 28 px from the last one, over it, which read as one window.

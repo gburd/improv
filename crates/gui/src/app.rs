@@ -3975,6 +3975,18 @@ fn decode(k: &CoordKey) -> improv_core_model::Coordinate {
     improv_core_model::Coordinate::from_pairs(k.iter().map(|(c, i)| (CategoryId(*c), ItemId(*i))))
 }
 
+/// The input-cell mark: a dark-gray hairline under the value, inset and
+/// clear of the cell's black rule so it reads at 1:1. Derived cells have
+/// none, which is how the two tell apart (H1-33). Light gray on the rule,
+/// as it was, could not be seen.
+fn input_mark(cell: egui::Rect) -> egui::Shape {
+    egui::Shape::hline(
+        cell.left() + 4.0..=cell.right() - 4.0,
+        cell.bottom() - 3.5,
+        egui::Stroke::new(1.0_f32, crate::theme::DARK_GRAY),
+    )
+}
+
 /// The measure a window shows by default: the first in id order, input or
 /// derived (H1-34), as the model was built.
 fn pick_default_measure(model: &Model) -> Option<MeasureId> {
@@ -7110,15 +7122,7 @@ impl ImprovApp {
                                                     if resp.double_clicked() {
                                                         begin_edit = Some((key.clone(), text));
                                                     }
-                                                    // Modern input mark: a faint inset underline.
-                                                    ui.painter().hline(
-                                                        r.left() + 2.0..=r.right() - 2.0,
-                                                        r.bottom() - 2.0,
-                                                        egui::Stroke::new(
-                                                            1.0_f32,
-                                                            crate::theme::LIGHT_GRAY,
-                                                        ),
-                                                    );
+                                                    ui.painter().add(input_mark(r));
                                                 }
                                             });
                                         });
@@ -12587,6 +12591,49 @@ mod tests {
             fill_of(cell_rect(&desk, &app, 1, 0)),
             Some(crate::theme::WHITE)
         );
+    }
+
+    /// H1-33: an input cell carries a dark-gray hairline under its value,
+    /// clear of the cell's black rule; a derived cell has none.
+    #[test]
+    fn input_cells_are_marked_and_derived_cells_are_not() {
+        fn marks(out: &egui::FullOutput, cell: egui::Rect) -> usize {
+            fn walk(s: &egui::Shape, cell: egui::Rect, n: &mut usize) {
+                match s {
+                    egui::Shape::LineSegment { points, stroke }
+                        if stroke.color == crate::theme::DARK_GRAY
+                            && points.iter().all(|p| cell.shrink(1.0).contains(*p))
+                            && points[0].y == points[1].y =>
+                    {
+                        *n += 1;
+                    }
+                    egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, cell, n)),
+                    _ => {}
+                }
+            }
+            let mut n = 0;
+            out.shapes.iter().for_each(|c| walk(&c.shape, cell, &mut n));
+            n
+        }
+        let (mut app, mut desk) = grid_desk();
+        let out = desk.frame(&mut app, Vec::new());
+        for (ri, ci) in [(0, 0), (1, 1)] {
+            assert_eq!(
+                marks(&out, cell_rect(&desk, &app, ri, ci)),
+                1,
+                "input ({ri},{ci})"
+            );
+        }
+        select(&mut app, MeasureId(102));
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        for (ri, ci) in [(0, 0), (1, 1)] {
+            assert_eq!(
+                marks(&out, cell_rect(&desk, &app, ri, ci)),
+                0,
+                "derived ({ri},{ci})"
+            );
+        }
     }
 
     /// (b) The cursor's row and column headers are lit; the other headers are not.
