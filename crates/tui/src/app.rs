@@ -609,6 +609,9 @@ pub struct App {
     pub outside_seen: Option<i64>,
     /// `q` was pressed and its save failed: the next `q` quits anyway.
     pub quit_armed: bool,
+    /// `R` was pressed with something to lose (H1-20): the next `R`
+    /// reverts. Any other key disarms it.
+    pub revert_armed: bool,
     /// The formula text whose commit was held because it is a constant
     /// (H1-4): Enter again on the same text replaces the formula.
     pub confirm_constant: Option<String>,
@@ -685,6 +688,7 @@ impl App {
             defining: false,
             outside_seen: None,
             quit_armed: false,
+            revert_armed: false,
             confirm_constant: None,
             unsaved: false,
             autosave_due: false,

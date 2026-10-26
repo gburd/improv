@@ -222,8 +222,9 @@ fn help_key(app: &mut App, code: KeyCode) {
 /// Key handling in normal (navigation) mode.
 fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
     let shift = k.modifiers.contains(KeyModifiers::SHIFT);
-    // Any other key disarms a quit whose save failed.
+    // Any other key disarms a quit whose save failed, or a revert.
     let armed = std::mem::take(&mut app.quit_armed);
+    let revert_armed = std::mem::take(&mut app.revert_armed);
     match k.code {
         KeyCode::Char('q') => quit(app, path, armed),
         KeyCode::Char('e') => app.begin_edit(),
@@ -249,7 +250,7 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         KeyCode::Char('I') => app.begin_import_csv(),
         KeyCode::Char('E') => app.begin_export_csv(),
         // 'R' reverts to the saved model (e.g. after another writer saved).
-        KeyCode::Char('R') => revert(app, path),
+        KeyCode::Char('R') => revert(app, path, revert_armed),
         // Building a model: a category and its items, an input measure, a
         // definition (formula or LAMBDA); 'w' saves now.
         KeyCode::Char('c') => app.begin_command(app::CommandKind::Category),
@@ -281,11 +282,24 @@ fn quit(app: &mut App, path: &str, armed: bool) {
     }
 }
 
-/// Reload the model from `path`, dropping this session's unsaved edits. The
-/// way out of a save conflict: the quit autosave refuses to clobber another
-/// writer, so revert, pick up their changes, and redo yours. On failure the
-/// session is untouched.
-fn revert(app: &mut App, path: &str) {
+/// Reload the model from `path`, dropping this session's unsaved edits and
+/// its undo history. The way out of a save conflict: a save refuses to
+/// clobber another writer, so revert, pick up their changes, and redo
+/// yours. With edits or history to lose it asks first, and a second `R`
+/// (`armed`) reverts (H1-20). On failure the session is untouched.
+fn revert(app: &mut App, path: &str, armed: bool) {
+    let lost = match (app.unsaved, app.undo_stack.is_empty()) {
+        (true, _) => "this session's unsaved edits and its undo history",
+        (false, false) => "the undo history",
+        (false, true) => "",
+    };
+    if !armed && !lost.is_empty() {
+        app.revert_armed = true;
+        app.status = Some(format!(
+            "R reloads the saved model and drops {lost}: R again to revert"
+        ));
+        return;
+    }
     match load(path) {
         Ok(fresh) => {
             *app = fresh;
@@ -829,10 +843,10 @@ mod tests {
             lines(&mut app)[0]
         );
         assert_eq!(stored(MeasureId(101), &at), Some(Value::Number(7.0)));
-        // A key that changes nothing does not retry; R then w saves.
+        // A key that changes nothing does not retry; R R then w saves.
         run_events(&mut app, p, vec![key(KeyCode::Down)]).unwrap();
         assert!(app.status.as_deref().unwrap().contains("conflict"));
-        run_events(&mut app, p, chars("R")).unwrap();
+        run_events(&mut app, p, chars("RR")).unwrap();
         assert!(!app.unsaved);
         view(&mut app, MeasureId(101));
         app.apply_edit(0, 0, 9.0).unwrap();
@@ -850,6 +864,42 @@ mod tests {
         (0..buf.area.height)
             .map(|y| (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect())
             .collect()
+    }
+
+    /// H1-20: `R` with unsaved edits or undo history asks first, naming
+    /// what goes; another key disarms it, and a second `R` reverts. With
+    /// nothing to lose, one `R` reverts.
+    #[test]
+    fn revert_asks_before_dropping_edits() {
+        let path = tmp_path("tui-h1-20.db");
+        let _guard = crate::app::tests::TmpFile(path.clone());
+        let p = path.to_str().unwrap();
+        save(&mut App::new(revenue_model()).unwrap(), p).unwrap();
+        let mut app = load(p).unwrap();
+        run_events(&mut app, p, chars("R")).unwrap();
+        assert_eq!(app.status.as_deref(), Some("reverted to the saved model"));
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 5.0).unwrap();
+        run_events(&mut app, p, chars("R")).unwrap();
+        let asked = app.status.clone().unwrap();
+        assert!(
+            asked.contains("unsaved edits and its undo history"),
+            "{asked}"
+        );
+        assert_eq!(app.grid.value_at(0, 0), Some(5.0), "nothing dropped yet");
+        run_events(&mut app, p, vec![key(KeyCode::Down)]).unwrap();
+        run_events(&mut app, p, chars("R")).unwrap();
+        assert_eq!(app.grid.value_at(0, 0), Some(5.0), "Down disarmed it");
+        run_events(&mut app, p, chars("w")).unwrap();
+        run_events(&mut app, p, chars("R")).unwrap();
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .ends_with("drops the undo history: R again to revert"));
+        run_events(&mut app, p, chars("R")).unwrap();
+        assert_eq!(app.status.as_deref(), Some("reverted to the saved model"));
+        assert!(app.undo_stack.is_empty());
     }
 
     /// Two sessions on one store: the second's autosave conflicts after the
@@ -1207,7 +1257,7 @@ mod tests {
             Some(&Value::Number(7.0)),
             "B's edit kept"
         );
-        run_events(&mut a, p, chars("R")).unwrap();
+        run_events(&mut a, p, chars("RR")).unwrap();
         assert_eq!(
             a.model.input(MeasureId(101), &at),
             Some(&Value::Number(7.0))

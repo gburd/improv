@@ -93,7 +93,7 @@ improv-tui new.db     # a new file opens empty: build it with c, n and =
 | `n` | add an input measure over categories: `Quantity: Time, Product` |
 | `=` | define: `Revenue = Price * Quantity` adds a derived measure, `Margin = LAMBDA(p, q, p - q)` a named LAMBDA |
 | `w` | save now (each change is already saved as it is made; `w` retries one that failed, marked "not saved") |
-| `R` | revert to the saved model (the status line says when another program saved it) |
+| `R` | revert to the saved model (the status line says when another program saved it); with edits or undo history to lose, press it twice |
 | `u` / Ctrl+R | undo / redo |
 | Tab (in a formula) | complete a function, measure or category name; again to cycle |
 | `?` / F1 | the keys, and a search over the functions; Enter inserts `NAME(` into the edit |

@@ -112,8 +112,11 @@ Tab completes, and errors are located, as in a formula edit.
 Save now: retry a save that failed.
 .TP
 .B R
-Revert to the saved model, dropping this session's edits. Use it after a
-save conflict, when another writer changed the model.
+Revert to the saved model, dropping this session's unsaved edits and its
+undo history. Use it after a save conflict, when another writer changed
+the model. With edits or history to lose it says what goes, and a second
+.B R
+reverts; any other key keeps them.
 .TP
 .B u
 Undo the last change to the model: a cell, a formula, an import. Up to

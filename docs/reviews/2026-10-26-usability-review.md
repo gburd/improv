@@ -272,7 +272,7 @@ refuses the same ("already a category, measure or LAMBDA"). **Fix:** the
 GUI's check, in `run_add_category` and `run_add_input`. **Files:**
 `crates/tui/src/app.rs`.
 
-**H1-20 TUI: `R` drops the session's edits and undo history without
+**[fixed: `fix(tui): R asks before it drops edits or undo history (H1-20)`] H1-20 TUI: `R` drops the session's edits and undo history without
 asking.** *User control.* One key, no confirmation, and afterwards
 "nothing to undo". **Fix:** when there are unsaved edits, ask for a
 second `R`, as `q` does after a failed save. **Files:**
