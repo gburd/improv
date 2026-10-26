@@ -19,6 +19,8 @@
 //!   RFC 3339 strings);
 //! - `lambda.definition`: written as serde JSON of the `NamedLambda`; read as
 //!   JSON or as `Name = LAMBDA(…)` text (what `improv.define` writes);
+//! - `measure.format`: serde JSON of the `NumberFormat`, NULL for General
+//!   (a value that does not read as one loads as General);
 //! - `meta.blob`: `{external_fns, external_calls, scenarios, sql_sources}`.
 //!   Before `improv.lambda` it also held `lambdas`, still read for a model
 //!   with no `improv.lambda` row.
@@ -74,6 +76,7 @@ CREATE TABLE IF NOT EXISTS improv.measure (
     formula     text,
     description text,
     categories  bigint[] NOT NULL DEFAULT '{}',
+    format      jsonb,
     PRIMARY KEY (model_id, id)
 );
 CREATE TABLE IF NOT EXISTS improv.binding (
@@ -118,6 +121,7 @@ CREATE TABLE IF NOT EXISTS improv.lambda (
 -- uses plain CREATE. Both pin mint_items' search_path.
 ALTER TABLE improv.binding ADD COLUMN IF NOT EXISTS agg text
   CHECK (agg IN ('sum', 'avg', 'min', 'max', 'count', 'count_distinct'));
+ALTER TABLE improv.measure ADD COLUMN IF NOT EXISTS format jsonb;
 CREATE UNIQUE INDEX IF NOT EXISTS item_name_uniq ON improv.item (model_id, category_id, name);
 CREATE OR REPLACE FUNCTION improv.mint_items(p_model bigint, p_cats bigint[], p_names text[])
 RETURNS TABLE (category_id bigint, name text, id bigint) LANGUAGE plpgsql
@@ -828,7 +832,15 @@ pub struct PgModelStore {
     /// What this handle last loaded or saved; `save_model` writes the diff
     /// against it. `None`: write everything, unchecked.
     loaded: Option<PgSnapshot>,
+    /// `improv.measure` has the `format` column: not under a pg_improv
+    /// older than 0.12.0, whose catalog this client leaves alone.
+    has_format: bool,
 }
+
+/// Why a save with number formats fails on a catalog without the column.
+const NO_FORMAT_COLUMN: &str = "this database's improv.measure has no format column, so \
+     number formats cannot be saved: update the extension (ALTER EXTENSION pg_improv UPDATE, \
+     0.12.0 or later), or set the measures back to General";
 
 impl PgModelStore {
     /// Connect to `postgres://…?model=<name>` and open (or create) that model.
@@ -847,16 +859,22 @@ impl PgModelStore {
             })
         })?;
         // The newest catalog objects: an older catalog is upgraded in place
-        // (CATALOG_SQL is idempotent).
-        const INSTALLED: &str =
+        // (CATALOG_SQL is idempotent). The extension's catalog is its own:
+        // an older pg_improv's gains the format column from its update.
+        const HAS_FORMAT: &str = "EXISTS (SELECT 1 FROM pg_attribute \
+             WHERE attrelid = to_regclass('improv.measure') AND attname = 'format' \
+             AND NOT attisdropped)";
+        let installed = format!(
             "SELECT to_regprocedure('improv.mint_items(bigint, bigint[], text[])') IS NOT NULL \
-             AND to_regclass('improv.lambda') IS NOT NULL";
-        if !client.query_one(INSTALLED, &[])?.get::<_, bool>(0) {
+             AND to_regclass('improv.lambda') IS NOT NULL AND ({HAS_FORMAT} \
+             OR EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_improv'))"
+        );
+        if !client.query_one(&installed, &[])?.get::<_, bool>(0) {
             // A session lock, so the check below starts a new transaction
             // and sees a catalog another client installed meanwhile: its
             // DDL rerun against that client's writes would deadlock.
             client.execute("SELECT pg_advisory_lock(hashtext('improv.catalog'))", &[])?;
-            if !client.query_one(INSTALLED, &[])?.get::<_, bool>(0) {
+            if !client.query_one(&installed, &[])?.get::<_, bool>(0) {
                 client.batch_execute(&format!("BEGIN; {CATALOG_SQL} COMMIT;"))?;
             }
             client.execute("SELECT pg_advisory_unlock(hashtext('improv.catalog'))", &[])?;
@@ -900,11 +918,15 @@ impl PgModelStore {
             "INSERT INTO improv.model_version(model_id) VALUES ($1) ON CONFLICT DO NOTHING",
             &[&model_id],
         )?;
+        let has_format = client
+            .query_one(&format!("SELECT {HAS_FORMAT}"), &[])?
+            .get(0);
         Ok(PgModelStore {
             client,
             model_id,
             loaded_tx: None,
             loaded: None,
+            has_format,
         })
     }
 
@@ -985,9 +1007,16 @@ impl PgModelStore {
             model.add_item(id, cat, r.get::<_, String>(2));
         }
         let (mut dsl, mut unreadable) = (Vec::new(), Vec::new());
+        let format = if self.has_format {
+            "format::text"
+        } else {
+            "NULL::text"
+        };
         for r in tx.query(
-            "SELECT id, name, value_type, kind, formula, description, categories \
-             FROM improv.measure WHERE model_id = $1 ORDER BY id",
+            &format!(
+                "SELECT id, name, value_type, kind, formula, description, categories, {format} \
+                 FROM improv.measure WHERE model_id = $1 ORDER BY id"
+            ),
             &[&mid],
         )? {
             let id = MeasureId(id32(r.get(0))?);
@@ -1025,7 +1054,10 @@ impl PgModelStore {
                 categories,
                 kind,
                 description: r.get(5),
-                format: None,
+                // Presentation only: one this release cannot read is General.
+                format: r
+                    .get::<_, Option<String>>(7)
+                    .and_then(|f| serde_json::from_str(&f).ok()),
             });
         }
         if let Some(r) = tx.query_opt(
@@ -1320,17 +1352,31 @@ impl PgModelStore {
             )?;
             let item_ids = ids;
 
-            let upsert = tx.prepare(
+            if !self.has_format && model.measures.values().any(|m| m.format.is_some()) {
+                return Err(StoreError::Pg(NO_FORMAT_COLUMN.into()));
+            }
+            // The format ($9) only where the column exists.
+            let (col, val, set) = if self.has_format {
+                (
+                    ", format",
+                    ", $9::text::jsonb",
+                    ", format = EXCLUDED.format",
+                )
+            } else {
+                ("", "", "")
+            };
+            let upsert = tx.prepare(&format!(
                 "INSERT INTO improv.measure \
-             (model_id, id, name, value_type, kind, formula, description, categories) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+             (model_id, id, name, value_type, kind, formula, description, categories{col}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8{val}) \
              ON CONFLICT (model_id, id) DO UPDATE SET name = EXCLUDED.name, \
              value_type = EXCLUDED.value_type, kind = EXCLUDED.kind, \
              formula = EXCLUDED.formula, description = EXCLUDED.description, \
-             categories = EXCLUDED.categories",
-            )?;
+             categories = EXCLUDED.categories{set}",
+            ))?;
             let mut measure_ids = Vec::new();
             for m in model.measures.values() {
+                let format = m.format.as_ref().map(serde_json::to_string).transpose()?;
                 let (kind, formula) = match &m.kind {
                     MeasureKind::Input => ("input", None),
                     MeasureKind::Derived(f) => {
@@ -1339,19 +1385,19 @@ impl PgModelStore {
                 };
                 let cats: Vec<i64> = m.categories.iter().map(|c| i64::from(c.0)).collect();
                 let id = i64::from(m.id.0);
-                tx.execute(
-                    &upsert,
-                    &[
-                        &mid,
-                        &id,
-                        &m.name.0,
-                        &vt_name(m.value_type),
-                        &kind,
-                        &formula,
-                        &m.description,
-                        &cats,
-                    ],
-                )?;
+                let vt = vt_name(m.value_type);
+                let params: [&(dyn postgres::types::ToSql + Sync); 9] = [
+                    &mid,
+                    &id,
+                    &m.name.0,
+                    &vt,
+                    &kind,
+                    &formula,
+                    &m.description,
+                    &cats,
+                    &format,
+                ];
+                tx.execute(&upsert, &params[..8 + usize::from(self.has_format)])?;
                 measure_ids.push(id);
             }
             // Children before parents, should the catalog grow foreign keys.

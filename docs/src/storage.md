@@ -254,7 +254,7 @@ The model is stored normalized in the `improv` schema. The DDL is
 | `improv.model` | one row per model: `name` (unique), `sync_mode` (`logical`, `trigger`, `commit`, `manual`), `slot_name` |
 | `improv.category` | categories, keyed by `(model_id, id)` |
 | `improv.item` | items, with `category_id` |
-| `improv.measure` | `name`, `value_type`, `kind`, `formula`, `description`, `categories bigint[]` |
+| `improv.measure` | `name`, `value_type`, `kind`, `formula`, `description`, `categories bigint[]`, `format jsonb` (the number format; NULL is General) |
 | `improv.binding` | a measure bound to a fact table: `rel`, `value_col`, `dim_cols` (category name → column), optional `agg` (`sum`, `avg`, `min`, `max`, `count`, `count_distinct`) |
 | `improv.cell` | unbound input cells: `coord jsonb`, `value jsonb` |
 | `improv.view` | saved views, `layout jsonb` |
@@ -271,6 +271,12 @@ same function.
 the function exists, so the client runs no DDL and the extension owns the
 tables. The extension's catalog is the same plus `improv.category_binding`,
 which records the column that supplies a bound category.
+
+`improv.measure.format` came with pg_improv 0.12.0. `open` adds it to a
+plain catalog that lacks it (`CATALOG_SQL` runs again), but it leaves an
+older extension's catalog alone: there every measure loads as General, and
+a save of a model with a number format fails, naming the update to run
+(`ALTER EXTENSION pg_improv UPDATE`).
 
 Formulas are written as JSON of the `Formula` AST. On load, a formula that is
 not JSON is parsed as formula text (`Target = expr`), which is what the

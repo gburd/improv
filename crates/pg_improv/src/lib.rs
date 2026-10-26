@@ -96,6 +96,9 @@ CREATE TABLE improv.measure (
     formula     text,
     description text,
     categories  bigint[] NOT NULL DEFAULT '{}',
+    -- How the GUI, TUI and CLI show its numbers (a JSON NumberFormat; NULL
+    -- is General). Presentation only: the extension never reads it.
+    format      jsonb,
     PRIMARY KEY (model_id, id)
 );
 CREATE TABLE improv.binding (
@@ -1309,6 +1312,35 @@ mod tests {
         .unwrap();
         assert_eq!(missing, None, "storage_pg indexes or functions differ here");
         assert_eq!(count("pg_indexes WHERE indexname = 'item_name_uniq'"), 2);
+    }
+
+    /// H1-22: `improv.measure.format` holds a measure's number format for
+    /// the GUI, TUI and CLI. The extension never reads it: a recalc and a
+    /// redefinition keep it, and the results stay numbers.
+    #[pg_test]
+    fn a_measures_number_format_is_kept() {
+        setup_plan();
+        let format = || {
+            Spi::get_one::<String>("SELECT format::text FROM improv.measure WHERE name = 'Revenue'")
+        };
+        assert_eq!(format(), Ok(None), "General: NULL");
+        Spi::run(
+            "UPDATE improv.measure SET format = '{\"decimals\": 2, \"grouping\": true}' \
+             WHERE name = 'Revenue'",
+        )
+        .unwrap();
+        recalc();
+        Spi::run("SELECT improv.define('plan', 'Revenue = Price * Quantity * 2', replace => true)")
+            .unwrap();
+        let two = r#"{"decimals": 2, "grouping": true}"#;
+        assert_eq!(format(), Ok(Some(two.into())));
+        assert_eq!(revenue("Q1", "Widget"), Some(2000.0));
+        assert_eq!(
+            Spi::get_one::<String>(
+                "SELECT pg_typeof(value)::text FROM improv_plan.revenue LIMIT 1"
+            ),
+            Ok(Some("double precision".into()))
+        );
     }
 
     #[pg_test]

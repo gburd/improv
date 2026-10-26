@@ -170,6 +170,12 @@ for from in "$@"; do
 	# superuser is named improv, and search_path starts with "\$user".)
 	q "CREATE ROLE alice; GRANT USAGE ON SCHEMA improv TO alice; GRANT SELECT ON sales TO alice"
 	q "ALTER SCHEMA improv_plan OWNER TO alice"
+	# From 0.11.0 a model records its owner, its creator (improv here): make
+	# it alice, with her result tables, as the 0.11.0 update would have.
+	if ! older "$fv" 0.11.0; then
+		q "UPDATE improv.model SET owner = 'alice' WHERE name = 'plan'"
+		for t in revenue total; do q "ALTER TABLE improv_plan.$t OWNER TO alice"; done
+	fi
 
 	# The new release over the old: SQL scripts side by side, the new .so.
 	"$PG_BIN/pg_ctl" -D "$W/data" -w stop -m fast >/dev/null
@@ -186,6 +192,10 @@ for from in "$@"; do
 	done
 	q "ALTER EXTENSION pg_improv UPDATE"
 	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$to" "updated version"
+	# 0.12.0: a measure's number format (H1-22), General (NULL) for every measure.
+	eq "$(q "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'improv.measure'::regclass AND attname = 'format'")" \
+		jsonb "the format column after the update"
+	eq "$(q "SELECT count(*) FROM improv.measure WHERE format IS NOT NULL")" 0 "every measure is General after the update"
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
 	want=plan:alice:logical
 	for m in $(modes "$fv" | LC_ALL=C sort); do want="$want,plan_$m:improv:$m"; done

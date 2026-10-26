@@ -200,6 +200,93 @@ fn save_load_round_trips_the_3d_model() {
     assert_eq!(s.reload_model().unwrap(), m2);
 }
 
+/// H1-22: a measure's number format round-trips in `improv.measure.format`
+/// (NULL for General) through save_model and save_changes. A value this
+/// release cannot read loads as General. A catalog without the column (an
+/// older pg_improv's) loads every measure as General and refuses to save a
+/// format, saying why.
+#[test]
+fn number_formats_live_in_improv_measure() {
+    use improv_core_model::NumberFormat;
+    let Some(url) = live("format") else { return };
+    let mut s = PgModelStore::open(&url).unwrap();
+    assert!(s.has_format, "CATALOG_SQL makes the column");
+    let mut m = sample();
+    let two = NumberFormat {
+        decimals: Some(2),
+        grouping: true,
+    };
+    m.measures.get_mut(&MeasureId(102)).unwrap().format = Some(two);
+    s.save_model(&m).unwrap();
+    let back = PgModelStore::open(&url).unwrap().load_model().unwrap();
+    assert_eq!(back, m);
+    let mid = s.model_id;
+    let mut c = client();
+    let stored = |c: &mut Client| -> Vec<Option<String>> {
+        c.query(
+            "SELECT format::text FROM improv.measure WHERE model_id = $1 ORDER BY id",
+            &[&mid],
+        )
+        .unwrap()
+        .iter()
+        .map(|r| r.get(0))
+        .collect()
+    };
+    let formats = stored(&mut c);
+    assert_eq!(
+        formats[2].as_deref(),
+        Some(r#"{"decimals": 2, "grouping": true}"#)
+    );
+    assert!(formats
+        .iter()
+        .enumerate()
+        .all(|(i, f)| i == 2 || f.is_none()));
+
+    // Back to General: NULL again, through the incremental save.
+    s.load_model().unwrap();
+    m.measures.get_mut(&MeasureId(102)).unwrap().format = None;
+    s.save_changes(&m, &[], true).unwrap();
+    assert!(stored(&mut c).iter().all(Option::is_none));
+
+    // A later release's format (more fields) reads; one that does not
+    // read as a format at all is General.
+    c.execute(
+        "UPDATE improv.measure SET format = '{\"decimals\": 1, \"percent\": true}' \
+         WHERE model_id = $1 AND id = 100",
+        &[&mid],
+    )
+    .unwrap();
+    c.execute(
+        "UPDATE improv.measure SET format = '\"percent\"' WHERE model_id = $1 AND id = 101",
+        &[&mid],
+    )
+    .unwrap();
+    let back = PgModelStore::open(&url).unwrap().load_model().unwrap();
+    let one = NumberFormat {
+        decimals: Some(1),
+        grouping: false,
+    };
+    assert_eq!(back.measures[&MeasureId(100)].format, Some(one));
+    assert_eq!(back.measures[&MeasureId(101)].format, None);
+
+    // Without the column (as under pg_improv 0.11): General on load, and a
+    // format is refused, writing nothing.
+    let mut old = PgModelStore::open(&url).unwrap();
+    old.has_format = false;
+    let loaded = old.load_model().unwrap();
+    assert!(loaded.measures.values().all(|m| m.format.is_none()));
+    old.save_model(&loaded).unwrap();
+    let mut with = loaded.clone();
+    with.measures.get_mut(&MeasureId(102)).unwrap().format = Some(two);
+    let e = old.save_model(&with).unwrap_err();
+    assert!(e.to_string().contains("no format column"), "{e}");
+    assert_eq!(
+        stored(&mut c)[0].as_deref(),
+        Some(r#"{"percent": true, "decimals": 1}"#),
+        "a save without the column leaves the column alone"
+    );
+}
+
 #[test]
 fn load_partial_loads_only_the_closure_cells() {
     let Some(url) = live("partial") else { return };

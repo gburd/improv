@@ -8,6 +8,18 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Number formats: a measure's cells can show a fixed number of decimals
+  and thousands separators** (H1-22). A measure keeps its format with it
+  (`NumberFormat`: decimals 0–15 or General, grouping on or off); the
+  values are untouched, so formulas, exports and SQL see every bit.
+  Decimals round half away from zero, the separators follow
+  `IMPROV_LOCALE` (`1,234.50`; `1.234,50` in German). Stored in a model
+  file as the new attribute `:measure/format` (an older file opens, its
+  measures General) and in Postgres as the new column
+  `improv.measure.format jsonb`. **pg_improv 0.12.0** adds that column
+  (`ALTER EXTENSION pg_improv UPDATE`); until a database is updated, the
+  GUI, TUI and CLI open its models with every measure General and refuse
+  to save a format there, saying so.
 - **The GUI's Help menu has Keys… and User Guide**, beside Functions…
   (H1-23). Keys… lists the key equivalents, read from the menu, and the
   grid and editor keys; User Guide opens the published guide,
