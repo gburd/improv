@@ -338,7 +338,7 @@ say "double-click, select all, type". `docs/src/tutorial-budget.md`.
 **[fixed: `fix(cli,engine): the usability review's CLI findings (H1-9, H1-10, H1-11, H1-30)`] H1-30 CLI:** `improv list … | head` panics "failed printing to stdout:
 Broken pipe". Exit quietly on EPIPE. `crates/cli/src/main.rs` (`main`).
 
-**H1-31 CLI:** `add-measure db 103 X number Line` (no `input`) answers
+**[fixed: `fix(cli): add-measure without the word input says where it goes (H1-31)`] H1-31 CLI:** `add-measure db 103 X number Line` (no `input`) answers
 "only 'input' measures are supported, got 'Line'". Say "expected
 `input` before the categories". `crates/cli/src/main.rs:336`.
 

@@ -69,8 +69,9 @@ pub enum Cmd {
     },
     /// Add an input measure.
     ///
-    /// Its type says how set parses its values. The word input is required.
-    /// The categories it ranges over follow by name, e.g. input Time Product.
+    /// Its type says how set parses its values. The word input is required,
+    /// after the type and before the categories it ranges over, which follow
+    /// by name: add-measure m.db 101 Quantity number input Time Product.
     AddMeasure {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
         db: String,

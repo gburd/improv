@@ -160,6 +160,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **`improv-server` stops on SIGTERM.** It had no handler: run as a
   container's PID 1, where SIGTERM's default is to ignore it, `docker stop`
   waited its 10 s and then killed it. SIGTERM and Ctrl-C now end it at once.
+- **`improv add-measure` without the word `input` says where it goes.**
+  `add-measure db 103 X number Line` answered "only 'input' measures are
+  supported, got 'Line'". It now says "expected the word 'input' after the
+  type, before the categories" and prints the command with it in place
+  (H1-31).
 ### Changed
 
 - **A formula may be 256 levels deep** (was 40; C3b). The limit

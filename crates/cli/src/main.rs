@@ -410,8 +410,21 @@ fn cmd_add_measure(
     category_names: &[String],
 ) -> Result<(), String> {
     let id = MeasureId(id);
+    if kind == "derived" {
+        return Err("add-measure adds input measures; add-derived or define adds a formula".into());
+    }
     if kind != "input" {
-        return Err(format!("only 'input' measures are supported, got '{kind}'"));
+        // H1-31: most likely the word was left out and this is a category.
+        let cats: Vec<&str> = std::iter::once(kind)
+            .chain(category_names.iter().map(String::as_str))
+            .collect();
+        let vt = format!("{value_type:?}").to_lowercase();
+        return Err(format!(
+            "expected the word 'input' after the type, before the categories, e.g. \
+             improv add-measure {db} {} {name} {vt} input {}",
+            id.0,
+            cats.join(" ")
+        ));
     }
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;

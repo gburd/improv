@@ -263,8 +263,17 @@ fn add_measure_number_boolean_text_and_errors() {
     );
     fails_with(
         &["add-measure", &db, "105", "D", "number", "derived"],
-        "only 'input' measures are supported, got 'derived'",
+        "add-measure adds input measures; add-derived or define adds a formula",
     );
+    // H1-31: `input` left out, so the first category took its place.
+    fails_with(
+        &["add-measure", &db, "105", "D", "number", "Time", "Product"],
+        &format!(
+            "expected the word 'input' after the type, before the categories, e.g. \
+             improv add-measure {db} 105 D number input Time Product"
+        ),
+    );
+    assert!(load(&db).measure_by_name("D").is_none());
     fails_with(
         &["add-measure", &db, "105", "D", "number", "input", "Nope"],
         "unknown category 'Nope'",
