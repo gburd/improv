@@ -349,6 +349,18 @@ fn check_new(model: &Model, what: &str, id: u32, taken: bool, name: &str) -> Res
     Ok(())
 }
 
+/// Refuse a derived measure named like another measure or a category (its
+/// own id keeps its name: a redefine).
+fn check_name_free(model: &Model, id: MeasureId, name: &str) -> Result<(), String> {
+    if let Some(m) = model.measure_by_name(name).filter(|m| m.id != id) {
+        return Err(format!("the name {name:?} is taken by measure {}", m.id.0));
+    }
+    if let Some(c) = model.category_by_name(name) {
+        return Err(format!("the name {name:?} is taken by category {}", c.id.0));
+    }
+    Ok(())
+}
+
 fn cmd_add_category(db: &str, id: u32, name: &str) -> Result<(), String> {
     let id = CategoryId(id);
     let mut store = open(db)?;
@@ -439,6 +451,7 @@ fn cmd_add_derived(db: &str, id: u32, name: &str, formula_text: &str) -> Result<
 
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
+    check_name_free(&model, id, name)?;
 
     // Parse the RHS expression, resolving measure/category names against the model.
     let formula_text = improv_core_model::Locale::from_env().canonicalize(formula_text);
@@ -489,6 +502,7 @@ fn cmd_define(db: &str, id: u32, text: &str, refresh_policy: RefreshPolicy) -> R
     let parse_model = model.with_provisional(id, &target);
     match parser::parse_definition(&parse_model, &text).map_err(|e| e.to_string())? {
         Definition::Formula(ft) => {
+            check_name_free(&model, id, &ft.target.0)?;
             let (value_type, cats) =
                 improv_engine::compiler::derived_shape(&model, id, &ft.target.0, &ft.formula)
                     .map_err(|e| e.to_string())?;

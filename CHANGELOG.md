@@ -39,9 +39,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   `evaluate` and the live engine ignore such a cell in an existing file
   (usability review H1-10).
 - **The CLI's `add-category`, `add-item` and `add-measure` refuse a taken id
-  or name.** A reused id silently renamed or replaced what had it
-  (`add-category 1 Foo` renamed Month), and a category could share a
-  measure's name (H1-9).
+  or name, and `define`/`add-derived` a name another measure or a category
+  has.** A reused id silently renamed or replaced what had it
+  (`add-category 1 Foo` renamed Month), `define 300 "Left = 1"` made a
+  second `Left`, and a category could share a measure's name (H1-9).
+  Redefining a measure under its own id still works.
 - **A mistyped model path is an error**, not a new empty model that the
   command then ran against: every command but `init`, `import-csv` and
   `import-sql` needs the file to exist (H1-11).

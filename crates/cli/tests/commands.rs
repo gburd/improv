@@ -1129,6 +1129,17 @@ fn add_refuses_a_taken_id_or_name_and_open_refuses_a_missing_model() {
         &["add-measure", d, "101", "Month", "number", "input"],
         "taken by category 1",
     );
+    ok(&["add-derived", d, "200", "Left", "Spent * 2"]);
+    fails_with(
+        &["define", d, "300", "Left = 1"],
+        "the name \"Left\" is taken by measure 200",
+    );
+    fails_with(
+        &["add-derived", d, "301", "Left", "Spent"],
+        "taken by measure 200",
+    );
+    fails_with(&["define", d, "302", "Month = 1"], "taken by category 1");
+    ok(&["define", d, "200", "Left = Spent * 3"]);
     stdout_has(&ok(&["list", d]), "1 Month");
     let missing = file(&dir, "typo.db");
     fails_with(&["list", &missing], "no model at");
