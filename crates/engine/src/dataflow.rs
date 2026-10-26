@@ -1751,6 +1751,7 @@ mod tests {
             categories: cats(cs),
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         };
         m.add_measure(input(100, "A", a_cats));
         m.add_measure(input(101, "B", b_cats));
@@ -1767,6 +1768,7 @@ mod tests {
             categories: cats(&union),
             kind: MeasureKind::Derived(improv_core_model::Formula::new(Expr::BinaryOp(op, l, rr))),
             description: None,
+            format: None,
         });
         for (id, cs, cells) in [(100, a_cats, a), (101, b_cats, b)] {
             for (items, v) in cells {
@@ -2106,6 +2108,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         // Quantity[Time,Product] (input)
         m.add_measure(Measure {
@@ -2115,6 +2118,7 @@ mod tests {
             categories: vec![time, product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         // Revenue[Time,Product] = Price[Product] * Quantity[Time,Product]
         m.add_measure(Measure {
@@ -2128,6 +2132,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
 
         let coord = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
@@ -2184,6 +2189,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Derived(f.formula),
             description: None,
+            format: None,
         });
     }
 
@@ -2212,6 +2218,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let at = |p: u32| Coordinate::from_pairs([(person, ItemId(10 + p))]);
@@ -2448,6 +2455,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let c2 = |a: (CategoryId, u32), b: (CategoryId, u32)| {
@@ -2816,6 +2824,7 @@ mod tests {
             categories: vec![time, product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let f = improv_core_model::parse_formula(&m, "Bal = PREV(Bal, Time, 1, Price) + Quantity")
             .unwrap();
@@ -2876,6 +2885,7 @@ mod tests {
                 categories: vec![time, product],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
             let f = improv_core_model::parse_formula(&m, text).unwrap();
             m.measures.get_mut(&MeasureId(id)).unwrap().kind = MeasureKind::Derived(f.formula);
@@ -3022,6 +3032,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         };
         input(&mut m, 100, "A", vec![r, k]);
@@ -3584,6 +3595,7 @@ mod tests {
                 vec![Expr::Ref(MeasureId(102), over_time)],
             ))),
             description: None,
+            format: None,
         });
 
         let out = evaluate(&model, &[MeasureId(103)]).expect("evaluate");
@@ -3614,6 +3626,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Derived(improv_core_model::Formula::new(f)),
             description: None,
+            format: None,
         };
 
         // Profit[Time,Product] = Price[Product] - Quantity[Time,Product]
@@ -3697,6 +3710,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let coord = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
         model.set_input(
@@ -3722,6 +3736,7 @@ mod tests {
                 Box::new(refr(MeasureId(120))),
             ))),
             description: None,
+            format: None,
         });
 
         let out = evaluate(&model, &[MeasureId(121)]).expect("evaluate");
@@ -3754,6 +3769,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         model.add_measure(Measure {
             id: MeasureId(130),
@@ -3766,6 +3782,7 @@ mod tests {
                 Box::new(Expr::Literal(Value::Number(15.0))),
             ))),
             description: None,
+            format: None,
         });
         let c = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
         model.set_input(
@@ -3799,6 +3816,7 @@ mod tests {
                 Value::Number(0.08),
             ))),
             description: None,
+            format: None,
         });
         let out = evaluate(&model, &[MeasureId(140)]).expect("evaluate");
         let tr = out.get(&MeasureId(140)).expect("TaxRate");
@@ -3825,6 +3843,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Derived(mul(MeasureId(2), MeasureId(2))),
             description: None,
+            format: None,
         });
         model.add_measure(Measure {
             id: MeasureId(2),
@@ -3833,6 +3852,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Derived(mul(MeasureId(1), MeasureId(1))),
             description: None,
+            format: None,
         });
         let err = evaluate(&model, &[MeasureId(1)]).unwrap_err().to_string();
         assert_eq!(err, "formula cycle: A → B → A");
@@ -3847,6 +3867,7 @@ mod tests {
                 categories: vec![],
                 kind: MeasureKind::Derived(refs(MeasureId(dep))),
                 description: None,
+                format: None,
             });
         }
         model.measures.get_mut(&MeasureId(2)).unwrap().kind =
@@ -4044,6 +4065,7 @@ mod tests {
             categories: cats,
             kind,
             description: None,
+            format: None,
         };
         let derived = |f| MeasureKind::Derived(improv_core_model::Formula::new(f));
         model.add_measure(mk(

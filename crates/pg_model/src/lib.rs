@@ -303,6 +303,7 @@ fn build(catalog: &Catalog, fixing: Option<&str>) -> Result<Model> {
             categories: r.categories.iter().map(|&c| CategoryId(c)).collect(),
             kind: MeasureKind::Input,
             description: r.description.clone(),
+            format: None,
         });
     }
     let lambdas: Vec<(u32, String)> = catalog

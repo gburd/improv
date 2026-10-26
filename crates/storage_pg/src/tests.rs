@@ -36,6 +36,7 @@ fn measure(id: u32, name: &str, cats: &[CategoryId], kind: MeasureKind) -> Measu
         categories: cats.to_vec(),
         kind,
         description: None,
+        format: None,
     }
 }
 

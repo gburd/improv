@@ -1252,6 +1252,7 @@ impl App {
                     categories,
                     kind: MeasureKind::Derived(ft.formula),
                     description: None,
+                    format: None,
                 });
                 (Some(id), msg)
             }
@@ -1746,6 +1747,7 @@ impl App {
             categories,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         self.adopt(model, Some(id), format!("added input measure {name}"))
     }
@@ -2133,6 +2135,7 @@ pub(crate) mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -2141,6 +2144,7 @@ pub(crate) mod tests {
             categories: vec![time, product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -2153,6 +2157,7 @@ pub(crate) mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
 
         let coord = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
@@ -2213,6 +2218,7 @@ pub(crate) mod tests {
             categories: vec![p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         model.set_input(
             MeasureId(300),
@@ -2451,6 +2457,7 @@ pub(crate) mod tests {
             categories: vec![CategoryId(1), CategoryId(2)],
             kind: MeasureKind::Derived(parse_formula_text(&m, "(Price - Quantity) / 2").unwrap()),
             description: None,
+            format: None,
         });
         let mut app = App::new(m).unwrap();
         view(&mut app, MeasureId(103));
@@ -2598,6 +2605,7 @@ pub(crate) mod tests {
             categories: vec![time, product, region],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let c = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
         m.set_input(
@@ -2710,6 +2718,7 @@ pub(crate) mod tests {
                 categories: vec![time],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let mut app = App::new(m).unwrap();
@@ -2758,6 +2767,7 @@ pub(crate) mod tests {
             categories: vec![time],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let at = Coordinate::from_pairs([(time, ItemId(10))]);
         m.set_input(MeasureId(201), at.clone(), Value::Boolean(false));
@@ -2769,6 +2779,7 @@ pub(crate) mod tests {
             categories: vec![time],
             kind: MeasureKind::Derived(hot.formula),
             description: None,
+            format: None,
         });
         let mut app = App::new(m).unwrap();
         let key = encode_coord(&at);
@@ -2801,6 +2812,7 @@ pub(crate) mod tests {
             categories: (1..=4).map(CategoryId).collect(),
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m
     }
@@ -3115,6 +3127,7 @@ pub(crate) mod tests {
             categories: vec![time, product, region],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let c = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
         m.set_input(
@@ -3246,6 +3259,7 @@ pub(crate) mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m
     }

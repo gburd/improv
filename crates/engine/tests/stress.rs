@@ -89,6 +89,7 @@ fn grid_model(n_time: usize, n_product: usize) -> Model {
         categories: vec![PRODUCT],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     m.add_measure(Measure {
         id: QUANTITY,
@@ -97,6 +98,7 @@ fn grid_model(n_time: usize, n_product: usize) -> Model {
         categories: vec![TIME, PRODUCT],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     m.add_measure(Measure {
         id: REVENUE,
@@ -109,6 +111,7 @@ fn grid_model(n_time: usize, n_product: usize) -> Model {
             Box::new(Expr::Ref(QUANTITY, DimensionSpec::default())),
         ))),
         description: None,
+        format: None,
     });
     for p in 0..n_product {
         m.set_input(
@@ -146,6 +149,7 @@ fn with_sum_over_time(mut m: Model) -> Model {
             vec![Expr::Ref(REVENUE, over_time)],
         ))),
         description: None,
+        format: None,
     });
     m
 }
@@ -173,6 +177,7 @@ fn grid_model_3d(n_time: usize, n_product: usize, n_region: usize) -> Model {
         categories: vec![PRODUCT],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     m.add_measure(Measure {
         id: QUANTITY,
@@ -181,6 +186,7 @@ fn grid_model_3d(n_time: usize, n_product: usize, n_region: usize) -> Model {
         categories: vec![TIME, PRODUCT, REGION],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     m.add_measure(Measure {
         id: REVENUE,
@@ -193,6 +199,7 @@ fn grid_model_3d(n_time: usize, n_product: usize, n_region: usize) -> Model {
             Box::new(Expr::Ref(QUANTITY, DimensionSpec::default())),
         ))),
         description: None,
+        format: None,
     });
     for p in 0..n_product {
         m.set_input(

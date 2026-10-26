@@ -268,6 +268,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.set_input(
             MeasureId(100),
@@ -281,6 +282,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input, // populated by refresh, like a CALL measure
             description: None,
+            format: None,
         });
         m.external_fns.insert(
             "double".into(),

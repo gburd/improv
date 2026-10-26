@@ -81,6 +81,7 @@ pub fn compile(formula: &str, inputs: &Inputs) -> Result<Compiled, String> {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
     }
     let text = formula.trim();

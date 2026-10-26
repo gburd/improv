@@ -1127,6 +1127,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -1135,6 +1136,7 @@ mod tests {
             categories: vec![time, product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -1147,6 +1149,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         let c = |p: &[(CategoryId, ItemId)]| Coordinate::from_pairs(p.iter().copied());
         m.set_input(
@@ -1194,6 +1197,7 @@ mod tests {
                 categories,
                 kind: MeasureKind::Derived(f.formula),
                 description: None,
+                format: None,
             });
         };
         let mut m = revenue_model();
@@ -1365,6 +1369,7 @@ mod tests {
                 Box::new(Expr::Literal(Value::Number(2.0))),
             ))),
             description: None,
+            format: None,
         });
         let (mut engine, before) =
             Engine::new(&model, &[MeasureId(102), MeasureId(103)]).expect("engine");
@@ -1397,6 +1402,7 @@ mod tests {
             categories: vec![CategoryId(2)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         model.add_measure(Measure {
             id: MeasureId(104),
@@ -1408,6 +1414,7 @@ mod tests {
                 DimensionSpec::default(),
             ))),
             description: None,
+            format: None,
         });
         model.set_input(
             MeasureId(103),
@@ -1494,6 +1501,7 @@ mod tests {
             categories: vec![CategoryId(1), CategoryId(2)],
             kind: MeasureKind::Derived(f.formula),
             description: None,
+            format: None,
         });
         let (mut engine, snap) = Engine::new(&model, &[MeasureId(103)]).expect("engine");
         let pick = |s: &Snapshot, t, p| s[&MeasureId(103)].get(&key(&[(1, t), (2, p)])).cloned();
@@ -1606,6 +1614,7 @@ mod tests {
             categories,
             kind: MeasureKind::Derived(f.formula),
             description: None,
+            format: None,
         });
     }
 
@@ -1628,6 +1637,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let mut seed = 7u64;
@@ -1750,6 +1760,7 @@ mod tests {
                 categories: vec![CategoryId(1)],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
             for (id, text) in [
                 (300, "Out = SUM(W OVER Dst)"),
@@ -2155,6 +2166,7 @@ mod tests {
             categories: vec![w],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         for i in 0..n {
             let x = f64::from(i % 97) / 7.0 - 3.0;
@@ -2266,6 +2278,7 @@ mod tests {
             categories: vec![src, dst],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let at =
             |s: u32, d: u32| Coordinate::from_pairs([(src, ItemId(s)), (dst, ItemId(10_000 + d))]);
@@ -2351,6 +2364,7 @@ mod tests {
                 categories: vec![s, d],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
             let at = |i: u32, j: u32| {
                 Coordinate::from_pairs([(s, ItemId(100 + i)), (d, ItemId(299 - j))])
@@ -2443,6 +2457,7 @@ mod tests {
             categories: vec![w],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let value = |i: u32| f64::from(i % 89) / 7.0 - 5.3 + f64::from(i) * 1e-9;
         for i in 0..1000 {
@@ -2515,6 +2530,7 @@ mod tests {
             categories: (1..=4).map(CategoryId).collect(),
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let at = Coordinate::from_pairs((1..=4).map(|c| (CategoryId(c), ItemId(c * 10))));
         wide.set_input(MeasureId(100), at, Value::Number(1.0));

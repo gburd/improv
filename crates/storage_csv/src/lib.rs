@@ -897,6 +897,7 @@ mod tests {
             categories: vec![CategoryId(9)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let coord = Coordinate::from_pairs([(CategoryId(9), ItemId(90))]);
         model.set_input(MeasureId(100), coord.clone(), Value::Text("hi".into()));
@@ -953,6 +954,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         };
         m.add_measure(input(100, "Price", vec![product]));
         m.add_measure(input(101, "Quantity", vec![time, product]));
@@ -967,6 +969,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
 
         let at = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
@@ -1124,6 +1127,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
 
         let mut buf = Vec::new();

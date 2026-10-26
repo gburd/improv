@@ -311,6 +311,7 @@ mod tests {
                 categories: vec![CategoryId(1), CategoryId(2)],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         m

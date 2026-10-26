@@ -660,6 +660,7 @@ impl ModelStore {
                 categories,
                 kind,
                 description,
+                format: None,
             };
             if unreadable {
                 measure.mark_unreadable(UNREADABLE);
@@ -1085,6 +1086,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: Some("Unit price".into()),
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -1097,6 +1099,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         m.set_input(
             MeasureId(100),
@@ -1189,6 +1192,7 @@ mod tests {
             categories: vec![CategoryId(2)],
             kind: MeasureKind::Derived(Formula::new(e)),
             description: None,
+            format: None,
         });
         m
     }
@@ -1366,6 +1370,7 @@ mod tests {
             categories: vec![CategoryId(3), CategoryId(1), CategoryId(2)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m
     }
@@ -1793,6 +1798,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         m
@@ -1950,6 +1956,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         ma.set_input(MeasureId(999), Coordinate::new(), Value::Number(1.0));
         assert!(fresh
@@ -1996,6 +2003,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -2004,6 +2012,7 @@ mod tests {
             categories: vec![time, product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -2016,6 +2025,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(200),
@@ -2024,6 +2034,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
 
         let price_coord = Coordinate::from_pairs([(product, ItemId(20))]);
@@ -2122,6 +2133,7 @@ mod tests {
             categories: vec![cat],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(2),
@@ -2134,6 +2146,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(1), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         // Outside the closure, and much bigger than it.
         m.add_measure(Measure {
@@ -2143,6 +2156,7 @@ mod tests {
             categories: vec![cat],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
 
         let small_coord = Coordinate::from_pairs([(cat, ItemId(1000))]);
@@ -2204,6 +2218,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(2),
@@ -2212,6 +2227,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.set_input(MeasureId(1), Coordinate::new(), Value::Number(1.0));
         m.set_input(MeasureId(2), Coordinate::new(), Value::Number(2.0));
@@ -2240,6 +2256,7 @@ mod tests {
             categories: vec![WIDE_CAT],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         for i in 0..n_cells {
             m.add_item(ItemId(1000 + i), WIDE_CAT, format!("item{i}"));
@@ -2341,6 +2358,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m
     }
@@ -2459,6 +2477,7 @@ mod tests {
             categories: vec![cat],
             kind: MeasureKind::Input,
             description: Some("first\nsecond\tthird\rfourth".into()),
+            format: None,
         });
         m.set_input(
             MeasureId(1),
@@ -2526,6 +2545,7 @@ mod tests {
                 categories: vec![cat],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
             m.set_input(mid, Coordinate::from_pairs([(cat, ItemId(10))]), a);
             m.set_input(mid, Coordinate::from_pairs([(cat, ItemId(11))]), b);
@@ -2647,6 +2667,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.sql_sources.insert(
             MeasureId(100),
@@ -2697,6 +2718,7 @@ mod tests {
             categories: vec![CategoryId(1)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let coord = Coordinate::from_pairs([(CategoryId(1), ItemId(10))]);
         m.set_input(MeasureId(1), coord.clone(), Value::Number(2.5));
@@ -2743,6 +2765,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let at = |pairs: &[(u32, u32)]| {

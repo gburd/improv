@@ -61,6 +61,7 @@ pub fn add_input_measure(
         categories,
         kind: MeasureKind::Input,
         description,
+        format: None,
     });
 }
 

@@ -1025,6 +1025,7 @@ impl PgModelStore {
                 categories,
                 kind,
                 description: r.get(5),
+                format: None,
             });
         }
         if let Some(r) = tx.query_opt(

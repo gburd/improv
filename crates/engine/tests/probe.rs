@@ -59,6 +59,7 @@ fn input(m: &mut Model, id: u32, name: &str, cats: Vec<CategoryId>) {
         categories: cats,
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
 }
 
@@ -74,6 +75,7 @@ fn define(m: &mut Model, id: u32, text: &str) {
         categories: cats,
         kind: MeasureKind::Derived(f.formula),
         description: None,
+        format: None,
     });
 }
 

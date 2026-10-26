@@ -90,6 +90,7 @@ fn model(data: &J) -> Model {
             categories: cats,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
     }
     m
@@ -154,6 +155,7 @@ fn array_functions_match_libreoffice() {
                 categories: cats,
                 kind: MeasureKind::Derived(f),
                 description: None,
+                format: None,
             });
             targets.push((id, *line, formula, want, src));
         }
@@ -241,6 +243,7 @@ fn textsplit_without_over_splits_each_cell() {
         categories: cats,
         kind: MeasureKind::Derived(f),
         description: None,
+        format: None,
     });
     let out = &evaluate(&m, &[MeasureId(99)]).unwrap()[&MeasureId(99)];
     let at = |t: usize, k: usize| {

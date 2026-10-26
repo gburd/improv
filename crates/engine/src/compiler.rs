@@ -201,6 +201,7 @@ pub(crate) fn fixpoint_parts(
                 categories: dim.categories.clone(),
                 kind: improv_core_model::MeasureKind::Input,
                 description: None,
+                format: None,
             },
         );
         let bctx = CompileContext {
@@ -328,6 +329,7 @@ pub fn derived_shape(
                 categories: cats.clone(),
                 kind: improv_core_model::MeasureKind::Derived(formula.clone()),
                 description: None,
+                format: None,
             },
         );
         let pctx = CompileContext::for_model(&provisional);
@@ -1871,6 +1873,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         }
     }
 

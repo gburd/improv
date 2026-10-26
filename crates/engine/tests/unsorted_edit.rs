@@ -25,6 +25,7 @@ fn unsorted_edit_coord_is_the_sorted_key() {
         categories,
         kind,
         description: None,
+        format: None,
     };
     m.add_measure(measure(price, "Price", vec![product], MeasureKind::Input));
     m.add_measure(measure(qty, "Qty", vec![time, product], MeasureKind::Input));

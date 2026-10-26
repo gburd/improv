@@ -1128,6 +1128,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
     }
 
@@ -1147,6 +1148,7 @@ mod tests {
             categories: cats,
             kind: MeasureKind::Derived(f.formula),
             description: None,
+            format: None,
         });
         compile_plans(m, &[MeasureId(id)]).is_ok()
     }

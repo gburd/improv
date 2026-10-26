@@ -288,6 +288,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         model.set_input(
             MeasureId(100),

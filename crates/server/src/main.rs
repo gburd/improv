@@ -1430,6 +1430,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -1438,6 +1439,7 @@ mod tests {
             categories: vec![time, product],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -1450,6 +1452,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
 
         let coord = |pairs: &[(CategoryId, ItemId)]| Coordinate::from_pairs(pairs.iter().copied());
@@ -3151,6 +3154,7 @@ mod tests {
                 DimensionSpec::default(),
             ))),
             description: None,
+            format: None,
         });
         m.set_input(
             MeasureId(100),

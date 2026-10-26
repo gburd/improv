@@ -110,6 +110,7 @@ fn measure(m: &mut Model, id: MeasureId, text: Option<&str>, cats: Vec<CategoryI
         categories,
         kind,
         description: None,
+        format: None,
     });
 }
 

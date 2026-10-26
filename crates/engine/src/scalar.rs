@@ -414,6 +414,7 @@ mod tests {
             categories: vec![],
             kind,
             description: None,
+            format: None,
         };
         m.add_measure(measure(A, "A", MeasureKind::Input));
         m.add_measure(measure(B, "B", MeasureKind::Input));

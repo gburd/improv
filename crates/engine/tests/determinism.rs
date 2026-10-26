@@ -55,6 +55,7 @@ fn build_schema(n_time: u32, m_product: u32) -> Model {
         categories: vec![PRODUCT],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     m.add_measure(Measure {
         id: QUANTITY,
@@ -63,6 +64,7 @@ fn build_schema(n_time: u32, m_product: u32) -> Model {
         categories: vec![TIME, PRODUCT],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     m.add_measure(Measure {
         id: REVENUE,
@@ -75,6 +77,7 @@ fn build_schema(n_time: u32, m_product: u32) -> Model {
             Box::new(Expr::Ref(QUANTITY, DimensionSpec::default())),
         ))),
         description: None,
+        format: None,
     });
     m
 }
@@ -278,6 +281,7 @@ fn define(m: &mut Model, id: u32, text: &str) {
         categories: vec![TIME, PRODUCT],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     let f = improv_core_model::parse_formula(m, text).unwrap_or_else(|e| panic!("{text}: {e}"));
     let (vt, cats) =
@@ -290,6 +294,7 @@ fn define(m: &mut Model, id: u32, text: &str) {
         categories: cats,
         kind: MeasureKind::Derived(f.formula),
         description: None,
+        format: None,
     });
 }
 

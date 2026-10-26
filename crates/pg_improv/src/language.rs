@@ -198,6 +198,7 @@ fn compile(sig: Sig, src: &str, stored: bool) -> Result<Compiled, String> {
             categories: vec![],
             kind,
             description: None,
+            format: None,
         });
         id
     };

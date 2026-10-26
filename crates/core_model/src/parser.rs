@@ -2192,6 +2192,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         m
@@ -3166,6 +3167,7 @@ mod tests {
                 categories: vec![TIME, PRODUCT],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         m
@@ -3418,6 +3420,7 @@ mod tests {
                 categories: vec![],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let p = |s: &str| parse_expr(&m, s).map(|f| f.expr);

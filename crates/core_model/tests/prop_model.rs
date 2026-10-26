@@ -65,6 +65,7 @@ fn arb_model() -> impl Strategy<Value = Model> {
                             categories: cats.iter().map(|&c| CategoryId(c)).collect(),
                             kind: MeasureKind::Input,
                             description: None,
+                            format: None,
                         });
                         // One input at the coordinate using each spanned
                         // category's first known item (if any).
@@ -204,6 +205,7 @@ proptest! {
             categories: Vec::new(),
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         };
         let mut m = Model::new();
         for e in edits {

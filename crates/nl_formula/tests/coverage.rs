@@ -28,6 +28,7 @@ fn model() -> Model {
             categories: vec![TIME, PRODUCT],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
     }
     m

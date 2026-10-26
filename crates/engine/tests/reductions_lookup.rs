@@ -78,6 +78,7 @@ fn add_input(
         categories: cats,
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
 }
 
@@ -191,6 +192,7 @@ fn lookups_match_the_goldens() {
                 categories: cats,
                 kind: MeasureKind::Derived(f),
                 description: None,
+                format: None,
             });
             targets.push((id, *line, formula, want, src));
         }
@@ -307,6 +309,7 @@ fn rate_per_employee_from_a_band_table() {
         categories: cats,
         kind: MeasureKind::Derived(f),
         description: None,
+        format: None,
     });
     let out = evaluate(&m, &[MeasureId(20)]).unwrap();
     let rate = |e: usize| out[&MeasureId(20)][[(emp.0, item(200, e).0)].as_slice()].clone();

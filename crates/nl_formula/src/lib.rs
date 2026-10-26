@@ -585,6 +585,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         m

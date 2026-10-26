@@ -1368,6 +1368,7 @@ dependencies = [
  "improv_engine",
  "improv_nl_formula",
  "improv_pg_model",
+ "libc",
  "pgrx",
  "pgrx-tests",
 ]

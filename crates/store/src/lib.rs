@@ -287,6 +287,7 @@ mod tests {
             categories: vec![CategoryId(1)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.set_input(
             MeasureId(100),

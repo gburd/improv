@@ -99,6 +99,7 @@ fn model(data: &J) -> Model {
             categories: cats,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
     }
     m
@@ -165,6 +166,7 @@ fn statistical_reductions_match_libreoffice() {
                 categories: cats,
                 kind: MeasureKind::Derived(f),
                 description: None,
+                format: None,
             });
             targets.push((id, *line, formula, want, src));
         }

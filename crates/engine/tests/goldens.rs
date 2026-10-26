@@ -159,6 +159,7 @@ fn dataflow_matches_scalar_on_the_goldens() {
             categories: vec![],
             kind: MeasureKind::Derived(f),
             description: None,
+            format: None,
         });
         want.insert(id, v);
     }

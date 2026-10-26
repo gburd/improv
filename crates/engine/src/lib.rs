@@ -33,7 +33,7 @@ pub mod scalar;
 pub mod session;
 pub mod typed;
 
-use improv_core_model::{CategoryId, Coordinate, ItemId, Value};
+use improv_core_model::{CategoryId, Coordinate, ItemId, Locale, NumberFormat, Value};
 
 /// The dataflow encoding of a coordinate: sorted `(category_id, item_id)`
 /// pairs. Up to three pairs are held inline (no heap allocation): a key is a
@@ -97,6 +97,14 @@ impl CellValue {
             Value::Error(e) => Some(CellValue::Err(e.kind.error_type().unwrap_or(0))),
         }
     }
+    /// The cell as `format` shows it in `locale` ([`format_number`]); a
+    /// value that is not a number shows as its `Display`.
+    pub fn formatted(&self, format: Option<&NumberFormat>, locale: &Locale) -> String {
+        match self {
+            CellValue::Num(bits) => format_number(f64::from_bits(*bits), format, locale),
+            other => other.to_string(),
+        }
+    }
 }
 
 impl std::fmt::Display for CellValue {
@@ -141,6 +149,95 @@ pub fn display_number(n: f64) -> String {
     let mantissa = mantissa.trim_end_matches('0').trim_end_matches('.');
     let sign = if exp < 0 { '-' } else { '+' };
     format!("{mantissa}E{sign}{:02}", exp.unsigned_abs())
+}
+
+/// A number as a measure's `format` shows it, in `locale` (H1-22).
+///
+/// No format is [`display_number`]'s General form, unchanged. A format
+/// writes the locale's separators (`1.234,50` in German). Its decimals
+/// round the 15 significant digits General shows, half away from zero, as
+/// Excel does: 2.5 is `3` at no decimals, 1.005 is `1.01` at two (in
+/// binary it is a hair under), and a result that rounds to zero has no
+/// sign. Without decimals the General digits are kept and only grouped.
+/// From 1E+15, and where General writes an exponent, General's digits
+/// stay, ungrouped. NaN and infinities are General's spelling.
+pub fn format_number(n: f64, format: Option<&NumberFormat>, locale: &Locale) -> String {
+    let general = display_number(n);
+    let Some(f) = format else {
+        return general;
+    };
+    let digits = match f.decimals {
+        _ if !n.is_finite() => None,
+        Some(d) => fixed(n, d.into()),
+        None if general.contains('E') => None,
+        None => {
+            let (int, frac) = general.split_once('.').unwrap_or((&general, ""));
+            let (neg, int) = int.strip_prefix('-').map_or((false, int), |i| (true, i));
+            Some((neg, int.to_string(), frac.to_string()))
+        }
+    };
+    let Some((neg, int, frac)) = digits else {
+        return general.replace('.', &locale.decimal.to_string());
+    };
+    let mut out = String::with_capacity(int.len() * 4 / 3 + frac.len() + 2);
+    if neg {
+        out.push('-');
+    }
+    for (i, c) in int.chars().enumerate() {
+        if f.grouping && i > 0 && (int.len() - i) % 3 == 0 {
+            out.push(locale.group());
+        }
+        out.push(c);
+    }
+    if !frac.is_empty() {
+        out.push(locale.decimal);
+        out.push_str(&frac);
+    }
+    out
+}
+
+/// `n`'s 15 significant digits rounded half away from zero to `decimals`
+/// places: (negative, integer digits, `decimals` fraction digits). `None`
+/// from 1E+15, where General writes an exponent.
+fn fixed(n: f64, decimals: usize) -> Option<(bool, String, String)> {
+    let sci = format!("{:.14e}", n.abs());
+    let (mantissa, exp) = sci.split_once('e')?;
+    let exp: i32 = exp.parse().ok()?;
+    if exp >= 15 {
+        return None;
+    }
+    // The value is 0.d1d2…d15 × 10^(exp + 1): `point` digits before the point.
+    let mut digits: Vec<u8> = mantissa.bytes().filter(u8::is_ascii_digit).collect();
+    let mut point = usize::try_from(exp + 1).unwrap_or(0);
+    if exp < 0 {
+        digits.splice(0..0, std::iter::repeat_n(b'0', exp.unsigned_abs() as usize));
+        point = 1;
+    }
+    let keep = point + decimals;
+    if digits.len() <= keep {
+        digits.resize(keep, b'0');
+    } else {
+        let up = digits[keep] >= b'5';
+        digits.truncate(keep);
+        if up {
+            match digits.iter().rposition(|&d| d != b'9') {
+                Some(i) => {
+                    digits[i] += 1;
+                    digits[i + 1..].fill(b'0');
+                }
+                None => {
+                    digits.fill(b'0');
+                    digits.insert(0, b'1');
+                    point += 1;
+                }
+            }
+        }
+    }
+    let neg = n.is_sign_negative() && digits.iter().any(|&d| d != b'0');
+    let (int, frac) = digits.split_at(point);
+    let lead = int.iter().position(|&d| d != b'0').unwrap_or(int.len() - 1);
+    let text = |d: &[u8]| String::from_utf8_lossy(d).into_owned();
+    Some((neg, text(&int[lead..]), text(frac)))
 }
 
 /// Encode a `Coordinate` as its dataflow key (BTreeMap already iterates sorted).
@@ -297,6 +394,40 @@ mod spike {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+mod format_props {
+    use super::format_number;
+    use improv_core_model::{Locale, NumberFormat};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// A formatted number reads back within half its last place, with
+        /// exactly its decimals; grouping only adds separators, and German
+        /// is English with the two separators swapped.
+        #[test]
+        fn formatted_numbers_read_back(n in -1e13f64..1e13, d in 0u8..=6, grouping: bool) {
+            let (en, de) = (Locale::en(), Locale::de());
+            let f = NumberFormat { decimals: Some(d), grouping };
+            let s = format_number(n, Some(&f), &en);
+            let plain: String = s.chars().filter(|c| *c != ',').collect();
+            let back: f64 = plain.parse().unwrap();
+            let half = 0.5 * 10f64.powi(-i32::from(d));
+            prop_assert!((back - n).abs() <= half * (1.0 + 1e-9) + n.abs() * 1e-14, "{n} -> {s}");
+            prop_assert_eq!(plain.split_once('.').map_or(0, |(_, f)| f.len()), usize::from(d));
+            let flat = NumberFormat { grouping: false, ..f };
+            prop_assert_eq!(&plain, &format_number(n, Some(&flat), &en));
+            let int = plain.trim_start_matches('-').split('.').next().unwrap().len();
+            prop_assert_eq!(s.matches(',').count(), if grouping { (int - 1) / 3 } else { 0 });
+            let swapped: String = s
+                .chars()
+                .map(|c| match c { ',' => '.', '.' => ',', c => c })
+                .collect();
+            prop_assert_eq!(format_number(n, Some(&f), &de), swapped);
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[test]
     fn display_number_hides_binary_noise_not_digits() {
@@ -326,6 +457,70 @@ mod tests {
         assert_eq!(d(f64::NAN), "NaN");
         assert_eq!(d(f64::INFINITY), "inf");
         assert_eq!(super::CellValue::num(1173.0 * 0.05).to_string(), "58.65");
+    }
+
+    /// H1-22: decimals round half away from zero on General's digits;
+    /// grouping and the separators follow the locale.
+    #[test]
+    fn format_number_rounds_groups_and_localizes() {
+        use super::format_number as f;
+        use improv_core_model::{Locale, NumberFormat};
+        let (en, de) = (Locale::en(), Locale::de());
+        let fm = |decimals, grouping| NumberFormat { decimals, grouping };
+        let two = fm(Some(2), false);
+        let two_g = fm(Some(2), true);
+        let none_g = fm(None, true);
+        for (n, fmt, want) in [
+            (299.666666666667, two, "299.67"),
+            (1234567.891, two_g, "1,234,567.89"),
+            (1234567.891, fm(Some(0), true), "1,234,568"),
+            (2.5, fm(Some(0), false), "3"),
+            (-2.5, fm(Some(0), false), "-3"),
+            (1.005, two, "1.01"),
+            (999.995, two_g, "1,000.00"),
+            (9.999, fm(Some(0), false), "10"),
+            (0.005, two, "0.01"),
+            (0.0004, two, "0.00"),
+            (-0.001, two, "0.00"),
+            (-0.0, two, "0.00"),
+            (0.0, fm(Some(0), true), "0"),
+            (1.5e-7, fm(Some(9), false), "0.000000150"),
+            (12.0, fm(Some(3), false), "12.000"),
+            (100.0, two_g, "100.00"),
+            (-1000.0, fm(Some(0), true), "-1,000"),
+            (123456.0, fm(Some(0), true), "123,456"),
+            (
+                99_999_999_999_999.9,
+                fm(Some(0), true),
+                "100,000,000,000,000",
+            ),
+            (1234567.5, none_g, "1,234,567.5"),
+            (-1234.25, none_g, "-1,234.25"),
+            (1e15, two_g, "1E+15"),
+            (1.5e-7, none_g, "1.5E-07"),
+            (f64::NAN, two, "NaN"),
+            (f64::INFINITY, two, "inf"),
+        ] {
+            assert_eq!(f(n, Some(&fmt), &en), want, "{n} {fmt:?}");
+            let german: String = want
+                .chars()
+                .map(|c| match c {
+                    ',' => '.',
+                    '.' => ',',
+                    c => c,
+                })
+                .collect();
+            assert_eq!(f(n, Some(&fmt), &de), german, "de {n} {fmt:?}");
+        }
+        // No format is General, in every locale.
+        assert_eq!(f(1234.5, None, &de), "1234.5");
+        assert_eq!(f(1.0 / 3.0, None, &en), super::display_number(1.0 / 3.0));
+        let cell = super::CellValue::num(1500.0);
+        assert_eq!(cell.formatted(Some(&two_g), &en), "1,500.00");
+        assert_eq!(
+            super::CellValue::Bool(true).formatted(Some(&two), &en),
+            "true"
+        );
     }
 
     /// A key that fits is inline whatever the `Vec`'s capacity; one that

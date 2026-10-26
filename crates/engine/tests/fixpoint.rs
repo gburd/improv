@@ -60,6 +60,7 @@ fn graph(n: usize, edges: usize, seed: u64) -> (Model, BTreeMap<(usize, usize), 
         categories: vec![SRC, DST],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     let mut rng = Rng(seed);
     let dangling = n / 20;
@@ -94,6 +95,7 @@ fn define(m: &mut Model, id: u32, text: &str) {
         categories: cats,
         kind: MeasureKind::Derived(f.formula),
         description: None,
+        format: None,
     });
 }
 
@@ -250,6 +252,7 @@ fn small() -> Model {
         categories: vec![SRC],
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     for i in 0..3 {
         m.set_input(

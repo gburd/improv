@@ -111,6 +111,87 @@ pub struct Measure {
     pub categories: Vec<CategoryId>,
     pub kind: MeasureKind,
     pub description: Option<String>,
+    /// How its numbers are shown (H1-22); `None` is the General form.
+    /// Absent in models saved before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<NumberFormat>,
+}
+
+/// How a number measure's cells are shown (H1-22): a fixed count of
+/// decimal places, thousands separators, or both. Presentation only: the
+/// values keep every bit, and formulas and exports see them unrounded.
+/// Every field has a default, so a format saved by a release that added
+/// fields (a percent or a currency form) still reads, without them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NumberFormat {
+    /// Digits after the decimal separator; `None` keeps the General form's
+    /// (as many as the value needs, at most 15 significant digits).
+    #[serde(default)]
+    pub decimals: Option<u8>,
+    /// Separate thousands with the locale's group separator (`1,500`).
+    #[serde(default)]
+    pub grouping: bool,
+}
+
+impl NumberFormat {
+    /// The most decimals a format may ask for: an `f64` carries 15
+    /// significant digits.
+    pub const MAX_DECIMALS: u8 = 15;
+
+    /// Read a format as it is typed and as [`Display`](std::fmt::Display)
+    /// writes it: `general` or a count of decimals (`2`, `2 decimals`),
+    /// then `grouped` for thousands separators (`0 grouped`). Case and
+    /// commas are ignored. `Ok(None)` is `general` alone: no format.
+    pub fn parse(text: &str) -> Result<Option<NumberFormat>, String> {
+        let usage = || {
+            format!(
+                "expected general or 0 to {} decimals, then grouped for thousands \
+                 separators (as in: 2 grouped); got {text:?}",
+                Self::MAX_DECIMALS
+            )
+        };
+        let mut words = text
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|w| !w.is_empty())
+            .map(str::to_ascii_lowercase);
+        let first = words.next().ok_or_else(usage)?;
+        let mut f = NumberFormat {
+            decimals: match first.as_str() {
+                "general" => None,
+                n => Some(
+                    n.parse::<u8>()
+                        .ok()
+                        .filter(|d| *d <= Self::MAX_DECIMALS)
+                        .ok_or_else(usage)?,
+                ),
+            },
+            grouping: false,
+        };
+        for w in words {
+            match w.as_str() {
+                "decimal" | "decimals" if f.decimals.is_some() => {}
+                "grouped" => f.grouping = true,
+                _ => return Err(usage()),
+            }
+        }
+        Ok((f != NumberFormat::default()).then_some(f))
+    }
+}
+
+impl std::fmt::Display for NumberFormat {
+    /// `general`, `1 decimal` or `N decimals`, then ` grouped`: what
+    /// [`NumberFormat::parse`] reads back.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.decimals {
+            None => f.write_str("general")?,
+            Some(1) => f.write_str("1 decimal")?,
+            Some(d) => write!(f, "{d} decimals")?,
+        }
+        if self.grouping {
+            f.write_str(" grouped")?;
+        }
+        Ok(())
+    }
 }
 
 impl Measure {
@@ -718,6 +799,7 @@ impl Model {
             categories: Vec::new(),
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         std::borrow::Cow::Owned(m)
     }
@@ -1005,6 +1087,53 @@ impl Model {
 mod tests {
     use super::*;
 
+    /// H1-22: a format reads as it is typed and as it prints; an old
+    /// measure's JSON (no `format`) and a newer format's (more fields) load.
+    #[test]
+    fn number_formats_parse_print_and_load() {
+        let f = |decimals, grouping| Some(NumberFormat { decimals, grouping });
+        for (text, want) in [
+            ("2", f(Some(2), false)),
+            ("2 decimals", f(Some(2), false)),
+            ("1 decimal", f(Some(1), false)),
+            ("0 grouped", f(Some(0), true)),
+            ("General, Grouped", f(None, true)),
+            ("  15  ", f(Some(15), false)),
+            ("general", None),
+        ] {
+            let got = NumberFormat::parse(text).unwrap();
+            assert_eq!(got, want, "{text:?}");
+            if let Some(g) = got {
+                assert_eq!(NumberFormat::parse(&g.to_string()), Ok(Some(g)));
+            }
+        }
+        for bad in ["", "16", "-1", "two", "general decimals", "2 grouped x"] {
+            let e = NumberFormat::parse(bad).unwrap_err();
+            assert!(e.contains("expected general or 0 to 15"), "{bad:?}: {e}");
+        }
+        assert_eq!(NumberFormat::default().to_string(), "general");
+        assert_eq!(f(Some(2), true).unwrap().to_string(), "2 decimals grouped");
+
+        let m = Measure {
+            id: MeasureId(1),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(!json.contains("format"), "no format, no field: {json}");
+        assert_eq!(serde_json::from_str::<Measure>(&json).unwrap(), m);
+        let newer = json.replace(
+            "\"description\":null",
+            "\"description\":null,\"format\":{\"decimals\":2,\"percent\":true}",
+        );
+        let read: Measure = serde_json::from_str(&newer).unwrap();
+        assert_eq!(read.format, f(Some(2), false));
+    }
+
     #[test]
     fn an_unreadable_formula_becomes_ref_errors_over_its_categories() {
         let mut m = Measure {
@@ -1014,6 +1143,7 @@ mod tests {
             categories: vec![CategoryId(1), CategoryId(2)],
             kind: MeasureKind::Input,
             description: Some("mine".into()),
+            format: None,
         };
         m.mark_unreadable("its stored formula nests too deeply to load");
         let MeasureKind::Derived(f) = &m.kind else {
@@ -1058,6 +1188,7 @@ mod tests {
             categories: vec![product],
             kind: MeasureKind::Input,
             description: Some("Unit price per product".into()),
+            format: None,
         });
         m.set_input(
             MeasureId(100),
@@ -1093,6 +1224,7 @@ mod tests {
             categories: Vec::new(),
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         };
         let mut m = Model::new();
         // Inserted straight into the maps before any lookup: the hints are
@@ -1313,6 +1445,7 @@ mod tests {
                 vec![Expr::Ref(MeasureId(100), DimensionSpec::default())],
             ))),
             description: None,
+            format: None,
         });
         assert_eq!(m.lambda_users(3), (vec![1, 2], vec![MeasureId(200)]));
         assert_eq!(m.lambda_users(1), (vec![], vec![MeasureId(200)]));
@@ -1442,6 +1575,7 @@ mod tests {
             categories: vec![],
             kind,
             description: None,
+            format: None,
         };
         m.add_measure(leaf(c, MeasureKind::Input));
         m.add_measure(leaf(e, MeasureKind::Input));

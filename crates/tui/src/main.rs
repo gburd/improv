@@ -495,6 +495,7 @@ mod tests {
             categories: vec![],
             kind: improv_core_model::MeasureKind::Input,
             description: None,
+            format: None,
         });
         let mut scalar = App::new(m).unwrap();
         run_events(&mut scalar, "", chars("f")).unwrap();
@@ -987,6 +988,7 @@ mod tests {
             categories: vec![a, b],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         for i in 0..100 {
             for j in 0..50 {

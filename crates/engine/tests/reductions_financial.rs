@@ -47,6 +47,7 @@ fn measure(m: &mut Model, id: MeasureId, name: &str, vt: ValueType, cats: &[Cate
         categories: cats.to_vec(),
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
 }
 
@@ -98,6 +99,7 @@ fn run(formula: &str, groups: &[Group]) -> Vec<Option<CellValue>> {
         categories: if several { vec![GROUP] } else { vec![] },
         kind: MeasureKind::Derived(f.formula),
         description: None,
+        format: None,
     });
     let out = evaluate(&m, &[R]).unwrap_or_else(|e| panic!("{formula}: {e}"));
     let r = &out[&R];

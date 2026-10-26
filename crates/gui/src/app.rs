@@ -2720,6 +2720,7 @@ impl ImprovApp {
             categories: cats,
             kind: MeasureKind::Derived(formula),
             description: None,
+            format: None,
         });
         self.publish_structure(candidate).inspect_err(|e| {
             self.new_formula_error = formula_fault(&self.model, text, e);
@@ -4523,6 +4524,7 @@ impl ImprovApp {
                     categories,
                     kind: MeasureKind::Input,
                     description: None,
+                    format: None,
                 });
                 shown = Some(id);
                 format!("added input measure {name}")
@@ -7505,6 +7507,7 @@ mod tests {
             categories: vec![p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -7513,6 +7516,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -7525,6 +7529,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         let c = |pairs: &[(CategoryId, ItemId)]| {
             improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
@@ -8167,6 +8172,7 @@ mod tests {
             categories: vec![time, product, region],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let c = |pairs: &[(CategoryId, ItemId)]| {
             improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
@@ -8318,6 +8324,7 @@ mod tests {
             categories: vec![big, small],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let mut app = build_app(m);
         select(&mut app, MeasureId(300));
@@ -8412,6 +8419,7 @@ mod tests {
             categories: vec![CategoryId(2)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         select(&mut app, MeasureId(201));
         app.sync_axis_state();
@@ -8445,6 +8453,7 @@ mod tests {
             categories: vec![p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -8453,6 +8462,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -8465,6 +8475,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         let c = |pairs: &[(CategoryId, ItemId)]| {
             improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
@@ -9577,6 +9588,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let cell = improv_core_model::Coordinate::from_pairs([(t, ItemId(10)), (p, ItemId(20))]);
         m.set_input(MeasureId(1), cell, Value::Number(42.0));
@@ -9676,6 +9688,7 @@ mod tests {
                 categories: vec![p],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let cell = improv_core_model::Coordinate::from_pairs([(p, ItemId(10))]);
@@ -9705,6 +9718,7 @@ mod tests {
             categories: vec![p],
             kind: MeasureKind::Derived(Formula::new(expr)),
             description: None,
+            format: None,
         };
         m.add_measure(derived(
             10,
@@ -10638,6 +10652,7 @@ mod tests {
                 categories: vec![t, p],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let at = |q| improv_core_model::Coordinate::from_pairs([(t, ItemId(q)), (p, ItemId(20))]);
@@ -11223,6 +11238,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         // Declared over the same dimensions as Revenue, with a cell at every
         // coordinate: this engine aligns a derived*input product on matching
@@ -11273,6 +11289,7 @@ mod tests {
                 categories: vec![t, p],
                 kind: MeasureKind::Derived(Formula::new(expr)),
                 description: None,
+                format: None,
             });
         }
         m
@@ -11605,6 +11622,7 @@ mod tests {
             categories: vec![CategoryId(2)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         // Broken = Revenue * Label — a type error the compiler rejects.
         model.add_measure(Measure {
@@ -11618,6 +11636,7 @@ mod tests {
                 Box::new(Expr::Ref(MeasureId(120), DimensionSpec::default())),
             ))),
             description: None,
+            format: None,
         });
         let app = build_app(model);
         let rows = app.formula_rows();
@@ -13156,6 +13175,7 @@ mod tests {
             categories: vec![r, c],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m
     }
@@ -15025,6 +15045,7 @@ mod tests {
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let at = |m: u32, l: u32| {
@@ -15237,6 +15258,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let mut app = build_app(model);
         app.show_inspector = true;
@@ -15663,6 +15685,7 @@ mod tests {
             categories: vec![CategoryId(1), CategoryId(2)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let mut store = improv_store::Store::open(&url).unwrap();
         store.save_model(&m).unwrap();
@@ -16324,6 +16347,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Derived(f),
             description: None,
+            format: None,
         });
         app.model = Arc::new(named);
         assert!(app
@@ -17176,6 +17200,7 @@ mod tests {
             categories: vec![a, b],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         for i in 0..100 {
             for j in 0..50 {
@@ -17628,6 +17653,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         for i in 0..1000 {
             for j in 0..1000 {
@@ -17657,6 +17683,7 @@ mod tests {
                 categories,
                 kind: MeasureKind::Derived(formula),
                 description: None,
+                format: None,
             });
         }
         m
@@ -17887,6 +17914,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let mut app = build_app(m);
         let mut desk = Desk::new();

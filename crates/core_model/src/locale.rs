@@ -48,6 +48,16 @@ impl Locale {
         }
     }
 
+    /// The group (thousands) separator: the one of `,` and `.` that is not
+    /// the decimal separator (`1,500.25` in English, `1.500,25` in German).
+    pub fn group(&self) -> char {
+        if self.decimal == ',' {
+            '.'
+        } else {
+            ','
+        }
+    }
+
     /// The locale for a tag such as `de`, `de_DE.UTF-8` or `en-US`; English
     /// for anything unknown.
     pub fn from_tag(tag: &str) -> Locale {
@@ -247,6 +257,7 @@ mod tests {
         assert_eq!(Locale::from_tag("de-CH").tag, "de");
         assert_eq!(Locale::from_tag("fr_FR").tag, "en");
         assert_eq!(Locale::from_tag("").tag, "en");
+        assert_eq!((en.group(), Locale::de().group()), (',', '.'));
     }
 
     #[test]

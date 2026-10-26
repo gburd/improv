@@ -184,6 +184,7 @@ mod tests {
                 categories: vec![product],
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
         }
         let c = |i| Coordinate::from_pairs([(product, ItemId(i))]);
@@ -265,6 +266,7 @@ mod tests {
             categories: vec![CategoryId(2)],
             kind: MeasureKind::Input, // populated by refresh
             description: None,
+            format: None,
         });
         m.external_calls.insert(
             MeasureId(200),

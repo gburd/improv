@@ -39,6 +39,7 @@ fn measure(id: u32, value_type: ValueType, kind: MeasureKind) -> Measure {
         categories: vec![TIME],
         kind,
         description: None,
+        format: None,
     }
 }
 

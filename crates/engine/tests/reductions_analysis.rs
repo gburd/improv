@@ -102,6 +102,7 @@ fn model(data: &J) -> (Model, HashMap<String, (CategoryId, usize)>) {
             categories,
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
     }
     (m, cats)
@@ -257,6 +258,7 @@ fn analysis_functions_match_libreoffice_and_gnumeric() {
                 categories: rcats,
                 kind: MeasureKind::Derived(f),
                 description: None,
+                format: None,
             });
             targets.push((id, *line, formula, want, src, list));
         }

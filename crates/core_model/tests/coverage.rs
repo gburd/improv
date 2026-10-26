@@ -20,6 +20,7 @@ fn measure(id: MeasureId, name: &str, kind: MeasureKind) -> Measure {
         categories: vec![TIME],
         kind,
         description: None,
+        format: None,
     }
 }
 

@@ -453,6 +453,7 @@ fn cmd_add_measure(
         categories,
         kind: MeasureKind::Input,
         description: None,
+        format: None,
     });
     save_structure(&mut store, &model)?;
     println!("added input measure {} '{name}'", id.0);
@@ -482,6 +483,7 @@ fn cmd_add_derived(db: &str, id: u32, name: &str, formula_text: &str) -> Result<
         categories: cats,
         kind: MeasureKind::Derived(formula),
         description: None,
+        format: None,
     });
     check_acyclic(&model)?;
     save_structure(&mut store, &model)?;
@@ -526,6 +528,7 @@ fn cmd_define(db: &str, id: u32, text: &str, refresh_policy: RefreshPolicy) -> R
                 categories: cats,
                 kind: MeasureKind::Derived(ft.formula),
                 description: None,
+                format: None,
             });
             println!("defined derived measure {} '{}'", id.0, ft.target.0);
         }
@@ -560,6 +563,7 @@ fn cmd_define(db: &str, id: u32, text: &str, refresh_policy: RefreshPolicy) -> R
                 categories: cats,
                 kind: MeasureKind::Input,
                 description: None,
+                format: None,
             });
             model.external_calls.insert(
                 id,
@@ -1954,6 +1958,7 @@ mod tests {
             categories: vec![p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(101),
@@ -1962,6 +1967,7 @@ mod tests {
             categories: vec![t, p],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         m.add_measure(Measure {
             id: MeasureId(102),
@@ -1982,6 +1988,7 @@ mod tests {
                 ),
             )),
             description: None,
+            format: None,
         });
         m.set_input(
             MeasureId(100),
@@ -2224,6 +2231,7 @@ mod tests {
             categories: vec![],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         assert!(
             resolve_coord(
@@ -2408,6 +2416,7 @@ mod tests {
             categories: vec![CategoryId(99)],
             kind: MeasureKind::Input,
             description: None,
+            format: None,
         });
         let err = resolve_coord(&m, MeasureId(901), &[]).unwrap_err();
         assert!(err.contains("missing category 99"), "{err}");
