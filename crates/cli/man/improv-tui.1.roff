@@ -141,6 +141,21 @@ defines a named LAMBDA that formulas then call as
 .BR Margin(Price,\ 1) .
 Tab completes, and errors are located, as in a formula edit.
 .TP
+.B #
+Set the shown measure's number format: type
+.B general
+or a count of decimals, 0 to 15, then
+.B grouped
+for thousands separators
+.RB ( 2 ,
+.BR "0 grouped" ,
+.BR "general grouped" ).
+The prompt shows the format now; Enter on an empty line keeps it.
+Decimals round half away from zero, the separators follow
+.BR IMPROV_LOCALE ,
+and the values are untouched: an edit starts from the value as typed.
+One undo step; saved with the model.
+.TP
 .B w
 Save now: retry a save that failed.
 .TP
@@ -170,6 +185,16 @@ into the cell being edited (F1 works while editing); Esc closes.
 .TP
 .B q
 Quit and save.
+.SH ENVIRONMENT
+.TP
+.B IMPROV_LOCALE
+The locale (else the OS locale): a number format's decimal and thousands
+separators,
+.B 1,234.50
+in English and
+.B 1.234,50
+for
+.BR de .
 .SH EXAMPLES
 .nf
 improv-tui sample.db

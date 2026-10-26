@@ -265,6 +265,8 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         }
         KeyCode::Char('D') => app.begin_command(app::CommandKind::Delete),
         KeyCode::Char('=') => app.begin_define(),
+        // The viewed measure's number format (H1-22).
+        KeyCode::Char('#') => app.begin_format(),
         KeyCode::Char('w') => app.write(path),
         KeyCode::Char('u') => app.undo(),
         KeyCode::Char('r') if k.modifiers.contains(KeyModifiers::CONTROL) => app.redo(),

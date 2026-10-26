@@ -23,6 +23,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   until now, sets the selected measure's decimals (General, 0–4) and
   thousands separators, with a check on the format in effect; cells, the
   Sum and the Info panel show it, and each change is one undo step.
+  In the TUI, `#` sets the shown measure's format (`2`, `0 grouped`,
+  `general`); the grid, its column widths and the Sum use it.
   Older releases open a file or database with formats: 0.11 shows those
   measures in the General form and keeps their formats when it saves.
 - **The GUI's Help menu has Keys… and User Guide**, beside Functions…

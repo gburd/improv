@@ -35,6 +35,7 @@ const HELP: &[&str] = &[
     "n: input measure",
     "r/D: rename/delete",
     "=: define",
+    "#: number format",
     "w: save",
     "R: revert",
     "u/Ctrl+R: undo/redo",
@@ -106,9 +107,14 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     } else {
         "input"
     };
-    let sum = match app.selection_sum() {
-        Some(v) => format!("Sum {v}"),
-        None => "Sum \u{2014}".to_string(),
+    let sum = match (app.selection_sum(), &g.format) {
+        // In the measure's format (H1-22); General is `{v}`, as before.
+        (Some(v), Some(f)) => format!(
+            "Sum {}",
+            improv_engine::format_number(v, Some(f), &g.locale)
+        ),
+        (Some(v), None) => format!("Sum {v}"),
+        (None, _) => "Sum \u{2014}".to_string(),
     };
     let coord = format!(
         "cell [{}, {}] = {}   {sum}",
@@ -164,12 +170,21 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             CommandKind::Delete => ("delete", "Name (an item: Category.Item)"),
             CommandKind::SaveView => ("view name", ""),
             CommandKind::Views => ("views", "Old = New renames, -Name deletes"),
+            CommandKind::Format => ("format", ""),
         };
         let mut line = Line::from(format!("{prompt}> {buf}"));
         match kind {
             // The name Enter on an empty line saves under.
             CommandKind::SaveView if buf.is_empty() => line.push_span(Span::styled(
                 format!("{}  (Enter saves; type a name)", app.default_view_name()),
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            // H1-22: the format now, and what the line takes.
+            CommandKind::Format if buf.is_empty() => line.push_span(Span::styled(
+                format!(
+                    "{} now; type general or 0-15 decimals, then grouped (2 grouped)",
+                    g.format.unwrap_or_default()
+                ),
                 Style::default().add_modifier(Modifier::DIM),
             )),
             _ if buf.is_empty() => line.push_span(dim(syntax)),
@@ -730,6 +745,34 @@ mod tests {
         assert!(!lines.iter().any(|l| l.contains("1234567890")), "{lines:?}");
         let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
         assert!(app.model.input(MeasureId(101), &at).is_some());
+    }
+
+    /// H1-22: a formatted measure's cells, its Sum and the `#` prompt's
+    /// hint on screen.
+    #[test]
+    fn a_number_format_shows_in_the_grid_and_the_sum() {
+        use improv_core_model::{MeasureId, NumberFormat};
+        let mut app = App::new(revenue_model()).unwrap();
+        crate::app::tests::view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 1234.5).unwrap();
+        app.begin_format();
+        row_of(
+            &text(&draw(&mut app, 120, 30)),
+            "format> general now; type general or 0-15 decimals, then grouped",
+        );
+        app.cancel_command();
+        app.model.measures.get_mut(&MeasureId(101)).unwrap().format = Some(NumberFormat {
+            decimals: Some(2),
+            grouping: true,
+        });
+        app.cursor_row = 1;
+        app.step(-1, 0, true);
+        crate::app::tests::view(&mut app, MeasureId(101));
+        app.step(1, 0, true);
+        let lines = text(&draw(&mut app, 120, 30));
+        row_of(&lines, "1,234.50");
+        row_of(&lines, "120.00");
+        row_of(&lines, "Sum 1,354.50");
     }
 
     #[test]

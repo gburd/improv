@@ -12,8 +12,9 @@ use crossterm::event::KeyCode;
 #[cfg(test)]
 use improv_core_model::Coordinate;
 use improv_core_model::{
-    parser, parser::Definition, CategoryId, Expr, Filter, Formula, ItemId, MatrixPlacement,
-    Measure, MeasureId, MeasureKind, Model, Name, ParseError, Value, ValueType, View, ViewId,
+    parser, parser::Definition, CategoryId, Expr, Filter, Formula, ItemId, Locale, MatrixPlacement,
+    Measure, MeasureId, MeasureKind, Model, Name, NumberFormat, ParseError, Value, ValueType, View,
+    ViewId,
 };
 use improv_engine::session::Engine;
 use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
@@ -48,6 +49,10 @@ pub struct Grid {
     /// Each column's natural width in characters: its widest value or its
     /// header, so the grid can size the column to fit (H1-3).
     pub widths: Vec<usize>,
+    /// The measure's number format (H1-22), and the locale whose
+    /// separators it writes.
+    pub format: Option<improv_core_model::NumberFormat>,
+    pub locale: Locale,
 }
 
 /// An extra dimension not on the row/column axes, pinned to one item (a
@@ -99,10 +104,11 @@ impl Grid {
             .and_then(|r| r.get(col))
             .and_then(|c| c.as_ref())
     }
-    /// The display string for `[row][col]` (empty for an empty cell).
+    /// The display string for `[row][col]` (empty for an empty cell), in
+    /// the measure's number format (H1-22).
     pub fn display_at(&self, row: usize, col: usize) -> String {
         match self.cell_at(row, col) {
-            Some(v) => v.to_string(),
+            Some(v) => v.formatted(self.format.as_ref(), &self.locale),
             None => String::new(),
         }
     }
@@ -214,6 +220,13 @@ pub fn build_grid_pivoted(
     let measure_name = m
         .map(|m| m.name.0.clone())
         .unwrap_or_else(|| measure.0.to_string());
+    let format = m.and_then(|m| m.format);
+    // Tests do not depend on the machine's locale.
+    let locale = if cfg!(test) {
+        Locale::en()
+    } else {
+        Locale::from_env()
+    };
     let natural: Vec<CategoryId> = m.map(|m| m.categories.clone()).unwrap_or_default();
     // Use the requested axis order if it is a valid permutation of the measure's
     // categories; otherwise fall back to natural order (defensive).
@@ -289,7 +302,7 @@ pub fn build_grid_pivoted(
             cells
                 .iter()
                 .filter_map(|row| row[c].as_ref())
-                .map(|v| v.to_string().chars().count())
+                .map(|v| v.formatted(format.as_ref(), &locale).chars().count())
                 .fold(cols[c].1.chars().count(), usize::max)
         })
         .collect();
@@ -304,6 +317,8 @@ pub fn build_grid_pivoted(
         pages,
         cells,
         widths,
+        format,
+        locale,
     }
 }
 
@@ -358,6 +373,9 @@ pub enum CommandKind {
     SaveView,
     /// `V`: `Old = New` renames a saved view, `-Name` deletes one (H1-15).
     Views,
+    /// `#`: the viewed measure's number format, `2`, `0 grouped` or
+    /// `general` (H1-22).
+    Format,
 }
 
 /// A category, item or measure named on the `r` or `D` line.
@@ -1340,7 +1358,44 @@ impl App {
             CommandKind::Delete => self.run_delete(&line),
             CommandKind::SaveView => self.run_save_view(&line),
             CommandKind::Views => self.run_views(&line),
+            CommandKind::Format => self.run_format(&line),
         });
+    }
+
+    /// `#` (H1-22): open the format prompt for the viewed measure (its
+    /// hint shows the format now); a measure of text has none.
+    pub fn begin_format(&mut self) {
+        let m = self.model.measures.get(&self.viewed_measure());
+        match m {
+            None => self.status = Some(EMPTY.into()),
+            Some(m) if m.value_type != ValueType::Number => {
+                self.status = Some(format!("{} holds no numbers to format", m.name.0));
+            }
+            Some(_) => self.begin_command(CommandKind::Format),
+        }
+    }
+
+    /// `#`'s line: give the viewed measure the format typed, one undo step.
+    fn run_format(&mut self, line: &str) -> String {
+        let id = self.viewed_measure();
+        let Some(m) = self.model.measures.get(&id) else {
+            return EMPTY.into();
+        };
+        let name = m.name.0.clone();
+        let f = match NumberFormat::parse(line) {
+            _ if line.trim().is_empty() => m.format,
+            Ok(f) => f,
+            Err(e) => return format!("format: {e}"),
+        };
+        if f == m.format {
+            return format!("format: {name} is unchanged");
+        }
+        let mut model = self.model.clone();
+        model.measures.get_mut(&id).expect("viewed").format = f;
+        let prior = std::mem::replace(&mut self.model, model);
+        self.record_history(prior);
+        self.reselect();
+        format!("{name}: {}", f.unwrap_or_default())
     }
 
     /// The name `S` gives a view when none is typed: the first free
@@ -2289,6 +2344,71 @@ pub(crate) mod tests {
     pub(crate) fn view(app: &mut App, measure: MeasureId) {
         app.selected = app.measures.iter().position(|m| *m == measure).unwrap();
         app.reselect();
+    }
+
+    /// H1-22: `#` sets the viewed measure's number format: the grid, its
+    /// column widths and the edit seed follow (the seed is the value as
+    /// typed); each change is one undo step; a bad line says what it takes;
+    /// a text measure has none.
+    #[test]
+    fn the_format_prompt_formats_the_viewed_measure() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 1234567.891).unwrap();
+        let w0 = app.grid.widths[0];
+        let run = |app: &mut App, line: &str| {
+            app.begin_format();
+            app.command.as_mut().expect("the prompt").1 = line.into();
+            app.commit_command();
+            app.status.clone().unwrap()
+        };
+        assert_eq!(run(&mut app, "2 grouped"), "Quantity: 2 decimals grouped");
+        assert_eq!(app.grid.display_at(0, 0), "1,234,567.89");
+        assert_eq!(app.grid.display_at(1, 0), "120.00");
+        assert_eq!(app.grid.widths[0], w0 + 1, "1234567.891 -> 1,234,567.89");
+        assert_eq!(run(&mut app, "0"), "Quantity: 0 decimals");
+        assert_eq!(app.grid.display_at(0, 0), "1234568");
+        assert_eq!(
+            run(&mut app, ""),
+            "format: Quantity is unchanged",
+            "Enter keeps it"
+        );
+        assert!(run(&mut app, "lots").starts_with("format: expected general"));
+        // The edit seeds with the value, not the text shown.
+        app.begin_edit();
+        assert_eq!(app.edit.as_ref().unwrap().text, "1234567.891");
+        app.edit = None;
+        // Undo steps back through each format, to General.
+        app.undo();
+        assert_eq!(app.grid.display_at(0, 0), "1,234,567.89");
+        app.undo();
+        assert_eq!(app.grid.display_at(0, 0), "1234567.891");
+        assert_eq!(app.model.measures[&MeasureId(101)].format, None);
+        app.redo();
+        assert_eq!(run(&mut app, "general"), "Quantity: general");
+        assert_eq!(app.model.measures[&MeasureId(101)].format, None);
+        assert!(app.unsaved, "a format change is a change");
+        // A derived measure takes one; text has no numbers.
+        view(&mut app, MeasureId(102));
+        assert_eq!(run(&mut app, "1"), "Revenue: 1 decimal");
+        assert_eq!(app.grid.display_at(0, 0), "12345678.9", "10 * 1234567.891");
+        let mut m = revenue_model();
+        m.measures.remove(&MeasureId(102));
+        m.measures.get_mut(&MeasureId(100)).unwrap().value_type = ValueType::Text;
+        let mut t = App::new(m).unwrap();
+        view(&mut t, MeasureId(100));
+        t.begin_format();
+        assert!(t.command.is_none());
+        assert_eq!(
+            t.status.as_deref(),
+            Some("Price holds no numbers to format")
+        );
+        let mut empty = App::new(Model::new()).unwrap();
+        empty.begin_format();
+        assert_eq!(empty.status.as_deref(), Some(EMPTY));
+        empty.command = Some((CommandKind::Format, "2".into()));
+        empty.commit_command();
+        assert_eq!(empty.status.as_deref(), Some(EMPTY));
     }
 
     #[test]
