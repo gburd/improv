@@ -160,7 +160,13 @@ impl Engine {
         // (The worker keeps each cell's value, so a set retracts the old.)
         let mut seed: Vec<(MeasureId, CoordKey, CellValue)> = Vec::new();
         for ((mid, coord), val) in &model.inputs {
-            let ty = model.measures.get(mid).map(|m| m.value_type);
+            // Inputs only: a stored cell of a derived measure is ignored, as
+            // `dataflow::evaluate` does.
+            let ty = model
+                .measures
+                .get(mid)
+                .filter(|m| m.is_input())
+                .map(|m| m.value_type);
             if let Some(cv) = ty.and_then(|t| input_cell(t, val)) {
                 seed.push((*mid, encode_coord(coord), cv));
             }
@@ -1328,6 +1334,20 @@ mod tests {
         let cells = &s[&m];
         assert_eq!(cells.get(&a), Some(&n(2.0)));
         assert_eq!(cells.get(&b), Some(&n(5.0)));
+    }
+
+    #[test]
+    fn a_stored_cell_of_a_derived_measure_is_ignored() {
+        // A model file can hold one (`improv set` on a formula measure, before
+        // it was refused): it panicked `evaluate`; both paths ignore it now.
+        let mut model = revenue_model();
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        let want = crate::dataflow::evaluate(&model, &[MeasureId(102)]).unwrap();
+        model.set_input(MeasureId(102), at, Value::Number(9.0));
+        let got = crate::dataflow::evaluate(&model, &[MeasureId(102)]).unwrap();
+        assert_eq!(got, want);
+        let (_engine, snap) = Engine::new(&model, &[MeasureId(102)]).unwrap();
+        assert_eq!(**snap.get(&MeasureId(102)).unwrap(), want[&MeasureId(102)]);
     }
 
     #[test]

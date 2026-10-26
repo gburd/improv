@@ -21,6 +21,21 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`improv set` refuses a formula measure, and a stored cell of one no
+  longer panics the engine.** `set` on a derived measure was accepted and
+  saved, and every later `eval` of the model panicked ("a session per input
+  measure"). `set` now says the measure is computed by its formula, and
+  `evaluate` and the live engine ignore such a cell in an existing file
+  (usability review H1-10).
+- **The CLI's `add-category`, `add-item` and `add-measure` refuse a taken id
+  or name.** A reused id silently renamed or replaced what had it
+  (`add-category 1 Foo` renamed Month), and a category could share a
+  measure's name (H1-9).
+- **A mistyped model path is an error**, not a new empty model that the
+  command then ran against: every command but `init`, `import-csv` and
+  `import-sql` needs the file to exist (H1-11).
+- **`improv … | head` exits quietly** (status 141) instead of panicking with
+  "Broken pipe" (H1-30).
 - **`improv-server` stops on SIGTERM.** It had no handler: run as a
   container's PID 1, where SIGTERM's default is to ignore it, `docker stop`
   waited its 10 s and then killed it. SIGTERM and Ctrl-C now end it at once.

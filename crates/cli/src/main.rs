@@ -35,11 +35,32 @@ use args::{Cli, Cmd};
 use clap::{CommandFactory, Parser};
 
 fn main() {
+    quiet_broken_pipe();
     let cli = Cli::try_parse().unwrap_or_else(|e| exit_usage(e));
     if let Err(e) = run(cli) {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
+}
+
+/// `improv list m.db | head` closes our stdout early: `println!` then
+/// panics with "failed printing to stdout: Broken pipe". That is the reader
+/// being done, not an error: exit quietly with 141 (128 + SIGPIPE), as a
+/// shell tool killed by SIGPIPE would. Every other panic keeps its message.
+fn quiet_broken_pipe() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| info.payload().downcast_ref::<&str>().copied())
+            .unwrap_or("");
+        if msg.contains("failed printing to stdout") && msg.contains("Broken pipe") {
+            std::process::exit(141);
+        }
+        default(info);
+    }));
 }
 
 /// Exit for a parse error: `--help`/`--version` print and exit 0; a usage
@@ -273,7 +294,20 @@ pub fn dim_spec(spec: &str) -> Result<(String, CategoryId, String), String> {
 
 // --- helpers ---
 
+/// Open an existing model. A local path that does not exist is an error,
+/// not a new empty model: a mistyped name would otherwise create one and
+/// run the command against it. `init` and the imports [`create`] instead.
 fn open(db: &str) -> Result<Store, String> {
+    if !improv_store::is_postgres(db) && !std::path::Path::new(db).exists() {
+        return Err(format!(
+            "no model at '{db}' (create one with: improv init {db})"
+        ));
+    }
+    create(db)
+}
+
+/// Open a model, creating a local file (and its schema) when it is missing.
+fn create(db: &str) -> Result<Store, String> {
     Store::open(db).map_err(|e| e.to_string())
 }
 
@@ -295,8 +329,23 @@ fn cmd_init(db: &str) -> Result<(), String> {
     // Opening installs the schema; that is all `init` does. It must not save
     // an empty model: `save_model` retracts stored cells the model lacks, so
     // re-running `init` on a populated store would delete every cell.
-    open(db)?;
+    create(db)?;
     println!("initialized store at '{db}'");
+    Ok(())
+}
+
+/// Refuse an `add-*` that would replace or shadow something: an id already
+/// in use, or a name another category or measure has (formulas name both).
+fn check_new(model: &Model, what: &str, id: u32, taken: bool, name: &str) -> Result<(), String> {
+    if taken {
+        return Err(format!("{what} id {id} is in use; pick another id"));
+    }
+    if let Some(c) = model.category_by_name(name) {
+        return Err(format!("the name {name:?} is taken by category {}", c.id.0));
+    }
+    if let Some(m) = model.measure_by_name(name) {
+        return Err(format!("the name {name:?} is taken by measure {}", m.id.0));
+    }
     Ok(())
 }
 
@@ -304,6 +353,13 @@ fn cmd_add_category(db: &str, id: u32, name: &str) -> Result<(), String> {
     let id = CategoryId(id);
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
+    check_new(
+        &model,
+        "category",
+        id.0,
+        model.categories.contains_key(&id),
+        name,
+    )?;
     model.add_category(id, name);
     save_structure(&mut store, &model)?;
     println!("added category {} '{name}'", id.0);
@@ -316,6 +372,16 @@ fn cmd_add_item(db: &str, id: u32, cat: u32, name: &str) -> Result<(), String> {
     let mut model = store.load_model().map_err(|e| e.to_string())?;
     if !model.categories.contains_key(&cat) {
         return Err(format!("no category with id {}", cat.0));
+    }
+    if model.items.contains_key(&id) {
+        return Err(format!("item id {} is in use; pick another id", id.0));
+    }
+    if model.categories[&cat]
+        .items
+        .iter()
+        .any(|i| model.items.get(i).is_some_and(|it| it.name.0 == name))
+    {
+        return Err(format!("category {} already has an item {name:?}", cat.0));
     }
     model.add_item(id, cat, name);
     save_structure(&mut store, &model)?;
@@ -337,6 +403,13 @@ fn cmd_add_measure(
     }
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
+    check_new(
+        &model,
+        "measure",
+        id.0,
+        model.measures.contains_key(&id),
+        name,
+    )?;
 
     // Optional trailing args name the categories this measure ranges over,
     // resolved by name against the model, e.g. `... input Time Product`.
@@ -746,11 +819,17 @@ fn cmd_set(db: &str, mid: u32, value_arg: &str, at: &[(String, String)]) -> Resu
     let mut store = open(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
 
-    let vt = model
+    let measure = model
         .measures
         .get(&mid)
-        .ok_or_else(|| format!("no measure with id {}", mid.0))?
-        .value_type;
+        .ok_or_else(|| format!("no measure with id {}", mid.0))?;
+    if !measure.is_input() {
+        return Err(format!(
+            "measure {} {} is computed by its formula, not set: set one of its inputs",
+            mid.0, measure.name.0
+        ));
+    }
+    let vt = measure.value_type;
     let value = parse_value(value_arg, vt)?;
     let coord = resolve_coord(&model, mid, at)?;
 
@@ -1151,7 +1230,7 @@ fn cmd_import_sql(a: args::ImportSql) -> Result<(), String> {
         refresh_policy,
     };
 
-    let mut store = open(db)?;
+    let mut store = create(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
     // add_sql_measure imports AND records a refreshable SqlSource on the model.
     let n = add_sql_measure(&conn, &mut model, &spec).map_err(|e| e.to_string())?;
@@ -1242,7 +1321,7 @@ fn cmd_import_csv(a: args::ImportCsv) -> Result<(), String> {
         max_records: None,
     };
 
-    let mut store = open(db)?;
+    let mut store = create(db)?;
     let mut model = store.load_model().map_err(|e| e.to_string())?;
     let n = improv_storage_csv::import_csv(&mut model, &spec).map_err(|e| e.to_string())?;
     store.save_model(&model).map_err(|e| e.to_string())?;

@@ -1078,6 +1078,81 @@ fn block_writes(db: &str) {
 /// model ("recursion limit exceeded"). C3b: the limit is 256, for every
 /// shape; `IMPROV_TEST_STACK_KB` runs the commands under `ulimit -s` (CI's
 /// Windows main thread is 1 MiB: `IMPROV_TEST_STACK_KB=1024`).
+/// `improv list m.db | head -1`: the reader closes the pipe early, and the
+/// CLI exits quietly instead of panicking.
+#[cfg(unix)]
+#[test]
+fn a_closed_stdout_is_not_a_panic() {
+    let (_dir, d) = model("pipe");
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_improv"))
+        .args(["list", &d])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let out = child.wait_with_output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+    assert!(
+        matches!(out.status.code(), Some(0) | Some(141)),
+        "{:?}",
+        out.status
+    );
+}
+
+/// H1-9 and H1-11: a reused id or name is refused (it silently renamed or
+/// replaced), and a mistyped model path is an error, not a new empty model.
+#[test]
+fn add_refuses_a_taken_id_or_name_and_open_refuses_a_missing_model() {
+    let dir = scratch("taken");
+    let d = &file(&dir, "m.db");
+    ok(&["init", d]);
+    ok(&["add-category", d, "1", "Month"]);
+    fails_with(&["add-category", d, "1", "Foo"], "category id 1 is in use");
+    fails_with(
+        &["add-category", d, "2", "Month"],
+        "the name \"Month\" is taken by category 1",
+    );
+    ok(&["add-item", d, "10", "1", "Jan"]);
+    fails_with(&["add-item", d, "10", "1", "Feb"], "item id 10 is in use");
+    fails_with(
+        &["add-item", d, "11", "1", "Jan"],
+        "category 1 already has an item \"Jan\"",
+    );
+    ok(&["add-measure", d, "100", "Spent", "number", "input", "Month"]);
+    fails_with(
+        &["add-measure", d, "100", "Other", "number", "input"],
+        "measure id 100 is in use",
+    );
+    fails_with(
+        &["add-measure", d, "101", "Month", "number", "input"],
+        "taken by category 1",
+    );
+    stdout_has(&ok(&["list", d]), "1 Month");
+    let missing = file(&dir, "typo.db");
+    fails_with(&["list", &missing], "no model at");
+    assert!(
+        !std::path::Path::new(&missing).exists(),
+        "list created {missing}"
+    );
+}
+
+#[test]
+fn set_refuses_a_formula_measure() {
+    let dir = scratch("set-derived");
+    let d = &file(&dir, "m.db");
+    ok(&["init", d]);
+    ok(&["add-measure", d, "100", "P", "number", "input"]);
+    ok(&["set", d, "100", "3"]);
+    ok(&["add-derived", d, "101", "Q", "P * 2"]);
+    fails_with(
+        &["set", d, "101", "9"],
+        "measure 101 Q is computed by its formula, not set",
+    );
+    stdout_has(&ok(&["eval", d, "101"]), "Q[] = 6");
+}
+
 #[test]
 fn a_formula_too_deep_is_refused_and_an_old_one_does_not_lock_the_model() {
     let dir = scratch("depth");

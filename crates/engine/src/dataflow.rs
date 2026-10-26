@@ -1328,6 +1328,15 @@ fn evaluate_here(
     // CellValue::Date millis), and Error.
     let mut input_cells: HashMap<MeasureId, Vec<(CoordKey, CellValue)>> = HashMap::new();
     for ((mid, coord), val) in &model.inputs {
+        // A stored cell of a derived (or unknown) measure is not an input: a
+        // model file can hold one (an old `improv set`), and it has no session.
+        let is_input = model
+            .measures
+            .get(mid)
+            .is_some_and(|m| matches!(m.kind, MeasureKind::Input));
+        if !is_input {
+            continue;
+        }
         if let Some(cv) = CellValue::from_model_value(val) {
             input_cells
                 .entry(*mid)
