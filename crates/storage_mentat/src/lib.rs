@@ -1597,6 +1597,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// An older release opening a newer file (as 0.11 opens a 0.12 file with
+    /// number formats): an attribute this release does not know, on a
+    /// measure, is ignored on load and kept by a save, which writes only the
+    /// attributes it knows and retracts none it does not.
+    #[test]
+    fn a_later_releases_attribute_is_ignored_and_kept() {
+        let mut store = ModelStore::open("").expect("open in-memory");
+        let mut m = sample_model();
+        store.save_model(&m).expect("save");
+        store
+            .store
+            .transact(
+                r#"[{:db/ident :measure/later :db/valueType :db.type/string
+                     :db/cardinality :db.cardinality/one}]"#,
+            )
+            .expect("a later schema");
+        store
+            .store
+            .transact(r#"[{:measure/id 100 :measure/later "kept"}]"#)
+            .expect("a later attribute");
+        let loaded = store.load_model().expect("load");
+        assert_eq!(loaded, m, "ignored");
+        m.measures.get_mut(&MeasureId(100)).unwrap().name = Name("Cost".into());
+        store.save_changes(&m, &[], true).expect("structure save");
+        store.save_model(&m).expect("full save");
+        let later = store
+            .rel("[:find ?v :where [?e :measure/id 100] [?e :measure/later ?v]]")
+            .unwrap();
+        assert_eq!(later.len(), 1, "kept: {later:?}");
+    }
+
     /// A view saved by a PRE-CANVAS build of Improv must still load. Those
     /// blobs are on users' disks; the only thing that ever read them is
     /// `serde_json::from_str::<View>` in `load_views`, so this drives the real

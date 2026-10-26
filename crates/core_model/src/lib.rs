@@ -1132,6 +1132,9 @@ mod tests {
         );
         let read: Measure = serde_json::from_str(&newer).unwrap();
         assert_eq!(read.format, f(Some(2), false));
+        // A field a later release adds to a measure is ignored.
+        let later = json.replace("\"description\":null", "\"description\":null,\"later\":1");
+        assert_eq!(serde_json::from_str::<Measure>(&later).unwrap(), m);
     }
 
     #[test]

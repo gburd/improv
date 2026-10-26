@@ -136,8 +136,9 @@ idempotent: an attribute that exists is unchanged and a new one is added.
 So a minor may only:
 
 - add attributes, which an older file simply lacks (a new reader treats a
-  missing one as its default; see the test
-  `store_without_category_order_still_loads`);
+  missing one as its default; see the tests
+  `store_without_category_order_still_loads` and
+  `measure_format_round_trips_and_old_stores_load`);
 - add fields to the JSON values, with defaults, so an older value still
   reads;
 - read an older shape and write the new one on the next save (the views
@@ -150,7 +151,12 @@ CHANGELOG records it.
 
 **Not stable:** opening a file with an older release than the one that
 last saved it. It may load, but a save then drops whatever the older
-release does not know.
+release does not know. An added attribute usually survives: a release
+ignores an attribute it does not know and its saves keep it (the test
+`a_later_releases_attribute_is_ignored_and_kept`). So 0.11 opens a file
+with 0.12's number formats, shows its numbers in the General form, and
+keeps the formats when it saves; the same holds for a Postgres model,
+whose `improv.measure.format` column 0.11 neither reads nor writes.
 
 ## The command line
 
