@@ -14,6 +14,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   paths (`postgresql-17-improv`, `postgresql17-improv`), and `improv.rb`.
   The release installs each `.deb`/`.rpm` in a clean Debian and Fedora
   container and runs it before attaching it.
+- **The GUI recalculates in the background** (H3). After a new or edited
+  formula, a rename, a new category or item, an import, the undo or redo
+  of any of these, Calc, Revert to Saved, or opening a model, the engine
+  is rebuilt on a thread of its own. Until then the grid shows the last
+  results and the status bar says "Recalculating…". A cell edit made
+  meanwhile is applied to the new engine when it is ready; a second
+  structural change builds again. At 1M cells, a new formula held the
+  window for 1.6–2.6 s (and its undo and redo for 1.8–2.0 s); the longest
+  frame is now 15–26 ms. A change that leaves the cells alone no longer
+  copies or diffs them for its undo step and its save (0.6 s at 1M).
+  An engine that fails to build now says so in the status bar.
 - **A container image**, `ghcr.io/gburd/improv`, from the next release on:
   `improv-server` and the `improv` CLI (`Containerfile`), as an
   unprivileged user, refusing to start without a token. The release job

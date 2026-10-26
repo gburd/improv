@@ -101,7 +101,12 @@ The window has five regions:
   type, dimensions, dependencies, and formula. Its close box closes it.
 - **Status bar** (bottom) — the last action's outcome (`saved model`,
   `recalculated`, `undo`, `added Margin`, or an error) on the left, cleared
-  after 5 seconds, and the selection's **Sum** on the right.
+  after 5 seconds, and the selection's **Sum** on the right. While the
+  formulas recompute after a structural change (a new or edited formula,
+  an import, its undo, opening a model), it also says **Recalculating…**.
+  That takes a second or two at a million cells. The window keeps
+  responding: the grid shows the last results until the new ones are
+  ready, and cell edits made meanwhile are applied to them.
 
 The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an

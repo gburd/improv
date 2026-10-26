@@ -15,6 +15,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::RangeInclusive;
+use std::sync::{mpsc, Arc};
 
 use improv_core_model::{
     parser, BinaryOp, CanvasRect, CategoryId, Expr, Filter, FuncId, ItemId, MatrixPlacement,
@@ -145,10 +146,17 @@ fn set_caret(ctx: &egui::Context, id: egui::Id, text: &str, at: usize) {
 pub struct ImprovApp {
     /// The store path (empty = in-memory scratch); used for saving.
     db: String,
-    model: Model,
+    /// Shared with an engine build in flight, which copies it and lets go
+    /// (see [`Self::rebuild_engine`]).
+    model: Arc<Model>,
     /// Live incremental engine over all derived measures, plus its snapshot.
     engine: Option<Engine>,
     snapshot: Snapshot,
+    /// The engine build running off the UI thread, if any (H3).
+    building: Option<Build>,
+    /// Whether builds run in the background: in the app, yes; tests build
+    /// in the foreground unless they test the background path.
+    background: bool,
     /// The matrices on the canvas, in canvas order. **Always non-empty**: index
     /// 0 is the view's primary matrix (see [`View`]'s flat fields), the rest are
     /// its `placements`.
@@ -266,6 +274,10 @@ pub struct ImprovApp {
     /// full save block the UI thread for seconds on a large model.
     queued_import: Option<u8>,
 }
+
+/// Engine builds run in the background, except in tests (see
+/// [`ImprovApp::background`]).
+const BACKGROUND: bool = !cfg!(test);
 
 /// Seconds between the checks for another writer's save (H9).
 const PROBE_SECS: f64 = 2.0;
@@ -400,23 +412,48 @@ const GRID_MIN_H: f32 = 120.0;
 /// How many steps the undo (and redo) stack keeps; older entries are
 /// evicted.
 ///
-/// shortcut: a structural step is a FULL `Model` clone, up to 50 resident
-/// copies, and undoing one rebuilds the engine (about 2 s at 1M cells).
-/// Grid edits record a [`Step::Cell`] instead. If structural edits on huge
-/// models need it, give them inverse operations too.
+/// shortcut: an import or a delete records a FULL `Model` clone, up to 50
+/// resident copies. Grid edits record a [`Step::Cell`], and changes that
+/// leave the cells alone a [`Step::Structure`]; undoing either of those two
+/// rebuilds the engine in the background. Give imports and deletes inverse
+/// operations too if huge models need it.
 const UNDO_DEPTH: usize = 50;
 
 /// One undo (or redo) step: what to put back.
 #[derive(Debug, Clone)]
 enum Step {
-    /// The whole model, before a structural change (a formula, an import,
-    /// a new category). Boxed: a `Model` is ten times a cell step.
+    /// The whole model, before a change to its cells and structure at
+    /// once (an import, a delete). Boxed: a `Model` is ten times a cell
+    /// step.
     Model(Box<Model>),
+    /// Everything but the input cells ([`structure_of`]), before a change
+    /// that left them alone (a formula, a name, a new category). Copying
+    /// 1M cells for the step took 140 ms, and diffing them for the save
+    /// 480 ms (H3).
+    Structure(Box<Model>),
     /// One input cell's value (`None`: empty), before a grid edit. Cloning
     /// the model per keystroke cost 170 ms at 1M cells, and undoing it was
     /// a full rebuild; this undoes incrementally.
     Cell(MeasureId, CoordKey, Option<Value>),
 }
+
+/// An engine build running off the UI thread (see
+/// [`ImprovApp::rebuild_engine`]).
+struct Build {
+    /// The engine for the model the build took, or why it failed.
+    done: mpsc::Receiver<Result<(Option<Engine>, Snapshot), String>>,
+    /// The input-cell edits made since the build took the model: replayed
+    /// onto the new engine when it lands.
+    edits: Vec<improv_engine::session::Edit>,
+    /// The model changed structurally since: build again when this lands.
+    stale: bool,
+}
+
+/// How often a frame looks for a finished build.
+const BUILD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+/// A build thread that ended without an answer (it panicked, or could not
+/// start).
+const BUILD_LOST: &str = "the engine build stopped";
 
 /// Initial window inner size: room for the menu, a default matrix and the Info
 /// panel side by side on the workspace.
@@ -1123,7 +1160,8 @@ impl Matrix {
 
 impl ImprovApp {
     /// Load a model from the store at `db` (`""` = fresh in-memory model) and
-    /// build the live engine over its derived measures.
+    /// start building the live engine over its derived measures (in the
+    /// background, see [`Self::rebuild_engine`]).
     pub fn load(db: &str) -> Result<ImprovApp, String> {
         let (model, save_token) = if db.is_empty() {
             (Model::new(), improv_store::SaveToken::default())
@@ -1133,17 +1171,18 @@ impl ImprovApp {
             (model, store.save_token())
         };
 
-        let (engine, snapshot) = build_engine(&model);
         let selected = pick_default_measure(&model);
         let matrices = vec![Matrix::new(&model, selected)];
 
-        Ok(ImprovApp {
+        let mut app = ImprovApp {
             db: db.to_string(),
             save_token,
             unsaved: Default::default(),
-            model,
-            engine,
-            snapshot,
+            model: Arc::new(model),
+            engine: None,
+            snapshot: Snapshot::default(),
+            building: None,
+            background: BACKGROUND,
             matrices,
             focus: 0,
             current_view: None,
@@ -1187,7 +1226,10 @@ impl ImprovApp {
             probed_at: f64::NEG_INFINITY,
             outside: None,
             queued_import: None,
-        })
+        };
+        // The window opens on the inputs; the formulas follow (H3).
+        app.rebuild_engine();
+        Ok(app)
     }
 
     // -- the canvas: N matrices, one focused -------------------------------
@@ -1439,10 +1481,11 @@ impl ImprovApp {
         let key = decode(&coord);
         let prior = self.model.input(measure, &key).cloned();
 
+        let model = self.model_mut();
         match &value {
-            Some(v) => self.model.set_input(measure, key.clone(), v.clone()),
+            Some(v) => model.set_input(measure, key.clone(), v.clone()),
             None => {
-                self.model.inputs.remove(&(measure, key.clone()));
+                model.inputs.remove(&(measure, key.clone()));
             }
         }
         let outcome = (|| -> Result<(), String> {
@@ -1453,10 +1496,11 @@ impl ImprovApp {
         if let Err(e) = outcome {
             // Restore the model, then push the restored value back through the
             // engine so its graph and our snapshot agree with the model again.
+            let model = self.model_mut();
             match &prior {
-                Some(v) => self.model.set_input(measure, key, v.clone()),
+                Some(v) => model.set_input(measure, key, v.clone()),
                 None => {
-                    self.model.inputs.remove(&(measure, key));
+                    model.inputs.remove(&(measure, key));
                 }
             }
             if self.push_engine(measure, &coord, prior.as_ref()).is_err() {
@@ -1469,7 +1513,8 @@ impl ImprovApp {
     }
 
     /// Push one input-cell edit through the live engine and adopt the recomputed
-    /// snapshot. No engine (no derived measures) -> nothing to do.
+    /// snapshot. No engine (no derived measures) -> nothing to do. While an
+    /// engine builds, the edit waits for it ([`Self::rebuild_engine`]).
     ///
     /// A value of the measure's type (number, boolean, text, date) enters the
     /// engine as that cell; anything else (text in a number measure, an
@@ -1483,24 +1528,30 @@ impl ImprovApp {
         coord: &CoordKey,
         value: Option<&Value>,
     ) -> Result<(), String> {
-        let Some(engine) = &mut self.engine else {
-            return Ok(());
-        };
         let ty = self.model.measures.get(&measure).map(|m| m.value_type);
         let cell = ty
             .zip(value)
             .and_then(|(t, v)| improv_engine::session::input_cell(t, v));
+        let edit = improv_engine::session::Edit {
+            measure,
+            coord: coord.clone(),
+            value: cell,
+        };
+        if let Some(b) = &mut self.building {
+            // A stale build is built again from the model, edit and all.
+            if !b.stale {
+                b.edits.push(edit);
+            }
+            return Ok(());
+        }
+        let Some(engine) = &mut self.engine else {
+            return Ok(());
+        };
         // Let go of the old snapshot first: the engine then updates its
         // results in place, O(the change), where one still held is copied
         // whole (52 ms an edit at 1M cells).
         self.snapshot = Snapshot::default();
-        let snapshot = engine
-            .apply(vec![improv_engine::session::Edit {
-                measure,
-                coord: coord.clone(),
-                value: cell,
-            }])
-            .map_err(|e| e.to_string())?;
+        let snapshot = engine.apply(vec![edit]).map_err(|e| e.to_string())?;
         self.snapshot = snapshot;
         Ok(())
     }
@@ -1677,18 +1728,18 @@ impl ImprovApp {
         }
         let id = self.next_view_id();
         let view = self.build_view(id, name)?;
-        let prior_model = self.model.clone();
-        self.model.add_view(view);
+        let prior = Box::new(structure_of(self.model_mut()));
+        self.model_mut().add_view(view);
         let structure = improv_store::ChangeSet {
             structure: true,
             ..Default::default()
         };
         if let Err(e) = self.save_changes(&structure) {
-            self.model.views.remove(&id);
+            self.model_mut().views.remove(&id);
             self.status = e;
             return None;
         }
-        self.record_history(prior_model);
+        self.record_step(Step::Structure(prior));
         self.current_view = Some(id);
         self.status = format!("saved view '{name}'");
         Some(id)
@@ -1824,8 +1875,8 @@ impl ImprovApp {
         };
         // `import_csv` is read-only on the model until it commits, so a failed
         // import leaves nothing to undo; the snapshot is kept only on success.
-        let prior_model = self.model.clone();
-        match improv_storage_csv::import_csv(&mut self.model, &spec) {
+        let prior_model = (*self.model).clone();
+        match improv_storage_csv::import_csv(self.model_mut(), &spec) {
             Ok(n) => {
                 self.rebuild_engine();
                 self.focused_mut().select(Some(spec.measure_id));
@@ -1869,12 +1920,136 @@ impl ImprovApp {
         }
     }
 
-    /// Rebuild the live engine after a structural change (formula edit / new
-    /// derived measure) and refresh the snapshot.
+    /// Rebuild the live engine after a structural change (a formula, a new
+    /// derived measure, an import, the undo of one), off the UI thread (H3):
+    /// at 1M cells a build takes seconds. Until it lands the grid shows the
+    /// last snapshot (less the measures the model no longer computes), the
+    /// status bar says "Recalculating…", and cell edits wait for the new
+    /// engine ([`Self::push_engine`]). A rebuild asked for while one runs
+    /// marks that one stale: when it lands it is thrown away and the model,
+    /// edits and all, is built again.
     fn rebuild_engine(&mut self) {
-        let (engine, snapshot) = build_engine(&self.model);
-        self.engine = engine;
-        self.snapshot = snapshot;
+        if let Some(b) = &mut self.building {
+            b.stale = true;
+            b.edits.clear();
+        } else {
+            self.spawn_build();
+        }
+        if !self.background {
+            self.finish_build();
+        }
+    }
+
+    /// The model, to change. A build thread holds it only while it copies
+    /// it (see [`Self::spawn_build`]): wait for that copy rather than make a
+    /// second one here, which at 1M cells is as slow and doubles the memory.
+    fn model_mut(&mut self) -> &mut Model {
+        // Only a build thread shares the model; it lets go before building.
+        while self.building.is_some() && Arc::strong_count(&self.model) > 1 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        Arc::make_mut(&mut self.model)
+    }
+
+    /// Start building an engine for the model as it is now, on a thread
+    /// with the engine's stack (a formula compiles recursively).
+    fn spawn_build(&mut self) {
+        let model = Arc::clone(&self.model);
+        // What the old engine computed for a measure the model no longer
+        // computes would show under a new measure that reuses its id.
+        let keep: HashMap<_, _> = self
+            .snapshot
+            .iter()
+            .filter(|(id, _)| model.measures.get(id).is_some_and(Measure::is_derived))
+            .map(|(id, v)| (*id, Arc::clone(v)))
+            .collect();
+        let old = (
+            self.engine.take(),
+            std::mem::replace(&mut self.snapshot, Arc::new(keep)),
+        );
+        let (tx, rx) = mpsc::channel();
+        // A failed spawn drops `tx`: the build lands as BUILD_LOST.
+        let _ = std::thread::Builder::new()
+            .name("improv-gui-build".into())
+            .stack_size(improv_engine::dataflow::ENGINE_STACK)
+            .spawn(move || {
+                // Copy the model and let go of it first, so an edit meanwhile
+                // need not copy it on the UI thread; free the old engine
+                // here, not there.
+                // shortcut: a change in the copy's first ~150 ms (at 1M
+                // cells) waits for it on the UI thread (`model_mut`); share
+                // the cells persistently if that shows.
+                let owned = engine_model(&model).into_owned();
+                drop(model);
+                drop(old);
+                let _ = tx.send(try_build_engine(&owned));
+            });
+        self.building = Some(Build {
+            done: rx,
+            edits: Vec::new(),
+            stale: false,
+        });
+    }
+
+    /// Adopt a finished build: replay the cell edits made while it ran, or,
+    /// when the structure moved on meanwhile, build again. A failed build
+    /// leaves no engine (inputs still show) and says why.
+    fn land(&mut self, b: Build, built: Result<(Option<Engine>, Snapshot), String>) {
+        if b.stale {
+            drop_off_thread(built);
+            self.spawn_build();
+            return;
+        }
+        let edits = b.edits;
+        let adopted = built.and_then(|(mut engine, snapshot)| {
+            let Some(e) = engine.as_mut().filter(|_| !edits.is_empty()) else {
+                return Ok((engine, snapshot));
+            };
+            // Let go of the snapshot first, as push_engine does.
+            drop(snapshot);
+            let snapshot = e.apply(edits).map_err(|e| e.to_string())?;
+            Ok((engine, snapshot))
+        });
+        let old = match adopted {
+            Ok((engine, snapshot)) => {
+                self.engine = engine;
+                std::mem::replace(&mut self.snapshot, snapshot)
+            }
+            Err(e) => {
+                self.status = format!("recalculation failed: {e}");
+                self.engine = None;
+                std::mem::take(&mut self.snapshot)
+            }
+        };
+        drop_off_thread(old);
+    }
+
+    /// Each frame: land the build if it is done, and keep frames coming
+    /// while one runs.
+    fn poll_build(&mut self, ctx: &egui::Context) {
+        let Some(b) = &self.building else {
+            return;
+        };
+        let built = match b.done.try_recv() {
+            Ok(built) => built,
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(BUILD_POLL);
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(BUILD_LOST.into()),
+        };
+        if let Some(b) = self.building.take() {
+            self.land(b, built);
+        }
+        ctx.request_repaint();
+    }
+
+    /// Wait for the build in flight, and any it starts, and land it.
+    fn finish_build(&mut self) {
+        while let Some(b) = self.building.take() {
+            let built = b.done.recv().unwrap_or_else(|_| Err(BUILD_LOST.into()));
+            self.land(b, built);
+        }
     }
 
     // -- keyboard cell cursor: delegated to the FOCUSED matrix -------------
@@ -1994,13 +2169,13 @@ impl ImprovApp {
         // Validate on a candidate copy: a formula that parses can still fail to
         // build (cycle, type/dimension error), which would otherwise leave the
         // app with a saved-but-broken model and a dead engine.
-        let mut candidate = self.model.clone();
+        let mut candidate = structure_of(self.model_mut());
         let m = candidate
             .measures
             .get_mut(&measure)
             .ok_or_else(|| format!("no measure with id {}", measure.0))?;
         m.kind = MeasureKind::Derived(formula);
-        self.publish(candidate).inspect_err(|e| {
+        self.publish_structure(candidate).inspect_err(|e| {
             self.formula_error = formula_fault(&self.model, text, e);
         })
     }
@@ -2039,7 +2214,7 @@ impl ImprovApp {
         if !m.is_derived() || !formula_disabled(m) == enabled {
             return Ok(());
         }
-        let mut candidate = self.model.clone();
+        let mut candidate = structure_of(self.model_mut());
         let m = candidate
             .measures
             .get_mut(&measure)
@@ -2047,7 +2222,7 @@ impl ImprovApp {
         // Preserve the user's own description text across the toggle.
         let (_, user) = split_marker(m.description.as_deref());
         m.description = join_marker(!enabled, user);
-        self.publish(candidate)
+        self.publish_structure(candidate)
     }
 
     /// Every formula in the model, in id order, as the formula pane lists them
@@ -2132,38 +2307,73 @@ impl ImprovApp {
     /// nothing is touched (`self` keeps its model, engine, and snapshot). On
     /// success the replaced model becomes an undo point.
     ///
-    /// ponytail: validation is a full model clone + a full engine rebuild per
-    /// structural edit (briefly two live engines). That is the price of
-    /// atomicity at GUI edit rates; if formula editing ever needs to be
-    /// interactive on huge models, validate against a compile-only pass
-    /// (`engine::compiler::compile_formula` + `derived_build_order`) instead of
-    /// a real `Engine::new`.
+    /// ponytail: a full model clone per structural edit (the candidate, then
+    /// the undo point). The engine is checked over the structure alone
+    /// ([`check_engine`]) and rebuilt in the background (H3).
     fn publish(&mut self, candidate: Model) -> Result<(), String> {
         let previous = self.swap_model(Box::new(candidate)).map_err(|(e, _)| e)?;
         self.record_history(previous);
         Ok(())
     }
 
-    /// The atomic model swap behind [`Self::publish`] and undo/redo: build an
-    /// engine for `candidate`, save it, and only then adopt it (model, engine,
-    /// snapshot together). Returns the model it replaced; on failure, the
+    /// The atomic model swap behind [`Self::publish`] and undo/redo: check
+    /// that `candidate` builds an engine ([`check_engine`]), save it, and only
+    /// then adopt it and rebuild the engine (in the background, see
+    /// [`Self::rebuild_engine`]). Returns the model it replaced; on failure, the
     /// error and `candidate`, so a failed undo keeps its step without a
     /// copy. Records no history — callers decide (an undo must not become
     /// an undo point of its own).
-    fn swap_model(&mut self, candidate: Box<Model>) -> Result<Model, (String, Box<Model>)> {
-        let (engine, snapshot) = match try_build_engine(&candidate) {
-            Ok(built) => built,
-            Err(e) => return Err((e, candidate)),
-        };
-        let previous = std::mem::replace(&mut self.model, *candidate);
+    fn swap_model(&mut self, mut candidate: Box<Model>) -> Result<Model, (String, Box<Model>)> {
+        if let Err(e) = check_engine(&mut candidate) {
+            return Err((e, candidate));
+        }
+        let previous = std::mem::replace(&mut self.model, Arc::new(*candidate));
         let changes = improv_store::ChangeSet::between(&previous, &self.model);
         if let Err(e) = self.save_changes(&changes) {
             let candidate = std::mem::replace(&mut self.model, previous);
+            return Err((e, Box::new(into_model(candidate))));
+        }
+        self.rebuild_engine();
+        Ok(into_model(previous))
+    }
+
+    /// [`Self::publish`] for a change that leaves the input cells alone:
+    /// `candidate` is the new model without them ([`structure_of`]).
+    fn publish_structure(&mut self, candidate: Model) -> Result<(), String> {
+        let previous = self
+            .swap_structure(Box::new(candidate))
+            .map_err(|(e, _)| e)?;
+        self.record_step(Step::Structure(previous));
+        Ok(())
+    }
+
+    /// [`Self::swap_model`] for a model without input cells: `candidate`
+    /// takes the current cells, so nothing copies or diffs them. Returns the
+    /// structure it replaced, also without cells; on failure, the error and
+    /// `candidate`.
+    fn swap_structure(
+        &mut self,
+        mut candidate: Box<Model>,
+    ) -> Result<Box<Model>, (String, Box<Model>)> {
+        debug_assert!(candidate.inputs.is_empty(), "a structure has no cells");
+        if let Err(e) = check_engine(&mut candidate) {
+            return Err((e, candidate));
+        }
+        let model = self.model_mut();
+        candidate.inputs = std::mem::take(&mut model.inputs);
+        let mut previous = std::mem::replace(model, *candidate);
+        let structure = improv_store::ChangeSet {
+            structure: true,
+            ..Default::default()
+        };
+        if let Err(e) = self.save_changes(&structure) {
+            let model = self.model_mut();
+            previous.inputs = std::mem::take(&mut model.inputs);
+            let candidate = std::mem::replace(model, previous);
             return Err((e, Box::new(candidate)));
         }
-        self.engine = engine;
-        self.snapshot = snapshot;
-        Ok(previous)
+        self.rebuild_engine();
+        Ok(Box::new(previous))
     }
 
     // -- undo / redo -------------------------------------------------------
@@ -2185,7 +2395,7 @@ impl ImprovApp {
     fn undo_model(&self) -> Option<&Model> {
         match self.undo_stack.last()? {
             Step::Model(m) => Some(m),
-            Step::Cell(..) => None,
+            Step::Structure(_) | Step::Cell(..) => None,
         }
     }
 
@@ -2197,6 +2407,10 @@ impl ImprovApp {
                 .swap_model(m)
                 .map(|m| Step::Model(Box::new(m)))
                 .map_err(|(e, m)| (e, Step::Model(m))),
+            Step::Structure(m) => self
+                .swap_structure(m)
+                .map(Step::Structure)
+                .map_err(|(e, m)| (e, Step::Structure(m))),
             Step::Cell(measure, coord, value) => {
                 match self.put_cell(measure, coord.clone(), value.clone()) {
                     Ok(now) => Ok(Step::Cell(measure, coord, now)),
@@ -2321,9 +2535,10 @@ impl ImprovApp {
             return Err(format!("a measure named {name:?} already exists"));
         }
         let id = MeasureId(self.next_measure_id());
+        let mut candidate = structure_of(self.model_mut());
         // A new measure may refer to itself (a PREV recurrence).
         let formula = {
-            let provisional = self.model.with_provisional(id, name);
+            let provisional = candidate.with_provisional(id, name);
             let canonical = self.locale.canonicalize(text);
             parser::parse_expr(&provisional, &canonical)
                 .or_else(|e| parse_nl_formula(&NlContext::new(&provisional), text).map_err(|_| e))
@@ -2334,15 +2549,14 @@ impl ImprovApp {
         };
         // The engine's shape: an aggregation drops what it reduces, `@ITEM`
         // is text, and so on.
-        let (value_type, cats) =
-            improv_engine::compiler::derived_shape(&self.model, id, name, &formula).map_err(
-                |e| {
-                    let e = e.to_string();
-                    self.new_formula_error = formula_fault(&self.model, text, &e);
-                    e
-                },
-            )?;
-        let mut candidate = self.model.clone();
+        let (value_type, cats) = improv_engine::compiler::derived_shape(
+            &candidate, id, name, &formula,
+        )
+        .map_err(|e| {
+            let e = e.to_string();
+            self.new_formula_error = formula_fault(&self.model, text, &e);
+            e
+        })?;
         candidate.add_measure(Measure {
             id,
             name: Name(name.to_string()),
@@ -2351,7 +2565,7 @@ impl ImprovApp {
             kind: MeasureKind::Derived(formula),
             description: None,
         });
-        self.publish(candidate).inspect_err(|e| {
+        self.publish_structure(candidate).inspect_err(|e| {
             self.new_formula_error = formula_fault(&self.model, text, e);
         })?;
         Ok(id)
@@ -2385,9 +2599,9 @@ impl ImprovApp {
         let old = self.model.lambda_by_name(&name).map(|(id, _)| id);
         let id = old.unwrap_or_else(|| next_id(self.model.lambdas.keys().copied()));
         let params = lt.lambda.params.join(", ");
-        let mut candidate = self.model.clone();
+        let mut candidate = structure_of(self.model_mut());
         candidate.lambdas.insert(id, lt.lambda);
-        self.publish(candidate)?;
+        self.publish_structure(candidate)?;
         let verb = if old.is_some() {
             "redefined"
         } else {
@@ -2471,13 +2685,12 @@ impl ImprovApp {
             return Ok(());
         }
         let mut store = Store::open(&self.db).map_err(|e| format!("revert failed: {e}"))?;
-        let model = store
+        let mut model = store
             .load_model()
             .map_err(|e| format!("revert failed: {e}"))?;
-        let (engine, snapshot) = try_build_engine(&model)?;
-        self.model = model;
-        self.engine = engine;
-        self.snapshot = snapshot;
+        check_engine(&mut model)?;
+        self.model = Arc::new(model);
+        self.rebuild_engine();
         self.save_token = store.take_save_token();
         self.unsaved = Default::default();
         self.outside = None;
@@ -3025,6 +3238,8 @@ fn formula_error_lines(ui: &mut egui::Ui, d: &diagnostics::Diagnostic) -> egui::
 
 /// Build a live engine over all derived measures in `model`, plus its initial
 /// snapshot. Falls back to no engine (inputs still render) on build failure.
+/// Test-only: the app builds in the background ([`ImprovApp::rebuild_engine`]).
+#[cfg(test)]
 fn build_engine(model: &Model) -> (Option<Engine>, Snapshot) {
     match try_build_engine(model) {
         Ok(pair) => pair,
@@ -3147,6 +3362,36 @@ fn engine_model(model: &Model) -> Cow<'_, Model> {
 ///
 /// `Ok(None)` (no engine, successfully) when nothing is left to compute — a
 /// model with no derived measures, or one whose formulas are all disabled.
+/// Whether `model`'s formulas build an engine, checked over its structure
+/// alone: the full build's compile, cycle and FIXPOINT checks, in
+/// milliseconds where the cells take seconds (H3).
+fn check_engine(model: &mut Model) -> Result<(), String> {
+    try_build_engine(&structure_of(model)).map(drop)
+}
+
+/// `model` without its input cells: what a structural change edits, and
+/// a copy in microseconds where the cells take 140 ms at 1M (H3). The
+/// cells are lent out for the copy, so a field `Model` gains is copied too.
+fn structure_of(model: &mut Model) -> Model {
+    let inputs = std::mem::take(&mut model.inputs);
+    let s = model.clone();
+    model.inputs = inputs;
+    s
+}
+
+/// The model in `m`, copied only when a build still holds it.
+fn into_model(m: Arc<Model>) -> Model {
+    Arc::unwrap_or_clone(m)
+}
+
+/// Drop `x` on a thread of its own: an engine or a snapshot of 1M cells
+/// takes longer to free than a frame lasts.
+fn drop_off_thread<T: Send + 'static>(x: T) {
+    let _ = std::thread::Builder::new()
+        .name("improv-gui-free".into())
+        .spawn(move || drop(x));
+}
+
 fn try_build_engine(model: &Model) -> Result<(Option<Engine>, Snapshot), String> {
     let model = engine_model(model);
     let derived: Vec<MeasureId> = model
@@ -3586,6 +3831,7 @@ impl ImprovApp {
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.run_queued_import(ctx);
+        self.poll_build(ctx);
         self.sync_axis_state();
         self.sync_native_title(ctx);
         self.handle_command_keys(ctx);
@@ -3887,7 +4133,7 @@ impl ImprovApp {
         let taken = self.model.category_by_name(name).is_some()
             || self.model.measure_by_name(name).is_some()
             || self.model.lambda_by_name(name).is_some();
-        let mut candidate = self.model.clone();
+        let mut candidate = structure_of(self.model_mut());
         let mut shown = None;
         let msg = match what {
             NewThing::Category | NewThing::Input if taken => {
@@ -3933,7 +4179,7 @@ impl ImprovApp {
                 format!("added input measure {name}")
             }
         };
-        self.publish(candidate)?;
+        self.publish_structure(candidate)?;
         if self.selected().is_none() {
             self.focused_mut().select(shown);
         }
@@ -4010,7 +4256,7 @@ impl ImprovApp {
         } else if taken(t) {
             return Err(format!("{name:?} is already a category, measure or LAMBDA"));
         }
-        let mut candidate = self.model.clone();
+        let mut candidate = structure_of(self.model_mut());
         let slot = match t {
             Thing::Category(c) => candidate.categories.get_mut(&c).map(|x| &mut x.name),
             Thing::Item(i) => candidate.items.get_mut(&i).map(|x| &mut x.name),
@@ -4019,7 +4265,7 @@ impl ImprovApp {
         if let Some(n) = slot {
             *n = Name(name.to_owned());
         }
-        self.publish(candidate)?;
+        self.publish_structure(candidate)?;
         Ok(format!("renamed {kind} {old} to {name}"))
     }
 
@@ -4123,7 +4369,7 @@ impl ImprovApp {
         if let Some(why) = self.delete_blockers(t) {
             return Err(why);
         }
-        let mut c = self.model.clone();
+        let mut c = (*self.model).clone();
         match t {
             Thing::Measure(id) => {
                 c.measures.remove(&id);
@@ -4880,7 +5126,10 @@ impl ImprovApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Calc").clicked() {
                     self.rebuild_engine();
-                    self.status = "recalculated".into();
+                    // In the background, "Recalculating…" shows until it lands.
+                    if self.building.is_none() {
+                        self.status = "recalculated".into();
+                    }
                 }
             });
         });
@@ -5337,6 +5586,10 @@ impl ImprovApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(self.selection_readout())
                             .on_hover_text("aggregate of the focused matrix's selection");
+                        if self.building.is_some() {
+                            ui.label("Recalculating…")
+                                .on_hover_text("the grid shows the last results until then");
+                        }
                     });
                 });
             });
@@ -6727,10 +6980,10 @@ mod tests {
     #[test]
     fn bad_formula_leaves_model_unchanged() {
         let mut app = build_app(revenue_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         let err = app.commit_formula(MeasureId(102), "Price * Widgets");
         assert!(err.is_err());
-        assert_eq!(app.model, before, "model unchanged on parse error");
+        assert_eq!(*app.model, before, "model unchanged on parse error");
         // Snapshot still computes the original Revenue.
         let vals = app.values_for(MeasureId(102));
         let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
@@ -6767,12 +7020,12 @@ mod tests {
     #[test]
     fn bad_add_derived_leaves_model_unchanged() {
         let mut app = build_app(revenue_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         assert!(app
             .add_derived_measure("Junk", "does not parse [[")
             .is_err());
         assert!(app.add_derived_measure("Revenue", "Price").is_err()); // dup name
-        assert_eq!(app.model, before);
+        assert_eq!(*app.model, before);
     }
 
     // -- BUG 2: the displayed formula must commit unchanged ----------------
@@ -7128,7 +7381,7 @@ mod tests {
     #[test]
     fn formula_that_fails_to_build_is_not_published() {
         let mut app = build_app(revenue_model());
-        let before_model = app.model.clone();
+        let before_model = (*app.model).clone();
         let before_snapshot = app.snapshot.clone();
 
         // Revenue = Revenue + Price parses fine but reads itself outside a
@@ -7138,7 +7391,7 @@ mod tests {
             .expect_err("a self-referencing formula must be rejected");
         assert!(err.contains("refers to itself"), "got {err:?}");
 
-        assert_eq!(app.model, before_model, "model preserved");
+        assert_eq!(*app.model, before_model, "model preserved");
         assert_eq!(app.snapshot, before_snapshot, "snapshot preserved");
         assert!(app.engine.is_some(), "engine preserved");
         assert_eq!(
@@ -7155,7 +7408,7 @@ mod tests {
             .commit_formula(MeasureId(102), "(Price > Quantity) * Price")
             .expect_err("a type error must be rejected");
         assert!(!err.is_empty());
-        assert_eq!(app.model, before_model, "model preserved");
+        assert_eq!(*app.model, before_model, "model preserved");
         assert!(app.engine.is_some(), "engine preserved");
 
         // And for add_derived_measure.
@@ -7163,7 +7416,7 @@ mod tests {
             .add_derived_measure("Bad", "(Price > Quantity) * Price")
             .expect_err("a type error must be rejected");
         assert!(!err.is_empty());
-        assert_eq!(app.model, before_model, "model preserved");
+        assert_eq!(*app.model, before_model, "model preserved");
         assert!(app.engine.is_some(), "engine preserved");
     }
 
@@ -7202,9 +7455,11 @@ mod tests {
             db: String::new(),
             save_token: improv_store::SaveToken::default(),
             unsaved: Default::default(),
-            model,
+            model: Arc::new(model),
             engine,
             snapshot,
+            building: None,
+            background: BACKGROUND,
             matrices,
             focus: 0,
             current_view: None,
@@ -7515,7 +7770,7 @@ mod tests {
         );
 
         // Add a 1-D measure and select it: axis order resets to its natural order.
-        app.model.add_measure(Measure {
+        Arc::make_mut(&mut app.model).add_measure(Measure {
             id: MeasureId(201),
             name: Name("Tax".into()),
             value_type: ValueType::Number,
@@ -8075,7 +8330,7 @@ mod tests {
         let c = |pairs: &[(CategoryId, ItemId)]| {
             improv_core_model::Coordinate::from_pairs(pairs.iter().copied())
         };
-        app.model.set_input(
+        Arc::make_mut(&mut app.model).set_input(
             MeasureId(101),
             c(&[(CategoryId(1), ItemId(11)), (CategoryId(2), ItemId(20))]),
             Value::Text("oops".into()),
@@ -9016,7 +9271,7 @@ mod tests {
         // measure as Text so a text edit is the legal one.
         let mut app = build_app(revenue_model());
         assert!(app.engine.is_some(), "the fixture needs a live engine");
-        app.model
+        Arc::make_mut(&mut app.model)
             .measures
             .get_mut(&MeasureId(101))
             .expect("Quantity")
@@ -9415,7 +9670,7 @@ mod tests {
         let _cleanup = Cleanup(path.clone());
 
         let mut app = build_app(inputs_only_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         app.import_form = ImportForm {
             path: path.to_string_lossy().into_owned(),
             tsv: false,
@@ -9449,7 +9704,7 @@ mod tests {
             !app.model.categories.contains_key(&CategoryId(9)),
             "undo must remove the category the import created"
         );
-        assert_eq!(app.model, before, "undo must restore the pre-import model");
+        assert_eq!(*app.model, before, "undo must restore the pre-import model");
         assert_eq!(
             app.selected(),
             pick_default_measure(&before),
@@ -9464,11 +9719,11 @@ mod tests {
     #[test]
     fn undo_at_the_bottom_of_the_stack_is_a_no_op() {
         let mut app = build_app(revenue_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         assert!(!app.can_undo());
         app.undo().expect("undo on an empty history is a no-op");
         app.redo().expect("redo on an empty history is a no-op");
-        assert_eq!(app.model, before);
+        assert_eq!(*app.model, before);
         // And after undoing the only recorded step.
         let (qkey, _) = q_and_rev_keys();
         app.set_cell(MeasureId(101), qkey, Value::Number(1.0))
@@ -9476,7 +9731,7 @@ mod tests {
         app.undo().expect("undo");
         assert!(!app.can_undo());
         app.undo().expect("still a no-op, not a panic");
-        assert_eq!(app.model, before);
+        assert_eq!(*app.model, before);
     }
 
     #[test]
@@ -10644,7 +10899,7 @@ mod tests {
 
         // Give Tax a real description too, so the round trip must preserve BOTH
         // the user's text and the disabled bit.
-        app.model
+        Arc::make_mut(&mut app.model)
             .measures
             .get_mut(&MeasureId(103))
             .expect("Tax")
@@ -10949,7 +11204,7 @@ mod tests {
 
         // Pivot matrix 1 only (the focused matrix is 0, so this must go through
         // the matrix itself — exactly as a click in matrix 1 does).
-        let model = app.model.clone();
+        let model = (*app.model).clone();
         app.matrices[1].pivot_rotate(&model);
 
         assert_eq!(
@@ -11087,7 +11342,7 @@ mod tests {
         select(&mut app, MeasureId(200));
         app.sync_axis_state();
         // Matrix 0: pivoted, its page dimension advanced one item.
-        let model = app.model.clone();
+        let model = (*app.model).clone();
         app.matrices[0].pivot_rotate(&model);
         app.matrices[0].set_page(&model, 0, 1);
         app.matrices[0].rect = CanvasRect {
@@ -11266,7 +11521,9 @@ mod tests {
         let mut app = two_matrix_app();
         let two = app.build_view(ViewId(1), "two").expect("view");
         // Drop the measure the EXTRA matrix shows.
-        app.model.measures.remove(&MeasureId(102));
+        Arc::make_mut(&mut app.model)
+            .measures
+            .remove(&MeasureId(102));
         app.apply_view(&two);
         assert_eq!(app.matrix_count(), 1, "the dead matrix was dropped");
         assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
@@ -11274,7 +11531,9 @@ mod tests {
 
         // Now drop the primary one too: nothing is applicable, so nothing moves.
         let before = app.matrices.clone();
-        app.model.measures.remove(&MeasureId(101));
+        Arc::make_mut(&mut app.model)
+            .measures
+            .remove(&MeasureId(101));
         app.apply_view(&two);
         assert_eq!(app.matrix_count(), before.len());
         assert_eq!(app.status, "view's measure no longer exists");
@@ -12653,7 +12912,7 @@ mod tests {
 
         // Page to South: the title follows the slice, which is the point of
         // putting it there.
-        let model = app.model.clone();
+        let model = (*app.model).clone();
         app.matrices[0].set_page(&model, 0, 1);
         assert_eq!(app.matrix_title(0), "Sales: South");
 
@@ -12687,7 +12946,7 @@ mod tests {
         assert_eq!(app.selection_readout(), "Sum 100");
 
         // Move that matrix's cursor: the readout follows it.
-        let model = app.model.clone();
+        let model = (*app.model).clone();
         app.matrices[0].move_cursor(&model, 1, 0); // [2026, WidgetA] = 120
         assert_eq!(app.selection_readout(), "Sum 120");
 
@@ -12698,9 +12957,10 @@ mod tests {
         assert_eq!(app.selection_readout(), "Sum 1000");
 
         // An empty cell has nothing to sum.
-        app.model
+        let at = decode(&app.cursor_key().unwrap());
+        Arc::make_mut(&mut app.model)
             .inputs
-            .remove(&(MeasureId(101), decode(&app.cursor_key().unwrap())));
+            .remove(&(MeasureId(101), at));
         app.rebuild_engine();
         assert_eq!(app.selection_sum(), None);
         assert_eq!(app.selection_readout(), "Sum \u{2014}");
@@ -12737,7 +12997,7 @@ mod tests {
         // Canvas B: two matrices, the second showing Revenue pivoted.
         app.add_matrix(Some(MeasureId(102)));
         app.sync_axis_state();
-        let model = app.model.clone();
+        let model = (*app.model).clone();
         app.matrices[1].pivot_rotate(&model);
         let b = app.save_view("Canvas B").expect("saved B");
 
@@ -12906,7 +13166,7 @@ mod tests {
         let mut app = build_app(grid_2x2_model());
         assert!(closes(&press_command_key(&mut app, egui::Key::Q, None)));
 
-        app.record_history(app.model.clone());
+        app.record_history((*app.model).clone());
         assert!(!closes(&press_command_key(&mut app, egui::Key::Q, None)));
         assert_eq!(app.status, "unsaved in-memory model: Quit again to discard");
         assert!(closes(&press_command_key(&mut app, egui::Key::Q, None)));
@@ -12940,7 +13200,7 @@ mod tests {
         let out = full_frame(&ctx, &mut app, size, 0.1);
         assert_eq!(title(&out), None, "an unchanged title is not resent");
 
-        app.record_history(app.model.clone());
+        app.record_history((*app.model).clone());
         let out = full_frame(&ctx, &mut app, size, 0.2);
         let t = title(&out).expect("the edit retitles the window");
         assert!(t.ends_with(" \u{2022}"), "{t}");
@@ -12955,7 +13215,7 @@ mod tests {
             .and_then(|mut s| s.save_model(&grid_2x2_model()))
             .expect("seed the store");
         let mut app = ImprovApp::load(&db).expect("load");
-        app.model
+        Arc::make_mut(&mut app.model)
             .measures
             .get_mut(&MeasureId(101))
             .expect("Quantity")
@@ -13003,7 +13263,7 @@ mod tests {
         let _ = command_key_frame(&ctx, &mut app, egui::Key::S, None);
         assert_eq!(app.status, "saved model");
         app.status.clear();
-        app.model
+        Arc::make_mut(&mut app.model)
             .measures
             .get_mut(&MeasureId(101))
             .expect("Quantity")
@@ -13585,7 +13845,7 @@ mod tests {
         let mut app = build_app(revenue_model());
         assert!(app.quit_allowed(), "nothing to lose");
         app.undo_stack
-            .push(Step::Model(Box::new(app.model.clone())));
+            .push(Step::Model(Box::new((*app.model).clone())));
         app.db = "/some/file.db".into();
         assert!(app.quit_allowed(), "a file-backed model is saved");
         app.db.clear();
@@ -13816,7 +14076,7 @@ mod tests {
         let mut app = build_app(revenue_model());
         app.db = "/nowhere/sales.db".into();
         app.undo_stack
-            .push(Step::Model(Box::new(app.model.clone())));
+            .push(Step::Model(Box::new((*app.model).clone())));
         let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 1.0);
         assert!(!app.dirty, "a store-backed model is not dirtied by history");
         assert_eq!(app.last_title, "Improv \u{2014} sales");
@@ -14146,11 +14406,15 @@ mod tests {
         store.save_model(&revenue_model()).unwrap();
 
         let mut app = ImprovApp::load(&url).expect("load postgres model");
-        assert_eq!(app.model, revenue_model());
+        assert_eq!(*app.model, revenue_model());
         assert_eq!(app.file_name(), format!("gui_{}", std::process::id()));
         let revenue = app.model.measure_by_name("Revenue").unwrap().id;
         assert!(app.formula_source(revenue).is_some());
-        app.model.items.get_mut(&ItemId(10)).unwrap().name = Name("Q1x".into());
+        Arc::make_mut(&mut app.model)
+            .items
+            .get_mut(&ItemId(10))
+            .unwrap()
+            .name = Name("Q1x".into());
         app.save().expect("save to postgres");
         let back = store.reload_model().unwrap();
         assert_eq!(back.items[&ItemId(10)].name.0, "Q1x");
@@ -14238,8 +14502,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        app.model
-            .set_input(MeasureId(100), at(q1), Value::Number(11.0));
+        Arc::make_mut(&mut app.model).set_input(MeasureId(100), at(q1), Value::Number(11.0));
         app.save().expect("saving an unrelated cell succeeds");
         assert_eq!(price(&mut sql, "Q1"), 11.0, "the GUI's edit was written");
         assert_eq!(
@@ -14254,8 +14517,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        app.model
-            .set_input(MeasureId(100), at(q1), Value::Number(12.0));
+        Arc::make_mut(&mut app.model).set_input(MeasureId(100), at(q1), Value::Number(12.0));
         let err = app
             .save()
             .expect_err("overwriting a concurrent SQL edit is a conflict");
@@ -14270,8 +14532,7 @@ mod tests {
             Some(&Value::Number(99.0))
         );
         assert!(!app.can_undo() && !app.dirty);
-        app.model
-            .set_input(MeasureId(100), at(q1), Value::Number(12.0));
+        Arc::make_mut(&mut app.model).set_input(MeasureId(100), at(q1), Value::Number(12.0));
         app.save().expect("the retried edit saves after the revert");
         assert_eq!(price(&mut sql, "Q1"), 12.0);
         sql.batch_execute(&format!(
@@ -14375,7 +14636,7 @@ mod tests {
     #[test]
     fn adding_a_clashing_or_empty_name_is_refused() {
         let mut app = build_app(grid_2x2_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         let t = CategoryId(1);
         let refuse =
             |app: &mut ImprovApp, what, name: &str| app.add_named(what, name).expect_err(name);
@@ -14385,7 +14646,7 @@ mod tests {
         assert!(refuse(&mut app, NewThing::Input, "Product").contains("already"));
         assert!(refuse(&mut app, NewThing::Item(t), "2025").contains("Time already has"));
         assert!(refuse(&mut app, NewThing::Item(CategoryId(9)), "X").contains("no category"));
-        assert_eq!(app.model, before);
+        assert_eq!(*app.model, before);
         assert!(!app.can_undo());
         // The same item name in another category is fine.
         app.add_named(NewThing::Item(CategoryId(2)), "2025")
@@ -14500,7 +14761,7 @@ mod tests {
         let _c2 = Cleanup(fresh.clone());
 
         let mut app = build_app(revenue_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         let missing = temp_db("h7_missing");
         assert!(app
             .switch_model(&missing, false)
@@ -14518,7 +14779,7 @@ mod tests {
             .switch_model(&seeded, true)
             .unwrap_err()
             .contains("already holds a model"));
-        assert_eq!(app.model, before);
+        assert_eq!(*app.model, before);
 
         app.switch_model(&seeded, false).expect("Open");
         assert_eq!(app.model.measures.len(), 3);
@@ -14615,7 +14876,7 @@ mod tests {
     #[test]
     fn a_clashing_rename_is_refused() {
         let mut app = build_app(grid_2x2_model());
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         let refuse = |app: &mut ImprovApp, t, name: &str| app.rename(t, name).expect_err(name);
         let price = Thing::Measure(MeasureId(100));
         assert!(refuse(&mut app, price, "Quantity").contains("already"));
@@ -14629,13 +14890,13 @@ mod tests {
         );
         app.define_lambda("Twice = LAMBDA(x, 2 * x)")
             .expect("a LAMBDA");
-        let before_lambda = app.model.clone();
+        let before_lambda = (*app.model).clone();
         assert!(refuse(&mut app, price, "twice").contains("already"));
-        assert_eq!(app.model, before_lambda);
+        assert_eq!(*app.model, before_lambda);
         // The same item name in another category is fine.
         app.rename(Thing::Item(ItemId(20)), "2025")
             .expect("Product may have a 2025");
-        assert_ne!(app.model, before);
+        assert_ne!(*app.model, before);
     }
 
     /// Deleting a measure that a formula reads, or a category a measure
@@ -14652,7 +14913,7 @@ mod tests {
         let region = app.model.category_by_name("Region").expect("added").id;
         app.add_derived_measure("Share", "Quantity / SUM(Quantity OVER Time)")
             .expect("Share");
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         assert_eq!(
             app.delete(Thing::Measure(MeasureId(102))).unwrap_err(),
             "cannot delete Revenue: Half, Twice still reference it (delete or redefine them first)"
@@ -14664,7 +14925,7 @@ mod tests {
         let e = app.delete(Thing::Category(CategoryId(1))).unwrap_err();
         assert!(e.starts_with("cannot delete Time: "), "{e}");
         assert!(e.contains("Quantity") && e.contains("Share"), "{e}");
-        assert_eq!(app.model, before, "nothing changed");
+        assert_eq!(*app.model, before, "nothing changed");
         // The same reason comes from Worksheet ▸ Delete…, with no panel.
         app.browser_pick = Some(Thing::Measure(MeasureId(102)));
         let ctx = egui::Context::default();
@@ -14679,7 +14940,7 @@ mod tests {
         app.add_named(NewThing::Item(region), "North")
             .expect("North");
         assert!(app.delete_blockers(Thing::Category(region)).is_none());
-        let mut named = app.model.clone();
+        let mut named = (*app.model).clone();
         let f = parser::parse_expr(&named, "SUM(Quantity OVER Region)").expect("parse");
         named.add_measure(Measure {
             id: MeasureId(200),
@@ -14689,7 +14950,7 @@ mod tests {
             kind: MeasureKind::Derived(f),
             description: None,
         });
-        app.model = named;
+        app.model = Arc::new(named);
         assert!(app
             .delete_blockers(Thing::Category(region))
             .is_some_and(|e| e.contains("Odd still uses it")));
@@ -14715,7 +14976,7 @@ mod tests {
         for r in ["North", "South"] {
             app.add_named(NewThing::Item(region), r).expect("item");
         }
-        let start = app.model.clone();
+        let start = (*app.model).clone();
         let reload = || {
             Store::open(&db)
                 .and_then(|mut s| s.load_model())
@@ -14776,7 +15037,7 @@ mod tests {
         for _ in 0..4 {
             app.undo().expect("undo a delete");
         }
-        assert_eq!(app.model, start, "every delete undone");
+        assert_eq!(*app.model, start, "every delete undone");
         assert_eq!(reload(), start, "and saved");
         app.redo().expect("redo the formula delete");
         assert!(!app.model.measures.contains_key(&MeasureId(102)));
@@ -14793,7 +15054,7 @@ mod tests {
         let mut view = app.model.views[&v].clone();
         view.page_items = vec![(CategoryId(2), ItemId(20))];
         view.placements = vec![view.primary()];
-        app.model.add_view(view);
+        Arc::make_mut(&mut app.model).add_view(view);
         app.delete(Thing::Item(ItemId(20))).expect("delete");
         let view = &app.model.views[&v];
         for p in view.matrices() {
@@ -14851,7 +15112,7 @@ mod tests {
         // Worksheet ▸ Rename, then Esc: nothing changes.
         app.run_command(&desk.ctx, Command::Rename);
         desk.settle(&mut app);
-        let before = app.model.clone();
+        let before = (*app.model).clone();
         let esc = egui::Event::Key {
             key: egui::Key::Escape,
             physical_key: None,
@@ -14862,7 +15123,7 @@ mod tests {
         let _ = desk.frame(&mut app, vec![egui::Event::Text("x".into()), esc]);
         desk.settle(&mut app);
         assert!(app.renaming.is_none(), "Esc ends it");
-        assert_eq!(app.model, before);
+        assert_eq!(*app.model, before);
         // Rename and Delete… act on the worksheet's measure with no pick.
         app.browser_pick = None;
         assert_eq!(app.edit_target(), app.selected().map(Thing::Measure));
@@ -15543,7 +15804,7 @@ mod tests {
         let mut app = ImprovApp::load(db).expect("load");
         let cells: Vec<_> = app.model.inputs.keys().cloned().collect();
         for k in 1..=u16::MAX {
-            let mut candidate = app.model.clone();
+            let mut candidate = (*app.model).clone();
             for (m, at) in &cells {
                 candidate.set_input(*m, at.clone(), Value::Number(f64::from(k)));
             }
@@ -15627,7 +15888,7 @@ mod tests {
             // The GUI opens it and saves again (no stale lock, no damage);
             // the next child starts again at 1, so this -1 is gone by then.
             let mut app = ImprovApp::load(&db).expect("the GUI reopens it");
-            let mut next_round = app.model.clone();
+            let mut next_round = (*app.model).clone();
             for v in next_round.inputs.values_mut() {
                 *v = Value::Number(-1.0);
             }
@@ -15655,7 +15916,7 @@ mod tests {
         let (qkey, _) = q_and_rev_keys();
         let mut failed = None;
         for i in 0..2000 {
-            let before = app.model.clone();
+            let before = (*app.model).clone();
             let shown = app.cell_text(MeasureId(101), &qkey);
             // Alternate a cell edit and a structural one: both paths save.
             let r = if i % 2 == 0 {
@@ -15671,7 +15932,7 @@ mod tests {
                 );
                 assert!(e.contains("not saved"), "{e}");
                 println!("H6 disk-full message: {e}");
-                assert_eq!(app.model, before, "the in-memory model must be kept");
+                assert_eq!(*app.model, before, "the in-memory model must be kept");
                 assert_eq!(app.cell_text(MeasureId(101), &qkey), shown);
                 assert!(app.dirty, "the title marks it unsaved");
                 failed = Some(i);
@@ -15686,7 +15947,7 @@ mod tests {
         let back = Store::open(&db)
             .and_then(|mut s| s.load_model())
             .expect("reopen");
-        assert_eq!(back, app.model, "nothing lost, nothing half-saved");
+        assert_eq!(back, *app.model, "nothing lost, nothing half-saved");
         assert_eq!(integrity(&db), "ok");
         println!("H6 disk-full: save {i} failed cleanly");
     }
@@ -15761,19 +16022,19 @@ mod tests {
         b.set_cell(q, k(10, 20), Value::Number(7.0))
             .expect("B saves first");
 
-        let before = a.model.clone();
+        let before = (*a.model).clone();
         let e = a
             .set_cell(q, k(11, 21), Value::Number(9.0))
             .expect_err("A's save is stale");
         assert!(e.contains("another program changed this model"), "{e}");
         assert!(e.contains("Revert to Saved"), "{e}");
-        assert_eq!(a.model, before, "A keeps its model");
+        assert_eq!(*a.model, before, "A keeps its model");
         assert_eq!(a.cell_text(q, &k(11, 21)).as_deref(), Some("80"));
         let e = a
             .add_named(NewThing::Category, "Region")
             .expect_err("a structural edit is stale too");
         assert!(e.contains("another program"), "{e}");
-        assert_eq!(a.model, before);
+        assert_eq!(*a.model, before);
         // The menu's Save says so too.
         let ctx = egui::Context::default();
         a.run_command(&ctx, Command::SaveModel);
@@ -15846,31 +16107,31 @@ mod tests {
         app.set_cell(MeasureId(101), q.clone(), Value::Number(5.0))
             .expect("a cell");
         app.clear_cell(MeasureId(101), q.clone()).expect("cleared");
-        assert_eq!(stored(&db), app.model);
+        assert_eq!(stored(&db), *app.model);
         app.add_named(NewThing::Item(CategoryId(1)), "2027")
             .expect("an item");
         app.undo().expect("undo the item");
         app.undo().expect("undo the clear");
-        assert_eq!(stored(&db), app.model);
+        assert_eq!(stored(&db), *app.model);
 
         // An import whose save fails keeps its cells in memory; the next
         // autosave writes them.
         let good = std::mem::replace(&mut app.db, "/nonexistent-dir-improv/x.db".into());
-        let mut imported = app.model.clone();
+        let mut imported = (*app.model).clone();
         imported.set_input(MeasureId(101), decode(&q), Value::Number(42.0));
         imported.add_item(ItemId(99), CategoryId(1), "2030");
         let changes = improv_store::ChangeSet::between(&app.model, &imported);
-        app.model = imported;
+        app.model = Arc::new(imported);
         assert!(app.save_changes(&changes).is_err() && app.dirty);
         app.db = good;
         app.add_named(NewThing::Category, "Region")
             .expect("saves all");
         assert!(!app.dirty);
-        assert_eq!(stored(&db), app.model, "the kept change was written");
+        assert_eq!(stored(&db), *app.model, "the kept change was written");
         let ctx = egui::Context::default();
         app.run_command(&ctx, Command::SaveModel);
         assert_eq!(app.status, "saved model");
-        assert_eq!(stored(&db), app.model);
+        assert_eq!(stored(&db), *app.model);
     }
 
     /// A failed undo keeps the step it failed to take: once the store is
@@ -15980,8 +16241,14 @@ mod tests {
             println!("H3 engine build: {:.0} ms", ms(t));
             app
         } else {
-            let app = ImprovApp::load(&db).expect("load");
+            let mut app = ImprovApp::load(&db).expect("load");
             println!("H3 ImprovApp::load (store + engine): {:.0} ms", ms(t));
+            let t = Instant::now();
+            app.rebuild_engine();
+            println!(
+                "H3 of which the engine (now in the background): {:.0} ms",
+                ms(t)
+            );
             app
         };
         println!("H3 cells: {}", app.model.inputs.len());
@@ -16045,7 +16312,7 @@ mod tests {
         // One cell edit, as the grid commits it, and its parts.
         let key = app.cursor_key().expect("a cell");
         let t = Instant::now();
-        let clone = app.model.clone();
+        let clone = (*app.model).clone();
         println!("H3 edit part: model clone (the undo point) {:.0} ms", ms(t));
         drop(clone);
         let t = Instant::now();
@@ -16069,11 +16336,85 @@ mod tests {
         let t = Instant::now();
         app.undo().expect("undo");
         println!("H3 undo: {:.0} ms", ms(t));
-        let t = Instant::now();
+        // The structural changes, as the app runs them (H3): the engine
+        // builds in the background. Each line is the call, then the longest
+        // frame until the build lands, and how long that took.
+        if !db.is_empty() {
+            let t = Instant::now();
+            let _ = app.outside_save();
+            println!(
+                "H3 reload check (H9, every {PROBE_SECS} s): {:.0} ms",
+                ms(t)
+            );
+        }
+        app.background = true;
+        let mut stalls = |app: &mut ImprovApp, what: &str, act: &mut dyn FnMut(&mut ImprovApp)| {
+            let t = Instant::now();
+            act(app);
+            let call = ms(t);
+            let (mut worst, mut frames) = (0.0f64, 0);
+            while app.building.is_some() {
+                let f = frame(app, Vec::new());
+                if f > 50.0 {
+                    println!("H3   slow frame {frames}: {f:.0} ms at {:.0} ms", ms(t));
+                }
+                worst = worst.max(f);
+                frames += 1;
+                std::thread::sleep(std::time::Duration::from_millis(8));
+            }
+            worst = worst.max(frame(app, Vec::new()));
+            println!(
+                "H3 {what}: call {call:.0} ms, longest frame {worst:.1} ms over {frames} frames, landed after {:.0} ms",
+                ms(t)
+            );
+        };
         let input = app.model.measures[&MeasureId(100)].name.0.clone();
-        app.add_derived_measure("Twice", &format!("{input} * 2"))
-            .expect("a formula");
-        println!("H3 add a derived measure (engine rebuild): {:.0} ms", ms(t));
+        let revenue = app.model.measure_by_name("Revenue").expect("Revenue").id;
+        stalls(&mut app, "add a derived measure", &mut |app| {
+            app.add_derived_measure("Twice", &format!("{input} * 2"))
+                .expect("a formula");
+        });
+        stalls(&mut app, "undo the new formula", &mut |app| {
+            app.undo().expect("undo the formula");
+        });
+        stalls(&mut app, "redo the new formula", &mut |app| {
+            app.redo().expect("redo the formula");
+        });
+        stalls(&mut app, "edit a formula", &mut |app| {
+            app.commit_formula(revenue, &format!("{input} * 3"))
+                .expect("a formula");
+        });
+        let twice = app.model.measure_by_name("Twice").expect("Twice").id;
+        stalls(
+            &mut app,
+            "edit a formula, then a cell during the build",
+            &mut |app| {
+                app.commit_formula(revenue, &format!("{input} * 4"))
+                    .expect("a formula");
+                let t = Instant::now();
+                app.commit_cell_text(MeasureId(100), key.clone(), "9")
+                    .expect("edit");
+                println!("H3 cell edit at once during the build: {:.0} ms", ms(t));
+            },
+        );
+        assert_eq!(app.cell_text(twice, &key).as_deref(), Some("18"));
+        stalls(
+            &mut app,
+            "edit a formula, then a cell 0.5 s into the build",
+            &mut |app| {
+                app.commit_formula(revenue, &format!("{input} * 5"))
+                    .expect("a formula");
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                let t = Instant::now();
+                app.commit_cell_text(MeasureId(100), key.clone(), "8")
+                    .expect("edit");
+                println!("H3 cell edit 0.5 s into the build: {:.0} ms", ms(t));
+            },
+        );
+        assert_eq!(app.cell_text(revenue, &key).as_deref(), Some("40"));
+        stalls(&mut app, "undo the cell edit", &mut |app| {
+            app.undo().expect("undo");
+        });
     }
 
     /// A grid wider than its window draws only the columns on screen: the
@@ -16171,6 +16512,117 @@ mod tests {
         assert_eq!(app.cell_text(MeasureId(101), &empty).as_deref(), Some("5"));
         assert!(app.model.category_by_name("Region").is_some());
         assert!(!app.can_redo());
+    }
+
+    /// H3: a structural change rebuilds the engine in the background. The
+    /// grid keeps the old results meanwhile, and a cell edit made during the
+    /// build waits for the new engine and lands on it, undo and all.
+    #[test]
+    fn a_cell_edit_during_a_rebuild_lands_on_the_new_engine() {
+        let mut app = build_app(grid_2x2_model());
+        app.background = true;
+        let (q, rev) = q_and_rev_keys();
+        let revenue = |app: &ImprovApp| app.cell_text(MeasureId(102), &rev);
+        app.commit_formula(MeasureId(102), "Price * Quantity * 2")
+            .expect("formula");
+        assert!(app.building.is_some(), "built in the background");
+        assert_eq!(revenue(&app).as_deref(), Some("1000"), "the old results");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(200.0))
+            .expect("edit");
+        assert_eq!(app.building.as_ref().map(|b| b.edits.len()), Some(1));
+        app.finish_build();
+        assert_eq!(revenue(&app).as_deref(), Some("4000"), "10 * 200 * 2");
+        app.undo().expect("undo the edit");
+        assert_eq!(revenue(&app).as_deref(), Some("2000"));
+        app.undo().expect("undo the formula");
+        app.finish_build();
+        assert_eq!(revenue(&app).as_deref(), Some("1000"));
+        assert_eq!(*app.model, grid_2x2_model());
+    }
+
+    /// H3: a structural change made while a build runs makes that build
+    /// stale. When it lands it is thrown away and the model is built again,
+    /// with the cell edits made in between; the result is what a foreground
+    /// build of the final model computes.
+    #[test]
+    fn two_rebuilds_in_a_row_build_the_last_model() {
+        let mut app = build_app(grid_2x2_model());
+        app.background = true;
+        let (q, rev) = q_and_rev_keys();
+        app.commit_formula(MeasureId(102), "Price * Quantity * 2")
+            .expect("formula");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(200.0))
+            .expect("edit");
+        let double = app
+            .add_derived_measure("Double", "Quantity * 2")
+            .expect("add");
+        let b = app.building.as_ref().expect("still building");
+        assert!(b.stale && b.edits.is_empty(), "the model is built again");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(300.0))
+            .expect("edit");
+        app.finish_build();
+        assert!(app.building.is_none());
+        assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("6000"));
+        assert_eq!(app.cell_text(double, &q).as_deref(), Some("600"));
+        let fresh = build_app((*app.model).clone());
+        assert_eq!(app.snapshot, fresh.snapshot);
+    }
+
+    /// H3: while a build runs the status bar says "Recalculating…" (and Calc
+    /// adds no "recalculated" of its own); a build that fails, or whose
+    /// thread dies, leaves no engine, says why, and the inputs still show.
+    #[test]
+    fn the_status_bar_says_recalculating_until_the_engine_lands() {
+        let (mut app, mut desk) = grid_desk();
+        app.background = true;
+        let (q, rev) = q_and_rev_keys();
+        let hold = |app: &mut ImprovApp| {
+            let (tx, rx) = mpsc::channel();
+            app.building = Some(Build {
+                done: rx,
+                edits: Vec::new(),
+                stale: false,
+            });
+            tx
+        };
+        let shown = |desk: &mut Desk, app: &mut ImprovApp| {
+            let out = desk.frame(app, Vec::new());
+            text_at(&out.shapes, "Recalculating…").is_some()
+        };
+        let tx = hold(&mut app);
+        assert!(shown(&mut desk, &mut app), "shown while it builds");
+        assert!(shown(&mut desk, &mut app), "still shown");
+        tx.send(try_build_engine(&app.model)).expect("send");
+        assert!(!shown(&mut desk, &mut app), "gone once it lands");
+        assert!(app.building.is_none() && app.engine.is_some());
+
+        let tx = hold(&mut app);
+        tx.send(Err("boom".into())).expect("send");
+        let _ = desk.frame(&mut app, Vec::new());
+        assert_eq!(app.status, "recalculation failed: boom");
+        assert!(app.engine.is_none() && app.snapshot.is_empty());
+        assert_eq!(app.cell_text(MeasureId(102), &rev), None);
+        assert_eq!(app.cell_text(MeasureId(101), &q).as_deref(), Some("100"));
+
+        drop(hold(&mut app));
+        let _ = desk.frame(&mut app, Vec::new());
+        assert_eq!(app.status, format!("recalculation failed: {BUILD_LOST}"));
+
+        // A stale build is built again even when it failed.
+        let tx = hold(&mut app);
+        app.rebuild_engine();
+        tx.send(Err("stale".into())).expect("send");
+        app.finish_build();
+        assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("1000"));
+
+        app.status.clear();
+        let calc = painted(&desk.frame(&mut app, Vec::new()).shapes, "Calc")
+            .expect("Calc shown")
+            .center();
+        desk.click(&mut app, calc);
+        assert_eq!(app.status, "", "Calc in the background says nothing yet");
+        app.finish_build();
+        assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("1000"));
     }
 
     /// Worksheet ▸ Add Category, clicked the way a pointer does (the press
