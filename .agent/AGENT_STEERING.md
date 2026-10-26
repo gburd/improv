@@ -31,22 +31,29 @@ criteria" are the bar. Mark tasks done there as they land.
 - **C3 done** (`docs: the C3 security review of pg_improv and
   improv-server`): no high; one medium fixed (text results unbounded
   through `LANGUAGE improv`: now Excel's 32,767-character cap).
-- **J4 soak running** on the kiwi box since 2026-10-25 15:34 UTC, 72 h
-  (to 10-28 15:34; the account expires 10-30 19:14): harness
-  `~/ws/improv-rescue/ops/soak.sh` (not yet in the repo), log
-  `~/soak72/soak.log` on the box, a check every hour.
-- **DD review** (`~/ws/improv-rescue/dd-review/REPORT.md`): the engine
-  uses DD as a map/join/reduce executor but shares no arrangements,
-  returns whole snapshots, advances every input per edit, and is
-  single-worker. Its items 3 (O(n) windows), 1 (deltas, not snapshots)
-  and 4 (slim AggRow, B8) are being implemented on the box in `~/w-dd`
-  (`work/dd`); 2 (B6), 5 (B5), 6 (multi-worker evaluate), 7 (B1) follow.
-- **DONE (0.12):** C3b, a formula may be 256 levels deep (new = stored
-  bound; JSON via serde_stacker, stacker at the recursions, 16 MiB engine
-  threads).
-- **NEXT:** merge `work/dd`; the soak result into the plan (J4); a
-  ~5% RANK edit slowdown since `9e74dda` (unexplained; see the
-  qualification).
+- **J4 soak running** on the kiwi box since 2026-10-25 19:59 UTC, 72 h
+  (to 10-28 19:59; the account expires 10-30 19:14): harness
+  `crates/pg_improv/tests/soak.sh`, log `~/soak72/soak.log` on the box, a
+  check every hour. (The first attempt stopped after 4 h on a harness bug,
+  fixed in the committed script.)
+- **Done since the release (all on main, CI green):** the DD review's
+  items 1 (`Engine::apply_delta`), 2 (B6: an edit reaching 1 of 20k
+  measures 45 → 0.18 ms), 3 (O(n) windows: 18 s → 25 ms per edit at 20k),
+  4 step 1 (inline `AggRow`: 556 → 501 B/edge at 10M), 6 (multi-worker
+  `evaluate`: 1M cells 0.88 → 0.22 s); C3b (formulas 256 deep); J2 (crates
+  declared unstable); J5 (container image, .deb/.rpm, Homebrew formula;
+  first published by the next tag); H3 (engine rebuild off the UI thread:
+  a new formula 2.4 s → ≤ 30 ms frames); H1 (the review,
+  `docs/reviews/2026-10-26-usability-review.md`, 34 findings; the CLI's
+  fixed); `improv-server` stops on SIGTERM. The DD review itself:
+  `~/ws/improv-rescue/dd-review/REPORT.md`.
+- **In flight on the box:** TUI H1-2..5 (`~/w-tui`), GUI H1-1, 6, 7, 8
+  (`~/w-gui1`).
+- **NEXT:** B5 (designed in its row, not built), B8 step 2 (share `W`'s
+  arrangement: 501 → < 500 B/edge), H3's two ~100–200 ms waits and the
+  background initial load, B1, the rest of H1, J4's result into the plan,
+  then 0.12.0 (its release runs the new packages and container jobs for
+  the first time).
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
