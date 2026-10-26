@@ -346,14 +346,11 @@ Broken pipe". Exit quietly on EPIPE. `crates/cli/src/main.rs` (`main`).
 at 80. Show it on `?` and keep one line ("? keys") in the status block.
 `crates/tui/src/ui.rs`.
 
-**[fixed: `fix(gui): a visible hairline marks input cells (H1-33)`] H1-33 GUI:** input and derived cells look almost the same. The tour's
+**[declined: a visible mark on every input cell (a hairline was tried) is not in Lotus Improv's grid, and the NeXTSTEP look is the spec; hovering a derived cell shows its formula] H1-33 GUI:** input and derived cells look almost the same. The tour's
 "faint underline" on input cells is the only cue, and it is hard to see at
 1:1 (compare gui-01 with gui-02). Use a clearer cue, such as a gray fill
 or italic text for derived cells. `crates/gui/src/app.rs`
-(`render_grid`), `crates/gui/src/theme.rs`. *Fixed with a dark-gray
-hairline on input cells, so derived cells (and the screenshot golden)
-are unchanged; before and after:
-[`refs/h1/gui-33-input-mark.png`](refs/h1/gui-33-input-mark.png).*
+(`render_grid`), `crates/gui/src/theme.rs`.
 
 **[fixed (GUI): `fix(gui): open on the first saved view, else the first measure (H1-34)`] H1-34 GUI, TUI:** both open on the first derived measure, not the first
 saved view. Open the first view when there is one.

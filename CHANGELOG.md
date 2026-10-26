@@ -131,10 +131,6 @@ this project follows [Semantic Versioning](https://semver.org/).
   be three digits, so `1,50` is refused rather than guessed, and a
   refusal now names the forms taken: `not a number: "1,50" (type 1500,
   1,500.25 or $1,500)`.
-- **The GUI's input cells are marked so they can be told from derived
-  ones**: a dark-gray hairline under the value, inset from the cell's
-  rule. The old mark, a light-gray line on the black rule, could not be
-  seen at 1:1 (H1-33).
 - **Worksheet ▸ Add Matrix opens the new window beside the last one**,
   or below it, where the desk has room and no window is covered; it
   opened 28 px from the last one, over it, which read as one window.

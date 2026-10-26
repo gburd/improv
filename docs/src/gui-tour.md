@@ -99,9 +99,8 @@ The window has five regions:
   German locale, `IMPROV_LOCALE=de`, `1.500,25` and `€1.500`). An entry
   the cell refuses (`1,50` in a number cell) stays in the editor, with
   the reason and the forms it takes in the status line, to correct or
-  cancel. Input cells carry a dark-gray hairline
-  under the value; derived cells have none (hover one to see its
-  formula). Arrows (or
+  cancel. Input cells carry a
+  faint underline; hover a derived cell to see its formula. Arrows (or
   `h` `j` `k` `l`) move the cursor, and `n` / Shift+`n` show the next or
   previous measure. **Shift+arrows**, Shift+click or a drag select a range,
   and the status bar shows its **Sum**.
