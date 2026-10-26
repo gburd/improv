@@ -354,6 +354,10 @@ pub enum CommandKind {
     Rename,
     /// `D`: `Name`, delete a category, item or measure (H1-21).
     Delete,
+    /// `S`: the new view's name; empty takes the default (H1-15).
+    SaveView,
+    /// `V`: `Old = New` renames a saved view, `-Name` deletes one (H1-15).
+    Views,
 }
 
 /// A category, item or measure named on the `r` or `D` line.
@@ -1333,7 +1337,98 @@ impl App {
             CommandKind::Input => self.run_add_input(&line),
             CommandKind::Rename => self.run_rename(&line),
             CommandKind::Delete => self.run_delete(&line),
+            CommandKind::SaveView => self.run_save_view(&line),
+            CommandKind::Views => self.run_views(&line),
         });
+    }
+
+    /// The name `S` gives a view when none is typed: the first free
+    /// `view N`.
+    pub fn default_view_name(&self) -> String {
+        (self.model.views.len() + 1..)
+            .map(|n| format!("view {n}"))
+            .find(|n| self.model.view_by_name(n).is_none())
+            .expect("a free name")
+    }
+
+    /// `S`'s line: save the layout as a view named `line` (H1-15), or
+    /// [`App::default_view_name`] when it is empty. A name in use is refused.
+    fn run_save_view(&mut self, line: &str) -> String {
+        if self.measures.is_empty() {
+            return EMPTY.into();
+        }
+        let name = match line.trim() {
+            "" => self.default_view_name(),
+            name => name.to_string(),
+        };
+        if self.model.view_by_name(&name).is_some() {
+            return format!("view: '{name}' is already a view (V renames or deletes one)");
+        }
+        self.save_view(&name);
+        format!("saved view '{name}'")
+    }
+
+    /// The saved view called `name`.
+    fn view_named(&self, name: &str) -> Result<ViewId, String> {
+        self.model.view_by_name(name).map(|v| v.id).ok_or_else(|| {
+            let mut names: Vec<&str> = self
+                .model
+                .views
+                .values()
+                .map(|v| v.name.0.as_str())
+                .collect();
+            names.sort_unstable();
+            match names[..] {
+                [] => "views: there are no saved views (S saves one)".into(),
+                _ => format!(
+                    "views: no view '{name}'; the views are {}",
+                    names.join(", ")
+                ),
+            }
+        })
+    }
+
+    /// `V`'s line (H1-15): `Old = New` renames a saved view, `-Name`
+    /// deletes one. Each is an undo step.
+    fn run_views(&mut self, line: &str) -> String {
+        let line = line.trim();
+        if let Some(name) = line.strip_prefix('-') {
+            let id = match self.view_named(name.trim()) {
+                Ok(id) => id,
+                Err(e) => return e,
+            };
+            let mut model = self.model.clone();
+            let gone = model.views.remove(&id).expect("named");
+            self.applied_view = self.applied_view.filter(|v| *v != id);
+            return self.adopt_views(model, format!("deleted view '{}'", gone.name.0));
+        }
+        let Some((old, new)) = line.split_once('=').map(|(a, b)| (a.trim(), b.trim())) else {
+            return "views: type Old = New to rename one, -Name to delete one".into();
+        };
+        if new.is_empty() {
+            return "views: type Old = New to rename one, -Name to delete one".into();
+        }
+        let id = match self.view_named(old) {
+            Ok(id) => id,
+            Err(e) => return e,
+        };
+        if old == new {
+            return format!("views: '{old}' is unchanged");
+        }
+        if self.model.view_by_name(new).is_some() {
+            return format!("views: '{new}' is already a view");
+        }
+        let mut model = self.model.clone();
+        model.views.get_mut(&id).expect("named").name = Name(new.into());
+        self.adopt_views(model, format!("renamed view '{old}' to '{new}'"))
+    }
+
+    /// Make `model`, which differs from the current one in its views
+    /// only, current, as an undo step. Nothing to recompute.
+    fn adopt_views(&mut self, model: Model, done: String) -> String {
+        let prior = std::mem::replace(&mut self.model, model);
+        self.record_history(prior);
+        done
     }
 
     /// What `name` names: a measure, a category, or an item, written
@@ -1781,25 +1876,17 @@ impl App {
         } else {
             (&mut self.redo_stack, &mut self.undo_stack, "redo", "redone")
         };
-        let Some(mut model) = from.pop() else {
+        // A view saved, renamed or deleted is an undo step, as in the GUI
+        // (H1-15), so views come and go with the model.
+        let Some(model) = from.pop() else {
             self.status = Some(format!("nothing to {verb}"));
             return;
         };
-        // Views are layout, saved as they are made: undo leaves them, but a
-        // view goes and comes back with its measure (a delete, H1-21).
-        let over = |m: &Model, v: &View| {
-            (v.matrices().iter()).all(|p| m.measures.contains_key(&p.measure))
-        };
-        let mut views = self.model.views.clone();
-        views.retain(|_, v| over(&model, v));
-        for (id, v) in &model.views {
-            if !over(&self.model, v) {
-                views.entry(*id).or_insert_with(|| v.clone());
-            }
-        }
-        model.views = views;
         push_bounded(to, std::mem::replace(&mut self.model, model));
         self.changed();
+        self.applied_view = self
+            .applied_view
+            .filter(|v| self.model.views.contains_key(v));
         let built = self.rebuild_keeping_layout();
         self.status = Some(match built {
             Ok(()) => done.to_string(),
@@ -1870,17 +1957,15 @@ impl App {
         ViewId(next_id(self.model.views.keys().map(|v| v.0)))
     }
 
-    /// Save the current layout as a named view: mint an id, add it to the
-    /// model, and (when `path` is set) persist immediately. Returns the id.
-    pub fn save_view(&mut self, name: &str, path: Option<&str>) -> ViewId {
+    /// Save the current layout as a view named `name` with the next id,
+    /// as an undo step (the GUI's, H1-15); the autosave writes it. Returns
+    /// the id.
+    pub fn save_view(&mut self, name: &str) -> ViewId {
         let id = self.next_view_id();
-        let view = self.build_view(id, name);
-        self.model.add_view(view);
-        self.unsaved = true;
-        self.status = Some(match path.map(|p| self.save(p)) {
-            Some(Err(e)) => format!("save failed: {e}"),
-            _ => format!("saved view '{name}'"),
-        });
+        let mut model = self.model.clone();
+        model.add_view(self.build_view(id, name));
+        self.status = Some(self.adopt_views(model, format!("saved view '{name}'")));
+        self.applied_view = Some(id);
         id
     }
 
@@ -2803,9 +2888,9 @@ pub(crate) mod tests {
         app.cycle_view();
         assert!(app.status.as_deref().unwrap().starts_with("no saved views"));
         view(&mut app, MeasureId(101));
-        let v1 = app.save_view("one", None);
+        let v1 = app.save_view("one");
         app.next_measure();
-        let v2 = app.save_view("two", None);
+        let v2 = app.save_view("two");
         assert_eq!(v2.0, v1.0 + 1);
         app.cycle_view();
         assert_eq!(app.status.as_deref(), Some("view: one"));
@@ -2825,8 +2910,10 @@ pub(crate) mod tests {
             app.status.as_deref(),
             Some("view's measure no longer exists")
         );
-        // A save to an unwritable path reports the failure.
-        app.save_view("bad", Some("/nonexistent/dir/x.db"));
+        // An autosave to an unwritable path reports the failure.
+        app.saved = Some(app.model.clone());
+        app.save_view("bad");
+        app.autosave("/nonexistent/dir/x.db");
         assert!(app.status.as_deref().unwrap().starts_with("save failed"));
     }
 
@@ -2973,7 +3060,7 @@ pub(crate) mod tests {
         app.pivot(); // rows=Product, cols=Time
         app.toggle_filter_item(CategoryId(2), ItemId(21)); // hide WidgetB
 
-        let id = app.save_view("L1", None);
+        let id = app.save_view("L1");
         let v = app.model.views.get(&id).expect("view saved");
         assert_eq!(v.measure, MeasureId(101));
         assert_eq!(v.axis_order, vec![CategoryId(2), CategoryId(1)]);
@@ -3273,12 +3360,13 @@ pub(crate) mod tests {
         assert_eq!(app.status.as_deref(), Some("redone"));
         assert_eq!(app.model, edited);
         assert_eq!(app.grid.display_at(0, 0), "140", "Price * 7 * 2");
-        // A view saved after a change survives undoing it.
-        app.save_view("kept", None);
+        // A saved view is an undo step of its own (H1-15).
+        app.save_view("kept");
         app.undo();
-        assert_eq!(app.model.views.len(), 1);
+        assert!(app.model.views.is_empty());
         app.redo();
         assert_eq!(app.model.views.len(), 1);
+        app.undo();
         // A new change after an undo drops the undone future.
         app.undo();
         view(&mut app, MeasureId(101));
@@ -3488,7 +3576,7 @@ pub(crate) mod tests {
     fn deletes_name_their_blockers_and_undo() {
         let mut app = App::new(revenue_model()).unwrap();
         view(&mut app, MeasureId(101));
-        app.save_view("Quantities", None);
+        app.save_view("Quantities");
         let start = app.model.clone();
         let d = |app: &mut App, text: &str| line(app, CommandKind::Delete, text);
         assert_eq!(
@@ -3555,6 +3643,75 @@ pub(crate) mod tests {
         assert_eq!(left.measure, MeasureId(100));
         assert!(left.placements.is_empty());
         assert_eq!(app.applied_view, Some(ViewId(1)));
+    }
+
+    /// H1-15: `S` names a view (empty takes the default), `V` renames or
+    /// deletes one; each is an undo step, and names stay unique.
+    #[test]
+    fn views_are_named_renamed_and_deleted() {
+        let mut app = App::new(revenue_model()).unwrap();
+        let s = |app: &mut App, text: &str| line(app, CommandKind::SaveView, text);
+        let v = |app: &mut App, text: &str| line(app, CommandKind::Views, text);
+        assert_eq!(
+            v(&mut app, "-x"),
+            "views: there are no saved views (S saves one)"
+        );
+        assert_eq!(s(&mut app, ""), "saved view 'view 1'");
+        assert_eq!(
+            s(&mut app, "  Revenue by year "),
+            "saved view 'Revenue by year'"
+        );
+        assert_eq!(
+            s(&mut app, "view 1"),
+            "view: 'view 1' is already a view (V renames or deletes one)"
+        );
+        assert_eq!(
+            v(&mut app, "view 1 = Revenue by year"),
+            "views: 'Revenue by year' is already a view"
+        );
+        assert_eq!(
+            v(&mut app, "view 1 = view 1"),
+            "views: 'view 1' is unchanged"
+        );
+        assert_eq!(
+            v(&mut app, "view 1"),
+            "views: type Old = New to rename one, -Name to delete one"
+        );
+        assert_eq!(
+            v(&mut app, "view 1 ="),
+            "views: type Old = New to rename one, -Name to delete one"
+        );
+        assert_eq!(
+            v(&mut app, "Nope = X"),
+            "views: no view 'Nope'; the views are Revenue by year, view 1"
+        );
+        assert_eq!(
+            v(&mut app, "view 1 = Totals"),
+            "renamed view 'view 1' to 'Totals'"
+        );
+        // The default skips a name in use.
+        app.model.views.get_mut(&ViewId(2)).unwrap().name = Name("view 3".into());
+        assert_eq!(app.default_view_name(), "view 4");
+        app.model.views.get_mut(&ViewId(2)).unwrap().name = Name("Revenue by year".into());
+        app.cycle_view();
+        assert_eq!(app.applied_view, Some(ViewId(1)));
+        assert_eq!(v(&mut app, "-Totals"), "deleted view 'Totals'");
+        assert_eq!(app.applied_view, None);
+        assert_eq!(app.model.views.len(), 1);
+        app.undo();
+        assert_eq!(app.model.views[&ViewId(1)].name.0, "Totals");
+        app.undo();
+        assert_eq!(app.model.views[&ViewId(1)].name.0, "view 1");
+        app.undo();
+        app.undo();
+        assert!(app.model.views.is_empty());
+        // An applied view undone away is no longer current.
+        app.redo();
+        app.cycle_view();
+        app.undo();
+        assert_eq!(app.applied_view, None);
+        let mut empty = App::new(Model::new()).unwrap();
+        assert_eq!(s(&mut empty, "x"), EMPTY);
     }
 
     /// An item is named alone when one category has it, else as
@@ -3742,7 +3899,7 @@ pub(crate) mod tests {
         view(&mut app, MeasureId(101));
         app.apply_edit(0, 0, 5.0).unwrap();
         assert!(app.save("/nonexistent/dir/x.db").is_err());
-        app.save_view("kept", None);
+        app.save_view("kept");
         app.apply_edit(0, 0, 7.0).unwrap();
         app.undo();
         app.save(p).unwrap();

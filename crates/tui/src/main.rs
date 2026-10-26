@@ -244,9 +244,12 @@ fn normal_key(app: &mut App, k: KeyEvent, path: &str) {
         // Filters: 'f' hides/shows the row item under the cursor; 'F' clears.
         KeyCode::Char('f') => filter_row_under_cursor(app),
         KeyCode::Char('F') => app.clear_filters(),
-        // Views: 'S' saves the current layout; 'v' cycles saved views.
-        KeyCode::Char('S') => save_current_view(app, path),
+        // Views: 'S' names and saves the layout, 'v' cycles the saved
+        // views, 'V' renames or deletes one (H1-15).
+        KeyCode::Char('S') if app.measures.is_empty() => app.status = Some(app::EMPTY.into()),
+        KeyCode::Char('S') => app.begin_command(app::CommandKind::SaveView),
         KeyCode::Char('v') => app.cycle_view(),
+        KeyCode::Char('V') => app.begin_command(app::CommandKind::Views),
         // CSV import/export: 'I' opens the import-csv prompt, 'E' export-csv.
         KeyCode::Char('I') => app.begin_import_csv(),
         KeyCode::Char('E') => app.begin_export_csv(),
@@ -326,18 +329,6 @@ fn filter_row_under_cursor(app: &mut App) {
         return;
     };
     app.toggle_filter_item(cat, item);
-}
-
-/// Save the current layout as a generated "view N" name and persist to `path`.
-/// (Inline text entry is intentionally omitted; the view can be renamed via a
-/// future dialog. Documented simplification.)
-fn save_current_view(app: &mut App, path: &str) {
-    if app.measures.is_empty() {
-        app.status = Some(app::EMPTY.into());
-        return;
-    }
-    let n = app.model.views.len() + 1;
-    app.save_view(&format!("view {n}"), Some(path));
 }
 
 #[cfg(test)]
@@ -706,10 +697,38 @@ mod tests {
         );
         let mut app = App::new(revenue_model()).unwrap();
         save(&mut app, p).unwrap();
+        // H1-15: S asks for the name; Enter on an empty line takes the default.
         run_events(&mut app, p, chars("S")).unwrap();
+        assert_eq!(app.command.as_ref().unwrap().0, app::CommandKind::SaveView);
+        run_events(&mut app, p, vec![key(KeyCode::Enter)]).unwrap();
         assert_eq!(app.status.as_deref(), Some("saved view 'view 1'"));
+        let mut ev = chars("SBy product");
+        ev.push(key(KeyCode::Enter));
+        ev.extend(chars("V"));
+        ev.extend(chars("view 1 = Totals"));
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, p, ev).unwrap();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("renamed view 'view 1' to 'Totals'")
+        );
         let loaded = load(p).unwrap();
-        assert_eq!(loaded.model.views.len(), 1);
+        let mut names: Vec<String> = loaded
+            .model
+            .views
+            .values()
+            .map(|v| v.name.0.clone())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["By product", "Totals"], "each saved as it was made");
+        let mut ev = chars("V-Totals");
+        ev.push(key(KeyCode::Enter));
+        run_events(&mut app, p, ev).unwrap();
+        assert_eq!(load(p).unwrap().model.views.len(), 1);
+        let mut empty = App::new(improv_core_model::Model::new()).unwrap();
+        run_events(&mut empty, "", chars("S")).unwrap();
+        assert_eq!(empty.status.as_deref(), Some(app::EMPTY));
+        assert!(empty.command.is_none());
         assert!(load_err("/nonexistent/dir/x.db").starts_with("cannot open model"));
         assert!(save(&mut app, "/nonexistent/dir/x.db")
             .unwrap_err()
@@ -929,7 +948,12 @@ mod tests {
         save(&mut App::new(revenue_model()).unwrap(), p).unwrap();
         let mut a = load(p).unwrap();
         let mut b = load(p).unwrap();
-        run_events(&mut a, p, chars("S")).unwrap();
+        run_events(
+            &mut a,
+            p,
+            vec![key(KeyCode::Char('S')), key(KeyCode::Enter)],
+        )
+        .unwrap();
         b.model.views.clear();
         b.model
             .add_view(b.build_view(improv_core_model::ViewId(77), "mine"));

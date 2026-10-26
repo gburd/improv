@@ -75,10 +75,21 @@ Page through the page dimensions.
 Hide the cursor row's item / clear all filters.
 .TP
 .B S
-Save the current layout as a view.
+Save the current layout as a view: type its name, or press Enter for the
+one offered
+.RB ( "view 1" ,
+.BR "view 2" ,
+\&...). A name in use is refused.
 .TP
 .B v
 Cycle through the saved views.
+.TP
+.B V
+Rename or delete a saved view:
+.IR Old " = " New
+renames one,
+.BI \- Name
+deletes it.
 .TP
 .BR I " / " E
 Import a CSV into a new measure / export the shown measure (a prompt opens).
@@ -141,8 +152,8 @@ the model. With edits or history to lose it says what goes, and a second
 reverts; any other key keeps them.
 .TP
 .B u
-Undo the last change to the model: a cell, a formula, an import. Up to
-50 changes are kept.
+Undo the last change to the model: a cell, a formula, an import, a
+rename or delete, a saved view. Up to 50 changes are kept.
 .TP
 .B Ctrl+R
 Redo the last change

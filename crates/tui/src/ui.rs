@@ -27,6 +27,7 @@ const HELP: &[&str] = &[
     "f/F: filter",
     "S: save view",
     "v: view",
+    "V: rename/delete view",
     "Tab/m: measure",
     "I: import-csv",
     "E: export-csv",
@@ -161,10 +162,18 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             CommandKind::Input => ("input", "Name: Category, Category, \u{2026}"),
             CommandKind::Rename => ("rename", "Old = New (an item: Category.Item = New)"),
             CommandKind::Delete => ("delete", "Name (an item: Category.Item)"),
+            CommandKind::SaveView => ("view name", ""),
+            CommandKind::Views => ("views", "Old = New renames, -Name deletes"),
         };
         let mut line = Line::from(format!("{prompt}> {buf}"));
-        if buf.is_empty() {
-            line.push_span(dim(syntax));
+        match kind {
+            // The name Enter on an empty line saves under.
+            CommandKind::SaveView if buf.is_empty() => line.push_span(Span::styled(
+                format!("{}  (Enter saves; type a name)", app.default_view_name()),
+                Style::default().add_modifier(Modifier::DIM),
+            )),
+            _ if buf.is_empty() => line.push_span(dim(syntax)),
+            _ => {}
         }
         lines.push(line);
     }
@@ -990,6 +999,15 @@ mod tests {
             app.begin_command(kind);
             row_of(&text(&draw(&mut app, 120, 30)), hint);
         }
+        // H1-15: the view name prompt offers the default.
+        app.begin_command(CommandKind::SaveView);
+        let lines = text(&draw(&mut app, 120, 30));
+        row_of(&lines, "view name> view 1  (Enter saves; type a name)");
+        app.begin_command(CommandKind::Views);
+        row_of(
+            &text(&draw(&mut app, 120, 30)),
+            "views> Old = New renames, -Name deletes",
+        );
         app.cancel_command();
         app.begin_define();
         let buf = draw(&mut app, 120, 30);

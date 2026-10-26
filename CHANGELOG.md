@@ -55,6 +55,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   measure uses, is refused with the formulas named; an item goes with its
   cells, a measure with its cells and the matrices of saved views. Each is
   one undo step, and undo brings back a deleted measure's views.
+- **The TUI names a saved view, and renames and deletes views** (H1-15,
+  the TUI part). `S` asks for the name, offering `view N` for Enter; a
+  name in use is refused. `V` takes `Old = New` to rename a view and
+  `-Name` to delete one. Saving, renaming and deleting a view are now undo
+  steps, as in the GUI; before, undo left views alone.
 ### Fixed
 
 - **Typing on a TUI cell replaces its value.** `e` or Enter showed the old

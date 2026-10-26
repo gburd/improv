@@ -87,7 +87,7 @@ improv-tui new.db     # a new file opens empty: build it with c, n and =
 | `[` `]` | page |
 | Shift+arrows | select a range; its sum shows in the status line |
 | `f` / `F` | hide a row item / clear filters |
-| `S` / `v` | save the layout as a view / cycle views |
+| `S` / `v` / `V` | save the layout as a view, named as you type (Enter takes `view N`) / cycle views / rename (`Old = New`) or delete (`-Name`) a view |
 | `I` / `E` | import / export CSV |
 | `c` | add a category and its items: `Time: 2025, 2026` |
 | `n` | add an input measure over categories: `Quantity: Time, Product` |
@@ -259,7 +259,7 @@ bold gaps are tracked as tasks for 1.0.
 | Add categories and items | `add-category`, `add-item` | via CSV import | Worksheet ▸ Add Category / Add Item, or type in a tile | — | `bind_category` (items from the column) | `category` lines |
 | Add an input measure | `add-measure` | via CSV import | Worksheet ▸ Add Input Measure | — | `bind_measure` | `input` lines |
 | Rename, delete | — | `r`, `D` | Worksheet ▸ Rename, Delete… | — | `drop_measure` | — |
-| **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
+| **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle, `V` rename or delete | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
 | **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
 | Edit an input cell | `set` | yes | yes | `POST /measures/:id/cells` | write your table | — |
 | **Formulas: edit** | `define`, `add-derived` | `e` edits the viewed one, `=` adds one | edit and add | — | `define` | `Name = formula` lines |

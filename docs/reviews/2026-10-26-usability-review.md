@@ -234,7 +234,7 @@ rect that overlaps the menu. **Files:** `crates/cli/src/main.rs`
 (`cmd_save_view`), `crates/core_model/src/lib.rs` (`CanvasRect`),
 `crates/gui/src/app.rs` (`from_placement`).
 
-**[fixed (GUI): `feat(gui): rename and delete saved views (H1-15)`] H1-15 TUI, GUI: views cannot be named (TUI), renamed or deleted.**
+**[fixed (GUI): `feat(gui): rename and delete saved views (H1-15)`] [fixed (TUI): `feat(tui): name a view when saving it; rename and delete views (H1-15)`] H1-15 TUI, GUI: views cannot be named (TUI), renamed or deleted.**
 *User control; consistency.* TUI `S` always saves "view N".
 Worksheet ▸ Save View does the same. Neither front end can rename or
 delete a view. With a view row selected in the GUI browser, Delete…
