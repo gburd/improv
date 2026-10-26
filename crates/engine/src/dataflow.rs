@@ -23,7 +23,9 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::reduce::{self, two_level, Rows};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
-use differential_dataflow::operators::{Join as _, Reduce, Threshold};
+use differential_dataflow::operators::arrange::{ArrangeByKey, Arranged, TraceAgent};
+use differential_dataflow::operators::{Reduce, Threshold};
+use differential_dataflow::trace::implementations::ValSpine;
 use differential_dataflow::AsCollection;
 use differential_dataflow::Collection;
 use improv_core_model::{
@@ -39,6 +41,7 @@ use std::time::Duration;
 use timely::communication::allocator::process::ProcessBuilder;
 use timely::communication::allocator::{Allocate, AllocateBuilder, Process, Thread};
 use timely::dataflow::operators::ToStream;
+use timely::dataflow::scopes::ScopeParent;
 use timely::dataflow::Scope;
 use timely::worker::Worker;
 
@@ -57,6 +60,19 @@ pub enum EngineError {
 /// A DD collection of `(coordinate, cell value)`.
 pub(crate) type Coll<G> = Collection<G, (CoordKey, CellValue), isize>;
 
+/// A collection arranged by its cells' projection on some categories (a
+/// join's or a reduction's key), each value its cell.
+pub(crate) type Keyed<G> = Arranged<
+    G,
+    TraceAgent<ValSpine<CoordKey, (CoordKey, CellValue), <G as ScopeParent>::Timestamp, isize>>,
+>;
+
+/// The arrangements one build shares, by measure and key categories: a
+/// measure that one plan reduces and another joins on the same categories
+/// (PageRank's `W`, by `Src` for `Out = SUM(W OVER Dst)` and `M = W / Out`)
+/// is arranged once.
+pub(crate) type Shared<G> = RefCell<HashMap<(MeasureId, Vec<u32>), Keyed<G>>>;
+
 /// Recursively build a collection for a plan node.
 ///
 /// `inputs` maps input-measure ids to their base DD collections. A `Ref` to a
@@ -66,6 +82,7 @@ pub(crate) fn build_coll<G: Scope>(
     scope: &mut G,
     inputs: &HashMap<MeasureId, Coll<G>>,
     derived: &HashMap<MeasureId, Coll<G>>,
+    arr: &Shared<G>,
 ) -> Result<Coll<G>, EngineError>
 where
     G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
@@ -78,7 +95,7 @@ where
             .ok_or_else(|| EngineError::Unsupported(format!("no collection for measure {m:?}"))),
 
         PlanNodeKind::MapUnary(op, child) => {
-            let c = build_coll(child, scope, inputs, derived)?;
+            let c = build_coll(child, scope, inputs, derived, arr)?;
             let op = *op;
             Ok(c.map(move |(k, v)| (k, apply_unary(op, &v))))
         }
@@ -90,11 +107,11 @@ where
             let op = *op;
             match (literal_value(left), literal_value(right)) {
                 (Some(lit), None) => {
-                    let r = build_coll(right, scope, inputs, derived)?;
+                    let r = build_coll(right, scope, inputs, derived, arr)?;
                     Ok(r.map(move |(k, b)| (k, apply_binary(op, &lit, &b))))
                 }
                 (None, Some(lit)) => {
-                    let l = build_coll(left, scope, inputs, derived)?;
+                    let l = build_coll(left, scope, inputs, derived, arr)?;
                     Ok(l.map(move |(k, a)| (k, apply_binary(op, &a, &lit))))
                 }
                 // Both literals: a scalar result at the empty coordinate.
@@ -104,15 +121,17 @@ where
                     // of a and b gives both values; re-joining the Join's
                     // rows with b on the full key would arrange both again.
                     if let Some((a, keys)) = broadcast_of(left, right) {
-                        let l = build_coll(a, scope, inputs, derived)?;
-                        let r = build_coll(right, scope, inputs, derived)?;
-                        return Ok(align(&l, &r, keys.to_vec())
+                        let l = build_coll(a, scope, inputs, derived, arr)?;
+                        let r = build_coll(right, scope, inputs, derived, arr)?;
+                        return Ok(align(arr, Some(a), &l, right, &r, keys)
                             .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))));
                     }
-                    let l = build_coll(left, scope, inputs, derived)?;
-                    let r = build_coll(right, scope, inputs, derived)?;
-                    Ok(align(&l, &r, shared_cats(left, right))
-                        .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))))
+                    let l = build_coll(left, scope, inputs, derived, arr)?;
+                    let r = build_coll(right, scope, inputs, derived, arr)?;
+                    Ok(
+                        align(arr, Some(left), &l, right, &r, &shared_cats(left, right))
+                            .map(move |(k, (a, b))| (k, apply_binary(op, &a, &b))),
+                    )
                 }
             }
         }
@@ -125,9 +144,9 @@ where
             // Broadcast the left value onto the union coordinate. A MapBinary
             // above re-aligns this with its right operand on their shared
             // categories, so it sees both values.
-            let l = build_coll(left, scope, inputs, derived)?;
-            let r = build_coll(right, scope, inputs, derived)?;
-            Ok(align(&l, &r, join_keys.clone()).map(|(k, (lv, _rv))| (k, lv)))
+            let l = build_coll(left, scope, inputs, derived, arr)?;
+            let r = build_coll(right, scope, inputs, derived, arr)?;
+            Ok(align(arr, Some(left), &l, right, &r, join_keys).map(|(k, (lv, _rv))| (k, lv)))
         }
 
         PlanNodeKind::Aggregate {
@@ -145,6 +164,7 @@ where
             scope,
             inputs,
             derived,
+            arr,
             AggSpec {
                 ins,
                 params,
@@ -176,7 +196,7 @@ where
         PlanNodeKind::Coalesce { args, grid } => {
             let colls = args
                 .iter()
-                .map(|a| build_coll(a, scope, inputs, derived))
+                .map(|a| build_coll(a, scope, inputs, derived, arr))
                 .collect::<Result<Vec<_>, _>>()?;
             let spans = |a: &PlanNode| a.ty.dim == node.ty.dim;
             // The domain: every item combination of the grid, or the cells of
@@ -208,7 +228,7 @@ where
                 let t = if spans(a) {
                     c.map(move |(k, v)| (k, (i, v)))
                 } else {
-                    align(&domain, c, a.ty.dim.categories.clone())
+                    align(arr, None, &domain, a, c, &a.ty.dim.categories)
                         .map(move |(k, (_, v))| (k, (i, v)))
                 };
                 tagged = Some(tagged.map_or(t.clone(), |acc| acc.concat(&t)));
@@ -227,7 +247,7 @@ where
         )),
 
         PlanNodeKind::Remap { input, maps } => {
-            let x = build_coll(input, scope, inputs, derived)?;
+            let x = build_coll(input, scope, inputs, derived, arr)?;
             let (from, to) = remap_table(maps);
             Ok(x.flat_map(move |(k, v)| Some((remap_key(&k, &from, &to)?, v))))
         }
@@ -242,17 +262,17 @@ where
             // Rows: every read measure aligned on the coordinate.
             let ids: Vec<MeasureId> = refs.iter().map(|(id, _)| *id).collect();
             let (_, p0) = &refs[0];
-            let mut rows = build_coll(p0, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+            let mut rows = build_coll(p0, scope, inputs, derived, arr)?.map(|(k, v)| (k, vec![v]));
             let mut dim = p0.ty.dim.clone();
             for (_, p) in &refs[1..] {
-                let c = build_coll(p, scope, inputs, derived)?;
+                let c = build_coll(p, scope, inputs, derived, arr)?;
                 let keys: Vec<CategoryId> = dim
                     .categories
                     .iter()
                     .copied()
                     .filter(|c| p.ty.dim.categories.contains(c))
                     .collect();
-                rows = align_with(&rows, &c, keys).map(|(k, (mut vs, v))| {
+                rows = align_with(arr, &rows, p, &c, &keys).map(|(k, (mut vs, v))| {
                     vs.push(v);
                     (k, vs)
                 });
@@ -313,7 +333,7 @@ where
             order,
             default,
         } => {
-            let x = build_coll(input, scope, inputs, derived)?;
+            let x = build_coll(input, scope, inputs, derived, arr)?;
             let pos: HashMap<u32, usize> =
                 order.iter().enumerate().map(|(i, it)| (it.0, i)).collect();
             let (cat, offset, order) = (cat.0, *offset, order.clone());
@@ -331,7 +351,7 @@ where
                 return Ok(moved);
             };
             // Where nothing moved in, the default, at the input's own cells.
-            let dflt = build_coll(d, scope, inputs, derived)?;
+            let dflt = build_coll(d, scope, inputs, derived, arr)?;
             let own = x.map(|(k, _)| k);
             let landed = moved.map(|(k, _)| k);
             let holes = own
@@ -339,7 +359,7 @@ where
                 .threshold(|_, m| if *m > 0 { 1 } else { 0 });
             let holes = holes.map(|k| (k, CellValue::Bool(true)));
             let filled =
-                align(&holes, &dflt, d.ty.dim.categories.clone()).map(|(k, (_, v))| (k, v));
+                align(arr, None, &holes, d, &dflt, &d.ty.dim.categories).map(|(k, (_, v))| (k, v));
             Ok(moved.concat(&filled))
         }
 
@@ -366,17 +386,18 @@ where
                 // No collection argument: a constant at the empty coordinate.
                 return Ok(constant(scope, fill(&[])));
             };
-            let mut acc = build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, vec![v]));
+            let mut acc =
+                build_coll(first, scope, inputs, derived, arr)?.map(|(k, v)| (k, vec![v]));
             let mut dim = first.ty.dim.clone();
             for (_, a) in rest {
-                let c = build_coll(a, scope, inputs, derived)?;
+                let c = build_coll(a, scope, inputs, derived, arr)?;
                 let keys: Vec<CategoryId> = dim
                     .categories
                     .iter()
                     .copied()
                     .filter(|c| a.ty.dim.categories.contains(c))
                     .collect();
-                acc = align_with(&acc, &c, keys).map(|(k, (mut vs, v))| {
+                acc = align_with(arr, &acc, a, &c, &keys).map(|(k, (mut vs, v))| {
                     vs.push(v);
                     (k, vs)
                 });
@@ -391,11 +412,11 @@ where
             otherwise,
             spanning,
         } => {
-            let t = build_coll(test, scope, inputs, derived)?;
-            let a = build_coll(then, scope, inputs, derived)?;
+            let t = build_coll(test, scope, inputs, derived, arr)?;
+            let a = build_coll(then, scope, inputs, derived, arr)?;
             let b = otherwise
                 .as_ref()
-                .map(|o| build_coll(o, scope, inputs, derived))
+                .map(|o| build_coll(o, scope, inputs, derived, arr))
                 .transpose()?;
             // The test over the result's categories: joined with the spanning
             // branch when the test lacks some of them.
@@ -408,15 +429,16 @@ where
                         let node = otherwise.as_deref().expect("spanning else exists");
                         (node, b.as_ref().expect("spanning else exists"))
                     };
-                    align(&t, coll, shared_cats(test, node)).map(|(k, (tv, _))| (k, tv))
+                    align(arr, Some(test), &t, node, coll, &shared_cats(test, node))
+                        .map(|(k, (tv, _))| (k, tv))
                 }
             };
             let pick = |want: bool, dom: &Coll<G>, branch: &Coll<G>, node: &PlanNode| {
-                let keys = node.ty.dim.categories.clone();
+                let keys = &node.ty.dim.categories;
                 let sel = dom.filter(move |(_, v)| *v == CellValue::Bool(want));
                 // The branch's categories are a subset of the domain's, so the
                 // joined coordinate is the domain's.
-                align(&sel, branch, keys).map(|(k, (_, v))| (k, v))
+                align(arr, None, &sel, node, branch, keys).map(|(k, (_, v))| (k, v))
             };
             let mut out = pick(true, &dom, &a, then);
             if let (Some(b), Some(node)) = (&b, otherwise) {
@@ -486,14 +508,19 @@ pub(crate) fn agg_order(order: &[(CategoryId, Vec<ItemId>)]) -> AggOrder {
 }
 
 /// A reduction row at `k`, values `vs`: its group key (`k` on `gb`) and the
-/// row as the reduction sees it (its item positions along `order`, its item
-/// of the first reduced category, the values).
+/// row as the reduction sees it ([`agg_row`]).
 pub(crate) fn agg_key<V>(
     k: &CoordKey,
     vs: Vals<V>,
     order: &AggOrder,
     gb: &[u32],
 ) -> (CoordKey, AggRow<V>) {
+    (project(k, gb), agg_row(k, vs, order))
+}
+
+/// The reduction row at `k`, values `vs`: its item positions along
+/// `order`, its item of the first reduced category, the values.
+pub(crate) fn agg_row<V>(k: &CoordKey, vs: Vals<V>, order: &AggOrder) -> AggRow<V> {
     let pos: Pos = order
         .iter()
         .map(|(c, m)| {
@@ -506,7 +533,7 @@ pub(crate) fn agg_key<V>(
         .first()
         .and_then(|(c, _)| k.iter().find(|(cc, _)| cc == c))
         .map_or(0, |(_, i)| *i);
-    (project(k, gb), ((pos, item), vs))
+    ((pos, item), vs)
 }
 
 /// A group's reduction input (sorted rows, with multiplicities) as the
@@ -636,6 +663,7 @@ fn build_aggregate<G: Scope>(
     scope: &mut G,
     inputs: &HashMap<MeasureId, Coll<G>>,
     derived: &HashMap<MeasureId, Coll<G>>,
+    arr: &Shared<G>,
     a: AggSpec<'_>,
 ) -> Result<Coll<G>, EngineError>
 where
@@ -645,6 +673,38 @@ where
         .ins
         .split_first()
         .ok_or_else(|| EngineError::Unsupported("aggregation with no input".into()))?;
+    let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
+    let plain = a.into.is_empty() && a.window.is_none() && !a.per_item && !a.two_level();
+    let lone =
+        rest.is_empty() && a.pred.is_none() && a.params.iter().all(|p| literal_value(p).is_some());
+    // Groups of few rows (a sparse sum, a small category): sorting them in
+    // the reduce costs little.
+    let few = a.flat || capacity <= two_level::FLAT_MAX;
+    if plain && lone && few && matches!(first.kind, PlanNodeKind::InputMeasure(_)) {
+        // One measure, one result per group: reduce the measure's shared
+        // arrangement by group, so a join of it on the same categories
+        // reads the same one (PageRank's `W`, B8). The rows come in
+        // coordinate order; laid out and sorted here, they reach the kernel
+        // as the `AggRow` reduce below gives them.
+        let c = build_coll(first, scope, inputs, derived, arr)?;
+        let order = agg_order(a.order);
+        let consts: Vec<Option<CellValue>> = a.params.iter().map(literal_value).collect();
+        let func = a.func;
+        return Ok(keyed(arr, Some(first), &c, a.group_by).reduce(
+            move |_k, input: &[(&(CoordKey, CellValue), isize)], output| {
+                let mut rows: Vec<(AggRow, isize)> = input
+                    .iter()
+                    .map(|((k, v), n)| (agg_row(k, Vals::from_buf([v.clone()]), &order), *n))
+                    .collect();
+                rows.sort_unstable_by(|x, y| x.0.cmp(&y.0));
+                let rows: Vec<(&AggRow, isize)> = rows.iter().map(|(r, n)| (r, *n)).collect();
+                let (rs, params, _) = agg_rows(&rows, 1, &consts, capacity);
+                if !rs.is_empty() {
+                    output.push((reduce::reduce(func, &rs, &params), 1isize));
+                }
+            },
+        ));
+    }
     let full: Vec<CategoryId> = first
         .ty
         .dim
@@ -654,12 +714,12 @@ where
         .copied()
         .collect();
     let mut rows =
-        build_coll(first, scope, inputs, derived)?.map(|(k, v)| (k, Vals::from_buf([v])));
+        build_coll(first, scope, inputs, derived, arr)?.map(|(k, v)| (k, Vals::from_buf([v])));
     // The reduced measures join on the categories they share; a category
     // only some of them range over broadcasts (the rows gain it).
     let mut full = full;
     for n in rest {
-        let c = build_coll(n, scope, inputs, derived)?;
+        let c = build_coll(n, scope, inputs, derived, arr)?;
         let mine: Vec<CategoryId> =
             n.ty.dim
                 .categories
@@ -667,21 +727,21 @@ where
                 .chain(a.order.iter().map(|(c, _)| c))
                 .copied()
                 .collect();
-        let shared = mine.iter().copied().filter(|c| full.contains(c)).collect();
+        let shared: Vec<CategoryId> = mine.iter().copied().filter(|c| full.contains(c)).collect();
         full.extend(
             mine.into_iter()
                 .filter(|c| !full.contains(c))
                 .collect::<Vec<_>>(),
         );
-        rows = align_with(&rows, &c, shared).map(|(k, (mut vs, v))| {
+        rows = align_with(arr, &rows, n, &c, &shared).map(|(k, (mut vs, v))| {
             vs.push(v);
             (k, vs)
         });
     }
     let n_in = a.ins.len();
     if let Some(p) = a.pred {
-        let pc = build_coll(p, scope, inputs, derived)?;
-        rows = align_with(&rows, &pc, p.ty.dim.categories.clone())
+        let pc = build_coll(p, scope, inputs, derived, arr)?;
+        rows = align_with(arr, &rows, p, &pc, &p.ty.dim.categories)
             .flat_map(|(k, (vs, t))| where_row(vs, t, |t| t).map(|vs| (k, vs)));
     }
     // Parameters: literals fold; the rest join per row on the categories they
@@ -696,7 +756,7 @@ where
             Some(v) => consts.push(Some(v)),
             None => {
                 consts.push(None);
-                let pc = build_coll(p, scope, inputs, derived)?;
+                let pc = build_coll(p, scope, inputs, derived, arr)?;
                 let shared: Vec<CategoryId> =
                     p.ty.dim
                         .categories
@@ -709,7 +769,7 @@ where
                         row_dim.push(*c);
                     }
                 }
-                rows = align_with(&rows, &pc, shared).map(|(k, (mut vs, v))| {
+                rows = align_with(arr, &rows, p, &pc, &shared).map(|(k, (mut vs, v))| {
                     vs.push(v);
                     (k, vs)
                 });
@@ -717,7 +777,6 @@ where
         }
     }
     let order = agg_order(a.order);
-    let capacity: usize = a.order.iter().map(|(_, items)| items.len()).product();
     let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
     // (group key, ((positions, item of the first reduced category), values))
     let keyed = rows.map(move |(k, vs)| agg_key(&k, vs, &order, &gb));
@@ -816,39 +875,84 @@ fn on_first<G: Scope, D: timely::Data>(
     rows.to_stream(scope).as_collection()
 }
 
+/// `c`, the collection of plan node `n`, arranged by its cells' projection
+/// on `keys`. A measure's (`n` an `InputMeasure`) is arranged once per
+/// key categories and shared ([`Shared`]); any other collection afresh.
+fn keyed<G: Scope>(
+    arr: &Shared<G>,
+    n: Option<&PlanNode>,
+    c: &Coll<G>,
+    keys: &[CategoryId],
+) -> Keyed<G>
+where
+    G::Timestamp: differential_dataflow::lattice::Lattice,
+{
+    let mut keys: Vec<u32> = keys.iter().map(|c| c.0).collect();
+    keys.sort_unstable();
+    keys.dedup();
+    let arrange = |keys: Vec<u32>| {
+        c.map(move |(k, v)| (project(&k, &keys), (k, v)))
+            .arrange_by_key()
+    };
+    match n.map(|n| &n.kind) {
+        Some(PlanNodeKind::InputMeasure(m)) => arr
+            .borrow_mut()
+            .entry((*m, keys.clone()))
+            .or_insert_with(|| arrange(keys))
+            .clone(),
+        _ => arrange(keys),
+    }
+}
+
+/// A joined pair of cells, at their union coordinate.
+fn joined<V: Clone>(
+    lk: &CoordKey,
+    lv: &V,
+    (rk, rv): &(CoordKey, CellValue),
+) -> Option<(CoordKey, (V, CellValue))> {
+    Some((union_keys(lk, rk), (lv.clone(), rv.clone())))
+}
+
 /// Broadcast-join two collections on `keys`, the categories both range over.
 /// Every pair that agrees on `keys` yields one row at the union coordinate
 /// carrying both values, so either side may have extra dimensions. This is the
 /// single alignment primitive for `Join`, `MapBinary` and two-arg `FuncCall`.
+/// `ln` and `rn` are the sides' plan nodes (`ln`, if `l` is one's), so a
+/// measure's arrangement is shared ([`keyed`]).
 #[allow(clippy::type_complexity)]
 fn align<G: Scope>(
+    arr: &Shared<G>,
+    ln: Option<&PlanNode>,
     l: &Coll<G>,
+    rn: &PlanNode,
     r: &Coll<G>,
-    keys: Vec<CategoryId>,
+    keys: &[CategoryId],
 ) -> Collection<G, (CoordKey, (CellValue, CellValue)), isize>
 where
     G::Timestamp: differential_dataflow::lattice::Lattice,
 {
-    align_with(l, r, keys)
+    let r = keyed(arr, Some(rn), r, keys);
+    keyed(arr, ln, l, keys).join_core(&r, |_, (lk, lv), rc| joined(lk, lv, rc))
 }
 
 /// [`align`] for any left value type (n-ary calls carry a `Vec` of values).
 #[allow(clippy::type_complexity)]
 fn align_with<G: Scope, V>(
+    arr: &Shared<G>,
     l: &Collection<G, (CoordKey, V), isize>,
+    rn: &PlanNode,
     r: &Coll<G>,
-    keys: Vec<CategoryId>,
+    keys: &[CategoryId],
 ) -> Collection<G, (CoordKey, (V, CellValue)), isize>
 where
     G::Timestamp: differential_dataflow::lattice::Lattice,
     V: differential_dataflow::ExchangeData + std::hash::Hash,
 {
+    let r = keyed(arr, Some(rn), r, keys);
     let keys: Vec<u32> = keys.iter().map(|c| c.0).collect();
-    let keys2 = keys.clone();
-    let l = l.map(move |(k, v)| (project(&k, &keys), (k, v)));
-    let r = r.map(move |(k, v)| (project(&k, &keys2), (k, v)));
-    l.join(&r)
-        .map(|(_jk, ((lk, lv), (rk, rv)))| (union_keys(&lk, &rk), (lv, rv)))
+    l.map(move |(k, v)| (project(&k, &keys), (k, v)))
+        .arrange_by_key()
+        .join_core(&r, |_, (lk, lv), rc| joined(lk, lv, rc))
 }
 
 /// `left` op `right` where `left` is `Join{a, right, keys}` (the compiler's
@@ -1254,8 +1358,9 @@ where
     let mut derived = HashMap::new();
     let mut built = Vec::new();
     let mut flat: HashSet<MeasureId> = inputs.keys().copied().collect();
+    let arr: Shared<G> = RefCell::default();
     for (mid, plan) in plans {
-        let Ok(coll) = build_coll(plan, scope, inputs, &derived) else {
+        let Ok(coll) = build_coll(plan, scope, inputs, &derived, &arr) else {
             continue;
         };
         if functional(plan, &flat) {
@@ -3746,8 +3851,10 @@ mod tests {
         };
         let (ok, err) = timely::execute::execute_directly(move |worker| {
             worker.dataflow::<u64, _, _>(|scope| {
-                let ok = build_coll(&unknown, scope, &HashMap::new(), &HashMap::new()).is_ok();
-                let err = build_coll(&missing, scope, &HashMap::new(), &HashMap::new())
+                let arr = Default::default();
+                let ok =
+                    build_coll(&unknown, scope, &HashMap::new(), &HashMap::new(), &arr).is_ok();
+                let err = build_coll(&missing, scope, &HashMap::new(), &HashMap::new(), &arr)
                     .err()
                     .map(|e| e.to_string());
                 (ok, err)

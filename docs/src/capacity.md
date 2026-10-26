@@ -26,7 +26,7 @@ factor of about two, and measure your own model before you buy hardware.
 | One-cell edit | 56 µs at 100k cells, independent of size; plus a per-measure round cost (fan of 20k measures: 129 ms per edit) | [changelog] |
 | Logical worker memory, fold state per fact row, `count` + `count_distinct` bindings | about 120 B (derived: 444 MB private for 2.5M rows, less the engine's 4 × 44,750 cells at 0.8 kB) | [bench] §1, [here] |
 | Logical worker memory per small model | about 0.6 MB (1,000 models of 1,000 rows: 575–602 MB) | [here] |
-| FIXPOINT memory per edge | about 0.6 kB in the live engine (10M edges: 556 B per edge, 10.1 GB peak); the tagged 1.5k and 10k-node tests together peak at 2.0 GB | [changelog] (B8), [qual] |
+| FIXPOINT memory per edge | about 0.4 kB in the live engine (10M edges: 414 B per edge, 8.4 GB peak); the tagged 1.5k and 10k-node tests together peak at 2.0 GB | [changelog] (B8), [qual] |
 | Worker CPU per 1,000-row batch | about 20–25 ms above idle | [here] |
 | Worker idle CPU | 0.08 core at `poll_ms = 50` with one large model; 0.06 core at 200 models, 0.11 at 1,000 | [here] |
 | Initial build (or rebuild) per million fact rows | about 2.1–2.6 s (2.5M rows: 5.3–6.5 s) | [here] |
@@ -69,8 +69,8 @@ cost less (not measured separately). The worker also reads the tables
 through shared buffers. That shows up in its RSS as shared memory (about
 300 MB in the example) but is not extra memory.
 
-**FIXPOINT** models need about `edges × 0.6 kB` on top, and more at
-peak while they build: ten million edges peaked at 10.1 GB.
+**FIXPOINT** models need about `edges × 0.4 kB` on top, and more at
+peak while they build: ten million edges peaked at 8.4 GB.
 
 `improv.max_cells` (default 5,000,000 bound input cells per model) refuses
 `recalc`, trigger and commit recomputes and the worker's apply above it.

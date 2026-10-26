@@ -395,16 +395,27 @@ and `M` 720 B (it joins `W` to `Out`). The engine used to keep two more
 copies of every input cell: `Engine::current` (a shadow map nothing read;
 the worker keeps the values it retracts) and the seed `Vec`, held for the
 worker's life by its closure. Both are gone: 1.29 kB → 1.06 kB per edge at
-1M edges, 1.21 → 1.03 kB at 10M (peak RSS 16.8 → 15.0 GB). What is left is
-one copy per operator that must arrange (DD arranges each join input and
-each reduce input), so the next step is structural: share one arrangement
-of `W` between `Out`'s reduce and `M`'s join (`arrange` once, `join_core` /
-`reduce_core` on it), and let the host step read `M` from that arrangement
-instead of its own `Vec` + index. Neither is a few-line change; it is not
-done. A reduction's row (`dataflow::AggRow`, what the reduce arranges) is
-inline (`SmallVec` positions and values: four categories, one value) for
-the common one-input reduction: 556 → 501 B per edge at 10M edges, and the
-same order as the `Vec`s it replaced, so results are bit for bit as before.
+1M edges, 1.21 → 1.03 kB at 10M (peak RSS 16.8 → 15.0 GB). A reduction's
+row (`dataflow::AggRow`, what the reduce arranges) is inline (`SmallVec`
+positions and values: four categories, one value) for the common
+one-input reduction: 556 → 501 B per edge at 10M edges, and the same order
+as the `Vec`s it replaced, so results are bit for bit as before.
+
+**Shared arrangements (B8).** A build keeps one arrangement of each
+measure per key categories (`dataflow::Shared`, keyed by `(measure, key
+categories)`; `keyed` makes or reuses one, `arrange_by_key` of `(the
+cell's projection, (coordinate, value))`). Every join side that is a
+measure (`align`, `align_with`, by `join_core`) and every plain reduction
+of one measure (one result per group, no `WHERE`, literal parameters,
+not two-level) over few rows per group (`flat`, or at most `FLAT_MAX`
+reduced items) reads it: PageRank's `W` is arranged once by `Src` for
+both `Out = SUM(W OVER Dst)` and `M = W / Out`. Such a reduction runs on
+the arrangement grouped by its `group_by` and lays out each group's rows
+itself (`agg_row`), sorting them, so the kernel sees the `AggRow` order
+the unshared reduce gave; any other reduction keeps its own row
+arrangement (sorting a large group on every edit would cost more than
+the copy). 501 → 414 B per edge at 10M edges. What is left: the worker's
+input map, the snapshot, the host step's copy of `M` and its layout.
 
 ---
 

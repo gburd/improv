@@ -265,6 +265,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   one-cell edit under `SUM(X OVER W)` at 1M items 0.65 -> 0.49 ms
   (release build, `tests/probe.rs` `pagerank` and `wide`; RANK's edits
   vary 2x run to run on a shared box). Every result is unchanged.
+- **A measure reduced and joined on the same categories is arranged once**
+  (B8). The dataflow arranged PageRank's `W` twice, keyed by `Src` both
+  times: as the input of `Out = SUM(W OVER Dst)` and of `M = W / Out`'s
+  join. Each build now keeps one arrangement per measure and key
+  categories, which every join and every one-input, one-result reduction
+  over few rows per group (a sparse sum, a category of at most 1,024
+  items) reads; such a reduction lays out and sorts its group's rows
+  itself, in the order the kernels saw before. PageRank at 100k nodes /
+  10M edges: engine heap 501 -> 414 bytes per edge, peak RSS 9.2 -> 8.4
+  GB, `Engine::new` 34.6 -> 28.4 s (release build, `tests/probe.rs`
+  `pagerank`, three runs each). Every result is unchanged.
 - **An edit costs what it reaches, not the number of measures** (B6). The
   live engine groups measures into components by what they read and
   advances only the input sessions of the components an edit feeds; the

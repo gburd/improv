@@ -2242,6 +2242,118 @@ mod tests {
         assert!(e.serves(&m).unwrap());
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(32))]
+
+        /// B8: a measure one plan reduces and another joins on the same
+        /// categories is arranged once, and the reduction lays out and
+        /// sorts each group itself. Its results are the unshared path's
+        /// (the same reduction under an always-true `WHERE`, which arranges
+        /// rows of its own)
+        /// bit for bit, on random graphs whose `Dst` ids run against their
+        /// item order, through random edits, and a fresh `evaluate`'s.
+        #[test]
+        fn shared_arrangements_reduce_as_unshared(
+            cells in proptest::collection::vec((0u32..5, 0u32..5, 0usize..6), 0..20),
+            batches in proptest::collection::vec(
+                proptest::collection::vec(
+                    (0u32..5, 0u32..5, proptest::option::of(0usize..6)),
+                    1..4,
+                ),
+                1..4,
+            ),
+        ) {
+            const VALS: [f64; 6] = [1.0, -0.0, 0.0, 2.5, -3.0, 1e300];
+            let (s, d, w) = (CategoryId(1), CategoryId(2), MeasureId(11));
+            let mut m = Model::new();
+            m.add_category(s, "Src");
+            m.add_category(d, "Dst");
+            for i in 0..5u32 {
+                m.add_item(ItemId(100 + i), s, format!("s{i}"));
+                m.add_item(ItemId(299 - i), d, format!("d{i}"));
+            }
+            m.add_measure(Measure {
+                id: w,
+                name: Name("W".into()),
+                value_type: ValueType::Number,
+                categories: vec![s, d],
+                kind: MeasureKind::Input,
+                description: None,
+            });
+            let at = |i: u32, j: u32| {
+                Coordinate::from_pairs([(s, ItemId(100 + i)), (d, ItemId(299 - j))])
+            };
+            for (i, j, v) in &cells {
+                m.set_input(w, at(*i, *j), Value::Number(VALS[*v]));
+            }
+            let calls = [
+                "SUM(W OVER Dst)",
+                "AVERAGE(W OVER Dst)",
+                "MIN(W OVER Dst)",
+                "MAX(W OVER Dst)",
+                "COUNT(W OVER Dst)",
+                "PRODUCT(W OVER Dst)",
+                "SUMSQ(W OVER Dst)",
+                "FIRST(W OVER Dst)",
+                "LAST(W OVER Dst)",
+                "MEDIAN(W OVER Dst)",
+                "STDEV(W OVER Dst)",
+                "LARGE(W OVER Dst, 2)",
+            ];
+            let mut pairs = Vec::new();
+            for (k, call) in calls.iter().enumerate() {
+                let (a, b) = (20 + 2 * k as u32, 21 + 2 * k as u32);
+                let c = char::from(b'a' + k as u8);
+                define_text(&mut m, a, &format!("K{c} = {call}"));
+                // Always true: the same rows, by the unshared path.
+                let control = call.replace("OVER Dst", "OVER Dst WHERE W + 10 > 0");
+                define_text(&mut m, b, &format!("L{c} = {control}"));
+                pairs.push((MeasureId(a), MeasureId(b)));
+            }
+            // A join of W on Src, sharing the reduction's arrangement.
+            define_text(&mut m, 90, "Mw = W / Ka");
+            define_text(&mut m, 91, "Nw = W / La");
+            pairs.push((MeasureId(90), MeasureId(91)));
+            let ids: Vec<MeasureId> = pairs.iter().flat_map(|(a, b)| [*a, *b]).collect();
+            let same = |snap: &Snapshot| {
+                for (a, b) in &pairs {
+                    let none = MeasureValues::new();
+                    let x = snap.get(a).map_or(&none, |v| &**v);
+                    let y = snap.get(b).map_or(&none, |v| &**v);
+                    proptest::prop_assert_eq!(x, y, "{:?} against {:?}", a, b);
+                }
+                Ok(())
+            };
+            let (mut e, snap) = Engine::new(&m, &ids).unwrap();
+            same(&snap)?;
+            for batch in batches {
+                let edits: Vec<Edit> = batch
+                    .iter()
+                    .map(|(i, j, v)| {
+                        match v {
+                            Some(v) => m.set_input(w, at(*i, *j), Value::Number(VALS[*v])),
+                            None => {
+                                m.inputs.remove(&(w, at(*i, *j)));
+                            }
+                        }
+                        Edit {
+                            measure: w,
+                            coord: crate::encode_coord(&at(*i, *j)),
+                            value: v.map(|v| CellValue::num(VALS[v])),
+                        }
+                    })
+                    .collect();
+                let snap = e.apply(edits).unwrap();
+                same(&snap)?;
+                for (mid, cells) in crate::dataflow::evaluate(&m, &ids).unwrap() {
+                    let none = MeasureValues::new();
+                    let got = snap.get(&mid).map_or(&none, |v| &**v);
+                    proptest::prop_assert_eq!(got, &cells, "{:?} against evaluate", mid);
+                }
+            }
+        }
+    }
+
     /// B4(b): a category growing from 1,000 to 1,100 items, one new item at
     /// a time through the live engine, crosses the flat limit without a
     /// rebuild: every step serves, and every result is a fresh
