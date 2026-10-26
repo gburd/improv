@@ -38,6 +38,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   replaces it; an arrow, Home, End or Backspace first edits it in place. A
   digit, `-` or `.` in the grid starts an edit holding just that key
   (usability review H1-2).
+- **The TUI grid never cuts a number short.** A column was 12 characters,
+  so 12345678901234 showed as `123456789012`, a hundredth of its value.
+  Each column now widens to its widest value, up to 20 characters; past
+  that a number drops decimals to fit, and one that still cannot fit shows
+  `###` (H1-3).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

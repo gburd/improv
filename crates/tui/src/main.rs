@@ -472,8 +472,8 @@ mod tests {
         // Status box is 4 rows here (title + 2 help + border); data starts
         // after the grid border + header. Click well inside row 1, col 1.
         run_events(&mut app, "", vec![]).unwrap();
-        let g = app.grid_geom.unwrap();
-        let (x, y) = (g.x0 + g.col_w + g.spacing + 1, g.y0 + 1);
+        let g = app.grid_geom.clone().unwrap();
+        let (x, y) = (g.x0 + g.col_w[0] + g.spacing + 1, g.y0 + 1);
         let ev = vec![
             click(MouseEventKind::Moved, x, y),
             key(KeyCode::Char('e')),
@@ -539,8 +539,8 @@ mod tests {
         // column 1: the prompt line pushes the grid down one row).
         view(&mut app, MeasureId(101));
         run_events(&mut app, "", vec![]).unwrap();
-        let g = app.grid_geom.unwrap();
-        let (x, y) = (g.x0 + g.col_w + g.spacing + 1, g.y0 + 1);
+        let g = app.grid_geom.clone().unwrap();
+        let (x, y) = (g.x0 + g.col_w[0] + g.spacing + 1, g.y0 + 1);
         let ev = vec![
             key(KeyCode::Char('I')),
             click(MouseEventKind::Down(MouseButton::Left), x, y),

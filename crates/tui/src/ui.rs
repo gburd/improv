@@ -5,6 +5,7 @@ use crate::app::{App, CommandKind, Grid, GridGeom};
 use crate::diagnose::Diagnostic;
 use crate::edit::LineEdit;
 use crate::fnhelp::FnHelp;
+use improv_engine::CellValue;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -266,6 +267,43 @@ fn signature_line(e: &LineEdit) -> Option<Line<'static>> {
 const LABEL_W: u16 = 14;
 const COL_W: u16 = 12;
 const SPACING: u16 = 1;
+/// The widest a data column grows to fit its values (H1-3).
+const MAX_COL_W: u16 = 20;
+
+/// How many of `widths` fit side by side in `room` columns, each after a
+/// `SPACING` gap: at least one, when there is one.
+fn fitting(widths: &[u16], room: u16) -> usize {
+    let mut used = 0u16;
+    let n = widths
+        .iter()
+        .take_while(|w| {
+            used = used.saturating_add(**w + SPACING);
+            used <= room
+        })
+        .count();
+    n.max(1).min(widths.len())
+}
+
+/// A number's text `s` in `w` columns (H1-3): as it is if it fits, else
+/// with fewer decimals, else `#` across the cell. Never fewer digits
+/// before the point, so a cut-off number never reads as a smaller one.
+fn fit_number(s: &str, w: usize) -> String {
+    if s.len() <= w {
+        return s.into();
+    }
+    let (head, exp) = s.split_at(s.find('E').unwrap_or(s.len()));
+    if let (Some(dot), Ok(m)) = (head.find('.'), head.parse::<f64>()) {
+        let most = w.saturating_sub(dot + 1 + exp.len());
+        if let Some(r) = (0..=most)
+            .rev()
+            .map(|d| format!("{m:.d$}{exp}"))
+            .find(|r| r.len() <= w)
+        {
+            return r;
+        }
+    }
+    "#".repeat(w)
+}
 
 /// First visible index after scrolling minimally from `prev` so `cursor`
 /// lies in a window of `vis` entries.
@@ -281,7 +319,7 @@ fn scroll(prev: usize, cursor: usize, vis: usize) -> usize {
 
 /// The grid table over the visible window described by `geom`.
 fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
-    let cols = geom.col0..(geom.col0 + geom.cols).min(g.n_cols());
+    let cols = geom.col0..geom.col0 + geom.col_w.len();
     let rows = geom.row0..(geom.row0 + geom.rows).min(g.n_rows());
     // Header: a corner cell (row-category name) then one per column item.
     let corner = g
@@ -307,6 +345,7 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
         .add_modifier(Modifier::BOLD | Modifier::REVERSED);
 
     let cols_r = cols.clone();
+    let col_w = &geom.col_w;
     let range = Style::default()
         .bg(Color::Cyan)
         .fg(Color::Black)
@@ -316,7 +355,10 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
         let mut cells =
             vec![Cell::from(rname).style(Style::default().add_modifier(Modifier::BOLD))];
         for c in cols_r.clone() {
-            let text = g.display_at(r, c);
+            let mut text = g.display_at(r, c);
+            if let Some(CellValue::Num(_)) = g.cell_at(r, c) {
+                text = fit_number(&text, col_w[c - geom.col0] as usize);
+            }
             let cell = Cell::from(text);
             let cell = if r == app.cursor_row && c == app.cursor_col {
                 cell.style(sel)
@@ -332,7 +374,7 @@ fn grid_table<'a>(app: &'a App, g: &'a Grid, geom: &GridGeom) -> Table<'a> {
 
     // One header column plus one per visible data column.
     let mut widths = vec![Constraint::Length(LABEL_W)];
-    widths.extend(cols.clone().map(|_| Constraint::Length(COL_W)));
+    widths.extend(geom.col_w.iter().map(|w| Constraint::Length(*w)));
 
     Table::new(rows, widths)
         .header(header)
@@ -360,19 +402,30 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let area = chunks[1];
     let inner_w = area.width.saturating_sub(2);
     let vis_rows = (area.height.saturating_sub(3) as usize).max(1);
-    let vis_cols = ((inner_w.saturating_sub(LABEL_W) / (SPACING + COL_W)) as usize).max(1);
-    let prev = app.grid_geom.map_or((0, 0), |g| (g.row0, g.col0));
+    // H1-3: a column is as wide as its widest value, at least COL_W, at
+    // most MAX_COL_W or the room there is; `fit_number` does the rest.
+    let room = inner_w.saturating_sub(LABEL_W);
+    let cap = MAX_COL_W.min(room.saturating_sub(SPACING)).max(1);
+    let widths: Vec<u16> = (app.grid.widths.iter())
+        .map(|&w| (w.min(cap.into()) as u16).max(COL_W.min(cap)))
+        .collect();
+    // Scroll the columns minimally so the cursor's is in the window.
+    let prev = app.grid_geom.as_ref().map_or((0, 0), |g| (g.row0, g.col0));
+    let mut col0 = prev.1.min(app.cursor_col).min(widths.len());
+    while col0 < app.cursor_col && app.cursor_col >= col0 + fitting(&widths[col0..], room) {
+        col0 += 1;
+    }
+    let shown = fitting(&widths[col0..], room);
     let geom = GridGeom {
         x0: area.x + 1 + LABEL_W + SPACING,
         y0: area.y + 2,
-        col_w: COL_W,
+        col_w: widths[col0..col0 + shown].to_vec(),
         spacing: SPACING,
         row0: scroll(prev.0, app.cursor_row, vis_rows),
-        col0: scroll(prev.1, app.cursor_col, vis_cols),
+        col0,
         rows: vis_rows,
-        cols: vis_cols,
     };
-    app.grid_geom = Some(geom);
+    app.grid_geom = Some(geom.clone());
 
     let table = grid_table(app, &app.grid, &geom);
     f.render_widget(table, area);
@@ -547,6 +600,72 @@ mod tests {
         let y = row_of(lines, needle);
         let x = lines[y].find(needle).unwrap();
         (lines[y][..x].chars().count() as u16, y as u16)
+    }
+
+    #[test]
+    fn numbers_too_wide_round_or_show_hashes() {
+        assert_eq!(fit_number("300", 12), "300");
+        assert_eq!(fit_number("12345678901234", 12), "############");
+        assert_eq!(fit_number("-1234567590.125", 12), "-1234567590");
+        assert_eq!(fit_number("3.14159", 4), "3.14");
+        assert_eq!(fit_number("99.96", 4), "100", "a carry drops a decimal");
+        assert_eq!(fit_number("1.25E+20", 6), "1E+20");
+        assert_eq!(fit_number("1.5E-07", 4), "####");
+        assert_eq!(fitting(&[12, 12], 26), 2);
+        assert_eq!(fitting(&[12, 12], 25), 1);
+        assert_eq!(fitting(&[40], 5), 1, "one always shows");
+        assert_eq!(fitting(&[], 50), 0);
+    }
+
+    /// H1-3: a wide number widens its column (never drops its leading
+    /// digits); past the cap a fraction rounds; on a narrow terminal a
+    /// number that cannot fit shows `#`, and clicks follow the widths.
+    #[test]
+    fn wide_numbers_widen_their_column_and_never_lose_digits() {
+        use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId};
+        let mut app = App::new(revenue_model()).unwrap();
+        crate::app::tests::view(&mut app, MeasureId(101));
+        app.apply_edit(0, 0, 12345678901234.0).unwrap();
+        app.apply_edit(1, 0, -1234567590.125).unwrap();
+        app.apply_edit(0, 1, -1.23456789012345e20).unwrap();
+        app.apply_edit(1, 1, 1.0 / 3.0).unwrap();
+        // The status line shows the cursor's cell: keep it off the numbers.
+        app.cursor_row = 1;
+        app.cursor_col = 1;
+        let lines = text(&draw(&mut app, 100, 30));
+        let (x, y) = find(&lines, "12345678901234");
+        row_of(&lines, "-1234567590.125");
+        row_of(&lines, "0.333333333333333");
+        // Past the 20-column cap a fraction rounds.
+        let (x1, y1) = find(&lines, "-1.2345678901235E+20");
+        assert_eq!(y1, y);
+        assert_eq!(x1, x + 15 + SPACING, "the first column is 15 wide");
+        app.click_at(x1, y1);
+        assert_eq!((app.cursor_row, app.cursor_col), (0, 1));
+        app.click_at(x1 - 1, y1);
+        assert_eq!(
+            (app.cursor_row, app.cursor_col),
+            (0, 0),
+            "the gap is col 0's"
+        );
+        app.click_at(x1 + 21, y1);
+        assert_eq!(
+            (app.cursor_row, app.cursor_col),
+            (0, 0),
+            "past the last column"
+        );
+        // 28 columns leave 11 for a data column: no number loses a digit.
+        app.cursor_row = 1;
+        let lines = text(&draw(&mut app, 28, 24));
+        let y = row_of(&lines, "###########");
+        assert!(
+            lines[y + 1].contains("-1234567590\u{2502}"),
+            "{:?}",
+            lines[y + 1]
+        );
+        assert!(!lines.iter().any(|l| l.contains("1234567890")), "{lines:?}");
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        assert!(app.model.input(MeasureId(101), &at).is_some());
     }
 
     #[test]

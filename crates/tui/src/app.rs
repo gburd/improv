@@ -45,6 +45,9 @@ pub struct Grid {
     /// (`CellValue`) so non-numeric cells (Text/Bool/Date/#ERR) render
     /// correctly, not just numbers.
     pub cells: Vec<Vec<Option<CellValue>>>,
+    /// Each column's natural width in characters: its widest value or its
+    /// header, so the grid can size the column to fit (H1-3).
+    pub widths: Vec<usize>,
 }
 
 /// An extra dimension not on the row/column axes, pinned to one item (a
@@ -61,20 +64,20 @@ pub struct PageDim {
 
 /// Geometry of the last-rendered grid, recorded by `ui::render` so mouse
 /// clicks (screen col/row) can be mapped back to a grid cell.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct GridGeom {
     /// Screen coords of the top-left DATA cell (row 0, col 0).
     pub x0: u16,
     pub y0: u16,
-    /// Width of each data column and the inter-column spacing.
-    pub col_w: u16,
+    /// The width of each visible data column, from `col0`, and the
+    /// inter-column spacing.
+    pub col_w: Vec<u16>,
     pub spacing: u16,
     /// First visible data row/column (the scroll offset).
     pub row0: usize,
     pub col0: usize,
-    /// How many data rows/columns the window shows.
+    /// How many data rows the window shows.
     pub rows: usize,
-    pub cols: usize,
 }
 
 impl Grid {
@@ -281,6 +284,15 @@ pub fn build_grid_pivoted(
         }
         cells.push(row_cells);
     }
+    let widths = (0..cols.len())
+        .map(|c| {
+            cells
+                .iter()
+                .filter_map(|row| row[c].as_ref())
+                .map(|v| v.to_string().chars().count())
+                .fold(cols[c].1.chars().count(), usize::max)
+        })
+        .collect();
 
     Grid {
         measure,
@@ -291,6 +303,7 @@ pub fn build_grid_pivoted(
         cols,
         pages,
         cells,
+        widths,
     }
 }
 
@@ -802,17 +815,22 @@ impl App {
     /// Out-of-grid clicks are ignored. (Enables mouse-driven navigation; the
     /// terminal must support mouse reporting, which `improv-tui` enables.)
     pub fn click_at(&mut self, col: u16, row: u16) {
-        let Some(g) = self.grid_geom else { return };
+        let Some(g) = &self.grid_geom else { return };
         if row < g.y0 || col < g.x0 {
             return;
         }
         // Which window row: each grid row is one terminal line from y0.
         let r = (row - g.y0) as usize;
-        // Which window column: columns are col_w + spacing wide, from x0.
-        let stride = (g.col_w + g.spacing) as usize;
-        let c = ((col - g.x0) as usize) / stride.max(1);
+        // Which window column: each is its width plus the spacing after it.
+        let mut right = g.x0;
+        let Some(c) = g.col_w.iter().position(|w| {
+            right += w + g.spacing;
+            col < right
+        }) else {
+            return;
+        };
         let (r, c) = (g.row0 + r, g.col0 + c);
-        let in_window = r < g.row0 + g.rows && c < g.col0 + g.cols;
+        let in_window = r < g.row0 + g.rows;
         if in_window && r < self.grid.n_rows() && c < self.grid.n_cols() {
             self.anchor = None;
             self.cursor_row = r;
@@ -2186,12 +2204,11 @@ pub(crate) mod tests {
         app.grid_geom = Some(GridGeom {
             x0: 10,
             y0: 5,
-            col_w: 12,
+            col_w: vec![12],
             spacing: 1,
             row0: 0,
             col0: 0,
             rows: 1,
-            cols: 1,
         });
         app.click_at(5, 6);
         app.click_at(10, 6); // row 1 is outside the 1-row window
@@ -2357,12 +2374,11 @@ pub(crate) mod tests {
         app.grid_geom = Some(GridGeom {
             x0: 2,
             y0: 5,
-            col_w: 12,
+            col_w: vec![12; 10],
             spacing: 1,
             row0: 0,
             col0: 0,
             rows: 10,
-            cols: 10,
         });
         // Click in data row 1, column 1: x within the 2nd column (stride 13).
         app.click_at(2 + 13, 5 + 1);

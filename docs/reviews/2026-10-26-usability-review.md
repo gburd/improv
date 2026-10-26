@@ -118,7 +118,7 @@ first printable key replaces it unless the user moved the caret first.
 **Files:** `crates/tui/src/main.rs` (`normal_key`), `crates/tui/src/app.rs`
 (`begin_edit`), `crates/tui/src/edit.rs`.
 
-**H1-3 TUI: numbers wider than 12 characters are cut off without a
+**[fixed: `fix(tui): size grid columns to their values, never cut a number (H1-3)`] H1-3 TUI: numbers wider than 12 characters are cut off without a
 mark.** *Visibility of system status.* 12345678901234 shows as
 `123456789012`, a hundredth of its value. -1234567590.125 shows as
 `-1234567590.`. Only the status line shows the true value. **Fix:** size
