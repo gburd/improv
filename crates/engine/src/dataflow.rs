@@ -1369,36 +1369,6 @@ fn evaluate_here(
         return Ok(snap.iter().map(|(m, v)| (*m, (**v).clone())).collect());
     }
 
-    // Gather input cells to feed, grouped by measure. Every model value type
-    // maps into the DD lane: Number, Boolean, Text, Enum, DateTime (as
-    // CellValue::Date millis), and Error.
-    let mut input_cells: HashMap<MeasureId, Vec<(CoordKey, CellValue)>> = HashMap::new();
-    for ((mid, coord), val) in &model.inputs {
-        // A stored cell of a derived (or unknown) measure is not an input: a
-        // model file can hold one (an old `improv set`), and it has no session.
-        let is_input = model
-            .measures
-            .get(mid)
-            .is_some_and(|m| matches!(m.kind, MeasureKind::Input));
-        if !is_input {
-            continue;
-        }
-        if let Some(cv) = CellValue::from_model_value(val) {
-            input_cells
-                .entry(*mid)
-                .or_default()
-                .push((encode_coord(coord), cv));
-        }
-    }
-
-    // Rows, not maps: a map grown while the dataflow's arrangements are
-    // alive peaks at both plus its old and new table (at 5M cells, 1.1 GB);
-    // built once the dataflow is gone, at its final size, it costs the rows.
-    #[allow(clippy::type_complexity)]
-    let results: Arc<Mutex<HashMap<MeasureId, Vec<(CoordKey, CellValue)>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-    let results2 = results.clone();
-
     // A session per input measure, with or without cells: an empty measure
     // is an empty collection (a lazy IF may never need it), not a missing one.
     let input_ids: Vec<MeasureId> = model
@@ -1492,8 +1462,12 @@ fn run_worker<A: Allocate>(worker: &mut Worker<A>, job: &Job, stop: &AtomicBool)
         if i % peers != me {
             continue;
         }
+        // A stored cell of a derived (or unknown) measure is not an input: a
+        // model file can hold one (an old `improv set`), and it has no session.
+        let Some(session) = sessions.get_mut(mid) else {
+            continue;
+        };
         if let Some(cv) = CellValue::from_model_value(val) {
-            let session = sessions.get_mut(mid).expect("a session per input measure");
             session.insert((encode_coord(coord), cv));
         }
     }
