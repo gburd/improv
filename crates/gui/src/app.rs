@@ -437,6 +437,9 @@ const CASCADE: f32 = 28.0;
 /// Seconds a status message stays up before the status bar clears it.
 const STATUS_TTL: f64 = 5.0;
 
+/// What an empty workspace says, right of the menu.
+const EMPTY_HINT: &str = "Empty model: Worksheet ▸ Add Category to begin, or File ▸ Open…";
+
 /// Where a fresh canvas's first matrix starts on the workspace: right of the
 /// application menu (at x 4, about 110 wide), as in the NeXT layout.
 const MENU_CLEAR: f32 = crate::menu::MENU_W + 12.0;
@@ -5983,9 +5986,14 @@ impl ImprovApp {
                 .frame(egui::Frame::NONE.fill(crate::theme::DARK_GRAY))
                 .show(root, |ui| {
                     if self.model.measures.is_empty() {
-                        ui.colored_label(
+                        // Right of the menu, where a first worksheet would open (H1-13).
+                        let at = ui.max_rect().min + egui::vec2(MENU_CLEAR, 8.0);
+                        ui.painter().text(
+                            at,
+                            egui::Align2::LEFT_TOP,
+                            EMPTY_HINT,
+                            egui::TextStyle::Body.resolve(ui.style()),
                             crate::theme::WHITE,
-                            "No measures. Open a model store with `improv-gui <db>`.",
                         );
                     }
                     ui.max_rect()
@@ -14763,7 +14771,9 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::apply(&ctx);
         let out = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0);
-        assert!(texts_of(&out).iter().any(|t| t.starts_with("No measures.")));
+        // H1-13: it names the menus, right of the menu, not under it.
+        let hint = text_at(&out.shapes, EMPTY_HINT).expect("the empty-model hint");
+        assert!(hint.left() >= crate::menu::MENU_W + 4.0, "{hint:?}");
 
         let mut app = build_app(revenue_model());
         app.db = "/nowhere/sales.db".into();

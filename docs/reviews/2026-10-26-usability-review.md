@@ -218,7 +218,7 @@ must click the field, and Escape leaves the panel open. **Fix:** request
 focus for the path field when the panel opens, and close on Escape.
 **Files:** `crates/gui/src/app.rs` (`file_panel`).
 
-**H1-13 GUI: the empty-model hint is outdated and hidden.** *Help.* "No
+**[fixed: `fix(gui): the empty-model hint names the menus, right of the menu (H1-13)`] H1-13 GUI: the empty-model hint is outdated and hidden.** *Help.* "No
 measures. Open a model store with `improv-gui <db>`." is drawn at (0,0)
 under the menu (gui-05) and names the command line, though File ▸ New
 and Worksheet ▸ Add Category exist. **Fix:** draw it right of the menu,

@@ -150,8 +150,8 @@ with every earlier edit and nothing half-written.
 ## Building a model from scratch
 
 Start `improv-gui` with no model, or choose **File ▸ New** and type a path
-for the new store. Then, all undoable with Ctrl+Z and autosaved after
-each step:
+for the new store. The empty workspace says where to begin, right of the
+menu. Then, all undoable with Ctrl+Z and autosaved after each step:
 
 1. **Worksheet ▸ Add Category** opens the model browser's Categories list
    at its **New category** line. Type `Time`, Enter; the line clears, so

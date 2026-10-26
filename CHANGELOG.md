@@ -108,6 +108,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **A cell entry the GUI refuses stays in the editor**, with the reason in
   the status line. `1,500` in a number cell closed the editor and lost the
   typing (H1-16).
+- **The GUI's empty-model hint is drawn right of the menu**, not under
+  it, and says "Empty model: Worksheet ▸ Add Category to begin, or File ▸
+  Open…" instead of naming the command line (H1-13).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input
