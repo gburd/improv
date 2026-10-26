@@ -19,8 +19,8 @@ use std::sync::{mpsc, Arc};
 
 use improv_core_model::{
     parser, BinaryOp, CanvasRect, CategoryId, Expr, Filter, FuncId, ItemId, MatrixPlacement,
-    Measure, MeasureId, MeasureKind, Model, Name, ParseError, UnaryOp, Value, ValueType, View,
-    ViewId,
+    Measure, MeasureId, MeasureKind, Model, Name, NumberFormat, ParseError, UnaryOp, Value,
+    ValueType, View, ViewId,
 };
 use improv_engine::session::{Engine, Snapshot};
 use improv_engine::{encode_coord, CellValue, CoordKey};
@@ -1553,6 +1553,52 @@ impl ImprovApp {
         self.cell_value(measure, key).map(|v| v.to_string())
     }
 
+    /// A cell as the grid shows it: in its measure's number format, in the
+    /// formula locale (H1-22). [`Self::cell_text`] is the value as typed,
+    /// what the editor opens with.
+    fn cell_shown(&self, measure: MeasureId, key: &CoordKey) -> Option<String> {
+        let v = self.cell_value(measure, key)?;
+        Some(v.formatted(self.number_format(measure).as_ref(), &self.locale))
+    }
+
+    /// The number format of `measure` (`None`: General).
+    fn number_format(&self, measure: MeasureId) -> Option<NumberFormat> {
+        self.model.measures.get(&measure).and_then(|m| m.format)
+    }
+
+    /// Format ▸ (H1-22): give the selected measure `decimals` (`None`:
+    /// General) or flip its thousands separators, keeping the other half
+    /// of its format. One undo step; autosaved with the structure.
+    pub fn set_number_format(&mut self, decimals: Option<Option<u8>>) -> Result<String, String> {
+        let id = self.selected().ok_or("select a measure first")?;
+        let m = self
+            .model
+            .measures
+            .get(&id)
+            .ok_or("the measure no longer exists")?;
+        if m.value_type != ValueType::Number {
+            return Err(format!("{} holds no numbers to format", m.name.0));
+        }
+        let mut f = m.format.unwrap_or_default();
+        match decimals {
+            Some(d) => f.decimals = d,
+            None => f.grouping = !f.grouping,
+        }
+        let (name, f) = (
+            m.name.0.clone(),
+            (f != NumberFormat::default()).then_some(f),
+        );
+        if f == m.format {
+            return Ok(format!("{name} is unchanged"));
+        }
+        let mut candidate = structure_of(self.model_mut());
+        if let Some(x) = candidate.measures.get_mut(&id) {
+            x.format = f;
+        }
+        self.publish_structure(candidate)?;
+        Ok(format!("{name}: {}", f.unwrap_or_default()))
+    }
+
     /// Set an input cell to a TYPED value and push the edit through the live
     /// engine, refreshing the snapshot.
     ///
@@ -2983,6 +3029,7 @@ impl ImprovApp {
             name: m.name.0.clone(),
             is_derived: m.is_derived(),
             value_type: m.value_type,
+            format: m.format,
             dimensions,
             dependencies,
             formula_english,
@@ -3035,6 +3082,7 @@ struct InspectorData {
     name: String,
     is_derived: bool,
     value_type: ValueType,
+    format: Option<NumberFormat>,
     dimensions: Vec<String>,
     dependencies: Vec<String>,
     formula_english: Option<String>,
@@ -4162,7 +4210,14 @@ impl ImprovApp {
             .collect();
         let mut state = self.menu;
         let home = ws.min + egui::vec2(4.0, 4.0);
-        let picked = menu::show(ctx, &mut state, home, &views, |c| self.command_enabled(c));
+        let picked = menu::show(
+            ctx,
+            &mut state,
+            home,
+            &views,
+            |c| self.command_enabled(c),
+            |c| self.command_checked(c),
+        );
         self.menu = state;
         if let Some(c) = picked {
             self.run_command(ctx, c);
@@ -4179,7 +4234,22 @@ impl ImprovApp {
             Command::RevertToSaved => !self.db.is_empty(),
             Command::AddItem => self.add_item_target().is_some(),
             Command::Rename | Command::Delete => self.edit_target().is_some(),
+            Command::Decimals(_) | Command::Grouping => self
+                .selected()
+                .and_then(|m| self.model.measures.get(&m))
+                .is_some_and(|m| m.value_type == ValueType::Number),
             _ => true,
+        }
+    }
+
+    /// Whether `c` is in effect, for the menu's check marks: the selected
+    /// measure's decimals and grouping.
+    fn command_checked(&self, c: Command) -> bool {
+        let f = self.selected().and_then(|m| self.number_format(m));
+        match c {
+            Command::Decimals(d) => self.command_enabled(c) && f.and_then(|f| f.decimals) == d,
+            Command::Grouping => f.is_some_and(|f| f.grouping),
+            _ => false,
         }
     }
 
@@ -4270,6 +4340,10 @@ impl ImprovApp {
                     self.open_view(id);
                 }
             }
+            Command::Decimals(d) => {
+                self.status = self.set_number_format(Some(d)).unwrap_or_else(|e| e);
+            }
+            Command::Grouping => self.status = self.set_number_format(None).unwrap_or_else(|e| e),
             Command::ToggleChart => self.show_chart = !self.show_chart,
             Command::ToggleCsv => self.toggle_csv_wizard(),
             Command::FunctionHelp => self.fn_help.toggle(),
@@ -5362,6 +5436,9 @@ impl ImprovApp {
                             if d.is_derived { "derived" } else { "input" }
                         ));
                         ui.label(format!("value type: {:?}", d.value_type));
+                        if d.value_type == ValueType::Number {
+                            ui.label(format!("format: {}", d.format.unwrap_or_default()));
+                        }
                         ui.label(format!(
                             "dimensions: {}",
                             if d.dimensions.is_empty() {
@@ -6197,7 +6274,14 @@ impl ImprovApp {
     /// the readout says `Sum \u2014` rather than inventing a zero.
     pub fn selection_readout(&self) -> String {
         match self.selection_sum() {
-            Some(v) => format!("Sum {v}"),
+            // In the measure's format (H1-22); General is Rust's `{v}`, as before.
+            Some(v) => match self.selected().and_then(|m| self.number_format(m)) {
+                Some(f) => format!(
+                    "Sum {}",
+                    improv_engine::format_number(v, Some(&f), &self.locale)
+                ),
+                None => format!("Sum {v}"),
+            },
             None => "Sum \u{2014}".to_string(),
         }
     }
@@ -6926,6 +7010,7 @@ impl ImprovApp {
             .measures
             .get(&measure)
             .is_some_and(|m| m.value_type == ValueType::Number);
+        let format = self.number_format(measure);
 
         // Cartesian product of stacked categories per axis. Columns are
         // materialized up front (they become egui table columns, which the
@@ -7197,8 +7282,8 @@ impl ImprovApp {
                                             .map(|(_, n)| n.as_str())
                                             .collect();
                                         let v = self
-                                            .cell_value(measure, &key)
-                                            .map_or_else(|| "empty".to_owned(), |v| v.to_string());
+                                            .cell_shown(measure, &key)
+                                            .unwrap_or_else(|| "empty".to_owned());
                                         format!("{}: {v}", place.join(", "))
                                     };
                                     let mut sense_cell = |ui: &mut egui::Ui| {
@@ -7234,8 +7319,9 @@ impl ImprovApp {
                                             } else {
                                                 egui::Layout::left_to_right(egui::Align::Center)
                                             };
-                                            let text =
-                                                value.map(|v| v.to_string()).unwrap_or_default();
+                                            let text = value
+                                                .map(|v| v.formatted(format.as_ref(), &self.locale))
+                                                .unwrap_or_default();
                                             ui.with_layout(align, |ui| {
                                                 if is_derived {
                                                     ui.add(
@@ -13643,6 +13729,101 @@ mod tests {
             .collect();
         assert_eq!(urls, ["https://gburd.github.io/improv/"]);
         assert!(app.status.contains(USER_GUIDE), "{}", app.status);
+    }
+
+    /// H1-22: Format ▸ sets the selected measure's decimals and thousands
+    /// separators. Cells, the screen reader's label, the Sum and the Info
+    /// panel show it; the editor still opens on the value as typed. One
+    /// undo step each; autosaved; a text measure has nothing to format.
+    #[test]
+    fn the_format_menu_formats_the_selected_measure() {
+        let db = temp_db("h1_22");
+        let _cleanup = Cleanup(db.clone());
+        let mut model = grid_2x2_model();
+        let at = improv_core_model::Coordinate::from_pairs([
+            (CategoryId(1), ItemId(10)),
+            (CategoryId(2), ItemId(20)),
+        ]);
+        model.set_input(MeasureId(101), at.clone(), Value::Number(1234.5));
+        Store::open(&db).unwrap().save_model(&model).unwrap();
+        let mut app = ImprovApp::load(&db).expect("load");
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        let ctx = egui::Context::default();
+        let key = encode_coord(&at);
+        let shown = |app: &ImprovApp| app.cell_shown(MeasureId(101), &key).unwrap();
+        assert_eq!(shown(&app), "1234.5", "General");
+        assert!(!app.command_checked(Command::Grouping));
+        assert!(app.command_checked(Command::Decimals(None)));
+
+        app.run_command(&ctx, Command::Decimals(Some(2)));
+        assert_eq!(app.status, "Quantity: 2 decimals");
+        assert_eq!(shown(&app), "1234.50");
+        app.run_command(&ctx, Command::Grouping);
+        assert_eq!(shown(&app), "1,234.50");
+        assert!(app.command_checked(Command::Decimals(Some(2))));
+        assert!(app.command_checked(Command::Grouping));
+        assert!(!app.command_checked(Command::Decimals(None)));
+        app.run_command(&ctx, Command::Decimals(Some(0)));
+        assert_eq!(shown(&app), "1,235", "half away from zero");
+        assert_eq!(app.selection_readout(), "Sum 1,235");
+        assert_eq!(
+            app.cell_text(MeasureId(101), &key).as_deref(),
+            Some("1234.5")
+        );
+        let d = app.inspector_data(MeasureId(101)).unwrap();
+        assert_eq!(d.format.unwrap().to_string(), "0 decimals grouped");
+        app.run_command(&ctx, Command::Decimals(Some(0)));
+        assert_eq!(app.status, "Quantity is unchanged");
+
+        // German separators.
+        app.locale = improv_core_model::Locale::de();
+        assert_eq!(shown(&app), "1.235");
+        app.locale = improv_core_model::Locale::en();
+
+        // Saved as it changed: a fresh load has it.
+        let saved = Store::open(&db).unwrap().load_model().unwrap();
+        assert_eq!(
+            saved.measures[&MeasureId(101)].format.unwrap().to_string(),
+            "0 decimals grouped"
+        );
+
+        // Each change is one undo step; back to General is no format.
+        app.run_command(&ctx, Command::Undo);
+        app.run_command(&ctx, Command::Undo);
+        assert_eq!(shown(&app), "1234.50");
+        app.run_command(&ctx, Command::Undo);
+        assert_eq!(shown(&app), "1234.5");
+        assert_eq!(app.model.measures[&MeasureId(101)].format, None);
+        app.run_command(&ctx, Command::Redo);
+        assert_eq!(shown(&app), "1234.50");
+        app.run_command(&ctx, Command::Decimals(None));
+        assert_eq!(app.model.measures[&MeasureId(101)].format, None, "General");
+        assert_eq!(app.status, "Quantity: general");
+        let saved = Store::open(&db).unwrap().load_model().unwrap();
+        assert_eq!(saved.measures[&MeasureId(101)].format, None);
+
+        // A derived measure formats too; a text one has no numbers.
+        select(&mut app, MeasureId(102));
+        assert!(app.command_enabled(Command::Grouping));
+        app.run_command(&ctx, Command::Grouping);
+        assert_eq!(
+            app.number_format(MeasureId(102)).unwrap().to_string(),
+            "general grouped"
+        );
+        let mut t = build_app(typed_model());
+        select(&mut t, MeasureId(2));
+        assert!(!t.command_enabled(Command::Decimals(Some(2))));
+        assert!(!t.command_checked(Command::Decimals(None)));
+        assert!(t
+            .set_number_format(Some(Some(2)))
+            .unwrap_err()
+            .contains("no numbers"));
+        t.matrices[0].measure = None;
+        assert_eq!(
+            t.set_number_format(None).unwrap_err(),
+            "select a measure first"
+        );
     }
 
     /// (c) Info ▸ Info Panel… opens the Info window; its close box closes it.

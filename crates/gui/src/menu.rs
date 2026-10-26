@@ -56,6 +56,12 @@ pub enum Command {
     Keys,
     /// Open the published user guide in the browser.
     UserGuide,
+    /// Format ▸ General / N Decimals: the selected measure's decimals
+    /// (`None`: General) (H1-22).
+    Decimals(Option<u8>),
+    /// Format ▸ Thousands Separators: turn the selected measure's grouping
+    /// on or off (H1-22).
+    Grouping,
     Hide,
     Quit,
 }
@@ -106,7 +112,19 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Redo", Some('Z'), Some(C::Redo)),
         ]),
     ),
-    ("Format", None, Top::Sub(&[])),
+    (
+        "Format",
+        None,
+        Top::Sub(&[
+            ("General", None, Some(C::Decimals(None))),
+            ("0 Decimals", None, Some(C::Decimals(Some(0)))),
+            ("1 Decimal", None, Some(C::Decimals(Some(1)))),
+            ("2 Decimals", None, Some(C::Decimals(Some(2)))),
+            ("3 Decimals", None, Some(C::Decimals(Some(3)))),
+            ("4 Decimals", None, Some(C::Decimals(Some(4)))),
+            ("Thousands Separators", None, Some(C::Grouping)),
+        ]),
+    ),
     (
         "Worksheet",
         None,
@@ -210,14 +228,17 @@ pub fn key_equivalents() -> impl Iterator<Item = (char, String, Option<Command>)
 
 /// Draw the menu and return the command picked this frame, if any. `views`
 /// fills the View submenu as `(name, is_current)`; picking the n-th returns
-/// [`Command::OpenView`]`(n)`. `enabled` greys out commands that can't run now.
-/// The menu's top-left starts at `home`; after that it stays where it's dragged.
+/// [`Command::OpenView`]`(n)`. `enabled` greys out commands that can't run now,
+/// and `checked` puts a check on those in effect (the selected measure's
+/// format). The menu's top-left starts at `home`; after that it stays where
+/// it's dragged.
 pub fn show(
     ctx: &Context,
     state: &mut MenuState,
     home: Pos2,
     views: &[(String, bool)],
     enabled: impl Fn(Command) -> bool,
+    checked: impl Fn(Command) -> bool,
 ) -> Option<Command> {
     let id = menu_id();
     let mut pos = state.pos.unwrap_or(home);
@@ -280,7 +301,10 @@ pub fn show(
 
     if let Some(i) = state.open {
         let leaves: Vec<(&str, Option<char>, Option<Command>, bool)> = match MENU[i].2 {
-            Top::Sub(l) => l.iter().map(|&(a, k, c)| (a, k, c, false)).collect(),
+            Top::Sub(l) => l
+                .iter()
+                .map(|&(a, k, c)| (a, k, c, c.is_some_and(&checked)))
+                .collect(),
             Top::Views => {
                 let browser = (MODEL_BROWSER, None, Some(C::ModelBrowser), false);
                 let list = views
@@ -567,7 +591,14 @@ mod tests {
             let mut picked = None;
             let state = &mut self.state;
             let _ = self.ctx.test_pass(raw, |ctx| {
-                picked = show(ctx, state, pos2(4.0, 4.0), &views, |c| c != C::RemoveMatrix);
+                picked = show(
+                    ctx,
+                    state,
+                    pos2(4.0, 4.0),
+                    &views,
+                    |c| c != C::RemoveMatrix && c != C::Decimals(Some(4)),
+                    |c| c == C::Decimals(Some(2)),
+                );
             });
             picked
         }
@@ -641,6 +672,26 @@ mod tests {
         assert_eq!(h.click_row(sub_id(view), 3), Some(C::OpenView(2)));
     }
 
+    /// H1-22: Format sets the selected measure's decimals and grouping; a
+    /// command that cannot run now draws disabled, and the format in effect
+    /// is checked.
+    #[test]
+    fn format_submenu_picks_decimals_and_grouping() {
+        let mut h = Harness::new();
+        let f = top("Format");
+        h.click_row(menu_id(), f);
+        assert_eq!(h.state.open, Some(f), "Format is built now");
+        assert_eq!(h.click_row(sub_id(f), 0), Some(C::Decimals(None)));
+        for (row, d) in [(1, 0), (2, 1), (3, 2), (4, 3)] {
+            h.click_row(menu_id(), f);
+            assert_eq!(h.click_row(sub_id(f), row), Some(C::Decimals(Some(d))));
+        }
+        h.click_row(menu_id(), f);
+        assert_eq!(h.click_row(sub_id(f), 5), None, "disabled here");
+        assert_eq!(h.click_row(sub_id(f), 6), Some(C::Grouping));
+        assert_eq!(sub_row("Format", "2 Decimals"), 3);
+    }
+
     /// View ▸ Model Browser sits above the views list and dispatches.
     #[test]
     fn view_model_browser_dispatches() {
@@ -654,7 +705,7 @@ mod tests {
     fn disabled_rows_return_nothing() {
         let mut h = Harness::new();
         assert_eq!(h.click_row(menu_id(), top("Print…")), None);
-        assert_eq!(h.click_row(menu_id(), top("Format")), None);
+        assert_eq!(h.click_row(menu_id(), top("Services")), None);
         assert_eq!(h.state.open, None, "an empty submenu doesn't open");
 
         let ws = top("Worksheet");
@@ -788,7 +839,8 @@ mod tests {
                 ..Default::default()
             };
             let out = ctx.test_pass(raw, |ctx| {
-                assert_eq!(show(ctx, &mut state, pos2(4.0, 4.0), &[], |_| true), None);
+                let picked = show(ctx, &mut state, pos2(4.0, 4.0), &[], |_| true, |_| false);
+                assert_eq!(picked, None);
             });
             texts = out
                 .shapes

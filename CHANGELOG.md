@@ -19,7 +19,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   `improv.measure.format jsonb`. **pg_improv 0.12.0** adds that column
   (`ALTER EXTENSION pg_improv UPDATE`); until a database is updated, the
   GUI, TUI and CLI open its models with every measure General and refuse
-  to save a format there, saying so.
+  to save a format there, saying so. The GUI's **Format** menu, grayed out
+  until now, sets the selected measure's decimals (General, 0–4) and
+  thousands separators, with a check on the format in effect; cells, the
+  Sum and the Info panel show it, and each change is one undo step.
 - **The GUI's Help menu has Keys… and User Guide**, beside Functions…
   (H1-23). Keys… lists the key equivalents, read from the menu, and the
   grid and editor keys; User Guide opens the published guide,

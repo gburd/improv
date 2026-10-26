@@ -43,6 +43,8 @@ The window has five regions:
   in-memory model), **Revert to Saved**
   reloads it from the store (the way out of a save conflict), and
   **Import/Export CSV…** opens the CSV wizard; **Edit** has Undo and Redo;
+  **Format** sets how the selected measure's numbers show (see [Number
+  formats](#number-formats));
   **Worksheet** has Pivot, Add Matrix, Remove Matrix, Save View, and **Add
   Category**, **Add Item** and **Add Input Measure** (see [Building a model
   from scratch](#building-a-model-from-scratch)), **Rename** and **Delete…**
@@ -53,7 +55,7 @@ The window has five regions:
   [function help](#function-help), **Help ▸ Keys…** a window listing the
   [keys](#keyboard-and-screen-readers), and **Help ▸ User Guide** this
   guide, online, in the browser; **Hide** minimizes and **Quit** closes the
-  window. Format, Print and Services, and Close in the File
+  window. Print and Services, and Close in the File
   menu, are not built yet and draw grayed out. Key equivalents, shown at
   the right of their item, take Ctrl (Cmd on macOS): `n` new, `o` open,
   `s` save, `z` undo, `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
@@ -115,7 +117,7 @@ The window has five regions:
   underlined (see [Formula errors](#formula-errors)).
 - **Info panel** (window, top right of the workspace, closed at start) —
   opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
-  type, dimensions, dependencies, and formula. An input measure has a box
+  type, number format, dimensions, dependencies, and formula. An input measure has a box
   per category, checked for its dimensions: check one to add it (the
   cells go to its first item), uncheck one to drop it (the cells at its
   first item stay, the rest go; the status line counts them). The
@@ -208,6 +210,24 @@ pick, or on the focused worksheet's measure when nothing is picked.
   views'.
 
 Each rename and delete autosaves and is one undo step.
+
+## Number formats
+
+**Format** sets how the selected measure's numbers show, in every
+worksheet: **General** (as many digits as the value needs, at most 15
+significant), **0 Decimals** to **4 Decimals**, and **Thousands
+Separators**, which turns grouping on or off and keeps the decimals. A
+check marks the format in effect. `299.666666666667` shows as `299.67` at
+two decimals, `1234567.891` as `1,234,568` at none with separators.
+Decimals round half away from zero (`2.5` shows as `3`). The separators
+follow the formula locale (`IMPROV_LOCALE`): `1.234,50` in German.
+
+A format is presentation only. The value keeps every digit: formulas, the
+CSV and SQL exports and Postgres see it unrounded, and editing a cell
+starts from the value as typed, not as shown. The Sum in the status bar
+and the Info panel follow the format. Each change autosaves and is one
+undo step; the measure keeps its format in the file or database. Format is
+grayed out for a measure that holds text, booleans or dates.
 
 ## Keyboard and screen readers
 
