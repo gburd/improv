@@ -168,7 +168,7 @@ panel), writes the model there and switches to it. Build Save As the same
 way. **Files:** `crates/gui/src/app.rs` (`command_enabled`, `file_panel`,
 `switch_model`), `crates/gui/src/menu.rs`.
 
-**H1-8 GUI: after a formula error, the keyboard goes to the grid.**
+**[fixed: `fix(gui): a failed formula keeps the keyboard, at the error (H1-8)`] H1-8 GUI: after a formula error, the keyboard goes to the grid.**
 *Error recovery; consistency.* Enter on `Pct = Spnt / Budget` shows the
 error, placed well, but the line loses focus. The next letters drive the
 grid: `n` switched the worksheet from Income to Saved, and `h j k l` move

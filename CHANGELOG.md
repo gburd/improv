@@ -81,6 +81,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   the budget tutorial's "type a new number and press Enter" stored 3001
   for 300 (usability review H1-1). The tutorial no longer asks for File ▸
   Save after the edit, which the GUI has already saved (H1-29).
+- **A formula the GUI refuses keeps the keyboard.** After Enter on a bad
+  formula, in a formula row or on the `Name = formula` line, the editor
+  lost focus and the next keys drove the grid: `n` switched the worksheet's
+  measure. It now keeps the keyboard, the caret at the start of the
+  underlined error (H1-8).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

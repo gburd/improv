@@ -237,7 +237,9 @@ underlined**, the description and the category.
 ## Formula errors
 
 When a formula fails, the place it fails is underlined in the editor, and
-under the row are the message and, dimmed, why:
+under the row are the message and, dimmed, why. The editor keeps the
+keyboard, with the caret at the start of the underlined part, so you can
+correct it and press Enter again:
 
 - an unknown measure or category: `did you mean Price?`, the nearest names
   in the model (a misspelled function's suggestion is in the message

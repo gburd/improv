@@ -2965,6 +2965,16 @@ pub struct FormulaRow {
     pub error: Option<String>,
 }
 
+/// Give a formula edit whose commit failed the keyboard back, the caret at
+/// the start of the error's `span` in `text` (its end when the error has no
+/// place), so the next keys correct the formula instead of driving the grid
+/// (H1-8).
+fn refocus_at_error(resp: &egui::Response, text: &str, span: Option<std::ops::Range<usize>>) {
+    resp.request_focus();
+    let at = span.map_or(text.len(), |r| r.start);
+    set_caret(&resp.ctx, resp.id, text, at);
+}
+
 /// Swallow this frame's Enter once a text field has acted on it, so the
 /// grid (drawn later, and now seeing no focus) doesn't start a cell edit.
 fn consume_enter(ui: &egui::Ui) {
@@ -5362,7 +5372,11 @@ impl ImprovApp {
             let text = self.formula_buf.clone();
             match self.commit_formula(mid, &text) {
                 Ok(()) => self.status = "formula updated".into(),
-                Err(e) => self.status = format!("formula error: {e}"),
+                Err(e) => {
+                    self.status = format!("formula error: {e}");
+                    let span = self.formula_error.as_ref().and_then(|d| d.span.clone());
+                    refocus_at_error(&resp, &text, span);
+                }
             }
         }
         resp
@@ -5413,6 +5427,11 @@ impl ImprovApp {
         if entered {
             consume_enter(ui);
             self.add_from_formula_line();
+            // Refused: the line keeps its text and the keyboard.
+            if !self.new_formula_line.is_empty() {
+                let span = self.new_formula_error.as_ref().and_then(|d| d.span.clone());
+                refocus_at_error(&resp, &self.new_formula_line, span);
+            }
         }
         if let Some(d) = self.new_formula_error.as_ref().filter(|_| editing) {
             let shown = formula_error_lines(ui, d);
@@ -13762,6 +13781,52 @@ mod tests {
         assert_eq!(d.span.map(|r| &app.new_formula_line[r]), Some("LEN"));
         at(&ctx, &mut app, 3.2, vec![egui::Event::Text("x".into())]);
         assert_eq!(app.new_formula_error, None);
+    }
+
+    /// H1-8: after a failed commit, in either formula editor, the keyboard
+    /// stays in the field with the caret at the error: the next keys fix
+    /// the formula, and `n` does not switch the worksheet's measure.
+    #[test]
+    fn a_failed_formula_keeps_the_keyboard_at_the_error() {
+        let mut app = build_app(revenue_model());
+        select(&mut app, MeasureId(102));
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1200.0, 800.0);
+        let mut t = 0.0;
+        let mut frame = |app: &mut ImprovApp, focus: Option<&str>, ev: Vec<egui::Event>| {
+            if let Some(id) = focus {
+                ctx.memory_mut(|m| m.request_focus(egui::Id::unique(id)));
+            }
+            t += 0.1;
+            let _ = full_frame_with(&ctx, app, size, t, ev, |_| ());
+        };
+        let n = || vec![key_event(egui::Key::N), egui::Event::Text("n".into())];
+        frame(&mut app, None, Vec::new());
+        app.formula_buf = "Prise * Quantity".into();
+        frame(&mut app, Some("formula_edit"), vec![enter()]);
+        assert!(app.formula_error.is_some(), "{}", app.status);
+        frame(&mut app, None, n());
+        assert_eq!(app.selected(), Some(MeasureId(102)), "n stayed in the row");
+        assert_eq!(app.formula_buf, "nPrise * Quantity", "typed at the error");
+
+        let line = "Margin = Revenue - Cots";
+        frame(
+            &mut app,
+            Some("formula_new"),
+            vec![egui::Event::Text(line.into())],
+        );
+        frame(&mut app, Some("formula_new"), vec![enter()]);
+        assert!(app.new_formula_error.is_some(), "{}", app.status);
+        frame(&mut app, None, n());
+        assert_eq!(app.selected(), Some(MeasureId(102)), "n stayed in the line");
+        assert_eq!(app.new_formula_line, "Margin = Revenue - nCots");
+        // A refusal with no place puts the caret at the end.
+        app.new_formula_line = "no equals sign".into();
+        frame(&mut app, Some("formula_new"), vec![enter()]);
+        assert_eq!(app.status, "type Name = formula");
+        frame(&mut app, None, n());
+        assert_eq!(app.new_formula_line, "no equals signn");
     }
 
     /// The selected row is the editor: Enter commits a good formula, and a
