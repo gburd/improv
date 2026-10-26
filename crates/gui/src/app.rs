@@ -712,12 +712,16 @@ impl Matrix {
             },
             ..Matrix::default()
         };
-        // Fit the window to its grid (plus the formula pane), within bounds.
-        let lines = |cats: &[CategoryId]| product_len(&m.axis_item_lists(model, cats)) as f32;
-        let (rows, cols) = (lines(&m.row_cats(model)), lines(&m.col_cats(model)));
-        m.rect.w = (120.0 + 80.0 * cols).clamp(360.0, 900.0);
-        m.rect.h = (200.0 + 20.0 * rows + 110.0).clamp(300.0, 700.0);
+        m.fit_to_grid(model);
         m
+    }
+
+    /// Size the window to its grid (plus the formula pane), within bounds.
+    fn fit_to_grid(&mut self, model: &Model) {
+        let lines = |cats: &[CategoryId]| product_len(&self.axis_item_lists(model, cats)) as f32;
+        let (rows, cols) = (lines(&self.row_cats(model)), lines(&self.col_cats(model)));
+        self.rect.w = (120.0 + 80.0 * cols).clamp(360.0, 900.0);
+        self.rect.h = (200.0 + 20.0 * rows + 110.0).clamp(300.0, 700.0);
     }
 
     /// A matrix restoring a saved [`MatrixPlacement`] verbatim: its measure,
@@ -775,6 +779,11 @@ impl Matrix {
             }
         }
         m.clamp_cursor(model);
+        // No geometry saved (`improv save-view`, a pre-canvas view): sized
+        // as a fresh window is (H1-34 opens such a view at startup).
+        if p.rect == CanvasRect::default() {
+            m.fit_to_grid(model);
+        }
         Some(m)
     }
 
@@ -1299,9 +1308,24 @@ impl ImprovApp {
             outside: None,
             queued_import: None,
         };
+        app.open_first_view();
         // The window opens on the inputs; the formulas follow (H3).
         app.rebuild_engine();
         Ok(app)
+    }
+
+    /// Open the first saved view in id order, if there is one (H1-34).
+    /// Opening is not news: the status line stays empty unless a matrix
+    /// was skipped.
+    fn open_first_view(&mut self) {
+        let Some(v) = self.model.views.keys().min_by_key(|v| v.0) else {
+            return;
+        };
+        let v = self.model.views[v].clone();
+        self.apply_view(&v);
+        if self.status == format!("view: {}", v.name.0) {
+            self.status.clear();
+        }
     }
 
     // -- the canvas: N matrices, one focused -------------------------------
@@ -3929,19 +3953,10 @@ fn decode(k: &CoordKey) -> improv_core_model::Coordinate {
     improv_core_model::Coordinate::from_pairs(k.iter().map(|(c, i)| (CategoryId(*c), ItemId(*i))))
 }
 
+/// The measure a window shows by default: the first in id order, input or
+/// derived (H1-34), as the model was built.
 fn pick_default_measure(model: &Model) -> Option<MeasureId> {
-    let mut ids: Vec<MeasureId> = model.measures.keys().copied().collect();
-    ids.sort_by_key(|m| m.0);
-    ids.iter()
-        .find(|m| {
-            model
-                .measures
-                .get(m)
-                .map(|x| x.is_derived())
-                .unwrap_or(false)
-        })
-        .copied()
-        .or_else(|| ids.first().copied())
+    model.measures.keys().min_by_key(|m| m.0).copied()
 }
 
 /// The measure's categories in natural (declared) order (empty if none/absent).
@@ -7314,8 +7329,8 @@ mod tests {
     #[test]
     fn loads_and_computes_derived() {
         let app = build_app(revenue_model());
-        // Revenue is derived and selected by default.
-        assert_eq!(app.selected(), Some(MeasureId(102)));
+        // The first measure, Price, is selected by default (H1-34).
+        assert_eq!(app.selected(), Some(MeasureId(100)));
         let vals = app.values_for(MeasureId(102));
         let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
@@ -8547,8 +8562,8 @@ mod tests {
         let v = src.build_view(ViewId(1), "L1").expect("view");
 
         let mut dst = build_app(grid_2x2_model());
-        // dst starts on Revenue (derived) with natural axes and no filters.
-        assert_eq!(dst.selected(), Some(MeasureId(102)));
+        // dst starts on Price (the first measure) with natural axes, no filters.
+        assert_eq!(dst.selected(), Some(MeasureId(100)));
         dst.apply_view(&v);
         dst.sync_axis_state(); // must not clobber the applied layout
 
@@ -8599,8 +8614,9 @@ mod tests {
     fn chart_series_yields_labels_and_oracle_values() {
         // Revenue[Time, Product], natural axes: rows=Time -> x, cols=Product ->
         // one series each. Oracle: WidgetA = 1000/1200, WidgetB = 1000/1600.
-        let app = build_app(grid_2x2_model());
-        assert_eq!(app.selected(), Some(MeasureId(102))); // Revenue selected
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(102));
+        app.sync_axis_state();
         let d = app.chart_series();
         assert_eq!(d.x_title, "Time");
         assert_eq!(d.x_labels, vec!["2025".to_string(), "2026".to_string()]);
@@ -10034,7 +10050,7 @@ mod tests {
             !app.snapshot.contains_key(&id),
             "the snapshot must not keep values for a measure that is gone"
         );
-        assert_eq!(app.selected(), Some(MeasureId(102)), "selection re-pointed");
+        assert_eq!(app.selected(), Some(MeasureId(100)), "selection re-pointed");
     }
 
     #[test]
@@ -10902,8 +10918,8 @@ mod tests {
             m.add_item(ItemId(100 + i), CategoryId(2), format!("Product{i:02}"));
         }
         let mut app = build_app(m);
-        select(&mut app, MeasureId(101));
-        app.sync_axis_state();
+        // A window sized for Quantity's grid, clear of the model browser.
+        app.matrices[0] = Matrix::new(&app.model, Some(MeasureId(101)));
         let mut desk = Desk::new();
         desk.settle(&mut app);
         let g = app.focused().gutters.expect("laid out");
@@ -11786,7 +11802,10 @@ mod tests {
 
         // Reload from the store and apply the view: the canvas comes back.
         let mut reloaded = ImprovApp::load(&db).expect("reload");
-        assert_eq!(reloaded.matrix_count(), 1, "a fresh app starts single");
+        // H1-34: it opens on its first saved view, this canvas.
+        assert_eq!(reloaded.current_view, Some(id));
+        assert_eq!(reloaded.matrix_count(), 2, "a reload opens its first view");
+        assert!(reloaded.status.is_empty(), "opening is not news");
         let v = reloaded.model.views[&id].clone();
         reloaded.apply_view(&v);
         reloaded.sync_axis_state(); // must not clobber the applied layout
@@ -11889,15 +11908,18 @@ mod tests {
         );
         assert_eq!(m.col_cats(&app.model), vec![time]);
         assert_eq!(m.filters, legacy.filters, "saved filter restored");
-        // H1-14: no geometry saved -> the default rectangle, moved right of
-        // the menu so the menu does not cover its row labels.
+        // H1-14: no geometry saved -> right of the menu, so the menu does not
+        // cover its row labels, and sized to its grid as a fresh window is
+        // (one filtered row by two columns: the minimum size).
         assert_eq!(
             m.rect,
             CanvasRect {
                 x: MENU_CLEAR,
-                ..CanvasRect::default()
+                y: 0.0,
+                w: 360.0,
+                h: 330.0,
             },
-            "no geometry saved -> the default rectangle, visible on the canvas"
+            "no geometry saved -> a fresh window's place and size"
         );
         // The filter really is in effect on the restored matrix.
         assert_eq!(
@@ -13182,11 +13204,58 @@ mod tests {
         assert_eq!(app.matrices[0].measure, Some(MeasureId(101)));
     }
 
+    /// H1-34: a model opens on its first saved view (in id order), else on
+    /// its first measure in id order, input or derived.
+    #[test]
+    fn a_model_opens_on_its_first_view_else_its_first_measure() {
+        let db = temp_db("h1_34");
+        let _cleanup = Cleanup(db.clone());
+        let mut model = grid_2x2_model();
+        let save = |m: &Model| Store::open(&db).and_then(|mut s| s.save_model(m));
+        save(&model).expect("seed");
+        let app = ImprovApp::load(&db).expect("load");
+        assert_eq!(app.selected(), Some(MeasureId(100)), "Price, not Revenue");
+        assert_eq!(app.current_view, None);
+        // Two views, saved out of id order: the lower id opens.
+        for (id, name, measure) in [(5, "Later", MeasureId(101)), (2, "First", MeasureId(102))] {
+            let p = MatrixPlacement::new(measure);
+            model.add_view(View::from_matrices(
+                ViewId(id),
+                Name(name.into()),
+                p,
+                vec![],
+            ));
+        }
+        save(&model).expect("views");
+        let app = ImprovApp::load(&db).expect("reload");
+        assert_eq!(app.current_view, Some(ViewId(2)));
+        assert_eq!(app.selected(), Some(MeasureId(102)));
+        assert_eq!(app.matrix_title(0), "Revenue");
+        assert!(app.status.is_empty(), "{}", app.status);
+        // Like a fresh window: right of the menu, sized to its grid.
+        let fresh = Matrix::new(&app.model, Some(MeasureId(102))).rect;
+        assert_eq!(app.matrices[0].rect, fresh);
+        // A first view with a matrix whose measure is gone says so.
+        let gone = MatrixPlacement::new(MeasureId(999));
+        let p = MatrixPlacement::new(MeasureId(101));
+        model.add_view(View::from_matrices(
+            ViewId(1),
+            Name("Odd".into()),
+            p,
+            vec![gone],
+        ));
+        save(&model).expect("a view with a dead matrix");
+        let app = ImprovApp::load(&db).expect("reload");
+        assert_eq!(app.current_view, Some(ViewId(1)));
+        assert!(app.status.contains("skipped"), "{}", app.status);
+    }
+
     /// A view's description names its measure and categories.
     #[test]
     fn view_description_names_the_measure() {
         let mut app = build_app(grid_2x2_model());
         select(&mut app, MeasureId(102));
+        app.sync_axis_state();
         let id = app.save_view("Rev").expect("saved");
         let d = app.view_description(&app.model.views[&id]);
         assert!(d.starts_with("Revenue by "), "{d}");
@@ -13217,7 +13286,7 @@ mod tests {
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
         assert!(
             shapes.iter().any(|c| matches!(&c.shape,
-                egui::Shape::Text(t) if t.galley.text() == "name: Revenue")),
+                egui::Shape::Text(t) if t.galley.text() == "name: Price")),
             "it shows the selected measure"
         );
         desk.click(&mut app, close.center());
@@ -15698,7 +15767,7 @@ mod tests {
             desk.settle(&mut app);
             type_text(&mut desk, &mut app, "x.db");
             assert_eq!(app.file_path, "x.db", "{c:?}");
-            assert_eq!(app.selected(), Some(MeasureId(102)), "the grid saw nothing");
+            assert_eq!(app.selected(), Some(MeasureId(100)), "the grid saw nothing");
             key(
                 &mut desk,
                 &mut app,

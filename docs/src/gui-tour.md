@@ -13,6 +13,9 @@ bash docs/demo/sample-model.sh sample.db
 nix develop -c cargo run -p improv_gui -- sample.db
 ```
 
+A model opens on its first saved view, or, with none, on its first
+measure.
+
 <video src="./img/gui-demo.mp4" controls muted loop playsinline width="100%"
   poster="./img/gui-workspace.png">
   <img src="./img/gui-demo.gif" alt="The GUI: pivoting, editing and adding a formula">

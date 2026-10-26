@@ -344,7 +344,7 @@ at 80. Show it on `?` and keep one line ("? keys") in the status block.
 or italic text for derived cells. `crates/gui/src/app.rs`
 (`render_grid`), `crates/gui/src/theme.rs`.
 
-**H1-34 GUI, TUI:** both open on the first derived measure, not the first
+**[fixed (GUI): `fix(gui): open on the first saved view, else the first measure (H1-34)`] H1-34 GUI, TUI:** both open on the first derived measure, not the first
 saved view. Open the first view when there is one.
 `crates/tui/src/app.rs` (`measure_order`), `crates/gui/src/app.rs`
 (`pick_default_measure`).

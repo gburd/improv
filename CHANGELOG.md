@@ -115,6 +115,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   CLI saves no window position (the origin), which the GUI restored as
   it was, so the menu covered the row labels and the first column. A
   window at the origin now opens where a fresh one does (H1-14).
+- **The GUI opens a model on its first saved view**, else on its first
+  measure in id order, input or derived; it opened on the first formula
+  (H1-34, the GUI part). A view saved by `improv save-view` opens sized to
+  its grid, as a fresh window does.
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input
