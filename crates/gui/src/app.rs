@@ -591,12 +591,14 @@ fn save_error(e: improv_store::StoreError) -> String {
     }
 }
 
-/// A category, item or measure: what Worksheet ▸ Rename and Delete… act on.
+/// A category, item, measure or saved view: what Worksheet ▸ Rename and
+/// Delete… act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Thing {
     Category(CategoryId),
     Item(ItemId),
     Measure(MeasureId),
+    View(ViewId),
 }
 
 /// Whether `e` names category `c`: `POSITION(c)`, `x OVER c`, `BY`, `EXCEPT`.
@@ -4171,15 +4173,20 @@ impl ImprovApp {
                 self.remove_matrix(i);
             }
             Command::SaveView => {
-                // Save under the browser's name box, or a generated name.
-                let name = if self.view_name.trim().is_empty() {
-                    format!("view {}", self.model.views.len() + 1)
-                } else {
+                // Save under the browser's name box, or a generated name
+                // whose rename line opens, so typing names it (H1-15).
+                let typed = !self.view_name.trim().is_empty();
+                let name = if typed {
                     self.view_name.clone()
+                } else {
+                    format!("view {}", self.model.views.len() + 1)
                 };
-                if self.save_view(&name).is_some() {
+                if let Some(id) = self.save_view(&name) {
                     self.view_name.clear();
                     self.status = format!("saved view '{name}'");
+                    if !typed {
+                        self.start_rename(Thing::View(id));
+                    }
                 }
             }
             Command::OpenView(i) => {
@@ -4566,6 +4573,7 @@ impl ImprovApp {
                 .map(|x| ("category", x.name.0.as_str())),
             Thing::Item(i) => m.items.get(&i).map(|x| ("item", x.name.0.as_str())),
             Thing::Measure(id) => m.measures.get(&id).map(|x| ("measure", x.name.0.as_str())),
+            Thing::View(v) => m.views.get(&v).map(|x| ("view", x.name.0.as_str())),
         }
     }
 
@@ -4623,6 +4631,11 @@ impl ImprovApp {
             if let (true, Some(cat)) = (dup, cat) {
                 return Err(format!("{} already has an item {name:?}", cat.name.0));
             }
+        } else if let Thing::View(v) = t {
+            // Views have names of their own: only another view's clashes.
+            if m.view_by_name(name).is_some_and(|x| x.id != v) {
+                return Err(format!("a view is already named {name:?}"));
+            }
         } else if taken(t) {
             return Err(format!("{name:?} is already a category, measure or LAMBDA"));
         }
@@ -4631,6 +4644,7 @@ impl ImprovApp {
             Thing::Category(c) => candidate.categories.get_mut(&c).map(|x| &mut x.name),
             Thing::Item(i) => candidate.items.get_mut(&i).map(|x| &mut x.name),
             Thing::Measure(id) => candidate.measures.get_mut(&id).map(|x| &mut x.name),
+            Thing::View(v) => candidate.views.get_mut(&v).map(|x| &mut x.name),
         };
         if let Some(n) = slot {
             *n = Name(name.to_owned());
@@ -4656,7 +4670,7 @@ impl ImprovApp {
                 || matches!(&x.kind, MeasureKind::Derived(f) if expr_names_category(&f.expr, c))
         };
         let (mut users, verb): (Vec<&str>, [&str; 2]) = match t {
-            Thing::Item(_) => return None,
+            Thing::Item(_) | Thing::View(_) => return None,
             Thing::Measure(id) => (
                 m.measures
                     .values()
@@ -4722,14 +4736,19 @@ impl ImprovApp {
                 m.categories[&c].name.0,
                 plural(m.categories[&c].items.len(), "item")
             ),
+            Thing::View(v) => format!(
+                "Delete the view {}? Its worksheets stay open.",
+                m.views[&v].name.0
+            ),
         })
     }
 
     /// Delete a category (once no measure uses it) with its items, an item
-    /// with its cells, or a measure (once no formula reads it) with its
-    /// cells, as one undoable, autosaved step. Saved views lose a deleted
-    /// measure's matrices (a view left with none goes) and a deleted item's
-    /// filter and page entries. Returns the status line; on failure nothing
+    /// with its cells, a measure (once no formula reads it) with its
+    /// cells, or a saved view (the canvas stays as it is), as one
+    /// undoable, autosaved step. Saved views lose a deleted measure's
+    /// matrices (a view left with none goes) and a deleted item's filter
+    /// and page entries. Returns the status line; on failure nothing
     /// changes.
     pub fn delete(&mut self, t: Thing) -> Result<String, String> {
         let Some((kind, name)) = self.thing_name(t) else {
@@ -4738,6 +4757,15 @@ impl ImprovApp {
         let msg = format!("deleted {kind} {name}");
         if let Some(why) = self.delete_blockers(t) {
             return Err(why);
+        }
+        if let Thing::View(v) = t {
+            // A view holds no cells: change the structure alone.
+            let mut s = structure_of(self.model_mut());
+            s.views.remove(&v);
+            self.publish_structure(s)?;
+            self.browser_pick = None;
+            self.current_view = self.current_view.filter(|c| *c != v);
+            return Ok(msg);
         }
         let mut c = (*self.model).clone();
         match t {
@@ -4793,6 +4821,7 @@ impl ImprovApp {
                     c.items.remove(&i);
                 }
             }
+            Thing::View(_) => {}
         }
         self.publish(c)?;
         self.browser_pick = None;
@@ -4895,7 +4924,9 @@ impl ImprovApp {
                     ui,
                     egui::ScrollArea::vertical().auto_shrink(false),
                     |ui| {
-                        self.views_section(ui);
+                        if let Some(d) = self.views_section(ui, &mut rename) {
+                            done = Some(d);
+                        }
 
                         egui::CollapsingHeader::new("Categories")
                             .default_open(false)
@@ -5104,13 +5135,19 @@ impl ImprovApp {
     /// of saved views as `Name - Worksheet` rows with a worksheet icon (click
     /// selects, double-click opens), a description of the selected view, then
     /// a name field + "Save view" button that captures the current CANVAS.
+    /// A click also picks the view for Worksheet ▸ Rename and Delete… (H1-15);
+    /// the row being renamed is `rename`'s line, whose outcome it returns.
     ///
     /// This is the NeXTSTEP reference's model navigator
     /// (`docs/reviews/refs/improv-next-nested-headers.jpg`: a `Model of
     /// Divisional Report` window listing `Worksheet 1` / `Worksheet 2`), and the
     /// same set the application menu's View submenu lists. The current view is
     /// highlighted in both.
-    fn views_section(&mut self, ui: &mut egui::Ui) {
+    fn views_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        rename: &mut Option<(Thing, String, bool)>,
+    ) -> Option<(Thing, Option<String>)> {
         use crate::theme::{BLACK, WHITE};
         let mut ids: Vec<ViewId> = self.model.views.keys().copied().collect();
         ids.sort_by_key(|v| v.0);
@@ -5131,11 +5168,17 @@ impl ImprovApp {
         // Clear the window border and the scroll bar.
         let width = ui.available_width() - 8.0;
         let mut open: Option<View> = None;
+        let mut done = None;
         box_frame().show(ui, |ui| {
             ui.set_width(width - 4.0);
             ui.set_min_height(3.0 * row_h);
             ui.spacing_mut().item_spacing.y = 0.0;
             for &id in &ids {
+                let me = Thing::View(id);
+                if let Some((_, buf, focus)) = rename.as_mut().filter(|r| r.0 == me) {
+                    done = rename_line(ui, buf, focus).map(|r| (me, r));
+                    continue;
+                }
                 let (rect, resp) = ui.allocate_exact_size(
                     egui::vec2(ui.available_width(), row_h),
                     egui::Sense::click(),
@@ -5172,6 +5215,7 @@ impl ImprovApp {
                 }
                 if resp.clicked() {
                     self.browser_sel = Some(id);
+                    self.browser_pick = Some(me);
                 }
                 if resp.double_clicked() {
                     open = Some(v.clone());
@@ -5203,6 +5247,7 @@ impl ImprovApp {
                 }
             }
         });
+        done
     }
 
     /// The Info panel (spec §4.7): a NeXT panel window at the workspace's top
@@ -16216,6 +16261,79 @@ mod tests {
         app.matrices[0].measure = None;
         assert!(!app.command_enabled(Command::Rename));
         assert!(!app.command_enabled(Command::Delete));
+    }
+
+    /// H1-15: a click on a view row picks the view, so Worksheet ▸ Rename
+    /// and Delete… act on it, not on a measure picked before. Save View
+    /// without a name opens the rename line on its "view N".
+    #[test]
+    fn views_rename_and_delete_from_the_browser() {
+        let (mut app, mut desk) = grid_desk();
+        app.run_command(&desk.ctx, Command::SaveView);
+        let v = app.current_view.expect("saved");
+        assert_eq!(app.renaming, Some((Thing::View(v), "view 1".into(), true)));
+        desk.settle(&mut app);
+        assert_eq!(
+            desk.ctx.memory(|m| m.focused()),
+            Some(egui::Id::unique("rename_line")),
+            "the name is ready to type over"
+        );
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Budget".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert_eq!(app.status, "renamed view view 1 to Budget");
+        assert_eq!(app.model.views[&v].name.0, "Budget");
+        let other = app.save_view("Other").expect("a second view");
+        // Pick a measure, then the view row: the view is the target.
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        let price = painted(&shapes, "Price").expect("Price listed").center();
+        desk.click(&mut app, price);
+        assert_eq!(app.browser_pick, Some(Thing::Measure(MeasureId(100))));
+        let row = painted(&shapes, "Budget - Worksheet")
+            .expect("Budget listed")
+            .center();
+        desk.click(&mut app, row);
+        assert_eq!(app.browser_pick, Some(Thing::View(v)));
+        // Worksheet ▸ Rename: a taken name is refused, the line stays.
+        app.run_command(&desk.ctx, Command::Rename);
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Other".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert_eq!(app.status, "a view is already named \"Other\"");
+        assert!(app.renaming.is_some());
+        // A measure's name is fine for a view.
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("Price".into())]);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        assert_eq!(app.status, "renamed view Budget to Price");
+        // Delete… asks about the view, and deletes only it.
+        app.run_command(&desk.ctx, Command::Delete);
+        let q = app.confirm_delete.clone().expect("asks");
+        assert_eq!(
+            q,
+            (
+                Thing::View(v),
+                "Delete the view Price? Its worksheets stay open.".into()
+            )
+        );
+        desk.settle(&mut app);
+        let _ = desk.frame(&mut app, vec![enter()]);
+        desk.settle(&mut app);
+        assert_eq!(app.status, "deleted view Price");
+        assert!(!app.model.views.contains_key(&v));
+        assert!(app.model.views.contains_key(&other));
+        assert!(
+            app.model.measures.contains_key(&MeasureId(100)),
+            "not Price"
+        );
+        assert_eq!(app.browser_pick, None);
+        assert_eq!(app.matrix_count(), 1, "the canvas stays");
+        app.undo().expect("undo");
+        assert_eq!(app.model.views[&v].name.0, "Price", "undo brings it back");
+        assert_eq!(
+            app.delete(Thing::View(ViewId(99))).unwrap_err(),
+            "it no longer exists"
+        );
     }
 
     /// Category and item rows rename the same way.

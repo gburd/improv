@@ -8,6 +8,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Saved views can be renamed and deleted in the GUI** (H1-15, the GUI
+  part). A click on a view row in the model browser picks it, and
+  Worksheet ▸ Rename and Delete… act on it; with a view picked, Delete…
+  had acted on a measure picked earlier. Worksheet ▸ Save View without
+  a typed name opens the rename line on its "view N". Deleting a view
+  leaves its worksheets open; both are one undo step and autosave.
 - **Linux packages and a Homebrew formula** on every release, from the next
   one on (`ci/packages.sh`, nfpm; `ci/homebrew-formula.sh`): `improv` as a
   `.deb` and `.rpm`, pg_improv per PostgreSQL major under PGDG's names and

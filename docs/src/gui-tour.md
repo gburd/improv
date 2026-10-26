@@ -181,9 +181,11 @@ the status line says why; so is a measure name with a comma.
 
 ## Renaming and deleting
 
-Click a category, an item or a measure in the model browser to pick it.
-**Worksheet ▸ Rename** and **Delete…** act on the pick, or on the
-focused worksheet's measure when nothing is picked.
+Click a category, an item, a measure or a saved view in the model
+browser to pick it. **Worksheet ▸ Rename** and **Delete…** act on the
+pick, or on the focused worksheet's measure when nothing is picked.
+**Worksheet ▸ Save View** with the browser's name field empty saves
+"view N" and opens its rename line, so typing names it.
 
 - **Rename:** the row turns into a line holding the name, selected. Type
   the new name and press Enter; Esc keeps the old one. Double-clicking an
@@ -197,7 +199,9 @@ focused worksheet's measure when nothing is picked.
   formula reads cannot be deleted, nor can a category that a measure ranges
   over or names. The status line names what still needs it, as
   `improv.drop_measure` does: `cannot delete Revenue: Margin still
-  references it (delete or redefine it first)`.
+  references it (delete or redefine it first)`. Deleting a view leaves
+  its worksheets open. A view's name need only differ from the other
+  views'.
 
 Each rename and delete autosaves and is one undo step.
 
