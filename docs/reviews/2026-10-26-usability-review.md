@@ -261,7 +261,7 @@ English as the fallback or a toggle. **Files:** `crates/tui/src/app.rs`
 (`formula_text`, `begin_edit`), `crates/gui/src/app.rs` (`formula_source`,
 to share).
 
-**H1-18 TUI: a cell cannot be cleared.** *User control.* An empty edit
+**[fixed: `fix(tui): an empty edit clears the cell (H1-18)`] H1-18 TUI: a cell cannot be cleared.** *User control.* An empty edit
 gives `not a number: ''`. The GUI clears the cell. **Fix:** an empty
 commit clears it, as the GUI's `commit_cell_text` does. **Files:**
 `crates/tui/src/app.rs` (`commit_edit`).

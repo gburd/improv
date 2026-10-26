@@ -1040,14 +1040,19 @@ impl App {
             .measures
             .get(&self.grid.measure)
             .map_or(ValueType::Number, |m| m.value_type);
-        let value = match parse_typed(buf.trim(), vt) {
-            Ok(v) => v,
-            Err(e) => {
-                self.status = Some(e);
-                return;
-            }
+        // H1-18: an empty edit clears the cell, as the GUI's does (a Text
+        // cell too: there is no other way to empty one).
+        let value = match buf.trim() {
+            "" => None,
+            text => match parse_typed(text, vt) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    self.status = Some(e);
+                    return;
+                }
+            },
         };
-        match self.apply_value(self.cursor_row, self.cursor_col, value) {
+        match self.write_cell(self.cursor_row, self.cursor_col, value) {
             Ok(()) => {
                 self.edit = None;
                 self.status = None;
@@ -1062,14 +1067,15 @@ impl App {
     /// measure is derived. Terminal-free -> unit-testable.
     #[cfg(test)]
     pub fn apply_edit(&mut self, row: usize, col: usize, value: f64) -> Result<(), String> {
-        self.apply_value(row, col, Value::Number(value))
+        self.write_cell(row, col, Some(Value::Number(value)))
     }
 
-    /// Set input `[row][col]` to a typed `value`, pushed through the live
-    /// engine as one incremental edit. A value of the measure's type enters
-    /// the engine as that cell; anything else clears it, exactly what a
-    /// rebuild would seed ([`improv_engine::session::input_cell`]).
-    pub fn apply_value(&mut self, row: usize, col: usize, value: Value) -> Result<(), String> {
+    /// Set input `[row][col]` to a typed `value` (`None` clears it: H1-18),
+    /// pushed through the live engine as one incremental edit. A value of
+    /// the measure's type enters the engine as that cell; anything else
+    /// clears it, exactly what a rebuild would seed
+    /// ([`improv_engine::session::input_cell`]).
+    fn write_cell(&mut self, row: usize, col: usize, value: Option<Value>) -> Result<(), String> {
         if !self.viewed_is_input() {
             return Err("derived cells are computed, not editable".into());
         }
@@ -1080,13 +1086,19 @@ impl App {
         let key = self.grid.coord_key(row, col);
         let coord = decode_coord(&key);
 
-        let cell = self
-            .model
-            .measures
-            .get(&measure)
-            .and_then(|m| improv_engine::session::input_cell(m.value_type, &value));
+        let cell = self.model.measures.get(&measure).and_then(|m| {
+            (value.as_ref()).and_then(|v| improv_engine::session::input_cell(m.value_type, v))
+        });
+        if self.model.input(measure, &coord) == value.as_ref() {
+            return Ok(());
+        }
         self.record_history(self.model.clone());
-        self.model.set_input(measure, coord, value);
+        match value {
+            Some(v) => self.model.set_input(measure, coord, v),
+            None => {
+                self.model.inputs.remove(&(measure, coord));
+            }
+        }
 
         // Push the delta through the engine (if any derived measures exist) and
         // keep the recomputed snapshot for rendering.
@@ -1977,6 +1989,32 @@ pub(crate) mod tests {
         view(&mut app, MeasureId(101));
         app.enter_cell();
         assert_eq!(app.edit.as_deref(), Some("100"));
+    }
+
+    /// H1-18: an empty edit clears the cell (and its dependents), as one
+    /// undoable change; clearing an empty cell records nothing.
+    #[test]
+    fn an_empty_edit_clears_the_cell() {
+        let mut app = App::new(revenue_model()).unwrap();
+        view(&mut app, MeasureId(101));
+        app.begin_edit();
+        app.edit = Some("  ".into());
+        app.commit_edit();
+        assert_eq!(app.status, None);
+        assert!(app.edit.is_none());
+        assert_eq!(app.grid.cell_at(0, 0), None);
+        let at = Coordinate::from_pairs([(CategoryId(1), ItemId(10)), (CategoryId(2), ItemId(20))]);
+        assert_eq!(app.model.input(MeasureId(101), &at), None);
+        view(&mut app, MeasureId(102));
+        assert_eq!(app.grid.cell_at(0, 0), None, "Revenue follows");
+        assert_eq!(app.grid.display_at(0, 1), "1000");
+        view(&mut app, MeasureId(101));
+        let depth = app.undo_stack.len();
+        app.edit = Some(String::new().into());
+        app.commit_edit();
+        assert_eq!(app.undo_stack.len(), depth, "nothing to clear");
+        app.undo();
+        assert_eq!(app.grid.value_at(0, 0), Some(100.0));
     }
 
     #[test]

@@ -58,6 +58,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   GUI does. A failed save puts "not saved" in the status box's title and
   the reason on the status line; `w` retries and `q` still refuses to drop
   the edits (H1-5).
+- **An empty TUI edit clears the cell**, as in the GUI; it was refused
+  with "not a number: ''" (H1-18).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

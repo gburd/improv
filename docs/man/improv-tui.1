@@ -53,7 +53,8 @@ categories, such as
 .BR 5 ,
 needs a second Enter. A cell's old value shows selected: the first key
 typed replaces it, and Left, Right, Home, End or Backspace first edit it in
-place. Enter commits, Esc cancels; on an error the edit
+place. Enter commits (an empty edit clears the cell), Esc cancels; on an
+error the edit
 stays open with the message under it. A formula that does not parse has
 the offending token underlined in red, a
 .B ^~~~
