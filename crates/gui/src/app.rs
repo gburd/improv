@@ -291,6 +291,8 @@ pub struct ImprovApp {
     /// File ▸ New, Open… or Save As… is asking for a path (`NewModel`,
     /// `OpenModel`, `SaveAs`).
     file_panel: Option<Command>,
+    /// The file panel's path field still has to take the keyboard (H1-12).
+    file_focus: bool,
     /// The file panel's path field.
     file_path: String,
     /// Worksheet ▸ Add …: open the browser at this "new …" line and focus it
@@ -1274,6 +1276,7 @@ impl ImprovApp {
             new_formula_line: String::new(),
             new_formula_error: None,
             file_panel: None,
+            file_focus: false,
             file_path: String::new(),
             reveal: None,
             browser_pick: None,
@@ -4051,7 +4054,7 @@ impl ImprovApp {
             Command::SaveModel if self.db.is_empty() => self.run_command(ctx, Command::SaveAs),
             Command::NewModel | Command::OpenModel | Command::SaveAs => {
                 self.file_panel = Some(c);
-                ctx.memory_mut(|m| m.request_focus(egui::Id::unique("file_path")));
+                self.file_focus = true;
             }
             Command::AddCategory => self.reveal_new(NewThing::Category),
             Command::AddItem => {
@@ -4188,6 +4191,7 @@ impl ImprovApp {
         };
         let mut open = true;
         let mut go = false;
+        let mut escape = false;
         let rect = egui::Rect::from_center_size(ws.center(), egui::vec2(380.0, 112.0));
         let win = crate::nxwin::NxWindow::new("file_panel", title);
         let rect = anchored_rect(ctx, win.id(), rect);
@@ -4204,6 +4208,14 @@ impl ImprovApp {
                 );
                 a11y_name(&resp, "Model file or postgres URL");
                 go = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                // Asked for until it has it: the window's first frame is a
+                // sizing pass, whose widgets give the keyboard up.
+                if self.file_focus {
+                    self.file_focus = !resp.has_focus();
+                    resp.request_focus();
+                }
+                // Escape closes it, from the field too (H1-12).
+                escape = ui.input(|i| i.key_pressed(egui::Key::Escape));
                 ui.horizontal(|ui| {
                     go |= ui.button(button).clicked();
                     if !save && self.db.is_empty() && self.can_undo() {
@@ -4229,7 +4241,7 @@ impl ImprovApp {
                 })
             };
             self.status = done.unwrap_or_else(|e| e);
-        } else if !open {
+        } else if !open || escape {
             self.file_panel = None;
         }
     }
@@ -7854,6 +7866,7 @@ mod tests {
             new_formula_line: String::new(),
             new_formula_error: None,
             file_panel: None,
+            file_focus: false,
             file_path: String::new(),
             reveal: None,
             browser_pick: None,
@@ -15616,6 +15629,29 @@ mod tests {
         app.file_panel = None;
         let shapes = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 0.0).shapes;
         assert!(text_at(&shapes, "Model file or postgres:// URL:").is_none());
+    }
+
+    /// H1-12: File ▸ New and Open… give the path field the keyboard, so a
+    /// path typed at once lands there; Escape closes the panel.
+    #[test]
+    fn the_file_panel_takes_the_keyboard_and_escape_closes_it() {
+        for c in [Command::NewModel, Command::OpenModel, Command::SaveAs] {
+            let mut app = build_app(grid_2x2_model());
+            let mut desk = Desk::new();
+            desk.settle(&mut app);
+            app.run_command(&desk.ctx, c);
+            desk.settle(&mut app);
+            type_text(&mut desk, &mut app, "x.db");
+            assert_eq!(app.file_path, "x.db", "{c:?}");
+            assert_eq!(app.selected(), Some(MeasureId(102)), "the grid saw nothing");
+            key(
+                &mut desk,
+                &mut app,
+                egui::Key::Escape,
+                egui::Modifiers::NONE,
+            );
+            assert_eq!(app.file_panel, None, "{c:?}: Escape closes it");
+        }
     }
 
     // -- H7: rename and delete categories, items and measures

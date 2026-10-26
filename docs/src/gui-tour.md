@@ -34,7 +34,8 @@ The window has five regions:
   close it. **Info ▸ Info Panel…** shows or hides the Info panel; **File ▸
   New** starts an empty model (type a new file, a `postgres://` URL, or
   nothing for an in-memory one) and **Open…** opens a store file or URL,
-  both in a small panel; **Save** saves the model, **Save As…** writes it
+  both in a small panel whose path field has the keyboard (Esc closes
+  it); **Save** saves the model, **Save As…** writes it
   to a new file or URL and carries on there (Save does that too for an
   in-memory model), **Revert to Saved**
   reloads it from the store (the way out of a save conflict), and

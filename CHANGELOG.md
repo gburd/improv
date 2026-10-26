@@ -102,6 +102,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   added category puts the cells at its first item, a dropped one keeps the
   cells at its first item, and the formulas that read the measure take
   their new shape (a change that breaks one is refused). One undo step.
+- **The GUI's New, Open… and Save As… panels take the keyboard**, so a path
+  typed straight away lands in the field (it went nowhere until the field
+  was clicked), and **Esc closes them** (H1-12).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

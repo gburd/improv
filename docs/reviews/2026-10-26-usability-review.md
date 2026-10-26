@@ -212,7 +212,7 @@ write nothing until the first save. **Files:** `crates/store/src/lib.rs`
 (`load`), `crates/gui/src/app.rs` (`ImprovApp::load`), and the man-page
 source `crates/tui/src/args.rs`.
 
-**H1-12 GUI: the New and Open panels do not take the keyboard.**
+**[fixed: `fix(gui): the New and Open panels take the keyboard; Esc closes them (H1-12)`] H1-12 GUI: the New and Open panels do not take the keyboard.**
 *Consistency.* The path typed right after File ▸ New went nowhere. You
 must click the field, and Escape leaves the panel open. **Fix:** request
 focus for the path field when the panel opens, and close on Escape.
