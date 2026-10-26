@@ -60,6 +60,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   the edits (H1-5).
 - **An empty TUI edit clears the cell**, as in the GUI; it was refused
   with "not a number: ''" (H1-18).
+- **The TUI's prompts show their syntax.** `category>`, `input>`, `define>`
+  and the CSV prompts gave no hint of the form they take; an empty prompt
+  now shows it dimmed, as in `category> Name: item, item, …` (H1-24).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

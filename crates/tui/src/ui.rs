@@ -110,20 +110,33 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
             _ => "edit> ",
         };
         let d = app.diagnostic.as_ref();
-        lines.push(edit_line(e, prompt, formula, d));
+        let mut line = edit_line(e, prompt, formula, d);
+        if app.defining && e.text.is_empty() {
+            line.push_span(dim(" Name = formula, or Name = LAMBDA(p, \u{2026}, body)"));
+        }
+        lines.push(line);
         if let Some(d) = d {
             lines.extend(diagnostic_lines(e, d, prompt));
         } else if formula {
             lines.extend(signature_line(e));
         }
     } else if let Some((kind, buf)) = &app.command {
-        let prompt = match kind {
-            CommandKind::ImportCsv => "import-csv",
-            CommandKind::ExportCsv => "export-csv",
-            CommandKind::Category => "category",
-            CommandKind::Input => "input",
+        // H1-24: an empty prompt shows what it takes, dimmed.
+        let (prompt, syntax) = match kind {
+            CommandKind::ImportCsv => (
+                "import-csv",
+                "file.csv measure-id measure-name value-col col:cat-id:cat-name \u{2026} \
+                 [--tsv] [--no-header]",
+            ),
+            CommandKind::ExportCsv => ("export-csv", "file.csv measure-id [--tsv]"),
+            CommandKind::Category => ("category", "Name: item, item, \u{2026}"),
+            CommandKind::Input => ("input", "Name: Category, Category, \u{2026}"),
         };
-        lines.push(Line::from(format!("{prompt}> {buf}")));
+        let mut line = Line::from(format!("{prompt}> {buf}"));
+        if buf.is_empty() {
+            line.push_span(dim(syntax));
+        }
+        lines.push(line);
     }
     // Under the prompt, so an edit's error shows while it is still open.
     if let Some(msg) = &app.status {
@@ -165,6 +178,11 @@ fn status_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     }
     lines.extend(help_lines(width));
     lines
+}
+
+/// `s`, dimmed: a hint, not text.
+fn dim(s: &'static str) -> Span<'static> {
+    Span::styled(s, Style::default().add_modifier(Modifier::DIM))
 }
 
 /// The `prompt` (`edit> `, or `formula> ` for a formula) and the text,
@@ -913,13 +931,42 @@ mod tests {
         let mut app = App::new(improv_core_model::Model::new()).unwrap();
         let lines = text(&draw(&mut app, 100, 30));
         row_of(&lines, "no measures yet: c adds a category");
+        // H1-24: an empty prompt shows its syntax, dimmed; typing hides it.
         app.begin_command(CommandKind::Category);
+        let buf = draw(&mut app, 120, 30);
+        let (x, y) = find(&text(&buf), "category> Name: item, item, \u{2026}");
+        assert!(buf[(x + 10, y)].modifier.contains(Modifier::DIM));
+        assert!(!buf[(x, y)].modifier.contains(Modifier::DIM));
         app.command.as_mut().unwrap().1 = "Time: Q1".into();
-        row_of(&text(&draw(&mut app, 100, 30)), "category> Time: Q1");
-        app.begin_command(CommandKind::Input);
-        row_of(&text(&draw(&mut app, 100, 30)), "input> ");
+        let lines = text(&draw(&mut app, 120, 30));
+        row_of(&lines, "category> Time: Q1");
+        assert!(!lines.iter().any(|l| l.contains("Name:")));
+        for (kind, hint) in [
+            (
+                CommandKind::Input,
+                "input> Name: Category, Category, \u{2026}",
+            ),
+            (
+                CommandKind::ExportCsv,
+                "export-csv> file.csv measure-id [--tsv]",
+            ),
+            (
+                CommandKind::ImportCsv,
+                "import-csv> file.csv measure-id measure-name",
+            ),
+        ] {
+            app.begin_command(kind);
+            row_of(&text(&draw(&mut app, 120, 30)), hint);
+        }
         app.cancel_command();
         app.begin_define();
+        let buf = draw(&mut app, 120, 30);
+        let (x, y) = find(&text(&buf), "define>   Name = formula, or Name = LAMBDA(");
+        assert!(
+            buf[(x + 8, y)].modifier.contains(Modifier::REVERSED),
+            "the caret"
+        );
+        assert!(buf[(x + 10, y)].modifier.contains(Modifier::DIM));
         app.edit = Some("X = PMT(".into());
         let lines = text(&draw(&mut app, 100, 30));
         let y = row_of(&lines, "define> X = PMT(");

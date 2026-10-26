@@ -297,7 +297,7 @@ Help ▸ Keys (the tour's "Keyboard" section) and Help ▸ User Guide (open
 the published URL). **Files:** `crates/gui/src/menu.rs`,
 `crates/gui/src/app.rs`.
 
-**H1-24 TUI: the `c`, `n` and `=` prompts show no syntax.**
+**[fixed: `fix(tui): an empty prompt shows its syntax (H1-24)`] H1-24 TUI: the `c`, `n` and `=` prompts show no syntax.**
 *Recognition rather than recall.* `category>` and `input>` give no hint
 that `Month: Jan, Feb, Mar` or `Spent: Line, Month` is wanted. The forms
 are only in the man page. **Fix:** a dim example after an empty prompt
