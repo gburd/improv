@@ -312,7 +312,7 @@ name (one lookup, `measure_by_name`). **Files:** `crates/cli/src/main.rs`
 
 ### 1: cosmetic
 
-**H1-26 TUI:** after `u`, the cursor moves one row up (Fun → Utilities).
+**[fixed: `fix(tui): undo keeps the cursor on its cell (H1-26)`] H1-26 TUI:** after `u`, the cursor moves one row up (Fun → Utilities).
 Keep the cursor cell. `crates/tui/src/app.rs` (`travel`, `relayout`).
 
 **H1-27 GUI, TUI:** both refuse `1,500`, and the TUI refuses `$1500`

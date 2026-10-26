@@ -71,6 +71,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   a category's: `c Spent: a` made a category `Spent` beside the measure.
   Both prompts now refuse a name a category, measure or LAMBDA has, as the
   GUI does (H1-19).
+- **Undo in the TUI keeps the cursor on its cell.** In a pivoted grid
+  whose rows outnumber the natural layout's, `u` moved the cursor up a row
+  (H1-26).
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

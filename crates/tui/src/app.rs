@@ -1492,8 +1492,8 @@ impl App {
     }
 
     /// Swap in the model from the undo (`back`) or the redo stack, moving
-    /// the current one onto the other. The layout stays while the viewed
-    /// measure still has the same categories.
+    /// the current one onto the other. The layout and the cursor stay while
+    /// the viewed measure still has the same categories (H1-26).
     fn travel(&mut self, back: bool) {
         let (from, to, verb, done) = if back {
             (&mut self.undo_stack, &mut self.redo_stack, "undo", "undone")
@@ -1514,6 +1514,9 @@ impl App {
             self.filters.clone(),
             self.page_idx.clone(),
         );
+        // The rebuild lays out the natural axes, which clamps the cursor to
+        // their size: keep it to put back with the layout.
+        let cursor = (self.cursor_row, self.cursor_col);
         let built = self.rebuild(None);
         let natural = self.natural_axis_order();
         if self.viewed_measure() == viewed
@@ -1521,6 +1524,7 @@ impl App {
             && natural.iter().all(|c| layout.0.contains(c))
         {
             (self.axis_order, self.filters, self.page_idx) = layout;
+            (self.cursor_row, self.cursor_col) = cursor;
             self.reselect();
         }
         self.status = Some(match built {
@@ -2922,6 +2926,28 @@ pub(crate) mod tests {
         app.apply_edit(1, 1, 1.0).unwrap();
         app.redo();
         assert_eq!(app.status.as_deref(), Some("nothing to redo"));
+    }
+
+    /// H1-26: undo keeps the cursor on its cell in a pivoted grid whose
+    /// row axis is longer than the natural one's (Fun stayed Fun, not
+    /// Utilities).
+    #[test]
+    fn undo_keeps_the_cursor_cell() {
+        let mut m = revenue_model();
+        m.add_item(ItemId(22), CategoryId(2), "WidgetC");
+        let mut app = App::new(m).unwrap();
+        view(&mut app, MeasureId(101));
+        app.pivot();
+        assert_eq!(app.grid.n_rows(), 3, "rows: Product");
+        app.cursor_row = 2;
+        app.cursor_col = 1;
+        app.apply_edit(2, 1, 4.0).unwrap();
+        app.undo();
+        assert_eq!((app.cursor_row, app.cursor_col), (2, 1));
+        assert_eq!(app.grid.rows[app.cursor_row].1, "WidgetC");
+        app.redo();
+        assert_eq!((app.cursor_row, app.cursor_col), (2, 1));
+        assert_eq!(app.grid.value_at(2, 1), Some(4.0));
     }
 
     #[test]
