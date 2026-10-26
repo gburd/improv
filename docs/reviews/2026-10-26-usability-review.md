@@ -148,7 +148,7 @@ changed). At the least, show "modified" in the status title and save on
 SIGHUP/SIGTERM. **Files:** `crates/tui/src/main.rs` (`run`, `quit`),
 `crates/tui/src/app.rs` (`save`, `record_history`).
 
-**H1-6 GUI: an input measure always ranges over every category.**
+**[fixed: `fix(gui): Add Input Measure takes Name: Category, Category (H1-6)`, `feat(gui): the Info panel changes an input measure's categories (H1-6)`] H1-6 GUI: an input measure always ranges over every category.**
 *Flexibility; match with the real world.* Worksheet ▸ Add Input Measure
 gives `Budget` both Month and Line. The tutorial's Budget (per line) and
 Income (per month) cannot be built, and dimensions cannot be changed

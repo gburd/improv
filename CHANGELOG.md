@@ -97,7 +97,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   `Tax:` a single cell. Every input measure ranged over every category,
   so the budget tutorial's `Budget` (per line) could not be built, and
   `Spent: Month, Line` made a measure of that name. A name with a comma,
-  an unknown or a repeated category is refused (H1-6).
+  an unknown or a repeated category is refused (H1-6). The Info panel now
+  has a box per category for an input measure, to add or drop one: an
+  added category puts the cells at its first item, a dropped one keeps the
+  cells at its first item, and the formulas that read the measure take
+  their new shape (a change that breaks one is refused). One undo step.
 - **`improv set` refuses a formula measure, and a stored cell of one no
   longer panics the engine.** `set` on a derived measure was accepted and
   saved, and every later `eval` of the model panicked ("a session per input

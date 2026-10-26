@@ -101,7 +101,13 @@ The window has five regions:
   underlined (see [Formula errors](#formula-errors)).
 - **Info panel** (window, top right of the workspace, closed at start) —
   opened by **Info ▸ Info Panel…**: the selected measure's id, kind, value
-  type, dimensions, dependencies, and formula. Its close box closes it.
+  type, dimensions, dependencies, and formula. An input measure has a box
+  per category, checked for its dimensions: check one to add it (the
+  cells go to its first item), uncheck one to drop it (the cells at its
+  first item stay, the rest go; the status line counts them). The
+  formulas that read the measure take their new shape, and a change that
+  would break one is refused with the reason. It is one undo step. Its
+  close box closes it.
 - **Status bar** (bottom) — the last action's outcome (`saved model`,
   `recalculated`, `undo`, `added Margin`, or an error) on the left, cleared
   after 5 seconds, and the selection's **Sum** on the right. While the

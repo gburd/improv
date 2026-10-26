@@ -806,7 +806,14 @@ impl Matrix {
             self.cursor_row = 0;
             self.cursor_col = 0;
             self.anchor = None;
-        } else if self.page_idx.len() != self.page_cats(model).len() {
+        } else {
+            // A dimension the measure gained (the Info panel, a re-import)
+            // joins the pages, so every cell stays fully specified.
+            for c in natural_axis_order(model, self.measure) {
+                if !self.axis_order.contains(&c) {
+                    self.axis_order.push(c);
+                }
+            }
             // Keep page_idx sized to the current page-dimension count.
             let n = self.page_cats(model).len();
             self.page_idx.resize(n, 0);
@@ -3438,6 +3445,47 @@ fn check_engine(model: &mut Model) -> Result<(), String> {
     try_build_engine(&structure_of(model)).map(drop)
 }
 
+/// Give each formula that reads `changed` (directly or not) the categories
+/// it now ranges over, as [`ImprovApp::add_derived_measure`] gave them, after
+/// `changed`'s categories did. A formula that no longer compiles is the
+/// error, named.
+fn reshape_dependents(model: &mut Model, changed: MeasureId) -> Result<(), String> {
+    let mut ids: Vec<MeasureId> = model
+        .measures
+        .values()
+        .filter(|m| m.is_derived() && m.id != changed)
+        .filter(|m| model.measure_dependency_closure(&[m.id]).contains(&changed))
+        .map(|m| m.id)
+        .collect();
+    ids.sort_by_key(|m| m.0);
+    // A formula reads the shapes of others: as many passes as formulas settle it.
+    for _ in 0..=ids.len() {
+        let mut moved = Vec::new();
+        for &id in &ids {
+            let m = &model.measures[&id];
+            let MeasureKind::Derived(f) = &m.kind else {
+                continue;
+            };
+            let (_, cats) = improv_engine::compiler::derived_shape(model, id, &m.name.0, f)
+                .map_err(|e| format!("{}: {e}", m.name.0))?;
+            let same =
+                cats.len() == m.categories.len() && cats.iter().all(|c| m.categories.contains(c));
+            if !same {
+                moved.push((id, cats));
+            }
+        }
+        if moved.is_empty() {
+            break;
+        }
+        for (id, cats) in moved {
+            if let Some(m) = model.measures.get_mut(&id) {
+                m.categories = cats;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// `model` without its input cells: what a structural change edits, and
 /// a copy in microseconds where the cells take 140 ms at 1M (H3). The
 /// cells are lent out for the copy, so a field `Model` gains is copied too.
@@ -4326,6 +4374,96 @@ impl ImprovApp {
         Ok(msg)
     }
 
+    /// The Info panel's category boxes (H1-6): make input measure `id` range
+    /// over `cats`. A category added puts the measure's cells at its first
+    /// item; one removed keeps the cells at its first item and drops the
+    /// rest. The formulas that read the measure take their new shape, and
+    /// one that no longer compiles refuses the change. One undoable,
+    /// autosaved step; on failure nothing changes.
+    pub fn set_input_categories(
+        &mut self,
+        id: MeasureId,
+        cats: Vec<CategoryId>,
+    ) -> Result<String, String> {
+        let model = &self.model;
+        let m = model
+            .measures
+            .get(&id)
+            .ok_or("the measure no longer exists")?;
+        let name = m.name.0.clone();
+        if m.is_derived() {
+            return Err(format!("{name}'s categories come from its formula"));
+        }
+        if model.sql_sources.contains_key(&id) || model.external_calls.contains_key(&id) {
+            return Err(format!("{name}'s categories come from its source"));
+        }
+        if m.categories == cats {
+            return Ok(format!("{name} is unchanged"));
+        }
+        let cat = |c: CategoryId| model.categories.get(&c);
+        // The grid lists items by id: the first is the lowest.
+        let first =
+            |c: CategoryId| cat(c).and_then(|x| x.items.iter().min_by_key(|i| i.0).copied());
+        let has_cells = model.inputs.keys().any(|(m, _)| *m == id);
+        let mut pins = Vec::new();
+        for c in cats.iter().filter(|c| !m.categories.contains(c)) {
+            let what = cat(*c).ok_or_else(|| format!("no category with id {}", c.0))?;
+            match first(*c) {
+                Some(i) => pins.push((*c, i)),
+                None if has_cells => {
+                    return Err(format!("{} has no items: add one first", what.name.0));
+                }
+                None => {}
+            }
+        }
+        let keep: Vec<(CategoryId, Option<ItemId>)> = m
+            .categories
+            .iter()
+            .filter(|c| !cats.contains(c))
+            .map(|&c| (c, first(c)))
+            .collect();
+        let moved = |at: &improv_core_model::Coordinate| {
+            let mut at = at.clone();
+            for (c, first) in &keep {
+                if at.dims.remove(c).is_some_and(|i| Some(i) != *first) {
+                    return None;
+                }
+            }
+            at.dims.extend(pins.iter().copied());
+            Some(at)
+        };
+        let mut c = (*self.model).clone();
+        let mut dropped = 0;
+        let mine: Vec<_> = c.inputs.extract_if(|(m, _), _| *m == id).collect();
+        for ((m, at), v) in mine {
+            match moved(&at) {
+                Some(at) => drop(c.inputs.insert((m, at), v)),
+                None => dropped += 1,
+            }
+        }
+        for s in c.scenarios.values_mut() {
+            let mine: Vec<_> = s.overrides.extract_if(|(m, _), _| *m == id).collect();
+            for ((m, at), v) in mine {
+                if let Some(at) = moved(&at) {
+                    s.overrides.insert((m, at), v);
+                }
+            }
+        }
+        if let Some(m) = c.measures.get_mut(&id) {
+            m.categories = cats;
+        }
+        reshape_dependents(&mut c, id)?;
+        self.publish(c)?;
+        self.after_history_restore();
+        Ok(match dropped {
+            0 => format!("{name}'s categories changed"),
+            n => format!(
+                "{name}'s categories changed; {} at other items dropped",
+                plural(n, "cell")
+            ),
+        })
+    }
+
     /// The categories `list` names, comma-separated, in its order: an
     /// unknown or repeated name is an error.
     fn categories_named(&self, list: &str) -> Result<Vec<CategoryId>, String> {
@@ -5004,6 +5142,7 @@ impl ImprovApp {
         );
         let win = crate::nxwin::NxWindow::new("info", "Info");
         let rect = anchored_rect(ctx, win.id(), rect);
+        let mut toggle: Option<(MeasureId, CategoryId, bool)> = None;
         let _ = win
             .closable(&mut open)
             .rect(rect)
@@ -5030,6 +5169,20 @@ impl ImprovApp {
                                 d.dimensions.join(" x ")
                             }
                         ));
+                        if !d.is_derived {
+                            // H1-6: a box per category; checked ones are its dimensions.
+                            let have = &self.model.measures[&d.id].categories;
+                            let mut all: Vec<_> = self.model.categories.values().collect();
+                            all.sort_by_key(|c| c.id.0);
+                            ui.horizontal_wrapped(|ui| {
+                                for c in all {
+                                    let mut on = have.contains(&c.id);
+                                    if ui.checkbox(&mut on, c.name.0.as_str()).changed() {
+                                        toggle = Some((d.id, c.id, on));
+                                    }
+                                }
+                            });
+                        }
                         if d.is_derived {
                             ui.separator();
                             ui.label(format!("depends on: {}", d.dependencies.join(", ")));
@@ -5047,6 +5200,15 @@ impl ImprovApp {
                 }
             });
         self.show_inspector = open;
+        if let Some((id, c, on)) = toggle {
+            let mut cats = self.model.measures[&id].categories.clone();
+            if on {
+                cats.push(c);
+            } else {
+                cats.retain(|x| *x != c);
+            }
+            self.status = self.set_input_categories(id, cats).unwrap_or_else(|e| e);
+        }
     }
 
     /// Help ▸ Functions… (F1): a NeXT window at the workspace's right
@@ -15151,6 +15313,120 @@ mod tests {
         );
         assert!(refuse(&mut app, "Cost: Time").contains("already"));
         assert_eq!(*app.model, before);
+    }
+
+    /// H1-6: an input measure's categories change. An added one puts the
+    /// cells at its first item, a removed one keeps the cells at its first
+    /// item; the formulas over it take their new shape, the open worksheet
+    /// shows it, and undo puts it all back.
+    #[test]
+    fn an_input_measures_categories_change_and_its_formulas_follow() {
+        let mut app = build_app(grid_2x2_model());
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        let (price, qty, rev) = (MeasureId(100), MeasureId(101), MeasureId(102));
+        let at = |pairs: &[(CategoryId, u32)]| {
+            improv_core_model::Coordinate::from_pairs(pairs.iter().map(|&(c, i)| (c, ItemId(i))))
+        };
+        let before = (*app.model).clone();
+        select(&mut app, qty);
+        app.sync_axis_state();
+        assert_eq!(
+            app.set_input_categories(qty, vec![p]).as_deref(),
+            Ok("Quantity's categories changed; 2 cells at other items dropped")
+        );
+        assert_eq!(
+            app.model.input(qty, &at(&[(p, 20)])),
+            Some(&Value::Number(100.0))
+        );
+        assert_eq!(
+            app.model.inputs.keys().filter(|(m, _)| *m == qty).count(),
+            2
+        );
+        assert_eq!(
+            app.model.measures[&rev].categories,
+            vec![p],
+            "Revenue follows"
+        );
+        let k: CoordKey = improv_engine::smallvec::smallvec![(2, 20)];
+        assert_eq!(app.values_for(rev).get(&k), Some(&1000.0));
+        // Back over Time: the cells land on its first item, 2025, and the
+        // worksheet (still on Quantity) puts Time back on its rows.
+        app.set_input_categories(qty, vec![p, t])
+            .expect("add Time back");
+        assert_eq!(
+            app.model.input(qty, &at(&[(p, 20), (t, 10)])),
+            Some(&Value::Number(100.0))
+        );
+        app.sync_axis_state();
+        assert_eq!(app.focused().row_cats(&app.model), vec![t]);
+        assert!(app.cursor_key().is_some(), "a cell is fully specified");
+        assert_eq!(
+            app.set_input_categories(qty, vec![p, t]).as_deref(),
+            Ok("Quantity is unchanged")
+        );
+        app.undo().expect("undo");
+        app.undo().expect("undo");
+        assert_eq!(*app.model, before);
+
+        // Refused: a formula's categories, an empty category over cells, a
+        // formula that would no longer compile, a category that is gone.
+        assert!(app
+            .set_input_categories(rev, vec![t])
+            .unwrap_err()
+            .contains("formula"));
+        Arc::make_mut(&mut app.model).add_category(CategoryId(3), "Region");
+        let e = app
+            .set_input_categories(price, vec![p, CategoryId(3)])
+            .unwrap_err();
+        assert_eq!(e, "Region has no items: add one first");
+        app.add_derived_measure("Prior", "PREV(Quantity, Time)")
+            .expect("Prior");
+        let e = app.set_input_categories(qty, vec![p]).unwrap_err();
+        assert!(e.starts_with("Prior: "), "{e}");
+        assert!(app.set_input_categories(qty, vec![CategoryId(9)]).is_err());
+        assert!(app.set_input_categories(MeasureId(99), vec![]).is_err());
+        assert_eq!(app.model.measures[&qty].categories, vec![t, p]);
+        // A category the worksheet never showed joins its pages.
+        Arc::make_mut(&mut app.model).add_item(ItemId(30), CategoryId(3), "North");
+        select(&mut app, price);
+        app.sync_axis_state();
+        app.set_input_categories(price, vec![p, CategoryId(3)])
+            .expect("Price over Region");
+        app.sync_axis_state();
+        assert_eq!(app.page_cats(), vec![CategoryId(3)]);
+        assert!(app.cursor_key().is_some(), "a cell is fully specified");
+    }
+
+    /// H1-6: the Info panel shows a box per category for an input measure;
+    /// unchecking one takes it out of the measure's categories.
+    #[test]
+    fn the_info_panel_changes_an_input_measures_categories() {
+        let (mut app, mut desk) = grid_desk();
+        app.show_inspector = true;
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        let info = crate::nxwin::stored_rect(&desk.ctx, panel_win("info")).expect("Info shown");
+        let time = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == "Time" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .find(|r| info.contains_rect(*r))
+            .expect("a Time box in the Info panel");
+        desk.click(&mut app, time.center());
+        assert_eq!(
+            app.model.measures[&MeasureId(101)].categories,
+            vec![CategoryId(2)]
+        );
+        assert!(
+            app.status.starts_with("Quantity's categories changed"),
+            "{}",
+            app.status
+        );
     }
 
     /// Bad names are refused with a reason and change nothing.
