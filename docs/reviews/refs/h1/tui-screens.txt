@@ -1,0 +1,77 @@
+== open budget.db (100x24): starts on the first derived measure, Left
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Left [derived]   rows: Month  cols: Line   cell [Jan, Rent] = 0   Sum 0                           │
+│Left = Budget minus Spent                                                                         │
+│arrows/click: move  Shift+arrows: range  e/Enter: edit  Tab (formula): complete  [ ]: page        │
+│p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  I: import-csv  E: export-csv        │
+│c: category/items  n: input measure  =: define  w: save  R: revert  u/Ctrl+R: undo/redo           │
+│?/F1: functions  q: quit                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Improv ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Month          Rent         Groceries    Utilities    Fun                                         │
+│Jan            0            -40          -30          120                                         │
+│Feb            0            25           -10          0                                           │
+│Mar            0            10           40           50                                          │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+│                                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+== v (Spending), e on Rent/Jan: the edit line is pre-filled, typed digits append
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Spent [input]   rows: Line  cols: Month   cell [Rent, Jan] = 1500   Sum 1500                      │
+│edit> 1500                                                                                        │
+│arrows/click: move  Shift+arrows: range  e/Enter: edit  Tab (formula): complete  [ ]: page        │
+│p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  I: import-csv  E: export-csv        │
+│c: category/items  n: input measure  =: define  w: save  R: revert  u/Ctrl+R: undo/redo           │
+│?/F1: functions  q: quit                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌ Improv ──────────────────────────────────────────────────────────────────────────────────────────┐
+
+== = with a typo: located error and hint
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Spent [input]   rows: Line  cols: Month   cell [Rent, Jan] = 1500   Sum 1500                      │
+│define> Saved2 = Income - SUM(Spnt OVER Line)                                                     │
+│                              ^~~~                                                                │
+│error: unknown measure: Spnt                                                                      │
+│hint: did you mean Spent?                                                                         │
+│arrows/click: move  Shift+arrows: range  e/Enter: edit  Tab (formula): complete  [ ]: page        │
+│p: pivot  f/F: filter  S: save view  v: view  Tab/m: measure  I: import-csv  E: export-csv        │
+│c: category/items  n: input measure  =: define  w: save  R: revert  u/Ctrl+R: undo/redo           │
+
+== Left (derived): Enter opens the formula in controlled English, not as typed
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Left [derived]   rows: Line  cols: Month   cell [Rent, Jan] = 0   Sum 0                           │
+│Left = Budget minus Spent                                                                         │
+│formula> Budget minus Spent                                                                       │
+│arrows/click: move  Shift+arrows: range  e/Enter: edit  Tab (formula): complete  [ ]: page        │
+
+== Spent[Fun,Feb] = 12345678901234 shows as 123456789012 in the grid (the status line has the real value)
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Spent [input]   rows: Line  cols: Month   cell [Fun, Feb] = 12345678901234   Sum 12345678901234   │
+│view: Spending                                                                                    │
+┌ Improv ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Line           Jan          Feb          Mar                                                      │
+│Rent           1500         1500         1500                                                     │
+│Groceries      640          575          590                                                      │
+│Utilities      230          210          160                                                      │
+│Fun            180          123456789012 250                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+== Enter on a derived cell, type 5, Enter: Left's formula is replaced by the constant 5; every cell goes blank
+┌ Status ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Left [derived]   rows: Month  cols: Line   cell [Jan, Rent] =    Sum —                            │
+│Left = 5                                                                                          │
+┌ Improv ──────────────────────────────────────────────────────────────────────────────────────────┐
+│Month          Rent         Groceries    Utilities    Fun                                         │
+│Jan                                                                                               │
+│Feb                                                                                               │
+│Mar                                                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────┘
