@@ -61,6 +61,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   An engine that fails to build now says so in the status bar.
   A cell edit in the first moments of a rebuild no longer waits for the
   build to copy the model (up to 160 ms at 1M cells).
+- **The GUI opens its window before the model has loaded** (H3). The
+  store is read on a thread of its own, behind a desk (and title) that say
+  "Loading…"; then the model shows and its engine builds. A 1M-cell
+  Mentat store opened its window after 6.2–6.4 s, now after 0.2–0.3 s
+  (opening the store). A path that cannot be opened still fails before
+  any window; a store that opens but cannot be read says so in the status
+  line and leaves an in-memory model, so nothing is saved over it.
 - **A container image**, `ghcr.io/gburd/improv`, from the next release on:
   `improv-server` and the `improv` CLI (`Containerfile`), as an
   unprivileged user, refusing to start without a token. The release job

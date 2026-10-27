@@ -121,6 +121,12 @@ until [[ -n $win ]]; do
 	sleep 0.2
 	win=$(xdotool search --name Improv 2>/dev/null | head -n1 || true)
 done
+# The model loads behind the open window (its title ends "Loading…").
+until ! xdotool getwindowname "$win" | grep -q 'Loading…'; do
+	kill -0 "$gui_pid" 2>/dev/null || die "improv-gui exited: $(cat "$tmp/gui.log")"
+	((SECONDS < deadline)) || die "timed out waiting for the model to load"
+	sleep 0.2
+done
 xdotool windowmove "$win" 0 0 windowsize "$win" "$w" "$h"
 sleep "${GUI_SHOT_SETTLE:-3}"
 kill -0 "$gui_pid" 2>/dev/null || die "improv-gui exited: $(cat "$tmp/gui.log")"

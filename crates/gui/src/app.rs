@@ -197,6 +197,9 @@ pub struct ImprovApp {
     snapshot: Snapshot,
     /// The engine build running off the UI thread, if any (H3).
     building: Option<Build>,
+    /// The store's model, loading on a thread of its own (H3): the window
+    /// opens on an empty desk that says "Loading…" ([`Self::open`]).
+    loading: Option<mpsc::Receiver<Loaded>>,
     /// Whether builds run in the background: in the app, yes; tests build
     /// in the foreground unless they test the background path.
     background: bool,
@@ -636,6 +639,13 @@ const SAVED_AGAIN: &str = "saved: the changes that were not saved are in the sto
 
 /// How often a frame looks for a finished save.
 const SAVE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// A loaded model and the token to save it over, or why it did not load.
+type Loaded = Result<(Model, improv_store::SaveToken), String>;
+
+/// A load thread that ended without an answer (it panicked, or could not
+/// start).
+const LOAD_LOST: &str = "the load stopped";
 
 /// How often a frame looks for a finished build.
 const BUILD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -1390,20 +1400,36 @@ impl Matrix {
 }
 
 impl ImprovApp {
-    /// Load a model from the store at `db` (`""` = fresh in-memory model) and
-    /// start building the live engine over its derived measures (in the
-    /// background, see [`Self::rebuild_engine`]).
-    pub fn load(db: &str) -> Result<ImprovApp, String> {
-        let (model, save_token) = if db.is_empty() {
-            (Model::new(), improv_store::SaveToken::default())
+    /// Open the store at `db` (`""` = a fresh in-memory model) and load its
+    /// model on a thread of its own (H3): at 1M cells that takes seconds, so
+    /// the window opens at once on an empty desk that says "Loading…", and the
+    /// model, then its engine, follow ([`Self::poll_load`]). A store that
+    /// cannot be opened is the error here, before any window; one that opens
+    /// but does not load says so in the status line, and the window carries on
+    /// in memory.
+    pub fn open(db: &str) -> Result<ImprovApp, String> {
+        let loading = if db.is_empty() {
+            None
         } else {
             let mut store = Store::open(db).map_err(|e| e.to_string())?;
-            let model = store.load_model().map_err(|e| e.to_string())?;
-            (model, store.save_token())
+            let (tx, rx) = mpsc::channel();
+            // A failed spawn drops `tx`: the load lands as LOAD_LOST. The
+            // engine's stack: a stored formula parses recursively.
+            let _ = std::thread::Builder::new()
+                .name("improv-gui-load".into())
+                .stack_size(improv_engine::dataflow::ENGINE_STACK)
+                .spawn(move || {
+                    let loaded = store
+                        .load_model()
+                        .map(|m| (m, store.take_save_token()))
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(loaded);
+                });
+            Some(rx)
         };
-
-        let selected = pick_default_measure(&model);
-        let matrices = vec![Matrix::new(&model, selected)];
+        let model = Model::new();
+        let save_token = improv_store::SaveToken::default();
+        let matrices = vec![Matrix::new(&model, None)];
 
         let mut app = ImprovApp {
             db: db.to_string(),
@@ -1419,6 +1445,7 @@ impl ImprovApp {
             engine: None,
             snapshot: Snapshot::default(),
             building: None,
+            loading: None,
             background: BACKGROUND,
             matrices,
             focus: 0,
@@ -1467,10 +1494,76 @@ impl ImprovApp {
             queued_import: None,
             desk: egui::vec2(INITIAL_WINDOW[0], INITIAL_WINDOW[1]),
         };
-        app.open_first_view();
-        // The window opens on the inputs; the formulas follow (H3).
-        app.rebuild_engine();
+        app.loading = loading;
+        if app.loading.is_none() {
+            app.install(Model::new(), improv_store::SaveToken::default());
+        }
         Ok(app)
+    }
+
+    /// [`Self::open`], then wait for the model: a load failure is the error.
+    #[cfg(test)]
+    pub fn load(db: &str) -> Result<ImprovApp, String> {
+        let mut app = Self::open(db)?;
+        app.finish_load()?;
+        Ok(app)
+    }
+
+    /// Wait for the load in flight, if any, and install its model.
+    fn finish_load(&mut self) -> Result<(), String> {
+        let Some(rx) = self.loading.take() else {
+            return Ok(());
+        };
+        let (model, token) = rx.recv().unwrap_or_else(|_| Err(LOAD_LOST.into()))?;
+        self.install(model, token);
+        Ok(())
+    }
+
+    /// Each frame while loading: install the model once it is in, and keep
+    /// frames coming until then. A failed load says so and leaves an
+    /// in-memory model, so nothing is saved over the store it could not read.
+    fn poll_load(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.loading else {
+            return;
+        };
+        let loaded = match rx.try_recv() {
+            Ok(loaded) => loaded,
+            Err(mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(BUILD_POLL);
+                return;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(LOAD_LOST.into()),
+        };
+        self.loading = None;
+        ctx.request_repaint();
+        match loaded {
+            Ok((model, token)) => self.install(model, token),
+            Err(e) => {
+                eprintln!("improv-gui: {}: {e}", self.db);
+                self.status = format!("could not open {}: {e}", self.db);
+                self.db.clear();
+            }
+        }
+    }
+
+    /// Show `model`, loaded with `token`, on a fresh canvas: its first view's
+    /// worksheets, or its first measure, with nothing to undo. The window
+    /// opens on the inputs; the engine follows in the background (H3).
+    fn install(&mut self, model: Model, token: improv_store::SaveToken) {
+        let selected = pick_default_measure(&model);
+        self.matrices = vec![Matrix::new(&model, selected)];
+        self.focus = 0;
+        self.held.clear();
+        self.model = Arc::new(model);
+        self.save_token = token;
+        // Anything asked for while it loaded changed the empty model, and
+        // was never saved ([`Self::writable`]).
+        self.unsaved = Default::default();
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.dirty = false;
+        self.open_first_view();
+        self.rebuild_engine();
     }
 
     /// Open the first saved view in id order, if there is one (H1-34).
@@ -3037,6 +3130,8 @@ impl ImprovApp {
     fn writable(&self) -> Result<(), String> {
         if self.db.is_empty() {
             Ok(())
+        } else if self.loading.is_some() {
+            Err("the model is still loading: nothing was changed".into())
         } else if self.save_lost {
             Err(SAVE_LOST.into())
         } else if self.outside.is_some() {
@@ -4450,6 +4545,16 @@ impl ImprovApp {
     /// windows (which float on the context).
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
+        self.poll_load(ctx);
+        if self.loading.is_some() {
+            // The menu (Quit, Hide), the status bar and a placeholder desk.
+            self.sync_native_title(ctx);
+            self.handle_command_keys(ctx);
+            self.status_bar(ui);
+            let ws = self.canvas_panel(ui);
+            self.menu_bar(ctx, ws);
+            return;
+        }
         self.run_queued_import(ctx);
         self.poll_saves(ctx);
         // The close box waits for the running save, and warns once if a
@@ -4545,6 +4650,9 @@ impl ImprovApp {
 
     /// Whether `c` can run now: the menu draws the rest disabled.
     fn command_enabled(&self, c: Command) -> bool {
+        if self.loading.is_some() {
+            return matches!(c, Command::Quit | Command::Hide | Command::UserGuide);
+        }
         match c {
             Command::Undo => self.can_undo(),
             Command::Redo => self.can_redo(),
@@ -4810,7 +4918,10 @@ impl ImprovApp {
                     .into(),
             );
         }
-        let mut next = ImprovApp::load(path)?;
+        let mut next = ImprovApp::open(path)?;
+        if new || !self.background {
+            next.finish_load()?;
+        }
         if new && !(next.model.categories.is_empty() && next.model.measures.is_empty()) {
             return Err(format!("{path} already holds a model; use File ▸ Open…"));
         }
@@ -6608,7 +6719,10 @@ impl ImprovApp {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(self.selection_readout())
                             .on_hover_text("aggregate of the focused matrix's selection");
-                        if self.building.is_some() {
+                        if self.loading.is_some() {
+                            ui.label("Loading…")
+                                .on_hover_text("the model opens when its store has been read");
+                        } else if self.building.is_some() {
                             ui.label("Recalculating…")
                                 .on_hover_text("the grid shows the last results until then");
                         }
@@ -6673,10 +6787,15 @@ impl ImprovApp {
                     if self.model.measures.is_empty() {
                         // Right of the menu, where a first worksheet would open (H1-13).
                         let at = ui.max_rect().min + egui::vec2(MENU_CLEAR, 8.0);
+                        let loading = format!("Loading {}…", self.file_name());
                         ui.painter().text(
                             at,
                             egui::Align2::LEFT_TOP,
-                            EMPTY_HINT,
+                            if self.loading.is_some() {
+                                &loading
+                            } else {
+                                EMPTY_HINT
+                            },
                             egui::TextStyle::Body.resolve(ui.style()),
                             crate::theme::WHITE,
                         );
@@ -6777,12 +6896,18 @@ impl ImprovApp {
         }
     }
 
-    /// The native window title: `Improv — <file>`, plus ` •` while dirty.
-    fn native_title(&self) -> String {
+    /// The native window title: `Improv — <file>`, plus ` •` while dirty,
+    /// and ` — Loading…` while the model loads.
+    pub(crate) fn native_title(&self) -> String {
         format!(
-            "Improv — {}{}",
+            "Improv — {}{}{}",
             self.file_name(),
-            if self.dirty { " •" } else { "" }
+            if self.dirty { " •" } else { "" },
+            if self.loading.is_some() {
+                " — Loading…"
+            } else {
+                ""
+            }
         )
     }
 
@@ -8549,6 +8674,7 @@ mod tests {
             engine,
             snapshot,
             building: None,
+            loading: None,
             background: BACKGROUND,
             matrices,
             focus: 0,
@@ -18309,8 +18435,38 @@ mod tests {
             println!("H3 engine build: {:.0} ms", ms(t));
             app
         } else {
-            let mut app = ImprovApp::load(&db).expect("load");
-            println!("H3 ImprovApp::load (store + engine): {:.0} ms", ms(t));
+            // As the app opens: the window waits only for `open`; the model
+            // loads behind a "Loading…" desk, painted meanwhile.
+            let mut app = ImprovApp::open(&db).expect("open");
+            println!("H3 ImprovApp::open (before the window): {:.0} ms", ms(t));
+            app.background = true;
+            let ctx = egui::Context::default();
+            crate::theme::apply(&ctx);
+            let (mut worst, mut frames) = (0.0f64, 0);
+            while app.loading.is_some() || app.building.is_some() {
+                let f = Instant::now();
+                let was = app.loading.is_some();
+                let _ = full_frame(&ctx, &mut app, egui::vec2(1400.0, 900.0), 0.0);
+                if ms(f) > 50.0 {
+                    println!(
+                        "H3   slow frame {frames}: {:.0} ms ({})",
+                        ms(f),
+                        if was {
+                            "the model lands"
+                        } else {
+                            "the first layout of its grid"
+                        }
+                    );
+                }
+                worst = worst.max(ms(f));
+                frames += 1;
+                std::thread::sleep(std::time::Duration::from_millis(16));
+            }
+            println!(
+                "H3 the model and its engine are in after {:.0} ms; longest frame meanwhile {worst:.1} ms over {frames}",
+                ms(t)
+            );
+            app.background = false;
             let t = Instant::now();
             app.rebuild_engine();
             println!(
@@ -18667,6 +18823,98 @@ mod tests {
         Store::open(db)
             .and_then(|mut s| s.load_model())
             .expect("reopen")
+    }
+
+    /// H3: the window opens before the model has loaded. The desk says
+    /// "Loading…" (the status bar, the title and the empty desk), every
+    /// command but Quit, Hide and User Guide is off, an edit asked for is
+    /// refused and nothing reaches the store; once it lands the model's
+    /// first view shows and its engine builds.
+    #[test]
+    fn the_window_opens_while_the_model_loads() {
+        let db = temp_db("h3_open");
+        let _cleanup = Cleanup(db.clone());
+        let mut seeded = grid_2x2_model();
+        seeded.add_view(View {
+            id: ViewId(1),
+            name: Name("Quantity by year".into()),
+            measure: MeasureId(101),
+            axis_order: vec![CategoryId(1), CategoryId(2)],
+            n_rows: 1,
+            n_cols: 1,
+            page_items: vec![],
+            filters: vec![],
+            rect: CanvasRect::default(),
+            placements: vec![],
+        });
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&seeded))
+            .expect("seed");
+        let mut app = ImprovApp::open(&db).expect("open");
+        // Hold the answer back: this is the load still running.
+        let rx = app.loading.take().expect("loading");
+        let (tx, held) = mpsc::channel();
+        app.loading = Some(held);
+        let mut desk = Desk::new();
+        let out = desk.frame(&mut app, Vec::new());
+        assert!(text_at(&out.shapes, "Loading…").is_some(), "the status bar");
+        let name = app.file_name().to_owned();
+        assert!(text_at(&out.shapes, &format!("Loading {name}…")).is_some());
+        assert!(app.native_title().ends_with("Loading…"));
+        assert!(!app.command_enabled(Command::SaveModel));
+        assert!(app.command_enabled(Command::Quit));
+        let (q, rev) = q_and_rev_keys();
+        assert!(app
+            .set_cell(MeasureId(101), q.clone(), Value::Number(1.0))
+            .is_err());
+        assert!(app.add_named(NewThing::Category, "Region").is_err());
+        // The edit asked for while loading changed nothing in the store.
+        tx.send(rx.recv().expect("loaded")).expect("send");
+        desk.settle(&mut app);
+        assert!(app.loading.is_none());
+        assert_eq!(*app.model, seeded, "installed whole");
+        assert_eq!(app.current_view, Some(ViewId(1)), "its first view");
+        assert!(!app.dirty && !app.can_undo());
+        app.finish_build();
+        assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("1000"));
+        assert_eq!(stored_model(&db), seeded);
+        let out = desk.frame(&mut app, Vec::new());
+        assert!(text_at(&out.shapes, "Loading…").is_none());
+        // Edits save over the token the load took.
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(2.0))
+            .expect("saves");
+        assert_eq!(*app.model, stored_model(&db));
+    }
+
+    /// H3: a store that opens but does not load (a load thread that dies,
+    /// or a read error) says so and leaves an in-memory model, so nothing is
+    /// saved over the store it could not read; a store that cannot be opened
+    /// at all is still the error before any window.
+    #[test]
+    fn a_failed_background_load_says_so_and_saves_nothing() {
+        let db = temp_db("h3_badload");
+        let _cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::open(&db).expect("open");
+        drop(app.loading.take());
+        let (tx, rx) = mpsc::channel::<Loaded>();
+        drop(tx);
+        app.loading = Some(rx);
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        assert!(app.status.contains(LOAD_LOST), "{}", app.status);
+        assert!(app.status.starts_with("could not open"), "{}", app.status);
+        assert!(app.db.is_empty(), "in memory now");
+        assert_eq!(stored_model(&db), grid_2x2_model(), "the store untouched");
+        let mut bad = ImprovApp::open(&db).expect("open");
+        let (tx, rx) = mpsc::channel::<Loaded>();
+        tx.send(Err("boom".into())).expect("send");
+        bad.loading = Some(rx);
+        assert_eq!(bad.finish_load(), Err("boom".into()));
+        assert!(ImprovApp::open("/nonexistent-dir-improv/x.db").is_err());
+        assert!(ImprovApp::load("/nonexistent-dir-improv/x.db").is_err());
     }
 
     /// H3: saves run on the save thread, one at a time and in order. Two

@@ -54,7 +54,9 @@ fn main() -> eframe::Result<()> {
     // No model is "": an in-memory scratch model.
     let db = args::Cli::parse().model.unwrap_or_default();
 
-    let app = match ImprovApp::load(&db) {
+    // The store opens here (a bad path fails before any window); its model
+    // loads in the background, behind a "Loading…" desk.
+    let app = match ImprovApp::open(&db) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("improv-gui: {e}");
@@ -64,6 +66,7 @@ fn main() -> eframe::Result<()> {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
+            .with_title(app.native_title())
             .with_inner_size(app::INITIAL_WINDOW)
             .with_min_inner_size(app::MIN_WINDOW),
         ..Default::default()

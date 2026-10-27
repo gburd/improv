@@ -130,6 +130,9 @@ The window has five regions:
   after 5 seconds, and the selection's **Sum** on the right. While the
   formulas recompute after a structural change (a new or edited formula,
   an import, its undo, opening a model), it also says **Recalculating…**.
+  While a model opens, the window shows at once and says **Loading…** (the
+  desk and the title too) until its store has been read; only Quit, Hide
+  and User Guide work until then.
   That takes a second or two at a million cells. The window keeps
   responding: the grid shows the last results until the new ones are
   ready, and cell edits made meanwhile are applied to them.
