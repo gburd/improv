@@ -4972,6 +4972,8 @@ impl ImprovApp {
         self.db = path.to_owned();
         self.save_token = store.take_save_token();
         self.unsaved = Default::default();
+        // The new store has everything; what the old one refused is moot.
+        (self.save_failed, self.save_lost, self.save_wanted) = (false, false, false);
         self.outside = None;
         self.dirty = false;
         Ok(())
@@ -18726,6 +18728,121 @@ mod tests {
         assert!(fast.windows(2).all(|w| w[0].1 < w[1].1), "{fast:?}");
     }
 
+    /// H3's Postgres probe: the model at `IMPROV_GUI_H3_PG` (the 2.5M-row
+    /// model of `crates/pg_improv/tests/scale.sh`, its measures bound to the
+    /// fact table with `count` and `count_distinct`, so read-only), as the
+    /// app opens it: the store open before the window, the load and engine
+    /// behind it, then frames idle, scrolling and pivoted, and a new formula
+    /// and its undo (structural saves to Postgres, on the save thread).
+    /// `cargo test --release -p improv_gui h3_pg -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "stress probe: needs IMPROV_GUI_H3_PG"]
+    fn h3_pg_probe() {
+        use std::time::Instant;
+        let Ok(url) = std::env::var("IMPROV_GUI_H3_PG") else {
+            return println!("skipped: IMPROV_GUI_H3_PG not set");
+        };
+        let ms = |t: Instant| t.elapsed().as_secs_f64() * 1e3;
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx);
+        let size = egui::vec2(1400.0, 900.0);
+        let mut time = 0.0;
+        let mut frame = |app: &mut ImprovApp, events: Vec<egui::Event>| -> f64 {
+            time += 1.0 / 60.0;
+            let t = Instant::now();
+            let out = full_frame_with(&ctx, app, size, time, events, |_| ());
+            let _ = ctx.tessellate(out.shapes, out.pixels_per_point);
+            ms(t)
+        };
+        let t = Instant::now();
+        let mut app = ImprovApp::open(&url).expect("open");
+        println!("H3pg ImprovApp::open (before the window): {:.0} ms", ms(t));
+        app.background = true;
+        let (mut worst, mut frames) = (0.0f64, 0);
+        let mut loaded_at = None;
+        while app.loading.is_some() || app.building.is_some() {
+            let f = frame(&mut app, Vec::new());
+            if f > 50.0 {
+                println!("H3pg   slow frame {frames}: {f:.0} ms at {:.0} ms", ms(t));
+            }
+            worst = worst.max(f);
+            frames += 1;
+            if loaded_at.is_none() && app.loading.is_none() {
+                loaded_at = Some(ms(t));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        println!(
+            "H3pg model in after {:.0} ms, engine after {:.0} ms; longest frame meanwhile {worst:.1} ms over {frames}",
+            loaded_at.unwrap_or_default(),
+            ms(t)
+        );
+        let cells = app.model.inputs.len();
+        let n = app.model.measure_by_name("N").expect("N").id;
+        let items: usize = app.model.categories.values().map(|c| c.items.len()).sum();
+        println!("H3pg cells: {cells}, items: {items}");
+        select(&mut app, n);
+        app.sync_axis_state();
+        for _ in 0..5 {
+            frame(&mut app, Vec::new());
+        }
+        let idle: Vec<f64> = (0..30).map(|_| frame(&mut app, Vec::new())).collect();
+        let table = app.matrices[0].gutters.expect("rendered").table;
+        let over = egui::Event::PointerMoved(table.center());
+        let wheel = |d: egui::Vec2| egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: d,
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Unknown,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![over.clone()]);
+        let down: Vec<f64> = (0..60)
+            .map(|_| frame(&mut app, vec![over.clone(), wheel(egui::vec2(0.0, -120.0))]))
+            .collect();
+        let right: Vec<f64> = (0..60)
+            .map(|_| frame(&mut app, vec![over.clone(), wheel(egui::vec2(-120.0, 0.0))]))
+            .collect();
+        let t = Instant::now();
+        app.pivot_rotate();
+        let pivot_call = ms(t);
+        let pivot_first = frame(&mut app, Vec::new());
+        let pivoted: Vec<f64> = (0..30).map(|_| frame(&mut app, Vec::new())).collect();
+        println!("H3pg pivot call {pivot_call:.1} ms, first frame after {pivot_first:.1} ms");
+        for (what, v) in [
+            ("idle", idle),
+            ("scroll down", down),
+            ("scroll right", right),
+            ("pivoted", pivoted),
+        ] {
+            let (med, p95, max) = frame_stats(v);
+            println!("H3pg frame {what}: median {med:.1} ms, p95 {p95:.1}, max {max:.1} ({:.0} fps at the median)", 1e3 / med);
+        }
+        let mut stalls = |app: &mut ImprovApp, what: &str, act: &mut dyn FnMut(&mut ImprovApp)| {
+            let t = Instant::now();
+            act(app);
+            let call = ms(t);
+            let (mut worst, mut frames) = (0.0f64, 0);
+            while app.building.is_some() || app.saving.is_some() {
+                worst = worst.max(frame(app, Vec::new()));
+                frames += 1;
+                std::thread::sleep(std::time::Duration::from_millis(8));
+            }
+            assert!(!app.dirty, "{what}: saved ({})", app.status);
+            println!(
+                "H3pg {what}: call {call:.0} ms, longest frame {worst:.1} ms over {frames} frames, landed after {:.0} ms",
+                ms(t)
+            );
+        };
+        stalls(&mut app, "add a derived measure", &mut |app| {
+            app.add_derived_measure("Twice", "N * 2")
+                .expect("a formula");
+        });
+        stalls(&mut app, "undo the new formula", &mut |app| {
+            app.undo().expect("undo");
+        });
+    }
+
     /// A grid wider than its window draws only the columns on screen: the
     /// cells past the right edge are never laid out, and scrolling right
     /// brings them in (H3: 1,000 columns cost 125 ms a frame).
@@ -19166,6 +19283,36 @@ mod tests {
             stored_model(&app.db).input(MeasureId(101), &decode(&q)),
             Some(&Value::Number(9.0))
         );
+    }
+
+    /// H3: a change no save wrote is not dropped by File ▸ Open (it refuses
+    /// until the change is saved or reverted), and Save As to a new store
+    /// writes it there and clears the failure.
+    #[test]
+    fn open_refuses_and_save_as_writes_a_change_that_failed() {
+        let (mut app, _c) = saving_app("h3_open_refuse");
+        let other = temp_db("h3_open_other");
+        let _o = Cleanup(other.clone());
+        Store::open(&other)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let (q, _) = q_and_rev_keys();
+        let good = std::mem::replace(&mut app.db, "/nonexistent-dir-improv/x.db".into());
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(9.0))
+            .expect("queued");
+        let _ = app.finish_saves();
+        let e = app.switch_model(&other, false).expect_err("refused");
+        assert!(e.contains("not saved"), "{e}");
+        assert_eq!(app.cell_text(MeasureId(101), &q).as_deref(), Some("9"));
+        drop(good);
+        let fresh = temp_db("h3_save_as");
+        let _f = Cleanup(fresh.clone());
+        app.save_as(&fresh).expect("save as");
+        assert!(!app.dirty && app.unsaved.is_empty() && !app.save_failed);
+        assert_eq!(stored_model(&fresh), *app.model);
+        app.switch_model(&other, false).expect("opens now");
+        app.finish_load().expect("loaded");
+        assert_eq!(*app.model, grid_2x2_model());
     }
 
     /// H3: edits made while a save runs (cell, structure, undo) go in the
