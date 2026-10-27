@@ -35,20 +35,28 @@ criteria" are the bar. Mark tasks done there as they land.
   nothing past 10% unexplained).
 - **v0.11.0 (2026-10-25, `19211d7`):** see its CHANGELOG section and
   `docs/reviews/2026-10-25-v0.11.0-qualification.md`.
-- **J4 soak:** the first run (from 2026-10-25 19:59 UTC) passed 37 hourly
-  checks with no drift, through 224 disruptions (52 failovers, 68
-  redefinitions, 59 server and 45 worker restarts), then stopped at 36.5 h
-  when J3's `cargo pgrx install` overwrote the system PG 18's
-  `pg_improv.so` under its running clusters (SIGSEGV in every process that
-  had it mapped; a harness collision, not a pg_improv fault; log kept in
-  `~/soak72-run1/` on the box). A second run on 0.12.0 started 2026-10-27
-  13:15 UTC (72 h: to 10-30 13:15; the account expires 10-30 19:14).
-  Nothing may install into the system PG 18 while it runs.
-- **NEXT:** J4's result into the plan (and whether to rerun it on 0.12),
-  B8 step 2 (share `W`'s arrangement: 501 → < 500 B/edge), the idle
-  worker's per-poll catalog queries at 1,000 models (0.12 core at
-  `poll_ms = 50`), lowering the Linux glibc floor (build on Ubuntu 22.04),
-  a Homebrew tap (`gburd/homebrew-improv`), J6.
+- **J4 soak: skipped for now** (maintainer's call, 2026-10-27). The first
+  run (from 2026-10-25 19:59 UTC) passed 37 hourly checks with no drift
+  through 224 disruptions (52 failovers, 68 redefinitions, 59 server and
+  45 worker restarts), then stopped at 36.5 h when J3's `cargo pgrx
+  install` overwrote the system PG 18's `pg_improv.so` under its running
+  clusters (a harness collision, not a pg_improv fault). A second run on
+  0.12.0 was stopped by hand after 20 minutes.
+- **0.11's ~5% RANK edit slowdown: code layout, and gone in 0.12.**
+  Bisected on the box (the wide RANK probe at 100k items, interleaved with
+  the base): edit new-max rose in 1–2% steps at commits that do not touch
+  RANK's path, the first at `ebf3db8` (it adds `Engine::estimated_bytes`,
+  which the probe never calls); compiling that function out restores the
+  base time. Evaluate and tail edits did not move. B5 then replaced RANK's
+  path: the scale gate reads `wide.rank.edit_max` 0.26× and `edit_tail`
+  0.00× its baseline.
+- **NEXT:** the Linux glibc floor: build every Linux release artifact on
+  manylinux_2_28 (glibc 2.28, EL8) and install-test on Debian 12/13,
+  Ubuntu 22.04/24.04, EL 8/9/10 and Fedora (0.12.0's need glibc 2.39, the
+  extensions 2.35); the idle worker's per-poll catalog listing at 1,000
+  models (0.12 core at `poll_ms = 50`); J6 at 1.0. Not now: a Homebrew tap
+  (the release still attaches `improv.rb`). B8 is done (390 B/edge, warm
+  re-solve 3.5× faster); the plan's row has the numbers.
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
