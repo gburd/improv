@@ -47,7 +47,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   `.deb` and `.rpm`, pg_improv per PostgreSQL major under PGDG's names and
   paths (`postgresql-17-improv`, `postgresql17-improv`), and `improv.rb`.
   The release installs each `.deb`/`.rpm` in a clean Debian and Fedora
-  container and runs it before attaching it.
+  container and runs it before attaching it. Each declares the glibc its
+  binaries need (2.39 for `improv`, 2.35 for pg_improv), so an older
+  system refuses it at install.
 - **The GUI recalculates in the background** (H3). After a new or edited
   formula, a rename, a new category or item, an import, the undo or redo
   of any of these, Calc, Revert to Saved, or opening a model, the engine

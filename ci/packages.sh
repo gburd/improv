@@ -24,9 +24,20 @@ vendor: Improv
 homepage: https://codeberg.org/gregburd/improv
 license: MIT OR Apache-2.0
 '
+# The newest glibc symbol version FILES need (weak ones too: the loader warns
+# on every start without them). nfpm adds no shared-library dependencies, so
+# without a libc6/glibc floor apt and dnf install the package on an older
+# system, where it fails to start ("GLIBC_2.38 not found").
+glibc() {
+	local v
+	v=$(readelf -V --wide "$@" | grep -oE 'Name: GLIBC_2\.[0-9]+' | cut -d_ -f2 | sort -uV | tail -n 1)
+	[ -n "$v" ] || { echo "packages.sh: no GLIBC version needed by $*" >&2; exit 1; }
+	echo "$v"
+}
 case $kind in
 bin)
 	src=$(cd "$3" && pwd) out=$4
+	libc=$(glibc "$src"/improv "$src"/improv-tui "$src"/improv-server "$src"/improv-gui)
 	cat >"$work/nfpm.yaml" <<-EOF
 		name: improv
 		$common
@@ -51,6 +62,9 @@ bin)
 		  - { src: $src/LICENSE-APACHE, dst: /usr/share/doc/improv/LICENSE-APACHE }
 		  - { src: $src/LICENSE-MIT, dst: /usr/share/doc/improv/LICENSE-MIT }
 		  - { src: $src/README.md, dst: /usr/share/doc/improv/README.md }
+		overrides:
+		  deb: { depends: [ "libc6 (>= $libc)" ] }
+		  rpm: { depends: [ "glibc >= $libc" ] }
 	EOF
 	;;
 pg)
@@ -63,12 +77,13 @@ pg)
 	# /usr/pgsql-17/{lib,share} (yum.postgresql.org).
 	lib=$work/root/usr/lib/postgresql/$pg/lib share=$work/root/usr/share/postgresql/$pg/extension
 	test -d "$share"
+	libc=$(glibc "$lib/pg_improv.so")
 	for f in deb rpm; do
 		if [ $f = deb ]; then
-			name=postgresql-$pg-improv dep="postgresql-$pg"
+			name=postgresql-$pg-improv dep="postgresql-$pg" cdep="libc6 (>= $libc)"
 			dlib=/usr/lib/postgresql/$pg/lib dshare=/usr/share/postgresql/$pg/extension
 		else
-			name=postgresql$pg-improv dep="postgresql$pg-server"
+			name=postgresql$pg-improv dep="postgresql$pg-server" cdep="glibc >= $libc"
 			dlib=/usr/pgsql-$pg/lib dshare=/usr/pgsql-$pg/share/extension
 		fi
 		cat >"$work/nfpm-$f.yaml" <<-EOF
@@ -77,7 +92,7 @@ pg)
 			description: |-
 			  pg_improv: Improv's multidimensional models over PostgreSQL $pg tables,
 			  kept current incrementally, and LANGUAGE improv.
-			depends: [ "$dep" ]
+			depends: [ "$dep", "$cdep" ]
 			contents:
 			  - { src: $lib/, dst: $dlib/, type: tree }
 			  - { src: $share/, dst: $dshare/, type: tree }

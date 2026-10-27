@@ -7,7 +7,12 @@ guide](./getting-started.md) walks through modeling itself.
 ## Install a release
 
 From 0.12, each GitHub Release also carries packages (all x86_64 Linux,
-except the formula):
+except the formula). The Linux binaries, in the packages and the tarballs,
+are built on Ubuntu 24.04 and need glibc 2.39 or newer (Debian 13,
+Ubuntu 24.04, Fedora 40, RHEL 10); the pg_improv packages need 2.35
+(Debian 12, Ubuntu 22.04; not RHEL 9). Each package declares that floor,
+so `apt` and `dnf` refuse an older system rather than install a binary
+that will not start.
 
 | Package | Install |
 | --- | --- |
