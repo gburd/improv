@@ -42,8 +42,10 @@ criteria" are the bar. Mark tasks done there as they land.
   4 step 1 (inline `AggRow`: 556 → 501 B/edge at 10M), 6 (multi-worker
   `evaluate`: 1M cells 0.88 → 0.22 s); C3b (formulas 256 deep); J2 (crates
   declared unstable); J5 (container image, .deb/.rpm, Homebrew formula;
-  first published by the next tag); H3 (engine rebuild off the UI thread:
-  a new formula 2.4 s → ≤ 30 ms frames); H1 (the review,
+  first published by the next tag); H3 **done** (engine rebuild, saves
+  and the initial load off the UI thread: a new formula 2.4 s → ≤ 30 ms
+  frames, its undo 107 → 2 ms, the 1M-cell window opens in 0.22 s, was
+  6.3 s; a failed save keeps the edit, marked •, for the next save); H1 (the review,
   `docs/reviews/2026-10-26-usability-review.md`, 34 findings; the CLI's
   fixed); `improv-server` stops on SIGTERM. The DD review itself:
   `~/ws/improv-rescue/dd-review/REPORT.md`.
@@ -53,8 +55,7 @@ criteria" are the bar. Mark tasks done there as they land.
   moves (B5)`): the order-statistics operator; at 1M items a tail edit
   under RANK 0.82 s → 1.6 ms, a new maximum 1.22 → 0.17 s (median).
 - **NEXT:** B8 step 2 (share `W`'s
-  arrangement: 501 → < 500 B/edge), H3's two ~100–200 ms waits and the
-  background initial load, B1, the rest of H1, J4's result into the plan,
+  arrangement: 501 → < 500 B/edge), B1, the rest of H1, J4's result into the plan,
   then 0.12.0 (its release runs the new packages and container jobs for
   the first time).
 
