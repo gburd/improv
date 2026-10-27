@@ -38,7 +38,9 @@ criteria" are the bar. Mark tasks done there as they land.
   extension 2.35), so none ran on RHEL 8/9, and only pg_improv on
   Debian 12 and Ubuntu 22.04. Every Linux artifact is now built in
   manylinux_2_28 (`ci/manylinux.sh`, `ci/pg_improv-dist.sh`), checked by
-  `ci/glibc-floor.sh 2.28 3.4.25`.
+  `ci/glibc-floor.sh 2.28 3.4.25`, and `ci/install-test.sh` installs it on
+  Debian 12/13, Ubuntu 22.04/24.04, Rocky 8/9, Alma 10 and Fedora (with
+  pg_improv under PGDG's server).
 - **v0.11.0 (2026-10-25, `19211d7`):** see its CHANGELOG section and
   `docs/reviews/2026-10-25-v0.11.0-qualification.md`.
 - **J4 soak: skipped for now** (maintainer's call, 2026-10-27). The first

@@ -10,7 +10,10 @@ From 0.12, each GitHub Release also carries packages (all x86_64 Linux,
 except the formula). Every Linux artifact (the tarball, the packages,
 pg_improv and the DuckDB extension) is built on EL8 (manylinux_2_28) and
 needs glibc 2.28 or newer; `improv` also needs GCC 8's libstdc++ or newer
-(`libstdc++.so.6`). Each package declares its floor, so `apt`
+(`libstdc++.so.6`). Each release installs and runs the packages on
+Debian 12 and 13, Ubuntu 22.04 and 24.04, Rocky Linux 8 and 9, AlmaLinux
+10 and Fedora, and pg_improv under PGDG's PostgreSQL on Debian 12, Ubuntu
+22.04 and Rocky Linux 8 and 9. Each package declares its floor, so `apt`
 and `dnf` refuse an older system rather than install a binary that will
 not start. (0.12.0's own Linux artifacts need glibc 2.39, and pg_improv
 2.35.)

@@ -150,7 +150,8 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   (on a `v*` tag: qualify on four targets, all four binaries per target,
   pg_improv packages per PG major, every Linux artifact built in
   manylinux_2_28 (`ci/manylinux.sh`; glibc ≤ 2.28, GLIBCXX ≤ 3.4.25,
-  checked by `ci/glibc-floor.sh`), the GitHub Release from the CHANGELOG
+  checked by `ci/glibc-floor.sh`), the `.deb`/`.rpm` install-tested on
+  eight distributions (`ci/install-test.sh`), the GitHub Release from the CHANGELOG
   section, the PGXN upload via `pgxn.yml`, the DuckDB extension
   (`build-duckdb-ext`, linux_amd64, attached to the Release), the DuckDB
   registry bump PR (`duckdb-registry-pr`, see below), and `ci/announce.sh`

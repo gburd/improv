@@ -173,6 +173,7 @@ ci/manylinux.sh ci/pg_improv-dist.sh 17 dist      # pg_improv for PG 17
 ci/manylinux.sh make configure release test_release   # the DuckDB extension
 ci/glibc-floor.sh 2.28 3.4.25 target/manylinux/x86_64-unknown-linux-gnu/release/improv
 ci/packages.sh bin X.Y.Z <staging-dir> pkg        # and `pg` per major; needs nfpm
+ci/install-test.sh X.Y.Z pkg                      # every distribution, or name some
 ```
 
 The `release` job runs `ci/release-attest.sh` on the downloaded artifacts

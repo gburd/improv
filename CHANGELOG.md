@@ -19,6 +19,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   same tarball layout). Everything needs at most glibc 2.28 and
   GLIBCXX_3.4.25, which `ci/glibc-floor.sh` checks on each artifact. The
   `improv` package also depends on libstdc++.
+  `ci/install-test.sh` installs and runs the packages on Debian 12/13,
+  Ubuntu 22.04/24.04, Rocky 8/9, AlmaLinux 10 and Fedora, and pg_improv,
+  the same `.so` in both formats, under PGDG's server on Debian and EL
+  (PG 17 on four distributions, each other major on Debian 12 and
+  Rocky 8).
 
 ## [0.12.0] - 2026-10-27
 

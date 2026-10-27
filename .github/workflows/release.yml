@@ -108,7 +108,7 @@ jobs:
   # install script and update scripts under usr/ in Debian's PGDG layout.
   # Built in manylinux_2_28 (EL8) against yum.postgresql.org's
   # postgresql<N>-devel (ci/pg_improv-dist.sh), so the .so needs at most
-  # glibc 2.28.
+  # glibc 2.28; the packages job loads it into Debian's and EL's servers.
   extension:
     name: Extension (PG ${{ matrix.pg }})
     if: startsWith(github.ref, 'refs/tags/')
@@ -190,14 +190,16 @@ jobs:
 
   # .deb and .rpm (ci/packages.sh, nfpm): improv (the four binaries, man
   # pages, completions) from the Linux tarball, and pg_improv per PG major
-  # under PGDG's names and paths. Each is installed in a clean container
-  # and run before it is attached.
+  # under PGDG's names and paths. ci/install-test.sh installs each in clean
+  # containers of every supported distribution (Debian 12/13, Ubuntu
+  # 22.04/24.04, Rocky 8/9, AlmaLinux 10, Fedora; pg_improv under PGDG's
+  # server on Debian and EL) and runs it before it is attached.
   packages:
     name: Linux packages (.deb, .rpm)
     if: startsWith(github.ref, 'refs/tags/')
     needs: [qualify, extension]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -228,12 +230,7 @@ jobs:
           for pg in 15 16 17 18; do
             ci/packages.sh pg "$ver" "$pg" "dist/pg_improv-$ver-pg$pg-x86_64-linux.tar.gz" pkg
           done
-          podman run --rm -v "$PWD/pkg:/pkg:ro" docker.io/library/debian:trixie-slim bash -c "
-            set -e; apt-get update -qq; apt-get install -y -qq --no-install-recommends /pkg/improv_${ver}-1_amd64.deb
-            test \"\$(improv --version)\" = 'improv $ver'; improv-server --help >/dev/null"
-          podman run --rm -v "$PWD/pkg:/pkg:ro" registry.fedoraproject.org/fedora:latest bash -c "
-            set -e; dnf -q -y install /pkg/improv-${ver}-1.x86_64.rpm
-            test \"\$(improv --version)\" = 'improv $ver'"
+          ci/install-test.sh "$ver" pkg
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: dist-packages
