@@ -19,7 +19,7 @@ that will not start.
 | `improv_X.Y.Z-1_amd64.deb`, `improv-X.Y.Z-1.x86_64.rpm` | `sudo apt install ./improv_*.deb` or `sudo dnf install ./improv-*.rpm`: the four binaries in `/usr/bin`, man pages, bash/zsh/fish completions |
 | `postgresql-N-improv_X.Y.Z-1_amd64.deb` | pg_improv for PostgreSQL N (15–18) from apt.postgresql.org, in its paths |
 | `postgresqlN-improv-X.Y.Z-1.x86_64.rpm` | the same for yum.postgresql.org's `postgresqlN-server` (`/usr/pgsql-N`) |
-| `improv.rb` | a Homebrew formula for macOS (arm64 and Intel): `brew install ./improv.rb` |
+| `improv.rb` | a Homebrew formula for macOS (arm64 and Intel). Homebrew installs only from a tap: `brew tap-new --no-git local/improv`, `cp improv.rb "$(brew --repository local/improv)/Formula/"`, `brew install local/improv/improv` |
 | `ghcr.io/gburd/improv:X.Y.Z` | the server and CLI in a container (see [The HTTP server](./server.md#deployment)) |
 
 pg_improv is also on [PGXN](https://pgxn.org/dist/pg_improv/), and the
