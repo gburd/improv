@@ -325,9 +325,9 @@ jobs:
           fi
           grep -q "refusing to serve 0.0.0.0:3000 without auth" err.txt
           podman run -d --name t -p 3000:3000 -e IMPROV_API_TOKEN=ci "$img:$ver" >/dev/null
-          for _ in $(seq 50); do curl -sf localhost:3000/health >/dev/null && break; sleep 0.2; done
-          curl -sf localhost:3000/health >/dev/null
-          test "$(curl -s -o /dev/null -w '%{http_code}' localhost:3000/v1/measures)" = 401
+          for _ in $(seq 50); do curl -sf 127.0.0.1:3000/health >/dev/null && break; sleep 0.2; done
+          curl -sf 127.0.0.1:3000/health >/dev/null
+          test "$(curl -s -o /dev/null -w '%{http_code}' 127.0.0.1:3000/v1/measures)" = 401
           podman stop -t 5 t >/dev/null
           echo "$GHCR_TOKEN" | podman login ghcr.io -u "$ACTOR" --password-stdin
           podman push "$img:$ver"
