@@ -6,6 +6,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-27
+
+The Linux release files run on every supported distribution again. 0.12.0's
+were built on Ubuntu 24.04 and needed glibc 2.39 (pg_improv and the DuckDB
+extension 2.35), so they did not run on RHEL 8 or 9, Debian 12 or Ubuntu
+22.04. 0.12.1 builds them on EL8 (glibc 2.28) and install-tests them on
+eight distributions. No code changes; pg_improv's update from 0.12.0 changes
+only its version.
+
 ### Fixed
 
 - **The Linux release artifacts run on RHEL 8 and later.** 0.12.0's were
@@ -2729,7 +2738,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.12.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.12.1...main
+[0.12.1]: https://codeberg.org/gregburd/improv/compare/v0.12.0...v0.12.1
 [0.12.0]: https://codeberg.org/gregburd/improv/compare/v0.11.0...v0.12.0
 [0.11.0]: https://codeberg.org/gregburd/improv/compare/v0.10.0...v0.11.0
 [0.10.0]: https://codeberg.org/gregburd/improv/compare/v0.9.0...v0.10.0
