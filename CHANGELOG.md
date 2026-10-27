@@ -88,6 +88,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   steps, as in the GUI; before, undo left views alone.
 ### Fixed
 
+- **`SORT` and `SORTBY` no longer panic on a NaN.** Their comparison
+  called a NaN equal to every number, which is not a total order, and
+  Rust's sort can panic on one. A NaN now sorts after every number. A NaN
+  bin in `FREQUENCY` sorts last and counts nothing.
 - **pg_improv's sync worker caps the engine's threads** at
   `max_parallel_workers_per_gather` + 1, as trigger and commit mode
   already cap `evaluate`: the live engine's FIXPOINT step (B8) would

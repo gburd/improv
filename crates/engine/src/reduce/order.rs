@@ -809,12 +809,8 @@ mod tests {
 
     /// A value, mostly small numbers (ties), sometimes anything else
     /// (`odd`: errors, and NaN where `nan`).
-    fn value(tc: &TestCase, odd: bool, nan: bool) -> CellValue {
-        let top = match (odd, nan) {
-            (false, _) => 25,
-            (true, false) => 27,
-            (true, true) => 29,
-        };
+    fn value(tc: &TestCase, odd: bool) -> CellValue {
+        let top = if odd { 29 } else { 25 };
         match int(tc, 0, top) {
             0..=17 => CellValue::num(int(tc, -3, 3) as f64 / 2.0),
             18 => CellValue::num(-0.0),
@@ -864,10 +860,7 @@ mod tests {
         let odd = int(tc, 0, 3) == 0;
         let groups = int(tc, 1, 2) as u32;
         let items = int(tc, 1, if tc.draw(gs::booleans()) { 12 } else { 90 }) as u32;
-        // SORTBY's kernel sorts by a comparison that is no total order on
-        // NaN (std's sort may panic on it), so NaN tests RANK only.
-        let nan = c.func.0 == 1050;
-        let vals = |tc: &TestCase| (0..c.cols).map(|_| value(tc, odd, nan)).collect::<Vec<_>>();
+        let vals = |tc: &TestCase| (0..c.cols).map(|_| value(tc, odd)).collect::<Vec<_>>();
         let mut out = Vec::new();
         // The first fill: most items.
         let mut first = Vec::new();

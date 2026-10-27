@@ -260,10 +260,13 @@ fn textsplit(vals: &[CellValue], params: &[CellValue]) -> List {
 fn frequency(vals: &[CellValue], params: &[CellValue]) -> List {
     let bins = nums(params)?;
     let mut ord: Vec<usize> = (0..bins.len()).collect();
+    // A NaN bin sorts last (sort_by panics on an order that is not total);
+    // no value is <= a NaN, so its count stays 0. Other bins as before.
     ord.sort_by(|&i, &j| {
-        bins[i]
-            .partial_cmp(&bins[j])
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let (x, y) = (bins[i], bins[j]);
+        x.is_nan()
+            .cmp(&y.is_nan())
+            .then(x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal))
             .then(j.cmp(&i))
     });
     let mut counts = vec![0_u32; bins.len() + 1];
@@ -294,10 +297,15 @@ pub(super) fn order(a: &CellValue, b: &CellValue) -> std::cmp::Ordering {
     rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
         (CellValue::Text(x), CellValue::Text(y)) => x.to_lowercase().cmp(&y.to_lowercase()),
         (CellValue::Bool(x), CellValue::Bool(y)) => x.cmp(y),
-        _ => num(a)
-            .zip(num(b))
-            .and_then(|(x, y)| x.partial_cmp(&y))
-            .unwrap_or(Ordering::Equal),
+        // A NaN sorts after every number (and equals another NaN), so this
+        // is a total order: `sort_by` panics on one that is not.
+        _ => match num(a).zip(num(b)) {
+            Some((x, y)) => match (x.is_nan(), y.is_nan()) {
+                (false, false) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                (xn, yn) => xn.cmp(&yn),
+            },
+            None => Ordering::Equal,
+        },
     })
 }
 
@@ -359,6 +367,26 @@ mod tests {
         assert_eq!(array(1252, &none, &[text("-")]), [text("-")]);
         let bad = rows(vec![vec![n(1.0), text("yes")]]);
         assert_eq!(array(1252, &bad, &[]), [CellValue::Err(err::VALUE)]);
+    }
+
+    #[test]
+    fn a_nan_sorts_last_and_does_not_panic() {
+        // sort_by panics ("does not correctly implement a total order") when
+        // the comparison is not total: NaN keys made SORT and SORTBY panic.
+        let nan = CellValue::num(f64::NAN);
+        let mut v: Vec<CellValue> = [3.0, f64::NAN, 1.0, 2.0, f64::NAN, 0.5]
+            .into_iter()
+            .chain((0..40).map(f64::from))
+            .map(CellValue::num)
+            .collect();
+        v.sort_by(order);
+        assert_eq!(v.first(), Some(&CellValue::num(0.0)));
+        assert!(v[v.len() - 2..].iter().all(|c| *c == nan));
+        assert_eq!(
+            order(&nan, &CellValue::num(1.0)),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(order(&nan, &nan), std::cmp::Ordering::Equal);
     }
 
     #[test]
@@ -535,7 +563,7 @@ mod tests {
         assert_eq!(order(&CellValue::Err(1), &CellValue::Bool(true)), Greater);
         assert_eq!(order(&CellValue::Date(5), &n(5.0)), Equal);
         assert_eq!(order(&text("B"), &text("a")), Greater);
-        assert_eq!(order(&n(f64::NAN), &n(1.0)), Equal);
+        assert_eq!(order(&n(f64::NAN), &n(1.0)), Greater);
     }
 
     /// UNIQUE with exactly_once where every value repeats is the empty
