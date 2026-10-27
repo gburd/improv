@@ -151,6 +151,9 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
    `crates/pg_improv/sql/pg_improv--<old>--<new>.sql`, and move the
    CHANGELOG's `[Unreleased]` section under the new version.
 2. Push to `main`, wait for CI, then push a signed annotated tag `vX.Y.Z`.
+   Before tagging, dry-run the release on the GitHub mirror:
+   `gh workflow run release.yml -R gburd/improv --ref main` builds and
+   install-tests everything a tag would and publishes nothing.
 3. On the GitHub mirror, `release.yml` builds and qualifies the binaries
    and pg_improv packages, makes the GitHub Release, publishes to
    [PGXN](https://pgxn.org/dist/pg_improv/) (`pgxn.yml`), and drafts the

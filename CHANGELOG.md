@@ -24,6 +24,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   the same `.so` in both formats, under PGDG's server on Debian and EL
   (PG 17 on four distributions, each other major on Debian 12 and
   Rocky 8).
+  A `workflow_dispatch` run of `release.yml` is now a full dry run: every
+  build and install test and the container checks, with nothing
+  published.
 
 ## [0.12.0] - 2026-10-27
 

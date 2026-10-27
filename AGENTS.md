@@ -155,7 +155,8 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   section, the PGXN upload via `pgxn.yml`, the DuckDB extension
   (`build-duckdb-ext`, linux_amd64, attached to the Release), the DuckDB
   registry bump PR (`duckdb-registry-pr`, see below), and `ci/announce.sh`
-  for X.Y.0 releases); `pgxn.yml` (called by every release, or run by hand with
+  for X.Y.0 releases; `workflow_dispatch` is the dry run: everything but
+  the Release, the ghcr push, PGXN, the registry PR and the announcement); `pgxn.yml` (called by every release, or run by hand with
   `gh workflow run pgxn.yml -R gburd/improv -f tag=vX.Y.Z` for a tag that
   missed PGXN: builds `ci/pgxn-dist.sh`'s zip, uploads it, and waits until
   https://api.pgxn.org/dist/pg_improv.json lists the version; it FAILS when
