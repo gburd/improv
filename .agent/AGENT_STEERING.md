@@ -49,7 +49,10 @@ criteria" are the bar. Mark tasks done there as they land.
   `~/ws/improv-rescue/dd-review/REPORT.md`.
 - **In flight on the box:** TUI H1-2..5 (`~/w-tui`), GUI H1-1, 6, 7, 8
   (`~/w-gui1`).
-- **NEXT:** B5 (designed in its row, not built), B8 step 2 (share `W`'s
+- **B5 done** (`perf(engine): RANK and SORTBY edits recompute only what
+  moves (B5)`): the order-statistics operator; at 1M items a tail edit
+  under RANK 0.82 s → 1.6 ms, a new maximum 1.22 → 0.17 s (median).
+- **NEXT:** B8 step 2 (share `W`'s
   arrangement: 501 → < 500 B/edge), H3's two ~100–200 ms waits and the
   background initial load, B1, the rest of H1, J4's result into the plan,
   then 0.12.0 (its release runs the new packages and container jobs for

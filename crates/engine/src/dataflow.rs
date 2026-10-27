@@ -20,7 +20,7 @@
 use crate::builtins::{self, err};
 use crate::compiler::{compile_formula, CompileContext};
 use crate::plan::{PlanNode, PlanNodeKind};
-use crate::reduce::{self, two_level, Rows};
+use crate::reduce::{self, order, two_level, Rows};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
 use differential_dataflow::operators::arrange::{ArrangeByKey, Arranged, TraceAgent};
@@ -85,7 +85,9 @@ pub(crate) fn build_coll<G: Scope>(
     arr: &Shared<G>,
 ) -> Result<Coll<G>, EngineError>
 where
-    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
+    G::Timestamp: differential_dataflow::lattice::Lattice
+        + timely::progress::Timestamp
+        + timely::order::TotalOrder,
 {
     match &node.kind {
         PlanNodeKind::InputMeasure(m) => inputs
@@ -667,7 +669,9 @@ fn build_aggregate<G: Scope>(
     a: AggSpec<'_>,
 ) -> Result<Coll<G>, EngineError>
 where
-    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
+    G::Timestamp: differential_dataflow::lattice::Lattice
+        + timely::progress::Timestamp
+        + timely::order::TotalOrder,
 {
     let (first, rest) = a
         .ins
@@ -749,6 +753,22 @@ where
     // (broadcast): each of its cells sees every row (a lookup).
     // ponytail: a lookup costs |table| × |parameter cells| rows; index the
     // table by key if lookups over large tables ever matter.
+    // RANK and SORTBY with literal parameters: the order-statistics
+    // operator, which emits only the results an edit changes (B5).
+    if let Some((params, spec)) = order_route(
+        a.func, n_in, a.params, a.per_item, a.window, a.order, a.into,
+    ) {
+        let order = agg_order(a.order);
+        let gb: Vec<u32> = a.group_by.iter().map(|c| c.0).collect();
+        let keyed = rows.map(move |(k, vs)| agg_key(&k, vs, &order, &gb));
+        let o = order::Order {
+            func: a.func,
+            params,
+            capacity,
+            spec,
+        };
+        return Ok(order::order_stats(&keyed, o));
+    }
     let mut consts: Vec<Option<CellValue>> = Vec::new();
     let mut row_dim: Vec<CategoryId> = full.clone();
     for p in a.params {
@@ -850,6 +870,38 @@ where
         k.sort_unstable();
         (k, v)
     }))
+}
+
+/// The order-statistics operator's parameters and spec for an aggregation
+/// ([`order::Spec::of`]), or `None` where the `reduce` keeps it: a window,
+/// or a parameter that is not a literal.
+fn order_route(
+    func: FuncId,
+    n_in: usize,
+    params: &[PlanNode],
+    per_item: bool,
+    window: Option<crate::typed::Window>,
+    order: &[(CategoryId, Vec<ItemId>)],
+    into: &[(CategoryId, Vec<ItemId>)],
+) -> Option<(Vec<CellValue>, order::Spec)> {
+    if window.is_some() {
+        return None;
+    }
+    let params = params.iter().map(folded).collect::<Option<Vec<_>>>()?;
+    let cat0 = order.first().map(|(c, _)| c.0);
+    let spec = order::Spec::of(func, n_in, &params, per_item, cat0, into)?;
+    Some((params, spec))
+}
+
+/// A literal, or a negated one (`-1` parses as a negation), as the
+/// dataflow would compute it.
+fn folded(p: &PlanNode) -> Option<CellValue> {
+    match &p.kind {
+        PlanNodeKind::MapUnary(UnaryOp::Neg, inner) => {
+            literal_value(inner).map(|v| apply_unary(UnaryOp::Neg, &v))
+        }
+        _ => literal_value(p),
+    }
 }
 
 /// A constant at the empty coordinate (broadcasts into any join).
@@ -1327,6 +1379,21 @@ pub(crate) fn functional(p: &PlanNode, f: &HashSet<MeasureId>) -> bool {
         // A join's row is at the union of its sides' coordinates, which
         // projects back onto each side's one cell: one value per key.
         PlanNodeKind::Join { left, right, .. } => functional(left, f) && functional(right, f),
+        // The order-statistics operator gives one value per item or slot.
+        PlanNodeKind::Aggregate {
+            inputs,
+            params,
+            func,
+            per_item,
+            window,
+            order,
+            into,
+            ..
+        } if order_route(*func, inputs.len(), params, *per_item, *window, order, into)
+            .is_some() =>
+        {
+            true
+        }
         // A single-result reduction pushes one value per group.
         PlanNodeKind::Aggregate {
             window: None,
@@ -1353,7 +1420,9 @@ pub(crate) fn build_derived<G: Scope>(
     inputs: &HashMap<MeasureId, Coll<G>>,
 ) -> Vec<(MeasureId, Coll<G>)>
 where
-    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
+    G::Timestamp: differential_dataflow::lattice::Lattice
+        + timely::progress::Timestamp
+        + timely::order::TotalOrder,
 {
     let mut derived = HashMap::new();
     let mut built = Vec::new();
@@ -4095,5 +4164,116 @@ mod tests {
         assert!(!out.contains_key(&MeasureId(153)));
         // An unknown target is ignored here (the compiler reports bad refs).
         assert!(evaluate(&model, &[MeasureId(999)]).unwrap().is_empty());
+    }
+
+    /// RANK and SORTBY run on the order-statistics operator (literal or
+    /// negated-literal parameters) or, with a parameter of another kind,
+    /// on the reduce; either way the live engine follows every edit (a
+    /// new maximum, a tie, text, an error, a deletion) as `evaluate` gives
+    /// it, and the routed plans are not collapsed.
+    #[test]
+    fn rank_and_sortby_follow_edits_on_the_operator() {
+        let (t, k, g) = (CategoryId(1), CategoryId(2), CategoryId(3));
+        let mut m = Model::new();
+        m.add_category(t, "T");
+        m.add_category(k, "K");
+        m.add_category(g, "G");
+        for i in 0..6 {
+            m.add_item(ItemId(10 + i), t, format!("t{i}"));
+            m.add_item(ItemId(20 + i), k, format!("k{i}"));
+        }
+        m.add_item(ItemId(30), g, "g0");
+        m.add_item(ItemId(31), g, "g1");
+        m.add_measure(Measure {
+            id: MeasureId(100),
+            name: Name("X".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, g],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        m.add_measure(Measure {
+            id: MeasureId(101),
+            name: Name("Dir".into()),
+            value_type: ValueType::Number,
+            categories: vec![],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        m.set_input(MeasureId(101), Coordinate::default(), Value::Number(1.0));
+        let x = |m: &mut Model, i: u32, gi: u32, v: Option<Value>| {
+            let c = Coordinate::from_pairs([(t, ItemId(10 + i)), (g, ItemId(30 + gi))]);
+            match v {
+                Some(v) => m.set_input(MeasureId(100), c, v),
+                None => {
+                    m.inputs.remove(&(MeasureId(100), c));
+                }
+            }
+        };
+        for i in 0..5 {
+            for gi in 0..2 {
+                x(
+                    &mut m,
+                    i,
+                    gi,
+                    Some(Value::Number(f64::from((i * 7 + gi) % 4))),
+                );
+            }
+        }
+        for (id, cats, text) in [
+            (200, vec![t, g], "R = RANK(X OVER T)"),
+            (201, vec![t, g], "A = RANK(X OVER T, 1)"),
+            (202, vec![t, g], "J = RANK(X OVER T, Dir)"),
+            (203, vec![k, g], "S = SORTBY(X, X OVER T, -1 INTO K)"),
+            (204, vec![k, g], "U = SORTBY(X, X OVER T INTO K)"),
+            (205, vec![k, g], "V = SORTBY(X, X, 1, X, -1 OVER T INTO K)"),
+        ] {
+            define(&mut m, id, cats, text);
+        }
+        let ids: Vec<MeasureId> = (200..=205).map(MeasureId).collect();
+        let plans = compile_plans(&m, &ids).unwrap();
+        let flat: HashSet<MeasureId> = [MeasureId(100), MeasureId(101)].into();
+        let routed: Vec<bool> = plans.iter().map(|(_, p)| functional(p, &flat)).collect();
+        assert_eq!(routed, [true, true, false, true, true, true]);
+        let (mut e, snap) = crate::session::Engine::new(&m, &ids).unwrap();
+        let check = |m: &Model, snap: &crate::session::Snapshot| {
+            let want = evaluate(m, &ids).unwrap();
+            for id in &ids {
+                let got = snap.get(id).map(|c| (**c).clone()).unwrap_or_default();
+                assert_eq!(got, want.get(id).cloned().unwrap_or_default(), "{id:?}");
+            }
+        };
+        check(&m, &snap);
+        drop(snap);
+        let edits: [(u32, u32, Option<Value>); 7] = [
+            (2, 0, Some(Value::Number(99.0))),
+            (4, 1, Some(Value::Number(1.0))),
+            (5, 0, Some(Value::Number(-3.0))),
+            (1, 1, Some(Value::Text("x".into()))),
+            (
+                0,
+                0,
+                Some(Value::Error(improv_core_model::ValueError::new(
+                    improv_core_model::ValueErrorKind::DivisionByZero,
+                ))),
+            ),
+            (0, 0, None),
+            (3, 1, None),
+        ];
+        for (i, gi, v) in edits {
+            x(&mut m, i, gi, v.clone());
+            let coord = CoordKey::from_slice(&[(t.0, 10 + i), (g.0, 30 + gi)]);
+            let value = v.as_ref().and_then(CellValue::from_model_value);
+            let snap = e
+                .apply(vec![crate::session::Edit {
+                    measure: MeasureId(100),
+                    coord,
+                    value,
+                }])
+                .unwrap();
+            check(&m, &snap);
+        }
     }
 }

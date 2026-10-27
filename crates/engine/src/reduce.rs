@@ -19,6 +19,7 @@ mod analysis;
 mod array;
 mod financial;
 mod lookup;
+pub(crate) mod order;
 mod statistical;
 pub(crate) mod two_level;
 pub(crate) mod window;

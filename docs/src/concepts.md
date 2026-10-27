@@ -136,8 +136,11 @@ shrink to the edit:
   `SUM(X OVER W)` re-reduces the group it falls in. Over more than 1,024
   items, `SUM`, `AVERAGE`, `MIN`, `MAX`, `COUNT` and the other simple
   reductions work in blocks of 1,024 items, so an edit re-reads one block
-  plus the block totals. `RANK` and `SORT` re-read the whole group, because
-  one new value can move every rank.
+  plus the block totals. `RANK` and `SORTBY` (with constant orders) keep
+  the group sorted: an edit recomputes the ranks or places of the values
+  it moves past, so a small change is fast, and a new maximum still moves
+  every rank. `SORT`, `RANK.AVG`, `RANK.DENSE` and `PERCENTRANK` re-read
+  the whole group.
 - **Each round has a fixed cost per measure.** Every edit is one round of
   the dataflow, and a round visits every tracked measure, reached or not.
 

@@ -237,6 +237,28 @@ this project follows [Semantic Versioning](https://semver.org/).
   Enter on an unchanged edit changes nothing (H1-17).
 ### Changed
 
+- **An edit under `RANK` or `SORTBY` recomputes only the results it moves**
+  (B5). `RANK` (`RANK.EQ`) and `SORTBY … INTO` with literal parameters
+  run on a new order-statistics operator (`reduce/order.rs`), which keeps
+  each group sorted and, for a value that moves past k others, emits just
+  those k ranks or the slots between its old and new place, instead of
+  re-running the group. Release build, 1M items (`tests/probe.rs` `wide`,
+  48-core box, min / median / max of 5 edits, median of 3 runs), before →
+  after: `RANK(X OVER W)` tail edit 0.59 / 0.82 / 1.72 s → 1.4 / 1.6 /
+  433 ms, new maximum 0.64 / 1.22 / 1.81 s → 23 / 173 / 569 ms (it moves
+  every rank: O(n) output, no per-item recompute), evaluate 1.28 → 1.38 s;
+  `SORTBY(X, X OVER W, -1 INTO K)` tail 0.96 / 1.18 / 2.15 s → 1.4 / 1.8 /
+  407 ms, new maximum 1.03 / 1.60 / 2.32 s → 23 / 166 / 522 ms, evaluate
+  2.27 → 1.61 s. The cost follows the results moved: the probe's first two
+  tail edits move the value past about half the items (0.4 s, ~0.9 µs per
+  moved result), the last three past none (1.4 ms). Results are the batch
+  kernel's, bit for bit:
+  a hegel property drives random edit rounds (ties, -0, text, booleans,
+  dates, errors, NaN, deletions, bulk batches) through the operator on one
+  and three workers against `reduce::per_item` / `reduce::array` over each
+  group. An error among RANK's values, or a NaN, sends that group's round
+  to the kernel; `RANK.AVG`, `RANK.DENSE`, `PERCENTRANK`, a `SORTBY` or
+  `RANK` whose order is a measure, and windows stay on the reduce.
 - **A formula may be 256 levels deep** (was 40; C3b). The limit
   (`MAX_FORMULA_DEPTH`) is now the load bound (`MAX_STORED_FORMULA_DEPTH`),
   so a 45-term sum is fine as a new formula too, and a formula at the limit

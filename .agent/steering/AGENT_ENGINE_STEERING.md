@@ -275,6 +275,24 @@ bit for bit. The whole group still re-runs on an edit (O(n), 1.9 s at 1M
 items); blocking the window category as the two-level reduce does is the
 next step.
 
+**Order statistics** (`reduce/order.rs`, B5). `RANK`/`RANK.EQ` and `SORTBY
+… INTO` with literal parameters bypass `reduce`: a custom `unary_frontier`
+operator, exchanged by group key, keeps each group's rows (by row, which
+is item order) and a sorted `Vec` of handles to the rows with a sort key.
+It relies on the epochs being totally ordered (`u64`; `G::Timestamp:
+TotalOrder` on the builders): like DD's `count_total`, it stashes a time's
+updates under a capability `delayed` to that time and processes the time
+once the input frontier has passed it, in time order. An edit moving a
+value from a to b emits the old and new ranks of the rows between them
+(SORTBY: the slots between its old and new places); a NaN, or an error
+among RANK's values, sends the group's round to the batch kernel, whose
+output the operator diffs. Its output is one value per cell, so
+`functional` holds and the measure skips the collapse. `RANK.AVG`,
+`RANK.DENSE`, `PERCENTRANK`, joined parameters and windows stay on the
+`reduce`. A hegel property (`reduce::order::tests`) holds the operator
+to `reduce::per_item` / `reduce::array` after every round, bit for bit,
+on one and three workers. The host evaluator keeps the batch kernel.
+
 ---
 
 ## 9. Scenarios (design target)
