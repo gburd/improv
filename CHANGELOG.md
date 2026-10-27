@@ -6,6 +6,24 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-27
+
+The release that makes Improv usable at scale and easier to use. The
+desktop GUI opens its window before a model loads, and saves and
+recalculates in the background, so no edit waits on a rebuild or a save
+(a cell edit during a 1M-cell rebuild stalled up to 160 ms; now 0 ms).
+A measure can carry a number format, in the GUI, the TUI, the CLI and
+both stores (pg_improv 0.12.0, with an update script). An edit under
+RANK or SORTBY recomputes only the results it moves (0.82 s → 1.6 ms at
+1M items), windowed reductions are O(n), `evaluate` runs on several
+threads, and FIXPOINT re-solves only what moved. pg_improv's sync worker
+applies models in parallel, so one slow model no longer delays the rest,
+and on PG 15 it no longer re-decodes old WAL on every poll. The TUI and
+the CLI get the usability review's fixes. Releases add Linux packages, a
+Homebrew formula and a container image. The release qualification,
+against 0.11.0 on the same benchmark, is in
+[docs/reviews/2026-10-27-v0.12.0-qualification.md](docs/reviews/2026-10-27-v0.12.0-qualification.md).
+
 ### Added
 
 - **Number formats: a measure's cells can show a fixed number of decimals
@@ -2689,7 +2707,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.11.0...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.12.0...main
+[0.12.0]: https://codeberg.org/gregburd/improv/compare/v0.11.0...v0.12.0
 [0.11.0]: https://codeberg.org/gregburd/improv/compare/v0.10.0...v0.11.0
 [0.10.0]: https://codeberg.org/gregburd/improv/compare/v0.9.0...v0.10.0
 [0.9.0]: https://codeberg.org/gregburd/improv/compare/v0.8.1...v0.9.0
