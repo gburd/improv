@@ -517,9 +517,10 @@ The loaded model counts against `improv.max_cells`; leaving logical mode or
 dropping the model frees it.
 
 After each poll that applied a batch the worker logs one standby snapshot
-(`pg_log_standby_snapshot()`), so the slot's restart point keeps up and a
-poll decodes only new WAL rather than everything since the bgwriter's last
-snapshot (up to 15 s of it). With the bound tables idle it also moves the
+(what `pg_log_standby_snapshot()` does, on PG 15 too, which lacks that
+function), so the slot's restart point keeps up and a poll decodes only new
+WAL rather than everything since the bgwriter's last snapshot (up to 15 s
+of it). With the bound tables idle it also moves the
 slot past unrelated WAL once it lags by 16 MB.
 
 An idle worker does not decode. Each poll first compares the WAL insert

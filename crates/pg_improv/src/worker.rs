@@ -836,16 +836,17 @@ fn sweep() {
             // applied something, in a transaction without an xid (one
             // logged inside a model's transaction names it as running and
             // pins the restart point), so the next advance moves it here
-            // and a poll re-reads about one batch of WAL.
+            // and a poll re-reads about one batch of WAL. The C call that
+            // `pg_log_standby_snapshot()` makes: PG 15 has no such SQL
+            // function, and there each poll re-decoded up to 15 s of WAL.
             let _ = in_txn(|| {
-                Spi::connect(|c| {
-                    c.select(
-                        "SELECT pg_log_standby_snapshot() WHERE NOT pg_is_in_recovery()",
-                        None,
-                        &[],
-                    )
-                    .map(|_| ())
-                })?;
+                // SAFETY: on the worker's thread, as the SQL function runs
+                // it; a logical slot implies `wal_level` >= replica.
+                unsafe {
+                    if !pg_sys::RecoveryInProgress() {
+                        pg_sys::LogStandbySnapshot();
+                    }
+                }
                 Ok(())
             });
         }

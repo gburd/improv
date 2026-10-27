@@ -103,6 +103,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   called a NaN equal to every number, which is not a total order, and
   Rust's sort can panic on one. A NaN now sorts after every number. A NaN
   bin in `FREQUENCY` sorts last and counts nothing.
+- **pg_improv's sync worker on PG 15 decodes only new WAL.** After each
+  applied batch the worker logs a standby snapshot so the slot's restart
+  point keeps up, but it called `pg_log_standby_snapshot()`, which PG 15
+  does not have. There the call failed, quietly, the restart point moved
+  only with the bgwriter's own snapshots, and every poll's peek and
+  advance decoded all the WAL since it: after `tests/logical.sh`'s
+  300k-row batch it stayed 144 MB behind, and each peek took 0.67 s. The
+  worker now makes the C call that function makes, on every major, and on
+  PG 15 the restart point stays within a batch of the slot's position.
 - **pg_improv's sync worker caps the engine's threads** at
   `max_parallel_workers_per_gather` + 1, as trigger and commit mode
   already cap `evaluate`: the live engine's FIXPOINT step (B8) would

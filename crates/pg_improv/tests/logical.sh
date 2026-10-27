@@ -715,4 +715,20 @@ want20=$(q "SELECT count(*) || ' ' || sum(v) * 2 FROM sd")
 for _ in $(seq 1 6); do [ "$(q "$SDQ")" = "$want20" ] && break; sleep 5; done
 wait_for "$SDQ" "$want20" "m_sd after the mid-batch stop" >/dev/null
 echo "ok: after both stops the worker caught up ($want20)"
+# the worker logs a standby snapshot (a running-xacts record) after each
+# batch it applies, so the slot's restart point keeps up and a poll decodes
+# new WAL only. PG 15 has no pg_log_standby_snapshot(): there it logged
+# none, the restart point stayed ~140 MB back, and every peek decoded all
+# of it (0.67 s). Three batches in a few seconds: the bgwriter (every 15 s)
+# and a checkpoint log at most two records of their own.
+w0=$(q "SELECT pg_current_wal_flush_lsn()")
+for i in 1 2 3; do
+	q "UPDATE sd SET v = v + 1 WHERE k = 'a'"
+	wait_for "SELECT value FROM improv_m_sd.w WHERE k = 'a'" $((2 * (1 + i))) "m_sd batch $i" >/dev/null
+done
+sleep 0.3
+snaps=$("$PG_BIN/pg_waldump" -p "$D/pg_wal" -s "$w0" -e "$(q "SELECT pg_current_wal_flush_lsn()")" -r Standby 2>/dev/null \
+	| grep -c RUNNING_XACTS || true)
+[ "$snaps" -ge 3 ] || { echo "FAIL: 3 applied batches logged $snaps standby snapshots"; exit 1; }
+echo "ok: 3 applied batches logged $snaps standby snapshots, so the slot's restart point keeps up"
 echo "PASS"
