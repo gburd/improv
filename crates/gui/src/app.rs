@@ -578,6 +578,9 @@ type SaveOutcome = (
 /// The save on the save thread, as the UI thread tracks it.
 struct Saving {
     done: mpsc::Receiver<SaveOutcome>,
+    /// The job shares the model itself (a save of every cell), not a copy
+    /// of what it writes: see [`ImprovApp::model_mut`].
+    whole: bool,
     /// It writes changes an earlier save failed to.
     retry: bool,
 }
@@ -2387,8 +2390,13 @@ impl ImprovApp {
     /// edit does not come here ([`Self::write_input`]); a structural change
     /// in a build's first ~150 ms (at 1M cells) still waits.
     fn model_mut(&mut self) -> &mut Model {
-        // Only a build thread shares the model; it lets go before building.
-        while self.building.is_some() && Arc::strong_count(&self.model) > 1 {
+        // A build thread lets go before building; a save of every cell holds
+        // it to the end (seconds at 1M cells), so wait for the build alone.
+        // shortcut: a structural change while such a save runs copies the
+        // model (150 ms at 1M cells); only an import or a big delete saves
+        // whole, and before H3 their save held the window for all of it.
+        let save = usize::from(self.saving.as_ref().is_some_and(|s| s.whole));
+        while self.building.is_some() && Arc::strong_count(&self.model) > 1 + save {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let model = Arc::make_mut(&mut self.model);
@@ -2401,8 +2409,12 @@ impl ImprovApp {
     /// Start building an engine for the model as it is now, on a thread
     /// with the engine's stack (a formula compiles recursively).
     fn spawn_build(&mut self) {
-        // A build that went stale lets go of the model before it lands.
-        let _ = self.model_mut();
+        // Build what the window shows: the held edits too. (A build that
+        // went stale let go of the model before it landed.) Without any, a
+        // save of every cell shares the model with the build, uncopied.
+        if !self.held.is_empty() {
+            let _ = self.model_mut();
+        }
         let model = Arc::clone(&self.model);
         // What the old engine computed for a measure the model no longer
         // computes would show under a new measure that reuses its id.
@@ -3153,6 +3165,7 @@ impl ImprovApp {
         };
         let changes = std::mem::take(&mut self.unsaved);
         let model = self.save_model_for(&changes);
+        let whole = Arc::ptr_eq(&model, &self.model);
         let job = SaveJob {
             db: self.db.clone(),
             model,
@@ -3169,6 +3182,7 @@ impl ImprovApp {
         }
         self.saving = Some(Saving {
             done: rx,
+            whole,
             retry: self.save_failed,
         });
         Ok(())
@@ -17956,10 +17970,12 @@ mod tests {
     }
 
     /// Save k = 1, 2, … through the GUI's atomic path (`publish`: build,
-    /// save, adopt), every cell set to k, saying `saving k` and `saved k`.
-    /// Runs until killed.
+    /// adopt, save), every cell set to k, saying `saving k` and `saved k`
+    /// once the save thread has landed it, as the app saves (H3). Runs
+    /// until killed.
     fn h6_child_saves(db: &str) {
         let mut app = ImprovApp::load(db).expect("load");
+        app.background = true;
         let cells: Vec<_> = app.model.inputs.keys().cloned().collect();
         for k in 1..=u16::MAX {
             let mut candidate = (*app.model).clone();
@@ -17967,8 +17983,11 @@ mod tests {
                 candidate.set_input(*m, at.clone(), Value::Number(f64::from(k)));
             }
             println!("saving {k}");
-            app.publish(candidate).expect("save");
+            app.publish(candidate).expect("queued");
+            app.finish_saves().expect("save");
+            assert!(!app.dirty);
             println!("saved {k}");
+            app.finish_build();
         }
     }
 
@@ -18624,7 +18643,12 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(8));
             }
             worst = worst.max(frame(app, Vec::new()));
-            assert!(!app.dirty, "{what}: saved ({})", app.status);
+            // (In memory, any undo history is "unsaved".)
+            assert!(
+                app.db.is_empty() || !app.dirty,
+                "{what}: saved ({})",
+                app.status
+            );
             println!(
                 "H3 {what}: call {call:.0} ms, longest frame {worst:.1} ms over {frames} frames, landed after {:.0} ms",
                 ms(t)
@@ -19267,6 +19291,7 @@ mod tests {
         drop(tx);
         app.saving = Some(Saving {
             done: rx,
+            whole: false,
             retry: false,
         });
         let e = app.finish_saves().expect_err("lost");
@@ -19313,6 +19338,48 @@ mod tests {
         app.switch_model(&other, false).expect("opens now");
         app.finish_load().expect("loaded");
         assert_eq!(*app.model, grid_2x2_model());
+    }
+
+    /// H3: a save of every cell (more than [`improv_store::SEEK_SAVE_LIMIT`])
+    /// shares the model itself; a structural change while it runs copies the
+    /// model rather than wait for it, and both land in order.
+    #[test]
+    fn a_change_during_a_whole_model_save_does_not_wait_for_it() {
+        let (mut app, _c) = saving_app("h3_whole");
+        let gate = hold_saves();
+        let mut big = (*app.model).clone();
+        big.add_item(ItemId(500), CategoryId(1), "big");
+        for i in 0..=improv_store::SEEK_SAVE_LIMIT {
+            big.add_item(ItemId(1000 + i as u32), CategoryId(2), format!("p{i}"));
+            let at = improv_core_model::Coordinate::from_pairs([
+                (CategoryId(1), ItemId(500)),
+                (CategoryId(2), ItemId(1000 + i as u32)),
+            ]);
+            big.set_input(MeasureId(101), at, Value::Number(1.0));
+        }
+        app.publish(big).expect("queued");
+        assert!(
+            app.saving.as_ref().is_some_and(|s| s.whole),
+            "shares the model"
+        );
+        // A build in flight that has let go of the model: only the save
+        // holds it now.
+        let built = app.building.take().expect("rebuilding");
+        let (tx, rx) = mpsc::channel();
+        app.building = Some(Build {
+            done: rx,
+            edits: Vec::new(),
+            stale: false,
+        });
+        let t = std::time::Instant::now();
+        app.add_named(NewThing::Category, "Region")
+            .expect("no wait");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "it waited");
+        drop(gate);
+        app.finish_saves().expect("both");
+        tx.send(built.done.recv().expect("built")).expect("send");
+        app.finish_build();
+        assert_eq!(stored_model(&app.db), *app.model);
     }
 
     /// H3: edits made while a save runs (cell, structure, undo) go in the
