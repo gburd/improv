@@ -6,6 +6,20 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Linux release artifacts run on RHEL 8 and later.** 0.12.0's were
+  built on Ubuntu 24.04: the tarball's binaries and the `improv`
+  `.deb`/`.rpm` needed glibc 2.39 (and `improv` GLIBCXX_3.4.29), so they
+  did not install, or did not start, on RHEL/Rocky/Alma 8 and 9, Debian
+  12 or Ubuntu 22.04; pg_improv and the DuckDB extension needed 2.35, so
+  not RHEL 8 or 9. `release.yml` now builds all of them in
+  manylinux_2_28 (AlmaLinux 8, `ci/manylinux.sh`), pg_improv against
+  yum.postgresql.org's `postgresqlN-devel` (`ci/pg_improv-dist.sh`, the
+  same tarball layout). Everything needs at most glibc 2.28 and
+  GLIBCXX_3.4.25, which `ci/glibc-floor.sh` checks on each artifact. The
+  `improv` package also depends on libstdc++.
+
 ## [0.12.0] - 2026-10-27
 
 The release that makes Improv usable at scale and easier to use. The

@@ -62,9 +62,11 @@ bin)
 		  - { src: $src/LICENSE-APACHE, dst: /usr/share/doc/improv/LICENSE-APACHE }
 		  - { src: $src/LICENSE-MIT, dst: /usr/share/doc/improv/LICENSE-MIT }
 		  - { src: $src/README.md, dst: /usr/share/doc/improv/README.md }
+		# improv bundles DuckDB's C++ and links libstdc++.so.6. It needs at most
+		# GLIBCXX_3.4.25 (ci/glibc-floor.sh), which is GCC 8's.
 		overrides:
-		  deb: { depends: [ "libc6 (>= $libc)" ] }
-		  rpm: { depends: [ "glibc >= $libc" ] }
+		  deb: { depends: [ "libc6 (>= $libc)", "libstdc++6 (>= 8)" ] }
+		  rpm: { depends: [ "glibc >= $libc", "libstdc++" ] }
 	EOF
 	;;
 pg)

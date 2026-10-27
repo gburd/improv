@@ -33,6 +33,12 @@ criteria" are the bar. Mark tasks done there as they land.
   glibc floor (the binaries need 2.39, pg_improv 2.35). J3:
   `docs/reviews/2026-10-27-v0.12.0-qualification.md` (all gates green,
   nothing past 10% unexplained).
+- **Since 0.12.0 (unreleased):** the Linux glibc floor is 2.28 (EL8).
+  0.12.0's Linux artifacts needed glibc 2.39 (pg_improv and the DuckDB
+  extension 2.35), so none ran on RHEL 8/9, and only pg_improv on
+  Debian 12 and Ubuntu 22.04. Every Linux artifact is now built in
+  manylinux_2_28 (`ci/manylinux.sh`, `ci/pg_improv-dist.sh`), checked by
+  `ci/glibc-floor.sh 2.28 3.4.25`.
 - **v0.11.0 (2026-10-25, `19211d7`):** see its CHANGELOG section and
   `docs/reviews/2026-10-25-v0.11.0-qualification.md`.
 - **J4 soak: skipped for now** (maintainer's call, 2026-10-27). The first
@@ -50,11 +56,9 @@ criteria" are the bar. Mark tasks done there as they land.
   base time. Evaluate and tail edits did not move. B5 then replaced RANK's
   path: the scale gate reads `wide.rank.edit_max` 0.26× and `edit_tail`
   0.00× its baseline.
-- **NEXT:** the Linux glibc floor: build every Linux release artifact on
-  manylinux_2_28 (glibc 2.28, EL8) and install-test on Debian 12/13,
-  Ubuntu 22.04/24.04, EL 8/9/10 and Fedora (0.12.0's need glibc 2.39, the
-  extensions 2.35); the idle worker's per-poll catalog listing at 1,000
-  models (0.12 core at `poll_ms = 50`); J6 at 1.0. Not now: a Homebrew tap
+- **NEXT:** the first `workflow_dispatch` dry run of `release.yml` with the
+  manylinux builds, then 0.12.1; the idle worker's per-poll catalog
+  listing at 1,000 models (0.12 core at `poll_ms = 50`); J6 at 1.0. Not now: a Homebrew tap
   (the release still attaches `improv.rb`). B8 is done (390 B/edge, warm
   re-solve 3.5× faster); the plan's row has the numbers.
 

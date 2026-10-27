@@ -162,6 +162,19 @@ branch (it needs a `PAGES_PUSH_TOKEN` secret).
    `gh release download vX.Y.Z -R gburd/improv`, then run `cosign
    verify-blob` on `SHA256SUMS` and `sha256sum -c SHA256SUMS`.
 
+Every Linux artifact is built in the manylinux_2_28 container (AlmaLinux
+8), so it needs at most glibc 2.28 and GLIBCXX_3.4.25: RHEL 8 and every
+later distribution. The same steps run locally with podman:
+
+```sh
+ci/manylinux.sh cargo build --release --target x86_64-unknown-linux-gnu \
+  -p improv_cli -p improv_tui -p improv_server -p improv_gui
+ci/manylinux.sh ci/pg_improv-dist.sh 17 dist      # pg_improv for PG 17
+ci/manylinux.sh make configure release test_release   # the DuckDB extension
+ci/glibc-floor.sh 2.28 3.4.25 target/manylinux/x86_64-unknown-linux-gnu/release/improv
+ci/packages.sh bin X.Y.Z <staging-dir> pkg        # and `pg` per major; needs nfpm
+```
+
 The `release` job runs `ci/release-attest.sh` on the downloaded artifacts
 before it publishes. The script writes a CycloneDX SBOM per binary and
 extension (`cargo cyclonedx`), `SHA256SUMS` over everything, and

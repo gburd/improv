@@ -148,7 +148,9 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   `ci/pg_improv.sh`, and `test-duckdb` via `ci/duckdb_improv.sh`); `docs.yml` (guide + API on every push to main,
   deployed to GitHub Pages, https://gburd.github.io/improv/); `release.yml`
   (on a `v*` tag: qualify on four targets, all four binaries per target,
-  pg_improv packages per PG major, the GitHub Release from the CHANGELOG
+  pg_improv packages per PG major, every Linux artifact built in
+  manylinux_2_28 (`ci/manylinux.sh`; glibc ≤ 2.28, GLIBCXX ≤ 3.4.25,
+  checked by `ci/glibc-floor.sh`), the GitHub Release from the CHANGELOG
   section, the PGXN upload via `pgxn.yml`, the DuckDB extension
   (`build-duckdb-ext`, linux_amd64, attached to the Release), the DuckDB
   registry bump PR (`duckdb-registry-pr`, see below), and `ci/announce.sh`

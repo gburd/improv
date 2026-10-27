@@ -7,12 +7,13 @@ guide](./getting-started.md) walks through modeling itself.
 ## Install a release
 
 From 0.12, each GitHub Release also carries packages (all x86_64 Linux,
-except the formula). The Linux binaries, in the packages and the tarballs,
-are built on Ubuntu 24.04 and need glibc 2.39 or newer (Debian 13,
-Ubuntu 24.04, Fedora 40, RHEL 10); the pg_improv packages need 2.35
-(Debian 12, Ubuntu 22.04; not RHEL 9). Each package declares that floor,
-so `apt` and `dnf` refuse an older system rather than install a binary
-that will not start.
+except the formula). Every Linux artifact (the tarball, the packages,
+pg_improv and the DuckDB extension) is built on EL8 (manylinux_2_28) and
+needs glibc 2.28 or newer; `improv` also needs GCC 8's libstdc++ or newer
+(`libstdc++.so.6`). Each package declares its floor, so `apt`
+and `dnf` refuse an older system rather than install a binary that will
+not start. (0.12.0's own Linux artifacts need glibc 2.39, and pg_improv
+2.35.)
 
 | Package | Install |
 | --- | --- |
