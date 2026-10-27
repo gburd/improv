@@ -34,7 +34,7 @@ A question you ask once ("revenue by region last quarter") is a query, not
 a model. Plain SQL answers it in one statement, with no model to define,
 bind or keep. DuckDB's `GROUP BY ALL` of the benchmark's 2.5M rows takes
 0.03–0.06 s; Improv's `improv(source, model)` over the same rows takes
-0.4 s, most of it building the model ([0.11.0 qualification][qual]).
+0.3–0.35 s, most of it building the model ([0.12.0 qualification][qual]).
 
 **Instead:** SQL in Postgres, or DuckDB over Parquet and CSV. For a single
 formula inside such a query, `improv_calc` in DuckDB or a
@@ -148,4 +148,4 @@ or put it in `manual` mode and refresh it on a schedule.
 [bench]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-20-v0.10.0-benchmark.md
 [changelog]: https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md
 [plan]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-21-road-to-1.0.md
-[qual]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-25-v0.11.0-qualification.md
+[qual]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-27-v0.12.0-qualification.md
