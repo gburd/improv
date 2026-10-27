@@ -68,6 +68,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   (opening the store). A path that cannot be opened still fails before
   any window; a store that opens but cannot be read says so in the status
   line and leaves an in-memory model, so nothing is saved over it.
+  A wide grid's first frame, which sizes its columns, takes 60 ms for
+  1,000 columns (was 155 ms).
 - **A container image**, `ghcr.io/gburd/improv`, from the next release on:
   `improv-server` and the `improv` CLI (`Containerfile`), as an
   unprivileged user, refusing to start without a token. The release job

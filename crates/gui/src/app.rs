@@ -4077,6 +4077,18 @@ fn structure_copy(model: &Model) -> Model {
     s
 }
 
+/// Whether the grid's sizing pass lays every cell out whole, as it did
+/// before it measured just their values: tests compare the two.
+#[cfg(test)]
+fn full_sizing() -> bool {
+    tests::FULL_SIZING.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn full_sizing() -> bool {
+    false
+}
+
 /// Set (`Some`) or clear the input cell `measure` at `at` in `model`.
 fn put_input(
     model: &mut Model,
@@ -7491,6 +7503,7 @@ impl ImprovApp {
             .get(&measure)
             .is_some_and(|m| m.value_type == ValueType::Number);
         let format = self.number_format(measure);
+        let cell_font = egui::TextStyle::Body.resolve(ui.style());
 
         // Cartesian product of stacked categories per axis. Columns are
         // materialized up front (they become egui table columns, which the
@@ -7742,6 +7755,28 @@ impl ImprovApp {
                                     );
                                     let editing_here =
                                         editing.as_ref() == Some(&(measure, key.clone()));
+                                    // The sizing pass (a grid's first frame) measures
+                                    // every column: take only the width the value
+                                    // needs, as its label in the cell's margin would.
+                                    // Laying out each of 1,000 columns' label, frame
+                                    // and sense took 139 ms (H3).
+                                    if ui.is_sizing_pass() && !editing_here && !full_sizing() {
+                                        let text = self
+                                            .cell_value(measure, &key)
+                                            .map(|v| v.formatted(format.as_ref(), &self.locale))
+                                            .unwrap_or_default();
+                                        let w = ui.fonts_mut(|f| {
+                                            f.layout_no_wrap(
+                                                text,
+                                                cell_font.clone(),
+                                                egui::Color32::BLACK,
+                                            )
+                                            .size()
+                                            .x
+                                        });
+                                        ui.allocate_space(egui::vec2(w + 8.0, 0.0));
+                                        return;
+                                    }
                                     // NeXT cell: white (light gray when selected), ruled
                                     // right and bottom in black. No per-cell chrome.
                                     let fill = if selected {
@@ -18631,6 +18666,64 @@ mod tests {
         stalls(&mut app, "undo the cell edit", &mut |app| {
             app.undo().expect("undo");
         });
+    }
+
+    thread_local! {
+        /// See [`super::full_sizing`].
+        pub(super) static FULL_SIZING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// H3: the grid's sizing pass measures each cell's value alone, not its
+    /// whole layout (139 → 46 ms for a 1,000-column grid's first frame), and
+    /// sizes every column exactly as the whole layout did: numbers, text, a
+    /// formatted measure, an empty cell, and with the row labels.
+    #[test]
+    fn the_sizing_pass_measures_columns_as_their_cells_do() {
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        let mut m = Model::new();
+        m.add_category(t, "Time");
+        m.add_category(p, "Product");
+        m.add_item(ItemId(10), t, "Q1");
+        m.add_item(ItemId(11), t, "a much longer row label");
+        for j in 0..6 {
+            m.add_item(ItemId(20 + j), p, format!("p{j}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("N".into()),
+            value_type: ValueType::Number,
+            categories: vec![t, p],
+            kind: MeasureKind::Input,
+            description: None,
+            format: Some(NumberFormat {
+                decimals: Some(2),
+                grouping: true,
+            }),
+        });
+        let at = |q, j| improv_core_model::Coordinate::from_pairs([(t, ItemId(q)), (p, ItemId(j))]);
+        for (j, v) in [(20, 5.0), (21, 12345678.5), (22, -0.25), (24, 1e15)] {
+            m.set_input(MeasureId(1), at(10, j), Value::Number(v));
+        }
+        m.set_input(MeasureId(1), at(11, 25), Value::Number(42.0));
+        let widths = |full: bool| {
+            FULL_SIZING.with(|f| f.set(full));
+            let mut app = build_app(m.clone());
+            let mut desk = Desk::new();
+            desk.settle(&mut app);
+            FULL_SIZING.with(|f| f.set(false));
+            let out = desk.frame(&mut app, Vec::new());
+            let mut xs: Vec<(String, f32, f32)> = (0..6)
+                .map(|j| {
+                    let r = text_at(&out.shapes, &format!("p{j}")).expect("a column header");
+                    (format!("p{j}"), r.left(), r.right())
+                })
+                .collect();
+            xs.sort_by(|a, b| a.1.total_cmp(&b.1));
+            xs
+        };
+        let (fast, whole) = (widths(false), widths(true));
+        assert_eq!(fast, whole);
+        assert!(fast.windows(2).all(|w| w[0].1 < w[1].1), "{fast:?}");
     }
 
     /// A grid wider than its window draws only the columns on screen: the
