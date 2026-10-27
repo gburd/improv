@@ -291,9 +291,11 @@ and `rebuilds` does not.
 several models, all of them lag at once.
 
 **Causes.**
-- One large model's batches take long, or it rebuilds (above). The worker
-  applies models one after the other, so every model waits for it
-  (parallel apply is B1 in the [plan][plan]).
+- One large model rebuilds (above), or its batches write many result
+  rows. The worker loads and writes models one after the other, so every
+  model waits for that. A model whose batches take long in its formulas
+  delays only its own results: each model's engine computes on its own
+  thread (B1).
 - Huge transactions: one transaction changing millions of rows is applied
   as one batch.
 - A per-item reduction (`RANK`, `SORT`) over a category with very many

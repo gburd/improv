@@ -256,6 +256,22 @@ pub fn route(txns: &[Txn], models: &HashMap<u32, Vec<i64>>) -> BTreeMap<i64, Vec
     out
 }
 
+/// How far the shared slot may move, `target`, while models still apply
+/// batches: a model yet to apply the transaction ending at `first` needs it
+/// decoded again, so the slot stops at the end of the transaction before it
+/// in `done` (the decoded batch, in commit order), or stays where it is (0)
+/// when it is the batch's first. The slot then passes only what every
+/// model applied.
+pub fn slot_hold(target: u64, done: &[Txn], firsts: impl IntoIterator<Item = u64>) -> u64 {
+    firsts
+        .into_iter()
+        .map(|first| {
+            let i = done.partition_point(|t| t.end_lsn < first);
+            i.checked_sub(1).map_or(0, |i| done[i].end_lsn)
+        })
+        .fold(target, u64::min)
+}
+
 /// Why a batch cannot be applied incrementally; the caller rebuilds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rebuild(pub &'static str);
@@ -1443,6 +1459,28 @@ mod tests {
             changes: vec![begin],
         }];
         assert!(route(&odd, &models).is_empty());
+    }
+
+    /// The slot stops before the first transaction a model has yet to
+    /// apply, and moves freely past a batch with nothing in flight.
+    #[test]
+    fn slot_hold_stops_before_unapplied_work() {
+        let done: Vec<Txn> = [10, 20, 30, 40]
+            .map(|end_lsn| Txn {
+                xid: 1,
+                end_lsn,
+                changes: Vec::new(),
+            })
+            .into();
+        assert_eq!(slot_hold(40, &done, []), 40);
+        assert_eq!(slot_hold(40, &done, [30]), 20);
+        assert_eq!(slot_hold(40, &done, [30, 20]), 10);
+        // In flight from the batch's first transaction: the slot stays.
+        assert_eq!(slot_hold(40, &done, [10]), 0);
+        // In flight from past this decode: the decode's end is applied.
+        assert_eq!(slot_hold(40, &done, [50]), 40);
+        assert_eq!(slot_hold(25, &done, [40]), 25);
+        assert_eq!(slot_hold(40, &[], [10]), 0);
     }
 
     use super::*;

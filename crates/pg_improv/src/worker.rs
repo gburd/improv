@@ -13,8 +13,16 @@
 //! re-reads and re-applies only what was not recorded (the result writes
 //! are idempotent upserts and deletes) and never loses a change.
 //!
-//! Every model applies a poll's batch in the same pass, so the slot is then
-//! confirmed (`pg_replication_slot_advance`) to the batch's end. A model
+//! Each model's batch goes to its engine without waiting
+//! ([`Engine::submit`]), so the models' engines compute at once, each on its
+//! own thread, and the worker writes each model's results as its round
+//! ends, in that model's own transaction (the SPI writes stay on the
+//! worker's thread, one model at a time). A slow model does not delay the
+//! others' results (B1). It keeps one batch in flight, and its next batch
+//! waits for that one's results, so it applies its transactions in commit
+//! order. The slot is confirmed (`pg_replication_slot_advance`) up to what
+//! every model has applied: it stops before the first transaction of a
+//! batch still in flight ([`live::slot_hold`]). A model
 //! that fails (its `last_error` says why) has dropped its live state, and
 //! its retry rebuilds it from its tables, which needs none of the WAL it
 //! skipped: a failing model never holds the others' slot back. Retries back
@@ -31,7 +39,7 @@
 //! state: the loaded model and a live [`Engine`] (its own compute thread,
 //! which never calls Postgres). Each batch's row changes become input-cell
 //! edits ([`live::Mapper`]); the engine recomputes only what they affect and
-//! returns the cells that changed ([`Engine::apply_delta`]), and only their
+//! returns the cells that changed ([`Engine::submit`]), and only their
 //! rows are written. The worker rebuilds (a full load + compute + diff against
 //! the result tables) when there is no live state or the model's
 //! `model_version` moved (a structural change such as `define`, checked on
@@ -43,13 +51,14 @@
 //! the live state, so the next poll rebuilds from the tables.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use improv_core_model::{MeasureId, Model};
-use improv_engine::session::{Changes, Engine, MeasureValues, Snapshot};
+use improv_engine::dataflow::EngineError;
+use improv_engine::session::{Changes, Engine, MeasureValues, Pending, Snapshot};
 use improv_pg_model as pm;
 use improv_pg_model::live::{self, Rebuild};
 use improv_pg_model::pgoutput::{self, Message};
@@ -543,6 +552,8 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         .and_then(|c| c.into_string().ok())
         .unwrap_or_else(|| "postgres".into());
     BackgroundWorker::connect_worker_to_spi(Some(&db), None);
+    // SAFETY: registers a plain callback, once, before any work.
+    unsafe { pg_sys::on_proc_exit(Some(abandon_rounds), pg_sys::Datum::from(0)) };
     // The live engine's FIXPOINT step splits large layouts over threads:
     // in a Postgres backend, at most the parallel workers one query may use,
     // as trigger and commit mode cap `evaluate`.
@@ -559,9 +570,16 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
             .expect("set the session style")
     });
     log!("pg_improv sync worker started on database {db:?}");
+    let mut swept = Instant::now();
     loop {
         let poll = Duration::from_millis(POLL_MS.get().max(10) as u64);
-        if !BackgroundWorker::wait_latch(Some(poll)) {
+        // While engine rounds run, wake often to write each one's results
+        // as it ends; the slot is still polled every `poll`.
+        let mut wait = poll.saturating_sub(swept.elapsed());
+        if busy() {
+            wait = wait.min(REPLY_WAIT);
+        }
+        if !BackgroundWorker::wait_latch(Some(wait)) {
             break; // the postmaster died (SIGTERM ends the worker in the wait)
         }
         if BackgroundWorker::sighup_received() {
@@ -580,6 +598,13 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
                 MAX_CHANGES.get()
             );
         }
+        if busy() {
+            finish_ready();
+        }
+        // Within a millisecond of due: the latch wait counts whole ms.
+        if swept.elapsed() + Duration::from_millis(1) < poll {
+            continue;
+        }
         // Nothing to do until the extension (0.11.0 or later: the shared
         // slot) is installed in this database. (A Postgres ERROR is not a
         // Rust `Err`: querying a missing `improv.*` table would unwind out
@@ -587,12 +612,15 @@ pub extern "C-unwind" fn improv_worker_main(_arg: pg_sys::Datum) {
         if !BackgroundWorker::transaction(installed) {
             // A re-created extension reuses model ids: forget them.
             LIVE.with(|l| l.borrow_mut().clear());
+            INFLIGHT.with(|f| f.borrow_mut().clear());
             PEEKED_TO.set(0);
             release_slot();
             orphaned();
+            swept = Instant::now();
             continue;
         }
         sweep();
+        swept = Instant::now();
     }
     log!("pg_improv sync worker stopping");
     // A bgworker that exits with status 0 is never restarted; exit 1, as the
@@ -647,19 +675,25 @@ fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
 
 /// WAL the slot may lag with nothing to apply before an idle advance.
 const IDLE_ADVANCE: u64 = 16 << 20;
+/// How often the worker checks for finished engine rounds while one runs.
+const REPLY_WAIT: Duration = Duration::from_millis(5);
 /// A failing model's first retry delay, doubled per failure up to the max.
 const RETRY_FIRST: Duration = Duration::from_millis(500);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
 /// One poll: decode the shared slot once, route each transaction's changes
-/// to the models bound to its relations, apply each model's share in its
-/// own transaction, then confirm the slot. Every model applies the batch in
-/// the same pass, so the slot moves to its end; a model that fails has
-/// dropped its live state and rebuilds from its tables on its next poll,
-/// which does not need the WAL it skipped (so it never holds the others
-/// back). Each model records its own progress, and skips transactions that
-/// ended at or before it: a crash between the models' commits and the
-/// slot's advance re-reads the batch, and re-applies none of it.
+/// to the models bound to its relations, start each model's share on its
+/// engine ([`tick`]), write the results of every round that has ended
+/// ([`finish_ready`]), then confirm the slot. A model whose round still
+/// runs waits in [`INFLIGHT`]: the next polls skip it (one batch in flight
+/// per model keeps its order), and the slot stops before its batch
+/// ([`live::slot_hold`]), so it moves only past what every model applied. A
+/// model that fails has dropped its live state and rebuilds from its tables
+/// on its next poll, which does not need the WAL it skipped (so it never
+/// holds the others back). Each model records its own progress with its
+/// result writes, and skips transactions that ended at or before it: a
+/// crash between the models' commits and the slot's advance re-reads the
+/// batch, and re-applies none of it.
 fn sweep() {
     release_slot();
     let listed = match in_txn(list_models) {
@@ -676,6 +710,12 @@ fn sweep() {
     });
     PARTITIONS.with(|p| {
         p.borrow_mut()
+            .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
+    });
+    // shortcut: dropping a model whose round runs waits for the round
+    // (`Engine`'s drop joins its thread); detach it if that ever matters.
+    INFLIGHT.with(|f| {
+        f.borrow_mut()
             .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
     });
     if listed.is_empty() {
@@ -706,6 +746,8 @@ fn sweep() {
         // until its rebuild succeeds.
         Ok(Some(made)) => {
             log!("pg_improv sync: created the slot {SLOT}");
+            // Rounds read from the old slot: every model rebuilds instead.
+            INFLIGHT.with(|f| f.borrow_mut().clear());
             let note = match made {
                 Slot::Recreated(why) => {
                     let note = format!(
@@ -749,8 +791,22 @@ fn sweep() {
     }
     let mut routed = live::route(&peeked.stream.done, &by_rel);
     let rels = &peeked.stream.relations;
+    // Where the in-flight models skipped below start: what this decode
+    // routes them is unapplied even once their round ends this sweep.
+    let mut held = Vec::new();
     for m in &listed {
-        let txns = routed.remove(&m.id).unwrap_or_default();
+        let mut txns = routed.remove(&m.id).unwrap_or_default();
+        // The slot holds while a round runs, so later polls decode its
+        // batch again: what a model recorded, it skips.
+        if let Some(c) = m.confirmed {
+            txns.retain(|t| t.end_lsn > c);
+        }
+        // One batch in flight per model keeps its order: the rest waits
+        // (the slot holds before it) until that batch's results are written.
+        if let Some(first) = INFLIGHT.with(|f| f.borrow().get(&m.id).map(|f| f.first)) {
+            held.push(first);
+            continue;
+        }
         let moved = PARTITIONS.with(|p| {
             p.borrow_mut()
                 .insert(m.id, m.partitions.clone())
@@ -781,34 +837,15 @@ fn sweep() {
         if RETRY.with(|r| r.borrow().get(&m.id).is_some_and(|(at, _)| now < *at)) {
             continue;
         }
-        let r = in_txn(|| tick(m.id, &m.name, txns, rels));
-        RETRY.with(|retry| {
-            let mut retry = retry.borrow_mut();
-            match &r {
-                Ok(()) => {
-                    retry.remove(&m.id);
-                }
-                Err(_) => {
-                    let wait = retry
-                        .get(&m.id)
-                        .map_or(RETRY_FIRST, |(_, w)| (*w * 2).min(RETRY_MAX));
-                    retry.insert(m.id, (now + wait, wait));
-                }
-            }
-        });
-        if let Err(e) = r {
-            let _ = in_txn(|| {
-                Spi::run_with_args(
-                    // It holds no live state now: no memory either.
-                    "UPDATE improv.sync_state SET last_error = $2, fold_bytes = NULL, \
-                       engine_bytes = NULL WHERE model_id = $1",
-                    &[m.id.into(), e.clone().into()],
-                )?;
-                Ok(())
-            });
-            log!("pg_improv sync: model {}: {e}", m.name);
+        match in_txn(|| tick(m.id, &m.name, txns, rels)) {
+            Ok(Some(f)) => INFLIGHT.with(|i| {
+                i.borrow_mut().insert(m.id, f);
+            }),
+            r => settle(m.id, &m.name, r.map(|_| ()), now),
         }
     }
+    // The rounds that ended while the others were started.
+    finish_ready();
     // A poll that stopped short of `max_changes` decoded the WAL up to at
     // least the flush position read before it, so the slot may move there
     // even past WAL with nothing for any model (which otherwise it would
@@ -822,6 +859,10 @@ fn sweep() {
     let Some(target) = target else {
         return drop_queued();
     };
+    // A model whose round still runs has not recorded its batch: the slot
+    // stops before it, so a crash decodes it again.
+    INFLIGHT.with(|f| held.extend(f.borrow().values().map(|f| f.first)));
+    let target = live::slot_hold(target, &peeked.stream.done, held);
     // After a standby snapshot, advance once more even when idle, so the
     // restart point passes it and idle peeks stop re-decoding the batch.
     let eager = last.is_some() || SNAPSHOT_PENDING.get();
@@ -993,6 +1034,8 @@ struct Listed {
     version: i64,
     /// Whether it has caught up once since its progress was reset.
     caught_up: bool,
+    /// Its recorded progress (`confirmed_lsn`).
+    confirmed: Option<u64>,
     /// The relations it binds.
     rels: Vec<u32>,
     /// Their partitions, each with its relfilenode: attaching, detaching or
@@ -1017,7 +1060,8 @@ fn list_models() -> Res<Vec<Listed>> {
                            JOIN pg_inherits i ON i.inhparent = b.rel WHERE b.model_id = m.id \
                          UNION \
                            SELECT i.inhrelid FROM pg_inherits i JOIN p ON i.inhparent = p.rel) \
-                       SELECT rel FROM p)) \
+                       SELECT rel FROM p)), \
+                    s.confirmed_lsn::text \
              FROM improv.model m JOIN improv.sync_state s ON s.model_id = m.id \
              LEFT JOIN improv.model_version v ON v.model_id = m.id \
              WHERE m.sync_mode = 'logical' ORDER BY m.id",
@@ -1035,6 +1079,7 @@ fn list_models() -> Res<Vec<Listed>> {
                     .map(u32::try_from)
                     .collect::<Result<_, _>>()?,
                 partitions: r.get(6)?,
+                confirmed: r.get::<String>(7)?.as_deref().and_then(pgoutput::parse_lsn),
             })
         })
         .collect()
@@ -1229,6 +1274,8 @@ thread_local! {
     static LIVE: RefCell<HashMap<i64, Live>> = RefCell::new(HashMap::new());
     /// Failing models: when to retry, and the current delay.
     static RETRY: RefCell<HashMap<i64, (Instant, Duration)>> = RefCell::new(HashMap::new());
+    /// Models whose engine round runs, in id order ([`InFlight`]).
+    static INFLIGHT: RefCell<BTreeMap<i64, InFlight>> = const { RefCell::new(BTreeMap::new()) };
     /// Each model's partitions as the last poll saw them ([`Listed`]).
     static PARTITIONS: RefCell<HashMap<i64, Option<String>>> = RefCell::new(HashMap::new());
     /// The flush position the last complete decode read to ([`peek`]).
@@ -1261,13 +1308,15 @@ struct Live {
 /// One model's share of a poll (`txns`, of relations `rels`), inside the
 /// caller's worker transaction: skip what its recorded progress already
 /// holds, (re)build its live state when it has none or the model changed,
-/// apply the rest, and record its progress with the result writes.
+/// and start the rest on its engine. Returns that round, whose results
+/// [`finish`] writes with the model's progress; or `None` once the progress
+/// is recorded here (nothing to compute, or a rebuild).
 fn tick(
     mid: i64,
     name: &str,
     mut txns: Vec<pgoutput::Txn>,
     rels: &HashMap<u32, pgoutput::Relation>,
-) -> Res<()> {
+) -> Res<Option<InFlight>> {
     // Taken out for the poll and put back only on success: any error (or a
     // Postgres ERROR unwinding through here) drops it, and the next poll
     // rebuilds from the tables.
@@ -1315,33 +1364,45 @@ fn tick(
         record(mid, n, None, Applied::Rebuild)?;
         state = l;
     }
-    let Some(last) = txns.last().map(|t| t.end_lsn) else {
+    let (Some(first), Some(last)) = (txns.first(), txns.last()) else {
         memory(mid, state.as_mut())?;
         keep(mid, state);
-        return Ok(());
+        return Ok(None);
     };
+    let (first, last) = (first.end_lsn, last.end_lsn);
     let mut how = Applied::Nothing;
     let changed = if txns.iter().any(|t| !t.changes.is_empty()) {
-        let _ = lock_model(name)?;
-        // Again under the lock: a define that committed while this waited
-        // for it must not see its results overwritten by the old formula.
+        // No lock while the engine runs: [`finish`] takes it, and checks the
+        // version again under it, before it writes.
         let version = model_version(mid)?;
+        let owner = super::owner::owner_of(mid)?;
+        let touched = changed_rels(&txns);
         let applied = match state.as_mut() {
             Some(l) if l.version == version && l.name == name => {
-                let owner = super::owner::owner_of(mid)?;
-                if owner_reads(mid, name, owner, Some(changed_rels(&txns)))? {
+                if owner_reads(mid, name, owner, Some(touched.clone()))? {
                     Err(OWNER_RLS)
                 } else {
-                    apply(owner, mid, l, rels, &txns)?
+                    apply(mid, l, rels, &txns)?
                 }
             }
             Some(_) => Err(Rebuild("model changed")),
             None => Err(Rebuild("no live state")),
         };
         match applied {
-            Ok(n) => {
+            Ok(Some(pending)) => {
+                let live = state.take().ok_or("no live state to apply to")?;
+                return Ok(Some(InFlight {
+                    live,
+                    pending,
+                    owner,
+                    touched,
+                    first,
+                    last,
+                }));
+            }
+            Ok(None) => {
                 how = Applied::Incremental;
-                n
+                0
             }
             Err(why) => {
                 how = Applied::Rebuild;
@@ -1350,6 +1411,7 @@ fn tick(
                 }
                 // Free the old engine before building one. The load runs
                 // after the decode, so it already holds this batch.
+                let _ = lock_model(name)?;
                 drop(state.take());
                 let (l, n) = rebuild(mid, name)?;
                 state = l;
@@ -1362,7 +1424,135 @@ fn tick(
     record(mid, changed, Some(last), how)?;
     memory(mid, state.as_mut())?;
     keep(mid, state);
+    Ok(None)
+}
+
+/// A model's batch whose engine round runs ([`Engine::submit`]): its live
+/// state waits here for the reply, and the slot holds before `first` until
+/// [`finish`] has written the results.
+struct InFlight {
+    live: Live,
+    pending: Pending,
+    /// The owner the batch was read for: another one rebuilds instead.
+    owner: Option<pg_sys::Oid>,
+    /// The relations it changed, whose privileges [`finish`] checks again.
+    touched: Vec<i64>,
+    /// The ends of the batch's first and last transactions.
+    first: u64,
+    last: u64,
+}
+
+/// At exit (a FATAL included), leave running engine rounds to die with the
+/// process. `exit` runs this thread's destructors, and dropping a round's
+/// engine joins its thread: a fast shutdown would wait out a slow round.
+#[pg_guard]
+unsafe extern "C-unwind" fn abandon_rounds(_code: std::ffi::c_int, _arg: pg_sys::Datum) {
+    let _ = INFLIGHT.try_with(|f| {
+        if let Ok(mut f) = f.try_borrow_mut() {
+            std::mem::forget(std::mem::take(&mut *f));
+        }
+    });
+}
+
+fn busy() -> bool {
+    INFLIGHT.with(|f| !f.borrow().is_empty())
+}
+
+/// Write the results of every in-flight round that has ended, each in its
+/// own worker transaction.
+fn finish_ready() {
+    type Ended = (i64, InFlight, Result<Changes, EngineError>);
+    let ended: Vec<Ended> = INFLIGHT.with(|f| {
+        let mut f = f.borrow_mut();
+        let replies: Vec<_> = f
+            .iter()
+            .filter_map(|(mid, x)| x.pending.try_reply().map(|r| (*mid, r)))
+            .collect();
+        replies
+            .into_iter()
+            .filter_map(|(mid, r)| f.remove(&mid).map(|x| (mid, x, r)))
+            .collect()
+    });
+    for (mid, f, reply) in ended {
+        let name = f.live.name.clone();
+        let now = Instant::now();
+        settle(mid, &name, in_txn(|| finish(mid, f, reply)), now);
+        // The slot held before this batch: decode again, even with no new
+        // WAL, so the next poll moves it on.
+        PEEKED_TO.set(0);
+    }
+}
+
+/// Write model `mid`'s round `f`, its engine's `reply`, in the caller's
+/// worker transaction with the model's progress, as [`tick`] records a
+/// batch: under the model's lock, and only if neither its version nor its
+/// owner moved while the engine ran, and the owner may still read what the
+/// batch changed (else it rebuilds, and the load holds the batch). Any
+/// error drops the live state, so the next poll rebuilds.
+fn finish(mid: i64, f: InFlight, reply: Result<Changes, EngineError>) -> Res<()> {
+    let InFlight {
+        live,
+        owner,
+        touched,
+        last,
+        ..
+    } = f;
+    let changes = reply?;
+    let _ = lock_model(&live.name)?;
+    let mut changed = 0;
+    let same = model_version(mid)? == live.version && super::owner::owner_of(mid)? == owner;
+    // Decoded rows bypass privileges and RLS: what the owner may read now.
+    let (how, mut state) = if same && !owner_reads(mid, &live.name, owner, Some(touched))? {
+        super::owner::as_role(owner, || write_changed(&live, &changes, &mut changed))?;
+        (Applied::Incremental, Some(live))
+    } else {
+        if !same {
+            log!(
+                "pg_improv sync: model {}: rebuilding (model changed)",
+                live.name
+            );
+        }
+        let name = live.name.clone();
+        drop(live);
+        let (l, n) = rebuild(mid, &name)?;
+        changed = n;
+        (Applied::Rebuild, l)
+    };
+    record(mid, changed, Some(last), how)?;
+    memory(mid, state.as_mut())?;
+    keep(mid, state);
     Ok(())
+}
+
+/// After model `mid`'s apply: clear its backoff, or, when `r` failed, back
+/// its retries off from `now`, and record and log the error.
+fn settle(mid: i64, name: &str, r: Result<(), String>, now: Instant) {
+    RETRY.with(|retry| {
+        let mut retry = retry.borrow_mut();
+        match &r {
+            Ok(()) => {
+                retry.remove(&mid);
+            }
+            Err(_) => {
+                let wait = retry
+                    .get(&mid)
+                    .map_or(RETRY_FIRST, |(_, w)| (*w * 2).min(RETRY_MAX));
+                retry.insert(mid, (now + wait, wait));
+            }
+        }
+    });
+    if let Err(e) = r {
+        let _ = in_txn(|| {
+            Spi::run_with_args(
+                // It holds no live state now: no memory either.
+                "UPDATE improv.sync_state SET last_error = $2, fold_bytes = NULL, \
+                   engine_bytes = NULL WHERE model_id = $1",
+                &[mid.into(), e.clone().into()],
+            )?;
+            Ok(())
+        });
+        log!("pg_improv sync: model {name}: {e}");
+    }
 }
 
 /// Refuse a live state of `fold` + `engine` estimated bytes (`about`, or
@@ -1493,19 +1683,18 @@ fn model_version(mid: i64) -> Res<i64> {
     .unwrap_or(0))
 }
 
-/// Apply a batch to live state `l` incrementally and write the changed
-/// result rows (as the model's `owner`); `Ok(Err(_))` when the batch needs
-/// a rebuild instead (then `l` is stale: drop it). Dimension values with no
-/// item yet are minted first, in this (the worker's) transaction; the
-/// engine keeps going when its plans do not read the item lists that grew
-/// ([`Engine::serves`]).
+/// Map a batch to input-cell edits of live state `l` and start them on its
+/// engine, returning the round; `Ok(Ok(None))` when the batch edits no
+/// cell, and `Ok(Err(_))` when it needs a rebuild instead (then `l` is
+/// stale: drop it). Dimension values with no item yet are minted first, in
+/// this (the worker's) transaction; the engine keeps going when its plans
+/// do not read the item lists that grew ([`Engine::serves`]).
 fn apply(
-    owner: Option<pg_sys::Oid>,
     mid: i64,
     l: &mut Live,
     rels: &HashMap<u32, pgoutput::Relation>,
     txns: &[pgoutput::Txn],
-) -> Res<Result<i64, Rebuild>> {
+) -> Res<Result<Option<Pending>, Rebuild>> {
     let new = l.mapper.unknown(rels, txns);
     if !new.is_empty() {
         for (cat, name, id) in mint(mid, new)? {
@@ -1522,13 +1711,10 @@ fn apply(
     };
     pm::check_cell_budget(l.model.inputs.len(), MAX_CELLS.get().max(0) as usize)?;
     if edits.is_empty() {
-        return Ok(Ok(0));
+        return Ok(Ok(None));
     }
     check_for_interrupts!();
-    let changes = l.engine.apply_delta(edits)?;
-    let mut changed = 0;
-    super::owner::as_role(owner, || write_changed(l, &changes, &mut changed))?;
-    Ok(Ok(changed))
+    Ok(Ok(Some(l.engine.submit(edits)?)))
 }
 
 /// Write the result rows of the cells in `changes` (each from its old value

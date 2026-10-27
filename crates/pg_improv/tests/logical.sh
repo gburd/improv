@@ -3,7 +3,9 @@
 # commits. Section 13 covers the shared slot: routing by table (two models
 # on one table, a model on two), models added, redefined and dropped while
 # a writer streams, and a failing model that holds no one back. Section 20
-# stops the server with -m fast, idle and mid-batch. Needs: cargo-pgrx installed and pg_improv installed into the PG
+# stops the server with -m fast, idle and mid-batch. Section 21 applies
+# models in parallel (B1): a light model's change is visible beside four
+# slow ones; a kill -9 and a fast stop mid-round lose nothing. Needs: cargo-pgrx installed and pg_improv installed into the PG
 # found by PG_BIN (default: Debian's PG 17). Uses its own data dir and port.
 #
 #   crates/pg_improv/tests/logical.sh            # run, print latency table
@@ -731,4 +733,83 @@ snaps=$("$PG_BIN/pg_waldump" -p "$D/pg_wal" -s "$w0" -e "$(q "SELECT pg_current_
 	| grep -c RUNNING_XACTS || true)
 [ "$snaps" -ge 3 ] || { echo "FAIL: 3 applied batches logged $snaps standby snapshots"; exit 1; }
 echo "ok: 3 applied batches logged $snaps standby snapshots, so the slot's restart point keeps up"
+
+# 21. parallel apply (B1): four models whose applies take about a second
+#     each (a FIXPOINT that never converges runs all its rounds), kept busy
+#     by a writer, and a fifth, light model. The light model's change must
+#     be visible in < LIGHT_MS (200) at the median, and never wait behind
+#     a slow round (< 1 s). Then the worker is killed (-9) and stopped
+#     (-m fast) while slow rounds run: the stop takes < 10 s, the slot
+#     still reaches the end of the WAL, and every model equals a fresh
+#     recalc without a failure.
+LIGHT_MS=${LIGHT_MS:-200}
+for m in s1 s2 s3 s4; do
+	q "CREATE TABLE t_$m (item text PRIMARY KEY, x float8)"
+	q "INSERT INTO t_$m SELECT 'i' || g, g FROM generate_series(1, 2000) g"
+	q "SELECT improv.create_model('m_$m')" >/dev/null
+	q "SELECT improv.bind_category('m_$m', 'Item', 't_$m', 'item')" >/dev/null
+	q "SELECT improv.bind_measure('m_$m', 'X', 't_$m', 'x')" >/dev/null
+	q "SELECT improv.define('m_$m', 'F = FIXPOINT(0, LAMBDA(r, X - r), 1451, 0)')" >/dev/null
+done
+q "CREATE TABLE t_light (k text PRIMARY KEY, v float8)"
+q "INSERT INTO t_light VALUES ('a', 0)"
+q "SELECT improv.create_model('m_light')" >/dev/null
+q "SELECT improv.bind_category('m_light', 'K', 't_light', 'k')" >/dev/null
+q "SELECT improv.bind_measure('m_light', 'V', 't_light', 'v')" >/dev/null
+q "SELECT improv.define('m_light', 'W = V * 2')" >/dev/null
+SLOW="SELECT string_agg(value::text, ',' ORDER BY m) FROM (SELECT 1 m, value FROM improv_m_s1.f WHERE item = 'i1' \
+  UNION ALL SELECT 2, value FROM improv_m_s2.f WHERE item = 'i1' UNION ALL SELECT 3, value FROM improv_m_s3.f WHERE item = 'i1' \
+  UNION ALL SELECT 4, value FROM improv_m_s4.f WHERE item = 'i1') s"
+WANTSLOW="SELECT string_agg(x::text, ',' ORDER BY t) FROM (SELECT 1 t, x FROM t_s1 WHERE item = 'i1' \
+  UNION ALL SELECT 2, x FROM t_s2 WHERE item = 'i1' UNION ALL SELECT 3, x FROM t_s3 WHERE item = 'i1' \
+  UNION ALL SELECT 4, x FROM t_s4 WHERE item = 'i1') s"
+LIGHT="SELECT value FROM improv_m_light.w WHERE k = 'a'"
+wait_for "$SLOW" "1,1,1,1" "the slow models caught up" >/dev/null
+wait_for "$LIGHT" 0 "the light model caught up" >/dev/null
+q "UPDATE t_s1 SET x = x + 1 WHERE item = 'i1'"
+slow_ms=$(wait_for "SELECT value FROM improv_m_s1.f WHERE item = 'i1'" 2 "one slow apply")
+writer21() {
+	rm -f "$D/stop21"
+	# (also stops when the data dir goes: a failed run must not leave it)
+	( while [ -d "$D" ] && [ ! -f "$D/stop21" ]; do
+		q "UPDATE t_s1 SET x = x + 1 WHERE item = 'i1'; UPDATE t_s2 SET x = x + 1 WHERE item = 'i1';
+		   UPDATE t_s3 SET x = x + 1 WHERE item = 'i1'; UPDATE t_s4 SET x = x + 1 WHERE item = 'i1'" 2>/dev/null || true
+		sleep 0.2; done ) &
+	writer=$!
+	sleep 2 # every slow model busy
+}
+writer21
+lat21=()
+for i in $(seq 1 10); do
+	q "UPDATE t_light SET v = $i"
+	lat21+=("$(wait_for "$LIGHT" $((2 * i)) "light change $i")")
+	sleep 0.3
+done
+read -r med21 max21 < <(printf '%s\n' "${lat21[@]}" | sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)], a[NR]}')
+[ "$med21" -lt "$LIGHT_MS" ] || { echo "FAIL: the light model's changes took ${lat21[*]} ms (median $med21) beside four slow models"; tail -20 "$D/log"; exit 1; }
+[ "$max21" -lt 1000 ] || { echo "FAIL: a light change waited $max21 ms, behind a slow round"; tail -20 "$D/log"; exit 1; }
+echo "ok: beside four models applying for ${slow_ms} ms each, a light model's change is visible in $med21 ms (median of 10; max $max21)"
+worker21() { q "SELECT pid FROM pg_stat_activity WHERE backend_type = 'pg_improv sync'" 2>/dev/null || true; }
+# a backend killed -9 makes the postmaster restart the cluster: a crash
+old21=$(worker21)
+kill -9 "$old21"
+for _ in $(seq 1 120); do new21=$(worker21); [ -n "$new21" ] && [ "$new21" != "$old21" ] && break; sleep 0.25; done
+[ -n "$new21" ] && [ "$new21" != "$old21" ] || { echo "FAIL: the worker did not come back after kill -9"; tail -20 "$D/log"; exit 1; }
+# a restarted worker rebuilds every model first, one after the other
+wait_long() { for _ in $(seq 1 6); do [ "$(q "$1" 2>/dev/null)" = "$2" ] && break; sleep 5; done; wait_for "$@" >/dev/null; }
+q "UPDATE t_light SET v = 100"
+wait_long "$LIGHT" 200 "the light model after kill -9"
+sleep 2 # slow rounds running again
+stop20 "in a slow round"
+q "UPDATE t_light SET v = 101"
+wait_long "$LIGHT" 202 "the light model after the fast stop"
+sleep 1
+touch "$D/stop21"; wait "$writer"
+end21=$(q "SELECT pg_current_wal_insert_lsn()")
+wait_long "$SLOW" "$(q "$WANTSLOW")" "the slow models after the writer"
+wait_for "SELECT confirmed_flush_lsn >= '$end21' FROM pg_replication_slots WHERE slot_name = 'improv_db'" t "the slot past the last write" >/dev/null
+eq14 "$(q "SELECT sum(improv.recalc(name)) FROM improv.model WHERE name ~ '^m_(s[1-4]|light)$'")" 0 \
+	"every model equals a fresh recalc after kill -9 and a fast stop"
+eq14 "$(q "SELECT count(*) FROM improv.sync_state WHERE last_error IS NOT NULL")" 0 "no model failed"
+echo "ok: killed (-9) and stopped (-m fast) mid-round, the worker caught up; the slot reached the end; every model equals a fresh recalc"
 echo "PASS"

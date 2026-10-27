@@ -94,18 +94,26 @@ recalc / commit-mode transaction ≈ 0.9 s per million fact rows of the written 
 logical worker ≈ 20–25 ms CPU per 1,000 changed rows + idle polling
 ```
 
-The worker is one process on one core. It serves every logical model of
-its database in turn, so the time it can spend per poll is shared:
+The worker is one process. Each model's engine computes on a thread of
+its own, so models whose formulas take long compute at the same time, on
+as many cores. The decode, the fold of aggregated bindings, and the SPI
+writes of the results stay on the worker's one thread. That is the
+`20–25 ms per 1,000 changed rows`, and the share every model's batches
+take turns on:
 
 ```text
 worker utilization ≈ (changed rows/s ÷ 1,000) × 25 ms  +  idle cost
 ```
 
-At 10,000 changed rows per second that is about a quarter of a core. A
-rebuild blocks the other models for its whole duration: a 6 s rebuild
-delays every other model's results by 6 s. Count your expected rebuilds
-(restarts, deploys, new items in categories a formula reads the item list
-of) as well as your batches.
+At 10,000 changed rows per second that is about a quarter of a core.
+Engine time is not in it: a model whose apply takes 1 s in its formulas
+(a large `MEDIAN`, a `FIXPOINT`) uses 1 s of its own core and delays only
+its own results. Beside four such models a fifth model's change was
+visible in 40–100 ms [here]. A rebuild still blocks the other models for
+its whole duration, since it loads and writes on the worker's thread: a
+6 s rebuild delays every other model's results by 6 s. Count your
+expected rebuilds (restarts, deploys, new items in categories a formula
+reads the item list of) as well as your batches.
 
 ## WAL retained while the worker is down
 
@@ -151,9 +159,12 @@ alerts.
   change showed up in 54–146 ms, and a transaction writing every model's
   table showed up everywhere within 2.6 s [here]. At v0.10.0, with a slot
   per model, the same took up to 120 s and 201 s ([bench] §3f).
-- **The limit is the single worker.** Models are applied one after the
-  other, so the sum of their apply and rebuild times is what a change may
-  wait. Parallel apply is B1 in the [road to 1.0][plan].
+- **The limit is the worker's one thread.** The models' engines compute
+  at once, but their decodes, folds, writes and rebuilds run one after
+  the other. So a change may wait for the sum of the other models' writes
+  and rebuilds, but not for their engine time. Rebuilds and write-heavy
+  models in their own processes (background workers per busy model) are
+  not built; see B1 in the [road to 1.0][plan].
 
 ## Choosing a sync mode by write rate and model size
 
@@ -250,6 +261,20 @@ the box.
   1,000 models (all built 21 s after the last switch, a one-row change in
   52–182 ms, 426 MB private), FIXPOINT, the engine probes, the 1M-row
   import and DuckDB.
+- **Parallel apply (B1),** 2026-10-26, the same box, PG 17.11 (PGDG),
+  release build. Four models of 2,000 items, each with
+  `F = FIXPOINT(0, LAMBDA(r, X - r), 1451, 0)`, which never converges and
+  so runs all its rounds: 1.0–1.06 s of engine time per one-row change.
+  A writer kept all four busy, and a fifth model (`W = V * 2`, one row)
+  took ten one-row changes. Before B1 each was visible in 5.2–8.3 s
+  (median 7.9 s); after, in 40–103 ms (median 57–71 ms), in three runs
+  (`tests/logical.sh` §21). In the timings the worker logged before the
+  change, the engine was 96–99 % of a slow apply (745–782 ms of a
+  767–803 ms apply for a `MEDIAN` over 1M items, and 1.00–1.04 s of
+  1.006–1.046 s for the FIXPOINT), and decode, fold and SPI writes were
+  under 1 ms. A batch of 20,000 rows that rewrites 20,000 result rows is
+  the other way around: 42 ms of decode and fold, 25–32 ms of engine, and
+  126–472 ms of SPI writes, which B1 does not overlap.
 
 [bench]: https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-20-v0.10.0-benchmark.md
 [changelog]: https://codeberg.org/gregburd/improv/src/branch/main/CHANGELOG.md

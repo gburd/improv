@@ -140,7 +140,7 @@ commands and their arguments.
 | One edit takes seconds | A `SORT`, `RANK.AVG`, `RANK.DENSE`, `PERCENTRANK` or other per-item reduction over a very large category (`RANK` and `SORTBY` with constant orders recompute only what moves), or an edit that changes a `FIXPOINT`'s input (it re-solves) | Move it to a smaller category or a separate model. |
 | The first open after adding many items is slow, later edits fast | A rebuild, because a formula reads the category's item list | Expected; see [Concepts](./concepts.md#incremental-recalculation). |
 | Postgres: writes got slower after `set_sync_mode` | `trigger` or `commit` mode makes the writer pay for the recompute (0.4 s per statement / 2.2 s per transaction on 2.5M rows) | Use `logical` ([When to use](./when-to-use.md#high-write-tables-in-trigger-or-commit-mode-use-logical-mode)). |
-| Postgres: logical results lag by seconds | One worker applies every model in turn; a slow model or a rebuild delays all | [Operations runbook](./runbook-ops.md#a-slow-apply). |
+| Postgres: logical results lag by seconds | One worker loads and writes every model in turn; a rebuild, or a model that writes many rows, delays all (a model slow in its formulas delays only itself) | [Operations runbook](./runbook-ops.md#a-slow-apply). |
 | Postgres: `recalc` or a commit-mode commit is slow | Both reload the bound tables in full (about 1 s per million fact rows) | Expected; use logical mode for large tables. |
 | DuckDB: `improv()` is slow on many distinct coordinates | It builds one engine cell per distinct coordinate (2.5M distinct cells: 4.5 s) | Bind with an aggregate so DuckDB folds rows first (2.5M rows into 44,750 cells: 0.4 s). |
 

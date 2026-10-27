@@ -301,6 +301,20 @@ this project follows [Semantic Versioning](https://semver.org/).
   Quit and the close box wait for a running save, and warn once (a second
   Quit discards) when a change could not be saved; File ▸ Open… refuses
   until it is saved or reverted.
+- **pg_improv's sync worker applies models in parallel** (B1). One worker
+  serves every logical-mode model of a database, and each model's batch
+  waited for the models before it to compute. Now every model's engine
+  computes its batch at once, on its own thread, and the worker writes
+  each model's results as soon as that model is done, each in its own
+  transaction with the model's position. Beside four models whose
+  applies take 1 s each in their formulas, a change to a fifth model was
+  visible in 5.2–8.3 s; it is now visible in 40–103 ms. A model keeps one
+  batch in flight, so its transactions still apply in commit order. The
+  slot moves only past what every model has applied, so a crash still
+  re-reads what any model had not recorded, and each model skips what it
+  had (`tests/logical.sh` §21 kills the worker and stops the server in
+  the middle of slow rounds). Decoding, folds, result writes and rebuilds
+  stay on the worker's one thread.
 - **A formula may be 256 levels deep** (was 40; C3b). The limit
   (`MAX_FORMULA_DEPTH`) is now the load bound (`MAX_STORED_FORMULA_DEPTH`),
   so a 45-term sum is fine as a new formula too, and a formula at the limit

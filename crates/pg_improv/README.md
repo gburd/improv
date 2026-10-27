@@ -391,11 +391,17 @@ anyway (for example, from a restored dump) shows `last_error` = "no sync
 worker serves this database" in `improv.status`. Use `commit`, `trigger` or
 `manual` mode there instead. Each poll decodes the slot once and routes
 each committed transaction's row changes, by relation, to the models bound
-there; models with nothing in the batch cost nothing. Each model applies
-its share and writes its changed results **in one worker transaction that
-also records the model's position** (`improv.sync_state.confirmed_lsn`), and
-skips transactions at or before it. When every model has applied the batch,
-the worker advances the slot to its end. A crash or `pg_terminate_backend`
+there; models with nothing in the batch cost nothing. The models' engines
+compute their shares at once, each on its own thread. As each finishes,
+the worker writes that model's changed results **in one worker transaction
+that also records the model's position** (`improv.sync_state.confirmed_lsn`).
+A model skips transactions at or before its position. So a slow model does
+not hold back the others' results: beside four models whose applies take
+1 s each, a fifth model's change is visible in 40–100 ms. A model has one
+batch in flight at a time, so it applies its transactions in commit order.
+The worker advances the slot only past what every model has applied: up
+to the batch's end, or to just before the first transaction of a batch
+still computing. A crash or `pg_terminate_backend`
 therefore re-reads and re-applies only what no model recorded (the writes
 are idempotent upserts and deletes); nothing is lost or applied twice.
 Rolled-back source transactions never appear. The worker restarts itself 5
