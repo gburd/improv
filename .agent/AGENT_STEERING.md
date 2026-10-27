@@ -6,58 +6,44 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — the road to 1.0.0 (status 2026-10-25, v0.11.0)
+## Active priority — the road to 1.0.0 (status 2026-10-27, v0.12.0)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
-- **v0.11.0 (2026-10-25):** B7, B8 (part: 556 B/edge, 1.47x re-solve;
-  targets 500 B and 2x not met), B4(b), exact SUM/AVERAGE, R.QTUKEY,
-  B12, the formula depth limit (40 new, 256 stored), H2, H4 (egui 0.37),
-  H6, H7, H9, the server's `--static`/CORS. J3 qualification:
-  `docs/reviews/2026-10-25-v0.11.0-qualification.md` (all gates green;
-  it found the worker's per-poll JIT at 1,000 models, fixed). Found on
-  the way: `evaluate` on a 1 MiB caller stack (Windows), FORECAST.ETS
-  overflow past 2^64 steps, and the fourth lockfile (`fuzz/`) in the
-  release steps.
-- **Released 2026-10-25:** tag `v0.11.0` = `19211d7` (re-signed: the first
-  tag's Windows qualify failed a timing test; nothing had been published).
-  GitHub Release with 32 assets (cosign `verify-blob` OK), PGXN 0.11.0,
-  DuckDB registry bump PR duckdb/community-extensions#3380 (opened by
-  hand: `COMMUNITY_EXT_PAT` is unset, so the release job fails at that
-  step; #3139, the first registration, merged 2026-10-20). The
-  postgresql.org news draft is in the release run's Announce log
-  (`PGORG_*` unset).
-- **C3 done** (`docs: the C3 security review of pg_improv and
-  improv-server`): no high; one medium fixed (text results unbounded
-  through `LANGUAGE improv`: now Excel's 32,767-character cap).
+- **Released 2026-10-27:** tag `v0.12.0` = `a2a3eda`. GitHub Release with
+  43 assets (cosign `verify-blob` OK); the first `.deb`/`.rpm` (improv and
+  pg_improv per PG major, install-tested in Debian and Fedora), the
+  Homebrew formula `improv.rb`, and `ghcr.io/gburd/improv:0.12.0` (public);
+  PGXN 0.12.0; DuckDB registry bump duckdb/community-extensions#3416, opened
+  by hand (`COMMUNITY_EXT_PAT` unset; #3380, 0.11.0, merged 2026-10-26).
+  The postgresql.org news draft is in the run's Announce log (`PGORG_*`
+  unset). The first tag run's Windows qualify failed the GUI kill -9 test
+  (no kill landed mid-save in nine rounds); the job's rerun passed.
+- **v0.12.0 contents:** H1-22 number formats (model, both stores, GUI,
+  TUI, CLI; pg_improv 0.12.0 with `pg_improv--0.11.0--0.12.0.sql`), B5
+  (RANK/SORTBY order-statistics operator: a tail edit at 1M 0.82 s →
+  1.5 ms), B1 (the sync worker applies models in parallel: a light model
+  beside four 1 s applies 7.9 s → 57–71 ms), H3 done (no UI-thread wait
+  during a recalc, a save or the initial load), the DD review's items 1,
+  2 (B6), 3, 4 step 1, 6, C3/C3b, J2, J5, and every H1 finding (fixed, or
+  H1-33 declined). Found on the way: the worker's standby snapshot never
+  logged on PG 15 (re-decoded up to 15 s of WAL per poll, since 0.8);
+  `SORT`/`SORTBY` could panic on a NaN key; the `.deb`/`.rpm` declared no
+  glibc floor (the binaries need 2.39, pg_improv 2.35). J3:
+  `docs/reviews/2026-10-27-v0.12.0-qualification.md` (all gates green,
+  nothing past 10% unexplained).
+- **v0.11.0 (2026-10-25, `19211d7`):** see its CHANGELOG section and
+  `docs/reviews/2026-10-25-v0.11.0-qualification.md`.
 - **J4 soak running** on the kiwi box since 2026-10-25 19:59 UTC, 72 h
   (to 10-28 19:59; the account expires 10-30 19:14): harness
   `crates/pg_improv/tests/soak.sh`, log `~/soak72/soak.log` on the box, a
-  check every hour. (The first attempt stopped after 4 h on a harness bug,
-  fixed in the committed script.)
-- **Done since the release (all on main, CI green):** the DD review's
-  items 1 (`Engine::apply_delta`), 2 (B6: an edit reaching 1 of 20k
-  measures 45 → 0.18 ms), 3 (O(n) windows: 18 s → 25 ms per edit at 20k),
-  4 step 1 (inline `AggRow`: 556 → 501 B/edge at 10M), 6 (multi-worker
-  `evaluate`: 1M cells 0.88 → 0.22 s); C3b (formulas 256 deep); J2 (crates
-  declared unstable); J5 (container image, .deb/.rpm, Homebrew formula;
-  first published by the next tag); H3 **done** (engine rebuild, saves
-  and the initial load off the UI thread: a new formula 2.4 s → ≤ 30 ms
-  frames, its undo 107 → 2 ms, the 1M-cell window opens in 0.22 s, was
-  6.3 s; a failed save keeps the edit, marked •, for the next save); H1 (the review,
-  `docs/reviews/2026-10-26-usability-review.md`, 34 findings; the CLI's
-  fixed); `improv-server` stops on SIGTERM. The DD review itself:
-  `~/ws/improv-rescue/dd-review/REPORT.md`.
-- **In flight on the box:** TUI H1-2..5 (`~/w-tui`), GUI H1-1, 6, 7, 8
-  (`~/w-gui1`).
-- **B5 done** (`perf(engine): RANK and SORTBY edits recompute only what
-  moves (B5)`): the order-statistics operator; at 1M items a tail edit
-  under RANK 0.82 s → 1.6 ms, a new maximum 1.22 → 0.17 s (median).
-- **NEXT:** B8 step 2 (share `W`'s
-  arrangement: 501 → < 500 B/edge), B1, the rest of H1, J4's result into the plan,
-  then 0.12.0 (its release runs the new packages and container jobs for
-  the first time).
+  check every hour. It runs the 0.11-era build it started with.
+- **NEXT:** J4's result into the plan (and whether to rerun it on 0.12),
+  B8 step 2 (share `W`'s arrangement: 501 → < 500 B/edge), the idle
+  worker's per-poll catalog queries at 1,000 models (0.12 core at
+  `poll_ms = 50`), lowering the Linux glibc floor (build on Ubuntu 22.04),
+  a Homebrew tap (`gburd/homebrew-improv`), J6.
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
