@@ -307,13 +307,14 @@ first.
 the model: each cell edit, formula, import, undo or redo, and **Save View**
 (a pivot by itself changes the layout, not the model, and is kept only as
 a saved view). The TUI writes when
-you save a view, press `w`, and quit. The CLI writes once per command. An
-autosave that fails is shown in the status line, and the GUI's title gets
-a trailing `•` until a save succeeds. Your backups are therefore current
+you save a view, press `w`, and quit. The CLI writes once per command. The
+GUI saves in the background; its title has a trailing `•` until the store
+has every edit. An autosave that fails is shown in the status line, the
+edit stays in the window, and the next save (or **File ▸ Save**) writes it. Your backups are therefore current
 as of the last edit, not the last explicit save. If another program saved
 the same store in between, the save is refused with a conflict instead of
-overwriting it: use **File ▸ Revert to Saved** (GUI) or `R` (TUI), then
-redo the edit.
+overwriting it, and the GUI saves nothing more until you reload: use
+**File ▸ Revert to Saved** (GUI) or `R` (TUI), then redo the edit.
 
 **Large stores:** an edit saves only what it changed (milliseconds for a
 cell, even at 1M cells), but a full save (an import, a refresh) of a

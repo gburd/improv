@@ -124,8 +124,9 @@ The window has five regions:
   formulas that read the measure take their new shape, and a change that
   would break one is refused with the reason. It is one undo step. Its
   close box closes it.
-- **Status bar** (bottom) — the last action's outcome (`saved model`,
-  `recalculated`, `undo`, `added Margin`, or an error) on the left, cleared
+- **Status bar** (bottom) — the last action's outcome (`saved model`, or
+  `saving…` until File ▸ Save's write lands, `recalculated`, `undo`,
+  `added Margin`, or an error) on the left, cleared
   after 5 seconds, and the selection's **Sum** on the right. While the
   formulas recompute after a structural change (a new or edited formula,
   an import, its undo, opening a model), it also says **Recalculating…**.
@@ -135,21 +136,28 @@ The window has five regions:
 
 The native window title reads `Improv — <file>` (`Untitled` in memory), with
 a trailing `•` while the model has edits that are not saved: any edit of an
-in-memory model, or a model whose last autosave failed. To keep an
+in-memory model, or a model whose autosave is still running or failed. To keep an
 in-memory model, choose **File ▸ Save** and type a path: the model is
 written there, the window switches to it and autosaves to it from then on,
 and Undo still works. Quitting an edited in-memory model asks for a second
 Quit.
 
-Every edit autosaves, in one transaction. If a save fails, the edit is
-undone in the window as well, so what you see is what the file holds,
-and the status line says why:
+Every edit autosaves, in one transaction, in the background: the window
+does not wait for the file. The title's `•` stays until the store has the
+edit. If a save fails, the edit stays in the window, still marked `•`,
+and the status line says it is not saved yet and why:
 
-- **The disk is full** (or the file can't be written): free some space and
-  make the edit again.
+- **The disk is full** (or the file can't be written): free some space.
+  The next edit, or **File ▸ Save**, writes everything that was not saved,
+  and the status line says so.
 - **Another program changed this model** since you opened it: nothing is
-  overwritten. Choose **File ▸ Revert to Saved** to load their changes,
-  then make yours again.
+  overwritten, and nothing from this window is saved until you reload. The
+  **Changed** panel opens; **Reload** (File ▸ Revert to Saved) loads their
+  changes and drops yours, which you then make again.
+
+Quit and the window's close box wait for a save that is still running.
+If a change could not be saved, the first Quit says so and a second one
+discards it; File ▸ Open… refuses until it is saved or reverted.
 
 Every two seconds the GUI checks whether another program saved the
 model. When one has, a **Changed** panel offers **Reload** (File ▸ Revert

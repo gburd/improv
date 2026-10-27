@@ -262,15 +262,29 @@ pub struct ImprovApp {
     /// closes. Any other command disarms it.
     quit_armed: bool,
     /// The model has edits that are not persisted: an in-memory model with
-    /// undo history, or a db model whose last autosave failed. Shown as the
-    /// title's ` •`. (Canvas-layout changes since the last saved view are
-    /// not tracked.)
+    /// undo history, or a db model with a save still queued or one that
+    /// failed. Shown as the title's ` •`; it clears only when the store has
+    /// every edit. (Canvas-layout changes since the last saved view are not
+    /// tracked.)
     dirty: bool,
     /// The store high-water this model was loaded/last saved at, so a save
     /// refuses to clobber another process's writes (`StoreError::Conflict`).
+    /// Lent to the save thread while a save runs ([`Self::saving`]).
     save_token: improv_store::SaveToken,
     /// What failed autosaves left unwritten; the next save writes it too.
     unsaved: improv_store::ChangeSet,
+    /// The save running on the save thread, and the thread (H3): a save
+    /// never runs on the UI thread. See [`Self::save_changes`].
+    saving: Option<Saving>,
+    saver: Option<Saver>,
+    /// A change asked for a save while one ran: [`Self::unsaved`] goes when
+    /// it lands, so saves run one at a time, in order.
+    save_wanted: bool,
+    /// The last save failed: [`Self::unsaved`] holds what it did not write.
+    save_failed: bool,
+    /// The save thread died with the token: nothing more is saved until
+    /// File ▸ Revert to Saved reloads the model.
+    save_lost: bool,
     /// The native title last sent, so `update` only sends a change.
     last_title: String,
     /// The `status` the status bar last drew, and when (egui time) it first
@@ -499,6 +513,14 @@ const GRID_MIN_H: f32 = 120.0;
 /// operations too if huge models need it.
 const UNDO_DEPTH: usize = 50;
 
+/// [`ImprovApp::swap_model`]'s outcome: the model it replaced and the
+/// save's, or why it changed nothing and the candidate back.
+type ModelSwap = Result<(Model, Result<(), String>), (String, Box<Model>)>;
+
+/// [`ImprovApp::swap_structure`]'s outcome: the structure it replaced and
+/// the save's, or why it changed nothing and the candidate back.
+type StructureSwap = Result<(Box<Model>, Result<(), String>), (String, Box<Model>)>;
+
 /// One undo (or redo) step: what to put back.
 #[derive(Debug, Clone)]
 enum Step {
@@ -528,6 +550,92 @@ struct Build {
     /// The model changed structurally since: build again when this lands.
     stale: bool,
 }
+
+/// One save for the save thread: the store, what it writes, and the token
+/// it saves over, moved there and back (never copied: a Postgres token
+/// holds every cell).
+struct SaveJob {
+    db: String,
+    /// The structure and the named cells ([`ImprovApp::save_model_for`]),
+    /// or the whole model when the save needs it.
+    model: Arc<Model>,
+    changes: improv_store::ChangeSet,
+    token: improv_store::SaveToken,
+}
+
+/// A finished save: the token after it (as it was, if the save failed),
+/// the changes it was to write (for the next save, if it failed), and how
+/// it went.
+type SaveOutcome = (
+    improv_store::SaveToken,
+    improv_store::ChangeSet,
+    improv_store::Result<()>,
+);
+
+/// The save on the save thread, as the UI thread tracks it.
+struct Saving {
+    done: mpsc::Receiver<SaveOutcome>,
+    /// It writes changes an earlier save failed to.
+    retry: bool,
+}
+
+/// The thread that runs [`SaveJob`]s (H3): a structural save of a 1M-cell
+/// Mentat store held the UI thread 46–105 ms.
+struct Saver {
+    jobs: mpsc::Sender<(SaveJob, mpsc::Sender<SaveOutcome>)>,
+}
+
+impl Saver {
+    fn spawn() -> Option<Saver> {
+        let (tx, rx) = mpsc::channel::<(SaveJob, mpsc::Sender<SaveOutcome>)>();
+        std::thread::Builder::new()
+            .name("improv-gui-save".into())
+            .spawn(move || {
+                for (job, reply) in rx {
+                    #[cfg(test)]
+                    tests::save_gate();
+                    let _ = reply.send(run_save(job));
+                }
+            })
+            .ok()
+            .map(|_| Saver { jobs: tx })
+    }
+}
+
+/// Run one save: open the store, adopt the job's token, save, take the
+/// token back.
+fn run_save(job: SaveJob) -> SaveOutcome {
+    let SaveJob {
+        db,
+        model,
+        changes,
+        mut token,
+    } = job;
+    let r = Store::open(&db).and_then(|mut s| {
+        s.adopt_save_token(std::mem::take(&mut token));
+        let r = s.save_changes(&model, &changes);
+        // On failure this is the adopted token back, unchanged.
+        token = s.take_save_token();
+        r
+    });
+    // Let go of the model before answering, so the UI thread owns it again.
+    drop(model);
+    (token, changes, r)
+}
+
+/// The save thread died (a bug) and took the save token with it.
+const SAVE_LOST: &str = "save failed: the save stopped, so the change is not saved, and \
+    nothing more can be saved from this window. Choose File ▸ Revert to Saved to reload \
+    the model.";
+
+/// What the status line says while File ▸ Save waits for its save.
+const SAVING: &str = "saving…";
+
+/// What it says when a save writes what earlier ones failed to.
+const SAVED_AGAIN: &str = "saved: the changes that were not saved are in the store now";
+
+/// How often a frame looks for a finished save.
+const SAVE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// How often a frame looks for a finished build.
 const BUILD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
@@ -596,27 +704,33 @@ fn is_lambda_definition(text: &str) -> bool {
     })
 }
 
-/// What the status line says about a failed save. The edit was rolled back
-/// (see [`ImprovApp::publish`]), so each message says so.
+/// What the status line says about a failed save. The change stays in the
+/// window, marked • and kept for the next save, so each message says what
+/// to do (H3). After a conflict nothing is retried: another save would only
+/// be refused again, and the Reload panel offers their changes.
 fn save_error(e: improv_store::StoreError) -> String {
     match e {
         improv_store::StoreError::Conflict(_) => "save conflict: another program changed this \
-            model since it was opened, so the change was not saved and nothing was \
-            overwritten. Choose File ▸ Revert to Saved to load their changes, then make \
-            it again."
+            model since it was opened, so your change is not saved and nothing was \
+            overwritten. Choose File ▸ Revert to Saved to load their changes (yours are \
+            dropped), then make it again."
             .into(),
         e if e.to_string().contains("disk is full") => {
-            "save failed: the disk is full, so the change was not saved. Free some space \
-             and make it again."
+            "save failed: the disk is full, so the change is not saved yet. Free some space; \
+             the next edit or File ▸ Save writes it."
                 .into()
         }
         // What SQLite reports when the disk fills while it grows a side file.
         e if e.to_string().contains("disk I/O error") => {
             "save failed: the model's file could not be written (a disk I/O error: is the \
-             disk full?), so the change was not saved. Free some space and make it again."
+             disk full?), so the change is not saved yet. Free some space; the next edit or \
+             File ▸ Save writes it."
                 .into()
         }
-        e => format!("save failed: {e}"),
+        e => format!(
+            "save failed: {e}; the change is not saved yet (the next edit or File ▸ Save \
+             tries again)"
+        ),
     }
 }
 
@@ -1295,6 +1409,11 @@ impl ImprovApp {
             db: db.to_string(),
             save_token,
             unsaved: Default::default(),
+            saving: None,
+            saver: None,
+            save_wanted: false,
+            save_failed: false,
+            save_lost: false,
             model: Arc::new(model),
             held: Vec::new(),
             engine: None,
@@ -1660,9 +1779,9 @@ impl ImprovApp {
     /// replacing a typed cell with a number. Editing UI must parse by declared
     /// type — see [`Self::commit_cell_text`].
     ///
-    /// Returns an error string on failure (derived cell, type mismatch, or a
-    /// failed autosave); on failure the model, engine, and snapshot are left as
-    /// they were.
+    /// Returns an error string on failure. A refused edit (derived cell, type
+    /// mismatch) leaves the model, engine, and snapshot as they were; a failed
+    /// autosave keeps the edit, unsaved (see [`Self::save_changes`]).
     pub fn set_cell(
         &mut self,
         measure: MeasureId,
@@ -1703,35 +1822,33 @@ impl ImprovApp {
                 ));
             }
         }
-        let prior = self.put_cell(measure, coord.clone(), value)?;
+        let (prior, saved) = self.put_cell(measure, coord.clone(), value)?;
         self.record_step(Step::Cell(measure, coord, prior));
-        Ok(())
+        saved
     }
 
     /// Set (or, with `None`, clear) one input cell in the model and the
-    /// engine, and save; on any failure put both back. Returns the cell's
-    /// prior value. Records no history (undo and redo use it too).
+    /// engine, and queue its save. Returns the cell's prior value, and the
+    /// save's failure if it failed at once. Records no history (undo and
+    /// redo use it too).
+    ///
+    /// A failed engine update puts the cell back (`Err`). A failed save does
+    /// not: the edit stays, marked unsaved (•), and the next save writes it
+    /// (H3, see [`Self::save_changes`]).
     fn put_cell(
         &mut self,
         measure: MeasureId,
         coord: CoordKey,
         value: Option<Value>,
-    ) -> Result<Option<Value>, String> {
+    ) -> Result<(Option<Value>, Result<(), String>), String> {
         // Precise rollback rather than publish()'s clone-and-swap: a single cell
         // edit goes through the INCREMENTAL engine (`engine.set`), so cloning the
         // whole model and rebuilding the graph per keystroke would throw away the
-        // very thing that makes editing cheap. Instead remember the prior value
-        // and undo both the model and the engine if anything downstream fails, so
-        // a reported failure never leaves memory diverged from the store.
+        // very thing that makes editing cheap.
         let key = decode(&coord);
         let prior = self.input(measure, &key).cloned();
         self.write_input(measure, key.clone(), value.clone());
-        let outcome = (|| -> Result<(), String> {
-            self.push_engine(measure, &coord, value.as_ref())?;
-            self.save_changes(&improv_store::ChangeSet::cell(measure, key.clone()))
-        })();
-
-        if let Err(e) = outcome {
+        if let Err(e) = self.push_engine(measure, &coord, value.as_ref()) {
             // Restore the model, then push the restored value back through the
             // engine so its graph and our snapshot agree with the model again.
             self.write_input(measure, key, prior.clone());
@@ -1741,7 +1858,8 @@ impl ImprovApp {
             }
             return Err(e);
         }
-        Ok(prior)
+        let saved = self.save_changes(&improv_store::ChangeSet::cell(measure, key));
+        Ok((prior, saved))
     }
 
     /// Push one input-cell edit through the live engine and adopt the recomputed
@@ -1950,8 +2068,8 @@ impl ImprovApp {
 
     /// Save the current canvas as a named view: mint an id, add it to the
     /// model, and autosave. Returns the id, or `None` when nothing was saved
-    /// (no measure on the canvas, blank name, or a failed store write — in which
-    /// case the view is rolled back and `status` holds the error).
+    /// (no measure on the canvas, or a blank name). A failed store write keeps
+    /// the view, unsaved (•), with the error in `status`.
     pub fn save_view(&mut self, name: &str) -> Option<ViewId> {
         let name = name.trim();
         if name.is_empty() {
@@ -1966,14 +2084,13 @@ impl ImprovApp {
             structure: true,
             ..Default::default()
         };
-        if let Err(e) = self.save_changes(&structure) {
-            self.model_mut().views.remove(&id);
-            self.status = e;
-            return None;
-        }
+        let saved = self.save_changes(&structure);
         self.record_step(Step::Structure(prior));
         self.current_view = Some(id);
-        self.status = format!("saved view '{name}'");
+        self.status = match saved {
+            Ok(()) => format!("saved view '{name}'"),
+            Err(e) => e,
+        };
         Some(id)
     }
 
@@ -2065,8 +2182,6 @@ impl ImprovApp {
     /// autosave, and report the cell count (or the error) in `self.status`.
     /// Never panics — every failure path (bad form, bad file, `CsvError`)
     /// lands in `self.status` as a clear message.
-    // shortcut: only the import is staged; File ▸ Save (a full save) still
-    // blocks unannounced. Move saves off the UI thread if that shows at scale.
     /// The Import button: a bad form is reported at once; a good one shows
     /// "Importing and saving…" (and a wait cursor) for a painted frame
     /// before [`Self::run_csv_import`] blocks the UI thread, so a large
@@ -2394,9 +2509,9 @@ impl ImprovApp {
     /// (structure changed), refreshes the snapshot, and autosaves.
     ///
     /// **Atomic:** the change is validated on a *candidate* model (parse, then
-    /// a real engine build) and only published once the engine is known good
-    /// and the store write succeeded. On any failure the previous model,
-    /// engine, and snapshot are all left intact and the error is returned; on a
+    /// a real engine build) and only published once the engine is known good.
+    /// A refused formula leaves the previous model, engine, and snapshot
+    /// intact; a failed save keeps it, unsaved ([`Self::save_changes`]). On a
     /// parse or compile error `formula_error` is also set (located in `text`,
     /// for the editor's underline and the explanation under the row). It is
     /// cleared the moment `text` parses — a later save failure is a save
@@ -2450,8 +2565,8 @@ impl ImprovApp {
     /// `description`, it survives save/reload unchanged.
     ///
     /// Atomic and undoable on exactly the same terms as [`Self::commit_formula`]
-    /// — it goes through [`Self::publish`], so a toggle that cannot build or
-    /// cannot save leaves the model, engine and snapshot untouched.
+    /// — it goes through [`Self::publish`], so a toggle that cannot build
+    /// leaves the model, engine and snapshot untouched.
     ///
     /// A no-op (still `Ok`) on an input measure or an unknown id: neither has a
     /// formula, so there is nothing to toggle and nothing to report.
@@ -2554,78 +2669,68 @@ impl ImprovApp {
     }
 
     /// Replace the model with `candidate`, but only if it builds a working
-    /// engine and persists: build first, save second, publish third. On failure
-    /// nothing is touched (`self` keeps its model, engine, and snapshot). On
-    /// success the replaced model becomes an undo point.
+    /// engine: check first, then publish and save. If it does not build
+    /// nothing is touched (`self` keeps its model, engine, and snapshot);
+    /// otherwise the replaced model becomes an undo point, and a failed save
+    /// is returned with the change kept ([`Self::save_changes`]).
     ///
     /// ponytail: a full model clone per structural edit (the candidate, then
     /// the undo point). The engine is checked over the structure alone
     /// ([`check_engine`]) and rebuilt in the background (H3).
     fn publish(&mut self, candidate: Model) -> Result<(), String> {
-        let previous = self.swap_model(Box::new(candidate)).map_err(|(e, _)| e)?;
+        let (previous, saved) = self.swap_model(Box::new(candidate)).map_err(|(e, _)| e)?;
         self.record_history(previous);
-        Ok(())
+        saved
     }
 
     /// The atomic model swap behind [`Self::publish`] and undo/redo: check
-    /// that `candidate` builds an engine ([`check_engine`]), save it, and only
-    /// then adopt it and rebuild the engine (in the background, see
-    /// [`Self::rebuild_engine`]). Returns the model it replaced; on failure, the
-    /// error and `candidate`, so a failed undo keeps its step without a
-    /// copy. Records no history — callers decide (an undo must not become
+    /// that `candidate` builds an engine ([`check_engine`]), then adopt it,
+    /// save it, and rebuild the engine (in the background, see
+    /// [`Self::rebuild_engine`]). Returns the model it replaced and the save's
+    /// outcome; if it does not build, the error and `candidate`, so a refused
+    /// undo keeps its step without a copy. Records no history — callers decide (an undo must not become
     /// an undo point of its own).
-    fn swap_model(&mut self, mut candidate: Box<Model>) -> Result<Model, (String, Box<Model>)> {
+    fn swap_model(&mut self, mut candidate: Box<Model>) -> ModelSwap {
         if let Err(e) = check_engine(&mut candidate) {
             return Err((e, candidate));
         }
         let _ = self.model_mut();
         let previous = std::mem::replace(&mut self.model, Arc::new(*candidate));
         let changes = improv_store::ChangeSet::between(&previous, &self.model);
-        if let Err(e) = self.save_changes(&changes) {
-            let candidate = std::mem::replace(&mut self.model, previous);
-            return Err((e, Box::new(into_model(candidate))));
-        }
+        let saved = self.save_changes(&changes);
         self.rebuild_engine();
-        Ok(into_model(previous))
+        Ok((into_model(previous), saved))
     }
 
     /// [`Self::publish`] for a change that leaves the input cells alone:
     /// `candidate` is the new model without them ([`structure_of`]).
     fn publish_structure(&mut self, candidate: Model) -> Result<(), String> {
-        let previous = self
+        let (previous, saved) = self
             .swap_structure(Box::new(candidate))
             .map_err(|(e, _)| e)?;
         self.record_step(Step::Structure(previous));
-        Ok(())
+        saved
     }
 
     /// [`Self::swap_model`] for a model without input cells: `candidate`
     /// takes the current cells, so nothing copies or diffs them. Returns the
     /// structure it replaced, also without cells; on failure, the error and
     /// `candidate`.
-    fn swap_structure(
-        &mut self,
-        mut candidate: Box<Model>,
-    ) -> Result<Box<Model>, (String, Box<Model>)> {
+    fn swap_structure(&mut self, mut candidate: Box<Model>) -> StructureSwap {
         debug_assert!(candidate.inputs.is_empty(), "a structure has no cells");
         if let Err(e) = check_engine(&mut candidate) {
             return Err((e, candidate));
         }
         let model = self.model_mut();
         candidate.inputs = std::mem::take(&mut model.inputs);
-        let mut previous = std::mem::replace(model, *candidate);
+        let previous = std::mem::replace(model, *candidate);
         let structure = improv_store::ChangeSet {
             structure: true,
             ..Default::default()
         };
-        if let Err(e) = self.save_changes(&structure) {
-            let model = self.model_mut();
-            previous.inputs = std::mem::take(&mut model.inputs);
-            let candidate = std::mem::replace(model, previous);
-            return Err((e, Box::new(candidate)));
-        }
+        let saved = self.save_changes(&structure);
         self.rebuild_engine();
-        Ok(Box::new(previous))
+        Ok((Box::new(previous), saved))
     }
 
     // -- undo / redo -------------------------------------------------------
@@ -2651,21 +2756,23 @@ impl ImprovApp {
         }
     }
 
-    /// Put `step` back, returning the step that restores what it replaced,
-    /// or on failure the error and `step` itself (nothing changed).
-    fn apply_step(&mut self, step: Step) -> Result<Step, (String, Step)> {
+    /// Put `step` back, returning the step that restores what it replaced
+    /// and the save's outcome (a failed save keeps the change, see
+    /// [`Self::save_changes`]), or on failure the error and `step` itself
+    /// (nothing changed).
+    fn apply_step(&mut self, step: Step) -> Result<(Step, Result<(), String>), (String, Step)> {
         match step {
             Step::Model(m) => self
                 .swap_model(m)
-                .map(|m| Step::Model(Box::new(m)))
+                .map(|(m, saved)| (Step::Model(Box::new(m)), saved))
                 .map_err(|(e, m)| (e, Step::Model(m))),
             Step::Structure(m) => self
                 .swap_structure(m)
-                .map(Step::Structure)
+                .map(|(m, saved)| (Step::Structure(m), saved))
                 .map_err(|(e, m)| (e, Step::Structure(m))),
             Step::Cell(measure, coord, value) => {
                 match self.put_cell(measure, coord.clone(), value.clone()) {
-                    Ok(now) => Ok(Step::Cell(measure, coord, now)),
+                    Ok((now, saved)) => Ok((Step::Cell(measure, coord, now), saved)),
                     Err(e) => Err((e, Step::Cell(measure, coord, value))),
                 }
             }
@@ -2694,10 +2801,10 @@ impl ImprovApp {
             return Ok(());
         };
         match self.apply_step(step) {
-            Ok(inverse) => {
+            Ok((inverse, saved)) => {
                 push_bounded(&mut self.redo_stack, inverse);
                 self.after_history_restore();
-                Ok(())
+                saved
             }
             Err((e, step)) => {
                 // Nothing changed, so the step still applies: keep it.
@@ -2713,10 +2820,10 @@ impl ImprovApp {
             return Ok(());
         };
         match self.apply_step(step) {
-            Ok(inverse) => {
+            Ok((inverse, saved)) => {
                 push_bounded(&mut self.undo_stack, inverse);
                 self.after_history_restore();
-                Ok(())
+                saved
             }
             Err((e, step)) => {
                 self.redo_stack.push(step);
@@ -2771,9 +2878,10 @@ impl ImprovApp {
 
     /// Create a new derived measure named `name` with RHS `text`. Categories
     /// are inferred as the union of the referenced measures' categories (same
-    /// rule as the CLI's `add-derived`). Rebuilds the engine and autosaves. On
-    /// any failure (parse error, duplicate name, engine build failure, failed
-    /// store write) the model, engine, and snapshot are unchanged.
+    /// rule as the CLI's `add-derived`). Rebuilds the engine and autosaves. A
+    /// refusal (parse error, duplicate name, engine build failure) leaves the
+    /// model, engine, and snapshot unchanged; a failed save keeps the measure,
+    /// unsaved ([`Self::save_changes`]).
     ///
     /// A parse or compile error is also left in `new_formula_error`, located
     /// in `text`.
@@ -2893,23 +3001,162 @@ impl ImprovApp {
     }
 
     /// Autosave `changes` (everything changed since the last load or save),
-    /// plus whatever a failed save left unwritten, when `db` is set: a cell
+    /// plus whatever failed saves left unwritten, when `db` is set: a cell
     /// edit writes that cell alone, not the whole model. In-memory (`""`)
-    /// models skip saving. Returns the failure message so callers can report
-    /// it — never overwrite a save failure with a success message.
+    /// models skip saving.
+    ///
+    /// In the app the save runs on the save thread ([`Saver`]) and this
+    /// returns at once (H3); [`Self::poll_saves`] reports how it went. One
+    /// save runs at a time: changes made meanwhile go in the next, in order,
+    /// over the token the last one left. A failed save keeps its changes in
+    /// memory, marked dirty, and the next save writes them too: the change
+    /// sets of every failed save merge. Tests save in the foreground (see
+    /// [`Self::background`]), so the error comes back here.
     #[must_use = "a failed save must be surfaced, not reported as success"]
     fn save_changes(&mut self, changes: &improv_store::ChangeSet) -> Result<(), String> {
-        let mut all = std::mem::take(&mut self.unsaved);
-        all.add(changes.clone());
         if self.db.is_empty() {
             return Ok(());
         }
-        let model = self.save_model_for(&all);
-        let r = self.store_with(&model, |s, m| s.save_changes(m, &all));
-        if r.is_err() {
-            self.unsaved = all;
+        self.unsaved.add(changes.clone());
+        self.dirty = true;
+        self.writable()?;
+        if self.saving.is_some() {
+            self.save_wanted = true;
+            return Ok(());
         }
+        self.send_save()?;
+        if self.background {
+            return Ok(());
+        }
+        self.finish_saves()
+    }
+
+    /// Refuse a change once another program's save is known (H9), or the
+    /// save thread is lost: this window's save would be refused, and nothing
+    /// is retried behind their back. File ▸ Revert to Saved is the way on.
+    fn writable(&self) -> Result<(), String> {
+        if self.db.is_empty() {
+            Ok(())
+        } else if self.save_lost {
+            Err(SAVE_LOST.into())
+        } else if self.outside.is_some() {
+            Err(save_error(
+                improv_store::StoreError::Conflict(String::new()),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Hand everything unsaved to the save thread.
+    fn send_save(&mut self) -> Result<(), String> {
+        if self.saver.is_none() {
+            self.saver = Saver::spawn();
+        }
+        let Some(jobs) = self.saver.as_ref().map(|s| s.jobs.clone()) else {
+            return Err(SAVE_LOST.into());
+        };
+        let changes = std::mem::take(&mut self.unsaved);
+        let model = self.save_model_for(&changes);
+        let job = SaveJob {
+            db: self.db.clone(),
+            model,
+            changes,
+            token: std::mem::take(&mut self.save_token),
+        };
+        let (tx, rx) = mpsc::channel();
+        if let Err(mpsc::SendError((job, _))) = jobs.send((job, tx)) {
+            // The thread is gone: the next save starts another.
+            self.saver = None;
+            self.save_token = job.token;
+            self.unsaved = job.changes;
+            return Err(SAVE_LOST.into());
+        }
+        self.saving = Some(Saving {
+            done: rx,
+            retry: self.save_failed,
+        });
+        Ok(())
+    }
+
+    /// Adopt a finished save (`None`: its thread died): the token, and on
+    /// failure its changes back into [`Self::unsaved`], merged with those
+    /// made since. Then send what was asked for meanwhile, unless the store
+    /// refused this window. `Ok(true)`: it wrote what an earlier save failed
+    /// to.
+    fn land_save(&mut self, s: Saving, outcome: Option<SaveOutcome>) -> Result<bool, String> {
+        let r = match outcome {
+            Some((token, _, Ok(()))) => {
+                self.save_token = token;
+                self.save_failed = false;
+                Ok(s.retry)
+            }
+            Some((token, changes, Err(e))) => {
+                self.save_token = token;
+                self.unsaved.add(changes);
+                self.save_failed = true;
+                if matches!(e, improv_store::StoreError::Conflict(_)) {
+                    // Show the Reload panel at once: the H9 way on.
+                    self.outside = Some((self.outside_save().unwrap_or_default(), true));
+                }
+                Err(save_error(e))
+            }
+            None => {
+                self.saver = None;
+                self.save_lost = true;
+                self.save_failed = true;
+                Err(SAVE_LOST.into())
+            }
+        };
+        if std::mem::take(&mut self.save_wanted) && self.writable().is_ok() {
+            if let Err(e) = self.send_save() {
+                self.dirty = true;
+                return r.and(Err(e));
+            }
+        }
+        self.dirty = self.saving.is_some() || !self.unsaved.is_empty();
         r
+    }
+
+    /// Each frame: report a finished save on the status line, and keep
+    /// frames coming while one runs.
+    fn poll_saves(&mut self, ctx: &egui::Context) {
+        while let Some(s) = &self.saving {
+            let outcome = match s.done.try_recv() {
+                Ok(o) => Some(o),
+                Err(mpsc::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(SAVE_POLL);
+                    return;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => None,
+            };
+            let Some(s) = self.saving.take() else {
+                return;
+            };
+            match self.land_save(s, outcome) {
+                Err(e) => self.status = e,
+                Ok(true) => self.status = SAVED_AGAIN.into(),
+                Ok(false) if self.saving.is_none() && self.status == SAVING => {
+                    self.status = "saved model".into();
+                }
+                Ok(false) => {}
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    /// Wait for the save running, and any it starts, and land them: the
+    /// first failure, if any.
+    fn finish_saves(&mut self) -> Result<(), String> {
+        let mut first = Ok(());
+        while let Some(s) = self.saving.take() {
+            let outcome = s.done.recv().ok();
+            let r = self.land_save(s, outcome);
+            if first.is_ok() {
+                first = r.map(drop);
+            }
+        }
+        first
     }
 
     /// What a save of `changes` reads: the structure and the named cells,
@@ -2930,9 +3177,10 @@ impl ImprovApp {
         Arc::new(m)
     }
 
-    /// Open the store, adopt the save token, run `save`, keep the new token.
-    /// A failed save keeps the old token (nothing was written) and marks
-    /// the model dirty.
+    /// Open the store, adopt the save token, run `save`, keep the new token,
+    /// on this thread (after any queued saves). A failed save keeps the old
+    /// token (nothing was written) and marks the model dirty.
+    #[cfg(test)]
     fn store_with(
         &mut self,
         model: &Model,
@@ -2941,6 +3189,7 @@ impl ImprovApp {
         if self.db.is_empty() {
             return Ok(());
         }
+        self.finish_saves()?;
         let r = Store::open(&self.db).map_err(save_error).and_then(|mut s| {
             s.adopt_save_token(std::mem::take(&mut self.save_token));
             let r = save(&mut s, model).map_err(save_error);
@@ -2949,19 +3198,22 @@ impl ImprovApp {
             r
         });
         self.dirty = r.is_err();
+        self.save_failed = r.is_err();
         r
     }
 
     /// File ▸ Revert to Saved: reload the model from the store (with a fresh
     /// save token) and rebuild the engine. After a save conflict this is the
-    /// way forward: the edit that conflicted was already rolled back, and the
-    /// reload picks up the other writer's changes. Undo history is dropped
+    /// way forward: the reload picks up the other writer's changes and drops
+    /// this window's unsaved ones. Undo history is dropped
     /// (it describes a model that no longer matches the store). On failure
     /// nothing changes.
     pub fn revert_to_saved(&mut self) -> Result<(), String> {
         if self.db.is_empty() {
             return Ok(());
         }
+        // Its outcome is moot: the reload takes what the store holds.
+        let _ = self.finish_saves();
         let mut store = Store::open(&self.db).map_err(|e| format!("revert failed: {e}"))?;
         let mut model = store
             .load_model()
@@ -2972,6 +3224,7 @@ impl ImprovApp {
         self.rebuild_engine();
         self.save_token = store.take_save_token();
         self.unsaved = Default::default();
+        (self.save_failed, self.save_lost, self.save_wanted) = (false, false, false);
         self.outside = None;
         self.undo_stack.clear();
         self.redo_stack.clear();
@@ -2996,7 +3249,8 @@ impl ImprovApp {
     /// H9: every [`PROBE_SECS`] (egui time `now`), look for another
     /// writer's save, and offer Reload when there is a new one.
     fn probe_store(&mut self, now: f64) {
-        if self.db.is_empty() || now - self.probed_at < PROBE_SECS {
+        // A save in flight moves the high-water itself: look after it lands.
+        if self.db.is_empty() || now - self.probed_at < PROBE_SECS || self.saving.is_some() {
             return;
         }
         self.probed_at = now;
@@ -4182,6 +4436,13 @@ impl eframe::App for ImprovApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.frame(ui);
     }
+
+    /// Never exit with a save still running (H3).
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Err(e) = self.finish_saves() {
+            eprintln!("improv-gui: {e}");
+        }
+    }
 }
 
 impl ImprovApp {
@@ -4190,6 +4451,12 @@ impl ImprovApp {
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
         self.run_queued_import(ctx);
+        self.poll_saves(ctx);
+        // The close box waits for the running save, and warns once if a
+        // change was not saved.
+        if ctx.input(|i| i.viewport().close_requested()) && !self.close_allowed() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.poll_build(ctx);
         self.sync_axis_state();
         self.sync_native_title(ctx);
@@ -4347,7 +4614,8 @@ impl ImprovApp {
                     ..Default::default()
                 };
                 self.status = match self.save_changes(&structure) {
-                    Ok(()) => "saved model".into(),
+                    Ok(()) if self.saving.is_none() => "saved model".into(),
+                    Ok(()) => SAVING.into(),
                     Err(e) => e,
                 };
             }
@@ -4381,7 +4649,6 @@ impl ImprovApp {
                 };
                 if let Some(id) = self.save_view(&name) {
                     self.view_name.clear();
-                    self.status = format!("saved view '{name}'");
                     if !typed {
                         self.start_rename(Thing::View(id));
                     }
@@ -4534,6 +4801,15 @@ impl ImprovApp {
         if !new && is_file && !std::path::Path::new(path).exists() {
             return Err(format!("no model at {path}"));
         }
+        // The running save lands first; a change no save wrote is not
+        // dropped by opening another model.
+        if self.finish_saves().is_err() || (!self.db.is_empty() && !self.unsaved.is_empty()) {
+            return Err(
+                "this model has changes that are not saved: File ▸ Save them, or \
+                File ▸ Revert to Saved to drop them, first"
+                    .into(),
+            );
+        }
         let mut next = ImprovApp::load(path)?;
         if new && !(next.model.categories.is_empty() && next.model.measures.is_empty()) {
             return Err(format!("{path} already holds a model; use File ▸ Open…"));
@@ -4560,6 +4836,9 @@ impl ImprovApp {
             };
             return self.save_changes(&all);
         }
+        // shortcut: Save As writes the whole model on the UI thread (seconds
+        // at 1M cells); queue it too if that shows.
+        let _ = self.finish_saves();
         let _ = self.model_mut();
         let mut store = Store::open(path).map_err(save_error)?;
         let there = store.load_model().map_err(save_error)?;
@@ -4579,7 +4858,8 @@ impl ImprovApp {
     /// one undoable, autosaved step. A new input measure ranges over every
     /// category, or over the ones listed as `Name: Category, Category` (the
     /// TUI's form, H1-6), and is shown if the focused worksheet shows
-    /// nothing. Returns the status line; on failure nothing changes.
+    /// nothing. Returns the status line; refused, nothing changes (a failed
+    /// save keeps it, see [`Self::save_changes`]).
     pub fn add_named(&mut self, what: NewThing, name: &str) -> Result<String, String> {
         let (name, listed) = match what {
             NewThing::Input => match name.split_once(':') {
@@ -4669,7 +4949,8 @@ impl ImprovApp {
     /// item; one removed keeps the cells at its first item and drops the
     /// rest. The formulas that read the measure take their new shape, and
     /// one that no longer compiles refuses the change. One undoable,
-    /// autosaved step; on failure nothing changes.
+    /// autosaved step; refused, nothing changes (a failed save keeps it, see
+    /// [`Self::save_changes`]).
     pub fn set_input_categories(
         &mut self,
         id: MeasureId,
@@ -4805,8 +5086,8 @@ impl ImprovApp {
 
     /// Rename a category, item or measure, as one undoable, autosaved step.
     /// Formulas hold ids, so they follow the new name. The clash rules are
-    /// [`Self::add_named`]'s. Returns the status line; on failure nothing
-    /// changes.
+    /// [`Self::add_named`]'s. Returns the status line; refused, nothing
+    /// changes (a failed save keeps it, see [`Self::save_changes`]).
     pub fn rename(&mut self, t: Thing, name: &str) -> Result<String, String> {
         let name = name.trim();
         let Some((kind, old)) = self.thing_name(t) else {
@@ -4957,8 +5238,8 @@ impl ImprovApp {
     /// cells, or a saved view (the canvas stays as it is), as one
     /// undoable, autosaved step. Saved views lose a deleted measure's
     /// matrices (a view left with none goes) and a deleted item's filter
-    /// and page entries. Returns the status line; on failure nothing
-    /// changes.
+    /// and page entries. Returns the status line; refused, nothing changes
+    /// (a failed save keeps it, see [`Self::save_changes`]).
     pub fn delete(&mut self, t: Thing) -> Result<String, String> {
         let Some((kind, name)) = self.thing_name(t) else {
             return Err("it no longer exists".into());
@@ -5080,12 +5361,33 @@ impl ImprovApp {
         }
     }
 
-    /// Whether Quit may close now. Edits to an in-memory model can't be saved,
-    /// so the first Quit only warns and arms; a second one closes.
+    /// Whether Quit may close now. It waits for the queued saves first
+    /// (H3). Edits that are not saved (an in-memory model's, or a store
+    /// model's whose save failed) only warn and arm the first Quit; a second
+    /// one closes.
     fn quit_allowed(&mut self) -> bool {
         if self.db.is_empty() && self.can_undo() && !self.quit_armed {
             self.quit_armed = true;
             self.status = "unsaved in-memory model: Quit again to discard".into();
+            return false;
+        }
+        self.close_allowed()
+    }
+
+    /// Whether the window may close (Quit, or its close box): once the
+    /// running save has landed, unless a store model has changes no save
+    /// wrote. Then the first close warns and arms; a second one closes.
+    fn close_allowed(&mut self) -> bool {
+        let failed = self.finish_saves().err();
+        if self.quit_armed {
+            return true;
+        }
+        if !self.db.is_empty() && !self.unsaved.is_empty() {
+            self.quit_armed = true;
+            self.status = format!(
+                "{} Quit again to discard the change.",
+                failed.unwrap_or_else(|| "some changes are not saved.".into())
+            );
             return false;
         }
         true
@@ -8126,7 +8428,7 @@ mod tests {
         let mut key: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
         key.sort();
         let err = app
-            .set_cell(MeasureId(101), key, Value::Number(9.0))
+            .set_cell(MeasureId(101), key.clone(), Value::Number(9.0))
             .expect_err("unwritable store must fail the edit");
         assert!(err.starts_with("save failed:"), "got {err:?}");
 
@@ -8139,19 +8441,25 @@ mod tests {
             .add_derived_measure("Margin", "Price - Quantity")
             .expect_err("unwritable store must fail the add");
         assert!(err.starts_with("save failed:"), "got {err:?}");
+        assert!(err.contains("not saved yet"), "says it plainly: {err}");
 
-        // The view save reports the failure in the status line and rolls back.
-        assert_eq!(app.save_view("L1"), None);
+        // The view save reports the failure in the status line.
+        assert!(app.save_view("L1").is_some());
         assert!(app.status.starts_with("save failed:"), "{}", app.status);
-        assert!(app.model.views.is_empty(), "view rolled back");
 
-        // A failed formula commit did not publish the new formula, so the model
-        // still holds (and computes) the original Revenue = Price * Quantity.
+        // H3: a failed save keeps each change in the window, marked unsaved,
+        // for the next save to write: the edit, the formula, the measure and
+        // the view are all there, and the title says •.
+        assert_eq!(app.cell_text(MeasureId(101), &key).as_deref(), Some("9"));
         assert_eq!(
             app.formula_source(MeasureId(102)).as_deref(),
-            Some("Price * Quantity")
+            Some("Price + Quantity")
         );
-        assert!(app.model.measure_by_name("Margin").is_none());
+        assert!(app.model.measure_by_name("Margin").is_some());
+        assert_eq!(app.model.views.len(), 1);
+        assert!(app.dirty && app.native_title().ends_with(" •"));
+        assert_eq!(app.unsaved.cells.len(), 1);
+        assert!(app.unsaved.structure);
     }
 
     #[test]
@@ -8231,6 +8539,11 @@ mod tests {
             db: String::new(),
             save_token: improv_store::SaveToken::default(),
             unsaved: Default::default(),
+            saving: None,
+            saver: None,
+            save_wanted: false,
+            save_failed: false,
+            save_lost: false,
             model: Arc::new(model),
             held: Vec::new(),
             engine,
@@ -9777,21 +10090,24 @@ mod tests {
     /// Regression for the review's defect #6: a failed save must not leave the
     /// in-memory model diverged from the store.
     #[test]
-    fn failed_cell_save_rolls_back_the_in_memory_edit() {
+    fn failed_cell_save_keeps_the_edit_unsaved() {
         let mut app = build_app(revenue_model());
         // An unwritable store path: save() must fail.
         app.db = "/nonexistent-dir-improv/cannot-write.db".to_string();
         let measure = MeasureId(101); // Quantity (input)
         let coord: CoordKey = improv_engine::smallvec::smallvec![(1u32, 10u32), (2u32, 20u32)];
-        let before = app.model.input(measure, &decode(&coord)).cloned();
 
         let res = app.set_cell(measure, coord.clone(), Value::Number(999.0));
         assert!(res.is_err(), "save to an unwritable path must fail");
+        // H3 (defect #6 revisited): the edit stays, marked unsaved, and is
+        // kept for the next save; the window never claims it is saved.
         assert_eq!(
             app.model.input(measure, &decode(&coord)).cloned(),
-            before,
-            "defect #6: rejected value must not remain in the model"
+            Some(Value::Number(999.0))
         );
+        assert!(app.dirty);
+        assert_eq!(app.unsaved.cells, vec![(measure, decode(&coord))]);
+        assert!(app.can_undo(), "and it undoes like any edit");
     }
 
     // -- typed (non-numeric) cell display + editing -------------------------
@@ -10098,7 +10414,7 @@ mod tests {
     /// Defect-6 atomicity on the TYPED path: a failed save rolls the in-memory
     /// typed edit back (set AND clear), prior value intact.
     #[test]
-    fn failed_save_rolls_back_a_typed_edit() {
+    fn failed_save_keeps_a_typed_edit_unsaved() {
         let mut app = build_app(typed_model());
         app.db = "/nonexistent-dir-improv/cannot-write.db".to_string();
         let key = typed_key();
@@ -10110,8 +10426,8 @@ mod tests {
         assert!(err.starts_with("save failed:"), "got {err:?}");
         assert_eq!(
             app.model.input(MeasureId(2), &coord),
-            Some(&Value::Text("hello".into())),
-            "a failed save must not leave the typed edit in memory"
+            Some(&Value::Text("replacement".into())),
+            "the typed edit stays, unsaved"
         );
 
         let err = app
@@ -10120,9 +10436,16 @@ mod tests {
         assert!(err.starts_with("save failed:"), "got {err:?}");
         assert_eq!(
             app.model.input(MeasureId(2), &coord),
-            Some(&Value::Text("hello".into())),
-            "a failed save must not leave the cell cleared in memory"
+            None,
+            "cleared, unsaved"
         );
+        assert!(app.dirty);
+        // Both failed saves name the one cell: merged, written once.
+        assert!(app
+            .unsaved
+            .cells
+            .iter()
+            .all(|c| *c == (MeasureId(2), coord.clone())));
     }
 
     /// Begin-edit seeds the buffer with the cell's TYPED display text, so a
@@ -10618,10 +10941,11 @@ mod tests {
         );
     }
 
-    /// A store write that fails during undo is surfaced, and the step is not
-    /// lost: the undo point stays, so the user can retry.
+    /// A store write that fails during undo is surfaced, and nothing is lost:
+    /// the undo is taken in the window (H3), unsaved, its redo step is there,
+    /// and the next save writes it.
     #[test]
-    fn a_failed_save_during_undo_is_reported_and_keeps_the_step() {
+    fn a_failed_save_during_undo_is_reported_and_kept_unsaved() {
         let mut app = build_app(grid_2x2_model());
         let (qkey, _) = q_and_rev_keys();
         app.set_cell(MeasureId(101), qkey.clone(), Value::Number(200.0))
@@ -10634,18 +10958,19 @@ mod tests {
             .into_owned();
         let err = app
             .undo()
-            .expect_err("an unwritable store must fail the undo");
+            .expect_err("an unwritable store must fail the undo's save");
         assert!(err.starts_with("save failed:"), "got {err:?}");
         assert_eq!(
             app.cell_text(MeasureId(101), &qkey).as_deref(),
-            Some("200"),
-            "a failed undo must leave the live state alone"
+            Some("100"),
+            "the undo is taken, unsaved"
         );
-        assert!(app.can_undo(), "the undo point must survive a failed undo");
+        assert!(app.dirty && app.can_redo());
 
         // The UI path reports it instead of claiming success.
-        app.undo_with_status();
-        assert!(app.status.starts_with("undo failed:"), "{}", app.status);
+        app.redo_with_status();
+        assert!(app.status.starts_with("redo failed:"), "{}", app.status);
+        assert_eq!(app.cell_text(MeasureId(101), &qkey).as_deref(), Some("200"));
     }
 
     // -- STEP 1: margin gutters (docs/reviews/2026-09-22-gui-reconstruction-plan.md)
@@ -11870,9 +12195,9 @@ mod tests {
         );
     }
 
-    /// Toggling a formula is undoable and atomic on the same terms as a formula
-    /// edit: it goes through `publish`, so it is an undo point, and a failed
-    /// save leaves the model untouched.
+    /// Toggling a formula is undoable on the same terms as a formula edit: it
+    /// goes through `publish`, so it is an undo point, and a failed save
+    /// keeps it, unsaved (H3).
     #[test]
     fn toggling_a_formula_is_undoable_and_atomic() {
         let mut app = build_app(four_formula_model());
@@ -11895,13 +12220,11 @@ mod tests {
             .into_owned();
         let err = app
             .set_formula_enabled(MeasureId(103), false)
-            .expect_err("an unwritable store must fail the toggle");
+            .expect_err("an unwritable store must fail the toggle's save");
         assert!(err.starts_with("save failed:"), "got {err:?}");
-        assert!(
-            app.formula_enabled(MeasureId(103)),
-            "a failed toggle must leave the model alone"
-        );
-        assert_eq!(app.values_for(MeasureId(103)).get(&qkey), Some(&100.0));
+        assert!(!app.formula_enabled(MeasureId(103)), "kept, unsaved");
+        assert!(app.dirty && app.unsaved.structure);
+        assert!(app.can_undo());
     }
 
     /// Toggling is a no-op (not an error) where there is no formula to toggle,
@@ -17570,8 +17893,9 @@ mod tests {
     }
 
     /// Inside its own mount namespace, on a tiny tmpfs at `dir`: fill the
-    /// disk, edit until a save fails, check the failure, free the space,
-    /// and check the store.
+    /// disk, edit until a save fails, check the failure and that the store
+    /// is untouched, fail a second edit of another kind, free the space, and
+    /// check that the next save wrote both (their changes merge, H3).
     fn h6_child_disk_full(dir: &str) {
         let db = format!("{dir}/model.db");
         Store::open(&db)
@@ -17586,42 +17910,59 @@ mod tests {
             while f.write_all(&chunk).is_ok() {}
         }
         let (qkey, _) = q_and_rev_keys();
-        let mut failed = None;
-        for i in 0..2000 {
-            let before = (*app.model).clone();
-            let shown = app.cell_text(MeasureId(101), &qkey);
-            // Alternate a cell edit and a structural one: both paths save.
-            let r = if i % 2 == 0 {
+        let stored = || Store::open(&db).and_then(|mut s| s.load_model());
+        let full = |e: &str| {
+            assert!(
+                e.contains("the disk is full") || e.contains("is the disk full?"),
+                "unclear: {e}"
+            );
+            assert!(e.contains("not saved yet"), "{e}");
+        };
+        // Alternate a cell edit and a structural one: both paths save.
+        let edit = |app: &mut ImprovApp, i: u32| {
+            if i.is_multiple_of(2) {
                 app.set_cell(MeasureId(101), qkey.clone(), Value::Number(f64::from(i)))
             } else {
                 app.add_named(NewThing::Item(CategoryId(1)), &format!("y{i}"))
                     .map(|_| ())
-            };
-            if let Err(e) = r {
-                assert!(
-                    e.contains("the disk is full") || e.contains("is the disk full?"),
-                    "unclear: {e}"
-                );
-                assert!(e.contains("not saved"), "{e}");
+            }
+        };
+        let mut failed = None;
+        // What the store holds: the model after the last save that worked.
+        let mut saved = (*app.model).clone();
+        for i in 0..2000 {
+            if let Err(e) = edit(&mut app, i) {
+                full(&e);
                 println!("H6 disk-full message: {e}");
-                assert_eq!(*app.model, before, "the in-memory model must be kept");
-                assert_eq!(app.cell_text(MeasureId(101), &qkey), shown);
+                // H3: the edit stays in the window, unsaved.
                 assert!(app.dirty, "the title marks it unsaved");
+                assert!(!app.unsaved.is_empty(), "kept for the next save");
+                assert_ne!(*app.model, saved);
                 failed = Some(i);
                 break;
             }
+            saved = (*app.model).clone();
         }
         let i = failed.expect("no save failed on a full disk");
+        // A second edit, of the other kind, fails too; both are kept.
+        let e = edit(&mut app, i + 1).expect_err("the disk is still full");
+        full(&e);
+        let kept = app.unsaved.clone();
+        assert!(kept.structure && !kept.cells.is_empty(), "merged: {kept:?}");
         std::fs::remove_file(&filler).expect("free the space");
-        app.set_cell(MeasureId(101), qkey.clone(), Value::Number(-1.0))
-            .expect("with room again the edit saves");
-        assert!(!app.dirty);
-        let back = Store::open(&db)
-            .and_then(|mut s| s.load_model())
-            .expect("reopen");
-        assert_eq!(back, *app.model, "nothing lost, nothing half-saved");
+        // (A full disk cannot open the store even to read it.)
+        assert_eq!(stored().expect("reopen"), saved, "the store is untouched");
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::SaveModel);
+        assert_eq!(app.status, "saved model", "with room again Save writes it");
+        assert!(!app.dirty && app.unsaved.is_empty());
+        let back = stored().expect("reopen");
+        assert_eq!(back, *app.model, "both failed edits are in the store");
         assert_eq!(integrity(&db), "ok");
-        println!("H6 disk-full: save {i} failed cleanly");
+        println!(
+            "H6 disk-full: saves {i} and {} failed cleanly, then saved",
+            i + 1
+        );
     }
 
     /// A full disk during a save: a clear error, the model kept in memory,
@@ -17674,8 +18015,10 @@ mod tests {
     }
 
     /// Two programs on one store: the second save to land is refused with a
-    /// clear "changed by another program", never overwriting, and the
-    /// refused program keeps its model; Revert to Saved is the way on.
+    /// clear "changed by another program", never overwriting. The refused
+    /// program keeps its edit in the window, unsaved (H3), shows the Reload
+    /// panel at once and saves nothing more (no retry) until Revert to Saved,
+    /// which takes the other program's changes and drops its own.
     #[test]
     fn two_writers_conflict_and_neither_overwrites_the_other() {
         let db = temp_db("h6_two");
@@ -17694,23 +18037,36 @@ mod tests {
         b.set_cell(q, k(10, 20), Value::Number(7.0))
             .expect("B saves first");
 
-        let before = (*a.model).clone();
         let e = a
             .set_cell(q, k(11, 21), Value::Number(9.0))
             .expect_err("A's save is stale");
         assert!(e.contains("another program changed this model"), "{e}");
+        assert!(e.contains("not saved"), "{e}");
         assert!(e.contains("Revert to Saved"), "{e}");
-        assert_eq!(*a.model, before, "A keeps its model");
-        assert_eq!(a.cell_text(q, &k(11, 21)).as_deref(), Some("80"));
+        assert_eq!(
+            a.cell_text(q, &k(11, 21)).as_deref(),
+            Some("9"),
+            "A keeps it"
+        );
+        assert!(a.dirty);
+        assert!(
+            matches!(a.outside, Some((_, true))),
+            "the Reload panel shows"
+        );
         let e = a
             .add_named(NewThing::Category, "Region")
             .expect_err("a structural edit is stale too");
         assert!(e.contains("another program"), "{e}");
-        assert_eq!(*a.model, before);
-        // The menu's Save says so too.
+        // The menu's Save says so too, and writes nothing.
         let ctx = egui::Context::default();
         a.run_command(&ctx, Command::SaveModel);
         assert!(a.status.contains("another program"), "{}", a.status);
+        // Not Now keeps it refused: nothing is retried behind B's back.
+        a.outside = a.outside.map(|(hw, _)| (hw, false));
+        let e = a
+            .set_cell(q, k(11, 20), Value::Number(3.0))
+            .expect_err("still stale after Not Now");
+        assert!(e.contains("another program"), "{e}");
 
         let stored = Store::open(&db)
             .and_then(|mut s| s.load_model())
@@ -17728,9 +18084,17 @@ mod tests {
         );
         assert!(stored.category_by_name("Region").is_none());
 
-        // Revert to Saved picks up B's edit; A's edit then saves on top.
+        assert!(
+            stored.measures.len() == a.model.measures.len(),
+            "B's catalog"
+        );
+
+        // Revert to Saved picks up B's edit and drops A's unsaved ones; A's
+        // edit then saves on top.
         a.revert_to_saved().expect("revert");
+        assert!(!a.dirty && a.unsaved.is_empty() && a.outside.is_none());
         assert_eq!(a.cell_text(q, &k(10, 20)).as_deref(), Some("7"));
+        assert_eq!(a.cell_text(q, &k(11, 21)).as_deref(), Some("80"));
         a.set_cell(q, k(11, 21), Value::Number(9.0))
             .expect("A saves now");
         let stored = Store::open(&db)
@@ -17738,11 +18102,25 @@ mod tests {
             .expect("reload");
         assert_eq!(value(&stored, k(10, 20)), Some(Value::Number(7.0)));
         assert_eq!(value(&stored, k(11, 21)), Some(Value::Number(9.0)));
-        // Now B is the stale one, undo included.
+        // Now B is the stale one, undo included: the undo is taken in B's
+        // window, unsaved, and the store keeps A's save.
         let e = b.undo().expect_err("B's undo is stale");
         assert!(e.contains("another program"), "{e}");
-        assert_eq!(b.cell_text(q, &k(10, 20)).as_deref(), Some("7"), "B kept");
-        assert!(b.can_undo(), "the undo step survives");
+        assert_eq!(
+            b.cell_text(q, &k(10, 20)).as_deref(),
+            Some("100"),
+            "undone in B"
+        );
+        assert!(b.dirty && b.can_redo());
+        let stored = Store::open(&db)
+            .and_then(|mut s| s.load_model())
+            .expect("reload");
+        assert_eq!(
+            value(&stored, k(10, 20)),
+            Some(Value::Number(7.0)),
+            "not overwritten"
+        );
+        assert_eq!(value(&stored, k(11, 21)), Some(Value::Number(9.0)));
     }
 
     /// The status line's wording for each kind of failed save.
@@ -17759,7 +18137,23 @@ mod tests {
         assert!(save_error(io).contains("is the disk full?"));
         assert!(save_error(StoreError::Conflict("x".into())).starts_with("save conflict: another"));
         let other = StoreError::Mentat(improv_storage_mentat::StoreError::Integrity("bad".into()));
-        assert_eq!(save_error(other), "save failed: data integrity: bad");
+        let other = save_error(other);
+        assert!(
+            other.starts_with("save failed: data integrity: bad"),
+            "{other}"
+        );
+        // Each says plainly the change is not saved, and what happens next.
+        for e in [
+            save_error(StoreError::Conflict("x".into())),
+            save_error(StoreError::Mentat(
+                improv_storage_mentat::StoreError::Mentat(
+                    "SQL error: database or disk is full".into(),
+                ),
+            )),
+            other,
+        ] {
+            assert!(e.contains("not saved"), "{e}");
+        }
     }
 
     /// Autosaves write only what changed, and lose nothing: a cell edit, a
@@ -18027,7 +18421,7 @@ mod tests {
             act(app);
             let call = ms(t);
             let (mut worst, mut frames) = (0.0f64, 0);
-            while app.building.is_some() {
+            while app.building.is_some() || app.saving.is_some() {
                 let f = frame(app, Vec::new());
                 if f > 50.0 {
                     println!("H3   slow frame {frames}: {f:.0} ms at {:.0} ms", ms(t));
@@ -18037,6 +18431,7 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(8));
             }
             worst = worst.max(frame(app, Vec::new()));
+            assert!(!app.dirty, "{what}: saved ({})", app.status);
             println!(
                 "H3 {what}: call {call:.0} ms, longest frame {worst:.1} ms over {frames} frames, landed after {:.0} ms",
                 ms(t)
@@ -18204,6 +18599,262 @@ mod tests {
         app.finish_build();
         assert_eq!(revenue(&app).as_deref(), Some("1000"));
         assert_eq!(*app.model, grid_2x2_model());
+    }
+
+    /// Saves on the save thread wait while a test holds this up (one test
+    /// at a time: [`SAVES_HELD`]).
+    static SAVE_GATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// Serializes the tests that hold [`SAVE_GATE`]; other tests' saves
+    /// pass through it.
+    static SAVES_HELD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(super) fn save_gate() {
+        while SAVE_GATE.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    /// Holds every save on the save thread until it drops (or `release`).
+    struct HeldSaves(Option<std::sync::MutexGuard<'static, ()>>);
+
+    impl HeldSaves {
+        /// Let the saves run, from any thread.
+        fn release() {
+            SAVE_GATE.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    impl Drop for HeldSaves {
+        fn drop(&mut self) {
+            Self::release();
+            self.0.take();
+        }
+    }
+
+    fn hold_saves() -> HeldSaves {
+        let one = SAVES_HELD.lock().unwrap_or_else(|e| e.into_inner());
+        SAVE_GATE.store(true, std::sync::atomic::Ordering::Release);
+        HeldSaves(Some(one))
+    }
+
+    /// A store-backed app whose saves run on the save thread, as in the app.
+    fn saving_app(tag: &str) -> (ImprovApp, Cleanup) {
+        let db = temp_db(tag);
+        let cleanup = Cleanup(db.clone());
+        Store::open(&db)
+            .and_then(|mut s| s.save_model(&grid_2x2_model()))
+            .expect("seed");
+        let mut app = ImprovApp::load(&db).expect("load");
+        app.finish_build();
+        app.background = true;
+        (app, cleanup)
+    }
+
+    /// Run frames until the save thread has nothing running.
+    fn saves_land(desk: &mut Desk, app: &mut ImprovApp) {
+        let t = std::time::Instant::now();
+        while app.saving.is_some() {
+            assert!(
+                t.elapsed() < std::time::Duration::from_secs(30),
+                "a save hung"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            let _ = desk.frame(app, Vec::new());
+        }
+    }
+
+    fn stored_model(db: &str) -> Model {
+        Store::open(db)
+            .and_then(|mut s| s.load_model())
+            .expect("reopen")
+    }
+
+    /// H3: saves run on the save thread, one at a time and in order. Two
+    /// quick edits return before either is written; the title says • until
+    /// the store has both, then the store equals the model, the second
+    /// value last.
+    #[test]
+    fn two_quick_saves_land_in_order_off_the_ui_thread() {
+        let (mut app, _c) = saving_app("h3_order");
+        let (q, _) = q_and_rev_keys();
+        let gate = hold_saves();
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(1.0))
+            .expect("queued");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(2.0))
+            .expect("queued");
+        app.add_named(NewThing::Category, "Region").expect("queued");
+        assert!(
+            app.saving.is_some() && app.save_wanted,
+            "one runs, one waits"
+        );
+        assert!(app.dirty, "not saved yet: •");
+        assert!(app.native_title().ends_with(" •"));
+        let value = |m: &Model| m.input(MeasureId(101), &decode(&q)).cloned();
+        assert_eq!(value(&stored_model(&app.db)), Some(Value::Number(100.0)));
+        drop(gate);
+        saves_land(&mut Desk::new(), &mut app);
+        assert!(!app.dirty && app.unsaved.is_empty());
+        let stored = stored_model(&app.db);
+        assert_eq!(
+            value(&stored),
+            Some(Value::Number(2.0)),
+            "the last value last"
+        );
+        assert!(stored.category_by_name("Region").is_some());
+        assert_eq!(stored, *app.model);
+        assert_eq!(
+            app.outside_save(),
+            None,
+            "its own saves are no outside save"
+        );
+    }
+
+    /// H3: a background save that fails says so on the status line, plainly,
+    /// keeps the change for the next save and the • until then; the next
+    /// save writes every failed change, and says so.
+    #[test]
+    fn a_failed_background_save_is_reported_and_written_by_the_next() {
+        let (mut app, _c) = saving_app("h3_fail");
+        let (q, _) = q_and_rev_keys();
+        let good = app.db.clone();
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        // Unwritable: each save fails, off the UI thread.
+        app.db = "/nonexistent-dir-improv/x.db".into();
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(5.0))
+            .expect("queued, not yet failed");
+        app.add_named(NewThing::Category, "Region").expect("queued");
+        saves_land(&mut desk, &mut app);
+        assert!(app.status.starts_with("save failed:"), "{}", app.status);
+        assert!(app.status.contains("not saved yet"), "{}", app.status);
+        assert!(app.dirty && app.unsaved.structure && !app.unsaved.cells.is_empty());
+        assert_eq!(
+            app.cell_text(MeasureId(101), &q).as_deref(),
+            Some("5"),
+            "kept"
+        );
+        // Writable again: the next save writes both failed changes.
+        app.db = good;
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::SaveModel);
+        assert_eq!(app.status, SAVING);
+        saves_land(&mut desk, &mut app);
+        assert_eq!(app.status, SAVED_AGAIN);
+        assert!(!app.dirty);
+        let stored = stored_model(&app.db);
+        assert_eq!(stored, *app.model, "both are in the store");
+        assert!(stored.category_by_name("Region").is_some());
+    }
+
+    /// H3: Quit (and the window's close box) waits for a running save and
+    /// then closes; a save that failed makes the first Quit warn, and the
+    /// second discard. A lost save thread is reported, never silent.
+    #[test]
+    fn quit_waits_for_a_pending_save_and_warns_when_it_failed() {
+        let (mut app, _c) = saving_app("h3_quit");
+        let (q, _) = q_and_rev_keys();
+        let gate = hold_saves();
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(6.0))
+            .expect("queued");
+        assert!(app.saving.is_some());
+        let release = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            HeldSaves::release();
+        });
+        assert!(app.quit_allowed(), "closes once the save is in");
+        release.join().expect("release");
+        drop(gate);
+        assert!(app.saving.is_none() && !app.dirty);
+        assert_eq!(
+            stored_model(&app.db).input(MeasureId(101), &decode(&q)),
+            Some(&Value::Number(6.0)),
+            "the store has it before the window closes"
+        );
+
+        let good = std::mem::replace(&mut app.db, "/nonexistent-dir-improv/x.db".into());
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(7.0))
+            .expect("queued");
+        assert!(!app.quit_allowed(), "the first Quit warns");
+        assert!(app.status.contains("not saved"), "{}", app.status);
+        assert!(app.status.ends_with("Quit again to discard the change."));
+        assert!(app.quit_allowed(), "the second discards");
+        // The close box asks the same question.
+        app.quit_armed = false;
+        let ctx = egui::Context::default();
+        let close = egui::RawInput {
+            viewports: std::iter::once((
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    events: vec![egui::ViewportEvent::Close],
+                    ..Default::default()
+                },
+            ))
+            .collect(),
+            ..Default::default()
+        };
+        let out = ctx.test_ui(close.clone(), |ui| app.frame(ui));
+        let cancelled = |out: &egui::FullOutput| {
+            out.viewport_output
+                .values()
+                .any(|v| v.commands.contains(&egui::ViewportCommand::CancelClose))
+        };
+        assert!(cancelled(&out), "the first close is cancelled");
+        let out = ctx.test_ui(close, |ui| app.frame(ui));
+        assert!(!cancelled(&out), "the second closes");
+        app.db = good;
+
+        // A save thread that dies takes the token: said, and nothing more
+        // is saved until Revert to Saved.
+        let (tx, rx) = mpsc::channel();
+        drop(tx);
+        app.saving = Some(Saving {
+            done: rx,
+            retry: false,
+        });
+        let e = app.finish_saves().expect_err("lost");
+        assert_eq!(e, SAVE_LOST);
+        let e = app
+            .set_cell(MeasureId(101), q.clone(), Value::Number(8.0))
+            .expect_err("nothing more saves");
+        assert_eq!(e, SAVE_LOST);
+        app.revert_to_saved().expect("revert");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(9.0))
+            .expect("saves again");
+        app.finish_saves().expect("saved");
+        assert_eq!(
+            stored_model(&app.db).input(MeasureId(101), &decode(&q)),
+            Some(&Value::Number(9.0))
+        );
+    }
+
+    /// H3: edits made while a save runs (cell, structure, undo) go in the
+    /// next save, after it, and the window keeps responding: none waits for
+    /// the running save.
+    #[test]
+    fn edits_during_a_pending_save_go_in_the_next() {
+        let (mut app, _c) = saving_app("h3_during");
+        let (q, rev) = q_and_rev_keys();
+        let gate = hold_saves();
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(3.0))
+            .expect("queued");
+        let t = std::time::Instant::now();
+        app.commit_formula(MeasureId(102), "Price * Quantity * 2")
+            .expect("formula");
+        app.set_cell(MeasureId(101), q.clone(), Value::Number(4.0))
+            .expect("edit");
+        app.undo().expect("undo the edit");
+        assert!(t.elapsed() < std::time::Duration::from_secs(2), "it waited");
+        assert!(app.save_wanted);
+        app.finish_build();
+        assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("60"));
+        drop(gate);
+        app.finish_saves().expect("both saves");
+        let stored = stored_model(&app.db);
+        assert_eq!(stored, *app.model);
+        assert_eq!(
+            stored.input(MeasureId(101), &decode(&q)),
+            Some(&Value::Number(3.0))
+        );
     }
 
     /// H3: a cell edit made while a build still holds the model (it copies

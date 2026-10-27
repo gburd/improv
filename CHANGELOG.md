@@ -265,6 +265,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   group. An error among RANK's values, or a NaN, sends that group's round
   to the kernel; `RANK.AVG`, `RANK.DENSE`, `PERCENTRANK`, a `SORTBY` or
   `RANK` whose order is a measure, and windows stay on the reduce.
+- **The GUI saves in the background** (H3). Each autosave runs on a
+  thread of its own, one at a time and in order, so an edit no longer
+  waits for the store: undoing a new formula on a 1M-cell Mentat store
+  held the window 93–107 ms, now 1–2 ms. The title's `•` stays until the
+  store has the edit. **A failed save no longer undoes the edit in the
+  window**: the edit stays, marked `•`, the status line says it is not
+  saved yet and why, and the next save or File ▸ Save writes every change
+  that failed, merged. After a save conflict nothing more is saved from
+  that window until Revert to Saved (the Changed panel opens at once).
+  Quit and the close box wait for a running save, and warn once (a second
+  Quit discards) when a change could not be saved; File ▸ Open… refuses
+  until it is saved or reverted.
 - **A formula may be 256 levels deep** (was 40; C3b). The limit
   (`MAX_FORMULA_DEPTH`) is now the load bound (`MAX_STORED_FORMULA_DEPTH`),
   so a 45-term sum is fine as a new formula too, and a formula at the limit
