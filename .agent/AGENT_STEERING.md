@@ -6,11 +6,17 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — the road to 1.0.0 (status 2026-10-27, v0.12.0)
+## Active priority — the road to 1.0.0 (status 2026-10-27, v0.12.1)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
+- **Released 2026-10-27:** tag `v0.12.1` = `9378cb8`: the Linux
+  artifacts built on EL8 (glibc 2.28), install-tested on eight
+  distributions; no code change, pg_improv's update from 0.12.0 changes
+  only its version. 43 assets (cosign OK), PGXN 0.12.1, ghcr
+  `improv:0.12.1`; registry PR duckdb/community-extensions#3416 now bumps
+  to 0.12.1.
 - **Released 2026-10-27:** tag `v0.12.0` = `a2a3eda`. GitHub Release with
   43 assets (cosign `verify-blob` OK); the first `.deb`/`.rpm` (improv and
   pg_improv per PG major, install-tested in Debian and Fedora), the
@@ -33,15 +39,6 @@ criteria" are the bar. Mark tasks done there as they land.
   glibc floor (the binaries need 2.39, pg_improv 2.35). J3:
   `docs/reviews/2026-10-27-v0.12.0-qualification.md` (all gates green,
   nothing past 10% unexplained).
-- **Since 0.12.0 (unreleased):** the Linux glibc floor is 2.28 (EL8).
-  0.12.0's Linux artifacts needed glibc 2.39 (pg_improv and the DuckDB
-  extension 2.35), so none ran on RHEL 8/9, and only pg_improv on
-  Debian 12 and Ubuntu 22.04. Every Linux artifact is now built in
-  manylinux_2_28 (`ci/manylinux.sh`, `ci/pg_improv-dist.sh`), checked by
-  `ci/glibc-floor.sh 2.28 3.4.25`, and `ci/install-test.sh` installs it on
-  Debian 12/13, Ubuntu 22.04/24.04, Rocky 8/9, Alma 10 and Fedora (with
-  pg_improv under PGDG's server). A `workflow_dispatch` run of
-  `release.yml` is the full dry run, with nothing published.
 - **v0.11.0 (2026-10-25, `19211d7`):** see its CHANGELOG section and
   `docs/reviews/2026-10-25-v0.11.0-qualification.md`.
 - **J4 soak: skipped for now** (maintainer's call, 2026-10-27). The first
@@ -59,9 +56,8 @@ criteria" are the bar. Mark tasks done there as they land.
   base time. Evaluate and tail edits did not move. B5 then replaced RANK's
   path: the scale gate reads `wide.rank.edit_max` 0.26× and `edit_tail`
   0.00× its baseline.
-- **NEXT:** the first `workflow_dispatch` dry run of `release.yml` with the
-  manylinux builds, then 0.12.1; the idle worker's per-poll catalog
-  listing at 1,000 models (0.12 core at `poll_ms = 50`); J6 at 1.0. Not now: a Homebrew tap
+- **NEXT:** the idle worker's per-poll catalog listing at 1,000 models
+  (0.12 core at `poll_ms = 50`); J6 at 1.0. Not now: a Homebrew tap
   (the release still attaches `improv.rb`). B8 is done (390 B/edge, warm
   re-solve 3.5× faster); the plan's row has the numbers.
 
