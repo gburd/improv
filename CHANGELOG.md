@@ -6,6 +6,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-10-29
+
+An idle pg_improv sync worker no longer re-reads its model catalog on
+every poll, which at 1,000 logical models was most of its idle CPU.
+Nothing else changes; pg_improv's update from 0.12.1 only moves its
+version.
+
 ### Changed
 
 - **An idle pg_improv sync worker no longer lists its models every poll.**
@@ -2749,7 +2756,8 @@ Improv becomes buildable by anyone who clones it.
 - Project infrastructure: workspace, `rustfmt.toml`, `clippy.toml`, `deny.toml`,
   `.typos.toml`, CI, dual license (Apache-2.0 OR MIT), contributor guide.
 
-[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.12.1...main
+[Unreleased]: https://codeberg.org/gregburd/improv/compare/v0.12.2...main
+[0.12.2]: https://codeberg.org/gregburd/improv/compare/v0.12.1...v0.12.2
 [0.12.1]: https://codeberg.org/gregburd/improv/compare/v0.12.0...v0.12.1
 [0.12.0]: https://codeberg.org/gregburd/improv/compare/v0.11.0...v0.12.0
 [0.11.0]: https://codeberg.org/gregburd/improv/compare/v0.10.0...v0.11.0
