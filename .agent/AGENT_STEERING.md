@@ -56,8 +56,12 @@ criteria" are the bar. Mark tasks done there as they land.
   base time. Evaluate and tail edits did not move. B5 then replaced RANK's
   path: the scale gate reads `wide.rank.edit_max` 0.26× and `edit_tail`
   0.00× its baseline.
-- **NEXT:** the idle worker's per-poll catalog listing at 1,000 models
-  (0.12 core at `poll_ms = 50`); J6 at 1.0. Not now: a Homebrew tap
+- **Since 0.12.1:** an idle sync worker keeps its model listing until a
+  transaction takes an xid (`perf(pg_improv): an idle sync worker keeps its
+  model listing`); it listed the catalog every poll.
+- **NEXT:** J6 at 1.0 (needs the `COMMUNITY_EXT_PAT` and `PGORG_*`
+  secrets); 1.0.0-rc.1 once the exit criteria hold (J4's soak is skipped
+  for now, the maintainer's call). Not now: a Homebrew tap
   (the release still attaches `improv.rb`). B8 is done (390 B/edge, warm
   re-solve 3.5× faster); the plan's row has the numbers.
 

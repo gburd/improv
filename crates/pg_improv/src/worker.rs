@@ -53,6 +53,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -696,10 +697,11 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// batch, and re-applies none of it.
 fn sweep() {
     release_slot();
-    let listed = match in_txn(list_models) {
+    let listed = match listing() {
         Ok(m) => m,
         Err(e) => return log!("pg_improv sync: listing models: {e}"),
     };
+    let listed: &[Listed] = &listed;
     LIVE.with(|l| {
         l.borrow_mut()
             .retain(|mid, _| listed.iter().any(|m| m.id == *mid))
@@ -730,11 +732,11 @@ fn sweep() {
     // Slot creation needs a transaction that has not written (and a failed
     // attempt leaves a half-made slot with no plugin): its own transaction.
     match in_txn(ensure_slot) {
-        Err(e) => return slot_error(&listed, &format!("creating the slot {SLOT}: {e}")),
+        Err(e) => return slot_error(listed, &format!("creating the slot {SLOT}: {e}")),
         // The publication was dropped by hand: make it; the slot follows.
         Ok(None) => {
             if let Err(e) = in_txn(sync_publication) {
-                slot_error(&listed, &format!("creating the publication {SLOT}: {e}"));
+                slot_error(listed, &format!("creating the publication {SLOT}: {e}"));
             }
             return;
         }
@@ -780,11 +782,11 @@ fn sweep() {
             full: true,
             flush: 0,
         },
-        Err(e) => return slot_error(&listed, &format!("reading the slot {SLOT}: {e}")),
+        Err(e) => return slot_error(listed, &format!("reading the slot {SLOT}: {e}")),
     };
     slot_ok();
     let mut by_rel: HashMap<u32, Vec<i64>> = HashMap::new();
-    for m in &listed {
+    for m in listed {
         for r in &m.rels {
             by_rel.entry(*r).or_default().push(m.id);
         }
@@ -794,7 +796,7 @@ fn sweep() {
     // Where the in-flight models skipped below start: what this decode
     // routes them is unapplied even once their round ends this sweep.
     let mut held = Vec::new();
-    for m in &listed {
+    for m in listed {
         let mut txns = routed.remove(&m.id).unwrap_or_default();
         // The slot holds while a round runs, so later polls decode its
         // batch again: what a model recorded, it skips.
@@ -1026,6 +1028,32 @@ fn installed() -> bool {
         == Some(true)
 }
 
+/// The models to serve this poll: the last listing while nothing can have
+/// changed it, else a new one ([`list_models`]). Re-listing every poll was
+/// the idle worker's main cost at 1,000 models.
+///
+/// Every change to what [`list_models`] reads is made by a transaction
+/// with an xid. A listing whose snapshot had no transaction running and
+/// every xid below `next` (read before it) completed saw all of them, so
+/// it holds while `next` is still the next xid. A transaction left open
+/// across the listing fails that test: nothing is kept.
+fn listing() -> Result<Rc<[Listed]>, String> {
+    // SAFETY: reads shared memory under its lock, on the worker's thread.
+    let next = unsafe { pg_sys::ReadNextFullTransactionId() }.value;
+    if let Some(kept) = LISTED
+        .with(|l| l.borrow().clone())
+        .filter(|(at, _)| *at == next)
+    {
+        return Ok(kept.1);
+    }
+    let (listed, settled) = in_txn(list_models)?;
+    debug1!("pg_improv sync: listed {} models", listed.len());
+    let listed: Rc<[Listed]> = listed.into();
+    let keep = settled == Some(next);
+    LISTED.with(|l| *l.borrow_mut() = keep.then(|| (next, listed.clone())));
+    Ok(listed)
+}
+
 /// A logical-mode model with sync state, as one poll sees it.
 struct Listed {
     id: i64,
@@ -1045,9 +1073,24 @@ struct Listed {
     partitions: Option<String>,
 }
 
-/// The models in logical mode that have sync state, in id order.
-fn list_models() -> Res<Vec<Listed>> {
-    Spi::connect(|c| -> Res<_> {
+/// The models in logical mode that have sync state, in id order, and the
+/// listing snapshot's `xmax` when no transaction was running in it (its
+/// `xmin` equals its `xmax`; `None` otherwise), for [`listing`].
+fn list_models() -> Res<(Vec<Listed>, Option<u64>)> {
+    let settled = Spi::connect(|c| -> Res<Option<u64>> {
+        let t = c.select(
+            "SELECT pg_snapshot_xmax(s)::text::int8 \
+             FROM pg_current_snapshot() s WHERE pg_snapshot_xmin(s) = pg_snapshot_xmax(s)",
+            None,
+            &[],
+        )?;
+        Ok(t.first()
+            .get::<i64>(1)
+            .ok()
+            .flatten()
+            .and_then(|x| u64::try_from(x).ok()))
+    })?;
+    let listed = Spi::connect(|c| -> Res<_> {
         c.select(
             "SELECT m.id, m.name, coalesce(v.tx, 0), \
                     s.confirmed_lsn IS NOT NULL OR s.last_applied_at IS NOT NULL, \
@@ -1083,7 +1126,8 @@ fn list_models() -> Res<Vec<Listed>> {
             })
         })
         .collect()
-    })
+    });
+    Ok((listed?, settled))
 }
 
 /// What [`ensure_slot`] did.
@@ -1284,6 +1328,9 @@ thread_local! {
     static SLOT_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     /// A standby snapshot was logged that the slot has not advanced past.
     static SNAPSHOT_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The last listing, while the next xid is still the one it holds for
+    /// ([`listing`]).
+    static LISTED: RefCell<Option<(u64, Rc<[Listed]>)>> = const { RefCell::new(None) };
 }
 
 /// A model kept loaded between polls, with its live engine.

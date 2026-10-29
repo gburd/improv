@@ -529,9 +529,12 @@ WAL rather than everything since the bgwriter's last snapshot (up to 15 s
 of it). With the bound tables idle it also moves the
 slot past unrelated WAL once it lags by 16 MB.
 
-An idle worker does not decode. Each poll first compares the WAL insert
-position with where its last decode ended, and decodes only when something
-was written since. Postgres logs "starting logical decoding" and "found
+An idle worker does not decode, nor list its models. Each poll first
+compares the WAL insert position with where its last decode ended, and
+decodes only when something was written since. It lists the logical models
+(the catalog, each one's bound tables and partitions) only after a
+transaction has taken an xid since its last listing: every change to them
+does, so an idle database's polls reuse the last listing. Postgres logs "starting logical decoding" and "found
 consistent point" at LOG for every decode, so the worker decodes with
 `log_min_messages = fatal` and logs its own errors.
 

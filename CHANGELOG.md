@@ -6,6 +6,17 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **An idle pg_improv sync worker no longer lists its models every poll.**
+  At 1,000 logical models that listing (the catalog, each model's bound
+  tables and partitions) was most of an idle worker's CPU: about 0.12 of a
+  core at `poll_ms = 50`. The worker now lists them only after some
+  transaction has taken an xid since its last listing, which every change
+  to them does. `logical.sh` §22 checks that an idle worker lists nothing
+  for 5 s and that `define`, a new model, a switch to manual and back, an
+  attached partition and a drop are still applied at once.
+
 ## [0.12.1] - 2026-10-27
 
 The Linux release files run on every supported distribution again. 0.12.0's

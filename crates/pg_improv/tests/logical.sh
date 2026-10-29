@@ -812,4 +812,64 @@ eq14 "$(q "SELECT sum(improv.recalc(name)) FROM improv.model WHERE name ~ '^m_(s
 	"every model equals a fresh recalc after kill -9 and a fast stop"
 eq14 "$(q "SELECT count(*) FROM improv.sync_state WHERE last_error IS NOT NULL")" 0 "no model failed"
 echo "ok: killed (-9) and stopped (-m fast) mid-round, the worker caught up; the slot reached the end; every model equals a fresh recalc"
+
+# 22. an idle worker keeps its model listing: with no transaction since its
+#     last listing it does not list the models again (it did every poll,
+#     the idle cost at 1,000 models); each kind of change it lists for is
+#     still seen at once: define (model_version), a new model, a drop, a
+#     switch out of logical mode, a partition attached, and a data write.
+q "ALTER SYSTEM SET log_min_messages = debug1"
+q "SELECT pg_reload_conf()" >/dev/null
+q "ALTER SYSTEM SET autovacuum = off" # an autovacuum or ANALYZE takes an xid
+q "SELECT pg_reload_conf()" >/dev/null
+sleep 1
+lists() { tail -c +$((logpos22 + 1)) "$D/log" | grep -c "pg_improv sync: listed" || true; }
+logpos22=$(wc -c <"$D/log")
+sleep 5
+idle22=$(lists)
+# 5 s at poll_ms 50 is about 100 polls; a bgwriter snapshot takes no xid
+[ "$idle22" -le 2 ] || { echo "FAIL: 5 s idle listed the models $idle22 times"; exit 1; }
+q "CREATE TABLE t22 (k text PRIMARY KEY, v float8)"
+q "INSERT INTO t22 VALUES ('a', 1), ('b', 2)"
+q "SELECT improv.create_model('m22')" >/dev/null
+q "SELECT improv.bind_category('m22', 'K', 't22', 'k')" >/dev/null
+q "SELECT improv.bind_measure('m22', 'V', 't22', 'v')" >/dev/null
+q "SELECT improv.define('m22', 'W = V * 2')" >/dev/null
+W22="SELECT string_agg(k || '=' || value, ',' ORDER BY k) FROM improv_m22.w"
+wait_for "$W22" "a=2,b=4" "a new model, while the worker keeps its listing" >/dev/null
+q "SELECT improv.define('m22', 'W = V * 3', replace => true)" >/dev/null
+wait_for "$W22" "a=3,b=6" "define on a listed model" >/dev/null
+q "UPDATE t22 SET v = 10 WHERE k = 'a'"
+wait_for "$W22" "a=30,b=6" "a data write" >/dev/null
+q "SELECT improv.set_sync_mode('m22', 'manual')" >/dev/null
+q "UPDATE t22 SET v = 20 WHERE k = 'a'"
+sleep 1
+eq14 "$(q "$W22")" "a=30,b=6" "a model switched to manual is no longer applied"
+q "SELECT improv.set_sync_mode('m22', 'logical')" >/dev/null
+wait_for "$W22" "a=60,b=6" "the same model back in logical mode" >/dev/null
+q "CREATE TABLE p22 (k text, v float8) PARTITION BY LIST (k)"
+q "CREATE TABLE p22_a PARTITION OF p22 FOR VALUES IN ('a')"
+q "INSERT INTO p22 VALUES ('a', 1)"
+q "SELECT improv.create_model('mp22')" >/dev/null
+q "SELECT improv.bind_category('mp22', 'K', 'p22', 'k')" >/dev/null
+q "SELECT improv.bind_measure('mp22', 'V', 'p22', 'v', agg => 'sum')" >/dev/null
+q "SELECT improv.define('mp22', 'T = V * 1')" >/dev/null
+P22="SELECT string_agg(k || '=' || value, ',' ORDER BY k) FROM improv_mp22.t"
+wait_for "$P22" "a=1" "a partitioned model" >/dev/null
+q "CREATE TABLE p22_b (k text, v float8)"
+q "INSERT INTO p22_b VALUES ('b', 5)"
+q "ALTER TABLE p22 ATTACH PARTITION p22_b FOR VALUES IN ('b')"
+wait_for "$P22" "a=1,b=5" "a partition attached with rows" >/dev/null
+q "SELECT improv.drop_model('m22')" >/dev/null
+wait_for "SELECT count(*) FROM improv.sync_state s JOIN improv.model m ON m.id = s.model_id WHERE m.name = 'm22'" 0 "a dropped model" >/dev/null
+sleep 1
+logpos22=$(wc -c <"$D/log")
+sleep 5
+idle22b=$(lists)
+[ "$idle22b" -le 2 ] || { echo "FAIL: 5 s idle after the changes listed the models $idle22b times"; exit 1; }
+eq14 "$(q "SELECT count(*) FROM improv.sync_state WHERE last_error IS NOT NULL")" 0 "no model failed"
+q "ALTER SYSTEM RESET log_min_messages"
+q "ALTER SYSTEM RESET autovacuum"
+q "SELECT pg_reload_conf()" >/dev/null
+echo "ok: idle, the worker listed its models $idle22 and $idle22b times in 5 s (about 100 polls); define, a new model, manual and back, a partition attached and a drop were each applied at once"
 echo "PASS"
