@@ -6,11 +6,16 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
-## Active priority — the road to 1.0.0 (status 2026-10-27, v0.12.1)
+## Active priority — the road to 1.0.0 (status 2026-10-29, v0.12.2)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
 criteria" are the bar. Mark tasks done there as they land.
 
+- **Released 2026-10-29:** tag `v0.12.2` = `b7fc53b`: an idle sync worker
+  keeps its model listing; pg_improv's update from 0.12.1 changes only its
+  version. 43 assets (cosign OK, every Linux file at glibc 2.28), PGXN
+  0.12.2, ghcr `improv:0.12.2`; registry PR duckdb/community-extensions#3416
+  now bumps to 0.12.2 (still opened by hand: `COMMUNITY_EXT_PAT` unset).
 - **Released 2026-10-27:** tag `v0.12.1` = `9378cb8`: the Linux
   artifacts built on EL8 (glibc 2.28), install-tested on eight
   distributions; no code change, pg_improv's update from 0.12.0 changes
@@ -56,9 +61,6 @@ criteria" are the bar. Mark tasks done there as they land.
   base time. Evaluate and tail edits did not move. B5 then replaced RANK's
   path: the scale gate reads `wide.rank.edit_max` 0.26× and `edit_tail`
   0.00× its baseline.
-- **Since 0.12.1:** an idle sync worker keeps its model listing until a
-  transaction takes an xid (`perf(pg_improv): an idle sync worker keeps its
-  model listing`); it listed the catalog every poll.
 - **NEXT:** J6 at 1.0 (needs the `COMMUNITY_EXT_PAT` and `PGORG_*`
   secrets); 1.0.0-rc.1 once the exit criteria hold (J4's soak is skipped
   for now, the maintainer's call). Not now: a Homebrew tap
