@@ -41,14 +41,38 @@ const DEFAULT_RECT: Rect = Rect {
     max: pos2(352.0, 272.0),
 };
 
-/// Title bar fill and text colors: black with white text for the key window,
-/// dark gray with light-gray text otherwise (spec §1).
-pub fn title_colors(key: bool) -> (Color32, Color32) {
-    if key {
-        (BLACK, WHITE)
-    } else {
-        (DARK_GRAY, LIGHT_GRAY)
+/// A window's status, which its title bar shows (NeXTSTEP 2 guidelines,
+/// "The Key Window" and "The Main Window").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// Takes the keyboard: black title bar.
+    Key,
+    /// The standard window the user works in while a panel has the key:
+    /// "the Application Kit highlights its title bar in dark gray".
+    Main,
+    /// Any other window: light gray.
+    Other,
+}
+
+/// Title bar fill and text colors for a window's [`Status`]: black with
+/// white text, dark gray with white text, light gray with black text.
+pub fn title_colors(status: Status) -> (Color32, Color32) {
+    match status {
+        Status::Key => (BLACK, WHITE),
+        Status::Main => (DARK_GRAY, WHITE),
+        Status::Other => (LIGHT_GRAY, BLACK),
     }
+}
+
+/// Is the window with this id the main window: the standard window last
+/// made key (a panel taking the key leaves it main)?
+pub fn is_main(ctx: &Context, id: Id) -> bool {
+    ctx.data(|d| d.get_temp::<Id>(main_slot())) == Some(id)
+}
+
+/// Memory slot holding the [`Id`] of the main window.
+fn main_slot() -> Id {
+    Id::unique("nxwin::main")
 }
 
 /// Is the window with this id the key window (the most recently clicked
@@ -91,6 +115,9 @@ pub struct NxWindow<'open> {
     min_size: Vec2,
     bounds: Option<Rect>,
     resizable: bool,
+    standard: bool,
+    edited: bool,
+    miniaturize: Option<&'open mut bool>,
 }
 
 impl<'open> NxWindow<'open> {
@@ -109,7 +136,32 @@ impl<'open> NxWindow<'open> {
             min_size: MIN_SIZE,
             bounds: None,
             resizable: true,
+            standard: false,
+            edited: false,
+            miniaturize: None,
         }
+    }
+
+    /// A standard window (a document's: worksheet, graph), not a panel: it
+    /// becomes the main window when it takes the key, and stays main, its
+    /// title bar dark gray, while a panel has the key.
+    pub fn standard(mut self) -> Self {
+        self.standard = true;
+        self
+    }
+
+    /// Draw the close box broken, NeXT's mark for a document "that the user
+    /// has edited but hasn't saved".
+    pub fn edited(mut self, edited: bool) -> Self {
+        self.edited = edited;
+        self
+    }
+
+    /// Show the miniaturize button at the left of the title bar; a click
+    /// sets `clicked`.
+    pub fn miniaturizable(mut self, clicked: &'open mut bool) -> Self {
+        self.miniaturize = Some(clicked);
+        self
     }
 
     /// The window's [`Id`]: its egui area id, and the id [`is_key`] takes.
@@ -178,6 +230,9 @@ impl<'open> NxWindow<'open> {
             min_size,
             bounds,
             resizable,
+            standard,
+            edited,
+            miniaturize,
         } = self;
         if matches!(open, Some(false)) {
             return None;
@@ -259,10 +314,21 @@ impl<'open> NxWindow<'open> {
             if pressed_here || d.get_temp::<Id>(key_slot()).is_none() {
                 d.insert_temp(key_slot(), id);
             }
+            if standard && d.get_temp::<Id>(key_slot()) == Some(id) {
+                d.insert_temp(main_slot(), id);
+            }
         });
-        let key = is_key(ctx, id);
+        let status = if is_key(ctx, id) {
+            Status::Key
+        } else if standard && is_main(ctx, id) {
+            Status::Main
+        } else {
+            Status::Other
+        };
 
         let mut close_clicked = false;
+        let mut mini_clicked = false;
+        let has_mini = miniaturize.is_some();
         let shown = egui::Window::new(title.as_str())
             .id(id)
             .title_bar(false)
@@ -277,9 +343,9 @@ impl<'open> NxWindow<'open> {
             .fixed_size(rect.size())
             .show(ctx, |ui| {
                 let outer = ui.max_rect();
-                let l = layout(outer, closable, resizable);
+                let l = layout(outer, closable, resizable, has_mini);
                 let p = ui.painter().clone();
-                let (fill, text) = title_colors(key);
+                let (fill, text) = title_colors(status);
 
                 p.rect_filled(l.body, 0.0, LIGHT_GRAY);
                 p.rect_filled(l.title, 0.0, fill);
@@ -305,19 +371,42 @@ impl<'open> NxWindow<'open> {
                 // Registered after the title so it sits on top for hit-testing.
                 if let Some(close) = l.close {
                     bevel(&p, close);
-                    let x = close.shrink(4.0);
-                    let stroke = Stroke::new(1.0_f32, BLACK);
-                    p.line_segment([x.left_top(), x.right_bottom()], stroke);
-                    p.line_segment([x.right_top(), x.left_bottom()], stroke);
+                    close_glyph(&p, close.shrink(4.0), edited);
                     let r = ui.interact(close, id.with("close"), Sense::click());
                     r.widget_info(|| {
                         egui::WidgetInfo::labeled(
                             egui::Role::Button,
                             true,
-                            format!("Close {title}"),
+                            if edited {
+                                format!("Close {title} (edited)")
+                            } else {
+                                format!("Close {title}")
+                            },
                         )
                     });
                     close_clicked = r.clicked();
+                }
+                if let Some(mini) = l.mini {
+                    bevel(&p, mini);
+                    // NeXT's miniaturize glyph: a small outlined square.
+                    let g = mini.shrink(4.0);
+                    p.rect_stroke(
+                        g,
+                        0.0,
+                        Stroke::new(1.0_f32, BLACK),
+                        egui::StrokeKind::Inside,
+                    );
+                    // Pointer only, never a Tab stop: Enter on it would
+                    // minimize the app; the keyboard has Hide (Command-h).
+                    let r = ui.interact(mini, id.with("mini"), Sense::click() - Sense::FOCUSABLE);
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::Role::Button,
+                            true,
+                            format!("Miniaturize {title}"),
+                        )
+                    });
+                    mini_clicked = r.clicked();
                 }
 
                 if let Some(bar) = l.resize {
@@ -341,6 +430,9 @@ impl<'open> NxWindow<'open> {
                 inner
             })?;
 
+        if let (true, Some(m)) = (mini_clicked, miniaturize) {
+            *m = true;
+        }
         if let (true, Some(open)) = (close_clicked, open) {
             *open = false;
             // Hand the key to the next window shown.
@@ -359,22 +451,23 @@ impl<'open> NxWindow<'open> {
 struct Layout {
     title: Rect,
     close: Option<Rect>,
+    mini: Option<Rect>,
     body: Rect,
     resize: Option<Rect>,
 }
 
-fn layout(outer: Rect, closable: bool, resizable: bool) -> Layout {
+fn layout(outer: Rect, closable: bool, resizable: bool, mini: bool) -> Layout {
     let inner = outer.shrink(BORDER);
     let title = Rect::from_min_size(inner.min, vec2(inner.width(), TITLE_HEIGHT));
-    let close = closable.then(|| {
+    let button = |x: f32| {
         Rect::from_min_size(
-            pos2(
-                title.right() - CLOSE_INSET - CLOSE_SIZE,
-                title.center().y - CLOSE_SIZE / 2.0,
-            ),
+            pos2(x, title.center().y - CLOSE_SIZE / 2.0),
             Vec2::splat(CLOSE_SIZE),
         )
-    });
+    };
+    let close = closable.then(|| button(title.right() - CLOSE_INSET - CLOSE_SIZE));
+    // Miniaturize at the left, close at the right (NeXTSTEP 2, Figure 2-16).
+    let mini = mini.then(|| button(title.left() + CLOSE_INSET));
     let resize = resizable.then(|| {
         Rect::from_min_max(
             pos2(inner.left(), inner.bottom() - RESIZE_HEIGHT),
@@ -388,8 +481,29 @@ fn layout(outer: Rect, closable: bool, resizable: bool) -> Layout {
     Layout {
         title,
         close,
+        mini,
         body,
         resize,
+    }
+}
+
+/// The close box's X in `g`; broken (its middle left out) while the
+/// window's document is edited and not saved.
+fn close_glyph(p: &Painter, g: Rect, broken: bool) {
+    let stroke = Stroke::new(1.0_f32, BLACK);
+    let diagonals = [
+        (g.left_top(), g.right_bottom()),
+        (g.right_top(), g.left_bottom()),
+    ];
+    for (a, b) in diagonals {
+        if broken {
+            // A gap of 40% of the stroke at the crossing.
+            let (m1, m2) = (a.lerp(b, 0.3), a.lerp(b, 0.7));
+            p.line_segment([a, m1], stroke);
+            p.line_segment([m2, b], stroke);
+        } else {
+            p.line_segment([a, b], stroke);
+        }
     }
 }
 
@@ -600,7 +714,7 @@ mod tests {
         for _ in 0..3 {
             h.frame(Vec::new(), &mut ui);
         }
-        let close = layout(R, true, true).close.unwrap();
+        let close = layout(R, true, true, false).close.unwrap();
         assert_eq!(close.size(), vec2(15.0, 15.0));
         // Centred in the 21 px bar: 3 px above and below the 15 px box.
         assert_eq!(close.top(), R.top() + 1.0 + 3.0);
@@ -645,7 +759,7 @@ mod tests {
     }
 
     fn title(r: Rect) -> Rect {
-        layout(r, false, true).title
+        layout(r, false, true, false).title
     }
 
     /// (d) Clicking window B makes it key and A non-key, and the painted title
@@ -663,16 +777,104 @@ mod tests {
         }
         assert!(is_key(&h.ctx, wid("a")), "first window shown is key");
         assert_eq!(fill_at(&shapes, title(a)), Some(BLACK));
-        assert_eq!(fill_at(&shapes, title(b)), Some(DARK_GRAY));
+        assert_eq!(fill_at(&shapes, title(b)), Some(LIGHT_GRAY));
 
         h.frame(click(b.center()), &mut ui);
         shapes = h.frame(Vec::new(), &mut ui);
         assert!(is_key(&h.ctx, wid("b")));
         assert!(!is_key(&h.ctx, wid("a")));
         assert_eq!(fill_at(&shapes, title(b)), Some(BLACK));
-        assert_eq!(fill_at(&shapes, title(a)), Some(DARK_GRAY));
+        assert_eq!(fill_at(&shapes, title(a)), Some(LIGHT_GRAY));
         assert_eq!(text_color(&shapes, "Bravo"), Some(WHITE));
-        assert_eq!(text_color(&shapes, "Alpha"), Some(LIGHT_GRAY));
+        assert_eq!(text_color(&shapes, "Alpha"), Some(BLACK));
+    }
+
+    /// NeXTSTEP 2's three title bars: the key window black; the standard
+    /// window last made key, once a panel takes the key, dark gray (the
+    /// main window); every other window light gray.
+    #[test]
+    fn a_panel_taking_the_key_leaves_the_document_main() {
+        let mut h = Harness::new();
+        let doc = Rect::from_min_size(pos2(50.0, 50.0), vec2(200.0, 150.0));
+        let other = doc.translate(vec2(0.0, 250.0));
+        let panel = doc.translate(vec2(350.0, 0.0));
+        let mut ui = |ctx: &Context| {
+            for (n, t, r) in [("doc", "Doc", doc), ("other", "Other", other)] {
+                let _ = NxWindow::new(n, t)
+                    .default_rect(r)
+                    .standard()
+                    .show(ctx, |_| ());
+            }
+            let _ = NxWindow::new("panel", "Panel")
+                .default_rect(panel)
+                .show(ctx, |_| ());
+        };
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        h.frame(click(panel.center()), &mut ui);
+        let shapes = h.frame(Vec::new(), &mut ui);
+        assert!(is_key(&h.ctx, wid("panel")));
+        assert!(is_main(&h.ctx, wid("doc")), "the first document stays main");
+        assert_eq!(fill_at(&shapes, title(panel)), Some(BLACK));
+        assert_eq!(fill_at(&shapes, title(doc)), Some(DARK_GRAY));
+        assert_eq!(text_color(&shapes, "Doc"), Some(WHITE));
+        assert_eq!(fill_at(&shapes, title(other)), Some(LIGHT_GRAY));
+        // Clicking the other document makes it key and main.
+        h.frame(click(other.center()), &mut ui);
+        let shapes = h.frame(Vec::new(), &mut ui);
+        assert!(is_main(&h.ctx, wid("other")));
+        assert_eq!(fill_at(&shapes, title(other)), Some(BLACK));
+        assert_eq!(fill_at(&shapes, title(doc)), Some(LIGHT_GRAY));
+    }
+
+    /// An edited window's close box is broken: four short strokes, not two
+    /// long ones. The miniaturize button sits at the left and reports a
+    /// click.
+    #[test]
+    fn the_close_box_breaks_when_edited_and_miniaturize_sits_left() {
+        let segments = |edited: bool| {
+            let mut h = Harness::new();
+            let mut open = true;
+            let mut shapes = Vec::new();
+            for _ in 0..3 {
+                shapes = h.frame(Vec::new(), |ctx| {
+                    let _ = NxWindow::new("a", "Alpha")
+                        .default_rect(R)
+                        .closable(&mut open)
+                        .edited(edited)
+                        .show(ctx, |_| ());
+                });
+            }
+            let close = layout(R, true, true, false).close.unwrap();
+            shapes
+                .iter()
+                .filter(|c| {
+                    matches!(&c.shape, Shape::LineSegment { points, .. }
+                        if close.contains(points[0]) && close.contains(points[1]))
+                })
+                .count()
+        };
+        assert_eq!(segments(false), 2);
+        assert_eq!(segments(true), 4);
+
+        let mut h = Harness::new();
+        let mut mini = false;
+        let mut ui = |ctx: &Context| {
+            let _ = NxWindow::new("a", "Alpha")
+                .default_rect(R)
+                .miniaturizable(&mut mini)
+                .show(ctx, |_| ());
+        };
+        for _ in 0..3 {
+            h.frame(Vec::new(), &mut ui);
+        }
+        let l = layout(R, false, true, true);
+        let m = l.mini.unwrap();
+        assert_eq!(m.left(), R.left() + 1.0 + CLOSE_INSET);
+        assert!(l.close.is_none());
+        h.frame(click(m.center()), &mut ui);
+        assert!(mini);
     }
 
     /// A click where windows overlap keys the one on top, not the one shown
@@ -739,7 +941,7 @@ mod tests {
         }
         assert!(is_key(&h.ctx, wid("a")));
         h.frame(
-            click(layout(R, true, true).close.unwrap().center()),
+            click(layout(R, true, true, false).close.unwrap().center()),
             &mut ui,
         );
         h.frame(Vec::new(), &mut ui);

@@ -6615,7 +6615,7 @@ impl ImprovApp {
         );
         let mi = self.focus_index();
         let title = format!("{} - Graph - {}", self.matrix_title(mi), self.file_name());
-        let win = crate::nxwin::NxWindow::new("graph", title);
+        let win = crate::nxwin::NxWindow::new("graph", title).standard();
         let rect = anchored_rect(ctx, win.id(), home);
         let mut open = true;
         let (mut kind, mut parse, mut color) =
@@ -6925,11 +6925,15 @@ impl ImprovApp {
         // `m.rect` is the source of truth: passed in every frame, so a
         // programmatic change (apply_view) moves the window, and read back
         // below, so a drag or resize lands in the view.
+        let mut mini = false;
         let mut win = crate::nxwin::NxWindow::new(("matrix", uid), self.window_title(mi))
             .rect(rect)
             .min_size(egui::vec2(MATRIX_MIN_W, MATRIX_MIN_H))
             .bounds(ws)
-            .resizable(true);
+            .resizable(true)
+            .standard()
+            .edited(self.dirty)
+            .miniaturizable(&mut mini);
         if closable {
             win = win.closable(&mut open);
         }
@@ -6948,6 +6952,12 @@ impl ImprovApp {
                 });
             self.gutter_frame(ui, mi);
         });
+        // shortcut: a worksheet window cannot shrink to a NeXT miniwindow
+        // inside the one native window, so miniaturize minimizes that, as
+        // Hide does; draw miniwindows on the workspace if it matters.
+        if mini {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+        }
         if let Some(after) = crate::nxwin::stored_rect(ctx, id).filter(|a| *a != rect) {
             self.matrices[mi].rect = CanvasRect {
                 x: after.min.x - ws.min.x,

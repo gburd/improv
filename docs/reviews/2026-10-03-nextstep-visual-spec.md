@@ -29,7 +29,8 @@ NeXTSTEP 2-bit gray has four levels. Sampled means, after scan and JPEG noise:
 | Window and panel background, menu item face, tile item field | 172 / 173 | `#AAAAAA` light gray |
 | Grid cells, formula rows, text fields | 242–254 / 231–233 | `#FFFFFF` white |
 | Key-window title bar, menu title bar | 0–10 | `#000000` black, white text |
-| Non-key window title bar | 85–104 | `#555555`, light-gray text |
+| Main window title bar (a document window while a panel is key) | 85–104 | `#555555`, white text (NeXTSTEP 2 guidelines) |
+| Other window title bar | W's back window | `#AAAAAA`, black text (NeXTSTEP 2 guidelines, Figure 2-9) |
 | Category tile face | 86 (column tile) | `#555555`, white text |
 | Tile being dragged, or selected | — | `#000000`, white text |
 | Scroller trough | 127–152 | `#808080` |

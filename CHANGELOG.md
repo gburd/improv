@@ -29,6 +29,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   light-gray rows, as the NeXTSTEP 2 guidelines give them; it is notched
   30 px from each end, where it moves a corner (the corner zones were
   thirds of the bar). Between the notches it moves the bottom edge.
+- **GUI: NeXTSTEP's key, main and other title bars, the broken close box
+  and the miniaturize button.** A window that is not key had a dark-gray
+  title bar; now, as on NeXTSTEP 2, the key window's is black, the
+  worksheet or graph you work in keeps a dark-gray one while a panel (Info,
+  Functions, the model browser) has the key, and every other window's is
+  light gray with black text. A worksheet's close box is drawn broken while
+  the model has unsaved changes, and its title bar has NeXT's miniaturize
+  button at the left, which minimizes the GUI's window (pointer only; Ctrl+H
+  hides from the keyboard).
 
 ### Fixed
 

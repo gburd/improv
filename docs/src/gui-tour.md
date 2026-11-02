@@ -76,7 +76,11 @@ The window has five regions:
   window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
   to move a window and its bottom bar to resize it (left of its left notch drags the
   bottom-left corner, right of the right notch the bottom-right, between them the bottom edge). Clicking a window
-  makes it key (black title bar) and gives its matrix the keyboard. With more
+  makes it key (black title bar) and gives its matrix the keyboard; while
+  a panel has the keyboard the worksheet you were in keeps a dark-gray
+  title bar, and other windows' are light gray, as on NeXTSTEP. The close
+  box is drawn broken while the model has unsaved changes, and the button
+  at the title bar's left minimizes the GUI's window. With more
   than one matrix open, each window's close box removes its matrix.
   **View ▸ New View** opens another window the size of the last
   one, beside it, or below it, where the workspace has room and no window
