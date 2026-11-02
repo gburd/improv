@@ -243,9 +243,13 @@ pub struct ImprovApp {
     /// opens it; `None` or a deleted id falls back to the current view.
     browser_sel: Option<ViewId>,
 
-    /// Whether the read-only chart panel is shown, and its bar/line toggle.
+    /// Whether the graph window (Graph ▸ New Graph) is shown, its graph
+    /// type, how the selection becomes series, and whether it is in color
+    /// (else NeXT's four grays).
     show_chart: bool,
-    chart_line: bool,
+    chart_kind: crate::chart::ChartKind,
+    chart_parse: crate::chart::ParseBy,
+    chart_color: bool,
 
     /// CSV/TSV import/export wizard: whether the panel is shown, and its two
     /// forms (see `csv_wizard`).
@@ -417,6 +421,9 @@ fn next_matrix_uid() -> u64 {
 fn matrix_window_id(uid: u64) -> egui::Id {
     crate::nxwin::NxWindow::new(("matrix", uid), "").id()
 }
+
+/// Height of the graph window's inspector line, above the graph.
+const GRAPH_INSPECTOR_H: f32 = 28.0;
 
 /// The rect to show NxWindow `win` at: `home` on the workspace until the user
 /// moves or resizes it, then where they left it. The workspace settles over
@@ -1465,7 +1472,9 @@ impl ImprovApp {
             view_name: String::new(),
             browser_sel: None,
             show_chart: false,
-            chart_line: false,
+            chart_kind: Default::default(),
+            chart_parse: Default::default(),
+            chart_color: true,
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             show_inspector: false,
@@ -1703,6 +1712,16 @@ impl ImprovApp {
         pinned: &[(CategoryId, ItemId)],
     ) -> CoordKey {
         cell_key_multi(row_cats, row_tuple, col_cats, col_tuple, pinned)
+    }
+    /// The focused matrix's range selection as (rows, cols), when it spans
+    /// more than one cell; a single cell graphs the whole grid.
+    pub(crate) fn chart_selection_pub(
+        &self,
+    ) -> Option<(RangeInclusive<usize>, RangeInclusive<usize>)> {
+        let m = self.focused();
+        m.anchor?;
+        let (rows, cols) = m.selection();
+        (rows.start() != rows.end() || cols.start() != cols.end()).then_some((rows, cols))
     }
     pub(crate) fn values_for_pub(&self, measure: MeasureId) -> HashMap<CoordKey, f64> {
         self.values_for(measure)
@@ -4597,12 +4616,12 @@ impl ImprovApp {
         // takes what is left.
 
         self.status_bar(ui);
-        self.chart_panel(ui);
         self.csv_wizard_panel(ctx);
         let ws = self.canvas_panel(ui);
         // After the worksheets, so they start on top of them.
         self.model_browser(ctx, ws);
         self.info_panel(ctx, ws);
+        self.graph_window(ctx, ws);
         self.function_help(ctx, ws);
         self.keys_panel(ctx, ws);
         self.file_panel(ctx, ws);
@@ -4797,7 +4816,7 @@ impl ImprovApp {
                 self.status = self.set_number_format(Some(d)).unwrap_or_else(|e| e);
             }
             Command::Grouping => self.status = self.set_number_format(None).unwrap_or_else(|e| e),
-            Command::ToggleChart => self.show_chart = !self.show_chart,
+            Command::NewGraph => self.show_chart = true,
             Command::ToggleCsv => self.toggle_csv_wizard(),
             Command::FunctionHelp => self.fn_help.toggle(),
             Command::Keys => self.show_keys = !self.show_keys,
@@ -6570,26 +6589,60 @@ impl ImprovApp {
         }
     }
 
-    /// Bottom-right chart panel (shown only when the "Chart" toggle is on): a
-    /// read-only bar chart of the selected measure with a bar/line toggle.
-    fn chart_panel(&mut self, root: &mut egui::Ui) {
+    /// The graph window (Graph ▸ New Graph): a NeXT window titled
+    /// `<measure> - Graph - <file>` charting the focused worksheet's
+    /// selection, hot-linked as Improv's was (an edit redraws it). Above the
+    /// graph, its inspector line: the graph type, how the selection is
+    /// parsed into series, and Color (else NeXT's four grays). Its default
+    /// size is Improv's, 5.5 x 4 inches at 72 points an inch.
+    fn graph_window(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        use crate::chart::{ChartKind, ParseBy};
         if !self.show_chart {
             return;
         }
-        {
-            egui::Panel::right("chart")
-                .resizable(true)
-                .default_size(360.0)
-                .show(root, |ui| {
+        let size = egui::vec2(396.0, 288.0 + GRAPH_INSPECTOR_H);
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.right() - size.x - 8.0, ws.bottom() - size.y - 8.0),
+            size,
+        );
+        let mi = self.focus_index();
+        let title = format!("{} - Graph - {}", self.matrix_title(mi), self.file_name());
+        let win = crate::nxwin::NxWindow::new("graph", title);
+        let rect = anchored_rect(ctx, win.id(), home);
+        let mut open = true;
+        let (mut kind, mut parse, mut color) =
+            (self.chart_kind, self.chart_parse, self.chart_color);
+        let data = self.chart_series(parse);
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .min_size(egui::vec2(300.0, 220.0))
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(4.0).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.heading("Chart");
-                        ui.checkbox(&mut self.chart_line, "line");
+                        ui.label("Type");
+                        egui::ComboBox::from_id_salt("graph_type")
+                            .selected_text(kind.label())
+                            .show_ui(ui, |ui| {
+                                for k in ChartKind::ALL {
+                                    ui.selectable_value(&mut kind, k, k.label());
+                                }
+                            });
+                        ui.label("Series by");
+                        egui::ComboBox::from_id_salt("graph_parse")
+                            .selected_text(parse.label())
+                            .show_ui(ui, |ui| {
+                                for b in ParseBy::ALL {
+                                    ui.selectable_value(&mut parse, b, b.label());
+                                }
+                            });
+                        ui.checkbox(&mut color, "Color");
                     });
-                    ui.separator();
-                    let data = self.chart_series();
-                    crate::chart::render_chart(ui, &data, self.chart_line);
+                    crate::chart::render_chart(ui, &data, kind, color);
                 });
-        }
+            });
+        (self.chart_kind, self.chart_parse, self.chart_color) = (kind, parse, color);
+        self.show_chart &= open;
     }
 
     /// A toggle-able window: CSV/TSV import (left) + export (right), mirroring
@@ -8742,7 +8795,9 @@ mod tests {
             view_name: String::new(),
             browser_sel: None,
             show_chart: false,
-            chart_line: false,
+            chart_kind: Default::default(),
+            chart_parse: Default::default(),
+            chart_color: true,
             show_csv_wizard: false,
             import_form: ImportForm::default(),
             show_inspector: false,
@@ -9480,7 +9535,7 @@ mod tests {
         let mut app = build_app(grid_2x2_model());
         select(&mut app, MeasureId(102));
         app.sync_axis_state();
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert_eq!(d.x_title, "Time");
         assert_eq!(d.x_labels, vec!["2025".to_string(), "2026".to_string()]);
         assert_eq!(d.series.len(), 2);
@@ -9505,7 +9560,7 @@ mod tests {
         assert_eq!(app.row_cats(), vec![CategoryId(1), CategoryId(2)]);
         assert!(app.col_cats().is_empty());
 
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert_eq!(d.x_title, "Time / Product");
         assert_eq!(
             d.x_labels,
@@ -9552,7 +9607,7 @@ mod tests {
         assert_eq!(app.row_cats(), vec![CategoryId(2)]);
         assert_eq!(app.col_cats(), vec![CategoryId(1)]);
 
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert_eq!(d.x_title, "Product");
         assert_eq!(
             d.x_labels,
@@ -9573,7 +9628,7 @@ mod tests {
         let mut app = build_app(grid_2x2_model());
         select(&mut app, MeasureId(100)); // Price[Product]
         app.sync_axis_state();
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert_eq!(d.x_title, "Product");
         assert_eq!(
             d.x_labels,
@@ -9591,7 +9646,7 @@ mod tests {
         select(&mut app, MeasureId(102));
         app.sync_axis_state();
         app.toggle_filter_item(CategoryId(1), ItemId(11)); // hide 2026
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert_eq!(d.x_labels, vec!["2025".to_string()], "2026 filtered out");
         assert_eq!(d.series[0].points, vec![Some(1000.0)]); // WidgetA
         assert_eq!(d.series[1].points, vec![Some(1000.0)]); // WidgetB
@@ -9615,8 +9670,8 @@ mod tests {
         app.rebuild_engine();
         select(&mut app, MeasureId(102));
         app.sync_axis_state();
-        let d = app.chart_series(); // must not panic
-                                    // WidgetA series: 2025 numeric, 2026 is a gap (None).
+        let d = app.chart_series(crate::chart::ParseBy::Columns); // must not panic
+                                                                  // WidgetA series: 2025 numeric, 2026 is a gap (None).
         assert_eq!(d.series[0].name, "WidgetA");
         assert_eq!(d.series[0].points, vec![Some(1000.0), None]);
         // WidgetB series unaffected.
@@ -10125,7 +10180,7 @@ mod tests {
             app.toggle_filter_item(CategoryId(1), it);
         }
         assert_eq!(app.grid_dims(), (0, 2), "grid renders no rows");
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert!(
             d.x_labels.is_empty() && d.series.is_empty(),
             "chart invented {} x line(s) / {} series for an empty row axis: {d:?}",
@@ -10147,7 +10202,7 @@ mod tests {
             app.toggle_filter_item(CategoryId(2), it);
         }
         assert_eq!(app.grid_dims(), (2, 0), "grid renders no columns");
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert!(
             d.x_labels.is_empty() && d.series.is_empty(),
             "chart drew data for an empty column axis: {d:?}"
@@ -10162,7 +10217,7 @@ mod tests {
             app.toggle_filter_item(CategoryId(3), it);
         }
         assert_eq!(app.grid_dims(), (0, 0), "grid renders nothing");
-        let d = app.chart_series();
+        let d = app.chart_series(crate::chart::ParseBy::Columns);
         assert_eq!(
             d,
             crate::chart::ChartData::default(),
@@ -14458,7 +14513,7 @@ mod tests {
             "Quantity"
         );
         // Quantity is an input measure: no chart-worthy formula, but a chart.
-        let q_chart = app.chart_series();
+        let q_chart = app.chart_series(crate::chart::ParseBy::Columns);
 
         app.set_focus(1);
         assert_eq!(app.selected(), Some(MeasureId(102)), "Revenue");
@@ -14470,7 +14525,7 @@ mod tests {
             Some("Price * Quantity")
         );
         // The chart followed too: different measure, different numbers.
-        let r_chart = app.chart_series();
+        let r_chart = app.chart_series(crate::chart::ParseBy::Columns);
         assert_ne!(
             q_chart.series[0].points, r_chart.series[0].points,
             "the chart must plot the focused matrix's measure"
@@ -14675,8 +14730,13 @@ mod tests {
         app.run_command(&ctx, Command::InfoPanel);
         assert!(!app.show_inspector);
 
-        app.run_command(&ctx, Command::ToggleChart);
+        app.run_command(&ctx, Command::NewGraph);
         assert!(app.show_chart);
+        app.run_command(&ctx, Command::NewGraph);
+        assert!(
+            app.show_chart,
+            "New Graph brings the window back, never closes it"
+        );
         app.run_command(&ctx, Command::ToggleCsv);
         assert!(app.show_csv_wizard);
     }
@@ -15934,6 +15994,20 @@ mod tests {
         assert!(desk.ctx.viewport(|v| v.prev_pass.widgets.get(id).is_none()));
     }
 
+    /// The fill of every rect painted this frame.
+    fn rect_fills(out: &egui::FullOutput) -> Vec<egui::Color32> {
+        fn walk(s: &egui::Shape, acc: &mut Vec<egui::Color32>) {
+            match s {
+                egui::Shape::Rect(r) => acc.push(r.fill),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, acc)),
+                _ => {}
+            }
+        }
+        let mut acc = Vec::new();
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut acc));
+        acc
+    }
+
     fn texts_of(out: &egui::FullOutput) -> Vec<String> {
         fn walk(s: &egui::Shape, acc: &mut Vec<String>) {
             match s {
@@ -16007,15 +16081,71 @@ mod tests {
         assert_eq!(app.last_title, "Improv \u{2014} sales");
     }
 
+    /// Graph ▸ New Graph opens a NeXT graph window named for the worksheet,
+    /// with its inspector line and a color bar per series; its close box
+    /// closes it.
     #[test]
-    fn the_chart_panel_shows_when_toggled_on() {
+    fn new_graph_opens_a_graph_window_in_color() {
         let mut app = build_app(revenue_model());
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        app.run_command(&desk.ctx, Command::NewGraph);
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        let texts = texts_of(&out);
+        let title = format!("{} - Graph - Untitled", app.matrix_title(0));
+        assert!(texts.contains(&title), "{texts:?}");
+        for want in ["Type", "Bar", "Series by", "Smart", "Color"] {
+            assert!(texts.iter().any(|t| t == want), "{want} in {texts:?}");
+        }
+        let fills = rect_fills(&out);
+        assert!(
+            fills.contains(&crate::chart::PALETTE[0]),
+            "a red series bar: {fills:?}"
+        );
+        // The close box, top right of the window, closes it.
+        let win = crate::nxwin::NxWindow::new("graph", "").id();
+        let r = crate::nxwin::stored_rect(&desk.ctx, win).expect("shown");
+        desk.click(&mut app, egui::pos2(r.right() - 12.0, r.top() + 11.0));
+        desk.settle(&mut app);
+        assert!(!app.show_chart);
+    }
+
+    /// The graph charts a range selection, not the whole grid, and its
+    /// Color box turns it to NeXT's four grays.
+    #[test]
+    fn the_graph_follows_the_selection_and_goes_gray() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(102));
+        app.sync_axis_state();
+        let whole = app.chart_series(crate::chart::ParseBy::Columns);
+        assert_eq!(whole.series.len(), 2);
+        // Select one column (both rows of WidgetA). By columns: one series
+        // of two points.
+        app.focused_mut().anchor = Some((0, 0));
+        app.focused_mut().cursor_row = 1;
+        let col = app.chart_series(crate::chart::ParseBy::Columns);
+        assert_eq!(col.series.len(), 1);
+        assert_eq!(col.series[0].name, "WidgetA");
+        assert_eq!(col.x_labels, vec!["2025".to_string(), "2026".to_string()]);
+        assert_eq!(col.series[0].points, vec![Some(1000.0), Some(1200.0)]);
+        // Smart, on one column: "each row of data is a series".
+        let smart = app.chart_series(crate::chart::ParseBy::Smart);
+        assert_eq!(smart, app.chart_series(crate::chart::ParseBy::Rows));
+        assert_eq!(smart.series.len(), 2);
+        assert_eq!(smart.series[1].name, "2026");
+        assert_eq!(smart.x_labels, vec!["WidgetA".to_string()]);
+        assert_eq!(smart.series[1].points, vec![Some(1200.0)]);
+
+        app.chart_color = false;
         app.show_chart = true;
         let mut desk = Desk::new();
         desk.settle(&mut app);
-        assert!(texts_of(&desk.frame(&mut app, Vec::new()))
-            .iter()
-            .any(|t| t == "Chart"));
+        let fills = rect_fills(&desk.frame(&mut app, Vec::new()));
+        assert!(
+            !fills.iter().any(|c| crate::chart::PALETTE.contains(c)),
+            "no color in a gray graph: {fills:?}"
+        );
     }
 
     #[test]

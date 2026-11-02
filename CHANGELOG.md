@@ -6,6 +6,16 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **GUI: color graphs in a NeXT graph window.** Graph ▸ New Graph (was
+  Show Chart) opens `<worksheet> - Graph - <file>` charting the focused
+  worksheet's range selection, or its whole grid, with Improv 1.0's seven
+  types (Line, Bar, Scatter, Pie, Area, Stock, 3D Bar), its Rows / Columns
+  / Smart series rule, and NeXT's named colors, or the four grays with
+  Color off. It replaces the docked grayscale chart panel. Sources:
+  `docs/reviews/2026-11-02-nextstep-fidelity.md`.
+
 ### Fixed
 
 - **Autocomplete quotes a name that is a formula keyword.** A measure or

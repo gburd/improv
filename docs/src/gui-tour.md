@@ -50,8 +50,8 @@ The window has five regions:
   from scratch](#building-a-model-from-scratch)), **Rename** and **Delete…**
   (see [Renaming and deleting](#renaming-and-deleting)); **View** has **Model Browser**, which shows or hides the model browser,
   then lists the saved views, with a check on the
-  current one, and picking one switches the workspace to it; **Graph ▸ Show
-  Chart** toggles the chart; **Help ▸ Functions…** (also F1) opens the
+  current one, and picking one switches the workspace to it; **Graph ▸ New
+  Graph** opens the [graph window](#graphs); **Help ▸ Functions…** (also F1) opens the
   [function help](#function-help), **Help ▸ Keys…** a window listing the
   [keys](#keyboard-and-screen-readers), and **Help ▸ User Guide** this
   guide, online, in the browser; **Hide** minimizes and **Quit** closes the
@@ -239,6 +239,30 @@ starts from the value as typed, not as shown. The Sum in the status bar
 and the Info panel follow the format. Each change autosaves and is one
 undo step; the measure keeps its format in the file or database. Format is
 grayed out for a measure that holds text, booleans or dates.
+
+## Graphs
+
+**Graph ▸ New Graph** charts the focused worksheet in a graph window,
+`<worksheet> - Graph - <file>`, at the workspace's bottom right. Select a
+range first to graph just that; with one cell selected the whole grid is
+graphed. The graph follows the worksheet as it changes, as Improv's did.
+
+The line above the graph is its inspector:
+
+- **Type**: Improv's seven graph types, Line, **Bar** (the default),
+  Scatter, Pie, Area (stacked), Stock (the first three series are high,
+  low and close) and 3D Bar. A pie shows the first series.
+- **Series by**: whether each **Rows** or each **Columns** of the
+  selection is a series, or **Smart**, Improv's rule: a single selected
+  row makes each column a series, a single column makes each row one, and
+  otherwise the longer side is the series.
+- **Color**: series in NeXT's named colors (red, blue, yellow, green,
+  orange, cyan, purple, brown); unchecked, in the four NeXT grays, as on a
+  monochrome NeXTstation.
+
+Every bar, wedge and marker is outlined in black, and the legend at the
+right names the series. A screen reader hears the graph as "Bar graph of
+2 series over Time".
 
 ## Keyboard and screen readers
 

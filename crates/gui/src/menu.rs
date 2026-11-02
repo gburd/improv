@@ -48,7 +48,9 @@ pub enum Command {
     Delete,
     /// Open the n-th entry of the `views` list passed to [`show`].
     OpenView(usize),
-    ToggleChart,
+    /// Graph ▸ New Graph: chart the focused worksheet's selection in the
+    /// graph window.
+    NewGraph,
     ToggleCsv,
     /// Show or hide the function help browser (also F1).
     FunctionHelp,
@@ -144,7 +146,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
     (
         "Graph",
         None,
-        Top::Sub(&[("Show Chart", None, Some(C::ToggleChart))]),
+        Top::Sub(&[("New Graph", None, Some(C::NewGraph))]),
     ),
     ("Print…", Some('p'), Top::Leaf(None)),
     ("Services", None, Top::Sub(&[])),
