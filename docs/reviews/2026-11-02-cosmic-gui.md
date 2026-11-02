@@ -19,12 +19,14 @@ Three caveats:
 2. **Windows is a second-class COSMIC target.** It builds and starts.
    AccessKit's winit adapter at the libcosmic pin does not compile on
    Windows, so a11y is off there. Rich clipboard formats and drag and drop
-   are no-ops in libcosmic's Windows clipboard backend. No window could be
-   shown over ssh (session 0), so the drawn window is unverified there.
+   are no-ops in libcosmic's Windows clipboard backend. These three are
+   documented gaps, not blockers. No window could be shown: ssh runs in
+   session 0, and the interactive scheduled task found nobody logged on,
+   so the drawn window is unverified there.
 3. **libcosmic is pre-release.** It is git-only and 1.0.0 in name, with a
    dozen companion git forks (winit, softbuffer, window_clipboard,
    accesskit). Its API moved between the examples and master. Each bump
-   needs a rebuild on all hosts and a `deny.toml` review.
+   needs a rebuild on all hosts and a `deny.toml` review (README, "Pins").
 
 ## Stack and pins
 
@@ -58,9 +60,36 @@ does.
 manifest makes a second source for the same repository. cargo builds
 that, but `cargo vendor` refuses it ("duplicate version vendored from two
 sources"). Vendoring is how Solnix builds (see illumos below) and how
-distributions and Flatpak build. With the bare URL there is one source,
-locked to the commit; CI builds `--locked`, and a bump is
-`cargo update -p libcosmic`.
+distributions and Flatpak build. So there is one source, locked to the
+commit.
+
+The lockfile is the only pin for libcosmic and for four companions
+libcosmic itself names with no rev: cosmic-settings-daemon,
+dbus-settings-bindings, freedesktop-icons and rust-atomicwrites.
+**Every build is `--locked`**: `ci/gui_cosmic.sh` (clippy, test, doc,
+cargo-deny), `crates/gui_cosmic/ci/solnix-build.sh`, and the README's
+commands. To move the pin, on purpose only:
+
+```sh
+cd crates/gui_cosmic
+cargo update -p libcosmic --precise <commit>
+git diff --stat Cargo.lock    # what moved with it
+```
+
+`--precise` also re-resolves libcosmic's git dependencies, the unpinned
+four to their current heads; a dry run against this same commit moved
+cosmic-settings-config `655b14f → 108e095`. So read the lockfile diff,
+then re-test:
+
+1. `ci/gui_cosmic.sh`;
+2. re-read the license files `deny.toml` clarifies, for every git crate
+   whose commit moved (cargo-deny 0.20 does not hash git crates'
+   licenses), and review its advisory ignores;
+3. build and run on the matrix below: Linux, FreeBSD, illumos
+   (`ci/solnix-build.sh` in a COSMIC session) and Windows. On Windows,
+   check whether `accesskit_winit` builds yet; if it does, turn `a11y`
+   on there;
+4. update this note's versions and matrix.
 
 **Licenses** (`crates/gui_cosmic/deny.toml`). Everything is in the root's
 allow list except the Unlicense (`apply`, a public-domain crate libcosmic
@@ -96,10 +125,46 @@ model, one measure's grid, through the model service).
 | Host | OS | Compiles | Runs | Display / renderer | Notes |
 |---|---|---|---|---|---|
 | werk | NixOS (Linux 6.18) x86_64 | yes, 1m24 cold debug; release 2m13 | yes | X11 (Xvfb), wgpu on llvmpipe (GL) | Release binary 65 MB (48 MB stripped); 182 MB peak RSS on the demo model. The in-app capture (`IMPROV_COSMIC_SHOT`) works. |
-| lixi | Solnix (illumos) x86_64, rustc 1.99.1 | yes, with Solnix's vendor fixups; 1m54 | **yes, in a live COSMIC session** | Wayland client of cosmic-comp 1.5.0, `ICED_BACKEND=tiny-skia`, 2× scale | Needs `cargo vendor` and `cosmic-comp-vendor-fixup.sh` + `cosmic-widen-linux.py` (rustix ioctl, wayland-backend MSG_CMSG_CLOEXEC/epoll, polling's epoll backend, winit `is_main_thread`, softbuffer shm names), wgpu off, and libxkbcommon/wayland/mesa from the Nix store on `PKG_CONFIG_PATH`. Found and fixed: `improv_extfn` used `RLIMIT_NPROC`, which illumos lacks. The in-app capture works. No screenshot portal (`org.freedesktop.portal.Desktop` is not on the bus), so the portals are absent there. |
+| lixi | Solnix (illumos) x86_64, rustc 1.99.1 | yes, with Solnix's vendor fixups (`ci/solnix-build.sh`, below); 1m54 | **yes, in a live COSMIC session** | Wayland client of cosmic-comp 1.5.0, `ICED_BACKEND=tiny-skia`, 2× scale | Needs `cargo vendor` and `cosmic-comp-vendor-fixup.sh` + `cosmic-widen-linux.py` (rustix ioctl, wayland-backend MSG_CMSG_CLOEXEC/epoll, polling's epoll backend, winit `is_main_thread`, softbuffer shm names), wgpu off, and libxkbcommon/wayland/mesa from the Nix store on `PKG_CONFIG_PATH`. Found and fixed: `improv_extfn` used `RLIMIT_NPROC`, which illumos lacks. The in-app capture works. No screenshot portal (`org.freedesktop.portal.Desktop` is not on the bus), so the portals are absent there. |
 | nuc | FreeBSD 15.1 amd64, rustc 1.99.1 | yes, 3m02 | yes, under Xvfb | X11 (Xvfb), wgpu on Mesa llvmpipe; tiny-skia fails on Xvfb's 24-bit visual ("does not use softbuffer's pixel format") | No display stack is installed and there is no root. libxkbcommon, wayland, X11, Mesa and Xvfb came from pkg.freebsd.org into `~/w-cosmic/pkgs/root`. Xvfb's hard-coded `/usr/local/bin/xkbcomp` was binary-patched for the test. Captured with xwd; the in-app capture never answered there. No Wayland compositor tried. |
-| santorini | Windows 11 arm64, rustc 1.99.1 (MSVC) | yes, 2m33 cold | starts; window not verified | wgpu: "Invalid surface" panic over ssh (session 0, no desktop); tiny-skia: runs until killed, no capture | **a11y off**: `accesskit_winit` @ `6c20249` fails E0782 on Windows. Dialogs via rfd (native), not the portal. Needs a console-session run (RDP) to see the window. |
+| santorini | Windows 11 arm64, rustc 1.99.1 (MSVC) | yes, 2m33 cold | starts; window not verified | wgpu: "Invalid surface" panic over ssh (session 0, no desktop); tiny-skia: runs until killed, no capture | **a11y off**: `accesskit_winit` @ `6c20249` fails E0782 on Windows. Dialogs via rfd (native), not the portal. A run on the user's desktop (`schtasks /create … /it` then `/run`) did not start: nobody was logged on (`query user`: none; console session 1 has no user), so `/it` had no session (last result 267011, never ran). Needs someone logged on at the console or over RDP. |
 | Windows x64 | (GitHub CI) | expected (same code as arm64) | n/a | | The `gui-cosmic` CI job builds and tests on `windows-latest`. |
+
+## Building on illumos (Solnix)
+
+`crates/gui_cosmic/ci/solnix-build.sh` reproduces the lixi build on any
+Solnix host with a COSMIC session installed. It builds the way Solnix
+builds its own COSMIC apps (`graphics/cosmic-apps.nix` and
+`cosmic-build.sh` in Solnix's store), and takes everything from the
+installed session so the build matches what runs:
+
+1. **Find the session's inputs.** `cosmic-comp`, from the system
+   profile, links the client libraries we need (libxkbcommon, wayland,
+   libffi, mesa). Its derivation names the `graphics` fixup scripts it
+   was built with. `SOLNIX_LIBS` and `SOLNIX_GRAPHICS` override them.
+2. **Wrap the compiler.** A `cc` wrapper adds `-L` and `-Wl,-R` for those
+   libraries and gcc's libgcc_s. Without it, rustup's own binaries and our
+   build scripts fail to load `libgcc_s.so.1`.
+3. **Vendor and patch.** `cargo vendor --locked` (once per Cargo.lock),
+   then Solnix's `cosmic-comp-vendor-fixup.sh` on the vendored copies
+   (9 files: rustix's ioctl encoding, wayland-backend's epoll and
+   MSG_CMSG_CLOEXEC arms, polling's epoll backend, winit's
+   `is_main_thread`, softbuffer's shm names), then
+   `cosmic-widen-linux.py` (14 `target_os = "linux"` gates in libcosmic
+   and iced_winit widened to illumos, so the Wayland client side, cctk
+   and dbus-config build). Both scripts re-stamp the vendored checksums.
+4. **Build offline,** `--locked --offline` against the patched vendor
+   directory. wgpu is already off on illumos (`Cargo.toml`), since it has
+   no backend there.
+5. **Run** in the session with `ICED_BACKEND=tiny-skia` and
+   `UMEM_OPTIONS=backend=mmap`. libumem's default sbrk backend fails the
+   renderer's first large allocation; Solnix's app wrappers set the same
+   two variables.
+
+A fixup whose anchor upstream removed fails loudly (Solnix wrote them to),
+so a libcosmic bump that outruns Solnix shows up as a build error here,
+not a silent miscompile. The one Improv-side fix is `e666179`
+(`improv_extfn`: no `RLIMIT_NPROC` on illumos).
 
 ## How each COSMIC integration point is done
 

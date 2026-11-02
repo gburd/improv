@@ -6,7 +6,9 @@
 #
 # fmt, clippy -D warnings, the tests, rustdoc, and cargo-deny with the
 # crate's own deny.toml (libcosmic's git sources are allowed there, never in
-# the root's). All --locked: Cargo.lock pins libcosmic's commit.
+# the root's). Every cargo command that resolves is --locked: Cargo.lock is
+# the only pin libcosmic and its git companions have (crates/gui_cosmic
+# README, "Pins"), so a resolve that moved it must fail, not build.
 #
 # Needs: cargo; on Linux, libxkbcommon-dev and libwayland-dev (what
 # libcosmic's own CI installs); cargo-deny when GUI_COSMIC_DENY is not 0.
@@ -32,6 +34,6 @@ end
 
 if [ "${GUI_COSMIC_DENY:-1}" != 0 ]; then
 	step "cargo-deny (crates/gui_cosmic/deny.toml)"
-	cargo deny --manifest-path Cargo.toml --config deny.toml check
+	cargo deny --locked --manifest-path Cargo.toml --config deny.toml check
 	end
 fi
