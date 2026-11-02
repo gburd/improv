@@ -15,6 +15,7 @@ pub mod functions;
 pub mod ids;
 pub mod json;
 pub mod locale;
+pub mod number;
 pub mod parser;
 pub mod schedule;
 pub mod value;
@@ -26,6 +27,7 @@ pub use formula::{
 };
 pub use ids::{CategoryId, ItemId, MeasureId, Name, ScenarioId, ViewId};
 pub use locale::Locale;
+pub use number::{display_number, format_number};
 pub use parser::{
     parse_definition, parse_expr, parse_formula, parse_stored_definition, parse_stored_expr,
     Definition, FormulaText, LambdaText, ParseError,
