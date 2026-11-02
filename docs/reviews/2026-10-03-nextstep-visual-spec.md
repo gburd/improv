@@ -88,6 +88,7 @@ Sizes at 1×:
 | --- | --- | --- |
 | Title bar height | ≈21 (W 12 px) | 21 *(NeXTSTEP 2 guidelines; was 23, AppKit 3.x)* |
 | Close box | ≈17 (W ≈10) | 15×15, right end of title bar, inset 3 |
+| Menu title bar | as window | 21; title at the left margin; border dark gray on top and left only (NeXTSTEP 2 guidelines) |
 | Menu item height | ≈20 (W 11.5, F 13) | 20 |
 | Menu width | W 70 → ≈120 | content + 24, min 100 |
 | Grid row height | ≈17 (W 9.7) | 17 |

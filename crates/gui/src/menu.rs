@@ -1,5 +1,7 @@
 //! The NeXTSTEP application menu (spec §4.1): a vertical floating panel with a
-//! black title bar and beveled items, whose submenus cascade to the right.
+//! black title bar, its title at the left margin, and beveled items, with a
+//! dark-gray border on its top and left sides only; submenus cascade to the
+//! right.
 //!
 //! The menu knows nothing about the app. [`show`] draws it and returns the
 //! [`Command`] the user picked, and the caller runs it. [`key_command`] maps the
@@ -182,7 +184,8 @@ const NO_VIEWS: &str = "No Views";
 
 // Geometry, in points (spec §3, §4.1).
 const BORDER: f32 = 1.0;
-const TITLE_HEIGHT: f32 = 23.0;
+/// As a window's (NeXTSTEP 2: 21 px).
+const TITLE_HEIGHT: f32 = 21.0;
 const ITEM_HEIGHT: f32 = 20.0;
 const PAD: f32 = 6.0;
 /// Room between a label and the right-hand marker, plus the marker itself.
@@ -508,12 +511,17 @@ fn panel(
                 })
                 .collect();
 
-            p.rect_stroke(
-                outer.shrink(BORDER / 2.0),
-                0.0,
-                Stroke::new(BORDER, BLACK),
-                egui::StrokeKind::Middle,
-            );
+            // NeXTSTEP 2: "menus have a dark gray border just on their top
+            // and left sides; the border on the bottom and right is drawn
+            // within the content area as part of the menu commands" (each
+            // row's black bottom-right bevel edge, and the title's black).
+            let edge = Stroke::new(BORDER, DARK_GRAY);
+            let o = outer.shrink(BORDER / 2.0);
+            p.line_segment([o.left_bottom(), o.left_top()], edge);
+            p.line_segment([o.left_top(), o.right_top()], edge);
+            let ink = Stroke::new(BORDER, BLACK);
+            p.line_segment([o.right_top(), o.right_bottom()], ink);
+            p.line_segment([o.left_bottom(), o.right_bottom()], ink);
             ui.advance_cursor_after_rect(outer);
             (outer, responses)
         })
@@ -724,6 +732,50 @@ mod tests {
         let ws = top("Worksheet");
         h.click_row(menu_id(), ws);
         assert_eq!(h.click_row(sub_id(ws), 0), Some(C::Recalculate));
+    }
+
+    /// NeXTSTEP 2's menu: a 21 px black title bar, a dark-gray border on the
+    /// top and left sides only (the bottom and right are the rows' black
+    /// bevel edges).
+    #[test]
+    fn the_menu_border_is_dark_gray_on_top_and_left() {
+        let ctx = Context::default();
+        crate::theme::install_fonts(&ctx);
+        let mut state = MenuState::default();
+        let mut shapes = Vec::new();
+        for t in 0..3 {
+            let raw = RawInput {
+                time: Some(f64::from(t) / 60.0),
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0))),
+                ..Default::default()
+            };
+            shapes = ctx
+                .test_pass(raw, |ctx| {
+                    show(ctx, &mut state, pos2(4.0, 4.0), &[], |_| true, |_| false);
+                })
+                .shapes;
+        }
+        let menu = ctx.memory(|m| m.area_rect(menu_id())).unwrap();
+        let o = menu.shrink(BORDER / 2.0);
+        let seg = |a: Pos2, b: Pos2| {
+            shapes.iter().find_map(|c| match &c.shape {
+                Shape::LineSegment { points, stroke } if *points == [a, b] => Some(stroke.color),
+                _ => None,
+            })
+        };
+        assert_eq!(seg(o.left_bottom(), o.left_top()), Some(DARK_GRAY), "left");
+        assert_eq!(seg(o.left_top(), o.right_top()), Some(DARK_GRAY), "top");
+        assert_eq!(seg(o.right_top(), o.right_bottom()), Some(BLACK), "right");
+        let title = shapes
+            .iter()
+            .find_map(|c| match &c.shape {
+                Shape::Rect(r) if r.fill == BLACK && r.rect.min == menu.min + vec2(1.0, 1.0) => {
+                    Some(r.rect)
+                }
+                _ => None,
+            })
+            .expect("the black title bar");
+        assert_eq!(title.height(), 21.0);
     }
 
     /// The top level is Improv 1.0's, in its order (from its main-menu nib),

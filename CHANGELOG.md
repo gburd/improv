@@ -38,6 +38,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   the model has unsaved changes, and its title bar has NeXT's miniaturize
   button at the left, which minimizes the GUI's window (pointer only; Ctrl+H
   hides from the keyboard).
+- **GUI: the NeXTSTEP 2 menu frame.** The application menu and its
+  submenus have a 21 px title bar (was 23) and a dark-gray border on their
+  top and left sides only, the bottom and right edges being the items' own
+  black bevels, as the NeXTSTEP 2 guidelines draw menus.
 
 ### Fixed
 
