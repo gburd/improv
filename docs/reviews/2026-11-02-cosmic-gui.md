@@ -19,8 +19,9 @@ Three caveats:
 2. **Windows is a second-class COSMIC target.** It builds and starts.
    AccessKit's winit adapter at the libcosmic pin does not compile on
    Windows, so a11y is off there. Rich clipboard formats and drag and drop
-   are no-ops in libcosmic's Windows clipboard backend. These three are
-   documented gaps, not blockers. No window could be shown: ssh runs in
+   are no-ops in libcosmic's Windows clipboard backend. a11y is an
+   accepted limitation; the clipboard and DnD gaps are **release blockers
+   for Windows**, waiting on libcosmic (see "Windows gaps"). No window could be shown: ssh runs in
    session 0, and the interactive scheduled task found nobody logged on,
    so the drawn window is unverified there.
 3. **libcosmic is pre-release.** It is git-only and 1.0.0 in name, with a
@@ -81,14 +82,15 @@ four to their current heads; a dry run against this same commit moved
 cosmic-settings-config `655b14f → 108e095`. So read the lockfile diff,
 then re-test:
 
+0. `cargo test --locked --test windows_gaps` fails if the bump
+   moved libcosmic, window_clipboard or accesskit_winit: re-check each
+   Windows gap (below) on the new commits, update the table, record them;
 1. `ci/gui_cosmic.sh`;
 2. re-read the license files `deny.toml` clarifies, for every git crate
    whose commit moved (cargo-deny 0.20 does not hash git crates'
    licenses), and review its advisory ignores;
 3. build and run on the matrix below: Linux, FreeBSD, illumos
-   (`ci/solnix-build.sh` in a COSMIC session) and Windows. On Windows,
-   check whether `accesskit_winit` builds yet; if it does, turn `a11y`
-   on there;
+   (`ci/solnix-build.sh` in a COSMIC session) and Windows;
 4. update this note's versions and matrix.
 
 **Licenses** (`crates/gui_cosmic/deny.toml`). Everything is in the root's
@@ -128,7 +130,27 @@ model, one measure's grid, through the model service).
 | lixi | Solnix (illumos) x86_64, rustc 1.99.1 | yes, with Solnix's vendor fixups (`ci/solnix-build.sh`, below); 1m54 | **yes, in a live COSMIC session** | Wayland client of cosmic-comp 1.5.0, `ICED_BACKEND=tiny-skia`, 2× scale | Needs `cargo vendor` and `cosmic-comp-vendor-fixup.sh` + `cosmic-widen-linux.py` (rustix ioctl, wayland-backend MSG_CMSG_CLOEXEC/epoll, polling's epoll backend, winit `is_main_thread`, softbuffer shm names), wgpu off, and libxkbcommon/wayland/mesa from the Nix store on `PKG_CONFIG_PATH`. Found and fixed: `improv_extfn` used `RLIMIT_NPROC`, which illumos lacks. The in-app capture works. No screenshot portal (`org.freedesktop.portal.Desktop` is not on the bus), so the portals are absent there. |
 | nuc | FreeBSD 15.1 amd64, rustc 1.99.1 | yes, 3m02 | yes, under Xvfb | X11 (Xvfb), wgpu on Mesa llvmpipe; tiny-skia fails on Xvfb's 24-bit visual ("does not use softbuffer's pixel format") | No display stack is installed and there is no root. libxkbcommon, wayland, X11, Mesa and Xvfb came from pkg.freebsd.org into `~/w-cosmic/pkgs/root`. Xvfb's hard-coded `/usr/local/bin/xkbcomp` was binary-patched for the test. Captured with xwd; the in-app capture never answered there. No Wayland compositor tried. |
 | santorini | Windows 11 arm64, rustc 1.99.1 (MSVC) | yes, 2m33 cold | starts; window not verified | wgpu: "Invalid surface" panic over ssh (session 0, no desktop); tiny-skia: runs until killed, no capture | **a11y off**: `accesskit_winit` @ `6c20249` fails E0782 on Windows. Dialogs via rfd (native), not the portal. A run on the user's desktop (`schtasks /create … /it` then `/run`) did not start: nobody was logged on (`query user`: none; console session 1 has no user), so `/it` had no session (last result 267011, never ran). Needs someone logged on at the console or over RDP. |
-| Windows x64 | (GitHub CI) | expected (same code as arm64) | n/a | | The `gui-cosmic` CI job builds and tests on `windows-latest`. |
+| Windows x64 | (GitHub CI only) | expected (same code as arm64) | n/a | | The `gui-cosmic` CI job builds and tests on `windows-latest`. nara (Win11 x64) is not reachable from werk yet (keys refused). |
+
+## Windows gaps
+
+The maintainer's call (2026-11-02): one gap is accepted, two block a
+Windows release.
+
+| Gap | Where it lives (at the pin) | Status | Upstream |
+|---|---|---|---|
+| **Accessibility off on Windows.** AccessKit's winit adapter (`accesskit_winit` @ wash2 `6c20249`) fails E0782 (`&Window` where winit 0.31 has a trait), so `a11y` is enabled only on the free Unixes (`Cargo.toml`). | wash2/accesskit `platforms/winit/src/platform_impl/windows.rs:20` | **Known limitation**, accepted. | [pop-os/libcosmic#1152](https://github.com/pop-os/libcosmic/issues/1152) ("Windows build broken in main branch": exactly this error, open since 2026-03-06). Behind it, [AccessKit/accesskit#654](https://github.com/AccessKit/accesskit/issues/654) (winit 0.31 support). |
+| **Range copy/paste of rich formats on Windows.** iced's `clipboard::write_data`/`read_data` (several MIME types at once: TSV plus HTML) reach `window_clipboard`'s Windows provider, which implements only `read`/`write` of one string; the multi-format calls fall back to the trait defaults, which do nothing. Plain-text TSV copy and paste works. | pop-os/window_clipboard `f68595e` (tag `sctk-0.20`), `src/platform/windows.rs` | **Release blocker** for the COSMIC GUI on Windows. We wait for libcosmic; no workaround here. | None found. No issue in pop-os/libcosmic, iced-rs/iced or hecrj/window_clipboard, and pop-os/window_clipboard has issues disabled. To file: a libcosmic issue, "window_clipboard: multi-MIME write_data/read_data unimplemented on Windows". |
+| **Drag and drop on Windows.** The same provider's `DndProvider` is all no-ops (`start_dnd`, `register_dnd_destination`; `peek_offer` returns "DnD not supported"). So libcosmic's `dnd_source`/`dnd_destination` never fire there. Only dropping files on the window (`window::Event::FileDropped`, from winit) works. | same file | **Release blocker**, as above. | None found for Windows. [pop-os/libcosmic#810](https://github.com/pop-os/libcosmic/issues/810) is DnD on non-COSMIC Linux desktops, not Windows. To file with the clipboard one. |
+
+**The tripwire.** `crates/gui_cosmic/tests/windows_gaps.rs` records the
+commit of libcosmic, window_clipboard and accesskit_winit each gap was
+last assessed at. It **fails** when `Cargo.lock` moves any of them, and
+names what to re-check, until the new commits are recorded there. So every
+pin bump re-opens this table, and it is the bump checklist's step 0
+(README, "Pins"). In-window drag (the pivot tiles, stage 4) uses plain
+mouse tracking, which works on Windows too. The blockers are drag
+between applications and rich formats.
 
 ## Building on illumos (Solnix)
 

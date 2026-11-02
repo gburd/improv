@@ -35,6 +35,9 @@ git diff --stat Cargo.lock      # see what else moved with it
 dependencies, the unpinned four to their current heads, so read the
 lockfile diff. Then, before committing the new `Cargo.lock`:
 
+0. `cargo test --locked --test windows_gaps` fails when libcosmic,
+   window_clipboard or accesskit_winit moved: re-check each Windows gap
+   below on the new commits, then record them in `tests/windows_gaps.rs`;
 1. `ci/gui_cosmic.sh` (fmt, clippy, tests, rustdoc, cargo-deny);
 2. re-read the license files `deny.toml` clarifies, for every git crate
    whose commit moved (cargo-deny does not hash git crates' licenses), and
@@ -44,6 +47,22 @@ lockfile diff. Then, before committing the new `Cargo.lock`:
    in its COSMIC session) and Windows (does `accesskit_winit` build there
    yet? then turn `a11y` on for Windows);
 4. record the new commit and anything that changed in the review note.
+
+## Windows: known limitation and release blockers
+
+It builds and starts on Windows (arm64 here; x64 in CI). At this pin:
+
+- **Accessibility is off on Windows** (known limitation, accepted):
+  AccessKit's winit adapter does not build there,
+  [pop-os/libcosmic#1152](https://github.com/pop-os/libcosmic/issues/1152).
+- **Release blockers for a Windows release:** copying and pasting ranges
+  as more than plain text (TSV plus HTML), and drag and drop with other
+  applications. libcosmic's Windows clipboard backend (pop-os
+  `window_clipboard`) leaves both unimplemented, and no upstream issue
+  exists yet. We wait for libcosmic; plain-text TSV copy and paste works.
+
+`tests/windows_gaps.rs` fails whenever the pin moves, so each bump
+re-checks these. Details: the review note, "Windows gaps".
 
 ## Linux build dependencies
 
