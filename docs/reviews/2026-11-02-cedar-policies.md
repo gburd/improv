@@ -139,6 +139,17 @@ below exact, and keeps per-cell cost to a few hash lookups. To keep it
 exact, a policy may not name a Cell (`set` refuses `Improv::Cell::"…"`),
 and the schema gives Cells no attributes.
 
+**Templates.** `improv policy template NAME` prints policy text to edit
+or store. Each takes a principal, `--group G` or `--user U`:
+
+| Template | Takes | Gives |
+|---|---|---|
+| `viewer` | | ViewModel, ReadMeasure, ReadItem, ReadCell on everything |
+| `editor` | `--measure M`… | `viewer`, plus EditCell on the cells of those input measures |
+| `analyst` | `--item I`… | `viewer`, minus ReadItem on those items: their rows and cells are absent, totals stay |
+| `hide-measures` | `--measure M`… | a forbid of ReadMeasure on those measures; add it to another template |
+| `admin` | | every action |
+
 **Groups and roles.** Roles come from whoever authenticated the user, and
 a model's Admin cannot change them. Groups are stored with the model's
 policies as Cedar entities JSON (`User in Group`, `Group in Group` edges
@@ -202,12 +213,45 @@ and Postgres or the server (TLS).
   minus the visible ones). A derived measure reveals the measure it is
   computed from (`Bonus = Salary * 0.1`). `improv policy lint` lists these;
   it does not prevent them.
-- Existence and timing. A ViewModel holder sees the model, its category
-  names, and when it changes (the change notification carries a version
-  number only).
+- Existence and timing. A ViewModel holder sees the model and its
+  category names. It also learns that the model changed, when, and how
+  often, even when nothing it can see changed: the model's version is
+  global (see [Versions](#versions-and-change-timing)). It never learns
+  what changed.
 - Older releases. 0.12 opens a file with policies and ignores them. For a
   file this changes nothing (see above). For Postgres the policies are in
   the database, so an old client cannot get past them.
+
+### Versions and change timing
+
+**Ruling: accepted and documented (option a), with two rules that keep
+option b open.** A model has one version, `improv.model_version` in
+Postgres and the store's high-water for a file. A principal that sees the
+version move with no visible change learns that something it cannot see
+changed, and when.
+
+- **Why not per-principal versions (b).** Postgres cannot hide change
+  timing from a role that may use the database. Any role may `LISTEN` on
+  any channel. `improv.model_version` is readable by every
+  `improv_user`. `pg_stat_user_tables` and `pg_current_wal_lsn()` show
+  any role when writes happen. Hiding the version on the server alone
+  would promise something the same model in Postgres does not keep.
+- **Rule 1: versions are opaque.** The server's API and the model
+  service carry a version as a string that clients compare for equality
+  only. They never order versions or subtract them. The server can later
+  switch to one version per principal (b) without changing the API.
+- **Rule 2: a cell edit never fails because the version moved.** When
+  the store refuses a batch of cell edits as a conflict, the authority
+  reloads, checks each cell again (it still exists, and the principal may
+  still edit it) and retries, up to three times. The last write to a cell
+  wins. So a hidden change never refuses a visible edit, which would leak
+  it. A structure edit (EditStructure, DefineMeasure, ManageViews) still
+  fails with a conflict. Those principals see the structure, so the leak
+  is small. Today's server returns 409 for a cell edit that races another
+  writer; stage 2 changes that.
+- **No empty events.** The change feed sends nothing to a subscriber when
+  the visible part of a change is empty. A client that polls still sees
+  the version move.
 
 **Denial of service.** A policy document is capped at 1 MiB and 10,000
 policies. Cedar's evaluation is linear in the policy set and has no
@@ -283,15 +327,20 @@ remote and filtered and never holds the full input set. What that implementation
 5. **What-ifs go to the authority.** `what_if(edits, measures, window)`
    returns the authority's results. The authority checks each edited cell
    as for EditCell, without saving.
-6. **Edits are per cell.** `edit(cells, base_version)` succeeds whole or
-   fails whole. A denied edit and an edit of a cell that does not exist
-   for this user get the same error.
+6. **Edits are per cell.** `edit(cells)` succeeds whole or fails whole.
+   A refusal names the first failing cell. A denied cell and a cell that
+   does not exist for this user get the same text. A cell edit never
+   fails because the version moved (the authority retries; the last
+   write to a cell wins). A structure edit fails with a conflict when
+   the version moved.
 7. **Capabilities are hints.** `can(action, resource)` greys out menus
    and cells. Every call can still fail with `Denied`, and the GUI must
    handle that on every call.
 8. **Changes arrive by subscription.** `subscribe()` yields changed cells
    (already filtered) or `Reload`. On `Reload` (the policy, the structure
-   or the user's groups changed) the client drops its caches.
+   or the user's groups changed) the client drops its caches. A change
+   with no visible part sends nothing. Versions are opaque strings,
+   compared for equality only.
 9. **Undo is inverse edits.** A filtered client cannot snapshot the whole
    model, so undo sends the inverse edit through `edit`.
 10. **Errors do not leak.** Error text from the authority is shown as is;
@@ -315,6 +364,24 @@ remote and filtered and never holds the full input set. What that implementation
 - Not offered: totals over visible items only (each user would see
   different numbers, and the engine would run per user), and small-cell
   suppression. Both are possible later as a per-measure option.
+
+**What each template shows for an aggregate.** An aggregate is a cell of
+a derived measure that sums (or averages, counts, ranks) over items. It is
+never recomputed over the visible items. It is shown with its value over
+all items, or it is absent. Clients display exactly this:
+
+| Template | Aggregate over items the principal cannot see | Derived cell that reads a hidden measure |
+|---|---|---|
+| `viewer` | none are hidden: shown | none are hidden: shown |
+| `editor` (edits named measures) | none are hidden: shown | none are hidden: shown |
+| `analyst` (hides named items) | **shown**, over all items, hidden ones included | none are hidden: shown |
+| `hide-measures` (hides named measures) | not affected by this template: shown | **shown**, without its formula |
+| `admin` | none are hidden: shown | none are hidden: shown |
+| any, plus a forbid on the aggregate's measure or cells | **absent** | **absent** |
+
+A cell whose own coordinate names a hidden item (`Total[Product=Secret]`)
+is absent under every template: the composite rule needs every item of
+the coordinate readable.
 
 ## Performance targets
 
