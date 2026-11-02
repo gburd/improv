@@ -2,7 +2,7 @@
 //! status line and a formula edit show `Left = Budget - Spent` as it was
 //! typed, not the controlled English. [`formula`] gives `None` for a shape
 //! the grammar has no exact spelling for, and
-//! [`crate::app::App::formula_text`] shows only text that parses back to
+//! the TUI's `App::formula_text` shows only text that parses back to
 //! the same formula, else the English. The GUI prints the same way
 //! (`formula_dsl` in `crates/gui`).
 
@@ -245,7 +245,7 @@ fn category(model: &Model, c: CategoryId) -> Option<String> {
 /// `name` bare when the tokenizer reads it back as one identifier that is
 /// not a keyword, else quoted (`'Unit Price'`, `'Bob''s'`). `None` for the
 /// empty name, which no spelling names.
-fn ident(name: &str) -> Option<String> {
+pub fn ident(name: &str) -> Option<String> {
     const KEYWORDS: &[&str] = &[
         "NOT", "AND", "OR", "OVER", "TRUE", "FALSE", "WHERE", "INTO", "EXCEPT", "ALL",
     ];
@@ -274,7 +274,7 @@ fn literal(v: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::tests::revenue_model;
+    use crate::testutil::revenue_model;
     use improv_core_model::{DimensionSpec, ItemId, Measure, MeasureKind, Name, ValueType};
 
     fn model() -> Model {

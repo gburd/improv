@@ -6,6 +6,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Autocomplete quotes a name that is a formula keyword.** A measure or
+  category named `Where`, `Into`, `Except` or `All` was inserted bare by
+  the GUI's autocomplete and then read as the keyword. It is inserted
+  quoted (`'Where'`), as the formula printer already wrote it.
+
 ## [0.12.2] - 2026-10-29
 
 An idle pg_improv sync worker no longer re-reads its model catalog on

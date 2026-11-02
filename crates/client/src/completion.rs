@@ -135,7 +135,7 @@ pub fn candidates(model: &Model, word: &str) -> Vec<Candidate> {
             .filter_map(move |n| {
                 Some(Candidate {
                     name: n.to_string(),
-                    insert: crate::app::ident(n)?,
+                    insert: crate::dsl::ident(n)?,
                     kind,
                 })
             })
