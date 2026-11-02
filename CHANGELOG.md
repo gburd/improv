@@ -106,6 +106,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   category named `Where`, `Into`, `Except` or `All` was inserted bare by
   the GUI's autocomplete and then read as the keyword. It is inserted
   quoted (`'Where'`), as the formula printer already wrote it.
+- **`improv_extfn` builds on illumos.** It set `RLIMIT_NPROC`, which
+  illumos lacks (it caps processes per project and zone); the sandbox
+  now skips that one limit there.
 
 ## [0.12.2] - 2026-10-29
 

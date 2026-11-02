@@ -117,7 +117,9 @@ mod limits {
     /// setup (or Python's threads) fail with EAGAIN before the user body even
     /// runs. 4096 is comfortably above typical host process counts while still
     /// bounding a runaway fork loop (which would hit thousands of processes
-    /// within its first second).
+    /// within its first second). Not on illumos, which has no `RLIMIT_NPROC`
+    /// (it caps processes per project and zone, with resource controls).
+    #[cfg(not(any(target_os = "illumos", target_os = "solaris")))]
     pub const MAX_NPROC: u64 = 4096;
 }
 
@@ -258,14 +260,15 @@ fn with_rlimits(mut cmd: Command) -> Command {
     use std::os::unix::process::CommandExt;
     // SAFETY: the hook runs in the forked child before exec, where only
     // async-signal-safe calls are allowed: it makes four `set_rlimit`
-    // calls (getrlimit/setrlimit syscalls, no allocation, no locks) and
-    // returns an io::Error, which std reports to the parent without
-    // allocating in the child.
+    // calls (three on illumos; getrlimit/setrlimit syscalls, no allocation,
+    // no locks) and returns an io::Error, which std reports to the parent
+    // without allocating in the child.
     unsafe {
         cmd.pre_exec(|| {
             set_rlimit(libc::RLIMIT_CPU, limits::CPU_SECONDS)?;
             set_rlimit(libc::RLIMIT_AS, limits::ADDRESS_SPACE_BYTES)?;
             set_rlimit(libc::RLIMIT_NOFILE, limits::MAX_FDS)?;
+            #[cfg(not(any(target_os = "illumos", target_os = "solaris")))]
             set_rlimit(libc::RLIMIT_NPROC, limits::MAX_NPROC)?;
             Ok(())
         });
@@ -437,6 +440,25 @@ mod tests {
         // NOFILE: macOS refuses an unlimited RLIMIT_NOFILE (setrlimit(2)),
         // and its default NOFILE hard limit is unlimited.
         assert!(set_rlimit(libc::RLIMIT_CPU, u64::MAX).is_ok());
+    }
+
+    /// The pre-exec hook runs on every Unix (three limits on illumos, which
+    /// has no `RLIMIT_NPROC`): a child spawned through it starts, with the
+    /// file-descriptor ceiling applied.
+    #[cfg(unix)]
+    #[test]
+    fn rlimits_apply_to_the_child() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "ulimit -n"]);
+        let out = with_rlimits(cmd)
+            .output()
+            .expect("the hook lets the child start");
+        assert!(out.status.success(), "{out:?}");
+        let n: u64 = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .expect("a number");
+        assert!(n <= limits::MAX_FDS, "{n} > {}", limits::MAX_FDS);
     }
 
     /// The program is run by its canonical path, so a symlinked interpreter
