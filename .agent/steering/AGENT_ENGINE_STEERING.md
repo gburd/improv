@@ -320,7 +320,8 @@ Interfaces request a slice for a `View` and render it.
 
 The live `Engine` runs on one timely worker (`execute_directly`, on its
 own thread): more workers make a single edit slower (0.15 → 1.96 ms at 8
-in the 2026-10-25 DD review's prototype). Batch `evaluate` runs on
+in the 2026-10-25 DD review's prototype,
+`docs/reviews/2026-10-25-dd-review.md`). Batch `evaluate` runs on
 `workers_for(cells)` workers (`dataflow.rs`): one per `CELLS_PER_WORKER`
 (10,000) input cells, at most `MAX_WORKERS` (8) and the cores, or
 `IMPROV_ENGINE_WORKERS`; `evaluate_with_workers` takes a count. It
