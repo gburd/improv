@@ -34,6 +34,12 @@ pub enum Command {
     RevertToSaved,
     Undo,
     Redo,
+    /// Edit ▸ Copy: the focused worksheet's selection to the clipboard as
+    /// tab-separated text (Command-c, which egui delivers as a copy event).
+    Copy,
+    /// Edit ▸ Paste: the clipboard's cells into the worksheet at the cursor
+    /// (Command-v).
+    Paste,
     PivotRotate,
     AddMatrix,
     RemoveMatrix,
@@ -122,6 +128,8 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         Top::Sub(&[
             ("Undo", Some('z'), Some(C::Undo)),
             ("Redo", Some('Z'), Some(C::Redo)),
+            ("Copy", Some('c'), Some(C::Copy)),
+            ("Paste", Some('v'), Some(C::Paste)),
             ("Add Category", None, Some(C::AddCategory)),
             ("Add Item", None, Some(C::AddItem)),
             ("Add Input Measure", None, Some(C::AddInputMeasure)),
@@ -212,6 +220,12 @@ pub struct MenuState {
 pub fn key_command(key: Key, shift: bool) -> Option<Command> {
     if key == Key::Y {
         return Some(C::Redo);
+    }
+    // egui turns these chords into its own copy and paste events (with the
+    // clipboard's text), which the worksheet takes; a key event for them
+    // must not run the commands a second time.
+    if !shift && matches!(key, Key::C | Key::V) {
+        return None;
     }
     keyed_items()
         .find(|(k, _)| Key::from_name(&k.to_string()) == Some(key) && k.is_uppercase() == shift)
@@ -876,10 +890,12 @@ mod tests {
         let mut n = 0;
         for (k, c) in keyed_items() {
             let key = Key::from_name(&k.to_string()).expect("a key letter");
-            assert_eq!(key_command(key, k.is_uppercase()), c, "{k:?}");
+            // Copy and Paste arrive as egui's clipboard events instead.
+            let want = if matches!(k, 'c' | 'v') { None } else { c };
+            assert_eq!(key_command(key, k.is_uppercase()), want, "{k:?}");
             n += 1;
         }
-        assert_eq!(n, 12, "o n s S z Z r V / p h q");
+        assert_eq!(n, 14, "o n s S z Z c v r V / p h q");
     }
 
     #[test]
@@ -897,7 +913,12 @@ mod tests {
         assert_eq!(key_command(Key::R, false), Some(C::Recalculate));
         assert_eq!(key_command(Key::V, true), Some(C::AddMatrix));
         assert_eq!(key_command(Key::Slash, false), Some(C::PivotRotate));
-        assert_eq!(key_command(Key::V, false), None, "Paste is not built");
+        assert_eq!(
+            key_command(Key::V, false),
+            None,
+            "Paste comes as egui's event"
+        );
+        assert_eq!(key_command(Key::C, false), None, "so does Copy");
         assert_eq!(key_command(Key::P, false), None, "Print is disabled");
         assert_eq!(key_command(Key::A, false), None);
     }

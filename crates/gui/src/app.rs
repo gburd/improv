@@ -547,6 +547,9 @@ enum Step {
     /// the model per keystroke cost 170 ms at 1M cells, and undoing it was
     /// a full rebuild; this undoes incrementally.
     Cell(MeasureId, CoordKey, Option<Value>),
+    /// Several input cells' values, before one change to them all (a
+    /// paste): one undo step, applied cell by cell as [`Step::Cell`] is.
+    Cells(MeasureId, Vec<(CoordKey, Option<Value>)>),
 }
 
 /// An engine build running off the UI thread (see
@@ -1345,6 +1348,44 @@ impl Matrix {
                     .collect::<Vec<_>>()
             })
             .take(10_000)
+            .collect()
+    }
+
+    /// The cells of the rectangle with top-left `(row, col)` and `rows` x
+    /// `cols` lines, row by row, clipped to the grid: what a copy reads (the
+    /// selection) and a paste writes (from the cursor).
+    fn block_keys(
+        &self,
+        model: &Model,
+        (row, col): (usize, usize),
+        (rows, cols): (usize, usize),
+    ) -> Vec<Vec<CoordKey>> {
+        let Some(pinned) = self.pinned_pages_opt(model) else {
+            return Vec::new();
+        };
+        let row_cats = self.row_cats(model);
+        let col_cats = self.col_cats(model);
+        let row_lists = self.axis_item_lists(model, &row_cats);
+        let col_lists = self.axis_item_lists(model, &col_cats);
+        let (n_rows, n_cols) = (product_len(&row_lists), product_len(&col_lists));
+        let line = |lists: &[Vec<(ItemId, String)>], i: usize| {
+            if lists.is_empty() {
+                Vec::new()
+            } else {
+                nth_tuple(lists, i)
+            }
+        };
+        let col_tuples: Vec<_> = (col..(col + cols).min(n_cols))
+            .map(|c| line(&col_lists, c))
+            .collect();
+        (row..(row + rows).min(n_rows))
+            .map(|r| {
+                let rt = line(&row_lists, r);
+                col_tuples
+                    .iter()
+                    .map(|ct| cell_key_multi(&row_cats, &rt, &col_cats, ct, &pinned))
+                    .collect()
+            })
             .collect()
     }
 
@@ -2876,7 +2917,7 @@ impl ImprovApp {
     fn undo_model(&self) -> Option<&Model> {
         match self.undo_stack.last()? {
             Step::Model(m) => Some(m),
-            Step::Structure(_) | Step::Cell(..) => None,
+            Step::Structure(_) | Step::Cell(..) | Step::Cells(..) => None,
         }
     }
 
@@ -2894,6 +2935,27 @@ impl ImprovApp {
                 .swap_structure(m)
                 .map(|(m, saved)| (Step::Structure(m), saved))
                 .map_err(|(e, m)| (e, Step::Structure(m))),
+            Step::Cells(measure, cells) => {
+                // All or nothing: a failure part way puts the done ones back.
+                let mut inverse = Vec::with_capacity(cells.len());
+                let mut saved = Ok(());
+                for (coord, value) in &cells {
+                    match self.put_cell(measure, coord.clone(), value.clone()) {
+                        Ok((now, s)) => {
+                            inverse.push((coord.clone(), now));
+                            saved = saved.and(s);
+                        }
+                        Err(e) => {
+                            for (c, v) in inverse.into_iter().rev() {
+                                let _ = self.put_cell(measure, c, v);
+                            }
+                            return Err((e, Step::Cells(measure, cells)));
+                        }
+                    }
+                }
+                inverse.reverse();
+                Ok((Step::Cells(measure, inverse), saved))
+            }
             Step::Cell(measure, coord, value) => {
                 match self.put_cell(measure, coord.clone(), value.clone()) {
                     Ok((now, saved)) => Ok((Step::Cell(measure, coord, now), saved)),
@@ -4778,6 +4840,10 @@ impl ImprovApp {
                     Err(e) => e,
                 };
             }
+            // The worksheet takes egui's clipboard events (handle_grid_keys);
+            // the menu rows ask the platform for the same ones.
+            Command::Copy => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy),
+            Command::Paste => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
             Command::Undo => self.undo_with_status(),
             Command::Redo => self.redo_with_status(),
             Command::PivotRotate => self.pivot_rotate(),
@@ -6844,6 +6910,90 @@ impl ImprovApp {
         }
     }
 
+    /// Edit ▸ Copy (Improv's Command-c): the focused worksheet's selection
+    /// as text, a tab between cells and a newline after each row, the way
+    /// the cells show (their number format), so it pastes into another
+    /// spreadsheet or back into Improv. `None` with no measure.
+    pub fn copy_selection(&self) -> Option<String> {
+        let measure = self.selected()?;
+        let m = self.focused();
+        let (rows, cols) = m.selection();
+        let size = (rows.end() - rows.start() + 1, cols.end() - cols.start() + 1);
+        // ponytail: capped like the Sum (10,000 rows) so a select-all copy of
+        // a huge grid stays bounded; stream it if bigger copies matter.
+        let block = m.block_keys(
+            &self.model,
+            (*rows.start(), *cols.start()),
+            (size.0.min(10_000), size.1),
+        );
+        let text: String = block
+            .iter()
+            .map(|row| {
+                let cells: Vec<String> = row
+                    .iter()
+                    .map(|k| self.cell_shown(measure, k).unwrap_or_default())
+                    .collect();
+                cells.join("\t") + "\n"
+            })
+            .collect();
+        Some(text)
+    }
+
+    /// Edit ▸ Paste (Improv's Command-v): `text` (tab-separated cells,
+    /// newline-separated rows, as Copy writes them) into the focused input
+    /// measure, from the cursor right and down, clipped to the grid. Every
+    /// cell must parse as the measure's type or nothing changes; the whole
+    /// paste is one undo step. Returns the status line.
+    pub fn paste_cells(&mut self, text: &str) -> Result<String, String> {
+        let measure = self.selected().ok_or("select a worksheet cell first")?;
+        let m = self
+            .model
+            .measures
+            .get(&measure)
+            .ok_or("no measure selected")?;
+        if m.is_derived() {
+            return Err(
+                "derived cells are computed, not editable; paste into an input measure".into(),
+            );
+        }
+        let declared = m.value_type;
+        let rows: Vec<Vec<&str>> = text
+            .trim_end_matches(['\n', '\r'])
+            .lines()
+            .map(|l| l.trim_end_matches('\r').split('\t').collect())
+            .collect();
+        let width = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let f = self.focused();
+        let at = (f.cursor_row, f.cursor_col);
+        let block = f.block_keys(&self.model, at, (rows.len(), width));
+        // Parse everything first: a bad cell refuses the paste, untouched.
+        let mut cells = Vec::new();
+        for (keys, texts) in block.iter().zip(&rows) {
+            for (key, t) in keys.iter().zip(texts) {
+                let t = t.trim();
+                let v = if t.is_empty() {
+                    None
+                } else {
+                    Some(
+                        parse_typed(&self.model, &self.locale, declared, t)
+                            .map_err(|e| format!("paste refused at {t:?}: {e}"))?,
+                    )
+                };
+                cells.push((key.clone(), v));
+            }
+        }
+        if cells.is_empty() {
+            return Err("nothing to paste".into());
+        }
+        let n = cells.len();
+        let (inverse, saved) = self
+            .apply_step(Step::Cells(measure, cells))
+            .map_err(|(e, _)| e)?;
+        self.record_step(inverse);
+        saved?;
+        Ok(format!("pasted {n} cell{}", if n == 1 { "" } else { "s" }))
+    }
+
     /// The numeric sum over the focused matrix's selection, or `None` when
     /// nothing numeric is selected (no measure, no addressable cell, an empty
     /// cell, or a text/boolean/date/error cell). See [`Self::selection_readout`].
@@ -7482,6 +7632,28 @@ impl ImprovApp {
         use egui::Key;
         let k = |key: Key| ui.input(|i| i.key_pressed(key));
         let modifiers = ui.input(|i| i.modifiers);
+        // Edit ▸ Copy and Paste (Command-c, Command-v): egui turns the
+        // chords into these events; a text field that has the keyboard
+        // takes them first (this runs only when none does).
+        let (copy, paste) = ui.input(|i| {
+            let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+            let paste = i.events.iter().find_map(|e| match e {
+                egui::Event::Paste(t) => Some(t.clone()),
+                _ => None,
+            });
+            (copy, paste)
+        });
+        if copy {
+            if let Some(text) = self.copy_selection() {
+                let n = text.lines().count();
+                ui.ctx().copy_text(text);
+                self.status = format!("copied {n} row{}", if n == 1 { "" } else { "s" });
+            }
+        }
+        if let Some(text) = paste {
+            self.status = self.paste_cells(&text).unwrap_or_else(|e| e);
+            return;
+        }
         // A typed key opens the editor holding just that key. An Enter in the
         // same frame is left for the editor, drawn later, to commit it.
         if !modifiers.command {
@@ -16097,6 +16269,84 @@ mod tests {
         let _ = full_frame(&ctx, &mut app, egui::vec2(1200.0, 800.0), 1.0);
         assert!(!app.dirty, "a store-backed model is not dirtied by history");
         assert_eq!(app.last_title, "Improv \u{2014} sales");
+    }
+
+    /// Edit ▸ Copy writes the selection as tab-separated rows, the way the
+    /// cells show; Paste writes them back from the cursor as one undo step,
+    /// refuses text a number cell cannot take, and refuses a derived measure.
+    #[test]
+    fn copy_and_paste_move_cells_as_tab_separated_text() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101)); // Quantity[Time, Product]
+        app.sync_axis_state();
+        app.focused_mut().anchor = Some((0, 0));
+        app.focused_mut().cursor_row = 1;
+        app.focused_mut().cursor_col = 1;
+        let copied = app.copy_selection().expect("a measure");
+        assert_eq!(copied, "100\t50\n120\t80\n");
+        // Paste the first row over the second: one undoable step.
+        app.focused_mut().anchor = None;
+        app.focused_mut().cursor_row = 1;
+        app.focused_mut().cursor_col = 0;
+        let before = app.undo_stack.len();
+        assert_eq!(app.paste_cells("7\t8\r\n").as_deref(), Ok("pasted 2 cells"));
+        assert_eq!(app.undo_stack.len(), before + 1, "one step");
+        app.focused_mut().anchor = Some((0, 0));
+        app.focused_mut().cursor_col = 1;
+        assert_eq!(app.copy_selection().unwrap(), "100\t50\n7\t8\n");
+        // A bad cell refuses it all; past the grid's edge is clipped.
+        app.focused_mut().anchor = None;
+        app.focused_mut().cursor_col = 0;
+        let err = app.paste_cells("1\tlots").unwrap_err();
+        assert!(err.contains("lots"), "{err}");
+        app.focused_mut().anchor = Some((0, 1));
+        assert_eq!(app.copy_selection().unwrap(), "100\t50\n7\t8\n");
+        app.focused_mut().anchor = None;
+        app.focused_mut().cursor_col = 1;
+        assert_eq!(
+            app.paste_cells("9\t9\t9\n9\t9").as_deref(),
+            Ok("pasted 1 cell")
+        );
+        app.undo().unwrap();
+        app.undo().unwrap();
+        app.focused_mut().anchor = Some((0, 0));
+        app.focused_mut().cursor_row = 1;
+        app.focused_mut().cursor_col = 1;
+        assert_eq!(copied, app.copy_selection().unwrap(), "undone to the start");
+        // Derived cells are computed.
+        select(&mut app, MeasureId(102));
+        assert!(app.paste_cells("1").unwrap_err().contains("derived"));
+    }
+
+    /// The worksheet takes egui's clipboard events: a copy event puts the
+    /// selection on the clipboard (an output command), a paste event writes
+    /// the cells.
+    #[test]
+    fn the_worksheet_takes_copy_and_paste_events() {
+        let (mut app, mut desk) = grid_desk(); // Quantity, cursor at (0, 0)
+        let out = desk.frame(&mut app, vec![egui::Event::Copy]);
+        let copied = out.platform_output.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        });
+        assert_eq!(copied.as_deref(), Some("100\n"));
+        assert_eq!(app.status, "copied 1 row");
+        let _ = desk.frame(&mut app, vec![egui::Event::Paste("42".into())]);
+        assert_eq!(app.status, "pasted 1 cell");
+        assert_eq!(
+            app.cell_text(MeasureId(101), &app.cursor_key().unwrap())
+                .as_deref(),
+            Some("42")
+        );
+        // The Edit menu's rows ask the platform for the same events.
+        let out = desk.frame(&mut app, Vec::new());
+        let _ = out;
+        app.run_command(&desk.ctx, Command::Copy);
+        let out = desk.frame(&mut app, Vec::new());
+        assert!(out
+            .viewport_output
+            .values()
+            .any(|v| v.commands.contains(&egui::ViewportCommand::RequestCopy)));
     }
 
     /// Graph ▸ New Graph opens a NeXT graph window named for the worksheet,

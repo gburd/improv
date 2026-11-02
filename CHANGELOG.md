@@ -6,6 +6,14 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **GUI: Edit ▸ Copy and Paste (Ctrl+C, Ctrl+V).** Copy puts the
+  worksheet's selection on the clipboard as tab-separated text, as the
+  cells show; Paste writes such text into an input measure from the
+  cursor, all or nothing (a value the cell refuses refuses the paste), as
+  one undo step. Improv 1.0's Edit menu had both (Command-c, Command-v).
+
 ### Changed
 
 - **GUI: color graphs in a NeXT graph window.** Graph ▸ New Graph (was

@@ -45,7 +45,8 @@ The window has five regions:
   reloads it from the store (the way out of a save conflict), **Model
   Browser…** shows or hides the model browser, and **Import/Export CSV…**
   opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
-  lacked), **Add Category**, **Add Item** and **Add Input Measure** (see
+  lacked), **Copy** and **Paste** (see [Copy and paste](#copy-and-paste)),
+  **Add Category**, **Add Item** and **Add Input Measure** (see
   [Building a model from scratch](#building-a-model-from-scratch)),
   **Rename** and **Delete…** (see [Renaming and
   deleting](#renaming-and-deleting)). **Format** sets how the selected
@@ -304,15 +305,29 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+Shift+S | Save As… | File |
 | Ctrl+Z | Undo | Edit |
 | Ctrl+Shift+Z, Ctrl+Y | Redo | Edit |
+| Ctrl+C | Copy | Edit |
+| Ctrl+V | Paste | Edit |
 | Ctrl+R | Recalculate | Worksheet |
 | Ctrl+Shift+V | New View | View |
 | Ctrl+/ | Swap Rows/Columns | View |
 | Ctrl+H | Hide | main menu |
 | Ctrl+Q | Quit | main menu |
 
-Improv's other equivalents (Ctrl+C, X, V copy, cut and paste; Ctrl+P
-print; Ctrl+W close; Ctrl+F Format panel, Ctrl+T Font panel) belong to
-commands not built yet, so they do nothing.
+Improv's other equivalents (Ctrl+X cut; Ctrl+P print; Ctrl+W close;
+Ctrl+F Format panel, Ctrl+T Font panel) belong to commands not built yet,
+so they do nothing.
+
+## Copy and paste
+
+**Edit ▸ Copy** (Ctrl+C) puts the worksheet's selection on the clipboard
+as text, a tab between cells and a line per row, the way the cells show,
+so it pastes into another spreadsheet or a text editor. **Edit ▸ Paste**
+(Ctrl+V) writes tab-separated text into an input measure from the cursor
+right and down, stopping at the grid's edge; an empty field clears its
+cell. Each value must be one the cell takes (`1,500` and `$1,500` are
+fine in a number cell), or nothing is pasted and the status line says
+which value it refused. A paste is one undo step. Derived cells are
+computed, so a paste there is refused.
 
 Every control has an accessible name (through AccessKit, which egui feeds
 to Orca, VoiceOver and Narrator): menu items by their label, a cell by

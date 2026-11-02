@@ -246,7 +246,7 @@ ordinary use; **C** a detail. Effort: S (hours), M (a day), L (more).
 | 5 | **Main-window title bar.** A worksheet that lost the key to a panel (Info, Functions) should turn dark gray, not light gray; other windows light gray ([UIG2]). Today any non-key window is dark gray. | B | S | done: same commit |
 | 6 | **Menu title and border.** Menu titles start at the left margin (ours do), the border is dark gray on top and left only [UIG2]; ours is black all round. | C | S | done: `feat(gui): the NeXTSTEP 2 menu frame` |
 | 7 | **Scroller trough click pages by a view**; NeXT jumps the knob to the click. Alternate-click on an arrow should scroll a viewful. | B | S | done: `feat(gui): NeXT scroller clicks` |
-| 8 | **Key equivalents missing** for commands we have: Close (Command-W in Improv; we have no Close), Info Panel has none (correct), Copy/Paste of cells (Command-c/v) unbuilt. | B | M | Copy/Paste: later |
+| 8 | **Key equivalents missing** for commands we have: Close (Command-W in Improv; we have no Close), Info Panel has none (correct), Copy/Paste of cells (Command-c/v) unbuilt. | B | M | Copy/Paste done: `feat(gui): Edit > Copy and Paste`; Cut and Close: later |
 | 9 | **Inspector and Format panel**: Improv's Edit ▸ Inspector… (Grid, Layout, Formulas) and Format ▸ Format Panel… (Number, Alignment, Line Style, Color) are a multiform panel with a pop-up selector. Ours: the Info panel and the Format submenu. | B | M | later |
 | 10 | **Formula pane status indicators**: Improv shows Calc, circular-reference and formula-mismatch indicators (`TWI_Calc`, `TWI_Circ`, `TWI_FMerr`) by the Calc button. | C | S | later |
 | 11 | **Print and Page Layout**: grayed out. Improv printed views with a Report Layout (headers, footers, page breaks). | B | L | later |
