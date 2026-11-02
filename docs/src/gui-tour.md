@@ -74,8 +74,8 @@ The window has five regions:
   are any. Its close box hides it; **File ▸ Model Browser…** brings it back.
 - **Worksheet windows** (center) — the dark gray workspace holds one
   window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
-  to move a window and its bottom bar to resize it (the left third drags the
-  bottom-left corner, the right third the bottom-right). Clicking a window
+  to move a window and its bottom bar to resize it (left of its left notch drags the
+  bottom-left corner, right of the right notch the bottom-right, between them the bottom edge). Clicking a window
   makes it key (black title bar) and gives its matrix the keyboard. With more
   than one matrix open, each window's close box removes its matrix.
   **View ▸ New View** opens another window the size of the last

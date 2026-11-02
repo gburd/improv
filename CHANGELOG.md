@@ -24,6 +24,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   Close Window (was Remove Matrix) and Swap Rows/Columns (was Pivot,
   Ctrl+/). The unbuilt File ▸ Close row is gone. The guide's "Key
   equivalents" table gives the Ctrl (Cmd on macOS) mapping.
+- **GUI: NeXTSTEP 2 window chrome.** Title bars are 21 px (were 23, the
+  3.x AppKit's) and the resize bar is 8 px of a dark-gray, a white and six
+  light-gray rows, as the NeXTSTEP 2 guidelines give them; it is notched
+  30 px from each end, where it moves a corner (the corner zones were
+  thirds of the bar). Between the notches it moves the bottom edge.
 
 ### Fixed
 

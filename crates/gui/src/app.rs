@@ -13736,7 +13736,7 @@ mod tests {
         );
     }
 
-    /// The left third of the resize bar drags the bottom-left corner; pushed
+    /// Left of its left notch, the resize bar drags the bottom-left corner; pushed
     /// far right it stops at the minimum width and the right edge stays put.
     #[test]
     fn left_resize_stops_at_the_minimum_width() {
@@ -16114,7 +16114,7 @@ mod tests {
         // The close box, top right of the window, closes it.
         let win = crate::nxwin::NxWindow::new("graph", "").id();
         let r = crate::nxwin::stored_rect(&desk.ctx, win).expect("shown");
-        desk.click(&mut app, egui::pos2(r.right() - 12.0, r.top() + 11.0));
+        desk.click(&mut app, egui::pos2(r.right() - 11.0, r.top() + 11.0));
         desk.settle(&mut app);
         assert!(!app.show_chart);
     }

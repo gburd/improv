@@ -85,8 +85,8 @@ Sizes at 1×:
 
 | Element | Measured | Spec |
 | --- | --- | --- |
-| Title bar height | ≈21 (W 12 px) | 23 *(AppKit)* |
-| Close box | ≈17 (W ≈10) | 15×15, right end of title bar, inset 4 |
+| Title bar height | ≈21 (W 12 px) | 21 *(NeXTSTEP 2 guidelines; was 23, AppKit 3.x)* |
+| Close box | ≈17 (W ≈10) | 15×15, right end of title bar, inset 3 |
 | Menu item height | ≈20 (W 11.5, F 13) | 20 |
 | Menu width | W 70 → ≈120 | content + 24, min 100 |
 | Grid row height | ≈17 (W 9.7) | 17 |
@@ -99,7 +99,7 @@ Sizes at 1×:
 | ✓ column | ≈22 (F 15) | 22 |
 | Bevel | 1 px light + 1 px dark | 1 px each; 2 px on the outside of title bars and menus |
 | Window border | 1 px black | 1 px black |
-| Resize bar | NeXT bottom resize bar | 9 px high, split into thirds by 2 notches (AppKit) |
+| Resize bar | NeXT bottom resize bar | 8 px: dark-gray, white, then light-gray rows; notched 30 px from each end, where it moves a corner (NeXTSTEP 2 guidelines, Figure 2-9; was 9 px in thirds) |
 
 ## 4. Components
 

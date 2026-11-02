@@ -1,10 +1,13 @@
 //! NeXTSTEP window chrome for in-app floating windows (spec §3, §4.3, §5).
 //!
 //! [`NxWindow`] wraps an [`egui::Window`] that has no egui title bar or frame,
-//! and paints the NeXT chrome itself: a 1 px black border, a 23 px title bar
-//! (black when key, dark gray otherwise), a beveled close box, a bottom resize
-//! bar split into thirds, and a light-gray body. Every piece is a painter
-//! shape; the only glyphs are the title text.
+//! and paints the NeXT chrome itself, to the NeXTSTEP 2 guidelines
+//! (*NEXTstep Concepts*, Dec 1990, ch. 2; fidelity note §3.3): a 1 px black
+//! border, a 21 px title bar (black when key, dark gray otherwise), a beveled
+//! close box, an 8 px resize bar (a dark-gray row, a white row, six
+//! light-gray rows) notched near each end, where it moves a corner, and a
+//! light-gray body. Every piece is a painter shape; the only glyphs are the
+//! title text.
 //!
 //! The *key* window is the most recently clicked `NxWindow`, tracked in egui
 //! memory; see [`is_key`]. Closing the key window hands the key to the next
@@ -16,12 +19,22 @@ use egui::{
     Order, Painter, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
 };
 
-// Geometry, in points (spec §3).
+// Geometry, in points (NeXTSTEP 2: "The title bar is 21 pixels high";
+// "the resize bar is eight pixels high").
 const BORDER: f32 = 1.0;
-const TITLE_HEIGHT: f32 = 23.0;
+const TITLE_HEIGHT: f32 = 21.0;
 const CLOSE_SIZE: f32 = 15.0;
-const CLOSE_INSET: f32 = 4.0;
-const RESIZE_HEIGHT: f32 = 9.0;
+const CLOSE_INSET: f32 = 3.0;
+const RESIZE_HEIGHT: f32 = 8.0;
+/// How far in from each end of the resize bar its corner notch sits (about
+/// the AppKit's, measured off the guidelines' Figure 2-9), at most a third
+/// of the bar.
+const CORNER_ZONE: f32 = 30.0;
+
+/// The resize bar's corner zone width for a bar `width` wide.
+fn corner_zone(width: f32) -> f32 {
+    CORNER_ZONE.min(width / 3.0)
+}
 const MIN_SIZE: Vec2 = vec2(100.0, 60.0);
 const DEFAULT_RECT: Rect = Rect {
     min: pos2(32.0, 32.0),
@@ -185,17 +198,19 @@ impl<'open> NxWindow<'open> {
             .read_response(id.with("nx_resize"))
             .filter(|r| r.dragged())
         {
-            // NeXT: the left third drags the bottom-left corner, the middle
-            // the bottom edge, the right third the bottom-right corner. The
-            // third is latched at press, since the bar moves under the pointer.
+            // NeXT: left of the left notch drags the bottom-left corner,
+            // right of the right notch the bottom-right corner, between them
+            // the bottom edge. The zone is latched at press, since the bar
+            // moves under the pointer.
             let zone_id = id.with("resize_zone");
             let zone = if r.drag_started() {
                 let x = r
                     .interact_pointer_pos()
                     .map_or(0.0, |p| p.x - r.rect.left());
-                let zone = if x * 3.0 < r.rect.width() {
+                let corner = corner_zone(r.rect.width());
+                let zone = if x < corner {
                     0
-                } else if x * 3.0 < r.rect.width() * 2.0 {
+                } else if x < r.rect.width() - corner {
                     1
                 } else {
                     2
@@ -306,20 +321,7 @@ impl<'open> NxWindow<'open> {
                 }
 
                 if let Some(bar) = l.resize {
-                    bevel(&p, bar);
-                    for f in [1.0 / 3.0, 2.0 / 3.0] {
-                        let x = (bar.left() + bar.width() * f).round();
-                        p.rect_filled(
-                            Rect::from_x_y_ranges(x..=x + 1.0, bar.y_range()),
-                            0.0,
-                            BLACK,
-                        );
-                        p.rect_filled(
-                            Rect::from_x_y_ranges(x + 1.0..=x + 2.0, bar.y_range()),
-                            0.0,
-                            WHITE,
-                        );
-                    }
+                    resize_bar(&p, bar);
                     let pointer_only = Sense::DRAG;
                     let _ = ui.interact(bar, id.with("nx_resize"), pointer_only);
                 }
@@ -388,6 +390,34 @@ fn layout(outer: Rect, closable: bool, resizable: bool) -> Layout {
         close,
         body,
         resize,
+    }
+}
+
+/// Paint the NeXTSTEP 2 resize bar over `r`: "The top row of pixels is
+/// dark gray, the row beneath is white, and the remaining six rows are light
+/// gray", with a notch (a black line, a white one right of it) where each
+/// corner zone ends.
+fn resize_bar(p: &Painter, r: Rect) {
+    let row = |y: f32, h: f32, c: Color32| {
+        p.rect_filled(
+            Rect::from_x_y_ranges(r.x_range(), r.top() + y..=r.top() + y + h),
+            0.0,
+            c,
+        );
+    };
+    row(0.0, 1.0, DARK_GRAY);
+    row(1.0, 1.0, WHITE);
+    row(2.0, r.height() - 2.0, LIGHT_GRAY);
+    let corner = corner_zone(r.width());
+    for x in [r.left() + corner, r.right() - corner - 2.0] {
+        let x = x.round();
+        let notch = r.top() + 1.0..=r.bottom();
+        p.rect_filled(
+            Rect::from_x_y_ranges(x..=x + 1.0, notch.clone()),
+            0.0,
+            BLACK,
+        );
+        p.rect_filled(Rect::from_x_y_ranges(x + 1.0..=x + 2.0, notch), 0.0, WHITE);
     }
 }
 
@@ -503,9 +533,10 @@ mod tests {
         max: pos2(400.0, 300.0),
     };
 
-    /// (a) The painted title bar is 23 px high and the body Ui starts below it.
+    /// (a) The painted title bar is 21 px high (NeXTSTEP 2) and the body Ui
+    /// starts below it.
     #[test]
-    fn title_bar_is_23px_and_body_sits_below() {
+    fn title_bar_is_21px_and_body_sits_below() {
         let mut h = Harness::new();
         let (mut outer, mut body) = (Rect::NOTHING, Rect::NOTHING);
         let mut shapes = Vec::new();
@@ -530,14 +561,27 @@ mod tests {
             })
             .expect("a black title bar inside the border");
         assert_eq!(title.width(), R.width() - 2.0);
-        assert_eq!(title.height(), 23.0);
+        assert_eq!(title.height(), 21.0);
         assert_eq!(body.top(), title.bottom());
         assert_eq!((body.left(), body.right()), (title.left(), title.right()));
         assert_eq!(
             body.bottom(),
-            R.bottom() - 1.0 - 9.0,
+            R.bottom() - 1.0 - 8.0,
             "resize bar below the body"
         );
+        // The bar's rows: dark gray, white, then light gray.
+        let bar_top = body.bottom();
+        let row = |y: f32| {
+            shapes.iter().find_map(|c| match &c.shape {
+                Shape::Rect(r) if r.rect.top() == y && r.rect.width() == R.width() - 2.0 => {
+                    Some(r.fill)
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(row(bar_top), Some(DARK_GRAY));
+        assert_eq!(row(bar_top + 1.0), Some(WHITE));
+        assert_eq!(row(bar_top + 2.0), Some(LIGHT_GRAY));
     }
 
     /// (b) Clicking the close box clears the bool and hides the window.
@@ -558,7 +602,9 @@ mod tests {
         }
         let close = layout(R, true, true).close.unwrap();
         assert_eq!(close.size(), vec2(15.0, 15.0));
-        assert_eq!(close.right(), R.right() - 1.0 - 4.0);
+        // Centred in the 21 px bar: 3 px above and below the 15 px box.
+        assert_eq!(close.top(), R.top() + 1.0 + 3.0);
+        assert_eq!(close.right(), R.right() - 1.0 - 3.0);
         h.frame(click(close.center()), &mut ui);
         h.frame(Vec::new(), &mut ui);
         assert!(!shown);
@@ -736,13 +782,14 @@ mod tests {
         for _ in 0..3 {
             h.frame(Vec::new(), &mut ui);
         }
-        let from = pos2(x, R.bottom() - 1.0 - 4.5);
+        let from = pos2(x, R.bottom() - 1.0 - 4.0);
         drag(&mut h, from, from + delta, &mut ui);
         rect
     }
 
-    /// (e) The resize bar resizes only when resizable; the left third drags
-    /// the bottom-left corner, the right third the bottom-right.
+    /// (e) The resize bar resizes only when resizable; left of its left
+    /// notch it drags the bottom-left corner, right of the right notch the
+    /// bottom-right.
     #[test]
     fn resize_bar_resizes_only_when_resizable() {
         let d = vec2(40.0, 30.0);
@@ -756,11 +803,18 @@ mod tests {
         assert_eq!(drag_resize_bar(false, R.right() - 20.0, d), R);
     }
 
-    /// The middle third drags only the bottom edge.
+    /// Between the notches the bar drags only the bottom edge, even well
+    /// outside the middle third (the notches sit 30 px in, not at thirds).
     #[test]
-    fn middle_third_resizes_height_only() {
-        let mid = drag_resize_bar(true, R.center().x, vec2(40.0, 30.0));
-        assert_eq!(mid, Rect::from_min_max(R.min, R.max + vec2(0.0, 30.0)));
+    fn between_the_notches_resizes_height_only() {
+        for x in [R.center().x, R.left() + 40.0, R.right() - 40.0] {
+            let mid = drag_resize_bar(true, x, vec2(40.0, 30.0));
+            assert_eq!(
+                mid,
+                Rect::from_min_max(R.min, R.max + vec2(0.0, 30.0)),
+                "at {x}"
+            );
+        }
     }
 
     /// Dragging the bar past the screen bottom stops the edge there instead
@@ -781,7 +835,7 @@ mod tests {
             .rect
     }
 
-    /// Dragging the left third past `min_size` stops the left edge there,
+    /// Dragging the left corner zone past `min_size` stops the left edge there,
     /// rather than at `MIN_SIZE` for the caller to enlarge (sliding it right).
     #[test]
     fn left_resize_stops_at_min_size() {
@@ -793,7 +847,7 @@ mod tests {
         for _ in 0..3 {
             h.frame(Vec::new(), &mut ui);
         }
-        let from = pos2(R.left() + 20.0, R.bottom() - 1.0 - 4.5);
+        let from = pos2(R.left() + 20.0, R.bottom() - 1.0 - 4.0);
         drag(&mut h, from, from + vec2(400.0, 0.0), &mut ui);
         let rect = stored_rect(&h.ctx, wid("a")).unwrap();
         assert_eq!(rect.max.x, R.max.x);
