@@ -39,6 +39,10 @@ pub enum Event {
     Clicked(Cell),
     /// A cell was double-clicked (edit it).
     Activated(Cell),
+    /// Shift+click: extend the selection to this cell.
+    Extended(Cell),
+    /// The canvas has this size now (the view's extent follows it).
+    Resized(Size),
 }
 
 /// The values a measure shows: its input cells (from the model) or its
@@ -67,6 +71,16 @@ pub fn visible(size: Size, row_cats: usize, col_cats: usize) -> (usize, usize) {
     (rows, cols)
 }
 
+/// How many whole data rows and columns fit (the page size for the keys;
+/// at least one each).
+pub fn whole(size: Size, row_cats: usize, col_cats: usize) -> (usize, usize) {
+    let head_h = ROW_H * col_cats.max(1) as f32;
+    let head_w = HEAD_W * row_cats.max(1) as f32;
+    let rows = ((size.height - head_h).max(0.0) / ROW_H).floor() as usize;
+    let cols = ((size.width - head_w).max(0.0) / COL_W).floor() as usize;
+    (rows.max(1), cols.max(1))
+}
+
 /// The grid of one measure, as the window last laid it out.
 pub struct Sheet<'a> {
     pub model: &'a Model,
@@ -78,12 +92,18 @@ pub struct Sheet<'a> {
     /// The top-left data cell in view.
     pub origin: Cell,
     pub cursor: Cell,
+    /// The selected range, inclusive (the cursor alone when no anchor).
+    pub selection: (Cell, Cell),
+    /// The size the window last heard of; a different one is reported.
+    pub size: Size,
 }
 
-/// The canvas's own state: the last click, to tell a double click.
+/// The canvas's own state: the last click (to tell a double click) and
+/// whether Shift is held.
 #[derive(Default)]
 pub struct State {
     last_click: Option<(std::time::Instant, Cell)>,
+    shift: bool,
 }
 
 impl Sheet<'_> {
@@ -134,6 +154,14 @@ impl<Message: Clone> canvas::Program<Message, Theme> for SheetProgram<'_, Messag
         cursor: mouse::Cursor,
     ) -> Option<canvas::Action<Message>> {
         let sheet = &self.sheet;
+        if bounds.size() != sheet.size {
+            let e = Event::Resized(bounds.size());
+            return Some(canvas::Action::publish((self.on_event)(e)));
+        }
+        if let canvas::Event::Keyboard(cosmic::iced::keyboard::Event::ModifiersChanged(m)) = event {
+            state.shift = m.shift();
+            return None;
+        }
         let p = cursor.position_in(bounds)?;
         match event {
             canvas::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
@@ -151,7 +179,9 @@ impl<Message: Clone> canvas::Program<Message, Theme> for SheetProgram<'_, Messag
                     c == cell && now.duration_since(t) < std::time::Duration::from_millis(400)
                 });
                 state.last_click = Some((now, cell));
-                let e = if double {
+                let e = if state.shift {
+                    Event::Extended(cell)
+                } else if double {
                     Event::Activated(cell)
                 } else {
                     Event::Clicked(cell)
@@ -249,14 +279,13 @@ impl<Message: Clone> canvas::Program<Message, Theme> for SheetProgram<'_, Messag
         for (i, row) in rows.clone().enumerate() {
             for (j, col) in cols.clone().enumerate() {
                 let at = Point::new(hw + j as f32 * COL_W, hh + i as f32 * ROW_H);
-                if (Cell { row, col }) == s.cursor {
-                    let sel = Color { a: 0.25, ..accent };
-                    f.fill_rectangle(at, Size::new(COL_W, ROW_H), sel);
-                    f.stroke_rectangle(
-                        at,
-                        Size::new(COL_W, ROW_H),
-                        Stroke::default().with_color(accent).with_width(2.0),
-                    );
+                let here = Cell { row, col };
+                if crate::nav::contains(s.selection, here) {
+                    f.fill_rectangle(at, Size::new(COL_W, ROW_H), Color { a: 0.18, ..accent });
+                }
+                if here == s.cursor {
+                    let edge = Stroke::default().with_color(accent).with_width(2.0);
+                    f.stroke_rectangle(at, Size::new(COL_W, ROW_H), edge);
                 }
                 let Some(k) = s.grid.key(row, col) else {
                     continue;
@@ -350,6 +379,8 @@ mod tests {
             locale: &locale,
             origin: Cell::default(),
             cursor: Cell::default(),
+            selection: Default::default(),
+            size: Size::ZERO,
         };
         let end = s.scrolled(isize::MAX, 0);
         assert_eq!(end.row, 999_999);
@@ -384,6 +415,8 @@ mod tests {
             locale: &locale,
             origin: Cell { row: 1, col: 0 },
             cursor: Cell::default(),
+            selection: Default::default(),
+            size: Size::ZERO,
         };
         assert_eq!(s.cell_at(Point::new(5.0, 5.0)), None);
         let p = Point::new(HEAD_W + COL_W + 1.0, ROW_H + 1.0);

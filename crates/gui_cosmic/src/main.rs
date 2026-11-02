@@ -3,6 +3,7 @@
 
 mod app;
 mod args;
+mod nav;
 mod pivot;
 mod service;
 mod sheet;

@@ -6,13 +6,15 @@
 use std::sync::{mpsc, Arc};
 
 use cosmic::app::{Core, Task};
-use cosmic::iced::{Length, Subscription};
+use cosmic::iced::keyboard::{self, key::Named, Key, Modifiers};
+use cosmic::iced::{Length, Size, Subscription};
 use cosmic::widget;
 use cosmic::{executor, ApplicationExt, Element};
 
 use improv_core_model::{Locale, MeasureId, Model};
 use improv_engine::session::Snapshot;
 
+use crate::nav::{self, Extent, Move};
 use crate::pivot::{Grid, Layout};
 use crate::service::{self, LocalService, ModelService, Request, Update};
 use crate::sheet::{self, Cell, Sheet, SheetProgram};
@@ -34,6 +36,8 @@ pub enum Message {
     /// A measure was picked in the measure list.
     ShowMeasure(usize),
     Sheet(sheet::Event),
+    /// A key the focused widgets did not take.
+    Key(Key, Modifiers),
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -60,6 +64,10 @@ pub struct App {
     grid: Option<Grid>,
     origin: Cell,
     cursor: Cell,
+    /// Where a Shift+move or Shift+click range started.
+    anchor: Option<Cell>,
+    /// The grid canvas's size, as it last reported it.
+    size: Size,
     locale: Locale,
     status: String,
 }
@@ -80,6 +88,8 @@ impl App {
             grid: None,
             origin: Cell::default(),
             cursor: Cell::default(),
+            anchor: None,
+            size: Size::ZERO,
             locale: Locale::from_env(),
             status: "Loading…".into(),
         }
@@ -95,6 +105,57 @@ impl App {
         self.grid = self.layout.as_ref().map(|l| Grid::new(&self.model, l));
         self.origin = Cell::default();
         self.cursor = Cell::default();
+        self.anchor = None;
+    }
+
+    /// The grid's and the view's extent.
+    fn extent(&self) -> Extent {
+        let Some(g) = &self.grid else {
+            return Extent::default();
+        };
+        let (view_rows, view_cols) = sheet::whole(self.size, g.rows.cats.len(), g.cols.cats.len());
+        Extent {
+            rows: g.rows.len(),
+            cols: g.cols.len(),
+            view_rows,
+            view_cols,
+        }
+    }
+
+    /// Move the cursor (extending the selection with `extend`), and scroll
+    /// the view after it.
+    pub fn go(&mut self, m: Move, extend: bool) {
+        let e = self.extent();
+        if extend {
+            self.anchor.get_or_insert(self.cursor);
+        } else {
+            self.anchor = None;
+        }
+        self.cursor = nav::step(self.cursor, m, e);
+        self.origin = nav::follow(self.origin, self.cursor, e);
+    }
+
+    /// The selected range, inclusive.
+    pub fn selection(&self) -> (Cell, Cell) {
+        nav::range(self.anchor, self.cursor)
+    }
+
+    /// What a key does in the grid, if anything.
+    fn key(&mut self, key: &Key, mods: Modifiers) {
+        let m = match key {
+            Key::Named(Named::ArrowUp) => Move::Up,
+            Key::Named(Named::ArrowDown) => Move::Down,
+            Key::Named(Named::ArrowLeft) => Move::Left,
+            Key::Named(Named::ArrowRight) | Key::Named(Named::Tab) => Move::Right,
+            Key::Named(Named::PageUp) => Move::PageUp,
+            Key::Named(Named::PageDown) => Move::PageDown,
+            Key::Named(Named::Home) if mods.control() => Move::First,
+            Key::Named(Named::End) if mods.control() => Move::Last,
+            Key::Named(Named::Home) => Move::Home,
+            Key::Named(Named::End) => Move::End,
+            _ => return,
+        };
+        self.go(m, mods.shift());
     }
 
     /// Apply what the service said.
@@ -193,7 +254,16 @@ impl cosmic::Application for App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::run_with(self.updates.clone(), updates)
+        Subscription::batch([
+            Subscription::run_with(self.updates.clone(), updates),
+            // Keys no widget took (a focused text field keeps its own).
+            keyboard::listen().filter_map(|e| match e {
+                keyboard::Event::KeyPressed { key, modifiers, .. } => {
+                    Some(Message::Key(key, modifiers))
+                }
+                _ => None,
+            }),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -224,7 +294,14 @@ impl cosmic::Application for App {
             Message::Sheet(sheet::Event::Scrolled(to)) => self.origin = to,
             Message::Sheet(sheet::Event::Clicked(c) | sheet::Event::Activated(c)) => {
                 self.cursor = c;
+                self.anchor = None;
             }
+            Message::Sheet(sheet::Event::Extended(c)) => {
+                self.anchor.get_or_insert(self.cursor);
+                self.cursor = c;
+            }
+            Message::Sheet(sheet::Event::Resized(size)) => self.size = size,
+            Message::Key(key, mods) => self.key(&key, mods),
         }
         Task::none()
     }
@@ -256,6 +333,8 @@ impl cosmic::Application for App {
                     locale: &self.locale,
                     origin: self.origin,
                     cursor: self.cursor,
+                    selection: self.selection(),
+                    size: self.size,
                 },
                 on_event: Message::Sheet,
             })
@@ -272,5 +351,111 @@ impl cosmic::Application for App {
             .spacing(cosmic::theme::spacing().space_s)
             .padding(cosmic::theme::spacing().space_s)
             .into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::tests::revenue_model;
+    use improv_core_model::{CategoryId, ItemId, Measure, MeasureKind, Name, ValueType};
+
+    /// A window over `model`, opened as the service would open it, with a
+    /// view of `rows` × `cols` whole cells.
+    pub(crate) fn opened(model: Model, rows: usize, cols: usize) -> App {
+        let mut app = App::with_service(Core::default(), String::new(), Box::new(Idle));
+        app.apply(Update::Opened(Arc::new(model), Snapshot::default()));
+        let (cats_r, cats_c) = app.grid.as_ref().map_or((1, 1), |g| {
+            (g.rows.cats.len().max(1), g.cols.cats.len().max(1))
+        });
+        app.size = Size::new(
+            sheet::HEAD_W * cats_r as f32 + sheet::COL_W * cols as f32,
+            sheet::ROW_H * cats_c as f32 + sheet::ROW_H * rows as f32,
+        );
+        app
+    }
+
+    /// A service that never answers: tests feed the window updates.
+    struct Idle;
+
+    impl ModelService for Idle {
+        fn open(&mut self) -> Result<(Model, Snapshot), String> {
+            Err("idle".into())
+        }
+    }
+
+    /// One input measure over A × B, `n` items each.
+    fn square(n: u32) -> Model {
+        let mut m = Model::new();
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        for i in 0..n {
+            m.add_item(ItemId(10_000 + i), a, format!("a{i}"));
+            m.add_item(ItemId(20_000 + i), b, format!("b{i}"));
+        }
+        m.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("V".into()),
+            value_type: ValueType::Number,
+            categories: vec![a, b],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        m
+    }
+
+    #[test]
+    fn opening_shows_the_first_measure() {
+        let app = opened(revenue_model(), 10, 5);
+        assert_eq!(app.layout.as_ref().map(|l| l.measure), Some(MeasureId(100)));
+        assert_eq!(app.status, "3 measures");
+        assert_eq!(app.title(), "Untitled — Improv");
+    }
+
+    #[test]
+    fn keys_move_the_cursor_and_the_view_follows_over_a_million_cells() {
+        // 1000 × 1000 = 10^6 cells.
+        let mut app = opened(square(1000), 20, 5);
+        let ctrl = Modifiers::CTRL;
+        app.key(&Key::Named(Named::End), ctrl);
+        assert_eq!(app.cursor, Cell { row: 999, col: 999 });
+        assert_eq!(app.origin, Cell { row: 980, col: 995 });
+        app.key(&Key::Named(Named::Home), ctrl);
+        assert_eq!((app.cursor, app.origin), (Cell::default(), Cell::default()));
+        app.key(&Key::Named(Named::PageDown), Modifiers::empty());
+        assert_eq!(app.cursor.row, 20);
+        assert_eq!(app.origin.row, 1);
+        // An unbound key does nothing.
+        app.key(&Key::Character("q".into()), Modifiers::empty());
+        assert_eq!(app.cursor.row, 20);
+    }
+
+    #[test]
+    fn shift_extends_a_range_and_a_plain_move_drops_it() {
+        let mut app = opened(square(10), 20, 5);
+        app.key(&Key::Named(Named::ArrowDown), Modifiers::SHIFT);
+        app.key(&Key::Named(Named::ArrowRight), Modifiers::SHIFT);
+        assert_eq!(app.selection(), (Cell::default(), Cell { row: 1, col: 1 }));
+        let _ = cosmic::Application::update(
+            &mut app,
+            Message::Sheet(sheet::Event::Extended(Cell { row: 3, col: 2 })),
+        );
+        // The anchor stays where Shift started.
+        assert_eq!(app.selection(), (Cell::default(), Cell { row: 3, col: 2 }));
+        app.key(&Key::Named(Named::ArrowUp), Modifiers::empty());
+        assert_eq!(
+            app.selection(),
+            (Cell { row: 2, col: 2 }, Cell { row: 2, col: 2 })
+        );
+    }
+
+    #[test]
+    fn a_failed_open_says_why() {
+        let mut app = App::with_service(Core::default(), String::new(), Box::new(Idle));
+        app.apply(Update::Failed("no such store".into()));
+        assert_eq!(app.status, "no such store");
+        assert!(app.grid.is_none());
     }
 }
