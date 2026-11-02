@@ -3,6 +3,9 @@
 - `bench-*.sh`, `summarize.py`: the release benchmark's harnesses (the
   v0.10.0 benchmark, `docs/reviews/2026-10-20-v0.10.0-benchmark.md`; A/B
   runs such as a Mentat bump, AGENTS.md).
+- `j3/`: the release qualification (road-to-1.0 J3): `j3.sh <rev>`, then
+  `j3b.sh`, on a quiet dedicated machine; the 0.11.0 and 0.12.0 runs are
+  `docs/reviews/2026-10-2*-v0.1*.0-qualification.md`.
 - `scale-gate.py`, `reference.rs`, `baseline.json`: the weekly scale
   regression gate (`.github/workflows/scale-gate.yml`; CONTRIBUTING.md,
   "The scale gate").

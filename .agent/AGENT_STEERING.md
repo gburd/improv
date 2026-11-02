@@ -106,11 +106,6 @@ criteria" are the bar. Mark tasks done there as they land.
 - **A1 DONE:** `mentatdb` 1.18.0 (`4008f5c`). A 1M-row `import-csv` takes
   about 105 s; on 1.16.0 it didn't finish in 15 minutes. See
   `docs/reviews/2026-10-23-mentat-1.18-upgrade.md`. **0.11.0 is unblocked.**
-- **Burner account:** the `kiwi` profile is a new account that expires
-  **2026-10-30 19:14:53 UTC**. Terminate boxes and rescue data by 18:30 UTC
-  that day. Launch and provision scripts are in `~/ws/improv-rescue/ops/`.
-- **Rescue copy:** `~/ws/improv-rescue/` on the maintainer's machine holds
-  the box's bench-out, bench-scratch, contracts and agent diffs.
 
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
