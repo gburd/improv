@@ -23,6 +23,8 @@ path = "src/main.rs"
 improv_core_model = { path = "../core_model" }
 improv_engine = { path = "../engine" }
 improv_store = { path = "../store" }
+improv_client = { path = "../client" }
+improv_nl_formula = { path = "../nl_formula" }
 clap = { version = "4.6.7", features = ["derive"] }
 futures = "0.3"
 # Already in libcosmic's graph (same versions, no new features but png).

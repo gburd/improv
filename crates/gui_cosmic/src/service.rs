@@ -39,12 +39,18 @@ pub trait ModelService: Send {
     /// recomputation changed, and the save's outcome: a failed save keeps
     /// the edit, unsaved.
     fn edit(&mut self, edits: Vec<CellEdit>) -> Result<Edited, String>;
+    /// Replace everything but the input cells (a formula, a name, a view),
+    /// rebuild the engine, and persist. A structure that does not build is
+    /// refused and nothing changes (`Err`). Returns the new snapshot, and
+    /// the save's outcome.
+    fn restructure(&mut self, structure: Model) -> Result<(Snapshot, Option<String>), String>;
 }
 
 /// What the window asks its service to do.
 #[derive(Debug)]
 pub enum Request {
     Edit(Vec<CellEdit>),
+    Restructure(Box<Model>),
 }
 
 /// What the service tells the window.
@@ -55,6 +61,9 @@ pub enum Update {
     /// Cells were set ([`ModelService::edit`]), what they changed, and why
     /// they are not saved, if they are not.
     Edited(Arc<Vec<CellEdit>>, Arc<Changes>, Option<String>),
+    /// The structure was replaced (the cells are as they were): the new
+    /// structure, its snapshot, and why it is not saved, if it is not.
+    Restructured(Arc<Model>, Snapshot, Option<String>),
     /// A request failed; nothing changed.
     Failed(String),
 }
@@ -88,6 +97,13 @@ pub fn spawn(
                         }
                         Err(e) => Update::Failed(e),
                     },
+                    Request::Restructure(m) => {
+                        let shown = Arc::new((*m).clone());
+                        match service.restructure(*m) {
+                            Ok((snap, unsaved)) => Update::Restructured(shown, snap, unsaved),
+                            Err(e) => Update::Failed(e),
+                        }
+                    }
                 });
             }
         });
@@ -228,6 +244,32 @@ impl ModelService for LocalService {
             Err(e) => Some(e),
         };
         Ok((edits, delta, unsaved))
+    }
+
+    fn restructure(&mut self, mut structure: Model) -> Result<(Snapshot, Option<String>), String> {
+        structure.inputs = std::mem::take(&mut self.model.inputs);
+        let old = std::mem::replace(&mut self.model, structure);
+        match self.build() {
+            Ok(snap) => {
+                self.unsaved.structure = true;
+                let unsaved = match self.save(&self.unsaved.clone()) {
+                    Ok(()) => {
+                        self.unsaved = ChangeSet::default();
+                        None
+                    }
+                    Err(e) => Some(e),
+                };
+                Ok((snap, unsaved))
+            }
+            Err(e) => {
+                // Put the old structure back, with the cells, and its engine.
+                let inputs = std::mem::take(&mut self.model.inputs);
+                self.model = old;
+                self.model.inputs = inputs;
+                let _ = self.build();
+                Err(e)
+            }
+        }
     }
 }
 
@@ -468,6 +510,48 @@ pub(crate) mod tests {
         println!("one edit at 10^6: {took:?}");
         assert_eq!(changes[&MeasureId(2)][0].new, Some(CellValue::num(2.0)));
         assert!(took < std::time::Duration::from_millis(500), "{took:?}");
+    }
+
+    #[test]
+    fn a_new_formula_recomputes_and_a_bad_one_changes_nothing() {
+        let mut s = memory(revenue_model());
+        let _ = s.open().unwrap();
+        let mut good = crate::formulas::structure(&s.model);
+        let plus = Expr::BinaryOp(
+            BinaryOp::Add,
+            Box::new(Expr::Ref(MeasureId(101), DimensionSpec::default())),
+            Box::new(Expr::Ref(MeasureId(100), DimensionSpec::default())),
+        );
+        good.measures.get_mut(&MeasureId(102)).unwrap().kind =
+            MeasureKind::Derived(Formula::new(plus));
+        let (snap, unsaved) = s.restructure(good).unwrap();
+        assert_eq!(unsaved, None);
+        let k = key(&[(1, 10), (2, 20)]);
+        assert_eq!(
+            snap[&MeasureId(102)].get(&k),
+            Some(&CellValue::num(110.0)),
+            "10 + 100"
+        );
+        assert_eq!(s.model.inputs.len(), 6, "cells kept");
+        // Revenue = Revenue: a cycle is refused, and Revenue is still 10 + 100.
+        let mut bad = crate::formulas::structure(&s.model);
+        bad.measures.get_mut(&MeasureId(102)).unwrap().kind = MeasureKind::Derived(Formula::new(
+            Expr::Ref(MeasureId(102), DimensionSpec::default()),
+        ));
+        assert!(s.restructure(bad).is_err());
+        assert_eq!(s.model.inputs.len(), 6);
+        let (_, changes, _) = s
+            .edit(vec![set(
+                100,
+                &[(1, 10), (2, 20)],
+                Some(Value::Number(1.0)),
+            )])
+            .unwrap();
+        assert_eq!(
+            changes[&MeasureId(102)][0].new,
+            Some(CellValue::num(11.0)),
+            "old engine kept"
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 mod app;
 mod args;
 mod entry;
+mod formulas;
 mod nav;
 mod pivot;
 mod service;

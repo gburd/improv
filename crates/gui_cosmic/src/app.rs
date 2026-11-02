@@ -19,6 +19,19 @@ use crate::pivot::{Grid, Layout};
 use crate::service::{self, CellEdit, LocalService, ModelService, Request, Update};
 use crate::sheet::{self, Cell, Sheet, SheetProgram};
 
+/// The formula editor's state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormulaEdit {
+    pub measure: MeasureId,
+    pub text: String,
+    /// Why the last commit was refused, located in `text`.
+    pub error: Option<improv_client::diagnostics::Diagnostic>,
+}
+
+/// The formula editor's widget id.
+static FORMULA: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("improv-formula-editor"));
+
 /// The cell editor's widget id (to focus it when it opens).
 static EDITOR: std::sync::LazyLock<cosmic::widget::Id> =
     std::sync::LazyLock::new(|| cosmic::widget::Id::new("improv-cell-editor"));
@@ -46,6 +59,14 @@ pub enum Message {
     EditText(String),
     /// Enter in the cell editor: commit it.
     EditCommit,
+    /// A formula in the list was picked to edit.
+    EditFormula(usize),
+    /// The formula editor's text changed.
+    FormulaText(String),
+    /// Enter in the formula editor: commit it.
+    FormulaCommit,
+    /// Tab in the formula editor, or a click on a candidate: accept it.
+    Complete(usize),
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -64,6 +85,9 @@ pub struct App {
     service: mpsc::Sender<Request>,
     /// The cell being edited and its text, while the editor is open.
     editing: Option<(Cell, String)>,
+    /// The formula being edited: its measure, its text, and where the last
+    /// commit of it failed (located for the underline).
+    formula: Option<FormulaEdit>,
     /// Edits sent to the service and not yet answered (the status line says
     /// so; the grid shows a cell's new value when the service has it).
     pending: usize,
@@ -94,6 +118,7 @@ impl App {
             target,
             service: service::spawn(service, tx),
             editing: None,
+            formula: None,
             pending: 0,
             updates: UpdateRx(Arc::new(std::sync::Mutex::new(Some(rx)))),
             model: Arc::new(Model::new()),
@@ -157,8 +182,8 @@ impl App {
 
     /// What a key does in the grid, if anything.
     fn key(&mut self, key: &Key, mods: Modifiers, text: Option<&str>) -> Task<Message> {
-        if self.editing.is_some() {
-            // The editor has the keyboard (Escape: [`Self::on_escape`]).
+        if self.editing.is_some() || self.formula.is_some() {
+            // An editor has the keyboard (Escape: [`Self::on_escape`]).
             return Task::none();
         }
         match key {
@@ -223,9 +248,94 @@ impl App {
                     Some(e) => e,
                 };
             }
+            Update::Restructured(structure, snapshot, unsaved) => {
+                self.pending = self.pending.saturating_sub(1);
+                let model = Arc::make_mut(&mut self.model);
+                let inputs = std::mem::take(&mut model.inputs);
+                *model = (*structure).clone();
+                model.inputs = inputs;
+                self.snapshot = snapshot;
+                self.formula = None;
+                self.status = unsaved.unwrap_or_else(|| "recalculated".into());
+            }
             Update::Failed(e) => {
                 self.pending = self.pending.saturating_sub(1);
+                // A refused formula is located in its text, and stays open.
+                if let Some(f) = &mut self.formula {
+                    f.error = Some(crate::formulas::build_error(&self.model, &f.text, &e));
+                }
                 self.status = e;
+            }
+        }
+    }
+
+    /// Open the formula editor on row `i` of the formula list.
+    pub fn edit_formula(&mut self, i: usize) -> Task<Message> {
+        let Some(row) = crate::formulas::rows(&self.model, &self.locale)
+            .into_iter()
+            .nth(i)
+        else {
+            return Task::none();
+        };
+        self.editing = None;
+        self.formula = Some(FormulaEdit {
+            measure: row.measure,
+            text: row.text,
+            error: None,
+        });
+        widget::text_input::focus(FORMULA.clone())
+    }
+
+    /// The completions for the formula being typed (its caret at the end).
+    ///
+    /// shortcut: the caret is taken to be at the end (libcosmic's text
+    /// input does not report it); completing mid-text needs a caret query.
+    pub fn completions(&self) -> Vec<improv_client::completion::Candidate> {
+        match &self.formula {
+            Some(f) => improv_client::completion::offer(&self.model, &f.text, f.text.len()),
+            None => Vec::new(),
+        }
+    }
+
+    /// Accept completion `i` at the end of the formula's text.
+    fn accept(&mut self, i: usize) {
+        let cands = self.completions();
+        if let (Some(c), Some(f)) = (cands.get(i), &mut self.formula) {
+            let (text, _) = improv_client::completion::accept(&f.text, f.text.len(), c);
+            f.text = text;
+        }
+    }
+
+    /// Commit the formula editor: parse, then ask the service to rebuild
+    /// with it. A parse error stays in the editor, located; a build error
+    /// comes back from the service ([`Update::Failed`]) and is located too.
+    pub fn commit_formula(&mut self) {
+        let Some(f) = &mut self.formula else {
+            return;
+        };
+        let parsed = crate::formulas::parse(&self.model, &self.locale, &f.text)
+            .map_err(|d| (d.message.clone(), d))
+            .and_then(|formula| {
+                crate::formulas::with_formula(&self.model, f.measure, formula)
+                    .map_err(|e| (e.clone(), improv_client::diagnostics::Diagnostic::plain(e)))
+            });
+        match parsed {
+            Ok(structure) => {
+                f.error = None;
+                self.pending += 1;
+                self.status = "recalculating…".into();
+                if self
+                    .service
+                    .send(Request::Restructure(Box::new(structure)))
+                    .is_err()
+                {
+                    self.pending -= 1;
+                    self.status = "the model thread stopped: this formula is not applied".into();
+                }
+            }
+            Err((msg, d)) => {
+                f.error = Some(d);
+                self.status = msg;
             }
         }
     }
@@ -408,7 +518,7 @@ impl cosmic::Application for App {
     /// Escape (libcosmic routes it here, focused editor or not): close the
     /// cell editor unsaved, else drop the range.
     fn on_escape(&mut self) -> Task<Message> {
-        if self.editing.take().is_some() {
+        if self.editing.take().is_some() || self.formula.take().is_some() {
             self.status.clear();
         } else {
             self.anchor = None;
@@ -457,6 +567,25 @@ impl cosmic::Application for App {
                 if let Some((_, text)) = &mut self.editing {
                     *text = t;
                 }
+            }
+            Message::EditFormula(i) => return self.edit_formula(i),
+            Message::FormulaText(t) => {
+                if let Some(f) = &mut self.formula {
+                    f.text = t;
+                    f.error = None;
+                }
+            }
+            Message::FormulaCommit => {
+                // Enter with a list showing accepts the first candidate.
+                if !self.completions().is_empty() {
+                    self.accept(0);
+                } else {
+                    self.commit_formula();
+                }
+            }
+            Message::Complete(i) => {
+                self.accept(i);
+                return widget::text_input::focus(FORMULA.clone());
             }
             Message::EditCommit => {
                 self.commit_edit();
@@ -534,13 +663,94 @@ impl cosmic::Application for App {
                 .center(Length::Fill)
                 .into(),
         };
-        widget::column::with_capacity(2)
+        widget::column::with_capacity(3)
             .push(bar)
             .push(body)
+            .push(self.formula_pane())
             .spacing(cosmic::theme::spacing().space_s)
             .padding(cosmic::theme::spacing().space_s)
             .into()
     }
+}
+
+impl App {
+    /// The formula list under the grid, Improv's numbered `Name = formula`
+    /// rows: a click opens a row in the editor; a refused formula shows its
+    /// error (the span, the message and the hint) under it, and the names
+    /// that complete the word at its end show as buttons (Enter takes the
+    /// first).
+    fn formula_pane(&self) -> Element<'_, Message> {
+        let space = cosmic::theme::spacing();
+        let mut list = widget::column::with_capacity(4).spacing(space.space_xxs);
+        for (i, row) in crate::formulas::rows(&self.model, &self.locale)
+            .into_iter()
+            .enumerate()
+        {
+            let label = format!("{}. {} =", i + 1, row.target);
+            let line: Element<'_, Message> = match &self.formula {
+                Some(f) if f.measure == row.measure => {
+                    let mut col = widget::column::with_capacity(4).spacing(space.space_xxs);
+                    col = col.push(
+                        widget::row::with_capacity(2)
+                            .push(widget::text::body(label))
+                            .push(
+                                widget::text_input::text_input("", f.text.as_str())
+                                    .id(FORMULA.clone())
+                                    .on_input(Message::FormulaText)
+                                    .on_submit(|_| Message::FormulaCommit)
+                                    .on_tab(Message::Complete(0)),
+                            )
+                            .spacing(space.space_xs)
+                            .align_y(cosmic::iced::Alignment::Center),
+                    );
+                    if let Some(d) = &f.error {
+                        col = col.push(error_line(&f.text, d));
+                    }
+                    let cands = self.completions();
+                    if !cands.is_empty() {
+                        let mut r =
+                            widget::row::with_capacity(cands.len()).spacing(space.space_xxs);
+                        for (j, c) in cands.iter().enumerate() {
+                            r = r.push(
+                                widget::button::text(format!("{}  {}", c.hint(), c.doc()))
+                                    .on_press(Message::Complete(j)),
+                            );
+                        }
+                        col = col.push(r);
+                    }
+                    col.into()
+                }
+                _ => widget::button::custom(
+                    widget::row::with_capacity(2)
+                        .push(widget::text::body(label))
+                        .push(widget::text::monotext(row.text))
+                        .spacing(space.space_xs),
+                )
+                .class(cosmic::theme::Button::Text)
+                .on_press(Message::EditFormula(i))
+                .into(),
+            };
+            list = list.push(line);
+        }
+        widget::container(list).padding(space.space_xs).into()
+    }
+}
+
+/// A formula error: the text with the span marked under it (`^^^`), the
+/// message, and the hint.
+fn error_line<'a>(text: &str, d: &improv_client::diagnostics::Diagnostic) -> Element<'a, Message> {
+    let mut col = widget::column::with_capacity(3);
+    if let Some(r) = &d.span {
+        col = col.push(widget::text::monotext(crate::formulas::caret_line(
+            text,
+            r.clone(),
+        )));
+    }
+    col = col.push(widget::text::body(d.message.clone()).class(cosmic::theme::Text::Accent));
+    if let Some(h) = &d.hint {
+        col = col.push(widget::text::caption(h.clone()));
+    }
+    col.into()
 }
 
 #[cfg(test)]
@@ -572,6 +782,9 @@ mod tests {
             Err("idle".into())
         }
         fn edit(&mut self, _: Vec<CellEdit>) -> Result<service::Edited, String> {
+            Err("idle".into())
+        }
+        fn restructure(&mut self, _: Model) -> Result<(Snapshot, Option<String>), String> {
             Err("idle".into())
         }
     }
@@ -726,6 +939,84 @@ mod tests {
         let (mut app, _rx) = live(revenue_model());
         let _ = app.key(&Key::Character("c".into()), Modifiers::CTRL, Some("c"));
         assert!(app.editing.is_none());
+    }
+
+    fn send(app: &mut App, m: Message) {
+        let _ = cosmic::Application::update(app, m);
+    }
+
+    #[test]
+    fn a_formula_edit_recomputes_and_lists_as_typed() {
+        let (mut app, mut rx) = live(revenue_model());
+        send(&mut app, Message::EditFormula(0));
+        assert_eq!(
+            app.formula.as_ref().map(|f| f.text.as_str()),
+            Some("Price * Quantity")
+        );
+        send(
+            &mut app,
+            Message::FormulaText("Price * Quantity * 2".into()),
+        );
+        send(&mut app, Message::FormulaCommit);
+        let u = next(&mut rx);
+        app.apply(u);
+        assert!(app.formula.is_none(), "closed once applied");
+        assert_eq!(app.status, "recalculated");
+        let k: improv_engine::CoordKey = [(1, 10), (2, 20)].into_iter().collect();
+        let rev = sheet::value(&app.model, &app.snapshot, MeasureId(102), &k);
+        assert_eq!(rev, Some(improv_engine::CellValue::num(2000.0)));
+        let rows = crate::formulas::rows(&app.model, &app.locale);
+        assert_eq!(rows[0].text, "Price * Quantity * 2");
+    }
+
+    #[test]
+    fn a_misspelled_name_is_underlined_and_nothing_is_sent() {
+        let (mut app, _rx) = live(revenue_model());
+        send(&mut app, Message::EditFormula(0));
+        send(&mut app, Message::FormulaText("Price * Quantty".into()));
+        // No completion for a misspelling, so Enter commits (and refuses).
+        assert!(app.completions().is_empty());
+        send(&mut app, Message::FormulaCommit);
+        let f = app.formula.as_ref().expect("still open");
+        let d = f.error.as_ref().expect("located");
+        assert_eq!(d.span, Some(8..15));
+        assert_eq!(app.pending, 0, "nothing sent");
+    }
+
+    #[test]
+    fn a_cycle_comes_back_located_and_the_editor_stays() {
+        let (mut app, mut rx) = live(revenue_model());
+        send(&mut app, Message::EditFormula(0));
+        send(&mut app, Message::FormulaText("Revenue + 1".into()));
+        send(&mut app, Message::FormulaCommit);
+        let u = next(&mut rx);
+        assert!(matches!(u, Update::Failed(_)), "{u:?}");
+        app.apply(u);
+        let f = app.formula.as_ref().expect("still open");
+        assert!(f.error.is_some());
+        assert_eq!(app.pending, 0);
+    }
+
+    #[test]
+    fn completion_offers_names_and_enter_takes_the_first() {
+        let (mut app, _rx) = live(revenue_model());
+        send(&mut app, Message::EditFormula(0));
+        send(&mut app, Message::FormulaText("Price * Qua".into()));
+        let c = app.completions();
+        assert_eq!(c.first().map(|c| c.insert.as_str()), Some("Quantity"));
+        send(&mut app, Message::FormulaCommit);
+        assert_eq!(app.formula.as_ref().unwrap().text, "Price * Quantity");
+        assert_eq!(app.pending, 0, "Enter completed, it did not commit");
+        // A function completes to its call.
+        send(&mut app, Message::FormulaText("ROU".into()));
+        send(&mut app, Message::Complete(0));
+        assert!(
+            app.formula.as_ref().unwrap().text.starts_with("ROUND"),
+            "{:?}",
+            app.formula
+        );
+        let _ = cosmic::Application::on_escape(&mut app);
+        assert!(app.formula.is_none());
     }
 
     #[test]

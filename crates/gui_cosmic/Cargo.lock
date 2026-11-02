@@ -2933,6 +2933,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edcd27d72f2f071c64249075f42e205ff93c9a4c5f6c6da53e79ed9f9832c285"
 
 [[package]]
+name = "improv_client"
+version = "0.12.2"
+dependencies = [
+ "improv_core_model",
+]
+
+[[package]]
 name = "improv_core_model"
 version = "0.12.2"
 dependencies = [
@@ -2983,11 +2990,21 @@ dependencies = [
  "clap",
  "futures",
  "image",
+ "improv_client",
  "improv_core_model",
  "improv_engine",
+ "improv_nl_formula",
  "improv_store",
  "libcosmic",
  "tokio",
+]
+
+[[package]]
+name = "improv_nl_formula"
+version = "0.12.2"
+dependencies = [
+ "improv_core_model",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

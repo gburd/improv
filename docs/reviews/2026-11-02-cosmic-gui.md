@@ -292,7 +292,7 @@ Each stage is one atomic, green commit with tests.
 |---|---|---|---|
 | 1 | Worksheet grid, virtual scrolling at 10⁶ cells, keyboard cursor | `pivot`, `sheet` (done in the spike, plus keys) | S |
 | 2 | Cell editing (typed by value type, refusals) | service `edit`; `parse_typed` rules from `crates/gui` | M |
-| 3 | Formula list + editor: located errors, autocomplete, signature help, highlighting | Move `diagnostics`, `completion`, `function_help` (pure today) and the scanner half of `formula_highlight` into a shared crate `improv_formula_ui`; `crates/gui` re-exports, unchanged behavior | L |
+| 3 | Formula list + editor: located errors, autocomplete, signature help, highlighting | `improv_client` (main's shared front-end crate: `diagnostics`, `completion`, `function_help`, `dsl`), by path | L |
 | 4 | Category tiles, pivot by drag (rows/cols/pages, stacking) | `pivot::Layout::place` | M |
 | 5 | Views (save/open/rename/delete) | `core_model::View`/`MatrixPlacement` | M |
 | 6 | Charts (bar/line) in theme accent + palette | the pure `ChartData` half of `crates/gui/src/chart.rs` (→ shared crate) drawn on a canvas | M |
