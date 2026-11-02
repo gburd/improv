@@ -240,6 +240,7 @@ pub fn scroller_chrome<R>(
     raised(p, knob);
     let max = (out.content_size.y - view).max(0.0);
     let mut offset = out.state.clamped_offset().y;
+    let step = arrow_step(ui, line, view);
     for (rect, sign) in [(up, -1.0), (down, 1.0)] {
         raised(p, rect);
         let c = rect.center();
@@ -257,7 +258,7 @@ pub fn scroller_chrome<R>(
             )
             .clicked()
         {
-            offset += sign * line;
+            offset += sign * step;
         }
     }
     let track_len = track.end() - track.start();
@@ -279,9 +280,23 @@ pub fn hscroller_rects(bar: Rect) -> [Rect; 3] {
     [button(0.0), button(1.0), track]
 }
 
+/// How far a scroll-arrow click moves: a `line`, or with Alt held (NeXT's
+/// Alternate-click) a `view` less one line of overlap, so the last line
+/// seen stays in sight ("When the Alternate key is held down, the scroll
+/// buttons scroll one viewful at a time", NeXTSTEP 2 guidelines).
+fn arrow_step(ui: &egui::Ui, line: f32, view: f32) -> f32 {
+    if ui.input(|i| i.modifiers.alt) {
+        (view - line).max(line)
+    } else {
+        line
+    }
+}
+
 /// Draw and run a horizontal scroller in `bar` for `out` (an area whose own
-/// bar is hidden): grouped arrows scroll `line` points per click, the beveled
-/// knob drags, and a click in the trough beside the knob pages by a view.
+/// bar is hidden): grouped arrows scroll `line` points per click (a view
+/// with Alt), the beveled knob drags, and a click in the trough beside the
+/// knob jumps it there, centred on the click, as NeXT's scrollers do (the
+/// vertical one is egui's, which does the same).
 pub fn hscroller_chrome<R>(
     ui: &egui::Ui,
     out: &egui::scroll_area::ScrollAreaOutput<R>,
@@ -311,14 +326,15 @@ pub fn hscroller_chrome<R>(
         .clicked()
         .then(|| trough.interact_pointer_pos().or(trough.hover_pos()))
         .flatten()
+        .filter(|at| !knob.x_range().contains(at.x))
     {
-        if at.x < knob.min.x {
-            offset -= view;
-        } else if at.x > knob.max.x {
-            offset += view;
-        }
+        // "The knob jumps to the location of the click."
+        let free = (track.width() - knob.width()).max(1.0);
+        let left = (at.x - knob.width() / 2.0 - track.min.x).clamp(0.0, free);
+        offset = left / free * max;
     }
     raised(p, knob);
+    let step = arrow_step(ui, line, view);
     for (rect, sign) in [(left, -1.0), (right, 1.0)] {
         raised(p, rect);
         let c = rect.center();
@@ -336,7 +352,7 @@ pub fn hscroller_chrome<R>(
             )
             .clicked()
         {
-            offset += sign * line;
+            offset += sign * step;
         }
     }
     offset += knob_drag(ui, out.id.with("hknob"), knob, 0, track.width(), max);
@@ -600,11 +616,36 @@ mod tests {
             .y;
         // Exactly one line (17 px row + 4 px spacing), not a trough jump.
         assert_eq!(offset, 21.0, "down arrow scrolled one line");
+        // Alt+click (NeXT's Alternate): a view (200) less one line (21).
+        let alt = egui::Modifiers::ALT;
+        let press_alt = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: alt,
+        };
+        let _ = frame(vec![
+            egui::Event::ModifiersChanged(alt),
+            egui::Event::PointerMoved(at),
+            press_alt(true),
+            press_alt(false),
+        ]);
+        let _ = frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]);
+        let offset = egui::scroll_area::State::load(&ctx, id)
+            .expect("state")
+            .clamped_offset()
+            .y;
+        assert_eq!(
+            offset,
+            21.0 + 179.0,
+            "Alt+click scrolled a view less a line"
+        );
     }
 
     /// The horizontal scroller: arrows grouped at the bar's left end; the
-    /// right arrow scrolls a line, the left one clamps at 0, a trough click
-    /// right of the knob pages by a view, and the knob drags.
+    /// right arrow scrolls a line (Alt+click: a view less a line), the left
+    /// one clamps at 0, a trough click jumps the knob there, and the knob
+    /// drags.
     #[test]
     fn horizontal_scroller_groups_arrows_left_and_scrolls() {
         let ctx = egui::Context::default();
@@ -638,18 +679,20 @@ mod tests {
             });
             (full, out.unwrap())
         };
-        let click = |at: egui::Pos2| {
+        let click_with = |at: egui::Pos2, modifiers: egui::Modifiers| {
             let b = |pressed| egui::Event::PointerButton {
                 pos: at,
                 button: egui::PointerButton::Primary,
                 pressed,
-                modifiers: egui::Modifiers::NONE,
+                modifiers,
             };
-            frame(vec![egui::Event::PointerMoved(at)]);
-            frame(vec![b(true)]);
-            frame(vec![b(false)]);
-            frame(Vec::new()).1
+            let m = egui::Event::ModifiersChanged(modifiers);
+            frame(vec![m.clone(), egui::Event::PointerMoved(at)]);
+            frame(vec![m.clone(), b(true)]);
+            frame(vec![m, b(false)]);
+            frame(vec![egui::Event::ModifiersChanged(egui::Modifiers::NONE)]).1
         };
+        let click = |at| click_with(at, egui::Modifiers::NONE);
         let (full, (x, view)) = frame(Vec::new());
         assert_eq!((x, view), (0.0, 200.0));
         let [left, right, track] = hscroller_rects(bar);
@@ -678,12 +721,22 @@ mod tests {
         assert_eq!(click(left.center()).0, 0.0, "clamped at the start");
         assert_eq!(click(right.center()).0, 20.0, "one line right");
         assert_eq!(
-            click(pos2(track.max.x - 2.0, track.center().y)).0,
-            220.0,
-            "a page right"
+            click_with(right.center(), egui::Modifiers::ALT).0,
+            200.0,
+            "Alt: a view (200) less a line of overlap (20)"
         );
+        // A trough click jumps the knob: at the track's far end, the end.
+        assert_eq!(
+            click(pos2(track.max.x - 2.0, track.center().y)).0,
+            800.0,
+            "jumped to the end"
+        );
+        // Back in the middle: the knob centres on the click.
+        let mid = click(pos2(track.center().x, track.center().y)).0;
+        assert!((mid - 400.0).abs() < 1.0, "{mid}");
         // Drag the knob 10 px: the free travel maps onto the 800 px scroll.
-        let (x0, x1) = knob_span(220.0, 200.0, 1000.0, track.min.x..=track.max.x, 19.0);
+        let at = mid;
+        let (x0, x1) = knob_span(at, 200.0, 1000.0, track.min.x..=track.max.x, 19.0);
         let from = pos2((x0 + x1) / 2.0, track.center().y);
         let to = from + vec2(10.0, 0.0);
         let b = |at, pressed| egui::Event::PointerButton {
@@ -698,10 +751,7 @@ mod tests {
         frame(vec![b(to, false)]);
         let after = frame(Vec::new()).1 .0;
         let free = track.width() - (x1 - x0);
-        assert!(
-            (after - (220.0 + 10.0 * 800.0 / free)).abs() < 0.5,
-            "{after}"
-        );
+        assert!((after - (at + 10.0 * 800.0 / free)).abs() < 0.5, "{after}");
     }
 
     #[test]

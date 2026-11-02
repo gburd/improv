@@ -270,6 +270,15 @@ Every bar, wedge and marker is outlined in black, and the legend at the
 right names the series. A screen reader hears the graph as "Bar graph of
 2 series over Time".
 
+## Scrollers
+
+NeXT's scrollers: a gray trough with a raised knob, and the arrow buttons
+grouped at one end (the bottom of a vertical scroller, the left of a
+horizontal one). An arrow scrolls a line; **Alt+click** an arrow scrolls a
+whole view, less a line so the last one stays in sight (NeXT's
+Alternate-click). A click in the trough makes the knob jump there; drag
+the knob to scroll continuously.
+
 ## Keyboard and screen readers
 
 Everything works from the keyboard. In a worksheet the arrows move, typing

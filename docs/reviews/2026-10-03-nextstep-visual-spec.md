@@ -245,8 +245,10 @@ dependencies, and the formula in English. The id appears only here.
   `ScrollArea` with egui's bar hidden, and `theme::hscroller_chrome` draws
   the NeXT horizontal scroller in the bottom strip, right of the row tiles
   (§4.4). The ◄ ► arrows are grouped at its LEFT end, as in the reference,
-  then the trough and beveled knob. Arrows step a 20 px line, a trough click
-  beside the knob pages by a view, and the knob drags. The vertical scroller
+  then the trough and beveled knob. Arrows step a 20 px line (Alt+click, a
+  view less a line), a trough click jumps the knob there as NeXTSTEP's did
+  ("The knob jumps to the location of the click", NeXTSTEP 2 guidelines),
+  and the knob drags. The vertical scroller
   stays at the window's right edge while the grid scrolls under it.
 
 ## 5. Window model

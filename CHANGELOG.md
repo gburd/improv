@@ -42,6 +42,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   submenus have a 21 px title bar (was 23) and a dark-gray border on their
   top and left sides only, the bottom and right edges being the items' own
   black bevels, as the NeXTSTEP 2 guidelines draw menus.
+- **GUI: NeXT scroller clicks.** A click in a horizontal scroller's trough
+  makes the knob jump there, as NeXTSTEP's did, instead of paging by a
+  view; Alt+click on a scroll arrow scrolls a view less one line (NeXT's
+  Alternate-click), on both scrollers.
 
 ### Fixed
 
