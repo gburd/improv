@@ -23,6 +23,14 @@ pub struct Layout {
     pub page_items: Vec<ItemId>,
 }
 
+/// An axis or the pages: where a category tile can be dropped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Axis {
+    Rows,
+    Cols,
+    Pages,
+}
+
 impl Layout {
     /// The measure's natural layout: its first category on rows, the second
     /// on columns, the rest pages at their first item. `None` when the
@@ -77,6 +85,61 @@ impl Layout {
             })
             .collect();
     }
+
+    /// Move `cat` onto `axis` at position `at` within it (clamped), the
+    /// pivot gesture. Formulas are untouched; only the layout changes.
+    /// Returns false (and changes nothing) for a category not in the
+    /// layout, or a move that would leave rows or columns empty while
+    /// another category sits on the pages.
+    pub fn place(&mut self, model: &Model, cat: CategoryId, axis: Axis, at: usize) -> bool {
+        if !self.order.contains(&cat) {
+            return false;
+        }
+        let mut rows: Vec<CategoryId> = self.row_cats().to_vec();
+        let mut cols: Vec<CategoryId> = self.col_cats().to_vec();
+        let mut pages: Vec<CategoryId> = self.page_cats().to_vec();
+        for v in [&mut rows, &mut cols, &mut pages] {
+            v.retain(|c| *c != cat);
+        }
+        let dest = match axis {
+            Axis::Rows => &mut rows,
+            Axis::Cols => &mut cols,
+            Axis::Pages => &mut pages,
+        };
+        dest.insert(at.min(dest.len()), cat);
+        // A grid with an empty axis while a page could fill it is never
+        // what a drop means: refuse it, as the NeXT GUI does.
+        if (rows.is_empty() || cols.is_empty()) && !pages.is_empty() {
+            return false;
+        }
+        self.n_rows = rows.len();
+        self.n_cols = cols.len();
+        self.order = rows.into_iter().chain(cols).chain(pages).collect();
+        self.repin(model);
+        true
+    }
+
+    /// Swap the row and column stacks.
+    pub fn transpose(&mut self) {
+        let rows = self.row_cats().to_vec();
+        let cols = self.col_cats().to_vec();
+        let pages = self.page_cats().to_vec();
+        self.n_rows = cols.len();
+        self.n_cols = rows.len();
+        self.order = cols.into_iter().chain(rows).chain(pages).collect();
+    }
+
+    /// Pin page `i` to `item`, if `item` belongs to that page's category.
+    pub fn set_page(&mut self, model: &Model, i: usize, item: ItemId) -> bool {
+        let ok = self
+            .page_cats()
+            .get(i)
+            .is_some_and(|c| items(model, *c).contains(&item));
+        if ok {
+            self.page_items[i] = item;
+        }
+        ok
+    }
 }
 
 /// A category's items in declared order.
@@ -95,6 +158,15 @@ pub fn item_name(model: &Model, item: ItemId) -> String {
         .get(&item)
         .map(|i| i.name.0.clone())
         .unwrap_or_else(|| item.0.to_string())
+}
+
+/// The name of a category, or its id when it has none.
+pub fn category_name(model: &Model, cat: CategoryId) -> String {
+    model
+        .categories
+        .get(&cat)
+        .map(|c| c.name.0.clone())
+        .unwrap_or_else(|| cat.0.to_string())
 }
 
 /// One axis's stack of categories, resolved to item lists, for decoding
@@ -223,5 +295,47 @@ mod tests {
         let k = g.key(1, 0).unwrap();
         assert_eq!(k.as_slice(), &[(1, 11), (2, 20)]);
         assert!(g.key(9, 0).is_none());
+    }
+
+    #[test]
+    fn placing_a_category_pivots_and_refuses_an_empty_axis() {
+        let m = revenue_model();
+        let mut l = Layout::natural(&m, MeasureId(100)).unwrap();
+        // Stack Product under Time on rows: columns become the scalar axis.
+        assert!(l.place(&m, CategoryId(2), Axis::Rows, 1));
+        assert_eq!(l.row_cats(), &[CategoryId(1), CategoryId(2)]);
+        assert!(l.col_cats().is_empty());
+        // To the pages with rows still holding Time: columns empty while a
+        // page exists is refused.
+        assert!(!l.place(&m, CategoryId(2), Axis::Pages, 0));
+        assert!(l.place(&m, CategoryId(2), Axis::Cols, 0));
+        assert_eq!(l.col_cats(), &[CategoryId(2)]);
+        assert!(!l.place(&m, CategoryId(77), Axis::Rows, 0));
+    }
+
+    #[test]
+    fn pages_pin_to_an_item_of_their_category() {
+        let m = revenue_model();
+        let mut l = Layout::natural(&m, MeasureId(100)).unwrap();
+        // Time to the pages beside a one-category grid is refused (rows
+        // would empty), so move Product there instead after stacking.
+        assert!(l.place(&m, CategoryId(1), Axis::Cols, 1));
+        assert!(l.row_cats().is_empty());
+        assert!(l.place(&m, CategoryId(2), Axis::Rows, 0));
+        assert!(l.place(&m, CategoryId(1), Axis::Rows, 1));
+        // Now rows = Product, Time; no columns, no pages.
+        assert_eq!(l.page_items, Vec::<ItemId>::new());
+        assert!(!l.set_page(&m, 0, ItemId(10)));
+    }
+
+    #[test]
+    fn transposing_swaps_rows_and_columns() {
+        let m = revenue_model();
+        let mut l = Layout::natural(&m, MeasureId(100)).unwrap();
+        l.transpose();
+        assert_eq!(l.row_cats(), &[CategoryId(2)]);
+        assert_eq!(l.col_cats(), &[CategoryId(1)]);
+        assert_eq!(category_name(&m, CategoryId(2)), "Product");
+        assert_eq!(category_name(&m, CategoryId(9)), "9");
     }
 }

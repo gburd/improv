@@ -15,7 +15,7 @@ use improv_core_model::{Locale, MeasureId, Model};
 use improv_engine::session::Snapshot;
 
 use crate::nav::{self, Extent, Move};
-use crate::pivot::{Grid, Layout};
+use crate::pivot::{self, Axis, Grid, Layout};
 use crate::service::{self, CellEdit, LocalService, ModelService, Request, Update};
 use crate::sheet::{self, Cell, Sheet, SheetProgram};
 
@@ -67,6 +67,19 @@ pub enum Message {
     FormulaCommit,
     /// Tab in the formula editor, or a click on a candidate: accept it.
     Complete(usize),
+    /// A category tile was picked up (the pivot gesture starts).
+    Grab(improv_core_model::CategoryId),
+    /// The pointer is over a tile strip, at a tile position in it.
+    Hover(Axis, usize),
+    /// The button was released over a strip: drop a held tile where it
+    /// hovers.
+    Drop,
+    /// The button was released anywhere: a held tile not dropped is let go.
+    Release,
+    /// Page `i` shows item `j` of its category.
+    Page(usize, usize),
+    /// Swap rows and columns.
+    Transpose,
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -85,6 +98,8 @@ pub struct App {
     service: mpsc::Sender<Request>,
     /// The cell being edited and its text, while the editor is open.
     editing: Option<(Cell, String)>,
+    /// The category tile being dragged, and the strip and slot it is over.
+    held: Option<(improv_core_model::CategoryId, Option<(Axis, usize)>)>,
     /// The formula being edited: its measure, its text, and where the last
     /// commit of it failed (located for the underline).
     formula: Option<FormulaEdit>,
@@ -118,6 +133,7 @@ impl App {
             target,
             service: service::spawn(service, tx),
             editing: None,
+            held: None,
             formula: None,
             pending: 0,
             updates: UpdateRx(Arc::new(std::sync::Mutex::new(Some(rx)))),
@@ -267,6 +283,33 @@ impl App {
                 self.status = e;
             }
         }
+    }
+
+    /// Pivot: move `cat` onto `axis` at slot `at`. The layout changes, not
+    /// the formulas; a move that would empty rows or columns while a page
+    /// could fill them is refused, and says so.
+    pub fn pivot(&mut self, cat: improv_core_model::CategoryId, axis: Axis, at: usize) {
+        let Some(l) = &mut self.layout else {
+            return;
+        };
+        if l.place(&self.model, cat, axis, at) {
+            self.relayout_keeping_layout();
+            self.status.clear();
+        } else {
+            self.status = "rows and columns each need a category while one is on the pages".into();
+        }
+    }
+
+    /// The grid again for the current layout (after a pivot or a page).
+    fn relayout_keeping_layout(&mut self) {
+        self.grid = self.layout.as_ref().map(|l| Grid::new(&self.model, l));
+        let e = self.extent();
+        self.cursor = Cell {
+            row: self.cursor.row.min(e.rows.saturating_sub(1)),
+            col: self.cursor.col.min(e.cols.saturating_sub(1)),
+        };
+        self.origin = nav::follow(Cell::default(), self.cursor, e);
+        self.anchor = None;
     }
 
     /// Open the formula editor on row `i` of the formula list.
@@ -502,6 +545,14 @@ impl cosmic::Application for App {
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             Subscription::run_with(self.updates.clone(), updates),
+            // A button released anywhere ends a tile drag (a strip's own
+            // release has dropped it there first).
+            cosmic::iced::event::listen_with(|e, _, _| match e {
+                cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
+                    cosmic::iced::mouse::Button::Left,
+                )) => Some(Message::Release),
+                _ => None,
+            }),
             // Keys no widget took (a focused text field keeps its own).
             keyboard::listen().filter_map(|e| match e {
                 keyboard::Event::KeyPressed {
@@ -569,6 +620,35 @@ impl cosmic::Application for App {
                 }
             }
             Message::EditFormula(i) => return self.edit_formula(i),
+            Message::Grab(c) => self.held = Some((c, None)),
+            Message::Hover(axis, at) => {
+                if let Some((_, over)) = &mut self.held {
+                    *over = Some((axis, at));
+                }
+            }
+            Message::Drop => {
+                if let Some((c, Some((axis, at)))) = self.held.take() {
+                    self.pivot(c, axis, at);
+                }
+                self.held = None;
+            }
+            Message::Release => self.held = None,
+            Message::Page(i, j) => {
+                if let Some(l) = &mut self.layout {
+                    let cat = l.page_cats().get(i).copied();
+                    let item = cat.and_then(|c| pivot::items(&self.model, c).get(j).copied());
+                    if let Some(item) = item {
+                        l.set_page(&self.model, i, item);
+                        self.relayout_keeping_layout();
+                    }
+                }
+            }
+            Message::Transpose => {
+                if let Some(l) = &mut self.layout {
+                    l.transpose();
+                    self.relayout_keeping_layout();
+                }
+            }
             Message::FormulaText(t) => {
                 if let Some(f) = &mut self.formula {
                     f.text = t;
@@ -663,8 +743,9 @@ impl cosmic::Application for App {
                 .center(Length::Fill)
                 .into(),
         };
-        widget::column::with_capacity(3)
+        widget::column::with_capacity(4)
             .push(bar)
+            .push(self.tiles())
             .push(body)
             .push(self.formula_pane())
             .spacing(cosmic::theme::spacing().space_s)
@@ -674,6 +755,82 @@ impl cosmic::Application for App {
 }
 
 impl App {
+    /// The category tiles, in three strips: Rows, Columns and Pages. Press
+    /// a tile and release it over a strip to move it there (before the tile
+    /// under the pointer, or at the end): Improv's pivot. A page tile picks
+    /// the item its page shows.
+    fn tiles(&self) -> Element<'_, Message> {
+        let space = cosmic::theme::spacing();
+        let Some(l) = &self.layout else {
+            return widget::space::horizontal().into();
+        };
+        let held = self.held.map(|(c, _)| c);
+        let over = self.held.and_then(|(_, o)| o);
+        let strip = |axis: Axis, title: &'static str, cats: &[improv_core_model::CategoryId]| {
+            let mut r = widget::row::with_capacity(cats.len() + 2)
+                .spacing(space.space_xxs)
+                .align_y(cosmic::iced::Alignment::Center)
+                .push(widget::text::caption(title));
+            for (i, c) in cats.iter().enumerate() {
+                let name = pivot::category_name(&self.model, *c);
+                let tile: Element<'_, Message> = if axis == Axis::Pages {
+                    let items = pivot::items(&self.model, *c);
+                    let names: Vec<String> = items
+                        .iter()
+                        .map(|it| pivot::item_name(&self.model, *it))
+                        .collect();
+                    let sel = l
+                        .page_items
+                        .get(i)
+                        .and_then(|p| items.iter().position(|it| it == p));
+                    widget::row::with_capacity(2)
+                        .spacing(space.space_xxs)
+                        .align_y(cosmic::iced::Alignment::Center)
+                        .push(tile_button(name, held == Some(*c), Message::Grab(*c)))
+                        .push(widget::dropdown(names, sel, move |j| Message::Page(i, j)))
+                        .into()
+                } else {
+                    tile_button(name, held == Some(*c), Message::Grab(*c))
+                };
+                let marker = over == Some((axis, i));
+                r = r.push(
+                    widget::mouse_area(widget::container(tile).padding(if marker {
+                        [0, 0, 0, 4]
+                    } else {
+                        [0, 0, 0, 0]
+                    }))
+                    .on_enter(Message::Hover(axis, i))
+                    .on_release(Message::Drop),
+                );
+            }
+            // The rest of the strip: drop at its end.
+            r = r.push(
+                widget::mouse_area(
+                    widget::container(widget::space::horizontal())
+                        .height(Length::Fixed(32.0))
+                        .width(Length::Fill),
+                )
+                .on_enter(Message::Hover(axis, cats.len()))
+                .on_release(Message::Drop),
+            );
+            widget::container(r)
+                .padding(space.space_xxs)
+                .class(cosmic::theme::Container::Card)
+                .width(Length::Fill)
+        };
+        widget::column::with_capacity(2)
+            .spacing(space.space_xxs)
+            .push(
+                widget::row::with_capacity(3)
+                    .spacing(space.space_xxs)
+                    .push(strip(Axis::Rows, "Rows", l.row_cats()))
+                    .push(strip(Axis::Cols, "Columns", l.col_cats()))
+                    .push(widget::button::standard("Swap").on_press(Message::Transpose)),
+            )
+            .push(strip(Axis::Pages, "Pages", l.page_cats()))
+            .into()
+    }
+
     /// The formula list under the grid, Improv's numbered `Name = formula`
     /// rows: a click opens a row in the editor; a refused formula shows its
     /// error (the span, the message and the hint) under it, and the names
@@ -734,6 +891,36 @@ impl App {
         }
         widget::container(list).padding(space.space_xs).into()
     }
+}
+
+/// A category tile: a pill in the button colors, the accent while it is
+/// held. Not a button: a button takes the press, and the pivot needs it.
+fn tile_button<'a>(name: String, held: bool, grab: Message) -> Element<'a, Message> {
+    let pill = widget::container(widget::text::body(name))
+        .padding([4, 12])
+        .class(cosmic::theme::Container::custom(
+            move |t: &cosmic::Theme| {
+                let c = t.cosmic();
+                let (bg, fg) = if held {
+                    (c.accent_color(), c.on_accent_color())
+                } else {
+                    (c.button_bg_color(), c.on_bg_color())
+                };
+                cosmic::iced::widget::container::Style {
+                    background: Some(cosmic::iced::Color::from(bg).into()),
+                    text_color: Some(fg.into()),
+                    border: cosmic::iced::Border {
+                        radius: c.corner_radii.radius_xl.into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }
+            },
+        ));
+    widget::mouse_area(pill)
+        .on_press(grab)
+        .interaction(cosmic::iced::mouse::Interaction::Grab)
+        .into()
 }
 
 /// A formula error: the text with the span marked under it (`^^^`), the
@@ -1017,6 +1204,56 @@ mod tests {
         );
         let _ = cosmic::Application::on_escape(&mut app);
         assert!(app.formula.is_none());
+    }
+
+    #[test]
+    fn dragging_a_tile_pivots_without_touching_formulas() {
+        let (mut app, _rx) = live(revenue_model());
+        // Quantity: Time on rows, Product on columns.
+        app.show(MeasureId(100));
+        let before = app.model.measures.clone();
+        // Drag Product (2) to the start of Rows.
+        send(&mut app, Message::Grab(CategoryId(2)));
+        send(&mut app, Message::Hover(Axis::Rows, 0));
+        send(&mut app, Message::Drop);
+        let l = app.layout.as_ref().unwrap();
+        assert_eq!(l.row_cats(), &[CategoryId(2), CategoryId(1)]);
+        assert!(l.col_cats().is_empty());
+        assert_eq!(app.grid.as_ref().unwrap().rows.len(), 4, "2 x 2 rows");
+        assert_eq!(app.model.measures, before, "no formula touched");
+        assert!(app.held.is_none());
+        // Release outside any strip: nothing moves.
+        send(&mut app, Message::Grab(CategoryId(1)));
+        send(&mut app, Message::Release);
+        assert!(app.held.is_none());
+        assert_eq!(app.layout.as_ref().unwrap().row_cats().len(), 2);
+    }
+
+    #[test]
+    fn a_page_shows_the_item_picked_and_an_empty_axis_is_refused() {
+        // A third category, on the pages.
+        let mut m = revenue_model();
+        m.add_category(CategoryId(3), "Scenario");
+        m.add_item(ItemId(30), CategoryId(3), "Plan");
+        m.add_item(ItemId(31), CategoryId(3), "Actual");
+        if let Some(q) = m.measures.get_mut(&MeasureId(100)) {
+            q.categories.push(CategoryId(3));
+        }
+        let (mut app, _rx) = live(m);
+        app.show(MeasureId(100));
+        assert_eq!(app.layout.as_ref().unwrap().page_items, vec![ItemId(30)]);
+        send(&mut app, Message::Page(0, 1));
+        assert_eq!(app.layout.as_ref().unwrap().page_items, vec![ItemId(31)]);
+        let k = app.grid.as_ref().unwrap().key(0, 0).unwrap();
+        assert_eq!(k.as_slice(), &[(1, 10), (2, 20), (3, 31)]);
+        // Time to the pages would leave the rows empty: refused.
+        send(&mut app, Message::Grab(CategoryId(1)));
+        send(&mut app, Message::Hover(Axis::Pages, 1));
+        send(&mut app, Message::Drop);
+        assert_eq!(app.layout.as_ref().unwrap().row_cats(), &[CategoryId(1)]);
+        assert!(app.status.contains("need a category"), "{}", app.status);
+        send(&mut app, Message::Transpose);
+        assert_eq!(app.layout.as_ref().unwrap().row_cats(), &[CategoryId(2)]);
     }
 
     #[test]
