@@ -1,0 +1,115 @@
+# cargo-deny for improv-cosmic's own workspace (crates/gui_cosmic). The
+# root deny.toml's policy, plus what libcosmic brings: run it as
+#   cargo deny --manifest-path crates/gui_cosmic/Cargo.toml \
+#     --config crates/gui_cosmic/deny.toml check
+# The root's allow-git stays empty: these git sources are allowed here only,
+# so they cannot reach the root lockfile's gate.
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # Transitive via improv_engine, as in the root deny.toml.
+    "RUSTSEC-2025-0141", # bincode unmaintained (via mentat)
+    "RUSTSEC-2024-0436", # paste unmaintained (differential-dataflow)
+    # Unmaintained, pulled by libcosmic's text and i18n stack at the pinned
+    # commit (cosmic-text and usvg for ttf-parser and rustybuzz; i18n-embed
+    # for basic-toml). Fonts are bundled or the system's, not untrusted
+    # input. Revisit with each libcosmic bump.
+    "RUSTSEC-2026-0192", # ttf-parser
+    "RUSTSEC-2026-0206", # rustybuzz
+    "RUSTSEC-2026-0374", # basic-toml (build-time: a proc macro's config)
+    "RUSTSEC-2026-0370", # zvariant (zbus 5, as in the root)
+    "RUSTSEC-2026-0371", # zbus_names
+    "RUSTSEC-2026-0372", # zvariant_derive
+]
+
+[licenses]
+version = 2
+# The root deny.toml's list, plus the Unlicense (the public-domain `apply`
+# crate libcosmic uses).
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0",
+    "OFL-1.1",
+    "LicenseRef-UFL-1.0",
+    "Ubuntu-font-1.0",
+    "Unlicense",
+]
+unused-allowed-license = "allow"
+
+# Crates whose manifests name no license, read by hand at the commits
+# Cargo.lock pins (a libcosmic bump must re-read them; cargo-deny 0.20 does
+# not check a git crate's license-file hash, so none is given):
+#   libcosmic, cosmic-config(-derive), cosmic-theme: libcosmic's LICENSE,
+#     MPL-2.0;
+#   iced_accessibility: pop-os/iced's LICENSE, MIT;
+#   dnd, mime: pop-os/window_clipboard's LICENSE, MIT;
+#   cosmic-settings-daemon (the D-Bus bindings, not the GPL daemon):
+#     pop-os/dbus-settings-bindings' LICENSE.md, MPL-2.0.
+[[licenses.clarify]]
+crate = "libcosmic"
+expression = "MPL-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "cosmic-config"
+expression = "MPL-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "cosmic-config-derive"
+expression = "MPL-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "cosmic-theme"
+expression = "MPL-2.0"
+license-files = []
+[[licenses.clarify]]
+crate = "iced_accessibility"
+expression = "MIT"
+license-files = []
+[[licenses.clarify]]
+crate = "dnd"
+expression = "MIT"
+license-files = []
+[[licenses.clarify]]
+crate = "mime@0.1.0"
+expression = "MIT"
+license-files = []
+[[licenses.clarify]]
+crate = "cosmic-settings-daemon"
+expression = "MPL-2.0"
+license-files = []
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# libcosmic (MPL-2.0) and the forks and companions it pins by git. Every
+# one is pinned by commit in Cargo.lock.
+allow-git = [
+    "https://github.com/pop-os/libcosmic",
+    "https://github.com/pop-os/cosmic-protocols",
+    "https://github.com/pop-os/dbus-settings-bindings",
+    "https://github.com/pop-os/freedesktop-icons",
+    "https://github.com/pop-os/smithay-clipboard",
+    "https://github.com/pop-os/softbuffer",
+    "https://github.com/pop-os/window_clipboard.git",
+    "https://github.com/pop-os/winit.git",
+    "https://github.com/iced-rs/cryoglyph.git",
+    "https://github.com/jackpot51/rust-atomicwrites",
+    "https://github.com/wash2/accesskit",
+]

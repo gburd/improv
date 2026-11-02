@@ -84,6 +84,12 @@ criteria" are the bar. Mark tasks done there as they land.
   (the release still attaches `improv.rb`). B8 is done (390 B/edge, warm
   re-solve 3.5× faster); the plan's row has the numbers.
 
+- **COSMIC GUI (branch `work/cosmic`, 2026-11-02):** `crates/gui_cosmic`,
+  a second desktop GUI on libcosmic, pinned by its own `Cargo.lock`.
+  The spike runs on Linux, FreeBSD (Xvfb), illumos (a live COSMIC
+  session on lixi) and Windows arm64 (builds and starts; window
+  unverified over ssh). Parity stages 1–10 are in the review note.
+
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two
   storage_mentat save bugs fixed), H3 partly (frames 125 → 7 ms at 1M
@@ -406,6 +412,9 @@ GUI later.
 - `crates/extfn` — external-language function runtime (Python). [Phase 6]
 - `crates/duckdb_model` — DuckDB-free core of the DuckDB extension.
 - `crates/duckdb_improv` — the DuckDB extension `improv` (own workspace).
+- `crates/gui_cosmic` — the COSMIC desktop GUI `improv-cosmic` (libcosmic on
+  iced; own workspace, `deny.toml` and CI job `gui-cosmic`). Spike and
+  staged plan: `docs/reviews/2026-11-02-cosmic-gui.md`. [preview]
 
 ## Phases (build in order)
 

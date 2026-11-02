@@ -58,6 +58,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   v0.12.2 binary). Enforcement by `improv-server` and pg_improv follows
   ([the design](docs/reviews/2026-11-02-cedar-policies.md)). New
   dependency: `cedar-policy` 4.14.0 (Apache-2.0), pinned exactly.
+- **`improv-cosmic`, a COSMIC desktop GUI (preview).** A second desktop
+  GUI on libcosmic (System76's toolkit, on iced), beside the NeXTSTEP-style
+  `improv-gui`. It opens a model (a store file or `postgres://…?model=`),
+  shows a measure's grid in the desktop's COSMIC theme, and keeps the load,
+  engine and saves off the UI thread behind a model-service interface. Its
+  own Cargo workspace, `crates/gui_cosmic`; built and run on Linux, FreeBSD,
+  illumos (Solnix, in a COSMIC session) and Windows arm64. See
+  `docs/reviews/2026-11-02-cosmic-gui.md`.
 
 ### Changed
 

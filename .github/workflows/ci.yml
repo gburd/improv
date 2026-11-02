@@ -292,6 +292,46 @@ jobs:
       - name: duckdb_improv
         run: improv/ci/duckdb_improv.sh "$GITHUB_WORKSPACE/duckdb-cli"
 
+  # The COSMIC GUI (crates/gui_cosmic: its own Cargo workspace, so
+  # libcosmic's iced, wgpu and winit fork stay out of the root lockfile).
+  # ci/gui_cosmic.sh: fmt, clippy, tests, rustdoc, and cargo-deny with the
+  # crate's deny.toml; Windows builds and tests it too (no AccessKit there
+  # at the libcosmic pin, see docs/src/cosmic-gui.md).
+  gui-cosmic:
+    name: COSMIC GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: [fmt, clippy]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: improv/crates/gui_cosmic
+          key: gui-cosmic-${{ matrix.os }}
+      - name: Install libxkbcommon and libwayland
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libxkbcommon-dev libwayland-dev
+      - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # cargo-deny
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-deny
+      - name: gui_cosmic
+        shell: bash
+        env:
+          # cargo-deny's verdict does not depend on the host: run it once.
+          GUI_COSMIC_DENY: ${{ runner.os == 'Linux' && '1' || '0' }}
+        run: improv/ci/gui_cosmic.sh
+
   # Review plan D5: the GUI rendered headless (Xvfb + llvmpipe) must match the
   # committed golden. Debian 13 like the box that made the golden, so Mesa and
   # ImageMagick match. Refresh: CONTRIBUTING.md "GUI screenshot golden".

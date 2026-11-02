@@ -1,0 +1,234 @@
+# A COSMIC desktop GUI for Improv: feasibility spike
+
+2026-11-02. A second desktop GUI, `crates/gui_cosmic` (binary
+`improv-cosmic`), built on libcosmic (System76's toolkit for the COSMIC
+desktop, on iced). It sits beside `crates/gui` (the NeXTSTEP-style egui GUI,
+which stays). Branch `work/cosmic`.
+
+## Verdict
+
+It is feasible on every target. At this pin the spike compiles and runs on
+four platforms: Linux, FreeBSD, illumos (Solnix, as a client of a live
+COSMIC session) and Windows 11 arm64. Windows x64 is left to GitHub CI.
+Three caveats:
+
+1. **illumos needs patched dependencies.** It builds only after Solnix's
+   own vendor fixups (the scripts Solnix uses to build COSMIC itself), and
+   only without wgpu, which has no illumos backend. A plain
+   `cargo build` there fails in `wayland-backend`.
+2. **Windows is a second-class COSMIC target.** It builds and starts.
+   AccessKit's winit adapter at the libcosmic pin does not compile on
+   Windows, so a11y is off there. Rich clipboard formats and drag and drop
+   are no-ops in libcosmic's Windows clipboard backend. No window could be
+   shown over ssh (session 0), so the drawn window is unverified there.
+3. **libcosmic is pre-release.** It is git-only and 1.0.0 in name, with a
+   dozen companion git forks (winit, softbuffer, window_clipboard,
+   accesskit). Its API moved between the examples and master. Each bump
+   needs a rebuild on all hosts and a `deny.toml` review.
+
+## Stack and pins
+
+| Piece | Version | Source |
+|---|---|---|
+| libcosmic | 1.0.0 @ `95236a944bfd51c63a2fc65fe50a592c47168d40` (2026-10-27) | git, pinned by `Cargo.lock` |
+| iced (pop-os fork) | 0.14.0, submodule `229186b` | in libcosmic |
+| winit (pop-os fork) | 0.31.0-beta.2 @ `9567503` | git |
+| wgpu | 28.0.0 | crates.io |
+| tiny-skia (software renderer) | 0.11 / 0.12 | crates.io |
+| AccessKit (wash2 fork) | 0.22.0 @ `6c20249` | git |
+| ashpd (XDG portals) | 0.12.3 | crates.io |
+| rfd (Windows dialogs) | 0.16.1 | crates.io |
+
+The root workspace has eframe 0.37 with **wgpu 30 and winit 0.30**.
+libcosmic has **wgpu 28 and a winit 0.31 beta fork**. One lockfile cannot
+hold both without two copies of each, and `cargo deny` on the root would
+then have to allow a dozen git sources.
+
+**Decision: `crates/gui_cosmic` is its own Cargo workspace,** like
+`pg_improv` and `duckdb_improv`. It has its own `Cargo.lock` (807 crates),
+its own `deny.toml`, and an entry in the root's `exclude`. The root
+lockfile, the root `deny.toml` (still `unknown-git = "deny"` with no
+`allow-git`) and the egui GUI are untouched. It path-depends on
+`improv_core_model`, `improv_engine` and `improv_store`, as `pg_improv`
+does.
+
+**The pin lives in `Cargo.lock`, not `rev =`.** libcosmic's own crates
+(`cosmic-launch`, via cosmic-settings-daemon) name
+`https://github.com/pop-os/libcosmic` without a rev. A `rev = …` in our
+manifest makes a second source for the same repository. cargo builds
+that, but `cargo vendor` refuses it ("duplicate version vendored from two
+sources"). Vendoring is how Solnix builds (see illumos below) and how
+distributions and Flatpak build. With the bare URL there is one source,
+locked to the commit; CI builds `--locked`, and a bump is
+`cargo update -p libcosmic`.
+
+**Licenses** (`crates/gui_cosmic/deny.toml`). Everything is in the root's
+allow list except the Unlicense (`apply`, a public-domain crate libcosmic
+uses), which is added there. Eight git crates have no `license` field,
+so they were read by hand at the pinned commits and clarified:
+
+- libcosmic, cosmic-config, cosmic-config-derive, cosmic-theme: MPL-2.0
+  (libcosmic's LICENSE).
+- iced_accessibility: MIT (pop-os/iced).
+- dnd and mime 0.1: MIT (pop-os/window_clipboard).
+- cosmic-settings-daemon: MPL-2.0. This is the D-Bus *bindings* repo
+  (`dbus-settings-bindings`), not the GPL-3.0 daemon. The GPL
+  `cosmic-settings-config` appears in the lockfile through `cosmic-launch`
+  (the `desktop` feature), but we do not enable that feature, so it is
+  not built: `cargo tree --target all -i cosmic-settings-config` prints
+  nothing.
+
+cargo-deny 0.20 does not hash a git crate's license files, so a bump must
+re-read them (the comment in `deny.toml` says so). Advisories:
+
+- three unmaintained crates in libcosmic's text and i18n stack:
+  ttf-parser, rustybuzz, basic-toml;
+- the root's existing zbus-5 trio.
+
+All are ignored there with reasons. `cargo deny check`:
+advisories, bans, licenses, sources ok.
+
+## Platform matrix
+
+The same tree on each host: `work/cosmic` plus the hello window (one
+model, one measure's grid, through the model service).
+
+| Host | OS | Compiles | Runs | Display / renderer | Notes |
+|---|---|---|---|---|---|
+| werk | NixOS (Linux 6.18) x86_64 | yes, 1m24 cold debug; release 2m13 | yes | X11 (Xvfb), wgpu on llvmpipe (GL) | Release binary 65 MB (48 MB stripped); 182 MB peak RSS on the demo model. The in-app capture (`IMPROV_COSMIC_SHOT`) works. |
+| lixi | Solnix (illumos) x86_64, rustc 1.99.1 | yes, with Solnix's vendor fixups; 1m54 | **yes, in a live COSMIC session** | Wayland client of cosmic-comp 1.5.0, `ICED_BACKEND=tiny-skia`, 2× scale | Needs `cargo vendor` and `cosmic-comp-vendor-fixup.sh` + `cosmic-widen-linux.py` (rustix ioctl, wayland-backend MSG_CMSG_CLOEXEC/epoll, polling's epoll backend, winit `is_main_thread`, softbuffer shm names), wgpu off, and libxkbcommon/wayland/mesa from the Nix store on `PKG_CONFIG_PATH`. Found and fixed: `improv_extfn` used `RLIMIT_NPROC`, which illumos lacks. The in-app capture works. No screenshot portal (`org.freedesktop.portal.Desktop` is not on the bus), so the portals are absent there. |
+| nuc | FreeBSD 15.1 amd64, rustc 1.99.1 | yes, 3m02 | yes, under Xvfb | X11 (Xvfb), wgpu on Mesa llvmpipe; tiny-skia fails on Xvfb's 24-bit visual ("does not use softbuffer's pixel format") | No display stack is installed and there is no root. libxkbcommon, wayland, X11, Mesa and Xvfb came from pkg.freebsd.org into `~/w-cosmic/pkgs/root`. Xvfb's hard-coded `/usr/local/bin/xkbcomp` was binary-patched for the test. Captured with xwd; the in-app capture never answered there. No Wayland compositor tried. |
+| santorini | Windows 11 arm64, rustc 1.99.1 (MSVC) | yes, 2m33 cold | starts; window not verified | wgpu: "Invalid surface" panic over ssh (session 0, no desktop); tiny-skia: runs until killed, no capture | **a11y off**: `accesskit_winit` @ `6c20249` fails E0782 on Windows. Dialogs via rfd (native), not the portal. Needs a console-session run (RDP) to see the window. |
+| Windows x64 | (GitHub CI) | expected (same code as arm64) | n/a | | The `gui-cosmic` CI job builds and tests on `windows-latest`. |
+
+## How each COSMIC integration point is done
+
+- **Theme, light/dark, accent.** Free with `cosmic::Application`. The
+  runtime follows cosmic-settings-daemon over D-Bus (`dbus-config`) and
+  `cosmic-config` files, and restyles live. The grid paints with
+  `theme.cosmic()` colors: `bg_color`, `primary_container_color` for
+  headers, `bg_divider` for rules, and `accent_color` for the selection.
+  Off COSMIC (Windows, other desktops) the default dark or light COSMIC
+  theme applies. High contrast comes with the theme.
+- **Clipboard.** `iced::clipboard::write_data` takes an `AsMimeTypes`
+  value, so one copy can offer `text/plain;charset=utf-8` (TSV) and
+  `text/html` (a `<table>`) together; `read_data` asks for the best
+  format offered. Caveat from the pinned `window_clipboard`:
+  multi-format data works on **Wayland only**. On X11 and Windows,
+  `write_data` is a no-op, so we also write plain text (TSV), which every
+  spreadsheet accepts. (Stage 7.)
+- **File chooser.** `cosmic::dialog::file_chooser` uses the XDG portal
+  (ashpd) on the free Unixes and rfd (native dialogs) on Windows. Both
+  return URLs; we open `file://` paths as Mentat stores. (Stage 8.)
+- **Printing.** libcosmic has no print API. The XDG Print portal is
+  `ashpd::desktop::print` (ashpd 0.12, already in the graph): render the
+  grid to PDF and hand the portal its fd. Windows needs a separate path
+  (open the PDF with the default handler). (Stage 9.)
+- **Opening URIs.** `ashpd::desktop::open_uri` on Unix (planned: help
+  links, a function's documentation); `ShellExecuteW` on Windows.
+- **Drag and drop.** Within the window (pivot tiles), iced's
+  `dnd_source` and `dnd_destination` widgets or plain mouse tracking,
+  which works everywhere. Dropping files onto the window uses
+  `window::Event::FileDropped`. Cross-application drag uses the
+  Wayland data-device; it is unimplemented on Windows in
+  window_clipboard.
+- **Desktop entry and icon.** `me.burd.Improv` is the `APP_ID`, which
+  COSMIC uses as the Wayland app id. Planned: a
+  `res/me.burd.Improv.desktop` and a scalable icon installed under
+  `hicolor`, which COSMIC's dock and launcher match on that id.
+- **Notifications** (planned). `org.freedesktop.Notifications` via zbus
+  (in the graph already) or `ashpd::desktop::notification` under a
+  portal. Use them only for what happens out of view: a long import
+  finished, a save failed after the window lost focus.
+- **Keyboard shortcuts** (planned). libcosmic's `menu::KeyBind` maps
+  (Ctrl+O, S, Z, Shift+Z, C, V, P, Q). Its `responsive_menu_bar` in
+  `header_start` shows them, and the HIG's header-bar menu layout comes
+  with it.
+
+## Accessibility
+
+iced in libcosmic's fork has AccessKit (`a11y` feature, accesskit 0.22
+from wash2's fork, AT-SPI via accesskit_unix and zbus). Standard
+widgets publish nodes: buttons, text inputs, scrollables, menus,
+toggles and the rest.
+
+**A canvas publishes nothing.** The worksheet grid is a canvas, so
+before stage 2 ships it needs its own `a11y_nodes`: a table node, plus
+row and cell nodes for the cells in view. The AccessKit `Table` role
+supports that. Until then a screen reader sees only the header bar and
+the measure list.
+
+AccessKit is off on Windows at this pin (the build failure above). Turn
+it on when libcosmic moves past `6c20249`.
+
+## Architecture
+
+```
+ UI thread (iced/libcosmic, MVU)          model thread (one per window)
+ ─────────────────────────────            ─────────────────────────────
+ App { model: Arc<Model>, snapshot,  ──Request──▶  dyn ModelService
+       layout, grid, cursor, … }                   LocalService:
+   view(): pure, paints visible cells              Store (Mentat | Postgres)
+   update(): applies Updates          ◀──Update──  Engine (DD worker thread)
+                                     (futures mpsc → Subscription)
+```
+
+- **`ModelService` trait** (`service.rs`): `open`, then (stage 2)
+  `edit(cells) -> (stored, Changes)` and (stage 3)
+  `restructure(model) -> Snapshot`. `LocalService` opens the store and
+  runs `improv_engine::session::Engine` exactly as `crates/gui` does: one
+  engine over every derived measure, `apply_delta` per edit round,
+  `save_changes` with a carried `SaveToken`. A `RemoteService` over
+  `improv-server` (the Cedar-policy session work) implements the same
+  trait. The window never knows which one it has.
+- **No waiting on the UI thread.** The service runs on its own thread
+  with `ENGINE_STACK`, and talks to the window through an unbounded
+  futures channel that a `Subscription` polls. Load, build,
+  recalculation and save never block a frame. This is the H3 property
+  `crates/gui` reached with three background threads and polling; here it
+  falls out of the Elm architecture.
+- **Edits are async.** The window applies a sent edit only when the
+  service's `Update::Edited` comes back, with the engine's `Changes`
+  (deltas, not snapshots: O(change)). So the service stays the authority,
+  as a remote server would be. An optimistic local echo can come later.
+- **Grid** (`pivot.rs`, `sheet.rs`). The pivot layout (rows, columns,
+  pages) is pure and tested. Lines are decoded from an index by mixed
+  radix and never materialized, and the canvas paints only the cells in
+  view. A 1000 × 1000 stack (10⁶ rows) scrolls to its last row in
+  constant work (test `a_million_rows_scroll_in_constant_work`).
+
+## Staged plan to parity with `crates/gui`
+
+Each stage is one atomic, green commit with tests.
+
+| # | Stage | Reuse | Size |
+|---|---|---|---|
+| 1 | Worksheet grid, virtual scrolling at 10⁶ cells, keyboard cursor | `pivot`, `sheet` (done in the spike, plus keys) | S |
+| 2 | Cell editing (typed by value type, refusals) | service `edit`; `parse_typed` rules from `crates/gui` | M |
+| 3 | Formula list + editor: located errors, autocomplete, signature help, highlighting | Move `diagnostics`, `completion`, `function_help` (pure today) and the scanner half of `formula_highlight` into a shared crate `improv_formula_ui`; `crates/gui` re-exports, unchanged behavior | L |
+| 4 | Category tiles, pivot by drag (rows/cols/pages, stacking) | `pivot::Layout::place` | M |
+| 5 | Views (save/open/rename/delete) | `core_model::View`/`MatrixPlacement` | M |
+| 6 | Charts (bar/line) in theme accent + palette | the pure `ChartData` half of `crates/gui/src/chart.rs` (→ shared crate) drawn on a canvas | M |
+| 7 | Copy/paste ranges as TSV + HTML | new pure `clip.rs` (TSV/HTML encode, TSV/HTML-table decode) | M |
+| 8 | Save / open through the portal | `cosmic::dialog::file_chooser` | S |
+| 9 | Print through the portal | ashpd print + a PDF of the grid (needs a PDF writer: `printpdf` or `krilla`, license check) | M–L |
+| 10 | Undo / redo | `crates/gui`'s step model (cell steps, structure steps) on the service | M |
+| — | Then: CSV import wizard, live DB sessions (`postgres://`, H9 refresh), number formats, scenarios, LAMBDAs, multi-matrix canvas | `csv_wizard` pure half; service methods | L |
+
+Effort: stages 1–10 are roughly 6–8 focused days for one engineer. Real
+parity with `crates/gui` (its 20k lines of app logic, the multi-matrix
+canvas, every dialog) is 4–6 weeks, most of it UI work rather than
+model work. The model work is shared.
+
+## Risks
+
+- **libcosmic churn.** It is git-only and pre-release; plan on API
+  fixes per bump. The pin and a per-host build at each bump contain it.
+- **illumos depends on Solnix's fixup scripts.** They live in its Nix
+  store, not upstream. For an illumos package, build the way Solnix
+  builds its COSMIC apps (vendor, fixups, no wgpu).
+- **Windows** lacks a11y and rich clipboard, and its window is not yet
+  seen on real hardware. Run it once in an RDP or console session on
+  santorini before claiming Windows support.
+- **Binary size.** Debug builds are about 1.2 GB on every host, release
+  65 MB. Fine for a desktop app, heavy for CI caches.

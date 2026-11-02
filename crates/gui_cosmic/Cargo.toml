@@ -1,0 +1,68 @@
+[package]
+name = "improv_gui_cosmic"
+description = "Improv's COSMIC desktop GUI (libcosmic on iced)"
+version = "0.12.2"
+edition = "2021"
+rust-version = "1.97"
+license = "Apache-2.0 OR MIT"
+authors = ["Greg Burd <greg@burd.me>"]
+repository = "https://github.com/gburd/improv"
+publish = false
+
+# A standalone workspace (and Cargo.lock), like pg_improv and duckdb_improv:
+# libcosmic brings its own iced, wgpu and a winit fork from git, a dozen git
+# sources in all, which must not enter the root lockfile, its cargo-deny
+# gate, or the egui GUI's build. Listed in the root's `exclude`.
+[workspace]
+
+[[bin]]
+name = "improv-cosmic"
+path = "src/main.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+improv_engine = { path = "../engine" }
+improv_store = { path = "../store" }
+clap = { version = "4.6.7", features = ["derive"] }
+futures = "0.3"
+# Already in libcosmic's graph (same versions, no new features but png).
+image = { version = "0.25", default-features = false, features = ["png"] }
+tokio = { version = "1", features = ["time"] }
+
+# libcosmic is not on crates.io. Pinned by Cargo.lock to master commit
+# 95236a944bfd51c63a2fc65fe50a592c47168d40 (2026-10-27), and CI builds with
+# --locked; bump it with `cargo update -p libcosmic` (docs/src/cosmic-gui.md,
+# "Pins"). Not `rev = ...` here: libcosmic's own git dependencies name the
+# bare URL, and a second source for the same repository breaks `cargo
+# vendor` (distribution and Flatpak builds vendor). MPL-2.0. Its features
+# differ per platform, so it is listed once per target table; cargo merges
+# the tables that match.
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["winit", "tokio", "multi-window"]
+
+# The GPU renderer, beside the tiny-skia software one libcosmic always has.
+# Not on illumos: wgpu has no backend there (Solnix's COSMIC drops it too).
+[target.'cfg(not(target_os = "illumos"))'.dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["wgpu"]
+
+# The free Unixes: Wayland and X11, the XDG portals, COSMIC's settings
+# daemon, and AccessKit (its winit adapter at this pin does not build on
+# Windows).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["wayland", "x11", "xdg-portal", "dbus-config", "a11y"]
+
+# Native file dialogs elsewhere.
+[target.'cfg(windows)'.dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic"
+default-features = false
+features = ["rfd"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
