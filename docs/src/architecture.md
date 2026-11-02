@@ -21,6 +21,7 @@ the ones below it.
 | `cli` | `improv_cli` | The `improv` command-line tool. |
 | `tui` | `improv_tui` | `improv-tui`, a VisiCalc-style terminal pivot grid. |
 | `gui` | `improv_gui` | `improv-gui`, the desktop GUI (`egui`/`eframe`). |
+| `client` | `improv_client` | What the front ends share without the engine or a store: located formula errors, autocomplete, function help, the formula printer. Builds for `wasm32-unknown-unknown`. |
 | `server` | `improv_server` | `improv-server`, a JSON HTTP API over a model store. |
 | `pg_model` | `improv_pg_model` | The Postgres-free core of `pg_improv`: catalog rows → `Model`, bound rows → cells, engine results → SQL. |
 | `pg_improv` | `pg_improv` | The Postgres extension (pgrx): Improv models over Postgres tables. A thin shell over SPI and `pg_model`. |

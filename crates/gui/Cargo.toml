@@ -15,6 +15,7 @@ improv_store = { path = "../store" }
 improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }
 improv_nl_formula = { path = "../nl_formula" }
+improv_client = { path = "../client" }
 eframe.workspace = true
 egui.workspace = true
 egui_extras.workspace = true

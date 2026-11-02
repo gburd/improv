@@ -17,7 +17,7 @@ mod app;
 mod args;
 mod complete;
 mod diagnose;
-mod dsl;
+use improv_client::dsl;
 mod edit;
 mod fnhelp;
 mod ui;

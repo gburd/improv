@@ -49,6 +49,7 @@ jobs:
           -p improv_tui
           -p improv_server
           -p improv_gui
+          -p improv_client
           -- --check
 
   clippy:
@@ -62,6 +63,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
         with:
           workspaces: improv
@@ -85,7 +87,12 @@ jobs:
           -p improv_tui
           -p improv_server
           -p improv_gui
+          -p improv_client
           --all-targets --all-features -- -D warnings
+      # The browser build shares improv_client: it must keep building there.
+      - name: improv_client builds for wasm32
+        working-directory: improv
+        run: cargo check --locked --target wasm32-unknown-unknown -p improv_client
       # The fuzz crate is its own workspace (cargo-fuzz), so the workspace
       # build never compiles it: check its targets build against the API.
       - name: Fuzz targets build

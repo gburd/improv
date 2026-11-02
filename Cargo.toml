@@ -15,6 +15,7 @@ members = [
     "crates/tui",
     "crates/server",
     "crates/gui",
+    "crates/client",
     "crates/extfn",
     "crates/pg_model",
     "crates/duckdb_model",

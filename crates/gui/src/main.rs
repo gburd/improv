@@ -14,11 +14,10 @@ mod app;
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod args;
 mod chart;
-mod completion;
 mod csv_wizard;
-mod diagnostics;
+// Shared with the TUI, the server and the browser (improv_client).
+use improv_client::{completion, diagnostics, function_help};
 mod formula_highlight;
-mod function_help;
 mod menu;
 mod nxwin;
 mod theme;
