@@ -13,25 +13,48 @@
 
 use std::sync::{mpsc, Arc};
 
-use improv_core_model::{MeasureId, Model};
-use improv_engine::session::{Engine, Snapshot};
-use improv_store::{SaveToken, Store};
+use improv_core_model::{Coordinate, MeasureId, Model, Value};
+use improv_engine::session::{input_cell, Changes, Edit, Engine, Snapshot};
+use improv_engine::{decode_coord, CoordKey};
+use improv_store::{ChangeSet, SaveToken, Store};
+
+/// One input cell to set (`Some`) or clear (`None`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CellEdit {
+    pub measure: MeasureId,
+    pub at: CoordKey,
+    pub value: Option<Value>,
+}
+
+/// An edit round the service applied: the cells, what they changed, and
+/// whether the save of them failed (`Some(why)`).
+pub type Edited = (Vec<CellEdit>, Changes, Option<String>);
 
 /// What a model service does. Every method runs on the service's thread.
 pub trait ModelService: Send {
     /// Load the model and compute every derived measure.
     fn open(&mut self) -> Result<(Model, Snapshot), String>;
+    /// Set or clear input cells and recompute, all or none (`Err`: nothing
+    /// changed), then persist. Returns the cells as now held, what the
+    /// recomputation changed, and the save's outcome: a failed save keeps
+    /// the edit, unsaved.
+    fn edit(&mut self, edits: Vec<CellEdit>) -> Result<Edited, String>;
 }
 
 /// What the window asks its service to do.
 #[derive(Debug)]
-pub enum Request {}
+pub enum Request {
+    Edit(Vec<CellEdit>),
+}
 
 /// What the service tells the window.
 #[derive(Debug, Clone)]
 pub enum Update {
     /// The model loaded and computed.
     Opened(Arc<Model>, Snapshot),
+    /// Cells were set ([`ModelService::edit`]), what they changed, and why
+    /// they are not saved, if they are not.
+    Edited(Arc<Vec<CellEdit>>, Arc<Changes>, Option<String>),
     /// A request failed; nothing changed.
     Failed(String),
 }
@@ -57,8 +80,15 @@ pub fn spawn(
                 Err(e) => return send(Update::Failed(e)),
             }
             // Serve until the window drops its sender.
-            if let Ok(req) = rx.recv() {
-                match req {}
+            for req in rx {
+                send(match req {
+                    Request::Edit(edits) => match service.edit(edits) {
+                        Ok((cells, changes, unsaved)) => {
+                            Update::Edited(Arc::new(cells), Arc::new(changes), unsaved)
+                        }
+                        Err(e) => Update::Failed(e),
+                    },
+                });
             }
         });
     if let Err(e) = spawned {
@@ -76,6 +106,8 @@ pub struct LocalService {
     model: Model,
     engine: Option<Engine>,
     token: SaveToken,
+    /// Changes a save failed to write, for the next save.
+    unsaved: ChangeSet,
 }
 
 impl LocalService {
@@ -85,7 +117,21 @@ impl LocalService {
             model: Model::new(),
             engine: None,
             token: SaveToken::default(),
+            unsaved: ChangeSet::default(),
         }
+    }
+
+    /// Persist `changes`, reopening the store over the token from the last
+    /// load or save (as `crates/gui` does, so no handle is held between).
+    fn save(&mut self, changes: &ChangeSet) -> Result<(), String> {
+        if self.target.is_empty() {
+            return Ok(());
+        }
+        let mut store = Store::open(&self.target).map_err(|e| e.to_string())?;
+        store.adopt_save_token(std::mem::take(&mut self.token));
+        let r = store.save_changes(&self.model, changes);
+        self.token = store.take_save_token();
+        r.map_err(|e| format!("not saved: {e}"))
     }
 
     /// Build the engine over every derived measure, and its first snapshot.
@@ -118,6 +164,85 @@ impl ModelService for LocalService {
         let snapshot = self.build()?;
         Ok((self.model.clone(), snapshot))
     }
+
+    fn edit(&mut self, edits: Vec<CellEdit>) -> Result<Edited, String> {
+        // Check every edit first, so a refused one changes nothing.
+        for e in &edits {
+            let m = self
+                .model
+                .measures
+                .get(&e.measure)
+                .ok_or_else(|| format!("no measure {}", e.measure.0))?;
+            if m.is_derived() {
+                return Err(format!("{} is computed, not entered", m.name.0));
+            }
+            if let Some(v) = &e.value {
+                if v.type_of() != Some(m.value_type) {
+                    return Err(format!("{} holds {:?} values", m.name.0, m.value_type));
+                }
+            }
+        }
+        let mut engine_edits = Vec::with_capacity(edits.len());
+        let mut changes = ChangeSet::default();
+        let mut prior = Vec::with_capacity(edits.len());
+        for e in &edits {
+            let ty = self.model.measures[&e.measure].value_type;
+            let at: Coordinate = decode_coord(&e.at);
+            let old = match &e.value {
+                Some(v) => self.model.inputs.insert((e.measure, at.clone()), v.clone()),
+                None => self.model.inputs.remove(&(e.measure, at.clone())),
+            };
+            prior.push((e.measure, at.clone(), old));
+            engine_edits.push(Edit {
+                measure: e.measure,
+                coord: e.at.clone(),
+                value: e.value.as_ref().and_then(|v| input_cell(ty, v)),
+            });
+            changes.cells.push((e.measure, at));
+        }
+        let delta = match &mut self.engine {
+            Some(engine) => match engine.apply_delta(engine_edits) {
+                Ok(d) => d,
+                Err(err) => {
+                    // Put the cells back, and an engine that agrees with them.
+                    for (m, at, old) in prior.into_iter().rev() {
+                        match old {
+                            Some(v) => drop(self.model.inputs.insert((m, at), v)),
+                            None => drop(self.model.inputs.remove(&(m, at))),
+                        }
+                    }
+                    let _ = self.build();
+                    return Err(err.to_string());
+                }
+            },
+            None => Changes::default(),
+        };
+        // A failed save keeps the edit (in the model and the engine) and
+        // says so; its cells join the next save, which writes them.
+        self.unsaved.add(changes);
+        let unsaved = match self.save(&self.unsaved.clone()) {
+            Ok(()) => {
+                self.unsaved = ChangeSet::default();
+                None
+            }
+            Err(e) => Some(e),
+        };
+        Ok((edits, delta, unsaved))
+    }
+}
+
+/// Apply what an edit round changed to a snapshot the window holds.
+pub fn apply_changes(snapshot: &mut Snapshot, changes: &Changes) {
+    let s = Arc::make_mut(snapshot);
+    for (m, cells) in changes {
+        let values = Arc::make_mut(s.entry(*m).or_default());
+        for c in cells {
+            match &c.new {
+                Some(v) => drop(values.insert(c.coord.clone(), v.clone())),
+                None => drop(values.remove(&c.coord)),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -128,6 +253,7 @@ pub(crate) mod tests {
         MeasureKind, Name, Value, ValueType,
     };
     use improv_engine::CellValue;
+    use std::collections::HashMap;
 
     /// Time × Product: Price[Product] × Quantity[Time, Product] = Revenue.
     pub(crate) fn revenue_model() -> Model {
@@ -192,7 +318,7 @@ pub(crate) mod tests {
     }
 
     /// A service over `m`, in memory only.
-    fn memory(m: Model) -> LocalService {
+    pub(crate) fn memory(m: Model) -> LocalService {
         let mut s = LocalService::new("");
         s.model = m;
         s
@@ -209,6 +335,139 @@ pub(crate) mod tests {
         assert_eq!(m.measures.len(), 3);
         let k: improv_engine::CoordKey = [(1, 10), (2, 20)].into_iter().collect();
         assert_eq!(snap[&MeasureId(102)].get(&k), Some(&CellValue::num(1000.0)));
+    }
+
+    fn key(p: &[(u32, u32)]) -> CoordKey {
+        p.iter().copied().collect()
+    }
+
+    fn set(m: u32, at: &[(u32, u32)], v: Option<Value>) -> CellEdit {
+        CellEdit {
+            measure: MeasureId(m),
+            at: key(at),
+            value: v,
+        }
+    }
+
+    #[test]
+    fn an_edit_is_saved_and_reads_back_from_the_store() {
+        let path = std::env::temp_dir().join(format!("improv-cosmic-{}.db", std::process::id()));
+        let db = path.to_string_lossy().into_owned();
+        let mut store = Store::open(&db).unwrap();
+        store.save_model(&revenue_model()).unwrap();
+        drop(store);
+        let mut s = LocalService::new(db.clone());
+        let _ = s.open().unwrap();
+        let (cells, changes, unsaved) = s
+            .edit(vec![set(
+                100,
+                &[(1, 10), (2, 20)],
+                Some(Value::Number(7.0)),
+            )])
+            .unwrap();
+        assert_eq!((cells.len(), unsaved), (1, None));
+        let rev = &changes[&MeasureId(102)];
+        assert_eq!(rev[0].new, Some(CellValue::num(70.0)));
+        let back = Store::open(&db).unwrap().load_model().unwrap();
+        let at = decode_coord(&key(&[(1, 10), (2, 20)]));
+        assert_eq!(back.input(MeasureId(100), &at), Some(&Value::Number(7.0)));
+        for f in [
+            path.clone(),
+            path.with_extension("db-wal"),
+            path.with_extension("db-shm"),
+        ] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    #[test]
+    fn a_refused_edit_changes_nothing_of_its_batch() {
+        let mut s = memory(revenue_model());
+        let _ = s.open().unwrap();
+        let before = s.model.inputs.clone();
+        // The first is fine, the second is a derived cell: neither applies.
+        let r = s.edit(vec![
+            set(100, &[(1, 10), (2, 20)], Some(Value::Number(1.0))),
+            set(102, &[(1, 10), (2, 20)], Some(Value::Number(1.0))),
+        ]);
+        assert!(r.unwrap_err().contains("computed"));
+        assert_eq!(s.model.inputs, before);
+        let typed = s.edit(vec![set(
+            100,
+            &[(1, 10), (2, 20)],
+            Some(Value::Text("x".into())),
+        )]);
+        assert!(typed.unwrap_err().contains("Number"));
+        assert!(s
+            .edit(vec![set(999, &[], None)])
+            .unwrap_err()
+            .contains("no measure"));
+    }
+
+    #[test]
+    fn clearing_a_cell_retracts_what_it_fed() {
+        let mut s = memory(revenue_model());
+        let _ = s.open().unwrap();
+        let (_, changes, _) = s.edit(vec![set(100, &[(1, 10), (2, 20)], None)]).unwrap();
+        assert_eq!(changes[&MeasureId(102)][0].new, None);
+        let k = key(&[(1, 10), (2, 20)]);
+        let before = HashMap::from([(k.clone(), CellValue::num(1000.0))]);
+        let mut snap: Snapshot = Arc::new(HashMap::from([(MeasureId(102), Arc::new(before))]));
+        apply_changes(&mut snap, &changes);
+        assert_eq!(snap[&MeasureId(102)].get(&k), None);
+    }
+
+    /// Stress (`--ignored`): one cell edit at 10^6 cells, with a derived
+    /// measure over them, in memory: the engine's incremental round only.
+    #[test]
+    #[ignore = "stress: 10^6 cells"]
+    fn an_edit_at_a_million_cells_is_incremental() {
+        let mut m = Model::new();
+        let (a, b) = (CategoryId(1), CategoryId(2));
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        for i in 0..1000 {
+            m.add_item(ItemId(10_000 + i), a, format!("a{i}"));
+            m.add_item(ItemId(20_000 + i), b, format!("b{i}"));
+        }
+        let measure = |id, kind| Measure {
+            id: MeasureId(id),
+            name: Name(format!("m{id}")),
+            value_type: ValueType::Number,
+            categories: vec![a, b],
+            kind,
+            description: None,
+            format: None,
+        };
+        m.add_measure(measure(1, MeasureKind::Input));
+        let double = Expr::BinaryOp(
+            BinaryOp::Mul,
+            Box::new(Expr::Ref(MeasureId(1), DimensionSpec::default())),
+            Box::new(Expr::Literal(Value::Number(2.0))),
+        );
+        m.add_measure(measure(2, MeasureKind::Derived(Formula::new(double))));
+        for i in 0..1000 {
+            for j in 0..1000 {
+                let at = Coordinate::from_pairs([(a, ItemId(10_000 + i)), (b, ItemId(20_000 + j))]);
+                m.set_input(MeasureId(1), at, Value::Number(f64::from(i + j)));
+            }
+        }
+        let mut s = memory(m);
+        let t = std::time::Instant::now();
+        let _ = s.open().unwrap();
+        println!("open (engine build) at 10^6: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let (_, changes, _) = s
+            .edit(vec![set(
+                1,
+                &[(1, 10_500), (2, 20_500)],
+                Some(Value::Number(1.0)),
+            )])
+            .unwrap();
+        let took = t.elapsed();
+        println!("one edit at 10^6: {took:?}");
+        assert_eq!(changes[&MeasureId(2)][0].new, Some(CellValue::num(2.0)));
+        assert!(took < std::time::Duration::from_millis(500), "{took:?}");
     }
 
     #[test]

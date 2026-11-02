@@ -16,8 +16,12 @@ use improv_engine::session::Snapshot;
 
 use crate::nav::{self, Extent, Move};
 use crate::pivot::{Grid, Layout};
-use crate::service::{self, LocalService, ModelService, Request, Update};
+use crate::service::{self, CellEdit, LocalService, ModelService, Request, Update};
 use crate::sheet::{self, Cell, Sheet, SheetProgram};
+
+/// The cell editor's widget id (to focus it when it opens).
+static EDITOR: std::sync::LazyLock<cosmic::widget::Id> =
+    std::sync::LazyLock::new(|| cosmic::widget::Id::new("improv-cell-editor"));
 
 /// The reverse-DNS application id: the desktop entry, the icon and the
 /// Wayland app id all use it.
@@ -36,8 +40,12 @@ pub enum Message {
     /// A measure was picked in the measure list.
     ShowMeasure(usize),
     Sheet(sheet::Event),
-    /// A key the focused widgets did not take.
-    Key(Key, Modifiers),
+    /// A key the focused widgets did not take, and the text it typed.
+    Key(Key, Modifiers, Option<String>),
+    /// The cell editor's text changed.
+    EditText(String),
+    /// Enter in the cell editor: commit it.
+    EditCommit,
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -53,7 +61,12 @@ pub struct App {
     core: Core,
     target: String,
     /// The service's request channel: dropping it ends the service.
-    _service: mpsc::Sender<Request>,
+    service: mpsc::Sender<Request>,
+    /// The cell being edited and its text, while the editor is open.
+    editing: Option<(Cell, String)>,
+    /// Edits sent to the service and not yet answered (the status line says
+    /// so; the grid shows a cell's new value when the service has it).
+    pending: usize,
     /// The service's update stream, until the subscription takes it.
     updates: UpdateRx,
     model: Arc<Model>,
@@ -79,7 +92,9 @@ impl App {
         App {
             core,
             target,
-            _service: service::spawn(service, tx),
+            service: service::spawn(service, tx),
+            editing: None,
+            pending: 0,
             updates: UpdateRx(Arc::new(std::sync::Mutex::new(Some(rx)))),
             model: Arc::new(Model::new()),
             snapshot: Snapshot::default(),
@@ -141,7 +156,27 @@ impl App {
     }
 
     /// What a key does in the grid, if anything.
-    fn key(&mut self, key: &Key, mods: Modifiers) {
+    fn key(&mut self, key: &Key, mods: Modifiers, text: Option<&str>) -> Task<Message> {
+        if self.editing.is_some() {
+            // The editor has the keyboard (Escape: [`Self::on_escape`]).
+            return Task::none();
+        }
+        match key {
+            Key::Named(Named::Enter | Named::F2) => return self.begin_edit(None),
+            Key::Named(Named::Delete | Named::Backspace) => {
+                self.editing = Some((self.cursor, String::new()));
+                self.commit_edit();
+                return Task::none();
+            }
+            _ => {}
+        }
+        // A printable key starts an edit holding it (not with Ctrl or Alt:
+        // those are shortcuts).
+        if let Some(t) = text.filter(|t| !t.is_empty() && t.chars().all(|c| !c.is_control())) {
+            if !mods.control() && !mods.alt() && !mods.logo() {
+                return self.begin_edit(Some(t.to_string()));
+            }
+        }
         let m = match key {
             Key::Named(Named::ArrowUp) => Move::Up,
             Key::Named(Named::ArrowDown) => Move::Down,
@@ -153,9 +188,10 @@ impl App {
             Key::Named(Named::End) if mods.control() => Move::Last,
             Key::Named(Named::Home) => Move::Home,
             Key::Named(Named::End) => Move::End,
-            _ => return,
+            _ => return Task::none(),
         };
         self.go(m, mods.shift());
+        Task::none()
     }
 
     /// Apply what the service said.
@@ -171,7 +207,107 @@ impl App {
                     self.show(m);
                 }
             }
-            Update::Failed(e) => self.status = e,
+            Update::Edited(cells, changes, unsaved) => {
+                self.pending = self.pending.saturating_sub(1);
+                let model = Arc::make_mut(&mut self.model);
+                for c in cells.iter() {
+                    let at = improv_engine::decode_coord(&c.at);
+                    match &c.value {
+                        Some(v) => model.set_input(c.measure, at, v.clone()),
+                        None => drop(model.inputs.remove(&(c.measure, at))),
+                    }
+                }
+                service::apply_changes(&mut self.snapshot, &changes);
+                self.status = match unsaved {
+                    None => "saved".into(),
+                    Some(e) => e,
+                };
+            }
+            Update::Failed(e) => {
+                self.pending = self.pending.saturating_sub(1);
+                self.status = e;
+            }
+        }
+    }
+
+    /// The cell under the cursor, if it is an input cell of the shown
+    /// measure (derived cells are computed, not entered): its key and type.
+    fn entry_cell(&self) -> Result<(MeasureId, improv_engine::CoordKey), String> {
+        let (Some(l), Some(g)) = (&self.layout, &self.grid) else {
+            return Err("no measure is shown".into());
+        };
+        let m = self
+            .model
+            .measures
+            .get(&l.measure)
+            .ok_or("no measure is shown")?;
+        if m.is_derived() {
+            return Err(format!(
+                "{} is computed by its formula, not entered",
+                m.name.0
+            ));
+        }
+        let k = g
+            .key(self.cursor.row, self.cursor.col)
+            .ok_or("no cell here")?;
+        Ok((l.measure, k))
+    }
+
+    /// Open the editor on the cursor's cell, holding `text` (what was
+    /// typed) or, with `None`, the cell's value.
+    pub fn begin_edit(&mut self, text: Option<String>) -> Task<Message> {
+        let (measure, k) = match self.entry_cell() {
+            Ok(c) => c,
+            Err(e) => {
+                self.status = e;
+                return Task::none();
+            }
+        };
+        let text = text.unwrap_or_else(|| {
+            sheet::value(&self.model, &self.snapshot, measure, &k)
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+        });
+        self.anchor = None;
+        self.editing = Some((self.cursor, text));
+        cosmic::widget::text_input::focus(EDITOR.clone())
+    }
+
+    /// Commit the editor: parse its text by the measure's type and send the
+    /// edit. A text that does not parse keeps the editor open and says why.
+    pub fn commit_edit(&mut self) {
+        let Some((at, text)) = self.editing.take() else {
+            return;
+        };
+        let cursor = std::mem::replace(&mut self.cursor, at);
+        let cell = self.entry_cell();
+        self.cursor = cursor;
+        let (measure, k) = match cell {
+            Ok(c) => c,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        let ty = self.model.measures[&measure].value_type;
+        match crate::entry::parse(&self.model, &self.locale, ty, &text) {
+            Ok(value) => {
+                self.pending += 1;
+                self.status = "saving…".into();
+                let edit = CellEdit {
+                    measure,
+                    at: k,
+                    value,
+                };
+                if self.service.send(Request::Edit(vec![edit])).is_err() {
+                    self.pending -= 1;
+                    self.status = "the model thread stopped: this edit is not applied".into();
+                }
+            }
+            Err(e) => {
+                self.status = e;
+                self.editing = Some((at, text));
+            }
         }
     }
 
@@ -258,12 +394,26 @@ impl cosmic::Application for App {
             Subscription::run_with(self.updates.clone(), updates),
             // Keys no widget took (a focused text field keeps its own).
             keyboard::listen().filter_map(|e| match e {
-                keyboard::Event::KeyPressed { key, modifiers, .. } => {
-                    Some(Message::Key(key, modifiers))
-                }
+                keyboard::Event::KeyPressed {
+                    key,
+                    modifiers,
+                    text,
+                    ..
+                } => Some(Message::Key(key, modifiers, text.map(|t| t.to_string()))),
                 _ => None,
             }),
         ])
+    }
+
+    /// Escape (libcosmic routes it here, focused editor or not): close the
+    /// cell editor unsaved, else drop the range.
+    fn on_escape(&mut self) -> Task<Message> {
+        if self.editing.take().is_some() {
+            self.status.clear();
+        } else {
+            self.anchor = None;
+        }
+        Task::none()
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -292,16 +442,34 @@ impl cosmic::Application for App {
                 }
             }
             Message::Sheet(sheet::Event::Scrolled(to)) => self.origin = to,
-            Message::Sheet(sheet::Event::Clicked(c) | sheet::Event::Activated(c)) => {
+            Message::Sheet(sheet::Event::Clicked(c)) => {
+                if self.editing.is_some() {
+                    self.commit_edit();
+                }
                 self.cursor = c;
                 self.anchor = None;
+            }
+            Message::Sheet(sheet::Event::Activated(c)) => {
+                self.cursor = c;
+                return self.begin_edit(None);
+            }
+            Message::EditText(t) => {
+                if let Some((_, text)) = &mut self.editing {
+                    *text = t;
+                }
+            }
+            Message::EditCommit => {
+                self.commit_edit();
+                if self.editing.is_none() {
+                    self.go(Move::Down, false);
+                }
             }
             Message::Sheet(sheet::Event::Extended(c)) => {
                 self.anchor.get_or_insert(self.cursor);
                 self.cursor = c;
             }
             Message::Sheet(sheet::Event::Resized(size)) => self.size = size,
-            Message::Key(key, mods) => self.key(&key, mods),
+            Message::Key(key, mods, text) => return self.key(&key, mods, text.as_deref()),
         }
         Task::none()
     }
@@ -323,24 +491,45 @@ impl cosmic::Application for App {
             .spacing(cosmic::theme::spacing().space_s)
             .align_y(cosmic::iced::Alignment::Center);
         let body: Element<'_, Message> = match (&self.layout, &self.grid) {
-            (Some(l), Some(g)) => widget::canvas(SheetProgram {
-                sheet: Sheet {
-                    model: &self.model,
-                    snapshot: &self.snapshot,
-                    measure: l.measure,
-                    grid: g,
-                    format: self.model.measures.get(&l.measure).and_then(|m| m.format),
-                    locale: &self.locale,
-                    origin: self.origin,
-                    cursor: self.cursor,
-                    selection: self.selection(),
-                    size: self.size,
-                },
-                on_event: Message::Sheet,
-            })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into(),
+            (Some(l), Some(g)) => {
+                let grid = widget::canvas(SheetProgram {
+                    sheet: Sheet {
+                        model: &self.model,
+                        snapshot: &self.snapshot,
+                        measure: l.measure,
+                        grid: g,
+                        format: self.model.measures.get(&l.measure).and_then(|m| m.format),
+                        locale: &self.locale,
+                        origin: self.origin,
+                        cursor: self.cursor,
+                        selection: self.selection(),
+                        size: self.size,
+                        editing: self.editing.as_ref().map(|(c, _)| *c),
+                    },
+                    on_event: Message::Sheet,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill);
+                match &self.editing {
+                    // The editor sits on its cell, while the cell is in view.
+                    Some((at, text)) => match sheet::cell_rect(g, self.origin, *at, self.size) {
+                        Some(r) => cosmic::iced::widget::stack![
+                            grid,
+                            cosmic::iced::widget::pin(
+                                widget::text_input::text_input("", text.as_str())
+                                    .id(EDITOR.clone())
+                                    .on_input(Message::EditText)
+                                    .on_submit(|_| Message::EditCommit)
+                                    .width(Length::Fixed(r.width))
+                            )
+                            .position(r.position())
+                        ]
+                        .into(),
+                        None => grid.into(),
+                    },
+                    None => grid.into(),
+                }
+            }
             _ => widget::container(widget::text::body(self.status.clone()))
                 .center(Length::Fill)
                 .into(),
@@ -382,6 +571,9 @@ mod tests {
         fn open(&mut self) -> Result<(Model, Snapshot), String> {
             Err("idle".into())
         }
+        fn edit(&mut self, _: Vec<CellEdit>) -> Result<service::Edited, String> {
+            Err("idle".into())
+        }
     }
 
     /// One input measure over A × B, `n` items each.
@@ -419,24 +611,24 @@ mod tests {
         // 1000 × 1000 = 10^6 cells.
         let mut app = opened(square(1000), 20, 5);
         let ctrl = Modifiers::CTRL;
-        app.key(&Key::Named(Named::End), ctrl);
+        let _ = app.key(&Key::Named(Named::End), ctrl, None);
         assert_eq!(app.cursor, Cell { row: 999, col: 999 });
         assert_eq!(app.origin, Cell { row: 980, col: 995 });
-        app.key(&Key::Named(Named::Home), ctrl);
+        let _ = app.key(&Key::Named(Named::Home), ctrl, None);
         assert_eq!((app.cursor, app.origin), (Cell::default(), Cell::default()));
-        app.key(&Key::Named(Named::PageDown), Modifiers::empty());
+        let _ = app.key(&Key::Named(Named::PageDown), Modifiers::empty(), None);
         assert_eq!(app.cursor.row, 20);
         assert_eq!(app.origin.row, 1);
         // An unbound key does nothing.
-        app.key(&Key::Character("q".into()), Modifiers::empty());
+        let _ = app.key(&Key::Named(Named::Insert), Modifiers::empty(), None);
         assert_eq!(app.cursor.row, 20);
     }
 
     #[test]
     fn shift_extends_a_range_and_a_plain_move_drops_it() {
         let mut app = opened(square(10), 20, 5);
-        app.key(&Key::Named(Named::ArrowDown), Modifiers::SHIFT);
-        app.key(&Key::Named(Named::ArrowRight), Modifiers::SHIFT);
+        let _ = app.key(&Key::Named(Named::ArrowDown), Modifiers::SHIFT, None);
+        let _ = app.key(&Key::Named(Named::ArrowRight), Modifiers::SHIFT, None);
         assert_eq!(app.selection(), (Cell::default(), Cell { row: 1, col: 1 }));
         let _ = cosmic::Application::update(
             &mut app,
@@ -444,11 +636,96 @@ mod tests {
         );
         // The anchor stays where Shift started.
         assert_eq!(app.selection(), (Cell::default(), Cell { row: 3, col: 2 }));
-        app.key(&Key::Named(Named::ArrowUp), Modifiers::empty());
+        let _ = app.key(&Key::Named(Named::ArrowUp), Modifiers::empty(), None);
         assert_eq!(
             app.selection(),
             (Cell { row: 2, col: 2 }, Cell { row: 2, col: 2 })
         );
+    }
+
+    /// A window over `model` whose service is a real one, in memory, on its
+    /// thread: tests send edits and wait for the answer.
+    fn live(model: Model) -> (App, futures::channel::mpsc::UnboundedReceiver<Update>) {
+        let (tx, mut rx) = futures::channel::mpsc::unbounded();
+        let svc = service::tests::memory(model);
+        let mut app = App::with_service(Core::default(), String::new(), Box::new(Idle));
+        app.service = service::spawn(Box::new(svc), tx);
+        let opened = next(&mut rx);
+        app.apply(opened);
+        app.size = Size::new(800.0, 600.0);
+        (app, rx)
+    }
+
+    fn next(rx: &mut futures::channel::mpsc::UnboundedReceiver<Update>) -> Update {
+        futures::executor::block_on(futures::StreamExt::next(rx)).expect("an update")
+    }
+
+    fn typed(app: &mut App, s: &str) {
+        let _ = app.key(&Key::Character(s.into()), Modifiers::empty(), Some(s));
+    }
+
+    #[test]
+    fn typing_on_a_cell_edits_it_and_the_derived_cells_follow() {
+        let (mut app, mut rx) = live(revenue_model());
+        // Quantity (100) at Time=2025 (row 0), Product=WidgetA (col 0).
+        typed(&mut app, "7");
+        assert_eq!(app.editing, Some((Cell::default(), "7".into())));
+        let _ = cosmic::Application::update(&mut app, Message::EditText("75".into()));
+        let _ = cosmic::Application::update(&mut app, Message::EditCommit);
+        assert!(app.editing.is_none());
+        assert_eq!(app.cursor, Cell { row: 1, col: 0 }, "Enter moves down");
+        assert_eq!(app.pending, 1);
+        let u = next(&mut rx);
+        app.apply(u);
+        assert_eq!(app.pending, 0);
+        assert_eq!(app.status, "saved");
+        let k: improv_engine::CoordKey = [(1, 10), (2, 20)].into_iter().collect();
+        let rev = sheet::value(&app.model, &app.snapshot, MeasureId(102), &k);
+        assert_eq!(
+            rev,
+            Some(improv_engine::CellValue::num(750.0)),
+            "Revenue = 10 x 75"
+        );
+        let q = sheet::value(&app.model, &app.snapshot, MeasureId(100), &k);
+        assert_eq!(q, Some(improv_engine::CellValue::num(75.0)));
+    }
+
+    #[test]
+    fn a_bad_entry_keeps_the_editor_and_says_why() {
+        let (mut app, _rx) = live(revenue_model());
+        typed(&mut app, "x");
+        let _ = cosmic::Application::update(&mut app, Message::EditCommit);
+        assert!(app.status.contains("not a number"), "{}", app.status);
+        assert_eq!(app.editing, Some((Cell::default(), "x".into())));
+        // Escape closes it unsaved.
+        let _ = cosmic::Application::on_escape(&mut app);
+        assert!(app.editing.is_none());
+        assert_eq!(app.pending, 0);
+    }
+
+    #[test]
+    fn delete_clears_a_cell_and_derived_cells_refuse_entry() {
+        let (mut app, mut rx) = live(revenue_model());
+        let _ = app.key(&Key::Named(Named::Delete), Modifiers::empty(), None);
+        let u = next(&mut rx);
+        app.apply(u);
+        let k: improv_engine::CoordKey = [(1, 10), (2, 20)].into_iter().collect();
+        assert_eq!(
+            sheet::value(&app.model, &app.snapshot, MeasureId(100), &k),
+            None
+        );
+        // Revenue is derived: Enter refuses to open an editor.
+        app.show(MeasureId(102));
+        let _ = app.key(&Key::Named(Named::Enter), Modifiers::empty(), None);
+        assert!(app.editing.is_none());
+        assert!(app.status.contains("computed"), "{}", app.status);
+    }
+
+    #[test]
+    fn ctrl_keys_are_not_typed_into_a_cell() {
+        let (mut app, _rx) = live(revenue_model());
+        let _ = app.key(&Key::Character("c".into()), Modifiers::CTRL, Some("c"));
+        assert!(app.editing.is_none());
     }
 
     #[test]

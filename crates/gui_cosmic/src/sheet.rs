@@ -71,6 +71,22 @@ pub fn visible(size: Size, row_cats: usize, col_cats: usize) -> (usize, usize) {
     (rows, cols)
 }
 
+/// Where the cell `at` is drawn, relative to the canvas, when `origin` is
+/// the view's top-left: `None` when it is out of view.
+pub fn cell_rect(grid: &Grid, origin: Cell, at: Cell, size: Size) -> Option<Rectangle> {
+    let hw = HEAD_W * grid.rows.cats.len().max(1) as f32;
+    let hh = ROW_H * grid.cols.cats.len().max(1) as f32;
+    let (vr, vc) = visible(size, grid.rows.cats.len(), grid.cols.cats.len());
+    let in_view = (origin.row..origin.row + vr).contains(&at.row)
+        && (origin.col..origin.col + vc).contains(&at.col);
+    in_view.then(|| Rectangle {
+        x: hw + (at.col - origin.col) as f32 * COL_W,
+        y: hh + (at.row - origin.row) as f32 * ROW_H,
+        width: COL_W,
+        height: ROW_H,
+    })
+}
+
 /// How many whole data rows and columns fit (the page size for the keys;
 /// at least one each).
 pub fn whole(size: Size, row_cats: usize, col_cats: usize) -> (usize, usize) {
@@ -96,6 +112,8 @@ pub struct Sheet<'a> {
     pub selection: (Cell, Cell),
     /// The size the window last heard of; a different one is reported.
     pub size: Size,
+    /// A cell under an open editor: its value is not drawn.
+    pub editing: Option<Cell>,
 }
 
 /// The canvas's own state: the last click (to tell a double click) and
@@ -287,7 +305,7 @@ impl<Message: Clone> canvas::Program<Message, Theme> for SheetProgram<'_, Messag
                     let edge = Stroke::default().with_color(accent).with_width(2.0);
                     f.stroke_rectangle(at, Size::new(COL_W, ROW_H), edge);
                 }
-                let Some(k) = s.grid.key(row, col) else {
+                let Some(k) = s.grid.key(row, col).filter(|_| s.editing != Some(here)) else {
                     continue;
                 };
                 if let Some(v) = value(s.model, s.snapshot, s.measure, &k) {
@@ -381,11 +399,66 @@ mod tests {
             cursor: Cell::default(),
             selection: Default::default(),
             size: Size::ZERO,
+            editing: None,
         };
         let end = s.scrolled(isize::MAX, 0);
         assert_eq!(end.row, 999_999);
         let k = g.key(end.row, 0).unwrap();
         assert_eq!(k.as_slice(), &[(1, 10_999), (2, 20_999)]);
+    }
+
+    /// What a frame reads at 10^6 input cells: every visible cell's key and
+    /// value. Not timed in CI (hosts vary); prints its time with
+    /// `--nocapture`, and bounds it loosely.
+    #[test]
+    fn a_frame_of_a_million_cell_measure_reads_only_what_it_shows() {
+        let (a, b) = (
+            improv_core_model::CategoryId(1),
+            improv_core_model::CategoryId(2),
+        );
+        let mut m = Model::new();
+        m.add_category(a, "A");
+        m.add_category(b, "B");
+        for i in 0..1000 {
+            m.add_item(improv_core_model::ItemId(10_000 + i), a, format!("a{i}"));
+            m.add_item(improv_core_model::ItemId(20_000 + i), b, format!("b{i}"));
+        }
+        m.add_measure(improv_core_model::Measure {
+            id: MeasureId(1),
+            name: improv_core_model::Name("V".into()),
+            value_type: improv_core_model::ValueType::Number,
+            categories: vec![a, b],
+            kind: improv_core_model::MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        for i in 0..1000 {
+            for j in 0..1000 {
+                m.set_input(
+                    MeasureId(1),
+                    improv_core_model::Coordinate::from_pairs([
+                        (a, improv_core_model::ItemId(10_000 + i)),
+                        (b, improv_core_model::ItemId(20_000 + j)),
+                    ]),
+                    improv_core_model::Value::Number(f64::from(i + j)),
+                );
+            }
+        }
+        let l = Layout::natural(&m, MeasureId(1)).unwrap();
+        let g = Grid::new(&m, &l);
+        let (rows, cols) = visible(Size::new(1920.0, 1200.0), 1, 1);
+        let t = std::time::Instant::now();
+        let mut shown = 0;
+        for r in 500..500 + rows {
+            for c in 500..500 + cols {
+                let k = g.key(r, c).unwrap();
+                shown += usize::from(value(&m, &Snapshot::default(), MeasureId(1), &k).is_some());
+            }
+        }
+        let took = t.elapsed();
+        println!("one 1920x1200 frame at 10^6 cells: {shown} cells read in {took:?}");
+        assert_eq!(shown, rows * cols);
+        assert!(took < std::time::Duration::from_millis(50), "{took:?}");
     }
 
     #[test]
@@ -417,6 +490,7 @@ mod tests {
             cursor: Cell::default(),
             selection: Default::default(),
             size: Size::ZERO,
+            editing: None,
         };
         assert_eq!(s.cell_at(Point::new(5.0, 5.0)), None);
         let p = Point::new(HEAD_W + COL_W + 1.0, ROW_H + 1.0);
