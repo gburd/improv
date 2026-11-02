@@ -15,6 +15,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   / Smart series rule, and NeXT's named colors, or the four grays with
   Color off. It replaces the docked grayscale chart panel. Sources:
   `docs/reviews/2026-11-02-nextstep-fidelity.md`.
+- **GUI: Lotus Improv 1.0's menus and key equivalents.** Read from
+  Improv's own main menu: File has Open…, New, Save, Save As… (Ctrl+Shift+S)
+  and Model Browser… (was View ▸ Model Browser); Edit has Add Category,
+  Add Item, Add Input Measure, Rename and Delete… (were in Worksheet);
+  Worksheet has Recalculate (Ctrl+R, the formula pane's Calc) and Save
+  View; View has New View (was Worksheet ▸ Add Matrix, Ctrl+Shift+V),
+  Close Window (was Remove Matrix) and Swap Rows/Columns (was Pivot,
+  Ctrl+/). The unbuilt File ▸ Close row is gone. The guide's "Key
+  equivalents" table gives the Ctrl (Cmd on macOS) mapping.
 
 ### Fixed
 

@@ -263,7 +263,7 @@ pub struct ImprovApp {
     fn_help: crate::function_help::Browser,
     /// The formula editor last focused: where the help browser inserts.
     formula_target: FormulaEditor,
-    /// Whether the model browser window is shown (View ▸ Model Browser).
+    /// Whether the model browser window is shown (File ▸ Model Browser…).
     show_browser: bool,
     /// Quit was picked once on an unsaved in-memory model; the next Quit
     /// closes. Any other command disarms it.
@@ -322,16 +322,16 @@ pub struct ImprovApp {
     file_focus: bool,
     /// The file panel's path field.
     file_path: String,
-    /// Worksheet ▸ Add …: open the browser at this "new …" line and focus it
+    /// Edit ▸ Add …: open the browser at this "new …" line and focus it
     /// next frame.
     reveal: Option<NewThing>,
-    /// The browser row Worksheet ▸ Rename and Delete… act on (a click picks
+    /// The browser row Edit ▸ Rename and Delete… act on (a click picks
     /// it); `None`, or a deleted one, falls back to the worksheet's measure.
     browser_pick: Option<Thing>,
     /// The browser row being renamed in place: what, the line's text, and
     /// whether the line still has to take the keyboard.
     renaming: Option<(Thing, String, bool)>,
-    /// Worksheet ▸ Delete… is asking to confirm this, with its question.
+    /// Edit ▸ Delete… is asking to confirm this, with its question.
     confirm_delete: Option<(Thing, String)>,
     /// H9: when (egui time) the store's high-water was last checked, and
     /// the outside high-water the Reload panel offers (or was dismissed
@@ -342,7 +342,7 @@ pub struct ImprovApp {
     /// count of frames shown since it was asked for): the import and its
     /// full save block the UI thread for seconds on a large model.
     queued_import: Option<u8>,
-    /// The workspace's size in the last frame: where Add Matrix has room.
+    /// The workspace's size in the last frame: where View ▸ New View has room.
     desk: egui::Vec2,
 }
 
@@ -461,10 +461,10 @@ type GridScroll =
 /// A category tile's height (the NeXT tiles are 17 px tall).
 const TILE_H: f32 = 17.0;
 
-/// The room Add Matrix leaves between a new window and the last one.
+/// The room View ▸ New View leaves between a new window and the last one.
 const WINDOW_GAP: f32 = 8.0;
 
-/// How far Add Matrix cascades a new window from the last one when neither
+/// How far View ▸ New View cascades a new window from the last one when neither
 /// beside nor below it has room: past its title bar (nxwin's 23 px and
 /// border) plus [`WINDOW_GAP`], so the old title stays readable (H1-28).
 /// See [`ImprovApp::add_matrix`].
@@ -497,7 +497,7 @@ const GRID_KEYS: &[(&str, &str)] = &[
 ];
 
 /// What an empty workspace says, right of the menu.
-const EMPTY_HINT: &str = "Empty model: Worksheet ▸ Add Category to begin, or File ▸ Open…";
+const EMPTY_HINT: &str = "Empty model: Edit ▸ Add Category to begin, or File ▸ Open…";
 
 /// Where a fresh canvas's first matrix starts on the workspace: right of the
 /// application menu (at x 4, about 110 wide), as in the NeXT layout.
@@ -703,7 +703,7 @@ pub enum NewThing {
 }
 
 impl NewThing {
-    /// The model browser's line for it (Worksheet ▸ Add … focuses it).
+    /// The model browser's line for it (Edit ▸ Add … focuses it).
     fn field(self) -> egui::Id {
         match self {
             NewThing::Category => egui::Id::unique("new_category"),
@@ -754,7 +754,7 @@ fn save_error(e: improv_store::StoreError) -> String {
     }
 }
 
-/// A category, item, measure or saved view: what Worksheet ▸ Rename and
+/// A category, item, measure or saved view: what Edit ▸ Rename and
 /// Delete… act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Thing {
@@ -2083,8 +2083,8 @@ impl ImprovApp {
         }
     }
 
-    /// Pivot the focused matrix: swap its row and column stacks (the toolbar's
-    /// and the grid header's `Pivot` button).
+    /// Pivot the focused matrix: swap its row and column stacks (View ▸ Swap Rows/Columns,
+    /// Command-/).
     pub fn pivot_rotate(&mut self) {
         self.with_focused(|m, model| m.pivot_rotate(model));
     }
@@ -4817,6 +4817,7 @@ impl ImprovApp {
             }
             Command::Grouping => self.status = self.set_number_format(None).unwrap_or_else(|e| e),
             Command::NewGraph => self.show_chart = true,
+            Command::Recalculate => self.recalculate(),
             Command::ToggleCsv => self.toggle_csv_wizard(),
             Command::FunctionHelp => self.fn_help.toggle(),
             Command::Keys => self.show_keys = !self.show_keys,
@@ -4833,13 +4834,22 @@ impl ImprovApp {
         }
     }
 
+    /// Recompute every formula: the formula pane's Calc and Worksheet ▸
+    /// Recalculate. In the background, "Recalculating…" shows until it lands.
+    fn recalculate(&mut self) {
+        self.rebuild_engine();
+        if self.building.is_none() {
+            self.status = "recalculated".into();
+        }
+    }
+
     /// Show the model browser at `what`'s "new …" line, focused.
     fn reveal_new(&mut self, what: NewThing) {
         self.show_browser = true;
         self.reveal = Some(what);
     }
 
-    /// The category Worksheet ▸ Add Item adds to: the focused worksheet's
+    /// The category Edit ▸ Add Item adds to: the focused worksheet's
     /// first row category, else the model's first.
     fn add_item_target(&self) -> Option<CategoryId> {
         self.focused()
@@ -5201,7 +5211,7 @@ impl ImprovApp {
             let id = self
                 .model
                 .category_by_name(c)
-                .ok_or_else(|| format!("no category {c:?} (Worksheet ▸ Add Category adds one)"))?
+                .ok_or_else(|| format!("no category {c:?} (Edit ▸ Add Category adds one)"))?
                 .id;
             if ids.contains(&id) {
                 return Err(format!("{c} is listed twice"));
@@ -5225,7 +5235,7 @@ impl ImprovApp {
         }
     }
 
-    /// What Worksheet ▸ Rename and Delete… act on: the browser's pick while
+    /// What Edit ▸ Rename and Delete… act on: the browser's pick while
     /// it exists, else the focused worksheet's measure.
     fn edit_target(&self) -> Option<Thing> {
         self.browser_pick
@@ -5349,7 +5359,7 @@ impl ImprovApp {
         ))
     }
 
-    /// Worksheet ▸ Delete…'s question for `t`, saying what goes with it, or
+    /// Edit ▸ Delete…'s question for `t`, saying what goes with it, or
     /// why it cannot be deleted.
     fn delete_question(&self, t: Thing) -> Result<String, String> {
         if self.thing_name(t).is_none() {
@@ -5482,7 +5492,7 @@ impl ImprovApp {
         Ok(msg)
     }
 
-    /// Worksheet ▸ Delete…'s confirmation: a NeXT panel asking the question,
+    /// Edit ▸ Delete…'s confirmation: a NeXT panel asking the question,
     /// with Delete (it takes the keyboard, so Enter or Space confirms) and
     /// Cancel (also Esc or the close box).
     fn delete_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
@@ -5554,7 +5564,7 @@ impl ImprovApp {
     /// The model browser (spec §4.2): a NeXT window, `<file> - Model`, at the
     /// workspace's bottom left, listing Categories (with their items),
     /// Measures (input vs derived; clicking one selects it) and Views.
-    /// View ▸ Model Browser shows and hides it.
+    /// File ▸ Model Browser… shows and hides it.
     fn model_browser(&mut self, ctx: &egui::Context, ws: egui::Rect) {
         let mut open = self.show_browser;
         let rect = egui::Rect::from_min_size(
@@ -5663,7 +5673,7 @@ impl ImprovApp {
                                         })
                                         .header_response;
                                     // A double-click toggles a header twice, so a
-                                    // category renames through Worksheet ▸ Rename.
+                                    // category renames through Edit ▸ Rename.
                                     if header.clicked() {
                                         picked = Some(me);
                                     }
@@ -5804,7 +5814,7 @@ impl ImprovApp {
     /// of saved views as `Name - Worksheet` rows with a worksheet icon (click
     /// selects, double-click opens), a description of the selected view, then
     /// a name field + "Save view" button that captures the current CANVAS.
-    /// A click also picks the view for Worksheet ▸ Rename and Delete… (H1-15);
+    /// A click also picks the view for Edit ▸ Rename and Delete… (H1-15);
     /// the row being renamed is `rename`'s line, whose outcome it returns.
     ///
     /// This is the NeXTSTEP reference's model navigator
@@ -6010,11 +6020,7 @@ impl ImprovApp {
         if !self.show_keys {
             return;
         }
-        let size = egui::vec2(440.0, 480.0);
-        let home =
-            egui::Rect::from_min_size(egui::pos2(ws.right() - size.x - 8.0, ws.top() + 48.0), size);
         let win = crate::nxwin::NxWindow::new("keys", "Keys");
-        let rect = anchored_rect(ctx, win.id(), home);
         let mut open = true;
         let chord = if cfg!(target_os = "macos") {
             "Cmd"
@@ -6039,6 +6045,12 @@ impl ImprovApp {
                     .map(|(k, w)| ((*k).to_owned(), (*w).to_owned())),
             )
             .collect();
+        // Sized to its rows (19 pt each: a 12 pt line, its spacing), the
+        // note under them and the chrome.
+        let size = egui::vec2(440.0, 19.0 * rows.len() as f32 + 80.0);
+        let home =
+            egui::Rect::from_min_size(egui::pos2(ws.right() - size.x - 8.0, ws.top() + 48.0), size);
+        let rect = anchored_rect(ctx, win.id(), home);
         let _ = win
             .closable(&mut open)
             .rect(rect)
@@ -6296,11 +6308,7 @@ impl ImprovApp {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Calc").clicked() {
-                    self.rebuild_engine();
-                    // In the background, "Recalculating…" shows until it lands.
-                    if self.building.is_none() {
-                        self.status = "recalculated".into();
-                    }
+                    self.recalculate();
                 }
             });
         });
@@ -13293,7 +13301,7 @@ mod tests {
         );
     }
 
-    /// H1-28: Add Matrix puts the new window beside the last one, then below
+    /// H1-28: View ▸ New View puts the new window beside the last one, then below
     /// it, on the desk and covering no window; with no room it cascades
     /// past the last one's title bar, still on the desk.
     #[test]
@@ -14458,7 +14466,7 @@ mod tests {
         assert!(close_box_of(&desk.ctx, info).is_none(), "closed again");
     }
 
-    /// (d) View ▸ Model Browser toggles the browser window.
+    /// (d) File ▸ Model Browser… toggles the browser window.
     #[test]
     fn the_model_browser_command_toggles_the_browser() {
         let mut app = build_app(grid_2x2_model());
@@ -16597,7 +16605,7 @@ mod tests {
         .unwrap();
     }
 
-    // -- H7: build a model from scratch (File ▸ New/Open, Worksheet ▸ Add …)
+    // -- H7: build a model from scratch (File ▸ New/Open, Edit ▸ Add …)
 
     fn names_of(model: &Model) -> (Vec<String>, Vec<String>, Vec<String>) {
         let sorted = |mut v: Vec<String>| {
@@ -16857,7 +16865,7 @@ mod tests {
             .expect("Product may have a 2025");
     }
 
-    /// Worksheet ▸ Add Category opens the browser's Categories list at its
+    /// Edit ▸ Add Category opens the browser's Categories list at its
     /// New category line, focused: type a name, press Enter, and the line
     /// clears for the next one.
     #[test]
@@ -17153,7 +17161,7 @@ mod tests {
         assert!(e.starts_with("cannot delete Time: "), "{e}");
         assert!(e.contains("Quantity") && e.contains("Share"), "{e}");
         assert_eq!(*app.model, before, "nothing changed");
-        // The same reason comes from Worksheet ▸ Delete…, with no panel.
+        // The same reason comes from Edit ▸ Delete…, with no panel.
         app.browser_pick = Some(Thing::Measure(MeasureId(102)));
         let ctx = egui::Context::default();
         app.run_command(&ctx, Command::Delete);
@@ -17297,7 +17305,7 @@ mod tests {
 
     /// The browser's rename line: double-click a measure, its name comes up
     /// selected in a line; type and Enter renames. A refused name keeps the
-    /// line; Esc ends it. Worksheet ▸ Rename opens the same line.
+    /// line; Esc ends it. Edit ▸ Rename opens the same line.
     #[test]
     fn double_clicking_a_browser_row_renames_it_in_place() {
         let (mut app, mut desk) = grid_desk();
@@ -17337,7 +17345,7 @@ mod tests {
         assert!(app.renaming.is_none());
         assert!(app.can_undo());
 
-        // Worksheet ▸ Rename, then Esc: nothing changes.
+        // Edit ▸ Rename, then Esc: nothing changes.
         app.run_command(&desk.ctx, Command::Rename);
         desk.settle(&mut app);
         let before = (*app.model).clone();
@@ -17360,7 +17368,7 @@ mod tests {
         assert!(!app.command_enabled(Command::Delete));
     }
 
-    /// H1-15: a click on a view row picks the view, so Worksheet ▸ Rename
+    /// H1-15: a click on a view row picks the view, so Edit ▸ Rename
     /// and Delete… act on it, not on a measure picked before. Save View
     /// without a name opens the rename line on its "view N".
     #[test]
@@ -17391,7 +17399,7 @@ mod tests {
             .center();
         desk.click(&mut app, row);
         assert_eq!(app.browser_pick, Some(Thing::View(v)));
-        // Worksheet ▸ Rename: a taken name is refused, the line stays.
+        // Edit ▸ Rename: a taken name is refused, the line stays.
         app.run_command(&desk.ctx, Command::Rename);
         desk.settle(&mut app);
         let _ = desk.frame(&mut app, vec![egui::Event::Text("Other".into())]);
@@ -17447,7 +17455,7 @@ mod tests {
         let _ = desk.frame(&mut app, vec![egui::Event::Text("Kind".into())]);
         let _ = desk.frame(&mut app, vec![enter()]);
         assert_eq!(app.status, "renamed category Product to Kind");
-        // Clicking an item picks it for Worksheet ▸ Delete….
+        // Clicking an item picks it for Edit ▸ Delete….
         desk.settle(&mut app);
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
         let at = last_text_at(&shapes, "Gizmo")
@@ -17462,7 +17470,7 @@ mod tests {
         assert!(app.renaming.is_none());
     }
 
-    /// Worksheet ▸ Delete… asks first: Cancel (or Esc) keeps it, Enter on
+    /// Edit ▸ Delete… asks first: Cancel (or Esc) keeps it, Enter on
     /// the focused Delete button deletes, autosaved and undoable.
     #[test]
     fn worksheet_delete_asks_before_deleting() {
@@ -17686,21 +17694,21 @@ mod tests {
             .filter(|i| reached.contains(&menu::menu_id().with(*i)))
             .count();
         assert_eq!(menu_rows, rows, "Tab reaches every top-level menu row");
-        // Focus Worksheet with Tab and open it with Enter, then run Add
-        // Matrix the same way.
-        let ws = menu::top_index("Worksheet");
+        // Focus View with Tab and open it with Enter, then run New View
+        // the same way.
+        let ws = menu::top_index("View");
         desk.ctx
             .memory_mut(|m| m.request_focus(menu::menu_id().with(ws)));
         let _ = desk.frame(&mut app, Vec::new());
         key(&mut desk, &mut app, egui::Key::Enter, none);
         assert_eq!(menu::open_submenu(&app.menu), Some(ws), "Enter opens it");
         let before = app.matrix_count();
-        let add = menu::sub_row("Worksheet", "Add Matrix");
+        let add = menu::sub_row("View", "New View");
         desk.ctx
             .memory_mut(|m| m.request_focus(menu::sub_id_pub(ws).with(add)));
         let _ = desk.frame(&mut app, Vec::new());
         key(&mut desk, &mut app, egui::Key::Enter, none);
-        assert_eq!(app.matrix_count(), before + 1, "Enter on Add Matrix");
+        assert_eq!(app.matrix_count(), before + 1, "Enter on New View");
     }
 
     /// The theme's text and fills meet WCAG 2.1 contrast: 4.5:1 for body
@@ -19699,7 +19707,7 @@ mod tests {
         assert_eq!(app.cell_text(MeasureId(102), &rev).as_deref(), Some("1000"));
     }
 
-    /// Worksheet ▸ Add Category, clicked the way a pointer does (the press
+    /// Edit ▸ Add Category, clicked the way a pointer does (the press
     /// and the release a frame apart, the pointer staying on the menu),
     /// then typed with no help: the text lands in the New category line.
     #[test]
@@ -19708,7 +19716,7 @@ mod tests {
         let mut desk = Desk::new();
         desk.settle(&mut app);
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
-        let ws = text_at(&shapes, "Worksheet").expect("the menu");
+        let ws = text_at(&shapes, "Edit").expect("the menu");
         desk.click(&mut app, ws.center());
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
         let item = text_at(&shapes, "Add Category").expect("the submenu");

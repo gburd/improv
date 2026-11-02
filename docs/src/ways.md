@@ -59,7 +59,7 @@ improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
   see its formula.
 - **Add a formula:** type `Margin = Revenue - COGS` on the last line of the
   formula list.
-- **More views:** **Worksheet ▸ Add Matrix** opens another worksheet on the
+- **More views:** **View ▸ New View** opens another worksheet on the
   same model; **Save View** keeps the arrangement.
 
 Every change is saved as you make it. [The Desktop GUI](./gui-tour.md) walks
@@ -257,9 +257,9 @@ bold gaps are tracked as tasks for 1.0.
 | Add an input measure | `add-measure` | `n` | via CSV import | — | `bind_measure` | `input` lines |
 | **Open a model** (file or `postgres://`) | yes | from the command line | File ▸ Open…, or the command line | one per process | its own catalog | — (computed per query) |
 | **Create a model** | `init` | — | File ▸ New | — | `create_model` | inline `improv(source, model)` |
-| Add categories and items | `add-category`, `add-item` | via CSV import | Worksheet ▸ Add Category / Add Item, or type in a tile | — | `bind_category` (items from the column) | `category` lines |
-| Add an input measure | `add-measure` | via CSV import | Worksheet ▸ Add Input Measure | — | `bind_measure` | `input` lines |
-| Rename, delete | — | `r`, `D` | Worksheet ▸ Rename, Delete… | — | `drop_measure` | — |
+| Add categories and items | `add-category`, `add-item` | via CSV import | Edit ▸ Add Category / Add Item, or type in a tile | — | `bind_category` (items from the column) | `category` lines |
+| Add an input measure | `add-measure` | via CSV import | Edit ▸ Add Input Measure | — | `bind_measure` | `input` lines |
+| Rename, delete | — | `r`, `D` | Edit ▸ Rename, Delete… | — | `drop_measure` | — |
 | **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle, `V` rename or delete | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
 | **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
 | Number formats (decimals, thousands separators) | `format`; `show`, `eval`, `stream` print in it | `#` | Format menu | — (values as numbers) | kept in `improv.measure.format`; results are numbers | — |

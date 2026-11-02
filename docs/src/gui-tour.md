@@ -34,32 +34,34 @@ The window has five regions:
 - **Application menu** (floating, top left) — NeXTSTEP's vertical menu. Drag
   its black `Improv` title bar to move it. An item marked with a triangle opens
   a submenu to its right; click it again, press Escape or click elsewhere to
-  close it. **Info ▸ Info Panel…** shows or hides the Info panel; **File ▸
-  New** starts an empty model (type a new file, a `postgres://` URL, or
-  nothing for an in-memory one) and **Open…** opens a store file or URL,
-  both in a small panel whose path field has the keyboard (Esc closes
-  it); **Save** saves the model, **Save As…** writes it
-  to a new file or URL and carries on there (Save does that too for an
-  in-memory model), **Revert to Saved**
-  reloads it from the store (the way out of a save conflict), and
-  **Import/Export CSV…** opens the CSV wizard; **Edit** has Undo and Redo;
-  **Format** sets how the selected measure's numbers show (see [Number
-  formats](#number-formats));
-  **Worksheet** has Pivot, Add Matrix, Remove Matrix, Save View, and **Add
-  Category**, **Add Item** and **Add Input Measure** (see [Building a model
-  from scratch](#building-a-model-from-scratch)), **Rename** and **Delete…**
-  (see [Renaming and deleting](#renaming-and-deleting)); **View** has **Model Browser**, which shows or hides the model browser,
-  then lists the saved views, with a check on the
-  current one, and picking one switches the workspace to it; **Graph ▸ New
-  Graph** opens the [graph window](#graphs); **Help ▸ Functions…** (also F1) opens the
-  [function help](#function-help), **Help ▸ Keys…** a window listing the
+  close it. The menus are Lotus Improv 1.0's, in its order and with its
+  key equivalents, holding the commands this GUI has. **Info ▸ Info
+  Panel…** shows or hides the Info panel. **File ▸ Open…** opens a store
+  file or URL and **New** starts an empty model (type a new file, a
+  `postgres://` URL, or nothing for an in-memory one), both in a small
+  panel whose path field has the keyboard (Esc closes it); **Save** saves
+  the model, **Save As…** writes it to a new file or URL and carries on
+  there (Save does that too for an in-memory model), **Revert to Saved**
+  reloads it from the store (the way out of a save conflict), **Model
+  Browser…** shows or hides the model browser, and **Import/Export CSV…**
+  opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
+  lacked), **Add Category**, **Add Item** and **Add Input Measure** (see
+  [Building a model from scratch](#building-a-model-from-scratch)),
+  **Rename** and **Delete…** (see [Renaming and
+  deleting](#renaming-and-deleting)). **Format** sets how the selected
+  measure's numbers show (see [Number formats](#number-formats)).
+  **Worksheet** has **Recalculate** (the formula pane's Calc) and **Save
+  View**. **View** has **New View**, another worksheet window on the
+  model, **Close Window**, and **Swap Rows/Columns**, then the saved
+  views, with a check on the current one; picking one switches the
+  workspace to it. **Graph ▸ New Graph** opens the [graph
+  window](#graphs). **Help ▸ Functions…** (also F1) opens the [function
+  help](#function-help), **Help ▸ Keys…** a window listing the
   [keys](#keyboard-and-screen-readers), and **Help ▸ User Guide** this
-  guide, online, in the browser; **Hide** minimizes and **Quit** closes the
-  window. Print and Services, and Close in the File
-  menu, are not built yet and draw grayed out. Key equivalents, shown at
-  the right of their item, take Ctrl (Cmd on macOS): `n` new, `o` open,
-  `s` save, `z` undo, `Z` (Shift+Z) or `y` redo, `h` hide, `q` quit. They don't fire while a text
-  field has focus.
+  guide, online, in the browser. **Hide** minimizes and **Quit** closes
+  the window. Print and Services are not built yet and draw grayed out.
+  Key equivalents are shown at the right of their item; a capital letter
+  means Shift too. See [the key equivalents](#key-equivalents).
 - **Model browser** (window, bottom left of the workspace) — titled
   `<file> - Model`. It leads with a white list of saved views, one
   `Name - Worksheet` row each with a worksheet icon: click a row to select it
@@ -69,14 +71,14 @@ The window has five regions:
   canvas. Collapsed below are Categories (with their items) and Measures (each
   labeled `input` or `formula` at the right; click one to select it), each
   list ending in a line that adds one, and the named LAMBDAs, once there
-  are any. Its close box hides it; **View ▸ Model Browser** brings it back.
+  are any. Its close box hides it; **File ▸ Model Browser…** brings it back.
 - **Worksheet windows** (center) — the dark gray workspace holds one
   window per matrix, titled `<matrix> - Worksheet - <file>`. Drag a title bar
   to move a window and its bottom bar to resize it (the left third drags the
   bottom-left corner, the right third the bottom-right). Clicking a window
   makes it key (black title bar) and gives its matrix the keyboard. With more
   than one matrix open, each window's close box removes its matrix.
-  **Worksheet ▸ Add Matrix** opens another window the size of the last
+  **View ▸ New View** opens another window the size of the last
   one, beside it, or below it, where the workspace has room and no window
   is covered; else it cascades from the last one, its title bar showing.
   **Save View** records every window's place and size. A fresh window
@@ -177,14 +179,14 @@ Start `improv-gui` with no model, or choose **File ▸ New** and type a path
 for the new store. The empty workspace says where to begin, right of the
 menu. Then, all undoable with Ctrl+Z and autosaved after each step:
 
-1. **Worksheet ▸ Add Category** opens the model browser's Categories list
+1. **Edit ▸ Add Category** opens the model browser's Categories list
    at its **New category** line. Type `Time`, Enter; the line clears, so
    type `Product` and Enter again.
 2. **Add Item**: open a category in the browser and type into its **New
    item** line, or right-click the category's tile in a worksheet and type
-   into the tile's **New item** line. **Worksheet ▸ Add Item** jumps to the
+   into the tile's **New item** line. **Edit ▸ Add Item** jumps to the
    line of the worksheet's first row category.
-3. **Worksheet ▸ Add Input Measure**: type `Price` for a measure over
+3. **Edit ▸ Add Input Measure**: type `Price` for a measure over
    every category, or name its categories after a colon, `Price:
    Product`, as the TUI's `n` takes them (`Price:` alone is a single
    cell). An empty worksheet shows it. Click a cell and type its value.
@@ -199,7 +201,7 @@ the status line says why; so is a measure name with a comma.
 ## Renaming and deleting
 
 Click a category, an item, a measure or a saved view in the model
-browser to pick it. **Worksheet ▸ Rename** and **Delete…** act on the
+browser to pick it. **Edit ▸ Rename** and **Delete…** act on the
 pick, or on the focused worksheet's measure when nothing is picked.
 **Worksheet ▸ Save View** with the browser's name field empty saves
 "view N" and opens its rename line, so typing names it.
@@ -272,8 +274,32 @@ cancels; `[` and `]` page. The grid's own keys (`h j k l n [ ]`) keep
 their jobs, so a text value that starts with one is typed after Enter. Tab moves
 through the menu, the windows' fields and buttons, and Enter or Space
 presses the focused one, so **Tab** to a menu item and **Enter** opens
-its submenu or runs it. The key equivalents (Ctrl or Cmd: `n o s z Z y h
-q`) work anywhere outside a text field. **Help ▸ Keys…** lists them all.
+its submenu or runs it. The key equivalents work anywhere outside a text
+field. **Help ▸ Keys…** lists them all.
+
+### Key equivalents
+
+NeXT's Command key is **Ctrl** on Linux, the BSDs, illumos and Windows,
+and **Cmd** on macOS. The letters are Improv 1.0's (from its main menu)
+and NeXTSTEP's reserved ones; a capital means Shift too.
+
+| Keys | Command | Menu |
+| --- | --- | --- |
+| Ctrl+O | Open… | File |
+| Ctrl+N | New | File |
+| Ctrl+S | Save | File |
+| Ctrl+Shift+S | Save As… | File |
+| Ctrl+Z | Undo | Edit |
+| Ctrl+Shift+Z, Ctrl+Y | Redo | Edit |
+| Ctrl+R | Recalculate | Worksheet |
+| Ctrl+Shift+V | New View | View |
+| Ctrl+/ | Swap Rows/Columns | View |
+| Ctrl+H | Hide | main menu |
+| Ctrl+Q | Quit | main menu |
+
+Improv's other equivalents (Ctrl+C, X, V copy, cut and paste; Ctrl+P
+print; Ctrl+W close; Ctrl+F Format panel, Ctrl+T Font panel) belong to
+commands not built yet, so they do nothing.
 
 Every control has an accessible name (through AccessKit, which egui feeds
 to Orca, VoiceOver and Narrator): menu items by their label, a cell by

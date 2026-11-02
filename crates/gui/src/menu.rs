@@ -48,6 +48,9 @@ pub enum Command {
     Delete,
     /// Open the n-th entry of the `views` list passed to [`show`].
     OpenView(usize),
+    /// Worksheet ▸ Recalculate (Improv's Command-r): recompute every
+    /// formula, as the formula pane's Calc button does.
+    Recalculate,
     /// Graph ▸ New Graph: chart the focused worksheet's selection in the
     /// graph window.
     NewGraph,
@@ -76,17 +79,22 @@ type Leaf = (&'static str, Option<char>, Option<Command>);
 enum Top {
     /// Opens a submenu. An empty one draws disabled.
     Sub(&'static [Leaf]),
-    /// Opens the View submenu: Model Browser, then the views the caller
-    /// passes to [`show`].
-    Views,
+    /// Opens the View submenu: these rows, then the saved views the
+    /// caller passes to [`show`].
+    Views(&'static [Leaf]),
     /// Runs a command directly (`None`: disabled).
     Leaf(Option<Command>),
 }
 
 use Command as C;
 
-/// The menu tree. Top level per spec §4.1; submenus hold the commands the app
-/// can already run, plus disabled placeholders for File.
+/// The menu tree: Lotus Improv 1.0's own, from its main-menu nib (titles,
+/// order and key equivalents; `docs/reviews/2026-11-02-nextstep-fidelity.md`
+/// §3.1), holding the commands this app has. What Improv did not have (Undo,
+/// Format's decimals, the CSV wizard, Help) sits at the end of the menu it
+/// fits. Rows Improv had that are not built here are left out rather than
+/// drawn disabled, except Print… and Services, which NeXT puts in every
+/// main menu.
 const MENU: &[(&str, Option<char>, Top)] = &[
     (
         "Info",
@@ -97,13 +105,13 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         "File",
         None,
         Top::Sub(&[
-            ("New", Some('n'), Some(C::NewModel)),
             ("Open…", Some('o'), Some(C::OpenModel)),
+            ("New", Some('n'), Some(C::NewModel)),
             ("Save", Some('s'), Some(C::SaveModel)),
-            ("Save As…", None, Some(C::SaveAs)),
+            ("Save As…", Some('S'), Some(C::SaveAs)),
             ("Revert to Saved", None, Some(C::RevertToSaved)),
+            ("Model Browser…", None, Some(C::ModelBrowser)),
             ("Import/Export CSV…", None, Some(C::ToggleCsv)),
-            ("Close", None, None),
         ]),
     ),
     (
@@ -112,6 +120,11 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         Top::Sub(&[
             ("Undo", Some('z'), Some(C::Undo)),
             ("Redo", Some('Z'), Some(C::Redo)),
+            ("Add Category", None, Some(C::AddCategory)),
+            ("Add Item", None, Some(C::AddItem)),
+            ("Add Input Measure", None, Some(C::AddInputMeasure)),
+            ("Rename", None, Some(C::Rename)),
+            ("Delete…", None, Some(C::Delete)),
         ]),
     ),
     (
@@ -131,18 +144,19 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         "Worksheet",
         None,
         Top::Sub(&[
-            ("Pivot", None, Some(C::PivotRotate)),
-            ("Add Matrix", None, Some(C::AddMatrix)),
-            ("Remove Matrix", None, Some(C::RemoveMatrix)),
+            ("Recalculate", Some('r'), Some(C::Recalculate)),
             ("Save View", None, Some(C::SaveView)),
-            ("Add Category", None, Some(C::AddCategory)),
-            ("Add Item", None, Some(C::AddItem)),
-            ("Add Input Measure", None, Some(C::AddInputMeasure)),
-            ("Rename", None, Some(C::Rename)),
-            ("Delete…", None, Some(C::Delete)),
         ]),
     ),
-    ("View", None, Top::Views),
+    (
+        "View",
+        None,
+        Top::Views(&[
+            ("New View", Some('V'), Some(C::AddMatrix)),
+            ("Close Window", None, Some(C::RemoveMatrix)),
+            ("Swap Rows/Columns", Some('/'), Some(C::PivotRotate)),
+        ]),
+    ),
     (
         "Graph",
         None,
@@ -165,7 +179,6 @@ const MENU: &[(&str, Option<char>, Top)] = &[
 
 const TITLE: &str = "Improv";
 const NO_VIEWS: &str = "No Views";
-const MODEL_BROWSER: &str = "Model Browser";
 
 // Geometry, in points (spec §3, §4.1).
 const BORDER: f32 = 1.0;
@@ -213,8 +226,8 @@ fn keyed_items() -> impl Iterator<Item = (char, Option<Command>)> {
 pub fn key_equivalents() -> impl Iterator<Item = (char, String, Option<Command>)> {
     MENU.iter().flat_map(|&(menu, key, ref top)| {
         let leaves: &[Leaf] = match top {
-            Top::Sub(l) => l,
-            _ => &[],
+            Top::Sub(l) | Top::Views(l) => l,
+            Top::Leaf(_) => &[],
         };
         let top = match top {
             Top::Leaf(c) => key.map(|k| (k, menu.to_owned(), *c)),
@@ -279,7 +292,7 @@ pub fn show(
             check: false,
             enabled: match top {
                 Top::Sub(items) => !items.is_empty(),
-                Top::Views => true,
+                Top::Views(_) => true,
                 Top::Leaf(c) => c.is_some_and(&enabled),
             },
             open: state.open == Some(i),
@@ -307,16 +320,16 @@ pub fn show(
                 .iter()
                 .map(|&(a, k, c)| (a, k, c, c.is_some_and(&checked)))
                 .collect(),
-            Top::Views => {
-                let browser = (MODEL_BROWSER, None, Some(C::ModelBrowser), false);
+            Top::Views(l) => {
+                let fixed = l.iter().map(|&(a, k, c)| (a, k, c, false));
                 let list = views
                     .iter()
                     .enumerate()
                     .map(|(n, (name, cur))| (name.as_str(), None, Some(C::OpenView(n)), *cur));
                 if views.is_empty() {
-                    vec![browser, (NO_VIEWS, None, None, false)]
+                    fixed.chain([(NO_VIEWS, None, None, false)]).collect()
                 } else {
-                    std::iter::once(browser).chain(list).collect()
+                    fixed.chain(list).collect()
                 }
             }
             Top::Leaf(_) => Vec::new(),
@@ -388,7 +401,7 @@ pub fn top_index(label: &str) -> usize {
 #[cfg(test)]
 pub fn sub_row(menu: &str, item: &str) -> usize {
     match MENU[top_index(menu)].2 {
-        Top::Sub(l) => l.iter().position(|r| r.0 == item).expect("a submenu row"),
+        Top::Sub(l) | Top::Views(l) => l.iter().position(|r| r.0 == item).expect("a submenu row"),
         _ => panic!("{menu} has no submenu"),
     }
 }
@@ -559,7 +572,7 @@ mod tests {
     use egui::{Event, Modifiers, PointerButton, RawInput};
 
     /// Headless frames of just the menu, with three views ("b" current) and
-    /// Remove Matrix disabled.
+    /// Close Window (View) disabled.
     struct Harness {
         ctx: Context,
         time: f64,
@@ -671,7 +684,7 @@ mod tests {
         assert_eq!(h.click_row(menu_id(), top("Quit")), Some(C::Quit));
         let view = top("View");
         h.click_row(menu_id(), view);
-        assert_eq!(h.click_row(sub_id(view), 3), Some(C::OpenView(2)));
+        assert_eq!(h.click_row(sub_id(view), 5), Some(C::OpenView(2)));
     }
 
     /// H1-22: Format sets the selected measure's decimals and grouping; a
@@ -694,13 +707,47 @@ mod tests {
         assert_eq!(sub_row("Format", "2 Decimals"), 3);
     }
 
-    /// View ▸ Model Browser sits above the views list and dispatches.
+    /// Improv's View menu leads with New View, then Swap Rows/Columns; the
+    /// saved views follow. File ▸ Model Browser… shows the browser.
     #[test]
-    fn view_model_browser_dispatches() {
+    fn view_and_file_rows_are_improvs() {
         let mut h = Harness::new();
         let view = top("View");
         h.click_row(menu_id(), view);
-        assert_eq!(h.click_row(sub_id(view), 0), Some(C::ModelBrowser));
+        assert_eq!(h.click_row(sub_id(view), 0), Some(C::AddMatrix));
+        h.click_row(menu_id(), view);
+        assert_eq!(h.click_row(sub_id(view), 2), Some(C::PivotRotate));
+        let file = top("File");
+        h.click_row(menu_id(), file);
+        let mb = sub_row("File", "Model Browser…");
+        assert_eq!(h.click_row(sub_id(file), mb), Some(C::ModelBrowser));
+        let ws = top("Worksheet");
+        h.click_row(menu_id(), ws);
+        assert_eq!(h.click_row(sub_id(ws), 0), Some(C::Recalculate));
+    }
+
+    /// The top level is Improv 1.0's, in its order (from its main-menu nib),
+    /// plus Help.
+    #[test]
+    fn the_top_level_is_improvs() {
+        let labels: Vec<&str> = MENU.iter().map(|m| m.0).collect();
+        assert_eq!(
+            labels,
+            [
+                "Info",
+                "File",
+                "Edit",
+                "Format",
+                "Worksheet",
+                "View",
+                "Graph",
+                "Print…",
+                "Services",
+                "Help",
+                "Hide",
+                "Quit"
+            ]
+        );
     }
 
     #[test]
@@ -710,17 +757,16 @@ mod tests {
         assert_eq!(h.click_row(menu_id(), top("Services")), None);
         assert_eq!(h.state.open, None, "an empty submenu doesn't open");
 
-        let ws = top("Worksheet");
-        h.click_row(menu_id(), ws);
+        let view = top("View");
+        h.click_row(menu_id(), view);
         assert_eq!(
-            h.click_row(sub_id(ws), 2),
+            h.click_row(sub_id(view), 1),
             None,
-            "Remove Matrix is disabled"
+            "Close Window is disabled"
         );
-        assert_eq!(h.state.open, Some(ws), "a disabled click leaves it open");
+        assert_eq!(h.state.open, Some(view), "a disabled click leaves it open");
         let file = top("File");
         h.click_row(menu_id(), file);
-        assert_eq!(h.click_row(sub_id(file), 6), None, "Close isn't built yet");
         assert_eq!(h.click_row(sub_id(file), 3), Some(C::SaveAs));
     }
 
@@ -781,7 +827,7 @@ mod tests {
             assert_eq!(key_command(key, k.is_uppercase()), c, "{k:?}");
             n += 1;
         }
-        assert_eq!(n, 8, "n o s z Z p h q");
+        assert_eq!(n, 12, "o n s S z Z r V / p h q");
     }
 
     #[test]
@@ -794,7 +840,12 @@ mod tests {
         assert_eq!(key_command(Key::H, false), Some(C::Hide));
         assert_eq!(key_command(Key::N, false), Some(C::NewModel));
         assert_eq!(key_command(Key::O, false), Some(C::OpenModel));
-        assert_eq!(key_command(Key::S, true), None);
+        // Improv's own: Save As, Recalculate, New View, Swap Rows/Columns.
+        assert_eq!(key_command(Key::S, true), Some(C::SaveAs));
+        assert_eq!(key_command(Key::R, false), Some(C::Recalculate));
+        assert_eq!(key_command(Key::V, true), Some(C::AddMatrix));
+        assert_eq!(key_command(Key::Slash, false), Some(C::PivotRotate));
+        assert_eq!(key_command(Key::V, false), None, "Paste is not built");
         assert_eq!(key_command(Key::P, false), None, "Print is disabled");
         assert_eq!(key_command(Key::A, false), None);
     }
@@ -804,11 +855,11 @@ mod tests {
     #[test]
     fn menu_glyphs_are_in_the_installed_fonts() {
         let h = Harness::new();
-        let mut texts: Vec<String> = vec![NO_VIEWS.into(), MODEL_BROWSER.into()];
+        let mut texts: Vec<String> = vec![NO_VIEWS.into()];
         for (label, key, top) in MENU {
             texts.push((*label).into());
             texts.extend(key.map(String::from));
-            if let Top::Sub(leaves) = top {
+            if let Top::Sub(leaves) | Top::Views(leaves) = top {
                 for (label, key, _) in *leaves {
                     texts.push((*label).into());
                     texts.extend(key.map(String::from));
@@ -823,7 +874,7 @@ mod tests {
         });
     }
 
-    /// With no saved views the View submenu lists Model Browser then a
+    /// With no saved views the View submenu lists its own rows then a
     /// disabled "No Views" placeholder.
     #[test]
     fn view_submenu_without_views_shows_the_placeholder() {
@@ -854,6 +905,6 @@ mod tests {
                 .collect();
         }
         assert!(texts.iter().any(|t| t == NO_VIEWS), "{texts:?}");
-        assert!(texts.iter().any(|t| t == MODEL_BROWSER), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "New View"), "{texts:?}");
     }
 }
