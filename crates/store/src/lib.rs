@@ -555,6 +555,47 @@ mod tests {
         let mut fresh = Store::open(target).unwrap();
         fresh.save_changes(&m, &ChangeSet::default()).unwrap();
         assert_eq!(Store::open(target).unwrap().load_model().unwrap(), m);
+
+        // A copied token saves as a moved one does, and this handle keeps its own.
+        let mut e = Store::open(target).unwrap();
+        e.load_model().unwrap();
+        let token = e.save_token();
+        assert_eq!(token.tx(), e.loaded_tx());
+        assert_eq!(e.save_token().tx(), token.tx(), "still held");
+        let mut f = Store::open(target).unwrap();
+        f.set_save_token(&token);
+        f.save_changes(&m2, &ChangeSet::between(&m, &m2)).unwrap();
+        assert_eq!(Store::open(target).unwrap().load_model().unwrap(), m2);
+        // The same token, now stale: another writer moved the store.
+        let mut g = Store::open(target).unwrap();
+        g.set_save_token(&token);
+        let e = g.save_model(&m).unwrap_err();
+        assert!(matches!(e, StoreError::Conflict(_)), "{e}");
+    }
+
+    /// The access policies on a Mentat file: unset, set, changed, cleared,
+    /// each moving the version on.
+    #[test]
+    fn mentat_stores_policies() {
+        let mut s = Store::open("").unwrap();
+        assert_eq!(s.load_policies().unwrap(), None);
+        assert_eq!(s.policy_version().unwrap(), 0);
+        let text = "permit (principal, action, resource);";
+        assert_eq!(s.save_policies(Some((text, "{}"))).unwrap(), 1);
+        let p = s.load_policies().unwrap().unwrap();
+        assert_eq!(
+            (p.version, p.text.as_str(), p.groups.as_str()),
+            (1, text, "{}")
+        );
+        assert_eq!(
+            s.save_policies(Some(("forbid (principal, action, resource);", "")))
+                .unwrap(),
+            2
+        );
+        assert_eq!(s.policy_version().unwrap(), 2);
+        assert_eq!(s.save_policies(None).unwrap(), 3);
+        assert_eq!(s.load_policies().unwrap(), None);
+        assert_eq!(s.policy_version().unwrap(), 3);
     }
 
     #[test]
@@ -615,5 +656,19 @@ mod tests {
         let url = format!("{url}?model=store_{}", std::process::id());
         assert!(matches!(Store::open(&url).unwrap(), Store::Pg(_)));
         exercise(&url);
+        // pg_improv keeps a Postgres model's policies (not yet): none, at
+        // version 0, and setting or clearing them is refused, not dropped.
+        let mut s = Store::open(&url).unwrap();
+        assert_eq!(s.load_policies().unwrap(), None);
+        assert_eq!(s.policy_version().unwrap(), 0);
+        for set in [Some(("permit (principal, action, resource);", "")), None] {
+            let e = s.save_policies(set).unwrap_err();
+            assert!(matches!(e, StoreError::Unsupported(_)), "{e}");
+            assert_eq!(
+                e.to_string(),
+                "a Postgres model's policies are kept by pg_improv, which cannot store them yet"
+            );
+        }
+        assert_eq!(s.policy_version().unwrap(), 0, "nothing stored");
     }
 }
