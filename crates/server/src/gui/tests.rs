@@ -484,3 +484,56 @@ async fn a_change_stream_outlives_the_request_timeout() {
         "{next:?}"
     );
 }
+
+/// The same filtering with the model's stored Cedar policies and no test
+/// hook: what the server does in production. Ann (analyst without
+/// WidgetB) gets her part of bob's edit, nothing of WidgetB, and no
+/// event at all for a change only to WidgetB.
+#[tokio::test]
+async fn the_change_stream_is_filtered_by_the_stored_cedar_policies() {
+    let path = temp_path("cedar-gui.db");
+    let p = path.to_str().unwrap();
+    let mut s = improv_store::Store::open(p).unwrap();
+    s.save_model(&revenue_model()).unwrap();
+    let who = |n: &str| improv_policy::templates::Who::User(n.into());
+    let r = improv_policy::templates::render;
+    let text = [
+        r("analyst", &who("ann"), &[], &[ItemId(21)]).unwrap(),
+        r("admin", &who("bob"), &[], &[]).unwrap(),
+    ]
+    .join("\n");
+    s.save_policies(Some((&text, ""))).unwrap();
+    let tok = |n: &str, secret: &str| Token {
+        name: n.into(),
+        scope: Scope::Write,
+        secret: secret.into(),
+    };
+    let auth = Auth::Tokens(vec![tok("ann", ANN), tok("bob", BOB)]);
+    let app = app(Arc::new(AppState::new(p.into(), auth, None)));
+    let ann = stream(&app, ANN, None).await;
+    let first = events(ann, 1).await;
+    let v0 = first[0]["version"].as_str().unwrap().to_owned();
+    let both = json!({"edits": [
+        {"measure": 101, "at": [[1, 10], [2, 20]], "value": 7},
+        {"measure": 101, "at": [[1, 10], [2, 21]], "value": 8}]});
+    let (st, _) = call(&app, req("POST", "/v1/cells", BOB, Some(both))).await;
+    assert_eq!(st, StatusCode::OK);
+    let got = events(stream(&app, ANN, Some(&v0)).await, 1).await;
+    let text = got[0].to_string();
+    assert!(text.contains("[1,10],[2,20]"), "{text}");
+    assert!(!text.contains("21"), "nothing of WidgetB: {text}");
+    // An edit of WidgetB only: ann's stream stays quiet.
+    let v1 = got[0]["version"].as_str().unwrap().to_owned();
+    let hidden = json!({"edits": [{"measure": 100, "at": [[2, 21]], "value": 3}]});
+    call(&app, req("POST", "/v1/cells", BOB, Some(hidden))).await;
+    let quiet = tokio::time::timeout(
+        Duration::from_millis(800),
+        events(stream(&app, ANN, Some(&v1)).await, 1),
+    )
+    .await;
+    assert!(quiet.is_err(), "no event for a hidden change: {quiet:?}");
+    // And ann may not edit at all.
+    let mine = json!({"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 1}]});
+    let (st, _) = call(&app, req("POST", "/v1/cells", ANN, Some(mine))).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}
