@@ -118,6 +118,11 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`improv` no longer overflows Windows' 1 MiB main-thread stack.** With
+  `improv policy`'s subcommands, clap's command tree outgrew it in a debug
+  build: every command, `--version` included, crashed. The CLI now parses
+  and runs on an 8 MiB thread of its own, and CI runs the CLI tests on
+  Linux under a 1 MiB stack too (`IMPROV_TEST_STACK_KB=1024`).
 - **Autocomplete quotes a name that is a formula keyword.** A measure or
   category named `Where`, `Into`, `Except` or `All` was inserted bare by
   the GUI's autocomplete and then read as the keyword. It is inserted

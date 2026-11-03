@@ -35,7 +35,26 @@ mod policy;
 use args::{Cli, Cmd};
 use clap::{CommandFactory, Parser};
 
+/// The CLI's own stack: clap builds the whole command tree on the stack of
+/// the thread that parses (`Cli::try_parse`), and with `improv policy` that
+/// passed Windows' 1 MiB main thread in a debug build (every command
+/// overflowed, `--version` included). 8 MiB is Linux's default main stack.
+const CLI_STACK: usize = 8 << 20;
+
 fn main() {
+    let cli = std::thread::Builder::new()
+        .name("improv".into())
+        .stack_size(CLI_STACK)
+        .spawn(cli_main)
+        .expect("start the CLI thread");
+    // `cli_main` exits the process itself on every error; a panic there has
+    // already printed its message (and the broken-pipe hook exits 141).
+    if cli.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn cli_main() {
     quiet_broken_pipe();
     let cli = Cli::try_parse().unwrap_or_else(|e| exit_usage(e));
     if let Err(e) = run(cli) {

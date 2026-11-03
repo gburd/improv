@@ -159,6 +159,14 @@ jobs:
       - name: Doctests
         working-directory: improv
         run: cargo test --workspace --doc ${{ matrix.features }}
+      # The CLI under Windows' 1 MiB main-thread stack, on Linux too, so a
+      # stack overflow there fails the fast Linux job, not only Windows.
+      - name: CLI under a 1 MiB main stack
+        if: runner.os == 'Linux' && matrix.features == ''
+        working-directory: improv
+        env:
+          IMPROV_TEST_STACK_KB: "1024"
+        run: cargo nextest run -p improv_cli
 
   # Coverage gate: every crate >= 90% functions AND >= 90% branches (inline
   # test modules excluded; see CONTRIBUTING.md "Coverage"). Branch coverage
