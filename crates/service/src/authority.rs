@@ -381,7 +381,7 @@ impl Authority {
                 .filter(|_| shown)
                 .map(|f| formula_text(&self.model, f)),
             error: derived.filter(|_| shown).and_then(|f| {
-                let ctx = improv_engine::compiler::CompileContext::new(&self.model.measures);
+                let ctx = improv_engine::compiler::CompileContext::for_model(&self.model);
                 improv_engine::compiler::compile_formula(&ctx, id, f)
                     .err()
                     .map(|e| e.to_string())

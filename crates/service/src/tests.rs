@@ -871,3 +871,29 @@ fn a_policy_change_is_seen_by_the_next_request() {
     assert!(sees(&mut a, "ann"));
     assert!(a.loads <= before + 1, "a policy set reloads at most once");
 }
+
+fn define(text: &str) -> Request {
+    Request::Define(DefineReq {
+        definition: Some(text.into()),
+        ..Default::default()
+    })
+}
+
+/// A formula that calls a named LAMBDA, or reads its categories' items
+/// (POSITION, @ITEMCOUNT), builds: the structure reports no error for it.
+/// The error is checked against the whole model, as the engine builds it.
+#[test]
+fn a_formula_using_a_lambda_or_a_category_has_no_error() {
+    let (mut a, _) = seeded();
+    done(&mut a, define("Half = LAMBDA(x, x / 2)"));
+    let mid = done(&mut a, define("Mid = Half(Revenue)")).id.unwrap();
+    let rank = done(&mut a, define("Rank = POSITION(Time)")).id.unwrap();
+    let years = done(&mut a, define("Years = @ITEMCOUNT(Time)")).id.unwrap();
+    let s = a.structure(&ann());
+    for id in [mid, rank, years] {
+        let x = s.measure(id).unwrap();
+        assert_eq!(x.error, None, "{}", x.name);
+    }
+    assert_eq!(cell(&a, mid, &A25), Some(WireValue::Number(500.0)));
+    assert_eq!(cell(&a, years, &[]), Some(WireValue::Number(2.0)));
+}

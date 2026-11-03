@@ -198,6 +198,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   poller did, the poller saw nothing new and no stream heard of it: an
   open page missed that change (a new category or measure) until the next
   one. Anything that moves the model's version now wakes the streams.
+- **`/v1/structure` no longer reports an error for a formula that builds.**
+  A measure calling a named LAMBDA (`Half(Revenue)`) or reading a
+  category's items (`POSITION(Time)`, `@ITEMCOUNT(Time)`) was listed with
+  an `error` ("unknown function", "needs the model's categories") while
+  its cells computed. The check now compiles against the whole model, as
+  the engine does.
 - **`improv` no longer overflows Windows' 1 MiB main-thread stack.** With
   `improv policy`'s subcommands, clap's command tree outgrew it in a debug
   build: every command, `--version` included, crashed. The CLI now parses
