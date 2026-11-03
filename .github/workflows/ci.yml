@@ -428,7 +428,9 @@ jobs:
     name: Web GUI in Chromium
     runs-on: ubuntu-latest
     needs: [fmt, clippy]
-    timeout-minutes: 30
+    # Release builds of the server, the CLI and the wasm GUI, cold: past
+    # 30 minutes on a 4-core runner (the first run was cancelled at 30).
+    timeout-minutes: 60
     container:
       image: rust:1.97-trixie
     steps:
@@ -450,14 +452,12 @@ jobs:
           rustup target add wasm32-unknown-unknown
           v=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)
           cargo install wasm-bindgen-cli --version "$v" --locked
-      # The golden was taken with nixpkgs' Chromium 156 (swiftshader); this
-      # is Debian's. Until a run here shows they draw the same, compare
-      # nothing and keep the shots (set WEB_GOLDEN to 1 once they match).
+      # The golden was taken with nixpkgs' Chromium 156; Debian's draws it
+      # identically (0 pixels differ, checked in this container image).
       - name: Two browser sessions
         working-directory: improv
         env:
           CHROMIUM: chromium
-          WEB_GOLDEN: "0"
         run: scripts/web-e2e.sh
       - name: Upload screenshots
         if: always()
