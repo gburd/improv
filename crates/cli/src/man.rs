@@ -542,7 +542,10 @@ fn md_text(t: &str) -> String {
 /// `docs/src/http-reference.md`: every operation of `docs/openapi.json`,
 /// with its scope, parameters, body and responses.
 fn http_reference() -> String {
-    let doc = sorted(serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap());
+    // Sorted, so the page does not depend on serde_json's features.
+    let doc = improv_core_model::json::sorted(
+        serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap(),
+    );
     let text = |v: &serde_json::Value| v.as_str().unwrap_or_default().to_string();
     let mut s = format!(
         "# HTTP API reference\n\n\
@@ -630,23 +633,6 @@ fn http_reference() -> String {
         );
     }
     s
-}
-
-/// `v` with every object's keys in order. serde_json keeps a document's
-/// order instead when a crate in the build (cedar-policy) turns on its
-/// `preserve_order` feature; the page must not depend on that.
-fn sorted(v: serde_json::Value) -> serde_json::Value {
-    match v {
-        serde_json::Value::Object(o) => {
-            let mut pairs: Vec<_> = o.into_iter().collect();
-            pairs.sort_by(|a, b| a.0.cmp(&b.0));
-            serde_json::Value::Object(pairs.into_iter().map(|(k, v)| (k, sorted(v))).collect())
-        }
-        serde_json::Value::Array(a) => {
-            serde_json::Value::Array(a.into_iter().map(sorted).collect())
-        }
-        v => v,
-    }
 }
 
 const REPO: &str = "https://codeberg.org/gregburd/improv/src/branch/main";

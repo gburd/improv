@@ -581,3 +581,25 @@ fn calc_threads() {
     }
     assert_eq!(c.len(), 1);
 }
+
+/// The inputs' key order never changes a result: input i is measure i+1 in
+/// whatever order serde_json's map yields (sorted, or the document's when a
+/// crate in the build turns on `preserve_order`), for compiling and for
+/// evaluating alike.
+#[test]
+fn input_key_order_does_not_change_a_result() {
+    let c = Cache::new(16);
+    for (a, b) in [
+        (r#"{"x": 2, "y": 10}"#, r#"{"y": 10, "x": 2}"#),
+        (r#"{"b": "hi", "a": 3}"#, r#"{"a": 3, "b": "hi"}"#),
+    ] {
+        for f in ["x - y", "y / x", "IF(a > 1, b, \"no\")"] {
+            let one = c.calc(f, Some(a));
+            assert_eq!(one, c.calc(f, Some(b)), "{f} over {a} and {b}");
+        }
+    }
+    let one = calc::parse_inputs(Some(r#"{"y": 1, "x": 2}"#)).unwrap();
+    let mut names: Vec<&str> = one.iter().map(|(n, _)| n.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["x", "y"]);
+}

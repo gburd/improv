@@ -54,7 +54,6 @@ this project follows [Semantic Versioning](https://semver.org/).
   status indicator between its enable box and its number: a check when it
   checks with no errors, a cross when it has one (the error is described
   under the row). Screen readers hear "Formula Revenue checks".
-
 - **Access policies, in Cedar.** A model can carry policies, written in
   [Cedar](https://www.cedarpolicy.com), that say per user, role and group
   who may see and change which measures, items, cells, categories and
@@ -127,6 +126,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   makes the knob jump there, as NeXTSTEP's did, instead of paging by a
   view; Alt+click on a scroll arrow scrolls a view less one line (NeXT's
   Alternate-click), on both scrollers.
+- **`improv export` lists the model's maps in another order.**
+  cedar-policy turns on serde_json's `preserve_order` feature, which the
+  `improv` binary now links. Every JSON output was checked. The only one
+  whose bytes change is `improv export`: its categories, items, measures
+  and other maps come out in the order the model holds them, which was
+  already different from run to run, not sorted. The JSON value is the
+  same, and a model saved by 0.12.2 and then by this release is
+  identical (checked against the v0.12.2 binary). `improv-server`'s audit
+  lines and `/v1/scheduler/status`, `/v1/nl/parse`'s formula and the
+  generated HTTP reference now sort their keys themselves, so none of
+  them depends on which crates a binary links. The server, GUI, TUI,
+  pg_improv and the DuckDB extension do not get the feature.
 
 ### Fixed
 

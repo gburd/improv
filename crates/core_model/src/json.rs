@@ -8,6 +8,26 @@
 
 use serde::{de::DeserializeOwned, Serialize};
 
+/// `v` with every object's keys in sorted order, at every depth. Anything
+/// that builds a [`serde_json::Value`] object and writes it where order
+/// shows (a response body, a log line, a generated page) goes through
+/// this: serde_json keeps insertion order instead of sorting when a crate
+/// in the build turns on its `preserve_order` feature (cedar-policy does),
+/// and the output must not depend on which crates are linked in. Typed
+/// values need nothing: a struct serializes in field order either way.
+pub fn sorted(v: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::Object(o) => {
+            let mut pairs: Vec<(String, Value)> = o.into_iter().collect();
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(pairs.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(sorted).collect()),
+        v => v,
+    }
+}
+
 /// The deepest JSON [`from_str`] reads: a whole model (5 levels) holding a
 /// formula (1) [`crate::MAX_STORED_FORMULA_DEPTH`] deep (3 levels per tree
 /// level, 1 more for its leaf), with room.
@@ -87,6 +107,24 @@ fn nesting(json: &[u8]) -> usize {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    /// Keys come out sorted at every depth, whatever order they were
+    /// inserted in (which `preserve_order` would otherwise keep).
+    #[test]
+    fn sorted_orders_keys_at_every_depth() {
+        let mut inner = serde_json::Map::new();
+        inner.insert("z".into(), 1.into());
+        inner.insert("a".into(), 2.into());
+        let mut outer = serde_json::Map::new();
+        outer.insert(
+            "y".into(),
+            serde_json::Value::Array(vec![inner.clone().into()]),
+        );
+        outer.insert("b".into(), inner.into());
+        let out = super::sorted(outer.into()).to_string();
+        assert_eq!(out, r#"{"b":{"a":2,"z":1},"y":[{"a":2,"z":1}]}"#);
+        assert_eq!(super::sorted(serde_json::json!(3)), serde_json::json!(3));
+    }
+
     use super::*;
 
     #[test]

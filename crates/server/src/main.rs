@@ -273,7 +273,7 @@ impl AuditLog {
     }
 
     fn record(&self, entry: &JsonValue) {
-        let line = format!("{entry}\n");
+        let line = format!("{}\n", improv_core_model::json::sorted(entry.clone()));
         match self {
             AuditLog::Stderr => eprint!("{line}"),
             AuditLog::File(f) => {
@@ -1153,12 +1153,12 @@ async fn scheduler_status_handler(State(state): State<Arc<AppState>>) -> Json<Js
         None => Json(json!({ "enabled": false })),
         Some(status) => {
             let s = status.lock().unwrap_or_else(PoisonError::into_inner);
-            Json(json!({
+            Json(improv_core_model::json::sorted(json!({
                 "enabled": true,
                 "tick_secs": s.tick_secs,
                 "last_tick_refreshed": s.last_tick_refreshed,
                 "last_error": s.last_error,
-            }))
+            })))
         }
     }
 }
@@ -1383,9 +1383,9 @@ async fn nl_parse(
     let model = load_model(&state).await?;
     let ctx = NlContext::new(&model);
     match parse_nl_formula(&ctx, &req.text) {
-        Ok(formula) => Ok(Json(
+        Ok(formula) => Ok(Json(improv_core_model::json::sorted(
             serde_json::to_value(&formula).map_err(|e| ApiError::Internal(e.to_string()))?,
-        )),
+        ))),
         Err(e) => Err(ApiError::BadRequest(e.to_string())),
     }
 }
@@ -3092,6 +3092,38 @@ pub(crate) mod tests {
         assert_eq!(
             (&lines[0]["who"], &lines[0]["status"]),
             (&json!("anonymous"), &json!(408))
+        );
+    }
+
+    #[test]
+    fn audit_lines_and_scheduler_status_keep_their_key_order() {
+        // Sorted whatever serde_json's features: what a log parser or a
+        // byte-for-byte check of a response sees does not depend on them.
+        let path = temp_path("order.log");
+        let log = AuditLog::open(path.to_str()).unwrap();
+        let mut entry = serde_json::Map::new();
+        for k in ["who", "audit", "ts"] {
+            entry.insert(k.into(), k.into());
+        }
+        log.record(&entry.into());
+        let line = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            line,
+            "{\"audit\":\"audit\",\"ts\":\"ts\",\"who\":\"who\"}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn scheduler_status_keys_are_sorted() {
+        let status = Arc::new(std::sync::Mutex::new(scheduler::SchedulerStatus {
+            tick_secs: 5,
+            ..Default::default()
+        }));
+        let state = Arc::new(AppState::new("".into(), Auth::Disabled, Some(status)));
+        let Json(v) = scheduler_status_handler(State(state)).await;
+        assert_eq!(
+            v.to_string(),
+            r#"{"enabled":true,"last_error":null,"last_tick_refreshed":[],"tick_secs":5}"#
         );
     }
 
