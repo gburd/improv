@@ -688,7 +688,9 @@ pub fn on_path(name: &str) -> bool {
 }
 
 /// Run `program args`, writing `data` to its standard input; its error
-/// output is the error when it fails.
+/// output is the error when it fails. Not on Windows, which prints through
+/// [`print_windows`] instead.
+#[cfg(not(windows))]
 pub fn spool(program: &str, args: &[String], data: &[u8]) -> Result<(), String> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
@@ -1107,6 +1109,7 @@ mod tests {
 
     /// `IMPROV_PRINT_LIVE=<printer>` (with `lp` or `lpr` on PATH, and
     /// CUPS_SERVER if the scheduler is not the system's) sends a real job.
+    #[cfg(not(windows))]
     #[test]
     fn a_live_job_reaches_the_print_system() {
         let Ok(printer) = std::env::var("IMPROV_PRINT_LIVE") else {
