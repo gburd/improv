@@ -130,6 +130,20 @@ above 200 pixels off `docs/reviews/golden/cosmic-1200x800.png`. A change
 to its look refreshes the golden with `scripts/cosmic-shot-check.sh
 --update`, made in the `rust:1.97-trixie` container as for `gui-shot`.
 
+## The web GUI in a browser
+
+`scripts/web-e2e.sh` builds the web GUI (`crates/gui_web`), `improv` and
+`improv-server`, and drives two browser sessions in headless Chromium:
+an edit in one must reach the other within a second, a server restart
+must be caught up, and a pivot, a located formula error, undo and a page
+item are checked. It then compares the first frame with
+`docs/reviews/golden/web-1280x713.png`, the same way (`--update` writes
+it). It needs the `wasm32-unknown-unknown` target, `wasm-bindgen-cli`
+at `Cargo.lock`'s version, Chromium (`CHROMIUM=…`) and python3 with
+`websocket-client`. The golden was taken with nixpkgs' Chromium 156;
+CI's `web-e2e` job uses Debian's, so it runs the sessions with
+`WEB_GOLDEN=0` and uploads the screenshots.
+
 ## Docs
 
 If you change a public API, the CLI surface, the formula/CNL grammar, the

@@ -163,6 +163,13 @@ try:
     Q, R = "Quantity", "Revenue"
     at = [[1, 10], [2, 20]]
     loaded = lambda t, m: (c := t.cell(m, at)) and c["text"] not in ("", "…") and c
+    # The golden: B as it first draws the model (before any edit, the
+    # pointer off the windows), once every window has its cells.
+    b.wait(lambda: loaded(b, R) and loaded(b, Q) and b.cell("Price", [[2, 20]]), "B's cells")
+    b.wait(lambda: b.js("document.body.dataset.live") == "true", "B's stream", secs=10)
+    b.mouse("mouseMoved", 1270, 700, 0, button="none")
+    time.sleep(1.0)
+    b.shot(os.path.join(out, "web-golden.png"))
     price = float(a.wait(lambda: (c := a.cell("Price", [[2, 20]])) and c["text"] != "…" and c,
                          "Price[Widget]")["text"])
     q = a.wait(lambda: loaded(a, Q), "Quantity[2025Q1, Widget]")
@@ -279,6 +286,15 @@ try:
     print(f"screenshots in {out}")
 finally:
     chrome.terminate()
-    chrome.wait()
+    try:
+        chrome.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        chrome.kill()
+        chrome.wait()
     import shutil
-    shutil.rmtree(prof, ignore_errors=True)
+    # Chromium's helpers may still be writing the profile for a moment.
+    for _ in range(20):
+        shutil.rmtree(prof, ignore_errors=True)
+        if not os.path.exists(prof):
+            break
+        time.sleep(0.25)

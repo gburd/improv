@@ -104,7 +104,10 @@ or the TUI with a screen reader.
 
 ## Testing it
 
-`crates/gui_web/e2e/e2e.sh` builds a model with the CLI, serves it and a
+`scripts/web-e2e.sh` runs it all: it builds the web GUI, `improv` and
+`improv-server`, runs the end-to-end check below, and compares the first
+frame with the golden, `docs/reviews/golden/web-1280x713.png` (`--update`
+replaces it). `crates/gui_web/e2e/e2e.sh` builds a model with the CLI, serves it and a
 web build with `improv-server`, and drives two browser sessions in
 headless Chromium over the DevTools protocol (`drive.py`). It edits a
 cell in one and checks the other shows it, recalculated, within a second.

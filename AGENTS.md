@@ -62,7 +62,8 @@ The full "tidy" gate — all must be error- AND warning-free:
    generated pages and completions first, if their sources changed)
 7. `scripts/verify.sh` (the Verus proofs in `crates/verified`: 0 errors;
    needs the pinned Verus release, see the script)
-8. `scripts/gui-shot-check.sh` (GUI screenshot vs the golden) and
+8. `scripts/gui-shot-check.sh` (GUI screenshot vs the golden),
+   `scripts/web-e2e.sh` (the web GUI in headless Chromium, and its golden) and
    `scripts/coverage.sh` (≥ 90% functions and branches per crate)
 9. pg_improv, its own Cargo workspace: `ci/pg_improv.sh <PGMAJOR>` runs
    fmt, clippy, `cargo pgrx test`, pgspot, `tests/txn.sh`, `tests/logical.sh`,
