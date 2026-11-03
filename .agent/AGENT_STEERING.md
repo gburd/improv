@@ -84,11 +84,17 @@ criteria" are the bar. Mark tasks done there as they land.
   (the release still attaches `improv.rb`). B8 is done (390 B/edge, warm
   re-solve 3.5× faster); the plan's row has the numbers.
 
-- **COSMIC GUI (branch `work/cosmic`, 2026-11-02):** `crates/gui_cosmic`,
-  a second desktop GUI on libcosmic, pinned by its own `Cargo.lock`.
-  The spike runs on Linux, FreeBSD (Xvfb), illumos (a live COSMIC
-  session on lixi) and Windows arm64 (builds and starts; window
-  unverified over ssh). Parity stages 1–10 are in the review note.
+- **COSMIC GUI (branch `work/cosmic`, 2026-11-02):** `crates/gui_cosmic`
+  (`improv-cosmic`), a second desktop GUI on libcosmic, its own workspace
+  pinned by its `Cargo.lock`. Parity stages 1–10 landed (grid at 10^6
+  cells, entry, formulas with located errors via `improv_client`, tile
+  pivoting, views, charts, TSV+HTML copy/paste, portal open/save/print,
+  undo); guide `docs/src/cosmic-gui.md`, `improv-cosmic(1)`, CI jobs
+  `gui-cosmic` and `cosmic-shot`. Runs on Linux, FreeBSD (Xvfb) and Solnix
+  (its COSMIC session); Windows builds and tests (window unseen: nobody
+  logged on at santorini). Windows release blockers (rich copy, DnD) wait
+  on libcosmic; `tests/windows_gaps.rs` re-checks them at each pin move.
+  Left: the review note's "Parity reached" and the guide's "Not yet".
 
 - **Done since the last status:** H7/H8 (TUI and GUI build models from
   scratch, define measures and LAMBDAs, undo), H6 (GUI crash safety; two

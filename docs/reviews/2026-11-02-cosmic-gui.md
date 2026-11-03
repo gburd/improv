@@ -319,7 +319,17 @@ man pages. Checked with a real pointer and keyboard under Xvfb (X11), on
 Solnix in its COSMIC session (the grid), and by `xclip` (copy and paste
 on X11). Not exercised: the portal dialogs (no host here runs
 xdg-desktop-portal) and the Wayland clipboard's HTML (no wl-clipboard on
-lixi). What `improv-gui` has that this does not yet: the guide's "Not
+lixi).
+
+The final tree (all ten stages, rebased on main `d3eb4e5`), rebuilt on
+each host:
+
+| Host | Build | Tests | Ran |
+|---|---|---|---|
+| werk (Linux) | yes | 67 + 2 pass, cargo-deny ok | Xvfb (X11, wgpu); `scripts/cosmic-shot-check.sh` 0 px |
+| lixi (Solnix) | `ci/solnix-build.sh`, 4m27 | not run | its COSMIC session (Wayland, tiny-skia), full UI captured |
+| nuc (FreeBSD) | yes | not run | Xvfb (X11, wgpu on llvmpipe), full UI captured |
+| santorini (Windows arm64) | yes | 67 + 2 pass | no window: nobody logged on | What `improv-gui` has that this does not yet: the guide's "Not
 yet".
 
 ## Risks
