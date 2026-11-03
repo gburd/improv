@@ -537,3 +537,27 @@ async fn the_change_stream_is_filtered_by_the_stored_cedar_policies() {
     let (st, _) = call(&app, req("POST", "/v1/cells", ANN, Some(mine))).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
+
+/// The per-caller stream cap counts by the principal the policies see
+/// (`Caller::principal().user`, the token's name), never by the secret:
+/// the cap's table holds bob's name and no secret, and a read token is
+/// its own caller.
+#[tokio::test]
+async fn the_stream_cap_keys_on_the_principal_not_the_token() {
+    let (app, state, _) = served();
+    let b = open_stream(&app, BOB).await.expect("bob's stream");
+    let r = open_stream(&app, RO).await.expect("ro's stream");
+    {
+        let s = state.gui.streams.lock().unwrap();
+        let mut keys: Vec<&String> = s.per.keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["bob", "ro"]);
+        assert!(s.per.keys().all(|k| k != BOB && k != RO), "no secret");
+    }
+    let caller = crate::Caller {
+        name: "bob".into(),
+        scope: Scope::Write,
+    };
+    assert_eq!(caller.principal().user, "bob");
+    drop((b, r));
+}
