@@ -30,6 +30,9 @@ futures = "0.3"
 # Already in libcosmic's graph (same versions, no new features but png).
 image = { version = "0.25", default-features = false, features = ["png"] }
 tokio = { version = "1", features = ["time"] }
+# Printing renders the grid to PDF (typst's low-level writer; MIT OR
+# Apache-2.0; its dependencies are already in the graph).
+pdf-writer = "0.15"
 
 # libcosmic is not on crates.io. Pinned by Cargo.lock to master commit
 # 95236a944bfd51c63a2fc65fe50a592c47168d40 (2026-10-27), and CI builds with

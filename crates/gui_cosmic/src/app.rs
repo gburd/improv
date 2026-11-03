@@ -99,6 +99,10 @@ pub enum Message {
     Chosen(bool, Option<String>),
     /// A file was dropped on the window: open it.
     Dropped(std::path::PathBuf),
+    /// File ▸ Print… (the print portal).
+    Print,
+    /// The print request ended: what to say.
+    Printed(String),
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -453,6 +457,26 @@ impl App {
             }
             out.push(row);
         }
+        out
+    }
+
+    /// The whole grid as text with its headers (what Print prints).
+    fn all_text(&mut self) -> Vec<Vec<String>> {
+        let Some(g) = &self.grid else {
+            return Vec::new();
+        };
+        let (rows, cols) = (g.rows.len(), g.cols.len());
+        if rows == 0 || cols == 0 {
+            return Vec::new();
+        }
+        let (anchor, cursor) = (self.anchor, self.cursor);
+        self.anchor = Some(Cell::default());
+        self.cursor = Cell {
+            row: rows.min(10_000) - 1,
+            col: cols - 1,
+        };
+        let out = self.selection_text(true);
+        (self.anchor, self.cursor) = (anchor, cursor);
         out
     }
 
@@ -878,6 +902,27 @@ impl cosmic::Application for App {
                 }
             }
             Message::Dropped(p) => return self.open_store(p.to_string_lossy().into_owned()),
+            Message::Print => {
+                let mut rows = self.all_text();
+                if rows.is_empty() {
+                    self.status = "nothing to print".into();
+                    return Task::none();
+                }
+                let title = self
+                    .layout
+                    .as_ref()
+                    .map(|l| self.measure_name(l.measure))
+                    .unwrap_or_default();
+                // shortcut: prints at most 10,000 rows; a bigger grid prints
+                // its first ones (a page run of a million rows helps no one).
+                rows.truncate(10_001);
+                let pdf = crate::print::table(&title, &rows);
+                self.status = "printing…".into();
+                return cosmic::task::future(async move {
+                    Message::Printed(crate::print::send(&title, pdf).await)
+                });
+            }
+            Message::Printed(s) => self.status = s,
             Message::Pasted(p) => match p {
                 Some(p) => self.paste(&p.0),
                 None => self.status = "nothing to paste".into(),
@@ -949,6 +994,7 @@ impl cosmic::Application for App {
         let bar = widget::row::with_capacity(8)
             .push(widget::button::standard("Open…").on_press(Message::Open))
             .push(widget::button::standard("Save As…").on_press(Message::SaveAs))
+            .push(widget::button::standard("Print…").on_press(Message::Print))
             .push(widget::dropdown(names, shown, Message::ShowMeasure))
             .push(widget::dropdown(views, None, Message::OpenView).placeholder("Views"))
             .push(
