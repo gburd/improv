@@ -4,6 +4,7 @@
 mod app;
 mod args;
 mod chart;
+mod clip;
 mod entry;
 mod formulas;
 mod nav;

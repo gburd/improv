@@ -89,6 +89,8 @@ pub enum Message {
     SaveView,
     /// Show the grid as a chart, or back.
     ToggleChart,
+    /// What the clipboard held for a paste (`None`: nothing readable).
+    Pasted(Option<crate::clip::Pasted>),
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -216,6 +218,28 @@ impl App {
         if self.editing.is_some() || self.formula.is_some() {
             // An editor has the keyboard (Escape: [`Self::on_escape`]).
             return Task::none();
+        }
+        if mods.control() {
+            match key.as_ref() {
+                Key::Character("c") => return self.copy(),
+                Key::Character("v") => {
+                    // HTML or text where the clipboard has formats (Wayland);
+                    // else (X11, Windows at the pin: `read_data` is None
+                    // there) the plain text, read as TSV.
+                    return cosmic::iced::clipboard::read_data::<crate::clip::Pasted>().then(|p| {
+                        match p {
+                            Some(p) => Task::done(Message::Pasted(Some(p)).into()),
+                            None => cosmic::iced::clipboard::read().map(|t| {
+                                Message::Pasted(
+                                    t.map(|t| crate::clip::Pasted(crate::clip::from_tsv(&t))),
+                                )
+                                .into()
+                            }),
+                        }
+                    });
+                }
+                _ => {}
+            }
         }
         match key {
             Key::Named(Named::Enter | Named::F2) => return self.begin_edit(None),
@@ -357,6 +381,117 @@ impl App {
             self.status = "the model thread stopped: the view is not saved".into();
         } else {
             self.view_name.clear();
+        }
+    }
+
+    /// The selection's cells as text, row by row (`with_headers`: the
+    /// column headers first and the row headers leading each row, as the
+    /// HTML copy carries them).
+    pub fn selection_text(&self, with_headers: bool) -> Vec<Vec<String>> {
+        let (Some(l), Some(g)) = (&self.layout, &self.grid) else {
+            return Vec::new();
+        };
+        let format = self.model.measures.get(&l.measure).and_then(|m| m.format);
+        let (a, b) = self.selection();
+        let names = |line: Option<Vec<improv_core_model::ItemId>>| {
+            line.unwrap_or_default()
+                .into_iter()
+                .map(|i| pivot::item_name(&self.model, i))
+                .collect::<Vec<_>>()
+                .join(" / ")
+        };
+        let mut out = Vec::new();
+        if with_headers {
+            let mut h = vec![String::new()];
+            h.extend((a.col..=b.col).map(|c| names(g.cols.line(c))));
+            out.push(h);
+        }
+        for r in a.row..=b.row {
+            let mut row = Vec::new();
+            if with_headers {
+                row.push(names(g.rows.line(r)));
+            }
+            for c in a.col..=b.col {
+                let v = g
+                    .key(r, c)
+                    .and_then(|k| sheet::value(&self.model, &self.snapshot, l.measure, &k));
+                // Unformatted numbers: what a spreadsheet reads back exactly.
+                row.push(
+                    v.map(|v| match v {
+                        improv_engine::CellValue::Num(_) => v.to_string(),
+                        other => other.formatted(format.as_ref(), &self.locale),
+                    })
+                    .unwrap_or_default(),
+                );
+            }
+            out.push(row);
+        }
+        out
+    }
+
+    /// Copy the selection: TSV of the values, and an HTML table with the
+    /// headers. Rich formats reach Wayland only at the libcosmic pin, so the
+    /// TSV goes as plain text too (every platform; see the review note,
+    /// "Windows gaps").
+    pub fn copy(&mut self) -> Task<Message> {
+        let values = self.selection_text(false);
+        if values.is_empty() {
+            return Task::none();
+        }
+        let tsv = crate::clip::to_tsv(&values);
+        let html = crate::clip::to_html(&self.selection_text(true), true);
+        let (a, b) = self.selection();
+        self.status = format!("copied {} × {}", b.row - a.row + 1, b.col - a.col + 1);
+        Task::batch([
+            cosmic::iced::clipboard::write(tsv.clone()),
+            cosmic::iced::clipboard::write_data(crate::clip::Range { tsv, html }),
+        ])
+    }
+
+    /// Paste `cells` with their top-left at the cursor, clipped to the grid:
+    /// each text read by the measure's type, all sent as one edit (refused
+    /// whole if any cell is). Derived measures take no paste.
+    pub fn paste(&mut self, cells: &[Vec<String>]) {
+        let (Some(l), Some(g)) = (&self.layout, &self.grid) else {
+            return;
+        };
+        let Some(m) = self.model.measures.get(&l.measure) else {
+            return;
+        };
+        if m.is_derived() {
+            self.status = format!("{} is computed by its formula, not entered", m.name.0);
+            return;
+        }
+        let ty = m.value_type;
+        let mut edits = Vec::new();
+        for (dr, row) in cells.iter().enumerate() {
+            for (dc, text) in row.iter().enumerate() {
+                let Some(k) = g.key(self.cursor.row + dr, self.cursor.col + dc) else {
+                    continue;
+                };
+                match crate::entry::parse(&self.model, &self.locale, ty, text) {
+                    Ok(value) => edits.push(CellEdit {
+                        measure: l.measure,
+                        at: k,
+                        value,
+                    }),
+                    Err(e) => {
+                        self.status = format!("not pasted: row {}, column {}: {e}", dr + 1, dc + 1);
+                        return;
+                    }
+                }
+            }
+        }
+        if edits.is_empty() {
+            return;
+        }
+        let n = edits.len();
+        self.pending += 1;
+        if self.service.send(Request::Edit(edits)).is_err() {
+            self.pending -= 1;
+            self.status = "the model thread stopped: nothing is pasted".into();
+        } else {
+            self.status = format!("pasting {n} cells…");
         }
     }
 
@@ -699,6 +834,10 @@ impl cosmic::Application for App {
             Message::ViewName(n) => self.view_name = n,
             Message::SaveView => self.save_view(),
             Message::ToggleChart => self.chart = !self.chart,
+            Message::Pasted(p) => match p {
+                Some(p) => self.paste(&p.0),
+                None => self.status = "nothing to paste".into(),
+            },
             Message::Page(i, j) => {
                 if let Some(l) = &mut self.layout {
                     let cat = l.page_cats().get(i).copied();
@@ -1436,6 +1575,66 @@ mod tests {
             (l.measure, l.row_cats(), l.col_cats()),
             (MeasureId(102), &[CategoryId(2)][..], &[CategoryId(1)][..])
         );
+    }
+
+    #[test]
+    fn a_copied_range_is_values_and_a_table_with_headers() {
+        let (mut app, _rx) = live(revenue_model());
+        app.show(MeasureId(100));
+        let _ = app.key(&Key::Named(Named::ArrowDown), Modifiers::SHIFT, None);
+        let _ = app.key(&Key::Named(Named::ArrowRight), Modifiers::SHIFT, None);
+        let v = app.selection_text(false);
+        assert_eq!(v, vec![vec!["100", "50"], vec!["120", "80"]]);
+        let h = app.selection_text(true);
+        assert_eq!(h[0], vec!["", "WidgetA", "WidgetB"]);
+        assert_eq!(h[1][0], "2025");
+        let _ = app.copy();
+        assert_eq!(app.status, "copied 2 × 2");
+    }
+
+    #[test]
+    fn a_paste_is_one_edit_from_the_cursor_and_clipped_to_the_grid() {
+        let (mut app, mut rx) = live(revenue_model());
+        app.show(MeasureId(100));
+        let _ = app.key(&Key::Named(Named::ArrowRight), Modifiers::empty(), None);
+        // 2 x 2 at (0, 1): the second column falls off the 2-column grid.
+        let cells = crate::clip::from_tsv("7\t99\n8\t99\n");
+        send(&mut app, Message::Pasted(Some(crate::clip::Pasted(cells))));
+        assert_eq!(app.pending, 1);
+        let u = next(&mut rx);
+        app.apply(u);
+        let g = app.grid.as_ref().unwrap();
+        let at = |r, c| {
+            sheet::value(
+                &app.model,
+                &app.snapshot,
+                MeasureId(100),
+                &g.key(r, c).unwrap(),
+            )
+        };
+        assert_eq!(at(0, 1), Some(improv_engine::CellValue::num(7.0)));
+        assert_eq!(at(1, 1), Some(improv_engine::CellValue::num(8.0)));
+        assert_eq!(
+            at(0, 0),
+            Some(improv_engine::CellValue::num(100.0)),
+            "untouched"
+        );
+    }
+
+    #[test]
+    fn a_paste_with_a_bad_cell_changes_nothing() {
+        let (mut app, _rx) = live(revenue_model());
+        app.show(MeasureId(100));
+        let cells = crate::clip::from_tsv("1\tx");
+        send(&mut app, Message::Pasted(Some(crate::clip::Pasted(cells))));
+        assert_eq!(app.pending, 0);
+        assert!(app.status.contains("row 1, column 2"), "{}", app.status);
+        send(&mut app, Message::Pasted(None));
+        assert_eq!(app.status, "nothing to paste");
+        // Derived: refused.
+        app.show(MeasureId(102));
+        app.paste(&[vec!["1".into()]]);
+        assert!(app.status.contains("computed"));
     }
 
     #[test]
