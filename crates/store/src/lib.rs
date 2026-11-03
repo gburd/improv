@@ -9,6 +9,7 @@
 
 use improv_core_model::{Coordinate, MeasureId, Model};
 use improv_storage_mentat::ModelStore;
+pub use improv_storage_mentat::StoredPolicies;
 /// The most cells [`Store::save_changes`] writes from the named cells alone:
 /// past it a Mentat save reads every cell of the model, so a caller that
 /// saves a model holding only the changed cells stays at or under it.
@@ -26,6 +27,9 @@ pub enum StoreError {
     /// Another writer committed since this handle loaded (either backend).
     #[error("conflict: {0}")]
     Conflict(String),
+    /// What this backend does not do.
+    #[error("{0}")]
+    Unsupported(String),
 }
 
 impl From<improv_storage_mentat::StoreError> for StoreError {
@@ -116,6 +120,38 @@ impl Store {
             return self.save_model(model);
         }
         delegate!(self, s => s.save_changes(model, &changes.cells, changes.structure))
+    }
+
+    /// The stored access policies (`improv policy`), `None` when none are
+    /// set. Postgres models get theirs from pg_improv (not yet): `None`.
+    pub fn load_policies(&mut self) -> Result<Option<StoredPolicies>> {
+        match self {
+            Store::Mentat(s) => Ok(s.load_policies()?),
+            Store::Pg(_) => Ok(None),
+        }
+    }
+
+    /// The policies' version, 0 when never set (and on Postgres, for now).
+    pub fn policy_version(&mut self) -> Result<i64> {
+        match self {
+            Store::Mentat(s) => Ok(s.policy_version()?),
+            Store::Pg(_) => Ok(0),
+        }
+    }
+
+    /// Set (or, with `None`, clear) the access policies: text and groups
+    /// JSON, already checked by `improv_policy::Policies::parse`. Returns
+    /// the new version. Refused for a Postgres model until pg_improv
+    /// stores policies itself.
+    pub fn save_policies(&mut self, policies: Option<(&str, &str)>) -> Result<i64> {
+        match self {
+            Store::Mentat(s) => Ok(s.save_policies(policies)?),
+            Store::Pg(_) => Err(StoreError::Unsupported(
+                "a Postgres model's policies are kept by pg_improv, which cannot store them \
+                 yet"
+                .into(),
+            )),
+        }
     }
 
     pub fn reload_model(&mut self) -> Result<Model> {

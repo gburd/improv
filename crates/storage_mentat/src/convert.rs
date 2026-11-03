@@ -211,6 +211,15 @@ pub fn as_u32(v: &TypedValue) -> Result<u32> {
     }
 }
 
+pub fn as_i64(v: &TypedValue) -> Result<i64> {
+    match v {
+        TypedValue::Long(n) => Ok(*n),
+        other => Err(StoreError::Integrity(format!(
+            "expected long, got {other:?}"
+        ))),
+    }
+}
+
 pub fn as_f64(v: &TypedValue) -> Result<f64> {
     match v {
         TypedValue::Double(d) => Ok(d.0),

@@ -117,4 +117,23 @@ pub const SCHEMA_EDN: &str = r#"[
  {:db/ident :meta/lambdas
   :db/valueType :db.type/string
   :db/cardinality :db.cardinality/one}
+
+ ;; ACCESS POLICIES (singleton), apart from the model: a model save never
+ ;; touches them, and older releases ignore them. Cedar policy text and the
+ ;; groups as JSON (crates/policy); the version counts every set and clear.
+ ;; No text: no policies. Installed over older stores on open.
+ {:db/ident :policy/singleton
+  :db/valueType :db.type/long
+  :db/cardinality :db.cardinality/one
+  :db/unique :db.unique/identity
+  :db/index true}
+ {:db/ident :policy/version
+  :db/valueType :db.type/long
+  :db/cardinality :db.cardinality/one}
+ {:db/ident :policy/text
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
+ {:db/ident :policy/groups
+  :db/valueType :db.type/string
+  :db/cardinality :db.cardinality/one}
 ]"#;

@@ -67,6 +67,16 @@ impl From<mentat::errors::MentatError> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// A store's access policies, as `improv policy set` stored them: Cedar
+/// policy text, the groups as JSON, and the version (how many times they
+/// were set or cleared). `improv_policy::Policies::parse` reads them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPolicies {
+    pub version: i64,
+    pub text: String,
+    pub groups: String,
+}
+
 /// Upper bound on the number of datoms Improv puts in a single
 /// `InProgress::transact` call.
 ///
@@ -486,6 +496,77 @@ impl ModelStore {
     /// `save_model` checks against. `None` saves unconditionally.
     pub fn set_loaded_tx(&mut self, tx: Option<i64>) {
         self.loaded_tx = tx;
+    }
+
+    /// The stored access policies, `None` when none are set. Kept apart
+    /// from the model: [`ModelStore::load_model`] does not read them and no
+    /// save of a model changes them.
+    pub fn load_policies(&mut self) -> Result<Option<StoredPolicies>> {
+        let rows = self.rel(
+            "[:find ?v ?t ?g :where [?e :policy/singleton 1] [?e :policy/version ?v] \
+             [?e :policy/text ?t] [?e :policy/groups ?g]]",
+        )?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some(StoredPolicies {
+            version: convert::as_i64(&row[0])?,
+            text: convert::as_string(&row[1])?,
+            groups: convert::as_string(&row[2])?,
+        }))
+    }
+
+    /// The policies' version: how many times they were set or cleared (0:
+    /// never).
+    pub fn policy_version(&mut self) -> Result<i64> {
+        let v =
+            self.scalar("[:find ?v . :where [?e :policy/singleton 1] [?e :policy/version ?v]]")?;
+        v.map_or(Ok(0), |v| convert::as_i64(&v))
+    }
+
+    /// Set the access policies (text and groups JSON, as checked by the
+    /// caller), or clear them with `None`, in one transaction that also
+    /// moves their version on. Returns the new version.
+    pub fn save_policies(&mut self, policies: Option<(&str, &str)>) -> Result<i64> {
+        let mut ip = self.store.begin_transaction()?;
+        let stored = rel_on(
+            &ip,
+            "[:find ?e ?v :where [?e :policy/singleton 1] [?e :policy/version ?v]]",
+        )?;
+        let version = match stored.first() {
+            Some(row) => convert::as_i64(&row[1])? + 1,
+            None => 1,
+        };
+        match policies {
+            Some((text, groups)) => ip.transact(format!(
+                "[{{:policy/singleton 1 :policy/version {version} :policy/text {} :policy/groups {}}}]",
+                convert::edn_str_pub(text),
+                convert::edn_str_pub(groups)
+            ))?,
+            None => {
+                let mut tx = format!("[{{:policy/singleton 1 :policy/version {version}}}");
+                for attr in ["text", "groups"] {
+                    let q = format!(
+                        "[:find ?e ?v :where [?e :policy/singleton 1] [?e :policy/{attr} ?v]]"
+                    );
+                    for row in rel_on(&ip, &q)? {
+                        tx += &format!(
+                            " [:db/retract {} :policy/{attr} {}]",
+                            convert::as_entid(&row[0])?,
+                            convert::stored_value_edn(&row[1])?
+                        );
+                    }
+                }
+                ip.transact(tx + "]")?
+            }
+        };
+        let new_tx = high_water(&ip)?;
+        ip.commit()?;
+        // Our own write: a save from this handle's load stays unconflicted.
+        if self.loaded_tx.is_some() {
+            self.loaded_tx = Some(new_tx);
+        }
+        Ok(version)
     }
 
     /// Re-read the model after a [`StoreError::Conflict`]; same as
@@ -1903,6 +1984,97 @@ mod tests {
             Value::Number(11.0),
         );
         a.save_model(&m).expect("second save");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Access policies round-trip, apart from the model: a model save,
+    /// full or incremental, leaves them as they are, setting them does not
+    /// conflict this handle's next save, and clearing them retracts the
+    /// text and keeps counting versions. A store written before they
+    /// existed opens and has none.
+    #[test]
+    fn policies_round_trip_apart_from_the_model() {
+        let path = temp_store_path("policies");
+        let start = schema::SCHEMA_EDN
+            .find(" ;; ACCESS POLICIES")
+            .expect("policy block");
+        let old_schema = format!("{}]", &schema::SCHEMA_EDN[..start]);
+        assert!(!old_schema.contains(":policy/"));
+        {
+            let mut old = Store::open(&path).expect("open old");
+            old.transact(&old_schema).expect("old schema");
+        }
+        let mut s = ModelStore::open(&path).expect("open old store with new schema");
+        assert_eq!(s.load_policies().unwrap(), None);
+        assert_eq!(s.policy_version().unwrap(), 0);
+        let mut m = sample_model();
+        s.save_model(&m).expect("save");
+
+        let text = "permit (principal, action, resource);\n// \"quoted\" \\ back\tslash\n";
+        let groups = r#"{"g": {"users": ["a\"b"]}}"#;
+        assert_eq!(s.save_policies(Some((text, groups))).unwrap(), 1);
+        let want = StoredPolicies {
+            version: 1,
+            text: text.into(),
+            groups: groups.into(),
+        };
+        assert_eq!(s.load_policies().unwrap(), Some(want.clone()));
+
+        // This handle loaded before; its save is not refused by its own set.
+        m.measures.get_mut(&MeasureId(100)).unwrap().name = Name("Cost".into());
+        s.save_changes(&m, &[], true).expect("structure save");
+        s.save_model(&m).expect("full save");
+        let mut other = ModelStore::open(&path).unwrap();
+        assert_eq!(
+            other.load_policies().unwrap(),
+            Some(want),
+            "kept by model saves"
+        );
+        assert_eq!(other.load_model().unwrap(), m, "the model ignores them");
+
+        assert_eq!(other.save_policies(Some(("x", "{}"))).unwrap(), 2);
+        assert_eq!(other.save_policies(None).unwrap(), 3);
+        assert_eq!(other.load_policies().unwrap(), None);
+        assert_eq!(other.policy_version().unwrap(), 3);
+        let left = other
+            .rel("[:find ?v :where [?e :policy/singleton 1] [?e :policy/text ?v]]")
+            .unwrap();
+        assert!(left.is_empty(), "{left:?}");
+        assert_eq!(
+            other.save_policies(None).unwrap(),
+            4,
+            "clearing none still counts"
+        );
+        assert_eq!(other.save_policies(Some((text, ""))).unwrap(), 5);
+        assert_eq!(other.load_policies().unwrap().unwrap().groups, "");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// What an older release does with a store that has policies: its
+    /// schema lacks the `:policy/*` attributes, so its load ignores them,
+    /// and its saves (full and incremental) write only what it knows, so
+    /// the policies survive. Simulated here by loading and saving through
+    /// a model that has no policy fields, which is all an older release is;
+    /// the cross-release check against the v0.12.2 binary is recorded in
+    /// the commit that added the attributes.
+    #[test]
+    fn an_older_release_keeps_the_policies() {
+        let path = temp_store_path("policies-old");
+        let mut s = ModelStore::open(&path).unwrap();
+        let mut m = sample_model();
+        s.save_model(&m).unwrap();
+        s.save_policies(Some(("permit (principal, action, resource);", "{}")))
+            .unwrap();
+        let mut old = ModelStore::open(&path).unwrap();
+        let mut loaded = old.load_model().unwrap();
+        assert_eq!(loaded, m);
+        loaded.measures.get_mut(&MeasureId(100)).unwrap().name = Name("Cost".into());
+        old.save_changes(&loaded, &[], true).unwrap();
+        old.save_model(&loaded).unwrap();
+        m = old.load_model().unwrap();
+        assert_eq!(m.measures[&MeasureId(100)].name.0, "Cost");
+        let kept = ModelStore::open(&path).unwrap().load_policies().unwrap();
+        assert_eq!(kept.map(|p| p.version), Some(1));
         let _ = std::fs::remove_file(&path);
     }
 
