@@ -414,8 +414,9 @@ pub enum PolicyCmd {
     /// From then on the model's default is deny: only what a policy permits
     /// is allowed, and a forbid wins. The policies replace any stored before,
     /// and their version moves on. They are enforced where the model is
-    /// served (improv-server); a local file is readable by whoever can read
-    /// it.
+    /// served: by pg_improv 0.13+ for a postgres:// model (which checks them
+    /// again and audits the change), and by improv-server; a local file is
+    /// readable by whoever can read it.
     Set {
         #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
         db: String,
