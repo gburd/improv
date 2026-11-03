@@ -48,7 +48,8 @@ The window has five regions:
   to an empty desk (unsaved edits warn first, as Quit does; a second Close
   drops them), and **Import/Export CSV…** opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
   lacked), **Cut**, **Copy**, **Paste** (see [Copy and paste](#copy-and-paste)) and
-  **Select All**, the whole worksheet, **Inspector…** (see [The
+  **Select All**, the whole worksheet, **Select Items Only** and **Select
+  Cells Only** (see [Selecting](#selecting)), **Inspector…** (see [The
   Inspector and the Format panel](#the-inspector-and-the-format-panel)),
   **Add Category**, **Add Item** and **Add Input Measure** (see
   [Building a model from scratch](#building-a-model-from-scratch)),
@@ -385,6 +386,8 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+C | Copy | Edit |
 | Ctrl+V | Paste | Edit |
 | Ctrl+A | Select All | Edit |
+| Ctrl+[ | Select Items Only | Edit |
+| Ctrl+] | Select Cells Only | Edit |
 | Ctrl+Shift+F | Format Panel… | Format |
 | Ctrl+P | Print… | main menu |
 | Ctrl+R | Recalculate | Worksheet |
@@ -397,6 +400,21 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 Improv's Ctrl+T (Font panel) belongs to a command not built yet, so it
 does nothing. Ctrl+W is NeXTSTEP's reserved Close for the key window; here
 it closes the focused worksheet window, as View ▸ Close Window does.
+
+## Selecting
+
+Click a cell to select it; Shift+click, Shift+arrows or a drag select a
+range of cells. Click an **item** (a row or column heading) to select it
+**and its cells**, the whole row or column; Shift+click another item
+extends to it. On stacked categories, an outer item selects its group:
+every row or column under it. **Edit ▸ Select All** (Ctrl+A) selects every
+item and cell.
+
+**Edit ▸ Select Items Only** (Ctrl+[) keeps the selection's item names and
+lets its cells go (the cells are no longer shaded): Copy then copies the
+names, a line each, Cut copies them (an items-only selection cannot be
+cut), and Paste and the Sum are refused. **Edit ▸ Select Cells Only**
+(Ctrl+]) keeps the cells. The plain `[` and `]` still page.
 
 ## Copy and paste
 

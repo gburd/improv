@@ -81,6 +81,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   opens the page for what it lands on (the menu, a panel, a worksheet's
   tiles, grid or formulas) without acting on it. Each page links to its
   section of the user guide.
+- **GUI: structured selection (fidelity gap 13).** A click on an item's
+  heading selects the item and its cells (an outer item on a stacked axis
+  selects its group); Shift+click extends. Edit ▸ Select Items Only
+  (Ctrl+[) keeps the item names, so Copy copies them and Cut only copies;
+  Select Cells Only (Ctrl+]) keeps the cells. Improv 1.0's Edit menu had
+  both.
 
 - **Access policies, in Cedar.** A model can carry policies, written in
   [Cedar](https://www.cedarpolicy.com), that say per user, role and group

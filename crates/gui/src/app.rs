@@ -103,12 +103,29 @@ pub(crate) struct Matrix {
     /// renderer that ignores its matrix index and draws the focused matrix's
     /// layout N times.
     rendered_axes: Option<(Vec<CategoryId>, Vec<CategoryId>)>,
+    /// Whether the selection is items and their cells (an item header was
+    /// clicked), the items only or the cells only (Edit ▸ Select Items Only
+    /// and Cells Only; a cell click selects cells).
+    part: SelPart,
     /// How this worksheet draws itself: Edit ▸ Inspector…'s Grid and
     /// Layout pages and Format ▸ Format Panel…'s Alignment.
     ///
     /// shortcut: kept with the window, not saved in the view (`View` has
     /// no field for them); add them to `MatrixPlacement` when it matters.
     opts: SheetOpts,
+}
+
+/// What a worksheet's selection holds (Improv's structured selection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SelPart {
+    /// Cells (a cell click, a drag, Shift+arrows).
+    #[default]
+    Cells,
+    /// Items and their cells (an item header click): the row items when
+    /// `rows`, else the column items.
+    Both { rows: bool },
+    /// The item names only (Select Items Only).
+    Items { rows: bool },
 }
 
 /// A worksheet's presentation options (Improv's Inspector Grid and Layout
@@ -1450,7 +1467,86 @@ impl Matrix {
     /// current cursor before moving, growing a range; otherwise it collapses.
     fn step(&mut self, model: &Model, drow: isize, dcol: isize, extend: bool) {
         self.anchor = extend.then(|| self.anchor.unwrap_or((self.cursor_row, self.cursor_col)));
+        self.part = SelPart::Cells;
         self.move_cursor(model, drow, dcol);
+    }
+
+    /// Select an item and its cells, as an item header click does: line
+    /// `line` of the row (`rows`) or column axis at category `level`, with
+    /// the lines of its group when the category is an outer one, across
+    /// the whole other axis. `extend` (Shift) reaches it from the anchor.
+    fn select_item(&mut self, model: &Model, rows: bool, line: usize, level: usize, extend: bool) {
+        let (n_rows, n_cols) = self.grid_dims(model);
+        let cats = if rows {
+            self.row_cats(model)
+        } else {
+            self.col_cats(model)
+        };
+        let lists = self.axis_item_lists(model, &cats);
+        let group = lists
+            .iter()
+            .skip(level + 1)
+            .map(Vec::len)
+            .product::<usize>()
+            .max(1);
+        let (first, last) = (line - line % group, line - line % group + group - 1);
+        let (other_last, n) = if rows {
+            (n_cols, n_rows)
+        } else {
+            (n_rows, n_cols)
+        };
+        let last = last.min(n.saturating_sub(1));
+        let other_last = other_last.saturating_sub(1);
+        let from = match self.anchor {
+            Some((r, c)) if extend && self.part == (SelPart::Both { rows }) => {
+                if rows {
+                    r
+                } else {
+                    c
+                }
+            }
+            _ => first,
+        };
+        let (lo, hi) = if from <= first {
+            (from, last)
+        } else {
+            (from.max(last), first)
+        };
+        if rows {
+            self.anchor = Some((lo, 0));
+            (self.cursor_row, self.cursor_col) = (hi, other_last);
+        } else {
+            self.anchor = Some((0, lo));
+            (self.cursor_row, self.cursor_col) = (other_last, hi);
+        }
+        self.part = SelPart::Both { rows };
+    }
+
+    /// The selected items' names (an item selection's, along `rows` or
+    /// the columns): one line per item line, its categories' items
+    /// tab-separated.
+    fn selected_item_names(&self, model: &Model, rows: bool) -> Vec<String> {
+        let (sel_rows, sel_cols) = self.selection();
+        let (cats, range) = if rows {
+            (self.row_cats(model), sel_rows)
+        } else {
+            (self.col_cats(model), sel_cols)
+        };
+        let lists = self.axis_item_lists(model, &cats);
+        if lists.is_empty() {
+            return Vec::new();
+        }
+        let n = product_len(&lists);
+        range
+            .filter(|i| *i < n)
+            .map(|i| {
+                nth_tuple(&lists, i)
+                    .into_iter()
+                    .map(|(_, name)| name)
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            })
+            .collect()
     }
 
     /// The selected rectangle's (rows, cols): anchor to cursor, inclusive.
@@ -5123,6 +5219,22 @@ impl ImprovApp {
                 m.anchor = Some((0, 0));
                 m.cursor_row = rows.saturating_sub(1);
                 m.cursor_col = cols.saturating_sub(1);
+                m.part = SelPart::Both { rows: true };
+            }
+            // A cell selection's items are its rows' (Improv: the items
+            // adjacent to it); Cells Only drops the items.
+            Command::SelectItems => {
+                let m = self.focused_mut();
+                let rows = match m.part {
+                    SelPart::Both { rows } | SelPart::Items { rows } => rows,
+                    SelPart::Cells => true,
+                };
+                m.part = SelPart::Items { rows };
+                self.status = "items only selected".into();
+            }
+            Command::SelectCells => {
+                self.focused_mut().part = SelPart::Cells;
+                self.status = "cells only selected".into();
             }
             Command::Undo => self.undo_with_status(),
             Command::Redo => self.redo_with_status(),
@@ -7940,6 +8052,11 @@ impl ImprovApp {
     /// spreadsheet or back into Improv. `None` with no measure.
     pub fn copy_selection(&self) -> Option<String> {
         let measure = self.selected()?;
+        // An items-only selection copies the item names, a line each.
+        if let SelPart::Items { rows } = self.focused().part {
+            let names = self.focused().selected_item_names(&self.model, rows);
+            return Some(names.iter().map(|n| format!("{n}\n")).collect());
+        }
         let text: String = self
             .selection_block()
             .iter()
@@ -7983,6 +8100,12 @@ impl ImprovApp {
             return Err("derived cells are computed, not cut; Copy them instead".into());
         }
         let text = self.copy_selection().unwrap_or_default();
+        if matches!(self.focused().part, SelPart::Items { .. }) {
+            return Ok((
+                text,
+                "an items-only selection cannot be cut: it was copied".into(),
+            ));
+        }
         let cells: Vec<(CoordKey, Option<Value>)> = self
             .selection_block()
             .into_iter()
@@ -8041,6 +8164,9 @@ impl ImprovApp {
                 "derived cells are computed, not editable; paste into an input measure".into(),
             );
         }
+        if matches!(self.focused().part, SelPart::Items { .. }) {
+            return Err("paste into cells: Edit ▸ Select Cells Only first".into());
+        }
         let declared = m.value_type;
         let rows: Vec<Vec<&str>> = text
             .trim_end_matches(['\n', '\r'])
@@ -8095,6 +8221,9 @@ impl ImprovApp {
     /// cell, or a text/boolean/date/error cell). See [`Self::selection_readout`].
     pub fn selection_sum(&self) -> Option<f64> {
         let measure = self.selected()?;
+        if matches!(self.focused().part, SelPart::Items { .. }) {
+            return None;
+        }
         let nums: Vec<f64> = self
             .focused()
             .selection_keys(&self.model)
@@ -8961,21 +9090,44 @@ impl ImprovApp {
                 egui::Stroke::NONE
             },
         );
-        let header_cell = |ui: &mut egui::Ui, text: &str, selected: bool| {
-            let r = ui.available_rect_before_wrap();
-            if selected {
-                ui.painter().rect_filled(r, 0.0, crate::theme::LIGHT_GRAY);
-            }
-            ui.painter().vline(r.right() - 0.5, r.y_range(), item_rule);
-            if !text.is_empty() {
-                ui.painter().hline(r.x_range(), r.top() + 0.5, item_rule);
-            }
-            egui::Frame::NONE
-                .inner_margin(egui::Margin::symmetric(4, 1))
-                .show(ui, |ui| {
-                    ui.add(egui::Label::new(text).truncate());
+        // An item header senses a click (not Tab: Select All and Items Only
+        // reach items from the keyboard), which selects that item.
+        let header_cell =
+            |ui: &mut egui::Ui, text: &str, selected: bool| -> Option<egui::Response> {
+                let r = ui.available_rect_before_wrap();
+                if selected {
+                    ui.painter().rect_filled(r, 0.0, crate::theme::LIGHT_GRAY);
+                }
+                let resp = (!text.is_empty() && !ui.is_sizing_pass()).then(|| {
+                    let resp =
+                        ui.interact(r, ui.scope_id().with(("item", text)), egui::Sense::CLICK);
+                    resp.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::Role::Button, true, format!("Item {text}"))
+                    });
+                    resp
                 });
-        };
+                ui.painter().vline(r.right() - 0.5, r.y_range(), item_rule);
+                if !text.is_empty() {
+                    ui.painter().hline(r.x_range(), r.top() + 0.5, item_rule);
+                }
+                egui::Frame::NONE
+                    .inner_margin(egui::Margin::symmetric(4, 1))
+                    .show(ui, |ui| {
+                        // Drawn over the header's click sense, so it senses
+                        // nothing itself.
+                        ui.add(
+                            egui::Label::new(text)
+                                .truncate()
+                                .selectable(false)
+                                .sense(egui::Sense::hover()),
+                        );
+                    });
+                resp
+            };
+        // An item header clicked this frame: its axis (rows: true), its
+        // line and its level (outer category first).
+        let mut item_click: Option<(bool, usize, usize)> = None;
+        let part = m.part;
         // The rule closing the header band from the body.
         let band_bottom = |ui: &egui::Ui| {
             let r = ui.max_rect();
@@ -9042,13 +9194,13 @@ impl ImprovApp {
                         for (si, rc) in row_cats.iter().enumerate() {
                             let _ = si;
                             header.col(|ui| {
-                                header_cell(ui, &cat_name(self, *rc), false);
+                                let _ = header_cell(ui, &cat_name(self, *rc), false);
                                 band_bottom(ui);
                             });
                         }
                         if row_cats.is_empty() {
                             header.col(|ui| {
-                                header_cell(ui, "", false);
+                                let _ = header_cell(ui, "", false);
                                 band_bottom(ui);
                             });
                         }
@@ -9057,11 +9209,13 @@ impl ImprovApp {
                             header.col(|ui| {
                                 ui.vertical(|ui| {
                                     if line.is_empty() {
-                                        header_cell(ui, "", selected);
+                                        let _ = header_cell(ui, "", selected);
                                     }
-                                    for (it, name) in line {
-                                        let _ = it;
-                                        header_cell(ui, name, selected);
+                                    for (lvl, (_, name)) in line.iter().enumerate() {
+                                        let r = header_cell(ui, name, selected);
+                                        if r.is_some_and(|r| r.clicked()) {
+                                            item_click = Some((false, ci, lvl));
+                                        }
                                     }
                                 });
                                 band_bottom(ui);
@@ -9103,13 +9257,15 @@ impl ImprovApp {
                                                         != p.get(k).map(|(id, _)| id)
                                                 }),
                                             };
-                                            if inner || changed {
-                                                header_cell(ui, name, row_selected);
-                                            } else {
-                                                header_cell(ui, "", row_selected);
+                                            let shown = if inner || changed { name } else { "" };
+                                            let r = header_cell(ui, shown, row_selected);
+                                            if r.is_some_and(|r| r.clicked()) {
+                                                item_click = Some((true, ri, si));
                                             }
                                         }
-                                        None => header_cell(ui, "", row_selected),
+                                        None => {
+                                            let _ = header_cell(ui, "", row_selected);
+                                        }
                                     });
                                 });
                             }
@@ -9124,7 +9280,9 @@ impl ImprovApp {
                                 if past_right {
                                     break;
                                 }
-                                let selected = sel_rows.contains(&ri) && sel_cols.contains(&ci);
+                                let selected = !matches!(part, SelPart::Items { .. })
+                                    && sel_rows.contains(&ri)
+                                    && sel_cols.contains(&ci);
                                 row.col(|ui| {
                                     let r = ui.max_rect();
                                     if !ui.is_sizing_pass() && !ui.is_rect_visible(r) {
@@ -9352,6 +9510,7 @@ impl ImprovApp {
                 m.anchor = shift.then(|| m.anchor.unwrap_or((m.cursor_row, m.cursor_col)));
                 m.cursor_row = ri;
                 m.cursor_col = ci;
+                m.part = SelPart::Cells;
             }
             if let Some(start) = drag_from {
                 m.anchor = Some(start);
@@ -9377,7 +9536,13 @@ impl ImprovApp {
                 ui.memory_mut(|mem| mem.surrender_focus(id));
             }
         }
-        if clicked_cell.is_some() {
+        if let Some((rows, line, level)) = item_click {
+            let model = Arc::clone(&self.model);
+            if let Some(m) = self.matrices.get_mut(mi) {
+                m.select_item(&model, rows, line, level, shift);
+            }
+        }
+        if clicked_cell.is_some() || item_click.is_some() {
             self.set_focus(mi);
         }
         if cancel {
@@ -17691,6 +17856,123 @@ mod tests {
         for n in crate::help::names() {
             assert_ne!(crate::help::topic(n), crate::help::IMPROV, "{n}");
         }
+    }
+
+    /// Gap 13: a click on an item's header selects the item and its cells,
+    /// across the other axis; Shift+click extends to another item. Select
+    /// Items Only keeps the names (Copy copies them, Cut only copies, Paste
+    /// and the Sum refuse); Select Cells Only keeps the cells.
+    #[test]
+    fn item_headers_select_items_and_their_cells() {
+        let (mut app, mut desk) = grid_desk(); // Quantity: Time rows, Product columns
+        let out = desk.frame(&mut app, Vec::new());
+        let header = |shapes: &[egui::epaint::ClippedShape], name: &str| {
+            text_at(shapes, name).unwrap_or_else(|| panic!("{name} drawn"))
+        };
+        desk.click(&mut app, header(&out.shapes, "WidgetB").center());
+        assert_eq!(app.focused().selection(), (0..=1, 1..=1), "the column");
+        assert_eq!(app.focused().part, SelPart::Both { rows: false });
+        assert_eq!(app.selection_sum(), Some(130.0), "its cells: 50 + 80");
+        let out = desk.frame(&mut app, Vec::new());
+        desk.click(&mut app, header(&out.shapes, "2026").center());
+        assert_eq!(app.focused().selection(), (1..=1, 0..=1), "the row");
+        assert_eq!(app.copy_selection().unwrap(), "120\t80\n");
+
+        // Items Only: the names; the cells are not lit, and Sum, Paste and
+        // Cut leave them alone.
+        let bracket = |key| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let _ = desk.frame(&mut app, vec![bracket(egui::Key::OpenBracket)]);
+        assert_eq!(app.focused().part, SelPart::Items { rows: true });
+        assert_eq!(app.copy_selection().unwrap(), "2026\n");
+        assert_eq!(app.selection_sum(), None);
+        assert!(app
+            .paste_cells("1")
+            .unwrap_err()
+            .starts_with("paste into cells"));
+        let (_, said) = app.cut_selection().unwrap();
+        assert!(said.contains("cannot be cut"), "{said}");
+        assert_eq!(
+            app.cell_text(MeasureId(101), &app.cursor_key().unwrap())
+                .as_deref(),
+            Some("80")
+        );
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        let cell = cell_rect(&desk, &app, 1, 0);
+        // A cell's own fill, not a panel's (both are light gray).
+        let lit = fills(&out).iter().any(|(r, f)| {
+            *f == crate::theme::LIGHT_GRAY && r.contains(cell.center()) && r.width() < 200.0
+        });
+        assert!(!lit, "an items-only selection leaves its cells white");
+        // Cells Only: the cells again; Paste and Sum work.
+        let _ = desk.frame(&mut app, vec![bracket(egui::Key::CloseBracket)]);
+        assert_eq!(app.focused().part, SelPart::Cells);
+        assert_eq!(app.selection_sum(), Some(200.0));
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        let lit = fills(&out).iter().any(|(r, f)| {
+            *f == crate::theme::LIGHT_GRAY && r.contains(cell.center()) && r.width() < 200.0
+        });
+        assert!(lit, "the cells are lit again");
+        // A plain [ still pages: no measure here has a page category.
+        let _ = desk.frame(&mut app, vec![egui::Event::Text("[".into())]);
+        assert_eq!(app.focused().part, SelPart::Cells);
+        // Select All is every item and cell.
+        app.run_command(&desk.ctx, Command::SelectAll);
+        app.run_command(&desk.ctx, Command::SelectItems);
+        assert_eq!(app.copy_selection().unwrap(), "2025\n2026\n");
+    }
+
+    /// Gap 13: on stacked rows, an outer item's header selects its group:
+    /// every row under it.
+    #[test]
+    fn an_outer_item_selects_its_group() {
+        let mut m = Matrix {
+            axis_order: vec![CategoryId(1), CategoryId(2), CategoryId(3)],
+            n_rows: 2,
+            n_cols: 1,
+            ..Matrix::default()
+        };
+        let mut model = Model::new();
+        for (c, name, items) in [(1, "Time", 3), (2, "Product", 2), (3, "Region", 2)] {
+            model.add_category(CategoryId(c), name);
+            for i in 0..items {
+                model.add_item(ItemId(c * 10 + i), CategoryId(c), format!("{name}{i}"));
+            }
+        }
+        model.add_measure(Measure {
+            id: MeasureId(1),
+            name: Name("Sales".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2), CategoryId(3)],
+            kind: MeasureKind::Input,
+            description: None,
+            format: None,
+        });
+        m.measure = Some(MeasureId(1));
+        m.axis_for = m.measure;
+        assert_eq!(m.grid_dims(&model), (6, 2));
+        // Row 3 is Time1/Product1: its outer item Time1 spans rows 2..=3.
+        m.select_item(&model, true, 3, 0, false);
+        assert_eq!(m.selection(), (2..=3, 0..=1));
+        assert_eq!(
+            m.selected_item_names(&model, true),
+            ["Time1\tProduct0", "Time1\tProduct1"]
+        );
+        // The inner item alone; Shift+click on Time2's reaches row 5.
+        m.select_item(&model, true, 3, 1, false);
+        assert_eq!(m.selection(), (3..=3, 0..=1));
+        m.select_item(&model, true, 4, 0, true);
+        assert_eq!(m.selection(), (3..=5, 0..=1));
+        // A column: all six rows.
+        m.select_item(&model, false, 1, 0, false);
+        assert_eq!(m.selection(), (0..=5, 1..=1));
     }
 
     /// Graph ▸ New Graph opens a NeXT graph window named for the worksheet,

@@ -55,6 +55,11 @@ pub enum Command {
     /// Edit ▸ Select All (Command-a, reserved by NeXTSTEP): every cell of
     /// the focused worksheet.
     SelectAll,
+    /// Edit ▸ Select Items Only (Command-[): keep the selection's item
+    /// names, not their cells.
+    SelectItems,
+    /// Edit ▸ Select Cells Only (Command-]): keep the selection's cells.
+    SelectCells,
     /// Edit ▸ Inspector…: Improv's Inspector panel (Grid, Layout,
     /// Formulas) for the focused worksheet.
     Inspector,
@@ -164,6 +169,8 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Paste", Some('v'), Some(C::Paste)),
             ("Inspector…", None, Some(C::Inspector)),
             ("Select All", Some('a'), Some(C::SelectAll)),
+            ("Select Items Only", Some('['), Some(C::SelectItems)),
+            ("Select Cells Only", Some(']'), Some(C::SelectCells)),
             ("Add Category", None, Some(C::AddCategory)),
             ("Add Item", None, Some(C::AddItem)),
             ("Add Input Measure", None, Some(C::AddInputMeasure)),
@@ -950,7 +957,7 @@ mod tests {
             }
             n += 1;
         }
-        assert_eq!(n, 20, "? o n s S W z Z x c v a F r V w / p h q");
+        assert_eq!(n, 22, "? o n s S W z Z x c v a [ ] F r V w / p h q");
     }
 
     #[test]
@@ -969,6 +976,8 @@ mod tests {
         assert_eq!(key_command(Key::V, true), Some(C::AddMatrix));
         assert_eq!(key_command(Key::Slash, false), Some(C::PivotRotate));
         assert_eq!(key_command(Key::Questionmark, true), Some(C::ContextHelp));
+        assert_eq!(key_command(Key::OpenBracket, false), Some(C::SelectItems));
+        assert_eq!(key_command(Key::CloseBracket, false), Some(C::SelectCells));
         assert_eq!(
             key_command(Key::V, false),
             None,
