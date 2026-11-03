@@ -601,6 +601,30 @@ fn corrupt_rows_are_integrity_errors() {
     )
     .unwrap();
     assert!(matches!(s.load_model(), Err(StoreError::Integrity(_))));
+    // DSL text past the formula limits (what `improv.define` could write
+    // before them), bare and as `Target = expr`: the model opens, and that
+    // measure alone is #REF! and says why.
+    let deep = vec!["Price"; improv_core_model::MAX_FORMULA_DEPTH + 2].join(" + ");
+    for text in [deep.clone(), format!("Revenue = {deep}")] {
+        c.execute(
+            "UPDATE improv.measure SET formula = $2 WHERE model_id = $1 AND id = 102",
+            &[&mid, &text],
+        )
+        .unwrap();
+        let m = s.load_model().unwrap();
+        let rev = &m.measures[&MeasureId(102)];
+        assert!(
+            rev.description
+                .as_deref()
+                .is_some_and(|d| d.contains("past the formula limits")),
+            "{:?}",
+            rev.description
+        );
+        assert_eq!(
+            m.measures[&MeasureId(100)],
+            sample().measures[&MeasureId(100)]
+        );
+    }
     c.execute(
         "UPDATE improv.measure SET formula = 'Price' WHERE model_id = $1 AND id = 102",
         &[&mid],
