@@ -68,6 +68,11 @@ Every function runs as its caller (`SECURITY INVOKER`) and acts on a model
 as the model's owner; that privilege model (see
 [Privileges](./postgres.md#privileges)) is stable too.
 
+**Not stable yet: the access-policy functions** (0.13): `set_policies`,
+`policies`, `explain_access`, `categories`, `items`, `measures`, `cells`
+and `set_cells`. They become stable when 1.0 lists them here. The Cedar
+schema they enforce is `improv_policy::SCHEMA`.
+
 **Stable: the GUCs.** Their names, types, units, contexts and defaults:
 
 | GUC | Type | Default | Set in |
@@ -105,8 +110,8 @@ columns. The logical worker's slot and publication are named `improv_db`.
 **Not stable: the catalog tables.** `improv.model`, `improv.category`,
 `improv.item`, `improv.measure`, `improv.binding`, `improv.category_binding`,
 `improv.cell`, `improv.view`, `improv.meta`, `improv.lambda`,
-`improv.model_version`, `improv.sync_state` and `improv.slot_to_drop` are
-internal. Change models through the functions, never by writing these
+`improv.model_version`, `improv.sync_state`, `improv.slot_to_drop`,
+`improv.policy` and `improv.policy_audit` are internal. Change models through the functions, never by writing these
 tables. A minor may change them, with an update script. One exception, for
 monitoring queries like the ones in this guide: `improv.model`'s `id`,
 `name`, `sync_mode` and `owner` columns stay readable.

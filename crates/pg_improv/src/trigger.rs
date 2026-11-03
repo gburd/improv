@@ -325,7 +325,7 @@ fn write_plan(l: &mut Loaded, plan: &pm::Plan) -> Res<i64> {
         pm::validate_name("measure", name)?;
         let table = pm::result_table(&l.name, name);
         let vt = l.model.measures[&target].value_type;
-        ensure_table(&l.name, &table, &dims, vt)?;
+        ensure_table(l.mid, target, &l.name, &table, &dims, vt)?;
         let filter = match &plan.scope {
             Some(s) => s.result_filter(&l.model, target)?,
             None => None,

@@ -21,8 +21,17 @@ stages 1-4 in 0.13).
   and older ones), `GET /v1/capabilities`, `/v1/model` refused under
   policies; the policy version is read per request (part of every
   session key); the principal is `Caller::principal()` (token name).
-- **NEXT:** stage 3, pg_improv (gated with `ci/pg_improv.sh` 15-18 in
-  podman), then stage 4, TLS.
+- **Stage 3 DONE** (`work/sec3`): pg_improv 0.13.0 stores and enforces
+  policies (`src/policy.rs`): `improv.policy`/`policy_audit`,
+  `set_policies`, `policies`, `explain_access`, the filtered
+  `categories`/`items`/`measures`/`cells`, `set_cells`, RLS
+  (`improv_access` -> `improv.cell_visible`) on result tables, the
+  catalog's reads behind `improv.unrestricted`, `define`/`drop_measure`
+  through `DefineMeasure`; the owner side bypasses Cedar.
+  storage_pg/store `load_policies`/`save_policies`/`policy_version` call
+  them. `tests/policies.sh` in `ci/pg_improv.sh`. Measured numbers are in
+  the design note's Performance section.
+- **NEXT:** stage 4, TLS.
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s

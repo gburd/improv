@@ -144,6 +144,16 @@ BEGIN
 END $$;
 "#;
 
+/// A model's stored access policies: Cedar policy text, the groups as JSON,
+/// and the version (how many times they were set or cleared). The same
+/// shape as `improv_storage_mentat::StoredPolicies`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPolicies {
+    pub version: i64,
+    pub text: String,
+    pub groups: String,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     /// Never produced by this backend; present so the variants match
@@ -928,6 +938,81 @@ impl PgModelStore {
             loaded: None,
             has_format,
         })
+    }
+
+    /// The model's access policies (Cedar text and groups JSON) as
+    /// pg_improv 0.13+ stores them in `improv.policy`: `None` when none are
+    /// set. Only a role that may act as the model's owner, or that the
+    /// policies allow `Admin`, may read them (`improv.policies`); a plain
+    /// catalog (no extension) or an older pg_improv has none.
+    pub fn load_policies(&mut self) -> Result<Option<StoredPolicies>> {
+        if !self.has_policies()? {
+            return Ok(None);
+        }
+        let row = self.client.query_opt(
+            "SELECT p.version, p.policies, coalesce(p.groups, '') \
+             FROM improv.model m, improv.policies(m.name) p WHERE m.id = $1",
+            &[&self.model_id],
+        )?;
+        Ok(row.and_then(|r| {
+            let text: Option<String> = r.get(1);
+            text.map(|text| StoredPolicies {
+                version: r.get(0),
+                text,
+                groups: r.get(2),
+            })
+        }))
+    }
+
+    /// The policies' version: how many times they were set or cleared (0:
+    /// never, or no pg_improv 0.13+). Read through `improv.policy`'s
+    /// row-level security, so a role that may not act as the owner reads 0
+    /// here; pg_improv enforces the policies for it either way.
+    pub fn policy_version(&mut self) -> Result<i64> {
+        if !self.has_policies()? {
+            return Ok(0);
+        }
+        let v = self.client.query_opt(
+            "SELECT version FROM improv.policy WHERE model_id = $1",
+            &[&self.model_id],
+        )?;
+        Ok(v.map_or(0, |r| r.get(0)))
+    }
+
+    /// Set (or, with `None`, clear) the model's access policies through
+    /// pg_improv's `improv.set_policies`, which validates them, checks the
+    /// caller may (it may act as the owner, or the policies allow it
+    /// `Admin`) and audits the change. Returns the new version. Refused
+    /// without pg_improv 0.13 or later: a plain catalog cannot enforce
+    /// them.
+    pub fn save_policies(&mut self, policies: Option<(&str, &str)>) -> Result<i64> {
+        if !self.has_policies()? {
+            return Err(StoreError::Pg(
+                "this database has no pg_improv 0.13 or later (CREATE EXTENSION pg_improv, or \
+                 ALTER EXTENSION pg_improv UPDATE), which keeps and enforces a Postgres model's \
+                 access policies"
+                    .into(),
+            ));
+        }
+        let (text, groups) = policies.unzip();
+        Ok(self
+            .client
+            .query_one(
+                "SELECT improv.set_policies(m.name, $2, $3) FROM improv.model m WHERE m.id = $1",
+                &[&self.model_id, &text, &groups],
+            )?
+            .get(0))
+    }
+
+    /// Whether pg_improv's policy functions are installed here (0.13+).
+    fn has_policies(&mut self) -> Result<bool> {
+        Ok(self
+            .client
+            .query_one(
+                "SELECT to_regprocedure('improv.set_policies(text, text, text)') IS NOT NULL",
+                &[],
+            )?
+            .get(0))
     }
 
     /// The model's current `improv.model_version.tx`, read live.

@@ -12,7 +12,8 @@
 # install this tree over it (both versions' SQL side by side; one .so, the
 # new one), restart, ALTER EXTENSION ... UPDATE, and check: the update path
 # Postgres picks, the version, every model's results, mode and owner, the
-# 0.11.0 row-level security and owner trigger, that the worker still follows
+# 0.11.0 row-level security and owner trigger, the 0.13.0 access policies
+# (none set; one set filters the results), that the worker still follows
 # writes and the trigger, commit and manual models still recompute, that
 # define() still works, that pg_dump now keeps the model, and that the model
 # then moves to commit sync (0.10.0) and recomputes at COMMIT. From before
@@ -196,6 +197,15 @@ for from in "$@"; do
 	eq "$(q "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'improv.measure'::regclass AND attname = 'format'")" \
 		jsonb "the format column after the update"
 	eq "$(q "SELECT count(*) FROM improv.measure WHERE format IS NOT NULL")" 0 "every measure is General after the update"
+	# 0.13.0: access policies. No model has any, so nothing is filtered;
+	# the tables, functions and catalog read policies are as a fresh install's.
+	eq "$(q "SELECT count(*) FROM improv.policy")" 0 "no model has policies after the update"
+	eq "$(q "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
+	         WHERE c.relnamespace = 'improv'::regnamespace AND p.polname = 'read' AND pg_get_expr(p.polqual, p.polrelid) LIKE '%unrestricted%'")" \
+		binding,category,category_binding,lambda,measure,sync_state,view "the catalog's policy-aware read policies after the update"
+	eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace AND proname IN
+	         ('set_policies','policies','explain_access','categories','items','measures','cells','set_cells','cell_visible','unrestricted')")" \
+		10 "the policy functions after the update"
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
 	want=plan:alice:logical
 	for m in $(modes "$fv" | LC_ALL=C sort); do want="$want,plan_$m:improv:$m"; done
@@ -208,10 +218,13 @@ for from in "$@"; do
 	         AND (c.relname = 'model' OR EXISTS (SELECT 1 FROM pg_attribute a WHERE a.attrelid = c.oid AND a.attname = 'model_id'))
 	         AND NOT (c.relrowsecurity AND EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid AND p.polname = 'write'))")" 0 \
 		"every catalog table has row-level security after the update"
-	# Items, input cells and state are data: readable only by those who may act as the owner.
+	# Items, input cells and state are data, and (0.13.0) the policies and
+	# their audit: readable only by those who may act as the owner. (The
+	# policy-aware read policies, improv.unrestricted, are checked above.)
 	eq "$(q "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid
-	         WHERE c.relnamespace = 'improv'::regnamespace AND p.polname = 'read' AND pg_get_expr(p.polqual, p.polrelid) <> 'true'")" \
-		cell,item,meta "the owner-only read policies after the update"
+	         WHERE c.relnamespace = 'improv'::regnamespace AND p.polname = 'read' AND pg_get_expr(p.polqual, p.polrelid) <> 'true'
+	           AND pg_get_expr(p.polqual, p.polrelid) NOT LIKE '%unrestricted%'")" \
+		cell,item,meta,policy,policy_audit "the owner-only read policies after the update"
 	eq "$(q "SELECT count(*) FROM pg_trigger WHERE tgname = 'check_owner' AND tgrelid = 'improv.model'::regclass")" 1 "the owner trigger after the update"
 	for m in $(modes "$fv"); do eq "$(rev "$m")" 1100 "the $m model's results after the update"; done
 	q "UPDATE sales2 SET qty = 250 WHERE quarter='Q1' AND product='Widget'"
@@ -264,7 +277,7 @@ for from in "$@"; do
 	q "SELECT improv.drop_measure('plan','Twice2')"
 	q "SELECT improv.set_sync_mode('plan','logical')"
 	cfg=$(q "SELECT count(*) FROM pg_extension, unnest(extconfig) WHERE extname = 'pg_improv'")
-	[ "$cfg" -ge 13 ] || fail "the update registered only $cfg config tables for pg_dump"
+	[ "$cfg" -ge 15 ] || fail "the update registered only $cfg config tables for pg_dump"
 	# (not `pg_dump | grep -q`: grep -q exits early, pg_dump gets SIGPIPE,
 	# and pipefail turns a found match into a failure)
 	"$PG_BIN/pg_dump" -h "$W" -p "$P" -U improv -Fp t >"$W/dump.sql"
@@ -273,6 +286,17 @@ for from in "$@"; do
 	eq "$(q "SELECT array_to_string(proconfig, ',') FROM pg_proc WHERE oid = 'improv.mint_items(bigint,bigint[],text[])'::regprocedure")" \
 		"search_path=pg_catalog, pg_temp" "mint_items search_path after the update"
 	eq "$(q "SELECT rebuilds >= 0 AND incremental_applies >= 0 FROM improv.status('plan')")" t "status counters after the update"
+	# 0.13.0: an updated model takes policies: alice's grantee reads only
+	# what they allow, and alice everything.
+	q "CREATE ROLE ann LOGIN; GRANT improv_user TO ann"
+	qa "GRANT USAGE ON SCHEMA improv_plan TO ann; GRANT SELECT ON improv_plan.revenue TO ann"
+	widget=$(qa "SELECT i.id FROM improv.item i JOIN improv.model m ON m.id = i.model_id WHERE m.name = 'plan' AND i.name = 'Widget'")
+	qa "SELECT improv.set_policies('plan', 'permit (principal == Improv::User::\"ann\", action in Improv::Action::\"Read\", resource); forbid (principal, action == Improv::Action::\"ReadItem\", resource == Improv::Item::\"$widget\");')" >/dev/null
+	qn() { "$PG_BIN/psql" -h "$W" -p "$P" -U ann -d t -qAtX -v ON_ERROR_STOP=1 -c "$1"; }
+	eq "$(qn "SELECT count(*) FROM improv_plan.revenue WHERE product = 'Widget'")" 0 "a policy filters an updated model's results"
+	eq "$(qn "SELECT count(*) > 0 FROM improv_plan.revenue")" t "and shows the rest"
+	eq "$(qa "SELECT count(*) FROM improv_plan.revenue WHERE product = 'Widget'")" 2 "the owner reads every row"
+	qa "SELECT improv.set_policies('plan', NULL)" >/dev/null
 	q "SELECT improv.set_sync_mode('plan','commit')"
 	eq "$(q "SELECT sync_mode FROM improv.status('plan')")" commit "commit mode after the update"
 	q "BEGIN; UPDATE sales SET qty = 400 WHERE quarter='Q1' AND product='Widget'; UPDATE sales SET price = 12 WHERE quarter='Q1' AND product='Widget'; COMMIT;"

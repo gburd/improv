@@ -123,35 +123,32 @@ impl Store {
     }
 
     /// The stored access policies (`improv policy`), `None` when none are
-    /// set. Postgres models get theirs from pg_improv (not yet): `None`.
+    /// set. A Postgres model's are pg_improv's (0.13+, `improv.policies`),
+    /// readable by a role that may act as its owner or that they allow
+    /// `Admin`.
     pub fn load_policies(&mut self) -> Result<Option<StoredPolicies>> {
         match self {
             Store::Mentat(s) => Ok(s.load_policies()?),
-            Store::Pg(_) => Ok(None),
+            Store::Pg(s) => Ok(s.load_policies()?.map(|p| StoredPolicies {
+                version: p.version,
+                text: p.text,
+                groups: p.groups,
+            })),
         }
     }
 
-    /// The policies' version, 0 when never set (and on Postgres, for now).
+    /// The policies' version, 0 when never set.
     pub fn policy_version(&mut self) -> Result<i64> {
-        match self {
-            Store::Mentat(s) => Ok(s.policy_version()?),
-            Store::Pg(_) => Ok(0),
-        }
+        delegate!(self, s => s.policy_version())
     }
 
     /// Set (or, with `None`, clear) the access policies: text and groups
     /// JSON, already checked by `improv_policy::Policies::parse`. Returns
-    /// the new version. Refused for a Postgres model until pg_improv
-    /// stores policies itself.
+    /// the new version. A Postgres model's go through pg_improv's
+    /// `improv.set_policies`, which checks them again, checks the caller
+    /// may, and audits the change.
     pub fn save_policies(&mut self, policies: Option<(&str, &str)>) -> Result<i64> {
-        match self {
-            Store::Mentat(s) => Ok(s.save_policies(policies)?),
-            Store::Pg(_) => Err(StoreError::Unsupported(
-                "a Postgres model's policies are kept by pg_improv, which cannot store them \
-                 yet"
-                .into(),
-            )),
-        }
+        delegate!(self, s => s.save_policies(policies))
     }
 
     pub fn reload_model(&mut self) -> Result<Model> {
@@ -656,19 +653,47 @@ mod tests {
         let url = format!("{url}?model=store_{}", std::process::id());
         assert!(matches!(Store::open(&url).unwrap(), Store::Pg(_)));
         exercise(&url);
-        // pg_improv keeps a Postgres model's policies (not yet): none, at
-        // version 0, and setting or clearing them is refused, not dropped.
+        // Without pg_improv 0.13+ a Postgres model keeps no policies: none,
+        // at version 0, and setting or clearing them is refused, not
+        // dropped. (With it: policies_round_trip_on_either_backend.)
         let mut s = Store::open(&url).unwrap();
         assert_eq!(s.load_policies().unwrap(), None);
         assert_eq!(s.policy_version().unwrap(), 0);
         for set in [Some(("permit (principal, action, resource);", "")), None] {
             let e = s.save_policies(set).unwrap_err();
-            assert!(matches!(e, StoreError::Unsupported(_)), "{e}");
-            assert_eq!(
-                e.to_string(),
-                "a Postgres model's policies are kept by pg_improv, which cannot store them yet"
-            );
+            assert!(matches!(e, StoreError::Pg(_)), "{e}");
+            assert!(e.to_string().contains("pg_improv 0.13 or later"), "{e}");
         }
         assert_eq!(s.policy_version().unwrap(), 0, "nothing stored");
+    }
+
+    /// Both backends keep policies; a Postgres model's through pg_improv
+    /// (`IMPROV_TEST_PG_EXT`, a `postgres://` URL of a database with the
+    /// extension, as a superuser).
+    #[test]
+    fn policies_round_trip_on_either_backend() {
+        let text = "permit (principal, action, resource);";
+        let mut targets = vec![String::new()];
+        match std::env::var("IMPROV_TEST_PG_EXT") {
+            Ok(url) => {
+                let sep = if url.contains('?') { '&' } else { '?' };
+                targets.push(format!("{url}{sep}model=store_pol_{}", std::process::id()));
+            }
+            Err(_) => println!("skipped Postgres: IMPROV_TEST_PG_EXT not set"),
+        }
+        for t in targets {
+            let mut s = Store::open(&t).unwrap();
+            assert_eq!(s.load_policies().unwrap(), None, "{t}");
+            assert_eq!(s.policy_version().unwrap(), 0, "{t}");
+            assert_eq!(s.save_policies(Some((text, ""))).unwrap(), 1, "{t}");
+            let p = s.load_policies().unwrap().unwrap();
+            assert_eq!(
+                (p.version, p.text.as_str(), p.groups.as_str()),
+                (1, text, "")
+            );
+            assert_eq!(s.save_policies(None).unwrap(), 2, "{t}");
+            assert_eq!(s.policy_version().unwrap(), 2, "{t}");
+            assert_eq!(s.load_policies().unwrap(), None, "{t}");
+        }
     }
 }

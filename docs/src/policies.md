@@ -7,10 +7,12 @@ before. Once a model has policies, everything they do not permit is
 denied, and a `forbid` always wins over a `permit`.
 
 The policies are stored with the model and enforced where the model is
-served: by `improv-server`, on every route (see
-[The HTTP Server](./server.md#access-policies)), and by `improv policy
-check` for testing. pg_improv enforces them in a later release. A local model file has no protection of its own: whoever can
-read the file can read all of it, whatever its policies say. The design
+served: by pg_improv, in the database, for every Postgres client (see
+[Improv in Postgres](./postgres.md#access-policies)); by `improv-server`,
+on every route (see [The HTTP Server](./server.md#access-policies)); and
+by `improv policy check` for testing. A local model file has no
+protection of its own: whoever can read the file can read all of it,
+whatever its policies say. The design
 is in [the design note](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md).
 
 ## A first policy
@@ -161,9 +163,69 @@ $ improv policy lint sales.db --user ann
 measure Total (103) totals over category Product (2), including Falcon, hidden from ann: the total less the visible items is their sum
 ```
 
+## In Postgres
+
+A Postgres model's policies live in pg_improv's `improv.policy` table.
+`improv policy set postgres://…?model=plan` stores them through
+`improv.set_policies`, which checks them again and audits the change; in
+SQL:
+
+```sql
+SELECT improv.set_policies('plan', $$ permit (principal in Improv::Role::"staff",
+  action in Improv::Action::"Read", resource); $$, '{"staff": {"users": ["ann"]}}');
+SELECT version, set_by, set_at FROM improv.policies('plan');
+SELECT * FROM improv.explain_access('plan', 'ReadCell',
+  '{"measure": "Revenue", "at": {"Time": "Q1", "Product": "Falcon"}}', 'ann');
+SELECT improv.set_policies('plan', NULL);   -- clear
+```
+
+The Cedar user is the Postgres role (`current_user`), and its roles are
+every role whose privileges it has. The model's owner, roles that may act
+as the owner, and superusers are never restricted, so a policy cannot lock
+the owner out. A policy may allow `Admin` to others, who may then set the
+policies too.
+
+Everyone else reads the model through what the policies allow:
+
+- `SELECT` on a result table returns only the rows it may read (row-level
+  security, on every sync mode);
+- `improv.categories`, `improv.items`, `improv.measures` and
+  `improv.cells` list only what it may read, and a hidden measure or item
+  answers exactly as one that does not exist;
+- the catalog tables (`improv.measure` and the rest) show it nothing.
+
+It changes the model where `EditCell` and `DefineMeasure` allow:
+`improv.set_cells` edits input cells, and `improv.define` and
+`improv.drop_measure` define, redefine and drop measures, all run as the
+owner. A definition cannot read a measure the role may not. Each change
+adds a row to `improv.policy_audit`; a refusal is logged by the server as
+one `pg_improv audit:` line. A change to the policies, the groups or a
+role's memberships applies from another session's next statement.
+
+Not covered: the source tables (a role that may read `sales` reads it,
+whatever the model's policies say), and the timing of changes
+(`improv.model_version` and NOTIFY are global).
+
+## Performance
+
+Measured in release builds (rustc 1.98, x86_64 Linux), 100 policies:
+
+| What | Measured |
+|---|---|
+| One raw `authorize` (uncached, the canonical model) | 142 µs |
+| One question of a new, uncached session | 21 µs |
+| One cell check from a session's cache | 334 ns |
+| A filtered read of a 1M-cell measure through a session | 326 ms |
+| `SELECT` of a 1M-row result table in Postgres, as a restricted role (the owner: 78 ms) | 955 ms |
+
+A session caches its decisions per class (a measure, an item a policy
+names, the rest of a category's items), so a read costs per cell, not
+per policy. In Postgres the row-level security check runs once a row.
+
 ## Compatibility
 
 The policies live in the model file beside the model, not in it. A model
 save does not touch them. Releases before 0.13 open a file with policies,
-ignore them, and keep them when they save. A Postgres model's policies
-will be kept by pg_improv; `improv policy set` refuses one until then.
+ignore them, and keep them when they save. pg_improv before 0.13 keeps
+none; `improv policy set` on such a database says to update the
+extension.

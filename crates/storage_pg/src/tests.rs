@@ -1458,3 +1458,72 @@ fn save_cells_writes_bound_cells_and_refuses_stale_handles() {
         .batch_execute(&format!("DROP TABLE IF EXISTS {table}"))
         .unwrap();
 }
+
+/// A plain catalog (no pg_improv 0.13+) has no policies and cannot keep
+/// any: load reads none, the version is 0, and a save says what is needed.
+/// The extension's side is `crates/pg_improv/tests/policies.sh`.
+#[test]
+fn a_plain_catalog_keeps_no_policies() {
+    let Some(url) = live("policies") else { return };
+    let mut s = PgModelStore::open(&url).unwrap();
+    if s.has_policies().unwrap() {
+        println!("skipped: this database has pg_improv's policy functions");
+        return;
+    }
+    assert_eq!(s.load_policies().unwrap(), None);
+    assert_eq!(s.policy_version().unwrap(), 0);
+    let e = s
+        .save_policies(Some(("permit (principal, action, resource);", "")))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("pg_improv 0.13 or later"), "{e}");
+    assert!(s.save_policies(None).is_err());
+}
+
+/// Under pg_improv 0.13+ (`IMPROV_TEST_PG_EXT`, a `postgres://` URL of a
+/// database with the extension, connecting as a superuser): set, load, version and clear go
+/// through `improv.set_policies` and `improv.policies`, which validate
+/// and audit.
+#[test]
+fn pg_improv_keeps_the_policies() {
+    let Ok(dsn) = std::env::var("IMPROV_TEST_PG_EXT") else {
+        println!("skipped: IMPROV_TEST_PG_EXT not set");
+        return;
+    };
+    let name = format!("t_policies_{}", std::process::id());
+    let sep = if dsn.contains('?') { '&' } else { '?' };
+    let mut s = PgModelStore::open(&format!("{dsn}{sep}model={name}")).unwrap();
+    assert!(s.has_policies().unwrap());
+    assert_eq!(s.load_policies().unwrap(), None);
+    assert_eq!(s.policy_version().unwrap(), 0);
+    let text = "permit (principal, action in Improv::Action::\"Read\", resource);";
+    let groups = r#"{"staff": {"users": ["ann"]}}"#;
+    assert_eq!(s.save_policies(Some((text, groups))).unwrap(), 1);
+    let want = StoredPolicies {
+        version: 1,
+        text: text.into(),
+        groups: groups.into(),
+    };
+    assert_eq!(s.load_policies().unwrap(), Some(want));
+    assert_eq!(s.policy_version().unwrap(), 1);
+    let e = s
+        .save_policies(Some(("permit (", "")))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("are not valid"), "{e}");
+    assert_eq!(s.save_policies(None).unwrap(), 2);
+    assert_eq!(s.load_policies().unwrap(), None);
+    assert_eq!(s.policy_version().unwrap(), 2);
+    let audited: i64 = s
+        .client
+        .query_one(
+            "SELECT count(*) FROM improv.policy_audit WHERE model = $1",
+            &[&name],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(audited, 2, "the set and the clear");
+    s.client
+        .execute("SELECT improv.drop_model($1)", &[&name])
+        .unwrap();
+}

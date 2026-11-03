@@ -269,6 +269,33 @@ for the mechanism, the wrapper's text, and the full privilege matrix
 (superuser, `improv_admin`, owner, `SET` member, `improv_user`, writer,
 `PUBLIC`), which `tests/privileges.sh` checks cell by cell.
 
+## Access policies
+
+A model's Cedar access policies ([Access Policies](./policies.md)) are
+stored and enforced by pg_improv, for every client. The owner, a role that
+may act as it and superusers are never restricted. Everyone else sees,
+through every read path, only what the policies allow: a result table's
+rows are filtered by row-level security, and `improv.categories`, `items`,
+`measures` and `cells` list only what the role may read. A hidden measure
+or item answers as one that does not exist. `improv.set_cells`, `define`
+and `drop_measure` let a role edit cells and define measures where the
+policies allow it, as the owner; every change is audited.
+
+```sql
+SELECT improv.set_policies('plan', $$
+  permit (principal in Improv::Role::"staff", action in Improv::Action::"Read", resource);
+$$);
+SELECT * FROM improv.explain_access('plan', 'ReadCell',
+  '{"measure": "Revenue", "at": {"Time": "Q1", "Product": "Widget"}}', 'ann');
+```
+
+The Cedar user is the current role; its roles are the roles whose
+privileges it has. A change to the policies, the groups or a role's
+memberships applies from another session's next statement. See the
+[pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#access-policies)
+for every path, the audit log and what is not covered, which
+`tests/policies.sh` checks.
+
 ## Durability
 
 In logical mode the worker writes a model's share of a batch and records

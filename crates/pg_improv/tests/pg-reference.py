@@ -35,6 +35,7 @@ PORT = os.environ.get("PGI_PORT", "55472")
 # Functions the extension installs for its own use: triggers, the language
 # handler, and helpers its policies and loads call.
 INTERNAL = {
+    "cell_visible": "Row-level security on a result table of a model with access policies: whether the caller may read the cell of `measure` at `dims` (item names in the measure's category order). True without policies and for the owner's side; false for every cell when the stored policies cannot be used.",
     "check_owner": "Trigger on `improv.model`: only a role that may act as both the current and the new owner may set or change a model's owner.",
     "commit_capture": "Commit mode's row-capture statement trigger (`improv.commit_capture = 'rows'`): notes the coordinates a statement touched for the pre-commit recompute.",
     "commit_catalog_changed": "Statement trigger on `improv.model` and `improv.binding`: invalidates every backend's cache of the commit-mode relations.",
@@ -43,6 +44,7 @@ INTERNAL = {
     "on_change": "Trigger mode's sync trigger: recomputes the changed inputs' dependents in the writer's transaction, as the model's owner.",
     "plimprov_call_handler": "The `LANGUAGE improv` call handler.",
     "plimprov_validator": "The `LANGUAGE improv` validator: checks the signature, and the body when `check_function_bodies` is on.",
+    "unrestricted": "Row-level security on the catalog: whether the caller may read model `model`'s measures, bindings, views and lambdas. True without access policies (0.12's rule) and for the owner's side.",
 }
 
 # improv.models has no table elsewhere; its columns, described once here.

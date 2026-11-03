@@ -20,6 +20,7 @@ use pgrx::{GucContext, GucFlags, GucRegistry, GucSetting, PgRelation};
 mod commit;
 mod language;
 mod owner;
+mod policy;
 mod trigger;
 mod worker;
 
@@ -387,10 +388,18 @@ fn get_value(r: &pgrx::spi::SpiHeapTupleData, i: usize, vt: ValueType) -> Res<Op
     })
 }
 
-/// Create result table `table` of model `model` for a `vt` measure (and the
-/// result schema) if missing; refuse an existing one whose `value` column
-/// holds another type.
-fn ensure_table(model: &str, table: &str, dims: &[String], vt: ValueType) -> Res<()> {
+/// Create result table `table` of measure `measure` of model `model` (id
+/// `mid`) for a `vt` measure (and the result schema) if missing, filtered
+/// by the model's access policies when it has any; refuse an existing one
+/// whose `value` column holds another type.
+fn ensure_table(
+    mid: i64,
+    measure: MeasureId,
+    model: &str,
+    table: &str,
+    dims: &[String],
+    vt: ValueType,
+) -> Res<()> {
     // Checked first: `IF NOT EXISTS` would NOTICE on every statement.
     let found = Spi::get_one_with_args::<String>(
         "SELECT (SELECT format_type(atttypid, atttypmod) FROM pg_attribute \
@@ -409,7 +418,7 @@ fn ensure_table(model: &str, table: &str, dims: &[String], vt: ValueType) -> Res
         create_result_schema(&schema)?;
     }
     Spi::run(&pm::create_table_sql(table, dims, vt)?)?;
-    Ok(())
+    policy::secure_new(mid, measure, table, dims)
 }
 
 /// Run the statements that turn result rows `old` of a `vt` measure into
@@ -661,9 +670,21 @@ fn bind_measure(
 /// bump, no row written); a new one recomputes the measure (the lambda's
 /// callers) and their dependents at once, in the caller's transaction,
 /// writing only the result rows whose value changed. Returns the measure's
-/// (or the lambda's) id.
+/// (or the lambda's) id. A role that may not act as the owner defines when
+/// the model's access policies allow it `DefineMeasure` (see
+/// [`policy::define_gate`]); the definition then runs as the owner.
 #[pg_extern(security_invoker)]
 fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<i64> {
+    if let Some(g) = policy::define_gate(model, definition, replace)? {
+        let id = owner::as_role(g.owner, || define_as(model, definition, replace))
+            .map_err(|e| g.scrub(e))?;
+        policy::audit_define(g.mid, model, definition, id)?;
+        return Ok(id);
+    }
+    define_as(model, definition, replace)
+}
+
+fn define_as(model: &str, definition: &str, replace: bool) -> Res<i64> {
     let (mid, model_name) = lock_model(model)?;
     let mut cat = read_catalog(mid)?;
     // A replacement may fix a measure whose old formula is past the load
@@ -713,7 +734,9 @@ fn define(model: &str, definition: &str, replace: default!(bool, false)) -> Res<
     let target = MeasureId(id32(id)?);
     let dims = pm::dim_columns(&m, target)?;
     let vt = m.measures[&target].value_type;
-    owner::as_owner(mid, || ensure_table(&model_name, &table, &dims, vt))?;
+    owner::as_owner(mid, || {
+        ensure_table(mid, target, &model_name, &table, &dims, vt)
+    })?;
     bump_version(mid)?;
     Ok(id)
 }
@@ -794,8 +817,18 @@ fn recompute_from(mid: i64, model: &str, root: MeasureId) -> Res<i64> {
 /// stored cells (an input), or its result table (a derived measure). An
 /// ERROR names the measures that still reference it. A named LAMBDA is
 /// dropped the same way, by name, once no measure or lambda calls it.
+/// A role that may not act as the owner drops when the model's access
+/// policies allow it `DefineMeasure` on the measure.
 #[pg_extern(security_invoker)]
 fn drop_measure(model: &str, measure: &str) -> Res<()> {
+    if let Some(g) = policy::drop_gate(model, measure)? {
+        owner::as_role(g.owner, || drop_measure_as(model, measure)).map_err(|e| g.scrub(e))?;
+        return policy::audit_drop(g.mid, model, measure);
+    }
+    drop_measure_as(model, measure)
+}
+
+fn drop_measure_as(model: &str, measure: &str) -> Res<()> {
     let (mid, model_name) = lock_model(model)?;
     let m = pm::build_model_to_fix(&read_catalog(mid)?, measure)?;
     if let Some(id) = pm::drop_lambda(&m, measure)? {

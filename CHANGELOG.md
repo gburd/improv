@@ -100,7 +100,7 @@ this project follows [Semantic Versioning](https://semver.org/).
   [Access Policies](docs/src/policies.md) chapter. A Mentat file stores
   them in four new `:policy/*` attributes, apart from the model. 0.12
   opens such a file, ignores them and keeps them (checked against the
-  v0.12.2 binary). Enforcement by pg_improv follows
+  v0.12.2 binary)
   ([the design](docs/reviews/2026-11-02-cedar-policies.md)). New
   dependency: `cedar-policy` 4.14.0 (Apache-2.0), pinned exactly.
 - **`improv-cosmic`, a COSMIC desktop GUI (preview).** A second desktop
@@ -135,6 +135,25 @@ this project follows [Semantic Versioning](https://semver.org/).
   Solnix's illumos fixups, and glutin's illumos patch
   (`docs/reviews/patches/glutin-illumos.patch`, to be sent upstream),
   `--locked --offline`. The guide's GUI page has a Platforms section.
+- **pg_improv 0.13.0 enforces a model's access policies** in the
+  database, for psql and every other client. `improv.set_policies`,
+  `improv.policies` and `improv.explain_access` set, show and explain
+  them; `improv policy set|show|clear postgres://…?model=` use them. The
+  Cedar user is the current role and its roles every role whose
+  privileges it has. The owner, roles that may act as it and superusers
+  are never restricted, so no policy locks the owner out. Everyone else
+  sees only what the policies allow, by every read path: result tables
+  are filtered by row-level security in every sync mode, the new
+  `improv.categories`, `items`, `measures` and `cells` list what it may
+  read, and the catalog shows it nothing; a hidden measure or item
+  answers as a missing one. `improv.set_cells`, `define` and
+  `drop_measure` let a role edit cells and define measures where the
+  policies allow, as the owner. Each change is audited in
+  `improv.policy_audit`; refusals in the server log. A change in one
+  session applies from another's next statement. The update script
+  (`pg_improv--0.12.2--0.13.0.sql`) adds `improv.policy`,
+  `improv.policy_audit` and the functions, and changes no row.
+  `tests/policies.sh` checks it on PG 15 to 18.
 
 ### Changed
 

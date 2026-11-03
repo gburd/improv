@@ -383,18 +383,43 @@ A cell whose own coordinate names a hidden item (`Total[Product=Secret]`)
 is absent under every template: the composite rule needs every item of
 the coordinate readable.
 
-## Performance targets
+## Performance (measured)
 
-Measured in a release build on the canonical model and recorded in the
-stage that lands each piece.
+Release builds, x86_64 Linux (werk), rustc 1.98; medians. The first three
+rows replace the targets this note set (20 µs, 200 ns, 1.2×), which the
+lead accepted as measured. `cargo test --release -p improv_policy --
+--ignored --nocapture perf` reproduces the `improv_policy` rows.
 
-| What | Target |
+| What | Measured |
 |---|---|
-| One `authorize` (100 policies, small entity slice) | ≤ 20 µs median |
-| One cell check with the class cache, amortized | ≤ 200 ns |
-| A filtered read of a 1M-cell measure | ≤ 1.2× the unfiltered read |
-| Building a policy session's model view at 100k items | ≤ 20 ms |
-| Parsing and validating 1,000 policies | ≤ 50 ms |
+| One raw `authorize` (100 policies, uncached, the canonical model) | 142 µs |
+| One question of a new, uncached session (100 policies) | 21 µs |
+| One cell check from a session's class cache | 334 ns |
+| Parsing and validating 100 policies | 4.5 ms |
+| A filtered read of a 1M-cell measure through a session (1,000 x 1,000 items, 100 policies, one row hidden; `perf_filtered_read`) | 326 ms (326 ns a cell; the bare pass: 2 ms) |
+| pg_improv, PG 17: `SELECT count(*), sum(value)` of a 1M-row result table as a restricted role (row-level security), against the owner (none) | 955 ms against 78 ms (12×) |
+| pg_improv: `improv.cells` of that measure, restricted against the owner | 3.6 s against 3.3 s |
+
+**Where the time goes.** A raw `authorize` builds the whole request: the
+schema-checked request, the principal and resource entities, and every
+policy of the set. A session keeps only the policies that can apply to
+its principal and action, and caches decisions per class, so a cell check
+is a few hash lookups; at 1M cells that is the 326 ms. In Postgres, the
+row-level security qual calls `improv.cell_visible` once per row: building
+the `text[]` of a row's item names costs about 150 ns, the function call
+and the session's statement check about 200 ns more, the cache lookup the
+rest. The owner's read has no qual.
+
+**Later, not now** (the lead's ruling: optimization comes after the
+measurements, each behind a test that a policy naming an undeclared
+attribute still fails closed):
+
+- Skip Cedar's per-request schema check (`Request::new` with a schema)
+  once a session has validated its policies; the raw `authorize` is the
+  path it would speed.
+- Decide per (measure, item class) once per statement in Postgres and
+  filter by item ids rather than names, so the qual is an array probe;
+  that needs result tables keyed by item id.
 
 **Caching.** A session is one (policy version, model structure version,
 principal, channel). It caches decisions:
@@ -463,10 +488,15 @@ would cost more than the evaluation.
   names or values; lists and counts leave them out; a hidden measure's
   404 is byte-for-byte the 404 of a measure that does not exist; denied
   writes are audited.
-- **pg_improv (stage 3):** `tests/privileges.sh` gains a policy section:
-  direct `SELECT` on a result table, the filtered functions, edits, and
-  `define` as owner, analyst, editor and PUBLIC, on every PG major CI
-  runs; the NOTIFY payload carries only the version.
+- **pg_improv (stage 3):** `tests/policies.sh` (in `ci/pg_improv.sh`, on
+  PG 15 to 18): direct `SELECT` on a result table in every sync mode, the
+  filtered functions, the catalog, edits, `define` and `drop_measure` as
+  owner, analyst, editor, an Admin and a role with no policy; hidden
+  equals missing byte for byte; denied changes write nothing and are
+  logged; the owner is never locked out; a change in one session applies
+  from the next statement of another; `pg_dump` keeps the policies. Two
+  `#[pg_test]`s check the result tables follow set and clear, and that
+  policies that no longer validate fail closed. (NOTIFY is stage 6.)
 - **Fuzz:** the stored policy document loader (text and groups JSON).
 - **Performance:** the targets above, release build, recorded in the
   stage's commit.
@@ -484,10 +514,11 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
    model, every route authorized, responses filtered, the hidden-equals-
    missing 404, `GET /v1/capabilities` for GUI hints, denied requests
    audited, OpenAPI updated.
-3. **pg_improv enforcement** (after the lead reviews this note).
+3. **pg_improv enforcement** (done, pg_improv 0.13.0).
    `improv.policy` and `improv.policy_audit`, `set_policies`, `policies`,
    `explain_access`, filtered read functions, RLS on result tables, edit
-   and define for non-owners, the update script.
+   and define for non-owners, the update script. As built (see
+   [Stage 3 as built](#stage-3-as-built)).
 4. **TLS.** storage_pg rustls and sslmode; `--tls-cert`/`--tls-key` in
    the server.
 5. **Filtered clients.** The model service's remote implementations: over
@@ -501,6 +532,40 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
    since DuckDB allows one writing process per file; it enforces the
    policies and serves the change feed. The DuckDB extension stays
    single-user; its README says so.
+
+### Stage 3 as built
+
+- **Freshness.** A backend keeps one session per (model, role), keyed by
+  the policy version, `improv.model_version`, the newest item id, and the
+  role's principal (its memberships). It is re-checked when the
+  statement, the snapshot's completed-transaction count, or the command
+  id moves, so one query's rows share a check and a commit in another
+  session is seen by the next statement. REPEATABLE READ keeps its
+  snapshot's policies.
+- **The catalog.** With policies, the read policies of `improv.measure`,
+  `category`, `binding`, `category_binding`, `view`, `lambda` and
+  `sync_state` call `improv.unrestricted(model_id)`: a restricted role
+  reads the model through `improv.categories`, `items`, `measures` and
+  `cells` instead. Without policies they read as in 0.12.
+- **Result tables.** `set_policies` adds a policy `improv_access` (`FOR
+  SELECT USING (improv.cell_visible(model, measure, ARRAY[dims]))`) to
+  each result table, as its owner, and turns row-level security on;
+  clearing drops them. A result table made later gets it when it is
+  created. The owner owns the tables, so its reads skip the qual.
+- **Changes through Cedar.** `define` and `drop_measure` check
+  `DefineMeasure` (on the model for a new measure or a LAMBDA, on the
+  measure to redefine or drop it), parse the formula against what the
+  role may read, and refuse a LAMBDA redefinition unless the role may
+  redefine every measure that calls it; then they run as the owner.
+  `set_cells` (new) edits input cells that pass `EditCell`. Structure
+  changes (`bind_*`) and `recalc`, `what_if` stay the owner's.
+- **Audit.** `improv.policy_audit` rows for every `set_policies` and
+  every change made through Cedar, in the change's transaction. A
+  refusal rolls back its transaction, so it is one `LOG_SERVER_ONLY`
+  line, `pg_improv audit: {"audit":"deny",…}`, instead.
+- **Messages.** A role the policies do not let open the model gets
+  "its access policies do not let you open it": model names are public
+  (`improv.models`), so this hides nothing that is not already shown.
 
 ### What 0.13 delivers
 

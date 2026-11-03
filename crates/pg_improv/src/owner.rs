@@ -246,6 +246,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON improv.model, improv.category, improv.it
 GRANT SELECT, INSERT, DELETE ON improv.sync_state TO improv_user;
 GRANT USAGE ON SEQUENCE improv.model_id_seq TO improv_user;
 GRANT SELECT ON improv.models TO improv_user;
+-- Row-level security shows each owner its own models' rows.
+GRANT SELECT ON improv.policy, improv.policy_audit TO improv_user;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA improv TO improv_user;
 "#,
     name = "roles",

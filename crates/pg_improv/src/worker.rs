@@ -1816,7 +1816,15 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
     let mut tables = Vec::with_capacity(targets.len());
     let mut changed = 0;
     super::owner::as_role(owner, || {
-        write_all(name, &model, &targets, &snapshot, &mut tables, &mut changed)
+        write_all(
+            mid,
+            name,
+            &model,
+            &targets,
+            &snapshot,
+            &mut tables,
+            &mut changed,
+        )
     })?;
     let l = Live {
         name: name.to_string(),
@@ -1834,6 +1842,7 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
 /// Per derived measure in `targets`: ensure its result table, write the
 /// rows that differ from `snapshot`, and note the table in `tables`.
 fn write_all(
+    mid: i64,
     name: &str,
     model: &Model,
     targets: &[MeasureId],
@@ -1849,7 +1858,7 @@ fn write_all(
         let table = pm::result_table(name, measure);
         let dims = pm::dim_columns(model, target)?;
         let vt = model.measures[&target].value_type;
-        ensure_table(name, &table, &dims, vt)?;
+        ensure_table(mid, target, name, &table, &dims, vt)?;
         let new = pm::result_rows(model, target, snapshot.get(&target).map_or(&empty, |m| m))?;
         let old = read_results(&table, &dims, vt)?;
         *changed += write_results(&table, &dims, vt, &old, &new)?;

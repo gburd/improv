@@ -141,6 +141,14 @@ improv-gui "postgres://me@localhost/sales?model=plan"
 | `sync_publication()` | Sets `improv_db` to the union of the relations every logical-mode model binds (creating it when missing). Called for you by every function that changes that set; run it by hand to repair a publication edited by hand. |
 | `status(model) → TABLE(sync_mode, slot, lag_bytes, confirmed_lsn, last_applied_at, rows_applied, last_error, incremental_applies, rebuilds)` | How the model is kept current, how far the logical worker is behind, and how it applied its batches: `incremental_applies` to the live engine, `rebuilds` full loads (the first catch-up, structural changes, and what it could not apply incrementally). |
 | `drop_model(name)` | Drops the catalog rows, the result schema and the triggers, and takes relations no other logical-mode model binds out of `improv_db`. |
+| `set_policies(model, policies text, groups text DEFAULT NULL) → bigint` | Stores the model's access policies (Cedar text, groups JSON), validated as `improv policy set` validates them; `NULL` policies clears them. Returns the new version. For the owner, a role that may act as it, or one the policies allow `Admin`. Audited. See [Access policies](#access-policies). |
+| `policies(model) → TABLE(version, policies, groups, set_by, set_at)` | The stored policies: no row if never set, a NULL `policies` after a clear. For the owner's side and `Admin`s. |
+| `explain_access(model, action text, resource jsonb DEFAULT NULL, role text DEFAULT NULL) → TABLE(step, action, resource, allowed, policies, errors)` | Each question the policy rules ask for `role` (the caller when NULL) doing `action` on `resource` (NULL: the model; `{"measure": M}`, `{"measure": M, "at": {"Category": "Item"}}`, `{"category": C}`, `{"category": C, "item": I}`, `{"view": V}`), with the deciding policies, to the first denial. Only the owner's side and `Admin`s ask about others or see the policies; a role asking about itself gets one row, allowed or not. |
+| `categories(model) → TABLE(id, name)` | The model's categories, for a role its policies let open it (`ViewModel`), and for the owner. |
+| `items(model) → TABLE(category, id, name)` | The items the caller may read (`ReadItem`). |
+| `measures(model) → TABLE(id, name, kind, value_type, categories, formula)` | The measures the caller may read (`ReadMeasure`); `formula` is NULL unless every measure it reads is readable too. |
+| `cells(model, measure text) → TABLE(coord jsonb, value jsonb)` | The cells of one measure the caller may read (`ReadCell`): an input's from its table, a derived measure's from its result table, read as the owner. A hidden measure answers as one that does not exist. |
+| `set_cells(model, edits jsonb) → bigint` | Sets (`null`: clears) input cells, as `what_if`'s edits name them, writing the bound table (or `improv.cell`) as the owner and recomputing. Each cell must pass `EditCell`; one that does not refuses the call. Returns the cells written. Audited. |
 
 **Redefining.** `define(model, 'Merit = …', replace => true)` is safe to
 re-run from a migration. When the formula parses to the one the measure
@@ -885,6 +893,92 @@ role that may act as the owner of every model may restore them too, from
 a dump made with `pg_dump --enable-row-security --inserts` (`COPY FROM`
 does not support row-level security); a role that may not is refused.
 
+## Access policies
+
+A model can carry **access policies** in [Cedar](https://www.cedarpolicy.com),
+the same policies `improv policy` writes for a model file and
+`improv-server` enforces (see the guide's
+[Access Policies](https://gburd.github.io/improv/policies.html)). pg_improv enforces them in
+the backend, for every client: psql, `postgres://` stores, and anything
+else that connects.
+
+```sql
+SELECT improv.set_policies('plan', $$
+  @id("staff") permit (principal in Improv::Role::"staff",
+                       action in Improv::Action::"Read", resource);
+  @id("ed") permit (principal == Improv::User::"ed",
+                    action == Improv::Action::"EditCell", resource in Improv::Measure::"2");
+$$);
+SELECT * FROM improv.policies('plan');         -- the stored text and version
+SELECT improv.set_policies('plan', NULL);      -- unrestricted again
+```
+
+Policies name measures, items, categories and views by id (`improv.measures`
+and `improv.items` list them). `set_policies` validates the text and groups
+as `improv policy set` does, NOTICEs ids the model lacks, and audits the
+change. `improv policy set postgres://…?model=plan` calls it.
+
+**Who is who.** The Cedar user is the current role, so `SET ROLE` acts as
+that role, as privileges do. Its Cedar roles are every role whose
+privileges it has (`pg_has_role(r, 'USAGE')`, so membership through other
+roles counts, `NOINHERIT` grants do not); groups come from the stored
+groups JSON. `context.channel` is `"postgres"`.
+
+**The owner is never restricted.** A superuser, and any role that may act
+as the model's owner (`improv.may_act_as`: the owner, and members with
+`SET`), bypass Cedar. A policy that forbids everything, or names the owner,
+does not lock the owner out. Cedar narrows what everyone else sees and
+does; it never lets anyone do more than the owner may.
+
+**Without policies** a model is as in 0.12: the result tables follow their
+grants, the catalog's names and formulas are readable by `improv_user`, and
+the filtered functions below refuse everyone but the owner's side.
+
+**With policies**, for a role that may not act as the owner:
+
+| Path | What it sees or does |
+| --- | --- |
+| `SELECT` on a result table (`improv_plan.revenue`) | The rows it may read, still behind the table's grants: a row-level security policy (`improv_access`, through `improv.cell_visible`) shows a cell when `ReadMeasure`, `ReadItem` on each of its items, and `ReadCell` allow it. The owner adds and drops the policy with `set_policies`; a result table made later gets it at once. |
+| `improv.categories`, `items`, `measures`, `cells` | What it may read; a hidden measure or item is absent, and asking for one answers exactly as for one that does not exist. |
+| The catalog (`improv.measure`, `binding`, `view`, `lambda`, `category`, `sync_state`; `item` and `cell` as before) | Nothing: the model is read through the functions. |
+| `improv.set_cells` | Edits input cells `EditCell` allows (each must be readable too), as the owner. |
+| `improv.define`, `drop_measure` | Defines, redefines or drops measures and LAMBDAs `DefineMeasure` allows, as the owner. A definition is parsed against what the role may read, so it cannot read a hidden measure; redefining a LAMBDA needs `DefineMeasure` on every measure that calls it. |
+| `bind_*`, `recalc`, `set_sync_mode`, `what_if`, `drop_model` | Refused, as in 0.12: the owner's. |
+
+Derived values are computed over all the data, as the owner sees it, then
+filtered: a total over items a role may not see is shown with its full
+value, or not at all (forbid its measure or cells). A role needs `USAGE` on
+schema `improv` to call the functions (`improv_user` has it), and `SELECT`
+on a result table to query it.
+
+**Freshness.** A backend keeps one Cedar session per model and role, built
+from the policy version, the model's version and its newest item, the
+role's memberships, and the groups. It is checked once per statement (per
+query, so a scan's rows cost a few hash lookups each), and against the
+snapshot: a change committed by another session, to the policies, the
+groups, the model or a role's memberships, applies from that session's
+next statement, while a `REPEATABLE READ` transaction keeps what its
+snapshot saw.
+
+**Audit.** Every `set_policies` and every `set_cells`, `define` and
+`drop_measure` a role makes through the policies adds a row to
+`improv.policy_audit` (model, time, role, action, resource, detail) in the
+change's transaction. A refusal rolls its transaction back, so it goes to
+the server log instead, as one line:
+`LOG:  pg_improv audit: {"audit":"deny","who":"ann","model":"plan","action":"EditCell","resource":"cell Quantity (2)[Time=Q1, Product=Widget]"}`.
+The owner's side reads both tables; `pg_dump` keeps them.
+
+**Fails closed.** Stored policies that no longer validate (written around
+`set_policies`) refuse every request but the owner's, who can replace them.
+
+**Not covered.** The source tables: a role that may `SELECT` from `sales`
+reads it whatever the model's policies say, so grant source tables to
+match. Models in a file are enforced only by `improv-server`. NOTIFY
+payloads, `improv.model_version` and `improv.models` show every role that
+a model exists and when it changed (see the design note's
+[Versions and change timing](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md#versions-and-change-timing)).
+`tests/policies.sh` checks all of this on every Postgres CI runs.
+
 ## Catalog
 
 The `improv.*` tables are a compatible superset of the catalog that
@@ -892,8 +986,9 @@ The `improv.*` tables are a compatible superset of the catalog that
 created in SQL opens in the GUI and vice versa. The extension adds
 `improv.model.owner` (the role that created the model, as which it reads
 its tables and writes its results),
-`improv.category_binding` (category ⇄ column bindings) and, for logical
-mode, `improv.sync_state` (each model's slot, progress and last error) and
+`improv.category_binding` (category ⇄ column bindings), `improv.policy`
+and `improv.policy_audit` (access policies and their audit trail) and, for
+logical mode, `improv.sync_state` (each model's slot, progress and last error) and
 `improv.slot_to_drop` (old per-model slots the worker drops after the
 update to 0.11.0). A pg_test checks the superset property against
 `improv_storage_pg::CATALOG_SQL`.

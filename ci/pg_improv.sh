@@ -11,7 +11,8 @@
 #   and update SQL, tests/pg-reference.py (docs/src/pg-reference.md matches
 #   the installed extension), tests/txn.sh (no-preload CREATE EXTENSION, the schema
 #   check, transactional semantics, dump/restore), tests/privileges.sh (a
-#   model acts as its owner: RLS in every sync mode), tests/logical.sh (the
+#   model acts as its owner: RLS in every sync mode), tests/policies.sh
+#   (Cedar access policies: every read path, edits, audit, freshness), tests/logical.sh (the
 #   sync worker end to end), tests/tutorial-sales.sh and tests/finance.sh
 #   (the guide's Postgres tutorial and family-finance example), tests/limits.sh (resource limits: worker
 #   slots, wal_keep_size, disk full), tests/scale.sh at its small default size
@@ -93,6 +94,10 @@ step "tests/privileges.sh (pg$pg)"
 # The improv CLI, to check the Postgres model store against this catalog.
 (cd "$root" && run cargo build -q -p improv_cli)
 run env PG_BIN="/usr/lib/postgresql/$pg/bin" IMPROV="$root/target/debug/improv" ./tests/privileges.sh
+end
+
+step "tests/policies.sh: access policies (pg$pg)"
+run env PG_BIN="/usr/lib/postgresql/$pg/bin" ./tests/policies.sh
 end
 
 step "tests/logical.sh (pg$pg)"
