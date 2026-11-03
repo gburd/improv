@@ -34,7 +34,20 @@ serve() {
   for _ in $(seq 50); do curl -fs "http://127.0.0.1:$port/v1/health" > /dev/null && return; sleep 0.1; done
   echo "e2e: improv-server did not start" >&2; cat "$d/server.log" >&2; return 1
 }
-stop() { kill "$(cat "$d/pid")" 2>/dev/null || true; while kill -0 "$(cat "$d/pid")" 2>/dev/null; do sleep 0.05; done; }
+# Stop the server and reap it. `kill -0` alone loops forever on a zombie,
+# which a container's init may never reap: `wait` reaps it when it is ours,
+# and `ps` tells a zombie (Z) from a live process otherwise; 10 s at most.
+stop() {
+  local p; p=$(cat "$d/pid")
+  kill "$p" 2>/dev/null || true
+  wait "$p" 2>/dev/null || true
+  for _ in $(seq 200); do
+    kill -0 "$p" 2>/dev/null || return 0
+    [ "$(ps -o stat= -p "$p" 2>/dev/null | cut -c1)" = Z ] && return 0
+    sleep 0.05
+  done
+  kill -9 "$p" 2>/dev/null || true
+}
 trap 'stop; find "$d" -delete' EXIT
 serve
 export -f serve stop
