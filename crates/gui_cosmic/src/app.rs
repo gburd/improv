@@ -7,6 +7,7 @@ use std::sync::{mpsc, Arc};
 
 use cosmic::app::{Core, Task};
 use cosmic::iced::keyboard::{self, key::Named, Key, Modifiers};
+use cosmic::iced::widget::canvas;
 use cosmic::iced::{Length, Size, Subscription};
 use cosmic::widget;
 use cosmic::{executor, ApplicationExt, Element};
@@ -86,6 +87,8 @@ pub enum Message {
     ViewName(String),
     /// Save the current layout as a view with the typed name.
     SaveView,
+    /// Show the grid as a chart, or back.
+    ToggleChart,
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -106,6 +109,8 @@ pub struct App {
     editing: Option<(Cell, String)>,
     /// The name typed for a view to save.
     view_name: String,
+    /// The measure shows as a chart instead of a grid.
+    chart: bool,
     /// The category tile being dragged, and the strip and slot it is over.
     held: Option<(improv_core_model::CategoryId, Option<(Axis, usize)>)>,
     /// The formula being edited: its measure, its text, and where the last
@@ -142,6 +147,7 @@ impl App {
             service: service::spawn(service, tx),
             editing: None,
             view_name: String::new(),
+            chart: false,
             held: None,
             formula: None,
             pending: 0,
@@ -692,6 +698,7 @@ impl cosmic::Application for App {
             }
             Message::ViewName(n) => self.view_name = n,
             Message::SaveView => self.save_view(),
+            Message::ToggleChart => self.chart = !self.chart,
             Message::Page(i, j) => {
                 if let Some(l) = &mut self.layout {
                     let cat = l.page_cats().get(i).copied();
@@ -766,11 +773,35 @@ impl cosmic::Application for App {
                     .width(Length::Fixed(160.0)),
             )
             .push(widget::button::standard("Save view").on_press(Message::SaveView))
+            .push(
+                widget::button::standard(if self.chart { "Grid" } else { "Chart" })
+                    .on_press(Message::ToggleChart),
+            )
             .push(widget::space::horizontal())
             .push(widget::text::caption(self.status.clone()))
             .spacing(cosmic::theme::spacing().space_s)
             .align_y(cosmic::iced::Alignment::Center);
         let body: Element<'_, Message> = match (&self.layout, &self.grid) {
+            (Some(l), Some(g)) if self.chart => {
+                let data = crate::chart::data(&self.model, &self.snapshot, l.measure, g);
+                let note = data.truncated.then(|| {
+                    format!(
+                        "the first {} rows and {} columns",
+                        crate::chart::MAX_GROUPS,
+                        crate::chart::MAX_SERIES
+                    )
+                });
+                let mut col = widget::column::with_capacity(2);
+                if let Some(n) = note {
+                    col = col.push(widget::text::caption(n));
+                }
+                col.push(
+                    widget::canvas(ChartView(data))
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .into()
+            }
             (Some(l), Some(g)) => {
                 let grid = widget::canvas(SheetProgram {
                     sheet: Sheet {
@@ -961,6 +992,31 @@ impl App {
             list = list.push(line);
         }
         widget::container(list).padding(space.space_xs).into()
+    }
+}
+
+/// A chart that owns its data (the canvas is built each view).
+struct ChartView(crate::chart::Data);
+
+impl canvas::Program<Message, cosmic::Theme> for ChartView {
+    type State = ();
+
+    fn draw(
+        &self,
+        state: &(),
+        renderer: &cosmic::Renderer,
+        theme: &cosmic::Theme,
+        bounds: cosmic::iced::Rectangle,
+        cursor: cosmic::iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        <crate::chart::Chart<'_> as canvas::Program<Message, cosmic::Theme>>::draw(
+            &crate::chart::Chart { data: &self.0 },
+            state,
+            renderer,
+            theme,
+            bounds,
+            cursor,
+        )
     }
 }
 

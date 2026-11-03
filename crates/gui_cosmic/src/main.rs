@@ -3,6 +3,7 @@
 
 mod app;
 mod args;
+mod chart;
 mod entry;
 mod formulas;
 mod nav;
