@@ -20,6 +20,26 @@ use crate::pivot::{self, Axis, Grid, Layout};
 use crate::service::{self, CellEdit, LocalService, ModelService, Request, Update};
 use crate::sheet::{self, Cell, Sheet, SheetProgram};
 
+/// How many steps undo (and redo) keep; older ones are dropped.
+pub const UNDO_DEPTH: usize = 100;
+
+/// One undo (or redo) step: what to send the service to put it back.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Step {
+    /// The cells as they were (each `None`: empty).
+    Cells(Vec<CellEdit>),
+    /// The structure as it was (no cells).
+    Structure(Box<Model>),
+}
+
+/// Which stack the next answered change records into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Travel {
+    Do,
+    Undo,
+    Redo,
+}
+
 /// The formula editor's state.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormulaEdit {
@@ -99,6 +119,9 @@ pub enum Message {
     Chosen(bool, Option<String>),
     /// A file was dropped on the window: open it.
     Dropped(std::path::PathBuf),
+    /// Edit ▸ Undo (Ctrl+Z) and Redo (Ctrl+Shift+Z, Ctrl+Y).
+    Undo,
+    Redo,
     /// File ▸ Print… (the print portal).
     Print,
     /// The print request ended: what to say.
@@ -130,6 +153,12 @@ pub struct App {
     /// The formula being edited: its measure, its text, and where the last
     /// commit of it failed (located for the underline).
     formula: Option<FormulaEdit>,
+    /// What undo and redo put back, newest last (at most [`UNDO_DEPTH`]).
+    undo: Vec<Step>,
+    redo: Vec<Step>,
+    /// Where the next answered change goes: a normal one is undoable (and
+    /// clears redo), an undo's is redoable, a redo's undoable again.
+    travel: Travel,
     /// Edits sent to the service and not yet answered (the status line says
     /// so; the grid shows a cell's new value when the service has it).
     pending: usize,
@@ -160,6 +189,9 @@ impl App {
             target,
             service: service::spawn(service, tx),
             editing: None,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            travel: Travel::Do,
             view_name: String::new(),
             chart: false,
             held: None,
@@ -233,6 +265,14 @@ impl App {
         }
         if mods.control() {
             match key.as_ref() {
+                Key::Character("z" | "Z") => {
+                    self.travel(!mods.shift());
+                    return Task::none();
+                }
+                Key::Character("y") => {
+                    self.travel(false);
+                    return Task::none();
+                }
                 Key::Character("c") => return self.copy(),
                 Key::Character("v") => {
                     // HTML or text where the clipboard has formats (Wayland);
@@ -301,6 +341,18 @@ impl App {
             }
             Update::Edited(cells, changes, unsaved) => {
                 self.pending = self.pending.saturating_sub(1);
+                let prior = cells
+                    .iter()
+                    .map(|c| CellEdit {
+                        measure: c.measure,
+                        at: c.at.clone(),
+                        value: self
+                            .model
+                            .input(c.measure, &improv_engine::decode_coord(&c.at))
+                            .cloned(),
+                    })
+                    .collect();
+                self.record(Step::Cells(prior));
                 let model = Arc::make_mut(&mut self.model);
                 for c in cells.iter() {
                     let at = improv_engine::decode_coord(&c.at);
@@ -317,6 +369,9 @@ impl App {
             }
             Update::Restructured(structure, snapshot, unsaved) => {
                 self.pending = self.pending.saturating_sub(1);
+                self.record(Step::Structure(Box::new(crate::formulas::structure(
+                    &self.model,
+                ))));
                 let model = Arc::make_mut(&mut self.model);
                 let inputs = std::mem::take(&mut model.inputs);
                 *model = (*structure).clone();
@@ -332,6 +387,9 @@ impl App {
             }
             Update::Failed(e) => {
                 self.pending = self.pending.saturating_sub(1);
+                // An undo or redo that failed records nothing; the next
+                // answered change is a normal one.
+                self.travel = Travel::Do;
                 // A refused formula is located in its text, and stays open.
                 if let Some(f) = &mut self.formula {
                     f.error = Some(crate::formulas::build_error(&self.model, &f.text, &e));
@@ -366,6 +424,58 @@ impl App {
         };
         self.origin = nav::follow(Cell::default(), self.cursor, e);
         self.anchor = None;
+    }
+
+    /// Record `step` (what puts back the change just answered) on the
+    /// stack the change's kind says.
+    fn record(&mut self, step: Step) {
+        let travel = std::mem::replace(&mut self.travel, Travel::Do);
+        let stack = match travel {
+            Travel::Do => {
+                self.redo.clear();
+                &mut self.undo
+            }
+            Travel::Redo => &mut self.undo,
+            Travel::Undo => &mut self.redo,
+        };
+        if stack.len() >= UNDO_DEPTH {
+            let _ = stack.remove(0);
+        }
+        stack.push(step);
+    }
+
+    /// Undo (`back`) or redo the last change: send the step that puts it
+    /// back. One at a time: a second waits for the first's answer.
+    pub fn travel(&mut self, back: bool) {
+        if self.pending > 0 {
+            self.status = "wait for the last change to land".into();
+            return;
+        }
+        let Some(step) = (if back {
+            self.undo.pop()
+        } else {
+            self.redo.pop()
+        }) else {
+            self.status = if back {
+                "nothing to undo"
+            } else {
+                "nothing to redo"
+            }
+            .into();
+            return;
+        };
+        self.travel = if back { Travel::Undo } else { Travel::Redo };
+        let req = match step {
+            Step::Cells(c) => Request::Edit(c),
+            Step::Structure(s) => Request::Restructure(s),
+        };
+        self.pending += 1;
+        self.status = if back { "undoing…" } else { "redoing…" }.into();
+        if self.service.send(req).is_err() {
+            self.pending -= 1;
+            self.travel = Travel::Do;
+            self.status = "the model thread stopped".into();
+        }
     }
 
     /// Open the store at `target` in this window: a new model service over
@@ -902,6 +1012,8 @@ impl cosmic::Application for App {
                 }
             }
             Message::Dropped(p) => return self.open_store(p.to_string_lossy().into_owned()),
+            Message::Undo => self.travel(true),
+            Message::Redo => self.travel(false),
             Message::Print => {
                 let mut rows = self.all_text();
                 if rows.is_empty() {
@@ -991,10 +1103,18 @@ impl cosmic::Application for App {
             .into_iter()
             .map(|(_, n)| n)
             .collect();
-        let bar = widget::row::with_capacity(8)
+        let bar = widget::row::with_capacity(11)
             .push(widget::button::standard("Open…").on_press(Message::Open))
             .push(widget::button::standard("Save As…").on_press(Message::SaveAs))
             .push(widget::button::standard("Print…").on_press(Message::Print))
+            .push(
+                widget::button::standard("Undo")
+                    .on_press_maybe((!self.undo.is_empty()).then_some(Message::Undo)),
+            )
+            .push(
+                widget::button::standard("Redo")
+                    .on_press_maybe((!self.redo.is_empty()).then_some(Message::Redo)),
+            )
             .push(widget::dropdown(names, shown, Message::ShowMeasure))
             .push(widget::dropdown(views, None, Message::OpenView).placeholder("Views"))
             .push(
@@ -1795,6 +1915,90 @@ mod tests {
         app.apply(u.unwrap());
         assert_eq!(app.measures.len(), 3);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Send `m`, then apply what the service answers.
+    fn round(
+        app: &mut App,
+        rx: &mut futures::channel::mpsc::UnboundedReceiver<Update>,
+        m: Message,
+    ) {
+        send(app, m);
+        let u = next(rx);
+        app.apply(u);
+    }
+
+    #[test]
+    fn undo_and_redo_cells_and_formulas() {
+        let (mut app, mut rx) = live(revenue_model());
+        let k: improv_engine::CoordKey = [(1, 10), (2, 20)].into_iter().collect();
+        let q = |app: &App| sheet::value(&app.model, &app.snapshot, MeasureId(100), &k);
+        let rev = |app: &App| sheet::value(&app.model, &app.snapshot, MeasureId(102), &k);
+        use improv_engine::CellValue as V;
+        // A cell edit, then a formula.
+        typed(&mut app, "7");
+        round(&mut app, &mut rx, Message::EditCommit);
+        assert_eq!(q(&app), Some(V::num(7.0)));
+        send(&mut app, Message::EditFormula(0));
+        send(
+            &mut app,
+            Message::FormulaText("Price * Quantity * 2".into()),
+        );
+        round(&mut app, &mut rx, Message::FormulaCommit);
+        assert_eq!(rev(&app), Some(V::num(140.0)));
+        // Undo the formula, then the cell.
+        round(&mut app, &mut rx, Message::Undo);
+        assert_eq!(rev(&app), Some(V::num(70.0)));
+        round(&mut app, &mut rx, Message::Undo);
+        assert_eq!(q(&app), Some(V::num(100.0)));
+        assert_eq!(rev(&app), Some(V::num(1000.0)));
+        send(&mut app, Message::Undo);
+        assert_eq!(app.status, "nothing to undo");
+        // Redo both, in order.
+        round(&mut app, &mut rx, Message::Redo);
+        assert_eq!(q(&app), Some(V::num(7.0)));
+        round(&mut app, &mut rx, Message::Redo);
+        assert_eq!(rev(&app), Some(V::num(140.0)));
+        // A new change after an undo drops what redo held.
+        round(&mut app, &mut rx, Message::Undo);
+        typed(&mut app, "9");
+        round(&mut app, &mut rx, Message::EditCommit);
+        assert!(app.redo.is_empty());
+    }
+
+    #[test]
+    fn ctrl_z_undoes_and_a_cleared_cell_comes_back() {
+        let (mut app, mut rx) = live(revenue_model());
+        let _ = app.key(&Key::Named(Named::Delete), Modifiers::empty(), None);
+        let u = next(&mut rx);
+        app.apply(u);
+        let k: improv_engine::CoordKey = [(1, 10), (2, 20)].into_iter().collect();
+        assert_eq!(
+            sheet::value(&app.model, &app.snapshot, MeasureId(100), &k),
+            None
+        );
+        let _ = app.key(&Key::Character("z".into()), Modifiers::CTRL, Some("z"));
+        let u = next(&mut rx);
+        app.apply(u);
+        assert_eq!(
+            sheet::value(&app.model, &app.snapshot, MeasureId(100), &k),
+            Some(improv_engine::CellValue::num(100.0))
+        );
+        let _ = app.key(
+            &Key::Character("Z".into()),
+            Modifiers::CTRL | Modifiers::SHIFT,
+            Some("Z"),
+        );
+        assert_eq!(app.pending, 1, "redo sent");
+    }
+
+    #[test]
+    fn undo_keeps_at_most_its_depth() {
+        let mut app = opened(revenue_model(), 10, 5);
+        for _ in 0..UNDO_DEPTH + 5 {
+            app.record(Step::Cells(vec![]));
+        }
+        assert_eq!(app.undo.len(), UNDO_DEPTH);
     }
 
     #[test]
