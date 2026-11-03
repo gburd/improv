@@ -431,6 +431,18 @@ Usage: improv-gui [model]
 | --- | --- |
 | `<model>` | The model: a store file, or postgres://USER@HOST/DB?model=NAME. Without it the model is in memory only |
 
+## `improv-cosmic`
+
+Open a model in a COSMIC (libcosmic) window that follows the desktop's theme.
+
+```text
+Usage: improv-cosmic [model]
+```
+
+| Argument | Description |
+| --- | --- |
+| `<model>` | The model: a store file, or postgres://USER@HOST/DB?model=NAME. Without it the model is in memory only |
+
 ## `improv-tui`
 
 Show one measure of a model as a pivot grid in the terminal.

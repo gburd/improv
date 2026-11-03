@@ -307,6 +307,21 @@ parity with `crates/gui` (its 20k lines of app logic, the multi-matrix
 canvas, every dialog) is 4–6 weeks, most of it UI work rather than
 model work. The model work is shared.
 
+## Parity reached (2026-11-02, same day)
+
+Stages 1–10 landed on `work/cosmic`, one commit each: keyboard and
+ranges, cell entry, the formula list and editor (`improv_client`),
+category tiles and pivoting by drag, views, charts, copy and paste (TSV
+and HTML), open and Save As through the file chooser, print through the
+print portal (pdf-writer), and undo. The guide page is
+`docs/src/cosmic-gui.md`; `improv-cosmic(1)` is generated with the other
+man pages. Checked with a real pointer and keyboard under Xvfb (X11), on
+Solnix in its COSMIC session (the grid), and by `xclip` (copy and paste
+on X11). Not exercised: the portal dialogs (no host here runs
+xdg-desktop-portal) and the Wayland clipboard's HTML (no wl-clipboard on
+lixi). What `improv-gui` has that this does not yet: the guide's "Not
+yet".
+
 ## Risks
 
 - **libcosmic churn.** It is git-only and pre-release; plan on API

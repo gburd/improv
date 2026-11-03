@@ -60,12 +60,20 @@ this project follows [Semantic Versioning](https://semver.org/).
   dependency: `cedar-policy` 4.14.0 (Apache-2.0), pinned exactly.
 - **`improv-cosmic`, a COSMIC desktop GUI (preview).** A second desktop
   GUI on libcosmic (System76's toolkit, on iced), beside the NeXTSTEP-style
-  `improv-gui`. It opens a model (a store file or `postgres://…?model=`),
-  shows a measure's grid in the desktop's COSMIC theme, and keeps the load,
-  engine and saves off the UI thread behind a model-service interface. Its
-  own Cargo workspace, `crates/gui_cosmic`; built and run on Linux, FreeBSD,
-  illumos (Solnix, in a COSMIC session) and Windows arm64. See
-  `docs/reviews/2026-11-02-cosmic-gui.md`.
+  `improv-gui`, over the same models (a store file or
+  `postgres://…?model=`). It follows the desktop's COSMIC theme and accent,
+  and opens, saves and prints through the XDG portals. A grid drawn only
+  where it is in view (10^6 cells), keyboard movement and ranges, typed
+  cell entry, the numbered formula list with located errors and
+  completion, pivoting by dragging category tiles, saved views, charts in
+  the theme's colors, copy and paste of ranges as TSV and HTML, and undo.
+  The model loads, recalculates and saves on a thread of its own behind a
+  model-service interface (a remote one can follow). Its own Cargo
+  workspace, `crates/gui_cosmic`; built and run on Linux, FreeBSD and
+  illumos (Solnix, in a COSMIC session), and built on Windows (no
+  accessibility there yet; rich copy and drag and drop wait on libcosmic).
+  Guide: [The COSMIC Desktop GUI](docs/src/cosmic-gui.md);
+  `improv-cosmic(1)`; design note `docs/reviews/2026-11-02-cosmic-gui.md`.
 
 ### Changed
 

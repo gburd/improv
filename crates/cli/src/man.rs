@@ -12,6 +12,11 @@ use std::path::{Path, PathBuf};
 #[allow(dead_code)]
 #[path = "../../gui/src/args.rs"]
 mod gui_args;
+// The COSMIC GUI is its own workspace; its command line is declarations
+// only, so its page is generated here with the others.
+#[allow(dead_code)]
+#[path = "../../gui_cosmic/src/args.rs"]
+mod cosmic_args;
 #[allow(dead_code)]
 #[path = "../../server/src/args.rs"]
 mod server_args;
@@ -48,6 +53,11 @@ fn pages() -> Vec<(String, String)> {
             gui_args::Cli::command(),
             include_str!("../man/improv-gui.1.roff"),
             "improv-gui.1.roff",
+        ),
+        (
+            cosmic_args::Cli::command(),
+            include_str!("../man/improv-cosmic.1.roff"),
+            "improv-cosmic.1.roff",
         ),
         (
             tui_args::Cli::command(),
@@ -295,6 +305,7 @@ fn completions() -> Vec<(String, String)> {
     for mut cmd in [
         crate::args::Cli::command(),
         gui_args::Cli::command(),
+        cosmic_args::Cli::command(),
         tui_args::Cli::command(),
         server_args::Cli::command(),
     ] {
@@ -447,6 +458,7 @@ fn cli_reference() -> String {
     }
     for mut cmd in [
         gui_args::Cli::command(),
+        cosmic_args::Cli::command(),
         tui_args::Cli::command(),
         server_args::Cli::command(),
     ] {

@@ -19,6 +19,7 @@
 - [Running Improv](./running.md)
 - [The Formula Language](./formulas.md)
 - [The Desktop GUI](./gui-tour.md)
+- [The COSMIC Desktop GUI](./cosmic-gui.md)
 - [The Web GUI](./web-gui.md)
 - [Improv in Postgres (pg_improv)](./postgres.md)
   - [A Family's Finances](./postgres-finance.md)
