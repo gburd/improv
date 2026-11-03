@@ -129,11 +129,14 @@ impl Store {
     pub fn load_policies(&mut self) -> Result<Option<StoredPolicies>> {
         match self {
             Store::Mentat(s) => Ok(s.load_policies()?),
-            Store::Pg(s) => Ok(s.load_policies()?.map(|p| StoredPolicies {
-                version: p.version,
-                text: p.text,
-                groups: p.groups,
-            })),
+            Store::Pg(s) => Ok(match s.load_policies()? {
+                Some(p) => Some(StoredPolicies {
+                    version: p.version,
+                    text: p.text,
+                    groups: p.groups,
+                }),
+                None => None,
+            }),
         }
     }
 

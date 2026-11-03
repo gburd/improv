@@ -949,18 +949,18 @@ impl PgModelStore {
         if !self.has_policies()? {
             return Ok(None);
         }
+        // A cleared document has a row with a NULL text: none.
         let row = self.client.query_opt(
             "SELECT p.version, p.policies, coalesce(p.groups, '') \
-             FROM improv.model m, improv.policies(m.name) p WHERE m.id = $1",
+             FROM improv.model m, improv.policies(m.name) p \
+             WHERE m.id = $1 AND p.policies IS NOT NULL",
             &[&self.model_id],
         )?;
-        Ok(row.and_then(|r| {
-            let text: Option<String> = r.get(1);
-            text.map(|text| StoredPolicies {
-                version: r.get(0),
-                text,
-                groups: r.get(2),
-            })
+        let Some(r) = row else { return Ok(None) };
+        Ok(Some(StoredPolicies {
+            version: r.get(0),
+            text: r.get(1),
+            groups: r.get(2),
         }))
     }
 
@@ -972,11 +972,13 @@ impl PgModelStore {
         if !self.has_policies()? {
             return Ok(0);
         }
-        let v = self.client.query_opt(
-            "SELECT version FROM improv.policy WHERE model_id = $1",
-            &[&self.model_id],
-        )?;
-        Ok(v.map_or(0, |r| r.get(0)))
+        Ok(self
+            .client
+            .query_one(
+                "SELECT coalesce((SELECT version FROM improv.policy WHERE model_id = $1), 0)",
+                &[&self.model_id],
+            )?
+            .get(0))
     }
 
     /// Set (or, with `None`, clear) the model's access policies through
