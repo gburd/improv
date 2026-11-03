@@ -157,8 +157,14 @@ work/next: color graphs in a NeXT graph window (gap 1), Improv 1.0's menus and
 key equivalents (2), NeXTSTEP 2 title and resize bars (3), key/main/other
 title bars, broken close box, miniaturize button (4, 5), the menu frame (6),
 scroller clicks (7), Edit ▸ Copy, Paste, Select All (8), formula status
-indicators (10). Next, ranked: the Inspector and Format panels (9), Print and
-Page Layout (11), context help (12), Improv's structured selection (13).
+indicators (10). Round 2 (work/next2): the Inspector and Format panels (9),
+Print, Page Layout and Report Layout to PDF, PostScript, `lp`/`lpr` and the
+Windows print dialog (11), Edit ▸ Cut and File ▸ Close (8), context help
+(12), structured selection (13); and `ci/solnix-gui.sh` builds improv-gui on
+illumos with `docs/reviews/patches/glutin-illumos.patch` (to send upstream).
+Left: gaps 14–16 are "not planned"; the remainders are listed in each gap's
+row (saving the worksheet options and print layouts with the view, Line
+Style and Color pages, page breaks, per-command help pages).
 
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
