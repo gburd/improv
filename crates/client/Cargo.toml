@@ -7,6 +7,9 @@ description = "What every Improv front end shares without the engine or a store:
 
 [dependencies]
 improv_core_model = { path = "../core_model" }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.

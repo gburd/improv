@@ -5,6 +5,11 @@
 //! functions of a [`Model`](improv_core_model::Model), so they build for
 //! `wasm32-unknown-unknown` and run in the browser as they do on the desktop
 //! and in the server.
+//!
+//! [`wire`] is the `/v1` API a GUI drives, as types both sides share, and
+//! the [`wire::ModelService`] trait a GUI calls. The browser build
+//! implements it over HTTP; the `local` feature adds the authority itself
+//! (a store and the engine) and a local implementation over it.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // The attribute is only used inside #[cfg(test)] modules, so non-test
 // coverage builds would otherwise warn that the feature is unused.
@@ -14,6 +19,7 @@ pub mod completion;
 pub mod diagnostics;
 pub mod dsl;
 pub mod function_help;
+pub mod wire;
 
 /// A model the tests share: the canonical Time x Product revenue model.
 #[cfg(test)]

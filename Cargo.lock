@@ -2819,7 +2819,10 @@ dependencies = [
 name = "improv_client"
 version = "0.12.2"
 dependencies = [
+ "chrono",
  "improv_core_model",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
