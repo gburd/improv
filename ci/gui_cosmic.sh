@@ -34,6 +34,6 @@ end
 
 if [ "${GUI_COSMIC_DENY:-1}" != 0 ]; then
 	step "cargo-deny (crates/gui_cosmic/deny.toml)"
-	cargo deny --locked --manifest-path Cargo.toml --config deny.toml check
+	cargo deny --config deny.toml --locked --manifest-path Cargo.toml check
 	end
 fi

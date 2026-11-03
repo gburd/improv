@@ -40,6 +40,9 @@ cleanup() {
 trap cleanup EXIT
 
 target=${CARGO_TARGET_DIR:-$root/target}
+# gui_cosmic is its own workspace: without CARGO_TARGET_DIR it builds into
+# its own target/, not the root's.
+cosmic_target=${CARGO_TARGET_DIR:-$root/crates/gui_cosmic/target}
 (cd "$root" && cargo build --quiet --locked -p improv_cli)
 (cd "$root/crates/gui_cosmic" && cargo build --quiet --locked)
 
@@ -75,7 +78,7 @@ for _ in $(seq 1 100); do [[ -s $tmp/display ]] && break; sleep 0.1; done
 mkdir -p "$tmp/config"
 DISPLAY=:$(<"$tmp/display") WAYLAND_DISPLAY='' XDG_CONFIG_HOME=$tmp/config \
 	IMPROV_COSMIC_SHOT=$out/cosmic.png timeout "${COSMIC_SHOT_TIMEOUT:-60}" \
-	"$target/debug/improv-cosmic" "$db" >"$tmp/run.log" 2>&1 ||
+	"$cosmic_target/debug/improv-cosmic" "$db" >"$tmp/run.log" 2>&1 ||
 	die "improv-cosmic failed: $(tail -5 "$tmp/run.log")"
 [[ -s $out/cosmic.png ]] || die "no capture: $(tail -5 "$tmp/run.log")"
 
