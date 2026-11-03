@@ -10,6 +10,7 @@
 #![cfg_attr(coverage_nightly, allow(unused_features))]
 
 pub mod authority;
+pub mod cedar;
 pub mod local;
 pub mod policy;
 

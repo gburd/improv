@@ -759,3 +759,115 @@ fn a_request_asks_the_policy_for_one_session_not_one_per_cell() {
     // and items, and the model.
     assert!(checks.load(Ordering::Relaxed) <= 16, "{checks:?}");
 }
+
+// --- Cedar (crate::cedar) ---
+
+/// Store `text` (and `groups`) as the model's policies, as `improv policy
+/// set` does, from another handle: another process, to the authority.
+fn set_policies(path: &str, text: Option<&str>, groups: &str) {
+    let mut s = improv_store::Store::open(path).unwrap();
+    let doc = text.map(|t| {
+        improv_policy::Policies::parse(t, groups).unwrap();
+        (t, groups)
+    });
+    s.save_policies(doc).unwrap();
+}
+
+fn cedar(path: &str) -> Authority {
+    let p = crate::cedar::CedarPolicy::new(path, improv_policy::Channel::Server);
+    Authority::with_policy(path, Box::new(p)).unwrap()
+}
+
+/// The analyst template hides WidgetB from ann, through the authority:
+/// structure, windows, edits and the change log, and totals over all data.
+#[test]
+fn cedar_policies_filter_every_answer() {
+    let path = temp_path("m.db");
+    improv_store::Store::open(&path)
+        .unwrap()
+        .save_model(&revenue_model())
+        .unwrap();
+    let who = |w: &str| improv_policy::templates::Who::User(w.into());
+    let r = improv_policy::templates::render;
+    let text = [
+        r("analyst", &who("ann"), &[], &[ItemId(21)]).unwrap(),
+        r("editor", &who("ed"), &[MeasureId(101)], &[]).unwrap(),
+    ]
+    .join("\n");
+    set_policies(&path, Some(&text), "");
+    let mut a = cedar(&path);
+    let s = serde_json::to_string(&a.structure(&ann())).unwrap();
+    assert!(!s.contains("WidgetB") && s.contains("WidgetA"), "{s}");
+    // Totals are over all data: Revenue's total over Product is not asked
+    // here, but each visible cell is the full model's.
+    assert_eq!(cell(&a, 102, &A25), Some(WireValue::Number(1000.0)));
+    let w = a.window(&ann(), 101, &WindowReq::default()).unwrap();
+    assert!(w.cells.iter().all(|c| !c.at.contains(&(2, 21))), "{w:?}");
+    // Ann reads but may not edit; ed edits Quantity and nothing else.
+    let edit = |m, at: &[(u32, u32)]| {
+        Request::Edit(EditReq {
+            edits: vec![set(m, at, Some(3.0))],
+        })
+    };
+    let r = a.serve(&ann(), "s", edit(101, &A25)).unwrap_err();
+    let gone = a
+        .serve(&ann(), "s", edit(101, &[(1, 10), (2, 99)]))
+        .unwrap_err();
+    assert_eq!((r.status, &r.body.error), (gone.status, &gone.body.error));
+    let ed = Principal::user("ed");
+    a.serve(&ed, "e", edit(101, &A25)).unwrap();
+    assert!(a.serve(&ed, "e", edit(100, &[(2, 20)])).is_err(), "Price");
+    // Someone the policies do not name sees nothing.
+    let eve = Principal::user("eve");
+    assert_eq!(
+        a.serve(&eve, "s", Request::Structure).unwrap_err().status,
+        403
+    );
+}
+
+/// Every way the policies change is seen by the authority's next request,
+/// with no restart and nothing to remember: a set, a change, a change of
+/// groups only, a clear, and policies that stop validating (fail closed).
+#[test]
+fn a_policy_change_is_seen_by_the_next_request() {
+    let path = temp_path("m.db");
+    improv_store::Store::open(&path)
+        .unwrap()
+        .save_model(&revenue_model())
+        .unwrap();
+    let mut a = cedar(&path);
+    let sees = |a: &mut Authority, who: &str| {
+        a.serve(&Principal::user(who), "s", Request::Structure)
+            .is_ok()
+    };
+    assert!(sees(&mut a, "ann"), "no policies: open");
+    let viewers = r#"permit (principal in Improv::Group::"viewers", action in Improv::Action::"Read", resource);"#;
+    set_policies(&path, Some(viewers), r#"{"viewers": {"users": ["bob"]}}"#);
+    assert!(!sees(&mut a, "ann") && sees(&mut a, "bob"), "set");
+    set_policies(&path, Some(viewers), r#"{"viewers": {"users": ["ann"]}}"#);
+    assert!(sees(&mut a, "ann") && !sees(&mut a, "bob"), "groups only");
+    set_policies(&path, Some(r#"forbid (principal, action, resource);"#), "");
+    assert!(!sees(&mut a, "ann"), "changed");
+    set_policies(&path, None, "");
+    assert!(sees(&mut a, "ann") && sees(&mut a, "bob"), "cleared");
+    // Text that no longer validates (written behind the CLI's back): every
+    // request is refused, not opened up.
+    improv_store::Store::open(&path)
+        .unwrap()
+        .save_policies(Some(("permit (", "")))
+        .unwrap();
+    assert!(!sees(&mut a, "ann"), "fails closed");
+    // A cell edit by an allowed writer does not reload the policies.
+    set_policies(&path, Some("permit (principal, action, resource);"), "");
+    let before = a.loads;
+    a.serve(
+        &ann(),
+        "s",
+        Request::Edit(EditReq {
+            edits: vec![set(101, &A25, Some(4.0))],
+        }),
+    )
+    .unwrap();
+    assert!(sees(&mut a, "ann"));
+    assert!(a.loads <= before + 1, "a policy set reloads at most once");
+}
