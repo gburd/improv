@@ -19442,7 +19442,10 @@ mod tests {
             .expect("edit");
         app.clear_cell(MeasureId(100), decode_key(&[(2, 21)]))
             .expect("clear");
-        assert!(t.elapsed() < std::time::Duration::from_secs(1), "it waited");
+        // Both edits save in the foreground here (tests do); 5 s, as the
+        // tests above, is far under a wait for the held build (forever)
+        // and over two SQLite saves on a loaded Windows runner (>1 s).
+        assert!(t.elapsed() < std::time::Duration::from_secs(5), "it waited");
         assert_eq!(app.held.len(), 2, "held beside the shared model");
         assert_eq!(app.cell_text(MeasureId(101), &q).as_deref(), Some("200"));
         assert_eq!(app.cell_text(MeasureId(100), &decode_key(&[(2, 21)])), None);
