@@ -1,0 +1,22 @@
+[package]
+name = "improv_service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The authority a GUI drives: one model, its live engine, and the /v1 operations, each checked by a policy and answered with what the caller may see."
+
+[dependencies]
+improv_client = { path = "../client" }
+improv_core_model = { path = "../core_model" }
+improv_engine = { path = "../engine" }
+improv_nl_formula = { path = "../nl_formula" }
+improv_store = { path = "../store" }
+chrono.workspace = true
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
+
+[dev-dependencies]
+serde_json.workspace = true

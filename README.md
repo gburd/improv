@@ -197,6 +197,7 @@ save conflict.
 | `improv_tui` | `improv-tui` | Terminal UI |
 | `improv_gui` | `improv-gui` | Desktop GUI (egui) |
 | `improv_client` | | What the front ends share: formula errors, autocomplete, function help |
+| `improv_service` | | The authority the web GUI drives (in `improv-server`) |
 | `improv_server` | `improv-server` | JSON HTTP API |
 | `improv_pg_model` | | Postgres-free core of the extension |
 | `pg_improv` | (extension) | The Postgres extension (pgrx, its own workspace) |

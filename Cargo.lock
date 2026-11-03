@@ -2968,6 +2968,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_service"
+version = "0.12.2"
+dependencies = [
+ "chrono",
+ "improv_client",
+ "improv_core_model",
+ "improv_engine",
+ "improv_nl_formula",
+ "improv_store",
+ "serde_json",
+]
+
+[[package]]
 name = "improv_storage_csv"
 version = "0.12.2"
 dependencies = [

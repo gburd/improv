@@ -51,6 +51,7 @@ jobs:
           -p improv_gui
           -p improv_client
           -p improv_policy
+          -p improv_service
           -- --check
 
   clippy:
@@ -90,6 +91,7 @@ jobs:
           -p improv_gui
           -p improv_client
           -p improv_policy
+          -p improv_service
           --all-targets --all-features -- -D warnings
       # The browser build shares improv_client: it must keep building there.
       - name: improv_client builds for wasm32
