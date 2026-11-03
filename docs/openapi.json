@@ -55,6 +55,30 @@
           "429": { "$ref": "#/components/responses/RateLimited" },
           "500": { "$ref": "#/components/responses/Internal" }
         }
+      },
+      "post": {
+        "summary": "Define a measure",
+        "x-improv-scope": "write",
+        "description": "A derived measure or LAMBDA from a definition, or a new input measure. A formula error is located in the text (`diagnostic`).",
+        "parameters": [{ "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Define" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
       }
     },
     "/v1/measures/{id}/values": {
@@ -196,6 +220,393 @@
           "429": { "$ref": "#/components/responses/RateLimited" }
         }
       }
+    },
+    "/v1/categories": {
+      "post": {
+        "summary": "Add a category",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Name" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/categories/{id}": {
+      "put": {
+        "summary": "Rename a category",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Name" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      },
+      "delete": {
+        "summary": "Delete a category",
+        "x-improv-scope": "write",
+        "description": "With its items. Refused while a measure uses it.",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/categories/{id}/items": {
+      "post": {
+        "summary": "Add an item",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Name" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/cells": {
+      "post": {
+        "summary": "Edit cells",
+        "x-improv-scope": "write",
+        "description": "Set or clear input cells, all or none. A refusal names the failing edit (`index`); a hidden cell is refused as one that does not exist. Never a conflict: when another writer moved the model, the server reloads, checks the batch again and applies it.",
+        "parameters": [{ "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/EditBatch" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/changes": {
+      "get": {
+        "summary": "Changes, as Server-Sent Events",
+        "x-improv-scope": "read",
+        "description": "A `text/event-stream`. The first event carries the current version, or what changed since `since`. Then one event per change the caller may see: the changed cells, filtered for the caller, or `reload`. A change the caller may see none of sends nothing. Each event's `id` is its version; reconnect with `?since=` (or `Last-Event-ID`) to resume.",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "The last version this client saw.",
+            "schema": { "$ref": "#/components/schemas/Version" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The event stream; each `data:` line is a ChangeEvent.",
+            "content": { "text/event-stream": { "schema": { "$ref": "#/components/schemas/ChangeEvent" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/items/{id}": {
+      "put": {
+        "summary": "Rename an item",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Name" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      },
+      "delete": {
+        "summary": "Delete an item",
+        "x-improv-scope": "write",
+        "description": "With its cells.",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/measures/{id}": {
+      "put": {
+        "summary": "Change a measure",
+        "x-improv-scope": "write",
+        "description": "A new formula (an error located in it), name or number format.",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/UpdateMeasure" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      },
+      "delete": {
+        "summary": "Delete a measure",
+        "x-improv-scope": "write",
+        "description": "Refused while a formula reads it.",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/measures/{id}/window": {
+      "post": {
+        "summary": "A window of a measure's cells",
+        "x-improv-scope": "read",
+        "description": "The visible cells of the measure at the given items. Derived cells are computed by the server's engine over every cell, hidden ones included.",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Window" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "The window's visible cells.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Cells" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/redo": {
+      "post": {
+        "summary": "Redo",
+        "x-improv-scope": "write",
+        "description": "The session's last undone change.",
+        "parameters": [{ "$ref": "#/components/parameters/Session" }],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/structure": {
+      "get": {
+        "summary": "What the caller may see of the model",
+        "x-improv-scope": "read",
+        "description": "Categories with their visible items, visible measures with formulas when shown, LAMBDAs and views. The stable shape a GUI reads, in place of `/v1/model`.",
+        "responses": {
+          "200": {
+            "description": "The visible structure.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Structure" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/undo": {
+      "post": {
+        "summary": "Undo",
+        "x-improv-scope": "write",
+        "description": "The session's last change (an edit batch, or a structural change with the cells it dropped). Cells written back are checked as new edits.",
+        "parameters": [{ "$ref": "#/components/parameters/Session" }],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/views": {
+      "post": {
+        "summary": "Save a view",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ViewBody" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
+    "/v1/views/{id}": {
+      "put": {
+        "summary": "Change a view",
+        "x-improv-scope": "write",
+        "description": "Its name, its matrices, or both.",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "requestBody": {
+          "required": true,
+          "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ViewBody" } } }
+        },
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "413": { "$ref": "#/components/responses/TooLarge" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      },
+      "delete": {
+        "summary": "Delete a view",
+        "x-improv-scope": "write",
+        "parameters": [{ "$ref": "#/components/parameters/Id" }, { "$ref": "#/components/parameters/Session" }],
+        "responses": {
+          "200": {
+            "description": "Done.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Done" } } }
+          },
+          "400": { "$ref": "#/components/responses/Refused" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "404": { "$ref": "#/components/responses/Refused" },
+          "409": { "$ref": "#/components/responses/Refused" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
     }
   },
   "components": {
@@ -203,7 +614,21 @@
       "bearer": { "type": "http", "scheme": "bearer", "description": "A token from IMPROV_API_TOKEN, IMPROV_API_TOKENS, IMPROV_API_TOKENS_RO or IMPROV_API_TOKEN_FILE. Not needed in open mode." }
     },
     "parameters": {
-      "MeasureId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 0 } }
+      "MeasureId": { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 0 } },
+      "Id": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "description": "The numeric id.",
+        "schema": { "type": "integer", "minimum": 0 }
+      },
+      "Session": {
+        "name": "x-improv-session",
+        "in": "header",
+        "required": false,
+        "description": "The client's session (any id up to 64 characters, made once per window): undo and redo are per session, within the caller.",
+        "schema": { "type": "string", "maxLength": 64 }
+      }
     },
     "schemas": {
       "Error": {
@@ -269,6 +694,243 @@
           "value": { "type": "number" }
         },
         "example": { "coord": { "dims": { "1": 10, "2": 20 } }, "value": 90 }
+      },
+      "Version": { "type": "string", "description": "The model's version: opaque, compare for equality only." },
+      "Value": {
+        "description": "A cell value: a number, boolean or string, or an object for a date or an error value.",
+        "oneOf": [
+          { "type": "number" },
+          { "type": "boolean" },
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["date"],
+            "properties": { "date": { "type": "string", "format": "date-time" } }
+          },
+          {
+            "type": "object",
+            "required": ["error"],
+            "properties": { "error": { "type": "string", "examples": ["#DIV/0!"] } }
+          }
+        ]
+      },
+      "At": {
+        "type": "array",
+        "description": "A coordinate: [category id, item id] pairs, sorted by category id.",
+        "items": {
+          "type": "array",
+          "prefixItems": [{ "type": "integer" }, { "type": "integer" }],
+          "minItems": 2,
+          "maxItems": 2
+        }
+      },
+      "NumberFormat": {
+        "type": ["object", "null"],
+        "properties": {
+          "decimals": { "type": ["integer", "null"], "minimum": 0, "maximum": 15 },
+          "grouping": { "type": "boolean" }
+        }
+      },
+      "Structure": {
+        "type": "object",
+        "required": ["version", "categories", "measures"],
+        "description": "What the caller may see of the model. Hidden measures and items are absent.",
+        "properties": {
+          "version": { "$ref": "#/components/schemas/Version" },
+          "categories": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "integer" },
+                "name": { "type": "string" },
+                "items": {
+                  "type": "array",
+                  "description": "Visible items, in grid order.",
+                  "items": {
+                    "type": "object",
+                    "properties": { "id": { "type": "integer" }, "name": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "measures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "integer" },
+                "name": { "type": "string" },
+                "type": { "enum": ["Number", "Boolean", "Text", "DateTime", "Enum"] },
+                "kind": { "enum": ["input", "derived"] },
+                "categories": { "type": "array", "items": { "type": "integer" } },
+                "formula": {
+                  "type": "string",
+                  "description": "As typed (the DSL), or controlled English; absent when the formula reads a hidden measure."
+                },
+                "error": { "type": "string", "description": "Why the formula does not build." },
+                "format": { "$ref": "#/components/schemas/NumberFormat" },
+                "editable": { "type": "boolean", "description": "A hint; every edit is still checked." }
+              }
+            }
+          },
+          "lambdas": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "integer" },
+                "name": { "type": "string" },
+                "params": { "type": "array", "items": { "type": "string" } }
+              }
+            }
+          },
+          "views": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "description": "A saved view, as the model stores it, with only visible matrices, filters and pages."
+            }
+          }
+        }
+      },
+      "Window": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "object",
+            "description": "Item ids to read, per category id; a category left out reads all its visible items.",
+            "additionalProperties": { "type": "array", "items": { "type": "integer" } }
+          }
+        }
+      },
+      "Cells": {
+        "type": "object",
+        "required": ["version", "measure", "cells"],
+        "description": "The window's visible cells, as the server computed them. A cell absent here is blank: empty, or not visible to the caller.",
+        "properties": {
+          "version": { "$ref": "#/components/schemas/Version" },
+          "measure": { "type": "integer" },
+          "cells": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["at", "value"],
+              "properties": {
+                "at": { "$ref": "#/components/schemas/At" },
+                "value": { "$ref": "#/components/schemas/Value" }
+              }
+            }
+          }
+        }
+      },
+      "EditBatch": {
+        "type": "object",
+        "required": ["edits"],
+        "properties": {
+          "edits": {
+            "type": "array",
+            "maxItems": 10000,
+            "items": {
+              "type": "object",
+              "required": ["measure", "at"],
+              "properties": {
+                "measure": { "type": "integer" },
+                "at": { "$ref": "#/components/schemas/At" },
+                "value": {
+                  "description": "The new value; null or absent clears the cell.",
+                  "oneOf": [{ "$ref": "#/components/schemas/Value" }, { "type": "null" }]
+                }
+              }
+            }
+          }
+        }
+      },
+      "Define": {
+        "type": "object",
+        "description": "A definition (`Revenue = Price * Quantity` defines or redefines a derived measure, `Half = LAMBDA(x, x / 2)` a LAMBDA), or a name for a new input measure.",
+        "properties": {
+          "definition": { "type": "string" },
+          "name": { "type": "string" },
+          "categories": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "An input measure's categories (default: all)."
+          },
+          "type": { "enum": ["Number", "Boolean", "Text", "DateTime"] }
+        }
+      },
+      "UpdateMeasure": {
+        "type": "object",
+        "description": "Any of a new formula, name and format, as one step.",
+        "properties": {
+          "formula": { "type": "string" },
+          "name": { "type": "string" },
+          "format": { "$ref": "#/components/schemas/NumberFormat" }
+        }
+      },
+      "Name": { "type": "object", "required": ["name"], "properties": { "name": { "type": "string" } } },
+      "ViewBody": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "matrices": {
+            "type": "array",
+            "description": "The view's matrices, the primary first (as the model stores a view's placements).",
+            "items": { "type": "object" }
+          }
+        }
+      },
+      "Done": {
+        "type": "object",
+        "required": ["version", "message"],
+        "properties": {
+          "version": { "$ref": "#/components/schemas/Version" },
+          "message": { "type": "string" },
+          "id": { "type": "integer", "description": "The id of what it made." }
+        }
+      },
+      "Failure": {
+        "type": "object",
+        "required": ["error"],
+        "description": "A refused request. A hidden thing is refused exactly as a missing one.",
+        "properties": {
+          "error": { "type": "string" },
+          "index": { "type": "integer", "description": "The edit of a batch that failed." },
+          "diagnostic": {
+            "type": "object",
+            "description": "Where in the formula text the error is (byte offsets).",
+            "properties": {
+              "span": { "type": "array", "prefixItems": [{ "type": "integer" }, { "type": "integer" }] },
+              "message": { "type": "string" },
+              "hint": { "type": "string" }
+            }
+          }
+        }
+      },
+      "ChangeEvent": {
+        "type": "object",
+        "required": ["version"],
+        "properties": {
+          "version": { "$ref": "#/components/schemas/Version" },
+          "cells": {
+            "type": "array",
+            "description": "The cells that changed, and only those the subscriber may see.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "measure": { "type": "integer" },
+                "at": { "$ref": "#/components/schemas/At" },
+                "value": { "oneOf": [{ "$ref": "#/components/schemas/Value" }, { "type": "null" }] }
+              }
+            }
+          },
+          "reload": {
+            "type": "boolean",
+            "description": "The structure changed, or the gap since `since` is too old: re-read everything."
+          }
+        }
       }
     },
     "responses": {
@@ -294,6 +956,10 @@
       "Internal": {
         "description": "Internal error; the detail is in the server log under request_id.",
         "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } }
+      },
+      "Refused": {
+        "description": "Refused: a bad request (400), a write with a read token (403), not there or not visible (404), another writer's structural change (409).",
+        "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Failure" } } }
       }
     }
   }

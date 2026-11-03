@@ -8,6 +8,23 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **The HTTP API a GUI drives (I2).** `improv-server` serves, under
+  `/v1`: the visible structure (`GET /v1/structure`: categories and
+  items in grid order, measures with formulas as typed, LAMBDAs, views),
+  windows of cells computed by the server (`POST
+  /v1/measures/{id}/window`), cell edit batches that apply whole or not
+  at all and name the failing edit (`POST /v1/cells`), measures defined,
+  redefined, renamed, formatted and deleted with formula errors located
+  in the text (`POST`, `PUT`, `DELETE /v1/measures`), categories, items
+  and views added, renamed and deleted, undo and redo per client session
+  (`x-improv-session`), and `GET /v1/changes`, a Server-Sent Events
+  stream of the changed cells that resumes with `?since=`. Values are
+  typed (numbers, booleans, text, dates). Every route asks one policy
+  hook, so a hidden measure, item or cell will be absent from every
+  answer once Cedar policies plug in; today it allows what the token's
+  scope allows. A cell edit never conflicts with another writer's: the
+  server reloads and applies it. `docs/openapi.json`, the HTTP reference
+  and `server.md` describe them.
 - **GUI: Edit ▸ Copy and Paste (Ctrl+C, Ctrl+V).** Copy puts the
   worksheet's selection on the clipboard as tab-separated text, as the
   cells show; Paste writes such text into an input measure from the

@@ -11,7 +11,7 @@ use improv_core_model::{
 };
 
 use crate::authority::Authority;
-use crate::policy::tests::Deny;
+use crate::policy::Deny;
 use crate::policy::{Action, Principal, Resource};
 
 /// The canonical Time x Product revenue model.

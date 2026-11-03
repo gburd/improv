@@ -28,7 +28,45 @@ is the OpenAPI 3.1 description, and the server serves it at
 | POST | `/v1/nl/describe` | read | `{"formula": …}` | A formula (as `/nl/parse` returns it) to controlled English. |
 | GET | `/v1/scheduler/status` | read | | Refresh scheduler state. |
 
-Values written through the API are numbers.
+Values written through these routes are numbers. The routes below are
+what a GUI drives ([The Web GUI](./web-gui.md) uses them); they take and
+return typed values, and answer with only what the caller may see.
+
+| Method | Path | Scope | Body | Notes |
+| --- | --- | --- | --- | --- |
+| GET | `/v1/structure` | read | | Categories with their items in grid order, measures (with formulas as typed), LAMBDAs, views, and the `version`. The stable shape, in place of `/v1/model`. |
+| POST | `/v1/measures/:id/window` | read | `{"at": {"1": [10, 11]}}` | The cells at these items (per category id; a category left out: all its items), computed by the server. |
+| POST | `/v1/cells` | write | `{"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 150}]}` | Set or clear (`"value": null`) cells, all or none. A refusal says which edit (`index`). |
+| POST | `/v1/measures` | write | `{"definition": "Tax = Revenue * 0.1"}` or `{"name": "Notes", "categories": [2], "type": "Text"}` | Define (or redefine) a derived measure or a LAMBDA, or add an input measure. |
+| PUT | `/v1/measures/:id` | write | `{"formula": "Revenue * 0.2", "name": "Duty", "format": {"decimals": 2}}` | Any of them, as one step. |
+| DELETE | `/v1/measures/:id` | write | | Refused while a formula reads it. |
+| POST | `/v1/categories` | write | `{"name": "Region"}` | |
+| PUT, DELETE | `/v1/categories/:id` | write | `{"name": …}` | Rename; delete (with its items; refused while a measure uses it). |
+| POST | `/v1/categories/:id/items` | write | `{"name": "North"}` | |
+| PUT, DELETE | `/v1/items/:id` | write | `{"name": …}` | Rename; delete (with its cells). |
+| POST | `/v1/views` | write | `{"name": "By product", "matrices": [{"measure": 102, "axis_order": [2, 1]}]}` | Save a view. |
+| PUT, DELETE | `/v1/views/:id` | write | `{"name": …, "matrices": …}` | |
+| POST | `/v1/undo`, `/v1/redo` | write | | The session's last change. |
+| GET | `/v1/changes` | read | | Server-Sent Events: what changed (see below). |
+
+A value is a JSON number, boolean or string, or `{"date": "2025-01-31T00:00:00+00:00"}`
+or `{"error": "#DIV/0!"}` (a computed error). A coordinate (`at`) is
+`[category id, item id]` pairs. A refused request gets
+`{"error": …, "index": n, "diagnostic": {"span": [6, 12], "message": …, "hint": …}}`:
+`index` names the edit of a batch that failed, and `diagnostic` places a
+formula error in the text sent (byte offsets), as the desktop's formula
+editor underlines it.
+
+**Versions** (`"version"` in every answer and event) are opaque strings:
+compare them for equality only. A cell edit never conflicts: when another
+writer saved first, the server reloads, checks the edits again, and
+applies them. A structural change that races another writer's gets 409.
+
+**Undo** is per session: send `x-improv-session: <any id>` (one per
+window, up to 64 characters) with each write; without it a token's writes
+share one stack. Undo writes back the cells an edit replaced (each checked
+as a new edit), or restores the structure and the cells a structural
+change dropped.
 
 ## Authentication
 
@@ -185,8 +223,9 @@ clear text.
 
 ## A web front end
 
-Improv has no web GUI for 1.0 ([the decision](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-10-22-web-gui.md)),
-but the server has what one needs, for anyone building on the API.
+The web GUI ([The Web GUI](./web-gui.md)) is served by `--static`, and
+the routes above are what it drives. They are there for anyone building
+another front end too.
 
 **Static files.** `--static DIR` serves the files under `DIR` at `/`,
 beside the API: `/` and a directory are their `index.html`, `.wasm` is
@@ -206,21 +245,40 @@ server, another host), list its origins, matched exactly:
 IMPROV_CORS_ORIGINS=http://localhost:8080,https://ui.example.com improv-server sales.db
 ```
 
-An allowed origin's preflight (`OPTIONS`) gets 204 with `GET, POST` and
-the `authorization` and `content-type` headers; its responses carry
+An allowed origin's preflight (`OPTIONS`) gets 204 with `GET, POST, PUT,
+DELETE` and the `authorization`, `content-type`, `x-improv-session` and
+`last-event-id` headers; its responses carry
 `Access-Control-Allow-Origin`. Other origins get no CORS headers, so the
 browser blocks them. `*` is refused, because a page from any site could
 then use a visitor's token.
 
-**Seeing other writers.** There is no push feed yet. Each request checks
-the store's high-water mark and reloads when another writer saved (see
-[Writes](#writes)), so a page that polls sees their change on its next
-request: poll `GET /v1/measures` or the values it shows, every few
-seconds, and redraw what changed. A save that races another writer's is
-refused with 409; reload and retry. A change feed (`GET
-/v1/changes?since=…` or Server-Sent Events, carrying the high-water) is
-planned for the web GUI after 1.0, with per-user undo and presence (plan
-rows I2, I3).
+**Seeing changes.** `GET /v1/changes` is a Server-Sent Events stream.
+Its first event is the current version, `{"version": "…"}`; after that,
+one event per change the caller may see, carrying the changed cells
+(inputs and the computed cells they moved) as the server computed them:
+
+```text
+id: 268435470
+data: {"version":"268435470","cells":[{"measure":101,"at":[[1,10],[2,20]],"value":150},{"measure":102,"at":[[1,10],[2,20]],"value":1800}]}
+```
+
+A structural change, or another program's save, sends
+`{"version": "…", "reload": true}`: re-read the structure and what is on
+screen. A change the caller may see none of sends nothing. To resume
+after a dropped connection, reconnect with `?since=<the last version>`
+(or `Last-Event-ID`): the server sends what changed since, or a reload
+when it no longer has the gap. Each request also checks the store's
+high-water mark (see [Writes](#writes)), so a client without the stream
+sees other writers on its next request. A browser's `EventSource` cannot
+send the `Authorization` header: read the stream with `fetch` instead,
+as the web GUI does.
+
+**Access.** Every GUI route asks one policy hook in `improv_service`, for
+each measure, item and cell it touches; today it allows everything the
+token's scope allows. A hidden measure, item or cell is absent from every
+answer, and is refused exactly as one that does not exist. Cedar policies
+(the security design, `docs/reviews/2026-11-02-cedar-policies.md`) plug in
+there.
 
 ## Refresh scheduler
 

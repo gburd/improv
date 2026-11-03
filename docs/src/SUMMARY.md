@@ -19,6 +19,7 @@
 - [Running Improv](./running.md)
 - [The Formula Language](./formulas.md)
 - [The Desktop GUI](./gui-tour.md)
+- [The Web GUI](./web-gui.md)
 - [Improv in Postgres (pg_improv)](./postgres.md)
   - [A Family's Finances](./postgres-finance.md)
 - [Improv in DuckDB](./duckdb.md)

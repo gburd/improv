@@ -32,7 +32,7 @@ use axum::{
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, MethodRouter},
+    routing::{delete, get, post, put, MethodRouter},
     Extension, Json, Router,
 };
 use improv_core_model::{Coordinate, MeasureId, MeasureKind, Model};
@@ -45,6 +45,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tower::ServiceBuilder;
 
+mod gui;
 mod scheduler;
 use scheduler::SharedStatus;
 
@@ -351,6 +352,8 @@ pub struct AppState {
     /// `IMPROV_CORS_ORIGINS`: browser origins allowed to call the API from
     /// another origin. Empty (the default): no CORS headers at all.
     cors_origins: Vec<String>,
+    /// The GUI routes' authority (`gui.rs`).
+    gui: gui::Gui,
     /// Store loads performed, so tests can check the cache.
     #[cfg(test)]
     loads: AtomicU64,
@@ -372,6 +375,7 @@ impl AppState {
             audit: AuditLog::Stderr,
             static_dir: None,
             cors_origins: Vec::new(),
+            gui: gui::Gui::default(),
             #[cfg(test)]
             loads: AtomicU64::new(0),
         }
@@ -620,6 +624,66 @@ fn routes() -> Vec<(
             Scope::Read,
             get(scheduler_status_handler),
         ),
+        // What a GUI drives (gui.rs): the visible model, windows of cells,
+        // edits, structure, views, undo, and the change stream.
+        ("get", "/structure", Scope::Read, get(gui::structure)),
+        (
+            "post",
+            "/measures/:id/window",
+            Scope::Read,
+            post(gui::window),
+        ),
+        ("post", "/cells", Scope::Write, post(gui::edit_cells)),
+        ("post", "/measures", Scope::Write, post(gui::define)),
+        (
+            "put",
+            "/measures/:id",
+            Scope::Write,
+            put(gui::update_measure),
+        ),
+        (
+            "delete",
+            "/measures/:id",
+            Scope::Write,
+            delete(gui::delete_measure),
+        ),
+        ("post", "/categories", Scope::Write, post(gui::add_category)),
+        (
+            "put",
+            "/categories/:id",
+            Scope::Write,
+            put(gui::rename_category),
+        ),
+        (
+            "delete",
+            "/categories/:id",
+            Scope::Write,
+            delete(gui::delete_category),
+        ),
+        (
+            "post",
+            "/categories/:id/items",
+            Scope::Write,
+            post(gui::add_item),
+        ),
+        ("put", "/items/:id", Scope::Write, put(gui::rename_item)),
+        (
+            "delete",
+            "/items/:id",
+            Scope::Write,
+            delete(gui::delete_item),
+        ),
+        ("post", "/views", Scope::Write, post(gui::save_view)),
+        ("put", "/views/:id", Scope::Write, put(gui::update_view)),
+        (
+            "delete",
+            "/views/:id",
+            Scope::Write,
+            delete(gui::delete_view),
+        ),
+        ("post", "/undo", Scope::Write, post(gui::undo)),
+        ("post", "/redo", Scope::Write, post(gui::redo)),
+        ("get", "/changes", Scope::Read, get(gui::changes)),
     ]
 }
 
@@ -721,11 +785,13 @@ async fn cors(State(state): State<Arc<AppState>>, req: Request, next: Next) -> R
             let h = r.headers_mut();
             h.insert(
                 header::ACCESS_CONTROL_ALLOW_METHODS,
-                header::HeaderValue::from_static("GET, POST, OPTIONS"),
+                header::HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
             );
             h.insert(
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
-                header::HeaderValue::from_static("authorization, content-type"),
+                header::HeaderValue::from_static(
+                    "authorization, content-type, x-improv-session, last-event-id",
+                ),
             );
             h.insert(
                 header::ACCESS_CONTROL_MAX_AGE,
@@ -1402,7 +1468,7 @@ fn readable_key(model: &Model, key: &CoordKey, value: f64) -> Cell {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::{Request, StatusCode};
@@ -1413,7 +1479,7 @@ mod tests {
     use tower::util::ServiceExt; // for `oneshot`
 
     // Canonical Time x Product revenue model, matching the engine's fixture.
-    fn revenue_model() -> Model {
+    pub(crate) fn revenue_model() -> Model {
         let mut m = Model::new();
         let (time, product) = (CategoryId(1), CategoryId(2));
         m.add_category(time, "Time");
@@ -1491,7 +1557,7 @@ mod tests {
 
     /// A fresh path in this process's temp dir. A counter, not the clock:
     /// parallel tests could read the same nanosecond.
-    fn temp_path(tag: &str) -> std::path::PathBuf {
+    pub(crate) fn temp_path(tag: &str) -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!("improv-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1562,7 +1628,7 @@ mod tests {
         b.body(Body::empty()).unwrap()
     }
 
-    async fn body_json(resp: Response) -> JsonValue {
+    pub(crate) async fn body_json(resp: Response) -> JsonValue {
         let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
     }
@@ -2763,12 +2829,19 @@ mod tests {
             .clone()
             .oneshot(post_cell("/nl/parse", parse.clone(), Some("rsecret-7a1d")));
         let describe = json!({"formula": body_json(resp.await.unwrap()).await});
+        let empty = json!({});
         let req = |m: &str, uri: &str, t: Option<&str>| -> Request<Body> {
             let body = match uri.rsplit('/').next().unwrap() {
-                "cells" => &cell,
+                "cells" if uri.contains("/measures/") => &cell,
                 "eval" => &what_if,
                 "parse" => &parse,
                 "describe" => &describe,
+                _ if gui::ROUTES
+                    .iter()
+                    .any(|r| uri.ends_with(&r.replace(":id", "102"))) =>
+                {
+                    &empty
+                }
                 _ => &JsonValue::Null,
             };
             let mut b = Request::builder()
@@ -2808,6 +2881,16 @@ mod tests {
                         StatusCode::OK,
                     ],
                 };
+                // The GUI routes get empty bodies and act on fixed ids, so
+                // a token that passes the gate may still be refused for the
+                // request itself (400, 404): never 401 or 403.
+                if gui::ROUTES.contains(&path) {
+                    let passed =
+                        |s: StatusCode| s != StatusCode::UNAUTHORIZED && s != StatusCode::FORBIDDEN;
+                    assert_eq!([none, read], want[..2], "{m} {uri}");
+                    assert!(passed(write), "{m} {uri}: {write}");
+                    continue;
+                }
                 assert_eq!([none, read, write], want, "{m} {uri}");
             }
         }

@@ -114,23 +114,24 @@ impl Gate<'_> {
     }
 }
 
+/// A stand-in policy for tests until Cedar's lands: everything is allowed
+/// except the `(principal, action, resource)` triples it lists.
+#[derive(Default)]
+pub struct Deny(pub Vec<(String, Action, Resource)>);
+
+impl Policy for Deny {
+    fn allows(&self, _: &Model, who: &Principal, a: Action, r: &Resource) -> bool {
+        !self
+            .0
+            .iter()
+            .any(|(w, x, y)| *w == who.0 && *x == a && y == r)
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
     use super::*;
-
-    /// A test policy: everything is allowed except what it lists.
-    #[derive(Default)]
-    pub struct Deny(pub Vec<(String, Action, Resource)>);
-
-    impl Policy for Deny {
-        fn allows(&self, _: &Model, who: &Principal, a: Action, r: &Resource) -> bool {
-            !self
-                .0
-                .iter()
-                .any(|(w, x, y)| *w == who.0 && *x == a && y == r)
-        }
-    }
 
     #[test]
     fn the_composite_rules_need_every_part() {
