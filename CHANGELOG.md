@@ -54,6 +54,14 @@ this project follows [Semantic Versioning](https://semver.org/).
   status indicator between its enable box and its number: a check when it
   checks with no errors, a cross when it has one (the error is described
   under the row). Screen readers hear "Formula Revenue checks".
+- **GUI: the Inspector and the Format panel (fidelity gap 9).** Edit ▸
+  Inspector… is Improv's multiform Inspector, a pop-up over Grid (Show Grid
+  Lines, Lines In Cell Area / Item Area / Both), Layout (the Hidden Items
+  marker) and Formulas (Show Errors In Line), with OK and Revert. Format ▸
+  Format Panel… (Ctrl+Shift+F) has Number (General or Specific decimal
+  places, Commas) and Alignment (Smart, Left, Center, Right) over a
+  sample, applied by Set. Both follow the focused worksheet.
+
 - **Access policies, in Cedar.** A model can carry policies, written in
   [Cedar](https://www.cedarpolicy.com), that say per user, role and group
   who may see and change which measures, items, cells, categories and

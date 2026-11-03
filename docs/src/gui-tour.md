@@ -46,12 +46,14 @@ The window has five regions:
   Browser…** shows or hides the model browser, and **Import/Export CSV…**
   opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
   lacked), **Copy**, **Paste** (see [Copy and paste](#copy-and-paste)) and
-  **Select All**, the whole worksheet,
+  **Select All**, the whole worksheet, **Inspector…** (see [The
+  Inspector and the Format panel](#the-inspector-and-the-format-panel)),
   **Add Category**, **Add Item** and **Add Input Measure** (see
   [Building a model from scratch](#building-a-model-from-scratch)),
   **Rename** and **Delete…** (see [Renaming and
-  deleting](#renaming-and-deleting)). **Format** sets how the selected
-  measure's numbers show (see [Number formats](#number-formats)).
+  deleting](#renaming-and-deleting)). **Format** has the **Format
+  Panel…** and sets how the selected measure's numbers show (see [Number
+  formats](#number-formats)).
   **Worksheet** has **Recalculate** (the formula pane's Calc) and **Save
   View**. **View** has **New View**, another worksheet window on the
   model, **Close Window**, and **Swap Rows/Columns**, then the saved
@@ -250,6 +252,37 @@ and the Info panel follow the format. Each change autosaves and is one
 undo step; the measure keeps its format in the file or database. Format is
 grayed out for a measure that holds text, booleans or dates.
 
+## The Inspector and the Format panel
+
+Improv's two multiform panels: a pop-up list at the top picks the page,
+and each works on the focused worksheet, following the focus to another
+one as a NeXT panel follows the selection.
+
+**Edit ▸ Inspector…** has three pages; **OK** applies them to the
+worksheet and **Revert** reads it back:
+
+- **Grid**: **Show Grid Lines**, and **Lines In** the **Cell Area**, the
+  **Item Area** (the item headers) or **Both**.
+- **Layout**: **Show Markers ▸ Hidden Items**, the `*` on a filtered
+  category's tile.
+- **Formulas**: **Show Errors In Line**. Off, a formula's error moves from
+  under its row to its status indicator's tip.
+
+**Format ▸ Format Panel…** (Ctrl+Shift+F) has two pages over a sample;
+**Set** applies both:
+
+- **Number**: **General** or **Specific** with its **Decimal Places**
+  (0 to 15), and **Commas** (thousands separators). It sets the measure's
+  format, as the Format menu's rows do, as one undo step.
+- **Alignment**: **Smart** (numbers right, text left), **Left**,
+  **Center** or **Right**, for the worksheet's cells.
+
+The worksheet's options (the Inspector's, and the alignment) stay with its
+window for the session; they are not saved in the view yet. Improv's
+Inspector also had its recalculation controls and group-collapse and
+page-break markers, and its Format panel Line Style, Color, custom and
+date/time pages; those have no engine or view state to set here.
+
 ## Graphs
 
 **Graph ▸ New Graph** charts the focused worksheet in a graph window,
@@ -311,6 +344,7 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+C | Copy | Edit |
 | Ctrl+V | Paste | Edit |
 | Ctrl+A | Select All | Edit |
+| Ctrl+Shift+F | Format Panel… | Format |
 | Ctrl+R | Recalculate | Worksheet |
 | Ctrl+Shift+V | New View | View |
 | Ctrl+/ | Swap Rows/Columns | View |
@@ -318,8 +352,7 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+Q | Quit | main menu |
 
 Improv's other equivalents (Ctrl+X cut; Ctrl+P print; Ctrl+W close;
-Ctrl+F Format panel, Ctrl+T Font panel) belong to commands not built yet,
-so they do nothing.
+Ctrl+T Font panel) belong to commands not built yet, so they do nothing.
 
 ## Copy and paste
 

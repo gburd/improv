@@ -103,6 +103,117 @@ pub(crate) struct Matrix {
     /// renderer that ignores its matrix index and draws the focused matrix's
     /// layout N times.
     rendered_axes: Option<(Vec<CategoryId>, Vec<CategoryId>)>,
+    /// How this worksheet draws itself: Edit ▸ Inspector…'s Grid and
+    /// Layout pages and Format ▸ Format Panel…'s Alignment.
+    ///
+    /// shortcut: kept with the window, not saved in the view (`View` has
+    /// no field for them); add them to `MatrixPlacement` when it matters.
+    opts: SheetOpts,
+}
+
+/// A worksheet's presentation options (Improv's Inspector Grid and Layout
+/// pages, and the Format panel's Alignment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SheetOpts {
+    /// Grid ▸ Show Grid Lines.
+    lines: bool,
+    /// Grid ▸ Lines In.
+    lines_in: LinesIn,
+    /// Layout ▸ Show Markers ▸ Hidden Items: a filtered category's tile
+    /// reads `Name*`.
+    hidden_marker: bool,
+    /// Formulas ▸ Show Errors In Line: a formula's error is spelled out
+    /// under its row; off, its status indicator's tip holds it.
+    errors_inline: bool,
+    /// Format panel ▸ Alignment.
+    align: CellAlign,
+}
+
+impl Default for SheetOpts {
+    fn default() -> Self {
+        SheetOpts {
+            lines: true,
+            lines_in: LinesIn::Both,
+            hidden_marker: true,
+            errors_inline: true,
+            align: CellAlign::Smart,
+        }
+    }
+}
+
+/// Inspector ▸ Grid ▸ Lines In: where the grid is ruled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LinesIn {
+    Cells,
+    Items,
+    Both,
+}
+
+/// Format panel ▸ Alignment: Smart puts numbers right and text left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CellAlign {
+    Smart,
+    Left,
+    Center,
+    Right,
+}
+
+/// The Inspector's pages, as its pop-up lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum InspectorPage {
+    #[default]
+    Grid,
+    Layout,
+    Formulas,
+}
+
+/// The Format panel's pages (Improv's also had Line Style and Color).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum FormatPage {
+    #[default]
+    Number,
+    Alignment,
+}
+
+/// What the Inspector and the Format panel edit: the focused worksheet's
+/// options and its measure's number format, with the worksheet and measure
+/// they were read from.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PanelDraft {
+    from: (u64, Option<MeasureId>),
+    opts: SheetOpts,
+    /// Number page: General (`None`) or a count of decimal places.
+    decimals: Option<u8>,
+    commas: bool,
+}
+
+/// An open Inspector or Format panel: its page, what it read, and the edits
+/// OK or Set applies. When what it reads changes (another worksheet or
+/// measure, a Format menu pick) the edits follow it, as a NeXT panel
+/// follows the selection; Revert reads it again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Panel<P> {
+    page: P,
+    read: PanelDraft,
+    draft: PanelDraft,
+}
+
+impl<P> Panel<P> {
+    fn new(page: P, read: PanelDraft) -> Self {
+        Panel {
+            page,
+            read,
+            draft: read,
+        }
+    }
+
+    /// Show `now` when what the panel reads has changed under it.
+    fn follow(&mut self, now: PanelDraft) {
+        if now != self.read {
+            self.read = now;
+            self.draft = now;
+        }
+    }
 }
 
 /// One of the formula pane's two editors.
@@ -259,6 +370,10 @@ pub struct ImprovApp {
     show_inspector: bool,
     /// Whether Help ▸ Keys…'s window is shown.
     show_keys: bool,
+    /// Edit ▸ Inspector… (Grid, Layout, Formulas), while it is open.
+    inspector: Option<Panel<InspectorPage>>,
+    /// Format ▸ Format Panel… (Number, Alignment), while it is open.
+    format_panel: Option<Panel<FormatPage>>,
     /// The function help browser (Help ▸ Functions…, F1).
     fn_help: crate::function_help::Browser,
     /// The formula editor last focused: where the help browser inserts.
@@ -1520,6 +1635,8 @@ impl ImprovApp {
             import_form: ImportForm::default(),
             show_inspector: false,
             show_keys: false,
+            inspector: None,
+            format_panel: None,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -1911,6 +2028,22 @@ impl ImprovApp {
         match decimals {
             Some(d) => f.decimals = d,
             None => f.grouping = !f.grouping,
+        }
+        self.set_format(f)
+    }
+
+    /// Give the selected number measure the format `f` (Format ▸ Format
+    /// Panel…'s Set, and the Format menu's rows): one undo step, autosaved
+    /// with the structure.
+    pub fn set_format(&mut self, f: NumberFormat) -> Result<String, String> {
+        let id = self.selected().ok_or("select a measure first")?;
+        let m = self
+            .model
+            .measures
+            .get(&id)
+            .ok_or("the measure no longer exists")?;
+        if m.value_type != ValueType::Number {
+            return Err(format!("{} holds no numbers to format", m.name.0));
         }
         let (name, f) = (
             m.name.0.clone(),
@@ -3592,7 +3725,8 @@ fn grid_keys_enabled(editing: bool, other_focus: bool) -> bool {
 /// has one (the error is spelled out under the row). Improv 1.0 also had
 /// Overlap and Mismatch indicators; this engine reports neither (an
 /// overlap is refused when the formula is entered), so they are not drawn.
-fn formula_status(ui: &mut egui::Ui, name: &str, checked: bool) {
+fn formula_status(ui: &mut egui::Ui, name: &str, error: Option<&str>) {
+    let checked = error.is_none();
     use crate::theme::BLACK;
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
     let p = ui.painter();
@@ -3615,11 +3749,27 @@ fn formula_status(ui: &mut egui::Ui, name: &str, checked: bool) {
     resp.widget_info(|| {
         egui::WidgetInfo::labeled(egui::Role::Image, true, format!("Formula {name} {state}"))
     });
-    resp.on_hover_text(if checked {
-        "Checked: the formula checks, with no errors."
-    } else {
-        "Error: the formula has an error, described under it."
+    resp.on_hover_text(match error {
+        None => "Checked: the formula checks, with no errors.".to_owned(),
+        Some(e) => format!("Error: {e}"),
     });
+}
+
+/// A NeXT pop-up list picking a multiform panel's page (the Inspector's,
+/// the Format panel's); the page names are the variants'.
+fn page_popup<P: PartialEq + Copy + std::fmt::Debug>(
+    ui: &mut egui::Ui,
+    id: &str,
+    page: &mut P,
+    pages: &[P],
+) {
+    egui::ComboBox::from_id_salt(id)
+        .selected_text(format!("{page:?}"))
+        .show_ui(ui, |ui| {
+            for &p in pages {
+                ui.selectable_value(page, p, format!("{p:?}"));
+            }
+        });
 }
 
 /// Give `ui`'s selected rows a white face. The palette makes egui's selection
@@ -4718,6 +4868,8 @@ impl ImprovApp {
         // After the worksheets, so they start on top of them.
         self.model_browser(ctx, ws);
         self.info_panel(ctx, ws);
+        self.inspector_panel(ctx, ws);
+        self.format_window(ctx, ws);
         self.graph_window(ctx, ws);
         self.function_help(ctx, ws);
         self.keys_panel(ctx, ws);
@@ -4829,6 +4981,18 @@ impl ImprovApp {
         }
         match c {
             Command::InfoPanel => self.show_inspector = !self.show_inspector,
+            // Brought up, not toggled, as NeXT panels are; the close box
+            // puts them away.
+            Command::Inspector => {
+                let read = self.panel_read();
+                self.inspector
+                    .get_or_insert(Panel::new(InspectorPage::Grid, read));
+            }
+            Command::FormatPanel => {
+                let read = self.panel_read();
+                self.format_panel
+                    .get_or_insert(Panel::new(FormatPage::Number, read));
+            }
             // In memory there is no store yet: Save asks for one (H1-7).
             Command::SaveModel if self.db.is_empty() => self.run_command(ctx, Command::SaveAs),
             Command::NewModel | Command::OpenModel | Command::SaveAs => {
@@ -6120,6 +6284,238 @@ impl ImprovApp {
         }
     }
 
+    /// What the Inspector and the Format panel read: the focused worksheet's
+    /// options and its measure's number format.
+    fn panel_read(&self) -> PanelDraft {
+        let m = self.focused();
+        let f = m
+            .measure
+            .and_then(|id| self.number_format(id))
+            .unwrap_or_default();
+        PanelDraft {
+            from: (m.uid, m.measure),
+            opts: m.opts,
+            decimals: f.decimals,
+            commas: f.grouping,
+        }
+    }
+
+    /// Edit ▸ Inspector…: Improv's Inspector, a NeXT panel whose pop-up
+    /// picks its page: Grid (whether and where the worksheet is ruled),
+    /// Layout (the hidden-items marker) and Formulas (errors under their
+    /// rows). It inspects the focused worksheet and follows the focus; OK
+    /// applies the panel to it, Revert reads it back.
+    fn inspector_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let Some(mut p) = self.inspector else {
+            return;
+        };
+        p.follow(self.panel_read());
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.right() - 268.0, ws.top() + 248.0),
+            egui::vec2(260.0, 172.0),
+        );
+        let win = crate::nxwin::NxWindow::new("inspector", "Inspector");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let (mut open, mut ok, mut revert) = (true, false, false);
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+                    use InspectorPage as I;
+                    page_popup(
+                        ui,
+                        "inspector_page",
+                        &mut p.page,
+                        &[I::Grid, I::Layout, I::Formulas],
+                    );
+                    ui.separator();
+                    let o = &mut p.draft.opts;
+                    match p.page {
+                        I::Grid => {
+                            ui.checkbox(&mut o.lines, "Show Grid Lines");
+                            ui.add_enabled_ui(o.lines, |ui| {
+                                ui.label("Lines In:");
+                                ui.horizontal(|ui| {
+                                    ui.radio_value(&mut o.lines_in, LinesIn::Cells, "Cell Area");
+                                    ui.radio_value(&mut o.lines_in, LinesIn::Items, "Item Area");
+                                    ui.radio_value(&mut o.lines_in, LinesIn::Both, "Both");
+                                });
+                            });
+                        }
+                        I::Layout => {
+                            ui.label("Show Markers:");
+                            ui.checkbox(&mut o.hidden_marker, "Hidden Items");
+                        }
+                        I::Formulas => {
+                            ui.checkbox(&mut o.errors_inline, "Show Errors In Line");
+                        }
+                    }
+                    ui.add_space(6.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        ok = ui.button("OK").clicked();
+                        revert = ui.button("Revert").clicked();
+                    });
+                });
+            });
+        if revert {
+            p.draft = p.read;
+        }
+        if ok {
+            if let Some(m) = self.matrices.iter_mut().find(|m| m.uid == p.draft.from.0) {
+                m.opts = p.draft.opts;
+                self.status = "worksheet options set".into();
+            }
+        }
+        self.inspector = open.then_some(p);
+    }
+
+    /// Format ▸ Format Panel… (Command-Shift-f): Improv's Format panel,
+    /// whose pop-up picks Number (General, or Specific decimal places, and
+    /// commas) or Alignment (Smart, Left, Center, Right), over a sample of
+    /// the result. Set applies both pages: the format to the focused
+    /// worksheet's measure (one undo step), the alignment to its cells.
+    fn format_window(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let Some(mut p) = self.format_panel else {
+            return;
+        };
+        p.follow(self.panel_read());
+        let numeric = p
+            .draft
+            .from
+            .1
+            .and_then(|id| self.model.measures.get(&id))
+            .is_some_and(|m| m.value_type == ValueType::Number);
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.right() - 548.0, ws.top() + 248.0),
+            egui::vec2(272.0, 180.0),
+        );
+        let win = crate::nxwin::NxWindow::new("format", "Format");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let (mut open, mut set) = (true, false);
+        let locale = &self.locale;
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+                    use FormatPage as F;
+                    page_popup(ui, "format_page", &mut p.page, &[F::Number, F::Alignment]);
+                    ui.separator();
+                    let d = &mut p.draft;
+                    match p.page {
+                        F::Number if !numeric => {
+                            ui.label("This measure holds no numbers to format.");
+                        }
+                        F::Number => {
+                            let mut specific = d.decimals.is_some();
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut specific, false, "General");
+                                ui.radio_value(&mut specific, true, "Specific");
+                            });
+                            ui.add_enabled_ui(specific, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label("Decimal Places:");
+                                    let mut n = d.decimals.unwrap_or(2);
+                                    let r = ui.add(
+                                        egui::DragValue::new(&mut n)
+                                            .range(0..=NumberFormat::MAX_DECIMALS),
+                                    );
+                                    a11y_name(&r, "Decimal Places");
+                                    d.decimals = specific.then_some(n);
+                                });
+                            });
+                            ui.checkbox(&mut d.commas, "Commas");
+                        }
+                        F::Alignment => {
+                            ui.horizontal(|ui| {
+                                for (a, name) in [
+                                    (CellAlign::Smart, "Smart"),
+                                    (CellAlign::Left, "Left"),
+                                    (CellAlign::Center, "Center"),
+                                    (CellAlign::Right, "Right"),
+                                ] {
+                                    ui.radio_value(&mut d.opts.align, a, name);
+                                }
+                            });
+                        }
+                    }
+                    // The sample: a number as Set would show it.
+                    let f = NumberFormat {
+                        decimals: d.decimals,
+                        grouping: d.commas,
+                    };
+                    let text = improv_engine::format_number(-1234.5678, Some(&f), locale);
+                    let (r, _) = ui.allocate_exact_size(
+                        egui::vec2(ui.available_width(), 20.0),
+                        egui::Sense::hover(),
+                    );
+                    let pt = ui.painter();
+                    pt.rect(
+                        r,
+                        0.0,
+                        crate::theme::WHITE,
+                        egui::Stroke::new(1.0_f32, crate::theme::BLACK),
+                        egui::StrokeKind::Inside,
+                    );
+                    let (x, anchor) = match d.opts.align {
+                        CellAlign::Left => (r.left() + 4.0, egui::Align2::LEFT_CENTER),
+                        CellAlign::Center => (r.center().x, egui::Align2::CENTER_CENTER),
+                        CellAlign::Smart | CellAlign::Right => {
+                            (r.right() - 4.0, egui::Align2::RIGHT_CENTER)
+                        }
+                    };
+                    let font = egui::TextStyle::Body.resolve(ui.style());
+                    pt.text(
+                        egui::pos2(x, r.center().y),
+                        anchor,
+                        text,
+                        font,
+                        crate::theme::BLACK,
+                    );
+                    ui.add_space(6.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                        set = ui.button("Set").clicked();
+                    });
+                });
+            });
+        if set {
+            self.status = self.format_set(p.draft, numeric);
+        }
+        self.format_panel = open.then_some(p);
+    }
+
+    /// The Format panel's Set: `d`'s alignment to its worksheet, and, for a
+    /// number measure, its format. Returns the status line.
+    fn format_set(&mut self, d: PanelDraft, numeric: bool) -> String {
+        let mut said = Vec::new();
+        if let Some(m) = self.matrices.iter_mut().find(|m| m.uid == d.from.0) {
+            if m.opts.align != d.opts.align {
+                m.opts.align = d.opts.align;
+                said.push(format!("cells aligned {:?}", d.opts.align).to_lowercase());
+            }
+        }
+        let f = NumberFormat {
+            decimals: d.decimals,
+            grouping: d.commas,
+        };
+        let now = d
+            .from
+            .1
+            .and_then(|id| self.number_format(id))
+            .unwrap_or_default();
+        if numeric && f != now {
+            said.push(self.set_format(f).unwrap_or_else(|e| e));
+        }
+        if said.is_empty() {
+            "the format is unchanged".into()
+        } else {
+            said.join("; ")
+        }
+    }
+
     /// Help ▸ Keys…: a NeXT window at the workspace's right listing the
     /// menu's key equivalents (read from the menu, Ctrl or Cmd) and the grid
     /// and editor keys ([`GRID_KEYS`]). Its close box or Help ▸ Keys… again
@@ -6452,7 +6848,7 @@ impl ImprovApp {
                         {
                             toggle = Some((row.measure, on));
                         }
-                        formula_status(ui, name, row.error.is_none());
+                        formula_status(ui, name, row.error.as_deref());
                         // `1.` `2.` … bold, as the reference numbers them.
                         ui.strong(format!("{}.", i + 1));
                         // A disabled formula is dimmed, not hidden: it is
@@ -6482,9 +6878,12 @@ impl ImprovApp {
                     } else {
                         None
                     };
+                    // The Inspector's Show Errors In Line; off, the status
+                    // indicator's tip says it.
                     let row_err = row
                         .error
                         .as_deref()
+                        .filter(|_| self.matrices[mi].opts.errors_inline)
                         .map(|e| diagnostics::compile_error(&self.model, &row.text, e));
                     if let Some(d) = edit_err.or(row_err) {
                         let _ = formula_error_lines(ui, &d);
@@ -7576,7 +7975,7 @@ impl ImprovApp {
         let filter = m.filters.iter().find(|f| f.category == c);
         let cat = model.categories.get(&c);
         let mut name = cat.map_or_else(|| format!("category {}", c.0), |x| x.name.0.clone());
-        if filter.is_some() {
+        if filter.is_some() && m.opts.hidden_marker {
             name.push('*');
         }
         // The full (unfiltered) item list, so hidden items can be re-shown.
@@ -7893,26 +8292,42 @@ impl ImprovApp {
             width: 1.0,
             color: crate::theme::BLACK,
         };
-        fn header_cell(ui: &mut egui::Ui, text: &str, selected: bool) {
+        // The Inspector's Grid page: whether the item area (the headers)
+        // and the cell area are ruled.
+        let opts = m.opts;
+        let ruled = |area: LinesIn| opts.lines && opts.lines_in != area;
+        let (item_rule, cell_rule) = (
+            if ruled(LinesIn::Cells) {
+                RULE
+            } else {
+                egui::Stroke::NONE
+            },
+            if ruled(LinesIn::Items) {
+                RULE
+            } else {
+                egui::Stroke::NONE
+            },
+        );
+        let header_cell = |ui: &mut egui::Ui, text: &str, selected: bool| {
             let r = ui.available_rect_before_wrap();
             if selected {
                 ui.painter().rect_filled(r, 0.0, crate::theme::LIGHT_GRAY);
             }
-            ui.painter().vline(r.right() - 0.5, r.y_range(), RULE);
+            ui.painter().vline(r.right() - 0.5, r.y_range(), item_rule);
             if !text.is_empty() {
-                ui.painter().hline(r.x_range(), r.top() + 0.5, RULE);
+                ui.painter().hline(r.x_range(), r.top() + 0.5, item_rule);
             }
             egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(4, 1))
                 .show(ui, |ui| {
                     ui.add(egui::Label::new(text).truncate());
                 });
-        }
+        };
         // The rule closing the header band from the body.
-        fn band_bottom(ui: &egui::Ui) {
+        let band_bottom = |ui: &egui::Ui| {
             let r = ui.max_rect();
-            ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
-        }
+            ui.painter().hline(r.x_range(), r.bottom() - 0.5, item_rule);
+        };
         let cat_name = |app: &ImprovApp, c: CategoryId| {
             app.model
                 .categories
@@ -8098,8 +8513,8 @@ impl ImprovApp {
                                         crate::theme::WHITE
                                     };
                                     ui.painter().rect_filled(r, 0.0, fill);
-                                    ui.painter().vline(r.right() - 0.5, r.y_range(), RULE);
-                                    ui.painter().hline(r.x_range(), r.bottom() - 0.5, RULE);
+                                    ui.painter().vline(r.right() - 0.5, r.y_range(), cell_rule);
+                                    ui.painter().hline(r.x_range(), r.bottom() - 0.5, cell_rule);
                                     cell_rects.push(((ri, ci), r));
                                     let cell_id = egui::Id::unique(("cell", uid, ri, ci));
                                     // H2: a screen reader hears the cell's place and value.
@@ -8141,11 +8556,27 @@ impl ImprovApp {
                                             // pass: a right-to-left layout fills the cell,
                                             // which would size every auto column to its
                                             // fallback width instead of its content.
+                                            // The Format panel's Alignment; Smart is
+                                            // numbers right, the rest left.
                                             let right = numeric || (editing_here && is_number);
-                                            let align = if right && !ui.is_sizing_pass() {
-                                                egui::Layout::right_to_left(egui::Align::Center)
-                                            } else {
-                                                egui::Layout::left_to_right(egui::Align::Center)
+                                            let align = match opts.align {
+                                                _ if ui.is_sizing_pass() => {
+                                                    egui::Layout::left_to_right(egui::Align::Center)
+                                                }
+                                                CellAlign::Right => {
+                                                    egui::Layout::right_to_left(egui::Align::Center)
+                                                }
+                                                CellAlign::Smart if right => {
+                                                    egui::Layout::right_to_left(egui::Align::Center)
+                                                }
+                                                CellAlign::Center => {
+                                                    egui::Layout::centered_and_justified(
+                                                        egui::Direction::TopDown,
+                                                    )
+                                                }
+                                                _ => {
+                                                    egui::Layout::left_to_right(egui::Align::Center)
+                                                }
                                             };
                                             let text = value
                                                 .map(|v| v.formatted(format.as_ref(), &self.locale))
@@ -9046,6 +9477,8 @@ mod tests {
             import_form: ImportForm::default(),
             show_inspector: false,
             show_keys: false,
+            inspector: None,
+            format_panel: None,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -16711,7 +17144,7 @@ mod tests {
         let strokes = |checked: bool| {
             let ctx = egui::Context::default();
             let out = ctx.test_ui(egui::RawInput::default(), |ui| {
-                formula_status(ui, "X", checked);
+                formula_status(ui, "X", (!checked).then_some("bad"));
             });
             out.shapes
                 .iter()
@@ -17186,6 +17619,258 @@ mod tests {
         app.sync_axis_state();
         assert_eq!(app.page_cats(), vec![CategoryId(3)]);
         assert!(app.cursor_key().is_some(), "a cell is fully specified");
+    }
+
+    /// The painted rect of text `label` inside NxWindow `win`.
+    fn text_in(desk: &mut Desk, app: &mut ImprovApp, win: &str, label: &str) -> egui::Rect {
+        let out = desk.frame(app, Vec::new());
+        let r = crate::nxwin::stored_rect(&desk.ctx, panel_win(win))
+            .unwrap_or_else(|| panic!("the {win} window is shown"));
+        out.shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) if t.galley.text() == label => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()))
+                }
+                _ => None,
+            })
+            .find(|t| r.contains_rect(*t))
+            .unwrap_or_else(|| panic!("{label:?} in the {win} window"))
+    }
+
+    /// Black 1 px rules painted at the cell `(ri, ci)`'s right edge.
+    fn cell_ruled(out: &egui::FullOutput, cell: egui::Rect) -> bool {
+        out.shapes.iter().any(|c| match &c.shape {
+            egui::Shape::LineSegment { points, stroke } => {
+                stroke.width > 0.0
+                    && stroke.color == crate::theme::BLACK
+                    && (points[0].x - (cell.right() - 0.5)).abs() < 0.01
+                    && points[0].y <= cell.top() + 0.5
+                    && points[1].y >= cell.bottom() - 0.5
+            }
+            _ => false,
+        })
+    }
+
+    /// Gap 9: Edit ▸ Inspector… is Improv's Inspector, a pop-up over Grid,
+    /// Layout and Formulas pages. OK applies the panel to the focused
+    /// worksheet; Revert reads it back first.
+    #[test]
+    fn the_inspector_sets_grid_lines_markers_and_inline_errors() {
+        let (mut app, mut desk) = grid_desk();
+        app.run_command(&desk.ctx, Command::Inspector);
+        desk.settle(&mut app);
+        let cell = cell_rect(&desk, &app, 0, 0);
+        assert!(
+            cell_ruled(&desk.frame(&mut app, Vec::new()), cell),
+            "ruled at first"
+        );
+
+        // Grid: Show Grid Lines off, Revert puts it back, OK applies it.
+        let lines = text_in(&mut desk, &mut app, "inspector", "Show Grid Lines");
+        desk.click(&mut app, lines.center());
+        assert!(!app.inspector.unwrap().draft.opts.lines);
+        let revert = text_in(&mut desk, &mut app, "inspector", "Revert");
+        desk.click(&mut app, revert.center());
+        assert!(app.inspector.unwrap().draft.opts.lines, "reverted");
+        desk.click(&mut app, lines.center());
+        assert!(app.focused().opts.lines, "nothing applies before OK");
+        let ok = text_in(&mut desk, &mut app, "inspector", "OK");
+        desk.click(&mut app, ok.center());
+        assert!(!app.focused().opts.lines);
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        assert!(!cell_ruled(&out, cell_rect(&desk, &app, 0, 0)), "unruled");
+
+        // Lines In Item Area: the headers are ruled, the cells are not.
+        app.focused_mut().opts = SheetOpts {
+            lines_in: LinesIn::Items,
+            ..SheetOpts::default()
+        };
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        assert!(!cell_ruled(&out, cell_rect(&desk, &app, 0, 0)));
+        let header = text_at(&out.shapes, "WidgetA").expect("a column header");
+        let ruled_header = out.shapes.iter().any(|c| {
+            matches!(&c.shape, egui::Shape::LineSegment { points, stroke }
+                if stroke.color == crate::theme::BLACK && stroke.width > 0.0
+                    && points[0].y == points[1].y
+                    && points[0].x <= header.left() && points[1].x >= header.right()
+                    && (points[0].y - header.top()).abs() < 4.0)
+        });
+        assert!(ruled_header, "the item area keeps its rules");
+
+        // Layout: the Hidden Items marker. A filtered tile reads `Time*`.
+        app.toggle_filter_item(CategoryId(1), ItemId(10));
+        desk.settle(&mut app);
+        assert!(text_at(&desk.frame(&mut app, Vec::new()).shapes, "Time*").is_some());
+        app.focused_mut().opts.hidden_marker = false;
+        desk.settle(&mut app);
+        let shapes = desk.frame(&mut app, Vec::new()).shapes;
+        assert!(text_at(&shapes, "Time*").is_none() && text_at(&shapes, "Time").is_some());
+
+        // The pop-up names the three pages.
+        let popup = text_in(&mut desk, &mut app, "inspector", "Grid");
+        desk.click(&mut app, popup.center());
+        let texts = texts_of(&desk.frame(&mut app, Vec::new()));
+        for page in ["Layout", "Formulas"] {
+            assert!(texts.iter().any(|t| t == page), "{page} in {texts:?}");
+        }
+        // Its close box puts it away.
+        let close = close_box_of(&desk.ctx, panel_win("inspector")).expect("shown");
+        desk.click(&mut app, egui::pos2(5.0, 795.0));
+        desk.click(&mut app, close.center());
+        assert!(app.inspector.is_none());
+    }
+
+    /// Gap 9: with Show Errors In Line off, a formula's error moves from
+    /// under its row into its status indicator's tip.
+    #[test]
+    fn errors_in_line_can_be_turned_off() {
+        let mut model = grid_2x2_model();
+        model.add_measure(Measure {
+            id: MeasureId(103),
+            name: Name("Broken".into()),
+            value_type: ValueType::Number,
+            categories: vec![CategoryId(1), CategoryId(2)],
+            kind: MeasureKind::Derived(Formula::new(Expr::Ref(
+                MeasureId(999),
+                DimensionSpec::default(),
+            ))),
+            description: None,
+            format: None,
+        });
+        let mut app = build_app(model);
+        let mut desk = Desk::new();
+        desk.settle(&mut app);
+        let warned = |texts: Vec<String>| texts.iter().any(|t| t.starts_with("⚠ "));
+        assert!(
+            warned(texts_of(&desk.frame(&mut app, Vec::new()))),
+            "in line"
+        );
+        app.focused_mut().opts.errors_inline = false;
+        desk.settle(&mut app);
+        assert!(
+            !warned(texts_of(&desk.frame(&mut app, Vec::new()))),
+            "tip only"
+        );
+    }
+
+    /// Gap 9: Format ▸ Format Panel… (Ctrl+Shift+F) is Improv's Format panel:
+    /// Number sets General or Specific decimals and Commas over a sample,
+    /// Alignment Smart, Left, Center or Right; Set applies both to the
+    /// focused worksheet, the format as one undo step.
+    #[test]
+    fn the_format_panel_sets_decimals_commas_and_alignment() {
+        let (mut app, mut desk) = grid_desk();
+        let shift_f = egui::Event::Key {
+            key: egui::Key::F,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        };
+        let _ = desk.frame(&mut app, vec![shift_f]);
+        desk.settle(&mut app);
+        assert!(app.format_panel.is_some(), "Ctrl+Shift+F opens it");
+        let sample = |desk: &mut Desk, app: &mut ImprovApp| {
+            texts_of(&desk.frame(app, Vec::new()))
+                .into_iter()
+                .find(|t| t.contains("1234") || t.contains("1,23"))
+                .expect("the sample")
+        };
+        assert_eq!(sample(&mut desk, &mut app), "-1234.5678", "General");
+
+        let specific = text_in(&mut desk, &mut app, "format", "Specific");
+        desk.click(&mut app, specific.center());
+        let commas = text_in(&mut desk, &mut app, "format", "Commas");
+        desk.click(&mut app, commas.center());
+        assert_eq!(sample(&mut desk, &mut app), "-1,234.57", "2 places, commas");
+        assert_eq!(app.number_format(MeasureId(101)), None, "not before Set");
+
+        // Alignment: Center.
+        if let Some(p) = &mut app.format_panel {
+            p.page = FormatPage::Alignment;
+        }
+        desk.settle(&mut app);
+        let center = text_in(&mut desk, &mut app, "format", "Center");
+        desk.click(&mut app, center.center());
+        let set = text_in(&mut desk, &mut app, "format", "Set");
+        desk.click(&mut app, set.center());
+        assert_eq!(
+            app.number_format(MeasureId(101)),
+            Some(NumberFormat {
+                decimals: Some(2),
+                grouping: true
+            })
+        );
+        assert_eq!(app.focused().opts.align, CellAlign::Center);
+        assert!(
+            app.status.contains("cells aligned center"),
+            "{}",
+            app.status
+        );
+        desk.settle(&mut app);
+        // 100 now shows as 100.00, centered in its cell.
+        let out = desk.frame(&mut app, Vec::new());
+        let cell = cell_rect(&desk, &app, 0, 0);
+        let text = text_at(&out.shapes, "100.00").expect("formatted");
+        assert!(
+            (text.center().x - cell.center().x).abs() < 1.5,
+            "{text:?} in {cell:?}"
+        );
+        app.undo().unwrap();
+        assert_eq!(app.number_format(MeasureId(101)), None, "one undo step");
+
+        // Right puts text right too; Left puts numbers left.
+        app.focused_mut().opts.align = CellAlign::Left;
+        desk.settle(&mut app);
+        let out = desk.frame(&mut app, Vec::new());
+        let cell = cell_rect(&desk, &app, 0, 0);
+        let text = text_at(&out.shapes, "100").expect("General again");
+        assert!(text.left() - cell.left() < 8.0, "{text:?} in {cell:?}");
+    }
+
+    /// Gap 9: the panels follow the focus, as a NeXT panel follows the
+    /// selection: another worksheet's options and measure show, and a text
+    /// measure's Number page says it has no numbers.
+    #[test]
+    fn the_panels_follow_the_focused_worksheet() {
+        let mut app = two_matrix_app();
+        app.matrices[1].opts.lines = false;
+        let mut desk = Desk::new();
+        app.run_command(&desk.ctx, Command::Inspector);
+        app.run_command(&desk.ctx, Command::FormatPanel);
+        desk.settle(&mut app);
+        let uid = |app: &ImprovApp, i: usize| app.matrices[i].uid;
+        assert_eq!(app.inspector.unwrap().draft.from.0, uid(&app, 0));
+        assert!(app.inspector.unwrap().draft.opts.lines);
+        app.set_focus(1);
+        desk.settle(&mut app);
+        let p = app.inspector.unwrap();
+        assert_eq!((p.draft.from.0, p.draft.opts.lines), (uid(&app, 1), false));
+        assert_eq!(app.format_panel.unwrap().draft.from.1, Some(MeasureId(102)));
+        // Format menu picks show in the open panel.
+        app.run_command(&desk.ctx, Command::Decimals(Some(3)));
+        desk.settle(&mut app);
+        assert_eq!(app.format_panel.unwrap().draft.decimals, Some(3));
+        // An unchanged Set says so.
+        let set = text_in(&mut desk, &mut app, "format", "Set");
+        desk.click(&mut app, set.center());
+        assert_eq!(app.status, "the format is unchanged");
+
+        let mut t = build_app(typed_model());
+        select(&mut t, MeasureId(2));
+        let mut desk = Desk::new();
+        t.run_command(&desk.ctx, Command::FormatPanel);
+        desk.settle(&mut t);
+        let texts = texts_of(&desk.frame(&mut t, Vec::new()));
+        assert!(
+            texts
+                .iter()
+                .any(|x| x == "This measure holds no numbers to format."),
+            "{texts:?}"
+        );
     }
 
     /// H1-6: the Info panel shows a box per category for an input measure;

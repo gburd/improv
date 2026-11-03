@@ -43,6 +43,12 @@ pub enum Command {
     /// Edit ▸ Select All (Command-a, reserved by NeXTSTEP): every cell of
     /// the focused worksheet.
     SelectAll,
+    /// Edit ▸ Inspector…: Improv's Inspector panel (Grid, Layout,
+    /// Formulas) for the focused worksheet.
+    Inspector,
+    /// Format ▸ Format Panel… (Command-Shift-f): Improv's Format panel
+    /// (Number, Alignment).
+    FormatPanel,
     PivotRotate,
     AddMatrix,
     RemoveMatrix,
@@ -133,6 +139,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Redo", Some('Z'), Some(C::Redo)),
             ("Copy", Some('c'), Some(C::Copy)),
             ("Paste", Some('v'), Some(C::Paste)),
+            ("Inspector…", None, Some(C::Inspector)),
             ("Select All", Some('a'), Some(C::SelectAll)),
             ("Add Category", None, Some(C::AddCategory)),
             ("Add Item", None, Some(C::AddItem)),
@@ -145,6 +152,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         "Format",
         None,
         Top::Sub(&[
+            ("Format Panel…", Some('F'), Some(C::FormatPanel)),
             ("General", None, Some(C::Decimals(None))),
             ("0 Decimals", None, Some(C::Decimals(Some(0)))),
             ("1 Decimal", None, Some(C::Decimals(Some(1)))),
@@ -722,15 +730,21 @@ mod tests {
         let f = top("Format");
         h.click_row(menu_id(), f);
         assert_eq!(h.state.open, Some(f), "Format is built now");
-        assert_eq!(h.click_row(sub_id(f), 0), Some(C::Decimals(None)));
-        for (row, d) in [(1, 0), (2, 1), (3, 2), (4, 3)] {
+        assert_eq!(h.click_row(sub_id(f), 0), Some(C::FormatPanel));
+        h.click_row(menu_id(), f);
+        assert_eq!(h.click_row(sub_id(f), 1), Some(C::Decimals(None)));
+        for (row, d) in [(2, 0), (3, 1), (4, 2), (5, 3)] {
             h.click_row(menu_id(), f);
             assert_eq!(h.click_row(sub_id(f), row), Some(C::Decimals(Some(d))));
         }
         h.click_row(menu_id(), f);
-        assert_eq!(h.click_row(sub_id(f), 5), None, "disabled here");
-        assert_eq!(h.click_row(sub_id(f), 6), Some(C::Grouping));
-        assert_eq!(sub_row("Format", "2 Decimals"), 3);
+        assert_eq!(h.click_row(sub_id(f), 6), None, "disabled here");
+        assert_eq!(h.click_row(sub_id(f), 7), Some(C::Grouping));
+        assert_eq!(sub_row("Format", "2 Decimals"), 4);
+        let edit = top("Edit");
+        h.click_row(menu_id(), edit);
+        let row = sub_row("Edit", "Inspector…");
+        assert_eq!(h.click_row(sub_id(edit), row), Some(C::Inspector));
     }
 
     /// Improv's View menu leads with New View, then Swap Rows/Columns; the
@@ -899,7 +913,7 @@ mod tests {
             assert_eq!(key_command(key, k.is_uppercase()), want, "{k:?}");
             n += 1;
         }
-        assert_eq!(n, 15, "o n s S z Z c v a r V / p h q");
+        assert_eq!(n, 16, "o n s S z Z c v a F r V / p h q");
     }
 
     #[test]
@@ -925,6 +939,8 @@ mod tests {
         assert_eq!(key_command(Key::C, false), None, "so does Copy");
         assert_eq!(key_command(Key::P, false), None, "Print is disabled");
         assert_eq!(key_command(Key::A, false), Some(C::SelectAll));
+        assert_eq!(key_command(Key::F, true), Some(C::FormatPanel));
+        assert_eq!(key_command(Key::F, false), None, "Command-f is Find");
         assert_eq!(key_command(Key::B, false), None);
     }
 
