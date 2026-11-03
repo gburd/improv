@@ -371,6 +371,16 @@ mod tests {
         assert_eq!(prefix("é", 2), Some((0, "é")));
         assert_eq!(prefix("é", 1), None, "not a char boundary");
         assert_eq!(word_start("Price", 0), 0);
+        assert_eq!(
+            prefix("_tmp", 4),
+            Some((0, "_tmp")),
+            "an underscore starts a name"
+        );
+        assert_eq!(
+            prefix("x + \"a\" & Pr", 12),
+            Some((10, "Pr")),
+            "after a string"
+        );
     }
 
     #[test]
@@ -559,6 +569,9 @@ mod tests {
         assert!(!p.sync("PMT ", "", 0), "nothing for a finished word");
         assert!(p.sync("PMTx", "PMTx", 1), "an edit reopens it");
         assert!(!p.sync("1", "", 0), "nothing to offer");
+        let sel = p.sel;
+        p.step(1, 0);
+        assert_eq!(p.sel, sel, "no candidates: no move");
     }
 
     #[test]

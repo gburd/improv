@@ -403,6 +403,13 @@ mod tests {
         // A ")" in a string does not close it.
         let t = "LEN(\")\"";
         assert_eq!(d_span(t), 3..4);
+        // A quoted name is read past whole.
+        let t = "ABS('Unit Cost' * 2";
+        assert_eq!(d_span(t), 3..4);
+        // Nothing left open: the error stays where the parser put it.
+        let t = "\"(\" + ";
+        let d = diag(t);
+        assert_eq!((d.span, d.hint), (Some(4..5), None));
     }
 
     #[test]
@@ -429,6 +436,12 @@ mod tests {
         assert_eq!(token_at("'it''s", 0), Some(0..6));
         assert_eq!(token_at("é", 1), Some(0..2));
         assert_eq!(token_at("", 0), None);
+        assert_eq!(
+            token_at("@ITEM(x)", 0),
+            Some(0..5),
+            "an @ name is one token"
+        );
+        assert_eq!(token_at("_x+1", 0), Some(0..2));
     }
 
     /// Compile errors carry no position: the first function or measure

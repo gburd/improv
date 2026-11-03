@@ -640,6 +640,160 @@ mod tests {
         assert_eq!(WireValue::Number(1500.0).shown(Some(&f), &en), "1,500.00");
     }
 
+    /// Each value decodes only into a measure of its own type, and each
+    /// refusal says what the measure holds; each model value has one wire
+    /// form, shown and typed as the grid shows and edits it.
+    #[test]
+    fn each_type_decodes_and_shows_as_itself() {
+        use improv_core_model::{ValueError, ValueErrorKind};
+        let date = "2025-01-31T00:00:00+00:00";
+        let d = chrono::DateTime::parse_from_rfc3339(date)
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for (w, ty, v) in [
+            (
+                WireValue::Bool(true),
+                ValueType::Boolean,
+                Value::Boolean(true),
+            ),
+            (
+                WireValue::Text("hi".into()),
+                ValueType::Text,
+                Value::Text("hi".into()),
+            ),
+            (
+                WireValue::Date { date: date.into() },
+                ValueType::DateTime,
+                Value::DateTime(d),
+            ),
+        ] {
+            assert_eq!(w.to_value(ty), Ok(v.clone()));
+            assert_eq!(WireValue::from_value(&v), w);
+        }
+        for (w, ty, words) in [
+            (WireValue::Text("1".into()), ValueType::Number, "numbers"),
+            (WireValue::Number(1.0), ValueType::Boolean, "true or false"),
+            (WireValue::Bool(true), ValueType::Text, "text"),
+            (WireValue::Text(date.into()), ValueType::DateTime, "dates"),
+            (WireValue::Number(1.0), ValueType::Enum, "enum indexes"),
+            (
+                WireValue::Error {
+                    error: "#N/A".into(),
+                },
+                ValueType::Number,
+                "numbers",
+            ),
+        ] {
+            assert_eq!(w.to_value(ty), Err(format!("this measure holds {words}")));
+        }
+        // An enum and an error value go out as a number and an error code.
+        assert_eq!(
+            WireValue::from_value(&Value::Enum(3)),
+            WireValue::Number(3.0)
+        );
+        let e = Value::Error(ValueError::new(ValueErrorKind::DivisionByZero));
+        let we = WireValue::from_value(&e);
+        assert_eq!(
+            we,
+            WireValue::Error {
+                error: "#DIV/0!".into()
+            }
+        );
+        // Shown and typed: everything but a number as its text.
+        let en = improv_core_model::Locale::en();
+        for (w, text) in [
+            (WireValue::Bool(false), "false"),
+            (WireValue::Text("hi".into()), "hi"),
+            (WireValue::Date { date: date.into() }, date),
+            (we, "#DIV/0!"),
+        ] {
+            assert_eq!(w.shown(None, &en), text);
+            assert_eq!(w.typed(), text);
+        }
+        // A boolean typed as a formula, or as a literal of another type, is
+        // refused: the measure's type decides.
+        let m = Model::new();
+        for text in ["1 > 0", "1"] {
+            let e = parse_typed(&m, &en, ValueType::Boolean, text).unwrap_err();
+            assert_eq!(e, format!("not a boolean (use true/false): {text:?}"));
+        }
+    }
+
+    /// A reply that does not decode as what the request answers is an
+    /// error naming it, never a wrong answer: a malformed body, a refusal
+    /// body where a value belongs, a value of the wrong shape.
+    #[test]
+    fn replies_that_do_not_decode_are_errors() {
+        let window = Request::Window(1, WindowReq::default());
+        for (req, body) in [
+            (Request::Structure, ""),
+            (Request::Structure, "[]"),
+            (Request::Structure, r#"{"error":"not allowed"}"#),
+            (
+                window.clone(),
+                r#"{"version":"1","measure":"x","cells":[]}"#,
+            ),
+            (
+                window.clone(),
+                r#"{"version":"1","measure":1,"cells":[{"at":[[1]]}]}"#,
+            ),
+            (Request::Undo, r#"{"message":"undone"}"#),
+            (Request::Edit(EditReq::default()), "null"),
+        ] {
+            let e = req.parse_reply(body).unwrap_err();
+            assert!(e.starts_with("bad reply: "), "{req:?} {body:?}: {e}");
+        }
+        // A cell's value that is none of the five shapes.
+        let bad = r#"{"version":"1","measure":1,"cells":[{"at":[[1,2]],"value":[1]}]}"#;
+        assert!(window.parse_reply(bad).is_err());
+        // An unknown field is ignored; a changed cell without a value is blank.
+        let ok = r#"{"version":"1","measure":1,"cells":[],"extra":true}"#;
+        assert!(matches!(window.parse_reply(ok), Ok(Response::Cells(_))));
+        let ch: ChangedCell = serde_json::from_str(r#"{"measure":1,"at":[[1,2]]}"#).unwrap();
+        assert_eq!(ch.value, None);
+        // A format object sets it; a bare number is not a format.
+        let u: UpdateMeasureReq = serde_json::from_str(r#"{"format":{"decimals":2}}"#).unwrap();
+        assert_eq!(u.format.unwrap().unwrap().decimals, Some(2));
+        assert!(serde_json::from_str::<UpdateMeasureReq>(r#"{"format":7}"#).is_err());
+        // The serializer alone writes "unchanged" as null; in a request,
+        // skip_serializing_if leaves the field out.
+        let mut out = Vec::new();
+        let mut ser = serde_json::Serializer::new(&mut out);
+        double_option::serialize::<NumberFormat, _>(&None, &mut ser).unwrap();
+        assert_eq!(out, b"null");
+    }
+
+    /// A structure's views come with its model, and a local service is
+    /// always live and needs no credentials.
+    #[test]
+    fn a_structure_keeps_its_views_and_a_local_service_is_live() {
+        use improv_core_model::{MatrixPlacement, ViewId};
+        let v = View::from_matrices(
+            ViewId(1),
+            Name("v".into()),
+            MatrixPlacement::new(MeasureId(100)),
+            vec![],
+        );
+        let s = Structure {
+            views: vec![v.clone()],
+            ..Default::default()
+        };
+        assert_eq!(s.to_model().views[&ViewId(1)], v);
+        struct Quiet(Vec<Event>);
+        impl ModelService for Quiet {
+            fn send(&mut self, _: Request) -> u64 {
+                0
+            }
+            fn poll(&mut self) -> Vec<Event> {
+                std::mem::take(&mut self.0)
+            }
+        }
+        let mut q = Quiet(vec![Event::LoggedOut("token refused".into())]);
+        q.authenticate("secret".into());
+        assert!(q.live());
+        assert_eq!(q.poll(), vec![Event::LoggedOut("token refused".into())]);
+    }
+
     #[test]
     fn typed_text_parses_by_type() {
         let m = Model::new();
