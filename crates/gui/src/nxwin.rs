@@ -762,6 +762,47 @@ mod tests {
         layout(r, false, true, false).title
     }
 
+    /// A window's options, for [`show_chrome`].
+    #[derive(Clone, Copy)]
+    struct Chrome {
+        standard: bool,
+        edited: bool,
+        resizable: bool,
+        closable: bool,
+        miniaturizable: bool,
+        open: bool,
+        mini: bool,
+    }
+
+    const PLAIN: Chrome = Chrome {
+        standard: false,
+        edited: false,
+        resizable: true,
+        closable: false,
+        miniaturizable: false,
+        open: true,
+        mini: false,
+    };
+
+    /// Show window `name` (titled `name`) at `r` with options `c`; its outer
+    /// rect, `None` once closed. One call site, so one `show` for them all.
+    fn show_chrome(ctx: &Context, name: &str, r: Rect, c: &mut Chrome) -> Option<Rect> {
+        let mut w = NxWindow::new(name, name)
+            .default_rect(r)
+            .resizable(c.resizable)
+            .edited(c.edited);
+        if c.standard {
+            w = w.standard();
+        }
+        if c.closable {
+            w = w.closable(&mut c.open);
+        }
+        if c.miniaturizable {
+            w = w.miniaturizable(&mut c.mini);
+        }
+        w.show(ctx, |ui| ui.max_rect()).map(|ir| ir.response.rect)
+    }
+
     /// (d) Clicking window B makes it key and A non-key, and the painted title
     /// fills and text colors follow.
     #[test]
@@ -799,23 +840,22 @@ mod tests {
         let other = doc.translate(vec2(0.0, 250.0));
         let panel = doc.translate(vec2(350.0, 0.0));
         let mut ui = |ctx: &Context| {
-            for (n, t, r) in [("doc", "Doc", doc), ("other", "Other", other)] {
-                let _ = NxWindow::new(n, t)
-                    .default_rect(r)
-                    .standard()
-                    .show(ctx, |_| ());
+            for (n, r) in [("Doc", doc), ("Other", other)] {
+                let mut c = Chrome {
+                    standard: true,
+                    ..PLAIN
+                };
+                show_chrome(ctx, n, r, &mut c);
             }
-            let _ = NxWindow::new("panel", "Panel")
-                .default_rect(panel)
-                .show(ctx, |_| ());
+            show_chrome(ctx, "Panel", panel, &mut { PLAIN });
         };
         for _ in 0..3 {
             h.frame(Vec::new(), &mut ui);
         }
         h.frame(click(panel.center()), &mut ui);
         let shapes = h.frame(Vec::new(), &mut ui);
-        assert!(is_key(&h.ctx, wid("panel")));
-        assert!(is_main(&h.ctx, wid("doc")), "the first document stays main");
+        assert!(is_key(&h.ctx, wid("Panel")));
+        assert!(is_main(&h.ctx, wid("Doc")), "the first document stays main");
         assert_eq!(fill_at(&shapes, title(panel)), Some(BLACK));
         assert_eq!(fill_at(&shapes, title(doc)), Some(DARK_GRAY));
         assert_eq!(text_color(&shapes, "Doc"), Some(WHITE));
@@ -823,9 +863,11 @@ mod tests {
         // Clicking the other document makes it key and main.
         h.frame(click(other.center()), &mut ui);
         let shapes = h.frame(Vec::new(), &mut ui);
-        assert!(is_main(&h.ctx, wid("other")));
+        assert!(is_main(&h.ctx, wid("Other")));
         assert_eq!(fill_at(&shapes, title(other)), Some(BLACK));
         assert_eq!(fill_at(&shapes, title(doc)), Some(LIGHT_GRAY));
+        assert_eq!(fill_at(&shapes, title(panel)), Some(LIGHT_GRAY));
+        assert_eq!(text_color(&shapes, "Panel"), Some(BLACK));
     }
 
     /// An edited window's close box is broken: four short strokes, not two
@@ -949,6 +991,91 @@ mod tests {
         assert!(is_key(&h.ctx, wid("b")));
     }
 
+    /// The close and miniaturize buttons say what they do to a screen
+    /// reader (an edited window's close box says so) and act on its Click:
+    /// closing a background window leaves the key where it is.
+    #[test]
+    fn the_title_bar_buttons_act_for_a_screen_reader() {
+        use egui::accesskit::{Action, ActionRequest, NodeId, TreeId};
+        let mut h = Harness::new();
+        h.ctx.enable_accesskit();
+        let b = R.translate(vec2(350.0, 0.0));
+        let mut alpha = Chrome {
+            standard: true,
+            edited: true,
+            closable: true,
+            miniaturizable: true,
+            ..PLAIN
+        };
+        let mut bravo = Chrome {
+            closable: true,
+            resizable: false,
+            ..PLAIN
+        };
+        let mut labels = Vec::new();
+        let frame = |h: &mut Harness, events, a: &mut Chrome, b2: &mut Chrome| {
+            let raw = RawInput {
+                time: Some(h.time),
+                screen_rect: Some(SCREEN),
+                events,
+                ..Default::default()
+            };
+            h.time += 1.0 / 60.0;
+            let out = h.ctx.test_pass(raw, |ctx| {
+                show_chrome(ctx, "Alpha", R, a);
+                show_chrome(ctx, "Bravo", b, b2);
+            });
+            out.platform_output
+                .accesskit_update
+                .expect("AccessKit is on")
+                .nodes
+                .into_iter()
+                .filter_map(|(_, n)| n.label().map(str::to_owned))
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..3 {
+            labels = frame(&mut h, Vec::new(), &mut alpha, &mut bravo);
+        }
+        for want in ["Close Alpha (edited)", "Miniaturize Alpha", "Close Bravo"] {
+            assert!(labels.iter().any(|l| l == want), "{want} in {labels:?}");
+        }
+        assert!(is_key(&h.ctx, wid("Alpha")));
+        let click = |id: Id| {
+            Event::AccessKitActionRequest(ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: NodeId::from(id.value()),
+                data: None,
+            })
+        };
+        frame(
+            &mut h,
+            vec![click(wid("Alpha").with("mini"))],
+            &mut alpha,
+            &mut bravo,
+        );
+        assert!(alpha.mini && alpha.open, "miniaturized, not closed");
+        frame(
+            &mut h,
+            vec![click(wid("Bravo").with("close"))],
+            &mut alpha,
+            &mut bravo,
+        );
+        assert!(!bravo.open);
+        assert!(is_key(&h.ctx, wid("Alpha")), "the key stays with Alpha");
+        frame(
+            &mut h,
+            vec![click(wid("Alpha").with("close"))],
+            &mut alpha,
+            &mut bravo,
+        );
+        assert!(!alpha.open);
+        assert!(
+            !is_key(&h.ctx, wid("Alpha")),
+            "a closed window gives up the key"
+        );
+    }
+
     /// A window placed off screen is moved back on, keeping its size.
     #[test]
     fn off_screen_window_is_clamped_on_screen() {
@@ -973,13 +1100,8 @@ mod tests {
         let mut h = Harness::new();
         let mut rect = Rect::NOTHING;
         let mut ui = |ctx: &Context| {
-            rect = NxWindow::new("a", "Alpha")
-                .default_rect(R)
-                .resizable(resizable)
-                .show(ctx, |_| ())
-                .unwrap()
-                .response
-                .rect;
+            let mut c = Chrome { resizable, ..PLAIN };
+            rect = show_chrome(ctx, "a", R, &mut c).unwrap();
         };
         for _ in 0..3 {
             h.frame(Vec::new(), &mut ui);
