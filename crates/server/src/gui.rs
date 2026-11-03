@@ -218,7 +218,10 @@ async fn serve(
     r
 }
 
-/// Run `f` on the authority, opening it first if need be.
+/// Run `f` on the authority, opening it first if need be. When `f` moves
+/// the model's version (a write here, or any refresh that found another
+/// program's write: every request refreshes first, not only the poller),
+/// the change streams are woken.
 fn with_authority<T>(
     st: &AppState,
     f: impl FnOnce(&mut Authority) -> Result<T, Refusal>,
@@ -244,7 +247,13 @@ fn with_authority<T>(
         let opened = Authority::with_policy(&st.db_path, policy);
         *slot = Some(opened.map_err(|e| refusal(500, e))?);
     }
-    f(slot.as_mut().expect("opened above"))
+    let a = slot.as_mut().expect("opened above");
+    let before = a.version();
+    let r = f(a);
+    if a.version() != before {
+        st.gui.changed.send_modify(|v| *v += 1);
+    }
+    r
 }
 
 fn refusal(status: u16, error: impl Into<String>) -> Refusal {

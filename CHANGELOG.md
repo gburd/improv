@@ -191,6 +191,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A browser sees another program's change even when a request finds it
+  first.** improv-server's change streams were woken only by its own
+  writes and by its 500 ms poller. Every request also refreshes from the
+  store first, and when one found another program's write before the
+  poller did, the poller saw nothing new and no stream heard of it: an
+  open page missed that change (a new category or measure) until the next
+  one. Anything that moves the model's version now wakes the streams.
 - **`improv` no longer overflows Windows' 1 MiB main-thread stack.** With
   `improv policy`'s subcommands, clap's command tree outgrew it in a debug
   build: every command, `--version` included, crashed. The CLI now parses

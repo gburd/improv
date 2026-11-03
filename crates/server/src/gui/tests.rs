@@ -352,6 +352,24 @@ async fn another_programs_write_reaches_the_stream() {
     assert_eq!(e[1]["reload"], true, "{e:?}");
 }
 
+/// Another program's write that a request's own refresh finds first (not
+/// the poller) still reaches the streams: whatever moves the authority's
+/// version wakes them.
+#[tokio::test]
+async fn an_outside_write_a_request_finds_first_reaches_the_stream() {
+    let (app, _, path) = served();
+    let bob = stream(&app, BOB, None).await;
+    let mut other = improv_store::Store::open(path.to_str().unwrap()).unwrap();
+    let mut m = other.load_model().unwrap();
+    m.add_category(CategoryId(9), "Region");
+    other.save_model(&m).unwrap();
+    // At once, well before the poller's first look (every 500 ms).
+    let (st, _) = call(&app, req("GET", "/v1/structure", ANN, None)).await;
+    assert_eq!(st, StatusCode::OK);
+    let e = events(bob, 2).await;
+    assert_eq!(e[1]["reload"], true, "{e:?}");
+}
+
 /// An open stream's response, kept open.
 async fn open_stream(app: &axum::Router, token: &str) -> Result<Body, StatusCode> {
     let resp = app
