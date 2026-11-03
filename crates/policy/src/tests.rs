@@ -424,13 +424,14 @@ fn the_canonical_oracle() {
     assert!(!vic.allowed(Action::Admin, &Resource::Model));
     assert!(!vic.allowed(Action::DefineMeasure, &Resource::Model));
     assert!(vic.formula_visible(REVENUE));
-    let e = root
-        .explain(
-            Action::EditCell,
-            &Resource::Cell(REVENUE, at(&[(TIME, ItemId(10)), (PRODUCT, A)])),
-        )
-        .unwrap();
-    assert!(e.last().unwrap().decision.errors[0].contains("derived"));
+    // A derived cell: refused before any policy, even for an admin, and
+    // for a principal no policy lets edit anything.
+    for who in [&root, &vic] {
+        let cell = Resource::Cell(REVENUE, at(&[(TIME, ItemId(10)), (PRODUCT, A)]));
+        let e = who.explain(Action::EditCell, &cell).unwrap();
+        assert_eq!(e.len(), 1);
+        assert!(e[0].decision.errors[0].contains("derived"));
+    }
 }
 
 #[test]

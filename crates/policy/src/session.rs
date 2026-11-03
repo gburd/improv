@@ -621,8 +621,21 @@ impl Session {
                 },
             }]);
         };
+        let steps = self.steps(action, resource)?;
+        // As in `allowed`: a derived cell is never edited, whatever permits.
+        if action == Action::EditCell && !self.is_input(resource) {
+            return Ok(vec![Check {
+                action,
+                resource: resource.clone(),
+                decision: Decision {
+                    allow: false,
+                    policies: Vec::new(),
+                    errors: vec!["the measure is derived: its cells are computed".into()],
+                },
+            }]);
+        }
         let mut out = Vec::new();
-        for (a, r) in self.steps(action, resource)? {
+        for (a, r) in steps {
             let decision = self.ask(policies, a, &r)?;
             let deny = !decision.allow;
             out.push(Check {
@@ -631,19 +644,8 @@ impl Session {
                 decision,
             });
             if deny {
-                return Ok(out);
+                break;
             }
-        }
-        if action == Action::EditCell && !self.is_input(resource) {
-            out.push(Check {
-                action,
-                resource: resource.clone(),
-                decision: Decision {
-                    allow: false,
-                    policies: Vec::new(),
-                    errors: vec!["the measure is derived: its cells are computed".into()],
-                },
-            });
         }
         Ok(out)
     }
