@@ -131,6 +131,10 @@ allow.
   validate refuse every request.
 - **Refusals are audited** like any write: who, the route and the status
   (see [Audit log](#audit-log)).
+- **The scheduler's errors are generic.** Under policies,
+  `/v1/scheduler/status` reports a failed refresh as "a refresh failed;
+  the server's log says why", since the error may name a hidden measure;
+  the server's log has the full text.
 
 ## Writes
 

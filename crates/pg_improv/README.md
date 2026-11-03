@@ -973,7 +973,11 @@ The owner's side reads both tables; `pg_dump` keeps them.
 
 **Not covered.** The source tables: a role that may `SELECT` from `sales`
 reads it whatever the model's policies say, so grant source tables to
-match. Models in a file are enforced only by `improv-server`. NOTIFY
+match. A role with `BYPASSRLS` skips the result tables' filter, as it
+skips every row-level security policy (the functions still apply Cedar);
+do not give it to a restricted role. A restricted role cannot open the
+model in the GUI or TUI (`postgres://…?model=`), which need the owner's
+side; it uses SQL until the filtered clients of the design's stage 5. Models in a file are enforced only by `improv-server`. NOTIFY
 payloads, `improv.model_version` and `improv.models` show every role that
 a model exists and when it changed (see the design note's
 [Versions and change timing](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md#versions-and-change-timing)).
