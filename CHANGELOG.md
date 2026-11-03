@@ -70,6 +70,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   A4), orientation and scale; Format ▸ Report Layout… the header and
   footer with Improv's markers (`<Date>`, `<Page #>`, …), the first page
   number, the page order and the content (data, formulas).
+- **GUI: Edit ▸ Cut and File ▸ Close (fidelity gap 8).** Cut (Ctrl+X)
+  copies the selection and clears its input cells as one undo step. Close
+  (Ctrl+Shift+W, Improv's) closes the model to an empty desk, warning
+  first about unsaved edits as Quit does. View ▸ Close Window takes
+  NeXTSTEP's Ctrl+W.
 
 - **Access policies, in Cedar.** A model can carry policies, written in
   [Cedar](https://www.cedarpolicy.com), that say per user, role and group

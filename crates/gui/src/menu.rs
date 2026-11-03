@@ -32,8 +32,14 @@ pub enum Command {
     /// Reload the model from the store, dropping in-memory state (the way
     /// out of a save conflict: another writer changed the model).
     RevertToSaved,
+    /// File ▸ Close (Command-W): close the model, after the check Quit
+    /// makes for unsaved changes; an empty desk in memory remains.
+    CloseModel,
     Undo,
     Redo,
+    /// Edit ▸ Cut (Command-x): Copy, then clear the selected input cells,
+    /// one undo step (egui delivers the chord as a cut event).
+    Cut,
     /// Edit ▸ Copy: the focused worksheet's selection to the clipboard as
     /// tab-separated text (Command-c, which egui delivers as a copy event).
     Copy,
@@ -133,6 +139,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Save As…", Some('S'), Some(C::SaveAs)),
             ("Revert to Saved", None, Some(C::RevertToSaved)),
             ("Model Browser…", None, Some(C::ModelBrowser)),
+            ("Close", Some('W'), Some(C::CloseModel)),
             ("Import/Export CSV…", None, Some(C::ToggleCsv)),
         ]),
     ),
@@ -142,6 +149,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         Top::Sub(&[
             ("Undo", Some('z'), Some(C::Undo)),
             ("Redo", Some('Z'), Some(C::Redo)),
+            ("Cut", Some('x'), Some(C::Cut)),
             ("Copy", Some('c'), Some(C::Copy)),
             ("Paste", Some('v'), Some(C::Paste)),
             ("Inspector…", None, Some(C::Inspector)),
@@ -182,7 +190,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         None,
         Top::Views(&[
             ("New View", Some('V'), Some(C::AddMatrix)),
-            ("Close Window", None, Some(C::RemoveMatrix)),
+            ("Close Window", Some('w'), Some(C::RemoveMatrix)),
             ("Swap Rows/Columns", Some('/'), Some(C::PivotRotate)),
         ]),
     ),
@@ -243,7 +251,7 @@ pub fn key_command(key: Key, shift: bool) -> Option<Command> {
     // egui turns these chords into its own copy and paste events (with the
     // clipboard's text), which the worksheet takes; a key event for them
     // must not run the commands a second time.
-    if !shift && matches!(key, Key::C | Key::V) {
+    if !shift && matches!(key, Key::C | Key::V | Key::X) {
         return None;
     }
     keyed_items()
@@ -915,12 +923,16 @@ mod tests {
         let mut n = 0;
         for (k, c) in keyed_items() {
             let key = Key::from_name(&k.to_string()).expect("a key letter");
-            // Copy and Paste arrive as egui's clipboard events instead.
-            let want = if matches!(k, 'c' | 'v') { None } else { c };
+            // Cut, Copy and Paste arrive as egui's clipboard events instead.
+            let want = if matches!(k, 'c' | 'v' | 'x') {
+                None
+            } else {
+                c
+            };
             assert_eq!(key_command(key, k.is_uppercase()), want, "{k:?}");
             n += 1;
         }
-        assert_eq!(n, 16, "o n s S z Z c v a F r V / p h q");
+        assert_eq!(n, 19, "o n s S W z Z x c v a F r V w / p h q");
     }
 
     #[test]
@@ -944,6 +956,9 @@ mod tests {
             "Paste comes as egui's event"
         );
         assert_eq!(key_command(Key::C, false), None, "so does Copy");
+        assert_eq!(key_command(Key::X, false), None, "and Cut");
+        assert_eq!(key_command(Key::W, true), Some(C::CloseModel));
+        assert_eq!(key_command(Key::W, false), Some(C::RemoveMatrix));
         assert_eq!(key_command(Key::P, false), Some(C::Print));
         assert_eq!(key_command(Key::A, false), Some(C::SelectAll));
         assert_eq!(key_command(Key::F, true), Some(C::FormatPanel));

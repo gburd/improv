@@ -43,9 +43,10 @@ The window has five regions:
   the model, **Save As…** writes it to a new file or URL and carries on
   there (Save does that too for an in-memory model), **Revert to Saved**
   reloads it from the store (the way out of a save conflict), **Model
-  Browser…** shows or hides the model browser, and **Import/Export CSV…**
-  opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
-  lacked), **Copy**, **Paste** (see [Copy and paste](#copy-and-paste)) and
+  Browser…** shows or hides the model browser, **Close** closes the model
+  to an empty desk (unsaved edits warn first, as Quit does; a second Close
+  drops them), and **Import/Export CSV…** opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
+  lacked), **Cut**, **Copy**, **Paste** (see [Copy and paste](#copy-and-paste)) and
   **Select All**, the whole worksheet, **Inspector…** (see [The
   Inspector and the Format panel](#the-inspector-and-the-format-panel)),
   **Add Category**, **Add Item** and **Add Input Measure** (see
@@ -58,7 +59,7 @@ The window has five regions:
   worksheet.
   **Worksheet** has **Recalculate** (the formula pane's Calc) and **Save
   View**. **View** has **New View**, another worksheet window on the
-  model, **Close Window**, and **Swap Rows/Columns**, then the saved
+  model, **Close Window** (Ctrl+W), and **Swap Rows/Columns**, then the saved
   views, with a check on the current one; picking one switches the
   workspace to it. **Graph ▸ New Graph** opens the [graph
   window](#graphs). **Help ▸ Functions…** (also F1) opens the [function
@@ -375,8 +376,10 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+N | New | File |
 | Ctrl+S | Save | File |
 | Ctrl+Shift+S | Save As… | File |
+| Ctrl+Shift+W | Close | File |
 | Ctrl+Z | Undo | Edit |
 | Ctrl+Shift+Z, Ctrl+Y | Redo | Edit |
+| Ctrl+X | Cut | Edit |
 | Ctrl+C | Copy | Edit |
 | Ctrl+V | Paste | Edit |
 | Ctrl+A | Select All | Edit |
@@ -384,12 +387,14 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+P | Print… | main menu |
 | Ctrl+R | Recalculate | Worksheet |
 | Ctrl+Shift+V | New View | View |
+| Ctrl+W | Close Window | View |
 | Ctrl+/ | Swap Rows/Columns | View |
 | Ctrl+H | Hide | main menu |
 | Ctrl+Q | Quit | main menu |
 
-Improv's other equivalents (Ctrl+X cut; Ctrl+W close; Ctrl+T Font
-panel) belong to commands not built yet, so they do nothing.
+Improv's Ctrl+T (Font panel) belongs to a command not built yet, so it
+does nothing. Ctrl+W is NeXTSTEP's reserved Close for the key window; here
+it closes the focused worksheet window, as View ▸ Close Window does.
 
 ## Copy and paste
 
@@ -402,7 +407,9 @@ many values were clipped there, as Improv warned); an empty field clears
 its cell. Each value must be one the cell takes (`1,500` and `$1,500` are
 fine in a number cell), or nothing is pasted and the status line says
 which value it refused. A paste is one undo step. Derived cells are
-computed, so a paste there is refused.
+computed, so a paste there is refused. **Edit ▸ Cut** (Ctrl+X) copies the
+selection as Copy does and clears its input cells, as one undo step; on a
+derived measure use Copy.
 
 Every control has an accessible name (through AccessKit, which egui feeds
 to Orca, VoiceOver and Narrator): menu items by their label, a cell by

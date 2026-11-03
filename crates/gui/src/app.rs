@@ -5006,7 +5006,8 @@ impl ImprovApp {
 
     /// Run a menu command or key equivalent.
     fn run_command(&mut self, ctx: &egui::Context, c: Command) {
-        if c != Command::Quit {
+        // A second Quit or Close drops what the first warned about.
+        if !matches!(c, Command::Quit | Command::CloseModel) {
             self.quit_armed = false;
         }
         match c {
@@ -5089,6 +5090,8 @@ impl ImprovApp {
             // The worksheet takes egui's clipboard events (handle_grid_keys);
             // the menu rows ask the platform for the same ones.
             Command::Copy => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy),
+            Command::Cut => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCut),
+            Command::CloseModel => self.status = self.close_model(),
             Command::Paste => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
             Command::SelectAll => {
                 let (rows, cols) = self.focused().grid_dims(&self.model);
@@ -7794,17 +7797,8 @@ impl ImprovApp {
     /// spreadsheet or back into Improv. `None` with no measure.
     pub fn copy_selection(&self) -> Option<String> {
         let measure = self.selected()?;
-        let m = self.focused();
-        let (rows, cols) = m.selection();
-        let size = (rows.end() - rows.start() + 1, cols.end() - cols.start() + 1);
-        // ponytail: capped like the Sum (10,000 rows) so a select-all copy of
-        // a huge grid stays bounded; stream it if bigger copies matter.
-        let block = m.block_keys(
-            &self.model,
-            (*rows.start(), *cols.start()),
-            (size.0.min(10_000), size.1),
-        );
-        let text: String = block
+        let text: String = self
+            .selection_block()
             .iter()
             .map(|row| {
                 let cells: Vec<String> = row
@@ -7815,6 +7809,76 @@ impl ImprovApp {
             })
             .collect();
         Some(text)
+    }
+
+    /// The focused worksheet's selected cells, row by row: what Copy and Cut
+    /// take.
+    fn selection_block(&self) -> Vec<Vec<CoordKey>> {
+        let m = self.focused();
+        let (rows, cols) = m.selection();
+        let size = (rows.end() - rows.start() + 1, cols.end() - cols.start() + 1);
+        // ponytail: capped like the Sum (10,000 rows) so a select-all copy of
+        // a huge grid stays bounded; stream it if bigger copies matter.
+        m.block_keys(
+            &self.model,
+            (*rows.start(), *cols.start()),
+            (size.0.min(10_000), size.1),
+        )
+    }
+
+    /// Edit ▸ Cut (Improv's Command-x): the selection as Copy writes it, and
+    /// its input cells cleared, as one undo step. Returns the text and the
+    /// status line; a derived measure's cells are refused.
+    pub fn cut_selection(&mut self) -> Result<(String, String), String> {
+        let measure = self.selected().ok_or("select a worksheet cell first")?;
+        if self
+            .model
+            .measures
+            .get(&measure)
+            .is_some_and(Measure::is_derived)
+        {
+            return Err("derived cells are computed, not cut; Copy them instead".into());
+        }
+        let text = self.copy_selection().unwrap_or_default();
+        let cells: Vec<(CoordKey, Option<Value>)> = self
+            .selection_block()
+            .into_iter()
+            .flatten()
+            .filter(|k| self.input(measure, &decode(k)).is_some())
+            .map(|k| (k, None))
+            .collect();
+        if cells.is_empty() {
+            return Ok((text, "copied; the cells were already empty".into()));
+        }
+        let n = cells.len();
+        let (inverse, saved) = self
+            .apply_step(Step::Cells(measure, cells))
+            .map_err(|(e, _)| e)?;
+        self.record_step(inverse);
+        saved?;
+        Ok((
+            text,
+            format!("cut {n} cell{}", if n == 1 { "" } else { "s" }),
+        ))
+    }
+
+    /// File ▸ Close (Improv's Command-Shift-w): close the model, leaving an
+    /// empty desk in memory. Changes no save wrote warn first, as Quit
+    /// does, and a second Close drops them. Returns the status line.
+    pub fn close_model(&mut self) -> String {
+        if !self.quit_allowed() {
+            return self.status.replace("Quit again", "Close again");
+        }
+        let name = self.file_name().to_owned();
+        match ImprovApp::open("") {
+            Ok(mut next) => {
+                next.locale = self.locale.clone();
+                next.menu = self.menu;
+                *self = next;
+                format!("closed {name}")
+            }
+            Err(e) => e,
+        }
     }
 
     /// Edit ▸ Paste (Improv's Command-v): `text` (tab-separated cells,
@@ -8521,17 +8585,27 @@ impl ImprovApp {
         use egui::Key;
         let k = |key: Key| ui.input(|i| i.key_pressed(key));
         let modifiers = ui.input(|i| i.modifiers);
-        // Edit ▸ Copy and Paste (Command-c, Command-v): egui turns the
+        // Edit ▸ Cut, Copy and Paste (Command-x, -c, -v): egui turns the
         // chords into these events; a text field that has the keyboard
         // takes them first (this runs only when none does).
-        let (copy, paste) = ui.input(|i| {
+        let (copy, cut, paste) = ui.input(|i| {
             let copy = i.events.iter().any(|e| matches!(e, egui::Event::Copy));
+            let cut = i.events.iter().any(|e| matches!(e, egui::Event::Cut));
             let paste = i.events.iter().find_map(|e| match e {
                 egui::Event::Paste(t) => Some(t.clone()),
                 _ => None,
             });
-            (copy, paste)
+            (copy, cut, paste)
         });
+        if cut {
+            match self.cut_selection() {
+                Ok((text, said)) => {
+                    ui.ctx().copy_text(text);
+                    self.status = said;
+                }
+                Err(e) => self.status = e,
+            }
+        }
         if copy {
             if let Some(text) = self.copy_selection() {
                 let n = text.lines().count();
@@ -17301,6 +17375,79 @@ mod tests {
             .viewport_output
             .values()
             .any(|v| v.commands.contains(&egui::ViewportCommand::RequestCopy)));
+    }
+
+    /// Gap 8: Edit ▸ Cut (Ctrl+X, egui's cut event) copies the selection
+    /// and clears its input cells as one undo step; derived cells are
+    /// refused, and the menu row asks the platform for the event.
+    #[test]
+    fn cut_copies_and_clears_the_selection_as_one_undo_step() {
+        let (mut app, mut desk) = grid_desk(); // Quantity
+        app.run_command(&desk.ctx, Command::SelectAll);
+        let out = desk.frame(&mut app, vec![egui::Event::Cut]);
+        let copied = out.platform_output.commands.iter().find_map(|c| match c {
+            egui::OutputCommand::CopyText(t) => Some(t.clone()),
+            _ => None,
+        });
+        assert_eq!(copied.as_deref(), Some("100\t50\n120\t80\n"));
+        assert_eq!(app.status, "cut 4 cells");
+        assert_eq!(app.selection_sum(), None, "the cells are empty");
+        assert_eq!(
+            app.values_for(MeasureId(102)).values().sum::<f64>(),
+            0.0,
+            "Revenue follows"
+        );
+        app.undo().unwrap();
+        assert_eq!(
+            app.selection_sum(),
+            Some(350.0),
+            "one undo brings all four back"
+        );
+        // Cutting empty cells copies and says so.
+        app.run_command(&desk.ctx, Command::SelectAll);
+        let _ = desk.frame(&mut app, vec![egui::Event::Cut]);
+        let (_, said) = app.cut_selection().unwrap();
+        assert_eq!(said, "copied; the cells were already empty");
+        // A derived measure's cells are computed.
+        select(&mut app, MeasureId(102));
+        assert!(app.cut_selection().unwrap_err().contains("derived"));
+        app.run_command(&desk.ctx, Command::Cut);
+        let out = desk.frame(&mut app, Vec::new());
+        assert!(out
+            .viewport_output
+            .values()
+            .any(|v| v.commands.contains(&egui::ViewportCommand::RequestCut)));
+    }
+
+    /// Gap 8: File ▸ Close (Ctrl+Shift+W) closes the model to an empty
+    /// desk; unsaved in-memory edits warn first, as Quit does, and a second
+    /// Close drops them.
+    #[test]
+    fn close_closes_the_model_after_the_quit_check() {
+        let mut app = build_app(grid_2x2_model());
+        let ctx = egui::Context::default();
+        app.record_history((*app.model).clone());
+        app.run_command(&ctx, Command::CloseModel);
+        assert_eq!(
+            app.status,
+            "unsaved in-memory model: Close again to discard"
+        );
+        assert!(!app.model.measures.is_empty(), "still open");
+        app.run_command(&ctx, Command::CloseModel);
+        assert_eq!(app.status, "closed Untitled");
+        assert!(app.model.measures.is_empty() && app.db.is_empty());
+        assert!(!app.can_undo());
+        // Nothing to lose: one Close does it; another command disarms.
+        let mut app = build_app(grid_2x2_model());
+        app.record_history((*app.model).clone());
+        app.run_command(&ctx, Command::CloseModel);
+        app.run_command(&ctx, Command::Keys);
+        app.run_command(&ctx, Command::CloseModel);
+        assert!(!app.model.measures.is_empty(), "Keys disarmed it");
+        assert_eq!(
+            menu::key_command(egui::Key::W, true),
+            Some(Command::CloseModel)
+        );
     }
 
     /// Graph ▸ New Graph opens a NeXT graph window named for the worksheet,
