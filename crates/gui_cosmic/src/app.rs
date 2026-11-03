@@ -91,6 +91,14 @@ pub enum Message {
     ToggleChart,
     /// What the clipboard held for a paste (`None`: nothing readable).
     Pasted(Option<crate::clip::Pasted>),
+    /// File ▸ Open… (the file chooser portal).
+    Open,
+    /// File ▸ Save As… (the file chooser portal).
+    SaveAs,
+    /// The file chooser answered (`None`: cancelled), for Open or Save As.
+    Chosen(bool, Option<String>),
+    /// A file was dropped on the window: open it.
+    Dropped(std::path::PathBuf),
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -313,6 +321,11 @@ impl App {
                 self.formula = None;
                 self.status = unsaved.unwrap_or_else(|| "recalculated".into());
             }
+            Update::SavedAs(target) => {
+                self.pending = self.pending.saturating_sub(1);
+                self.status = format!("saved as {target}");
+                self.target = target;
+            }
             Update::Failed(e) => {
                 self.pending = self.pending.saturating_sub(1);
                 // A refused formula is located in its text, and stays open.
@@ -349,6 +362,20 @@ impl App {
         };
         self.origin = nav::follow(Cell::default(), self.cursor, e);
         self.anchor = None;
+    }
+
+    /// Open the store at `target` in this window: a new model service over
+    /// it, the old one ended (its saves are done: every edit saves as it
+    /// lands).
+    pub fn open_store(&mut self, target: String) -> Task<Message> {
+        let core = std::mem::take(&mut self.core);
+        *self = App::with_service(core, target.clone(), Box::new(LocalService::new(target)));
+        let title = self.title();
+        self.set_header_title(title.clone());
+        match self.core.main_window_id() {
+            Some(id) => self.set_window_title(title, id),
+            None => Task::none(),
+        }
     }
 
     /// Save the layout as a view named as typed: a new view, or the one by
@@ -734,6 +761,10 @@ impl cosmic::Application for App {
                 cosmic::iced::Event::Mouse(cosmic::iced::mouse::Event::ButtonReleased(
                     cosmic::iced::mouse::Button::Left,
                 )) => Some(Message::Release),
+                // A model file dropped on the window opens in it.
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::FileDropped(paths)) => {
+                    paths.into_iter().next().map(Message::Dropped)
+                }
                 _ => None,
             }),
             // Keys no widget took (a focused text field keeps its own).
@@ -834,6 +865,19 @@ impl cosmic::Application for App {
             Message::ViewName(n) => self.view_name = n,
             Message::SaveView => self.save_view(),
             Message::ToggleChart => self.chart = !self.chart,
+            Message::Open => return choose(false),
+            Message::SaveAs => return choose(true),
+            Message::Chosen(_, None) => {}
+            Message::Chosen(false, Some(path)) => return self.open_store(path),
+            Message::Chosen(true, Some(path)) => {
+                self.pending += 1;
+                self.status = "saving…".into();
+                if self.service.send(Request::SaveAs(path)).is_err() {
+                    self.pending -= 1;
+                    self.status = "the model thread stopped: not saved".into();
+                }
+            }
+            Message::Dropped(p) => return self.open_store(p.to_string_lossy().into_owned()),
             Message::Pasted(p) => match p {
                 Some(p) => self.paste(&p.0),
                 None => self.status = "nothing to paste".into(),
@@ -902,7 +946,9 @@ impl cosmic::Application for App {
             .into_iter()
             .map(|(_, n)| n)
             .collect();
-        let bar = widget::row::with_capacity(6)
+        let bar = widget::row::with_capacity(8)
+            .push(widget::button::standard("Open…").on_press(Message::Open))
+            .push(widget::button::standard("Save As…").on_press(Message::SaveAs))
             .push(widget::dropdown(names, shown, Message::ShowMeasure))
             .push(widget::dropdown(views, None, Message::OpenView).placeholder("Views"))
             .push(
@@ -1134,6 +1180,46 @@ impl App {
     }
 }
 
+/// The file chooser (the XDG portal on the free Unixes, the native dialog
+/// on Windows) for an Improv store: to open one, or (`save`) to name a new
+/// one. Answers [`Message::Chosen`].
+fn choose(save: bool) -> Task<Message> {
+    use cosmic::dialog::file_chooser::{self, FileFilter};
+    // The portal's filter (ashpd) takes globs; rfd's (Windows) extensions.
+    #[cfg(not(windows))]
+    let filter = FileFilter::new("Improv models")
+        .glob("*.db")
+        .glob("*.improv");
+    #[cfg(windows)]
+    let filter = FileFilter::new("Improv models")
+        .extension("db")
+        .extension("improv");
+    cosmic::task::future(async move {
+        let url = if save {
+            file_chooser::save::Dialog::new()
+                .title("Save the model as".to_string())
+                .filter(filter)
+                .save_file()
+                .await
+                .ok()
+                .and_then(|r| r.url().cloned())
+        } else {
+            file_chooser::open::Dialog::new()
+                .title("Open a model".to_string())
+                .filter(filter)
+                .open_file()
+                .await
+                .ok()
+                .map(|r| r.url().clone())
+        };
+        let path = url
+            .filter(|u| u.scheme() == "file")
+            .and_then(|u| u.to_file_path().ok())
+            .map(|p| p.to_string_lossy().into_owned());
+        Message::Chosen(save, path)
+    })
+}
+
 /// A chart that owns its data (the canvas is built each view).
 struct ChartView(crate::chart::Data);
 
@@ -1238,6 +1324,9 @@ mod tests {
             Err("idle".into())
         }
         fn restructure(&mut self, _: Model) -> Result<(Snapshot, Option<String>), String> {
+            Err("idle".into())
+        }
+        fn save_as(&mut self, _: String) -> Result<(), String> {
             Err("idle".into())
         }
     }
@@ -1635,6 +1724,31 @@ mod tests {
         app.show(MeasureId(102));
         app.paste(&[vec!["1".into()]]);
         assert!(app.status.contains("computed"));
+    }
+
+    #[test]
+    fn save_as_then_open_moves_the_window_to_the_new_store() {
+        let dir = std::env::temp_dir().join(format!("improv-cosmic-o{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let to = dir.join("saved.db").to_string_lossy().into_owned();
+        let (mut app, mut rx) = live(revenue_model());
+        send(&mut app, Message::Chosen(true, Some(to.clone())));
+        let u = next(&mut rx);
+        app.apply(u);
+        assert_eq!(app.status, format!("saved as {to}"));
+        assert_eq!(app.title(), "saved.db — Improv");
+        // Cancelled: nothing.
+        send(&mut app, Message::Chosen(false, None));
+        // Open it (a dropped file opens the same way).
+        let _ = app.open_store(to.clone());
+        assert_eq!(app.status, "Loading…");
+        let u = futures::executor::block_on(async {
+            let mut rx = app.updates.0.lock().unwrap().take().unwrap();
+            futures::StreamExt::next(&mut rx).await
+        });
+        app.apply(u.unwrap());
+        assert_eq!(app.measures.len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

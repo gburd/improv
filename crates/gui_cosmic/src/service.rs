@@ -44,6 +44,9 @@ pub trait ModelService: Send {
     /// refused and nothing changes (`Err`). Returns the new snapshot, and
     /// the save's outcome.
     fn restructure(&mut self, structure: Model) -> Result<(Snapshot, Option<String>), String>;
+    /// Write the whole model to the store `target` (a new file), and keep
+    /// working there: later edits save to it.
+    fn save_as(&mut self, target: String) -> Result<(), String>;
 }
 
 /// What the window asks its service to do.
@@ -51,6 +54,7 @@ pub trait ModelService: Send {
 pub enum Request {
     Edit(Vec<CellEdit>),
     Restructure(Box<Model>),
+    SaveAs(String),
 }
 
 /// What the service tells the window.
@@ -64,6 +68,8 @@ pub enum Update {
     /// The structure was replaced (the cells are as they were): the new
     /// structure, its snapshot, and why it is not saved, if it is not.
     Restructured(Arc<Model>, Snapshot, Option<String>),
+    /// The model is now in the store named (Save As).
+    SavedAs(String),
     /// A request failed; nothing changed.
     Failed(String),
 }
@@ -95,6 +101,10 @@ pub fn spawn(
                         Ok((cells, changes, unsaved)) => {
                             Update::Edited(Arc::new(cells), Arc::new(changes), unsaved)
                         }
+                        Err(e) => Update::Failed(e),
+                    },
+                    Request::SaveAs(target) => match service.save_as(target.clone()) {
+                        Ok(()) => Update::SavedAs(target),
                         Err(e) => Update::Failed(e),
                     },
                     Request::Restructure(m) => {
@@ -270,6 +280,17 @@ impl ModelService for LocalService {
                 Err(e)
             }
         }
+    }
+
+    fn save_as(&mut self, target: String) -> Result<(), String> {
+        let mut store = Store::open(&target).map_err(|e| format!("{target}: {e}"))?;
+        store
+            .save_model(&self.model)
+            .map_err(|e| format!("not saved to {target}: {e}"))?;
+        self.target = target;
+        self.token = store.take_save_token();
+        self.unsaved = ChangeSet::default();
+        Ok(())
     }
 }
 
@@ -447,6 +468,31 @@ pub(crate) mod tests {
         ] {
             let _ = std::fs::remove_file(f);
         }
+    }
+
+    #[test]
+    fn save_as_writes_a_new_store_and_later_edits_go_there() {
+        let dir = std::env::temp_dir().join(format!("improv-cosmic-sa{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let to = dir.join("copy.db").to_string_lossy().into_owned();
+        let mut s = memory(revenue_model());
+        let _ = s.open().unwrap();
+        s.save_as(to.clone()).unwrap();
+        let _ = s
+            .edit(vec![set(
+                100,
+                &[(1, 10), (2, 20)],
+                Some(Value::Number(5.0)),
+            )])
+            .unwrap();
+        let back = Store::open(&to).unwrap().load_model().unwrap();
+        assert_eq!(back.measures.len(), 3);
+        let at = decode_coord(&key(&[(1, 10), (2, 20)]));
+        assert_eq!(back.input(MeasureId(100), &at), Some(&Value::Number(5.0)));
+        assert!(s
+            .save_as(dir.join("no/such/dir.db").to_string_lossy().into_owned())
+            .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
