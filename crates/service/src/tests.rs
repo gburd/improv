@@ -1327,12 +1327,19 @@ fn a_store_error_is_a_500_and_the_handle_reopens() {
     // The next request reopens the store and works.
     done(&mut a, edit1(101, &A25, 5.0));
     assert_eq!(cell(&a, 101, &A25), Some(WireValue::Number(5.0)));
+    // Windows refuses to overwrite a file another handle has mapped
+    // (SQLite's), so the rest is Unix-only.
+    #[cfg(unix)]
+    overwritten_under_the_handle(&mut a, &path);
+}
 
+#[cfg(unix)]
+fn overwritten_under_the_handle(a: &mut Authority, path: &str) {
     // The file overwritten under the open handle: the high-water read
     // fails, every request is a 500 (and the handle is dropped), and once
     // the file is back the next request reopens it and serves again.
-    let good = std::fs::read(&path).unwrap();
-    std::fs::write(&path, vec![0x5a; good.len()]).unwrap();
+    let good = std::fs::read(path).unwrap();
+    std::fs::write(path, vec![0x5a; good.len()]).unwrap();
     for _ in 0..2 {
         let r = a.serve(&ann(), "s", Request::Structure).unwrap_err();
         assert_eq!(r.status, 500, "{}", r.body.error);
@@ -1344,13 +1351,13 @@ fn a_store_error_is_a_500_and_the_handle_reopens() {
     }
     // (`good` is the database file without its write-ahead log: the last
     // edit need not come back with it.)
-    std::fs::write(&path, &good).unwrap();
+    std::fs::write(path, &good).unwrap();
     assert!(matches!(
         a.serve(&ann(), "s", Request::Structure),
         Ok(Response::Structure(_))
     ));
-    done(&mut a, edit1(101, &A25, 6.0));
-    let back = improv_store::Store::open(&path)
+    done(a, edit1(101, &A25, 6.0));
+    let back = improv_store::Store::open(path)
         .unwrap()
         .load_model()
         .unwrap();
