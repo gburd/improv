@@ -327,8 +327,9 @@ so they do nothing.
 as text, a tab between cells and a line per row, the way the cells show,
 so it pastes into another spreadsheet or a text editor. **Edit ▸ Paste**
 (Ctrl+V) writes tab-separated text into an input measure from the cursor
-right and down, stopping at the grid's edge; an empty field clears its
-cell. Each value must be one the cell takes (`1,500` and `$1,500` are
+right and down, stopping at the grid's edge (the status line says how
+many values were clipped there, as Improv warned); an empty field clears
+its cell. Each value must be one the cell takes (`1,500` and `$1,500` are
 fine in a number cell), or nothing is pasted and the status line says
 which value it refused. A paste is one undo step. Derived cells are
 computed, so a paste there is refused.

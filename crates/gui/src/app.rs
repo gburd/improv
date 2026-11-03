@@ -7029,12 +7029,23 @@ impl ImprovApp {
             return Err("nothing to paste".into());
         }
         let n = cells.len();
+        let given: usize = rows.iter().map(Vec::len).sum();
         let (inverse, saved) = self
             .apply_step(Step::Cells(measure, cells))
             .map_err(|(e, _)| e)?;
         self.record_step(inverse);
         saved?;
-        Ok(format!("pasted {n} cell{}", if n == 1 { "" } else { "s" }))
+        let pasted = format!("pasted {n} cell{}", if n == 1 { "" } else { "s" });
+        // Improv: "If the pasteboard selection does not fit at the selected
+        // position, you are warned that the selection will be clipped".
+        Ok(if given > n {
+            format!(
+                "{pasted}; {} past the worksheet's edge were clipped",
+                given - n
+            )
+        } else {
+            pasted
+        })
     }
 
     /// The numeric sum over the focused matrix's selection, or `None` when
@@ -16364,7 +16375,7 @@ mod tests {
         app.focused_mut().cursor_col = 1;
         assert_eq!(
             app.paste_cells("9\t9\t9\n9\t9").as_deref(),
-            Ok("pasted 1 cell")
+            Ok("pasted 1 cell; 4 past the worksheet's edge were clipped")
         );
         app.undo().unwrap();
         app.undo().unwrap();
