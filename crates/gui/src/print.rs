@@ -689,7 +689,7 @@ pub fn on_path(name: &str) -> bool {
 
 /// Run `program args`, writing `data` to its standard input; its error
 /// output is the error when it fails. Not on Windows, which prints through
-/// [`print_windows`] instead.
+/// `print_windows` instead.
 #[cfg(not(windows))]
 pub fn spool(program: &str, args: &[String], data: &[u8]) -> Result<(), String> {
     use std::io::Write as _;
