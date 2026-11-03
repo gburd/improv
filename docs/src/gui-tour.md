@@ -114,7 +114,9 @@ The window has five regions:
   previous measure. **Shift+arrows**, Shift+click or a drag select a range,
   and the status bar shows its **Sum**.
 - **Formula list** (bottom of each worksheet window) — every formula,
-  numbered, with a **Calc** button above and a checkbox that enables it.
+  numbered, with a **Calc** button above, a checkbox that enables it, and
+  Improv's status indicator: a check when the formula checks, a cross when
+  it has an error.
   Click a row to select its measure; the selected row becomes an editor:
   Enter commits (re-typechecks and recomputes), Esc reverts. Type
   `Name = formula` on the last line and press Enter to add a measure, or

@@ -3587,6 +3587,41 @@ fn grid_keys_enabled(editing: bool, other_focus: bool) -> bool {
     !editing && !other_focus
 }
 
+/// Improv's formula status indicator, between a formula's checkbox and its
+/// number: a check when the formula checks with no errors, a cross when it
+/// has one (the error is spelled out under the row). Improv 1.0 also had
+/// Overlap and Mismatch indicators; this engine reports neither (an
+/// overlap is refused when the formula is entered), so they are not drawn.
+fn formula_status(ui: &mut egui::Ui, name: &str, checked: bool) {
+    use crate::theme::BLACK;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+    let p = ui.painter();
+    let s = egui::Stroke::new(1.5_f32, BLACK);
+    let r = rect.shrink(2.0);
+    if checked {
+        p.line_segment(
+            [r.left_center(), egui::pos2(r.center().x - 1.0, r.bottom())],
+            s,
+        );
+        p.line_segment(
+            [egui::pos2(r.center().x - 1.0, r.bottom()), r.right_top()],
+            s,
+        );
+    } else {
+        p.line_segment([r.left_top(), r.right_bottom()], s);
+        p.line_segment([r.right_top(), r.left_bottom()], s);
+    }
+    let state = if checked { "checks" } else { "has an error" };
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::Role::Image, true, format!("Formula {name} {state}"))
+    });
+    resp.on_hover_text(if checked {
+        "Checked: the formula checks, with no errors."
+    } else {
+        "Error: the formula has an error, described under it."
+    });
+}
+
 /// Give `ui`'s selected rows a white face. The palette makes egui's selection
 /// fill and hover fill the same gray as the panel, so a selected
 /// `selectable_label` would look merely hovered. Call inside a `ui.scope` (or a
@@ -6410,6 +6445,7 @@ impl ImprovApp {
                         {
                             toggle = Some((row.measure, on));
                         }
+                        formula_status(ui, name, row.error.is_none());
                         // `1.` `2.` … bold, as the reference numbers them.
                         ui.strong(format!("{}.", i + 1));
                         // A disabled formula is dimmed, not hidden: it is
@@ -12546,6 +12582,22 @@ mod tests {
         for r in rows.iter().filter(|r| r.measure != MeasureId(121)) {
             assert_eq!(r.error, None, "{r:?} must not report an error");
         }
+        // Its status indicator is Improv's error cross; the others check.
+        let mut app = app;
+        let mut desk = Desk::new();
+        let labels: Vec<String> = accesskit_nodes(&mut app, &mut desk)
+            .iter()
+            .filter_map(|(_, n)| n.label().map(str::to_owned))
+            .filter(|l| l.starts_with("Formula "))
+            .collect();
+        assert!(
+            labels.contains(&"Formula Broken has an error".to_owned()),
+            "{labels:?}"
+        );
+        assert!(
+            labels.contains(&"Formula Revenue checks".to_owned()),
+            "{labels:?}"
+        );
     }
 
     /// A formula with no editable spelling says so inline, because the editor
@@ -16612,15 +16664,48 @@ mod tests {
         assert!(app.view_name.is_empty());
     }
 
+    /// Improv's formula status indicator: a check for a formula that
+    /// checks, a cross for one with an error, each named for AccessKit.
+    #[test]
+    fn each_formula_shows_its_status_indicator() {
+        let (mut app, mut desk) = grid_desk();
+        let labels: Vec<String> = accesskit_nodes(&mut app, &mut desk)
+            .iter()
+            .filter_map(|(_, n)| n.label().map(str::to_owned))
+            .filter(|l| l.starts_with("Formula "))
+            .collect();
+        assert_eq!(labels, ["Formula Revenue checks"]);
+        // The indicator alone: a check is two strokes meeting at the
+        // bottom, a cross two diagonals.
+        let strokes = |checked: bool| {
+            let ctx = egui::Context::default();
+            let out = ctx.test_ui(egui::RawInput::default(), |ui| {
+                formula_status(ui, "X", checked);
+            });
+            out.shapes
+                .iter()
+                .filter_map(|c| match c.shape {
+                    egui::Shape::LineSegment { points, .. } => Some(points),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let (check, cross) = (strokes(true), strokes(false));
+        assert_eq!((check.len(), cross.len()), (2, 2));
+        assert_eq!(check[0][1], check[1][0], "a check's strokes meet");
+        assert_ne!(cross[0][1], cross[1][0], "a cross's do not");
+    }
+
     #[test]
     fn the_enabled_checkbox_toggles_a_formula_and_says_so() {
         let (mut app, mut desk) = grid_desk();
         app.matrices[0].measure = Some(MeasureId(101)); // the row is not the editor
         desk.settle(&mut app);
         let shapes = desk.frame(&mut app, Vec::new()).shapes;
-        // The checkbox sits left of the row's `1.` number.
+        // The checkbox sits left of the status indicator, left of the
+        // row's `1.` number.
         let num = painted(&shapes, "1.").expect("row numbered");
-        let at = egui::pos2(num.left() - 12.0, num.center().y);
+        let at = egui::pos2(num.left() - 12.0 - 12.0 - 8.0, num.center().y);
         desk.click(&mut app, at);
         assert_eq!(app.status, "formula Revenue disabled");
         assert!(formula_disabled(&app.model.measures[&MeasureId(102)]));

@@ -248,7 +248,7 @@ ordinary use; **C** a detail. Effort: S (hours), M (a day), L (more).
 | 7 | **Scroller trough click pages by a view**; NeXT jumps the knob to the click. Alternate-click on an arrow should scroll a viewful. | B | S | done: `feat(gui): NeXT scroller clicks` |
 | 8 | **Key equivalents missing** for commands we have: Close (Command-W in Improv; we have no Close), Info Panel has none (correct), Copy/Paste of cells (Command-c/v) unbuilt. | B | M | Copy/Paste done: `feat(gui): Edit > Copy and Paste`; Cut and Close: later |
 | 9 | **Inspector and Format panel**: Improv's Edit ▸ Inspector… (Grid, Layout, Formulas) and Format ▸ Format Panel… (Number, Alignment, Line Style, Color) are a multiform panel with a pop-up selector. Ours: the Info panel and the Format submenu. | B | M | later |
-| 10 | **Formula pane status indicators**: Improv shows Calc, circular-reference and formula-mismatch indicators (`TWI_Calc`, `TWI_Circ`, `TWI_FMerr`) by the Calc button. | C | S | later |
+| 10 | **Formula pane status indicators**: Improv shows Calc, circular-reference and formula-mismatch indicators (`TWI_Calc`, `TWI_Circ`, `TWI_FMerr`) by the Calc button. | C | S | Checked and Error indicators per row done: `feat(gui): formula status indicators`; Overlap and Mismatch have no engine state to show |
 | 11 | **Print and Page Layout**: grayed out. Improv printed views with a Report Layout (headers, footers, page breaks). | B | L | later |
 | 12 | **Help**: Improv had context help (Command-? then click). Ours: Help ▸ Keys…, Functions…, User Guide. | C | M | later |
 | 13 | **Selection rules**: Improv's Select Items Only / Cells Only (Command-[ / ]) and structured selection of items. Our `[` `]` page instead. | C | M | later |
