@@ -191,6 +191,12 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **improv-server on a Postgres-hosted model answers the measure routes
+  again.** The access check that came with Cedar enforcement read the
+  stored policies on the async request thread, where the blocking
+  Postgres client panics ("Cannot start a runtime from within a
+  runtime"); `GET /measures/{id}/values` and the other older routes failed
+  on any `postgres://` model. The check now runs off the async thread.
 - **A browser sees another program's change even when a request finds it
   first.** improv-server's change streams were woken only by its own
   writes and by its 500 ms poller. Every request also refreshes from the

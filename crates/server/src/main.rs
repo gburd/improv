@@ -1120,27 +1120,34 @@ async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, A
 /// The caller's decisions over `model` (the cached copy [`load_model`]
 /// returned), and refuse the request outright when the policies do not
 /// let it open the model. Sessions are keyed by the store's high-water,
-/// so a structure change (any save) makes new ones.
-fn access(
-    state: &AppState,
-    model: &Model,
+/// so a structure change (any save) makes new ones. In `spawn_blocking`:
+/// the policy reads the store, and a blocking `postgres::Client` must not
+/// run on the async runtime.
+async fn access(
+    state: &Arc<AppState>,
+    model: &Arc<Model>,
     caller: &Caller,
 ) -> Result<Arc<dyn improv_service::policy::Access>, ApiError> {
-    use improv_service::policy::Policy;
-    let tx = state
-        .loaded_tx
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .unwrap_or(0);
-    let access = state.policy.session(model, tx as u64, &caller.principal());
-    let gate = improv_service::policy::Gate {
-        access: &*access,
-        model,
-    };
-    if !gate.sees_model() {
-        return Err(ApiError::Forbidden("not allowed".into()));
-    }
-    Ok(access)
+    let (state, model, who) = (state.clone(), model.clone(), caller.principal());
+    tokio::task::spawn_blocking(move || {
+        use improv_service::policy::Policy;
+        let tx = state
+            .loaded_tx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .unwrap_or(0);
+        let access = state.policy.session(&model, tx as u64, &who);
+        let gate = improv_service::policy::Gate {
+            access: &*access,
+            model: &model,
+        };
+        if !gate.sees_model() {
+            return Err(ApiError::Forbidden("not allowed".into()));
+        }
+        Ok(access)
+    })
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?
 }
 
 /// The gate over `model` for `access`.
@@ -1241,7 +1248,7 @@ async fn scheduler_status_handler(
             "tick_secs": s.tick_secs,
         })));
     };
-    let access = access(&state, &model, &caller)?;
+    let access = access(&state, &model, &caller).await?;
     let g = gate(&access, &model);
     let s = status.lock().unwrap_or_else(PoisonError::into_inner);
     // A hidden measure's id, or an error that may name one, is not shown.
@@ -1267,7 +1274,7 @@ async fn get_model(
     Extension(caller): Extension<Caller>,
 ) -> Result<Response, ApiError> {
     let model = load_model(&state).await?;
-    if access(&state, &model, &caller)?.restricted() {
+    if access(&state, &model, &caller).await?.restricted() {
         return Err(ApiError::Forbidden(
             "this model has access policies: read it through /v1/structure and the measure routes"
                 .into(),
@@ -1289,7 +1296,7 @@ async fn list_measures(
     Extension(caller): Extension<Caller>,
 ) -> Result<Json<Vec<MeasureSummary>>, ApiError> {
     let model = load_model(&state).await?;
-    let access = access(&state, &model, &caller)?;
+    let access = access(&state, &model, &caller).await?;
     let g = gate(&access, &model);
     let mut out: Vec<MeasureSummary> = model
         .measures
@@ -1322,7 +1329,7 @@ async fn measure_values(
     Path(id): Path<u32>,
 ) -> Result<Json<Vec<Cell>>, ApiError> {
     let model = load_model(&state).await?;
-    let access = access(&state, &model, &caller)?;
+    let access = access(&state, &model, &caller).await?;
     let g = gate(&access, &model);
     let mid = MeasureId(id);
     // A hidden measure answers exactly as a missing one.
@@ -1409,7 +1416,7 @@ async fn eval_measure(
         false => None,
     };
     let mut model = load_model(&state).await?;
-    let access = access(&state, &model, &caller)?;
+    let access = access(&state, &model, &caller).await?;
     let measure = model
         .measures
         .get(&mid)
@@ -1536,7 +1543,7 @@ async fn nl_parse(
 ) -> Result<Json<JsonValue>, ApiError> {
     let Json(req) = body?;
     let model = load_model(&state).await?;
-    let model = visible_names(&model, &access(&state, &model, &caller)?);
+    let model = visible_names(&model, &access(&state, &model, &caller).await?);
     let ctx = NlContext::new(&model);
     match parse_nl_formula(&ctx, &req.text) {
         Ok(formula) => Ok(Json(improv_core_model::json::sorted(
@@ -1561,7 +1568,7 @@ async fn nl_describe(
     let req: NlDescribeReq = improv_core_model::json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid formula: {e}")))?;
     let model = load_model(&state).await?;
-    let model = visible_names(&model, &access(&state, &model, &caller)?);
+    let model = visible_names(&model, &access(&state, &model, &caller).await?);
     let ctx = NlContext::new(&model);
     Ok(Json(
         json!({ "text": describe_formula(&ctx, &req.formula) }),
@@ -1585,7 +1592,7 @@ async fn set_cell(
 
     let _write = state.write_lock.lock().await;
     let model = load_model(&state).await?;
-    let access = access(&state, &model, &caller)?;
+    let access = access(&state, &model, &caller).await?;
     let g = gate(&access, &model);
     if !g.sees_measure(mid) {
         return Err(ApiError::NotFound(format!("no measure {id}")));
