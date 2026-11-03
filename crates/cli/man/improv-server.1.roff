@@ -53,6 +53,11 @@ or
 .B IMPROV_MAX_BODY_BYTES
 Request body limit (default 1048576).
 .TP
+.B IMPROV_MAX_STREAMS
+Change streams
+.RB ( /v1/changes )
+open at once (default 256; 8 per caller).
+.TP
 .B IMPROV_RATE_LIMIT
 Requests a minute per token, or per client address without one (default
 600; 0 turns it off).

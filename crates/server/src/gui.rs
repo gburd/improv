@@ -34,15 +34,121 @@ use crate::{AppState, Audited, Caller, Scope};
 
 /// The authority, made on first use (opening it loads the model and
 /// builds the engine).
-#[derive(Default)]
 pub struct Gui {
     authority: Mutex<Option<Authority>>,
     /// The policy the authority opens with (`None`: no policy). Set by
     /// tests; Cedar's loader sets it from the model's stored policies.
     pub policy: Mutex<Option<Box<dyn improv_service::policy::Policy>>>,
-    /// Woken after every write through these routes, so change streams
-    /// look at once; they also look every [`POLL`].
-    wake: tokio::sync::Notify,
+    /// Bumped after every change the authority has seen (a write through
+    /// these routes, or the [`poller`]'s refresh finding another writer's):
+    /// change streams wait on it and never read the store themselves.
+    changed: tokio::sync::watch::Sender<u64>,
+    /// Open change streams: in all, and per principal.
+    streams: Mutex<Streams>,
+}
+
+impl Default for Gui {
+    fn default() -> Self {
+        Gui {
+            authority: Mutex::default(),
+            policy: Mutex::default(),
+            changed: tokio::sync::watch::Sender::new(0),
+            streams: Mutex::default(),
+        }
+    }
+}
+
+/// Open change streams, counted for [`MAX_STREAMS`] and
+/// [`MAX_STREAMS_PER_CALLER`]; the poller runs while any is open.
+#[derive(Default)]
+struct Streams {
+    total: usize,
+    per: std::collections::HashMap<String, usize>,
+    polling: bool,
+}
+
+/// Default most change streams open at once (`IMPROV_MAX_STREAMS`).
+pub const MAX_STREAMS: usize = 256;
+/// Most change streams one principal may hold open.
+pub const MAX_STREAMS_PER_CALLER: usize = 8;
+
+/// One open stream's slot: freed when the stream is dropped (the client
+/// went away, or the server ended it).
+struct Slot {
+    state: Arc<AppState>,
+    who: String,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut s = self
+            .state
+            .gui
+            .streams
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        s.total = s.total.saturating_sub(1);
+        if let Some(n) = s.per.get_mut(&self.who) {
+            *n -= 1;
+            if *n == 0 {
+                s.per.remove(&self.who);
+            }
+        }
+    }
+}
+
+/// Take a stream slot for `who`, or say which limit is full.
+fn take_slot(state: &Arc<AppState>, who: &str) -> Result<Slot, &'static str> {
+    let mut s = state
+        .gui
+        .streams
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if s.total >= state.max_streams {
+        return Err("too many change streams are open; try again later");
+    }
+    let mine = s.per.entry(who.to_owned()).or_default();
+    if *mine >= MAX_STREAMS_PER_CALLER {
+        return Err("this caller has too many change streams open");
+    }
+    *mine += 1;
+    s.total += 1;
+    let start = !std::mem::replace(&mut s.polling, true);
+    drop(s);
+    if start {
+        tokio::spawn(poller(state.clone()));
+    }
+    Ok(Slot {
+        state: state.clone(),
+        who: who.to_owned(),
+    })
+}
+
+/// The one task that looks for other writers' changes (one store read
+/// every [`POLL`], however many streams are open) and wakes the streams
+/// when it finds one. Ends when the last stream closes.
+async fn poller(state: Arc<AppState>) {
+    loop {
+        tokio::time::sleep(POLL).await;
+        {
+            let mut s = state
+                .gui
+                .streams
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if s.total == 0 {
+                s.polling = false;
+                return;
+            }
+        }
+        let st = state.clone();
+        let moved = tokio::task::spawn_blocking(move || with_authority(&st, |a| a.refresh())).await;
+        // An error (the store is unreachable) wakes the streams too: they
+        // end, and their clients reconnect with `since`.
+        if !matches!(moved, Ok(Ok(false))) {
+            state.gui.changed.send_modify(|v| *v += 1);
+        }
+    }
 }
 
 /// The paths of these routes (without `/v1`), as `routes()` lists them.
@@ -64,7 +170,7 @@ pub const ROUTES: &[&str] = &[
     "/changes",
 ];
 
-/// How often a change stream looks for other writers' changes.
+/// How often the poller looks for other writers' changes.
 const POLL: Duration = Duration::from_millis(500);
 
 /// The session a request's undo belongs to: the `x-improv-session` header
@@ -106,7 +212,7 @@ async fn serve(
     if writes {
         // The older routes' cache must see this write.
         *state.cache.write().await = None;
-        state.gui.wake.notify_waiters();
+        state.gui.changed.send_modify(|v| *v += 1);
     }
     r
 }
@@ -336,6 +442,11 @@ pub struct Since {
 /// the caller may see: the changed
 /// cells, or `"reload": true` after a structural change or a gap the log
 /// no longer covers. A change the caller may see none of sends nothing.
+///
+/// A stream outlives the request timeout and takes no in-flight slot
+/// (tower's timeout and concurrency limit apply until the response
+/// headers go out); [`MAX_STREAMS`] and [`MAX_STREAMS_PER_CALLER`] bound
+/// them instead, with 429 past either.
 /// Each event's `id` is its version, so a browser's `Last-Event-ID`
 /// resumes too.
 pub async fn changes(
@@ -351,6 +462,12 @@ pub async fn changes(
             .map(str::to_owned)
     });
     let who = Principal::user(caller.name.clone());
+    // Keyed by the principal (never the secret), as the policy sees it.
+    let slot = match take_slot(&state, &who.user) {
+        Ok(s) => s,
+        Err(e) => return refused(refusal(429, e)),
+    };
+    let mut changed = state.gui.changed.subscribe();
     // The first look: the current version, or the gap since `since`.
     let st = state.clone();
     let w = who.clone();
@@ -379,40 +496,42 @@ pub async fn changes(
         Ok(Err(r)) => return refused(r),
         Err(e) => return refused(refusal(500, format!("task join: {e}"))),
     };
+    changed.mark_unchanged();
     let stream = futures_util::stream::unfold(
-        (state, who, seen, first),
-        |(state, who, seen, pending)| async move {
+        (state, who, seen, first, changed, slot),
+        |(state, who, seen, pending, mut changed, slot)| async move {
             if let Some(ev) = pending {
-                return Some((sse(&ev), (state, who, seen, None)));
+                return Some((sse(&ev), (state, who, seen, None, changed, slot)));
             }
             loop {
-                // Armed before the look, so a write during it still wakes us.
-                let armed = state.clone();
-                let wake = armed.gui.wake.notified();
+                // Woken by a write here or the poller's refresh; no store
+                // read of its own. The sender lives in `state`.
+                changed.changed().await.ok()?;
                 let st = state.clone();
                 let w = who.clone();
                 let s = seen.clone();
                 let looked = tokio::task::spawn_blocking(move || {
-                    with_authority(&st, |a| {
-                        a.refresh()?;
-                        Ok((a.changes_since(&w, &s), a.version()))
-                    })
+                    let slot = st
+                        .gui
+                        .authority
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner);
+                    slot.as_ref()
+                        .map(|a| (a.changes_since(&w, &s), a.version()))
                 })
                 .await;
                 match looked {
-                    Ok(Ok((Some(ev), now))) => return Some((sse(&ev), (state, who, now, None))),
-                    Ok(Ok((None, now))) if now != seen => {
-                        // Nothing this caller may see changed: no event.
-                        return Some((None, (state, who, now, None)));
+                    Ok(Some((Some(ev), now))) => {
+                        return Some((sse(&ev), (state, who, now, None, changed, slot)));
                     }
-                    Ok(Ok(_)) => {}
-                    // The store is unreachable: end the stream; the client
-                    // reconnects with `since`.
+                    // Nothing this caller may see changed: no event.
+                    Ok(Some((None, now))) if now == seen => {}
+                    Ok(Some((None, now))) => {
+                        return Some((None, (state, who, now, None, changed, slot)));
+                    }
+                    // The store went away (the poller's refresh failed):
+                    // end the stream; the client reconnects with `since`.
                     _ => return None,
-                }
-                tokio::select! {
-                    () = wake => {}
-                    () = tokio::time::sleep(POLL) => {}
                 }
             }
         },

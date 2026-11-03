@@ -351,3 +351,136 @@ async fn another_programs_write_reaches_the_stream() {
     let e = events(bob, 2).await;
     assert_eq!(e[1]["reload"], true, "{e:?}");
 }
+
+/// An open stream's response, kept open.
+async fn open_stream(app: &axum::Router, token: &str) -> Result<Body, StatusCode> {
+    let resp = app
+        .clone()
+        .oneshot(req("GET", "/v1/changes", token, None))
+        .await
+        .unwrap();
+    match resp.status() {
+        StatusCode::OK => Ok(resp.into_body()),
+        s => Err(s),
+    }
+}
+
+#[tokio::test]
+async fn change_streams_are_capped_in_all_and_per_caller() {
+    let (_, state, _) = served();
+    let mut st = Arc::into_inner(state).unwrap();
+    st.max_streams = 10;
+    let app = app(Arc::new(st));
+    let mut bobs = Vec::new();
+    for _ in 0..crate::gui::MAX_STREAMS_PER_CALLER {
+        bobs.push(open_stream(&app, BOB).await.expect("under the cap"));
+    }
+    assert_eq!(
+        open_stream(&app, BOB).await.err(),
+        Some(StatusCode::TOO_MANY_REQUESTS)
+    );
+    // Another caller still gets in, up to the total.
+    let a1 = open_stream(&app, ANN).await.expect("ann's first");
+    let a2 = open_stream(&app, ANN).await.expect("ann's second");
+    assert_eq!(
+        open_stream(&app, ANN).await.err(),
+        Some(StatusCode::TOO_MANY_REQUESTS)
+    );
+    // A closed stream frees its slot.
+    drop(bobs.pop());
+    let back = open_stream(&app, ANN).await.expect("a slot came free");
+    drop((a1, a2, back, bobs));
+    assert!(
+        open_stream(&app, BOB).await.is_ok(),
+        "all closed: bob again"
+    );
+}
+
+/// One shared poller, not one per stream: N idle streams read the store
+/// about once a POLL between them, and none blocks other requests.
+#[tokio::test]
+async fn idle_streams_share_one_poller_and_take_no_request_slots() {
+    // More streams than MAX_IN_FLIGHT requests could hold at once, from
+    // enough callers to stay under the per-caller cap.
+    let path = temp_path("gui.db");
+    improv_store::Store::open(path.to_str().unwrap())
+        .unwrap()
+        .save_model(&revenue_model())
+        .unwrap();
+    let n = crate::MAX_IN_FLIGHT + 8;
+    let callers = n.div_ceil(crate::gui::MAX_STREAMS_PER_CALLER);
+    let secrets: Vec<String> = (0..callers).map(|i| format!("caller-secret-{i}")).collect();
+    let auth = Auth::Tokens(
+        secrets
+            .iter()
+            .enumerate()
+            .map(|(i, secret)| Token {
+                name: format!("c{i}"),
+                scope: Scope::Read,
+                secret: secret.clone(),
+            })
+            .collect(),
+    );
+    let mut st = AppState::new(path.to_str().unwrap().into(), auth, None);
+    st.configure(&|k: &str| (k == "IMPROV_RATE_LIMIT").then(|| "0".to_string()))
+        .unwrap();
+    let state = Arc::new(st);
+    let app = app(state.clone());
+    let mut open = Vec::new();
+    for i in 0..n {
+        open.push(
+            open_stream(&app, &secrets[i % callers])
+                .await
+                .expect("under the caps"),
+        );
+    }
+    assert!(open.len() > crate::MAX_IN_FLIGHT);
+    let probes = || state.gui.authority.lock().unwrap().as_ref().unwrap().probes;
+    let before = probes();
+    tokio::time::sleep(Duration::from_millis(1600)).await;
+    let reads = probes() - before;
+    assert!(
+        reads <= 5,
+        "{} streams read the store {reads} times in 1.6 s",
+        open.len()
+    );
+    // Other requests go through at once.
+    let t0 = std::time::Instant::now();
+    let (s, _) = call(&app, req("GET", "/v1/structure", &secrets[0], None)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(t0.elapsed() < Duration::from_secs(2), "{:?}", t0.elapsed());
+    // The poller ends with the last stream.
+    drop(open);
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(!state.gui.streams.lock().unwrap().polling);
+}
+
+/// A stream outlives REQUEST_TIMEOUT: the timeout layer stops at the
+/// response headers. The same stream still delivers an edit made after
+/// the deadline.
+#[tokio::test]
+async fn a_change_stream_outlives_the_request_timeout() {
+    use futures_util::StreamExt;
+    let (_, state, _) = served();
+    let mut st = Arc::into_inner(state).unwrap();
+    st.request_timeout = Duration::from_millis(500);
+    let app = app(Arc::new(st));
+    let body = open_stream(&app, BOB).await.expect("open");
+    let mut data = body.into_data_stream();
+    let hello = data.next().await.expect("the first event").unwrap();
+    assert!(std::str::from_utf8(&hello).unwrap().contains("version"));
+    // Past the deadline (a short one, set for this test).
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let edit = json!({"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 3}]});
+    let (s, _) = call(&app, req("POST", "/v1/cells", ANN, Some(edit))).await;
+    assert_eq!(s, StatusCode::OK);
+    let next = tokio::time::timeout(Duration::from_secs(5), data.next())
+        .await
+        .expect("an event after the deadline")
+        .expect("the stream is still open")
+        .unwrap();
+    assert!(
+        std::str::from_utf8(&next).unwrap().contains("\"cells\""),
+        "{next:?}"
+    );
+}

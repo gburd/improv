@@ -127,12 +127,20 @@ cache is dropped, so a retry reloads and succeeds.
 | Request time | 30 s (408), including time queued for a slot | |
 | Requests in flight | 64; the rest queue | |
 | Header read | 10 s | `IMPROV_HEADER_TIMEOUT_MS` |
+| Change streams open (`/v1/changes`) | 256 in all, 8 per caller (429 above) | `IMPROV_MAX_STREAMS` (the total) |
 
 The rate limit is a token bucket per token name. A request without a valid
 token (and every request in open mode) is counted against the client's IP
 address instead. Behind a reverse proxy every client has the proxy's
 address, so in open mode set the limit in the proxy. Public routes are not
 limited.
+
+A change stream is long-lived: it is not bound by the request time and
+takes no in-flight slot, so open streams never hold up other requests.
+The stream caps bound them instead, counted per principal (a token's
+name). However many are open, the server reads the store's high-water
+mark for other writers' changes once every 0.5 s, from one task, and
+wakes the streams when it moves.
 
 The server speaks HTTP/1.1 only.
 

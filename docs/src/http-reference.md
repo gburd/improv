@@ -152,7 +152,7 @@ Request body: [EditBatch](#editbatch).
 
 **Changes, as Server-Sent Events** Scope: `read`.
 
-A `text/event-stream`. The first event carries the current version, or what changed since `since`. Then one event per change the caller may see: the changed cells, filtered for the caller, or `reload`. A change the caller may see none of sends nothing. Each event's `id` is its version; reconnect with `?since=` (or `Last-Event-ID`) to resume.
+A `text/event-stream`. The first event carries the current version, or what changed since `since`. Then one event per change the caller may see: the changed cells, filtered for the caller, or `reload`. A change the caller may see none of sends nothing. Each event's `id` is its version; reconnect with `?since=` (or `Last-Event-ID`) to resume. A stream is not bound by the request time limit and takes no in-flight slot; at most IMPROV_MAX_STREAMS (default 256) are open at once, 8 per caller, with 429 past either.
 
 - Path parameter `since`: `{"$ref":"#/components/schemas/Version"}`.
 
@@ -160,7 +160,7 @@ A `text/event-stream`. The first event carries the current version, or what chan
 | --- | --- |
 | 200 | The event stream; each `data:` line is a ChangeEvent. |
 | 401 | No token, or an unknown one. Body: [Error](#error). |
-| 429 | The caller is over IMPROV_RATE_LIMIT requests a minute. Body: [Error](#error). |
+| 429 | Over the rate limit, or too many change streams open (in all, or for this caller). Body: [Failure](#failure). |
 | 500 | Internal error; the detail is in the server log under request_id. Body: [Error](#error). |
 
 ## GET /v1/health

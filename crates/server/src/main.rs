@@ -343,6 +343,10 @@ pub struct AppState {
     probe: std::sync::Mutex<Option<Store>>,
     /// Request body cap in bytes.
     max_body: usize,
+    /// Most change streams open at once (`IMPROV_MAX_STREAMS`).
+    max_streams: usize,
+    /// [`REQUEST_TIMEOUT`]; tests shorten it.
+    request_timeout: Duration,
     rate: RateLimiter,
     audit: AuditLog,
     /// `db_path` without credentials, for the audit log.
@@ -371,6 +375,8 @@ impl AppState {
             loaded_tx: std::sync::Mutex::new(None),
             probe: std::sync::Mutex::new(None),
             max_body: MAX_BODY_BYTES,
+            max_streams: gui::MAX_STREAMS,
+            request_timeout: REQUEST_TIMEOUT,
             rate: RateLimiter::new(RATE_PER_MIN),
             audit: AuditLog::Stderr,
             static_dir: None,
@@ -394,11 +400,13 @@ impl AppState {
         Ok(())
     }
 
-    /// Apply `IMPROV_MAX_BODY_BYTES`, `IMPROV_RATE_LIMIT` (requests a minute
+    /// Apply `IMPROV_MAX_BODY_BYTES`, `IMPROV_MAX_STREAMS` (change streams
+    /// open at once), `IMPROV_RATE_LIMIT` (requests a minute
     /// per caller, 0 = off), `IMPROV_AUDIT_LOG` (a file; default stderr) and
     /// `IMPROV_CORS_ORIGINS` (comma-separated origins; default none).
     pub fn configure(&mut self, get: &impl Fn(&str) -> Option<String>) -> Result<(), String> {
         self.max_body = env_num(get, "IMPROV_MAX_BODY_BYTES", MAX_BODY_BYTES)?;
+        self.max_streams = env_num(get, "IMPROV_MAX_STREAMS", gui::MAX_STREAMS)?;
         self.rate = RateLimiter::new(env_num(get, "IMPROV_RATE_LIMIT", RATE_PER_MIN)?);
         self.audit = AuditLog::open(get("IMPROV_AUDIT_LOG").as_deref())?;
         self.cors_origins = cors_origins(get("IMPROV_CORS_ORIGINS").as_deref())?;
@@ -716,7 +724,7 @@ pub fn app(state: Arc<AppState>) -> Router {
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error")
             }
         }))
-        .layer(tower::timeout::TimeoutLayer::new(REQUEST_TIMEOUT))
+        .layer(tower::timeout::TimeoutLayer::new(state.request_timeout))
         .layer(tower::limit::GlobalConcurrencyLimitLayer::new(
             MAX_IN_FLIGHT,
         ));

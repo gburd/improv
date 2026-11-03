@@ -139,6 +139,9 @@ pub struct Authority {
     structure_version: u64,
     /// Loads performed, so tests can see the cache work.
     pub loads: u64,
+    /// High-water checks performed ([`Authority::refresh`]), so tests can
+    /// count store reads.
+    pub probes: u64,
 }
 
 impl Authority {
@@ -161,6 +164,7 @@ impl Authority {
             undo: HashMap::new(),
             structure_version: 0,
             loads: 0,
+            probes: 0,
         };
         a.reload().map_err(|r| r.body.error)?;
         a.push_log(Some(Vec::new()));
@@ -183,6 +187,7 @@ impl Authority {
     /// Another writer's change is logged as a reload: the authority does
     /// not know which cells it touched.
     pub fn refresh(&mut self) -> Answer<bool> {
+        self.probes += 1;
         let hw = match self.store()?.tx_high_water() {
             Ok(hw) => hw,
             Err(e) => {

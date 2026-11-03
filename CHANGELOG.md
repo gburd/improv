@@ -25,6 +25,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   scope allows. A cell edit never conflicts with another writer's: the
   server reloads and applies it. `docs/openapi.json`, the HTTP reference
   and `server.md` describe them.
+- **Change streams are bounded.** At most `IMPROV_MAX_STREAMS` (default
+  256) `/v1/changes` streams are open at once, 8 per caller, with 429
+  past either. A stream outlives the 30 s request limit and takes no
+  in-flight slot, so open streams never hold up other requests. One task
+  reads the store's high-water mark every 0.5 s for all of them, where
+  each stream used to read it itself.
 - **GUI: Edit ▸ Copy and Paste (Ctrl+C, Ctrl+V).** Copy puts the
   worksheet's selection on the clipboard as tab-separated text, as the
   cells show; Paste writes such text into an input measure from the
