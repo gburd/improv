@@ -52,6 +52,7 @@ jobs:
           -p improv_client
           -p improv_policy
           -p improv_service
+          -p improv_gui_web
           -- --check
 
   clippy:
@@ -92,11 +93,15 @@ jobs:
           -p improv_client
           -p improv_policy
           -p improv_service
+          -p improv_gui_web
           --all-targets --all-features -- -D warnings
-      # The browser build shares improv_client: it must keep building there.
-      - name: improv_client builds for wasm32
+      # The browser build: improv_client must keep building for wasm32, and
+      # the web GUI must build and lint there.
+      - name: improv_client and the web GUI build for wasm32
         working-directory: improv
-        run: cargo check --locked --target wasm32-unknown-unknown -p improv_client
+        run: |
+          cargo check --locked --target wasm32-unknown-unknown -p improv_client
+          cargo clippy --locked --target wasm32-unknown-unknown -p improv_gui_web -- -D warnings
       # The fuzz crate is its own workspace (cargo-fuzz), so the workspace
       # build never compiles it: check its targets build against the API.
       - name: Fuzz targets build
@@ -413,6 +418,56 @@ jobs:
         with:
           name: gui-shot
           path: improv/target/gui-shot/
+          if-no-files-found: ignore
+
+  # The web GUI (crates/gui_web) in headless Chromium: two browser sessions
+  # on one improv-server; an edit in one reaches the other within a second,
+  # a server restart is caught up, pivot by drag, a located formula error,
+  # undo, a page item (crates/gui_web/e2e/drive.py).
+  web-e2e:
+    name: Web GUI in Chromium
+    runs-on: ubuntu-latest
+    needs: [fmt, clippy]
+    timeout-minutes: 30
+    container:
+      image: rust:1.97-trixie
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          path: improv
+      - name: Install Chromium and the DevTools client
+        run: >
+          apt-get update && apt-get install -y --no-install-recommends
+          chromium python3-websocket curl fonts-dejavu-core
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: improv
+          key: web-e2e
+      - name: The wasm target and wasm-bindgen at Cargo.lock's version
+        working-directory: improv
+        run: |
+          rustup target add wasm32-unknown-unknown
+          v=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$v" --locked
+      - name: Build the web GUI, the CLI and the server
+        working-directory: improv
+        run: |
+          crates/gui_web/build.sh --release target/gui_web
+          cargo build --locked --release -p improv_cli -p improv_server
+      - name: Two browser sessions
+        working-directory: improv
+        env:
+          CHROMIUM: chromium
+        run: >
+          crates/gui_web/e2e/e2e.sh target/release/improv target/release/improv-server
+          target/gui_web target/web-e2e
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: web-e2e
+          path: improv/target/web-e2e/
           if-no-files-found: ignore
 
   # The Verus proofs of crates/verified (scripts/verify.sh). The release and

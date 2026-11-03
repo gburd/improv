@@ -51,6 +51,7 @@ jobs:
           -p improv_client
           -p improv_policy
           -p improv_service
+          -p improv_gui_web
           -- --check
       - name: Clippy (workspace crates)
         working-directory: improv
@@ -73,6 +74,7 @@ jobs:
           -p improv_client
           -p improv_policy
           -p improv_service
+          -p improv_gui_web
           --all-targets --all-features -- -D warnings
       - name: Build
         working-directory: improv

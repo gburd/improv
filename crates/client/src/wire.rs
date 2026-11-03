@@ -525,6 +525,17 @@ pub trait ModelService {
     fn send(&mut self, req: Request) -> u64;
     /// Replies and changes that have arrived since the last call.
     fn poll(&mut self) -> Vec<Event>;
+    /// Use `secret` (a bearer token) from now on, after
+    /// [`Event::LoggedOut`]. Held in memory only. A local service needs
+    /// none.
+    fn authenticate(&mut self, secret: String) {
+        let _ = secret;
+    }
+    /// Whether pushed changes are arriving (the change stream is
+    /// connected). Always true in process.
+    fn live(&self) -> bool {
+        true
+    }
 }
 
 /// What [`ModelService::poll`] returns.
@@ -532,6 +543,9 @@ pub trait ModelService {
 pub enum Event {
     Reply(u64, Result<Response, Failure>),
     Changed(ChangeEvent),
+    /// The authority refused the credentials (HTTP 401): ask for them
+    /// again. A local service never sends it.
+    LoggedOut(String),
 }
 
 /// A cell as a client can know it.

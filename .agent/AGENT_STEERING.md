@@ -78,6 +78,14 @@ criteria" are the bar. Mark tasks done there as they land.
   base time. Evaluate and tail edits did not move. B5 then replaced RANK's
   path: the scale gate reads `wide.rank.edit_max` 0.26× and `edit_tail`
   0.00× its baseline.
+- **I2, the web GUI, in progress** (`work/web`): the `/v1` API a GUI
+  drives and `GET /v1/changes` are on main (`improv_client`,
+  `improv_service`, `crates/server/src/gui.rs`); the browser build is
+  `crates/gui_web` (egui on wasm32, the desktop's theme/nxwin/menu by
+  `#[path]`), checked by `crates/gui_web/e2e/e2e.sh` in headless
+  Chromium. Its guide is `docs/src/web-gui.md`; what is left is in the
+  plan's I2 row. Not screen-reader accessible yet (eframe's web runner
+  drops AccessKit).
 - **NEXT:** J6 at 1.0 (needs the `COMMUNITY_EXT_PAT` and `PGORG_*`
   secrets); 1.0.0-rc.1 once the exit criteria hold (J4's soak is skipped
   for now, the maintainer's call). Not now: a Homebrew tap

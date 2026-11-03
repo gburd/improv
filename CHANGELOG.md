@@ -25,6 +25,18 @@ this project follows [Semantic Versioning](https://semver.org/).
   scope allows. A cell edit never conflicts with another writer's: the
   server reloads and applies it. `docs/openapi.json`, the HTTP reference
   and `server.md` describe them.
+- **The web GUI (I2).** `crates/gui_web` is the GUI in a browser: the
+  desktop's NeXT worksheet drawn by egui into a WebGL canvas, over
+  `improv-server`'s `/v1` API. `crates/gui_web/build.sh` builds it, and
+  `improv-server MODEL --static DIR` serves it. It has a login panel
+  (the token is held in memory), worksheet windows, pivoting by dragging
+  category tiles, page items, cell edits, the formula pane with
+  autocomplete and located errors, the main menu, views, undo per
+  session, the model browser, and live updates from the change stream,
+  resuming after a dropped connection. It computes nothing itself:
+  every derived cell is the server's. It is not yet screen-reader
+  accessible (eframe's web runner drops AccessKit). See
+  `docs/src/web-gui.md`.
 - **Change streams are bounded.** At most `IMPROV_MAX_STREAMS` (default
   256) `/v1/changes` streams are open at once, 8 per caller, with 429
   past either. A stream outlives the 30 s request limit and takes no

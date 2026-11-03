@@ -2912,6 +2912,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "improv_gui_web"
+version = "0.12.2"
+dependencies = [
+ "eframe",
+ "egui",
+ "improv_client",
+ "improv_core_model",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "improv_nl_formula"
 version = "0.12.2"
 dependencies = [
