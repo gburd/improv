@@ -17975,6 +17975,245 @@ mod tests {
         assert_eq!(m.selection(), (0..=5, 1..=1));
     }
 
+    /// Gap 13: on a row-only worksheet (no column category), Shift+click
+    /// on a column item extends from the anchor's column; an item selection
+    /// of an axis with no category names nothing.
+    #[test]
+    fn shift_click_on_a_column_extends_and_an_empty_axis_names_nothing() {
+        let model = grid_2x2_model();
+        let mut m = Matrix::new(&model, Some(MeasureId(101)));
+        assert_eq!(m.grid_dims(&model), (2, 2));
+        m.select_item(&model, false, 0, 0, false);
+        assert_eq!(m.selection(), (0..=1, 0..=0));
+        m.select_item(&model, false, 1, 0, true);
+        assert_eq!(m.selection(), (0..=1, 0..=1), "extended from column 0");
+        assert_eq!(m.selected_item_names(&model, false), ["WidgetA", "WidgetB"]);
+        // From a later column back to an earlier one: the far end is kept.
+        m.select_item(&model, false, 1, 0, false);
+        m.select_item(&model, false, 0, 0, true);
+        assert_eq!(m.selection(), (0..=1, 0..=1));
+        // Both categories on rows: the column axis has none, so no names.
+        m.set_axis(&model, CategoryId(2), Axis::Rows);
+        assert!(m.col_cats(&model).is_empty());
+        assert!(m.selected_item_names(&model, false).is_empty());
+    }
+
+    /// A category is "named" by a formula that ranges over it, groups by
+    /// it, leaves it out (EXCEPT) or passes it, at any depth; Delete is
+    /// refused while one does.
+    #[test]
+    fn a_formula_names_a_category_by_by_over_except_or_position() {
+        let (t, p) = (CategoryId(1), CategoryId(2));
+        let r = |by: Vec<CategoryId>, over: Vec<CategoryId>, except: Vec<CategoryId>| {
+            Expr::Ref(MeasureId(101), DimensionSpec { by, over, except })
+        };
+        let lit = Expr::Literal(Value::Number(1.0));
+        assert!(expr_names_category(&r(vec![t], vec![], vec![]), t));
+        assert!(expr_names_category(&r(vec![], vec![], vec![t]), t));
+        assert!(!expr_names_category(&r(vec![p], vec![p], vec![p]), t));
+        let add = |a: Expr, b: Expr| Expr::BinaryOp(BinaryOp::Add, Box::new(a), Box::new(b));
+        assert!(expr_names_category(
+            &add(r(vec![], vec![t], vec![]), lit.clone()),
+            t
+        ));
+        assert!(expr_names_category(&add(lit.clone(), Expr::Category(t)), t));
+        assert!(!expr_names_category(&add(lit.clone(), lit), t));
+
+        let mut model = grid_2x2_model();
+        model.add_category(CategoryId(3), "Region");
+        if let Some(m) = model.measures.get_mut(&MeasureId(102)) {
+            m.kind = MeasureKind::Derived(Formula::new(add(
+                r(vec![], vec![], vec![]),
+                r(vec![CategoryId(3)], vec![], vec![]),
+            )));
+        }
+        let app = build_app(model);
+        let why = app
+            .delete_blockers(Thing::Category(CategoryId(3)))
+            .expect("Revenue groups by Region");
+        assert!(why.contains("Revenue"), "{why}");
+    }
+
+    /// A window bound prints as Improv spells it; fractions and other
+    /// literals have no spelling.
+    #[test]
+    fn window_bounds_print_first_last_and_this_offsets() {
+        let num = |n: f64| Expr::Literal(Value::Number(n));
+        let text = |t: &str| Expr::Literal(Value::Text(t.into()));
+        assert_eq!(bound_dsl(&text("FIRST")).as_deref(), Some("FIRST"));
+        assert_eq!(bound_dsl(&text("LAST")).as_deref(), Some("LAST"));
+        assert_eq!(bound_dsl(&text("MIDDLE")), None);
+        assert_eq!(bound_dsl(&num(0.0)).as_deref(), Some("THIS"));
+        assert_eq!(bound_dsl(&num(2.0)).as_deref(), Some("THIS+2"));
+        assert_eq!(bound_dsl(&num(-3.0)).as_deref(), Some("THIS-3"));
+        assert_eq!(bound_dsl(&num(1.5)), None);
+        assert_eq!(bound_dsl(&num(-0.5)), None);
+        assert_eq!(bound_dsl(&Expr::Category(CategoryId(1))), None);
+    }
+
+    /// Gap 12: the help page for a point in a worksheet window: its tiles
+    /// (the column gutter as well as the row well), its grid, its formula
+    /// pane; a submenu is the menu's page, and no layer or a layer that
+    /// is no window of ours is Improv's.
+    #[test]
+    fn the_help_topic_follows_the_layer_and_point() {
+        let (app, desk) = grid_desk();
+        let title = |app: &ImprovApp, layer, at| app.topic_at(layer, at).title;
+        let g = app.matrices[0].gutters.expect("laid out");
+        let win = egui::LayerId::new(egui::Order::Middle, win_id(&app, 0));
+        assert_eq!(
+            title(&app, Some(win), Some(g.top.center())),
+            "Category tiles"
+        );
+        assert_eq!(
+            title(&app, Some(win), Some(g.well.center())),
+            "Category tiles"
+        );
+        assert_eq!(title(&app, Some(win), None), "Worksheet");
+        let cell = cell_rect(&desk, &app, 0, 0).center();
+        assert_eq!(title(&app, Some(win), Some(cell)), "Worksheet");
+        let sub = egui::LayerId::new(egui::Order::Foreground, menu::menu_id().with(("sub", 3)));
+        assert_eq!(title(&app, Some(sub), None), "The main menu");
+        let stray = egui::LayerId::new(egui::Order::Middle, egui::Id::unique("stray"));
+        assert_eq!(title(&app, Some(stray), None), crate::help::IMPROV.title);
+        assert_eq!(title(&app, None, None), crate::help::IMPROV.title);
+    }
+
+    /// Gap 11: Print with nothing to print says so; the print system path
+    /// says when there is no `lp` or `lpr`; a model in a store prints next
+    /// to it, one in memory or in Postgres under its name.
+    #[test]
+    fn print_refuses_an_empty_job_and_names_its_file_after_the_model() {
+        let (mut app, desk) = grid_desk();
+        let p = PrintPanel {
+            copies: 1,
+            pages: None,
+            selection: false,
+            printer: String::new(),
+            path: String::new(),
+        };
+        app.report_layout.data = false;
+        let doc = app.print_doc(false);
+        assert_eq!(
+            app.run_print("pdf", &doc, &p).unwrap_err(),
+            "nothing to print: Report Layout's Content is empty"
+        );
+        app.report_layout.data = true;
+        let doc = app.print_doc(false);
+        if cfg!(not(windows)) && crate::print::local_spooler("", 1).is_none() {
+            assert!(app
+                .run_print("print", &doc, &p)
+                .unwrap_err()
+                .starts_with("no lp or lpr"));
+        }
+        let dir = std::env::temp_dir().join(format!("improv-print-pages-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let two = PrintPanel {
+            path: dir.join("two").display().to_string(),
+            ..p.clone()
+        };
+        app.report_layout.formulas = true;
+        let doc = app.print_doc(false);
+        assert_eq!(doc.pages.len(), 2);
+        assert!(app
+            .run_print("ps", &doc, &two)
+            .unwrap()
+            .starts_with("saved 2 pages to "));
+        let _ = std::fs::remove_dir_all(dir);
+
+        let path = |app: &mut ImprovApp| {
+            app.print_panel = None;
+            app.run_command(&desk.ctx, Command::Print);
+            app.print_panel.as_ref().expect("Print opens").path.clone()
+        };
+        assert_eq!(path(&mut app), "Untitled.pdf");
+        app.db = "/tmp/books/q3.improv".into();
+        assert_eq!(path(&mut app), "/tmp/books/q3.pdf");
+        app.db = "postgres://h/db?model=plan".into();
+        assert_eq!(path(&mut app), "plan.pdf");
+        app.db = String::new();
+    }
+
+    /// Gap 11: the printed sheet of an axis with no row category has no
+    /// item names; Smart alignment puts text left, numbers right; a
+    /// worksheet with no measure prints nothing; the Inspector's lines off
+    /// rule nothing.
+    #[test]
+    fn the_printed_sheet_aligns_text_left_and_drops_missing_items() {
+        use crate::print::Align;
+        let mut app = build_app(typed_model());
+        select(&mut app, MeasureId(2)); // Label[Product], text
+        let s = app.print_sheet(false);
+        assert_eq!(s.corner, ["Product"]);
+        assert_eq!(
+            s.rows,
+            [(
+                vec!["WidgetA".to_owned()],
+                vec![("hello".to_owned(), Align::Left)]
+            )]
+        );
+        app.set_axis(CategoryId(1), Axis::Columns);
+        let s = app.print_sheet(false);
+        assert!(s.corner.is_empty());
+        assert_eq!(s.col_heads, [["WidgetA"]]);
+        assert_eq!(s.rows, [(vec![], vec![("hello".to_owned(), Align::Left)])]);
+        app.focused_mut().opts.lines = false;
+        app.focused_mut().opts.align = CellAlign::Right;
+        let s = app.print_sheet(false);
+        assert!(!s.item_rules && !s.cell_rules);
+        assert_eq!(s.rows[0].1[0].1, Align::Right);
+        app.focused_mut().measure = None;
+        assert_eq!(app.print_sheet(false), crate::print::Sheet::default());
+    }
+
+    /// Gap 9: the Format panel's Set on a text measure aligns its cells
+    /// but leaves its (absent) number format alone; a number format on a
+    /// text measure is refused.
+    #[test]
+    fn the_format_panel_on_a_text_measure_only_aligns() {
+        let mut app = build_app(typed_model());
+        select(&mut app, MeasureId(2));
+        let mut d = app.panel_read();
+        d.opts.align = CellAlign::Right;
+        d.decimals = Some(2);
+        assert_eq!(app.format_set(d, false), "cells aligned right");
+        assert_eq!(app.focused().opts.align, CellAlign::Right);
+        assert_eq!(app.format_set(d, false), "the format is unchanged");
+        let f = NumberFormat {
+            decimals: Some(2),
+            grouping: false,
+        };
+        assert_eq!(
+            app.set_format(f).unwrap_err(),
+            "Label holds no numbers to format"
+        );
+        // A panel read from a closed worksheet changes no worksheet.
+        d.from.0 = u64::MAX;
+        d.opts.align = CellAlign::Left;
+        assert_eq!(app.format_set(d, false), "the format is unchanged");
+        assert_eq!(app.focused().opts.align, CellAlign::Right);
+    }
+
+    /// Gap 8: a paste may clear cells (an empty field), an empty
+    /// clipboard pastes nothing, and Cut says "cell" for one.
+    #[test]
+    fn paste_clears_on_empty_fields_and_refuses_past_the_edge() {
+        let (mut app, _desk) = grid_desk(); // Quantity, cursor (0, 0)
+        assert_eq!(app.paste_cells("\t7").unwrap(), "pasted 2 cells");
+        let at = |app: &ImprovApp, r: usize, c: usize| {
+            let m = app.focused();
+            let key = m.block_keys(&app.model, (r, c), (1, 1))[0][0].clone();
+            app.cell_text(MeasureId(101), &key)
+        };
+        assert_eq!(at(&app, 0, 0), None, "the empty field cleared it");
+        assert_eq!(at(&app, 0, 1).as_deref(), Some("7"));
+        assert_eq!(app.paste_cells("").unwrap_err(), "nothing to paste");
+        app.focused_mut().cursor_row = 1;
+        app.focused_mut().anchor = None;
+        let (text, said) = app.cut_selection().unwrap();
+        assert_eq!((text.as_str(), said.as_str()), ("120\n", "cut 1 cell"));
+    }
+
     /// Graph ▸ New Graph opens a NeXT graph window named for the worksheet,
     /// with its inspector line and a color bar per series; its close box
     /// closes it.
