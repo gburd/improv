@@ -809,3 +809,76 @@ fn perf() {
         t.elapsed().as_micros() / 100
     );
 }
+
+/// A filtered read of a 1M-cell measure (1,000 x 1,000 items, 100
+/// policies, one item hidden): each cell checked through a session from
+/// its cache, as pg_improv's row-level security and the server's windows
+/// do, against the same pass without the check. Run with `cargo test
+/// --release -p improv_policy -- --ignored --nocapture perf_filtered_read`.
+#[test]
+#[ignore]
+fn perf_filtered_read() {
+    use std::time::Instant;
+    const ROWS: CategoryId = CategoryId(1);
+    const COLS: CategoryId = CategoryId(2);
+    const M: MeasureId = MeasureId(100);
+    let mut m = Model::new();
+    m.add_category(ROWS, "Row");
+    m.add_category(COLS, "Col");
+    for i in 0..1000 {
+        m.add_item(ItemId(10 + i), ROWS, format!("r{i}"));
+        m.add_item(ItemId(2000 + i), COLS, format!("c{i}"));
+    }
+    m.add_measure(measure(M, "V", vec![ROWS, COLS], MeasureKind::Input));
+    let mut text = template("viewer", Who::Group("viewers".into()), &[], &[]);
+    text += "forbid (principal, action == Improv::Action::\"ReadItem\", resource == Improv::Item::\"10\");\n";
+    for i in 0..98 {
+        text += &format!(
+            "forbid (principal == Improv::User::\"u{i}\", action, resource in Improv::Item::\"{}\");\n",
+            11 + i
+        );
+    }
+    let p = Arc::new(Policies::parse(&text, r#"{"viewers": {"users": ["vic"]}}"#).unwrap());
+    assert_eq!(p.len(), 100);
+    let cells: Vec<(f64, Coordinate)> = (0..1000u32)
+        .flat_map(|r| {
+            (0..1000u32).map(move |c| {
+                let at = Coordinate::from_pairs([(ROWS, ItemId(10 + r)), (COLS, ItemId(2000 + c))]);
+                (f64::from(r * c), at)
+            })
+        })
+        .collect();
+    let mut runs = Vec::new();
+    for _ in 0..5 {
+        let t = Instant::now();
+        let all: f64 = cells.iter().map(|(v, _)| *v).sum();
+        let plain = t.elapsed();
+        let s = Session::new(
+            Some(p.clone()),
+            &m,
+            &Principal::user("vic"),
+            Channel::Postgres,
+        );
+        let t = Instant::now();
+        let (mut n, mut sum) = (0usize, 0f64);
+        for (v, at) in &cells {
+            if s.cell_visible(M, at) {
+                n += 1;
+                sum += v;
+            }
+        }
+        let filtered = t.elapsed();
+        assert_eq!(n, 999_000, "row r0 is hidden");
+        assert!(sum <= all);
+        runs.push((plain.as_micros(), filtered.as_micros()));
+    }
+    runs.sort_by_key(|r| r.1);
+    let (plain, filtered) = runs[2];
+    println!(
+        "filtered read of 1M cells (new session each run): median {} ms ({} ns a cell); the \
+         unfiltered pass {} ms",
+        filtered / 1000,
+        filtered * 1000 / 1_000_000,
+        plain / 1000
+    );
+}
