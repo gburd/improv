@@ -3,10 +3,10 @@
 //! over the model's current structure), then asks that for every measure,
 //! item and cell it touches. [`Open`] allows everything. Cedar policies
 //! (`docs/reviews/2026-11-02-cedar-policies.md`, `improv_policy`) plug in
-//! here: `improv_policy::Session` is an `Access` (its `allowed` and
-//! `restricted`), and `improv_policy::Sessions` keyed by policy version,
-//! structure version and principal is the `Policy`. The names below are
-//! that crate's, one to one.
+//! here: [`crate::cedar::CedarPolicy`] is the `Policy`, its sessions
+//! `improv_policy::Session`s keyed by policy version, structure version
+//! and principal. [`Principal`], [`Action`] and [`Resource`] are that
+//! crate's.
 //!
 //! **Cost per cell.** An `Access` answers with the contract's composite
 //! rules (a cell is visible when its measure, each of its items and the
@@ -17,52 +17,11 @@
 
 use std::sync::Arc;
 
-use improv_core_model::{CategoryId, Coordinate, ItemId, MeasureId, MeasureKind, Model, ViewId};
+use improv_core_model::{Coordinate, ItemId, MeasureId, MeasureKind, Model};
 
-/// Who asks: an authenticated user and the roles its identity source
-/// asserts (a token's name has none yet).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct Principal {
-    pub user: String,
-    pub roles: Vec<String>,
-}
-
-impl Principal {
-    /// A user with no roles.
-    pub fn user(name: impl Into<String>) -> Self {
-        Principal {
-            user: name.into(),
-            roles: Vec::new(),
-        }
-    }
-}
-
-/// What a principal asks to do: the Cedar schema's actions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Action {
-    ViewModel,
-    ReadMeasure,
-    ReadItem,
-    ReadCell,
-    EditCell,
-    DefineMeasure,
-    EditStructure,
-    ManageViews,
-    Admin,
-}
-
-/// What an action is on. `Model` is the model as a whole: ViewModel, and
-/// adding a measure, category, item or view.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Resource {
-    Model,
-    Category(CategoryId),
-    Item(ItemId),
-    Measure(MeasureId),
-    View(ViewId),
-    /// One cell: a measure and an item for each of its categories.
-    Cell(MeasureId, Coordinate),
-}
+/// The Cedar crate's own types, so the authority and the policies agree
+/// on what a principal, an action and a resource are.
+pub use improv_policy::{Action, Principal, Resource};
 
 /// Where decisions for a principal come from.
 pub trait Policy: Send + Sync {
@@ -231,6 +190,7 @@ impl Access for DenyAccess {
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
     use super::*;
+    use improv_core_model::CategoryId;
 
     fn at(pairs: &[(u32, u32)]) -> Coordinate {
         Coordinate::from_pairs(pairs.iter().map(|(c, i)| (CategoryId(*c), ItemId(*i))))

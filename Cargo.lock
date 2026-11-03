@@ -2995,6 +2995,7 @@ dependencies = [
  "improv_core_model",
  "improv_engine",
  "improv_nl_formula",
+ "improv_policy",
  "improv_store",
  "serde_json",
 ]

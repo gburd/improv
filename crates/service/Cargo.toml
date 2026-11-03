@@ -10,6 +10,7 @@ improv_client = { path = "../client" }
 improv_core_model = { path = "../core_model" }
 improv_engine = { path = "../engine" }
 improv_nl_formula = { path = "../nl_formula" }
+improv_policy = { path = "../policy" }
 improv_store = { path = "../store" }
 chrono.workspace = true
 
