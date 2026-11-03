@@ -571,6 +571,13 @@ impl Session {
         Some(all)
     }
 
+    fn input(&self, m: MeasureId) -> bool {
+        self.structure
+            .measures
+            .get(&m)
+            .is_some_and(|(input, ..)| *input)
+    }
+
     fn is_input(&self, r: &Resource) -> bool {
         matches!(r, Resource::Cell(m, _) if self.structure.measures.get(m).is_some_and(|(input, ..)| *input))
     }
@@ -587,12 +594,24 @@ impl Session {
 
     /// A cell's value may be shown.
     pub fn cell_visible(&self, m: MeasureId, at: &Coordinate) -> bool {
-        self.allowed(Action::ReadCell, &Resource::Cell(m, at.clone()))
+        self.cell(Action::ReadCell, m, at)
     }
 
     /// An input cell may be set or cleared.
     pub fn cell_editable(&self, m: MeasureId, at: &Coordinate) -> bool {
-        self.allowed(Action::EditCell, &Resource::Cell(m, at.clone()))
+        self.cell(Action::EditCell, m, at)
+    }
+
+    /// ReadCell or EditCell on a cell, as [`Session::allowed`] answers it,
+    /// without building a [`Resource`]: once its classes are cached, a few
+    /// hash lookups and no allocation.
+    pub fn cell(&self, action: Action, m: MeasureId, at: &Coordinate) -> bool {
+        if self.policies.is_some() && (action != Action::EditCell || self.input(m)) {
+            if let Some(hit) = self.cell_cached(action, m, at) {
+                return hit;
+            }
+        }
+        self.allowed(action, &Resource::Cell(m, at.clone()))
     }
 
     /// A measure's formula may be shown: the measure and every measure the

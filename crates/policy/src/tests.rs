@@ -790,6 +790,16 @@ fn perf() {
         assert!(s.cell_visible(QUANTITY, &coord));
     }
     println!("cached cell check: {} ns", t.elapsed().as_nanos() / n);
+    let r = Resource::Cell(QUANTITY, coord.clone());
+    let t = Instant::now();
+    for _ in 0..n {
+        assert!(s.allowed(Action::ReadCell, &Resource::Cell(QUANTITY, coord.clone())));
+    }
+    println!(
+        "cached cell check through a Resource: {} ns",
+        t.elapsed().as_nanos() / n
+    );
+    assert!(s.allowed(Action::ReadCell, &r));
     let t = Instant::now();
     for _ in 0..100 {
         Policies::parse(&text, "").unwrap();
