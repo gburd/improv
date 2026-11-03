@@ -40,6 +40,9 @@ pub enum Command {
     /// Edit ▸ Paste: the clipboard's cells into the worksheet at the cursor
     /// (Command-v).
     Paste,
+    /// Edit ▸ Select All (Command-a, reserved by NeXTSTEP): every cell of
+    /// the focused worksheet.
+    SelectAll,
     PivotRotate,
     AddMatrix,
     RemoveMatrix,
@@ -130,6 +133,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("Redo", Some('Z'), Some(C::Redo)),
             ("Copy", Some('c'), Some(C::Copy)),
             ("Paste", Some('v'), Some(C::Paste)),
+            ("Select All", Some('a'), Some(C::SelectAll)),
             ("Add Category", None, Some(C::AddCategory)),
             ("Add Item", None, Some(C::AddItem)),
             ("Add Input Measure", None, Some(C::AddInputMeasure)),
@@ -895,7 +899,7 @@ mod tests {
             assert_eq!(key_command(key, k.is_uppercase()), want, "{k:?}");
             n += 1;
         }
-        assert_eq!(n, 14, "o n s S z Z c v r V / p h q");
+        assert_eq!(n, 15, "o n s S z Z c v a r V / p h q");
     }
 
     #[test]
@@ -920,7 +924,8 @@ mod tests {
         );
         assert_eq!(key_command(Key::C, false), None, "so does Copy");
         assert_eq!(key_command(Key::P, false), None, "Print is disabled");
-        assert_eq!(key_command(Key::A, false), None);
+        assert_eq!(key_command(Key::A, false), Some(C::SelectAll));
+        assert_eq!(key_command(Key::B, false), None);
     }
 
     /// Every label and key letter renders from the installed fonts, not as the

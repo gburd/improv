@@ -45,7 +45,8 @@ The window has five regions:
   reloads it from the store (the way out of a save conflict), **Model
   Browser…** shows or hides the model browser, and **Import/Export CSV…**
   opens the CSV wizard. **Edit** has Undo and Redo (which Improv 1.0
-  lacked), **Copy** and **Paste** (see [Copy and paste](#copy-and-paste)),
+  lacked), **Copy**, **Paste** (see [Copy and paste](#copy-and-paste)) and
+  **Select All**, the whole worksheet,
   **Add Category**, **Add Item** and **Add Input Measure** (see
   [Building a model from scratch](#building-a-model-from-scratch)),
   **Rename** and **Delete…** (see [Renaming and
@@ -309,6 +310,7 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+Shift+Z, Ctrl+Y | Redo | Edit |
 | Ctrl+C | Copy | Edit |
 | Ctrl+V | Paste | Edit |
+| Ctrl+A | Select All | Edit |
 | Ctrl+R | Recalculate | Worksheet |
 | Ctrl+Shift+V | New View | View |
 | Ctrl+/ | Swap Rows/Columns | View |

@@ -4879,6 +4879,13 @@ impl ImprovApp {
             // the menu rows ask the platform for the same ones.
             Command::Copy => ctx.send_viewport_cmd(egui::ViewportCommand::RequestCopy),
             Command::Paste => ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaste),
+            Command::SelectAll => {
+                let (rows, cols) = self.focused().grid_dims(&self.model);
+                let m = self.focused_mut();
+                m.anchor = Some((0, 0));
+                m.cursor_row = rows.saturating_sub(1);
+                m.cursor_col = cols.saturating_sub(1);
+            }
             Command::Undo => self.undo_with_status(),
             Command::Redo => self.redo_with_status(),
             Command::PivotRotate => self.pivot_rotate(),
@@ -16368,6 +16375,19 @@ mod tests {
         // Derived cells are computed.
         select(&mut app, MeasureId(102));
         assert!(app.paste_cells("1").unwrap_err().contains("derived"));
+    }
+
+    /// Edit ▸ Select All (Command-a) selects the whole grid, so Copy takes
+    /// it all and the status bar sums it.
+    #[test]
+    fn select_all_selects_the_whole_grid() {
+        let mut app = build_app(grid_2x2_model());
+        select(&mut app, MeasureId(101));
+        app.sync_axis_state();
+        let ctx = egui::Context::default();
+        app.run_command(&ctx, Command::SelectAll);
+        assert_eq!(app.copy_selection().unwrap(), "100\t50\n120\t80\n");
+        assert_eq!(app.selection_sum(), Some(350.0));
     }
 
     /// The worksheet takes egui's clipboard events: a copy event puts the

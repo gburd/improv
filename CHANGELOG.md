@@ -13,6 +13,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   cells show; Paste writes such text into an input measure from the
   cursor, all or nothing (a value the cell refuses refuses the paste), as
   one undo step. Improv 1.0's Edit menu had both (Command-c, Command-v).
+- **GUI: Edit ▸ Select All (Ctrl+A).** Selects the whole worksheet, for
+  Copy and the status bar's Sum; NeXTSTEP reserves Command-a for it.
 - **GUI: formula status indicators.** Each formula row shows Improv's
   status indicator between its enable box and its number: a check when it
   checks with no errors, a cross when it has one (the error is described
