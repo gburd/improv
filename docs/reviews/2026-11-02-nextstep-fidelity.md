@@ -265,6 +265,24 @@ equivalent. **Ctrl stands in for Command** on Linux, FreeBSD, illumos and
 Windows; Cmd on macOS. The mapping is in `docs/src/gui-tour.md`,
 "Keyboard and screen readers", and in Help ▸ Keys….
 
+## 6a. illumos: the glutin patch
+
+`docs/reviews/patches/glutin-illumos.patch`, against glutin `master`
+(6409c83), ready to send to rust-windowing/glutin. glutin's build script
+already counts illumos as a free Unix, so its EGL, GLX, X11 and Wayland
+backends are compiled in there, but the target tables that pull in their
+crates (`glutin/Cargo.toml`, `glutin_glx_sys/Cargo.toml`) and the
+`target.contains` and `#![cfg]` gates of `glutin_egl_sys` and
+`glutin_glx_sys` list only Linux and the BSDs. On
+`x86_64-unknown-illumos` glutin then fails to compile, and with it
+eframe's glow renderer. The patch adds illumos to those five lists and
+nothing else: EGL, libGL and the Wayland client are dlopen'ed at run
+time, as on the BSDs. It was tested with eframe 0.37 on Solnix (Mesa
+24.0, COSMIC on Wayland), where `ci/solnix-gui.sh` applies it to the
+vendored 0.32.3 crates (whose published `Cargo.toml` is cargo's
+normalized form, so the script makes that one change by name), and
+`improv_gui`'s 342 tests pass.
+
 ## 7. Still unverified
 
 - The default chart colors on a color NeXT (§3.2).

@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Greg Burd <greg@burd.me>
+Date: Mon, 2 Nov 2026 22:22:53 -0500
+Subject: [PATCH] Build the EGL and GLX backends on illumos
+
+glutin's build script already treats illumos as a free Unix, so
+`egl_backend`, `glx_backend`, `x11_platform` and `wayland_platform` are set
+there, but the target tables in glutin/Cargo.toml and glutin_glx_sys's,
+and the `target.contains(..)` and `#![cfg(..)]` gates of glutin_egl_sys and
+glutin_glx_sys, list only Linux and the BSDs. On x86_64-unknown-illumos the
+crates the backends use are then missing and glutin fails to compile
+(`glutin_egl_sys`, `glutin_glx_sys`, `x11_dl` and `wayland_sys` unresolved).
+
+Add illumos to those five lists. EGL, libGL and the Wayland client library
+are dlopen'ed at run time, as on the BSDs, so nothing else changes. Tested
+with eframe 0.37 (glow) on illumos (Solnix, Mesa 24.0, Wayland/COSMIC).
+---
+ CHANGELOG.md              | 1 +
+ glutin/Cargo.toml         | 2 +-
+ glutin_egl_sys/build.rs   | 1 +
+ glutin_egl_sys/src/lib.rs | 3 ++-
+ glutin_glx_sys/Cargo.toml | 2 +-
+ glutin_glx_sys/build.rs   | 1 +
+ glutin_glx_sys/src/lib.rs | 3 ++-
+ 7 files changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,6 @@
+ # Unreleased
+ 
++- Build the EGL and GLX backends on illumos, as on the BSDs.
+ - **Breaking:** Added `make_current_surfaceless(self)` for `{Possibly,Not}CurrentGlContext`.
+ - **Breaking:** CGL (macOS) no longer requests an `NSOpenGLProfile` unless `Api::OPENGL` was
+   requested via `ConfigTemplateBuilder::with_api`.
+diff --git a/glutin/Cargo.toml b/glutin/Cargo.toml
+--- a/glutin/Cargo.toml
++++ b/glutin/Cargo.toml
+@@ -43,7 +43,7 @@ optional = true
+ [target.'cfg(target_os = "android")'.dependencies]
+ glutin_egl_sys = { version = "0.7.1", path = "../glutin_egl_sys" }
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
++[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "netbsd", target_os = "openbsd", target_os = "illumos"))'.dependencies]
+ glutin_egl_sys = { version = "0.7.1", path = "../glutin_egl_sys", optional = true }
+ glutin_glx_sys = { version = "0.6.1", path = "../glutin_glx_sys", optional = true }
+ wayland-sys = { version = "0.31.1", default-features = false, features = [
+diff --git a/glutin_egl_sys/build.rs b/glutin_egl_sys/build.rs
+--- a/glutin_egl_sys/build.rs
++++ b/glutin_egl_sys/build.rs
+@@ -14,6 +14,7 @@ fn main() {
+         || target.contains("freebsd")
+         || target.contains("netbsd")
+         || target.contains("openbsd")
++        || target.contains("illumos")
+         || target.contains("windows")
+         || target.contains("android")
+         || target.contains("ios")
+diff --git a/glutin_egl_sys/src/lib.rs b/glutin_egl_sys/src/lib.rs
+--- a/glutin_egl_sys/src/lib.rs
++++ b/glutin_egl_sys/src/lib.rs
+@@ -5,7 +5,8 @@
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "netbsd",
+-    target_os = "openbsd"
++    target_os = "openbsd",
++    target_os = "illumos"
+ ))]
+ #![allow(non_camel_case_types)]
+ #![allow(clippy::missing_safety_doc)]
+diff --git a/glutin_glx_sys/Cargo.toml b/glutin_glx_sys/Cargo.toml
+--- a/glutin_glx_sys/Cargo.toml
++++ b/glutin_glx_sys/Cargo.toml
+@@ -12,5 +12,5 @@ edition = "2021"
+ [build-dependencies]
+ gl_generator = "0.14"
+ 
+-[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os="dragonfly", target_os="netbsd", target_os="openbsd"))'.dependencies]
++[target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os="dragonfly", target_os="netbsd", target_os="openbsd", target_os="illumos"))'.dependencies]
+ x11-dl = "2.18.3"
+diff --git a/glutin_glx_sys/build.rs b/glutin_glx_sys/build.rs
+--- a/glutin_glx_sys/build.rs
++++ b/glutin_glx_sys/build.rs
+@@ -14,6 +14,7 @@ fn main() {
+         || target.contains("freebsd")
+         || target.contains("netbsd")
+         || target.contains("openbsd")
++        || target.contains("illumos")
+     {
+         let mut file = File::create(dest.join("glx_bindings.rs")).unwrap();
+         Registry::new(Api::Glx, (1, 4), Profile::Core, Fallbacks::All, [])
+diff --git a/glutin_glx_sys/src/lib.rs b/glutin_glx_sys/src/lib.rs
+--- a/glutin_glx_sys/src/lib.rs
++++ b/glutin_glx_sys/src/lib.rs
+@@ -3,7 +3,8 @@
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "netbsd",
+-    target_os = "openbsd"
++    target_os = "openbsd",
++    target_os = "illumos"
+ ))]
+ #![allow(clippy::missing_safety_doc)]
+ #![allow(clippy::manual_non_exhaustive)]
+-- 
+2.55.0
+

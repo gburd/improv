@@ -465,6 +465,39 @@ the recomputed revenue (1200):
 
 ![The GUI on a Postgres model](./img/gui-postgres.png)
 
+## Platforms
+
+| Platform | Status |
+|---|---|
+| Linux (Wayland, X11) | Builds and runs. |
+| FreeBSD | Builds and runs (X11). |
+| illumos (Solnix) | Builds with `ci/solnix-gui.sh` (below); runs in a Solnix COSMIC (Wayland) session. |
+| Windows 11 (x64, arm64) | Builds and runs; arm64 tested on santorini, x64 in CI. |
+| macOS | Builds and passes its tests in CI. |
+
+### illumos
+
+eframe draws with OpenGL through glutin, and glutin 0.32's EGL and GLX
+crates leave illumos out of their target lists, so it does not compile
+there as published. Until a glutin release has the fix
+(`docs/reviews/patches/glutin-illumos.patch`), build on a Solnix host
+with:
+
+```sh
+ci/solnix-gui.sh build --release   # or: ci/solnix-gui.sh test
+UMEM_OPTIONS=backend=mmap target/release/improv-gui sample.db
+```
+
+The script vendors the locked crates (`cargo vendor --locked`), applies
+Solnix's illumos fixups to them (the ones its own COSMIC applications are
+built with, found from the installed `cosmic-comp`), then the glutin
+patch, and builds with `--locked --offline` against the session's
+libxkbcommon, Wayland and Mesa. It needs rustup's
+`x86_64-unknown-illumos` toolchain, gcc and an installed COSMIC session;
+it vendors again only when `Cargo.lock` or the patch changes.
+`UMEM_OPTIONS=backend=mmap` is there because libumem's default allocator
+backend fails the renderer's first large allocation.
+
 ## Recording the movie and screenshots
 
 `docs/demo/gui-movie.sh` rebuilds the demo model, runs the GUI on a headless

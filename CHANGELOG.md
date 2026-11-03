@@ -104,6 +104,11 @@ this project follows [Semantic Versioning](https://semver.org/).
   New: `GET /v1/capabilities`, what the caller may do, for a GUI to grey
   out the rest. `GET /v1/model` is refused (403) for a model with
   policies.
+- **GUI on illumos: `ci/solnix-gui.sh`.** Builds and tests `improv-gui`
+  on Solnix the way Solnix builds its COSMIC applications: vendored crates,
+  Solnix's illumos fixups, and glutin's illumos patch
+  (`docs/reviews/patches/glutin-illumos.patch`, to be sent upstream),
+  `--locked --offline`. The guide's GUI page has a Platforms section.
 
 ### Changed
 
