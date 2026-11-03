@@ -912,4 +912,122 @@ mod tests {
         let shapes = paint(&data, ChartKind::Bar, false);
         assert_eq!(count(&shapes, is_bar), 2);
     }
+
+    /// `n` series named `s0`.. over `x` labels, every point 1.
+    fn many(n: usize, x: usize) -> ChartData {
+        ChartData {
+            x_title: "Time".into(),
+            x_labels: (0..x).map(|i| format!("x{i}")).collect(),
+            series: (0..n)
+                .map(|i| Series {
+                    name: format!("s{i}"),
+                    points: vec![Some(1.0); x],
+                })
+                .collect(),
+        }
+    }
+
+    /// A pie of two or more series lists its x labels, not the series, and
+    /// a legend longer than the graph stops at its bottom edge.
+    #[test]
+    fn a_pies_legend_lists_the_points_and_legends_stop_at_the_bottom() {
+        let shapes = paint(&many(2, 3), ChartKind::Pie, true);
+        let t = texts(&shapes);
+        assert!(t.iter().any(|x| x == "x2"), "{t:?}");
+        assert!(!t.iter().any(|x| x == "s1"), "{t:?}");
+        let swatch = |s: &Shape| matches!(s, Shape::Rect(r) if r.stroke == OUTLINE);
+        assert_eq!(count(&shapes, swatch), 3, "a swatch per x label");
+        // 40 rows at 16 px do not fit 400 px: the legend is cut.
+        let bars = paint(&many(40, 1), ChartKind::Bar, true);
+        let names = texts(&bars)
+            .into_iter()
+            .filter(|x| x.starts_with('s'))
+            .count();
+        assert!(names > 5 && names < 40, "{names} series named");
+        let pie = paint(&many(2, 40), ChartKind::Pie, true);
+        let labels = texts(&pie)
+            .into_iter()
+            .filter(|x| x.starts_with('x'))
+            .count();
+        assert!(labels > 5 && labels < 40, "{labels} points named");
+    }
+
+    /// A pie with nothing positive draws no wedge.
+    #[test]
+    fn a_pie_of_no_positive_values_is_empty() {
+        let data = ChartData {
+            x_title: "Product".into(),
+            x_labels: vec!["a".into(), "b".into()],
+            series: vec![Series {
+                name: String::new(),
+                points: vec![Some(-1.0), None],
+            }],
+        };
+        let shapes = paint(&data, ChartKind::Pie, true);
+        assert_eq!(count(&shapes, |s| matches!(s, Shape::Mesh(_))), 0);
+    }
+
+    /// Stock: the third series is the close, a tick right of the bar.
+    #[test]
+    fn a_stock_graph_ticks_the_close() {
+        let mut data = many(3, 2);
+        data.series[0].points = vec![Some(9.0), Some(8.0)];
+        data.series[1].points = vec![Some(2.0), Some(3.0)];
+        data.series[2].points = vec![Some(5.0), None];
+        let shapes = paint(&data, ChartKind::Stock, true);
+        let high_low =
+            |s: &Shape| matches!(s, Shape::LineSegment { stroke, .. } if stroke.width == 2.0);
+        assert_eq!(count(&shapes, high_low), 2);
+        let ticks = count(&shapes, |s| {
+            matches!(s, Shape::LineSegment { points, stroke }
+                if *stroke == OUTLINE && (points[1].x - points[0].x - 5.0).abs() < 1e-3)
+        });
+        assert_eq!(ticks, 1, "only the first x has a close");
+    }
+
+    /// A legend wider than the graph leaves no room to plot: nothing is
+    /// drawn but the white field.
+    #[test]
+    fn no_room_to_plot_draws_no_data() {
+        let mut data = many(2, 2);
+        data.series[0].name = "W".repeat(200);
+        let shapes = paint(&data, ChartKind::Bar, true);
+        assert_eq!(count(&shapes, is_bar), 0);
+        assert!(!texts(&shapes).iter().any(|t| t == "x0"));
+    }
+
+    /// A screen reader hears the graph's type, series and x axis, or "the
+    /// selection" when the x axis has no category.
+    #[test]
+    fn the_graph_is_described_to_a_screen_reader() {
+        let label = |data: &ChartData| {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, egui::vec2(600.0, 400.0))),
+                ..Default::default()
+            };
+            let out = ctx.test_ui(raw, |ui| {
+                egui::CentralPanel::default()
+                    .show(ui, |ui| render_chart(ui, data, ChartKind::Line, true));
+            });
+            out.platform_output
+                .accesskit_update
+                .expect("AccessKit is on")
+                .nodes
+                .iter()
+                .find(|(_, n)| n.role() == egui::accesskit::Role::Image)
+                .and_then(|(_, n)| n.label().map(str::to_owned))
+        };
+        let mut data = many(2, 3);
+        assert_eq!(
+            label(&data).as_deref(),
+            Some("Line graph of 2 series over Time")
+        );
+        data.x_title.clear();
+        assert_eq!(
+            label(&data).as_deref(),
+            Some("Line graph of 2 series over the selection")
+        );
+    }
 }
