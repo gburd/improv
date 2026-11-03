@@ -34,8 +34,8 @@ Next gates, in order:
    our horizontal shelf is structurally wrong), a numbered formula list,
    multiple matrices on a free-form canvas, nested headers with group
    summaries plus quoted/qualified names, then chrome. Attribution is split
-   Improv-derived vs Quantrix-derived; no pixel-fidelity claim to Improv 3.0
-   may rest on Quantrix screenshots.
+   Improv-derived vs Quantrix-derived; no pixel-fidelity claim to Improv
+   (1.0 for NeXT, the last NeXT release) may rest on Quantrix screenshots.
 4. Complete new/open/save-as, category/item creation, clipboard, range
    selection, undo/redo, and keyboard-only workflows.
 5. Qualify with screenshot comparisons at fixed DPI/geometry, pointer/key
@@ -222,7 +222,10 @@ Modeler. Parity status (drives the plan):
 - **Multiple saved views** per model — a named layout (which measure, category
   placement, sort/filter). *Planned* (a `View` on the model, persisted as
   datoms; see IMPROV.txt "View layer").
-- Charts on a view. *Planned*, lower priority.
+- Charts: Graph ▸ New Graph opens a NeXT graph window on the focused
+  worksheet's selection, in Improv 1.0's seven types and NeXT's named colors
+  (`gui::chart`; `docs/reviews/2026-11-02-nextstep-fidelity.md` §3.2). Not
+  saved with a view yet.
 
 ### 6.5 NeXTSTEP look-and-feel (GUI)
 
@@ -232,13 +235,22 @@ The GUI was rebuilt against supplied NeXTSTEP Improv and Quantrix references
 frame the grid, formulas are a numbered list, a view is a canvas of matrices,
 and names can be quoted. Steps 1/2/4 follow the NeXTSTEP screenshots; the
 canvas, tile chrome and status readout follow modern Quantrix, the drifted
-descendant — so pixel fidelity to Improv 3.0 remains unproven.
+descendant — so pixel fidelity remains unproven.
+
+**Target, settled 2026-11-02** (`docs/reviews/2026-11-02-nextstep-fidelity.md`):
+there was no Improv 2.x or 3.x for NeXT. The last NeXT release is **Improv 1.0
+(build 108r0, 1991) on NeXTSTEP 2.x**, so the chrome follows the NeXTSTEP 2
+user interface guidelines (*NEXTstep Concepts*, Dec 1990, ch. 2: 21 px title
+bars, an 8 px resize bar, key/main/other title bars) and the menus and key
+equivalents follow Improv 1.0's own main-menu nib, recovered from the
+archive.org beta disk image. Only facts with citations enter the repo; no Lotus
+or NeXT binary, artwork or font. That note ranks the remaining gaps.
 
 Historical note on the pre-rebuild state: The desktop GUI is
 built from general knowledge of the original NeXTSTEP Lotus Improv's
 description (gray desktop, beveled controls, drag-to-pivot category tiles), NOT
 from a side-by-side comparison against real screenshots or a recording of
-Improv 3.0 / Quantrix Modeler. Until that comparison happens, docs/README
+Improv / Quantrix Modeler. Until that comparison happens, docs/README
 should say "NeXTSTEP-inspired," never "identical." A real comparison (a
 screenshot or video frame from the actual applications) is the fastest way to
 close this gap — see the Phase A item in `.agent/AGENT_STEERING.md`.
@@ -247,7 +259,8 @@ The desktop GUI targets the look-and-feel of the original NeXTSTEP Lotus Improv:
 
 - **NeXTSTEP theme** (`gui::theme::next_style`) — NeXT's four-level grayscale
   (`theme::{BLACK, DARK_GRAY, LIGHT_GRAY, WHITE}` plus the `TROUGH` scroller
-  gray; no color anywhere): `#AAAAAA` panels and selection fill, white grid and
+  gray; no color in the chrome, only in graphs, which Improv drew in color on
+  a color NeXT): `#AAAAAA` panels and selection fill, white grid and
   text fields, black text and rules, square corners, 1 px strokes, dark-gray
   category tiles with white text. Text is the bundled Arimo 12 (OFL-1.1,
   `crates/gui/assets/fonts/`), registered by `theme::install_fonts` ahead of

@@ -107,6 +107,17 @@ criteria" are the bar. Mark tasks done there as they land.
   about 105 s; on 1.16.0 it didn't finish in 15 minutes. See
   `docs/reviews/2026-10-23-mentat-1.18-upgrade.md`. **0.11.0 is unblocked.**
 
+## GUI: NeXTSTEP fidelity pass (2026-11-02, work/next)
+
+Gap list and sources: `docs/reviews/2026-11-02-nextstep-fidelity.md` (target
+Improv 1.0 on NeXTSTEP 2.x; there was no Improv 2.x for NeXT). Done on
+work/next: color graphs in a NeXT graph window (gap 1), Improv 1.0's menus and
+key equivalents (2), NeXTSTEP 2 title and resize bars (3), key/main/other
+title bars, broken close box, miniaturize button (4, 5), the menu frame (6),
+scroller clicks (7), Edit ▸ Copy, Paste, Select All (8), formula status
+indicators (10). Next, ranked: the Inspector and Format panels (9), Print and
+Page Layout (11), context help (12), Improv's structured selection (13).
+
 ## Active priority — post-v0.7.0 hardening (2026-10-04)
 
 DONE on `main` (unreleased; see CHANGELOG "Unreleased"):
