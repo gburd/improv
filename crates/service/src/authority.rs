@@ -31,7 +31,9 @@ use improv_engine::{decode_coord, encode_coord, CellValue, CoordKey};
 use improv_nl_formula::{describe_formula, parse_nl_formula, NlContext};
 use improv_store::{ChangeSet, Store, StoreError};
 
-use crate::policy::{Action, Gate, Open, Policy, Principal, Resource};
+use std::sync::Arc;
+
+use crate::policy::{Access, Action, Gate, Open, Policy, Principal, Resource};
 
 /// Undo steps kept per session.
 const UNDO_DEPTH: usize = 100;
@@ -132,6 +134,9 @@ pub struct Authority {
     snapshot: Snapshot,
     log: VecDeque<Logged>,
     undo: HashMap<String, (Vec<Step>, Vec<Step>)>,
+    /// Bumped whenever the structure changes (a load, a structural
+    /// change): what a policy keys its sessions by.
+    structure_version: u64,
     /// Loads performed, so tests can see the cache work.
     pub loads: u64,
 }
@@ -154,6 +159,7 @@ impl Authority {
             snapshot: Snapshot::default(),
             log: VecDeque::new(),
             undo: HashMap::new(),
+            structure_version: 0,
             loads: 0,
         };
         a.reload().map_err(|r| r.body.error)?;
@@ -197,6 +203,7 @@ impl Authority {
         let model = store.load_model().map_err(Refusal::from)?;
         let tx = store.loaded_tx();
         self.loads += 1;
+        self.structure_version += 1;
         self.model = model;
         self.tx = tx;
         self.rebuild()
@@ -234,7 +241,7 @@ impl Authority {
     /// Serve one request for `who` in `session` (undo is per session).
     pub fn serve(&mut self, who: &Principal, session: &str, req: Request) -> Answer<Response> {
         self.refresh()?;
-        if !self.gate(who).sees_model() {
+        if !self.gate(&self.access(who)).sees_model() {
             return Err(Refusal::forbidden());
         }
         Ok(match req {
@@ -247,11 +254,17 @@ impl Authority {
         })
     }
 
-    fn gate<'a>(&'a self, who: &'a Principal) -> Gate<'a> {
+    /// `who`'s decisions over the current structure. The policy keeps one
+    /// per (structure, principal); see [`Policy::session`].
+    fn access(&self, who: &Principal) -> Arc<dyn Access> {
+        self.policy
+            .session(&self.model, self.structure_version, who)
+    }
+
+    fn gate<'a>(&'a self, access: &'a Arc<dyn Access>) -> Gate<'a> {
         Gate {
-            policy: &*self.policy,
+            access: &**access,
             model: &self.model,
-            who,
         }
     }
 
@@ -259,7 +272,8 @@ impl Authority {
 
     /// What `who` may see of the structure.
     pub fn structure(&self, who: &Principal) -> Structure {
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let m = &self.model;
         let mut cats: Vec<&improv_core_model::Category> = m.categories.values().collect();
         cats.sort_by_key(|c| c.id.0);
@@ -347,7 +361,8 @@ impl Authority {
 
     /// The visible cells of measure `id` at the items `w` names.
     pub fn window(&self, who: &Principal, id: u32, w: &WindowReq) -> Answer<Window> {
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let mid = MeasureId(id);
         if !g.sees_measure(mid) {
             return Err(Refusal::not_found("measure", id));
@@ -398,7 +413,7 @@ impl Authority {
                     .get(&(mid, decode_coord(&key)))
                     .map(WireValue::from_value)
             };
-            if let Some(value) = value.filter(|_| g.sees_cell(mid, &sorted)) {
+            if let Some(value) = value.filter(|_| g.sees_cell(mid, &decode_coord(&key))) {
                 cells.push(CellOut {
                     at: key.to_vec(),
                     value,
@@ -453,7 +468,8 @@ impl Authority {
         who: &Principal,
         e: &CellEdit,
     ) -> Answer<(MeasureId, Coordinate, Option<Value>)> {
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let mid = MeasureId(e.measure);
         let gone = || Refusal::not_found("such cell in measure", e.measure);
         let x = self
@@ -476,9 +492,7 @@ impl Authority {
                     .and_then(|i| self.model.items.get(i))
                     .is_some_and(|it| it.category == *c)
             });
-        let mut sorted = at;
-        sorted.sort();
-        if !fits || !g.sees_cell(mid, &sorted) {
+        if !fits || !g.sees_cell(mid, &coord) {
             return Err(gone());
         }
         if !x.is_input() {
@@ -494,7 +508,7 @@ impl Authority {
                 x.name.0
             )));
         }
-        if !g.edits_cell(mid, &sorted) {
+        if !g.edits_cell(mid, &coord) {
             return Err(gone());
         }
         let value = e
@@ -642,6 +656,7 @@ impl Authority {
         let changes = ChangeSet::between(&self.model, &candidate);
         self.save(&candidate, &changes)?;
         let mut previous = std::mem::replace(&mut self.model, candidate);
+        self.structure_version += 1;
         self.engine = engine;
         self.snapshot = snap;
         self.push_log(None);
@@ -651,7 +666,8 @@ impl Authority {
 
     /// The structure a request asks for, checked; nothing changes yet.
     fn plan(&self, who: &Principal, req: Request) -> Answer<(Model, String, Option<u32>)> {
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let m = &self.model;
         let mut c = structure_of(m);
         let need = |a: Action, r: Resource| match g.allows(a, &r) {
@@ -871,7 +887,7 @@ impl Authority {
                 let Some(old) = m.views.get(&vid).filter(|x| visible_view(&g, x).is_some()) else {
                     return Err(Refusal::not_found("view", id));
                 };
-                need(Action::ManageViews, Resource::View(id))?;
+                need(Action::ManageViews, Resource::View(ViewId(id)))?;
                 let name = v
                     .name
                     .as_deref()
@@ -892,7 +908,7 @@ impl Authority {
                 let Some(old) = m.views.get(&vid).filter(|x| visible_view(&g, x).is_some()) else {
                     return Err(Refusal::not_found("view", id));
                 };
-                need(Action::ManageViews, Resource::View(id))?;
+                need(Action::ManageViews, Resource::View(ViewId(id)))?;
                 c.views.remove(&vid);
                 (c, format!("deleted view {}", old.name.0), None)
             }
@@ -943,7 +959,8 @@ impl Authority {
     /// `Name = formula` makes a derived measure (or redefines one);
     /// `Name = LAMBDA(…)` a named LAMBDA; `name` alone an input measure.
     fn define(&self, who: &Principal, d: DefineReq) -> Answer<(Model, String, Option<u32>)> {
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let m = &self.model;
         let mut c = structure_of(m);
         if let Some(text) = d.definition.as_deref() {
@@ -1074,7 +1091,8 @@ impl Authority {
         id: u32,
         u: UpdateMeasureReq,
     ) -> Answer<(Model, String, Option<u32>)> {
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let m = &self.model;
         let mid = MeasureId(id);
         if !g.sees_measure(mid) {
@@ -1177,7 +1195,8 @@ impl Authority {
         };
         let result = match step {
             Step::Structure(s, cells) => {
-                let g = self.gate(who);
+                let access = self.access(who);
+                let g = self.gate(&access);
                 if !g.allows(Action::DefineMeasure, &Resource::Model)
                     || !g.allows(Action::EditStructure, &Resource::Model)
                 {
@@ -1245,18 +1264,15 @@ impl Authority {
         let Some(start) = self.log.iter().position(|l| l.version == since) else {
             return reload();
         };
-        let g = self.gate(who);
+        let access = self.access(who);
+        let g = self.gate(&access);
         let mut cells: BTreeMap<(u32, At), Option<WireValue>> = BTreeMap::new();
         for l in self.log.iter().skip(start + 1) {
             let Some(cs) = &l.cells else {
                 return reload();
             };
             for (m, key, v) in cs {
-                let at: Vec<(CategoryId, ItemId)> = key
-                    .iter()
-                    .map(|(c, i)| (CategoryId(*c), ItemId(*i)))
-                    .collect();
-                if g.sees_cell(*m, &at) {
+                if g.sees_cell(*m, &decode_coord(key)) {
                     cells.insert((m.0, key.to_vec()), v.clone());
                 }
             }

@@ -89,7 +89,7 @@ fn seeded() -> (Authority, String) {
 }
 
 fn ann() -> Principal {
-    Principal("ann".into())
+    Principal::user("ann")
 }
 
 fn done(a: &mut Authority, req: Request) -> improv_client::wire::Done {
@@ -596,7 +596,7 @@ fn a_hidden_item_measure_or_cell_is_absent_everywhere() {
             Action::ReadCell,
             Resource::Cell(
                 MeasureId(101),
-                vec![(CategoryId(1), ItemId(11)), (CategoryId(2), ItemId(20))],
+                Coordinate::from_pairs([(CategoryId(1), ItemId(11)), (CategoryId(2), ItemId(20))]),
             ),
         ),
     ]);
@@ -609,7 +609,7 @@ fn a_hidden_item_measure_or_cell_is_absent_everywhere() {
     );
     assert_eq!(s.measure(102).unwrap().formula, None, "it reads Price");
     // Bob, unrestricted, sees everything.
-    let bob = Principal("bob".into());
+    let bob = Principal::user("bob");
     assert!(serde_json::to_string(&a.structure(&bob))
         .unwrap()
         .contains("WidgetB"));
@@ -715,4 +715,47 @@ fn the_local_service_answers_and_pushes_changes() {
     m.add_category(CategoryId(9), "Region");
     other.save_model(&m).unwrap();
     assert!(matches!(&svc.poll()[..], [Event::Changed(c)] if c.reload));
+}
+
+#[test]
+fn a_request_asks_the_policy_for_one_session_not_one_per_cell() {
+    use crate::policy::{Access, Policy};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    struct Counting(Arc<AtomicUsize>, Arc<AtomicUsize>);
+    struct Counted(Arc<AtomicUsize>);
+    impl Policy for Counting {
+        fn session(&self, _: &Model, _: u64, _: &Principal) -> Arc<dyn Access> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Arc::new(Counted(self.1.clone()))
+        }
+    }
+    impl Access for Counted {
+        fn allowed(&self, _: Action, _: &Resource) -> bool {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        fn restricted(&self) -> bool {
+            true
+        }
+    }
+    let path = temp_path("m.db");
+    improv_store::Store::open(&path)
+        .unwrap()
+        .save_model(&revenue_model())
+        .unwrap();
+    let (sessions, checks) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+    let mut a = Authority::with_policy(&path, Box::new(Counting(sessions.clone(), checks.clone())))
+        .unwrap();
+    sessions.store(0, Ordering::Relaxed);
+    a.serve(&ann(), "s", Request::Window(102, WindowReq::default()))
+        .unwrap();
+    assert_eq!(
+        sessions.load(Ordering::Relaxed),
+        2,
+        "the model check and the window"
+    );
+    // Restricted: each of the 4 cells is one class lookup, plus its measure
+    // and items, and the model.
+    assert!(checks.load(Ordering::Relaxed) <= 16, "{checks:?}");
 }

@@ -95,7 +95,7 @@ async fn serve(
     }
     let writes = req.writes();
     let st = state.clone();
-    let who = Principal(caller.name.clone());
+    let who = Principal::user(caller.name.clone());
     let r = tokio::task::spawn_blocking(move || {
         // Writes here and through the older routes go one at a time.
         let _write = writes.then(|| st.write_lock.blocking_lock());
@@ -350,7 +350,7 @@ pub async fn changes(
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned)
     });
-    let who = Principal(caller.name.clone());
+    let who = Principal::user(caller.name.clone());
     // The first look: the current version, or the gap since `since`.
     let st = state.clone();
     let w = who.clone();
