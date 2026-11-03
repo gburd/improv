@@ -200,6 +200,15 @@ jobs:
         with:
           persist-credentials: false
           path: improv
+      # An instrumented build of the whole workspace and its cache filled
+      # the runner's disk ("No space left on device"): drop the preinstalled
+      # SDKs this job never uses first (about 30 GB).
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo find /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL -mindepth 1 -delete 2>/dev/null || true
+          df -h /
       - name: Install bubblewrap and python3
         # ubuntu-24.04 restricts unprivileged user namespaces (AppArmor), which
         # bwrap needs; lift it so the sandboxed extfn paths run, not fail.
