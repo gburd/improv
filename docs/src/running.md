@@ -184,7 +184,7 @@ carry code or SQL.
 | Behavior | Default | Override |
 | --- | --- | --- |
 | External functions run sandboxed (bubblewrap: read-only `/usr`, no `$HOME`, no network, cleared env, rlimits) | always, regardless of the model's `pure` flag | `IMPROV_EXTFN_TRUSTED=1` (host decides, never the model) |
-| No bubblewrap installed | **refuse** to run external functions | `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1` (rlimits only) |
+| No bubblewrap installed | **refuse** to run external functions | `IMPROV_EXTFN_ALLOW_UNSANDBOXED=1` (rlimits only; not on macOS, which refuses one of the ceilings, so there use `IMPROV_EXTFN_TRUSTED=1`) |
 | Server's refresh scheduler | **off** | `IMPROV_SCHEDULER=1` plus `IMPROV_EXTFN_ALLOW=<file>` listing `sha256(name\0body)` digests |
 | Server with no token on a non-loopback address | **refuses to start** | `IMPROV_ALLOW_OPEN=1` |
 | Read-only API tokens | none | `IMPROV_API_TOKENS_RO=a,b` |
