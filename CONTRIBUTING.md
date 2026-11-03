@@ -122,6 +122,14 @@ scripts/gui-shot-check.sh            # 0 pixels differ
 
 Look at the new golden before committing it.
 
+The COSMIC GUI has its own: CI's `cosmic-shot` job runs
+`scripts/cosmic-shot-check.sh`, which renders the same demo model in
+`improv-cosmic` under Xvfb (the window captures itself, with an empty
+`XDG_CONFIG_HOME` so libcosmic's default dark theme is used) and fails
+above 200 pixels off `docs/reviews/golden/cosmic-1200x800.png`. A change
+to its look refreshes the golden with `scripts/cosmic-shot-check.sh
+--update`, made in the `rust:1.97-trixie` container as for `gui-shot`.
+
 ## Docs
 
 If you change a public API, the CLI surface, the formula/CNL grammar, the
