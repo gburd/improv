@@ -16,8 +16,13 @@ stages 1-4 in 0.13).
 
 - **Stage 1 DONE** (`work/sec`): `crates/policy` (`improv_policy`), the
   `:policy/*` Mentat attributes, `improv policy …`, `docs/src/policies.md`.
-- **NEXT:** stage 2, improv-server enforcement; then stage 3, pg_improv
-  (gated with `ci/pg_improv.sh` 15-18), then stage 4, TLS.
+- **Stage 2 DONE** (`work/sec-stage2`): `improv_service::cedar::CedarPolicy`
+  behind web's `Policy` seam; improv-server enforces on every route (GUI
+  and older ones), `GET /v1/capabilities`, `/v1/model` refused under
+  policies; the policy version is read per request (part of every
+  session key); the principal is `Caller::principal()` (token name).
+- **NEXT:** stage 3, pg_improv (gated with `ci/pg_improv.sh` 15-18 in
+  podman), then stage 4, TLS.
 - **Rule for every front end:** a client under a read policy never
   computes derived values itself; it reads them, and what-ifs, from the
   authority. Hidden is absent. Versions are opaque. (`improv_client`'s
