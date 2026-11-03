@@ -18,6 +18,7 @@ mod csv_wizard;
 // Shared with the TUI, the server and the browser (improv_client).
 use improv_client::{completion, diagnostics, function_help};
 mod formula_highlight;
+mod help;
 mod menu;
 mod nxwin;
 mod print;

@@ -19,6 +19,12 @@ use crate::theme::{BLACK, BOLD, DARK_GRAY, LIGHT_GRAY, WHITE};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Command {
     InfoPanel,
+    /// Info ▸ Context Help… (Command-?): the help page for the window in
+    /// front.
+    ContextHelp,
+    /// Info ▸ Point for Help: the next click opens the help page for what
+    /// it lands on.
+    PointForHelp,
     /// File ▸ New: ask for a path and start an empty model there.
     NewModel,
     /// File ▸ Open…: ask for a store path or `postgres://` URL and open it.
@@ -127,7 +133,11 @@ const MENU: &[(&str, Option<char>, Top)] = &[
     (
         "Info",
         None,
-        Top::Sub(&[("Info Panel…", None, Some(C::InfoPanel))]),
+        Top::Sub(&[
+            ("Info Panel…", None, Some(C::InfoPanel)),
+            ("Context Help…", Some('?'), Some(C::ContextHelp)),
+            ("Point for Help", None, Some(C::PointForHelp)),
+        ]),
     ),
     (
         "File",
@@ -243,7 +253,9 @@ pub struct MenuState {
 
 /// Map a key equivalent (pressed with Ctrl/Cmd) to its command, read off the
 /// [`MENU`] tree so the two can't disagree: a lowercase letter is the plain
-/// chord, an uppercase one the chord with Shift. Y is a Redo alias.
+/// chord, an uppercase one the chord with Shift; a key that is not a letter
+/// (`?`, `/`) matches either way, since typing it may take Shift. Y is a
+/// Redo alias.
 pub fn key_command(key: Key, shift: bool) -> Option<Command> {
     if key == Key::Y {
         return Some(C::Redo);
@@ -255,7 +267,10 @@ pub fn key_command(key: Key, shift: bool) -> Option<Command> {
         return None;
     }
     keyed_items()
-        .find(|(k, _)| Key::from_name(&k.to_string()) == Some(key) && k.is_uppercase() == shift)
+        .find(|(k, _)| {
+            Key::from_name(&k.to_string()) == Some(key)
+                && (!k.is_alphabetic() || k.is_uppercase() == shift)
+        })
         .and_then(|(_, c)| c)
 }
 
@@ -930,9 +945,12 @@ mod tests {
                 c
             };
             assert_eq!(key_command(key, k.is_uppercase()), want, "{k:?}");
+            if !k.is_alphabetic() {
+                assert_eq!(key_command(key, true), want, "{k:?} with Shift");
+            }
             n += 1;
         }
-        assert_eq!(n, 19, "o n s S W z Z x c v a F r V w / p h q");
+        assert_eq!(n, 20, "? o n s S W z Z x c v a F r V w / p h q");
     }
 
     #[test]
@@ -950,6 +968,7 @@ mod tests {
         assert_eq!(key_command(Key::R, false), Some(C::Recalculate));
         assert_eq!(key_command(Key::V, true), Some(C::AddMatrix));
         assert_eq!(key_command(Key::Slash, false), Some(C::PivotRotate));
+        assert_eq!(key_command(Key::Questionmark, true), Some(C::ContextHelp));
         assert_eq!(
             key_command(Key::V, false),
             None,

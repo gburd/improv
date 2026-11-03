@@ -75,6 +75,12 @@ this project follows [Semantic Versioning](https://semver.org/).
   (Ctrl+Shift+W, Improv's) closes the model to an empty desk, warning
   first about unsaved edits as Quit does. View ▸ Close Window takes
   NeXTSTEP's Ctrl+W.
+- **GUI: context help (fidelity gap 12).** Info ▸ Context Help… (Ctrl+?)
+  opens a Help window on the page for the window in front; Info ▸ Point
+  for Help turns the pointer into a question mark, and the next click
+  opens the page for what it lands on (the menu, a panel, a worksheet's
+  tiles, grid or formulas) without acting on it. Each page links to its
+  section of the user guide.
 
 - **Access policies, in Cedar.** A model can carry policies, written in
   [Cedar](https://www.cedarpolicy.com), that say per user, role and group

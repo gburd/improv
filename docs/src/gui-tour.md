@@ -36,7 +36,8 @@ The window has five regions:
   a submenu to its right; click it again, press Escape or click elsewhere to
   close it. The menus are Lotus Improv 1.0's, in its order and with its
   key equivalents, holding the commands this GUI has. **Info ▸ Info
-  Panel…** shows or hides the Info panel. **File ▸ Open…** opens a store
+  Panel…** shows or hides the Info panel; **Context Help…** and **Point
+  for Help** open the Help window (see [Context help](#context-help)). **File ▸ Open…** opens a store
   file or URL and **New** starts an empty model (type a new file, a
   `postgres://` URL, or nothing for an in-memory one), both in a small
   panel whose path field has the keyboard (Esc closes it); **Save** saves
@@ -372,6 +373,7 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 
 | Keys | Command | Menu |
 | --- | --- | --- |
+| Ctrl+? | Context Help… | Info |
 | Ctrl+O | Open… | File |
 | Ctrl+N | New | File |
 | Ctrl+S | Save | File |
@@ -417,6 +419,18 @@ its row and column items and its value (`2025, WidgetA: 100`), a tile by
 its category and axis, and text fields by what they ask for. The four
 grays meet WCAG contrast: black text is 21:1 on cells and 9:1 on panels,
 white tile text 7.5:1.
+
+## Context help
+
+**Info ▸ Context Help…** (Ctrl+?) opens the Help window on the page for
+the window in front: the Inspector's page when the Inspector was the last
+window clicked, the worksheet's when a worksheet was. **Info ▸ Point for
+Help** turns the pointer into a question mark: the next click opens the
+page for what it lands on (the menu, a panel, or a worksheet's tiles, grid
+or formula pane) and does nothing else; Esc cancels. Each page is a few
+lines, with **More in the User Guide** to open its section of this guide
+and its own **Point for Help** button. Help ▸ Functions… (F1) is the
+function browser.
 
 ## Function help
 

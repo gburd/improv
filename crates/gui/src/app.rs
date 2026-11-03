@@ -396,6 +396,14 @@ pub struct ImprovApp {
     show_report_layout: bool,
     /// Print…, while its panel is open.
     print_panel: Option<PrintPanel>,
+    /// The help page shown (Info ▸ Context Help…, Point for Help).
+    help: Option<crate::help::Topic>,
+    /// Point for Help is waiting for its click; and the click, taken from
+    /// the frame's input before egui saw it ([`Self::take_help_click`]).
+    pointing: bool,
+    help_click: Option<egui::Pos2>,
+    /// The window in front as the frame began: Context Help's context.
+    front: Option<egui::LayerId>,
     /// The function help browser (Help ▸ Functions…, F1).
     fn_help: crate::function_help::Browser,
     /// The formula editor last focused: where the help browser inserts.
@@ -611,7 +619,7 @@ const CASCADE: f32 = 24.0 + WINDOW_GAP;
 const STATUS_TTL: f64 = 5.0;
 
 /// The published user guide Help ▸ User Guide opens.
-const USER_GUIDE: &str = "https://gburd.github.io/improv/";
+const USER_GUIDE: &str = crate::help::GUIDE;
 
 /// Help ▸ Keys…'s keys beyond the menu's key equivalents (which it reads
 /// from the menu): `(keys, what they do)`.
@@ -1664,6 +1672,10 @@ impl ImprovApp {
             show_page_layout: false,
             show_report_layout: false,
             print_panel: None,
+            help: None,
+            pointing: false,
+            help_click: None,
+            front: None,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -4851,6 +4863,10 @@ impl eframe::App for ImprovApp {
         self.frame(ui);
     }
 
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.take_help_click(raw);
+    }
+
     /// Never exit with a save still running (H3).
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         if let Err(e) = self.finish_saves() {
@@ -4864,6 +4880,7 @@ impl ImprovApp {
     /// windows (which float on the context).
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = &ui.ctx().clone();
+        self.front = ctx.top_layer_id();
         self.poll_load(ctx);
         if self.loading.is_some() {
             // The menu (Quit, Hide), the status bar and a placeholder desk.
@@ -4875,6 +4892,7 @@ impl ImprovApp {
             return;
         }
         self.run_queued_import(ctx);
+        self.point_for_help(ctx);
         self.poll_saves(ctx);
         // The close box waits for the running save, and warns once if a
         // change was not saved.
@@ -4900,6 +4918,7 @@ impl ImprovApp {
         self.page_layout_panel(ctx, ws);
         self.report_layout_panel(ctx, ws);
         self.print_window(ctx, ws);
+        self.help_window(ctx, ws);
         self.graph_window(ctx, ws);
         self.function_help(ctx, ws);
         self.keys_panel(ctx, ws);
@@ -5012,6 +5031,11 @@ impl ImprovApp {
         }
         match c {
             Command::InfoPanel => self.show_inspector = !self.show_inspector,
+            Command::ContextHelp => self.help = Some(self.context_topic()),
+            Command::PointForHelp => {
+                self.pointing = true;
+                self.status = "Point for Help: click what you want help on (Esc cancels)".into();
+            }
             // Brought up, not toggled, as NeXT panels are; the close box
             // puts them away.
             Command::Inspector => {
@@ -6564,6 +6588,125 @@ impl ImprovApp {
         } else {
             said.join("; ")
         }
+    }
+
+    /// Point for Help's click: taken out of the frame's raw input before
+    /// egui reads it (eframe's `raw_input_hook`), so the click only asks.
+    pub(crate) fn take_help_click(&mut self, raw: &mut egui::RawInput) {
+        if self.pointing {
+            if let Some(at) = crate::help::take_click(raw) {
+                self.pointing = false;
+                self.help_click = Some(at);
+            }
+        }
+    }
+
+    /// Point for Help, each frame: the question-mark pointer while it waits
+    /// (Esc cancels), then the page for what the click landed on.
+    fn point_for_help(&mut self, ctx: &egui::Context) {
+        if self.pointing {
+            ctx.set_cursor_icon(egui::CursorIcon::Help);
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.pointing = false;
+                self.status = "Point for Help cancelled".into();
+            }
+        }
+        if let Some(at) = self.help_click.take() {
+            let layer = ctx.layer_id_at(at);
+            self.help = Some(self.topic_at(layer, Some(at)));
+            self.status.clear();
+        }
+    }
+
+    /// The help page for the window in front (Info ▸ Context Help…): the
+    /// last one raised, as Improv's showed the page for the current window.
+    /// Read from the frame's start ([`Self::front`]): the windows shown
+    /// this frame may already have asked to be raised.
+    fn context_topic(&self) -> crate::help::Topic {
+        self.topic_at(self.front, None)
+    }
+
+    /// The help page for `layer` and, in a worksheet window, the point `at`
+    /// in it: its tiles, its grid or its formula pane.
+    fn topic_at(&self, layer: Option<egui::LayerId>, at: Option<egui::Pos2>) -> crate::help::Topic {
+        use crate::help::topic;
+        const PANELS: &[&str] = &[
+            "browser",
+            "info",
+            "inspector",
+            "format",
+            "print",
+            "page_layout",
+            "report_layout",
+            "graph",
+            "fnhelp",
+            "keys",
+            "file_panel",
+            "delete_panel",
+            "help",
+        ];
+        let Some(layer) = layer else {
+            return crate::help::IMPROV;
+        };
+        let id = layer.id;
+        let menu = menu::menu_id();
+        if id == menu || (0..16).any(|i| id == menu.with(("sub", i))) {
+            return topic("menu");
+        }
+        if let Some(name) = PANELS
+            .iter()
+            .find(|n| id == crate::nxwin::NxWindow::new(**n, "").id())
+        {
+            return topic(name);
+        }
+        let Some(m) = self.matrices.iter().find(|m| matrix_window_id(m.uid) == id) else {
+            return crate::help::IMPROV;
+        };
+        match (at, m.gutters) {
+            (Some(p), Some(g)) if g.top.contains(p) || g.well.contains(p) => topic("tiles"),
+            (Some(p), Some(g)) if p.y > g.well.bottom() => topic("formulas"),
+            _ => topic("worksheet"),
+        }
+    }
+
+    /// The help window: a NeXT panel with the page's title and text, a
+    /// button to its section of the user guide, and Point for Help.
+    fn help_window(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let Some(t) = self.help else {
+            return;
+        };
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.center().x - 60.0, ws.bottom() - 168.0),
+            egui::vec2(340.0, 160.0),
+        );
+        let win = crate::nxwin::NxWindow::new("help", "Help");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let (mut open, mut guide, mut point) = (true, false, false);
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(8.0).show(ui, |ui| {
+                    ui.heading(t.title);
+                    ui.add_space(4.0);
+                    ui.add(egui::Label::new(t.text).wrap());
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        guide = ui.button("More in the User Guide").clicked();
+                        point = ui.button("Point for Help").clicked();
+                    });
+                });
+            });
+        if guide {
+            let url = format!("{}{}", crate::help::GUIDE, t.guide);
+            ctx.open_url(egui::OpenUrl::new_tab(&url));
+            self.status = format!("opening {url}");
+        }
+        if point {
+            self.run_command(ctx, Command::PointForHelp);
+        }
+        self.help = if open { self.help } else { None };
     }
 
     /// The focused worksheet as Print… lays it out: its item names and
@@ -9994,6 +10137,10 @@ mod tests {
             show_page_layout: false,
             show_report_layout: false,
             print_panel: None,
+            help: None,
+            pointing: false,
+            help_click: None,
+            front: None,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -12464,7 +12611,9 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        // Exactly what eframe runs each frame (App::ui).
+        // Exactly what eframe runs each frame (raw_input_hook, App::ui).
+        let mut raw = raw;
+        app.take_help_click(&mut raw);
         ctx.test_ui(raw, |ui| {
             app.frame(ui);
             inspect(&ui.ctx().clone());
@@ -17448,6 +17597,100 @@ mod tests {
             menu::key_command(egui::Key::W, true),
             Some(Command::CloseModel)
         );
+    }
+
+    /// Gap 12: Info ▸ Point for Help sets the question-mark pointer; the
+    /// next click opens the page for what it lands on and does nothing else
+    /// (a cell click does not move the cursor). Tiles, the grid and the
+    /// formula pane have pages of their own.
+    #[test]
+    fn point_for_help_opens_the_page_for_what_is_clicked() {
+        let (mut app, mut desk) = grid_desk();
+        let point = |app: &mut ImprovApp, desk: &mut Desk, at: egui::Pos2| {
+            app.run_command(&desk.ctx, Command::PointForHelp);
+            let out = desk.frame(app, Vec::new());
+            assert_eq!(out.platform_output.cursor_icon, egui::CursorIcon::Help);
+            desk.click(app, at);
+            assert!(!app.pointing);
+            app.help.expect("a page").title
+        };
+        let cell = cell_rect(&desk, &app, 1, 1);
+        assert_eq!(point(&mut app, &mut desk, cell.center()), "Worksheet");
+        assert_eq!(app.focused().cursor_row, 0, "the click only asked");
+        let g = app.matrices[0].gutters.unwrap();
+        assert_eq!(
+            point(&mut app, &mut desk, g.well.center()),
+            "Category tiles"
+        );
+        let row = app.formula_row_rects[0].1;
+        assert_eq!(point(&mut app, &mut desk, row.center()), "Formulas");
+        let menu = desk.ctx.memory(|m| m.area_rect(menu::menu_id())).unwrap();
+        assert_eq!(point(&mut app, &mut desk, menu.center()), "The main menu");
+        let browser = crate::nxwin::stored_rect(&desk.ctx, panel_win("browser")).unwrap();
+        assert_eq!(
+            point(&mut app, &mut desk, browser.center()),
+            "Model Browser"
+        );
+        let texts = texts_of(&desk.frame(&mut app, Vec::new()));
+        assert!(
+            texts.iter().any(|t| t == "More in the User Guide"),
+            "{texts:?}"
+        );
+        // Esc cancels; the next click is an ordinary one.
+        app.run_command(&desk.ctx, Command::PointForHelp);
+        let esc = egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = desk.frame(&mut app, vec![esc]);
+        assert!(!app.pointing);
+        desk.click(&mut app, cell.center());
+        assert_eq!(app.focused().cursor_row, 1, "a click again");
+        // Its close box closes the page.
+        let close = close_box_of(&desk.ctx, panel_win("help")).expect("shown");
+        desk.click(&mut app, close.center());
+        assert!(app.help.is_none());
+    }
+
+    /// Gap 12: Info ▸ Context Help… (Ctrl+?) opens the page for the window
+    /// in front: the last one raised.
+    #[test]
+    fn context_help_opens_the_page_for_the_window_in_front() {
+        let (mut app, mut desk) = grid_desk();
+        let help = egui::Event::Key {
+            key: egui::Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        };
+        let cell = cell_rect(&desk, &app, 0, 0);
+        desk.click(&mut app, cell.center());
+        let released = egui::Event::Key {
+            key: egui::Key::Questionmark,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        };
+        let _ = desk.frame(&mut app, vec![help.clone(), released]);
+        assert_eq!(app.help.expect("Ctrl+? opens it").title, "Worksheet");
+
+        app.run_command(&desk.ctx, Command::Inspector);
+        desk.settle(&mut app);
+        // Raised by a click on its title bar, as a user brings a window up.
+        let r = crate::nxwin::stored_rect(&desk.ctx, panel_win("inspector")).unwrap();
+        desk.click(&mut app, r.left_top() + egui::vec2(40.0, 8.0));
+        app.help = None;
+        let _ = desk.frame(&mut app, vec![help]);
+        assert_eq!(app.help.expect("shown again").title, "Inspector");
+        // Every window the app names has a page.
+        for n in crate::help::names() {
+            assert_ne!(crate::help::topic(n), crate::help::IMPROV, "{n}");
+        }
     }
 
     /// Graph ▸ New Graph opens a NeXT graph window named for the worksheet,
