@@ -20,6 +20,7 @@ use improv_client::{completion, diagnostics, function_help};
 mod formula_highlight;
 mod menu;
 mod nxwin;
+mod print;
 mod theme;
 
 /// Tests run egui frames by hand and never paint them; egui 0.37 asserts

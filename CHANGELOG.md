@@ -61,6 +61,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   Format Panel… (Ctrl+Shift+F) has Number (General or Specific decimal
   places, Commas) and Alignment (Smart, Left, Center, Right) over a
   sample, applied by Set. Both follow the focused worksheet.
+- **GUI: Print…, Page Layout… and Report Layout… (fidelity gap 11).**
+  Print… (Ctrl+P) prints the focused worksheet as it shows, paged with
+  the item names repeated, with Copies, a page range and Print Selected
+  Data Only: to CUPS's `lp` or BSD `lpr` (PDF to CUPS, PostScript to
+  illumos's LP and `lpr`), through the Windows print dialog, or saved as
+  PDF or PostScript. Format ▸ Page Layout… sets the paper (Letter, Legal,
+  A4), orientation and scale; Format ▸ Report Layout… the header and
+  footer with Improv's markers (`<Date>`, `<Page #>`, …), the first page
+  number, the page order and the content (data, formulas).
 
 - **Access policies, in Cedar.** A model can carry policies, written in
   [Cedar](https://www.cedarpolicy.com), that say per user, role and group

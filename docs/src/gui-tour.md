@@ -52,8 +52,10 @@ The window has five regions:
   [Building a model from scratch](#building-a-model-from-scratch)),
   **Rename** and **Delete…** (see [Renaming and
   deleting](#renaming-and-deleting)). **Format** has the **Format
-  Panel…** and sets how the selected measure's numbers show (see [Number
-  formats](#number-formats)).
+  Panel…**, sets how the selected measure's numbers show (see [Number
+  formats](#number-formats)), and has **Report Layout…** and **Page
+  Layout…** (see [Printing](#printing)). **Print…** prints the focused
+  worksheet.
   **Worksheet** has **Recalculate** (the formula pane's Calc) and **Save
   View**. **View** has **New View**, another worksheet window on the
   model, **Close Window**, and **Swap Rows/Columns**, then the saved
@@ -283,6 +285,40 @@ Inspector also had its recalculation controls and group-collapse and
 page-break markers, and its Format panel Line Style, Color, custom and
 date/time pages; those have no engine or view state to set here.
 
+## Printing
+
+**Print…** (Ctrl+P) prints the focused worksheet as it shows: its item
+names and cells in their number format and alignment, ruled as the
+Inspector's Grid page says, split across as many pages as it needs with
+the item names repeated on each. The Print panel has **Copies**, **Pages**
+(All, or From and To), and **Print Selected Data Only** (when more than
+one cell is selected), then:
+
+- **Print**: to the platform's print system. On Linux, macOS and the BSDs
+  that is CUPS's `lp` (or BSD `lpr`), sent as PDF; on illumos the LP
+  service's `lp`, sent as PostScript. **Printer** names a queue; empty is
+  the default one. On Windows, Print opens the Windows print dialog and
+  prints with the printer it picks. With no `lp` or `lpr`, Print is grayed.
+- **Save as PDF** and **Save as PostScript**: write the pages to **File**
+  (`.pdf` or `.ps`; it starts as the model's name).
+
+**Format ▸ Page Layout…** sets the **Paper Size** (Letter, Legal, A4), the
+**Orientation** (Portrait or Landscape) and the **Scale** (50% prints at
+half size, so more fits on a page).
+
+**Format ▸ Report Layout…** sets the **Header** and **Footer**, each with
+a left, a centered and a right part, the **First Page Number**, **Number
+Pages** (Top to Bottom: down a column of pages first; Left to Right:
+across first), and the **Content**: **Data** (the items and cells),
+**Formulas** (the numbered formula list, on pages of its own), or both.
+A header or footer can hold Improv's markers, typed or inserted from its
+field's right-click menu: `<Date>`, `<Time>`, `<View Name>`, `<Worksheet
+Name>`, `<Model Name>` and `<Page #>`. The default header is the worksheet's
+name and the default footer `Page <Page #>`.
+
+The layouts are kept for the session, not saved with the model yet.
+Pages are in Helvetica, which every printer and PDF reader has.
+
 ## Graphs
 
 **Graph ▸ New Graph** charts the focused worksheet in a graph window,
@@ -345,14 +381,15 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+V | Paste | Edit |
 | Ctrl+A | Select All | Edit |
 | Ctrl+Shift+F | Format Panel… | Format |
+| Ctrl+P | Print… | main menu |
 | Ctrl+R | Recalculate | Worksheet |
 | Ctrl+Shift+V | New View | View |
 | Ctrl+/ | Swap Rows/Columns | View |
 | Ctrl+H | Hide | main menu |
 | Ctrl+Q | Quit | main menu |
 
-Improv's other equivalents (Ctrl+X cut; Ctrl+P print; Ctrl+W close;
-Ctrl+T Font panel) belong to commands not built yet, so they do nothing.
+Improv's other equivalents (Ctrl+X cut; Ctrl+W close; Ctrl+T Font
+panel) belong to commands not built yet, so they do nothing.
 
 ## Copy and paste
 

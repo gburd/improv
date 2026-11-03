@@ -49,6 +49,12 @@ pub enum Command {
     /// Format ▸ Format Panel… (Command-Shift-f): Improv's Format panel
     /// (Number, Alignment).
     FormatPanel,
+    /// Format ▸ Report Layout…: header, footer, page order and content.
+    ReportLayout,
+    /// Format ▸ Page Layout…: paper, orientation and scale.
+    PageLayout,
+    /// Print… (Command-p): the Print panel for the focused worksheet.
+    Print,
     PivotRotate,
     AddMatrix,
     RemoveMatrix,
@@ -110,8 +116,7 @@ use Command as C;
 /// §3.1), holding the commands this app has. What Improv did not have (Undo,
 /// Format's decimals, the CSV wizard, Help) sits at the end of the menu it
 /// fits. Rows Improv had that are not built here are left out rather than
-/// drawn disabled, except Print… and Services, which NeXT puts in every
-/// main menu.
+/// drawn disabled, except Services, which NeXT puts in every main menu.
 const MENU: &[(&str, Option<char>, Top)] = &[
     (
         "Info",
@@ -160,6 +165,8 @@ const MENU: &[(&str, Option<char>, Top)] = &[
             ("3 Decimals", None, Some(C::Decimals(Some(3)))),
             ("4 Decimals", None, Some(C::Decimals(Some(4)))),
             ("Thousands Separators", None, Some(C::Grouping)),
+            ("Report Layout…", None, Some(C::ReportLayout)),
+            ("Page Layout…", None, Some(C::PageLayout)),
         ]),
     ),
     (
@@ -184,7 +191,7 @@ const MENU: &[(&str, Option<char>, Top)] = &[
         None,
         Top::Sub(&[("New Graph", None, Some(C::NewGraph))]),
     ),
-    ("Print…", Some('p'), Top::Leaf(None)),
+    ("Print…", Some('p'), Top::Leaf(Some(C::Print))),
     ("Services", None, Top::Sub(&[])),
     (
         "Help",
@@ -837,7 +844,7 @@ mod tests {
     #[test]
     fn disabled_rows_return_nothing() {
         let mut h = Harness::new();
-        assert_eq!(h.click_row(menu_id(), top("Print…")), None);
+        assert_eq!(h.click_row(menu_id(), top("Print…")), Some(C::Print));
         assert_eq!(h.click_row(menu_id(), top("Services")), None);
         assert_eq!(h.state.open, None, "an empty submenu doesn't open");
 
@@ -937,7 +944,7 @@ mod tests {
             "Paste comes as egui's event"
         );
         assert_eq!(key_command(Key::C, false), None, "so does Copy");
-        assert_eq!(key_command(Key::P, false), None, "Print is disabled");
+        assert_eq!(key_command(Key::P, false), Some(C::Print));
         assert_eq!(key_command(Key::A, false), Some(C::SelectAll));
         assert_eq!(key_command(Key::F, true), Some(C::FormatPanel));
         assert_eq!(key_command(Key::F, false), None, "Command-f is Find");

@@ -2895,6 +2895,7 @@ dependencies = [
 name = "improv_gui"
 version = "0.12.2"
 dependencies = [
+ "chrono",
  "clap",
  "eframe",
  "egui",
@@ -2909,6 +2910,7 @@ dependencies = [
  "mentatdb",
  "postgres",
  "thiserror 2.0.20",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

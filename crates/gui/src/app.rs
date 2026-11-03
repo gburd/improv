@@ -216,6 +216,20 @@ impl<P> Panel<P> {
     }
 }
 
+/// The Print panel's fields.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PrintPanel {
+    copies: u32,
+    /// Pages From and To; `None` prints them all.
+    pages: Option<(usize, usize)>,
+    /// Print Selected Data Only.
+    selection: bool,
+    /// The printer, empty for the default (Unix spoolers).
+    printer: String,
+    /// Save as PDF or PostScript: this path.
+    path: String,
+}
+
 /// One of the formula pane's two editors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FormulaEditor {
@@ -374,6 +388,14 @@ pub struct ImprovApp {
     inspector: Option<Panel<InspectorPage>>,
     /// Format ▸ Format Panel… (Number, Alignment), while it is open.
     format_panel: Option<Panel<FormatPage>>,
+    /// Format ▸ Page Layout… and Report Layout…, for every print; and
+    /// which of their panels is open.
+    page_layout: crate::print::PageLayout,
+    report_layout: crate::print::ReportLayout,
+    show_page_layout: bool,
+    show_report_layout: bool,
+    /// Print…, while its panel is open.
+    print_panel: Option<PrintPanel>,
     /// The function help browser (Help ▸ Functions…, F1).
     fn_help: crate::function_help::Browser,
     /// The formula editor last focused: where the help browser inserts.
@@ -1637,6 +1659,11 @@ impl ImprovApp {
             show_keys: false,
             inspector: None,
             format_panel: None,
+            page_layout: Default::default(),
+            report_layout: Default::default(),
+            show_page_layout: false,
+            show_report_layout: false,
+            print_panel: None,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -4870,6 +4897,9 @@ impl ImprovApp {
         self.info_panel(ctx, ws);
         self.inspector_panel(ctx, ws);
         self.format_window(ctx, ws);
+        self.page_layout_panel(ctx, ws);
+        self.report_layout_panel(ctx, ws);
+        self.print_window(ctx, ws);
         self.graph_window(ctx, ws);
         self.function_help(ctx, ws);
         self.keys_panel(ctx, ws);
@@ -4992,6 +5022,23 @@ impl ImprovApp {
                 let read = self.panel_read();
                 self.format_panel
                     .get_or_insert(Panel::new(FormatPage::Number, read));
+            }
+            Command::PageLayout => self.show_page_layout = true,
+            Command::ReportLayout => self.show_report_layout = true,
+            Command::Print => {
+                let path = std::path::Path::new(&self.db).with_extension("pdf");
+                let path = if self.db.is_empty() || improv_store::is_postgres(&self.db) {
+                    format!("{}.pdf", self.file_name())
+                } else {
+                    path.display().to_string()
+                };
+                self.print_panel.get_or_insert(PrintPanel {
+                    copies: 1,
+                    pages: None,
+                    selection: false,
+                    printer: String::new(),
+                    path,
+                });
             }
             // In memory there is no store yet: Save asks for one (H1-7).
             Command::SaveModel if self.db.is_empty() => self.run_command(ctx, Command::SaveAs),
@@ -6516,6 +6563,395 @@ impl ImprovApp {
         }
     }
 
+    /// The focused worksheet as Print… lays it out: its item names and
+    /// cells as they show (the selection only, with `selection`), its
+    /// formulas, and the Inspector's rules.
+    pub(crate) fn print_sheet(&self, selection: bool) -> crate::print::Sheet {
+        use crate::print::{Align, Sheet};
+        let m = self.focused();
+        let Some(measure) = m.measure else {
+            return Sheet::default();
+        };
+        let name = |c: &CategoryId| {
+            self.model
+                .categories
+                .get(c)
+                .map_or_else(|| format!("category {}", c.0), |x| x.name.0.clone())
+        };
+        let row_cats = m.row_cats(&self.model);
+        let col_cats = m.col_cats(&self.model);
+        let (n_rows, n_cols) = m.grid_dims(&self.model);
+        let (rows, cols) = if selection {
+            m.selection()
+        } else {
+            (0..=n_rows.saturating_sub(1), 0..=n_cols.saturating_sub(1))
+        };
+        let (r0, c0) = (*rows.start(), *cols.start());
+        let size = (
+            (rows.end() + 1).min(n_rows).saturating_sub(r0),
+            (cols.end() + 1).min(n_cols).saturating_sub(c0),
+        );
+        // shortcut: printing is capped at 10,000 rows, as Copy is; page
+        // through a larger grid's slices if whole huge models are printed.
+        let size = (size.0.min(10_000), size.1);
+        let col_lines: Vec<_> = m
+            .axis_tuples(&self.model, &col_cats)
+            .into_iter()
+            .skip(c0)
+            .take(size.1)
+            .collect();
+        let row_lists = m.axis_item_lists(&self.model, &row_cats);
+        let keys = m.block_keys(&self.model, (r0, c0), size);
+        let numeric = self
+            .model
+            .measures
+            .get(&measure)
+            .is_some_and(|x| x.value_type == ValueType::Number);
+        let align = |v: Option<&CellValue>| match m.opts.align {
+            CellAlign::Left => Align::Left,
+            CellAlign::Center => Align::Center,
+            CellAlign::Right => Align::Right,
+            CellAlign::Smart if numeric && matches!(v, Some(CellValue::Num(_))) => Align::Right,
+            CellAlign::Smart => Align::Left,
+        };
+        let rows = keys
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let items = if row_lists.is_empty() {
+                    Vec::new()
+                } else {
+                    nth_tuple(&row_lists, r0 + i)
+                        .into_iter()
+                        .map(|(_, n)| n)
+                        .collect()
+                };
+                let cells = row
+                    .iter()
+                    .map(|k| {
+                        let v = self.cell_value(measure, k);
+                        let shown = self.cell_shown(measure, k).unwrap_or_default();
+                        (shown, align(v.as_ref()))
+                    })
+                    .collect();
+                (items, cells)
+            })
+            .collect();
+        let o = m.opts;
+        Sheet {
+            corner: row_cats.iter().map(name).collect(),
+            col_heads: (0..col_cats.len())
+                .map(|lvl| col_lines.iter().map(|t| t[lvl].1.clone()).collect())
+                .collect(),
+            rows,
+            formulas: self
+                .formula_rows()
+                .iter()
+                .enumerate()
+                .map(|(i, r)| format!("{}. {} = {}", i + 1, r.target, r.text))
+                .collect(),
+            item_rules: o.lines && o.lines_in != LinesIn::Cells,
+            cell_rules: o.lines && o.lines_in != LinesIn::Items,
+        }
+    }
+
+    /// The focused worksheet laid out with the Page and Report Layouts.
+    pub(crate) fn print_doc(&self, selection: bool) -> crate::print::Doc {
+        let now = chrono::Local::now();
+        let names = crate::print::Names {
+            date: now.format("%Y-%m-%d").to_string(),
+            time: now.format("%H:%M").to_string(),
+            view: self
+                .current_view
+                .and_then(|v| self.model.views.get(&v))
+                .map(|v| v.name.0.clone())
+                .unwrap_or_default(),
+            worksheet: self.matrix_title(self.focus_index()),
+            model: self.file_name().to_owned(),
+        };
+        crate::print::layout(
+            &self.print_sheet(selection),
+            &self.page_layout,
+            &self.report_layout,
+            &names,
+        )
+    }
+
+    /// Format ▸ Page Layout…: Improv's Page Layout panel, the paper, its
+    /// orientation and the scale every print uses. It applies as it is set.
+    fn page_layout_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        use crate::print::Paper;
+        if !self.show_page_layout {
+            return;
+        }
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.right() - 288.0, ws.top() + 60.0),
+            egui::vec2(280.0, 150.0),
+        );
+        let win = crate::nxwin::NxWindow::new("page_layout", "Page Layout");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let mut open = true;
+        let p = &mut self.page_layout;
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+                    egui::Grid::new("page_layout_grid")
+                        .num_columns(2)
+                        .spacing(egui::vec2(8.0, 6.0))
+                        .show(ui, |ui| {
+                            ui.label("Paper Size:");
+                            egui::ComboBox::from_id_salt("paper")
+                                .selected_text(format!("{:?}", p.paper))
+                                .show_ui(ui, |ui| {
+                                    for x in Paper::ALL {
+                                        ui.selectable_value(&mut p.paper, x, format!("{x:?}"));
+                                    }
+                                });
+                            ui.end_row();
+                            ui.label("Orientation:");
+                            ui.horizontal(|ui| {
+                                ui.radio_value(&mut p.landscape, false, "Portrait");
+                                ui.radio_value(&mut p.landscape, true, "Landscape");
+                            });
+                            ui.end_row();
+                            ui.label("Scale:");
+                            ui.horizontal(|ui| {
+                                let r = ui.add(egui::DragValue::new(&mut p.scale).range(10..=400));
+                                a11y_name(&r, "Scale, percent");
+                                ui.label("%");
+                            });
+                            ui.end_row();
+                        });
+                    let (w, h) = p.size();
+                    ui.label(format!("{:.1} x {:.1} in", w / 72.0, h / 72.0));
+                });
+            });
+        self.show_page_layout = open;
+    }
+
+    /// Format ▸ Report Layout…: Improv's Report Layout panel. Header and
+    /// footer (left, center and right, with its markers inserted from a
+    /// pop-up), the first page's number, the page order and the content.
+    fn report_layout_panel(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        if !self.show_report_layout {
+            return;
+        }
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.center().x - 220.0, ws.top() + 60.0),
+            egui::vec2(440.0, 268.0),
+        );
+        let win = crate::nxwin::NxWindow::new("report_layout", "Report Layout");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let mut open = true;
+        let r = &mut self.report_layout;
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+                    ui.strong("Header / Footer");
+                    egui::Grid::new("report_bands")
+                        .num_columns(4)
+                        .spacing(egui::vec2(4.0, 4.0))
+                        .show(ui, |ui| {
+                            for (band, slots) in
+                                [("Header", &mut r.header), ("Footer", &mut r.footer)]
+                            {
+                                ui.label(band);
+                                for (slot, at) in slots.iter_mut().zip(["left", "center", "right"])
+                                {
+                                    let resp = ui
+                                        .add(egui::TextEdit::singleline(slot).desired_width(110.0));
+                                    a11y_name(&resp, &format!("{band}, {at}"));
+                                    egui::Popup::context_menu(&resp).show(|ui| {
+                                        ui.label("Insert Marker");
+                                        for m in crate::print::MARKERS {
+                                            if ui.button(m).clicked() {
+                                                slot.push_str(&format!("<{m}>"));
+                                                ui.close();
+                                            }
+                                        }
+                                    });
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    ui.label(
+                        egui::RichText::new(
+                            "Markers: <Date> <Time> <View Name> <Worksheet Name> <Model Name> \
+                             <Page #> (right-click a field to insert one)",
+                        )
+                        .color(crate::theme::DARK_GRAY),
+                    );
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("First Page Number:");
+                        let resp = ui.add(egui::DragValue::new(&mut r.first_page).range(1..=9999));
+                        a11y_name(&resp, "First Page Number");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Number Pages:");
+                        ui.radio_value(&mut r.across_first, false, "Top to Bottom");
+                        ui.radio_value(&mut r.across_first, true, "Left to Right");
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Content:");
+                        ui.checkbox(&mut r.data, "Data");
+                        ui.checkbox(&mut r.formulas, "Formulas");
+                    });
+                });
+            });
+        self.show_report_layout = open;
+    }
+
+    /// Print… (Command-p): Improv's Print panel over the focused worksheet.
+    /// Copies, All pages or From–To, Print Selected Data Only; then Print
+    /// (the platform's print system, [`crate::print::spooler`], or the
+    /// Windows print dialog), or Save as PDF or PostScript to the path.
+    fn print_window(&mut self, ctx: &egui::Context, ws: egui::Rect) {
+        let Some(mut p) = self.print_panel.clone() else {
+            return;
+        };
+        let home = egui::Rect::from_min_size(
+            egui::pos2(ws.center().x - 170.0, ws.center().y - 120.0),
+            egui::vec2(340.0, 200.0),
+        );
+        let win = crate::nxwin::NxWindow::new("print", "Print");
+        let rect = anchored_rect(ctx, win.id(), home);
+        let mut open = true;
+        let (rows, cols) = self.focused().selection();
+        let has_selection = rows.start() != rows.end() || cols.start() != cols.end();
+        p.selection &= has_selection;
+        let pages = self.print_doc(p.selection).pages.len();
+        let spooler = crate::print::local_spooler(&p.printer, p.copies);
+        let mut go: Option<&str> = None;
+        let _ = win
+            .closable(&mut open)
+            .rect(rect)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE.inner_margin(6.0).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Copies:");
+                        let r = ui.add(egui::DragValue::new(&mut p.copies).range(1..=999));
+                        a11y_name(&r, "Copies");
+                        ui.label(format!(
+                            "({pages} page{})",
+                            if pages == 1 { "" } else { "s" }
+                        ));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Pages:");
+                        let mut some = p.pages.is_some();
+                        ui.radio_value(&mut some, false, "All");
+                        ui.radio_value(&mut some, true, "From");
+                        let (mut f, mut t) = p.pages.unwrap_or((1, pages.max(1)));
+                        ui.add_enabled_ui(some, |ui| {
+                            let r = ui.add(egui::DragValue::new(&mut f).range(1..=pages.max(1)));
+                            a11y_name(&r, "From page");
+                            ui.label("to");
+                            let r = ui.add(egui::DragValue::new(&mut t).range(f..=pages.max(1)));
+                            a11y_name(&r, "To page");
+                        });
+                        p.pages = some.then_some((f, t.max(f)));
+                    });
+                    ui.add_enabled(
+                        has_selection,
+                        egui::Checkbox::new(&mut p.selection, "Print Selected Data Only"),
+                    );
+                    if !cfg!(windows) {
+                        ui.horizontal(|ui| {
+                            ui.label("Printer:");
+                            let r = ui.add(
+                                egui::TextEdit::singleline(&mut p.printer)
+                                    .hint_text("default")
+                                    .desired_width(f32::INFINITY),
+                            );
+                            a11y_name(&r, "Printer");
+                        });
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("File:");
+                        let r = ui.add(
+                            egui::TextEdit::singleline(&mut p.path).desired_width(f32::INFINITY),
+                        );
+                        a11y_name(&r, "File to save the pages in");
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Save as PDF").clicked() {
+                            go = Some("pdf");
+                        }
+                        if ui.button("Save as PostScript").clicked() {
+                            go = Some("ps");
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let can = cfg!(windows) || spooler.is_some();
+                            let b = ui.add_enabled(can, egui::Button::new("Print"));
+                            if b.clicked() {
+                                go = Some("print");
+                            }
+                            if !can {
+                                b.on_disabled_hover_text("No lp or lpr: save as PDF or PostScript");
+                            }
+                        });
+                    });
+                });
+            });
+        if let Some(what) = go {
+            let doc = self.print_doc(p.selection).range(p.pages);
+            self.status = match self.run_print(what, &doc, &p) {
+                Ok(msg) => {
+                    open = false;
+                    msg
+                }
+                Err(e) => e,
+            };
+        }
+        self.print_panel = open.then_some(p);
+    }
+
+    /// Print's three buttons: `pdf` and `ps` write `p.path`, `print` sends
+    /// the job to the platform. Returns the status line.
+    fn run_print(
+        &self,
+        what: &str,
+        doc: &crate::print::Doc,
+        p: &PrintPanel,
+    ) -> Result<String, String> {
+        if doc.pages.is_empty() {
+            return Err("nothing to print: Report Layout's Content is empty".into());
+        }
+        let n = doc.pages.len();
+        let pages = format!("{n} page{}", if n == 1 { "" } else { "s" });
+        let save = |ext: &str, data: Vec<u8>| {
+            let path = std::path::Path::new(p.path.trim()).with_extension(ext);
+            std::fs::write(&path, data)
+                .map(|()| format!("saved {pages} to {}", path.display()))
+                .map_err(|e| format!("could not write {}: {e}", path.display()))
+        };
+        match what {
+            "pdf" => save("pdf", doc.to_pdf()),
+            "ps" => save("ps", doc.to_postscript()),
+            #[cfg(windows)]
+            _ => crate::print::print_windows(doc, p.copies),
+            #[cfg(not(windows))]
+            _ => {
+                let (cmd, args, format) = crate::print::local_spooler(&p.printer, p.copies)
+                    .ok_or("no lp or lpr to print with: save as PDF or PostScript")?;
+                let data = match format {
+                    crate::print::Format::Pdf => doc.to_pdf(),
+                    crate::print::Format::PostScript => doc.to_postscript(),
+                };
+                crate::print::spool(cmd, &args, &data).map(|()| format!("sent {pages} to {cmd}"))
+            }
+        }
+    }
+
     /// Help ▸ Keys…: a NeXT window at the workspace's right listing the
     /// menu's key equivalents (read from the menu, Ctrl or Cmd) and the grid
     /// and editor keys ([`GRID_KEYS`]). Its close box or Help ▸ Keys… again
@@ -6531,7 +6967,7 @@ impl ImprovApp {
         } else {
             "Ctrl"
         };
-        // A key the menu draws disabled (Print…) is not listed.
+        // A key whose command is not built is not listed.
         let rows: Vec<(String, String)> = menu::key_equivalents()
             .filter(|(_, _, c)| c.is_some())
             .map(|(k, item, _)| {
@@ -9479,6 +9915,11 @@ mod tests {
             show_keys: false,
             inspector: None,
             format_panel: None,
+            page_layout: Default::default(),
+            report_layout: Default::default(),
+            show_page_layout: false,
+            show_report_layout: false,
+            print_panel: None,
             fn_help: Default::default(),
             formula_target: FormulaEditor::NewLine,
             show_browser: true,
@@ -14996,10 +15437,7 @@ mod tests {
         ] {
             assert!(painted(&shapes, &text).is_some(), "{text} listed");
         }
-        assert!(
-            painted(&shapes, &format!("{chord}+p")).is_none(),
-            "Print… is not built"
-        );
+        assert!(painted(&shapes, &format!("{chord}+p")).is_some(), "Print…");
         // Every row is inside the window, the last one included.
         let win = crate::nxwin::stored_rect(&desk.ctx, keys).expect("shown");
         let last = painted(&shapes, "pick from a formula's completion list").expect("last row");
@@ -17870,6 +18308,144 @@ mod tests {
                 .iter()
                 .any(|x| x == "This measure holds no numbers to format."),
             "{texts:?}"
+        );
+    }
+
+    /// Gap 11: Print… (Ctrl+P) opens the Print panel; Save as PDF writes
+    /// the focused worksheet's items and cells, as they show, to a PDF and
+    /// Save as PostScript to a PostScript file, and the panel closes.
+    #[test]
+    fn print_saves_the_worksheet_as_pdf_and_postscript() {
+        let (mut app, mut desk) = grid_desk();
+        let ctrl_p = egui::Event::Key {
+            key: egui::Key::P,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let _ = desk.frame(&mut app, vec![ctrl_p]);
+        desk.settle(&mut app);
+        let dir = std::env::temp_dir().join(format!("improv-print-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("sheet");
+        app.print_panel.as_mut().expect("Ctrl+P opens Print").path = base.display().to_string();
+        let pdf = text_in(&mut desk, &mut app, "print", "Save as PDF");
+        desk.click(&mut app, pdf.center());
+        assert!(app.print_panel.is_none(), "{}", app.status);
+        assert!(app.status.starts_with("saved 1 page to "), "{}", app.status);
+        let bytes = std::fs::read(base.with_extension("pdf")).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        for want in [
+            "%PDF-1.4",
+            "(Time) Tj",
+            "(WidgetA) Tj",
+            "(2026) Tj",
+            "(120) Tj",
+            "(Page 1) Tj",
+        ] {
+            assert!(text.contains(want), "{want} in the PDF");
+        }
+        assert!(
+            text.contains("(Quantity) Tj"),
+            "the worksheet's name heads the page"
+        );
+
+        app.run_command(&desk.ctx, Command::Print);
+        app.print_panel.as_mut().unwrap().path = base.display().to_string();
+        desk.settle(&mut app);
+        let ps = text_in(&mut desk, &mut app, "print", "Save as PostScript");
+        desk.click(&mut app, ps.center());
+        let ps = std::fs::read_to_string(base.with_extension("ps")).unwrap();
+        assert!(ps.starts_with("%!PS-Adobe-3.0") && ps.contains("(WidgetB) "));
+
+        // An unwritable path says so and keeps the panel.
+        app.run_command(&desk.ctx, Command::Print);
+        app.print_panel.as_mut().unwrap().path = dir.join("no/such/dir/x").display().to_string();
+        desk.settle(&mut app);
+        let pdf = text_in(&mut desk, &mut app, "print", "Save as PDF");
+        desk.click(&mut app, pdf.center());
+        assert!(app.status.starts_with("could not write "), "{}", app.status);
+        assert!(app.print_panel.is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Gap 11: the sheet Print lays out is the worksheet as it shows: its
+    /// number format and alignment, the selection with Print Selected Data
+    /// Only, the formulas, and the Inspector's rules.
+    #[test]
+    fn the_printed_sheet_is_the_worksheet_as_it_shows() {
+        use crate::print::Align;
+        let (mut app, _desk) = grid_desk();
+        let s = app.print_sheet(false);
+        assert_eq!(s.corner, ["Time"]);
+        assert_eq!(s.col_heads, [["WidgetA", "WidgetB"]]);
+        assert_eq!(s.rows.len(), 2);
+        assert_eq!(s.rows[1].0, ["2026"]);
+        assert_eq!(s.rows[1].1[0], ("120".to_owned(), Align::Right));
+        assert_eq!(s.formulas, ["1. Revenue = Price * Quantity"]);
+        assert!(s.item_rules && s.cell_rules);
+        app.set_format(NumberFormat {
+            decimals: Some(1),
+            grouping: false,
+        })
+        .unwrap();
+        app.focused_mut().opts.align = CellAlign::Center;
+        app.focused_mut().opts.lines_in = LinesIn::Items;
+        // The selection: row 1, column 1 only.
+        app.focused_mut().anchor = Some((1, 1));
+        (app.focused_mut().cursor_row, app.focused_mut().cursor_col) = (1, 1);
+        let s = app.print_sheet(true);
+        assert_eq!(s.col_heads, [["WidgetB"]]);
+        assert_eq!(
+            s.rows,
+            [(
+                vec!["2026".to_owned()],
+                vec![("80.0".to_owned(), Align::Center)]
+            )]
+        );
+        assert!(s.item_rules && !s.cell_rules);
+        // The page numbers start where Report Layout says.
+        app.report_layout.first_page = 3;
+        let doc = app.print_doc(false);
+        assert!(doc.pages[0]
+            .iter()
+            .any(|o| matches!(o, crate::print::Op::Text { s, .. } if s == "Page 3")));
+    }
+
+    /// Gap 11: Format ▸ Page Layout… and Report Layout… are NeXT panels
+    /// whose settings every print uses; Print Selected Data Only is grayed
+    /// with one cell selected.
+    #[test]
+    fn page_and_report_layout_panels_set_the_print() {
+        let (mut app, mut desk) = grid_desk();
+        app.run_command(&desk.ctx, Command::PageLayout);
+        app.run_command(&desk.ctx, Command::ReportLayout);
+        desk.settle(&mut app);
+        let land = text_in(&mut desk, &mut app, "page_layout", "Landscape");
+        desk.click(&mut app, land.center());
+        assert!(app.page_layout.landscape);
+        assert!(texts_of(&desk.frame(&mut app, Vec::new())).contains(&"11.0 x 8.5 in".to_owned()));
+        let formulas = text_in(&mut desk, &mut app, "report_layout", "Formulas");
+        desk.click(&mut app, formulas.center());
+        let across = text_in(&mut desk, &mut app, "report_layout", "Left to Right");
+        desk.click(&mut app, across.center());
+        assert!(app.report_layout.formulas && app.report_layout.across_first);
+        assert_eq!(app.print_doc(false).size, (792.0, 612.0));
+        assert_eq!(app.print_doc(false).pages.len(), 2, "data, then formulas");
+        let close = close_box_of(&desk.ctx, panel_win("page_layout")).expect("shown");
+        desk.click(&mut app, close.center());
+        assert!(!app.show_page_layout);
+
+        app.run_command(&desk.ctx, Command::Print);
+        desk.settle(&mut app);
+        let texts = texts_of(&desk.frame(&mut app, Vec::new()));
+        assert!(texts.contains(&"(2 pages)".to_owned()), "{texts:?}");
+        let only = text_in(&mut desk, &mut app, "print", "Print Selected Data Only");
+        desk.click(&mut app, only.center());
+        assert!(
+            !app.print_panel.as_ref().unwrap().selection,
+            "one cell: grayed"
         );
     }
 

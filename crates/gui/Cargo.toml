@@ -20,6 +20,17 @@ eframe.workspace = true
 egui.workspace = true
 egui_extras.workspace = true
 thiserror.workspace = true
+# Print's Date and Time markers, in local time.
+chrono.workspace = true
+
+# Print on Windows: the system print dialog and GDI.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Storage_Xps",
+  "Win32_UI_Controls_Dialogs",
+] }
 
 # `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
 # `coverage(off)` so the report measures library code only.
