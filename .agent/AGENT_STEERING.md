@@ -6,6 +6,23 @@ This is the **live status tracker**: what is DONE / NEXT right now. The
 contributor workflow and the CI quality gate are in the top-level `/AGENTS.md`.
 When a phase lands, update this file.
 
+## Access policies (Cedar), 0.13 (status 2026-11-02)
+
+Design: `docs/reviews/2026-11-02-cedar-policies.md` (approved by the lead;
+the five open questions are with the maintainer, with defaults: `require`
+= verify-full, Admin may grant Admin and the owner is never locked out,
+the lint is enough for 1.0, only the server enforces file policies,
+stages 1-4 in 0.13).
+
+- **Stage 1 DONE** (`work/sec`): `crates/policy` (`improv_policy`), the
+  `:policy/*` Mentat attributes, `improv policy …`, `docs/src/policies.md`.
+- **NEXT:** stage 2, improv-server enforcement; then stage 3, pg_improv
+  (gated with `ci/pg_improv.sh` 15-18), then stage 4, TLS.
+- **Rule for every front end:** a client under a read policy never
+  computes derived values itself; it reads them, and what-ifs, from the
+  authority. Hidden is absent. Versions are opaque. (`improv_client`'s
+  model service; the note's contract section.)
+
 ## Active priority — the road to 1.0.0 (status 2026-10-29, v0.12.2)
 
 The 1.0.0 plan is `docs/reviews/2026-10-21-road-to-1.0.md`; its "1.0.0 exit
