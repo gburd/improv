@@ -409,6 +409,16 @@ Usage: improv stream <db> <target-measure>...
 | `<db>` | The model store: a file, or postgres://USER@HOST/DB?model=NAME |
 | `<target-measure>` | The measures whose changes to print, by id or name |
 
+### `improv policy`
+
+Manage a model's access policies (Cedar).
+
+A model with no policies is unrestricted. With policies, a user may do only what a policy permits, and a forbid wins. Policies name measures, items, categories and views by id. See improv-policy-* and the guide's Access Policies chapter.
+
+```text
+Usage: improv policy <COMMAND>
+```
+
 ## `improv-gui`
 
 Open a model in a NeXTSTEP-style workspace.

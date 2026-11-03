@@ -1585,3 +1585,355 @@ fn german_formula_entry() {
     assert!(!bad.status.success());
     std::fs::remove_file(db).ok();
 }
+
+/// `improv policy`: templates, validate, set, show, check (with its exit
+/// status and the policies it names), lint and clear, and the errors.
+#[test]
+fn policy_commands() {
+    let (dir, db) = model("policy");
+    let d = db.as_str();
+    ok(&[
+        "add-derived",
+        d,
+        "103",
+        "Total",
+        "SUM(Revenue OVER Product)",
+    ]);
+    stdout_has(
+        &ok(&["policy", "show", d]),
+        "no policies: the model is unrestricted",
+    );
+    let unrestricted = ok(&["policy", "check", d, "--user", "x", "Admin"]);
+    stdout_has(&unrestricted, "allow: x Admin the model");
+    stdout_has(&unrestricted, "everything is allowed");
+
+    let analyst = ok(&[
+        "policy",
+        "template",
+        d,
+        "analyst",
+        "--user",
+        "ann",
+        "--item",
+        "Product=WidgetB",
+    ]);
+    stdout_has(&analyst, "// item 21 = WidgetB");
+    stdout_has(&analyst, "@id(\"analyst:user:ann\")");
+    let editor = ok(&[
+        "policy",
+        "template",
+        d,
+        "editor",
+        "--group",
+        "eds",
+        "--measure",
+        "Price",
+    ]);
+    stdout_has(&editor, "// measure 100 = Price");
+    let policies = file(&dir, "p.cedar");
+    std::fs::write(&policies, format!("{analyst}{editor}")).unwrap();
+    let groups = file(&dir, "g.json");
+    std::fs::write(&groups, r#"{"eds": {"users": ["ed"]}}"#).unwrap();
+    let (p, g) = (policies.as_str(), groups.as_str());
+
+    stdout_has(
+        &ok(&["policy", "validate", d, p, "--groups", g]),
+        "4 policies are valid",
+    );
+    stdout_has(
+        &ok(&["policy", "set", d, p, "--groups", g]),
+        "set 4 policies (version 1)",
+    );
+    let shown = ok(&["policy", "show", d]);
+    stdout_has(
+        &shown,
+        "// version 1\n// item 21 = WidgetB\n@id(\"viewer:user:ann\")",
+    );
+    stdout_has(
+        &ok(&["policy", "show", d, "--groups"]),
+        r#"{"eds":{"users":["ed"],"groups":[]}}"#,
+    );
+
+    // A hidden item's cell: denied, exit 1, naming the forbid.
+    let o = improv(&[
+        "policy",
+        "check",
+        d,
+        "--user",
+        "ann",
+        "ReadCell",
+        "--measure",
+        "Quantity",
+        "--at",
+        "Time=Q1",
+        "Product=WidgetB",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    let out = String::from_utf8_lossy(&o.stdout);
+    stdout_has(
+        &out,
+        "deny: ann ReadCell cell measure Quantity (101)[Time=Q1, Product=WidgetB]",
+    );
+    stdout_has(&out, "deny  ReadItem item WidgetB (21) by analyst:user:ann");
+    assert!(o.stderr.is_empty(), "a denial is not an error");
+    // The total over it stays visible.
+    let out = ok(&[
+        "policy",
+        "check",
+        d,
+        "--user",
+        "ann",
+        "ReadCell",
+        "--measure",
+        "Total",
+        "--at",
+        "Time=Q1",
+    ]);
+    stdout_has(
+        &out,
+        "allow: ann ReadCell cell measure Total (103)[Time=Q1]",
+    );
+    // The group's editor edits Price, not a derived measure.
+    let out = ok(&[
+        "policy",
+        "check",
+        d,
+        "--user",
+        "ed",
+        "EditCell",
+        "--measure",
+        "Price",
+        "--at",
+        "Product=WidgetA",
+    ]);
+    stdout_has(
+        &out,
+        "allow EditCell cell measure Price (100)[Product=WidgetA] by editor:group:eds",
+    );
+    let o = improv(&[
+        "policy",
+        "check",
+        d,
+        "--user",
+        "ed",
+        "editcell",
+        "--measure",
+        "Revenue",
+        "--at",
+        "Time=Q1",
+        "Product=WidgetA",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    stdout_has(
+        &String::from_utf8_lossy(&o.stdout),
+        "the measure is derived",
+    );
+    // Other resources, a role, and a file instead of the stored policies.
+    let o = improv(&[
+        "policy",
+        "check",
+        d,
+        "--user",
+        "eve",
+        "--role",
+        "r",
+        "ViewModel",
+    ]);
+    assert_eq!(o.status.code(), Some(1));
+    stdout_has(&String::from_utf8_lossy(&o.stdout), "no policy permits it");
+    stdout_has(
+        &ok(&[
+            "policy",
+            "check",
+            d,
+            "--user",
+            "ann",
+            "ReadItem",
+            "--item",
+            "Product=WidgetA",
+        ]),
+        "allow: ann ReadItem item WidgetA (20)",
+    );
+    let o = improv(&[
+        "policy",
+        "check",
+        d,
+        "--user",
+        "ann",
+        "EditStructure",
+        "--category",
+        "Time",
+    ]);
+    assert_eq!(o.status.code(), Some(1), "a viewer does not edit structure");
+    stdout_has(
+        &String::from_utf8_lossy(&o.stdout),
+        "deny: ann EditStructure category Time (1)",
+    );
+    stdout_has(
+        &ok(&[
+            "policy",
+            "check",
+            d,
+            "--user",
+            "ann",
+            "ReadMeasure",
+            "--measure",
+            "Total",
+        ]),
+        "allow: ann ReadMeasure measure Total (103)",
+    );
+    let alt = file(&dir, "alt.cedar");
+    std::fs::write(&alt, "permit (principal, action, resource);").unwrap();
+    stdout_has(
+        &ok(&[
+            "policy",
+            "check",
+            d,
+            "--user",
+            "eve",
+            "Admin",
+            "--policies",
+            &alt,
+        ]),
+        "allow: eve Admin the model",
+    );
+
+    let lint = ok(&["policy", "lint", d, "--user", "ann"]);
+    stdout_has(
+        &lint,
+        "measure Total (103) totals over category Product (2), including WidgetB",
+    );
+    stdout_has(
+        &ok(&["policy", "lint", d, "--user", "ed"]),
+        "ed can infer nothing hidden",
+    );
+
+    // Errors: a bad file, a slot, a measure by name, the wrong flags.
+    let bad = file(&dir, "bad.cedar");
+    std::fs::write(&bad, "\npermit (principal, action, resource)\n").unwrap();
+    fails_with(&["policy", "validate", d, &bad], "line ");
+    std::fs::write(
+        &bad,
+        "permit (principal, action, resource in Improv::Measure::\"Price\");",
+    )
+    .unwrap();
+    let o = improv(&["policy", "validate", d, &bad]);
+    assert!(o.status.success());
+    stdout_has(
+        &String::from_utf8_lossy(&o.stderr),
+        "warning: the policies name Improv::Measure::\"Price\", which this model does not have",
+    );
+    fails_with(
+        &["policy", "validate", d, "nope.cedar"],
+        "cannot read nope.cedar",
+    );
+    fails_with(
+        &["policy", "check", d, "--user", "u", "Peek"],
+        "unknown action 'Peek'",
+    );
+    fails_with(
+        &[
+            "policy",
+            "check",
+            d,
+            "--user",
+            "u",
+            "ReadCell",
+            "--item",
+            "Product=WidgetA",
+            "--view",
+            "v",
+        ],
+        "give one of",
+    );
+    fails_with(
+        &[
+            "policy", "check", d, "--user", "u", "ReadCell", "--at", "Time=Q1",
+        ],
+        "--at names a cell",
+    );
+    fails_with(
+        &[
+            "policy", "check", d, "--user", "u", "ReadItem", "--item", "WidgetA",
+        ],
+        "Category=Item",
+    );
+    fails_with(
+        &[
+            "policy", "check", d, "--user", "u", "ReadItem", "--item", "Nope=X",
+        ],
+        "no category named 'Nope'",
+    );
+    fails_with(
+        &[
+            "policy", "check", d, "--user", "u", "ReadItem", "--item", "Time=X",
+        ],
+        "no item named 'X'",
+    );
+    fails_with(
+        &[
+            "policy",
+            "check",
+            d,
+            "--user",
+            "u",
+            "ManageViews",
+            "--view",
+            "v",
+        ],
+        "no view named 'v'",
+    );
+    fails_with(
+        &[
+            "policy",
+            "check",
+            d,
+            "--user",
+            "u",
+            "EditStructure",
+            "--category",
+            "C",
+        ],
+        "no category named 'C'",
+    );
+    fails_with(
+        &[
+            "policy",
+            "template",
+            d,
+            "editor",
+            "--user",
+            "u",
+            "--measure",
+            "Revenue",
+        ],
+        "is derived",
+    );
+    fails_with(
+        &[
+            "policy",
+            "template",
+            d,
+            "viewer",
+            "--user",
+            "u",
+            "--measure",
+            "Price",
+        ],
+        "takes no --measure",
+    );
+    fails_with(
+        &["policy", "template", d, "nope", "--group", "g"],
+        "unknown template",
+    );
+
+    stdout_has(
+        &ok(&["policy", "clear", d]),
+        "cleared the policies (version 2)",
+    );
+    stdout_has(
+        &ok(&["policy", "lint", d, "--user", "ann"]),
+        "no policies: nothing is hidden",
+    );
+    stdout_has(&ok(&["policy", "show", d]), "no policies");
+}

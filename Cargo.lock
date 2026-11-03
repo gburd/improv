@@ -2806,6 +2806,7 @@ dependencies = [
  "improv_core_model",
  "improv_engine",
  "improv_extfn",
+ "improv_policy",
  "improv_storage_csv",
  "improv_storage_sql",
  "improv_store",

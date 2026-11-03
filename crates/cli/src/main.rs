@@ -30,6 +30,7 @@ mod args;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod man;
+mod policy;
 
 use args::{Cli, Cmd};
 use clap::{CommandFactory, Parser};
@@ -232,6 +233,7 @@ fn run(cli: Cli) -> Result<(), String> {
             tsv,
         } => cmd_export_csv(&db, &target, &measure, tsv),
         Cmd::Stream { db, targets } => cmd_stream(&db, &targets),
+        Cmd::Policy(p) => policy::run(p),
     }
 }
 

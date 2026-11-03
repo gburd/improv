@@ -61,6 +61,9 @@ _improv() {
             improv,list)
                 cmd="improv__subcmd__list"
                 ;;
+            improv,policy)
+                cmd="improv__subcmd__policy"
+                ;;
             improv,refresh-all)
                 cmd="improv__subcmd__refresh__subcmd__all"
                 ;;
@@ -136,6 +139,9 @@ _improv() {
             improv__subcmd__help,list)
                 cmd="improv__subcmd__help__subcmd__list"
                 ;;
+            improv__subcmd__help,policy)
+                cmd="improv__subcmd__help__subcmd__policy"
+                ;;
             improv__subcmd__help,refresh-all)
                 cmd="improv__subcmd__help__subcmd__refresh__subcmd__all"
                 ;;
@@ -166,6 +172,75 @@ _improv() {
             improv__subcmd__help,stream)
                 cmd="improv__subcmd__help__subcmd__stream"
                 ;;
+            improv__subcmd__help__subcmd__policy,check)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__check"
+                ;;
+            improv__subcmd__help__subcmd__policy,clear)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__clear"
+                ;;
+            improv__subcmd__help__subcmd__policy,lint)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__lint"
+                ;;
+            improv__subcmd__help__subcmd__policy,set)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__set"
+                ;;
+            improv__subcmd__help__subcmd__policy,show)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__show"
+                ;;
+            improv__subcmd__help__subcmd__policy,template)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__template"
+                ;;
+            improv__subcmd__help__subcmd__policy,validate)
+                cmd="improv__subcmd__help__subcmd__policy__subcmd__validate"
+                ;;
+            improv__subcmd__policy,check)
+                cmd="improv__subcmd__policy__subcmd__check"
+                ;;
+            improv__subcmd__policy,clear)
+                cmd="improv__subcmd__policy__subcmd__clear"
+                ;;
+            improv__subcmd__policy,help)
+                cmd="improv__subcmd__policy__subcmd__help"
+                ;;
+            improv__subcmd__policy,lint)
+                cmd="improv__subcmd__policy__subcmd__lint"
+                ;;
+            improv__subcmd__policy,set)
+                cmd="improv__subcmd__policy__subcmd__set"
+                ;;
+            improv__subcmd__policy,show)
+                cmd="improv__subcmd__policy__subcmd__show"
+                ;;
+            improv__subcmd__policy,template)
+                cmd="improv__subcmd__policy__subcmd__template"
+                ;;
+            improv__subcmd__policy,validate)
+                cmd="improv__subcmd__policy__subcmd__validate"
+                ;;
+            improv__subcmd__policy__subcmd__help,check)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__check"
+                ;;
+            improv__subcmd__policy__subcmd__help,clear)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__clear"
+                ;;
+            improv__subcmd__policy__subcmd__help,help)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__help"
+                ;;
+            improv__subcmd__policy__subcmd__help,lint)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__lint"
+                ;;
+            improv__subcmd__policy__subcmd__help,set)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__set"
+                ;;
+            improv__subcmd__policy__subcmd__help,show)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__show"
+                ;;
+            improv__subcmd__policy__subcmd__help,template)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__template"
+                ;;
+            improv__subcmd__policy__subcmd__help,validate)
+                cmd="improv__subcmd__policy__subcmd__help__subcmd__validate"
+                ;;
             *)
                 ;;
         esac
@@ -173,7 +248,7 @@ _improv() {
 
     case "${cmd}" in
         improv)
-            opts="-h -V --help --version init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view format show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream help"
+            opts="-h -V --help --version init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view format show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream policy help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -335,7 +410,7 @@ _improv() {
             return 0
             ;;
         improv__subcmd__help)
-            opts="init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view format show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream help"
+            opts="init add-category add-item add-measure add-derived define register-ext refresh-ext set list save-view format show eval scenario export import-sql refresh-sql refresh-all serve-refresh export-sql import-csv export-csv stream policy help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -558,6 +633,118 @@ _improv() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        improv__subcmd__help__subcmd__policy)
+            opts="validate set show clear check template lint"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__check)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__clear)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__lint)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__set)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__show)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__template)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__help__subcmd__policy__subcmd__validate)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         improv__subcmd__help__subcmd__refresh__subcmd__all)
             opts=""
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
@@ -751,6 +938,312 @@ _improv() {
                 return 0
             fi
             case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy)
+            opts="-h --help validate set show clear check template lint help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__check)
+            opts="-h --user --role --measure --item --category --view --at --policies --groups --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --role)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --measure)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --item)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --category)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --view)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --at)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --policies)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --groups)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__clear)
+            opts="-h --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help)
+            opts="validate set show clear check template lint help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__check)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__clear)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__help)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__lint)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__set)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__show)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__template)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__help__subcmd__validate)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__lint)
+            opts="-h --user --role --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --role)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__set)
+            opts="-h --groups --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --groups)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__show)
+            opts="-h --groups --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__template)
+            opts="-h --user --group --measure --item --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --user)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --group)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --measure)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --item)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        improv__subcmd__policy__subcmd__validate)
+            opts="-h --groups --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --groups)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;

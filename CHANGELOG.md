@@ -20,6 +20,22 @@ this project follows [Semantic Versioning](https://semver.org/).
   checks with no errors, a cross when it has one (the error is described
   under the row). Screen readers hear "Formula Revenue checks".
 
+- **Access policies, in Cedar.** A model can carry policies, written in
+  [Cedar](https://www.cedarpolicy.com), that say per user, role and group
+  who may see and change which measures, items, cells, categories and
+  views. A model without policies is unrestricted, as before. With them,
+  the default is deny, a forbid wins, and an evaluation error denies.
+  New: the `improv_policy` crate (the schema, the evaluator with an exact
+  per-session decision cache, five templates, and a lint for what totals
+  reveal); `improv policy validate|set|show|clear|check|template|lint`
+  (`improv-policy(1)`); the guide's
+  [Access Policies](docs/src/policies.md) chapter. A Mentat file stores
+  them in four new `:policy/*` attributes, apart from the model. 0.12
+  opens such a file, ignores them and keeps them (checked against the
+  v0.12.2 binary). Enforcement by `improv-server` and pg_improv follows
+  ([the design](docs/reviews/2026-11-02-cedar-policies.md)). New
+  dependency: `cedar-policy` 4.14.0 (Apache-2.0), pinned exactly.
+
 ### Changed
 
 - **GUI: color graphs in a NeXT graph window.** Graph ▸ New Graph (was

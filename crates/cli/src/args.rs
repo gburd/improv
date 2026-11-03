@@ -381,6 +381,154 @@ pub enum Cmd {
         )]
         targets: Vec<String>,
     },
+    /// Manage a model's access policies (Cedar).
+    ///
+    /// A model with no policies is unrestricted. With policies, a user may
+    /// do only what a policy permits, and a forbid wins. Policies name
+    /// measures, items, categories and views by id. See improv-policy-*
+    /// and the guide's Access Policies chapter.
+    #[command(subcommand)]
+    Policy(PolicyCmd),
+}
+
+/// `policy`'s subcommands.
+#[derive(Subcommand, Debug)]
+pub enum PolicyCmd {
+    /// Check a policy file against the schema and the model, storing nothing.
+    ///
+    /// Reports syntax and type errors with their lines, policies that can
+    /// never apply, and ids the model does not have (a policy naming
+    /// "Revenue" where it means measure "102").
+    Validate {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        /// The Cedar policy file
+        #[arg(allow_hyphen_values = true, value_name = "policies.cedar")]
+        file: String,
+        /// The groups, a JSON file: {"group": {"users": [...], "groups": [...]}}
+        #[arg(long, value_name = "groups.json", allow_hyphen_values = true)]
+        groups: Option<String>,
+    },
+    /// Validate a policy file and store it with the model.
+    ///
+    /// From then on the model's default is deny: only what a policy permits
+    /// is allowed, and a forbid wins. The policies replace any stored before,
+    /// and their version moves on. They are enforced where the model is
+    /// served (improv-server); a local file is readable by whoever can read
+    /// it.
+    Set {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        /// The Cedar policy file
+        #[arg(allow_hyphen_values = true, value_name = "policies.cedar")]
+        file: String,
+        /// The groups, a JSON file
+        #[arg(long, value_name = "groups.json", allow_hyphen_values = true)]
+        groups: Option<String>,
+    },
+    /// Print the stored policies, or say there are none.
+    ///
+    /// With --groups, the stored groups JSON instead.
+    Show {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        /// Print the groups JSON
+        #[arg(long)]
+        groups: bool,
+    },
+    /// Remove the stored policies: the model is unrestricted again.
+    Clear {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+    },
+    /// Ask whether a user may do an action, and say which policies decided.
+    ///
+    /// The action is one of ViewModel, ReadMeasure, ReadItem, ReadCell,
+    /// EditCell, DefineMeasure, EditStructure, ManageViews, Admin. The
+    /// resource is the model (no flag), --measure, --item Cat=Item,
+    /// --category, --view, or a cell (--measure with --at). Prints allow or
+    /// deny, then each check the rules make (a cell needs its measure, its
+    /// items and the cell readable) with the policies that decided it, and
+    /// exits 1 on deny. --policies checks a file instead of the stored ones.
+    Check {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        /// The user asking
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        user: String,
+        /// A role the user has (repeatable)
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        role: Vec<String>,
+        /// The action
+        #[arg(value_name = "action")]
+        action: String,
+        #[arg(long, value_name = "measure", help = MEASURE)]
+        measure: Option<String>,
+        /// An item, as Category=Item
+        #[arg(long, value_name = "Cat=Item")]
+        item: Option<String>,
+        /// A category, by name
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        category: Option<String>,
+        /// A view, by name
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        view: Option<String>,
+        #[arg(long, value_name = "Cat=Item", num_args = 1.., help = AT)]
+        at: Vec<String>,
+        /// A policy file to check instead of the stored policies
+        #[arg(long, value_name = "policies.cedar", allow_hyphen_values = true)]
+        policies: Option<String>,
+        /// The groups for --policies, a JSON file
+        #[arg(long, value_name = "groups.json", allow_hyphen_values = true)]
+        groups: Option<String>,
+    },
+    /// Print a template's policies, to edit or set.
+    ///
+    /// viewer reads everything; editor adds editing the cells of the input
+    /// measures given; analyst reads everything but the items given, whose
+    /// rows and cells are absent while totals over them stay; hide-measures
+    /// forbids reading the measures given (add it to another); admin may do
+    /// everything. Each names one --user or --group.
+    Template {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        /// viewer, editor, analyst, hide-measures or admin
+        #[arg(value_name = "template")]
+        name: String,
+        /// The user it grants to
+        #[arg(
+            long,
+            value_name = "name",
+            allow_hyphen_values = true,
+            conflicts_with = "group",
+            required_unless_present = "group"
+        )]
+        user: Option<String>,
+        /// The group it grants to
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        group: Option<String>,
+        /// A measure (editor, hide-measures; repeatable)
+        #[arg(long, value_name = "measure", allow_hyphen_values = true)]
+        measure: Vec<String>,
+        /// An item as Category=Item (analyst; repeatable)
+        #[arg(long, value_name = "Cat=Item")]
+        item: Vec<String>,
+    },
+    /// List what a user can infer of what is hidden from them.
+    ///
+    /// Each readable derived measure that reads a measure the user cannot
+    /// read, or totals over items the user cannot see: the total and the
+    /// visible items give the hidden items' sum.
+    Lint {
+        #[arg(allow_hyphen_values = true, value_name = "db", help = DB)]
+        db: String,
+        /// The user
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        user: String,
+        /// A role the user has (repeatable)
+        #[arg(long, value_name = "name", allow_hyphen_values = true)]
+        role: Vec<String>,
+    },
 }
 
 /// `import-sql`'s arguments.

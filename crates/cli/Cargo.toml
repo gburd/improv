@@ -14,6 +14,7 @@ improv_store = { path = "../store" }
 improv_storage_sql = { path = "../storage_sql" }
 improv_storage_csv = { path = "../storage_csv" }
 improv_engine = { path = "../engine" }
+improv_policy = { path = "../policy" }
 thiserror.workspace = true
 serde_json.workspace = true
 clap.workspace = true

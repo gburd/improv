@@ -23,6 +23,7 @@
   - [A Family's Finances](./postgres-finance.md)
 - [Improv in DuckDB](./duckdb.md)
 - [The HTTP Server](./server.md)
+- [Access Policies](./policies.md)
 - [Controlled Natural Language](./cnl.md)
 
 # Operations

@@ -1,0 +1,40 @@
+.\" Generated from crates/cli/src/args.rs by `UPDATE_DOCS=1 cargo test -p improv_cli`. Do not edit.
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH IMPROV-POLICY 1 "" "improv" "Improv Manual"
+.SH NAME
+improv\-policy \- Manage a model\*(Aqs access policies (Cedar)
+.SH SYNOPSIS
+\fBimprov policy\fR <COMMAND>
+.SH DESCRIPTION
+Manage a model\*(Aqs access policies (Cedar).
+.PP
+A model with no policies is unrestricted. With policies, a user may do only what a policy permits, and a forbid wins. Policies name measures, items, categories and views by id. See improv\-policy\-* and the guide\*(Aqs Access Policies chapter.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.SH COMMANDS
+.TP
+improv\-policy\-validate(1)
+Check a policy file against the schema and the model, storing nothing
+.TP
+improv\-policy\-set(1)
+Validate a policy file and store it with the model
+.TP
+improv\-policy\-show(1)
+Print the stored policies, or say there are none
+.TP
+improv\-policy\-clear(1)
+Remove the stored policies: the model is unrestricted again
+.TP
+improv\-policy\-check(1)
+Ask whether a user may do an action, and say which policies decided
+.TP
+improv\-policy\-template(1)
+Print a template\*(Aqs policies, to edit or set
+.TP
+improv\-policy\-lint(1)
+List what a user can infer of what is hidden from them
+.SH SEE ALSO
+.BR improv (1).
