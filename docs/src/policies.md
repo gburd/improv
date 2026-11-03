@@ -7,9 +7,9 @@ before. Once a model has policies, everything they do not permit is
 denied, and a `forbid` always wins over a `permit`.
 
 The policies are stored with the model and enforced where the model is
-served. Today that is `improv policy check` (to test them) and the stored
-model file. `improv-server` and pg_improv enforce them in the next
-releases. A local model file has no protection of its own: whoever can
+served: by `improv-server`, on every route (see
+[The HTTP Server](./server.md#access-policies)), and by `improv policy
+check` for testing. pg_improv enforces them in a later release. A local model file has no protection of its own: whoever can
 read the file can read all of it, whatever its policies say. The design
 is in [the design note](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md).
 
@@ -105,7 +105,9 @@ when { resource.kind == "input" && context.channel == "server" };
 ```
 
 A cell is `in` its measure and in each of its items, so `resource in
-Improv::Measure::"105"` covers the measure and all its cells. A measure
+Improv::Measure::"105"` covers the measure and all its cells. A list
+(`resource in [...]`) holds entities of one type: forbid an item and a
+measure in two policies. A measure
 has a `kind`, `"input"` or `"derived"`. `context.channel` is `"local"`,
 `"server"` or `"postgres"`. A policy may not name a cell directly, or use
 template slots (`?principal`).

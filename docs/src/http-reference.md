@@ -12,6 +12,7 @@ limits.
 
 | Method | Path | Scope | Summary |
 | --- | --- | --- | --- |
+| GET | [`/v1/capabilities`](#get-v1capabilities) | read | What the caller may do |
 | POST | [`/v1/categories`](#post-v1categories) | write | Add a category |
 | DELETE | [`/v1/categories/{id}`](#delete-v1categoriesid) | write | Delete a category |
 | PUT | [`/v1/categories/{id}`](#put-v1categoriesid) | write | Rename a category |
@@ -40,6 +41,20 @@ limits.
 | POST | [`/v1/views`](#post-v1views) | write | Save a view |
 | DELETE | [`/v1/views/{id}`](#delete-v1viewsid) | write | Delete a view |
 | PUT | [`/v1/views/{id}`](#put-v1viewsid) | write | Change a view |
+
+## GET /v1/capabilities
+
+**What the caller may do** Scope: `read`.
+
+Hints for a GUI to grey out what the caller cannot do, from the model's access policies: the model-wide actions, for each visible measure whether it may be redefined and which of its cells may be edited, and the visible items that may be renamed or deleted. Every request is still checked. Without policies, everything the token's scope allows.
+
+| Status | Response |
+| --- | --- |
+| 200 | The caller's capabilities. Body: [Capabilities](#capabilities). |
+| 401 | No token, or an unknown one. Body: [Error](#error). |
+| 403 | Refused: a bad request (400), a write with a read token (403), not there or not visible (404), another writer's structural change (409). Body: [Failure](#failure). |
+| 429 | The caller is over IMPROV_RATE_LIMIT requests a minute. Body: [Error](#error). |
+| 500 | Internal error; the detail is in the server log under request_id. Body: [Error](#error). |
 
 ## POST /v1/categories
 
@@ -387,12 +402,13 @@ Request body: [Window](#window).
 
 **The whole model** Scope: `read`. **Unstable:** not covered by the compatibility promise.
 
-Unstable: the body is the store's internal serialization of the model (ids, expression trees, function ids as numbers) and may change in any release. Not covered by the /v1 compatibility promise; use /v1/measures and /v1/measures/{id}/values for a stable view.
+Unstable: the body is the store's internal serialization of the model (ids, expression trees, function ids as numbers) and may change in any release. Not covered by the /v1 compatibility promise; use /v1/measures and /v1/measures/{id}/values for a stable view. Refused (403) for a model with access policies, whoever asks: it is everything, unfiltered.
 
 | Status | Response |
 | --- | --- |
 | 200 | The model, as the store serializes it. Body: `{"type":"object"}`. |
 | 401 | No token, or an unknown one. Body: [Error](#error). |
+| 403 | The request was refused. Body: [Error](#error). |
 | 429 | The caller is over IMPROV_RATE_LIMIT requests a minute. Body: [Error](#error). |
 | 500 | Internal error; the detail is in the server log under request_id. Body: [Error](#error). |
 
@@ -613,6 +629,84 @@ Request body: [ViewBody](#viewbody).
     "type": "array"
   },
   "type": "array"
+}
+```
+
+### Capabilities
+
+```json
+{
+  "properties": {
+    "add_measure": {
+      "type": "boolean"
+    },
+    "admin": {
+      "description": "May set the model's policies.",
+      "type": "boolean"
+    },
+    "edit_items": {
+      "description": "The visible items the caller may rename or delete.",
+      "items": {
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "edit_structure": {
+      "description": "May add, rename or remove categories and items.",
+      "type": "boolean"
+    },
+    "manage_views": {
+      "type": "boolean"
+    },
+    "measures": {
+      "description": "Each visible measure, in id order.",
+      "items": {
+        "properties": {
+          "cells": {
+            "description": "Which of its visible cells may be edited.",
+            "enum": [
+              "all",
+              "some",
+              "none"
+            ]
+          },
+          "define": {
+            "description": "May redefine, format or drop it.",
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "define",
+          "cells"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "restricted": {
+      "description": "Whether the model has access policies.",
+      "type": "boolean"
+    },
+    "version": {
+      "description": "The model's version: opaque, compare for equality only.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "restricted",
+    "admin",
+    "add_measure",
+    "edit_structure",
+    "manage_views",
+    "measures",
+    "edit_items"
+  ],
+  "type": "object"
 }
 ```
 

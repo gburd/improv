@@ -194,6 +194,32 @@ pub struct MeasureOut {
     pub editable: bool,
 }
 
+/// What a caller may do (`GET /v1/capabilities`): hints for a GUI.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Capabilities {
+    pub version: String,
+    /// Whether the model has policies at all.
+    pub restricted: bool,
+    pub admin: bool,
+    pub add_measure: bool,
+    pub edit_structure: bool,
+    pub manage_views: bool,
+    /// Each visible measure, in id order.
+    pub measures: Vec<MeasureCaps>,
+    /// The visible items the caller may rename or delete, in id order.
+    pub edit_items: Vec<u32>,
+}
+
+/// One measure's capabilities.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MeasureCaps {
+    pub id: u32,
+    /// It may be redefined, formatted or dropped.
+    pub define: bool,
+    /// Its cells that may be edited: `all`, `some` or `none`.
+    pub cells: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LambdaOut {
     pub id: u32,

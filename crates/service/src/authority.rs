@@ -22,6 +22,7 @@ use improv_client::wire::{
     DiagnosticOut, Done, EditReq, Failure, ItemOut, LambdaOut, MeasureOut, NameReq, Request,
     Response, Structure, UpdateMeasureReq, WindowReq, WireValue,
 };
+use improv_client::wire::{Capabilities, MeasureCaps};
 use improv_core_model::{
     parser, CategoryId, Coordinate, Expr, Filter, ItemId, MatrixPlacement, Measure, MeasureId,
     MeasureKind, Model, Name, Value, ValueErrorKind, ValueType, View, ViewId,
@@ -100,6 +101,34 @@ impl From<StoreError> for Refusal {
 }
 
 type Answer<T> = Result<T, Refusal>;
+
+/// Whether the caller may edit all, some or none of input measure `id`'s
+/// cells. Checks every cell of its grid: a session answers each from its
+/// class cache, so this is a few lookups a cell.
+// shortcut: walks the measure's whole grid; per class (the policy-named
+// items) would be enough, if a huge grid makes capabilities slow.
+fn edit_cells(g: &Gate, m: &Model, id: MeasureId) -> &'static str {
+    let cats = &m.measures[&id].categories;
+    let mut coords = vec![Coordinate::new()];
+    for c in cats {
+        let items = m
+            .categories
+            .get(c)
+            .map(|x| x.items.clone())
+            .unwrap_or_default();
+        coords = coords
+            .into_iter()
+            .flat_map(|co| items.iter().map(move |i| co.clone().with(*c, *i)))
+            .collect();
+    }
+    let visible: Vec<&Coordinate> = coords.iter().filter(|c| g.sees_cell(id, c)).collect();
+    let editable = visible.iter().filter(|c| g.edits_cell(id, c)).count();
+    match editable {
+        0 => "none",
+        n if n == visible.len() => "all",
+        _ => "some",
+    }
+}
 
 /// One undo step: the model before a change (without its cells for a
 /// structural one), or the cells a batch replaced.
@@ -362,6 +391,59 @@ impl Authority {
             // come with the capabilities route (Cedar stage 2).
             editable: derived.is_none() && !filled,
         }
+    }
+
+    /// What `who` may do, for a GUI to grey out what it cannot (hints only:
+    /// every request is checked again). The model-wide actions; for each
+    /// visible measure whether it may be redefined and whether its cells
+    /// may be edited (`some` when only some of them may); and the visible
+    /// items that may be renamed or deleted. `None` when `who` may not open
+    /// the model.
+    pub fn capabilities(&mut self, who: &Principal) -> Answer<Capabilities> {
+        self.refresh()?;
+        let access = self.access(who);
+        let g = self.gate(&access);
+        if !g.sees_model() {
+            return Err(Refusal::forbidden());
+        }
+        let m = &self.model;
+        let model_wide = |a| g.allows(a, &Resource::Model);
+        let mut ids: Vec<MeasureId> = m.measures.keys().copied().collect();
+        ids.sort_by_key(|i| i.0);
+        let measures = ids
+            .into_iter()
+            .filter(|id| g.sees_measure(*id))
+            .map(|id| {
+                let x = &m.measures[&id];
+                let filled = m.sql_sources.contains_key(&id) || m.external_calls.contains_key(&id);
+                let cells = match (x.is_input() && !filled, access.restricted()) {
+                    (false, _) => "none",
+                    (true, false) => "all",
+                    (true, true) => edit_cells(&g, m, id),
+                };
+                MeasureCaps {
+                    id: id.0,
+                    define: g.allows(Action::DefineMeasure, &Resource::Measure(id)),
+                    cells: cells.into(),
+                }
+            })
+            .collect();
+        let mut items: Vec<u32> = (m.items.keys())
+            .filter(|i| g.sees_item(**i))
+            .filter(|i| g.allows(Action::EditStructure, &Resource::Item(**i)))
+            .map(|i| i.0)
+            .collect();
+        items.sort_unstable();
+        Ok(Capabilities {
+            version: self.version(),
+            restricted: access.restricted(),
+            admin: model_wide(Action::Admin),
+            add_measure: model_wide(Action::DefineMeasure),
+            edit_structure: model_wide(Action::EditStructure),
+            manage_views: model_wide(Action::ManageViews),
+            measures,
+            edit_items: items,
+        })
     }
 
     /// The visible cells of measure `id` at the items `w` names.

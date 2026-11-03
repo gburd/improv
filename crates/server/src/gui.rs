@@ -27,7 +27,6 @@ use improv_client::wire::{
     ViewReq, WindowReq,
 };
 use improv_service::authority::{Authority, Refusal};
-use improv_service::policy::Principal;
 use serde::Deserialize;
 
 use crate::{AppState, Audited, Caller, Scope};
@@ -36,8 +35,9 @@ use crate::{AppState, Audited, Caller, Scope};
 /// builds the engine).
 pub struct Gui {
     authority: Mutex<Option<Authority>>,
-    /// The policy the authority opens with (`None`: no policy). Set by
-    /// tests; Cedar's loader sets it from the model's stored policies.
+    /// The policy the authority opens with, when a test sets one. Else
+    /// it opens with the model's stored Cedar policies
+    /// ([`improv_service::cedar::CedarPolicy`]): none stored is open.
     pub policy: Mutex<Option<Box<dyn improv_service::policy::Policy>>>,
     /// Bumped after every change the authority has seen (a write through
     /// these routes, or the [`poller`]'s refresh finding another writer's):
@@ -155,6 +155,7 @@ async fn poller(state: Arc<AppState>) {
 #[cfg(test)]
 pub const ROUTES: &[&str] = &[
     "/structure",
+    "/capabilities",
     "/measures/:id/window",
     "/cells",
     "/measures",
@@ -201,7 +202,7 @@ async fn serve(
     }
     let writes = req.writes();
     let st = state.clone();
-    let who = Principal::user(caller.name.clone());
+    let who = caller.principal();
     let r = tokio::task::spawn_blocking(move || {
         // Writes here and through the older routes go one at a time.
         let _write = writes.then(|| st.write_lock.blocking_lock());
@@ -234,10 +235,13 @@ fn with_authority<T>(
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let opened = match policy {
-            Some(p) => Authority::with_policy(&st.db_path, p),
-            None => Authority::open(&st.db_path),
-        };
+        let policy = policy.unwrap_or_else(|| {
+            Box::new(improv_service::cedar::CedarPolicy::new(
+                &st.db_path,
+                improv_policy::Channel::Server,
+            ))
+        });
+        let opened = Authority::with_policy(&st.db_path, policy);
         *slot = Some(opened.map_err(|e| refusal(500, e))?);
     }
     f(slot.as_mut().expect("opened above"))
@@ -331,6 +335,19 @@ macro_rules! body {
 
 pub async fn structure(cx: Ctx) -> Response {
     cx.run(Req::Structure).await
+}
+
+/// `GET /v1/capabilities`: what the caller may do, as hints for a GUI.
+pub async fn capabilities(cx: Ctx) -> Response {
+    let who = cx.caller.principal();
+    let st = cx.state.clone();
+    let r = tokio::task::spawn_blocking(move || with_authority(&st, |a| a.capabilities(&who)))
+        .await
+        .map_err(|e| refusal(500, format!("task join: {e}")));
+    match r.and_then(|r| r) {
+        Ok(c) => Json(c).into_response(),
+        Err(e) => refused(e),
+    }
 }
 
 pub async fn window(
@@ -461,7 +478,7 @@ pub async fn changes(
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned)
     });
-    let who = Principal::user(caller.name.clone());
+    let who = caller.principal();
     // Keyed by the principal (never the secret), as the policy sees it.
     let slot = match take_slot(&state, &who.user) {
         Ok(s) => s,

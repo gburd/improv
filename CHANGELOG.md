@@ -66,7 +66,7 @@ this project follows [Semantic Versioning](https://semver.org/).
   [Access Policies](docs/src/policies.md) chapter. A Mentat file stores
   them in four new `:policy/*` attributes, apart from the model. 0.12
   opens such a file, ignores them and keeps them (checked against the
-  v0.12.2 binary). Enforcement by `improv-server` and pg_improv follows
+  v0.12.2 binary). Enforcement by pg_improv follows
   ([the design](docs/reviews/2026-11-02-cedar-policies.md)). New
   dependency: `cedar-policy` 4.14.0 (Apache-2.0), pinned exactly.
 - **`improv-cosmic`, a COSMIC desktop GUI (preview).** A second desktop
@@ -85,6 +85,17 @@ this project follows [Semantic Versioning](https://semver.org/).
   accessibility there yet; rich copy and drag and drop wait on libcosmic).
   Guide: [The COSMIC Desktop GUI](docs/src/cosmic-gui.md);
   `improv-cosmic(1)`; design note `docs/reviews/2026-11-02-cosmic-gui.md`.
+- **`improv-server` enforces a model's access policies** on every route.
+  The caller is the Cedar user its token names. A measure, item or cell
+  it may not read is absent from every answer (lists, cells, windows,
+  what-ifs, `/nl/parse`, the change stream, the scheduler's status), and
+  a route about a hidden measure answers as for one that does not exist.
+  Edits are checked cell by cell. Derived values are computed over all
+  the data, then filtered. A change to the policies is seen by the next
+  request, and policies that no longer validate refuse every request.
+  New: `GET /v1/capabilities`, what the caller may do, for a GUI to grey
+  out the rest. `GET /v1/model` is refused (403) for a model with
+  policies.
 
 ### Changed
 

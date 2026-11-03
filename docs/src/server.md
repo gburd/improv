@@ -19,7 +19,7 @@ is the OpenAPI 3.1 description, and the server serves it at
 | --- | --- | --- | --- | --- |
 | GET | `/v1/health` | public | | Liveness probe. |
 | GET | `/v1/openapi.json` | public | | The OpenAPI document. |
-| GET | `/v1/model` | read | | The whole model. |
+| GET | `/v1/model` | read | | The whole model. Refused (403) for a model with [access policies](./policies.md). |
 | GET | `/v1/measures` | read | | Id, name, kind, categories. |
 | GET | `/v1/measures/:id/values` | read | | Stored inputs, or computed values. |
 | POST | `/v1/measures/:id/eval` | read; write to persist | `{"edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 90}], "persist": false}` | What-if edits through the live engine; `"persist": true` writes them. Ids are numeric; `"value": null` clears a cell. The answer names coordinates by category and item name. |
@@ -34,6 +34,7 @@ return typed values, and answer with only what the caller may see.
 
 | Method | Path | Scope | Body | Notes |
 | --- | --- | --- | --- | --- |
+| GET | `/v1/capabilities` | read | | What the caller may do: the model-wide actions, each visible measure's `define` and `cells` (`all`, `some`, `none`), and the items it may rename or delete. Hints for a GUI; every request is still checked. |
 | GET | `/v1/structure` | read | | Categories with their items in grid order, measures (with formulas as typed), LAMBDAs, views, and the `version`. The stable shape, in place of `/v1/model`. |
 | POST | `/v1/measures/:id/window` | read | `{"at": {"1": [10, 11]}}` | The cells at these items (per category id; a category left out: all its items), computed by the server. |
 | POST | `/v1/cells` | write | `{"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 150}]}` | Set or clear (`"value": null`) cells, all or none. A refusal says which edit (`index`). |
@@ -102,6 +103,34 @@ users. All the sources combine. Generate secrets with
 
 In open mode (no tokens) every caller has write access and the audit log
 names it `anonymous`.
+
+## Access policies
+
+A model with [access policies](./policies.md) (`improv policy set`) is
+served under them, to every route. The caller is the Cedar user named by
+its token (`dashboard`, `loader`, …; `anonymous` in open mode), with no
+roles; groups come from the model's policy document. A token's scope
+stays an outer limit: a read token never writes, whatever the policies
+allow.
+
+- **Hidden is absent.** A measure, item or cell a caller may not read is
+  missing from every answer: lists, cells, windows, what-if results,
+  `/nl/parse`'s names, the change stream, `/v1/scheduler/status`. A
+  route about a hidden measure answers exactly as for a measure that
+  does not exist (the same status and message). An edit of a cell the
+  caller may not edit answers as an edit of a cell that does not exist.
+- **Totals are the model's.** Derived values are computed over all the
+  data, hidden cells included, and then filtered. See
+  [Totals and what they reveal](./policies.md#totals-and-what-they-reveal).
+- **`/v1/model` is refused** (403) for a model with policies, to every
+  caller: it is the whole model, unfiltered. Read the model through
+  `/v1/structure` and the measure routes.
+- **Changes take effect at once.** The server reads the policies'
+  version on every request, so a `set`, a `clear` or a change of groups
+  is seen by the next request, with no restart. Policies that no longer
+  validate refuse every request.
+- **Refusals are audited** like any write: who, the route and the status
+  (see [Audit log](#audit-log)).
 
 ## Writes
 

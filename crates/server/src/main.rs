@@ -172,6 +172,16 @@ struct Caller {
     scope: Scope,
 }
 
+impl Caller {
+    /// Who the policies see: the token's name as the Cedar user, with no
+    /// roles (a token asserts none; groups come from the model's policy
+    /// document). The seam for OIDC/JWT: map the token's subject and role
+    /// claims here, and nothing past it changes.
+    fn principal(&self) -> improv_policy::Principal {
+        improv_policy::Principal::user(self.name.clone())
+    }
+}
+
 /// Request extension set by [`audit`]: marking it (with the caller's name)
 /// makes the request a write the audit log records. Shared, so a mark made
 /// before a timeout drops the handler still counts.
@@ -358,6 +368,9 @@ pub struct AppState {
     cors_origins: Vec<String>,
     /// The GUI routes' authority (`gui.rs`).
     gui: gui::Gui,
+    /// The model's stored Cedar policies, for the routes outside
+    /// [`gui`]: the same store, read the same way, but its own sessions.
+    policy: improv_service::cedar::CedarPolicy,
     /// Store loads performed, so tests can check the cache.
     #[cfg(test)]
     loads: AtomicU64,
@@ -365,8 +378,11 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(db_path: String, auth: Auth, scheduler_status: Option<SharedStatus>) -> Self {
+        let policy =
+            improv_service::cedar::CedarPolicy::new(&db_path, improv_policy::Channel::Server);
         AppState {
             model_label: model_label(&db_path),
+            policy,
             db_path,
             auth,
             scheduler_status,
@@ -635,6 +651,7 @@ fn routes() -> Vec<(
         // What a GUI drives (gui.rs): the visible model, windows of cells,
         // edits, structure, views, undo, and the change stream.
         ("get", "/structure", Scope::Read, get(gui::structure)),
+        ("get", "/capabilities", Scope::Read, get(gui::capabilities)),
         (
             "post",
             "/measures/:id/window",
@@ -1100,6 +1117,64 @@ async fn save_model(state: &Arc<AppState>, model: Model) -> Result<Arc<Model>, A
     Ok(model)
 }
 
+/// The caller's decisions over `model` (the cached copy [`load_model`]
+/// returned), and refuse the request outright when the policies do not
+/// let it open the model. Sessions are keyed by the store's high-water,
+/// so a structure change (any save) makes new ones.
+fn access(
+    state: &AppState,
+    model: &Model,
+    caller: &Caller,
+) -> Result<Arc<dyn improv_service::policy::Access>, ApiError> {
+    use improv_service::policy::Policy;
+    let tx = state
+        .loaded_tx
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .unwrap_or(0);
+    let access = state.policy.session(model, tx as u64, &caller.principal());
+    let gate = improv_service::policy::Gate {
+        access: &*access,
+        model,
+    };
+    if !gate.sees_model() {
+        return Err(ApiError::Forbidden("not allowed".into()));
+    }
+    Ok(access)
+}
+
+/// The gate over `model` for `access`.
+fn gate<'a>(
+    access: &'a Arc<dyn improv_service::policy::Access>,
+    model: &'a Model,
+) -> improv_service::policy::Gate<'a> {
+    improv_service::policy::Gate {
+        access: &**access,
+        model,
+    }
+}
+
+/// A write (or a what-if edit) of measure `mid` at `coord`, checked
+/// against the policies before [`validate_write`]: a cell the caller may
+/// not see or edit is refused with `missing`, what the route answers for
+/// a measure that does not exist, so a refusal reveals nothing. `edit`
+/// false (a what-if) needs the cell visible only.
+fn check_cell(
+    g: &improv_service::policy::Gate,
+    mid: MeasureId,
+    coord: &Coordinate,
+    edit: bool,
+    missing: fn(String) -> ApiError,
+) -> Result<(), ApiError> {
+    let shown = g.sees_measure(mid) && g.sees_cell(mid, coord);
+    // An edit's derived-or-filled refusal is validate_write's, after this.
+    let input = g.model.measures.get(&mid).is_some_and(|m| m.is_input());
+    if !shown || (edit && input && !g.edits_cell(mid, coord)) {
+        return Err(missing(format!("no measure {}", mid.0)));
+    }
+    Ok(())
+}
+
 /// S12: a write must target an existing input measure, at a coordinate naming
 /// exactly the measure's categories, each with an item of that category, and
 /// carry a finite value (`None` clears the cell).
@@ -1148,23 +1223,57 @@ async fn openapi() -> Response {
 
 /// Scheduler observability: enabled/tick/last-refreshed. Protected (not a
 /// liveness probe like `/health`) since it can reveal which measures exist.
-async fn scheduler_status_handler(State(state): State<Arc<AppState>>) -> Json<JsonValue> {
-    match &state.scheduler_status {
-        None => Json(json!({ "enabled": false })),
-        Some(status) => {
-            let s = status.lock().unwrap_or_else(PoisonError::into_inner);
-            Json(improv_core_model::json::sorted(json!({
-                "enabled": true,
-                "tick_secs": s.tick_secs,
-                "last_tick_refreshed": s.last_tick_refreshed,
-                "last_error": s.last_error,
-            })))
-        }
-    }
+async fn scheduler_status_handler(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Json<JsonValue>, ApiError> {
+    let Some(status) = &state.scheduler_status else {
+        return Ok(Json(json!({ "enabled": false })));
+    };
+    // An unreadable store is what a failing tick reports: say that, with
+    // no measure named (the policies cannot be read either).
+    let Ok(model) = load_model(&state).await else {
+        let s = status.lock().unwrap_or_else(PoisonError::into_inner);
+        return Ok(Json(json!({
+            "enabled": true,
+            "last_error": "the model store cannot be read",
+            "last_tick_refreshed": [],
+            "tick_secs": s.tick_secs,
+        })));
+    };
+    let access = access(&state, &model, &caller)?;
+    let g = gate(&access, &model);
+    let s = status.lock().unwrap_or_else(PoisonError::into_inner);
+    // A hidden measure's id, or an error that may name one, is not shown.
+    let refreshed: Vec<u32> = (s.last_tick_refreshed.iter().copied())
+        .filter(|m| g.sees_measure(MeasureId(*m)))
+        .collect();
+    let error = (s.last_error.clone()).map(|e| match access.restricted() {
+        true => "a refresh failed; the server's log says why".to_string(),
+        false => e,
+    });
+    Ok(Json(improv_core_model::json::sorted(json!({
+        "enabled": true,
+        "tick_secs": s.tick_secs,
+        "last_tick_refreshed": refreshed,
+        "last_error": error,
+    }))))
 }
 
-async fn get_model(State(state): State<Arc<AppState>>) -> Result<Response, ApiError> {
-    Ok(Json(&*load_model(&state).await?).into_response())
+/// The whole stored model, unfiltered: refused for a model with access
+/// policies (403, as for a model the caller may not open), whoever asks.
+async fn get_model(
+    State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
+) -> Result<Response, ApiError> {
+    let model = load_model(&state).await?;
+    if access(&state, &model, &caller)?.restricted() {
+        return Err(ApiError::Forbidden(
+            "this model has access policies: read it through /v1/structure and the measure routes"
+                .into(),
+        ));
+    }
+    Ok(Json(&*model).into_response())
 }
 
 #[derive(Serialize)]
@@ -1177,11 +1286,15 @@ struct MeasureSummary {
 
 async fn list_measures(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
 ) -> Result<Json<Vec<MeasureSummary>>, ApiError> {
     let model = load_model(&state).await?;
+    let access = access(&state, &model, &caller)?;
+    let g = gate(&access, &model);
     let mut out: Vec<MeasureSummary> = model
         .measures
         .values()
+        .filter(|m| g.sees_measure(m.id))
         .map(|m| MeasureSummary {
             id: m.id.0,
             name: m.name.0.clone(),
@@ -1205,30 +1318,37 @@ struct Cell {
 
 async fn measure_values(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<u32>,
 ) -> Result<Json<Vec<Cell>>, ApiError> {
     let model = load_model(&state).await?;
+    let access = access(&state, &model, &caller)?;
+    let g = gate(&access, &model);
     let mid = MeasureId(id);
+    // A hidden measure answers exactly as a missing one.
     let measure = model
         .measures
         .get(&mid)
+        .filter(|_| g.sees_measure(mid))
         .ok_or_else(|| ApiError::NotFound(format!("no measure {id}")))?;
 
     let cells = match &measure.kind {
         MeasureKind::Input => model
             .inputs
             .iter()
-            .filter(|((m, _), _)| *m == mid)
+            .filter(|((m, coord), _)| *m == mid && g.sees_cell(mid, coord))
             .filter_map(|((_, coord), val)| {
                 val.as_number().map(|n| readable_cell(&model, coord, n))
             })
             .collect(),
+        // Computed over every cell, then filtered: totals are the model's.
         MeasureKind::Derived(_) => {
             let mut out =
                 evaluate(&model, &[mid]).map_err(|e| ApiError::Internal(e.to_string()))?;
             let values = out.remove(&mid).unwrap_or_default();
             values
                 .into_iter()
+                .filter(|(k, _)| g.sees_cell(mid, &decode_coord(k)))
                 .map(|(k, n)| readable_key(&model, &k, n.as_num().unwrap_or(f64::NAN)))
                 .collect()
         }
@@ -1289,9 +1409,11 @@ async fn eval_measure(
         false => None,
     };
     let mut model = load_model(&state).await?;
+    let access = access(&state, &model, &caller)?;
     let measure = model
         .measures
         .get(&mid)
+        .filter(|_| gate(&access, &model).sees_measure(mid))
         .ok_or_else(|| ApiError::NotFound(format!("no measure {id}")))?;
     if measure.is_input() {
         return Err(ApiError::BadRequest(format!(
@@ -1308,6 +1430,13 @@ async fn eval_measure(
             if coord.dims.len() != e.coord.len() {
                 return Err(ApiError::BadRequest("coordinate repeats a category".into()));
             }
+            check_cell(
+                &gate(&access, &model),
+                MeasureId(e.measure),
+                &coord,
+                req.persist,
+                ApiError::BadRequest,
+            )?;
             validate_write(&model, MeasureId(e.measure), &coord, e.value)?;
             Ok(coord)
         })
@@ -1363,8 +1492,12 @@ async fn eval_measure(
     .map_err(|e| ApiError::Internal(format!("task join: {e}")))?
     .map_err(ApiError::Internal)?;
 
+    // The model the edits were checked against; after a persist, the saved
+    // one has the same structure.
+    let g = gate(&access, &model);
     let cells = values
         .iter()
+        .filter(|(k, _)| g.sees_cell(mid, &decode_coord(k)))
         .map(|(k, n)| readable_key(&model, k, n.as_num().unwrap_or(f64::NAN)))
         .collect();
     Ok(Json(cells))
@@ -1375,12 +1508,35 @@ struct NlParseReq {
     text: String,
 }
 
+/// `model` with only the measures `access` shows, for routes that resolve
+/// or print names (the NL routes): a hidden measure is then unknown, as
+/// one that does not exist. Categories are all shown (ViewModel).
+fn visible_names(
+    model: &Arc<Model>,
+    access: &Arc<dyn improv_service::policy::Access>,
+) -> Arc<Model> {
+    if !access.restricted() {
+        return model.clone();
+    }
+    let g = gate(access, model);
+    let mut m = Model::new();
+    for c in model.categories.values() {
+        m.add_category(c.id, c.name.0.clone());
+    }
+    for x in model.measures.values().filter(|x| g.sees_measure(x.id)) {
+        m.add_measure(x.clone());
+    }
+    Arc::new(m)
+}
+
 async fn nl_parse(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
     body: Result<Json<NlParseReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
     let Json(req) = body?;
     let model = load_model(&state).await?;
+    let model = visible_names(&model, &access(&state, &model, &caller)?);
     let ctx = NlContext::new(&model);
     match parse_nl_formula(&ctx, &req.text) {
         Ok(formula) => Ok(Json(improv_core_model::json::sorted(
@@ -1397,6 +1553,7 @@ struct NlDescribeReq {
 
 async fn nl_describe(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
     body: Result<Bytes, BytesRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
     let body = body.map_err(|e| ApiError::Rejected(e.status(), e.body_text()))?;
@@ -1404,6 +1561,7 @@ async fn nl_describe(
     let req: NlDescribeReq = improv_core_model::json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid formula: {e}")))?;
     let model = load_model(&state).await?;
+    let model = visible_names(&model, &access(&state, &model, &caller)?);
     let ctx = NlContext::new(&model);
     Ok(Json(
         json!({ "text": describe_formula(&ctx, &req.formula) }),
@@ -1418,6 +1576,7 @@ struct SetCellReq {
 
 async fn set_cell(
     State(state): State<Arc<AppState>>,
+    Extension(caller): Extension<Caller>,
     Path(id): Path<u32>,
     body: Result<Json<SetCellReq>, JsonRejection>,
 ) -> Result<Json<JsonValue>, ApiError> {
@@ -1426,8 +1585,15 @@ async fn set_cell(
 
     let _write = state.write_lock.lock().await;
     let model = load_model(&state).await?;
-    if !model.measures.contains_key(&mid) {
+    let access = access(&state, &model, &caller)?;
+    let g = gate(&access, &model);
+    if !g.sees_measure(mid) {
         return Err(ApiError::NotFound(format!("no measure {id}")));
+    }
+    // A coordinate that does not fit is validate_write's 400; one that fits
+    // but the caller may not edit answers as a measure that does not exist.
+    if validate_write(&model, mid, &req.coord, Some(req.value)).is_ok() {
+        check_cell(&g, mid, &req.coord, true, ApiError::NotFound)?;
     }
     validate_write(&model, mid, &req.coord, Some(req.value))?;
     let mut model = (*model).clone();
@@ -3120,7 +3286,13 @@ pub(crate) mod tests {
             ..Default::default()
         }));
         let state = Arc::new(AppState::new("".into(), Auth::Disabled, Some(status)));
-        let Json(v) = scheduler_status_handler(State(state)).await;
+        let caller = Caller {
+            name: "t".into(),
+            scope: Scope::Read,
+        };
+        let Ok(Json(v)) = scheduler_status_handler(State(state), Extension(caller)).await else {
+            panic!("refused");
+        };
         assert_eq!(
             v.to_string(),
             r#"{"enabled":true,"last_error":null,"last_tick_refreshed":[],"tick_secs":5}"#
@@ -3324,5 +3496,381 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+/// Stage 2 of the access policies: every route under the model's stored
+/// Cedar policies.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod policy_tests {
+    use super::tests::{revenue_model, temp_path};
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use tower::util::ServiceExt;
+
+    /// Ann may not see item WidgetB (21), measure Price (100), or the
+    /// Quantity cell at 2026 x WidgetA; nor edit anything. Ed may edit
+    /// Quantity. Root may do everything. Eve is in no policy.
+    const POLICIES: &str = r#"
+        permit (principal, action in Improv::Action::"Read", resource)
+          when { principal in Improv::Group::"staff" };
+        forbid (principal == Improv::User::"ann", action in Improv::Action::"Read",
+                resource in Improv::Item::"21");
+        forbid (principal == Improv::User::"ann", action in Improv::Action::"Read",
+                resource in Improv::Measure::"100");
+        forbid (principal == Improv::User::"ann", action == Improv::Action::"ReadCell",
+                resource in Improv::Item::"11")
+          when { resource in Improv::Measure::"101" && resource in Improv::Item::"20" };
+        permit (principal == Improv::User::"ed", action == Improv::Action::"EditCell",
+                resource in Improv::Measure::"101");
+        permit (principal == Improv::User::"root", action, resource);
+    "#;
+    const GROUPS: &str = r#"{"staff": {"users": ["ann", "ed"]}}"#;
+
+    /// An app over the revenue model with those policies, tokens named
+    /// after each user (secret = name + "-s"), and an audit log.
+    fn app_with_policies() -> (Router, std::path::PathBuf, std::path::PathBuf) {
+        let path = temp_path("pol.db");
+        let p = path.to_str().unwrap();
+        let mut s = Store::open(p).unwrap();
+        s.save_model(&revenue_model()).unwrap();
+        improv_policy::Policies::parse(POLICIES, GROUPS).unwrap();
+        s.save_policies(Some((POLICIES, GROUPS))).unwrap();
+        let tokens = ["ann", "ed", "root", "eve"]
+            .iter()
+            .map(|n| Token {
+                name: n.to_string(),
+                scope: Scope::Write,
+                secret: format!("{n}-s"),
+            })
+            .collect();
+        let log = temp_path("pol-audit.log");
+        let mut st = AppState::new(p.into(), Auth::Tokens(tokens), None);
+        st.configure(&|k| (k == "IMPROV_AUDIT_LOG").then(|| log.to_str().unwrap().to_string()))
+            .unwrap();
+        (app(Arc::new(st)), path, log)
+    }
+
+    async fn call(
+        app: &Router,
+        who: &str,
+        m: &str,
+        uri: &str,
+        body: Option<JsonValue>,
+    ) -> (StatusCode, String) {
+        let mut b = Request::builder()
+            .method(m)
+            .uri(uri)
+            .header("authorization", format!("Bearer {who}-s"))
+            .header("content-type", "application/json");
+        if m == "GET" {
+            b = b.header("x-improv-session", "t");
+        }
+        let req = b
+            .body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Every read a client can make, as (method, uri, body).
+    fn reads() -> Vec<(&'static str, String, Option<JsonValue>)> {
+        let mut out = vec![
+            ("GET", "/v1/measures".to_string(), None),
+            ("GET", "/v1/structure".to_string(), None),
+            ("GET", "/v1/capabilities".to_string(), None),
+            (
+                "POST",
+                "/v1/nl/parse".to_string(),
+                Some(json!({"text": "revenue is price times quantity"})),
+            ),
+        ];
+        for m in [100, 101, 102] {
+            out.push(("GET", format!("/v1/measures/{m}/values"), None));
+            out.push(("POST", format!("/v1/measures/{m}/window"), Some(json!({}))));
+        }
+        out.push((
+            "POST",
+            "/v1/measures/102/eval".into(),
+            Some(json!({"edits": []})),
+        ));
+        out
+    }
+
+    /// Nothing hidden from ann appears in any answer she gets: not
+    /// WidgetB's name or id as an item, not Price, not the hidden cell's
+    /// value. Root, with the same requests, sees all of it.
+    #[tokio::test]
+    async fn hidden_is_absent_from_every_response() {
+        let (app, _p, _log) = app_with_policies();
+        let mut ann_all = String::new();
+        let mut root_all = String::new();
+        for (m, uri, body) in reads() {
+            let (s, b) = call(&app, "ann", m, &uri, body.clone()).await;
+            // A route about a hidden measure is refused as for a missing
+            // one (404; 400 for /nl/parse's unknown name).
+            let refused = [StatusCode::NOT_FOUND, StatusCode::BAD_REQUEST];
+            assert!(s.is_success() || refused.contains(&s), "{m} {uri}: {s} {b}");
+            ann_all += &b;
+            let (s, b) = call(&app, "root", m, &uri, body).await;
+            assert!(s.is_success(), "root {m} {uri}: {s} {b}");
+            root_all += &b;
+        }
+        for hidden in ["WidgetB", "Price"] {
+            assert!(root_all.contains(hidden), "root sees {hidden}");
+            assert!(!ann_all.contains(hidden), "ann sees {hidden}: {ann_all}");
+        }
+        // Quantity[2026, WidgetA] = 120 is hidden; Revenue there is not.
+        assert!(root_all.contains("120"));
+        let (_, q) = call(&app, "ann", "GET", "/v1/measures/101/values", None).await;
+        assert!(!q.contains("120") && q.contains("100"), "{q}");
+        // Revenue is computed over everything: WidgetA's 2025 value is the
+        // full model's (Price 10 x Quantity 100), though Price is hidden.
+        let (_, r) = call(&app, "ann", "GET", "/v1/measures/102/values", None).await;
+        assert!(r.contains("1000"), "{r}");
+        // A hidden name is unknown to /nl/parse, as a name no measure has.
+        let parse = |t: &str| Some(json!({ "text": t }));
+        let hidden = call(
+            &app,
+            "ann",
+            "POST",
+            "/v1/nl/parse",
+            parse("revenue is price times quantity"),
+        )
+        .await;
+        let missing = call(
+            &app,
+            "ann",
+            "POST",
+            "/v1/nl/parse",
+            parse("revenue is zzz times quantity"),
+        )
+        .await;
+        assert_eq!((hidden.0, hidden.1.replace("price", "zzz")), missing);
+        // A formula reading a hidden measure is not shown.
+        let (_, s) = call(&app, "ann", "GET", "/v1/structure", None).await;
+        assert!(!s.contains("formula"), "{s}");
+    }
+
+    /// A hidden measure answers every route exactly as one that does not
+    /// exist (status and body, with the id swapped), so a refusal says
+    /// nothing; so does a hidden cell's edit.
+    #[tokio::test]
+    async fn a_hidden_thing_is_refused_as_a_missing_one() {
+        let (app, _p, _log) = app_with_policies();
+        let swap = |b: &str| b.replace("100", "999");
+        for (m, uri, body) in [
+            ("GET", "/v1/measures/{}/values", None),
+            ("POST", "/v1/measures/{}/window", Some(json!({}))),
+            ("POST", "/v1/measures/{}/eval", Some(json!({"edits": []}))),
+            (
+                "POST",
+                "/v1/measures/{}/cells",
+                Some(json!({"coord": {"dims": {"2": 20}}, "value": 1.0})),
+            ),
+            ("PUT", "/v1/measures/{}", Some(json!({"name": "X"}))),
+            ("DELETE", "/v1/measures/{}", None),
+        ] {
+            let hidden = call(&app, "ann", m, &uri.replace("{}", "100"), body.clone()).await;
+            let missing = call(&app, "ann", m, &uri.replace("{}", "999"), body).await;
+            assert_eq!(
+                hidden.0, missing.0,
+                "{m} {uri}: {} / {}",
+                hidden.1, missing.1
+            );
+            assert_eq!(swap(&hidden.1), missing.1, "{m} {uri}");
+        }
+        // A cell ed may not see does not exist for him either; one he may
+        // see but not edit (Price) answers the same.
+        let edit = |dims: JsonValue| json!({"coord": {"dims": dims}, "value": 1.0});
+        let what_if = |m: u32, coord: JsonValue| json!({"edits": [{"measure": m, "coord": coord, "value": 1.0}], "persist": true});
+        let a = call(
+            &app,
+            "ed",
+            "POST",
+            "/v1/measures/100/cells",
+            Some(edit(json!({"2": 20}))),
+        )
+        .await;
+        let b = call(
+            &app,
+            "ed",
+            "POST",
+            "/v1/measures/999/cells",
+            Some(edit(json!({"2": 20}))),
+        )
+        .await;
+        assert_eq!((a.0, swap(&a.1)), b);
+        let a = call(
+            &app,
+            "ed",
+            "POST",
+            "/v1/measures/102/eval",
+            Some(what_if(100, json!([[2, 20]]))),
+        )
+        .await;
+        let b = call(
+            &app,
+            "ed",
+            "POST",
+            "/v1/measures/102/eval",
+            Some(what_if(999, json!([[2, 20]]))),
+        )
+        .await;
+        assert_eq!((a.0, swap(&a.1)), b);
+        // And ed's own edit lands.
+        let ok = call(
+            &app,
+            "ed",
+            "POST",
+            "/v1/measures/101/cells",
+            Some(edit(json!({"1": 10, "2": 20}))),
+        )
+        .await;
+        assert_eq!(ok.0, StatusCode::OK, "{}", ok.1);
+    }
+
+    /// Eve is in no policy: every route refuses her, with one answer.
+    /// The whole-model dump is refused even to root under policies.
+    #[tokio::test]
+    async fn no_policy_no_model_and_no_dump() {
+        let (app, _p, _log) = app_with_policies();
+        for (m, uri, body) in reads() {
+            let (s, _) = call(&app, "eve", m, &uri, body).await;
+            assert_eq!(s, StatusCode::FORBIDDEN, "{m} {uri}");
+        }
+        for who in ["root", "ann"] {
+            let (s, b) = call(&app, who, "GET", "/v1/model", None).await;
+            assert_eq!(s, StatusCode::FORBIDDEN, "{who}");
+            assert!(b.contains("access policies"), "{b}");
+        }
+    }
+
+    /// Capabilities say what each may do; ann edits nothing, ed edits
+    /// Quantity's cells, root everything.
+    #[tokio::test]
+    async fn capabilities_follow_the_policies() {
+        let (app, _p, _log) = app_with_policies();
+        let caps = |who: &'static str| {
+            let app = app.clone();
+            async move {
+                let (s, b) = call(&app, who, "GET", "/v1/capabilities", None).await;
+                assert_eq!(s, StatusCode::OK, "{who}: {b}");
+                serde_json::from_str::<JsonValue>(&b).unwrap()
+            }
+        };
+        let ann = caps("ann").await;
+        assert_eq!(ann["restricted"], true);
+        assert_eq!(ann["admin"], false);
+        let ids: Vec<u64> = ann["measures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(ids, [101, 102], "Price is hidden");
+        assert!(ann["measures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["cells"] == "none"));
+        let ed = caps("ed").await;
+        let q = ed["measures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["id"] == 101)
+            .unwrap()
+            .clone();
+        assert_eq!(q["cells"], "all");
+        let root = caps("root").await;
+        assert_eq!(root["admin"], true);
+        assert_eq!(root["edit_items"].as_array().unwrap().len(), 4);
+        let r = root["measures"].as_array().unwrap();
+        assert_eq!(
+            r.iter().find(|m| m["id"] == 102).unwrap()["cells"],
+            "none",
+            "derived"
+        );
+    }
+
+    /// A refused write is audited with who tried and its status, as an
+    /// allowed one is.
+    #[tokio::test]
+    async fn denied_writes_are_audited() {
+        let (app, _p, log) = app_with_policies();
+        let cell = json!({"coord": {"dims": {"1": 10, "2": 20}}, "value": 2.0});
+        let (s, _) = call(
+            &app,
+            "ann",
+            "POST",
+            "/v1/measures/101/cells",
+            Some(cell.clone()),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(
+            &app,
+            "ann",
+            "POST",
+            "/v1/cells",
+            Some(json!({"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 2.0}]})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NOT_FOUND);
+        let (s, _) = call(&app, "ed", "POST", "/v1/measures/101/cells", Some(cell)).await;
+        assert_eq!(s, StatusCode::OK);
+        let lines: Vec<JsonValue> = std::fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let got: Vec<(String, u64)> = lines
+            .iter()
+            .map(|l| {
+                (
+                    l["who"].as_str().unwrap().to_string(),
+                    l["status"].as_u64().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("ann".to_string(), 404),
+                ("ann".into(), 404),
+                ("ed".into(), 200)
+            ]
+        );
+    }
+
+    /// A policy change by another writer (the CLI) is seen by the next
+    /// request, on the GUI routes and the older ones alike.
+    #[tokio::test]
+    async fn a_policy_change_is_seen_at_once_on_every_route() {
+        let (app, p, _log) = app_with_policies();
+        let sees = |who: &'static str, uri: &'static str| {
+            let app = app.clone();
+            async move { call(&app, who, "GET", uri, None).await.0 == StatusCode::OK }
+        };
+        assert!(!sees("eve", "/v1/measures").await && !sees("eve", "/v1/structure").await);
+        let all = r#"permit (principal, action, resource);"#;
+        Store::open(p.to_str().unwrap())
+            .unwrap()
+            .save_policies(Some((all, "")))
+            .unwrap();
+        assert!(sees("eve", "/v1/measures").await && sees("eve", "/v1/structure").await);
+        Store::open(p.to_str().unwrap())
+            .unwrap()
+            .save_policies(None)
+            .unwrap();
+        assert!(
+            sees("eve", "/v1/model").await,
+            "no policies: the dump is back"
+        );
     }
 }

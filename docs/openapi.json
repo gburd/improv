@@ -31,12 +31,13 @@
     "/v1/model": {
       "get": {
         "summary": "The whole model",
-        "description": "Unstable: the body is the store's internal serialization of the model (ids, expression trees, function ids as numbers) and may change in any release. Not covered by the /v1 compatibility promise; use /v1/measures and /v1/measures/{id}/values for a stable view.",
+        "description": "Unstable: the body is the store's internal serialization of the model (ids, expression trees, function ids as numbers) and may change in any release. Not covered by the /v1 compatibility promise; use /v1/measures and /v1/measures/{id}/values for a stable view. Refused (403) for a model with access policies, whoever asks: it is everything, unfiltered.",
         "x-improv-scope": "read",
         "x-improv-unstable": true,
         "responses": {
           "200": { "description": "The model, as the store serializes it.", "content": { "application/json": { "schema": { "type": "object" } } } },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Error" },
           "429": { "$ref": "#/components/responses/RateLimited" },
           "500": { "$ref": "#/components/responses/Internal" }
         }
@@ -504,6 +505,23 @@
         }
       }
     },
+    "/v1/capabilities": {
+      "get": {
+        "summary": "What the caller may do",
+        "x-improv-scope": "read",
+        "description": "Hints for a GUI to grey out what the caller cannot do, from the model's access policies: the model-wide actions, for each visible measure whether it may be redefined and which of its cells may be edited, and the visible items that may be renamed or deleted. Every request is still checked. Without policies, everything the token's scope allows.",
+        "responses": {
+          "200": {
+            "description": "The caller's capabilities.",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Capabilities" } } }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Refused" },
+          "429": { "$ref": "#/components/responses/RateLimited" },
+          "500": { "$ref": "#/components/responses/Internal" }
+        }
+      }
+    },
     "/v1/structure": {
       "get": {
         "summary": "What the caller may see of the model",
@@ -732,6 +750,32 @@
         "properties": {
           "decimals": { "type": ["integer", "null"], "minimum": 0, "maximum": 15 },
           "grouping": { "type": "boolean" }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "required": ["version", "restricted", "admin", "add_measure", "edit_structure", "manage_views", "measures", "edit_items"],
+        "properties": {
+          "version": { "type": "string", "description": "The model's version: opaque, compare for equality only." },
+          "restricted": { "type": "boolean", "description": "Whether the model has access policies." },
+          "admin": { "type": "boolean", "description": "May set the model's policies." },
+          "add_measure": { "type": "boolean" },
+          "edit_structure": { "type": "boolean", "description": "May add, rename or remove categories and items." },
+          "manage_views": { "type": "boolean" },
+          "measures": {
+            "type": "array",
+            "description": "Each visible measure, in id order.",
+            "items": {
+              "type": "object",
+              "required": ["id", "define", "cells"],
+              "properties": {
+                "id": { "type": "integer" },
+                "define": { "type": "boolean", "description": "May redefine, format or drop it." },
+                "cells": { "enum": ["all", "some", "none"], "description": "Which of its visible cells may be edited." }
+              }
+            }
+          },
+          "edit_items": { "type": "array", "items": { "type": "integer" }, "description": "The visible items the caller may rename or delete." }
         }
       },
       "Structure": {
