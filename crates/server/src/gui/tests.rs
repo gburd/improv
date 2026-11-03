@@ -481,14 +481,18 @@ async fn a_change_stream_outlives_the_request_timeout() {
     use futures_util::StreamExt;
     let (_, state, _) = served();
     let mut st = Arc::into_inner(state).unwrap();
-    st.request_timeout = Duration::from_millis(500);
+    // Opened first: the stream's first request would otherwise also load
+    // the model and build the engine, which can pass a short deadline on
+    // a slow runner (Windows answered 408 before the stream began).
+    super::with_authority(&st, |_| Ok(())).unwrap();
+    st.request_timeout = Duration::from_millis(1000);
     let app = app(Arc::new(st));
     let body = open_stream(&app, BOB).await.expect("open");
     let mut data = body.into_data_stream();
     let hello = data.next().await.expect("the first event").unwrap();
     assert!(std::str::from_utf8(&hello).unwrap().contains("version"));
     // Past the deadline (a short one, set for this test).
-    tokio::time::sleep(Duration::from_millis(800)).await;
+    tokio::time::sleep(Duration::from_millis(1300)).await;
     let edit = json!({"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 3}]});
     let (s, _) = call(&app, req("POST", "/v1/cells", ANN, Some(edit))).await;
     assert_eq!(s, StatusCode::OK);
