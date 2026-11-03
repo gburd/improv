@@ -1,0 +1,26 @@
+[package]
+name = "improv_policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "improv_policy"
+path = "src/lib.rs"
+
+[dependencies]
+improv_core_model = { path = "../core_model" }
+cedar-policy.workspace = true
+# Error positions in policy text; the version cedar-policy uses.
+miette = "7.6"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = "1"
+
+# `cargo llvm-cov` on nightly sets `--cfg coverage_nightly`; test modules are
+# `coverage(off)` so the report measures library code only.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }

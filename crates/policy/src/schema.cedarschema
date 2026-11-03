@@ -1,0 +1,45 @@
+// The Cedar schema every Improv enforcement point checks policies against.
+// The design: docs/reviews/2026-11-02-cedar-policies.md. Changing it changes
+// what stored policies mean: add, never rename or remove.
+namespace Improv {
+  // Who. A User is one authenticated identity. A Role is asserted by the
+  // identity source (Postgres role membership; later, a JWT claim). A Group
+  // is defined with the model's policies, by its Admin.
+  entity Role in [Role];
+  entity Group in [Group];
+  entity User in [Group, Role];
+
+  // What. Ids are the model's numeric ids, as strings; the model itself is
+  // always Model::"model". A cell's parents are its measure and its items;
+  // it has no attributes, and no policy may name one.
+  entity Model;
+  entity Category in [Model];
+  entity Item in [Category];
+  entity Measure in [Model] { kind: String };
+  entity View in [Model] { measure: Measure };
+  entity Cell in [Measure, Item];
+
+  // "local", "postgres" or "server": where the request is checked.
+  type Context = { channel: String };
+
+  // Groups of actions, for policies to name: action in Improv::Action::"Read".
+  action Read, Write, Build;
+  action ViewModel in [Read] appliesTo {
+    principal: User, resource: Model, context: Context };
+  action ReadMeasure in [Read] appliesTo {
+    principal: User, resource: Measure, context: Context };
+  action ReadItem in [Read] appliesTo {
+    principal: User, resource: Item, context: Context };
+  action ReadCell in [Read] appliesTo {
+    principal: User, resource: Cell, context: Context };
+  action EditCell in [Write] appliesTo {
+    principal: User, resource: Cell, context: Context };
+  action DefineMeasure in [Build] appliesTo {
+    principal: User, resource: [Model, Measure], context: Context };
+  action EditStructure in [Build] appliesTo {
+    principal: User, resource: [Model, Category, Item], context: Context };
+  action ManageViews in [Build] appliesTo {
+    principal: User, resource: [Model, View], context: Context };
+  action Admin appliesTo {
+    principal: User, resource: Model, context: Context };
+}

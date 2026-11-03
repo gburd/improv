@@ -19,6 +19,7 @@ members = [
     "crates/extfn",
     "crates/pg_model",
     "crates/duckdb_model",
+    "crates/policy",
 ]
 # pg_improv is its own workspace (pgrx needs pg_config + libclang); see its Cargo.toml.
 # duckdb_improv too (its loadable-extension duckdb must not unify with
@@ -91,3 +92,8 @@ egui_extras = "=0.37.0"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 clap_mangen = "0.3.3"
 clap_complete = "4.6.11"
+# Access policies (crates/policy): the Cedar language, evaluator and
+# validator. Pinned exactly: a policy that validates must keep validating,
+# and decide the same, until a deliberate bump. No extension types
+# (decimal, ipaddr, datetime): the schema uses none. Apache-2.0.
+cedar-policy = { version = "=4.14.0", default-features = false }
