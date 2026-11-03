@@ -333,6 +333,40 @@ mod tests {
     }
 
     #[test]
+    fn a_category_moves_onto_and_off_the_column_axis() {
+        let s = structure();
+        let mut sh = Sheet::new(&s, 100);
+        assert_eq!(sh.axis_of(2), Some(Axis::Columns));
+        assert_eq!(sh.axis_of(9), None);
+        sh.move_to(3, Axis::Columns);
+        assert_eq!(
+            (sh.rows(), sh.cols(), sh.pages()),
+            (&[1][..], &[2, 3][..], &[][..])
+        );
+        assert_eq!(sh.axis_of(3), Some(Axis::Columns));
+        assert_eq!(Sheet::tuples(&s, sh.cols()).len(), 4);
+        // The cell's coordinate is sorted, with no page to add.
+        assert_eq!(
+            sh.at(&s, &[(1, 11)], &[(2, 20), (3, 31)]),
+            vec![(1, 11), (2, 20), (3, 31)]
+        );
+        assert!(sh.window(&s).at.is_empty());
+        sh.move_to(2, Axis::Rows);
+        assert_eq!(
+            (sh.rows(), sh.cols(), sh.pages()),
+            (&[1, 2][..], &[3][..], &[][..])
+        );
+        // A saved view keeps the columns; an empty saved order is the
+        // measure's natural one.
+        let p = sh.to_placement();
+        assert_eq!((p.n_rows, p.n_cols), (2, 1));
+        assert_eq!(Sheet::from_placement(&s, &p), sh);
+        let mut empty = p.clone();
+        empty.axis_order.clear();
+        assert_eq!(Sheet::from_placement(&s, &empty), Sheet::new(&s, 100));
+    }
+
+    #[test]
     fn the_cache_tells_blank_from_not_loaded() {
         let mut c = Cache::default();
         let w = WindowReq {
