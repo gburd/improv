@@ -34,6 +34,8 @@ end
 
 if [ "${GUI_COSMIC_DENY:-1}" != 0 ]; then
 	step "cargo-deny (crates/gui_cosmic/deny.toml)"
-	cargo deny --config deny.toml --locked --manifest-path Cargo.toml check
+	# No --config: cargo-deny reads the deny.toml beside the manifest, and
+	# where --config may go differs between cargo-deny releases.
+	cargo deny --locked --manifest-path Cargo.toml check
 	end
 fi
