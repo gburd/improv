@@ -295,6 +295,15 @@ mod tests {
         assert_eq!(toks[2], (TokenKind::Number, "2.5E+3"));
         assert_eq!(toks[4], (TokenKind::Number, "6e2"));
         assert_eq!(toks[5], (TokenKind::Ident, "x"));
+        // An exponent ending the text.
+        assert_eq!(
+            kinds("2 * 1e5"),
+            [
+                (TokenKind::Number, "2"),
+                (TokenKind::Operator, "*"),
+                (TokenKind::Number, "1e5")
+            ]
+        );
         // No digits after the `e`: the number ends before it.
         let toks = kinds("1e+");
         assert_eq!(toks[0], (TokenKind::Number, "1"));
