@@ -1161,17 +1161,74 @@ mod tests {
         assert!(doc.range(Some((3, 2))).pages.is_empty());
     }
 
+    /// Stacked categories: an outer item is named once per group on a
+    /// page, a short row leaves its missing cells blank, and no formulas
+    /// add no formula page.
+    #[test]
+    fn stacked_items_are_named_once_per_group() {
+        let s = Sheet {
+            corner: vec!["Time".into(), "Region".into()],
+            col_heads: vec![
+                vec!["A".into(), "A".into(), "B".into()],
+                vec!["x".into(), "y".into(), "x".into()],
+            ],
+            rows: vec![
+                (
+                    vec!["2025".into(), "N".into()],
+                    vec![("1".into(), Align::Left), ("2".into(), Align::Center)],
+                ),
+                (vec!["2025".into(), "S".into()], vec![]),
+            ],
+            formulas: vec![],
+            item_rules: false,
+            cell_rules: false,
+        };
+        let r = ReportLayout {
+            formulas: true,
+            ..ReportLayout::default()
+        };
+        let doc = layout(&s, &PageLayout::default(), &r, &names());
+        assert_eq!(doc.pages.len(), 1, "no formulas: no formula page");
+        let t = texts(&doc.pages[0]);
+        let n = |w: &str| t.iter().filter(|x| **x == w).count();
+        assert_eq!((n("A"), n("B"), n("x"), n("y")), (1, 1, 2, 1));
+        assert_eq!((n("2025"), n("N"), n("S")), (1, 1, 1));
+        assert_eq!((n("1"), n("2")), (1, 1), "the short row has no cells");
+        // Centered text sits around its column's middle, left text at its pad.
+        let x_of = |w: &str| {
+            doc.pages[0].iter().find_map(|o| match o {
+                Op::Text { x, s: t, .. } if t == w => Some(*x),
+                _ => None,
+            })
+        };
+        let (one, a) = (x_of("1").unwrap(), x_of("A").unwrap());
+        assert_eq!(one, a, "left: at the column's pad, as its head");
+        assert!(x_of("2").unwrap() > x_of("y").unwrap(), "centered");
+
+        // An empty sheet is one page of its header and footer.
+        let empty = layout(
+            &Sheet::default(),
+            &PageLayout::default(),
+            &ReportLayout::default(),
+            &names(),
+        );
+        assert_eq!(empty.pages.len(), 1);
+        assert_eq!(texts(&empty.pages[0]), ["Revenue", "Page 1"]);
+    }
+
     #[test]
     fn the_spooler_is_lp_else_lpr() {
-        let lp = spooler("", 2, false, |c| c == "lp" || c == "lpr").unwrap();
+        // One closure type, so every case runs the same `spooler`.
+        let on = |have: &'static [&'static str]| move |c: &str| have.contains(&c);
+        let lp = spooler("", 2, false, on(&["lp", "lpr"])).unwrap();
         assert_eq!(lp, ("lp", vec!["-n".into(), "2".into()], Format::Pdf));
-        let named = spooler(" hp ", 1, false, |c| c == "lp").unwrap();
+        let named = spooler(" hp ", 1, false, on(&["lp"])).unwrap();
         assert_eq!(named.1, ["-n", "1", "-d", "hp"]);
         assert_eq!(
-            spooler("", 1, true, |c| c == "lp").unwrap().2,
+            spooler("", 1, true, on(&["lp"])).unwrap().2,
             Format::PostScript
         );
-        let lpr = spooler("hp", 3, false, |c| c == "lpr").unwrap();
+        let lpr = spooler("hp", 3, false, on(&["lpr"])).unwrap();
         assert_eq!(
             lpr,
             (
@@ -1180,8 +1237,8 @@ mod tests {
                 Format::PostScript
             )
         );
-        assert_eq!(spooler("", 0, false, |c| c == "lpr").unwrap().1, ["-#1"]);
-        assert!(spooler("", 1, false, |_| false).is_none());
+        assert_eq!(spooler("", 0, false, on(&["lpr"])).unwrap().1, ["-#1"]);
+        assert!(spooler("", 1, false, on(&[])).is_none());
     }
 
     /// The job goes to the spooler's standard input; its error output is
