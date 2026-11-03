@@ -423,6 +423,33 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_restructure_is_saved_to_the_store() {
+        let path = std::env::temp_dir().join(format!("improv-cosmic-v{}.db", std::process::id()));
+        let db = path.to_string_lossy().into_owned();
+        Store::open(&db)
+            .unwrap()
+            .save_model(&revenue_model())
+            .unwrap();
+        let mut s = LocalService::new(db.clone());
+        let (m, _) = s.open().unwrap();
+        let mut st = crate::formulas::structure(&m);
+        let l = crate::pivot::Layout::natural(&m, MeasureId(100)).unwrap();
+        st.add_view(l.to_view(improv_core_model::ViewId(1), "V"));
+        let (_, unsaved) = s.restructure(st).unwrap();
+        assert_eq!(unsaved, None);
+        let back = Store::open(&db).unwrap().load_model().unwrap();
+        assert_eq!(back.views.len(), 1);
+        assert_eq!(back.inputs.len(), 6, "cells kept");
+        for f in [
+            path.clone(),
+            path.with_extension("db-wal"),
+            path.with_extension("db-shm"),
+        ] {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    #[test]
     fn a_refused_edit_changes_nothing_of_its_batch() {
         let mut s = memory(revenue_model());
         let _ = s.open().unwrap();

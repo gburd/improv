@@ -7,7 +7,7 @@
 //! from `i` by mixed radix (the inner category fastest), so a grid of a
 //! million rows costs what the visible ones cost.
 
-use improv_core_model::{CategoryId, ItemId, MeasureId, Model};
+use improv_core_model::{CategoryId, ItemId, MeasureId, Model, Name, View, ViewId};
 use improv_engine::CoordKey;
 
 /// Where a measure's categories sit: the first `n_rows` of `order` are
@@ -140,6 +140,105 @@ impl Layout {
         }
         ok
     }
+}
+
+impl Layout {
+    /// This layout as a saved view named `name`.
+    ///
+    /// shortcut: one matrix, no filters, no canvas geometry (the COSMIC GUI
+    /// has neither yet); add them here when it does.
+    pub fn to_view(&self, id: ViewId, name: &str) -> View {
+        View {
+            id,
+            name: Name(name.to_string()),
+            measure: self.measure,
+            axis_order: self.order.clone(),
+            n_rows: self.n_rows,
+            n_cols: self.n_cols,
+            page_items: self
+                .page_cats()
+                .iter()
+                .copied()
+                .zip(self.page_items.iter().copied())
+                .collect(),
+            filters: Vec::new(),
+            rect: Default::default(),
+            placements: Vec::new(),
+        }
+    }
+
+    /// The layout a saved view describes: its primary matrix, checked
+    /// against the model as it is now. A category the measure lost is
+    /// dropped and one it gained joins the pages; a page item that is gone
+    /// falls back to the first. `None` when the view's measure is gone.
+    pub fn from_view(model: &Model, v: &View) -> Option<Layout> {
+        let m = model.measures.get(&v.measure)?;
+        let mut order: Vec<CategoryId> = v
+            .axis_order
+            .iter()
+            .copied()
+            .filter(|c| m.categories.contains(c))
+            .collect();
+        if v.axis_order.is_empty() {
+            return Layout::natural(model, v.measure);
+        }
+        let kept_rows = v.axis_order[..v.n_rows.min(v.axis_order.len())]
+            .iter()
+            .filter(|c| order.contains(c))
+            .count();
+        let kept_cols = v.axis_order
+            [v.n_rows.min(v.axis_order.len())..(v.n_rows + v.n_cols).min(v.axis_order.len())]
+            .iter()
+            .filter(|c| order.contains(c))
+            .count();
+        order.extend(
+            m.categories
+                .iter()
+                .copied()
+                .filter(|c| !v.axis_order.contains(c)),
+        );
+        let mut l = Layout {
+            measure: v.measure,
+            order,
+            n_rows: kept_rows,
+            n_cols: kept_cols,
+            page_items: Vec::new(),
+        };
+        // The saved pins, by category, then the usual repin for the rest.
+        l.page_items = l
+            .page_cats()
+            .iter()
+            .map(|c| {
+                v.page_items
+                    .iter()
+                    .find(|(pc, _)| pc == c)
+                    .map(|(_, i)| *i)
+                    .unwrap_or(ItemId(0))
+            })
+            .collect();
+        l.repin(model);
+        Some(l)
+    }
+}
+
+/// Saved views in id order: (id, name).
+pub fn views(model: &Model) -> Vec<(ViewId, String)> {
+    let mut v: Vec<(ViewId, String)> = model
+        .views
+        .values()
+        .map(|v| (v.id, v.name.0.clone()))
+        .collect();
+    v.sort_by_key(|(id, _)| id.0);
+    v
+}
+
+/// The smallest unused view id (at least 1).
+pub fn next_view_id(model: &Model) -> ViewId {
+    ViewId(
+        (1..)
+            .find(|i| !model.views.keys().any(|v| v.0 == *i))
+            .unwrap_or(1),
+    )
 }
 
 /// A category's items in declared order.
@@ -337,5 +436,47 @@ mod tests {
         assert_eq!(l.col_cats(), &[CategoryId(1)]);
         assert_eq!(category_name(&m, CategoryId(2)), "Product");
         assert_eq!(category_name(&m, CategoryId(9)), "9");
+    }
+
+    #[test]
+    fn a_view_round_trips_its_layout() {
+        let m = revenue_model();
+        let mut l = Layout::natural(&m, MeasureId(100)).unwrap();
+        assert!(l.place(&m, CategoryId(1), Axis::Rows, 1));
+        let v = l.to_view(next_view_id(&m), "Stacked");
+        assert_eq!(v.id, ViewId(1));
+        assert_eq!(Layout::from_view(&m, &v), Some(l));
+    }
+
+    #[test]
+    fn a_view_survives_a_changed_model() {
+        let mut m = revenue_model();
+        let l = Layout::natural(&m, MeasureId(100)).unwrap();
+        let v = l.to_view(ViewId(1), "V");
+        // The measure gains a category: it joins the pages at its first item.
+        m.add_category(CategoryId(3), "Scenario");
+        m.add_item(ItemId(30), CategoryId(3), "Plan");
+        m.measures
+            .get_mut(&MeasureId(100))
+            .unwrap()
+            .categories
+            .push(CategoryId(3));
+        let back = Layout::from_view(&m, &v).unwrap();
+        assert_eq!(back.page_cats(), &[CategoryId(3)]);
+        assert_eq!(back.page_items, vec![ItemId(30)]);
+        // The measure is gone: no layout.
+        m.measures.remove(&MeasureId(100));
+        assert_eq!(Layout::from_view(&m, &v), None);
+        // An empty axis order is the natural layout.
+        let m = revenue_model();
+        let bare = View {
+            axis_order: vec![],
+            ..v
+        };
+        assert_eq!(
+            Layout::from_view(&m, &bare),
+            Layout::natural(&m, MeasureId(100))
+        );
+        assert!(views(&m).is_empty());
     }
 }

@@ -80,6 +80,12 @@ pub enum Message {
     Page(usize, usize),
     /// Swap rows and columns.
     Transpose,
+    /// Saved view `i` (in id order) was picked: show it.
+    OpenView(usize),
+    /// The new view's name, as typed.
+    ViewName(String),
+    /// Save the current layout as a view with the typed name.
+    SaveView,
     /// Capture the window to [`SHOT_ENV`]'s file, then quit.
     Shoot,
     Shot(cosmic::iced::window::Screenshot),
@@ -98,6 +104,8 @@ pub struct App {
     service: mpsc::Sender<Request>,
     /// The cell being edited and its text, while the editor is open.
     editing: Option<(Cell, String)>,
+    /// The name typed for a view to save.
+    view_name: String,
     /// The category tile being dragged, and the strip and slot it is over.
     held: Option<(improv_core_model::CategoryId, Option<(Axis, usize)>)>,
     /// The formula being edited: its measure, its text, and where the last
@@ -133,6 +141,7 @@ impl App {
             target,
             service: service::spawn(service, tx),
             editing: None,
+            view_name: String::new(),
             held: None,
             formula: None,
             pending: 0,
@@ -310,6 +319,39 @@ impl App {
         };
         self.origin = nav::follow(Cell::default(), self.cursor, e);
         self.anchor = None;
+    }
+
+    /// Save the layout as a view named as typed: a new view, or the one by
+    /// that name replaced. A structural change, so the service saves it.
+    pub fn save_view(&mut self) {
+        let name = self.view_name.trim().to_string();
+        let Some(l) = &self.layout else {
+            return;
+        };
+        if name.is_empty() {
+            self.status = "name the view first".into();
+            return;
+        }
+        let id = self
+            .model
+            .views
+            .values()
+            .find(|v| v.name.0 == name)
+            .map_or_else(|| pivot::next_view_id(&self.model), |v| v.id);
+        let mut s = crate::formulas::structure(&self.model);
+        s.add_view(l.to_view(id, &name));
+        self.pending += 1;
+        self.status = format!("saving view '{name}'…");
+        if self
+            .service
+            .send(Request::Restructure(Box::new(s)))
+            .is_err()
+        {
+            self.pending -= 1;
+            self.status = "the model thread stopped: the view is not saved".into();
+        } else {
+            self.view_name.clear();
+        }
     }
 
     /// Open the formula editor on row `i` of the formula list.
@@ -633,6 +675,23 @@ impl cosmic::Application for App {
                 self.held = None;
             }
             Message::Release => self.held = None,
+            Message::OpenView(i) => {
+                let id = pivot::views(&self.model).get(i).map(|(id, _)| *id);
+                match id
+                    .and_then(|id| self.model.views.get(&id))
+                    .and_then(|v| Layout::from_view(&self.model, v))
+                {
+                    Some(l) => {
+                        self.layout = Some(l);
+                        self.relayout_keeping_layout();
+                        self.cursor = Cell::default();
+                        self.origin = Cell::default();
+                    }
+                    None => self.status = "that view's measure no longer exists".into(),
+                }
+            }
+            Message::ViewName(n) => self.view_name = n,
+            Message::SaveView => self.save_view(),
             Message::Page(i, j) => {
                 if let Some(l) = &mut self.layout {
                     let cat = l.page_cats().get(i).copied();
@@ -693,8 +752,20 @@ impl cosmic::Application for App {
             .layout
             .as_ref()
             .and_then(|l| self.measures.iter().position(|m| *m == l.measure));
-        let bar = widget::row::with_capacity(3)
+        let views: Vec<String> = pivot::views(&self.model)
+            .into_iter()
+            .map(|(_, n)| n)
+            .collect();
+        let bar = widget::row::with_capacity(6)
             .push(widget::dropdown(names, shown, Message::ShowMeasure))
+            .push(widget::dropdown(views, None, Message::OpenView).placeholder("Views"))
+            .push(
+                widget::text_input::text_input("New view", self.view_name.as_str())
+                    .on_input(Message::ViewName)
+                    .on_submit(|_| Message::SaveView)
+                    .width(Length::Fixed(160.0)),
+            )
+            .push(widget::button::standard("Save view").on_press(Message::SaveView))
             .push(widget::space::horizontal())
             .push(widget::text::caption(self.status.clone()))
             .spacing(cosmic::theme::spacing().space_s)
@@ -1254,6 +1325,61 @@ mod tests {
         assert!(app.status.contains("need a category"), "{}", app.status);
         send(&mut app, Message::Transpose);
         assert_eq!(app.layout.as_ref().unwrap().row_cats(), &[CategoryId(2)]);
+    }
+
+    #[test]
+    fn a_saved_view_reopens_its_layout() {
+        let (mut app, mut rx) = live(revenue_model());
+        app.show(MeasureId(100));
+        send(&mut app, Message::Transpose);
+        let pivoted = app.layout.clone();
+        send(&mut app, Message::SaveView);
+        assert_eq!(app.status, "name the view first");
+        send(&mut app, Message::ViewName("By product".into()));
+        send(&mut app, Message::SaveView);
+        assert_eq!(app.pending, 1);
+        let u = next(&mut rx);
+        app.apply(u);
+        assert_eq!(
+            pivot::views(&app.model),
+            vec![(improv_core_model::ViewId(1), "By product".into())]
+        );
+        // Elsewhere, then back through the view.
+        app.show(MeasureId(102));
+        send(&mut app, Message::OpenView(0));
+        assert_eq!(app.layout, pivoted);
+        // Saving the same name replaces it.
+        send(&mut app, Message::ViewName("By product".into()));
+        send(&mut app, Message::SaveView);
+        let u = next(&mut rx);
+        app.apply(u);
+        assert_eq!(app.model.views.len(), 1);
+    }
+
+    /// A view the CLI saved (`improv save-view … --rows Product,Time
+    /// --cols Scenario`, the GUI screenshot's fixture) opens as saved.
+    #[test]
+    fn a_view_from_another_front_end_opens() {
+        let mut m = revenue_model();
+        m.add_view(improv_core_model::View {
+            id: improv_core_model::ViewId(1),
+            name: improv_core_model::Name("Revenue by product".into()),
+            measure: MeasureId(102),
+            axis_order: vec![CategoryId(2), CategoryId(1)],
+            n_rows: 1,
+            n_cols: 1,
+            page_items: vec![],
+            filters: vec![],
+            rect: Default::default(),
+            placements: vec![],
+        });
+        let mut app = opened(m, 10, 5);
+        send(&mut app, Message::OpenView(0));
+        let l = app.layout.as_ref().unwrap();
+        assert_eq!(
+            (l.measure, l.row_cats(), l.col_cats()),
+            (MeasureId(102), &[CategoryId(2)][..], &[CategoryId(1)][..])
+        );
     }
 
     #[test]
