@@ -693,8 +693,11 @@ impl<S: ModelService> WebApp<S> {
             if let Some(r) = crate::nxwin::stored_rect(ctx, id) {
                 self.wins[i].rect = r;
             }
-            if crate::nxwin::is_key(ctx, id) {
+            if crate::nxwin::is_key(ctx, id) && self.key != Some(uid) {
+                // The formula pane moves to this window: start it clean.
                 self.key = Some(uid);
+                self.formula = (None, String::new(), None);
+                self.new_formula = (String::new(), None);
             }
         }
         let w = &mut self.wins[i];
