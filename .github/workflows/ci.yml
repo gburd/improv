@@ -147,6 +147,15 @@ jobs:
         with:
           persist-credentials: false
           path: improv
+      # The all-features build and its cache filled the Linux runner's disk
+      # ("No space left on device"): drop the preinstalled SDKs it never
+      # uses first, as the coverage job does.
+      - name: Free disk space
+        if: runner.os == 'Linux'
+        run: |
+          sudo find /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL -mindepth 1 -delete 2>/dev/null || true
+          df -h /
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@d31232495ad76f47aad66e3501e47780b49f0f3e # nextest
         with:
