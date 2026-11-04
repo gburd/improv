@@ -14,6 +14,12 @@ CREATE FUNCTION improv.cell_rule(model bigint, measure bigint) RETURNS integer
 CREATE FUNCTION improv.row_visible(model bigint, measure bigint, VARIADIC dims "any")
   RETURNS bool STRICT STABLE SECURITY INVOKER LANGUAGE c
   AS 'MODULE_PATHNAME', 'row_visible_wrapper';
+CREATE FUNCTION improv.cell_name(model bigint, measure bigint, dim integer, slot integer)
+  RETURNS text STRICT STABLE SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'cell_name_wrapper';
+CREATE FUNCTION improv.item_changed() RETURNS trigger
+  LANGUAGE c AS 'MODULE_PATHNAME', 'item_changed_wrapper';
+CREATE FUNCTION improv.result_written() RETURNS trigger
+  LANGUAGE c AS 'MODULE_PATHNAME', 'result_written_wrapper';
 CREATE FUNCTION improv.set_policies(model text, policies text, groups text DEFAULT NULL)
   RETURNS bigint SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'set_policies_wrapper';
 CREATE FUNCTION improv.policies(model text)
@@ -74,11 +80,35 @@ ALTER POLICY read ON improv.category_binding USING (improv.unrestricted(model_id
 ALTER POLICY read ON improv.view USING (improv.unrestricted(model_id));
 ALTER POLICY read ON improv.lambda USING (improv.unrestricted(model_id));
 ALTER POLICY read ON improv.sync_state USING (improv.unrestricted(model_id));
+CREATE TABLE improv.stale (
+    model_id  bigint PRIMARY KEY REFERENCES improv.model(id) ON DELETE CASCADE,
+    items     bigint NOT NULL DEFAULT 0,
+    gen       bigint NOT NULL DEFAULT 1,
+    clean_gen bigint
+);
+INSERT INTO improv.stale (model_id) SELECT id FROM improv.model;
+ALTER TABLE improv.stale ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.stale FOR SELECT USING (true);
+CREATE POLICY write ON improv.stale USING (false);
+CREATE TRIGGER stale_items AFTER UPDATE ON improv.item
+  REFERENCING OLD TABLE AS improv_old NEW TABLE AS improv_new
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+CREATE TRIGGER stale_items_del AFTER DELETE ON improv.item REFERENCING OLD TABLE AS improv_old
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+CREATE TRIGGER stale_items_trn AFTER TRUNCATE ON improv.item
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+CREATE TRIGGER stale_items_ins AFTER INSERT ON improv.item REFERENCING NEW TABLE AS improv_new
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+-- Also under session_replication_role = replica (a logical subscriber, a
+-- restore with triggers disabled): a missed rename would leak.
+ALTER TABLE improv.item ENABLE ALWAYS TRIGGER stale_items, ENABLE ALWAYS TRIGGER stale_items_del,
+  ENABLE ALWAYS TRIGGER stale_items_trn, ENABLE ALWAYS TRIGGER stale_items_ins;
 
 -- The grants a fresh install makes.
 GRANT SELECT ON improv.policy, improv.policy_audit TO improv_user;
 GRANT EXECUTE ON FUNCTION improv.unrestricted(bigint), improv.cell_visible(bigint, bigint, text[]),
   improv.cell_rule(bigint, bigint), improv.row_visible(bigint, bigint, "any"),
+  improv.cell_name(bigint, bigint, integer, integer),
   improv.set_policies(text, text, text), improv.policies(text),
   improv.explain_access(text, text, jsonb, text), improv.categories(text), improv.items(text),
   improv.measures(text), improv.cells(text, text), improv.set_cells(text, jsonb) TO improv_user;
@@ -102,5 +132,5 @@ GRANT EXECUTE ON FUNCTION improv.categories(text), improv.items(text), improv.me
   improv.cells(text, text), improv.set_cells(text, jsonb), improv.define(text, text, boolean),
   improv.drop_measure(text, text), improv.explain_access(text, text, jsonb, text),
   improv.policies(text), improv.cell_rule(bigint, bigint),
-  improv.row_visible(bigint, bigint, "any"), improv.cell_visible(bigint, bigint, text[]),
+  improv.cell_name(bigint, bigint, integer, integer), improv.row_visible(bigint, bigint, "any"), improv.cell_visible(bigint, bigint, text[]),
   improv.unrestricted(bigint), improv.may_act_as(regrole) TO improv_reader;

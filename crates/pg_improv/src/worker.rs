@@ -1826,6 +1826,7 @@ fn rebuild(mid: i64, name: &str) -> Res<(Option<Live>, i64)> {
             &mut changed,
         )
     })?;
+    super::policy::clear_stale(mid, name, &model)?;
     let l = Live {
         name: name.to_string(),
         version,

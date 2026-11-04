@@ -39,7 +39,7 @@ use improv_engine::CellValue;
 use improv_pg_model as pm;
 use improv_policy::{Action, Channel, Policies, Principal, Resource, Session};
 use pgrx::prelude::*;
-use pgrx::{JsonB, PgLogLevel, PgMemoryContexts, PgSqlErrorCode};
+use pgrx::{JsonB, PgLogLevel, PgMemoryContexts, PgSqlErrorCode, PgTriggerOperation};
 
 use super::{owner, req, Res};
 
@@ -98,6 +98,233 @@ ALTER POLICY read ON improv.sync_state USING (improv.unrestricted(model_id));
     requires = ["check_owner", unrestricted]
 );
 
+/// A trigger on `improv.item`: an item renamed or deleted (or the table
+/// truncated) may leave result rows with a name the model no longer has,
+/// so the model's stale generation moves on ([`clear_stale`]). Written as
+/// the extension: a role that may change an item may not write
+/// `improv.stale` itself.
+#[pg_trigger]
+fn item_changed<'a>(
+    t: &'a PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, PgHeapTupleError> {
+    let bumped = (|| -> Res<()> {
+        let q = |n: Option<&str>| n.map(pm::quote_ident).ok_or("no transition table");
+        // An INSERT adds names (no row names them yet): only the sessions
+        // keyed on the items are stale, not the result rows.
+        let (models, rows_stale) = match t.op()? {
+            // Every model: TRUNCATE has no rows to say which.
+            PgTriggerOperation::Truncate => ("SELECT id FROM improv.model".to_string(), 1),
+            PgTriggerOperation::Insert => (
+                format!(
+                    "SELECT model_id FROM {}",
+                    q(t.new_transition_table_name()?)?
+                ),
+                0,
+            ),
+            // An UPDATE that changed no item (a store's upsert) changes nothing.
+            PgTriggerOperation::Update => (
+                format!(
+                    "SELECT model_id FROM (SELECT model_id, id, category_id, name FROM {} \
+                     EXCEPT SELECT model_id, id, category_id, name FROM {}) x",
+                    q(t.old_transition_table_name()?)?,
+                    q(t.new_transition_table_name()?)?
+                ),
+                1,
+            ),
+            _ => (
+                format!(
+                    "SELECT model_id FROM {}",
+                    q(t.old_transition_table_name()?)?
+                ),
+                1,
+            ),
+        };
+        let sql = format!(
+            "INSERT INTO improv.stale AS s (model_id, items) \
+             SELECT DISTINCT m, 1 FROM ({models}) x(m) WHERE m IN (SELECT id FROM improv.model) \
+             ON CONFLICT (model_id) DO UPDATE SET items = s.items + 1, gen = s.gen + {rows_stale}"
+        );
+        Spi::connect_mut(|c| {
+            if !matches!(t.op()?, PgTriggerOperation::Truncate) {
+                // SAFETY: the firing trigger's data, live for this call;
+                // registering it exposes its transition tables.
+                let rc = unsafe {
+                    pg_sys::SPI_register_trigger_data(
+                        std::ptr::from_ref(t.trigger_data()).cast_mut(),
+                    )
+                };
+                if rc != pg_sys::SPI_OK_TD_REGISTER as i32 {
+                    return Err(format!("SPI_register_trigger_data failed: {rc}").into());
+                }
+            }
+            owner::as_catalog(|| Ok(c.update(&sql, None, &[]).map(drop)?))
+        })
+    })();
+    if let Err(e) = bumped {
+        error!("improv.item_changed: {e}");
+    }
+    Ok(None)
+}
+
+extension_sql!(
+    r#"
+-- Whether a model's result tables may hold rows whose item names the model
+-- does not have: gen moves on with every item renamed or deleted
+-- (improv.item_changed) and every result row written other than by a
+-- rewrite of every result table (improv.result_written); clean_gen is the
+-- gen as of the last such rewrite (src/policy.rs, clear_stale). Clean when
+-- equal; a model with no row, or a NULL, is not. items moves on with every
+-- item added, renamed or deleted: a backend's Cedar sessions are keyed on it.
+-- Read and written by the extension alone (the result tables' qual reads
+-- it as the extension).
+CREATE TABLE improv.stale (
+    model_id  bigint PRIMARY KEY REFERENCES improv.model(id) ON DELETE CASCADE,
+    items     bigint NOT NULL DEFAULT 0,
+    gen       bigint NOT NULL DEFAULT 1,
+    clean_gen bigint
+);
+INSERT INTO improv.stale (model_id) SELECT id FROM improv.model;
+ALTER TABLE improv.stale ENABLE ROW LEVEL SECURITY;
+CREATE POLICY read ON improv.stale FOR SELECT USING (true);
+CREATE POLICY write ON improv.stale USING (false);
+CREATE TRIGGER stale_items AFTER UPDATE ON improv.item
+  REFERENCING OLD TABLE AS improv_old NEW TABLE AS improv_new
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+CREATE TRIGGER stale_items_del AFTER DELETE ON improv.item REFERENCING OLD TABLE AS improv_old
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+CREATE TRIGGER stale_items_trn AFTER TRUNCATE ON improv.item
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+CREATE TRIGGER stale_items_ins AFTER INSERT ON improv.item REFERENCING NEW TABLE AS improv_new
+  FOR EACH STATEMENT EXECUTE FUNCTION improv.item_changed();
+-- Also under session_replication_role = replica (a logical subscriber, a
+-- restore with triggers disabled): a missed rename would leak.
+ALTER TABLE improv.item ENABLE ALWAYS TRIGGER stale_items, ENABLE ALWAYS TRIGGER stale_items_del,
+  ENABLE ALWAYS TRIGGER stale_items_trn, ENABLE ALWAYS TRIGGER stale_items_ins;
+"#,
+    name = "stale",
+    requires = ["policy_catalog", item_changed]
+);
+
+/// A statement trigger on a filtered result table (made by [`secure`]):
+/// any write may name an item the model lacks (the owner's own `INSERT`,
+/// or a recompute from a load that raced a rename), so the model is stale
+/// until [`clear_stale`] checks it again. The model id is the trigger's
+/// argument.
+#[pg_trigger]
+fn result_written<'a>(
+    t: &'a PgTrigger<'a>,
+) -> Result<Option<PgHeapTuple<'a, AllocatedByPostgres>>, PgHeapTupleError> {
+    let bumped = (|| -> Res<()> {
+        let mid: i64 = (t.extra_args()?.first())
+            .and_then(|a| a.parse().ok())
+            .ok_or("the trigger has no model argument")?;
+        bump_stale(mid)
+    })();
+    if let Err(e) = bumped {
+        error!("improv.result_written: {e}");
+    }
+    Ok(None)
+}
+
+/// Mark model `mid` stale: its result rows are not vouched for.
+fn bump_stale(mid: i64) -> Res<()> {
+    owner::as_catalog(|| {
+        Spi::connect_mut(|c| {
+            c.update(
+                "INSERT INTO improv.stale AS s (model_id) VALUES ($1) \
+                 ON CONFLICT (model_id) DO UPDATE SET gen = s.gen + 1",
+                None,
+                &[mid.into()],
+            )?;
+            Ok(())
+        })
+    })
+}
+
+/// After a recompute of every derived measure of model `mid` (`model`,
+/// named `name`), in this transaction: mark the model clean when no result
+/// row names an item the model lacks. Reads the stale generation, then
+/// checks each result table against the items in one query (one snapshot,
+/// later than the read), then sets `clean_gen` only if `gen` is still what
+/// it read: a compare-and-set on the row every rename, delete and result
+/// write moves on, so a change committed after the check, or still in
+/// flight, leaves the model stale. Not under REPEATABLE READ or
+/// SERIALIZABLE, where the compare-and-set would fail its transaction on a
+/// concurrent change rather than skip.
+pub(crate) fn clear_stale(mid: i64, name: &str, model: &Model) -> Res<()> {
+    // SAFETY: a plain read of the transaction's isolation level.
+    if unsafe { pg_sys::XactIsoLevel } >= pg_sys::XACT_REPEATABLE_READ as i32 {
+        return Ok(());
+    }
+    owner::as_catalog(|| {
+        Spi::connect_mut(|c| {
+            c.update(
+                "INSERT INTO improv.stale (model_id) VALUES ($1) ON CONFLICT DO NOTHING",
+                None,
+                &[mid.into()],
+            )?;
+            let read = c
+                .update(
+                    "SELECT gen FROM improv.stale WHERE model_id = $1",
+                    None,
+                    &[mid.into()],
+                )?
+                .first()
+                .get::<i64>(1)?;
+            let Some(read) = read else { return Ok(()) };
+            for m in model
+                .measures
+                .values()
+                .filter(|m| m.is_derived() && !m.categories.is_empty())
+            {
+                pm::validate_name("measure", &m.name.0)?;
+                let table = pm::result_table(name, &m.name.0);
+                let dims = pm::dim_columns(model, m.id)?;
+                let known: Vec<String> = (m.categories.iter().zip(&dims))
+                    .map(|(cat, d)| {
+                        format!(
+                            "t.{} IN (SELECT i.name FROM improv.item i \
+                             WHERE i.model_id = {mid} AND i.category_id = {})",
+                            pm::quote_ident(d),
+                            cat.0
+                        )
+                    })
+                    .collect();
+                let sql = format!(
+                    "SELECT EXISTS (SELECT 1 FROM {table} t WHERE NOT ({})) \
+                     FROM (SELECT pg_catalog.to_regclass($1) r) x WHERE x.r IS NOT NULL",
+                    known.join(" AND ")
+                );
+                // A table not made yet holds no row.
+                let exists = c
+                    .update(
+                        "SELECT pg_catalog.to_regclass($1) IS NOT NULL",
+                        None,
+                        &[table.as_str().into()],
+                    )?
+                    .first()
+                    .get::<bool>(1)?;
+                if exists != Some(true) {
+                    continue;
+                }
+                let bad = c
+                    .update(&sql, None, &[table.as_str().into()])?
+                    .first()
+                    .get::<bool>(1)?;
+                if bad != Some(false) {
+                    return Ok(());
+                }
+            }
+            c.update(
+                "UPDATE improv.stale SET clean_gen = $2 WHERE model_id = $1 AND gen = $2",
+                None,
+                &[mid.into(), read.into()],
+            )?;
+            Ok(())
+        })
+    })
+}
+
 /// How a role may act on a model, as of one statement.
 #[derive(Clone)]
 enum Access {
@@ -122,6 +349,12 @@ struct Restricted {
     /// Per measure, what a row check of its result table looks up, built
     /// at its first row (see [`Rows`]).
     rows: RefCell<HashMap<MeasureId, Rc<Rows>>>,
+    /// Per measure, its hide lists when its rows can be decided per
+    /// category ([`Rows::hide_lists`]).
+    fast: RefCell<HashMap<MeasureId, Option<Rc<HideLists>>>>,
+    /// (newest item id, item generation) of the catalog this session was
+    /// built from, when the build saw exactly that generation's items.
+    items: Option<(i64, i64)>,
 }
 
 /// FNV-1a: a row check hashes two or three short item names, where
@@ -146,6 +379,13 @@ impl Hasher for Fnv {
         self.0 = h;
     }
 }
+
+/// Per dimension of a measure, the names of the items a role may not
+/// read (rule 2 of [`cell_rule`]).
+type HideLists = Vec<Vec<String>>;
+
+/// A model's `improv.stale` state: clean, item generation, newest item.
+type StaleRow = (Option<bool>, Option<i64>, Option<i64>);
 
 /// One category's item names, as bytes, to (decision class, item).
 type Names = HashMap<Box<[u8]>, (u32, ItemId), BuildHasherDefault<Fnv>>;
@@ -285,6 +525,56 @@ impl Rows {
         }
     }
 
+    /// When a row is shown exactly when each of its items is readable (the
+    /// measure readable, and every combination of decision classes, at most
+    /// [`PROVE`], shown iff each class's items are readable): per
+    /// dimension, the names of its items the role may not read, each list
+    /// at most [`SLOTS`] long. `None` otherwise.
+    fn hide_lists(&self, r: &Restricted) -> Option<HideLists> {
+        let s = &r.session;
+        if !s.allowed(Action::ViewModel, &Resource::Model) || !s.measure_visible(self.measure) {
+            return None;
+        }
+        let reps = self.representatives()?;
+        let mut at = vec![0usize; reps.len()];
+        'combos: loop {
+            let items: Vec<ItemId> = reps.iter().zip(&at).map(|(r, k)| r[*k]).collect();
+            let dims = self
+                .cats
+                .iter()
+                .copied()
+                .zip(items.iter().copied())
+                .collect();
+            let each = items.iter().all(|i| s.item_visible(*i));
+            if s.cell_visible(self.measure, &Coordinate { dims }) != each {
+                return None;
+            }
+            for k in 0..at.len() {
+                at[k] += 1;
+                if at[k] < reps[k].len() {
+                    continue 'combos;
+                }
+                at[k] = 0;
+            }
+            break;
+        }
+        let mut lists = Vec::with_capacity(self.dims.len());
+        for (c, map) in self.cats.iter().zip(&self.dims) {
+            let mut hidden: Vec<String> = (r.model.items.values())
+                .filter(|i| i.category == *c && map.contains_key(i.name.0.as_bytes()))
+                .filter(|i| !s.item_visible(i.id))
+                .map(|i| i.name.0.clone())
+                .take(SLOTS + 1)
+                .collect();
+            if hidden.len() > SLOTS {
+                return None;
+            }
+            hidden.sort();
+            lists.push(hidden);
+        }
+        Some(lists)
+    }
+
     /// One item of each decision class, per dimension; `None` past
     /// [`PROVE`] combinations. A category with no item at all has none,
     /// and no row (see `none`).
@@ -305,6 +595,19 @@ impl Rows {
 }
 
 impl Restricted {
+    /// Measure `m`'s hide lists ([`Rows::hide_lists`]), kept per session.
+    fn fast(&self, m: MeasureId) -> Option<Rc<HideLists>> {
+        if let Some(f) = self.fast.borrow().get(&m) {
+            return f.clone();
+        }
+        let f = self
+            .rows(m)
+            .and_then(|rows| rows.hide_lists(self))
+            .map(Rc::new);
+        self.fast.borrow_mut().insert(m, f.clone());
+        f
+    }
+
     /// The row check of measure `m`'s result table; `None` when the model
     /// has no such measure.
     fn rows(&self, m: MeasureId) -> Option<Rc<Rows>> {
@@ -373,8 +676,10 @@ impl Restricted {
 type Stamp = (i64, i64, u64, u64, u32);
 
 /// What a session was built from: (policy version, model version, newest
-/// item id) and the principal (its roles change with GRANT and REVOKE).
-type Key = ((i64, i64, i64), Principal);
+/// item id, item generation: `improv.stale.items`, which every item rename
+/// and delete moves on) and the principal (its roles change with GRANT and
+/// REVOKE).
+type Key = ((i64, i64, i64, i64), Principal);
 
 /// A backend's sessions: per (model, role), what it was checked against.
 struct Cached {
@@ -556,7 +861,7 @@ fn access(mid: i64, role: pg_sys::Oid) -> Res<Access> {
             "SELECT max(id) FROM improv.item WHERE model_id = $1",
             &[mid.into()],
         )?;
-        Ok((version, tx.unwrap_or(0), item.unwrap_or(0)))
+        Ok((version, tx.unwrap_or(0), item.unwrap_or(0), item_gen(mid)?))
     })?;
     let key = (versions, principal(role)?);
     let kept = CACHE.with(|c| {
@@ -566,7 +871,7 @@ fn access(mid: i64, role: pg_sys::Oid) -> Res<Access> {
     });
     let a = match kept {
         Some(a) => a,
-        None => build(mid, &key.1, &text, &groups)?,
+        None => build(mid, &key, &text, &groups)?,
     };
     remember(mid, role, now, Some(key), a.clone());
     Ok(a)
@@ -612,8 +917,19 @@ fn principal(role: pg_sys::Oid) -> Res<Principal> {
     })
 }
 
-/// A Cedar session for `who` over model `mid` and its stored policies.
-fn build(mid: i64, who: &Principal, text: &str, groups: &str) -> Res<Access> {
+/// Model `mid`'s item generation (`improv.stale.items`; 0 without a row).
+fn item_gen(mid: i64) -> Res<i64> {
+    Ok(one::<i64>(
+        "SELECT (SELECT items FROM improv.stale WHERE model_id = $1)",
+        &[mid.into()],
+    )?
+    .unwrap_or(0))
+}
+
+/// A Cedar session for `key`'s principal over model `mid` and its stored
+/// policies.
+fn build(mid: i64, key: &Key, text: &str, groups: &str) -> Res<Access> {
+    let who = &key.1;
     let policies = match Policies::parse(text, groups) {
         Ok(p) => Arc::new(p),
         Err(e) => {
@@ -634,11 +950,17 @@ fn build(mid: i64, who: &Principal, text: &str, groups: &str) -> Res<Access> {
             .or_default()
             .insert(i.name.0.clone(), i.id);
     }
+    // The catalog read above saw the items of the key's generation only if
+    // no rename or delete committed while it ran: else this session may
+    // not stand for the snapshot's items in `cell_rule`.
+    let exact = owner::as_catalog(|| item_gen(mid))? == (key.0).3;
     Ok(Access::Policy(Rc::new(Restricted {
         session,
         model,
         names,
         rows: RefCell::default(),
+        fast: RefCell::default(),
+        items: exact.then_some(((key.0).2, (key.0).3)),
     })))
 }
 
@@ -754,13 +1076,27 @@ fn cell_visible(model: i64, measure: i64, dims: pgrx::Array<&str>) -> Res<bool> 
 /// session about to prove that no row of a table can be shown.
 const PROVE: u64 = 1024;
 
+/// The most hidden names per dimension the result tables' qual compares a
+/// row with (rule 2); more, and its rows are checked one by one.
+const SLOTS: usize = 2;
+
 /// The result tables' qual, once per statement (an InitPlan): 0 when every
-/// row is shown (a model without policies, a role that may act as the
-/// owner), 1 when none is (policies that cannot be used; `ViewModel` or
-/// `ReadMeasure` denied; a category of the measure with no item the role
-/// may read; or every combination of the items' decision classes denied),
-/// 3 when [`row_visible`] decides each row. Each answer is exactly what
-/// [`cell_visible`] would say of every row.
+/// row is shown, 1 when none is, 2 when a row is shown exactly when none
+/// of its items is one of [`cell_name`]'s hidden names, 3 when
+/// [`row_visible`] decides each row. Each answer is exactly what
+/// [`cell_visible`] would say of every row of the table:
+///
+/// - 0: a model without policies, a role that may act as the owner; or
+///   rule 2 with no hidden name.
+/// - 1: policies that cannot be used; `ViewModel` or `ReadMeasure`
+///   denied; a category of the measure with no item the role may read; or
+///   every combination of the items' decision classes denied.
+/// - 2: only when the model's result rows name only its items: its stale
+///   state, read in this statement's snapshot, says no item was renamed or
+///   deleted, and no result row written but by a rewrite of every table,
+///   since the last such rewrite ([`clear_stale`]); and this session was
+///   built from that very catalog. Else a row whose name the model lacks,
+///   which `cell_visible` hides, would be shown.
 #[pg_extern(stable, security_invoker)]
 fn cell_rule(model: i64, measure: i64) -> Res<i32> {
     Ok(match access(model, me())? {
@@ -769,9 +1105,96 @@ fn cell_rule(model: i64, measure: i64) -> Res<i32> {
         Access::Policy(r) => {
             let m = MeasureId(super::id32(measure)?);
             match r.rows(m) {
-                Some(rows) if !rows.none_shown(&r.session) => 3,
-                _ => 1,
+                None => 1,
+                Some(rows) if rows.none_shown(&r.session) => 1,
+                Some(_) => match r.fast(m) {
+                    Some(lists) if clean(model, r.items)? => {
+                        match lists.iter().all(Vec::is_empty) {
+                            true => 0,
+                            false => 2,
+                        }
+                    }
+                    _ => 3,
+                },
             }
+        }
+    })
+}
+
+/// The `slot`th (from 0) hidden name of dimension `dim` (from 0) of
+/// measure `measure`'s rows, for rule 2 of [`cell_rule`]; NULL past the
+/// last (a slot that hides nothing). NULL too whenever rule 2 does not
+/// apply: the qual reads the names only under it.
+#[pg_extern(stable, security_invoker)]
+fn cell_name(model: i64, measure: i64, dim: i32, slot: i32) -> Res<Option<String>> {
+    let Access::Policy(r) = access(model, me())? else {
+        return Ok(None);
+    };
+    let m = MeasureId(super::id32(measure)?);
+    let pick = |lists: &[Vec<String>]| {
+        let (d, k) = (usize::try_from(dim).ok()?, usize::try_from(slot).ok()?);
+        lists.get(d)?.get(k).cloned()
+    };
+    Ok(r.fast(m).and_then(|l| pick(&l)))
+}
+
+/// Whether model `mid`'s result rows name only its items, as of this
+/// statement's snapshot: its `improv.stale` row is clean (`gen =
+/// clean_gen`), and its item generation and newest item are a session's
+/// `items` (so the session's names are the snapshot's). Read-only, in the
+/// active snapshot, as the extension. False without a row, for NULLs, and
+/// for a session built while its items changed.
+fn clean(mid: i64, items: Option<(i64, i64)>) -> Res<bool> {
+    let Some((newest, gen)) = items else {
+        return Ok(false);
+    };
+    let row = owner::as_catalog(|| {
+        let sql = c"SELECT s.gen OPERATOR(pg_catalog.=) s.clean_gen, s.items, \
+            (SELECT pg_catalog.max(i.id) FROM improv.item i WHERE i.model_id OPERATOR(pg_catalog.=) s.model_id) \
+            FROM improv.stale s WHERE s.model_id OPERATOR(pg_catalog.=) $1";
+        snapshot_row(sql, mid)
+    })?;
+    Ok(matches!(row, Some((Some(true), Some(g), n)) if g == gen && n.unwrap_or(0) == newest))
+}
+
+/// One row of `sql` (bool, int8, int8; `$1` the model id) read in the
+/// active snapshot: a read-only SPI execution takes no new snapshot, so
+/// the qual's decision and the scan's rows come from one.
+fn snapshot_row(sql: &std::ffi::CStr, mid: i64) -> Res<Option<StaleRow>> {
+    Spi::connect(|_| {
+        // SAFETY: inside an SPI connection; one int8 argument; the result
+        // table is read before the connection closes.
+        unsafe {
+            let mut types = [pg_sys::INT8OID];
+            let mut values = [pg_sys::Datum::from(mid)];
+            let nulls = [b' ' as std::ffi::c_char];
+            let rc = pg_sys::SPI_execute_with_args(
+                sql.as_ptr(),
+                1,
+                types.as_mut_ptr(),
+                values.as_mut_ptr(),
+                nulls.as_ptr(),
+                true,
+                1,
+            );
+            if rc != pg_sys::SPI_OK_SELECT as i32 {
+                return Err(format!("reading improv.stale: SPI error {rc}").into());
+            }
+            let t = pg_sys::SPI_tuptable;
+            if t.is_null() || pg_sys::SPI_processed == 0 {
+                return Ok(None);
+            }
+            let (tup, desc) = (*(*t).vals, (*t).tupdesc);
+            let get = |k: i32| {
+                let mut null = false;
+                let d = pg_sys::SPI_getbinval(tup, desc, k, &mut null);
+                (!null).then_some(d)
+            };
+            Ok(Some((
+                get(1).map(|d| d.value() != 0),
+                get(2).map(|d| d.value() as i64),
+                get(3).map(|d| d.value() as i64),
+            )))
         }
     })
 }
@@ -914,32 +1337,47 @@ fn unrestricted(model: i64) -> Res<bool> {
 }
 
 /// The `improv_access` qual of measure `measure`'s result table (dimension
-/// columns `dims`): [`cell_rule`] decides once per statement (an InitPlan,
-/// so a cursor keeps its first execution's answer), and only rule 3 checks
-/// rows ([`row_visible`]; [`cell_visible`] for a table without dimensions,
-/// which has at most one row). Under rules 0 and 1 a row costs two
-/// integer compares (row-level security keeps the conjunct in the scan's
-/// filter, not a one-time filter).
+/// columns `dims`): [`cell_rule`] decides once per statement (InitPlans,
+/// so a cursor keeps its first execution's answer); rule 2 compares each
+/// row's names with at most [`SLOTS`] hidden names a dimension (more
+/// InitPlans, [`cell_name`]); only rule 3 calls a function a row
+/// ([`row_visible`]; [`cell_visible`] for a table without dimensions,
+/// which has at most one row).
 fn qual(mid: i64, measure: MeasureId, dims: &[String]) -> String {
-    let rule = format!(
-        "(SELECT improv.cell_rule({mid}::int8, {}::int8))",
-        measure.0
-    );
+    let m = measure.0;
+    let rule = |n: u8| {
+        format!("(SELECT improv.cell_rule({mid}::int8, {m}::int8) OPERATOR(pg_catalog.=) {n})")
+    };
     let row = match dims.is_empty() {
-        true => format!(
-            "improv.cell_visible({mid}::int8, {}::int8, '{{}}'::text[])",
-            measure.0
-        ),
+        true => format!("improv.cell_visible({mid}::int8, {m}::int8, '{{}}'::text[])"),
         false => format!(
-            "improv.row_visible({mid}::int8, {}::int8, {})",
-            measure.0,
+            "improv.row_visible({mid}::int8, {m}::int8, {})",
             dims.iter()
                 .map(|d| pm::quote_ident(d))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
     };
-    format!("{rule} OPERATOR(pg_catalog.<>) 1 AND ({rule} OPERATOR(pg_catalog.=) 0 OR {row})")
+    let mut slots = Vec::new();
+    for (k, d) in dims.iter().enumerate() {
+        for j in 0..SLOTS {
+            // The columns are NOT NULL; an empty slot is NULL, hiding nothing.
+            slots.push(format!(
+                "{} IS DISTINCT FROM (SELECT improv.cell_name({mid}::int8, {m}::int8, {k}, {j}))",
+                pm::quote_ident(d)
+            ));
+        }
+    }
+    match slots.is_empty() {
+        true => format!("{} OR ({} AND {row})", rule(0), rule(3)),
+        false => format!(
+            "{} OR ({} AND {}) OR ({} AND {row})",
+            rule(0),
+            rule(2),
+            slots.join(" AND "),
+            rule(3)
+        ),
+    }
 }
 
 /// The row-level security policy that filters result table `table` of
@@ -956,6 +1394,24 @@ fn secure(mid: i64, measure: MeasureId, table: &str, dims: &[String]) -> Res<()>
             "CREATE POLICY improv_access ON {table} FOR SELECT USING ({})",
             qual(mid, measure, dims)
         ))?;
+    }
+    // Kept when the policies are cleared, so writes stay tracked.
+    let tracked = one::<bool>(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger \
+         WHERE tgrelid = pg_catalog.to_regclass($1) AND tgname = 'improv_stale')",
+        &[table.into()],
+    )?;
+    if tracked != Some(true) {
+        Spi::run(&format!(
+            "CREATE TRIGGER improv_stale AFTER INSERT OR UPDATE ON {table} \
+             FOR EACH STATEMENT EXECUTE FUNCTION improv.result_written('{mid}')"
+        ))?;
+        // Under session_replication_role = replica too.
+        Spi::run(&format!(
+            "ALTER TABLE {table} ENABLE ALWAYS TRIGGER improv_stale"
+        ))?;
+        // Its rows were written untracked until now.
+        bump_stale(mid)?;
     }
     // Skipped when on: the ALTER takes an ACCESS EXCLUSIVE lock.
     let on = one::<bool>(
@@ -2472,8 +2928,11 @@ mod tests {
         sets.extend(
             (q.random(40).into_iter().enumerate()).map(|(i, (t, g))| (format!("random {i}"), t, g)),
         );
-        let states: [(&str, &dyn Fn()); 5] = [
+        let states: [(&str, &dyn Fn()); 6] = [
             ("fresh", &|| {}),
+            ("clean: recomputed", &|| {
+                run("SELECT improv.recalc('q')");
+            }),
             ("rows with names the model lacks", &|| {
                 run("INSERT INTO improv_q.w VALUES ('zz', 'c0', 1), ('r0', 'zz', 2)");
                 run("INSERT INTO improv_q.s VALUES ('zz', 3)");
@@ -2514,6 +2973,20 @@ mod tests {
                 "renamed and deleted, then recalc" => "24:4",
                 _ => "20:0",
             };
+            // The fast path only when the rows are vouched for.
+            let rule = text_as(
+                Some("eq_a"),
+                &format!("SELECT improv.cell_rule({}, {})::text", q.mid, q.w),
+            );
+            let fast = matches!(
+                state,
+                "clean: recomputed" | "renamed and deleted, then recalc"
+            );
+            assert_eq!(
+                rule,
+                if fast { "2" } else { "3" },
+                "{state}: the rule for one hidden name"
+            );
             assert_eq!(
                 read("SELECT count(*) || ':' || count(*) FILTER (WHERE r = 'r1') FROM improv_q.w"),
                 want,
@@ -2534,8 +3007,17 @@ mod tests {
         let bad = "permit (principal, action, resource) when { resource.nope == \"x\" };";
         assert!(improv_policy::Policies::parse(bad, "").is_err());
         run("ALTER TABLE improv.policy DISABLE ROW LEVEL SECURITY");
+        let mut rules = std::collections::BTreeSet::new();
         for (name, text, groups) in q.matrix() {
             q.set(&text, &groups);
+            // Clean, so the valid policies' rule may be 0 or 2.
+            run("SELECT improv.recalc('q')");
+            for role in ["eq_a", "eq_b"] {
+                rules.insert(text_as(
+                    Some(role),
+                    &format!("SELECT improv.cell_rule({}, {})::text", q.mid, q.w),
+                ));
+            }
             Spi::run_with_args(
                 "UPDATE improv.policy SET version = version + 1, text = text || $1",
                 &[bad.into()],
@@ -2571,6 +3053,12 @@ mod tests {
                 "{name}"
             );
         }
+        let seen: Vec<String> = rules.into_iter().collect();
+        assert_eq!(
+            seen,
+            ["0", "1", "2", "3"],
+            "the valid policies covered every rule"
+        );
     }
 
     /// cell_rule's answer for the matrix's plain cases.
@@ -2588,6 +3076,7 @@ mod tests {
         let case = |n: &str| m.iter().find(|c| c.0 == n).unwrap();
         for (n, role, measure, want) in [
             ("uniform allow, by user and by role", "eq_a", q.w, "3"),
+            ("uniform allow, by user and by role", "eq_a", q.s, "3"),
             ("uniform allow, by user and by role", "eq_o", q.w, "0"),
             ("uniform deny of cells", "eq_a", q.w, "1"),
             ("a category with nothing readable", "eq_a", q.w, "1"),
@@ -2601,5 +3090,76 @@ mod tests {
             q.set(&c.1, &c.2);
             assert_eq!(rule(role, measure), want, "{n}: {role}");
         }
+        // Clean (a recalc after the policies were set): a uniform allow is
+        // rule 0, one hidden name rule 2; with three, rows are checked.
+        let (a, i) = (q.allow(), |n: &str| q.item(n));
+        let forbid = |names: &[&str]| {
+            let mut t = a.clone();
+            for n in names {
+                t += &format!(
+                    "forbid (principal, action == Improv::Action::\"ReadItem\", resource == Improv::Item::\"{}\");\n",
+                    i(n)
+                );
+            }
+            t
+        };
+        for (names, want) in [
+            (&[][..], "0"),
+            (&["r1"][..], "2"),
+            (&["r1", "c2"][..], "2"),
+            (&["r1", "r2"][..], "2"),
+            (&["r1", "r2", "r3"][..], "3"),
+        ] {
+            q.set(&forbid(names), "");
+            run("SELECT improv.recalc('q')");
+            assert_eq!(rule("eq_a", q.w), want, "clean, hidden {names:?}");
+            run(&format!(
+                "UPDATE improv.item SET name = name WHERE id = {}",
+                i("r4")
+            ));
+            assert_eq!(
+                rule("eq_a", q.w),
+                want,
+                "a no-op item UPDATE keeps it clean"
+            );
+            run(&format!(
+                "UPDATE improv.item SET name = 'x' || name WHERE id = {}",
+                i("r4")
+            ));
+            let stale = if want == "0" || want == "2" {
+                "3"
+            } else {
+                want
+            };
+            assert_eq!(rule("eq_a", q.w), stale, "a rename: hidden {names:?}");
+            run(&format!(
+                "UPDATE improv.item SET name = substr(name, 2) WHERE id = {}",
+                i("r4")
+            ));
+        }
+        // A result row written by hand marks it stale too.
+        q.set(&forbid(&["r1"]), "");
+        run("SELECT improv.recalc('q')");
+        assert_eq!(rule("eq_a", q.w), "2");
+        run("INSERT INTO improv_q.w VALUES ('zz', 'c0', 1)");
+        assert_eq!(rule("eq_a", q.w), "3", "a row written by hand");
+        run("SELECT improv.recalc('q')");
+        assert_eq!(
+            rule("eq_a", q.w),
+            "2",
+            "a recalc vouches for the rows again"
+        );
+        // Without its improv.stale row a model is never clean.
+        run("ALTER TABLE improv.stale DISABLE ROW LEVEL SECURITY");
+        run(&format!(
+            "DELETE FROM improv.stale WHERE model_id = {}",
+            q.mid
+        ));
+        assert_eq!(rule("eq_a", q.w), "3", "no stale row");
+        run(&format!(
+            "INSERT INTO improv.stale (model_id, gen, clean_gen) VALUES ({}, 5, NULL)",
+            q.mid
+        ));
+        assert_eq!(rule("eq_a", q.w), "3", "a NULL clean_gen");
     }
 }

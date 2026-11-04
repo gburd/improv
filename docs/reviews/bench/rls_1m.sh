@@ -12,12 +12,16 @@
 #   cells    mixed, plus a forbid of ReadCell on the cells of r1 x c1 (two
 #            named items together: not decidable per category)
 #   denied   permit Read, forbid ReadMeasure on W: no row, decided once
-# Prints the median ms of `SELECT count(*), sum(value) FROM improv_b.w`
-# for alice and vic, and the plan's shape for vic.
+#   hidden1  permit Read, forbid ReadItem on r0 (one hidden name)
+# Each case runs twice: "stale" after an item is renamed and back (the
+# result rows are not vouched for: the per-row check, rule 3) and "clean"
+# after a recalc vouches for them (rule 0 or 2 where the policies allow). Prints the median ms of
+# `SELECT count(*), sum(value) FROM improv_b.w` for alice and vic, vic's
+# cell_rule, and with PLANS=1 the plan's shape for vic.
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
 REPS=${REPS:-7}
-CASES=${CASES:-mixed uniform cells denied}
+CASES=${CASES:-mixed uniform hidden1 cells denied}
 D=$(mktemp -d /var/tmp/pgi-rls.XXXX)
 P=${PGI_PORT:-55437}
 cleanup() {
@@ -64,6 +68,8 @@ med() { sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}'; }
 policy() {
 	local pol='@id("v") permit (principal == Improv::User::"vic", action in Improv::Action::"Read", resource);'
 	[ "$1" = uniform ] && { echo "$pol"; return; }
+	[ "$1" = hidden1 ] && { echo "$pol
+forbid (principal, action == Improv::Action::\"ReadItem\", resource == Improv::Item::\"$R0\");"; return; }
 	[ "$1" = denied ] && { echo "$pol
 forbid (principal, action == Improv::Action::\"ReadMeasure\", resource == Improv::Measure::\"$WID\");"; return; }
 	pol="$pol
@@ -74,15 +80,24 @@ forbid (principal == Improv::User::\"u$i\", action, resource in Improv::Item::\"
 forbid (principal, action == Improv::Action::\"ReadCell\", resource) when { resource in Improv::Item::\"$((R0 + 1))\" && resource in Improv::Item::\"$C1\" };"
 	echo "$pol"
 }
-want_rows() { case $1 in uniform) echo 1000000 ;; mixed) echo 999000 ;; cells) echo 998999 ;; denied) echo 0 ;; esac; }
-echo "case owner_ms restricted_ms ratio rows"
+want_rows() { case $1 in uniform) echo 1000000 ;; mixed | hidden1) echo 999000 ;; cells) echo 998999 ;; denied) echo 0 ;; esac; }
+MID=$(U=alice q "SELECT id FROM improv.model WHERE name = 'b'")
+echo "case state owner_ms restricted_ms ratio rule rows"
 for c in $CASES; do
 	U=alice q "SELECT improv.set_policies('b', \$\$$(policy "$c")\$\$)" >/dev/null
-	got=$(U=vic q "SELECT count(*) FROM improv_b.w")
-	[ "$got" = "$(want_rows "$c")" ] || { echo "FAIL: $c: vic reads $got rows, want $(want_rows "$c")"; exit 1; }
-	for u in alice vic; do ms $u >/dev/null; done # warm-up
-	a=$(for _ in $(seq "$REPS"); do ms alice; done | med)
-	v=$(for _ in $(seq "$REPS"); do ms vic; done | med)
-	echo "$c $a $v $(awk -v a="$a" -v v="$v" 'BEGIN {printf "%.2f", v / a}') $got"
-	[ -z "${PLANS:-}" ] || U=vic q "EXPLAIN (COSTS OFF) $SQL" | sed 's/^/    /'
+	for state in stale clean; do
+		case $state in
+		# An item renamed and back: the rows are no longer vouched for.
+		stale) U=alice q "UPDATE improv.item SET name = 'x' WHERE name = 'c999'; UPDATE improv.item SET name = 'c999' WHERE name = 'x'" ;;
+		clean) U=alice q "SET improv.max_cells = 3000000; SELECT improv.recalc('b')" >/dev/null ;;
+		esac
+		got=$(U=vic q "SELECT count(*) FROM improv_b.w")
+		[ "$got" = "$(want_rows "$c")" ] || { echo "FAIL: $c: vic reads $got rows, want $(want_rows "$c")"; exit 1; }
+		rule=$(U=vic q "SELECT improv.cell_rule($MID, $WID)")
+		for u in alice vic; do ms $u >/dev/null; done # warm-up
+		a=$(for _ in $(seq "$REPS"); do ms alice; done | med)
+		v=$(for _ in $(seq "$REPS"); do ms vic; done | med)
+		echo "$c $state $a $v $(awk -v a="$a" -v v="$v" 'BEGIN {printf "%.2f", v / a}') $rule $got"
+		[ -z "${PLANS:-}" ] || U=vic q "EXPLAIN (COSTS OFF) $SQL" | sed 's/^/    /'
+	done
 done

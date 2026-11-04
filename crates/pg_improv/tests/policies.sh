@@ -29,6 +29,10 @@
 #      nothing more; it reaches only what Cedar allows; a role with only
 #      SELECT on a result table reads it too; the qual decides once per
 #      statement (InitPlans), and checks rows only when it must
+#  12. the fast path (rule 2: hidden names compared in the qual): only when
+#      a full recompute vouched for the result rows; a rename, a delete, a
+#      hand-written row, and a rename committed during a recalc in another
+#      session each send the qual back to the per-row check
 # Usage: tests/policies.sh
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
@@ -323,7 +327,7 @@ q "CREATE ROLE rea LOGIN; CREATE ROLE sel LOGIN; CREATE ROLE adm2 LOGIN; GRANT i
 U=adm2 q "GRANT improv_reader TO rea"
 eq "$(q "SELECT string_agg(p.proname, ',' ORDER BY p.proname) FROM pg_proc p, aclexplode(p.proacl) a
          WHERE p.pronamespace = 'improv'::regnamespace AND a.grantee = 'improv_reader'::regrole AND a.privilege_type = 'EXECUTE'")" \
-	categories,cell_rule,cell_visible,cells,define,drop_measure,explain_access,items,may_act_as,measures,policies,row_visible,set_cells,unrestricted \
+	categories,cell_name,cell_rule,cell_visible,cells,define,drop_measure,explain_access,items,may_act_as,measures,policies,row_visible,set_cells,unrestricted \
 	"improv_reader's functions: the ones Cedar filters, and what the quals call"
 eq "$(q "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relnamespace = 'improv'::regnamespace
          AND has_table_privilege('improv_reader', c.oid, 'SELECT')")" model,models "improv_reader's tables"
@@ -364,4 +368,55 @@ eq "$(calls rea)" 6 "rea's rows are checked one by one"
 U=adm2 q "REVOKE improv_reader FROM rea"
 has "$(U=rea e "SELECT * FROM improv.items('m')")" "permission denied for schema improv" "a revoked reader"
 echo "ok: improv_reader; SELECT alone reads a result table; the qual decides once a statement"
+
+# ---- 12. the fast path and the stale state --------------------------------------
+U=alice q "SELECT improv.set_sync_mode('m','manual')" >/dev/null
+U=alice q "SELECT improv.set_policies('m', \$\$$POL\$\$)" >/dev/null
+REVENUE=$(idof measure Revenue)
+rule() { U=$1 q "SELECT improv.cell_rule($MID, $REVENUE)"; }
+U=alice q "SELECT improv.recalc('m')" >/dev/null
+eq "$(rule ann)" 2 "after a recalc, ann's one hidden item is compared in the qual"
+eq "$(calls ann)" 0 "and no row is checked by a function"
+eq "$(U=ann q "$ROWS")" "Q1/Gadget=$(q "SELECT 20 * qty FROM sales WHERE quarter = 'Q1' AND product = 'Gadget'") Q1/Widget=$(q "SELECT 10 * qty FROM sales WHERE quarter = 'Q1' AND product = 'Widget'") Q2/Gadget=1200 Q2/Widget=2000" \
+	"ann's rows through the fast path"
+lacks "$(U=ann q "EXPLAIN (COSTS OFF) SELECT count(*) FROM improv_m.revenue")" cell_visible "the fast path's plan"
+# A rename of Falcon: its rows keep the old name, which the model lacks.
+U=alice q "UPDATE improv.item SET name = 'Hawk' WHERE id = $FALCON"
+eq "$(rule ann)" 3 "a rename sends the qual back to the per-row check"
+eq "$(U=ann q "SELECT count(*) FROM improv_m.revenue WHERE product IN ('Falcon', 'Hawk')")" 0 "Falcon's stale rows stay hidden"
+# The source renamed too, and recomputed: Hawk is Falcon, hidden by id.
+q "UPDATE sales SET product = 'Hawk' WHERE product = 'Falcon'"
+U=alice q "SELECT improv.recalc('m')" >/dev/null
+eq "$(rule ann)" 2 "a recalc vouches for the rows again"
+eq "$(U=ann q "SELECT count(*) FROM improv_m.revenue WHERE product IN ('Falcon', 'Hawk')")" 0 "Hawk is Falcon: hidden by id"
+U=alice q "UPDATE improv.item SET name = 'Falcon' WHERE id = $FALCON"
+q "UPDATE sales SET product = 'Falcon' WHERE product = 'Hawk'"
+U=alice q "SELECT improv.recalc('m')" >/dev/null
+q "INSERT INTO improv_m.revenue VALUES ('Q9', 'Nope', 1)"
+eq "$(rule ann)" 3 "a row written by hand"
+eq "$(U=ann q "SELECT count(*) FROM improv_m.revenue WHERE product = 'Nope'")" 0 "a name the model lacks stays hidden"
+q "DELETE FROM improv_m.revenue WHERE product = 'Nope'"
+U=alice q "SELECT improv.recalc('m')" >/dev/null
+eq "$(rule ann)" 2 "clean again"
+# Two sessions: a rename, uncommitted, while alice recalcs; it commits after.
+# The recalc's compare-and-set waits for it and sees the moved generation.
+mkfifo "$D/in2"
+"$PG_BIN/psql" -h "$D" -p "$P" -U postgres -d t -qAtX <"$D/in2" >"$D/out2" 2>&1 &
+exec 4>"$D/in2"
+echo "BEGIN; UPDATE improv.item SET name = 'Hawk' WHERE id = $FALCON; SELECT 'renamed';" >&4
+for _ in $(seq 200); do grep -q renamed "$D/out2" && break; sleep 0.025; done
+U=alice q "SELECT improv.recalc('m')" >"$D/recalc" 2>&1 &
+RECALC=$!
+sleep 1
+echo "COMMIT; SELECT 'committed';" >&4
+wait $RECALC || fail "the recalc: $(cat "$D/recalc")"
+exec 4>&-
+wait
+grep -q committed "$D/out2" || fail "the rename: $(cat "$D/out2")"
+eq "$(rule ann)" 3 "a rename committed during a recalc leaves the model stale"
+eq "$(U=ann q "SELECT count(*) FROM improv_m.revenue WHERE product IN ('Falcon', 'Hawk')")" 0 "and its rows hidden"
+U=alice q "UPDATE improv.item SET name = 'Falcon' WHERE id = $FALCON"
+U=alice q "SELECT improv.recalc('m')" >/dev/null
+eq "$(rule ann)" 2 "the next recalc vouches for the rows"
+echo "ok: the fast path only on rows a full recompute vouched for"
 echo PASS

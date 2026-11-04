@@ -162,7 +162,13 @@ this project follows [Semantic Versioning](https://semver.org/).
   row from a decision table built at its first row, with no allocation.
   `SELECT count(*), sum(value)` of a 1M-row result table: 167 ms against
   the owner's 63 ms (was 1007 ms; `docs/reviews/bench/rls_1m.sh`). A row
-  whose item name the model lacks stays hidden, as before.
+  whose item name the model lacks stays hidden, as before. While a
+  model's result rows are vouched for (`improv.stale`, cleared by a
+  recompute of every measure that finds every row naming the model's
+  items, set by any item rename or delete and any other result write), a
+  role allowed everything reads every row (88 ms) and one with one or
+  two hidden items a category has its rows compared with them in the
+  qual (115 ms).
 - **pg_improv 0.13.0: `improv_reader`,** a role for the users a model's
   policies restrict. It has `USAGE` on schema `improv`, `EXECUTE` on the
   functions Cedar filters (`categories`, `items`, `measures`, `cells`,

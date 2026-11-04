@@ -398,7 +398,7 @@ lead accepted as measured. `cargo test --release -p improv_policy --
 | Parsing and validating 100 policies | 4.5 ms |
 | A filtered read of a 1M-cell measure through a session (1,000 x 1,000 items, 100 policies, one row hidden; `perf_filtered_read`) | 326 ms (326 ns a cell; the bare pass: 2 ms) |
 | pg_improv, PG 17: `SELECT count(*), sum(value)` of a 1M-row result table as a restricted role (row-level security), against the owner (none); stage 3 as first built | 955 ms against 78 ms (12×) |
-| The same, with the per-statement qual (`docs/reviews/bench/rls_1m.sh`, the mixed case below) | 167 ms against 63 ms (2.7×) |
+| The same, with the per-statement qual (`docs/reviews/bench/rls_1m.sh`, the mixed case below) | 167 ms against 63 ms (2.7×); 126 ms (2.0×) once a recalc vouches for the rows; a uniform allow 88 ms (1.4×) |
 | pg_improv: `improv.cells` of that measure, restricted against the owner | 3.6 s against 3.3 s |
 
 **Where the time goes.** A raw `authorize` builds the whole request: the
@@ -477,13 +477,69 @@ arrays. Two findings changed it:
   per row; a 64-name list costs about 700 ns a row, more than
   `row_visible`. A list pays only for one or two names a category.
 
+**Rule 2, with proof the rows are fresh.** A uniform allow (rule 0) and
+one or two hidden names a category (rule 2: the qual compares the row's
+names with `(SELECT improv.cell_name(m, w, dim, slot))` InitPlans, `IS
+DISTINCT FROM` each, an empty slot NULL) are used only when the model's
+result rows are vouched for, so the leak above cannot happen:
+
+- `improv.stale (model_id, items, gen, clean_gen)`. A trigger on
+  `improv.item` (`ENABLE ALWAYS`, so a logical subscriber or a restore
+  with `session_replication_role = replica` fires it too) bumps `gen` for
+  an item UPDATE that changed a row, a DELETE and a TRUNCATE (every
+  model), and `items` for those and an INSERT. A trigger on each filtered
+  result table bumps `gen` for any INSERT or UPDATE of it, the
+  extension's own writes included (a recompute from a load that raced a
+  rename writes the old name).
+- Only a recompute of every derived measure clears it: `recalc`,
+  `set_sync_mode` to trigger or commit, and the sync worker's rebuild (a
+  load and a whole-table diff of every result table). After its writes,
+  in its transaction, it reads `gen`, checks in one query per table that
+  every row's dimension values are the names of the model's items (as of
+  a snapshot after that read), and then sets `clean_gen = gen` with a
+  compare-and-set (`UPDATE … SET clean_gen = $read WHERE gen = $read`) on
+  the row the triggers bump. A rename that commits after the check, or
+  is still in flight, moves `gen` (or waits on the row lock and then
+  fails the compare), so the model stays stale. Under REPEATABLE READ or
+  SERIALIZABLE the clear is skipped. Trigger mode's statement recomputes,
+  commit mode's pre-commit recompute and the worker's incremental applies
+  write result rows and never clear.
+- The default is stale: a model without a row, or with `clean_gen`
+  NULL, is checked per row; a model updated to 0.13.0, or made by a
+  store that writes `improv.model` directly, starts stale until its first
+  full recompute.
+- `cell_rule` reads the row in the statement's own snapshot (a read-only
+  SPI execution takes no snapshot of its own), and the backend's Cedar
+  session is keyed on `items` as well as the policy and model versions,
+  and is used for rule 2 only if `items` did not move while it was built.
+  A cached session never outlives a rename.
+
+Measured, PG 17, release, medians of 7 wall-clock runs each in its own
+connection, on a host that was otherwise idle (`rls_1m.sh`; "stale" is
+after an item renamed and back, "clean" after a `recalc`):
+
+| Case | Owner | Restricted, stale | Restricted, clean (rule) |
+|---|---:|---:|---:|
+| mixed (r0 hidden; 98 forbids for others, r1..r98 named) | 64 ms | 167 ms (2.6×) | 126 ms (2.0×, rule 2) |
+| uniform: permit Read only | 64 ms | 155 ms (2.5×) | 88 ms (1.4×, rule 0) |
+| hidden1: permit Read, forbid ReadItem on r0 | 64 ms | 158 ms (2.5×) | 115 ms (1.8×, rule 2) |
+| cells: mixed, plus a ReadCell forbid on r1 x c1 | 64 ms | 172 ms (2.7×) | 169 ms (rule 3: not per category) |
+| denied: forbid ReadMeasure on W | 64 ms | 65 ms (rule 1) | 65 ms (rule 1) |
+
+About 10 ms of each restricted number is the first statement's Cedar
+session in a new connection (warm, uniform clean reads in about 70 ms
+against the owner's 57 ms). Rule 2 costs about 15 ns per comparison a
+row: 2 slots a dimension, 4 for this table. The 1.5× target is met for a
+uniform allow; with hidden names rule 2 gives 1.8× (2.0× in the mixed
+case, whose 99 named items make the session's first build slower).
+
 **Not done, on purpose.** Result tables stay keyed by item names (the SQL
 users read). The session still checks each request against the schema
 (`Request::new` with a schema): that is in the session's first questions,
 not the per-row path, and skipping it would weaken fail-closed for no
 gain here. `unvalidated_policies_hide_every_row_for_every_rule` checks
 that stored policies naming an undeclared attribute deny every row
-through the qual, whatever rule the valid ones gave.
+through the qual, from every rule the valid ones gave (0, 1, 2 and 3).
 
 **Caching.** A session is one (policy version, model structure version,
 principal, channel). It caches decisions:
@@ -613,9 +669,10 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
   `cells` instead. Without policies they read as in 0.12.
 - **Result tables.** `set_policies` adds a policy `improv_access` (`FOR
   SELECT`, the per-statement qual of "Performance (measured)":
-  `improv.cell_rule` once a statement, `improv.row_visible` a row) to
-  each result table, as its owner, and turns row-level security on;
-  clearing drops them. A result table made later gets it when it is
+  `improv.cell_rule` once a statement, `improv.cell_name` lists or
+  `improv.row_visible` a row) and a trigger `improv_stale` to each
+  result table, as its owner, and turns row-level security on; clearing
+  drops the policy (the trigger stays, so writes stay tracked). A result table made later gets it when it is
   created. The owner owns the tables, so its reads skip the qual.
 - **Roles.** `improv_reader` is the least-privilege role for a restricted
   user: `USAGE` on schema `improv`, `EXECUTE` on the functions Cedar

@@ -669,13 +669,15 @@ fn recalc_measures(model: &str, measures: Option<Vec<String>>) -> Res<i64> {
 pub(crate) fn recompute_all(mid: i64, name: &str) -> Res<i64> {
     let mut l = load(mid, name.to_string(), true)?;
     let targets = all_derived(&l.model);
-    recompute(
+    let n = recompute(
         &mut l,
         &pm::Plan {
             targets,
             scope: None,
         },
-    )
+    )?;
+    super::policy::clear_stale(mid, name, &l.model)?;
+    Ok(n)
 }
 
 /// Evaluate `model` with `edits` applied to its input cells in memory and

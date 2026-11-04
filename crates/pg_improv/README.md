@@ -746,8 +746,8 @@ them once no database's extension uses them).
   `EXECUTE` on the functions Cedar filters (`categories`, `items`,
   `measures`, `cells`, `set_cells`, `define`, `drop_measure`,
   `explain_access`, `policies`) and on the ones the result tables'
-  row-level security calls (`cell_rule`, `row_visible`, `cell_visible`,
-  `unrestricted`, `may_act_as`), and `SELECT` on `improv.model` and
+  row-level security calls (`cell_rule`, `cell_name`, `row_visible`,
+  `cell_visible`, `unrestricted`, `may_act_as`), and `SELECT` on `improv.model` and
   `improv.models`, so model names and owners are public to it (a model
   it may not open says "its access policies do not let you open it").
   Nothing else: the catalog tables, `recalc`, `what_if`, `bind_*`,
@@ -966,7 +966,7 @@ the filtered functions below refuse everyone but the owner's side.
 
 | Path | What it sees or does |
 | --- | --- |
-| `SELECT` on a result table (`improv_plan.revenue`) | The rows it may read, still behind the table's grants: a row-level security policy (`improv_access`, through `improv.cell_rule` and `improv.row_visible`) shows a cell when `ReadMeasure`, `ReadItem` on each of its items, and `ReadCell` allow it, and its item names are the model's. The owner adds and drops the policy with `set_policies`; a result table made later gets it at once. |
+| `SELECT` on a result table (`improv_plan.revenue`) | The rows it may read, still behind the table's grants: a row-level security policy (`improv_access`, through `improv.cell_rule`, `improv.cell_name` and `improv.row_visible`) shows a cell when `ReadMeasure`, `ReadItem` on each of its items, and `ReadCell` allow it, and its item names are the model's. The owner adds and drops the policy with `set_policies`; a result table made later gets it at once. |
 | `improv.categories`, `items`, `measures`, `cells` | What it may read; a hidden measure or item is absent, and asking for one answers exactly as for one that does not exist. |
 | The catalog (`improv.measure`, `binding`, `view`, `lambda`, `category`, `sync_state`; `item` and `cell` as before) | Nothing: the model is read through the functions. |
 | `improv.set_cells` | Edits input cells `EditCell` allows (each must be readable too), as the owner. |
@@ -983,13 +983,19 @@ value, or not at all (forbid its measure or cells). A role needs
 (`improv.cell_rule`, which Postgres runs as an InitPlan): the owner's side
 reads every row, and a role that may read nothing of the measure (or whose
 stored policies cannot be used) none, each for two integer compares a row.
-Anyone else's rows go through `improv.row_visible`, which hashes the row's
-item names into a decision table it builds at the query's first row, so a
-row costs about 100 ns. Over a 1M-row result table (1000 x 1000 items,
-`docs/reviews/bench/rls_1m.sh`, PG 17, release build), `SELECT count(*),
-sum(value)` takes 63 ms as the owner and 167 ms as a restricted role, of
-which about 10 ms is the first statement's Cedar session in a new
-connection. A cursor keeps the decision of its first execution.
+When the role may read every item, or all but one or two of a category's,
+and the model's result rows are vouched for (`improv.stale`: no item
+renamed or deleted, and no result row written but by a recompute of every
+measure, since the last `recalc` or the worker's last rebuild), the qual
+shows every row, or compares each row's names with the hidden ones.
+Otherwise `improv.row_visible` checks each row against a decision table
+it builds at the query's first row, about 100 ns a row. Over a 1M-row
+result table (1000 x 1000 items, `docs/reviews/bench/rls_1m.sh`, PG 17,
+release build), `SELECT count(*), sum(value)` takes 64 ms as the owner;
+as a role allowed everything, 88 ms; with one hidden item, 115 ms; and
+checked row by row (after an item rename, before the next `recalc`),
+about 160 ms. About 10 ms of each is the first statement's Cedar session
+in a new connection. A cursor keeps the decision of its first execution.
 
 **Freshness.** A backend keeps one Cedar session per model and role, built
 from the policy version, the model's version and its newest item, the
@@ -1031,7 +1037,9 @@ created in SQL opens in the GUI and vice versa. The extension adds
 `improv.model.owner` (the role that created the model, as which it reads
 its tables and writes its results),
 `improv.category_binding` (category ⇄ column bindings), `improv.policy`
-and `improv.policy_audit` (access policies and their audit trail) and, for
+and `improv.policy_audit` (access policies and their audit trail),
+`improv.stale` (whether a model's result rows may name items it no longer
+has) and, for
 logical mode, `improv.sync_state` (each model's slot, progress and last error) and
 `improv.slot_to_drop` (old per-model slots the worker drops after the
 update to 0.11.0). A pg_test checks the superset property against

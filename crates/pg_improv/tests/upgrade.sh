@@ -100,7 +100,7 @@ REV="SELECT value FROM improv_plan.revenue WHERE time='Q1' AND product='Widget'"
 # improv_reader's own grants (tests/policies.sh checks a fresh install's).
 READER_FNS="SELECT string_agg(p.proname, ',' ORDER BY p.proname) FROM pg_proc p, aclexplode(p.proacl) a
   WHERE p.pronamespace = 'improv'::regnamespace AND a.grantee = 'improv_reader'::regrole AND a.privilege_type = 'EXECUTE'"
-READER_WANT=categories,cell_rule,cell_visible,cells,define,drop_measure,explain_access,items,may_act_as,measures,policies,row_visible,set_cells,unrestricted
+READER_WANT=categories,cell_name,cell_rule,cell_visible,cells,define,drop_measure,explain_access,items,may_act_as,measures,policies,row_visible,set_cells,unrestricted
 rev() { q "SELECT value FROM improv_plan_$1.revenue WHERE time='Q1' AND product='Widget'"; }
 wait_rev() {
 	local v=""
@@ -209,8 +209,13 @@ for from in "$@"; do
 		binding,category,category_binding,lambda,measure,sync_state,view "the catalog's policy-aware read policies after the update"
 	eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace AND proname IN
 	         ('set_policies','policies','explain_access','categories','items','measures','cells','set_cells','cell_visible','unrestricted',
-	          'cell_rule','row_visible')")" \
-		12 "the policy functions after the update"
+	          'cell_rule','row_visible','cell_name','item_changed','result_written')")" \
+		15 "the policy functions after the update"
+	eq "$(q "SELECT count(*) FROM improv.stale")" "$(q "SELECT count(*) FROM improv.model")" "every model has a stale row after the update"
+	# (The worker's rebuild of the logical model is a full recompute, which
+	# may already have vouched for its rows.)
+	eq "$(q "SELECT count(*) FROM improv.stale s JOIN improv.model m ON m.id = s.model_id
+	         WHERE m.sync_mode <> 'logical' AND s.gen = s.clean_gen")" 0 "and no other is clean before a recalc"
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
 	want=plan:alice:logical
 	for m in $(modes "$fv" | LC_ALL=C sort); do want="$want,plan_$m:improv:$m"; done

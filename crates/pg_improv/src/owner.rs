@@ -268,7 +268,7 @@ GRANT EXECUTE ON FUNCTION improv.categories(text), improv.items(text), improv.me
   improv.cells(text, text), improv.set_cells(text, jsonb), improv.define(text, text, boolean),
   improv.drop_measure(text, text), improv.explain_access(text, text, jsonb, text),
   improv.policies(text), improv.cell_rule(bigint, bigint),
-  improv.row_visible(bigint, bigint, "any"), improv.cell_visible(bigint, bigint, text[]),
+  improv.cell_name(bigint, bigint, integer, integer), improv.row_visible(bigint, bigint, "any"), improv.cell_visible(bigint, bigint, text[]),
   improv.unrestricted(bigint), improv.may_act_as(regrole) TO improv_reader;
 "#,
     name = "roles",
