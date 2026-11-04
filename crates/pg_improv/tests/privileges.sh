@@ -376,7 +376,7 @@ echo "ok: a restore by the models' owner or a superuser loads them; one by a rol
 # and CREATE EXTENSION again grants improv_user the new catalog.
 qr() { "$PG_BIN/psql" -h "$D" -p "$P" -U "${U:-postgres}" -d r_postgres -qAtX -v ON_ERROR_STOP=1 -c "$1"; }
 qr "DROP EXTENSION pg_improv CASCADE"
-eq "$(qr "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE 'improv\_%'")" improv_admin,improv_user \
+eq "$(qr "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE 'improv\_%'")" improv_admin,improv_reader,improv_user \
 	"DROP EXTENSION keeps the roles"
 qr "CREATE EXTENSION pg_improv"
 U=bob qr "SELECT improv.create_model('again')" >/dev/null
@@ -404,17 +404,18 @@ echo "ok: improv.models lists every model and whether the caller may change it"
 #   alice     the owner
 #   carol     a member of alice with SET (INHERIT FALSE on PG 16+), an improv_user
 #   bob       an improv_user, not the owner
+#   rea       an improv_reader (alone)
 #   wri       may write xs, no grant on improv
 #   nob       no grant at all: what PUBLIC may do
 # y = allowed; n = refused ("permission denied ...") or, for a read of the
 # catalog, no rows (row-level security).
-q "CREATE ROLE wri LOGIN"
+q "CREATE ROLE wri LOGIN; CREATE ROLE rea LOGIN; GRANT improv_reader TO rea"
 q "CREATE TABLE xs (k text PRIMARY KEY, v float8); INSERT INTO xs VALUES ('a', 1)"
 q "GRANT SELECT ON xs TO alice; GRANT SELECT, INSERT, UPDATE, DELETE ON xs TO wri"
 for s in "bind_category('x','K','xs','k')" "bind_measure('x','V','xs','v')" "define('x','W = V * 1')" "recalc('x')"; do
 	U=alice q "SELECT improv.$s" >/dev/null
 done
-ROLES="postgres adm alice carol bob wri nob"
+ROLES="postgres adm alice carol bob rea wri nob"
 act() { # action role
 	case $1 in
 	create_model) echo "SELECT improv.create_model('c_$2')" ;;
@@ -440,18 +441,18 @@ try() { # action role -> y or n
 }
 # Results: carol inherits nothing of alice on PG 16+ (she reads them after SET ROLE alice).
 if [ "$PG16" = t ]; then CAROL_READS=n; else CAROL_READS=y; fi
-#                  postgres adm alice carol bob wri nob
-want_create_model="y y y y y n n"
-want_bind="y n y y n n n"
-want_define="y n y y n n n"
-want_recalc="y n y y n n n"
-want_what_if="y n y y n n n"
-want_set_sync_mode="y n y y n n n"
-want_drop="y n y y n n n"
-want_names="y y y y y n n"
-want_items="y n y y n n n"
-want_results="y n y $CAROL_READS n n n"
-want_status="y y y y y n n"
+#                  postgres adm alice carol bob rea wri nob
+want_create_model="y y y y y n n n"
+want_bind="y n y y n n n n"
+want_define="y n y y n n n n"
+want_recalc="y n y y n n n n"
+want_what_if="y n y y n n n n"
+want_set_sync_mode="y n y y n n n n"
+want_drop="y n y y n n n n"
+want_names="y y y y y n n n"
+want_items="y n y y n n n n"
+want_results="y n y $CAROL_READS n n n n"
+want_status="y y y y y n n n"
 for a in create_model bind define recalc what_if set_sync_mode drop names items results status; do
 	got=""
 	for r in $ROLES; do
@@ -474,5 +475,10 @@ U=adm q "GRANT improv_user TO newb"
 U=newb q "SELECT improv.create_model('n1')" >/dev/null
 U=adm q "REVOKE improv_user FROM newb"
 U=newb q "SELECT improv.create_model('n2')" >/dev/null 2>&1 && fail "newb builds after the REVOKE"
-echo "ok: the privilege matrix, cell by cell; improv_admin enrolls builders"
+# ... and readers.
+U=bob q "GRANT improv_reader TO newb" >/dev/null 2>&1 && fail "bob enrolled a reader"
+U=adm q "GRANT improv_reader TO newb"
+eq "$(U=newb q "SELECT count(*) > 0 FROM improv.models")" t "a reader reads the model names"
+U=adm q "REVOKE improv_reader FROM newb"
+echo "ok: the privilege matrix, cell by cell; improv_admin enrolls builders and readers"
 echo PASS

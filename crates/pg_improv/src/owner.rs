@@ -222,7 +222,11 @@ extension_sql!(
 -- the slots it names). improv_admin enrolls builders (ADMIN OPTION on
 -- improv_user) and acts on no one else's model: acting on a model is acting
 -- as its owner, so acting on every model would be acting as every owner,
--- superusers included. Only a superuser does that.
+-- superusers included. Only a superuser does that. improv_reader is a
+-- role a model's access policies restrict: schema USAGE, the functions
+-- Cedar filters, and improv.model and improv.models (names and owners are
+-- public to it). improv_user has all of that already; improv_admin enrolls
+-- readers as it enrolls builders.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) 'improv_user') THEN
@@ -231,6 +235,15 @@ BEGIN
   IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) 'improv_admin') THEN
     CREATE ROLE improv_admin NOLOGIN;
     GRANT improv_user TO improv_admin WITH ADMIN OPTION;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) 'improv_reader') THEN
+    CREATE ROLE improv_reader NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_auth_members a
+                 WHERE a.roleid OPERATOR(pg_catalog.=) 'improv_reader'::pg_catalog.regrole
+                   AND a.member OPERATOR(pg_catalog.=) 'improv_admin'::pg_catalog.regrole
+                   AND a.admin_option) THEN
+    GRANT improv_reader TO improv_admin WITH ADMIN OPTION;
   END IF;
 END $$;
 -- Every model, for anyone who may read improv.model (whose read policy is
@@ -249,6 +262,14 @@ GRANT SELECT ON improv.models TO improv_user;
 -- Row-level security shows each owner its own models' rows.
 GRANT SELECT ON improv.policy, improv.policy_audit TO improv_user;
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA improv TO improv_user;
+GRANT USAGE ON SCHEMA improv TO improv_reader;
+GRANT SELECT ON improv.model, improv.models TO improv_reader;
+GRANT EXECUTE ON FUNCTION improv.categories(text), improv.items(text), improv.measures(text),
+  improv.cells(text, text), improv.set_cells(text, jsonb), improv.define(text, text, boolean),
+  improv.drop_measure(text, text), improv.explain_access(text, text, jsonb, text),
+  improv.policies(text), improv.cell_rule(bigint, bigint),
+  improv.row_visible(bigint, bigint, "any"), improv.cell_visible(bigint, bigint, text[]),
+  improv.unrestricted(bigint), improv.may_act_as(regrole) TO improv_reader;
 "#,
     name = "roles",
     finalize

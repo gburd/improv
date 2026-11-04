@@ -259,15 +259,18 @@ models.
 A non-superuser builds models as a member of **`improv_user`**, which the
 extension creates: `GRANT improv_user TO alice`, plus `SELECT` (and, for
 trigger and commit mode, `TRIGGER`) on the tables alice binds. No `CREATE`
-on the database is needed. **`improv_admin`** grants and revokes
-`improv_user` and acts on no one else's model. Acting on a model means
+on the database is needed. A role a model's access policies restrict
+needs **`improv_reader`** (the filtered functions and the model names)
+and the owner's grants on the result tables it queries. **`improv_admin`**
+grants and revokes `improv_user` and `improv_reader` and acts on no one
+else's model. Acting on a model means
 acting as its owner, so only a superuser acts on every model.
 `improv.models` lists every model with its owner, sync mode, result
 schema, and `may_change` for the caller. See the
 [pg_improv README](https://codeberg.org/gregburd/improv/src/branch/main/crates/pg_improv/README.md#privileges)
 for the mechanism, the wrapper's text, and the full privilege matrix
-(superuser, `improv_admin`, owner, `SET` member, `improv_user`, writer,
-`PUBLIC`), which `tests/privileges.sh` checks cell by cell.
+(superuser, `improv_admin`, owner, `SET` member, `improv_user`,
+`improv_reader`, writer, `PUBLIC`), which `tests/privileges.sh` checks cell by cell.
 
 ## Access policies
 

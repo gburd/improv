@@ -163,6 +163,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   `SELECT count(*), sum(value)` of a 1M-row result table: 167 ms against
   the owner's 63 ms (was 1007 ms; `docs/reviews/bench/rls_1m.sh`). A row
   whose item name the model lacks stays hidden, as before.
+- **pg_improv 0.13.0: `improv_reader`,** a role for the users a model's
+  policies restrict. It has `USAGE` on schema `improv`, `EXECUTE` on the
+  functions Cedar filters (`categories`, `items`, `measures`, `cells`,
+  `set_cells`, `define`, `drop_measure`, `explain_access`, `policies`)
+  and the ones the row-level security quals call, and `SELECT` on
+  `improv.model` and `improv.models`; nothing else in `improv`.
+  `improv_admin` enrolls readers, as it enrolls builders; `improv_user`
+  already has all of it. A role with only the owner's `SELECT` on a
+  result table reads it too, through the policies.
 
 ### Changed
 

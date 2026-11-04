@@ -97,6 +97,10 @@ q() { "$PG_BIN/psql" -h "$W" -p "$P" -U improv -d t -qAtX -v ON_ERROR_STOP=1 -c 
 fail() { echo "FAIL ($from, PG $PGV): $*"; tail -15 "$W/log"; exit 1; }
 eq() { [ "$1" = "$2" ] || fail "$3: got '$1', want '$2'"; }
 REV="SELECT value FROM improv_plan.revenue WHERE time='Q1' AND product='Widget'"
+# improv_reader's own grants (tests/policies.sh checks a fresh install's).
+READER_FNS="SELECT string_agg(p.proname, ',' ORDER BY p.proname) FROM pg_proc p, aclexplode(p.proacl) a
+  WHERE p.pronamespace = 'improv'::regnamespace AND a.grantee = 'improv_reader'::regrole AND a.privilege_type = 'EXECUTE'"
+READER_WANT=categories,cell_rule,cell_visible,cells,define,drop_measure,explain_access,items,may_act_as,measures,policies,row_visible,set_cells,unrestricted
 rev() { q "SELECT value FROM improv_plan_$1.revenue WHERE time='Q1' AND product='Widget'"; }
 wait_rev() {
 	local v=""
@@ -236,9 +240,11 @@ for from in "$@"; do
 		fi
 		eq "$(rev "$m")" 2750 "the $m model recomputes after the update"
 	done
-	# 0.11.0: the roles. The update makes them; a 0.10.0 model's owner keeps
-	# her model once she is an improv_user (the update grants no one).
-	eq "$(q "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE 'improv\_%'")" improv_admin,improv_user "the roles after the update"
+	# 0.11.0: the roles (0.13.0: improv_reader). The update makes them; a
+	# 0.10.0 model's owner keeps her model once she is an improv_user (the
+	# update grants no one).
+	eq "$(q "SELECT string_agg(rolname, ',' ORDER BY rolname) FROM pg_roles WHERE rolname LIKE 'improv\_%'")" improv_admin,improv_reader,improv_user "the roles after the update"
+	eq "$(q "$READER_FNS")" "$READER_WANT" "improv_reader's grants after the update"
 	eq "$(q "SELECT pg_has_role('alice', 'improv_user', 'MEMBER')")" f "the update enrolls no one"
 	q "ALTER ROLE alice LOGIN; GRANT improv_user TO alice"
 	qa() { "$PG_BIN/psql" -h "$W" -p "$P" -U alice -d t -qAtX -v ON_ERROR_STOP=1 -c "$1"; }

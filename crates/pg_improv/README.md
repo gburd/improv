@@ -727,8 +727,8 @@ that created them) at `ALTER EXTENSION pg_improv UPDATE`, which also hands
 it their result tables; a model without one gets the bootstrap superuser,
 with a NOTICE.
 
-**Roles: what to grant a builder.** `CREATE EXTENSION` makes two roles when
-they are missing, both `NOLOGIN`. Roles belong to the cluster, so a second
+**Roles: what to grant a builder.** `CREATE EXTENSION` makes three roles when
+they are missing, all `NOLOGIN`. Roles belong to the cluster, so a second
 database's install reuses them (and grants them that database's catalog),
 and `DROP EXTENSION` keeps them and their members (`DROP ROLE` removes
 them once no database's extension uses them).
@@ -741,10 +741,24 @@ them once no database's extension uses them).
   by it, so a builder needs no `CREATE` on the database. A builder still
   needs `SELECT` on each table it binds, and `TRIGGER` on it for trigger
   and commit mode.
-- **`improv_admin`** enrolls builders: it holds `improv_user` `WITH ADMIN
-  OPTION`, so it may `GRANT improv_user TO r` and `REVOKE` it, and builds
-  models itself. It acts on no one else's model. Acting on a model is
-  acting as its owner (its reads and writes run as the owner), so a role
+- **`improv_reader`** is for a role a model's [access
+  policies](#access-policies) restrict. It has `USAGE` on schema `improv`,
+  `EXECUTE` on the functions Cedar filters (`categories`, `items`,
+  `measures`, `cells`, `set_cells`, `define`, `drop_measure`,
+  `explain_access`, `policies`) and on the ones the result tables'
+  row-level security calls (`cell_rule`, `row_visible`, `cell_visible`,
+  `unrestricted`, `may_act_as`), and `SELECT` on `improv.model` and
+  `improv.models`, so model names and owners are public to it (a model
+  it may not open says "its access policies do not let you open it").
+  Nothing else: the catalog tables, `recalc`, `what_if`, `bind_*`,
+  `set_sync_mode`, `status` and `create_model` refuse it. What it sees of
+  a model is what the policies allow, and of the results what the
+  owner grants (`GRANT USAGE ON SCHEMA improv_m`, `GRANT SELECT ON
+  improv_m.revenue`). `improv_user` has all of it already.
+- **`improv_admin`** enrolls builders and readers: it holds `improv_user`
+  and `improv_reader` `WITH ADMIN OPTION`, so it may `GRANT improv_user
+  TO r` (or `improv_reader`) and `REVOKE` it, and builds models itself.
+  It acts on no one else's model. Acting on a model is acting as its owner (its reads and writes run as the owner), so a role
   that acted on every model would act as every owner, superusers among
   them, through any model. A policy clause `OR pg_has_role(current_user,
   'improv_admin', 'MEMBER')` would hand that to every admin, quietly and
@@ -754,7 +768,16 @@ them once no database's extension uses them).
 ```sql
 GRANT improv_user TO alice;                 -- as a superuser or an improv_admin
 GRANT SELECT, TRIGGER ON sales TO alice;    -- the tables alice binds
+GRANT improv_reader TO ann;                 -- a role alice's policies restrict
+-- and, as alice: the result tables ann may query, filtered by the policies
+GRANT USAGE ON SCHEMA improv_plan TO ann; GRANT SELECT ON improv_plan.revenue TO ann;
 ```
+
+A role with only that `SELECT` (no `improv_reader`, no `USAGE` on
+`improv`) still reads the table through the policies: Postgres checks
+`EXECUTE` on the functions a row-level security qual calls, which PUBLIC
+has by default, and not `USAGE` on their schema. It cannot call the
+filtered functions. `tests/policies.sh` checks both.
 
 **`improv.models`** lists every model with its `owner`, `sync_mode`,
 `result_schema`, and `may_change`, which is true when the caller may act
@@ -801,6 +824,7 @@ on each Postgres it runs on. The columns:
   WITH INHERIT FALSE, SET TRUE`; any member on PG 15), who is an
   `improv_user`.
 - **improv_user**: an `improv_user` who is not the owner.
+- **improv_reader**: a member of `improv_reader` alone.
 - **writer**: a role that may write a table `x` binds, with no grant on
   `improv`.
 - **PUBLIC**: a role with no grants.
@@ -808,20 +832,20 @@ on each Postgres it runs on. The columns:
 "no" means refused ("permission denied …") or, for a read of the
 catalog, no rows.
 
-| | superuser | improv_admin | owner | SET member | improv_user | writer | PUBLIC |
-|---|---|---|---|---|---|---|---|
-| `create_model` (a model of one's own) | yes | yes | yes | yes | yes | no | no |
-| `bind_category`, `bind_measure` | yes | no | yes | yes | no | no | no |
-| `define` | yes | no | yes | yes | no | no | no |
-| `recalc` | yes | no | yes | yes | no | no | no |
-| `what_if` | yes | no | yes | yes | no¹ | no¹ | no¹ |
-| `set_sync_mode` | yes | no | yes | yes | no | no | no |
-| `drop_model` | yes | no | yes | yes | no | no | no |
-| read names and formulas (`improv.measure`, `improv.models`) | yes | yes | yes | yes | yes | no | no |
-| read items (`improv.item`) and input cells (`improv.cell`, the same policy) | yes | no | yes | yes | no | no | no |
-| read results (`improv_x.*`) | yes | no² | yes | no³ | no² | no² | no² |
-| `status` | yes | yes | yes | yes | yes | no | no |
-| drive sync (write a bound table) | ⁴ | ⁴ | ⁴ | ⁴ | ⁴ | yes | ⁴ |
+| | superuser | improv_admin | owner | SET member | improv_user | improv_reader | writer | PUBLIC |
+|---|---|---|---|---|---|---|---|---|
+| `create_model` (a model of one's own) | yes | yes | yes | yes | yes | no | no | no |
+| `bind_category`, `bind_measure` | yes | no | yes | yes | no | no | no | no |
+| `define` | yes | no | yes | yes | no | no⁵ | no | no |
+| `recalc` | yes | no | yes | yes | no | no | no | no |
+| `what_if` | yes | no | yes | yes | no¹ | no¹ | no¹ | no¹ |
+| `set_sync_mode` | yes | no | yes | yes | no | no | no | no |
+| `drop_model` | yes | no | yes | yes | no | no | no | no |
+| read names and formulas (`improv.measure`, `improv.models`) | yes | yes | yes | yes | yes | no⁵ | no | no |
+| read items (`improv.item`) and input cells (`improv.cell`, the same policy) | yes | no | yes | yes | no | no | no | no |
+| read results (`improv_x.*`) | yes | no² | yes | no³ | no² | no² | no² | no² |
+| `status` | yes | yes | yes | yes | yes | no | no | no |
+| drive sync (write a bound table) | ⁴ | ⁴ | ⁴ | ⁴ | ⁴ | ⁴ | yes | ⁴ |
 
 1. A `SECURITY DEFINER` wrapper the owner grants gives `what_if` on one
    model to any role, with no grant on `improv` (see [Giving others
@@ -835,6 +859,10 @@ catalog, no rows.
    is the table's grant, not pg_improv's. Every role that has it drives
    every sync mode, and the model reads the table as its owner (sections 1
    and 4 of the test).
+5. Of a model without access policies. `improv_reader` reads model names
+   and owners (`improv.models`), not `improv.measure`; with policies it
+   reads, and defines, what they allow, through the functions ([Access
+   policies](#access-policies)).
 
 **Who may set a model's owner.** The same rule, for the current and the
 new owner (a trigger, `improv.check_owner`): "only a superuser or a member
@@ -947,9 +975,9 @@ the filtered functions below refuse everyone but the owner's side.
 
 Derived values are computed over all the data, as the owner sees it, then
 filtered: a total over items a role may not see is shown with its full
-value, or not at all (forbid its measure or cells). A role needs `USAGE` on
-schema `improv` to call the functions (`improv_user` has it), and `SELECT`
-on a result table to query it.
+value, or not at all (forbid its measure or cells). A role needs
+`improv_reader` (or `improv_user`) to call the functions, and the owner's
+`SELECT` on a result table to query it.
 
 **Cost.** The result tables' qual decides once per statement
 (`improv.cell_rule`, which Postgres runs as an InitPlan): the owner's side

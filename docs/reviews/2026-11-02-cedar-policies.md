@@ -617,6 +617,29 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
   each result table, as its owner, and turns row-level security on;
   clearing drops them. A result table made later gets it when it is
   created. The owner owns the tables, so its reads skip the qual.
+- **Roles.** `improv_reader` is the least-privilege role for a restricted
+  user: `USAGE` on schema `improv`, `EXECUTE` on the functions Cedar
+  filters (`categories`, `items`, `measures`, `cells`, `set_cells`,
+  `define`, `drop_measure`, `explain_access`, `policies`) and on what the
+  quals call (`cell_rule`, `row_visible`, `cell_visible`, `unrestricted`,
+  `may_act_as`), and `SELECT` on `improv.model` and `improv.models`.
+  `improv_admin` holds it `WITH ADMIN OPTION`; `improv_user` already has
+  all of it. It is not granted to PUBLIC: every function's errors would
+  then name models and owners to any role, and every function would need
+  an audit for PUBLIC callers. A role with only the owner's `SELECT` on a
+  result table (no `USAGE` on `improv`) reads it through the qual:
+  Postgres checks `EXECUTE` on a policy's functions (PUBLIC has it by
+  default), not `USAGE` on their schema. So a reader needs
+  `improv_reader` for the functions, and the owner's grant to query a
+  result table. What else a reader can call, checked by the error each
+  gives (`tests/policies.sh` section 11): `create_model`, `recalc`,
+  `bind_*`, `set_sync_mode`, `drop_model`, `enable_logical`,
+  `sync_publication` and `mint_items` need catalog tables it has no
+  grant on; `status` reads `improv.sync_state`; `what_if` needs to act
+  as the owner; `set_policies` needs Admin; `may_act_as` and
+  `unrestricted` answer only about the caller; `on_change` and the
+  language handlers cannot be called as functions. The functions it is
+  granted act through Cedar, as everyone else's calls do.
 - **Changes through Cedar.** `define` and `drop_measure` check
   `DefineMeasure` (on the model for a new measure or a LAMBDA, on the
   measure to redefine or drop it), parse the formula against what the
@@ -657,3 +680,7 @@ cells of a model it may not act as the owner of).
    a convenience, not security), or only by the server? This design says
    only the server.
 5. Release split: stages 1 to 4 in 0.13, and 5 to 7 in 0.14?
+6. Answered: the maintainer confirmed `improv.set_cells` (its name and
+   its `what_if`-style edits), and accepted "its access policies do not
+   let you open it" for a model a role may not open (model names are
+   public through `improv.models`).

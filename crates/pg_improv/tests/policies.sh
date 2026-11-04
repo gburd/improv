@@ -25,8 +25,10 @@
 #      allow or deny to the role itself
 #   9. clearing the policies restores 0.12's behavior
 #  10. pg_dump keeps the policies; a restore enforces them
-#  11. the result tables' qual decides once per statement (InitPlans), and
-#      checks rows only when it must
+#  11. improv_reader: a restricted role needs it and the owner's grants,
+#      nothing more; it reaches only what Cedar allows; a role with only
+#      SELECT on a result table reads it too; the qual decides once per
+#      statement (InitPlans), and checks rows only when it must
 # Usage: tests/policies.sh
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
@@ -315,13 +317,41 @@ eq "$(DB=r U=ann q "SELECT count(*) FROM improv_m.revenue")" 4 "and are enforced
 eq "$(DB=r q "SELECT count(*) > 0 FROM improv.policy_audit")" t "the audit trail survives"
 echo "ok: pg_dump keeps the policies and their audit trail"
 
-# ---- 11. the qual's plan -------------------------------------------------------
-# The decision is two InitPlans; rows are checked only under rule 3.
-PLAN=$(U=ann q "EXPLAIN (COSTS OFF) SELECT count(*) FROM improv_m.revenue")
+# ---- 11. improv_reader, and the qual's plan ------------------------------------
+# rea: only improv_reader and alice's grants; sel: only SELECT on the table.
+q "CREATE ROLE rea LOGIN; CREATE ROLE sel LOGIN; CREATE ROLE adm2 LOGIN; GRANT improv_admin TO adm2"
+U=adm2 q "GRANT improv_reader TO rea"
+eq "$(q "SELECT string_agg(p.proname, ',' ORDER BY p.proname) FROM pg_proc p, aclexplode(p.proacl) a
+         WHERE p.pronamespace = 'improv'::regnamespace AND a.grantee = 'improv_reader'::regrole AND a.privilege_type = 'EXECUTE'")" \
+	categories,cell_rule,cell_visible,cells,define,drop_measure,explain_access,items,may_act_as,measures,policies,row_visible,set_cells,unrestricted \
+	"improv_reader's functions: the ones Cedar filters, and what the quals call"
+eq "$(q "SELECT string_agg(c.relname, ',' ORDER BY c.relname) FROM pg_class c WHERE c.relnamespace = 'improv'::regnamespace
+         AND has_table_privilege('improv_reader', c.oid, 'SELECT')")" model,models "improv_reader's tables"
+eq "$(q "SELECT pg_has_role('improv_user', 'improv_reader', 'USAGE')::text || has_schema_privilege('rea', 'improv', 'USAGE')")" "falsetrue" \
+	"improv_reader has USAGE on improv (improv_user has its own)"
+U=alice q "GRANT USAGE ON SCHEMA improv_m TO rea, sel; GRANT SELECT ON improv_m.revenue TO rea, sel"
+U=alice q "SELECT improv.set_policies('m', \$\$$POL
+@id(\"rea\") permit (principal in Improv::Role::\"improv_reader\", action in Improv::Action::\"Read\", resource);
+@id(\"sel\") permit (principal == Improv::User::\"sel\", action in Improv::Action::\"Read\", resource);
+@id(\"rea-no-falcon\") forbid (principal == Improv::User::\"rea\", action, resource in Improv::Item::\"$FALCON\");\$\$)" >/dev/null
+eq "$(U=rea q "SELECT count(*) FROM improv_m.revenue")" 4 "a reader reads its rows"
+eq "$(U=rea q "SELECT count(*) FROM improv.items('m')")" 4 "and the filtered functions"
+eq "$(U=rea q "SELECT string_agg(name, ',' ORDER BY name) FROM improv.models WHERE name = 'm'")" m "and the model names"
+eq "$(U=sel q "SELECT count(*) FROM improv_m.revenue")" 6 "SELECT alone reads the result table, through the qual"
+has "$(U=sel e "SELECT * FROM improv.items('m')")" "permission denied for schema improv" "but nothing else of the model"
+for f in "recalc('m')" "what_if('m', '[]')" "set_sync_mode('m','manual')" "drop_model('m')" "create_model('rx')" \
+	"bind_measure('m','B','sales','qty')" "status('m')" "sync_publication()" "enable_logical('m')" "set_policies('m', NULL)"; do
+	has "$(U=rea e "SELECT improv.$f")" "permission denied" "a reader may not call $f"
+done
+for t in measure item cell binding category view lambda meta model_version policy policy_audit sync_state; do
+	has "$(U=rea e "SELECT count(*) FROM improv.$t")" "permission denied" "a reader reads nothing of improv.$t"
+done
+# The plan: the decision is two InitPlans; rows are checked only under rule 3.
+PLAN=$(U=rea q "EXPLAIN (COSTS OFF) SELECT count(*) FROM improv_m.revenue")
 has "$PLAN" "InitPlan" "the qual decides in an InitPlan"
 lacks "$PLAN" "cell_visible" "and never calls cell_visible a row"
 MID=$(U=alice q "SELECT id FROM improv.model WHERE name = 'm'")
-eq "$(U=ann q "SELECT improv.cell_rule($MID, $(idof measure Revenue))")" 3 "ann, with a hidden item, is checked per row"
+eq "$(U=rea q "SELECT improv.cell_rule($MID, $(idof measure Revenue))")" 3 "rea, with a hidden item, is checked per row"
 eq "$(U=ed q "SELECT improv.cell_rule($MID, $PRICE)")" 1 "ed, with Price forbidden, reads no row of it: decided once"
 eq "$(U=alice q "SELECT improv.cell_rule($MID, $PRICE)")" 0 "the owner: every row"
 # How often a read calls the per-row check (this transaction's count).
@@ -330,6 +360,8 @@ calls() { # role -> row_visible calls of one read of revenue
 	  SELECT coalesce(pg_stat_get_xact_function_calls('improv.row_visible(bigint, bigint, \"any\")'::regprocedure), 0)" | tail -1
 }
 eq "$(calls nob)" 0 "nob (no policy) reads no row, and no row is checked"
-eq "$(calls ann)" 6 "ann's rows are checked one by one"
-echo "ok: the qual decides once a statement"
+eq "$(calls rea)" 6 "rea's rows are checked one by one"
+U=adm2 q "REVOKE improv_reader FROM rea"
+has "$(U=rea e "SELECT * FROM improv.items('m')")" "permission denied for schema improv" "a revoked reader"
+echo "ok: improv_reader; SELECT alone reads a result table; the qual decides once a statement"
 echo PASS

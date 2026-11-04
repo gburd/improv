@@ -83,3 +83,24 @@ GRANT EXECUTE ON FUNCTION improv.unrestricted(bigint), improv.cell_visible(bigin
   improv.explain_access(text, text, jsonb, text), improv.categories(text), improv.items(text),
   improv.measures(text), improv.cells(text, text), improv.set_cells(text, jsonb) TO improv_user;
 
+-- improv_reader, as a fresh install makes it (src/owner.rs, "roles").
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname OPERATOR(pg_catalog.=) 'improv_reader') THEN
+    CREATE ROLE improv_reader NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_catalog.pg_auth_members a
+                 WHERE a.roleid OPERATOR(pg_catalog.=) 'improv_reader'::pg_catalog.regrole
+                   AND a.member OPERATOR(pg_catalog.=) 'improv_admin'::pg_catalog.regrole
+                   AND a.admin_option) THEN
+    GRANT improv_reader TO improv_admin WITH ADMIN OPTION;
+  END IF;
+END $$;
+GRANT USAGE ON SCHEMA improv TO improv_reader;
+GRANT SELECT ON improv.model, improv.models TO improv_reader;
+GRANT EXECUTE ON FUNCTION improv.categories(text), improv.items(text), improv.measures(text),
+  improv.cells(text, text), improv.set_cells(text, jsonb), improv.define(text, text, boolean),
+  improv.drop_measure(text, text), improv.explain_access(text, text, jsonb, text),
+  improv.policies(text), improv.cell_rule(bigint, bigint),
+  improv.row_visible(bigint, bigint, "any"), improv.cell_visible(bigint, bigint, text[]),
+  improv.unrestricted(bigint), improv.may_act_as(regrole) TO improv_reader;

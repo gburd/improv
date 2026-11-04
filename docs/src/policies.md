@@ -202,6 +202,14 @@ adds a row to `improv.policy_audit`; a refusal is logged by the server as
 one `pg_improv audit:` line. A change to the policies, the groups or a
 role's memberships applies from another session's next statement.
 
+A restricted role needs `improv_reader`, a role the extension makes
+(`GRANT improv_reader TO ann`, as a superuser or an `improv_admin`): it
+may call the filtered functions and read model names, and nothing else
+in schema `improv`. To query a result table it needs the owner's grant
+too (`GRANT USAGE ON SCHEMA improv_plan TO ann; GRANT SELECT ON
+improv_plan.revenue TO ann`); that grant alone is enough for `SELECT`,
+which the policies still filter.
+
 Not covered: the source tables (a role that may read `sales` reads it,
 whatever the model's policies say), and the timing of changes
 (`improv.model_version` and NOTIFY are global).
