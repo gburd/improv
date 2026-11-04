@@ -29,6 +29,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
+use std::rc::Rc;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -37,7 +39,7 @@ use improv_engine::CellValue;
 use improv_pg_model as pm;
 use improv_policy::{Action, Channel, Policies, Principal, Resource, Session};
 use pgrx::prelude::*;
-use pgrx::{JsonB, PgLogLevel, PgSqlErrorCode};
+use pgrx::{JsonB, PgLogLevel, PgMemoryContexts, PgSqlErrorCode};
 
 use super::{owner, req, Res};
 
@@ -104,7 +106,7 @@ enum Access {
     /// No policies, and the role may not act as the owner: 0.12's rules.
     NotOwner,
     /// Cedar decides.
-    Policy(Arc<Restricted>),
+    Policy(Rc<Restricted>),
     /// The stored policies cannot be used (they no longer validate, or the
     /// model does not build): everything is denied.
     Closed(String),
@@ -117,9 +119,202 @@ struct Restricted {
     model: Model,
     /// Each category's items by name.
     names: HashMap<CategoryId, HashMap<String, ItemId>>,
+    /// Per measure, what a row check of its result table looks up, built
+    /// at its first row (see [`Rows`]).
+    rows: RefCell<HashMap<MeasureId, Rc<Rows>>>,
+}
+
+/// FNV-1a: a row check hashes two or three short item names, where
+/// SipHash costs more than the rest of the check.
+// shortcut: not DoS-resistant; the names are the model's own, written by
+// its owner, so a hostile owner slows only its own readers.
+#[derive(Default)]
+struct Fnv(u64);
+
+impl Hasher for Fnv {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        let mut h = match self.0 {
+            0 => 0xcbf2_9ce4_8422_2325,
+            h => h,
+        };
+        for b in bytes {
+            h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        self.0 = h;
+    }
+}
+
+/// One category's item names, as bytes, to (decision class, item).
+type Names = HashMap<Box<[u8]>, (u32, ItemId), BuildHasherDefault<Fnv>>;
+
+/// The most class combinations a [`Rows`] keeps a decision for; a row of
+/// a combination past it asks the session (which caches it too, at the
+/// cost of an allocation).
+const DENSE: u64 = 1 << 16;
+
+/// A row check of one measure's result table, for one session, with no
+/// allocation per row: each dimension's item names, as bytes, to (decision
+/// class, item), and a decision per combination of classes. Class 0 of a
+/// dimension is its category's items no policy names, which Cedar decides
+/// alike ([`Session::item_named`]); each named item is a class of its own.
+/// A name the model lacks has no entry, and its row is hidden, as
+/// [`cell_visible`] hides it.
+struct Rows {
+    measure: MeasureId,
+    /// The measure's categories, in its order.
+    cats: Vec<CategoryId>,
+    /// Per category: item name to (class, item).
+    dims: Vec<Names>,
+    /// A class's weight in a combination's index (mixed radix; saturated
+    /// past `u64`, which is past [`DENSE`]).
+    strides: Vec<u64>,
+    /// Per combination below [`DENSE`]: 0 not asked yet, 1 hidden, 2 shown.
+    decided: Vec<Cell<u8>>,
+    /// No row can be shown: a category of the measure has no item the role
+    /// may read.
+    none: bool,
+}
+
+impl Rows {
+    fn new(r: &Restricted, m: MeasureId) -> Option<Rows> {
+        let cats = r.model.measures.get(&m)?.categories.clone();
+        let (mut dims, mut strides, mut none) = (Vec::new(), Vec::new(), false);
+        let mut total = 1u64;
+        for c in &cats {
+            let mut items: Vec<_> = (r.model.items.values())
+                .filter(|i| i.category == *c)
+                .map(|i| (r.session.item_named(i.id), i))
+                .collect();
+            // The unnamed items first: one of them decides for all.
+            items.sort_by_key(|(named, i)| (*named, i.id));
+            none = none || !items.iter().any(|(_, i)| r.session.item_visible(i.id));
+            let mut map = HashMap::default();
+            let mut named = 0u32;
+            for (is_named, i) in items {
+                let class = match is_named {
+                    true => {
+                        named += 1;
+                        named
+                    }
+                    false => 0,
+                };
+                map.insert(i.name.0.as_bytes().into(), (class, i.id));
+            }
+            dims.push(map);
+            strides.push(total);
+            total = total.saturating_mul(u64::from(named) + 1);
+        }
+        let decided = (0..total.min(DENSE)).map(|_| Cell::new(0)).collect();
+        Some(Rows {
+            measure: m,
+            cats,
+            dims,
+            strides,
+            decided,
+            none,
+        })
+    }
+
+    /// Whether the row whose `n` dimension values `key` gives is shown, as
+    /// `session.cell_visible` decides its cell: false for a value the
+    /// model has no item for, and for a row of another width.
+    fn visible<'a>(&self, session: &Session, n: usize, key: impl Fn(usize) -> &'a [u8]) -> bool {
+        if n != self.dims.len() {
+            return false;
+        }
+        let mut at = 0u64;
+        for (k, map) in self.dims.iter().enumerate() {
+            let Some((class, _)) = map.get(key(k)) else {
+                return false;
+            };
+            at = at.saturating_add(u64::from(*class).saturating_mul(self.strides[k]));
+        }
+        let slot = usize::try_from(at).ok().and_then(|i| self.decided.get(i));
+        if let Some(d) = slot.map(Cell::get).filter(|d| *d != 0) {
+            return d == 2;
+        }
+        // The first row of its combination: ask the session about it.
+        let dims = (self.cats.iter().zip(&self.dims).enumerate())
+            .filter_map(|(k, (c, map))| map.get(key(k)).map(|(_, i)| (*c, *i)))
+            .collect();
+        let shown = session.cell_visible(self.measure, &Coordinate { dims });
+        if let Some(s) = slot {
+            s.set(if shown { 2 } else { 1 });
+        }
+        shown
+    }
+
+    /// Whether no row of the table can be shown: `ViewModel` or
+    /// `ReadMeasure` denied, a category with no item the role may read, or
+    /// every combination of decision classes (at most [`PROVE`]) hidden.
+    /// False when it cannot tell.
+    fn none_shown(&self, session: &Session) -> bool {
+        if self.none
+            || !session.allowed(Action::ViewModel, &Resource::Model)
+            || !session.measure_visible(self.measure)
+        {
+            return true;
+        }
+        let Some(reps) = self.representatives() else {
+            return false;
+        };
+        let mut at = vec![0usize; reps.len()];
+        loop {
+            let dims = (self.cats.iter().zip(&reps).zip(&at))
+                .map(|((c, r), k)| (*c, r[*k]))
+                .collect();
+            if session.cell_visible(self.measure, &Coordinate { dims }) {
+                return false;
+            }
+            // The next combination (odometer order); done after the last.
+            let mut k = 0;
+            loop {
+                if k == at.len() {
+                    return true;
+                }
+                at[k] += 1;
+                if at[k] < reps[k].len() {
+                    break;
+                }
+                at[k] = 0;
+                k += 1;
+            }
+        }
+    }
+
+    /// One item of each decision class, per dimension; `None` past
+    /// [`PROVE`] combinations. A category with no item at all has none,
+    /// and no row (see `none`).
+    fn representatives(&self) -> Option<Vec<Vec<ItemId>>> {
+        let mut total = 1u64;
+        let mut out = Vec::with_capacity(self.dims.len());
+        for map in &self.dims {
+            let mut by: BTreeMap<u32, ItemId> = BTreeMap::new();
+            for (class, i) in map.values() {
+                let e = by.entry(*class).or_insert(*i);
+                *e = (*e).min(*i);
+            }
+            total = total.saturating_mul(by.len() as u64);
+            out.push(by.into_values().collect());
+        }
+        (total <= PROVE).then_some(out)
+    }
 }
 
 impl Restricted {
+    /// The row check of measure `m`'s result table; `None` when the model
+    /// has no such measure.
+    fn rows(&self, m: MeasureId) -> Option<Rc<Rows>> {
+        if let Some(r) = self.rows.borrow().get(&m) {
+            return Some(r.clone());
+        }
+        let r = Rc::new(Rows::new(self, m)?);
+        self.rows.borrow_mut().insert(m, r.clone());
+        Some(r)
+    }
     /// The coordinate of a result row: item names in `m`'s category order.
     fn coord(&self, m: MeasureId, key: &[&str]) -> Option<Coordinate> {
         let cats = &self.model.measures.get(&m)?.categories;
@@ -439,10 +634,11 @@ fn build(mid: i64, who: &Principal, text: &str, groups: &str) -> Res<Access> {
             .or_default()
             .insert(i.name.0.clone(), i.id);
     }
-    Ok(Access::Policy(Arc::new(Restricted {
+    Ok(Access::Policy(Rc::new(Restricted {
         session,
         model,
         names,
+        rows: RefCell::default(),
     })))
 }
 
@@ -496,7 +692,7 @@ struct Reader {
     mid: i64,
     name: String,
     owner: Option<pg_sys::Oid>,
-    r: Option<Arc<Restricted>>,
+    r: Option<Rc<Restricted>>,
 }
 
 /// The [`Reader`] for the current role; refuses a role that may neither
@@ -531,8 +727,10 @@ fn structure(mid: i64) -> Res<Model> {
 /// current role may read the cell of measure `measure` at `dims` (item
 /// names in the measure's category order). True for a model without
 /// policies and for a role that may act as its owner; false for a cell
-/// Cedar hides, and for every cell of a model whose policies cannot be
-/// used.
+/// Cedar hides, for a name the model has no item for, and for every cell
+/// of a model whose policies cannot be used. The reference the result
+/// tables' qual ([`cell_rule`], [`row_visible`]) is tested against, and
+/// the qual of a measure with no dimensions.
 #[pg_extern(stable, security_invoker)]
 fn cell_visible(model: i64, measure: i64, dims: pgrx::Array<&str>) -> Res<bool> {
     Ok(match access(model, me())? {
@@ -552,6 +750,157 @@ fn cell_visible(model: i64, measure: i64, dims: pgrx::Array<&str>) -> Res<bool> 
     })
 }
 
+/// The most combinations of decision classes [`cell_rule`] asks the
+/// session about to prove that no row of a table can be shown.
+const PROVE: u64 = 1024;
+
+/// The result tables' qual, once per statement (an InitPlan): 0 when every
+/// row is shown (a model without policies, a role that may act as the
+/// owner), 1 when none is (policies that cannot be used; `ViewModel` or
+/// `ReadMeasure` denied; a category of the measure with no item the role
+/// may read; or every combination of the items' decision classes denied),
+/// 3 when [`row_visible`] decides each row. Each answer is exactly what
+/// [`cell_visible`] would say of every row.
+#[pg_extern(stable, security_invoker)]
+fn cell_rule(model: i64, measure: i64) -> Res<i32> {
+    Ok(match access(model, me())? {
+        Access::Owner | Access::NotOwner => 0,
+        Access::Closed(_) => 1,
+        Access::Policy(r) => {
+            let m = MeasureId(super::id32(measure)?);
+            match r.rows(m) {
+                Some(rows) if !rows.none_shown(&r.session) => 3,
+                _ => 1,
+            }
+        }
+    })
+}
+
+/// What a [`row_visible`] call keeps for its query: the role it decided
+/// for and how that role may act on the model, as of the query's first row
+/// (as an InitPlan decides once).
+struct RowCall {
+    role: pg_sys::Oid,
+    access: Access,
+    rows: Option<Rc<Rows>>,
+}
+
+/// `improv.row_visible(model, measure, VARIADIC dims "any")`: the per-row
+/// half of the result tables' qual, the answer of [`cell_visible`] without
+/// building an array or a coordinate. The dimension values are `text`
+/// arguments, in the measure's category order. The first call of a query
+/// finds the session and the measure's [`Rows`] and keeps them in the
+/// call's `fn_extra`; each row then hashes its names and reads one
+/// decision. A value the model has no item for hides its row.
+///
+/// # Safety
+/// Called by Postgres's fmgr with a valid `fcinfo`, as the SQL declares it
+/// (STRICT: no argument is NULL).
+#[pg_guard]
+#[unsafe(no_mangle)]
+pub unsafe extern "C-unwind" fn row_visible_wrapper(
+    fcinfo: pg_sys::FunctionCallInfo,
+) -> pg_sys::Datum {
+    // SAFETY: fmgr passes a valid fcinfo with flinfo set; `nargs` arguments.
+    let (flinfo, nargs) = unsafe {
+        (
+            (*fcinfo).flinfo,
+            usize::try_from((*fcinfo).nargs).unwrap_or(0),
+        )
+    };
+    // SAFETY: as above.
+    let arg = |i: usize| unsafe { (*fcinfo).args.as_slice(nargs)[i].value };
+    let role = me();
+    // SAFETY: fn_extra is ours: null, or the RowCall set below, which lives
+    // as long as fn_mcxt.
+    let mut call = unsafe { (*flinfo).fn_extra.cast::<RowCall>() };
+    if call.is_null() || unsafe { (*call).role } != role {
+        // SAFETY: flinfo is the live call's; checking its argument types
+        // before any is read as text.
+        let ok = unsafe { !pg_sys::get_fn_expr_variadic(flinfo) }
+            && nargs >= 3
+            && (2..nargs).all(
+                |i| unsafe { pg_sys::get_fn_expr_argtype(flinfo, i as i32) } == pg_sys::TEXTOID,
+            );
+        if !ok {
+            error!(
+                "improv.row_visible takes a model, a measure and the row's text dimension values"
+            );
+        }
+        let (mid, measure) = (arg(0).value() as i64, arg(1).value() as i64);
+        let found = (|| -> Res<RowCall> {
+            let access = access(mid, role)?;
+            let rows = match &access {
+                Access::Policy(r) => r.rows(MeasureId(super::id32(measure)?)),
+                _ => None,
+            };
+            Ok(RowCall { role, access, rows })
+        })();
+        let found = found.unwrap_or_else(|e| error!("{e}"));
+        // SAFETY: fn_mcxt outlives every call through flinfo; the callback
+        // drops the RowCall when it is reset or deleted.
+        unsafe {
+            if !call.is_null() {
+                *call = found;
+            } else {
+                call = PgMemoryContexts::For((*flinfo).fn_mcxt).leak_and_drop_on_delete(found);
+                (*flinfo).fn_extra = call.cast();
+            }
+        }
+    }
+    // SAFETY: set above, live for the query.
+    let call = unsafe { &*call };
+    let shown = match &call.access {
+        Access::Owner | Access::NotOwner => true,
+        Access::Closed(_) => false,
+        Access::Policy(r) => match &call.rows {
+            // SAFETY: arguments 2.. are non-NULL text (checked above).
+            Some(rows) => {
+                rows.visible(&r.session, nargs - 2, |k| unsafe { text_bytes(arg(k + 2)) })
+            }
+            None => false,
+        },
+    };
+    pg_sys::Datum::from(shown)
+}
+
+/// A `text` datum's bytes, detoasted only when it is compressed or stored
+/// out of line (a detoasted copy lives in the per-row memory context).
+///
+/// # Safety
+/// `d` is a non-NULL `text` datum.
+unsafe fn text_bytes<'a>(d: pg_sys::Datum) -> &'a [u8] {
+    use pgrx::varlena as v;
+    let p = d.cast_mut_ptr::<pg_sys::varlena>();
+    // SAFETY: a valid varlena (the caller's promise).
+    unsafe {
+        let p = match v::varatt_is_1b_e(p) || v::varatt_is_4b_c(p) {
+            true => pg_sys::pg_detoast_datum_packed(p),
+            false => p,
+        };
+        v::varlena_to_byte_slice(p)
+    }
+}
+
+/// Required by Postgres to call [`row_visible_wrapper`] (`PG_FUNCTION_INFO_V1`).
+#[unsafe(no_mangle)]
+#[doc(hidden)]
+pub extern "C" fn pg_finfo_row_visible_wrapper() -> &'static pg_sys::Pg_finfo_record {
+    const V1: pg_sys::Pg_finfo_record = pg_sys::Pg_finfo_record { api_version: 1 };
+    &V1
+}
+
+extension_sql!(
+    r#"
+-- The per-row half of the result tables' qual (src/policy.rs, row_visible).
+CREATE FUNCTION improv.row_visible(model bigint, measure bigint, VARIADIC dims "any")
+  RETURNS bool STRICT STABLE SECURITY INVOKER LANGUAGE c
+  AS 'MODULE_PATHNAME', 'row_visible_wrapper';
+"#,
+    name = "row_visible",
+    requires = [cell_rule]
+);
+
 /// Row-level security on the catalog: whether the current role may read
 /// model `model`'s catalog rows (measures, bindings, views, lambdas, sync
 /// state). True when the model has no policies (0.12's rule) or the role
@@ -564,9 +913,38 @@ fn unrestricted(model: i64) -> Res<bool> {
     ))
 }
 
+/// The `improv_access` qual of measure `measure`'s result table (dimension
+/// columns `dims`): [`cell_rule`] decides once per statement (an InitPlan,
+/// so a cursor keeps its first execution's answer), and only rule 3 checks
+/// rows ([`row_visible`]; [`cell_visible`] for a table without dimensions,
+/// which has at most one row). Under rules 0 and 1 a row costs two
+/// integer compares (row-level security keeps the conjunct in the scan's
+/// filter, not a one-time filter).
+fn qual(mid: i64, measure: MeasureId, dims: &[String]) -> String {
+    let rule = format!(
+        "(SELECT improv.cell_rule({mid}::int8, {}::int8))",
+        measure.0
+    );
+    let row = match dims.is_empty() {
+        true => format!(
+            "improv.cell_visible({mid}::int8, {}::int8, '{{}}'::text[])",
+            measure.0
+        ),
+        false => format!(
+            "improv.row_visible({mid}::int8, {}::int8, {})",
+            measure.0,
+            dims.iter()
+                .map(|d| pm::quote_ident(d))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    };
+    format!("{rule} OPERATOR(pg_catalog.<>) 1 AND ({rule} OPERATOR(pg_catalog.=) 0 OR {row})")
+}
+
 /// The row-level security policy that filters result table `table` of
-/// measure `measure` (dimension columns `dims`) through [`cell_visible`].
-/// Run as the table's owner.
+/// measure `measure` (dimension columns `dims`), [`qual`]. Run as the
+/// table's owner.
 fn secure(mid: i64, measure: MeasureId, table: &str, dims: &[String]) -> Res<()> {
     let have = one::<bool>(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_policy \
@@ -574,20 +952,9 @@ fn secure(mid: i64, measure: MeasureId, table: &str, dims: &[String]) -> Res<()>
         &[table.into()],
     )?;
     if have != Some(true) {
-        let key = match dims.is_empty() {
-            true => "'{}'::text[]".to_string(),
-            false => format!(
-                "ARRAY[{}]::text[]",
-                dims.iter()
-                    .map(|d| pm::quote_ident(d))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-        };
         Spi::run(&format!(
-            "CREATE POLICY improv_access ON {table} FOR SELECT \
-             USING (improv.cell_visible({mid}::int8, {}::int8, {key}))",
-            measure.0
+            "CREATE POLICY improv_access ON {table} FOR SELECT USING ({})",
+            qual(mid, measure, dims)
         ))?;
     }
     // Skipped when on: the ALTER takes an ACCESS EXCLUSIVE lock.
@@ -1776,5 +2143,463 @@ mod tests {
             Some(2),
             "the owner reads on"
         );
+    }
+
+    fn run(sql: &str) {
+        Spi::run(sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+    }
+
+    fn id(sql: &str) -> i64 {
+        Spi::get_one::<i64>(sql).unwrap().unwrap()
+    }
+
+    /// One text answer of `sql`, as `role` (the superuser when `None`).
+    fn text_as(role: Option<&str>, sql: &str) -> String {
+        if let Some(r) = role {
+            run(&format!("SET LOCAL ROLE {r}"));
+        }
+        let v = Spi::get_one::<String>(sql)
+            .unwrap_or_else(|e| panic!("{sql}: {e}"))
+            .unwrap_or_default();
+        if role.is_some() {
+            run("RESET ROLE");
+        }
+        v
+    }
+
+    /// The equivalence fixture: model `q` (manual) over R (r0..r5) x C
+    /// (c0..c3), W = V * 2 (two dimensions), S = SUM(W OVER C) (one),
+    /// T = SUM(W OVER R, C) (none). eq_a is a user, eq_b a member of
+    /// eq_staff, eq_o may act as the owner (the test's superuser).
+    struct Eq {
+        mid: i64,
+        w: i64,
+        s: i64,
+        t: i64,
+        r: i64,
+        c: i64,
+        item: std::collections::HashMap<String, i64>,
+    }
+
+    const ROLES: [&str; 3] = ["eq_a", "eq_b", "eq_o"];
+
+    fn eq_setup() -> Eq {
+        for sql in [
+            "CREATE TABLE eqf (r text, c text, v float8, PRIMARY KEY (r, c))",
+            "INSERT INTO eqf SELECT 'r' || i, 'c' || j, i * 10 + j \
+             FROM generate_series(0, 5) i, generate_series(0, 3) j",
+            "SELECT improv.create_model('q')",
+            "SELECT improv.set_sync_mode('q', 'manual')",
+            "SELECT improv.bind_category('q', 'R', 'eqf', 'r')",
+            "SELECT improv.bind_category('q', 'C', 'eqf', 'c')",
+            "SELECT improv.bind_measure('q', 'V', 'eqf', 'v')",
+            "SELECT improv.define('q', 'W = V * 2')",
+            "SELECT improv.define('q', 'S = SUM(W OVER C)')",
+            "SELECT improv.define('q', 'T = SUM(W OVER R, C)')",
+            "SELECT improv.recalc('q')",
+            "CREATE ROLE eq_a",
+            "CREATE ROLE eq_b",
+            "CREATE ROLE eq_o",
+            "CREATE ROLE eq_staff",
+            "GRANT eq_staff TO eq_b",
+            "GRANT improv_user TO eq_a, eq_b, eq_o",
+            "DO $$ BEGIN EXECUTE format('GRANT %I TO eq_o', current_user); END $$",
+            "GRANT USAGE ON SCHEMA improv_q TO eq_a, eq_b, eq_o",
+            "GRANT SELECT ON ALL TABLES IN SCHEMA improv_q TO eq_a, eq_b, eq_o",
+        ] {
+            run(sql);
+        }
+        let named = |t: &str, n: &str| id(&format!("SELECT id FROM improv.{t} WHERE name = '{n}'"));
+        let item = (0..6)
+            .map(|i| format!("r{i}"))
+            .chain((0..4).map(|j| format!("c{j}")))
+            .map(|n| {
+                let i = named("item", &n);
+                (n, i)
+            })
+            .collect();
+        Eq {
+            mid: id("SELECT id FROM improv.model WHERE name = 'q'"),
+            w: named("measure", "W"),
+            s: named("measure", "S"),
+            t: named("measure", "T"),
+            r: named("category", "R"),
+            c: named("category", "C"),
+            item,
+        }
+    }
+
+    impl Eq {
+        /// The rows each role reads through the qual, against the rows of
+        /// a copy (no row-level security) the old per-row check shows.
+        fn check(&self, what: &str) {
+            for t in ["w", "s", "t"] {
+                run(&format!("DROP TABLE IF EXISTS eq_{t}"));
+                run(&format!(
+                    "CREATE TABLE eq_{t} AS SELECT * FROM improv_q.{t}"
+                ));
+                run(&format!("GRANT SELECT ON eq_{t} TO PUBLIC"));
+            }
+            let tables = [
+                ("w", self.w, "r || '/' || c", "ARRAY[r, c]"),
+                ("s", self.s, "r", "ARRAY[r]"),
+                ("t", self.t, "''", "'{}'::text[]"),
+            ];
+            for role in ROLES {
+                for (t, m, key, dims) in tables {
+                    let rows = |from: &str, filter: &str| {
+                        format!(
+                            "SELECT coalesce(string_agg({key} || '=' || value, ',' ORDER BY {key}), '') \
+                             FROM {from} {filter}"
+                        )
+                    };
+                    let qual = text_as(Some(role), &rows(&format!("improv_q.{t}"), ""));
+                    let oracle = text_as(
+                        Some(role),
+                        &rows(
+                            &format!("eq_{t}"),
+                            &format!("WHERE improv.cell_visible({}, {m}, {dims})", self.mid),
+                        ),
+                    );
+                    assert_eq!(qual, oracle, "{what}: {role} reading {t}");
+                }
+            }
+        }
+
+        fn item(&self, n: &str) -> i64 {
+            self.item[n]
+        }
+
+        fn allow(&self) -> String {
+            "permit (principal == Improv::User::\"eq_a\", action in Improv::Action::\"Read\", resource);\n\
+             permit (principal in Improv::Role::\"eq_staff\", action in Improv::Action::\"Read\", resource);\n"
+                .into()
+        }
+
+        /// The fixed matrix: (name, policies, groups).
+        fn matrix(&self) -> Vec<(&'static str, String, String)> {
+            let a = self.allow();
+            let i = |n: &str| self.item(n);
+            let none = String::new();
+            vec![
+                ("uniform allow, by user and by role", a.clone(), none.clone()),
+                (
+                    "allow by group",
+                    "permit (principal in Improv::Group::\"g\", action in Improv::Action::\"Read\", resource);".into(),
+                    r#"{"g": {"users": ["eq_a"]}}"#.into(),
+                ),
+                (
+                    "uniform deny of cells",
+                    format!("{a}forbid (principal, action == Improv::Action::\"ReadCell\", resource);"),
+                    none.clone(),
+                ),
+                (
+                    "a hidden named item",
+                    format!(
+                        "{a}forbid (principal, action == Improv::Action::\"ReadItem\", resource == Improv::Item::\"{}\");",
+                        i("r1")
+                    ),
+                    none.clone(),
+                ),
+                (
+                    "a hidden unnamed class",
+                    format!(
+                        "{a}forbid (principal, action == Improv::Action::\"ReadItem\", resource in Improv::Category::\"{}\") \
+                         unless {{ resource == Improv::Item::\"{}\" }};",
+                        self.r,
+                        i("r2")
+                    ),
+                    none.clone(),
+                ),
+                (
+                    "a category with nothing readable",
+                    format!(
+                        "{a}forbid (principal, action == Improv::Action::\"ReadItem\", resource in Improv::Category::\"{}\");",
+                        self.c
+                    ),
+                    none.clone(),
+                ),
+                (
+                    "a forbid on cells of two named items (not per category)",
+                    format!(
+                        "{a}forbid (principal, action == Improv::Action::\"ReadCell\", resource) \
+                         when {{ resource in Improv::Item::\"{}\" && resource in Improv::Item::\"{}\" }};",
+                        i("r1"),
+                        i("c1")
+                    ),
+                    none.clone(),
+                ),
+                (
+                    "ViewModel denied",
+                    format!("{a}forbid (principal == Improv::User::\"eq_a\", action == Improv::Action::\"ViewModel\", resource);"),
+                    none.clone(),
+                ),
+                (
+                    "ReadMeasure denied",
+                    format!(
+                        "{a}forbid (principal, action == Improv::Action::\"ReadMeasure\", resource == Improv::Measure::\"{}\");",
+                        self.w
+                    ),
+                    none.clone(),
+                ),
+                (
+                    "mixed, as the benchmark",
+                    format!(
+                        "{a}forbid (principal, action == Improv::Action::\"ReadItem\", resource == Improv::Item::\"{}\");\n\
+                         forbid (principal == Improv::User::\"u1\", action, resource in Improv::Item::\"{}\");\n\
+                         forbid (principal == Improv::User::\"u2\", action, resource in Improv::Item::\"{}\");",
+                        i("r0"),
+                        i("r1"),
+                        i("c2")
+                    ),
+                    none.clone(),
+                ),
+                (
+                    "a policy for someone else",
+                    "permit (principal == Improv::User::\"nobody\", action, resource);".into(),
+                    none,
+                ),
+            ]
+        }
+
+        /// Random policy sets over the fixture's ids (a fixed seed, so a
+        /// failure reproduces), each valid.
+        fn random(&self, n: usize) -> Vec<(String, String)> {
+            let mut x: u64 = 0x2545_f491_4f6c_dd1d;
+            let mut next = |k: usize| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x % k as u64) as usize
+            };
+            let items: Vec<i64> = ["r0", "r1", "r2", "r3", "c0", "c1"]
+                .iter()
+                .map(|n| self.item(n))
+                .collect();
+            let mut out = Vec::new();
+            while out.len() < n {
+                let mut text = String::new();
+                for k in 0..1 + next(4) {
+                    let effect = if k == 0 && next(10) < 8 {
+                        "permit"
+                    } else {
+                        ["permit", "forbid"][next(2)]
+                    };
+                    let who = [
+                        "principal",
+                        "principal == Improv::User::\"eq_a\"",
+                        "principal in Improv::Role::\"eq_staff\"",
+                        "principal in Improv::Group::\"g\"",
+                    ][next(4)];
+                    let (x1, x2) = (items[next(items.len())], items[next(items.len())]);
+                    let cat = [self.r, self.c][next(2)];
+                    let (action, resource, when): (String, String, String) = match next(9) {
+                        0 => ("action in Improv::Action::\"Read\"".into(), "resource".into(), String::new()),
+                        1 => ("action".into(), "resource".into(), String::new()),
+                        2 => (
+                            "action == Improv::Action::\"ReadItem\"".into(),
+                            format!("resource == Improv::Item::\"{x1}\""),
+                            String::new(),
+                        ),
+                        3 => (
+                            "action == Improv::Action::\"ReadItem\"".into(),
+                            format!("resource in Improv::Category::\"{cat}\""),
+                            String::new(),
+                        ),
+                        4 => (
+                            "action == Improv::Action::\"ReadCell\"".into(),
+                            format!("resource in Improv::Item::\"{x1}\""),
+                            String::new(),
+                        ),
+                        5 => (
+                            "action == Improv::Action::\"ReadCell\"".into(),
+                            "resource".into(),
+                            format!(
+                                " when {{ resource in Improv::Item::\"{x1}\" && resource in Improv::Item::\"{x2}\" }}"
+                            ),
+                        ),
+                        6 => (
+                            "action == Improv::Action::\"ReadMeasure\"".into(),
+                            format!("resource == Improv::Measure::\"{}\"", [self.w, self.s, self.t][next(3)]),
+                            String::new(),
+                        ),
+                        7 => ("action == Improv::Action::\"ViewModel\"".into(), "resource".into(), String::new()),
+                        _ => ("action".into(), format!("resource in Improv::Item::\"{x1}\""), String::new()),
+                    };
+                    text += &format!("{effect} ({who}, {action}, {resource}){when};\n");
+                }
+                let groups = [
+                    r#"{"g": {"users": ["eq_a"]}}"#,
+                    r#"{"g": {"users": ["eq_b"]}}"#,
+                    "",
+                ][next(3)];
+                if improv_policy::Policies::parse(&text, groups).is_ok() {
+                    out.push((text, groups.to_string()));
+                }
+            }
+            out
+        }
+
+        fn set(&self, text: &str, groups: &str) {
+            Spi::run_with_args(
+                "SELECT improv.set_policies('q', $1, $2)",
+                &[text.into(), groups.into()],
+            )
+            .unwrap_or_else(|e| panic!("{text}: {e}"));
+        }
+
+        /// As a store's save does: a structure change moves the version on.
+        fn bump(&self) {
+            run(&format!(
+                "UPDATE improv.model_version SET tx = tx + 1 WHERE model_id = {}",
+                self.mid
+            ));
+        }
+    }
+
+    /// The result tables' qual (`cell_rule` once a statement, then
+    /// `row_visible` a row) shows each role exactly the rows the per-row
+    /// `cell_visible` shows, for a fixed matrix of policies and 40 random
+    /// ones, with no policies, and as the model's tables go stale: rows
+    /// whose names the model lacks, a forbidden item renamed (its old
+    /// rows keep the old name), an item deleted, and both then recomputed.
+    #[pg_test]
+    fn the_qual_shows_what_cell_visible_shows() {
+        let q = eq_setup();
+        let mut sets: Vec<(String, String, String)> = (q.matrix().into_iter())
+            .map(|(n, t, g)| (n.to_string(), t, g))
+            .collect();
+        sets.extend(
+            (q.random(40).into_iter().enumerate()).map(|(i, (t, g))| (format!("random {i}"), t, g)),
+        );
+        let states: [(&str, &dyn Fn()); 5] = [
+            ("fresh", &|| {}),
+            ("rows with names the model lacks", &|| {
+                run("INSERT INTO improv_q.w VALUES ('zz', 'c0', 1), ('r0', 'zz', 2)");
+                run("INSERT INTO improv_q.s VALUES ('zz', 3)");
+            }),
+            ("a forbidden item renamed", &|| {
+                run(&format!(
+                    "UPDATE improv.item SET name = 'pub' WHERE id = {}",
+                    q.item("r1")
+                ));
+                q.bump();
+            }),
+            ("an item deleted", &|| {
+                run(&format!(
+                    "DELETE FROM improv.item WHERE id = {}",
+                    q.item("r3")
+                ));
+                q.bump();
+            }),
+            ("renamed and deleted, then recalc", &|| {
+                run("SELECT improv.recalc('q')");
+            }),
+        ];
+        for (state, change) in states {
+            change();
+            run("SELECT improv.set_policies('q', NULL)");
+            q.check(&format!("{state}, no policies"));
+            for (name, text, groups) in &sets {
+                q.set(text, groups);
+                q.check(&format!("{state}, {name}:\n{text}"));
+            }
+            // Not vacuous: the leak a name list would have. r1 is forbidden
+            // by id; renamed, its stale rows still say r1 and stay hidden.
+            q.set(&sets[3].1, "");
+            let read = |sql: &str| text_as(Some("eq_a"), sql);
+            let want = match state {
+                // r3's rows name an item the model no longer has.
+                "an item deleted" => "16:0",
+                "renamed and deleted, then recalc" => "24:4",
+                _ => "20:0",
+            };
+            assert_eq!(
+                read("SELECT count(*) || ':' || count(*) FILTER (WHERE r = 'r1') FROM improv_q.w"),
+                want,
+                "{state}: r1's rows (a recalc mints a new, unforbidden r1)"
+            );
+        }
+    }
+
+    /// Stored policies that do not validate (here: a policy naming an
+    /// attribute the schema does not declare, written around
+    /// set_policies) deny every row through the qual whatever rule the
+    /// valid policies gave: cell_rule says 1 and row_visible and
+    /// cell_visible say false, for every policy of the matrix. The owner's
+    /// side reads on.
+    #[pg_test]
+    fn unvalidated_policies_hide_every_row_for_every_rule() {
+        let q = eq_setup();
+        let bad = "permit (principal, action, resource) when { resource.nope == \"x\" };";
+        assert!(improv_policy::Policies::parse(bad, "").is_err());
+        run("ALTER TABLE improv.policy DISABLE ROW LEVEL SECURITY");
+        for (name, text, groups) in q.matrix() {
+            q.set(&text, &groups);
+            Spi::run_with_args(
+                "UPDATE improv.policy SET version = version + 1, text = text || $1",
+                &[bad.into()],
+            )
+            .unwrap();
+            for role in ["eq_a", "eq_b"] {
+                for t in ["w", "s", "t"] {
+                    let n = text_as(
+                        Some(role),
+                        &format!("SELECT count(*)::text FROM improv_q.{t}"),
+                    );
+                    assert_eq!(n, "0", "{name}: {role} reads {t}");
+                }
+                let probe = format!(
+                    "SELECT improv.cell_rule({0}, {1}) || ':' || improv.row_visible({0}, {1}, 'r4'::text, 'c3'::text) \
+                     || ':' || improv.cell_visible({0}, {1}, ARRAY['r4', 'c3'])",
+                    q.mid, q.w
+                );
+                assert_eq!(
+                    text_as(Some(role), &probe),
+                    "1:false:false",
+                    "{name}: {role}"
+                );
+            }
+            assert_eq!(
+                text_as(Some("eq_o"), "SELECT count(*)::text FROM improv_q.w"),
+                "24",
+                "{name}"
+            );
+            assert_eq!(
+                text_as(None, "SELECT count(*)::text FROM improv_q.w"),
+                "24",
+                "{name}"
+            );
+        }
+    }
+
+    /// cell_rule's answer for the matrix's plain cases.
+    #[pg_test]
+    fn cell_rule_decides_per_statement() {
+        let q = eq_setup();
+        let rule = |role: &str, m: i64| {
+            text_as(
+                Some(role),
+                &format!("SELECT improv.cell_rule({}, {m})::text", q.mid),
+            )
+        };
+        assert_eq!(rule("eq_a", q.w), "0", "no policies");
+        let m = q.matrix();
+        let case = |n: &str| m.iter().find(|c| c.0 == n).unwrap();
+        for (n, role, measure, want) in [
+            ("uniform allow, by user and by role", "eq_a", q.w, "3"),
+            ("uniform allow, by user and by role", "eq_o", q.w, "0"),
+            ("uniform deny of cells", "eq_a", q.w, "1"),
+            ("a category with nothing readable", "eq_a", q.w, "1"),
+            ("a category with nothing readable", "eq_a", q.s, "3"),
+            ("ViewModel denied", "eq_a", q.w, "1"),
+            ("ReadMeasure denied", "eq_b", q.w, "1"),
+            ("ReadMeasure denied", "eq_b", q.s, "3"),
+            ("a policy for someone else", "eq_b", q.w, "1"),
+        ] {
+            let c = case(n);
+            q.set(&c.1, &c.2);
+            assert_eq!(rule(role, measure), want, "{n}: {role}");
+        }
     }
 }

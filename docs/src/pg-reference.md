@@ -187,7 +187,8 @@ handler, or from its row-level security policies). Do not call them.
 
 | Function | Returns | What it is |
 | --- | --- | --- |
-| `cell_visible(model bigint, measure bigint, dims text[])` | boolean | Row-level security on a result table of a model with access policies: whether the caller may read the cell of `measure` at `dims` (item names in the measure's category order). True without policies and for the owner's side; false for every cell when the stored policies cannot be used. |
+| `cell_rule(model bigint, measure bigint)` | integer | Row-level security on a result table of a model with access policies, once per statement (an InitPlan): 0 shows every row (the owner's side), 1 none (the stored policies cannot be used, or nothing of the measure is readable), 3 checks each row with `row_visible`. |
+| `cell_visible(model bigint, measure bigint, dims text[])` | boolean | Whether the caller may read the cell of `measure` at `dims` (item names in the measure's category order), as the result tables' row-level security decides it: true without policies and for the owner's side; false for a hidden cell, a name the model lacks, and every cell when the stored policies cannot be used. The check of a result table without dimensions. |
 | `check_owner()` | trigger | Trigger on `improv.model`: only a role that may act as both the current and the new owner may set or change a model's owner. |
 | `commit_capture()` | trigger | Commit mode's row-capture statement trigger (`improv.commit_capture = 'rows'`): notes the coordinates a statement touched for the pre-commit recompute. |
 | `commit_catalog_changed()` | trigger | Statement trigger on `improv.model` and `improv.binding`: invalidates every backend's cache of the commit-mode relations. |
@@ -196,6 +197,7 @@ handler, or from its row-level security policies). Do not call them.
 | `on_change()` | trigger | Trigger mode's sync trigger: recomputes the changed inputs' dependents in the writer's transaction, as the model's owner. |
 | `plimprov_call_handler()` | language_handler | The `LANGUAGE improv` call handler. |
 | `plimprov_validator(oid)` | void | The `LANGUAGE improv` validator: checks the signature, and the body when `check_function_bodies` is on. |
+| `row_visible(model bigint, measure bigint, VARIADIC dims "any")` | boolean | Row-level security on a result table, per row under `cell_rule` 3: `cell_visible`'s answer for the row's dimension values (text, in the measure's category order), from a decision table kept for the query. |
 | `unrestricted(model bigint)` | boolean | Row-level security on the catalog: whether the caller may read model `model`'s measures, bindings, views and lambdas. True without access policies (0.12's rule) and for the owner's side. |
 
 ## Settings (GUCs)

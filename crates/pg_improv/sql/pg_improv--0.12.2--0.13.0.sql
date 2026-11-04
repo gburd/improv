@@ -9,6 +9,11 @@ CREATE FUNCTION improv.unrestricted(model bigint) RETURNS bool
   STRICT STABLE SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'unrestricted_wrapper';
 CREATE FUNCTION improv.cell_visible(model bigint, measure bigint, dims text[]) RETURNS bool
   STRICT STABLE SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'cell_visible_wrapper';
+CREATE FUNCTION improv.cell_rule(model bigint, measure bigint) RETURNS integer
+  STRICT STABLE SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'cell_rule_wrapper';
+CREATE FUNCTION improv.row_visible(model bigint, measure bigint, VARIADIC dims "any")
+  RETURNS bool STRICT STABLE SECURITY INVOKER LANGUAGE c
+  AS 'MODULE_PATHNAME', 'row_visible_wrapper';
 CREATE FUNCTION improv.set_policies(model text, policies text, groups text DEFAULT NULL)
   RETURNS bigint SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'set_policies_wrapper';
 CREATE FUNCTION improv.policies(model text)
@@ -73,6 +78,8 @@ ALTER POLICY read ON improv.sync_state USING (improv.unrestricted(model_id));
 -- The grants a fresh install makes.
 GRANT SELECT ON improv.policy, improv.policy_audit TO improv_user;
 GRANT EXECUTE ON FUNCTION improv.unrestricted(bigint), improv.cell_visible(bigint, bigint, text[]),
+  improv.cell_rule(bigint, bigint), improv.row_visible(bigint, bigint, "any"),
   improv.set_policies(text, text, text), improv.policies(text),
   improv.explain_access(text, text, jsonb, text), improv.categories(text), improv.items(text),
   improv.measures(text), improv.cells(text, text), improv.set_cells(text, jsonb) TO improv_user;
+

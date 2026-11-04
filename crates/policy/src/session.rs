@@ -432,6 +432,13 @@ impl Session {
         self.policies.is_some()
     }
 
+    /// Whether a policy names item `i`. Such an item is a decision class
+    /// of its own; every other item of a category shares one, so a
+    /// decision about one of them is the decision about all of them.
+    pub fn item_named(&self, i: ItemId) -> bool {
+        self.named_items.contains(&i)
+    }
+
     fn class(&self, r: &Resource) -> Option<Class> {
         let named = |i: &ItemId| self.named_items.contains(i);
         Some(match r {

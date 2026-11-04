@@ -204,8 +204,9 @@ for from in "$@"; do
 	         WHERE c.relnamespace = 'improv'::regnamespace AND p.polname = 'read' AND pg_get_expr(p.polqual, p.polrelid) LIKE '%unrestricted%'")" \
 		binding,category,category_binding,lambda,measure,sync_state,view "the catalog's policy-aware read policies after the update"
 	eq "$(q "SELECT count(*) FROM pg_proc WHERE pronamespace = 'improv'::regnamespace AND proname IN
-	         ('set_policies','policies','explain_access','categories','items','measures','cells','set_cells','cell_visible','unrestricted')")" \
-		10 "the policy functions after the update"
+	         ('set_policies','policies','explain_access','categories','items','measures','cells','set_cells','cell_visible','unrestricted',
+	          'cell_rule','row_visible')")" \
+		12 "the policy functions after the update"
 	# 0.11.0: each model acts as its owner, its result schema's owner before.
 	want=plan:alice:logical
 	for m in $(modes "$fv" | LC_ALL=C sort); do want="$want,plan_$m:improv:$m"; done

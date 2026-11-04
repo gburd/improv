@@ -216,11 +216,13 @@ Measured in release builds (rustc 1.98, x86_64 Linux), 100 policies:
 | One question of a new, uncached session | 21 µs |
 | One cell check from a session's cache | 334 ns |
 | A filtered read of a 1M-cell measure through a session | 326 ms |
-| `SELECT` of a 1M-row result table in Postgres, as a restricted role (the owner: 78 ms) | 955 ms |
+| `SELECT` of a 1M-row result table in Postgres, as a restricted role (the owner: 63 ms) | 167 ms |
 
 A session caches its decisions per class (a measure, an item a policy
 names, the rest of a category's items), so a read costs per cell, not
-per policy. In Postgres the row-level security check runs once a row.
+per policy. In Postgres the row-level security qual decides once per
+statement whether every row, no row, or each row on its own is shown;
+a row checked on its own costs about 100 ns.
 
 ## Compatibility
 

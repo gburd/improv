@@ -397,29 +397,93 @@ lead accepted as measured. `cargo test --release -p improv_policy --
 | One cell check from a session's class cache | 334 ns |
 | Parsing and validating 100 policies | 4.5 ms |
 | A filtered read of a 1M-cell measure through a session (1,000 x 1,000 items, 100 policies, one row hidden; `perf_filtered_read`) | 326 ms (326 ns a cell; the bare pass: 2 ms) |
-| pg_improv, PG 17: `SELECT count(*), sum(value)` of a 1M-row result table as a restricted role (row-level security), against the owner (none) | 955 ms against 78 ms (12×) |
+| pg_improv, PG 17: `SELECT count(*), sum(value)` of a 1M-row result table as a restricted role (row-level security), against the owner (none); stage 3 as first built | 955 ms against 78 ms (12×) |
+| The same, with the per-statement qual (`docs/reviews/bench/rls_1m.sh`, the mixed case below) | 167 ms against 63 ms (2.7×) |
 | pg_improv: `improv.cells` of that measure, restricted against the owner | 3.6 s against 3.3 s |
 
 **Where the time goes.** A raw `authorize` builds the whole request: the
 schema-checked request, the principal and resource entities, and every
 policy of the set. A session keeps only the policies that can apply to
 its principal and action, and caches decisions per class, so a cell check
-is a few hash lookups; at 1M cells that is the 326 ms. In Postgres, the
-row-level security qual calls `improv.cell_visible` once per row: building
-the `text[]` of a row's item names costs about 150 ns, the function call
-and the session's statement check about 200 ns more, the cache lookup the
-rest. The owner's read has no qual.
+is a few hash lookups; at 1M cells that is the 326 ms. In Postgres, stage
+3 as first built called `improv.cell_visible` once per row: building the
+`text[]` of a row's item names cost about 150 ns, the function call and
+the session's statement check about 200 ns more, the coordinate and the
+cache lookup the rest. The owner's read has no qual.
 
-**Later, not now** (the lead's ruling: optimization comes after the
-measurements, each behind a test that a policy naming an undeclared
-attribute still fails closed):
+**The result tables' qual, per statement.** Postgres runs an uncorrelated
+scalar subquery in a policy qual once per execution (an InitPlan), so the
+qual of measure `w` of model `m` is
 
-- Skip Cedar's per-request schema check (`Request::new` with a schema)
-  once a session has validated its policies; the raw `authorize` is the
-  path it would speed.
-- Decide per (measure, item class) once per statement in Postgres and
-  filter by item ids rather than names, so the qual is an array probe;
-  that needs result tables keyed by item id.
+```sql
+(SELECT improv.cell_rule(m, w)) <> 1 AND
+  ((SELECT improv.cell_rule(m, w)) = 0 OR improv.row_visible(m, w, "row", col))
+```
+
+`cell_rule` says 0 (every row: the owner's side, or no policies), 1 (no
+row: stored policies that cannot be used, `ViewModel` or `ReadMeasure`
+denied, a category of the measure with no item the role may read, or
+every combination of the items' decision classes denied, which it asks
+the session for up to 1,024 combinations) or 3 (check each row). Each is
+exactly what `cell_visible` says of every row. `row_visible` takes the
+dimension columns as `VARIADIC "any"` text, so no array is built. Its
+first call of a query finds the session and builds, per measure, each
+category's item names (as bytes, FNV-hashed) to their decision class, and
+a decision per combination of classes, kept in the call's `fn_extra`. A
+row then hashes its names and reads one byte: no allocation. A name the
+model lacks has no entry and hides its row, as before. Freshness is as
+before (the session's statement stamp; a change committed elsewhere
+applies from the next statement, REPEATABLE READ keeps its snapshot's
+view); a cursor keeps its first execution's decisions.
+
+Measured on PG 17 (release build, `shared_buffers = 1GB`,
+`max_parallel_workers_per_gather = 0`, werk; `rls_1m.sh`: medians of 7
+wall-clock runs, each its own connection, 1000 x 1000 items):
+
+| Case | Owner | Restricted, stage 3 as first built | Restricted, per-statement qual |
+|---|---:|---:|---:|
+| mixed: permit Read; forbid ReadItem on r0; 98 forbids for others naming r1..r98 | 61 ms | 1007 ms | 167 ms (2.7×) |
+| uniform: permit Read only | 62 ms | 939 ms | 158 ms (2.5×) |
+| cells: mixed, plus a ReadCell forbid on r1 x c1 (not separable per category) | 62 ms | 1015 ms | 174 ms (2.8×) |
+| denied: permit Read, forbid ReadMeasure on W (rule 1) | 63 ms | about 1000 ms | 56 ms (0 rows) |
+
+About 10 ms of each restricted number is the Cedar session a new
+connection builds at its first statement (11 ms with 100 policies, 6 ms
+with one); a warm session reads the mixed case in 142 ms. The rest is
+about 90 ns a row: the call, two hashes, a byte.
+
+**Why not hidden-item name lists (the first design).** The plan had a
+rule 2: a row is visible when each dimension's item is outside a
+per-category hide list (or inside an allow list), the lists InitPlan
+arrays. Two findings changed it:
+
+- **Stale rows would leak.** A result table is keyed by item names, and
+  its rows keep the names they were written with until their measure is
+  recomputed. An item renamed (by a `postgres://` store's save, the GUI,
+  or `UPDATE improv.item`) or deleted leaves rows whose name the model no
+  longer has. `cell_visible` hides them (no item, no cell). A hide list of
+  the model's current names would show them, and after a rename exactly
+  the wrong ones: forbid `Item::"57"` named `Secret`, rename 57 to
+  `Public`, and the list is `['Public']`, so the stale `Secret` rows, the
+  forbidden item's values, show. A uniform allow answered by rule 0 would
+  likewise show stale rows `cell_visible` hides. So rule 0 is only the
+  owner's side and models without policies, and a uniform allow is
+  checked per row. `the_qual_shows_what_cell_visible_shows` checks rows
+  with names the model lacks, a forbidden item renamed, an item deleted,
+  and both recomputed.
+- **A list costs per name per row.** `col <> ALL(<InitPlan array>)` is
+  not hashed (only a constant array is), so each row walks the list,
+  about 10 ns a name, and an InitPlan array under 127 bytes is detoasted
+  per row; a 64-name list costs about 700 ns a row, more than
+  `row_visible`. A list pays only for one or two names a category.
+
+**Not done, on purpose.** Result tables stay keyed by item names (the SQL
+users read). The session still checks each request against the schema
+(`Request::new` with a schema): that is in the session's first questions,
+not the per-row path, and skipping it would weaken fail-closed for no
+gain here. `unvalidated_policies_hide_every_row_for_every_rule` checks
+that stored policies naming an undeclared attribute deny every row
+through the qual, whatever rule the valid ones gave.
 
 **Caching.** A session is one (policy version, model structure version,
 principal, channel). It caches decisions:
@@ -548,7 +612,8 @@ Each stage lands green on its own (fmt, clippy, tests, docs, CHANGELOG).
   reads the model through `improv.categories`, `items`, `measures` and
   `cells` instead. Without policies they read as in 0.12.
 - **Result tables.** `set_policies` adds a policy `improv_access` (`FOR
-  SELECT USING (improv.cell_visible(model, measure, ARRAY[dims]))`) to
+  SELECT`, the per-statement qual of "Performance (measured)":
+  `improv.cell_rule` once a statement, `improv.row_visible` a row) to
   each result table, as its owner, and turns row-level security on;
   clearing drops them. A result table made later gets it when it is
   created. The owner owns the tables, so its reads skip the qual.

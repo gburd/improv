@@ -25,6 +25,8 @@
 #      allow or deny to the role itself
 #   9. clearing the policies restores 0.12's behavior
 #  10. pg_dump keeps the policies; a restore enforces them
+#  11. the result tables' qual decides once per statement (InitPlans), and
+#      checks rows only when it must
 # Usage: tests/policies.sh
 set -euo pipefail
 PG_BIN=${PG_BIN:-/usr/lib/postgresql/17/bin}
@@ -45,6 +47,7 @@ cat >"$D/data/postgresql.auto.conf" <<-EOF
 	wal_level = logical
 	improv.database = 't'
 	improv.poll_ms = 50
+	track_functions = 'all'
 EOF
 "$PG_BIN/pg_ctl" -D "$D/data" -l "$D/log" -w start >/dev/null 3>&-
 "$PG_BIN/createdb" -h "$D" -p "$P" -U postgres t
@@ -311,4 +314,22 @@ eq "$(DB=r q "SELECT version FROM improv.policy")" "$(ver)" "the policies surviv
 eq "$(DB=r U=ann q "SELECT count(*) FROM improv_m.revenue")" 4 "and are enforced"
 eq "$(DB=r q "SELECT count(*) > 0 FROM improv.policy_audit")" t "the audit trail survives"
 echo "ok: pg_dump keeps the policies and their audit trail"
+
+# ---- 11. the qual's plan -------------------------------------------------------
+# The decision is two InitPlans; rows are checked only under rule 3.
+PLAN=$(U=ann q "EXPLAIN (COSTS OFF) SELECT count(*) FROM improv_m.revenue")
+has "$PLAN" "InitPlan" "the qual decides in an InitPlan"
+lacks "$PLAN" "cell_visible" "and never calls cell_visible a row"
+MID=$(U=alice q "SELECT id FROM improv.model WHERE name = 'm'")
+eq "$(U=ann q "SELECT improv.cell_rule($MID, $(idof measure Revenue))")" 3 "ann, with a hidden item, is checked per row"
+eq "$(U=ed q "SELECT improv.cell_rule($MID, $PRICE)")" 1 "ed, with Price forbidden, reads no row of it: decided once"
+eq "$(U=alice q "SELECT improv.cell_rule($MID, $PRICE)")" 0 "the owner: every row"
+# How often a read calls the per-row check (this transaction's count).
+calls() { # role -> row_visible calls of one read of revenue
+	U=$1 q "SELECT count(*) FROM improv_m.revenue;
+	  SELECT coalesce(pg_stat_get_xact_function_calls('improv.row_visible(bigint, bigint, \"any\")'::regprocedure), 0)" | tail -1
+}
+eq "$(calls nob)" 0 "nob (no policy) reads no row, and no row is checked"
+eq "$(calls ann)" 6 "ann's rows are checked one by one"
+echo "ok: the qual decides once a statement"
 echo PASS

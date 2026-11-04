@@ -154,6 +154,15 @@ this project follows [Semantic Versioning](https://semver.org/).
   (`pg_improv--0.12.2--0.13.0.sql`) adds `improv.policy`,
   `improv.policy_audit` and the functions, and changes no row.
   `tests/policies.sh` checks it on PG 15 to 18.
+- **pg_improv 0.13.0: a restricted role's read of a result table costs
+  2.7x the owner's, not 16x.** The row-level security qual decides once
+  per statement (`improv.cell_rule`, an InitPlan): every row for the
+  owner's side, none when the policies cannot be used or let the role
+  read nothing of the measure; otherwise `improv.row_visible` checks each
+  row from a decision table built at its first row, with no allocation.
+  `SELECT count(*), sum(value)` of a 1M-row result table: 167 ms against
+  the owner's 63 ms (was 1007 ms; `docs/reviews/bench/rls_1m.sh`). A row
+  whose item name the model lacks stays hidden, as before.
 
 ### Changed
 
