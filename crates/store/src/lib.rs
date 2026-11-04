@@ -27,9 +27,6 @@ pub enum StoreError {
     /// Another writer committed since this handle loaded (either backend).
     #[error("conflict: {0}")]
     Conflict(String),
-    /// What this backend does not do.
-    #[error("{0}")]
-    Unsupported(String),
 }
 
 impl From<improv_storage_mentat::StoreError> for StoreError {

@@ -157,6 +157,9 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
+  since both backends keep access policies (pg_improv 0.13 for a Postgres
+  model); a `match` with an arm for it no longer compiles.
 - **GUI: color graphs in a NeXT graph window.** Graph ▸ New Graph (was
   Show Chart) opens `<worksheet> - Graph - <file>` charting the focused
   worksheet's range selection, or its whole grid, with Improv 1.0's seven
