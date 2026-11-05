@@ -8,6 +8,13 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Docs: console movies, slower and narrated.** The TUI and pg_improv
+  movies are re-recorded, and there are new ones of access policies in
+  Postgres, the CLI, improv-server's change stream and the DuckDB
+  extension. Each pauses on its results and says what it is about to do
+  (a `# ...` or `-- ...` line at the prompt, a caption under the TUI), and
+  plays as an MP4 with a GIF fallback. `docs/demo/README.md` lists the
+  scripts that re-record them.
 - **The HTTP API a GUI drives (I2).** `improv-server` serves, under
   `/v1`: the visible structure (`GET /v1/structure`: categories and
   items in grid order, measures with formulas as typed, LAMBDAs, views),
