@@ -19,7 +19,10 @@ gifsicle -O3 --lossy=30 --colors 64 "$T/raw.gif" -o "docs/src/img/$name.gif"
 ffmpeg -loglevel error -y -i "docs/src/img/$name.gif" -movflags +faststart -pix_fmt yuv420p \
 	-vf "fps=10,scale=trunc(iw/2)*2:trunc(ih/2)*2" -tune animation -preset veryslow -crf 26 \
 	-x264-params keyint=9999:scenecut=0:me=umh:merange=700 "docs/src/img/$name.mp4"
-ffmpeg -loglevel error -y -ss "$at" -i "docs/src/img/$name.gif" -frames:v 1 "$T/poster.png"
-magick "$T/poster.png" -strip -colors 16 "PNG8:docs/src/img/$name.png"
+# The poster: the GIF frame showing at $at (frame delays are in 1/100 s).
+n=$(magick identify -format '%T\n' "docs/src/img/$name.gif" |
+	awk -v at="$at" '{ t += $1 / 100; if (t > at) { print NR - 1; exit } } END { if (t <= at) print NR - 1 }')
+magick "docs/src/img/$name.gif" -coalesce "$T/f-%d.png"
+magick "$T/f-$n.png" -strip -colors 16 "PNG8:docs/src/img/$name.png"
 ls -l "docs/src/img/$name".*
 ffprobe -v error -show_entries format=duration -of csv=p=0 "docs/src/img/$name.mp4"

@@ -193,15 +193,28 @@ def _write(out, cols, rows, cmd, events):
     with open(out, "w", encoding="utf-8") as f:
         f.write(json.dumps(header) + "\n")
         for e in events:
-            # Escape each CSI final byte (ESC[2;2H -> ESC[2;2\u0048) so a
-            # spell checker does not see the H glued to the next word. Same JSON.
-            line = json.dumps(e, ensure_ascii=False)
-            f.write(re.sub(r"(\\u001b\[[0-9;?]*)([A-Za-z])",
-                           lambda m: f"{m[1]}\\u{ord(m[2]):04x}", line) + "\n")
+            f.write(escape(json.dumps(e, ensure_ascii=False)) + "\n")
+
+
+def escape(line):
+    """Hide glued and cut words from a spell checker, in the same JSON.
+    Each CSI final byte is escaped (ESC[2;2H -> ESC[2;2\\u0048), so the H
+    is not glued to the next word, and so is a run of letters just before
+    a control character or at the end of an event: a line editor redraws a
+    word one key at a time (ext, then exte, ...), and the cuts read as
+    misspellings."""
+    line = re.sub(r"(\\u001b\[[0-9;?]*)([A-Za-z])",
+                  lambda m: f"{m[1]}\\u{ord(m[2]):04x}", line)
+    cut = lambda m: m[0] if m[1] is None else "".join(f"\\u{ord(c):04x}" for c in m[1])
+    return re.sub(r'\\u[0-9a-fA-F]{4}|\\.|([A-Za-z]+)(?=\\|"\]$)', cut, line)
 
 
 def selftest():
     """Record `bash -c` with one say and one caption; check the events."""
+    for raw in ["exte\x1b[0m", "a\rSELE\r\x1b[1;2Hxy", "plain words", "\x1b[0m"]:
+        line = escape(json.dumps([0.5, "o", raw], ensure_ascii=False))
+        assert json.loads(line)[2] == raw, line
+        assert not any(w in line for w in ("exte", "SELE", "Hxy")), line
     assert ends_clean("ab\x1b[2J") and ends_clean("x\x1b7") and ends_clean("plain")
     assert not ends_clean("ab\x1b[2") and not ends_clean("ab\x1b")
     steps = ["say hello there", "caption Look below", "clear $ ", "sleep 0.2"]
