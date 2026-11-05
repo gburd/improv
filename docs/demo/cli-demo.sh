@@ -1,52 +1,103 @@
 #!/usr/bin/env bash
-# Deterministic end-to-end CLI demo used for the README asciinema cast.
-# Run from the repo root: docs/demo/cli-demo.sh
+# Record the CLI terminal movie: docs/demo/cli-demo.cast and
+# docs/src/img/cli-demo.{gif,mp4,png}. Run from the repo root after
+#   cargo build --release -p improv_cli
+# (BIN= the directory with improv, default target/release).
+# Needs python3 + pexpect, agg, gifsicle, ffmpeg and ImageMagick. About 3
+# minutes.
 set -euo pipefail
+ROOT=$(pwd)
+BIN=${BIN:-$ROOT/target/release}
+W=$(mktemp -d)
+trap 'find "$W" -delete' EXIT
 
-# Build once, then invoke the binary directly. Using `cargo run` per command
-# re-checks the whole workspace on each of the ~60 invocations below, which took
-# 12m31s versus 2.7s for the built binary.
-if [ -z "${IMPROV:-}" ]; then
-  cargo build --quiet -p improv_cli
-  IMPROV="$(cargo metadata --format-version 1 --no-deps \
-    | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')/debug/improv"
-fi
-DB="$(mktemp -u /tmp/improv-demo-XXXX.db)"
-trap 'rm -f "$DB"' EXIT
+# `clear` steps wipe the screen between steps (the prompt redrawn).
+cd "$W"
+PATH=$BIN:$PATH python3 "$ROOT/docs/demo/record.py" "$ROOT/docs/demo/cli-demo.cast" \
+	--size 100x26 -- env PS1='$ ' bash --norc --noprofile <<'STEPS'
+expect \$ $
+sleep 1
+pace 0.05 0.12
+say improv builds a model one command at a time, each saved to the file
+type improv init m.db
+send \r
+expect \$ $
+say Two categories with two items each, by id
+type improv add-category m.db 1 Time && improv add-item m.db 10 1 Q1 && improv add-item m.db 11 1 Q2
+send \r
+expect \$ $
+type improv add-category m.db 2 Product && improv add-item m.db 20 2 Widget
+send \r
+expect \$ $
+type improv add-item m.db 21 2 Gadget
+send \r
+expect \$ $
+sleep 1
+clear $ 
+say Input measures: Price by Product, Quantity by Time and Product
+type improv add-measure m.db 100 Price number input Product
+send \r
+expect \$ $
+type improv add-measure m.db 101 Quantity number input Time Product
+send \r
+expect \$ $
+say Some cells, by name (Gadget's Q1 quantity stays empty)
+type improv set m.db Price 10 --at Product=Widget && improv set m.db Price 25 --at Product=Gadget
+send \r
+expect \$ $
+type improv set m.db Quantity 100 --at Time=Q1,Product=Widget
+send \r
+expect \$ $
+type improv set m.db Quantity 120 --at Time=Q2,Product=Widget
+send \r
+expect \$ $
+type improv set m.db Quantity 40 --at Time=Q2,Product=Gadget
+send \r
+expect \$ $
+sleep 1
+clear $ 
+say Formulas name measures and categories, not cells
+type improv define m.db 102 "Revenue = Price * Quantity"
+send \r
+expect \$ $
+type improv define m.db 103 "Total = SUM(Revenue OVER Time)"
+send \r
+expect \$ $
+say eval computes a measure; Price is the same in every quarter
+type improv eval m.db Revenue
+send \r
+expect \$ $
+sleep 3
+say A number format: two decimals, grouped thousands
+type improv format m.db Total 2 grouped && improv eval m.db Total
+send \r
+expect \$ $
+sleep 3.5
+clear $ 
+say A policy template: ann reads everything except Gadget
+type improv policy template m.db analyst --user ann --item Product=Gadget > ann.cedar
+send \r
+expect \$ $
+type improv policy set m.db ann.cedar
+send \r
+expect \$ $
+sleep 1.5
+say check asks one question and names the policies that decided
+type improv policy check m.db --user ann ReadCell --measure Revenue --at Time=Q2 Product=Gadget
+send \r
+expect \$ $
+sleep 4
+type improv policy check m.db --user ann ReadItem --item Product=Widget
+send \r
+expect \$ $
+sleep 3.5
+clear $ 
+say Export a measure's cells as CSV, for anything downstream
+type improv export-csv m.db revenue.csv Revenue && cat revenue.csv
+send \r
+expect \$ $
+sleep 4
+STEPS
 
-run() { echo "\$ improv $*"; $IMPROV "$@"; echo; }
-
-echo "# Improv — model Revenue = Price * Quantity over Time x Product"
-echo
-
-run init "$DB"
-run add-category "$DB" 1 Time
-run add-category "$DB" 2 Product
-run add-item "$DB" 10 1 2025
-run add-item "$DB" 11 1 2026
-run add-item "$DB" 20 2 WidgetA
-run add-item "$DB" 21 2 WidgetB
-
-run add-measure "$DB" 100 Price number input Product
-run add-measure "$DB" 101 Quantity number input Time Product
-
-run set "$DB" 100 10 --at Product=WidgetA
-run set "$DB" 100 20 --at Product=WidgetB
-run set "$DB" 101 100 --at Time=2025,Product=WidgetA
-run set "$DB" 101 100 --at Time=2025,Product=WidgetB
-run set "$DB" 101 120 --at Time=2026,Product=WidgetA
-run set "$DB" 101 80  --at Time=2026,Product=WidgetB
-
-echo "# Derived measure: Price is broadcast over Time."
-run define "$DB" 102 "Revenue = Price * Quantity"
-run eval "$DB" 102
-
-echo "# Aggregate Revenue over Time -> Revenue[Product]."
-run define "$DB" 103 "TotalRevenue = SUM(Revenue OVER Time)"
-run eval "$DB" 103
-
-echo "# External (Python) function, host-side, off the deterministic engine path."
-run register-ext "$DB" hypot 2 "result = (args[0]**2 + args[1]**2) ** 0.5"
-run define "$DB" 200 "H = CALL(hypot, Price, Price)"
-run refresh-ext "$DB" 200
-run show "$DB" 200
+cd "$ROOT"
+docs/demo/render.sh cli-demo 142

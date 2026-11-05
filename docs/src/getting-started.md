@@ -31,6 +31,15 @@ a store (a single SQLite file, a Postgres model named by a
 `postgres://…?model=` URL, or an in-memory database if you pass `""`),
 mutates the loaded model, and saves it back.
 
+<video src="./img/cli-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/cli-demo.png">
+  <img src="./img/cli-demo.gif" alt="The improv CLI: a model built command by command, eval, a number format, a policy template set and checked, and a CSV export">
+</video>
+
+*The CLI builds a model one command at a time, evaluates Revenue and Total,
+gives Total a number format, stores a policy template and asks `policy check`
+why a cell is denied, then exports Revenue as CSV.*
+
 Run `improv help` for the full command list. The commands, exactly as accepted
 by the binary, are:
 
