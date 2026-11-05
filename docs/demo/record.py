@@ -20,6 +20,9 @@ are skipped):
     caption TEXT    show TEXT in a caption bar under the program's screen
                     (an empty TEXT clears it); for full-screen programs,
                     where a typed comment is impossible
+    clear PROMPT    wipe the recorded screen and show PROMPT at the top, as
+                    Ctrl-L would (the program sees nothing; for a shell
+                    without readline, at its prompt)
 
 With any `caption` step the pty has the --size rows but the cast two more:
 the program never sees the bar's rows, and a scroll region keeps its
@@ -153,6 +156,8 @@ def record(out, cols, rows, cmd, steps):
                 typed(text, SAY_PACE)
                 child.send("\r")
                 hold(max(1.5, 0.05 * len(arg)))
+            elif op == "clear":
+                cast.write("\x1b[H\x1b[2J" + arg)
             elif op == "comment":
                 prefix = arg.strip() + " "
             elif op == "caption":
@@ -199,7 +204,7 @@ def selftest():
     """Record `bash -c` with one say and one caption; check the events."""
     assert ends_clean("ab\x1b[2J") and ends_clean("x\x1b7") and ends_clean("plain")
     assert not ends_clean("ab\x1b[2") and not ends_clean("ab\x1b")
-    steps = ["say hello there", "caption Look below", "sleep 0.2"]
+    steps = ["say hello there", "caption Look below", "clear $ ", "sleep 0.2"]
     with tempfile.TemporaryDirectory() as d:
         out = os.path.join(d, "t.cast")
         t0 = time.monotonic()
@@ -216,6 +221,8 @@ def selftest():
     say_end = next(e[0] for e in events if "got[" in e[2])
     assert bars[0][0] - say_end >= 1.4, "say holds the frame to read it"
     assert took >= 3.0, took  # say's hold + caption's hold
+    wiped = [i for i, e in enumerate(events) if e[2] == "\x1b[H\x1b[2J$ "]
+    assert wiped and "Look below" in events[wiped[0] + 1][2], "clear, then the bar again"
     print("record.py selftest: ok")
 
 
