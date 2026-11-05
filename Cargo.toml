@@ -55,12 +55,12 @@ chrono = { version = "0.4", features = ["serde"] }
 # (0.2026.10.04.426d8b0; see scripts/verify.sh). MIT.
 vstd = { version = "=0.0.0-2026-10-04-0306" }
 # Differential dataflow is the mandated computation engine (see AGENT_STEERING.md).
-# Version pinning is delicate: DD 0.13.7 pulls timely 0.19/timely_communication
-# 0.18 (a columnar line that won't compile on rustc 1.97); DD 0.12.0 compiles but
-# has a merge_batcher UB that aborts under debug assertions. DD 0.13.0 + timely
-# 0.13.0 is the pre-breakage pair the spike validates.
-differential-dataflow = "=0.13.0"
-timely = "=0.13.0"
+# Exact pins: every DD minor breaks the API, so a bump is a port of the engine
+# (crates/engine/src/dataflow.rs, session.rs, reduce/order.rs), checked bit
+# for bit by its tests and timed by the scale probes. DD 0.26.0 + timely 0.32.0
+# (MSRV 1.88/1.86) build on rustc 1.97; see AGENT_ENGINE_STEERING.md §2.
+differential-dataflow = "=0.26.0"
+timely = "=0.32.0"
 # Storage substrate: the embedded SQLite Mentat fork, from crates.io (Mentat
 # 1.12+ publishes it as `mentatdb`; the library is still `mentat`). Bump
 # procedure + benchmark: AGENTS.md "CI / storage-backend pin".

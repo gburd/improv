@@ -40,7 +40,7 @@ storage-free; the semantic backbone every other crate depends on.
 Differential-dataflow evaluation: formula compiler
 (`Formula → TypedExpr → PlanNode`), dependency graph, broadcasting, aggregation,
 and incremental recalculation. Built on `differential-dataflow` + `timely`,
-pinned `=0.13.0` (delicate — see `AGENT_ENGINE_STEERING.md` §2).
+pinned `=0.26.0` / `=0.32.0` (delicate — see `AGENT_ENGINE_STEERING.md` §2).
 
 ### 3.3 Storage (`improv_storage_mentat`)
 

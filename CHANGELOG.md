@@ -207,6 +207,9 @@ this project follows [Semantic Versioning](https://semver.org/).
   0.2.127: build it with wasm-bindgen-cli 0.2.130); wasmi 2.0 (was 0.32)
   for Wasm external functions, with the same fuel and memory limits; and
   every other dependency at its newest semver-compatible release.
+- **The engine runs on differential-dataflow 0.26.0 and timely 0.32.0**
+  (were 0.13.0 and 0.13.0). Results are the same, bit for bit, on any
+  worker count; `improv_engine`'s public API does not change.
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.

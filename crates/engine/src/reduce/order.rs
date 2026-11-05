@@ -36,15 +36,16 @@ use crate::dataflow::AggRow;
 use crate::{CellValue, CoordKey};
 use differential_dataflow::consolidation::consolidate;
 use differential_dataflow::hashable::Hashable;
-use differential_dataflow::{AsCollection, Collection};
+use differential_dataflow::{AsCollection, VecCollection};
 use improv_core_model::{CategoryId, FuncId, ItemId};
 use smallvec::SmallVec;
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeMap, HashMap};
+use timely::container::CapacityContainerBuilder;
 use timely::dataflow::channels::pact::Exchange;
 use timely::dataflow::operators::{Capability, Operator};
-use timely::dataflow::Scope;
 use timely::order::TotalOrder;
+use timely::progress::Timestamp;
 
 /// One component of a sort key, in `array::order`'s order: numbers and
 /// dates (dates as milliseconds), then text ignoring case, then booleans,
@@ -580,34 +581,32 @@ type Stash<T> = BTreeMap<T, (Capability<T>, Vec<((CoordKey, AggRow), isize)>)>;
 
 /// `o` over each group of `rows` (group key, row), as the cells it lands
 /// on: the same collection the `reduce` with the batch kernel gives.
-pub(crate) fn order_stats<G>(
-    rows: &Collection<G, (CoordKey, AggRow), isize>,
+pub(crate) fn order_stats<'s, T>(
+    rows: VecCollection<'s, T, (CoordKey, AggRow), isize>,
     o: Order,
-) -> Collection<G, (CoordKey, CellValue), isize>
+) -> VecCollection<'s, T, (CoordKey, CellValue), isize>
 where
-    G: Scope,
-    G::Timestamp: TotalOrder,
+    T: Timestamp + TotalOrder,
 {
     type Update<T> = ((CoordKey, AggRow), T, isize);
-    let by_group = Exchange::new(|u: &Update<G::Timestamp>| (u.0).0.hashed());
+    type Out<T> = CapacityContainerBuilder<Vec<((CoordKey, CellValue), T, isize)>>;
+    let by_group = Exchange::new(|u: &Update<T>| (u.0).0.hashed());
     rows.inner
-        .unary_frontier(by_group, "OrderStats", move |_, _| {
-            let mut stash: Stash<G::Timestamp> = BTreeMap::new();
+        .unary_frontier::<Out<T>, _, _, _>(by_group, "OrderStats", move |_, _| {
+            let mut stash: Stash<T> = BTreeMap::new();
             let mut groups: HashMap<CoordKey, Group> = HashMap::new();
-            let mut buf = Vec::new();
-            move |input, output| {
+            move |(input, frontier), output| {
                 input.for_each(|cap, data| {
-                    data.swap(&mut buf);
-                    for (d, t, r) in buf.drain(..) {
+                    for (d, t, r) in data.drain(..) {
                         let at = stash
                             .entry(t.clone())
-                            .or_insert_with(|| (cap.delayed(&t), Vec::new()));
+                            .or_insert_with(|| (cap.delayed(&t, 0), Vec::new()));
                         at.1.push((d, r));
                     }
                 });
                 // A totally ordered time the frontier has passed is complete.
                 while let Some(t) = stash.keys().next() {
-                    if input.frontier().less_equal(t) {
+                    if frontier.less_equal(t) {
                         break;
                     }
                     let (t, (cap, mut ups)) = stash.pop_first().expect("a stashed time");
@@ -649,7 +648,6 @@ mod tests {
     use hegel::{HealthCheck, TestCase};
     use std::sync::{Arc, Mutex};
     use timely::dataflow::operators::probe::Handle as ProbeHandle;
-    use timely::dataflow::operators::{Inspect, Probe};
 
     /// A function, its parameters, the reduced columns per row, the
     /// landing cells (SORTBY).
@@ -748,8 +746,7 @@ mod tests {
             worker.dataflow::<u64, _, _>(|scope| {
                 let rows = input.to_collection(scope);
                 let out = Arc::clone(&sink);
-                order_stats(&rows, o)
-                    .inner
+                order_stats(rows, o)
                     .inspect(move |(d, _, r)| {
                         let mut m = out.lock().unwrap();
                         let e = m.entry(d.clone()).or_insert(0);

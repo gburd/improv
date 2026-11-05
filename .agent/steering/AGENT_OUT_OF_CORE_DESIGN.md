@@ -192,6 +192,13 @@ upstream, re-evaluate then, but don't design around a feature that doesn't
 exist in `=0.13.0` today (and the version pin is deliberately delicate,
 see `AGENT_ENGINE_STEERING.md` §2 — bumping it is its own risky project).
 
+**Update (2026-11, DD 0.26.0):** the engine now runs on DD 0.26, which has
+an *experimental* columnar trace that can page committed chunks out to a
+pluggable byte store (`differential_dataflow::columnar::trace::spill`; a
+per-worker high-water mark, its own docs call the API unsettled). Using it
+means moving the engine's arrangements to the columnar containers and the
+key types to `columnar` impls; nothing here is built on it yet.
+
 ### 3c. Change the storage-to-engine boundary: hand the DD graph a *window*, not the whole model
 
 Idea: keep Mentat/SQLite exactly as-is (already disk-backed, already fine

@@ -1246,6 +1246,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "columnar"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac2a201a7fe79ee8737b499480c6b56ffc019cd8925c4f3445f51218a7b5d9a5"
+dependencies = [
+ "bytemuck",
+ "columnar_derive",
+ "smallvec",
+]
+
+[[package]]
+name = "columnar_derive"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b5c4fc8424ccac583fe8678f195d147b3fc01d0ccbb3066111437088ca7d986"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "columnation"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1417,15 +1439,6 @@ name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
-
-[[package]]
-name = "crossbeam-channel"
-version = "0.5.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "98b0cc327b5bc766e7fda9c9260cc0fa81b43a8e240440422dff70788e3f9ef1"
-dependencies = [
- "crossbeam-utils",
-]
 
 [[package]]
 name = "crossbeam-utils"
@@ -1669,12 +1682,16 @@ dependencies = [
 
 [[package]]
 name = "differential-dataflow"
-version = "0.13.0"
+version = "0.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f5ad19c6ddddedba008bf9626348810ff5171de9cad62406cd4e9ea291fa8d1"
+checksum = "83ebf7e586c04a90e30e8ef0b7d8d2481281f71c8dbe840af1f0d943e86c1c09"
 dependencies = [
- "fnv",
+ "columnar",
+ "columnation",
+ "foldhash 0.2.0",
+ "paste",
  "serde",
+ "smallvec",
  "timely",
 ]
 
@@ -2224,17 +2241,6 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
-
-[[package]]
-name = "flatcontainer"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ff185ea156496de196dfd189038982f480515ea3338f1ff0a4fbff1e52ea0a6"
-dependencies = [
- "cfg-if",
- "paste",
- "serde",
-]
 
 [[package]]
 name = "flate2"
@@ -6700,13 +6706,16 @@ dependencies = [
 
 [[package]]
 name = "timely"
-version = "0.13.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81b6f390cec7160992fd8502fe02064a0f52dcfd2978544f4999f18664b709aa"
+checksum = "44135293ec33ae3c35fc408fe05501810f633858f6c6ab326f534533be0b82ed"
 dependencies = [
  "bincode",
- "crossbeam-channel",
+ "byteorder",
+ "columnar",
+ "columnation",
  "getopts",
+ "itertools 0.14.0",
  "serde",
  "smallvec",
  "timely_bytes",
@@ -6717,41 +6726,39 @@ dependencies = [
 
 [[package]]
 name = "timely_bytes"
-version = "0.12.2"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99223f9594ab7d4dd36b55b1d7eb9bd2cd205f4304b5cc5381d5cdd417ec06f2"
+checksum = "48d44f03ea758062884d44b6ba903268ba272a2237f2cd53d68b4a253fed8175"
 
 [[package]]
 name = "timely_communication"
-version = "0.13.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22d602b340fd8d5d4128660a577f7886070098b860dc9a9aa46512a2e0d683b4"
+checksum = "8b732a28bbd8b007ff5227f8d1f06b4df5ee1b7081a45fc8b30f24f8dcd30a0b"
 dependencies = [
- "bincode",
  "byteorder",
- "crossbeam-channel",
+ "columnar",
  "getopts",
  "serde",
  "timely_bytes",
+ "timely_container",
  "timely_logging",
 ]
 
 [[package]]
 name = "timely_container"
-version = "0.12.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ddfa4639c9390c6fac4ff66e47aa1bcfbc5f5bba6d520d5a7c55978165e7b14"
-dependencies = [
- "columnation",
- "flatcontainer",
- "serde",
-]
+checksum = "da2f476c19e56f8caba2d2ba45f4c51fc361848a650748ce812b7dd119fdba6f"
 
 [[package]]
 name = "timely_logging"
-version = "0.12.1"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b73a034d62792b507397701ee660001c8ba3e9dbffce29bc7a25319a36ebaa86"
+checksum = "f286e43d8aef6de238b19c7aee9b2779f5b022961eda028d409c421546b9d192"
+dependencies = [
+ "timely_container",
+]
 
 [[package]]
 name = "tiny-keccak"

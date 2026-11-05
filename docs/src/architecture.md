@@ -80,11 +80,11 @@ computing `Revenue = Price * Quantity`, it changes one `Quantity` cell and
 confirms the matching `Revenue` cell updates while an unaffected cell does not
 recompute.
 
-The version pin is deliberate and delicate — `differential-dataflow =
-"=0.13.0"` with `timely = "=0.13.0"`. Newer DD pulls a timely line that does
-not compile on the project's rustc; an older DD compiles but aborts on a
-`merge_batcher` bug under debug assertions. `0.13.0` is the pair that both
-compiles and runs. Do not bump it without re-validating.
+The version pin is exact and deliberate — `differential-dataflow =
+"=0.26.0"` with `timely = "=0.32.0"`. Every DD minor changes its API, so a
+bump is a port of the engine, re-validated by its tests (the same results,
+bit for bit, on any worker count) and the scale probes. Do not bump it
+without both.
 
 ## The live engine
 
@@ -153,9 +153,9 @@ Users of the live engine:
 
 ## The coordinate / value encoding for dataflow
 
-Timely 0.13 needs dataflow data to be `Clone + 'static`, and data that crosses
-an exchange channel to also be `Send + Sync` and serde
-`Serialize + Deserialize`. Differential dataflow adds `Ord + Debug`, and keys
+Timely needs dataflow data to be `Clone + 'static`, and data that crosses
+an exchange channel (in a `Vec` container, as the engine's do) to also be
+`Send` and serde `Serialize + Deserialize`. Differential dataflow adds `Ord + Debug`, and keys
 must be hashable. The model's `Coordinate` is a dynamic-arity `BTreeMap` and
 `Value` holds an `f64`, which is neither `Ord` nor `Hash`. The engine encodes
 at the dataflow boundary:

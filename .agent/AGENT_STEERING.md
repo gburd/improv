@@ -419,10 +419,9 @@ GUI later.
      exchange-safe), **numeric value = `f64::to_bits()` as `u64`** in data
      position, diff = `isize` multiplicity, `reduce` collapses to one value/key.
    - **Version pin (delicate, do not bump blindly):** `differential-dataflow =
-     "=0.13.0"`, `timely = "=0.13.0"`. DD 0.13.7 pulls timely 0.19 /
-     timely_communication 0.18 (a columnar line that does not compile on rustc
-     1.97); DD 0.12.0 compiles but aborts on a `merge_batcher` `get_unchecked`
-     UB under debug assertions. 0.13.0 + timely 0.13.0 both compiles and runs.
+     "=0.26.0"`, `timely = "=0.32.0"` (was 0.13.0 + 0.13.0 until 2026-11).
+     Every DD minor breaks the API, so a bump is a port of the engine; the
+     rationale and what moved are in `AGENT_ENGINE_STEERING.md` §2.
 2. **Toolchain:** rustc 1.97+ (matches the mentat workspace).
 3. **Determinism:** the core engine must be deterministic and unit/property
    tested (Time x Product revenue is the canonical fixture with known results).

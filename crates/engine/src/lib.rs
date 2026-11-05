@@ -6,9 +6,10 @@
 //! computation (`Revenue = Price * Quantity`) works on differential dataflow,
 //! including a live delta after the initial run.
 //!
-//! Encoding at the dataflow boundary (timely 0.13's exchange bound is serde
-//! `Serialize + Deserialize` plus `Ord + Hash` for keys; a `Coordinate`'s
-//! `BTreeMap` and a raw `f64` are encoded rather than used directly):
+//! Encoding at the dataflow boundary (timely exchanges `Vec` containers
+//! through serde, so data is `Serialize + Deserialize`, plus `Ord + Hash` for
+//! keys; a `Coordinate`'s `BTreeMap` and a raw `f64` are encoded rather than
+//! used directly):
 //! * DD *key* = the coordinate as a sorted `Vec<(u32, u32)>` (category, item).
 //!   Deterministic and `Ord + Hash`.
 //! * cell *value* = [`CellValue`]: a number as `f64::to_bits()` (so it is
@@ -166,7 +167,6 @@ mod spike {
 
     use super::*;
     use differential_dataflow::input::InputSession;
-    use differential_dataflow::operators::{Join, Reduce};
     use std::sync::{Arc, Mutex};
 
     const TIME: u32 = 1;
@@ -204,7 +204,7 @@ mod spike {
                 let qty_by_product = qty.map(|(k, v)| (project_key(&k, &[PRODUCT]), (k, v)));
 
                 let revenue = qty_by_product
-                    .join(&price_by_product)
+                    .join(price_by_product)
                     .map(|(_p, ((full, qbits), pbits))| {
                         let rev = f64::from_bits(pbits) * f64::from_bits(qbits);
                         (full, rev.to_bits())

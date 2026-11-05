@@ -29,18 +29,36 @@ design, not a choice to revisit.
 **Version pin (delicate — do not bump blindly):**
 
 ```toml
-differential-dataflow = "=0.13.0"
-timely               = "=0.13.0"
+differential-dataflow = "=0.26.0"
+timely               = "=0.32.0"
 ```
 
-Rationale, so a future maintainer does not "helpfully" upgrade:
+Rationale, so a future maintainer knows what a bump costs:
 
-- **DD 0.13.7** pulls timely 0.19 / timely_communication 0.18 (a columnar line)
-  that does **not** compile on rustc 1.97, the project toolchain.
-- **DD 0.12.0** compiles but aborts on a `merge_batcher` `get_unchecked` UB under
-  debug assertions.
-- **DD 0.13.0 + timely 0.13.0** is the pre-breakage pair that both compiles and
-  runs; it is the validated combination.
+- **DD 0.26.0 + timely 0.32.0** (MSRV 1.88 / 1.86) build on rustc 1.97 and
+  give the engine's results bit for bit (every engine test, the goldens,
+  the FIXPOINT suite, one to five workers). The columnar line that did not
+  compile on 1.97 in 2026-10 (DD 0.13.7, timely 0.19) builds now.
+- Each DD minor in 0.14–0.26 broke the API: a `Collection` is
+  `Collection<'scope, T, C>` (no scope type parameter; `VecCollection<'s,
+  T, D, R>` for `Vec` containers), passed by value and `clone`d where it is
+  used twice; a `Scope<'s, T>` is a `Copy` struct, not a trait; `join`,
+  `reduce`, `threshold` and `arrange_by_key` are inherent methods (no
+  `Join`/`Reduce`/`Threshold` traits); `Arranged<'s, Tr>` lost its scope
+  parameter, and its `reduce_abelian` takes the builder, spine and a
+  `push` closure (`dataflow::reduce_keyed`); `Worker` is no longer generic
+  over its allocator (`Allocator::Thread`/`Allocator::Process`, and
+  `Worker::new` takes a clock); a `unary_frontier` closure gets its
+  input's frontier beside the handle, and `InputCapability::delayed` names
+  the output port.
+- Exchange still goes through serde (bincode) for `Vec` containers, so the
+  key types need only `Serialize + Deserialize`; the columnar containers
+  are opt-in, and the engine does not use them.
+- Earlier: DD 0.12.0 aborted on a `merge_batcher` `get_unchecked` UB under
+  debug assertions; DD 0.13.0 + timely 0.13.0 was the pin until 2026-11.
+- A bump repeats the checks above and the scale probes before and after
+  (CONTRIBUTING.md, "The scale gate"; `cargo test --release -p
+  improv_engine -- --ignored`).
 
 Toolchain floor: **rustc 1.97+** (matches the Mentat workspace).
 
@@ -103,7 +121,8 @@ Measure kinds:
 
 A coordinate is a tuple of `(category, item)` pairs. Values are carried in the
 dataflow as `engine::CellValue` (`Num(f64 bits)` / `Bool` / `Text` / `Err`),
-which is `Ord + Eq + Hash + serde` (timely 0.13 exchanges via serde). Numbers
+which is `Ord + Eq + Hash + serde` (timely exchanges `Vec` containers via
+serde). Numbers
 are the fast path; comparisons and `NOT`/`AND`/`OR` yield `Bool`, so **boolean
 and text derived measures work end-to-end** (e.g. `Hot = Price > 15` →
 `Bool`). `Date` is not yet representable in the lane (skipped on input).

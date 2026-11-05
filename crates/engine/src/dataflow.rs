@@ -23,11 +23,10 @@ use crate::plan::{PlanNode, PlanNodeKind};
 use crate::reduce::{self, order, two_level, Rows};
 use crate::{encode_coord, CellValue, CoordKey};
 use differential_dataflow::input::InputSession;
-use differential_dataflow::operators::arrange::{ArrangeByKey, Arranged, TraceAgent};
-use differential_dataflow::operators::{Reduce, Threshold};
-use differential_dataflow::trace::implementations::ValSpine;
+use differential_dataflow::operators::arrange::{Arranged, TraceAgent};
+use differential_dataflow::trace::implementations::{ValBuilder, ValSpine};
 use differential_dataflow::AsCollection;
-use differential_dataflow::Collection;
+use differential_dataflow::VecCollection;
 use improv_core_model::{
     BinaryOp, CategoryId, Formula, FuncId, ItemId, MeasureId, MeasureKind, Model, UnaryOp,
 };
@@ -38,10 +37,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use timely::communication::allocator::process::ProcessBuilder;
-use timely::communication::allocator::{Allocate, AllocateBuilder, Process, Thread};
-use timely::dataflow::operators::ToStream;
-use timely::dataflow::scopes::ScopeParent;
+use timely::communication::allocator::{Allocator, ProcessBuilder, Thread};
+use timely::dataflow::operators::vec::ToStream;
 use timely::dataflow::Scope;
 use timely::worker::Worker;
 
@@ -57,38 +54,32 @@ pub enum EngineError {
     Cycle(String),
 }
 
-/// A DD collection of `(coordinate, cell value)`.
-pub(crate) type Coll<G> = Collection<G, (CoordKey, CellValue), isize>;
+/// A DD collection of `(coordinate, cell value)`, in a dataflow of scope
+/// `'s`. Every engine dataflow counts rounds in `u64`.
+pub(crate) type Coll<'s> = VecCollection<'s, u64, (CoordKey, CellValue), isize>;
 
 /// A collection arranged by its cells' projection on some categories (a
 /// join's or a reduction's key), each value its cell.
-pub(crate) type Keyed<G> = Arranged<
-    G,
-    TraceAgent<ValSpine<CoordKey, (CoordKey, CellValue), <G as ScopeParent>::Timestamp, isize>>,
->;
+pub(crate) type Keyed<'s> =
+    Arranged<'s, TraceAgent<ValSpine<CoordKey, (CoordKey, CellValue), u64, isize>>>;
 
 /// The arrangements one build shares, by measure and key categories: a
 /// measure that one plan reduces and another joins on the same categories
 /// (PageRank's `W`, by `Src` for `Out = SUM(W OVER Dst)` and `M = W / Out`)
 /// is arranged once.
-pub(crate) type Shared<G> = RefCell<HashMap<(MeasureId, Vec<u32>), Keyed<G>>>;
+pub(crate) type Shared<'s> = RefCell<HashMap<(MeasureId, Vec<u32>), Keyed<'s>>>;
 
 /// Recursively build a collection for a plan node.
 ///
 /// `inputs` maps input-measure ids to their base DD collections. A `Ref` to a
 /// *derived* measure resolves to its already-built collection in `derived`.
-pub(crate) fn build_coll<G: Scope>(
+pub(crate) fn build_coll<'s>(
     node: &PlanNode,
-    scope: &mut G,
-    inputs: &HashMap<MeasureId, Coll<G>>,
-    derived: &HashMap<MeasureId, Coll<G>>,
-    arr: &Shared<G>,
-) -> Result<Coll<G>, EngineError>
-where
-    G::Timestamp: differential_dataflow::lattice::Lattice
-        + timely::progress::Timestamp
-        + timely::order::TotalOrder,
-{
+    scope: Scope<'s, u64>,
+    inputs: &HashMap<MeasureId, Coll<'s>>,
+    derived: &HashMap<MeasureId, Coll<'s>>,
+    arr: &Shared<'s>,
+) -> Result<Coll<'s>, EngineError> {
     match &node.kind {
         PlanNodeKind::InputMeasure(m) => inputs
             .get(m)
@@ -182,15 +173,10 @@ where
         ),
 
         PlanNodeKind::Items(cat, vals) => Ok(on_first(scope, || {
-            let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
             vals.iter()
                 .filter_map(|(item, v)| {
                     let cv = CellValue::from_model_value(v)?;
-                    Some((
-                        (smallvec::smallvec![(cat.0, item.0)], cv),
-                        t.clone(),
-                        1isize,
-                    ))
+                    Some(((smallvec::smallvec![(cat.0, item.0)], cv), 0, 1isize))
                 })
                 .collect()
         })),
@@ -205,17 +191,16 @@ where
             // the arguments over all the result's categories.
             let domain = match grid {
                 Some(g) => on_first(scope, || {
-                    let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-                    grid_keys(g)
-                        .into_iter()
-                        .map(|k| (k, t.clone(), 1isize))
-                        .collect()
+                    grid_keys(g).into_iter().map(|k| (k, 0, 1isize)).collect()
                 }),
                 None => {
-                    let mut keys = None::<Collection<G, CoordKey, isize>>;
+                    let mut keys = None::<VecCollection<'s, u64, CoordKey, isize>>;
                     for (_, c) in args.iter().zip(&colls).filter(|(a, _)| spans(a)) {
-                        let k = c.map(|(k, _)| k);
-                        keys = Some(keys.map_or(k.clone(), |acc| acc.concat(&k)));
+                        let k = c.clone().map(|(k, _)| k);
+                        keys = Some(match keys {
+                            Some(acc) => acc.concat(k),
+                            None => k,
+                        });
                     }
                     keys.expect("the widest argument spans the result")
                         .distinct()
@@ -224,16 +209,19 @@ where
             let domain = domain.map(|k| (k, CellValue::Bool(true)));
             // Each argument's cells on the domain, tagged with its position;
             // per coordinate the lowest position wins.
-            let mut tagged = None::<Collection<G, (CoordKey, (u32, CellValue)), isize>>;
+            let mut tagged = None::<VecCollection<'s, u64, (CoordKey, (u32, CellValue)), isize>>;
             for (i, (a, c)) in args.iter().zip(&colls).enumerate() {
                 let i = i as u32;
                 let t = if spans(a) {
-                    c.map(move |(k, v)| (k, (i, v)))
+                    c.clone().map(move |(k, v)| (k, (i, v)))
                 } else {
                     align(arr, None, &domain, a, c, &a.ty.dim.categories)
                         .map(move |(k, (_, v))| (k, (i, v)))
                 };
-                tagged = Some(tagged.map_or(t.clone(), |acc| acc.concat(&t)));
+                tagged = Some(match tagged {
+                    Some(acc) => acc.concat(t),
+                    None => t,
+                });
             }
             let tagged = tagged.expect("COALESCE has arguments");
             Ok(tagged.reduce(|_k, input, output| {
@@ -341,7 +329,7 @@ where
             let (cat, offset, order) = (cat.0, *offset, order.clone());
             // Each cell moves to the item `-offset` away: the value at item i
             // is the input's value at item i + offset.
-            let moved = x.flat_map(move |(k, v)| {
+            let moved = x.clone().flat_map(move |(k, v)| {
                 let mut k2 = k.clone();
                 let slot = k2.iter_mut().find(|(c, _)| *c == cat)?;
                 let p = *pos.get(&slot.1)? as i64 - offset;
@@ -355,14 +343,14 @@ where
             // Where nothing moved in, the default, at the input's own cells.
             let dflt = build_coll(d, scope, inputs, derived, arr)?;
             let own = x.map(|(k, _)| k);
-            let landed = moved.map(|(k, _)| k);
+            let landed = moved.clone().map(|(k, _)| k);
             let holes = own
-                .concat(&landed.negate())
+                .concat(landed.negate())
                 .threshold(|_, m| if *m > 0 { 1 } else { 0 });
             let holes = holes.map(|k| (k, CellValue::Bool(true)));
             let filled =
                 align(arr, None, &holes, d, &dflt, &d.ty.dim.categories).map(|(k, (_, v))| (k, v));
-            Ok(moved.concat(&filled))
+            Ok(moved.concat(filled))
         }
 
         PlanNodeKind::Literal(v) => {
@@ -435,18 +423,20 @@ where
                         .map(|(k, (tv, _))| (k, tv))
                 }
             };
-            let pick = |want: bool, dom: &Coll<G>, branch: &Coll<G>, node: &PlanNode| {
+            let pick = |want: bool, dom: &Coll<'s>, branch: &Coll<'s>, node: &PlanNode| {
                 let keys = &node.ty.dim.categories;
-                let sel = dom.filter(move |(_, v)| *v == CellValue::Bool(want));
+                let sel = dom
+                    .clone()
+                    .filter(move |(_, v)| *v == CellValue::Bool(want));
                 // The branch's categories are a subset of the domain's, so the
                 // joined coordinate is the domain's.
                 align(arr, None, &sel, node, branch, keys).map(|(k, (_, v))| (k, v))
             };
             let mut out = pick(true, &dom, &a, then);
             if let (Some(b), Some(node)) = (&b, otherwise) {
-                out = out.concat(&pick(false, &dom, b, node));
+                out = out.concat(pick(false, &dom, b, node));
             }
-            Ok(out.concat(&dom.filter(|(_, v)| matches!(v, CellValue::Err(_)))))
+            Ok(out.concat(dom.filter(|(_, v)| matches!(v, CellValue::Err(_)))))
         }
     }
 }
@@ -661,18 +651,13 @@ pub(crate) fn call_with(
 /// A reduction's rows: the reduced measures aligned on their coordinate
 /// (and filtered by `pred`), parameters appended, re-keyed to the group,
 /// each row carrying its item positions so the reduction sees item order.
-fn build_aggregate<G: Scope>(
-    scope: &mut G,
-    inputs: &HashMap<MeasureId, Coll<G>>,
-    derived: &HashMap<MeasureId, Coll<G>>,
-    arr: &Shared<G>,
+fn build_aggregate<'s>(
+    scope: Scope<'s, u64>,
+    inputs: &HashMap<MeasureId, Coll<'s>>,
+    derived: &HashMap<MeasureId, Coll<'s>>,
+    arr: &Shared<'s>,
     a: AggSpec<'_>,
-) -> Result<Coll<G>, EngineError>
-where
-    G::Timestamp: differential_dataflow::lattice::Lattice
-        + timely::progress::Timestamp
-        + timely::order::TotalOrder,
-{
+) -> Result<Coll<'s>, EngineError> {
     let (first, rest) = a
         .ins
         .split_first()
@@ -694,8 +679,9 @@ where
         let order = agg_order(a.order);
         let consts: Vec<Option<CellValue>> = a.params.iter().map(literal_value).collect();
         let func = a.func;
-        return Ok(keyed(arr, Some(first), &c, a.group_by).reduce(
-            move |_k, input: &[(&(CoordKey, CellValue), isize)], output| {
+        return Ok(reduce_keyed(
+            keyed(arr, Some(first), &c, a.group_by),
+            move |_k, input, output| {
                 let mut rows: Vec<(AggRow, isize)> = input
                     .iter()
                     .map(|((k, v), n)| (agg_row(k, Vals::from_buf([v.clone()]), &order), *n))
@@ -767,7 +753,7 @@ where
             capacity,
             spec,
         };
-        return Ok(order::order_stats(&keyed, o));
+        return Ok(order::order_stats(keyed, o));
     }
     let mut consts: Vec<Option<CellValue>> = Vec::new();
     let mut row_dim: Vec<CategoryId> = full.clone();
@@ -905,20 +891,16 @@ fn folded(p: &PlanNode) -> Option<CellValue> {
 }
 
 /// A constant at the empty coordinate (broadcasts into any join).
-fn constant<G: Scope>(scope: &mut G, v: CellValue) -> Coll<G>
-where
-    G::Timestamp: differential_dataflow::lattice::Lattice + timely::progress::Timestamp,
-{
-    let t = <G::Timestamp as timely::progress::Timestamp>::minimum();
-    on_first(scope, || vec![((CoordKey::new(), v), t, 1isize)])
+fn constant(scope: Scope<'_, u64>, v: CellValue) -> Coll<'_> {
+    on_first(scope, || vec![((CoordKey::new(), v), 0, 1isize)])
 }
 
 /// `rows()` as a collection, made and sent by worker 0 only: every worker
 /// builds the same dataflow, and each copy would add the rows again.
-fn on_first<G: Scope, D: timely::Data>(
-    scope: &mut G,
-    rows: impl FnOnce() -> Vec<(D, G::Timestamp, isize)>,
-) -> Collection<G, D, isize> {
+fn on_first<D: 'static>(
+    scope: Scope<'_, u64>,
+    rows: impl FnOnce() -> Vec<(D, u64, isize)>,
+) -> VecCollection<'_, u64, D, isize> {
     let rows = if scope.index() == 0 {
         rows()
     } else {
@@ -930,20 +912,18 @@ fn on_first<G: Scope, D: timely::Data>(
 /// `c`, the collection of plan node `n`, arranged by its cells' projection
 /// on `keys`. A measure's (`n` an `InputMeasure`) is arranged once per
 /// key categories and shared ([`Shared`]); any other collection afresh.
-fn keyed<G: Scope>(
-    arr: &Shared<G>,
+fn keyed<'s>(
+    arr: &Shared<'s>,
     n: Option<&PlanNode>,
-    c: &Coll<G>,
+    c: &Coll<'s>,
     keys: &[CategoryId],
-) -> Keyed<G>
-where
-    G::Timestamp: differential_dataflow::lattice::Lattice,
-{
+) -> Keyed<'s> {
     let mut keys: Vec<u32> = keys.iter().map(|c| c.0).collect();
     keys.sort_unstable();
     keys.dedup();
     let arrange = |keys: Vec<u32>| {
-        c.map(move |(k, v)| (project(&k, &keys), (k, v)))
+        c.clone()
+            .map(move |(k, v)| (project(&k, &keys), (k, v)))
             .arrange_by_key()
     };
     match n.map(|n| &n.kind) {
@@ -954,6 +934,24 @@ where
             .clone(),
         _ => arrange(keys),
     }
+}
+
+/// `logic` over each group of `k` (its cells, in order), one value per
+/// group: [`VecCollection::reduce`] on a shared arrangement.
+fn reduce_keyed<'s>(
+    k: Keyed<'s>,
+    logic: impl FnMut(&CoordKey, &[(&(CoordKey, CellValue), isize)], &mut Vec<(CellValue, isize)>)
+        + 'static,
+) -> Coll<'s> {
+    k.reduce_abelian::<_, ValBuilder<_, _, _, _>, ValSpine<CoordKey, CellValue, u64, isize>, _, _>(
+        "Reduce",
+        logic,
+        |vec, key, upds| {
+            vec.clear();
+            vec.extend(upds.drain(..).map(|(v, t, r)| ((key.clone(), v), t, r)));
+        },
+    )
+    .as_collection(|k, v| (k.clone(), v.clone()))
 }
 
 /// A joined pair of cells, at their union coordinate.
@@ -972,39 +970,36 @@ fn joined<V: Clone>(
 /// `ln` and `rn` are the sides' plan nodes (`ln`, if `l` is one's), so a
 /// measure's arrangement is shared ([`keyed`]).
 #[allow(clippy::type_complexity)]
-fn align<G: Scope>(
-    arr: &Shared<G>,
+fn align<'s>(
+    arr: &Shared<'s>,
     ln: Option<&PlanNode>,
-    l: &Coll<G>,
+    l: &Coll<'s>,
     rn: &PlanNode,
-    r: &Coll<G>,
+    r: &Coll<'s>,
     keys: &[CategoryId],
-) -> Collection<G, (CoordKey, (CellValue, CellValue)), isize>
-where
-    G::Timestamp: differential_dataflow::lattice::Lattice,
-{
+) -> VecCollection<'s, u64, (CoordKey, (CellValue, CellValue)), isize> {
     let r = keyed(arr, Some(rn), r, keys);
-    keyed(arr, ln, l, keys).join_core(&r, |_, (lk, lv), rc| joined(lk, lv, rc))
+    keyed(arr, ln, l, keys).join_core(r, |_, (lk, lv), rc| joined(lk, lv, rc))
 }
 
 /// [`align`] for any left value type (n-ary calls carry a `Vec` of values).
 #[allow(clippy::type_complexity)]
-fn align_with<G: Scope, V>(
-    arr: &Shared<G>,
-    l: &Collection<G, (CoordKey, V), isize>,
+fn align_with<'s, V>(
+    arr: &Shared<'s>,
+    l: &VecCollection<'s, u64, (CoordKey, V), isize>,
     rn: &PlanNode,
-    r: &Coll<G>,
+    r: &Coll<'s>,
     keys: &[CategoryId],
-) -> Collection<G, (CoordKey, (V, CellValue)), isize>
+) -> VecCollection<'s, u64, (CoordKey, (V, CellValue)), isize>
 where
-    G::Timestamp: differential_dataflow::lattice::Lattice,
     V: differential_dataflow::ExchangeData + std::hash::Hash,
 {
     let r = keyed(arr, Some(rn), r, keys);
     let keys: Vec<u32> = keys.iter().map(|c| c.0).collect();
-    l.map(move |(k, v)| (project(&k, &keys), (k, v)))
+    l.clone()
+        .map(move |(k, v)| (project(&k, &keys), (k, v)))
         .arrange_by_key()
-        .join_core(&r, |_, (lk, lv), rc| joined(lk, lv, rc))
+        .join_core(r, |_, (lk, lv), rc| joined(lk, lv, rc))
 }
 
 /// `left` op `right` where `left` is `Join{a, right, keys}` (the compiler's
@@ -1414,20 +1409,15 @@ pub(crate) fn functional(p: &PlanNode, f: &HashSet<MeasureId>) -> bool {
 /// of such measures settles in one scheduling step rather than one per link.
 /// Its deltas within a round are then in no set order (a join's `-old` may
 /// follow its `+new`); the live engine consolidates them per round.
-pub(crate) fn build_derived<G: Scope>(
-    scope: &mut G,
+pub(crate) fn build_derived<'s>(
+    scope: Scope<'s, u64>,
     plans: &[(MeasureId, PlanNode)],
-    inputs: &HashMap<MeasureId, Coll<G>>,
-) -> Vec<(MeasureId, Coll<G>)>
-where
-    G::Timestamp: differential_dataflow::lattice::Lattice
-        + timely::progress::Timestamp
-        + timely::order::TotalOrder,
-{
+    inputs: &HashMap<MeasureId, Coll<'s>>,
+) -> Vec<(MeasureId, Coll<'s>)> {
     let mut derived = HashMap::new();
     let mut built = Vec::new();
     let mut flat: HashSet<MeasureId> = inputs.keys().copied().collect();
-    let arr: Shared<G> = RefCell::default();
+    let arr: Shared<'s> = RefCell::default();
     for (mid, plan) in plans {
         let Ok(coll) = build_coll(plan, scope, inputs, &derived, &arr) else {
             continue;
@@ -1586,7 +1576,7 @@ fn evaluate_here(
         .then(|| run_workers(workers, |w, stop| run_worker(w, &job, stop)))
         .flatten()
         .unwrap_or_else(|| {
-            let mut worker = Worker::new(timely::WorkerConfig::default(), Thread::new());
+            let mut worker = new_worker(Allocator::Thread(Thread::default()));
             vec![run_worker(&mut worker, &job, &AtomicBool::new(false))]
         });
 
@@ -1628,14 +1618,14 @@ const POLL: Duration = Duration::from_millis(50);
 /// Build `job`'s dataflow on `worker`, feed it the worker's share of the
 /// input cells (every `peers`-th), and run it to completion, or until
 /// `stop` (a peer panicked).
-fn run_worker<A: Allocate>(worker: &mut Worker<A>, job: &Job, stop: &AtomicBool) -> Share {
+fn run_worker(worker: &mut Worker, job: &Job, stop: &AtomicBool) -> Share {
     let (me, peers) = (worker.index(), worker.peers());
     let mut sessions: HashMap<MeasureId, InputSession<u64, (CoordKey, CellValue), isize>> =
         HashMap::new();
     #[allow(clippy::type_complexity)]
     let outs: Vec<(MeasureId, Rc<RefCell<Vec<(CoordKey, CellValue)>>>)> = worker
         .dataflow::<u64, _, _>(|scope| {
-            let mut input_colls: HashMap<MeasureId, Coll<_>> = HashMap::new();
+            let mut input_colls: HashMap<MeasureId, Coll<'_>> = HashMap::new();
             for id in job.input_ids {
                 let mut session = InputSession::new();
                 input_colls.insert(*id, session.to_collection(scope));
@@ -1691,7 +1681,7 @@ fn run_worker<A: Allocate>(worker: &mut Worker<A>, job: &Job, stop: &AtomicBool)
 /// waits for it forever; its panic resumes here.
 fn run_workers<T: Send>(
     n: usize,
-    work: impl Fn(&mut Worker<Process>, &AtomicBool) -> T + Sync,
+    work: impl Fn(&mut Worker, &AtomicBool) -> T + Sync,
 ) -> Option<Vec<T>> {
     /// Sets the stop flag if its worker unwinds.
     struct Stop<'a>(&'a AtomicBool);
@@ -1705,7 +1695,7 @@ fn run_workers<T: Send>(
     let stop = AtomicBool::new(false);
     let run = |b: ProcessBuilder| {
         let _stop = Stop(&stop);
-        let mut worker = Worker::new(timely::WorkerConfig::default(), b.build());
+        let mut worker = new_worker(Allocator::Process(b.build()));
         work(&mut worker, &stop)
     };
     let run = &run;
@@ -1722,7 +1712,8 @@ fn run_workers<T: Send>(
             // (Dropping the senders lets the started ones return.)
             peers.push((tx, h.ok()?));
         }
-        let mut builders = Process::new_vector(n).into_iter();
+        let refill = timely::communication::Hooks::default().refill;
+        let mut builders = ProcessBuilder::new_typed_vector(n, refill, None).into_iter();
         let first = builders.next().expect("n > 1 builders");
         for ((tx, _), b) in peers.iter().zip(builders) {
             tx.send(b)
@@ -1734,6 +1725,16 @@ fn run_workers<T: Send>(
         }
         Some(out)
     })
+}
+
+/// A timely worker on `alloc`, as `timely::execute` makes them (its clock
+/// set, so operators can schedule themselves).
+fn new_worker(alloc: Allocator) -> Worker {
+    Worker::new(
+        timely::WorkerConfig::default(),
+        alloc,
+        Some(std::time::Instant::now()),
+    )
 }
 
 #[cfg(test)]
