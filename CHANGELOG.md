@@ -197,7 +197,8 @@ this project follows [Semantic Versioning](https://semver.org/).
   0.50, tests only); smallvec 1.16 (was 1.13); the TUI's ratatui 0.30 and crossterm 0.29
   (were 0.29 and 0.28); improv-server's axum 0.8 (was 0.7; the routes and
   their URLs are unchanged); the web GUI's wasm-bindgen 0.2.130 (was
-  0.2.127: build it with wasm-bindgen-cli 0.2.130).
+  0.2.127: build it with wasm-bindgen-cli 0.2.130); wasmi 2.0 (was 0.32)
+  for Wasm external functions, with the same fuel and memory limits.
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.

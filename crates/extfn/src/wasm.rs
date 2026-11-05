@@ -33,7 +33,7 @@
 //!   linear memory: `memory.grow` past it returns `-1`, and a module that
 //!   declares more fails to instantiate.
 //!
-//! ponytail: wasmi 0.32 has no epoch interruption (that is a wasmtime
+//! ponytail: wasmi 2.0 has no epoch interruption (that is a wasmtime
 //! feature), so the wall clock cannot stop the interpreter thread directly;
 //! fuel is the stop. A fuel unit is roughly one instruction; the budget is
 //! sized for a debug build, so an optimized build exhausts it well before the
@@ -128,8 +128,9 @@ fn load_module_bytes(body: &str) -> Result<Vec<u8>, ExtFnError> {
 /// out of fuel is a `Runtime` "ran out of fuel" error, as is any other wasmi
 /// error.
 pub(crate) fn run_wasm(wasm: &[u8], inputs: &[f64], fuel: u64) -> Result<f64, ExtFnError> {
-    use wasmi::core::TrapCode;
-    use wasmi::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, Val};
+    use wasmi::{
+        Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder, TrapCode, Val,
+    };
 
     let runtime_err = |m: String| ExtFnError::Runtime {
         message: m,
@@ -148,11 +149,13 @@ pub(crate) fn run_wasm(wasm: &[u8], inputs: &[f64], fuel: u64) -> Result<f64, Ex
         .set_fuel(fuel)
         .map_err(|e| runtime_err(format!("wasm fuel: {e}")))?;
     let linker = <Linker<StoreLimits>>::new(&engine);
+    // One step since wasmi 2.0: a trap is the start function's.
     let instance = linker
-        .instantiate(&mut store, &module)
-        .map_err(|e| runtime_err(format!("wasm instantiate error: {e}")))?
-        .start(&mut store)
-        .map_err(|e| runtime_err(format!("wasm start error: {e}")))?;
+        .instantiate_and_start(&mut store, &module)
+        .map_err(|e| match e.as_trap_code() {
+            Some(_) => runtime_err(format!("wasm start error: {e}")),
+            None => runtime_err(format!("wasm instantiate error: {e}")),
+        })?;
 
     let func = instance
         .get_func(&store, "improv_call")
