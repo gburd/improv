@@ -17,13 +17,15 @@ A model opens on its first saved view, or, with none, on its first
 measure.
 
 <video src="./img/gui-demo.mp4" controls muted loop playsinline width="100%"
-  poster="./img/gui-workspace.png">
-  <img src="./img/gui-demo.gif" alt="The GUI: pivoting, editing and adding a formula">
+  poster="./img/gui-demo.png">
+  <img src="./img/gui-demo.gif" alt="The GUI: pivoting a tile, paging, editing a Quantity cell, a formula typed with autocomplete, a color graph, and the Inspector">
 </video>
 
-*Pivoting by dragging the Region tile, paging, editing a Quantity cell while
-the Revenue worksheet recomputes, selecting a range for its Sum, and adding
-a formula. Recorded by `docs/demo/gui-movie.sh`.*
+*Pivoting by dragging the Region tile, paging, editing a Quantity cell
+while the Revenue worksheet recomputes, a formula typed with
+autocomplete, a color graph in two of its types, and the Inspector
+turning the grid lines off. A caption under the screen says what each
+step does. Recorded by `docs/demo/gui-movie.sh`.*
 
 ## The pivot grid
 
@@ -386,8 +388,8 @@ and NeXTSTEP's reserved ones; a capital means Shift too.
 | Ctrl+C | Copy | Edit |
 | Ctrl+V | Paste | Edit |
 | Ctrl+A | Select All | Edit |
-| Ctrl+[ | Select Items Only | Edit |
-| Ctrl+] | Select Cells Only | Edit |
+| Ctrl+\[ | Select Items Only | Edit |
+| Ctrl+\] | Select Cells Only | Edit |
 | Ctrl+Shift+F | Format Panel… | Format |
 | Ctrl+P | Print… | main menu |
 | Ctrl+R | Recalculate | Worksheet |
@@ -410,11 +412,11 @@ extends to it. On stacked categories, an outer item selects its group:
 every row or column under it. **Edit ▸ Select All** (Ctrl+A) selects every
 item and cell.
 
-**Edit ▸ Select Items Only** (Ctrl+[) keeps the selection's item names and
+**Edit ▸ Select Items Only** (Ctrl+\[) keeps the selection's item names and
 lets its cells go (the cells are no longer shaded): Copy then copies the
 names, a line each, Cut copies them (an items-only selection cannot be
 cut), and Paste and the Sum are refused. **Edit ▸ Select Cells Only**
-(Ctrl+]) keeps the cells. The plain `[` and `]` still page.
+(Ctrl+\]) keeps the cells. The plain `[` and `]` still page.
 
 ## Copy and paste
 

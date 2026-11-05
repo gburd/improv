@@ -50,7 +50,7 @@ Each front end takes a model file or a Postgres model URL
 
 ### The desktop GUI
 
-![The GUI: pivoting, paging, editing, a range Sum and a new formula](docs/src/img/gui-demo.gif)
+![The GUI: pivoting a tile, paging, editing a cell, a formula typed with autocomplete, a color graph and the Inspector](docs/src/img/gui-demo.gif)
 
 ### The terminal UI
 
