@@ -176,6 +176,9 @@ fn value_attr(vt: ValueType) -> &'static str {
 /// in-memory).
 pub struct ModelStore {
     store: Store,
+    /// Where `store` was opened (`""`: in memory), to reopen it when another
+    /// process has written (see [`ModelStore::fresh_for_write`]).
+    path: String,
     /// The high-water as of this handle's last load or save; `save_model`
     /// refuses to commit if the store has moved past it. `None`: unchecked.
     loaded_tx: Option<i64>,
@@ -206,6 +209,7 @@ impl ModelStore {
         }
         Ok(ModelStore {
             store,
+            path: path.to_owned(),
             loaded_tx: None,
             loaded_scope: None,
             #[cfg(test)]
@@ -299,6 +303,7 @@ impl ModelStore {
         cells: Option<&[(MeasureId, Coordinate)]>,
         structure: bool,
     ) -> Result<()> {
+        self.fresh_for_write()?;
         // IMMEDIATE: no other writer can commit between this check and ours.
         let mut ip = self.store.begin_transaction()?;
         if let Some(loaded) = self.loaded_tx {
@@ -479,6 +484,34 @@ impl ModelStore {
         Ok(())
     }
 
+    /// Reopen the Mentat store when another process has committed since this
+    /// handle last did. Mentat keeps the next entity and transaction ids in
+    /// memory and never re-reads them, so a long-lived handle (the server,
+    /// a GUI) writing after the CLI wrote the same file reused the CLI's
+    /// transaction id and could give a new entity an id the CLI's already
+    /// had, merging the two (one of them lost). A reopen reads them again.
+    /// In memory there is no other process.
+    fn fresh_for_write(&mut self) -> Result<()> {
+        if self.path.is_empty() {
+            return Ok(());
+        }
+        let newest: i64 = self
+            .store
+            .sqlite_ref()
+            .query_row(
+                // The newest row's: rows are appended, so O(1) by rowid.
+                "SELECT coalesce((SELECT tx FROM timelined_transactions \
+                 ORDER BY rowid DESC LIMIT 1), 0)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| StoreError::Mentat(e.to_string()))?;
+        if newest != self.store.last_tx_id() {
+            self.store = Store::open(&self.path)?;
+        }
+        Ok(())
+    }
+
     /// The store's latest transaction id, read live from SQLite (so it sees
     /// other processes' commits).
     pub fn tx_high_water(&mut self) -> Result<i64> {
@@ -528,6 +561,7 @@ impl ModelStore {
     /// caller), or clear them with `None`, in one transaction that also
     /// moves their version on. Returns the new version.
     pub fn save_policies(&mut self, policies: Option<(&str, &str)>) -> Result<i64> {
+        self.fresh_for_write()?;
         let mut ip = self.store.begin_transaction()?;
         let stored = rel_on(
             &ip,
@@ -1962,6 +1996,57 @@ mod tests {
             after.input(MeasureId(100), &b_coord),
             Some(&Value::Number(7.0))
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A long-lived handle that reloads after another process wrote, then
+    /// saves new cells: each write gets its own transaction (the high water
+    /// moves on), and neither writer's new cell is lost. Mentat's cached
+    /// next ids made A reuse B's transaction id and B's new entity's id, so
+    /// B's cell was overwritten by A's.
+    #[test]
+    fn a_reloaded_handle_writes_after_another_process_without_reusing_ids() {
+        let path = temp_store_path("ids");
+        ModelStore::open(&path)
+            .and_then(|mut s| s.save_model(&sample_model()))
+            .expect("seed");
+        let mut a = ModelStore::open(&path).expect("open a");
+        a.load_model().expect("a loads");
+        // B, another process: a new item and its Price, so new entities.
+        let mut b = ModelStore::open(&path).expect("open b");
+        let mut model_b = b.load_model().expect("b loads");
+        let at_b = Coordinate::from_pairs([(CategoryId(2), ItemId(21))]);
+        model_b.add_item(ItemId(21), CategoryId(2), "Widget B");
+        model_b.set_input(MeasureId(100), at_b.clone(), Value::Number(5.0));
+        b.save_model(&model_b).expect("b saves");
+        let after_b = b.loaded_tx().expect("b's tx");
+        // A sees B's write (a reload through its own handle), then adds an
+        // item and a Price of its own.
+        assert_eq!(a.tx_high_water().unwrap(), after_b);
+        let mut model_a = a.load_model().expect("a reloads");
+        let at_a = Coordinate::from_pairs([(CategoryId(2), ItemId(22))]);
+        model_a.add_item(ItemId(22), CategoryId(2), "Widget C");
+        model_a.set_input(MeasureId(100), at_a.clone(), Value::Number(9.0));
+        a.save_model(&model_a).expect("a saves");
+        assert!(
+            a.loaded_tx().unwrap() > after_b,
+            "a's write is a transaction of its own"
+        );
+        let both = ModelStore::open(&path)
+            .and_then(|mut s| s.load_model())
+            .expect("reopen");
+        assert_eq!(
+            both.input(MeasureId(100), &at_b),
+            Some(&Value::Number(5.0)),
+            "b's cell"
+        );
+        assert_eq!(
+            both.input(MeasureId(100), &at_a),
+            Some(&Value::Number(9.0)),
+            "a's cell"
+        );
+        assert_eq!(both.items[&ItemId(21)].name.0, "Widget B");
+        assert_eq!(both.items[&ItemId(22)].name.0, "Widget C");
         let _ = std::fs::remove_file(&path);
     }
 

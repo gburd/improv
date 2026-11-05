@@ -352,6 +352,75 @@ async fn another_programs_write_reaches_the_stream() {
     assert_eq!(e[1]["reload"], true, "{e:?}");
 }
 
+/// After another program writes the file, this server's own next edit is a
+/// change of its own: a new version, delivered with its cells. (Mentat's
+/// cached ids made the edit reuse the other program's transaction, so the
+/// version did not move and the stream never sent it.)
+#[tokio::test]
+async fn an_edit_after_another_programs_write_reaches_the_stream() {
+    let (app, _, path) = served();
+    let mut bob = stream(&app, BOB, None).await.into_data_stream();
+    // Another program changes one cell: one transaction.
+    let mut other = improv_store::Store::open(path.to_str().unwrap()).unwrap();
+    let mut m = other.load_model().unwrap();
+    let at = improv_core_model::Coordinate::from_pairs([
+        (CategoryId(1), ItemId(10)),
+        (CategoryId(2), ItemId(20)),
+    ]);
+    m.set_input(
+        MeasureId(101),
+        at.clone(),
+        improv_core_model::Value::Number(77.0),
+    );
+    other.save_cells(&m, &[(MeasureId(101), at)]).unwrap();
+    let (st, _) = call(&app, req("GET", "/v1/structure", BOB, None)).await;
+    assert_eq!(st, StatusCode::OK);
+    let first = next_events(&mut bob, 2).await;
+    assert_eq!(first[1]["reload"], true, "{first:?}");
+    // This server's own edit after it.
+    let edit = json!({"edits": [{"measure": 101, "at": [[1, 11], [2, 20]], "value": 5}]});
+    let (s, done) = call(&app, req("POST", "/v1/cells", BOB, Some(edit))).await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    assert_ne!(
+        done["version"], first[1]["version"],
+        "the edit is a new version"
+    );
+    let e = next_events(&mut bob, 1).await;
+    assert!(
+        e[0]["cells"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|c| c["measure"] == 101 && c["value"] == 5.0)),
+        "{e:?}"
+    );
+}
+
+/// The next `n` events of an open stream.
+async fn next_events(
+    stream: &mut (impl futures_util::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+    n: usize,
+) -> Vec<JsonValue> {
+    use futures_util::StreamExt;
+    let mut buf = String::new();
+    let mut out = Vec::new();
+    while out.len() < n {
+        let chunk = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .expect("an event within 5 s")
+            .expect("the stream is open")
+            .unwrap();
+        buf.push_str(std::str::from_utf8(&chunk).unwrap());
+        while let Some(end) = buf.find("\n\n") {
+            let frame: String = buf.drain(..end + 2).collect();
+            for line in frame.lines() {
+                if let Some(d) = line.strip_prefix("data:") {
+                    out.push(serde_json::from_str(d.trim()).unwrap());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Another program's write that a request's own refresh finds first (not
 /// the poller) still reaches the streams: whatever moves the authority's
 /// version wakes them.

@@ -244,6 +244,15 @@ this project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A model file written by two programs no longer loses a write.** Mentat
+  keeps a store's next entity and transaction ids in memory and never
+  re-reads them, so a program that kept the file open (improv-server, a
+  GUI, the TUI) and wrote after another program (`improv set`) had written
+  reused that program's transaction id, and could give a new item or cell
+  the id of the other program's: the two merged and one was lost. The
+  reused transaction also kept the model's version from moving, so an open
+  web page never heard of the server's next edit. Each write now reopens
+  the store first when another program has committed since.
 - **improv-server on a Postgres-hosted model answers the measure routes
   again.** The access check that came with Cedar enforcement read the
   stored policies on the async request thread, where the blocking
