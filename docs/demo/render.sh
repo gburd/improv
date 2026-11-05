@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Render docs/demo/NAME.cast to docs/src/img/NAME.gif and NAME.mp4, in the
-# one theme every console movie uses. Run from the repo root:
-#   docs/demo/render.sh NAME
-# Needs agg, gifsicle and ffmpeg. Pauses longer than 3 s are cut to 3 s.
+# one theme every console movie uses, and NAME.png, the MP4's poster: the
+# frame at SECONDS into the movie. Run from the repo root:
+#   docs/demo/render.sh NAME SECONDS
+# Needs agg, gifsicle, ffmpeg and ImageMagick. Pauses longer than 3 s are
+# cut to 3 s.
 set -euo pipefail
-name=${1:?usage: docs/demo/render.sh NAME}
+name=${1:?usage: docs/demo/render.sh NAME SECONDS}
+at=${2:?usage: docs/demo/render.sh NAME SECONDS}
 T=$(mktemp -d)
 trap 'find "$T" -delete' EXIT
 # NeXT-ish grayscale: bg,fg, then the 16 ANSI colors (blue = cursor, cyan = range).
@@ -13,4 +16,7 @@ agg --idle-time-limit 3 --font-size 15 --theme "$THEME" "docs/demo/$name.cast" "
 gifsicle -O3 --lossy=30 --colors 64 "$T/raw.gif" -o "docs/src/img/$name.gif"
 ffmpeg -loglevel error -y -i "docs/src/img/$name.gif" -movflags +faststart -pix_fmt yuv420p \
 	-vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" "docs/src/img/$name.mp4"
-ls -l "docs/src/img/$name.gif" "docs/src/img/$name.mp4"
+ffmpeg -loglevel error -y -ss "$at" -i "docs/src/img/$name.gif" -frames:v 1 "$T/poster.png"
+magick "$T/poster.png" -strip -colors 16 "PNG8:docs/src/img/$name.png"
+ls -l "docs/src/img/$name".*
+ffprobe -v error -show_entries format=duration -of csv=p=0 "docs/src/img/$name.mp4"

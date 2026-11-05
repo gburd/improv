@@ -54,7 +54,7 @@ Each front end takes a model file or a Postgres model URL
 
 ### The terminal UI
 
-![The TUI: moving, editing an input and watching Revenue recompute, pivoting, paging](docs/src/img/tui-demo.gif)
+![The TUI: editing an input as 1,500 and watching Revenue recompute, a number format, paging, pivoting, a range Sum, a saved view the TUI reopens on](docs/src/img/tui-demo.gif)
 
 ### Improv in Postgres
 

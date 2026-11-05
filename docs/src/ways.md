@@ -67,7 +67,14 @@ through each window.
 
 ## The terminal UI (`improv-tui`)
 
-![The TUI](./img/tui-demo.gif)
+<video src="./img/tui-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/tui-demo.png">
+  <img src="./img/tui-demo.gif" alt="improv-tui: moving, editing a Quantity cell as 1,500, Revenue recomputed, a number format, paging, pivoting, a range Sum and a saved view the TUI reopens on">
+</video>
+
+*improv-tui on the sample model: an input typed as `1,500`, Revenue
+recomputed, `#` giving it two decimals and grouped thousands, paging,
+pivoting, a range's Sum, and a saved view the next start opens on.*
 
 **Use it for:** the same pivot-and-edit loop without a display, over SSH, or
 in a tmux pane next to your logs.
