@@ -48,7 +48,7 @@ serde_json = "1.0"
 stacker = "0.1.25"
 serde_stacker = "0.1.14"
 # Property-based testing (Hypothesis engine; imported as `hegel`).
-hegeltest = "0.50.1"
+hegeltest = "0.52.0"
 chrono = { version = "0.4", features = ["serde"] }
 # Verus's standard library (specs/proofs; erased under plain rustc). Pinned
 # exactly: it must match the Verus release CI verifies with
