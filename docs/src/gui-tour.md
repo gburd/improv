@@ -29,7 +29,16 @@ step does. Recorded by `docs/demo/gui-movie.sh`.*
 
 ## The pivot grid
 
-![Improv GUI — pivot grid](./img/gui-pivot-grid.png)
+![The whole workspace: the main menu, the Revenue and Quantity worksheets side by side, the model browser below, and a color bar graph of Revenue at the bottom right](./img/gui-workspace.png)
+
+*The whole workspace: the main menu at the top left, two worksheets on
+one model, the model browser under them and a graph of the Revenue
+worksheet.*
+
+![The Revenue worksheet: the Region tile and its North page above the grid, Product on the columns, Time on the rows, and five numbered formulas below](./img/gui-pivot-grid.png)
+
+*One worksheet window: Revenue with Region paged (North), Product on the
+columns, Time on the rows, and the formula list under the grid.*
 
 The window has five regions:
 
@@ -275,6 +284,12 @@ worksheet and **Revert** reads it back:
 - **Formulas**: **Show Errors In Line**. Off, a formula's error moves from
   under its row to its status indicator's tip.
 
+![The Inspector's Grid page with Lines In set to Cell Area, beside the worksheet it applies to](./img/gui-inspector.png)
+
+*The Inspector on its Grid page, Lines In the Cell Area: the worksheet
+beside it keeps its cell rules and drops the ones between the item
+names.*
+
 **Format ▸ Format Panel…** (Ctrl+Shift+F) has two pages over a sample;
 **Set** applies both:
 
@@ -283,6 +298,11 @@ worksheet and **Revert** reads it back:
   format, as the Format menu's rows do, as one undo step.
 - **Alignment**: **Smart** (numbers right, text left), **Left**,
   **Center** or **Right**, for the worksheet's cells.
+
+![The Format panel's Number page set to Specific, 2 decimal places and Commas, its sample reading -1,234.57, and the worksheet showing 1,122.00](./img/gui-format-panel.png)
+
+*The Format panel's Number page after **Set**: two decimal places with
+commas, in the sample and in the worksheet.*
 
 The worksheet's options (the Inspector's, and the alignment) stay with its
 window for the session; they are not saved in the view yet. Improv's
@@ -310,6 +330,12 @@ one cell is selected), then:
 **Format ▸ Page Layout…** sets the **Paper Size** (Letter, Legal, A4), the
 **Orientation** (Portrait or Landscape) and the **Scale** (50% prints at
 half size, so more fits on a page).
+
+![The Page Layout panel set to Letter, Landscape, 100 percent, above the Print panel with one copy, all pages, the default printer and the file demo.pdf](./img/gui-print.png)
+
+*Page Layout (Letter, landscape) above the Print panel. With no print
+system on this machine, Print is grayed, and the pages go to
+`demo.pdf`.*
 
 **Format ▸ Report Layout…** sets the **Header** and **Footer**, each with
 a left, a centered and a right part, the **First Page Number**, **Number
@@ -347,6 +373,10 @@ The line above the graph is its inspector:
 Every bar, wedge and marker is outlined in black, and the legend at the
 right names the series. A screen reader hears the graph as "Bar graph of
 2 series over Time".
+
+![Two graph windows of the Revenue worksheet in color: a bar graph and a line graph, each with Widget in red, Gadget in blue and Gizmo in yellow over the four quarters](./img/gui-graphs.png)
+
+*The same worksheet as a Bar graph and as a Line graph, in color.*
 
 ## Scrollers
 
@@ -418,6 +448,11 @@ names, a line each, Cut copies them (an items-only selection cannot be
 cut), and Paste and the Sum are refused. **Edit ▸ Select Cells Only**
 (Ctrl+\]) keeps the cells. The plain `[` and `]` still page.
 
+![Revenue with Region stacked under Time on the rows: clicking 2024Q2 selects its North and South rows and every cell in them](./img/gui-selection.png)
+
+*Region stacked under Time: a click on the outer item 2024Q2 selects its
+group, the North and South rows and their cells.*
+
 ## Copy and paste
 
 **Edit ▸ Copy** (Ctrl+C) puts the worksheet's selection on the clipboard
@@ -452,6 +487,11 @@ lines, with **More in the User Guide** to open its section of this guide
 and its own **Point for Help** button. Help ▸ Functions… (F1) is the
 function browser.
 
+![The Help window on the Category tiles page, beside the worksheet whose Product tile was clicked in Point for Help](./img/gui-context-help.png)
+
+*Point for Help, then a click on the worksheet's Product tile: the Help
+window opens on the page for category tiles.*
+
 ## Function help
 
 **Help ▸ Functions…**, or F1 from anywhere (a formula edit included), opens
@@ -466,7 +506,10 @@ and the argument types. **Insert**, a double-click or Enter puts `NAME(`
 into the formula you were editing (the selected row's, else the
 `Name = formula` line), at the caret, and returns the keyboard to it.
 
-![The Functions window](./img/gui-function-help.png)
+![The Functions window searching pmt: nine financial functions with their signatures, PMT selected, and its signature, category, description and argument types below](./img/gui-function-help.png)
+
+*Searching `pmt`: PMT first, then the functions whose names or
+descriptions match.*
 
 ## Autocomplete
 
@@ -486,9 +529,13 @@ and its parameters trail it in light gray (`PM` shows `T(rate, nper, pv,
 shows the signature with the argument the caret is in **bold and
 underlined**, the description and the category.
 
-![Completing PM](./img/gui-autocomplete.png)
+![Typing Payment = PM in the formula pane: the list offers PMT with its signature and description, and a tip above shows the same](./img/gui-autocomplete.png)
 
-![Inside PMT: the current argument marked](./img/gui-signature.png)
+*Completing `PM`: the list under the edit, the signature tip above it.*
+
+![After Payment = PMT(0.05, the tip shows PMT's signature with nper, the argument the caret is in, in bold and underlined](./img/gui-signature.png)
+
+*Inside the call: the tip marks the argument the caret is in.*
 
 ## Formula errors
 
@@ -518,7 +565,7 @@ same way. Editing the text clears the mark.
 Drag the **Region** tile from the top-left pages strip onto the bottom row strip and the
 row axis becomes the *stacked* product of Time × Region:
 
-![Improv GUI — stacked axes](./img/gui-stacked-axes.png)
+![Revenue with Time and Region stacked on the rows: each quarter label once, over a North row and a South row](./img/gui-stacked-axes.png)
 
 Each Time group (2024Q1, 2024Q2, …) now expands into its Region rows
 (North / South), with the outer Time label printed once per group. Any number of
@@ -580,5 +627,6 @@ backend fails the renderer's first large allocation.
 
 `docs/demo/gui-movie.sh` rebuilds the demo model, runs the GUI on a headless
 X server and records the movie above with `ffmpeg`, driving it with
-`xdotool`. `scripts/gui-shot.sh` takes the screenshot the CI compares
-against its golden image.
+`xdotool`. `docs/demo/gui-stills.sh` takes this page's screenshots the same
+way, in one run. `scripts/gui-shot.sh` takes the screenshot the CI compares
+against its golden image. See `docs/demo/README.md` for what each needs.
