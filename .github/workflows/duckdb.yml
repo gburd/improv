@@ -9,7 +9,7 @@ name: DuckDB extension
 # The registry tests only on macOS arm64 and Windows amd64 (linux_amd64 and
 # linux_arm64 skip tests), and its test venv is DuckDB 1.5.6. So
 # `cross-version` then loads the linux_amd64 artifact it built into the
-# DuckDB v1.5.6 and v2.0.0-alpha46057 CLIs: one binary, both versions
+# DuckDB v1.5.6 and v2.0.0 CLIs: one binary, both versions
 # (crates/duckdb_improv/README.md, "Pins").
 #
 # Run by hand on any branch of the GitHub mirror:
@@ -34,16 +34,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # The registry's build.yml at duckdb/community-extensions#3079: DuckDB
-  # b15358c3 (v2.0.0-alpha46057), ci-tools v2.0-cyanoptera. Keep these in
+  # The registry's build.yml (duckdb/community-extensions 6c3738b8): DuckDB
+  # v2.0.0 (duckdb_commit d54cbbe3), ci-tools v2.0-cyanoptera. Keep these in
   # step with it, and exclude_archs with the descriptor's excluded_platforms.
   build:
     name: Registry build
-    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@969bc76276acec1c0a3922ff500d2ec3a1a3b037 # v2.0-cyanoptera
+    uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@8f59772b4ef9a13837b3e353db032b3aca300d04 # v2.0-cyanoptera
     with:
       extension_name: improv
-      duckdb_version: b15358c371daf10dad799a43b6167f6ccdce84d8
-      duckdb_tag: v2.0.0-alpha46057
+      duckdb_version: v2.0.0
+      duckdb_commit: d54cbbe3df17e8e5ce68312f483b4155836112aa
       ci_tools_version: v2.0-cyanoptera
       extra_toolchains: rust;python3
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl
@@ -61,14 +61,10 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: improv-b15358c371daf10dad799a43b6167f6ccdce84d8-extension-linux_amd64
+          name: improv-v2.0.0-extension-linux_amd64
           path: artifact
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ninja-build cmake unzip
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: duckdb-cli
-          key: duckdb-cli-v1.5.6-b15358c371-${{ runner.os }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends unzip
       - name: DuckDB CLIs
         run: ci/duckdb-clis.sh "$GITHUB_WORKSPACE/duckdb-cli"
       - name: smoke.sh in both
@@ -76,7 +72,7 @@ jobs:
           ext="$(find artifact -name improv.duckdb_extension | head -1)"
           test -n "$ext"
           tail -c 600 "$ext" | strings | grep -qx C_STRUCT   # the stable ABI, not C_STRUCT_UNSTABLE
-          for v in v1.5.6 v2.0.0-alpha46057; do
+          for v in v1.5.6 v2.0.0; do
             EXT="$PWD/$ext" DUCKDB="$GITHUB_WORKSPACE/duckdb-cli/$v/duckdb" \
               bash crates/duckdb_improv/test/smoke.sh
           done

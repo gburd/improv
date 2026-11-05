@@ -166,11 +166,7 @@ jobs:
           path: improv
           submodules: recursive
       - name: Install build deps
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv ninja-build cmake unzip
-      - uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: duckdb-cli
-          key: duckdb-cli-v1.5.6-b15358c371-${{ runner.os }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-venv unzip
       - name: DuckDB CLIs
         run: improv/ci/duckdb-clis.sh "$GITHUB_WORKSPACE/duckdb-cli"
       - name: Build, test, smoke in v1.5.6 and v2.0, package
@@ -184,7 +180,7 @@ jobs:
           ci/manylinux.sh make configure release test_release
           ext="$PWD/build/release/extension/improv/improv.duckdb_extension"
           ci/glibc-floor.sh 2.28 3.4.25 "$ext"
-          for v in v1.5.6 v2.0.0-alpha46057; do
+          for v in v1.5.6 v2.0.0; do
             EXT="$ext" DUCKDB="$GITHUB_WORKSPACE/duckdb-cli/$v/duckdb" bash crates/duckdb_improv/test/smoke.sh
           done
           staging="improv-${ver}-duckdb-linux_amd64"
@@ -429,7 +425,7 @@ jobs:
           body: |
             Descriptor bump for improv ${{ github.ref_name }} (commit ${{ github.sha }}).
             Stable C API (v1.5.6 floor): qualified with the registry's own build
-            (extension-ci-tools v2.0-cyanoptera, DuckDB v2.0.0-alpha46057) and
+            (extension-ci-tools v2.0-cyanoptera, DuckDB v2.0.0) and
             smoke tested in DuckDB v1.5.6 and v2.0 by gburd/improv's
             duckdb.yml and release.yml.
 

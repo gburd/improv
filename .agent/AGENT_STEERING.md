@@ -223,9 +223,10 @@ shell, its own workspace, mentat's layout: extension-ci-tools submodule +
 root `Makefile` for the registry) over `crates/duckdb_model` (pure core,
 reuses `pg_model`). SQL: `improv_calc`/`improv_calc_text`,
 `improv_functions([query :=])`, `improv(source, model)`. **Stable C API**
-(v1.5.6 floor), unlike mentat: the registry builds on DuckDB
-v2.0.0-alpha46057 since community-extensions #3079, and one binary is tested
-in v1.5.6 and v2.0 (`ci/duckdb_improv.sh`, `.github/workflows/duckdb.yml`).
+(v1.5.6 floor), unlike mentat: the registry builds on DuckDB 2.0 since
+community-extensions #3079 (v2.0.0 final, d54cbbe3, since 2026-10-20), and
+one binary is tested in v1.5.6 and v2.0.0 (`ci/duckdb_improv.sh`,
+`.github/workflows/duckdb.yml`).
 Reasoning: `crates/duckdb_improv/README.md` "Pins". Guide
 `docs/src/duckdb.md`. Qualified at 874a031 on all five registry platforms
 (GitHub run 39177542841, plus the v1.5.6 + v2.0 load check); first

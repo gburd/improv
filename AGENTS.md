@@ -72,7 +72,7 @@ The full "tidy" gate — all must be error- AND warning-free:
 10. duckdb_improv, its own Cargo workspace: in `crates/duckdb_improv`,
    `cargo fmt -- --check`, `cargo clippy --all-targets -- -D warnings`,
    `make configure release test_release`, and `test/smoke.sh` with BOTH a
-   DuckDB v1.5.6 CLI and a v2.0 CLI (`DUCKDB=...`): the binary must keep
+   DuckDB v1.5.6 CLI and a v2.0.0 CLI (`DUCKDB=...`): the binary must keep
    loading into both (see its README, "Pins"). `ci/duckdb_improv.sh <dir>`
    runs all of it, as CI does
 
@@ -172,7 +172,7 @@ is rustc **1.97** (`rust-version` in the workspace; CI has a 1.97 job).
   `duckdb/extension-ci-tools/_extension_distribution.yml@v2.0-cyanoptera`
   with the inputs the registry passes, on every platform the descriptor
   does not exclude, then smoke tests the linux_amd64 artifact in DuckDB
-  v1.5.6 and v2.0).
+  v1.5.6 and v2.0.0).
 - **DuckDB Community Extensions:** the descriptor is
   `crates/duckdb_improv/community-extensions/description.yml`. The first
   registration is a manual PR to duckdb/community-extensions with

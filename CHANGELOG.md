@@ -219,6 +219,10 @@ this project follows [Semantic Versioning](https://semver.org/).
   extension stays on duckdb-rs 1.10506 (the DuckDB v1.5.6 C API floor):
   duckdb-rs 1.20000 reads past the end of v1.5.6's API struct
   (`crates/duckdb_improv/README.md`, "Pins").
+- **The DuckDB extension is tested against DuckDB v2.0.0** (was the
+  v2.0.0-alpha46057 build), the release the Community Extensions registry
+  now builds against, as well as v1.5.6, its C API floor. One binary
+  still loads into both.
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.

@@ -90,8 +90,8 @@ Load an unsigned local build with `duckdb -unsigned` (or
 |---|---|---|
 | duckdb-rs | `~1.10506.1` (DuckDB v1.5.6) | `Cargo.toml` |
 | C API | **stable** (`USE_UNSTABLE_C_API` unset), floor `TARGET_DUCKDB_VERSION=v1.5.6` | `Makefile` |
-| extension-ci-tools | `v2.0-cyanoptera` (969bc76) | submodule; `.github/workflows/duckdb.yml` |
-| Tested DuckDB | v1.5.6 (CLI, Python) and v2.0.0-alpha46057 (CLI built at b15358c3, Python dev wheel) | CI `test-duckdb`, `duckdb.yml` |
+| extension-ci-tools | `v2.0-cyanoptera` (8f59772) | submodule; `.github/workflows/duckdb.yml` |
+| Tested DuckDB | v1.5.6 and v2.0.0 (d54cbbe3), each as the release CLI and the Python package | CI `test-duckdb`, `duckdb.yml` |
 
 mentat's DuckDB extension uses the **unstable** C API: its footer says
 `C_STRUCT_UNSTABLE` + `v1.5.6`, and DuckDB loads such a binary only into
@@ -100,26 +100,30 @@ no longer does:
 
 - **The registry builds against v2.0 now.** Since duckdb/community-extensions
   PR #3079 (merged 2026-10-15), `.github/workflows/build.yml` builds and
-  deploys every merged descriptor with `duckdb_version: b15358c3…`,
-  `duckdb_tag: v2.0.0-alpha46057`, `ci_tools_version: v2.0-cyanoptera`. The
-  v1.4.5 (`build_andium.yml`) and "next" (`build_next.yml`) workflows are
-  `if: false`; `repo.variegata` / `repo.andium` refs are used only when
-  someone dispatches `build.yml` by hand for v1.5.6 / v1.4.5.
-- **Evidence it deploys to the 2.0 path:** extensions merged after #3079
-  (finetype, duck_hunt, clickhouse_scanner) have fresh artifacts under
-  `community-extensions.duckdb.org/v2.0.0-alpha46057/linux_amd64/`, dated
-  2026-10-16, while their `v1.5.6/` artifacts are from September.
-- **Its test step still uses DuckDB 1.5.6.** The registry's test venv runs
-  `pip install duckdb` (= 1.5.6, the latest stable on PyPI), so an
-  unstable-API v1.5.6 binary passes the registry's CI (mentat #3072 does)
-  and is then published where DuckDB 2.0 users install from. We checked:
-  DuckDB 2.0 refuses mentat's v1.5.6 binary ("built specifically for DuckDB
-  version 'v1.5.6'").
+  deploys every merged descriptor against DuckDB 2.0 with
+  `ci_tools_version: v2.0-cyanoptera`: first v2.0.0-alpha46057 (b15358c3),
+  and since 2026-10-20 the v2.0.0 release (`duckdb_version: v2.0.0`,
+  `duckdb_commit: d54cbbe3…`). `repo.variegata` / `repo.andium` refs build
+  for v1.5.6 / v1.4.5 only on their own workflows.
+- **Evidence it deploys to the 2.0 path:** extensions such as finetype and
+  duck_hunt have artifacts under
+  `community-extensions.duckdb.org/v2.0.0/linux_amd64/` dated after
+  2026-10-20 (and under `v2.0.0-alpha46057/` from 2026-10-16), while their
+  `v1.5.6/` artifacts are from September.
+- **Its test step tested with DuckDB 1.5.6 until 2.0.0 shipped.** The
+  registry's test venv runs `pip install duckdb`, the latest stable on PyPI:
+  1.5.6 until 2026-10-21, so an unstable-API v1.5.6 binary passed the
+  registry's CI (mentat #3072 did) and was then published where DuckDB 2.0
+  users install from. We checked: DuckDB 2.0 refuses mentat's v1.5.6
+  binary ("built specifically for DuckDB version 'v1.5.6'"). Since then
+  the latest is 2.0.0, so the registry's tests no longer cover v1.5.6:
+  ours do.
 - **The stable C API is forward compatible.** A `C_STRUCT` binary records a
   C API *floor*. DuckDB loads it when the floor is ≤ its own and hands it
   the v1 function-pointer struct. finetype's stable-API binary (floor
-  v1.2.0) loads into both v1.5.6 and 2.0. In v2.0.0-alpha46057's
-  `duckdb_extension.h` the `duckdb_ext_api_v1` struct is v1.5.6's 546
+  v1.2.0) loads into both v1.5.6 and 2.0. In v2.0.0's (and
+  v2.0.0-alpha46057's) `duckdb_extension.h` the `duckdb_ext_api_v1`
+  struct is v1.5.6's 546
   entries with identical signatures in the same order, plus 2 appended
   (`duckdb_create_timestamp_tz_ns`, `duckdb_get_timestamp_tz_ns`), 548 in
   all. duckdb-rs 1.10506's struct has the same 546. A v1.5.6-floor binary
@@ -129,7 +133,7 @@ no longer does:
   in the stable struct; the extension builds and runs with the stable ABI.
 - **Proof, kept tested:** one `make release` artifact passes `test/smoke.sh`
   and `test/sql/improv.test` under the DuckDB v1.5.6 CLI and Python package
-  *and* the v2.0.0-alpha46057 CLI and 2.0 dev Python package. CI's
+  *and* the v2.0.0 CLI and Python package. CI's
   `test-duckdb` job and `.github/workflows/duckdb.yml` run both.
 
 **Why not duckdb-rs 1.20000 (DuckDB 2.0) yet.** It builds unchanged, and
