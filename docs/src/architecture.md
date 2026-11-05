@@ -21,11 +21,16 @@ the ones below it.
 | `cli` | `improv_cli` | The `improv` command-line tool. |
 | `tui` | `improv_tui` | `improv-tui`, a VisiCalc-style terminal pivot grid. |
 | `gui` | `improv_gui` | `improv-gui`, the desktop GUI (`egui`/`eframe`). |
+| `gui_web` | `improv_gui_web` | The web GUI: the desktop GUI's worksheet, theme and menu compiled to `wasm32-unknown-unknown`, over `improv-server`'s `/v1` API ([The Web GUI](./web-gui.md)). |
+| `gui_cosmic` | `improv_gui_cosmic` | `improv-cosmic`, a COSMIC desktop GUI on libcosmic, in a Cargo workspace of its own ([The COSMIC Desktop GUI](./cosmic-gui.md)). |
+| `policy` | `improv_policy` | Cedar access policies: the schema, the evaluator with its per-session decision cache, the templates and the lint ([Access Policies](./policies.md)). |
 | `client` | `improv_client` | What the front ends share without the engine or a store: located formula errors, autocomplete, function help, the formula printer. Builds for `wasm32-unknown-unknown`. |
-| `service` | `improv_service` | The authority a GUI drives: one model, its live engine and the `/v1` operations, each checked by a policy hook and answered with only what the caller may see. `improv-server` serves it. |
+| `service` | `improv_service` | The authority a GUI drives: one model, its live engine and the `/v1` operations, each checked against the model's access policies and answered with only what the caller may see. `improv-server` serves it. |
 | `server` | `improv_server` | `improv-server`, a JSON HTTP API over a model store. |
 | `pg_model` | `improv_pg_model` | The Postgres-free core of `pg_improv`: catalog rows → `Model`, bound rows → cells, engine results → SQL. |
 | `pg_improv` | `pg_improv` | The Postgres extension (pgrx): Improv models over Postgres tables. A thin shell over SPI and `pg_model`. |
+| `duckdb_model` | `improv_duckdb_model` | The DuckDB-free core of the DuckDB extension. |
+| `duckdb_improv` | `duckdb_improv` | The DuckDB extension `improv` (duckdb-rs), in a Cargo workspace of its own ([Improv in DuckDB](./duckdb.md)). |
 
 ## The computation pipeline
 
