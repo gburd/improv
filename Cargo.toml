@@ -52,8 +52,8 @@ hegeltest = "0.52.0"
 chrono = { version = "0.4", features = ["serde"] }
 # Verus's standard library (specs/proofs; erased under plain rustc). Pinned
 # exactly: it must match the Verus release CI verifies with
-# (0.2026.10.04.426d8b0; see scripts/verify.sh). MIT.
-vstd = { version = "=0.0.0-2026-10-04-0306" }
+# (0.2026.11.02.8bf68ee; see scripts/verify.sh). MIT.
+vstd = { version = "=0.0.0-2026-11-01-0251" }
 # Differential dataflow is the mandated computation engine (see AGENT_STEERING.md).
 # Exact pins: every DD minor breaks the API, so a bump is a port of the engine
 # (crates/engine/src/dataflow.rs, session.rs, reduce/order.rs), checked bit

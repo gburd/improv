@@ -5,8 +5,8 @@
 # unpacked directory) and the Rust toolchain that release names, which rustup
 # installs on first use:
 #
-#   curl -LO https://github.com/verus-lang/verus/releases/download/release/0.2026.10.04.426d8b0/verus-0.2026.10.04.426d8b0-x86-linux.zip
-#   unzip verus-0.2026.10.04.426d8b0-x86-linux.zip   # -> verus-x86-linux/
+#   curl -LO https://github.com/verus-lang/verus/releases/download/release/0.2026.11.02.8bf68ee/verus-0.2026.11.02.8bf68ee-x86-linux.zip
+#   unzip verus-0.2026.11.02.8bf68ee-x86-linux.zip   # -> verus-x86-linux/
 #   VERUS_DIR=$PWD/verus-x86-linux scripts/verify.sh
 #
 # The vstd pin in the workspace Cargo.toml must match this release.
