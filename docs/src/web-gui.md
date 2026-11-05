@@ -8,6 +8,11 @@ what you type, and it computes nothing. A derived cell is always the
 server's answer, which is what lets the server hide what a user may not
 see (see [Access](#access)).
 
+![The web GUI in Chromium: the main menu and three worksheet windows, Price, Quantity and Revenue, each with its Pages, Columns and Rows gutters, and the status bar reading ready, live](./img/web-worksheet.png)
+
+*Three worksheets in the browser after logging in; the status bar says
+`live` while the change stream is up.*
+
 ## Serve it
 
 Build it once (it needs the `wasm32-unknown-unknown` Rust target and
@@ -35,6 +40,8 @@ cookie, so another site cannot make your browser act for you (CSRF). A
 reload asks for the token again. A read-only token
 (`IMPROV_API_TOKENS_RO`) shows the model and refuses edits. A server in
 open mode (no tokens, loopback only) logs in at once.
+
+![The Improv - Log In panel: a masked access token half typed, the Log In button, and the line "This server needs an access token."](./img/web-login.png)
 
 ## What it does
 
@@ -75,6 +82,16 @@ open mode (no tokens, loopback only) logs in at once.
   with backoff and resumes from the last version it saw, so nothing is
   missed. A structural change (a new category, a renamed measure) makes
   it re-read the model.
+
+![Two browser sessions side by side: in session A, 250 typed into Quantity 2025Q2 Widget; in session B, the same 250 and Revenue 3000, recalculated by the server](./img/web-live.png)
+
+*Session A types 250 into Quantity; session B, another login, shows it
+and the server's new Revenue (12 × 250) without reloading.*
+
+![The Model Browser window at the right, listing the measures and the categories with their items, each with rename, add-item and delete buttons](./img/web-browser.png)
+
+*The Model Browser, opened from the status bar's **Model Browser**
+button.*
 
 ## What it does not do yet
 
