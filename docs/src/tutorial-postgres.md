@@ -11,6 +11,16 @@ scratch cluster with the settings below, runs every `sql` block in order
 through `psql`, and checks each output block (`docs/tutorials/mdtest.py`).
 CI runs it on every Postgres version in `ci/pg_improv.sh`.
 
+<video src="./img/pg-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/pg-demo.png">
+  <img src="./img/pg-demo.gif" alt="pg_improv in psql: a model over a sales table, an UPDATE flowing to the result table, improv.status, a LANGUAGE improv function, then improv-tui editing the same model and the edit back in the table">
+</video>
+
+*A smaller model than this tutorial's, start to finish: bound to a sales
+table, an `UPDATE` reaching the result table through the sync worker,
+`improv.status`, a `LANGUAGE improv` function, and the TUI editing the
+model by URL.*
+
 ## 1. Set up the server
 
 Logical sync needs a logical-decoding WAL level and pg_improv preloaded, so
