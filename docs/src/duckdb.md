@@ -11,6 +11,16 @@ results current as the data changes, the DuckDB extension is stateless.
 way an analytical query does. Nothing is stored and there is nothing to
 keep in sync.
 
+<video src="./img/duckdb-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/duckdb-demo.png">
+  <img src="./img/duckdb-demo.gif" alt="The DuckDB v1.5.6 CLI loading the improv extension: improv_calc, a Parquet file, the tutorial model, a PIVOT and a query as the source">
+</video>
+
+*The DuckDB v1.5.6 CLI with the extension loaded runs the
+[tutorial](./tutorial-duckdb.md)'s queries, the model a little shorter:
+`improv_calc`, the Parquet file, the model, a `PIVOT` over its result, and
+a query as the source.*
+
 ## Install
 
 ```sql

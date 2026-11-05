@@ -13,6 +13,15 @@ This page is tested: `crates/duckdb_improv/test/tutorial.sh` feeds every
 (`docs/tutorials/mdtest.py`). CI runs it under DuckDB v1.5.6 and v2.0
 (`ci/duckdb_improv.sh`).
 
+<video src="./img/duckdb-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/duckdb-demo.png">
+  <img src="./img/duckdb-demo.gif" alt="The DuckDB v1.5.6 CLI loading the improv extension: improv_calc, a Parquet file, the tutorial model, a PIVOT and a query as the source">
+</video>
+
+*The DuckDB v1.5.6 CLI with the extension loaded runs this tutorial's
+queries, the model a little shorter: `improv_calc`, the Parquet file, the
+model, a `PIVOT` over its result, and a query as the source.*
+
 ## 1. Load the extension
 
 Start the DuckDB CLI with a database file. The extension is in the
