@@ -74,6 +74,19 @@ class Tab:
             time.sleep(0.05)
         raise SystemExit(f"timed out waiting for {what}; title={self.title()!r}")
 
+    def settled(self, pred, what, secs=60):
+        """pred's answer once two reads 0.1 s apart agree: a window's first
+        frame is laid out before it settles, so a widget's first position
+        can be off by the window's final move."""
+        last = self.wait(pred, what, secs)
+        for _ in range(50):
+            time.sleep(0.1)
+            now = self.wait(pred, what, secs)
+            if now == last:
+                return now
+            last = now
+        return last
+
     def cells(self):
         return json.loads(self.js("document.body.dataset.cells || '[]'"))
 
@@ -265,11 +278,25 @@ try:
         # as View > Model Browser).
         btn = json.loads(a.js("document.body.dataset.browserbutton || 'null'"))
         a.click(btn["x"], btn["y"])
-        link = a.wait(lambda: next((l for l in json.loads(a.js("document.body.dataset.links || '[]'"))
-                                    if l["name"] == "Sales"), None), "Sales in the browser")
-        a.click(link["x"], link["y"])
-        a.wait(lambda: any(t["name"] == "Region" for t in json.loads(
-            a.js("document.body.dataset.tiles || '[]'"))), "the Region tile", secs=10)
+        def region_tile():
+            return any(t["name"] == "Region" for t in json.loads(
+                a.js("document.body.dataset.tiles || '[]'")))
+        # The browser window's first frames still lay out (its links move a
+        # few pixels), and about one run in thirty a click there was lost:
+        # click the settled link, and again (at most three times) when no
+        # Sales worksheet shows within 3 s. The step tests that the browser
+        # lists another program's measure and opens it, not click timing.
+        for attempt in range(3):
+            link = a.settled(lambda: next((l for l in json.loads(a.js("document.body.dataset.links || '[]'"))
+                                           if l["name"] == "Sales"), None), "Sales in the browser")
+            a.click(link["x"], link["y"])
+            try:
+                a.wait(region_tile, "the Region tile", secs=3)
+                break
+            except SystemExit:
+                if attempt == 2:
+                    raise
+                print(f"the click on Sales opened nothing; again (attempt {attempt + 2})")
         pages = json.loads(a.js("document.body.dataset.pages || '[]'"))
         pick = next(p for p in pages if p["measure"] == "Sales")
         a.click(pick["x"], pick["y"])
