@@ -2,6 +2,9 @@
 -- The catalog rows are the user's models: register them so pg_dump keeps
 -- them (before 0.9.0 a dump restored every model empty). See
 -- `dump_catalog` in src/lib.rs and `l2_logical` in src/worker.rs.
+-- First, the lock every sync worker transaction takes shared: the update
+-- then holds no catalog lock while a poll reads (src/worker.rs, update_gate).
+SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('improv.update'));
 SELECT pg_catalog.pg_extension_config_dump('improv.model', '');
 SELECT pg_catalog.pg_extension_config_dump('improv.model_id_seq', '');
 SELECT pg_catalog.pg_extension_config_dump('improv.category', '');

@@ -1,6 +1,9 @@
 -- pg_improv 0.9.0 -> 0.10.0 (ALTER EXTENSION pg_improv UPDATE).
 -- The `commit` sync mode (src/commit.rs): one recompute per writing
 -- transaction, before it commits, with nothing on the user's tables.
+-- First, the lock every sync worker transaction takes shared: the update
+-- then holds no catalog lock while a poll reads (src/worker.rs, update_gate).
+SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('improv.update'));
 ALTER TABLE improv.model DROP CONSTRAINT model_sync_mode_check;
 ALTER TABLE improv.model ADD CONSTRAINT model_sync_mode_check
   CHECK (sync_mode IN ('logical', 'trigger', 'commit', 'manual'));

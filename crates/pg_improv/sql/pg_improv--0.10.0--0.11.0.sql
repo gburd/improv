@@ -2,6 +2,9 @@
 -- One logical replication slot and publication per database, improv_db,
 -- instead of one per model (src/worker.rs): the sync worker decodes the WAL
 -- once per poll and routes each change to the models bound to its table.
+-- First, the lock every sync worker transaction takes shared: the update
+-- then holds no catalog lock while a poll reads (src/worker.rs, update_gate).
+SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('improv.update'));
 CREATE FUNCTION improv.sync_publication() RETURNS void STRICT SECURITY INVOKER
   LANGUAGE c AS 'MODULE_PATHNAME', 'sync_publication_wrapper';
 -- improv_db publishes the union of the logical-mode models' bound tables.

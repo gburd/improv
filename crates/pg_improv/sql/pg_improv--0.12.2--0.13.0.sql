@@ -5,6 +5,9 @@
 -- row-level security that applies them. No model has policies after the
 -- update, so every model behaves as before until its owner sets some; no
 -- existing row changes.
+-- First, the lock every sync worker transaction takes shared: the update
+-- then holds no catalog lock while a poll reads (src/worker.rs, update_gate).
+SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtext('improv.update'));
 CREATE FUNCTION improv.unrestricted(model bigint) RETURNS bool
   STRICT STABLE SECURITY INVOKER LANGUAGE c AS 'MODULE_PATHNAME', 'unrestricted_wrapper';
 CREATE FUNCTION improv.cell_visible(model bigint, measure bigint, dims text[]) RETURNS bool

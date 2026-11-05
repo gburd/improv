@@ -37,6 +37,9 @@ cargo pgrx test pg17                                             # the extension
 
 **Upgrading:** install the new release, restart Postgres (the preloaded
 library is loaded at startup), then `ALTER EXTENSION pg_improv UPDATE`. The
+sync worker pauses while the update runs (each update script takes an
+advisory lock its polls wait on), so the two never deadlock over the
+catalog's locks. The
 update scripts (`sql/pg_improv--<old>--<new>.sql`) ship with every release,
 and `tests/upgrade.sh` updates a live database from every earlier release,
 with a model in each sync mode, on each supported Postgres major.

@@ -651,6 +651,7 @@ fn in_txn<R>(f: impl FnOnce() -> Res<R>) -> Result<R, String> {
     let r = PgTryBuilder::new(move || {
         // The whole wrapper, not its field: closures capture disjointly.
         let f = f;
+        update_gate().map_err(|e| e.to_string())?;
         (f.0)().map_err(|e| e.to_string())
     })
     .catch_others(|e| {
@@ -1005,6 +1006,32 @@ fn drop_queued() {
     if let Err(e) = in_txn(drop_queued_slots) {
         log!("pg_improv sync: dropping queued slots: {e}");
     }
+}
+
+/// The key of the advisory lock an `ALTER EXTENSION pg_improv UPDATE`
+/// holds exclusively for its whole transaction (each update script takes it
+/// first, as `pg_catalog.hashtext('improv.update')`) and each worker
+/// transaction holds shared before it reads a catalog table.
+const UPDATE_LOCK: &std::ffi::CStr = c"improv.update";
+
+/// Wait out a running `ALTER EXTENSION pg_improv UPDATE` before this
+/// transaction touches the catalog. The update locks catalog tables one
+/// after another (an `ALTER POLICY` is an ACCESS EXCLUSIVE lock), and a
+/// poll reads them in another order: with the poll holding a read lock the
+/// update wanted and waiting on one it held, Postgres broke the deadlock by
+/// failing the update (seen in CI on PG 17). Read-only: the lock takes no
+/// transaction id, so an idle poll still writes no WAL.
+fn update_gate() -> Res<()> {
+    let key = UPDATE_LOCK.to_str().unwrap_or("improv.update");
+    Spi::connect(|c| {
+        c.select(
+            "SELECT pg_catalog.pg_advisory_xact_lock_shared(pg_catalog.hashtext($1))",
+            None,
+            &[key.into()],
+        )
+        .map(drop)
+    })?;
+    Ok(())
 }
 
 /// Whether pg_improv's L2 catalog, 0.11.0's shared slot included, exists in

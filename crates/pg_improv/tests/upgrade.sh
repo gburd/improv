@@ -195,7 +195,25 @@ for from in "$@"; do
 		[ -n "$(q "SELECT path FROM pg_extension_update_paths('pg_improv') WHERE source = '$(version_of "$t")' AND target = '$to'")" ] ||
 			fail "ALTER EXTENSION UPDATE finds no path from $t to $to"
 	done
+	# The update against a poll mid-transaction, as the worker runs one: it
+	# holds the update lock shared and has read improv.sync_state when the
+	# update starts, then reads improv.measure. Without the lock (each update
+	# script takes it first) the update locked measure, waited on sync_state,
+	# and Postgres failed it with a deadlock (CI, PG 17).
+	poll=$W/poll.sql
+	cat >"$poll" <<-'POLL'
+		BEGIN;
+		SELECT pg_advisory_xact_lock_shared(hashtext('improv.update'));
+		SELECT count(*) FROM improv.sync_state;
+		SELECT pg_sleep(1.5);
+		SELECT count(*) FROM improv.measure;
+		COMMIT;
+	POLL
+	"$PG_BIN/psql" -h "$W" -p "$P" -U improv -d t -qAtX -v ON_ERROR_STOP=1 -f "$poll" >"$W/poll.out" 2>&1 &
+	poll_pid=$!
+	sleep 0.5
 	q "ALTER EXTENSION pg_improv UPDATE"
+	wait "$poll_pid" || fail "the poll beside the update failed: $(cat "$W/poll.out")"
 	eq "$(q "SELECT extversion FROM pg_extension WHERE extname = 'pg_improv'")" "$to" "updated version"
 	# 0.12.0: a measure's number format (H1-22), General (NULL) for every measure.
 	eq "$(q "SELECT format_type(atttypid, atttypmod) FROM pg_attribute WHERE attrelid = 'improv.measure'::regclass AND attname = 'format'")" \

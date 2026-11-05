@@ -253,6 +253,16 @@ this project follows [Semantic Versioning](https://semver.org/).
   reused transaction also kept the model's version from moving, so an open
   web page never heard of the server's next edit. Each write now reopens
   the store first when another program has committed since.
+- **pg_improv: `ALTER EXTENSION pg_improv UPDATE` no longer deadlocks with
+  the sync worker.** The update locks catalog tables one after another, and
+  a poll reads them in another order; when a poll held a read lock the
+  update wanted while waiting on one the update held, Postgres failed the
+  update with "deadlock detected" (a retry worked). Each update script now
+  takes an advisory lock first that every worker transaction holds shared,
+  so a poll waits for the update, or the update for the poll, holding no
+  catalog lock. A worker from before this release (no restart after
+  installing it) does not take the lock: restart before updating, as the
+  README says.
 - **improv-server on a Postgres-hosted model answers the measure routes
   again.** The access check that came with Cedar enforcement read the
   stored policies on the async request thread, where the blocking
