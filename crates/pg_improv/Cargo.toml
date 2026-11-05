@@ -14,11 +14,7 @@ publish = false
 [workspace]
 
 [lib]
-crate-type = ["cdylib", "lib"]
-
-[[bin]]
-name = "pgrx_embed_pg_improv"
-path = "./src/bin/pgrx_embed.rs"
+crate-type = ["cdylib"]
 
 [features]
 default = ["pg17"]
@@ -29,7 +25,7 @@ pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
 pg_test = []
 
 [dependencies]
-pgrx = "=0.17.0"
+pgrx = "=0.19.3"
 improv_core_model = { path = "../core_model" }
 improv_engine = { path = "../engine" }
 improv_nl_formula = { path = "../nl_formula" }
@@ -39,7 +35,7 @@ libc = "0.2"
 serde_json = "1"
 
 [dev-dependencies]
-pgrx-tests = "=0.17.0"
+pgrx-tests = "=0.19.3"
 
 [profile.dev]
 panic = "unwind"

@@ -26,7 +26,7 @@ if [ ! -x "$pgc" ]; then
 	# needs openssl-devel.
 	dnf -q -y --enablerepo=powertools install "postgresql$pg-devel" clang clang-devel openssl-devel
 fi
-command -v cargo-pgrx >/dev/null || cargo install cargo-pgrx --version 0.17.0 --locked
+cargo install -q cargo-pgrx --version "$(sed -n 's/^pgrx = "=\{0,1\}\([0-9.]*\)"/\1/p' "$crate/Cargo.toml")" --locked
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
 work=$(mktemp -d)

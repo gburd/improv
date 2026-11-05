@@ -31,7 +31,11 @@ CACHE=${PGI_OLD_CACHE:-$HOME/.cache/pgi-old}
 to=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
 version_of() { git -C "$root" show "$1:crates/pg_improv/Cargo.toml" | sed -n 's/^version = "\(.*\)"/\1/p' | head -1; }
 older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" = "$1" ]; }
-pgrx() { ${PGRX_LOCK:+flock -o "$PGRX_LOCK"} cargo pgrx "$@"; }
+pgrx_pin() { sed -n 's/^pgrx = "=\{0,1\}\([0-9.]*\)"/\1/p' | head -1; }
+# cargo-pgrx refuses a crate whose pgrx is another version: a release on an
+# older pgrx builds with its own cargo-pgrx, installed once into the cache.
+cpgrx=(cargo pgrx)
+pgrx() { ${PGRX_LOCK:+flock -o "$PGRX_LOCK"} "${cpgrx[@]}" "$@"; }
 # pgrx-pg-sys builds for a major `cargo pgrx init` named, or for PGRX_PG_CONFIG_PATH.
 # (Only when not named: a changed PGRX_PG_CONFIG_PATH rebuilds pgrx-pg-sys.)
 grep -qs "^pg$PGV = " "${PGRX_HOME:-$HOME/.pgrx}/config.toml" || export PGRX_PG_CONFIG_PATH=$PG_CONFIG
@@ -131,10 +135,17 @@ for from in "$@"; do
 	if [ ! -f "$old/pg_improv.so" ]; then
 		mkdir -p "$W/src"
 		git -C "$root" archive "$from" | tar -x -C "$W/src"
+		pv=$(pgrx_pin <"$W/src/crates/pg_improv/Cargo.toml")
+		if [ "$pv" != "$(pgrx_pin <"$here/Cargo.toml")" ]; then
+			[ -x "$CACHE/cargo-pgrx-$pv/bin/cargo-pgrx" ] ||
+				cargo install -q --locked --root "$CACHE/cargo-pgrx-$pv" cargo-pgrx --version "$pv"
+			cpgrx=("$CACHE/cargo-pgrx-$pv/bin/cargo-pgrx" pgrx)
+		fi
 		# A test fixture: no fat LTO, so a cold cache builds in minutes; and
 		# no -Dwarnings, which a newer compiler may turn on old code.
 		CARGO_TARGET_DIR="$W/target-old" CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
 			RUSTFLAGS="" package "$W/src/crates/pg_improv" "$old.tmp"
+		cpgrx=(cargo pgrx)
 		find "$W/src" -delete
 		[ ! -d "$old" ] || find "$old" -delete
 		mv "$old.tmp" "$old"

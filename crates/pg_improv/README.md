@@ -24,8 +24,8 @@ Supports Postgres **15, 16, 17 and 18**. Three ways to get it:
   under the paths `pg_config` reports).
 - **PGXN:** `pgxn download pg_improv`, then build it as below. It is a pgrx
   (Rust) extension, so it builds with `cargo pgrx`, not `make`.
-- **Source:** needs `cargo-pgrx` 0.17 (`cargo install cargo-pgrx --version
-  0.17.0 --locked && cargo pgrx init --pg17 $(which pg_config)`).
+- **Source:** needs `cargo-pgrx` 0.19.3 (`cargo install cargo-pgrx --version
+  0.19.3 --locked && cargo pgrx init --pg17 $(which pg_config)`).
 
 ```sh
 cd crates/pg_improv

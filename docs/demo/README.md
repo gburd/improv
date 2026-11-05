@@ -27,7 +27,7 @@ Linux box with the binaries already built.
 
 **Postgres movies** (`pg-demo.sh`, `policies-demo.sh`) record inside the
 `pg17.Containerfile` image: rust:1.97-trixie, as CI uses, with PGDG
-Postgres 17 and cargo-pgrx 0.17.0. `pg-container.sh` builds the image
+Postgres 17 and cargo-pgrx 0.19.3. `pg-container.sh` builds the image
 (podman caches it), mounts the checkout at `/src`, installs pg_improv
 from it (`cargo pgrx install --release`, as `ci/pg_improv.sh` does),
 builds `improv` and `improv-tui`, and runs the script, which writes its

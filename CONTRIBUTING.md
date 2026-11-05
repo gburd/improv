@@ -21,7 +21,7 @@ RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps
 mdbook build docs               # the guide (mdbook, mdbook-mermaid, mdbook-linkcheck)
 ```
 
-The Postgres extension, from `crates/pg_improv` (needs `cargo-pgrx` 0.17 and
+The Postgres extension, from `crates/pg_improv` (needs `cargo-pgrx` 0.19.3 and
 Postgres 17):
 
 ```sh

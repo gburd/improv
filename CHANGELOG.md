@@ -210,6 +210,10 @@ this project follows [Semantic Versioning](https://semver.org/).
 - **The engine runs on differential-dataflow 0.26.0 and timely 0.32.0**
   (were 0.13.0 and 0.13.0). Results are the same, bit for bit, on any
   worker count; `improv_engine`'s public API does not change.
+- **pg_improv builds with pgrx 0.19.3** (was 0.17.0): building it from
+  source, or from PGXN, needs `cargo install cargo-pgrx --version 0.19.3
+  --locked`. Postgres 15 to 18 stay supported, and the SQL it installs is
+  unchanged. Its other dependencies are at their newest.
 - **`improv_store::StoreError::Unsupported` is gone.** Nothing returns it
   since both backends keep access policies (pg_improv 0.13 for a Postgres
   model); a `match` with an arm for it no longer compiles.

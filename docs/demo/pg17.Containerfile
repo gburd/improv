@@ -7,7 +7,7 @@ RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends postgre
  && /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null \
  && apt-get install -y -qq --no-install-recommends postgresql-17 postgresql-server-dev-17 libclang-dev clang sudo python3 python3-pexpect git >/dev/null \
  && apt-get clean
-RUN cargo install cargo-pgrx --version 0.17.0 --locked
+RUN cargo install cargo-pgrx --version 0.19.3 --locked
 # The demo runs as the calling user (podman --userns=keep-id): let it install
 # the extension and use cargo's home.
 RUN chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib && chmod -R a+rwX /usr/local/cargo

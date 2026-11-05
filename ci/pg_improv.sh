@@ -46,7 +46,9 @@ fi
 
 step "cargo-pgrx, pgspot"
 rustup component add rustfmt clippy >/dev/null 2>&1 || true
-command -v cargo-pgrx >/dev/null || cargo install cargo-pgrx --version 0.17.0 --locked
+# The cargo-pgrx of the crate's pgrx pin (they must match; this replaces a
+# cached older one, and is a no-op when it is already installed).
+cargo install -q cargo-pgrx --version "$(sed -n 's/^pgrx = "=\{0,1\}\([0-9.]*\)"/\1/p' "$crate/Cargo.toml")" --locked
 if ! command -v pgspot >/dev/null; then
 	python3 -m venv /opt/pgspot && /opt/pgspot/bin/pip install -q pgspot==0.9.3
 	export PATH="/opt/pgspot/bin:$PATH"

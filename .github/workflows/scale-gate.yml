@@ -80,7 +80,7 @@ jobs:
           /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y >/dev/null
           apt-get install -y -qq --no-install-recommends postgresql-17 postgresql-server-dev-17 >/dev/null
           chmod -R a+w /usr/share/postgresql/17/extension /usr/lib/postgresql/17/lib
-          command -v cargo-pgrx >/dev/null || cargo install cargo-pgrx --version 0.17.0 --locked
+          cargo install -q cargo-pgrx --version "$(sed -n 's/^pgrx = "=\{0,1\}\([0-9.]*\)"/\1/p' crates/pg_improv/Cargo.toml)" --locked
           useradd -m pgi
           chown -R pgi . "$CARGO_HOME"
           as_pgi() { sudo -u pgi env PATH="$PATH" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" "$@"; }
