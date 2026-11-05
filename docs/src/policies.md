@@ -9,10 +9,12 @@ denied, and a `forbid` always wins over a `permit`.
 The policies are stored with the model and enforced where the model is
 served: by pg_improv, in the database, for every Postgres client (see
 [Improv in Postgres](./postgres.md#access-policies)); by `improv-server`,
-on every route (see [The HTTP Server](./server.md#access-policies)); and
-by `improv policy check` for testing. A local model file has no
-protection of its own: whoever can read the file can read all of it,
-whatever its policies say. The design
+on every route (see [The HTTP Server](./server.md#access-policies)), and
+so for [the web GUI](./web-gui.md#access); and by `improv policy check`
+for testing. A local model file has no protection of its own: whoever
+can read the file can read all of it, whatever its policies say, and
+`improv-gui`, `improv-cosmic` and `improv-tui` do not apply them to a
+file they open. The design
 is in [the design note](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md).
 
 <video src="./img/policies-demo.mp4" controls muted loop playsinline width="100%"
@@ -241,7 +243,10 @@ names, the rest of a category's items), so a read costs per cell, not
 per policy. In Postgres the row-level security qual decides once per
 statement whether every row, no row, the rows without one or two hidden
 names, or each row on its own is shown; a row checked on its own costs
-about 100 ns. The fast answers need the result rows to name only the
+about 100 ns. Before that per-statement decision, the same row-by-row
+read took about 1 s (1007 ms against the owner's 61 ms; the measurements
+and `docs/reviews/bench/rls_1m.sh` are in [the design
+note](https://codeberg.org/gregburd/improv/src/branch/main/docs/reviews/2026-11-02-cedar-policies.md)). The fast answers need the result rows to name only the
 model's items: after an item is renamed or deleted, rows are checked one
 by one until the next `recalc`.
 

@@ -8,6 +8,8 @@ job, and switch when the job changes.
 | You want to… | Use | Where the model lives |
 | --- | --- | --- |
 | explore a model, pivot it, edit numbers, add formulas with a mouse | [the desktop GUI](#the-desktop-gui-improv-gui) | a store file, or Postgres |
+| the same in a browser, several people at once | [the web GUI](#the-web-gui) | behind `improv-server` |
+| the same as a native COSMIC application (a preview) | [the COSMIC GUI](#the-cosmic-gui-improv-cosmic) | a store file, or Postgres |
 | do the same over SSH or in a terminal | [the TUI](#the-terminal-ui-improv-tui) | a store file, or Postgres |
 | script a model, build it in CI, diff it, load data in bulk | [the CLI](#the-cli-improv) | a store file, or Postgres |
 | push a live feed through a model and get the changed results out | [streaming](#streaming-improv-stream) | a store file, or Postgres |
@@ -64,6 +66,21 @@ improv-gui 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 
 Every change is saved as you make it. [The Desktop GUI](./gui-tour.md) walks
 through each window.
+
+## The web GUI
+
+**Use it for:** the desktop GUI's worksheets in a browser, for people who
+should not get the model file. `improv-server --static DIR` serves it; the
+server computes, enforces the model's [access policies](./policies.md),
+and streams each change to every open page.
+[The Web GUI](./web-gui.md) has the setup and what it does not do yet.
+
+## The COSMIC GUI (`improv-cosmic`)
+
+**Use it for:** a native application on the COSMIC desktop that takes the
+desktop's theme and portals. A preview: the grid, cell and formula
+editing, pivoting, views, charts, copy and paste, and undo, but not yet
+everything `improv-gui` has. See [The COSMIC Desktop GUI](./cosmic-gui.md).
 
 ## The terminal UI (`improv-tui`)
 
@@ -260,43 +277,40 @@ tokens and limits.
 
 ## What each front end can do
 
-Checked against each tool on 2026-10-22 (0.11.0 development). **yes**: it
-does it; **—**: it does not; a note says how, or what is missing. The
-bold gaps are tracked as tasks for 1.0.
+Checked against each tool on 2026-10-22 (0.11.0 development); the GUI,
+server and policy rows again on 2026-11-05 (0.13 development). **yes**:
+it does it; **—**: it does not; a note says how, or what is missing. The
+server column is its `/v1` API, which [the web GUI](./web-gui.md) drives;
+[the COSMIC GUI](./cosmic-gui.md#not-yet) lists its own gaps.
 
 | | CLI | TUI | GUI | server | pg_improv | DuckDB |
 | --- | --- | --- | --- | --- | --- | --- |
-| **Open a model** (file or `postgres://`) | yes | from the command line | from the command line (File ▸ Open is disabled) | one per process | its own catalog | — (computed per query) |
-| **Create a model** | `init` | open a new file | — (File ▸ New is disabled) | — | `create_model` | inline `improv(source, model)` |
-| Add categories and items | `add-category`, `add-item` | `c` | via CSV import | — | `bind_category` (items from the column) | `category` lines |
-| Add an input measure | `add-measure` | `n` | via CSV import | — | `bind_measure` | `input` lines |
 | **Open a model** (file or `postgres://`) | yes | from the command line | File ▸ Open…, or the command line | one per process | its own catalog | — (computed per query) |
-| **Create a model** | `init` | — | File ▸ New | — | `create_model` | inline `improv(source, model)` |
-| Add categories and items | `add-category`, `add-item` | via CSV import | Edit ▸ Add Category / Add Item, or type in a tile | — | `bind_category` (items from the column) | `category` lines |
-| Add an input measure | `add-measure` | via CSV import | Edit ▸ Add Input Measure | — | `bind_measure` | `input` lines |
-| Rename, delete | — | `r`, `D` | Edit ▸ Rename, Delete… | — | `drop_measure` | — |
-| **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle, `V` rename or delete | open, save, several worksheets at once | — | — (a GUI's views are kept in the catalog) | — |
+| **Create a model** | `init` | open a new file | File ▸ New | — | `create_model` | inline `improv(source, model)` |
+| Add categories and items | `add-category`, `add-item` | `c` | Edit ▸ Add Category / Add Item, or type in a tile | `POST /v1/categories`, `/v1/categories/{id}/items` | `bind_category` (items from the column) | `category` lines |
+| Add an input measure | `add-measure` | `n` | Edit ▸ Add Input Measure | `POST /v1/measures` | `bind_measure` | `input` lines |
+| Rename, delete | — | `r`, `D` | Edit ▸ Rename, Delete… | `PUT`, `DELETE` on `/v1/categories`, `/v1/items`, `/v1/measures` | `drop_measure` | — |
+| **Views** (saved layouts) | `save-view`, `list` | `S` save, `v` cycle, `V` rename or delete | open, save, several worksheets at once | `/v1/views` | — (a GUI's views are kept in the catalog) | — |
 | **Pivot** | `save-view --rows --cols` | `p` | drag tiles | — | — (result tables are flat) | — (rows are flat) |
 | Number formats (decimals, thousands separators) | `format`; `show`, `eval`, `stream` print in it | `#` | Format menu | — (values as numbers) | kept in `improv.measure.format`; results are numbers | — |
-| Edit an input cell | `set` | yes | yes | `POST /measures/:id/cells` | write your table | — |
-| **Formulas: edit** | `define`, `add-derived` | `e` edits the viewed one, `=` adds one | edit and add | — | `define` | `Name = formula` lines |
+| Edit an input cell | `set` | yes | yes | `POST /v1/cells` | write your table, or `improv.set_cells` | — |
+| **Formulas: edit** | `define`, `add-derived` | `e` edits the viewed one, `=` adds one | edit and add | `POST`, `PUT /v1/measures` | `define` | `Name = formula` lines |
 | Autocomplete | shell completion of commands only | Tab | as you type | — | — | — |
-| Located errors | `parse error at N` | marked under the token, with a hint | underlined, explained | — | `parse error at N` | `model line L: … at N` |
+| Located errors | `parse error at N` | marked under the token, with a hint | underlined, explained | `diagnostic` in the answer | `parse error at N` | `model line L: … at N` |
 | Function help | `man improv-functions` | `?` / F1 | Help ▸ Functions… | — | — | `improv_functions()` |
 | Import CSV | `import-csv` | `I` | wizard | — | `COPY` into a table | `read_csv` as the source |
 | Import SQL | `import-sql` (SQLite), `refresh-sql` | — | — | refreshed by the scheduler | bind any table | any query as the source |
 | `SQL("…")` source | `define` refuses it; use `import-sql` | — | — | — | refused | — |
-| Export | `export` (JSON), `export-csv`, `export-sql` | `E` (CSV) | wizard (CSV) | `GET /model` (JSON) | the result tables | it is a query |
+| Export | `export` (JSON), `export-csv`, `export-sql` | `E` (CSV) | wizard (CSV); Print… to PDF or PostScript | `GET /v1/model` (JSON; refused under policies) | the result tables | it is a query |
 | **Scenarios** | `scenario`, `eval --scenario` | — | — | — | — | — |
-| **Undo** | — | `u`, Ctrl+R to redo | Edit ▸ Undo, Redo | — | — | — |
-| Named LAMBDAs | `define` | `=` | **calls work; define them in the CLI** | computes them | `define` | — (refused; inline `LAMBDA` works) |
-| **Undo** | — | **—** | Edit ▸ Undo, Redo | — | — | — |
-| Named LAMBDAs | `define` | **calls work; define them in the CLI** | `Name = LAMBDA(…)` on the formula list's last line | computes them | `define` | — (refused; inline `LAMBDA` works) |
+| **Undo** | — | `u`, Ctrl+R to redo | Edit ▸ Undo, Redo | `POST /v1/undo`, `/v1/redo`, per session | — | — |
+| Named LAMBDAs | `define` | `=` | `Name = LAMBDA(…)` on the formula list's last line | computes them | `define` | — (refused; inline `LAMBDA` works) |
 | FIXPOINT | yes | yes (the same parser and engine) | yes | yes | yes | in `improv(…)`; not in `improv_calc` |
-| what-if (compute, don't save) | through a stored scenario | — | — | `POST /measures/:id/eval` | `what_if` | — |
-| **Live sync** (see others' writes) | each command reloads | says so on the next key; `R` reloads | offers Reload within 2 s | each request checks the high-water and reloads | logical, trigger, commit sync | — |
+| what-if (compute, don't save) | through a stored scenario | — | — | `POST /v1/measures/{id}/eval` | `what_if` | — |
+| **Live sync** (see others' writes) | each command reloads | says so on the next key; `R` reloads | offers Reload within 2 s | each request checks the high-water and reloads; `GET /v1/changes` streams them | logical, trigger, commit sync | — |
 | Controlled English | — | accepts it as a formula | shows and accepts it | `/nl/parse`, `/nl/describe` | — | — |
 | Keyboard only, screen readers | yes | yes; works under `NO_COLOR` | yes; every control named for AccessKit | — | — | — |
+| **Access policies** (Cedar) | `policy set`, `show`, `check`; a file has no protection of its own | not applied to a file | not applied to a file | enforced on every route | enforced for every role but the owner's side | — |
 
 Every front end that saves refuses to overwrite another writer: the save
 fails with a conflict, and you reload and redo the change.

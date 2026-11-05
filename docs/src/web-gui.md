@@ -65,13 +65,16 @@ open mode (no tokens, loopback only) logs in at once.
   pick, Tab accepts, Esc closes). A formula the server refuses is
   underlined where it went wrong, with the message and a hint, as on the
   desktop.
-- **Menus.** The NeXT main menu. Edit has Undo and Redo (Ctrl+Z,
-  Ctrl+Shift+Z). Format has decimals and thousands separators. Worksheet
-  has Pivot, Add Matrix (another window on the same measure), Remove
-  Matrix, Save View, Add Category, Add Item, Add Input Measure, Rename and
-  Delete. View opens a saved view. Help ▸ User Guide opens this guide.
-  The Model Browser (View ▸ Model Browser) lists measures, categories and
-  items, to open, rename, add and delete them.
+- **Menus.** The desktop's main menu, Improv 1.0's (see [the desktop
+  GUI](./gui-tour.md#the-pivot-grid)), with the commands the web GUI
+  has; the rest draw grayed. Edit has Undo and Redo (Ctrl+Z,
+  Ctrl+Shift+Z), Add Category, Add Item, Add Input Measure, Rename and
+  Delete…. Format has the decimals and thousands separators. Worksheet
+  has Save View. View has New View (another window on the same measure),
+  Close Window and Swap Rows/Columns, then the saved views. Help ▸ User
+  Guide opens this guide. **File ▸ Model Browser…**, or the status bar's
+  **Model Browser** button, lists measures, categories and items, to
+  open, rename, add and delete them.
 - **Undo** is per window session: each page load is a session, and its
   Undo undoes its own changes, not another user's.
 - **Live updates.** The page reads the server's change stream
@@ -95,20 +98,22 @@ button.*
 
 ## What it does not do yet
 
-The CSV wizard, the chart, the Info panel, function help (F1),
-scenarios, item filters, keyboard navigation of the grid, and range
-selection with Copy and Paste are desktop-only. A model with more
+The CSV wizard, graphs, the Info panel, the Inspector and the Format
+panel, printing, context help, function help (F1), scenarios, item
+filters, keyboard navigation of the grid, and range selection with Copy
+and Paste are desktop-only. A model with more
 than about 200,000 cells on one page needs paging the grid does not do
 yet.
 
 ## Access
 
-Every request goes through the server's token check, then through one
-policy hook in `improv_service` for each measure, item and cell it
-touches. With Cedar policies on the model (the security design,
-`docs/reviews/2026-11-02-cedar-policies.md`), a hidden measure, item or
-cell is absent from what the page receives. Totals stay computed over
-everything, by the server.
+Every request goes through the server's token check, then through the
+model's [access policies](./policies.md), for each measure, item and cell
+it touches, with the token's name as the Cedar user (see [The HTTP
+Server](./server.md#access-policies)). A hidden measure, item or cell is
+absent from what the page receives, and an edit of a cell the user may
+not change is refused. Totals stay computed over everything, by the
+server.
 
 ## Accessibility
 

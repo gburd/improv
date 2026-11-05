@@ -7,8 +7,12 @@ spreadsheet functions people know, Excel's names: `IF`, `ROUND`, `NPV`,
 `STDEV`, `TEXT` and some 330 more, plus running totals and `PREV`), and
 every derived value recomputes **incrementally** through a
 differential-dataflow graph. The
-same model opens in a NeXTSTEP-style desktop GUI, a terminal UI, a CLI, a
+same model opens in a NeXTSTEP-style desktop GUI, the same GUI in a web
+browser, a COSMIC desktop GUI (a preview), a terminal UI, a CLI, a
 streaming pipe, an HTTP server, **inside Postgres** and **inside DuckDB**.
+A model can carry **access policies** in
+[Cedar](https://www.cedarpolicy.com), which the server and pg_improv
+enforce ([Access Policies](docs/src/policies.md)).
 
 [![Docs](https://img.shields.io/badge/docs-gburd.github.io%2Fimprov-blue)](https://gburd.github.io/improv/)
 [![CI](https://github.com/gburd/improv/actions/workflows/ci.yml/badge.svg)](https://github.com/gburd/improv/actions/workflows/ci.yml)
@@ -21,7 +25,7 @@ streaming pipe, an HTTP server, **inside Postgres** and **inside DuckDB**.
 [Improv in Postgres](https://gburd.github.io/improv/postgres.html) ·
 [Improv in DuckDB](https://gburd.github.io/improv/duckdb.html)
 
-![The Improv workspace: worksheets, formulas and the model browser](docs/src/img/gui-workspace.png)
+![The Improv desktop GUI: the main menu, two worksheets on one model with their formulas, the model browser and a color graph](docs/src/img/gui-workspace.png)
 
 ```text
 Revenue[Time, Product] = Price[Product] * Quantity[Time, Product]
@@ -36,6 +40,8 @@ Revenue cell and one Total, not the sheet.
 | | Use it for | Start with |
 | --- | --- | --- |
 | **GUI** `improv-gui` | building and exploring a model by hand: drag tiles to pivot, edit cells, add formulas, several worksheets at once | `improv-gui sample.db` |
+| **Web GUI** | the same worksheets in a browser, for many users, under the model's access policies | `improv-server sample.db --static web` ([how](docs/src/web-gui.md)) |
+| **COSMIC GUI** `improv-cosmic` (preview) | a native COSMIC desktop application on the same models | `cd crates/gui_cosmic && cargo run --locked --release -- ../../sample.db` |
 | **TUI** `improv-tui` | the same in a terminal or over SSH | `improv-tui sample.db` |
 | **CLI** `improv` | scripting a model, bulk CSV/SQL import and export, CI | `improv --help`, `man improv` |
 | **Streaming** `improv stream` | pushing a live feed through a model and reading the changed results | `producer \| improv stream m.db Revenue` |
@@ -173,13 +179,16 @@ and [`crates/duckdb_improv/README.md`](crates/duckdb_improv/README.md).
 **TUI:** arrows move · `e`/Enter edit · Tab next measure · `p` pivot ·
 `[` `]` page · Shift+arrows select a range (its sum in the status line) ·
 `f`/`F` filter · `S` save view · `v` cycle views · `I`/`E` CSV import/export ·
-`R` revert to saved · `q` quit and save.
+`c` category, `n` input measure, `=` formula · `r`/`D` rename/delete ·
+`#` number format · `u`/Ctrl+R undo/redo · `R` revert to saved ·
+`?`/F1 keys and functions · `q` quit and save.
 
 **GUI:** drag a tile between strips to pivot (or right-click it) ·
 double-click or Enter to edit · type `Name = formula` on the formula list's
 last line · Shift+click or drag selects a range (its Sum in the status bar) ·
-Ctrl+S save, Ctrl+Z undo, Ctrl+Y redo · **File ▸ Revert to Saved** after a
-save conflict.
+Ctrl+S save, Ctrl+Z undo, Ctrl+Y redo, Ctrl+P print · **File ▸ Revert to
+Saved** after a save conflict · F1 function help, Ctrl+? context help ·
+**Help ▸ Keys…** lists them all.
 
 ## Workspace
 
@@ -196,6 +205,9 @@ save conflict.
 | `improv_cli` | `improv` | Command-line tool and `stream` |
 | `improv_tui` | `improv-tui` | Terminal UI |
 | `improv_gui` | `improv-gui` | Desktop GUI (egui) |
+| `improv_gui_web` | (wasm) | The web GUI, served by `improv-server --static` |
+| `improv_gui_cosmic` | `improv-cosmic` | COSMIC desktop GUI (libcosmic, its own workspace) |
+| `improv_policy` | | Cedar access policies: schema, evaluator, templates, lint |
 | `improv_client` | | What the front ends share: formula errors, autocomplete, function help |
 | `improv_service` | | The authority the web GUI drives (in `improv-server`) |
 | `improv_server` | `improv-server` | JSON HTTP API |

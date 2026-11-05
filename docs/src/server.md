@@ -324,12 +324,11 @@ sees other writers on its next request. A browser's `EventSource` cannot
 send the `Authorization` header: read the stream with `fetch` instead,
 as the web GUI does.
 
-**Access.** Every GUI route asks one policy hook in `improv_service`, for
-each measure, item and cell it touches; today it allows everything the
-token's scope allows. A hidden measure, item or cell is absent from every
-answer, and is refused exactly as one that does not exist. Cedar policies
-(the security design, `docs/reviews/2026-11-02-cedar-policies.md`) plug in
-there.
+**Access.** Every GUI route asks the model's access policies, for each
+measure, item and cell it touches, within what the token's scope allows
+(see [Access policies](#access-policies)). A hidden measure, item or cell
+is absent from every answer, and is refused exactly as one that does not
+exist.
 
 ## Refresh scheduler
 

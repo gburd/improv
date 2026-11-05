@@ -1,8 +1,8 @@
 # The Desktop GUI
 
 `improv-gui` is the egui/eframe desktop front-end, styled after the original
-NeXTSTEP Lotus Improv: NeXT's four-level grayscale (no color anywhere, a gray
-selection), flat controls with 1 px black outlines, worksheet windows with NeXT
+NeXTSTEP Lotus Improv: NeXT's four-level grayscale (color only in graphs,
+as Improv's own; a gray selection), flat controls with 1 px black outlines, worksheet windows with NeXT
 title bars on a dark gray workspace, white grid cells, a formula list in each worksheet window, a floating application menu,
 on-grid category tiles for pivoting, a model browser window and an Info panel.
 
@@ -14,7 +14,9 @@ nix develop -c cargo run -p improv_gui -- sample.db
 ```
 
 A model opens on its first saved view, or, with none, on its first
-measure.
+measure. The same worksheets run in a browser, served by `improv-server`
+([The Web GUI](./web-gui.md)), and [`improv-cosmic`](./cosmic-gui.md)
+is a native COSMIC application on the same models.
 
 <video src="./img/gui-demo.mp4" controls muted loop playsinline width="100%"
   poster="./img/gui-demo.png">
@@ -79,7 +81,7 @@ The window has five regions:
   help](#function-help), **Help ▸ Keys…** a window listing the
   [keys](#keyboard-and-screen-readers), and **Help ▸ User Guide** this
   guide, online, in the browser. **Hide** minimizes and **Quit** closes
-  the window. Print and Services are not built yet and draw grayed out.
+  the window. Services is not built yet and draws grayed out.
   Key equivalents are shown at the right of their item; a capital letter
   means Shift too. See [the key equivalents](#key-equivalents).
 - **Model browser** (window, bottom left of the workspace) — titled
