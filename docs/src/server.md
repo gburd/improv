@@ -7,6 +7,16 @@ improv-server model.db 127.0.0.1:3000   # or IMPROV_ADDR=...; model defaults to 
 improv-server 'postgres://me@127.0.0.1/sales?sslmode=disable&model=plan'
 ```
 
+<video src="./img/server-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/server-demo.png">
+  <img src="./img/server-demo.gif" alt="improv-server: a request refused without a token, the structure, a window of cells, a background change stream, and a cell edit the stream delivers">
+</video>
+
+*improv-server on the sample model: a request without the token refused,
+`/v1/structure`, a window of Revenue cells, then a cell edit that the
+`/v1/changes` stream in the background delivers with every cell it moved,
+and the audit log.*
+
 ## Endpoints
 
 The API is versioned: every route is served under `/v1`, the path the 1.x
