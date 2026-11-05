@@ -69,7 +69,7 @@ mentat = { package = "mentatdb", version = "=1.19.1" }
 ratatui = "0.30"
 crossterm = "0.29"
 # Server (Phase 3).
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
 tower = "0.5"
 # Desktop GUI (Phase 5). egui/eframe — see AGENT_GUI_STEERING §9.1.

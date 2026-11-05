@@ -156,16 +156,16 @@ async fn poller(state: Arc<AppState>) {
 pub const ROUTES: &[&str] = &[
     "/structure",
     "/capabilities",
-    "/measures/:id/window",
+    "/measures/{id}/window",
     "/cells",
     "/measures",
-    "/measures/:id",
+    "/measures/{id}",
     "/categories",
-    "/categories/:id",
-    "/categories/:id/items",
-    "/items/:id",
+    "/categories/{id}",
+    "/categories/{id}/items",
+    "/items/{id}",
     "/views",
-    "/views/:id",
+    "/views/{id}",
     "/undo",
     "/redo",
     "/changes",
@@ -306,7 +306,6 @@ impl Ctx {
     }
 }
 
-#[axum::async_trait]
 impl axum::extract::FromRequestParts<Arc<AppState>> for Ctx {
     type Rejection = Infallible;
 

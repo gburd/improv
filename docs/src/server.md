@@ -31,9 +31,9 @@ is the OpenAPI 3.1 description, and the server serves it at
 | GET | `/v1/openapi.json` | public | | The OpenAPI document. |
 | GET | `/v1/model` | read | | The whole model. Refused (403) for a model with [access policies](./policies.md). |
 | GET | `/v1/measures` | read | | Id, name, kind, categories. |
-| GET | `/v1/measures/:id/values` | read | | Stored inputs, or computed values. |
-| POST | `/v1/measures/:id/eval` | read; write to persist | `{"edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 90}], "persist": false}` | What-if edits through the live engine; `"persist": true` writes them. Ids are numeric; `"value": null` clears a cell. The answer names coordinates by category and item name. |
-| POST | `/v1/measures/:id/cells` | write | `{"coord": {"dims": {"1": 10, "2": 20}}, "value": 90}` | Set one input cell (category id → item id). |
+| GET | `/v1/measures/{id}/values` | read | | Stored inputs, or computed values. |
+| POST | `/v1/measures/{id}/eval` | read; write to persist | `{"edits": [{"measure": 101, "coord": [[1, 10], [2, 20]], "value": 90}], "persist": false}` | What-if edits through the live engine; `"persist": true` writes them. Ids are numeric; `"value": null` clears a cell. The answer names coordinates by category and item name. |
+| POST | `/v1/measures/{id}/cells` | write | `{"coord": {"dims": {"1": 10, "2": 20}}, "value": 90}` | Set one input cell (category id → item id). |
 | POST | `/v1/nl/parse` | read | `{"text": "revenue is price times quantity"}` | Controlled English to a formula. |
 | POST | `/v1/nl/describe` | read | `{"formula": …}` | A formula (as `/nl/parse` returns it) to controlled English. |
 | GET | `/v1/scheduler/status` | read | | Refresh scheduler state. |
@@ -46,17 +46,17 @@ return typed values, and answer with only what the caller may see.
 | --- | --- | --- | --- | --- |
 | GET | `/v1/capabilities` | read | | What the caller may do: the model-wide actions, each visible measure's `define` and `cells` (`all`, `some`, `none`), and the items it may rename or delete. Hints for a GUI; every request is still checked. |
 | GET | `/v1/structure` | read | | Categories with their items in grid order, measures (with formulas as typed), LAMBDAs, views, and the `version`. The stable shape, in place of `/v1/model`. |
-| POST | `/v1/measures/:id/window` | read | `{"at": {"1": [10, 11]}}` | The cells at these items (per category id; a category left out: all its items), computed by the server. |
+| POST | `/v1/measures/{id}/window` | read | `{"at": {"1": [10, 11]}}` | The cells at these items (per category id; a category left out: all its items), computed by the server. |
 | POST | `/v1/cells` | write | `{"edits": [{"measure": 101, "at": [[1, 10], [2, 20]], "value": 150}]}` | Set or clear (`"value": null`) cells, all or none. A refusal says which edit (`index`). |
 | POST | `/v1/measures` | write | `{"definition": "Tax = Revenue * 0.1"}` or `{"name": "Notes", "categories": [2], "type": "Text"}` | Define (or redefine) a derived measure or a LAMBDA, or add an input measure. |
-| PUT | `/v1/measures/:id` | write | `{"formula": "Revenue * 0.2", "name": "Duty", "format": {"decimals": 2}}` | Any of them, as one step. |
-| DELETE | `/v1/measures/:id` | write | | Refused while a formula reads it. |
+| PUT | `/v1/measures/{id}` | write | `{"formula": "Revenue * 0.2", "name": "Duty", "format": {"decimals": 2}}` | Any of them, as one step. |
+| DELETE | `/v1/measures/{id}` | write | | Refused while a formula reads it. |
 | POST | `/v1/categories` | write | `{"name": "Region"}` | |
-| PUT, DELETE | `/v1/categories/:id` | write | `{"name": …}` | Rename; delete (with its items; refused while a measure uses it). |
-| POST | `/v1/categories/:id/items` | write | `{"name": "North"}` | |
-| PUT, DELETE | `/v1/items/:id` | write | `{"name": …}` | Rename; delete (with its cells). |
+| PUT, DELETE | `/v1/categories/{id}` | write | `{"name": …}` | Rename; delete (with its items; refused while a measure uses it). |
+| POST | `/v1/categories/{id}/items` | write | `{"name": "North"}` | |
+| PUT, DELETE | `/v1/items/{id}` | write | `{"name": …}` | Rename; delete (with its cells). |
 | POST | `/v1/views` | write | `{"name": "By product", "matrices": [{"measure": 102, "axis_order": [2, 1]}]}` | Save a view. |
-| PUT, DELETE | `/v1/views/:id` | write | `{"name": …, "matrices": …}` | |
+| PUT, DELETE | `/v1/views/{id}` | write | `{"name": …, "matrices": …}` | |
 | POST | `/v1/undo`, `/v1/redo` | write | | The session's last change. |
 | GET | `/v1/changes` | read | | Server-Sent Events: what changed (see below). |
 

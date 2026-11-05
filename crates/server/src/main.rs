@@ -628,18 +628,18 @@ fn routes() -> Vec<(
         ("get", "/measures", Scope::Read, get(list_measures)),
         (
             "get",
-            "/measures/:id/values",
+            "/measures/{id}/values",
             Scope::Read,
             get(measure_values),
         ),
         // A what-if read; `"persist": true` needs a write token (checked in the handler).
         (
             "post",
-            "/measures/:id/eval",
+            "/measures/{id}/eval",
             Scope::Read,
             post(eval_measure),
         ),
-        ("post", "/measures/:id/cells", Scope::Write, post(set_cell)),
+        ("post", "/measures/{id}/cells", Scope::Write, post(set_cell)),
         ("post", "/nl/parse", Scope::Read, post(nl_parse)),
         ("post", "/nl/describe", Scope::Read, post(nl_describe)),
         (
@@ -654,7 +654,7 @@ fn routes() -> Vec<(
         ("get", "/capabilities", Scope::Read, get(gui::capabilities)),
         (
             "post",
-            "/measures/:id/window",
+            "/measures/{id}/window",
             Scope::Read,
             post(gui::window),
         ),
@@ -662,47 +662,47 @@ fn routes() -> Vec<(
         ("post", "/measures", Scope::Write, post(gui::define)),
         (
             "put",
-            "/measures/:id",
+            "/measures/{id}",
             Scope::Write,
             put(gui::update_measure),
         ),
         (
             "delete",
-            "/measures/:id",
+            "/measures/{id}",
             Scope::Write,
             delete(gui::delete_measure),
         ),
         ("post", "/categories", Scope::Write, post(gui::add_category)),
         (
             "put",
-            "/categories/:id",
+            "/categories/{id}",
             Scope::Write,
             put(gui::rename_category),
         ),
         (
             "delete",
-            "/categories/:id",
+            "/categories/{id}",
             Scope::Write,
             delete(gui::delete_category),
         ),
         (
             "post",
-            "/categories/:id/items",
+            "/categories/{id}/items",
             Scope::Write,
             post(gui::add_item),
         ),
-        ("put", "/items/:id", Scope::Write, put(gui::rename_item)),
+        ("put", "/items/{id}", Scope::Write, put(gui::rename_item)),
         (
             "delete",
-            "/items/:id",
+            "/items/{id}",
             Scope::Write,
             delete(gui::delete_item),
         ),
         ("post", "/views", Scope::Write, post(gui::save_view)),
-        ("put", "/views/:id", Scope::Write, put(gui::update_view)),
+        ("put", "/views/{id}", Scope::Write, put(gui::update_view)),
         (
             "delete",
-            "/views/:id",
+            "/views/{id}",
             Scope::Write,
             delete(gui::delete_view),
         ),
@@ -1382,7 +1382,7 @@ struct EvalReq {
 
 /// Incremental / what-if evaluation. Builds a short-lived live `Engine` over
 /// all derived measures, applies the batch of edits as deltas, and returns the
-/// recomputed snapshot for measure `:id` as `[{coord: [[cat_name,item_name]..], value}]`.
+/// recomputed snapshot for measure `{id}` as `[{coord: [[cat_name,item_name]..], value}]`.
 ///
 /// Stateless by design: the `Engine` owns a worker thread and a live dataflow
 /// and is not cheaply shareable across async tasks, so v1 rebuilds one per
@@ -3019,7 +3019,7 @@ pub(crate) mod tests {
                 "describe" => &describe,
                 _ if gui::ROUTES
                     .iter()
-                    .any(|r| uri.ends_with(&r.replace(":id", "102"))) =>
+                    .any(|r| uri.ends_with(&r.replace("{id}", "102"))) =>
                 {
                     &empty
                 }
@@ -3041,7 +3041,7 @@ pub(crate) mod tests {
         for (method, path, scope, _) in routes() {
             let m = method.to_uppercase();
             for prefix in ["", "/v1"] {
-                let uri = format!("{prefix}{}", path.replace(":id", "102"));
+                let uri = format!("{prefix}{}", path.replace("{id}", "102"));
                 let uri = uri.replace("102/cells", "100/cells");
                 let status = |t| {
                     let r = app.clone().oneshot(req(&m, &uri, t));
@@ -3336,7 +3336,7 @@ pub(crate) mod tests {
         let mut want: Vec<(String, String, String)> = routes()
             .into_iter()
             .map(|(m, p, scope, _)| {
-                let p = format!("/v1{}", p.replace(":id", "{id}"));
+                let p = format!("/v1{p}");
                 (m.to_string(), p, format!("{scope:?}").to_lowercase())
             })
             .collect();

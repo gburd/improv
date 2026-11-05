@@ -148,7 +148,7 @@ Users of the live engine:
 | TUI (`improv-tui`) | one engine per session; a numeric edit is `Engine::set`, any other value rebuilds the engine |
 | GUI (`improv-gui`) | one engine per session; edits go through `input_cell` and `apply`, its snapshot dropped first; rebuilt on structural changes |
 | `improv stream` | edits read from stdin, changed cells written to stdout |
-| server `POST /measures/:id/eval` | a short-lived engine per request, for what-if edits |
+| server `POST /measures/{id}/eval` | a short-lived engine per request, for what-if edits |
 | pg_improv's logical worker | one engine per model in `logical` mode, fed the row changes of each batch through `apply_delta`; it writes the changed rows |
 
 ## The coordinate / value encoding for dataflow
