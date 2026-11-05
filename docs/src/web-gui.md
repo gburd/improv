@@ -21,7 +21,7 @@ when it is missing), then serve it beside the API:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.127 --locked
+cargo install wasm-bindgen-cli --version 0.2.130 --locked
 crates/gui_web/build.sh --release web        # index.html, the .js and the .wasm, in ./web
 IMPROV_API_TOKEN_FILE=/etc/improv/tokens improv-server sales.db 127.0.0.1:3000 --static ./web
 ```
