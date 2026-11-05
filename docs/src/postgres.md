@@ -274,6 +274,16 @@ for the mechanism, the wrapper's text, and the full privilege matrix
 
 ## Access policies
 
+<video src="./img/policies-demo.mp4" controls muted loop playsinline width="100%"
+  poster="./img/policies-demo.png">
+  <img src="./img/policies-demo.gif" alt="Access policies in pg_improv: the owner sets Cedar policies and grants a role; as that role, filtered rows and cells, a hidden item answering as missing, explain_access, a refused and an allowed edit; the owner reads the decision and the audit log">
+</video>
+
+*Access policies in pg_improv: the owner sets policies and grants `ann`;
+as `ann`, the result table and `improv.cells` lack Falcon, a hidden item
+answers as a missing one, a Price edit is refused and a Quantity edit
+written; the owner sees why a cell is hidden, and the audit log.*
+
 A model's Cedar access policies ([Access Policies](./policies.md)) are
 stored and enforced by pg_improv, for every client. The owner, a role that
 may act as it and superusers are never restricted. Everyone else sees,
